@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import sys
@@ -10,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from conftest import envelope
-from cutpoint import cli, ffmpeg_utils, jsonout
+from cutpoint import cli, ffmpeg_utils, jsonout, reset_state
 from cutpoint.ffmpeg_utils import FFmpegError, FFmpegNotFoundError, FolderBusyError
 
 
@@ -187,6 +188,27 @@ def test_cli_error_envelope(monkeypatch, capsys, err, code, exit_code, message):
     assert "noise" in stderr
 
 
+@pytest.mark.skipif(Path("C:/ffmpeg/bin").is_dir(), reason="C:/ffmpeg/bin is always searched")
+def test_ffmpeg_off_path_gives_ffmpeg_missing(home, tmp_path, monkeypatch, capsys):
+    """A real lookup, not an injected exception: nothing on PATH or in the default folders."""
+    video = tmp_path / "videos" / "a.mp4"
+    video.parent.mkdir()
+    video.write_bytes(b"not probed")
+    segments = tmp_path / "seg.json"
+    segments.write_text(json.dumps([{"source": str(video), "start": 0, "end": 2}]), "utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "programs"))
+    reset_state()  # forget any ffmpeg found earlier in this process
+
+    assert cli.main(["clips", "p", "--segments", str(segments), "--json"]) == 1
+
+    doc = envelope(capsys.readouterr().out)
+    assert doc["ok"] is False
+    assert doc["error"]["code"] == "ffmpeg_missing"
+    assert "not found" in doc["error"]["message"]
+
+
 def test_cli_error_without_json_prints_nothing_on_stdout(monkeypatch, capsys):
     _paths_raising(monkeypatch, FileNotFoundError("gone"))
     assert cli.main(["paths"]) == 1
@@ -213,9 +235,10 @@ def test_cli_nonzero_return_is_not_ok(monkeypatch, capsys):
         (["paths", "--json", "--bogus"], "unrecognized arguments: --bogus"),
         (["clips", "p", "--size", "abc", "--json"], "argument --size: 'abc': expected WxH"),
         (["setup", "--only", "bogus", "--json"], "argument --only: invalid choice: 'bogus'"),
+        (["events", "ev", "--layers", "bogus", "--json"], "argument --layers: invalid choice"),
         (["paths", "--json=1"], "argument --json: ignored explicit argument '1'"),
     ],
-    ids=["paths-unknown-option", "clips-size", "setup", "json-with-value"],
+    ids=["paths-unknown-option", "clips-size", "setup", "events-layers", "json-with-value"],
 )
 def test_bad_args_envelope(capsys, argv, message):
     with pytest.raises(SystemExit) as exc:

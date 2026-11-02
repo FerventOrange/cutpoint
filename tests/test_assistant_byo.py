@@ -1081,3 +1081,38 @@ def test_clear_model_cache_invalidates_transient_cache(monkeypatch) -> None:
     assert res3["models"][0]["id"] == "gpt-6.1-terra"
     assert call_count == 2
     providers.clear_model_cache()
+
+
+@pytest.mark.parametrize(
+    ("provider", "listed", "want"),
+    [
+        ("codex", ["other-model", "{default}"], "{default}"),  # the default, when offered
+        ("codex", ["other-model", "second"], "other-model"),  # else the proxy's first
+        ("antigravity", ["claude-x", "gemini-9-pro"], "gemini-9-pro"),  # a Gemini first
+        ("antigravity", ["claude-x", "gpt-y"], "claude-x"),
+    ],
+    ids=["default-listed", "first-listed", "antigravity-gemini", "antigravity-no-gemini"],
+)
+def test_subscription_resolve_model_picks_from_the_proxys_list(monkeypatch, provider, listed, want):
+    default = providers.DEFAULT_SUBSCRIPTION_MODELS.get(provider, "")
+    if "{default}" in listed and not default:
+        pytest.skip(f"{provider} has no default model")
+    ids = [m.replace("{default}", default) for m in listed]
+    calls: list[str] = []
+
+    def list_models(p: str) -> list[dict]:
+        calls.append(p)
+        return [{"id": i, "name": i} for i in ids]
+
+    monkeypatch.setattr(providers.cliproxy, "list_models", list_models)
+    p = providers.SubscriptionProvider(provider, "", "", 0)
+    assert p.resolve_model() == want.replace("{default}", default)
+    assert p.resolve_model() == want.replace("{default}", default)
+    assert calls == [provider]  # asked once
+
+
+def test_subscription_resolve_model_keeps_a_chosen_model_and_refuses_an_empty_list(monkeypatch):
+    monkeypatch.setattr(providers.cliproxy, "list_models", lambda p: [])
+    assert providers.SubscriptionProvider("codex", "", "picked", 0).resolve_model() == "picked"
+    with pytest.raises(ProviderError, match="no models available from proxy"):
+        providers.SubscriptionProvider("codex", "", "", 0).resolve_model()

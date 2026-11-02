@@ -20,7 +20,7 @@ import pytest
 
 import cutpoint.pano.x3 as x3
 import cutpoint.ski as ski
-from conftest import StubTranscriber, set_config, write
+from conftest import StubTranscriber, run_json, set_config, write
 from cutpoint import activity, analyze, cache, cli, config, crash, jsonout, progress, transcribe
 from cutpoint.events import common, pipeline, report, scoring
 from cutpoint.events import paths as event_paths
@@ -493,6 +493,19 @@ def test_a_layer_failure_fails_its_step_warns_and_the_later_steps_run(run, capsy
     assert "Keyframes failed: model blew up" in res.warnings[0]["message"]
     assert "Keyframes failed" in caplog.text
     assert (run.proj / "highlights.json").is_file()
+
+
+def test_analyze_json_reports_a_failed_step_as_a_warning_not_an_error(run, capsys):
+    """Through ``cli.main``: a failed layer is a ``step_failed`` warning; the run succeeds."""
+    run.plan = plan(reactions=("audio", "voice"), keyframes=("visual",))
+    run.fail = "visual"
+
+    code, doc = run_json(capsys, ["analyze", str(run.video), "--style", "action", "--out", "s"])
+
+    assert code == 0 and doc["ok"] is True and doc["error"] is None
+    [warning] = [w for w in doc["warnings"] if w["code"] == "step_failed"]
+    assert "Keyframes failed: model blew up" in warning["message"]
+    assert Path(doc["outputs"]["highlights"]).is_file()
 
 
 def test_a_failure_of_the_events_run_itself_skips_its_steps_and_goes_on(run, capsys, monkeypatch):

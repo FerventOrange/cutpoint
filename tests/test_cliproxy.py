@@ -1262,3 +1262,88 @@ def test_prefix_setup_not_called_in_chat_or_list_models(
 
     cliproxy.chat("claude-code", {"model": "claude-3-5-sonnet", "messages": []})
     assert prefix_called == []
+
+
+def test_run_refuses_a_port_in_use_before_writing_keys_or_config(
+    temp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CUTPOINT_CLIPROXY_BINARY", sys.executable)
+    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", lambda: pytest.fail("started"))
+    with socket.socket() as holder:
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        busy = holder.getsockname()[1]
+        with pytest.raises(cliproxy.ProxyError, match=f"port {busy} is already in use"):
+            cliproxy.run(port=busy)
+    assert not cliproxy.keys_path().exists()
+    assert not cliproxy.config_path().exists()
+
+
+class _StuckGuardian:
+    """A supervisor that never exits: every ``wait`` times out."""
+
+    stdin = None
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.terminated = False
+
+    def poll(self) -> None:
+        return None
+
+    def wait(self, timeout: float | None = None) -> int:
+        raise subprocess.TimeoutExpired("guardian", timeout or 0)
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+
+_HOOKED = [
+    signal.SIGINT,
+    signal.SIGTERM,
+    *([signal.SIGBREAK] if hasattr(signal, "SIGBREAK") else []),
+]
+
+
+@pytest.fixture
+def stuck_run(temp_home: Path, monkeypatch: pytest.MonkeyPatch):
+    """``run()`` with a guardian that never exits and Ctrl+C during startup; yields the
+    guardians started and the signal handlers before (restored afterwards whatever happens)."""
+    if threading.current_thread() is not threading.main_thread():
+        pytest.skip("run() hooks the signals only on the main thread")
+    monkeypatch.setenv("CUTPOINT_CLIPROXY_BINARY", sys.executable)
+    started: list[_StuckGuardian] = []
+
+    def popen(*args: object, **kwargs: object) -> _StuckGuardian:
+        started.append(_StuckGuardian())
+        return started[-1]
+
+    def interrupted() -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cliproxy.subprocess, "Popen", popen)
+    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", interrupted)
+    before = {sig: signal.getsignal(sig) for sig in _HOOKED}
+    try:
+        yield started, before
+    finally:
+        for sig, handler in before.items():
+            signal.signal(sig, handler)
+
+
+def test_run_reports_a_supervisor_stuck_in_credential_cleanup(stuck_run) -> None:
+    started, _ = stuck_run
+    with pytest.raises(cliproxy.ProxyError, match="did not finish credential cleanup"):
+        cliproxy.run()
+    assert started and started[0].terminated
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="bug: run()'s finally calls stop_guardian(), which raises ProxyError before the "
+    "loop that restores the SIGINT/SIGTERM/SIGBREAK handlers, so they stay hooked",
+)
+def test_run_restores_the_signal_handlers_when_the_supervisor_is_stuck(stuck_run) -> None:
+    _, before = stuck_run
+    with pytest.raises(cliproxy.ProxyError):
+        cliproxy.run()
+    assert {sig: signal.getsignal(sig) for sig in _HOOKED} == before
