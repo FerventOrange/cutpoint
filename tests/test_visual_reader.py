@@ -8,14 +8,10 @@ fakes are installed there.
 
 from __future__ import annotations
 
-import collections
 import io
 import os
-import pickle
-import subprocess
 import sys
 import threading
-import types
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -106,177 +102,133 @@ def test_stale_hw_reader_does_not_pollute_cpu_pass(monkeypatch):
     assert all(f.shape == (H, W, 3) for _, f in out)
 
 
-# ---- _read_state_dict / _aesthetic_layers without torch --------------------
+# ---- _aesthetic_layers: the .npz head --------------------------------------------
+
+_DIMS = (4, 3, 2, 1)  # stands in for 768-1024-128-64-16-1
 
 
-def _torch_stub(module: str, name: str) -> type:
-    return type(name, (), {"__module__": module, "__qualname__": name})
+def _head(dtype=np.float32) -> dict[str, np.ndarray]:
+    """A head for ``_DIMS``; layer numbers 0, 2, 10 check the numeric (not text) order."""
+    rng = np.random.default_rng(1)
+    out = {}
+    for idx, n_in, n_out in zip((0, 2, 10), _DIMS[:-1], _DIMS[1:], strict=True):
+        out[f"layers.{idx}.weight"] = rng.standard_normal((n_out, n_in)).astype(dtype)
+        out[f"layers.{idx}.bias"] = rng.standard_normal(n_out).astype(dtype)
+    return out
 
 
-def _pickle_checkpoint(tensors: dict[str, tuple]) -> bytes:
-    """A torch.save-style data.pkl: OrderedDict of _rebuild_tensor_v2 calls (protocol 2)."""
-
-    mods = {}
-    for m, names in {"torch": ["FloatStorage"], "torch._utils": ["_rebuild_tensor_v2"]}.items():
-        mod = types.ModuleType(m)
-        for n in names:
-            setattr(mod, n, _torch_stub(m, n))
-        mods[m] = mod
-    saved = {m: sys.modules.get(m) for m in mods}
-    sys.modules.update(mods)
-    try:
-
-        class Tensor:
-            def __init__(self, key, offset, size, stride):
-                self.args = (key, offset, size, stride)
-
-            def __reduce__(self):
-                key, offset, size, stride = self.args
-                storage = _Storage(key, int(np.prod(size)) + offset)
-                rebuild = mods["torch._utils"]._rebuild_tensor_v2
-                return rebuild, (storage, offset, size, stride, False, collections.OrderedDict())
-
-        class _Storage:
-            def __init__(self, key, n):
-                self.key, self.n = key, n
-
-        class P(pickle.Pickler):
-            def persistent_id(self, obj):
-                if isinstance(obj, _Storage):
-                    return ("storage", mods["torch"].FloatStorage, obj.key, "cpu", obj.n)
-                return None
-
-        buf = io.BytesIO()
-        P(buf, protocol=2).dump(
-            collections.OrderedDict((k, Tensor(*v)) for k, v in tensors.items())
-        )
-        return buf.getvalue()
-    finally:
-        for m, old in saved.items():
-            if old is None:
-                sys.modules.pop(m, None)
-            else:
-                sys.modules[m] = old
+@pytest.fixture
+def small_head(monkeypatch):
+    """``_aesthetic_layers`` expects ``_DIMS``; its cache is cleared around the test."""
+    monkeypatch.setattr(visual, "_AESTHETIC_DIMS", _DIMS)
+    visual._aesthetic_layers.cache_clear()
+    yield
+    visual._aesthetic_layers.cache_clear()
 
 
-def _write_checkpoint(path: Path, arrays: dict[str, np.ndarray], tensors: dict[str, tuple]):
-
-    with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("archive/data.pkl", _pickle_checkpoint(tensors))
-        zf.writestr("archive/byteorder", "little")
-        for key, arr in arrays.items():
-            zf.writestr(f"archive/data/{key}", arr.astype("<f4").tobytes())
-
-
-def test_read_state_dict_reads_torch_zip_with_offset_and_strides(tmp_path: Path):
-    plain = np.arange(6, dtype=np.float32)
-    shifted = np.arange(10, dtype=np.float32)  # tensor starts at element 4
-    transposed = np.arange(6, dtype=np.float32)  # a (3, 2) view with strides (1, 3)
-    path = tmp_path / "m.pth"
-    _write_checkpoint(
-        path,
-        {"0": plain, "1": shifted, "2": transposed},
-        {
-            "a": ("0", 0, (2, 3), (3, 1)),
-            "b": ("1", 4, (6,), (1,)),
-            "c": ("2", 0, (3, 2), (1, 3)),
-        },
-    )
-    sd = visual._read_state_dict(path)
-    np.testing.assert_array_equal(sd["a"], plain.reshape(2, 3))
-    np.testing.assert_array_equal(sd["b"], shifted[4:])
-    np.testing.assert_array_equal(sd["c"], plain.reshape(2, 3).T)
-
-
-class _Evil:
-    def __reduce__(self):
-        return os.system, ("echo pwned",)
-
-
-@pytest.mark.parametrize(
-    "payload", [_Evil(), [1, 2], {"a": 1.5}], ids=["disallowed-global", "not-a-dict", "not-arrays"]
-)
-def test_read_state_dict_rejects_what_is_no_state_dict(tmp_path: Path, payload):
-    path = tmp_path / "bad.pth"
-    with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("archive/data.pkl", pickle.dumps(payload, protocol=2))
-    with pytest.raises(
-        ValueError, match=r"not readable without torch.*cutpoint setup --only visual"
-    ):
-        visual._read_state_dict(path)
-
-
-def test_aesthetic_layers_load_without_torch(tmp_path: Path, monkeypatch):
-    w = [np.arange(4, dtype=np.float32), np.arange(6, dtype=np.float32)]
-    b = [np.ones(2, dtype=np.float32), np.ones(1, dtype=np.float32)]
-    path = tmp_path / "head.pth"
-    _write_checkpoint(
-        path,
-        {"0": w[0], "1": b[0], "2": w[1], "3": b[1]},
-        {
-            "layers.0.weight": ("0", 0, (2, 2), (2, 1)),
-            "layers.0.bias": ("1", 0, (2,), (1,)),
-            "layers.2.weight": ("2", 0, (1, 6), (6, 1)),
-            "layers.2.bias": ("3", 0, (1,), (1,)),
-        },
-    )
+def test_aesthetic_layers_load_npz_without_torch(tmp_path: Path, monkeypatch, small_head):
+    arrays = _head()
+    path = tmp_path / "head.npz"
+    np.savez(path, **arrays)
     monkeypatch.setitem(sys.modules, "torch", None)  # import torch -> ImportError
-    monkeypatch.setattr(visual.paths, "aesthetic_head", lambda: path)
-    visual._aesthetic_layers.cache_clear()
-    try:
-        layers = visual._aesthetic_layers(visual.paths.aesthetic_head())
-    finally:
-        visual._aesthetic_layers.cache_clear()
-    assert [a.shape for a, _ in layers] == [(2, 2), (1, 6)]
-    np.testing.assert_array_equal(layers[0][0], w[0].reshape(2, 2))
-    np.testing.assert_array_equal(layers[1][1], b[1])
+    layers = visual._aesthetic_layers(path)
+    assert [w.shape for w, _ in layers] == [(3, 4), (2, 3), (1, 2)]
+    for (w, b), idx in zip(layers, (0, 2, 10), strict=True):
+        np.testing.assert_array_equal(w, arrays[f"layers.{idx}.weight"])
+        np.testing.assert_array_equal(b, arrays[f"layers.{idx}.bias"])
+        assert w.dtype == b.dtype == np.float32
 
 
-_PROBE = """
-import subprocess
-import sys
-from pathlib import Path
-from cutpoint.events import visual
-try:
-    visual._read_state_dict(Path(sys.argv[1]))
-except ValueError as err:
-    print("ValueError", err)
-"""
+def test_aesthetic_layers_missing_file_names_setup(tmp_path: Path, small_head):
+    with pytest.raises(FileNotFoundError, match=r"cutpoint setup --only visual"):
+        visual._aesthetic_layers(tmp_path / "head.npz")
 
 
-@pytest.mark.slow
+def _object_array(path: Path) -> None:
+    np.savez(path, **(_head() | {"layers.0.bias": np.array([{"x": 1}] * 3, dtype=object)}))
+
+
+def _float64(path: Path) -> None:
+    np.savez(path, **_head(np.float64))
+
+
+def _broken_chain(path: Path) -> None:
+    np.savez(path, **(_head() | {"layers.2.weight": np.zeros((2, 4), np.float32)}))
+
+
+def _missing_bias(path: Path) -> None:
+    np.savez(path, **{k: v for k, v in _head().items() if k != "layers.10.bias"})
+
+
+def _extra_layer(path: Path) -> None:
+    extra = {"layers.11.weight": np.zeros((1, 1), np.float32), "layers.11.bias": np.zeros(1)}
+    np.savez(path, **(_head() | extra))
+
+
+def _other_names(path: Path) -> None:
+    np.savez(path, fc=np.zeros((2, 2), np.float32))
+
+
+def _not_a_zip(path: Path) -> None:
+    path.write_text("not a zip", encoding="utf-8")
+
+
+def _bad_zip(path: Path) -> None:
+    path.write_bytes(b"PK\x03\x04truncated")
+
+
+def _raw_member(path: Path) -> None:
+    np.savez(path, **{k: v for k, v in _head().items() if k != "layers.0.weight"})
+    with zipfile.ZipFile(path, "a") as z:
+        z.writestr("layers.0.weight", b"x")  # no .npy suffix: NpzFile returns raw bytes
+
+
+def _npy(path: Path) -> None:
+    with path.open("wb") as fh:
+        np.save(fh, np.zeros(3, np.float32))
+
+
 @pytest.mark.parametrize(
-    "spec",
+    ("make", "match"),
     [
-        ("0", 0, (1000, 1000), (1000, 1)),  # far larger than the 6-element storage
-        ("0", 0, (3,), (-100000,)),  # negative stride
-        ("0", -2, (2,), (1,)),  # negative offset
-        ("0", 0, (2, 3), (1,)),  # size and stride of different lengths
+        (_object_array, r"not readable.*allow_pickle"),
+        (_float64, r"not an aesthetic head \(expected float32 layers 4-3-2-1\)"),
+        (_broken_chain, r"not an aesthetic head \(expected float32"),
+        (_missing_bias, r"not an aesthetic head \(expected float32"),
+        (_extra_layer, r"not an aesthetic head \(expected float32"),
+        (_other_names, r"not an aesthetic head \(unexpected tensor names\)"),
+        (_raw_member, r"not an aesthetic head \(expected float32"),
+        (_not_a_zip, r"not readable"),
+        (_bad_zip, r"not readable"),
+        (_npy, r"not readable \(not an \.npz archive\)"),
     ],
-    ids=["oversized", "negative-stride", "negative-offset", "rank-mismatch"],
+    ids=lambda v: getattr(v, "__name__", "").lstrip("_") or None,
 )
-def test_read_state_dict_rejects_views_outside_the_storage(tmp_path: Path, spec):
-    path = tmp_path / "bad.pth"
-    _write_checkpoint(path, {"0": np.arange(6, dtype=np.float32)}, {"a": spec})
-    # a subprocess: an unchecked view would read foreign memory and may crash the interpreter
-    run = subprocess.run(
-        [sys.executable, "-c", _PROBE, str(path)], capture_output=True, text=True, timeout=60
-    )
-    assert run.returncode == 0, run.stderr
-    assert "ValueError" in run.stdout and "not readable without torch" in run.stdout
-
-
-def test_aesthetic_layers_rejects_a_checkpoint_that_is_not_an_aesthetic_head(
-    tmp_path: Path, monkeypatch
+def test_aesthetic_layers_rejects_a_file_that_is_not_the_head(
+    tmp_path: Path, small_head, make, match
 ):
-    path = tmp_path / "other.pth"
-    _write_checkpoint(path, {"0": np.arange(4, dtype=np.float32)}, {"fc": ("0", 0, (2, 2), (2, 1))})
-    monkeypatch.setitem(sys.modules, "torch", None)
+    path = tmp_path / "head.npz"
+    make(path)
+    with pytest.raises(ValueError, match=match + r".*cutpoint setup --only visual"):
+        visual._aesthetic_layers(path)
+
+
+# ---- pinned scores of the real aesthetic head --------------------------------
+
+# Read at import, before conftest isolates the environment: the user's installed head
+# (read only), or CUTPOINT_TEST_AESTHETIC_HEAD to check another copy of it.
+_REAL_HEAD = Path(os.environ.get("CUTPOINT_TEST_AESTHETIC_HEAD") or visual.paths.aesthetic_head())
+
+
+@pytest.mark.skipif(not _REAL_HEAD.is_file(), reason="real aesthetic head not installed")
+def test_real_aesthetic_head_gives_pinned_scores(home: Path):
+    dst = visual.paths.aesthetic_head()  # inside the isolated home
+    dst.parent.mkdir(parents=True)
+    dst.write_bytes(_REAL_HEAD.read_bytes())
     visual._aesthetic_layers.cache_clear()
     try:
-        with pytest.raises(
-            ValueError, match=r"not an aesthetic head.*cutpoint setup --only visual"
-        ):
-            visual._aesthetic_layers(path)
+        x = np.random.default_rng(0).standard_normal((4, 768)).astype(np.float32)
+        got = visual.aesthetic(x)
     finally:
         visual._aesthetic_layers.cache_clear()
+    np.testing.assert_allclose(got, [4.464581, 5.4804344, 5.008131, 5.676256], rtol=1e-6)

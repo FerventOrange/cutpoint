@@ -59,7 +59,10 @@ Read `transcript.txt` (or `events.txt` after `events`), then write the ranges yo
 cutpoint clips my-edit --segments segments.json
 ```
 
-You can mix hand-picked segments with auto-scored ones by exporting both and joining the clips.
+To mix hand-picked segments with auto-scored ones, copy `source`, `start`, `end` and `label` of
+the chosen candidates from `highlights.json` into the same segments file and export everything
+with one `clips --segments` run (a second run into the same folder would replace the first
+batch), then `assemble` that folder.
 Per-segment options (tails, crop, padding) are in the [command reference](../commands.md#clips).
 
 ### More room for trimming

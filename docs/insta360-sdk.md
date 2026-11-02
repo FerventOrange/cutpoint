@@ -68,7 +68,7 @@ Notes:
 ## What `cutpoint 360 stitch` does
 
 ```powershell
-cutpoint 360 stitch <project> [--clips NNN ... | --from-clips DIR] [--top N] [--max-total S] [--force] [--dry-run]
+cutpoint 360 stitch <project> [--clips NNN ... | --from-clips DIR | --segments FILE] [--top N] [--max-total S] [--force] [--dry-run]
 ```
 
 - Cutpoint judges success from the SDK's progress and error output plus other status markers it prints at runtime (including any requested `-enable_*` feature reported as failed or off), and verifies the output file with ffprobe.
@@ -82,7 +82,7 @@ After stitching, `cutpoint clips` and `cutpoint extend` pick the stitched file a
 
 ## Never commit the SDK
 
-The SDK is under NDA. The repository `.gitignore` blocks the common SDK paths (`sdk/`, `**/insta360/`, `MediaSDKTest*`, and the Camera SDK and metadata library names), but that is a safety net only. Keep the SDK outside the repository, preferably in `<CUTPOINT_HOME>\sdk\insta360\`, and do not paste SDK output or documentation into issues, pull requests or docs.
+The SDK is under NDA. The repository `.gitignore` blocks the common SDK paths (`sdk/`, `**/insta360/`, `MediaSDK*`, and the Camera SDK and metadata library names), but that is a safety net only. Keep the SDK outside the repository, preferably in `<CUTPOINT_HOME>\sdk\insta360\`, and do not paste SDK output or documentation into issues, pull requests or docs.
 
 ## Troubleshooting
 

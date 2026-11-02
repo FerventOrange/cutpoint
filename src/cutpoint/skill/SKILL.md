@@ -35,11 +35,13 @@ One step ("edit this into a montage"):
 cutpoint edit <video> --kind highlights|montage|clips|funny-moments
 ```
 
-It writes the project with the clips, `final.mp4` and `<video>-final.mp4` plus `.srt`
-subtitles; the last log lines name them. `--out NAME` names the project.
+It writes the project with the clips, `final.mp4` and `<name>-final.mp4` plus `.srt`
+subtitles; the last log lines name them. `--out NAME` names the project. `--no-keep-clips`
+removes the clips after the join when the user wants only the final video.
 
-`--vision` (on `edit` and `analyze`) adds an optional frame rating by a local Ollama vision
-model. It is off by default: slower and uses several GB of GPU memory, so pass it only when the
+`--vision` (on `edit` and `analyze`) adds an optional frame rating by the vision model (Ollama
+by default; the Vision role in the `cutpoint ui` Models tab can route it to a hosted
+provider). It is off by default: slower and uses several GB of GPU memory, so pass it only when the
 user asks for it. If the user's `config.json` has `"vision": true`, it is on by default and
 `--no-vision` skips it.
 
@@ -55,6 +57,9 @@ Choosing the moments yourself:
 4. Review: tell the user which clips were exported. Delete clips they reject; rename to reorder
    (`005_x.mp4` to `001b_x.mp4`, and its `.srt` the same way).
 5. Assemble: `cutpoint assemble projects/<project>/clips --transition fade --loudnorm`.
+   If the user wants only the final video and no clip review, skip steps 3-4:
+   `cutpoint assemble <project> --top 8 --transition fade --loudnorm` exports the moments into a
+   temporary folder, joins them and removes the clips.
 
 ## Rules
 
@@ -62,8 +67,8 @@ Choosing the moments yourself:
 - Ask the user before `cutpoint setup` (about 8 GB of downloads), `cutpoint stage` (copies
   footage to local disk), and before `cutpoint clips --force` or `cutpoint edit --force` over a
   non-empty folder.
-- Transcription, `cutpoint analyze`, `cutpoint events` and export can take minutes to hours: run them in the
-  background or with a long timeout.
+- Transcription, `cutpoint analyze`, `cutpoint events` and export can take minutes to hours:
+  run them in the background or with a long timeout.
 - Results are files: read the JSON in the project folder instead of parsing logs. Logs and
   errors go to stderr as `HH:MM:SS LEVEL message`; exit code `0` is success.
 - `--json` prints the result as one JSON object on stdout (logs stay on stderr): `ok`, `command`,
@@ -72,9 +77,9 @@ Choosing the moments yourself:
   `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `events`, `crashes`,
   `profile` and every `360` subcommand.
 - If `clips`, `extend` or `assemble` stops with an `ERROR` that another run holds the folder's
-  lock (`.<folder>.cutpoint-lock`; with `--json`, `error.code` is `folder_busy`), wait or retry; delete the lock file only if no run is active. If
-  `clips --force` or `extend` refuses a `manifest.json` Cutpoint did not write, tell the user;
-  never delete it.
+  lock (`.<folder>.cutpoint-lock`; with `--json`, `error.code` is `folder_busy`), wait or
+  retry; delete the lock file only if no run is active. If `clips --force` or `extend` refuses
+  a `manifest.json` Cutpoint did not write, tell the user; never delete it.
 - Check `cutpoint <command> --help`; never invent options.
 - When done, report the absolute paths of `final.mp4` (and the `<name>-final.mp4` copy after
   `cutpoint edit`), its `.srt` and the clips folder, exactly as the last log lines print them;
