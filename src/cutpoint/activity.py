@@ -108,8 +108,8 @@ SCHEMA_KEYS = ("name", "description", "detect", "incident", "highlight", "low_in
 PAIR_SECTIONS = ("incident", "highlight", "group", "person", "selfie", "lift")
 LIST_SECTIONS = ("low_info", "occluder", "scene")
 VL_KEYS = ("video", "gear", "scenery", "low_info")
-# The prompt set of callers that do not know the project's activity (the action-cam
-# scorer, the events contact sheets, the 360 mix): the ski lists they always used.
+# The prompt set outside a use_prompts block and for a project without activity.json:
+# the ski lists they always used.
 DEFAULT_ACTIVITY = "ski"
 GEN_WORD_CAP = 0.6
 GEN_PHRASE_CAP = 0.9
