@@ -76,27 +76,23 @@ def test_selfie_only_recompute_equals_a_full_recompute(pano):
     assert col7.tobytes() != full.det[:, 7].tobytes()
 
 
-def test_other_frames_fall_back_to_a_full_recompute(pano):
+@pytest.mark.parametrize(
+    "stale",
+    [
+        lambda first: {"t": first.t + 1},  # other frames
+        lambda first: {"rays": None},  # as load_views gives it
+    ],
+    ids=["other-frames", "no-rays"],
+)
+def test_views_that_cannot_be_reused_fall_back_to_a_full_recompute(pano, stale):
     models = Models(pano)
     orient = orientation()
     first = views.compute_views(pano.clip, models, pano.p, orient)
     axis = views.wearer_axis(first)
     full = views.compute_views(pano.clip, models, pano.p, orient, wearer_v=axis)
-    stale = views.PanoViews(**{**first.__dict__, "t": first.t + 1})
+    reuse = views.PanoViews(**{**first.__dict__, **stale(first)})
     det_calls = pano.det_calls
-    _same(views.compute_views(pano.clip, models, pano.p, orient, wearer_v=axis, reuse=stale), full)
-    assert pano.det_calls > det_calls
-
-
-def test_views_without_rays_fall_back_to_a_full_recompute(pano):
-    models = Models(pano)
-    orient = orientation()
-    first = views.compute_views(pano.clip, models, pano.p, orient)
-    axis = views.wearer_axis(first)
-    full = views.compute_views(pano.clip, models, pano.p, orient, wearer_v=axis)
-    cached = views.PanoViews(**{**first.__dict__, "rays": None})  # as load_views gives it
-    det_calls = pano.det_calls
-    _same(views.compute_views(pano.clip, models, pano.p, orient, wearer_v=axis, reuse=cached), full)
+    _same(views.compute_views(pano.clip, models, pano.p, orient, wearer_v=axis, reuse=reuse), full)
     assert pano.det_calls > det_calls
 
 

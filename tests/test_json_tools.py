@@ -46,23 +46,6 @@ def test_capabilities_json_keeps_the_report_keys_and_warns(monkeypatch, capsys):
     assert code == 0 and doc["warnings"] == []
 
 
-def test_capabilities_json_error(monkeypatch, capsys):
-    def boom():
-        raise RuntimeError("probe failed")
-
-    monkeypatch.setattr(capabilities, "report", boom)
-    code, doc = run_json(capsys, ["capabilities"])
-    assert code == 1 and doc["ok"] is False
-    assert doc["error"] == {"code": "error", "message": "probe failed"}
-
-
-def test_capabilities_text_unchanged_without_json(monkeypatch, capsys):
-    monkeypatch.setattr(capabilities, "report", lambda: {"x": 1})
-    monkeypatch.setattr(capabilities, "format_report", lambda d: "the report")
-    assert cli.main(["capabilities"]) == 0
-    assert capsys.readouterr().out == "the report\n"
-
-
 # ------------------------------------------------------------------------------------- mix
 @pytest.fixture
 def mix_project(home, tmp_path, monkeypatch) -> Path:

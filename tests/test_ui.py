@@ -8404,6 +8404,26 @@ def test_a_failed_subscription_login_says_why_and_can_start_again(
     assert client.post("/api/assistant/login", json={"provider": "other"}).status_code == 400
 
 
+def test_a_subscription_login_without_the_proxy_is_unavailable_not_a_server_error(
+    client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    why = "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
+
+    def offline(_provider: str) -> dict:
+        raise ui.cliproxy.ProxyConnectionError(why)
+
+    monkeypatch.setattr(ui.cliproxy, "start_login", offline)
+    res = client.post("/api/assistant/login", json={"provider": "codex"})
+    assert res.status_code == 503 and res.json()["detail"] == why
+    assert login_state(client, "codex") == {"state": "error", "error": why}
+
+    def broken(_provider: str) -> dict:
+        raise ui.cliproxy.ProxyError("failed to start login for codex: missing url")
+
+    monkeypatch.setattr(ui.cliproxy, "start_login", broken)
+    assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 500
+
+
 def test_login_timeout_cancellation_does_not_hold_login_lock(
     client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:

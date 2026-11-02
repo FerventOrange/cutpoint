@@ -48,9 +48,9 @@ def test_select_windows_quiet_logs_counts_at_debug_only(tmp_path: Path, caplog):
     assert "VLM windows" in caplog.text
 
 
-def test_hints_builtin_kill_says_whose_kill():
+def test_hints_kill_says_whose_kill():
     def hint(**fields):
-        ev = {"kind": "ocr", "type": "kill", "text": "a > b", "t": 5.0, **fields}
+        ev = {"kind": "ocr", "type": "kill", "verb": "kill", "text": "a > b", "t": 5.0, **fields}
         return vw._hints([ev], 0.0, 10.0)
 
     assert hint(player_death=True).endswith("a > b (the PLAYER died)")

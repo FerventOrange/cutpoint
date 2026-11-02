@@ -17,6 +17,7 @@ from typing import Any
 
 from cutpoint.extras import LITE, edition, install_hint
 from cutpoint.ffmpeg_utils import pcm_float
+from cutpoint.hub import quiet_hub_handler
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,7 @@ class Transcriber:
         self._model: Any = None
 
     def _load(self) -> Any:
+        quiet_hub_handler()
         from faster_whisper import WhisperModel  # noqa: PLC0415
 
         if self._model is None:

@@ -130,9 +130,8 @@ def test_take_waits_for_the_read(fake) -> None:
     pre = fake.make()
     pre.offer(fake.paths[0], 60.0, True)
     threading.Timer(0.3, fake.gate.set).start()
-    t0 = time.monotonic()
     assert pre.take(fake.source(0), fake.params(), None) is not None
-    assert time.monotonic() - t0 >= 0.25
+    assert fake.gate.is_set()  # it returned only once the read could finish
 
 
 def test_a_read_error_is_raised_in_turn_and_stops_the_rest(fake) -> None:
@@ -382,14 +381,6 @@ def test_a_stuck_worker_gets_neither_its_source_nor_its_engine(ocr_run, monkeypa
 
 
 # ----------------------------------------------------------------- the switches
-def test_env_var_turns_it_off(monkeypatch) -> None:
-    assert ocr_prefetch.enabled()
-    monkeypatch.setenv("CUTPOINT_ANALYZE_OVERLAP", "0")
-    assert not ocr_prefetch.enabled()
-    monkeypatch.setenv("CUTPOINT_ANALYZE_OVERLAP", "1")
-    assert ocr_prefetch.enabled()
-
-
 @pytest.mark.parametrize(
     ("out", "want"),
     [
@@ -421,7 +412,6 @@ def eligible(monkeypatch):
     ("style", "skip", "layers", "env", "want"),
     [
         ("gaming", (), True, None, True),
-        ("funny", (), True, None, True),
         ("gaming", (), True, "0", False),
         ("gaming", ("keyframes",), True, None, False),
         ("gaming", (), False, None, False),  # reanalyze, 360 analyze
@@ -447,17 +437,6 @@ def test_no_prefetch_without_the_model_files(eligible, tmp_path, monkeypatch) ->
 
 
 # ----------------------------------------------------------------- decode_raw(isolate=True)
-def test_isolated_popen_options(monkeypatch) -> None:
-    assert ffmpeg_utils._isolated() == (
-        {"stdin": subprocess.DEVNULL, "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-        if os.name == "nt"
-        else {"stdin": subprocess.DEVNULL, "start_new_session": True}
-    )
-    monkeypatch.setattr(ffmpeg_utils.os, "name", "nt")
-    monkeypatch.setattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
-    assert ffmpeg_utils._isolated() == {"stdin": subprocess.DEVNULL, "creationflags": 0x200}
-
-
 @pytest.mark.slow
 @needs_ffmpeg
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sessions")

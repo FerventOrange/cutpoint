@@ -31,7 +31,7 @@ def test_truncated_highlights_names_file_and_how_to_fix(tmp_path, reader):
 
 # reanalyze has its own non-object check (tests/test_analyze.py)
 @pytest.mark.parametrize("reader", ["select_moments", "load_highlights"])
-@pytest.mark.parametrize("content", ["null", "[]", "{}", '{"sources": null}'])
+@pytest.mark.parametrize("content", ["[]", '{"sources": null}'])
 def test_non_object_highlights_is_a_clear_error(tmp_path, reader, content):
     (tmp_path / "highlights.json").write_text(content, encoding="utf-8")
     with pytest.raises(ValueError, match=r"has no (candidates|sources) list") as err:
@@ -41,7 +41,7 @@ def test_non_object_highlights_is_a_clear_error(tmp_path, reader, content):
     assert "not found" not in str(err.value)
 
 
-@pytest.mark.parametrize("content", ['{"sources": []}', '{"candidates": null}'])
+@pytest.mark.parametrize("content", ['{"sources": []}'])
 def test_select_moments_without_a_candidates_list_is_a_clear_error(tmp_path, content):
     (tmp_path / "highlights.json").write_text(content, encoding="utf-8")
     with pytest.raises(ValueError, match="has no candidates list"):

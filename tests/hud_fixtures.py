@@ -8,10 +8,9 @@ from typing import Any
 
 
 def boxfeed(**over: Any) -> dict[str, Any]:
-    """A ``"builtin": true`` preset with a title, view and hype (invented game ``boxfeed``)."""
+    """A preset with a title, view and hype (invented game ``boxfeed``)."""
     data: dict[str, Any] = {
         "game": "boxfeed",
-        "builtin": True,
         "title": "Box Feed",
         "view": "top-down",
         "hype": "  hype: 0-1 box stacking\n",
@@ -27,10 +26,8 @@ def boxfeed(**over: Any) -> dict[str, Any]:
 
 
 def verbfeed(**over: Any) -> dict[str, Any]:
-    """A plain (not builtin) preset with a title, view and hype (game ``verbfeed``)."""
-    data = boxfeed(game="verbfeed", title="Verb Feed", banner_phrases=["VERB DONE"])
-    del data["builtin"]
-    return data | over
+    """Like :func:`boxfeed`, for game ``verbfeed``."""
+    return boxfeed(game="verbfeed", title="Verb Feed", banner_phrases=["VERB DONE"]) | over
 
 
 def write_preset(folder: Path, data: dict[str, Any]) -> Path:

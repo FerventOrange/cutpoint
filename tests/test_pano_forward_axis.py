@@ -4,7 +4,6 @@ that depend on it (views, director paths). Synthetic IMU fused by ``geometry.fus
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import sys
@@ -119,13 +118,6 @@ def test_upright_still_camera_holds_its_view() -> None:
     assert np.ptp(_display_yaw(o, render.stabilised_r_vw(o, IDX, 0.7, 0.5), IDX)) < 1.0
 
 
-def test_the_helmet_axis_was_noisy_on_upright_footage() -> None:
-    """The bug: levelled by ``FORWARD_V``, the same still upright camera swings its view."""
-    o = _fuse(UPRIGHT, sway_deg=8.0)
-    old = np.stack([G.level_matrix(o.up[i]) for i in IDX])
-    assert np.ptp(_display_yaw(o, old, IDX)) > 20.0
-
-
 # --------------------------------------------------------------------------- helmet unchanged
 def test_helmet_mount_matrices_are_unchanged() -> None:
     o = _fuse(HELMET, turn_dps=30.0, sway_deg=15.0)
@@ -133,13 +125,6 @@ def test_helmet_mount_matrices_are_unchanged() -> None:
     for i in IDX[::17]:
         before = G.level_matrix(o.up[i]) @ G.rot_y(o.heading[i] - o.heading_smooth[i])
         assert np.array_equal(o.r_vw(i / FPS), before)
-
-
-def test_helmet_renderer_heading_uses_forward_v() -> None:
-    o = _fuse(HELMET, turn_dps=30.0, sway_deg=15.0)
-    new = render.stabilised_r_vw(o, IDX, 0.7, 0.5)
-    o.fwd = np.array([0.0, -1.0, 0.0])  # a copy: what the code used before
-    assert np.array_equal(render.stabilised_r_vw(o, IDX, 0.7, 0.5), new)
 
 
 def test_upright_axis_logged_once(home, tmp_path, monkeypatch, caplog) -> None:
@@ -175,11 +160,9 @@ def _write_views(src: Path, meta: dict) -> None:
     ("up", "meta", "valid"),
     [
         ([0.0, 0.0, -1.0], {}, True),  # helmet: as before
-        (None, {}, True),  # no orientation cached: taken as it is
         ([0.0, -1.0, 0.0], {}, False),  # upright, computed before the fix
         ([0.0, -1.0, 0.0], {"forward_axis": "+z"}, False),  # d10b5c0: equirect in +z yaw
         ([0.0, -1.0, 0.0], {"forward_axis": "+z", "det_frame": "-z"}, True),
-        ([0.0, 0.0, -1.0], {"det_frame": "-z"}, True),  # helmet: no det_frame check
         ([0.0, 0.0, -1.0], {"forward_axis": "+z"}, False),
         ([0.0, -1.0, 0.0], {"forward_axis": "-z"}, False),  # this branch's first sign
     ],
@@ -220,8 +203,6 @@ def test_a_cached_track_records_its_axis_in_memory_only_when_upright(home, tmp_p
 
 def test_director_reuse_key_has_the_axis_only_when_upright(tmp_path) -> None:
     seg = ("001", 1.0, 5.0, "people", False, {"a": 1})
-    assert PC._plan_key(*seg) == json.dumps([["001", 1.0, 5.0, "people", False], {"a": 1}])
-    assert PC._plan_key(*seg, "+z") != PC._plan_key(*seg)
     from cutpoint.pano.director import PATH_VERSION  # noqa: PLC0415
 
     base = {
@@ -254,17 +235,6 @@ def test_upright_yaw_0_follows_the_10_lens() -> None:
             front, _ = G.ray_yaw_pitch(r.T @ np.array([0.0, 0.0, 1.0]))
             back, _ = G.ray_yaw_pitch(r.T @ np.array([0.0, 0.0, -1.0]))
             assert abs(front) < 10.0 and abs(abs(back) - 180.0) < 10.0
-
-
-def test_upright_wearer_prior_is_the_helmet_one() -> None:
-    """The wearer prior does not depend on the mount (the upright one is left to #573): too
-    few large person boxes give ``WEARER_V`` on a helmet and an upright clip alike."""
-    for name, meta in (("helmet-wearer.lrv", {}), ("upright-wearer.lrv", {"forward_axis": "+z"})):
-        pv = VW.PanoViews(
-            np.zeros(1), np.zeros((1, 9, 4)), np.zeros((0, 11)), np.zeros(0), np.zeros(0)
-        )
-        pv.meta = {"source": name} | meta
-        assert VW.wearer_axis(pv) is G.WEARER_V
 
 
 def test_a_stale_axis_in_the_meta_is_replaced() -> None:

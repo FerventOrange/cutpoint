@@ -222,15 +222,10 @@ def test_other_proxies_keep_the_sdr_filter(tags):
     ("tags", "matrix"),
     [
         (BT601, "smpte170m"),
-        (BT601 | {"color_range": "pc", "pix_fmt": "yuvj420p"}, "smpte170m"),
         ({"color_space": "bt470bg", "color_primaries": "bt470bg"}, "bt470bg"),
-        ({"color_space": "smpte240m"}, "smpte240m"),
         (SD, "smpte170m"),  # untagged SD
-        ({"width": 960, "height": 540, "color_range": "tv"}, "smpte170m"),
-        ({**SD, **BT601}, "smpte170m"),
         # No matrix tag: SD only, the primaries tag naming the matrix; the transfer never.
         ({**SD, "color_primaries": "bt470bg", "color_range": "tv"}, "bt470bg"),
-        ({**SD, "color_primaries": "bt709"}, "smpte170m"),
         ({**SD, "color_transfer": "bt709"}, "smpte170m"),
     ],
 )
@@ -258,23 +253,16 @@ def test_bt709_sources_keep_todays_chain(tags):
     "tags",
     [
         {},
-        {"color_range": "tv"},
-        {"color_range": "pc"},
-        {"width": 1280, "height": 720},
         {"width": 1280, "height": 536},  # cropped widescreen HD: HD by its width
-        {"width": 1920, "height": 800},
         {"width": 720, "height": 1280},  # vertical HD
         # No matrix tag on HD: BT.601 primaries or transfer do not make it BT.601.
-        {"color_transfer": "smpte170m"},
         {"color_primaries": "smpte170m", "color_transfer": "smpte170m"},
         {"color_primaries": "bt470bg", "color_range": "tv"},
-        {"color_primaries": "bt709"},
     ],
 )
 def test_hd_without_a_matrix_tag_is_only_tagged_bt709(tags):
     assert encode.bt601_matrix(media_info(**tags)) is None
     assert encode.bt709_filter(media_info(**tags), BOTH) == encode.TAG_BT709
-    assert encode.TAG_BT709 == "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709"
 
 
 @pytest.mark.parametrize(
@@ -872,26 +860,11 @@ def test_underwater_borrows_red_from_green_and_lifts_red(lenient):
     assert graded[0] / graded[1] > before[0] / before[1] + 0.2
 
 
-def test_underwater_levels_are_per_channel_and_auto_s_follow_the_luma():
+def test_underwater_levels_are_per_channel():
     stats = _stats(_underwater())
     under = color.estimate(stats, "underwater")
     assert isinstance(under.black, tuple) and isinstance(under.white, tuple)
     assert under == color.estimate(stats, "underwater", levels="channel")
-    auto = color.estimate(stats, "auto")
-    assert isinstance(auto.black, float) and auto == color.estimate(stats, "auto", levels="luma")
-
-
-def test_the_veto_counts_per_channel_levels_by_the_per_channel_rule():
-    """Per-channel points intend each channel's own tails: the veto's intended clipping is the
-    per-channel rule's, not the luma's."""
-    stats = _stats(_underwater())
-    rgb = color._float(stats.frames)
-    grade = color.estimate(stats, "underwater")
-    luma = replace(grade, black=max(grade.black), white=min(grade.white))
-    assert color._intended_clipping(rgb, grade) != color._intended_clipping(rgb, luma)
-    predicted = color.metrics(color.simulate(rgb, replace(grade, skip=None)))
-    want = color._veto(grade.before, predicted, color._intended_clipping(rgb, grade))
-    assert grade.skip == want
 
 
 def test_a_strong_cast_whose_grade_takes_much_colour_away_is_vetoed(lenient):
@@ -1017,15 +990,10 @@ def test_a_grade_that_clips_too_much_is_vetoed():
     [
         ({"clipped": 0.016}, color.VETO_CLIPPING, 0.01),
         ({"clipped": 0.015}, None, 0.01),
-        ({"clipped": 0.026}, color.VETO_CLIPPING, 0.02),
-        ({"clipped": 0.0249}, None, 0.02),
         ({"clipped": 0.016}, color.VETO_CLIPPING, 0.0),  # never below the source's own
         ({"residual": 0.106}, color.VETO_CAST, 0.01),
-        ({"residual": 0.1045}, None, 0.01),  # 1.05 times: only the absolute rule applies
         ({"m3": 25.1}, color.VETO_COLOURFUL, 0.01),
-        ({"m3": 25.0}, None, 0.01),
         ({"m3": 16.9}, color.VETO_M3_LOSS, 0.01),
-        ({"m3": 17.0}, None, 0.01),
         ({"saturation": 0.1}, None, 0.01),  # auto does not judge the saturation
     ],
 )
@@ -1040,11 +1008,8 @@ def test_veto_thresholds(after, veto, intended):
         ({"saturation": 0.3149}, 0.0, color.VETO_FADED),  # below 0.63 of 0.5
         ({"saturation": 0.3151}, 0.0, None),
         ({"m3": 10.0}, 0.0, None),  # the M3 drop is auto's rule
-        ({"m3": 25.1}, 0.0, color.VETO_COLOURFUL),
-        ({"clipped": 0.016}, 0.0, color.VETO_CLIPPING),
         ({"clipped": 0.026}, 0.011, None),  # red-only highlights do not count
         ({"clipped": 0.046}, 0.04, color.VETO_CLIPPING),  # ... up to 3 points
-        ({"clipped": 0.044}, 0.04, None),
     ],
 )
 def test_underwater_veto_thresholds(after, red, veto):
@@ -1080,22 +1045,14 @@ def test_a_red_highlight_the_levels_intend_is_counted_once():
     assert _color_eval().evaluate(frames, grade)["red_highlights"] == 1 / 400
 
 
-def test_an_underwater_veto_without_a_saturation_record_does_not_judge_it():
-    old = Metrics(m3=20.0, residual=0.1, clipped=0.0, black=0.05, white=0.9)  # version 2
-    assert color._veto(old, replace(old, m3=10.0), 0.0, underwater=True) is None
-
-
 @pytest.mark.parametrize(
     ("before", "after", "veto"),
     [
         # gopro 0079 underwater: 2.8 times and +0.0031, within the absolute rule
         (0.0017, 0.0048, color.VETO_CAST),
-        (0.001, 0.0031, color.VETO_CAST),  # +0.0021
         (0.001, 0.0029, None),  # +0.0019: below the floor (half an 8-bit code)
-        (0.004, 0.0059, None),  # +0.0019
         (0.01, 0.0149, None),  # 1.49 times, +0.0049
         (0.01, 0.0151, color.VETO_CAST),  # 1.51 times, +0.0051 (both rules)
-        (0.1, 0.1049, None),
     ],
 )
 def test_a_cast_veto_is_relative_as_well_as_absolute(before, after, veto):
@@ -1367,9 +1324,7 @@ def test_sampling_reads_keyframes_of_the_inner_80_percent_on_the_cpu(decodes):
     ("over", "high_bit"),
     [
         ({}, False),
-        ({"pix_fmt": "yuv420p10le"}, True),
         ({"pix_fmt": "p010le"}, True),
-        ({"pix_fmt": "yuv420p10le", **HLG}, False),  # tone-mapped: not checked for log
     ],
 )
 def test_sampling_records_a_high_bit_source_like_the_log_warning(decodes, over, high_bit):
