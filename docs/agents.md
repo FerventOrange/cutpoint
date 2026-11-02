@@ -3,9 +3,10 @@
 Cutpoint is a command-line tool, so any agent that can run shell commands can drive it:
 Claude Code, Codex, Grok CLI, or a script. Analysis runs locally (ffmpeg, Whisper, optional
 Ollama and llama.cpp models), so the agent only issues commands and reads small JSON and text
-files. No video is sent to an API, and local models are the default for the model features. The AI
-Chat in `cutpoint ui` can optionally use a hosted provider with your own API key; it then sends
-text (moment labels, transcript snippets, file names, times), never video.
+files. Local models are the default for every model feature, and nothing leaves the machine
+unless you opt in in the Models tab of `cutpoint ui`: the AI Chat with a hosted provider sends
+text (moment labels, transcript snippets, file names, times), and the Vision role with a
+subscription provider sends single frames after you allow it. Video files are never uploaded.
 
 The instructions the agent itself should follow are in [AGENTS.md](../AGENTS.md) at the
 repository root; `cutpoint guide` prints the same text, so an agent using a PyPI install
@@ -45,8 +46,8 @@ Cutpoint skill is installed:
 cutpoint skill install
 ```
 
-This writes `~/.claude/skills/cutpoint/SKILL.md`, the Claude Code user skills folder, so every
-project sees it. Use `--dir` for another folder: a project's `.claude/skills`
+This writes `~/.claude/skills/cutpoint/SKILL.md` (`$CLAUDE_CONFIG_DIR/skills/cutpoint/SKILL.md`
+when that variable is set), the Claude Code user skills folder, so every project sees it. Use `--dir` for another folder: a project's `.claude/skills`
 (`cutpoint skill install --dir .claude/skills`) or another agent's skills folder. If an
 installed skill differs (an older version or your own edits), the command stops with an error
 naming the file; add `--force` to replace it. Re-run it after upgrading Cutpoint. See

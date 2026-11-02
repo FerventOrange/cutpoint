@@ -1059,7 +1059,7 @@ def add_parser(sub: Any) -> None:
         default=None,
         help="style preset (default: pano.default_style in config.json, else ski)",
     )
-    an.add_argument("--model", help="whisper model (default: medium on CUDA)")
+    an.add_argument("--model", help="whisper model (default: medium on CUDA, small on CPU)")
     an.add_argument("--language", help="force transcription language, e.g. en")
     an.add_argument("--only", nargs="+", metavar="NNN", help="only these clip numbers")
     an.add_argument("--views-only", action="store_true", help="only the 360 view layer")
@@ -1084,11 +1084,13 @@ def add_parser(sub: Any) -> None:
     )
     di.add_argument("project")
     g = di.add_mutually_exclusive_group()
-    g.add_argument("--top", type=positive_int)
-    g.add_argument("--ids", nargs="+")
-    g.add_argument("--segments")
-    di.add_argument("--vertical", action="store_true")
-    di.add_argument("--preview", action="store_true")
+    g.add_argument("--top", type=positive_int, help="the top N moments by score")
+    g.add_argument("--ids", nargs="+", help="explicit candidate ids")
+    g.add_argument("--segments", help="segments JSON file")
+    di.add_argument("--vertical", action="store_true", help="plan 9:16 views")
+    di.add_argument(
+        "--preview", action="store_true", help="also render 640x360 check clips from the .lrv"
+    )
     di.add_argument(
         "--param",
         action="append",
@@ -1133,21 +1135,25 @@ def add_parser(sub: Any) -> None:
     )
     sti.add_argument("project")
     g2 = sti.add_mutually_exclusive_group()
-    g2.add_argument("--clips", nargs="+", metavar="NNN")
+    g2.add_argument("--clips", nargs="+", metavar="NNN", help="these clip numbers")
     g2.add_argument("--from-clips", metavar="DIR", help="clips folder (its manifest)")
     g2.add_argument(
         "--segments", metavar="FILE", help="segments JSON, e.g. mix_segments.json (its sources)"
     )
-    sti.add_argument("--top", type=positive_int)
-    sti.add_argument("--max-total", type=positive_float)
-    sti.add_argument("--force", action="store_true")
+    sti.add_argument("--top", type=positive_int, help="only clips holding the top N moments")
+    sti.add_argument(
+        "--max-total",
+        type=positive_float,
+        help="only clips holding the best moments that fit in S seconds",
+    )
+    sti.add_argument("--force", action="store_true", help="stitch again over existing outputs")
     sti.add_argument("--dry-run", action="store_true", help="print the SDK commands only")
     _add_json_argument(sti)
     sti.set_defaults(func=cmd_stitch)
 
     ck = s3.add_parser("check", help="contact sheets of rendered 360 clips")
     ck.add_argument("clips_dir")
-    ck.add_argument("--per-clip", type=int, default=6)
+    ck.add_argument("--per-clip", type=int, default=6, help="frames per clip (default 6)")
     _add_json_argument(ck)
     ck.set_defaults(func=cmd_check)
 

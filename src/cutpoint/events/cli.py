@@ -46,42 +46,40 @@ def _forced(spec: str) -> tuple[str, float, float]:
 
 def add_arguments(ap: argparse.ArgumentParser) -> None:
     """Add the ``cutpoint events`` options to ``ap`` (shared with cutpoint.cli)."""
-    ap.add_argument("project", type=Path, help="Project folder with highlights.json")
+    ap.add_argument("project", type=Path, help="project folder with highlights.json")
     ap.add_argument(
         "--layers",
         nargs="+",
         choices=LAYERS,
         default=None,
-        help="Layers to run (others still use cached results). Default: audio "
+        help="layers to run (others still use cached results). Default: audio "
         "ocr vlm; ski projects: audio voice visual crash vlm (no HUD; crash = "
         "cutpoint crashes, writes crashes.json)",
     )
-    ap.add_argument(
-        "--no-vlm", action="store_true", help="Skip layer 2 (the default layers without vlm)"
-    )
+    ap.add_argument("--no-vlm", action="store_true", help="run the default layers without vlm")
     ap.add_argument(
         "--only",
         action="append",
         default=[],
         metavar="GLOB",
-        help="Only sources whose file name matches (repeatable)",
+        help="only sources whose file name matches (repeatable)",
     )
     ap.add_argument(
         "--force",
         nargs="+",
         choices=LAYERS,
         default=[],
-        help="Ignore cached results of these layers",
+        help="ignore cached results of these layers",
     )
     ap.add_argument(
         "--no-rescore",
         action="store_true",
-        help="Do not feed the events back into highlights.json scores",
+        help="do not feed the events back into highlights.json scores",
     )
     ap.add_argument(
         "--sheets",
         action="store_true",
-        help="Write visual-layer contact sheets (top beauty shots, friends, "
+        help="write visual-layer contact sheets (top beauty shots, friends, "
         "people on lifts) to <project>/visual_check",
     )
     ap.add_argument(
@@ -98,14 +96,14 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         metavar="GROUP=P",
-        help="Absolute threshold per group, e.g. Laughter=0.1",
+        help="absolute threshold per group, e.g. Laughter=0.1",
     )
     g.add_argument(
         "--audio-floor",
         action="append",
         default=[],
         metavar="GROUP=P",
-        help="Floor of the relative (local baseline) rule, e.g. Laughter=0.03",
+        help="floor of the relative (local baseline) rule, e.g. Laughter=0.03",
     )
     g = ap.add_argument_group("OCR")
     g.add_argument(
@@ -120,11 +118,13 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         metavar="TAG",
-        help="Your in-game name(s), repeatable (default: player_tags in config.json)",
+        help="your in-game name(s), repeatable (default: player_tags in config.json)",
     )
-    g.add_argument("--ocr-fps", type=float, default=3.0)
-    g.add_argument("--no-hwaccel", action="store_true", help="Decode on the CPU")
-    g.add_argument("--ocr-debug", type=Path, help="Save region crops of OCR events here")
+    g.add_argument(
+        "--ocr-fps", type=float, default=3.0, help="frames per second read by the OCR (default 3)"
+    )
+    g.add_argument("--no-hwaccel", action="store_true", help="decode on the CPU")
+    g.add_argument("--ocr-debug", type=Path, help="save region crops of OCR events here")
     d = g.add_mutually_exclusive_group()
     d.add_argument(
         "--discover-regions",
@@ -132,7 +132,7 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         action="store_const",
         const=True,
         default=None,
-        help="Run HUD region discovery even if the game has a "
+        help="run HUD region discovery even if the game has a "
         "preset (writes <project>/discovery/<game>/proposal.json + overlay.jpg; "
         "an existing preset is kept). Default: only for games without one",
     )
@@ -141,13 +141,13 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         dest="discover",
         action="store_const",
         const=False,
-        help="Never run region discovery (games without a preset get no OCR)",
+        help="never run region discovery (games without a preset get no OCR)",
     )
     g.add_argument(
         "--discover-bursts",
         type=int,
         default=40,
-        help="Frame bursts sampled by discovery (4 frames each; default 40)",
+        help="frame bursts sampled by discovery (4 frames each; default 40)",
     )
     g.add_argument(
         "--preset-scope",
@@ -162,11 +162,11 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         "--max-windows",
         type=int,
         default=None,
-        help="Default 60; ski: one per seed + riding coverage, 60-150",
+        help="default 60; ski: one per seed + riding coverage, 60-150",
     )
-    g.add_argument("--window", type=float, default=15.0, help="Window length (s)")
-    g.add_argument("--pre", type=float, default=3.0, help="Seconds before an event")
-    g.add_argument("--post", type=float, default=12.0, help="Seconds after an event")
+    g.add_argument("--window", type=float, default=15.0, help="window length (s, default 15)")
+    g.add_argument("--pre", type=float, default=3.0, help="seconds before an event (default 3)")
+    g.add_argument("--post", type=float, default=12.0, help="seconds after an event (default 12)")
     g.add_argument(
         "--window-at",
         action="append",
@@ -174,15 +174,21 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         metavar="GLOB@START-END",
         help='Always describe this window, e.g. "*22.13.09*@364-400"',
     )
-    g.add_argument("--frames", type=int, default=14, help="Frames per window (12-16)")
-    g.add_argument("--frame-height", type=int, default=720)
-    g.add_argument("--image-max-tokens", type=int, default=640)
-    g.add_argument("--ctx", type=int, default=16384)
+    g.add_argument("--frames", type=int, default=14, help="frames per window (12-16, default 14)")
     g.add_argument(
-        "--no-audio", action="store_true", help="Do not send audio (frames + transcript only)"
+        "--frame-height", type=int, default=720, help="height of frames sent (default 720)"
     )
     g.add_argument(
-        "--no-transcript", action="store_true", help="Do not send the transcript excerpt"
+        "--image-max-tokens", type=int, default=640, help="token budget per frame (default 640)"
+    )
+    g.add_argument(
+        "--ctx", type=int, default=16384, help="llama-server context size (default 16384)"
+    )
+    g.add_argument(
+        "--no-audio", action="store_true", help="do not send audio (frames + transcript only)"
+    )
+    g.add_argument(
+        "--no-transcript", action="store_true", help="do not send the transcript excerpt"
     )
 
 
