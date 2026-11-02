@@ -20,11 +20,10 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from cutpoint import cache, jsonout, progress
+from cutpoint import cache, folders, jsonout, progress
 from cutpoint.assemble import assemble, temporary_clips
 from cutpoint.clips import export_clips
 from cutpoint.encode import Lut
-from cutpoint.ffmpeg_utils import atomic_output, check_not_sources, file_keys
 from cutpoint.styles import ACTION_CAM, get_style
 from cutpoint.utils import file_stamp, find_videos, input_name
 
@@ -91,7 +90,7 @@ def _events_namespace(project: Path) -> argparse.Namespace:
 
 def _link_or_copy(src: Path, dst: Path) -> None:
     """Make ``dst`` a hard link to ``src`` (a copy where links are not possible), atomically."""
-    with atomic_output(dst) as part:
+    with folders.atomic_output(dst) as part:
         part.unlink(missing_ok=True)  # left by a hard-killed run
         try:
             os.link(src, part)
@@ -204,7 +203,7 @@ def _run_edit(
             f"--format {output_format} references the clips; it cannot go with --no-keep-clips"
         )
     videos = find_videos(inputs)
-    if any(file_keys(v.parent) & file_keys(project) for v in videos):
+    if any(folders.file_keys(v.parent) & folders.file_keys(project) for v in videos):
         raise ValueError(
             f"{project} is the folder of the source videos; give --out a project name "
             "so nothing is written next to them"
@@ -213,8 +212,8 @@ def _run_edit(
     final_name = "final_vertical.mp4" if vertical else "final.mp4"
     named = (project / f"{edit_name(inputs[0])}-{final_name}").with_suffix(f".{output_format}")
     named_srt = named.with_suffix(".srt")
-    keys = set().union(*(file_keys(v) for v in videos))
-    check_not_sources(project, [named.name, named_srt.name], keys)
+    keys = set().union(*(folders.file_keys(v) for v in videos))
+    folders.check_not_sources(project, [named.name, named_srt.name], keys)
     # The checks clips makes, before hours of analysis rather than after.
     if keep_clips and clips_dir.exists() and any(clips_dir.iterdir()) and not force:
         raise FileExistsError(f"{clips_dir} is not empty; use --force to replace its clips")

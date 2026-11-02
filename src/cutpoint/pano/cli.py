@@ -146,12 +146,10 @@ def _drop_timings(project: Path) -> None:
     If it cannot be removed (held open on Windows), only warn (``stale_timings_kept`` with
     ``--json``), so the run's own error is never hidden. Either way ``outputs.timings`` is
     null: no file of this run is there."""
-    from cutpoint.ffmpeg_utils import retry_locked  # noqa: PLC0415
-
     path = project / TIMINGS_FILE
     jsonout.output("timings", None)
     try:
-        retry_locked(partial(path.unlink, missing_ok=True), path, "delete")
+        cache.retry_locked(partial(path.unlink, missing_ok=True), path, "delete")
     except OSError as err:
         message = f"{path} of an earlier analysis not removed: {err}"
         logger.warning("%s", message)
@@ -598,7 +596,7 @@ def _drop_stale(out_dir: Path, stems: set[str], carried: set[str]) -> None:
 
 def cmd_director(a: argparse.Namespace) -> None:
     """Plan (and optionally preview) director paths without the full render."""
-    from cutpoint.ffmpeg_utils import output_dir  # noqa: PLC0415
+    from cutpoint import folders  # noqa: PLC0415
     from cutpoint.pano.project import load  # noqa: PLC0415
 
     project = _project(a.project)
@@ -613,7 +611,7 @@ def cmd_director(a: argparse.Namespace) -> None:
     out_dir = project / "pano_paths" / name
     checker = _vl_checker(a)
     try:
-        with output_dir(out_dir):  # a failed run leaves no empty folder behind
+        with folders.output_dir(out_dir):  # a failed run leaves no empty folder behind
             stems, vl_saved = _direct(a, project, clips, overrides, out_dir, checker)
     finally:  # free the vision model's VRAM on any exit (errors, Ctrl+C, a dead model too)
         if checker is not None:
@@ -747,7 +745,7 @@ def _direct(
 
         checked = checker is not None  # its render is the preview
         if checker is not None:  # a failed render / check loses the check only
-            from cutpoint.ffmpeg_utils import FFmpegError  # noqa: PLC0415
+            from cutpoint.errors import FFmpegError  # noqa: PLC0415
             from cutpoint.pano.vlcheck import check_preview  # noqa: PLC0415
 
             try:

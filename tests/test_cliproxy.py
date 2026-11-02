@@ -20,9 +20,9 @@ from pathlib import Path
 
 import pytest
 
+from cutpoint import folders, procs
 from cutpoint.assistant import cliproxy, keys
 from cutpoint.assistant.proxy_credentials import CredentialStore
-from cutpoint.ffmpeg_utils import _pid_alive
 
 
 def _install_child_runtime(tmp_path: Path) -> None:
@@ -551,7 +551,7 @@ def test_live_daemon_lock_refuses_before_secret_materialization(temp_home: Path)
     root = cliproxy.cliproxy_dir()
     root.mkdir(parents=True)
     with (
-        cliproxy.swap_lock(root / "daemon.run"),
+        folders.swap_lock(root / "daemon.run"),
         pytest.raises(cliproxy.ProxyError, match="another cutpoint proxy is already running"),
     ):
         cliproxy.run()
@@ -1068,7 +1068,7 @@ def test_cli_proxy_interrupt_exit_130_and_child_cleanup(tmp_path: Path) -> None:
         child_pid = int(pid_file.read_text())
         parent.send_signal(signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGINT)
         assert parent.wait(timeout=10) == 130
-        assert not _pid_alive(child_pid)  # the daemon was reaped with it
+        assert not procs.pid_alive(child_pid)  # the daemon was reaped with it
     finally:
         if parent.poll() is None:
             parent.kill()

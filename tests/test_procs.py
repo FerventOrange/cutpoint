@@ -1,4 +1,5 @@
-"""cutpoint.winjob: the Windows job object that ends children with Python, on a fake kernel32."""
+"""cutpoint.procs.kill_with_parent: the Windows job object that ends children with Python, on a
+fake kernel32."""
 
 from __future__ import annotations
 
@@ -8,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cutpoint import winjob
+from cutpoint import procs
 
 
 class _Kernel32:
@@ -44,8 +45,8 @@ def k32(monkeypatch):
         fake = _Kernel32(**kw)
         monkeypatch.setattr(ctypes, "WinDLL", lambda name, **_: fake, raising=False)
         monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
-        monkeypatch.setattr(winjob, "os", SimpleNamespace(name="nt"))
-        monkeypatch.setattr(winjob, "_JOB_HANDLE", None)
+        monkeypatch.setattr(procs, "os", SimpleNamespace(name="nt"))
+        monkeypatch.setattr(procs, "_JOB_HANDLE", None)
         return fake
 
     return install
@@ -56,15 +57,15 @@ def _proc(handle: int) -> SimpleNamespace:
 
 
 def test_noop_off_windows(monkeypatch):
-    monkeypatch.setattr(winjob, "os", SimpleNamespace(name="posix"))
+    monkeypatch.setattr(procs, "os", SimpleNamespace(name="posix"))
     monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: pytest.fail("no kernel32"), raising=False)
-    winjob.kill_with_parent(_proc(1))  # type: ignore[arg-type]
+    procs.kill_with_parent(_proc(1))  # type: ignore[arg-type]
 
 
 def test_one_kill_on_close_job_for_every_child(k32):
     fake = k32()
-    winjob.kill_with_parent(_proc(11))  # type: ignore[arg-type]
-    winjob.kill_with_parent(_proc(12))  # type: ignore[arg-type]
+    procs.kill_with_parent(_proc(11))  # type: ignore[arg-type]
+    procs.kill_with_parent(_proc(12))  # type: ignore[arg-type]
     assert fake.calls == [
         ("create",),
         ("set", 77, 9, 0x2000),  # JobObjectExtendedLimitInformation, KILL_ON_JOB_CLOSE
@@ -75,24 +76,24 @@ def test_one_kill_on_close_job_for_every_child(k32):
 
 def test_job_not_created_assigns_nothing_and_retries(k32):
     fake = k32(job=0)
-    winjob.kill_with_parent(_proc(11))  # type: ignore[arg-type]
-    winjob.kill_with_parent(_proc(12))  # type: ignore[arg-type]
+    procs.kill_with_parent(_proc(11))  # type: ignore[arg-type]
+    procs.kill_with_parent(_proc(12))  # type: ignore[arg-type]
     assert fake.calls == [("create",), ("create",)]
-    assert winjob._JOB_HANDLE is None
+    assert procs._JOB_HANDLE is None
 
 
 def test_limits_not_set_closes_the_job_and_assigns_nothing(k32):
     fake = k32(set_ok=0)
-    winjob.kill_with_parent(_proc(11))  # type: ignore[arg-type]
+    procs.kill_with_parent(_proc(11))  # type: ignore[arg-type]
     assert [c[0] for c in fake.calls] == ["create", "set", "close"]
     assert fake.calls[-1] == ("close", 77)
-    assert winjob._JOB_HANDLE is None  # a job without KILL_ON_JOB_CLOSE is never used
+    assert procs._JOB_HANDLE is None  # a job without KILL_ON_JOB_CLOSE is never used
 
 
 def test_assign_failure_is_logged_not_raised(k32, caplog):
     k32(assign_ok=0)
-    with caplog.at_level(logging.DEBUG, logger="cutpoint.winjob"):
-        winjob.kill_with_parent(_proc(11))  # type: ignore[arg-type]
+    with caplog.at_level(logging.DEBUG, logger="cutpoint.procs"):
+        procs.kill_with_parent(_proc(11))  # type: ignore[arg-type]
     assert "not put in the job object" in caplog.text
 
 
@@ -103,5 +104,5 @@ def test_api_unavailable_is_a_noop(k32, monkeypatch):
         raise OSError("no kernel32")
 
     monkeypatch.setattr(ctypes, "WinDLL", boom, raising=False)
-    winjob.kill_with_parent(_proc(11))  # type: ignore[arg-type]
-    assert winjob._JOB_HANDLE is None
+    procs.kill_with_parent(_proc(11))  # type: ignore[arg-type]
+    assert procs._JOB_HANDLE is None

@@ -68,10 +68,11 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache
+from cutpoint import cache, folders
+from cutpoint.errors import FFmpegError
 from cutpoint.events.common import Source
 from cutpoint.events.regions import Region, bigtext_region
-from cutpoint.ffmpeg_utils import FFmpegError, grab_images, output_dir, probe
+from cutpoint.ffmpeg_utils import grab_images, probe
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +319,7 @@ def _ocr_frames(
 
     # failed before the first frame is saved: no empty frames/ (or empty ocr.jsonl) left
     # behind; the cache is opened on the first record and closed before output_dir cleans up
-    with output_dir(frame_dir), ExitStack() as stack:
+    with folders.output_dir(frame_dir), ExitStack() as stack:
         for bi, (src, t) in enumerate(bursts):
             ids = plan_ids[bi]
             hits = [cached(fid, t, bi, k) for k, fid in enumerate(ids)]

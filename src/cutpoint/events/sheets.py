@@ -18,7 +18,8 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint.ffmpeg_utils import FFmpegError, grab_images
+from cutpoint.errors import FFmpegError
+from cutpoint.ffmpeg_utils import grab_images
 
 logger = logging.getLogger(__name__)
 

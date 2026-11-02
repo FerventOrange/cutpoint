@@ -60,18 +60,10 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache, paths, state
+from cutpoint import cache, folders, paths, state
 from cutpoint.config import path_key, resolve_project_path, source_path
-from cutpoint.ffmpeg_utils import (
-    FFmpegError,
-    decode_pcm,
-    decode_raw,
-    decoder_for,
-    output_dir,
-    pcm_float,
-    probe,
-    run,
-)
+from cutpoint.errors import FFmpegError
+from cutpoint.ffmpeg_utils import decode_pcm, decode_raw, decoder_for, pcm_float, probe, run
 
 logger = logging.getLogger(__name__)
 
@@ -419,7 +411,7 @@ def _merge_spans(spans: list[tuple[str, float, float]]) -> list[tuple[str, float
 
 def check_frames(result: dict[str, Any], out_dir: Path, n: int = 6) -> list[Path]:
     """Side-by-side JPEGs (reference | matched source) for ``n`` spread-out matches."""
-    with output_dir(out_dir):  # interrupted: no empty folder left behind
+    with folders.output_dir(out_dir):  # interrupted: no empty folder left behind
         matched = [s for s in result["shots"] if s["matched"]]
         picks = (
             [matched[i] for i in np.linspace(0, len(matched) - 1, min(n, len(matched)), dtype=int)]

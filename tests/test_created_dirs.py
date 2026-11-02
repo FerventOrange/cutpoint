@@ -10,10 +10,9 @@ import numpy as np
 import pytest
 
 from conftest import set_config, write
-from cutpoint import cache, stage
+from cutpoint import cache, folders, stage
 from cutpoint.events import discover, killfeed, visual
 from cutpoint.events.common import Source
-from cutpoint.ffmpeg_utils import output_dir
 from cutpoint.pano import qa, qa_paths, stitch, views
 from pano_helpers import x3clip
 
@@ -45,7 +44,7 @@ def test_a_failure_removes_new_nested_folders_deepest_first(tmp_path: Path) -> N
 def test_a_failure_keeps_an_existing_folder_named_through_dotdot(tmp_path: Path) -> None:
     """``a/new/../x`` names the existing ``a``, which must stay."""
     (tmp_path / "a").mkdir()
-    with pytest.raises(KeyboardInterrupt), output_dir(tmp_path / "a" / "new" / ".." / "x"):
+    with pytest.raises(KeyboardInterrupt), folders.output_dir(tmp_path / "a" / "new" / ".." / "x"):
         raise KeyboardInterrupt
     assert (tmp_path / "a").is_dir()
     assert not (tmp_path / "a" / "new").exists()

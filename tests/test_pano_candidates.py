@@ -457,10 +457,8 @@ def test_360_analyze_locked_stale_timings_keep_the_runs_own_error(
 ) -> None:
     """A pano_timings.json that cannot be removed (held open on Windows) only warns: the
     run's own error (here Ctrl+C) still comes through, not the PermissionError."""
-    from cutpoint import ffmpeg_utils  # noqa: PLC0415
-
     _timing_run(monkeypatch, tmp_path)
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda s: None)  # retry_locked's backoff
+    monkeypatch.setattr(cache.time, "sleep", lambda s: None)  # retry_locked's backoff
     calls: list[Path] = []
 
     def locked(self, missing_ok=False):
@@ -488,10 +486,8 @@ def test_360_analyze_failure_json_does_not_name_stale_timings(
     """#11: once a failure dropped the earlier run's pano_timings.json, or could not (held
     open), the failure envelope's outputs.timings is null; a kept file is named by a
     stale_timings_kept warning."""
-    from cutpoint import ffmpeg_utils  # noqa: PLC0415
-
     _timing_run(monkeypatch, tmp_path)
-    monkeypatch.setattr(ffmpeg_utils.time, "sleep", lambda s: None)  # retry_locked's backoff
+    monkeypatch.setattr(cache.time, "sleep", lambda s: None)  # retry_locked's backoff
 
     def locked_unlink(self, missing_ok=False):
         raise PermissionError(13, "in use", str(self))

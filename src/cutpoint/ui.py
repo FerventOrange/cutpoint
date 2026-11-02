@@ -75,7 +75,6 @@ import sys
 import tempfile
 import threading
 import time
-import weakref
 from collections import Counter, deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -89,7 +88,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from cutpoint import cache, paths, progress
+from cutpoint import cache, folders, paths, procs, progress
 from cutpoint.assemble import AUDIO_TRANSITIONS, OUTPUT_FORMATS, default_audio_transition
 from cutpoint.assistant import cliproxy
 from cutpoint.assistant import keys as ai_keys
@@ -116,16 +115,13 @@ from cutpoint.config import (
 )
 from cutpoint.edit import KINDS
 from cutpoint.encode import BT709_TAGS, TV_RANGE, preview_filter, still_filter
+from cutpoint.errors import EncoderUnavailableError, FFmpegError
 from cutpoint.ffmpeg_utils import (
-    SOFT_STOP_S,
     ChildScope,
-    EncoderUnavailableError,
-    FFmpegError,
     VideoEncoder,
     audio_mix_filter,
     child_scope,
     grab_images,
-    part_path,
     probe,
     video_encoder,
 )
@@ -172,10 +168,6 @@ CROP_BOX = re.compile(r"[1-9]\d{0,4}:[1-9]\d{0,4}:\d{1,5}:\d{1,5}")  # clips --c
 EVEN_PX = r"(?:[1-9]\d{0,3}[02468]|[2468])"  # H.264 needs even sizes
 CLIP_SIZE = re.compile(rf"{EVEN_PX}x{EVEN_PX}")  # clips --size WxH
 REVERT = "revert-"  # proposal id prefix: put back the "before" of an applied assistant change
-# A stopped job gets this long before the hard kill: its own soft stop waits SOFT_STOP_S for
-# ffmpeg, then kills it and waits SOFT_STOP_S again, and only then removes the partial file;
-# the rest is for that removal and the interpreter's exit (#257).
-JOB_STOP_S = 2 * SOFT_STOP_S + 2.0
 BROWSER_CONTAINERS = {".mp4", ".m4v", ".mov", ".webm"}
 BROWSER_VIDEO = {"h264", "vp8", "vp9", "av1"}
 BROWSER_AUDIO = {None, "aac", "mp3", "opus", "vorbis"}
@@ -224,8 +216,7 @@ def spawn(args: list[str], *, low_priority: bool = True) -> subprocess.Popen[str
         group: dict[str, Any] = {"creationflags": flags}
     else:
         group = {"start_new_session": True}
-        nice = shutil.which("nice") if low_priority else None
-        args = [nice, "-n", "10", *args] if nice else args
+        args = procs.nice_prefix(args) if low_priority else args
     proc = subprocess.Popen(
         args,
         stdin=subprocess.DEVNULL,
@@ -246,67 +237,8 @@ def spawn(args: list[str], *, low_priority: bool = True) -> subprocess.Popen[str
         **group,
     )
     if os.name == "nt":
-        _join_tree_job(proc)
+        procs.join_tree_job(proc)
     return proc
-
-
-def _join_tree_job(proc: subprocess.Popen[str]) -> None:
-    """Windows: put ``proc`` in a job object of its own, so its descendants join it too.
-
-    ``kill_tree`` ends the job, which reaches every descendant even when the leader is gone:
-    ``taskkill /T`` walks the tree from a live leader only, and a soft stop that worked has ended
-    the leader. A descendant can miss CTRL_BREAK: a venv's python.exe launcher ignores the event,
-    so an interpreter it starts just after the event keeps running and holds the job's stdout.
-    """
-    import ctypes  # noqa: PLC0415 - Windows only
-
-    k32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
-    k32.CreateJobObjectW.restype = ctypes.c_void_p
-    job = k32.CreateJobObjectW(None, None)
-    if not job:
-        return
-    if k32.AssignProcessToJobObject(ctypes.c_void_p(job), ctypes.c_void_p(int(proc._handle))):  # type: ignore[attr-defined]
-        proc.tree_job = job  # type: ignore[attr-defined]
-        weakref.finalize(proc, k32.CloseHandle, ctypes.c_void_p(job))
-    else:  # e.g. the leader already exited: taskkill alone, as before
-        k32.CloseHandle(ctypes.c_void_p(job))
-
-
-def kill_tree(proc: subprocess.Popen[str], wait: float = JOB_STOP_S, *, term: bool = True) -> None:
-    """Stop ``proc`` and everything it started (ffmpeg, workers): TERM, wait ``wait``, then KILL.
-
-    ``term=False``: the KILL alone, for a job that was already sent its TERM.
-
-    Windows: CTRL_BREAK_EVENT to the job's process group first (cutpoint turns it into
-    KeyboardInterrupt: partial files removed, exit 130), then the job object ``spawn`` made
-    and ``taskkill /T /F``. The event
-    needs a console shared with the job; without one (pythonw) only the hard kill runs.
-    GenerateConsoleCtrlEvent is called directly: when it fails, ``os.kill`` falls through to
-    TerminateProcess on the leader alone, which orphans its ffmpeg before taskkill can see it.
-    """
-    if os.name == "nt":
-        import ctypes  # noqa: PLC0415 - Windows only
-
-        k32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
-        if term and k32.GenerateConsoleCtrlEvent(signal.CTRL_BREAK_EVENT, proc.pid):
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                proc.wait(wait)
-        job = getattr(proc, "tree_job", None)
-        if job:  # every descendant, including ones the leader's exit left out of /T
-            k32.TerminateJobObject(ctypes.c_void_p(job), 1)
-        subprocess.run(
-            ["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False
-        )
-        return
-    if term:
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(wait)
-    with contextlib.suppress(ProcessLookupError):  # sweeps members that outlived the leader
-        os.killpg(proc.pid, signal.SIGKILL)
 
 
 def cutpoint_cmd(*args: str) -> list[str]:
@@ -1139,7 +1071,7 @@ class Jobs:
                 job.cancelled = True  # also between two steps: the next one never starts
             proc = job.proc
         if start and proc is not None:
-            threading.Thread(target=kill_tree, args=(proc,), daemon=True).start()
+            threading.Thread(target=procs.kill_tree, args=(proc,), daemon=True).start()
         return job
 
     def shutdown(self) -> None:
@@ -1153,9 +1085,9 @@ class Jobs:
             if proc is None:  # between two steps: the next one never starts
                 continue
             if not stopping:
-                kill_tree(proc)
-            elif not job.done.wait(JOB_STOP_S):  # a second TERM could cut short its cleanup
-                kill_tree(proc, term=False)
+                procs.kill_tree(proc)
+            elif not job.done.wait(procs.JOB_STOP_S):  # a second TERM could cut short its cleanup
+                procs.kill_tree(proc, term=False)
 
 
 # Proxies: a keyframe every PROXY_GOP frames and at most PROXY_FPS_MAX fps keep seeks quick (the
@@ -1533,7 +1465,9 @@ class Media:
                 run.cancelled = True  # does not start if it has not yet
                 kill, run.proc = run.proc, None
         if kill is not None:
-            threading.Thread(target=kill_tree, args=(kill, SOFT_STOP_S), daemon=True).start()
+            threading.Thread(
+                target=procs.kill_tree, args=(kill, procs.SOFT_STOP_S), daemon=True
+            ).start()
 
     def _window_lane(self) -> None:
         """The window proxies' one worker, beside the whole-source lane."""
@@ -1671,7 +1605,9 @@ class Media:
                 run.cancelled = True
                 kill, run.proc = run.proc, None
         if kill is not None:
-            threading.Thread(target=kill_tree, args=(kill, SOFT_STOP_S), daemon=True).start()
+            threading.Thread(
+                target=procs.kill_tree, args=(kill, procs.SOFT_STOP_S), daemon=True
+            ).start()
 
     def window(self, project: Path, path: str, lo: int, hi: int) -> Path | None:
         """The ready window ``lo``-``hi`` (centiseconds) of a source, else None; marks it used."""
@@ -2041,12 +1977,13 @@ class Media:
     def shutdown(self) -> None:
         with self.lock:  # as in ``_encode``: no proxy ffmpeg starts after this
             self.closing = True
-            procs = list(self.procs)
+            running = list(self.procs)
             self.windows_queue.clear()
             self.window_wake.notify_all()  # the window lane ends
         self.pool.shutdown(wait=False, cancel_futures=True)
-        for proc in procs:
-            kill_tree(proc, SOFT_STOP_S)  # a bare ffmpeg: no soft stop of its own to wait for
+        for proc in running:
+            # a bare ffmpeg: no soft stop of its own to wait for
+            procs.kill_tree(proc, procs.SOFT_STOP_S)
 
 
 # --------------------------------------------------------------------------- 360 director previews
@@ -2060,7 +1997,7 @@ class Media:
 # spans what the path was planned for: the moment and up to 10 s on either side.
 PANO_PREVIEW_W, PANO_PREVIEW_H = 640, 360
 PANO_PREVIEW_NAME = re.compile(r"[A-Za-z0-9_]{1,40}-[0-9a-f]{16}")
-# a preview, its temporary (ffmpeg_utils.part_path) or the sendcmd file render_segment leaves
+# a preview, its temporary (folders.part_path) or the sendcmd file render_segment leaves
 PANO_PREVIEW_FILE = re.compile(r"\.?([A-Za-z0-9_]{1,40}-[0-9a-f]{16})(?:\.part)?\.(?:mp4|cmd)")
 
 
@@ -2450,7 +2387,7 @@ class PanoPreviews:
                 out = p / UI_DIR / "pano" / f"{name}.mp4"
                 if self.file(p, name) is None:
                     _own(p, f"{UI_DIR}/pano/{out.name}")  # never rendered through a link
-                    _own(p, f"{UI_DIR}/pano/{part_path(out).name}")
+                    _own(p, f"{UI_DIR}/pano/{folders.part_path(out).name}")
                     _own(p, f"{UI_DIR}/pano/{name}.cmd")  # render_segment writes it beside it
                     src = pano_project.RenderSource(
                         "proxy", (job.clip.lrv,), "dfisheye", False, True, "lrv proxy"
@@ -2486,7 +2423,8 @@ class PanoPreviews:
                 logger.exception("director preview of %s failed", what)
         finally:
             if out is not None:
-                for f in (part_path(out), out.with_suffix(".cmd")):  # .cmd: only `360 qa` reads it
+                # .cmd: only `360 qa` reads it
+                for f in (folders.part_path(out), out.with_suffix(".cmd")):
                     with contextlib.suppress(OSError):
                         f.unlink(missing_ok=True)
         if failed is not None:

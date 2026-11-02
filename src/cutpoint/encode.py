@@ -14,15 +14,14 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from cutpoint import jsonout, state
+from cutpoint import folders, jsonout, state
 from cutpoint.audio_tracks import export_tracks
 from cutpoint.crop import Crop
+from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
-    FFmpegError,
     MediaInfo,
     VideoEncoder,
-    atomic_output,
     decode_raw,
     encode_with_fallback,
     ffmpeg_filters,
@@ -754,7 +753,7 @@ def export_clip(
     Returns:
         ffmpeg's stderr (check it for read errors; ffmpeg exits 0 after them).
     """
-    with atomic_output(out) as part:
+    with folders.atomic_output(out) as part:
         return _export(
             src, info, start, end, part, fmt, vertical, crop, audio_fade, out.name, peaks, grade
         )
@@ -898,7 +897,7 @@ def export_clip_checked(
         None if the clip is complete, else a record for manifest.json with
         ``failure_time``, ``messages``, ``retried`` and the ``end`` used.
     """
-    with atomic_output(out) as part:
+    with folders.atomic_output(out) as part:
         return _export_checked(
             src, info, start, end, part, fmt, vertical, crop, audio_fade, out, peaks, grade
         )

@@ -146,7 +146,8 @@ def probe_video_stream(path: Path) -> dict[str, Any]:
 
     ffprobe reads the staged copy if there is one; ``{}`` if it fails.
     """
-    from cutpoint.ffmpeg_utils import FFmpegError, ffprobe_json  # noqa: PLC0415
+    from cutpoint.errors import FFmpegError  # noqa: PLC0415
+    from cutpoint.ffmpeg_utils import ffprobe_json  # noqa: PLC0415
 
     try:
         data = ffprobe_json(
