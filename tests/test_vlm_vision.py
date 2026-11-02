@@ -167,7 +167,11 @@ def hosted(home, monkeypatch) -> FakeSubscription:
     monkeypatch.setattr(vision.requests, "get", no_network)
     set_config(
         home,
-        vision_assistant={"provider": "codex", "model": "gpt-x", "consent": ["codex@chatgpt.com"]},
+        vision_assistant={
+            "provider": "codex",
+            "model": "gpt-x",
+            "consent": ["vision-v2:codex@chatgpt.com"],
+        },
     )
     return fake
 

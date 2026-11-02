@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for subscription providers).
   Without a `vision_assistant` section, frame rating uses Ollama. Activity detection in
   `profile`, `crashes` and the crash step of `analyze` always uses Ollama.
+  Vision consent is its own and versioned (`vision-v2:<provider>@<host>` in
+  `vision_assistant.consent`): agreeing for the assistant never covers Vision, or the reverse,
+  and a Vision consent saved without the prefix no longer counts, so users agree again. The
+  prompt names what Vision sends (frames, transcript excerpts, file names and times, on-screen
+  text, telemetry) and that it is more data and more risk than the assistant. The AI Chat
+  consent now also names the scores and detection signals it sends (analysis results only,
+  never video or audio).
 - `cutpoint proxy` command runs the authenticated CLIProxyAPI daemon in the foreground for Claude
   Code, Codex and Antigravity subscriptions (Use at your own risk). Available in both full and lite
   installs. First run lazily downloads the checksum-verified ~24 MB binary (pinned 8.0.47) to

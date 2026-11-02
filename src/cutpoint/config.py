@@ -63,9 +63,12 @@ documents every key.
     The model that rates frames, set in the Models tab independently of the chat model:
     ``provider`` (``ollama``, ``claude-code``, ``codex`` or ``antigravity``), ``model``,
     ``url`` (empty for official hosts; custom URLs are rejected for subscription providers)
-    and ``consent``. Subscription providers route requests through the local ``cutpoint proxy``
-    daemon. Frames go to a hosted subscription provider only after "Allow vision requests"
-    in the Models tab grants permission.
+    and ``consent`` (``vision-v2:<provider>@<host>`` of the hosted providers the user agreed to
+    send frames and analysis data to; separate from the assistant's ``consent``, and an entry
+    without the ``vision-v2:`` prefix, from an older version, no longer counts). Subscription
+    providers route requests through the local ``cutpoint proxy`` daemon. Frames go to a hosted
+    subscription provider only after "Allow vision requests" in the Models tab grants
+    permission.
 ``compress_peaks``
     ``off`` (default), ``light`` or ``strong``: peak compression and clip leveling of
     ``cutpoint clips``, ``assemble`` and ``edit`` when ``--compress-peaks`` is not given
@@ -393,7 +396,7 @@ def _vision_assistant(path: Path, data: dict) -> AssistantSettings:
         ("provider", _is_str, "a string"),
         ("model", _is_str, "a string"),
         ("url", _is_str, "a string"),
-        ("consent", _is_str_list, "a list of <provider>@<host> entries"),
+        ("consent", _is_str_list, "a list of vision-v2:<provider>@<host> entries"),
     )
     for key, ok, what in checks:
         _check_type(

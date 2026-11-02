@@ -320,7 +320,7 @@ def test_vision_assistant_config_independent_parsing(home):
         vision_assistant={
             "provider": "codex",
             "model": "gpt-custom",
-            "consent": ["codex@chatgpt.com"],
+            "consent": ["vision-v2:codex@chatgpt.com"],
         },
     )
     cfg = config.get_config()
@@ -328,7 +328,7 @@ def test_vision_assistant_config_independent_parsing(home):
     assert cfg.assistant.model == "claude-opus-5-5"
     assert cfg.vision_assistant.provider == "codex"
     assert cfg.vision_assistant.model == "gpt-custom"
-    assert cfg.vision_assistant.consent == ("codex@chatgpt.com",)
+    assert cfg.vision_assistant.consent == ("vision-v2:codex@chatgpt.com",)
 
 
 def test_vision_assistant_rejects_unsupported_provider(home):

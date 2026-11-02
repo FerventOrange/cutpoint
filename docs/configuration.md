@@ -160,7 +160,12 @@ Catalogs and frames go to a subscription provider only after you allow it there
 (`vision_assistant.consent`, via "Allow vision requests"); choosing or saving a model never
 grants it. Once allowed, the provider receives video frames, transcript excerpts, file names and
 times, and detected on-screen text (such as player names) and telemetry (for frame ratings and
-the `events` window descriptions), never the video file. **Use at your own risk** when selecting a hosted provider.
+the `events` window descriptions), never the video file. That is more data, and more risk, than
+the assistant gets, so this consent is separate from the assistant's: agreeing to one never
+covers the other. Entries are `vision-v2:<provider>@<host>` (for example
+`vision-v2:codex@chatgpt.com`); an entry without the `vision-v2:` prefix, saved by an earlier
+version under a narrower description, no longer counts, and the Models tab asks again.
+**Use at your own risk** when selecting a hosted provider.
 `--ollama-url` and `--ollama-model` have no effect for subscription providers, whose ratings
 have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
 `analyze` always uses Ollama, independently of this selection.
@@ -242,6 +247,9 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   moments and turns.
 - `consent`: the hosted providers the user agreed to send project text to, as
   `<provider>@<host>` (for example `anthropic@api.anthropic.com`); the AI Chat tab adds them.
+  The assistant gets only analysis results (moment labels, scores and detection signals,
+  transcript snippets, file names without paths, times) and your messages, never video or audio.
+  This consent never covers the [Vision role](#vision_assistant), which has its own.
   Remove an entry to be asked again. A provider is local when its host is `localhost` or a
   loopback address; any other host, a LAN address too, is hosted.
 

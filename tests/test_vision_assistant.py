@@ -15,7 +15,7 @@ from cutpoint.pano import vlcheck
 
 JPEG = b"\xff\xd8jpeg"
 B64 = base64.b64encode(JPEG).decode()
-CONSENT = "codex@chatgpt.com"
+CONSENT = "vision-v2:codex@chatgpt.com"
 
 
 class FakeSubscription:
@@ -113,7 +113,7 @@ def test_independent_vision_assistant_settings(fake, home) -> None:
         vision_assistant={
             "provider": "codex",
             "model": "gpt-x",
-            "consent": ["codex@chatgpt.com"],
+            "consent": [CONSENT],
         },
     )
     rater = vision.VisionRater()
@@ -136,6 +136,19 @@ def test_independent_vision_consent_privacy_gate(fake, home) -> None:
     assert fake.sent == []
 
 
+def test_consent_under_the_old_vision_wording_no_longer_counts(fake, home) -> None:
+    # "codex@chatgpt.com" was the Vision key before frames, on-screen text and telemetry were
+    # named in the prompt: the user must agree again (vision-v2:)
+    set_config(
+        home,
+        vision_assistant={"provider": "codex", "model": "gpt-x", "consent": ["codex@chatgpt.com"]},
+    )
+    rater = vision.VisionRater()
+    assert not rater.available()
+    assert rater.rate(Path("a.mp4"), 0, 4, "ski") is None
+    assert fake.sent == []
+
+
 def test_antigravity_is_allowed_vision_subscription(fake, home) -> None:
     fake.name = "antigravity"
     fake.host = "daily-cloudcode-pa.googleapis.com"
@@ -144,7 +157,7 @@ def test_antigravity_is_allowed_vision_subscription(fake, home) -> None:
         vision_assistant={
             "provider": "antigravity",
             "model": "gemini-3.8-flash",
-            "consent": ["antigravity@daily-cloudcode-pa.googleapis.com"],
+            "consent": ["vision-v2:antigravity@daily-cloudcode-pa.googleapis.com"],
         },
     )
     rater = vision.VisionRater()
@@ -165,7 +178,7 @@ def test_offline_refresh_skips_vision_instead_of_raising(home, monkeypatch) -> N
         vision_assistant={
             "provider": "codex",
             "model": "gpt-x",
-            "consent": ["codex@chatgpt.com"],
+            "consent": [CONSENT],
         },
     )
 

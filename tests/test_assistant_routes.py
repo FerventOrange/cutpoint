@@ -689,7 +689,7 @@ def test_models_route_role_consent_gating(client: TestClient, monkeypatch, home:
     set_config(
         home,
         assistant={"provider": "ollama"},
-        vision_assistant={"provider": "codex", "consent": ["codex@chatgpt.com"]},
+        vision_assistant={"provider": "codex", "consent": ["vision-v2:codex@chatgpt.com"]},
     )
     seen = []
     monkeypatch.setattr(
@@ -699,7 +699,7 @@ def test_models_route_role_consent_gating(client: TestClient, monkeypatch, home:
     )
     res2 = client.get("/api/assistant/models?role=vision&provider=codex")
     assert res2.status_code == 200
-    assert seen == [("codex@chatgpt.com",)]
+    assert seen == [("vision-v2:codex@chatgpt.com",)]
 
 
 def test_role_aware_consent_endpoint(client: TestClient, monkeypatch, home: Path) -> None:
@@ -709,15 +709,72 @@ def test_role_aware_consent_endpoint(client: TestClient, monkeypatch, home: Path
         vision_assistant={"provider": "codex", "consent": []},
     )
     # Grant consent for vision
-    res = client.post("/api/assistant/consent", json={"key": "codex@chatgpt.com", "role": "vision"})
+    res = client.post(
+        "/api/assistant/consent", json={"key": "vision-v2:codex@chatgpt.com", "role": "vision"}
+    )
     assert res.status_code == 200
     consent = res.json()["consent"]
     assert consent["needed"] is False
 
     cfg = config.load_config_data()
-    assert cfg["vision_assistant"]["consent"] == ["codex@chatgpt.com"]
+    assert cfg["vision_assistant"]["consent"] == ["vision-v2:codex@chatgpt.com"]
     # Assistant consent remains empty
     assert cfg.get("assistant", {}).get("consent", []) == []
+
+
+def test_vision_consent_is_versioned_and_not_given_by_the_assistant_s(
+    client: TestClient, monkeypatch, home: Path
+) -> None:
+    """Consent under the old Vision wording (``<provider>@<host>``) and the assistant's consent
+    do not let frames go out: the Models tab asks again with the ``vision-v2:`` key."""
+    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": True})
+    set_config(
+        home,
+        assistant={"provider": "codex", "consent": ["codex@chatgpt.com"]},
+        vision_assistant={"provider": "codex", "consent": ["codex@chatgpt.com"]},
+    )
+    got = client.get("/api/settings").json()["vision_consent"]
+    assert got["needed"] is True and got["key"] == "vision-v2:codex@chatgpt.com"
+    old = client.post("/api/assistant/consent", json={"key": "codex@chatgpt.com", "role": "vision"})
+    assert old.status_code == 409
+    ok = client.post(
+        "/api/assistant/consent", json={"key": "vision-v2:codex@chatgpt.com", "role": "vision"}
+    )
+    assert ok.status_code == 200 and ok.json()["consent"]["needed"] is False
+    cfg = config.load_config_data()
+    assert cfg["vision_assistant"]["consent"] == [
+        "codex@chatgpt.com",
+        "vision-v2:codex@chatgpt.com",
+    ]
+    assert cfg["assistant"]["consent"] == ["codex@chatgpt.com"]
+
+
+def test_vision_consent_does_not_unlock_the_assistant(
+    client: TestClient, monkeypatch, home: Path, proj
+) -> None:
+    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": True})
+    vision_key = "vision-v2:codex@chatgpt.com"
+    # even a Vision key in the assistant's own list is not the assistant's consent
+    set_config(
+        home,
+        assistant={"provider": "codex", "consent": [vision_key]},
+        vision_assistant={"provider": "codex", "consent": [vision_key]},
+    )
+    got = client.get("/api/projects/cli/assistant").json()["consent"]
+    assert got["needed"] is True and got["key"] == "codex@chatgpt.com"
+    _, seq, _ = proj
+    res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
+    assert res.status_code == 409
+    wrong = client.post("/api/assistant/consent", json={"key": vision_key})
+    assert wrong.status_code == 409
+    assert config.load_config_data()["assistant"]["consent"] == [vision_key]
+
+
+def test_consent_keys_differ_by_role() -> None:
+    hosted = providers.SubscriptionProvider("codex")
+    assert providers.consent_key(hosted) == "codex@chatgpt.com"
+    assert providers.consent_key(hosted, "vision") == "vision-v2:codex@chatgpt.com"
+    assert providers.consent_key(providers.preset("ollama", 0), "vision") is None
 
 
 def test_subscription_host_pin_rejects_custom_url(client: TestClient) -> None:

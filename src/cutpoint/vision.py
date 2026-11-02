@@ -140,7 +140,7 @@ class AssistantVision:
                 " or ".join(providers.SUBSCRIPTION_PROVIDERS),
             )
             return False
-        if providers.consent_key(p) not in self.settings.consent:
+        if providers.consent_key(p, "vision") not in self.settings.consent:
             logger.info("Agree to send to %s for Vision first; skipping vision", p.name)
             return False
         if missing := providers.missing_key(p):

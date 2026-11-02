@@ -7678,6 +7678,49 @@ def test_the_ai_chat_tab_has_one_labelled_input_and_one_send_button() -> None:
     assert "prov ? prov.label" in chat and "prov?.local" in chat
 
 
+def test_the_consent_texts_name_what_each_role_sends() -> None:
+    """The AI Chat consent names what context.py sends a hosted assistant (analysis results
+    only: no frames or audio, file names but not paths); the Vision consent names the frames,
+    transcript excerpts, file names and times, on-screen text and telemetry, and that this is
+    more data and more risk than the assistant."""
+    from cutpoint.assistant import context  # noqa: PLC0415
+
+    sends = re.search(r'^const CONSENT_SENDS = "(.*)";$', _web("app.js"), re.M)[1]
+    for part in ("labels", "scores", "signals", "transcript snippets", "file names", "times"):
+        assert part in sends, part
+    assert "your messages" in sends and "never video or audio" in sends
+    cand = {
+        "id": "h1",
+        "source": "D:/Videos/clip.mp4",
+        "start": 1.0,
+        "end": 5.0,
+        "score": 80,
+        "label": "jump",
+        "kind": "crash",
+        "transcript": "look at that",
+        "signals": {"keywords": ["look"], "events": {"laughter": 0.4}},
+    }
+    table = context.MomentTable([cand], [])
+    disclosed = {"id", "file", "start", "end", "analyzed", "score", "seq", "label", "said"}
+    assert set(table.row("h1")) <= disclosed
+    assert set(table.row("h1", full=True)) <= disclosed | {"kind", "signals"}
+    msgs = context.build_messages(table, [], "hi", context.budget(8192))
+    assert all(isinstance(m["content"], str) for m in msgs)  # text only: no image parts
+    assert "D:/Videos" not in "".join(m["content"] for m in msgs)
+    vision = _js_function(_web("app.js"), "renderVisionConsent")
+    text = re.search(r"\$\('#visionConsentText'\)\.textContent = `(.*?)`;", vision)[1]
+    for part in (
+        "video frames",
+        "transcript excerpts",
+        "file names and times",
+        "on-screen text",
+        "telemetry",
+        "more data, and more risk, than the AI Chat assistant",
+        "agreeing for one never covers the other",
+    ):
+        assert part in text, part
+
+
 def test_model_text_is_never_set_as_markup() -> None:
     """Contract pin (#346): replies, summaries, labels and notes come from the model or the
     project; the page sets them as text only (h()'s ``text`` or textContent)."""
