@@ -64,6 +64,7 @@ RANKS = [
     ("gaming", "laughter", "scene"),
     ("action", "loudness", "speech"),
     ("action", "scene", "laughter"),
+    ("action", "speech", "laughter"),
     ("sport", "loudness", "speech"),
     ("sport", "speech", "scene"),
     ("sport", "scene", "laughter"),
@@ -218,18 +219,52 @@ def crash_record(cid: str, t: float, confidence: float) -> dict[str, Any]:
     }  # fmt: skip
 
 
+def ride(tel: Telemetry, t0: float, t1: float, kmh: float) -> Telemetry:
+    """Ride at ``kmh`` (GPS fix) from ``t0`` to ``t1``; the day's median is 20 km/h."""
+    tel.grid["speed_kmh"][int(t0 / DT) : int(t1 / DT)] = kmh
+    return tel
+
+
+def without_gps(
+    tel: Telemetry, t0: float, t1: float, wind: float, vibration: float, indoor: float = 0.0
+) -> Telemetry:
+    """No GPS fix from ``t0`` to ``t1``: only the wind meter, the IMU and the indoor flag."""
+    sl = slice(int(t0 / DT), int(t1 / DT))
+    tel.grid["gps_ok"][sl] = 0.0
+    tel.grid["wind"][sl], tel.grid["vibration"][sl], tel.grid["indoor"][sl] = (
+        wind, vibration, indoor,
+    )  # fmt: skip
+    return tel
+
+
+def vlm_window(t: float, tag: str = "jump_air", score: int = 10) -> dict[str, Any]:
+    """A ``cutpoint events`` window around ``t`` tagged ``tag``."""
+    return {"source": str(SRC), "start": t - 6, "end": t + 6, "tags": {tag: score}}
+
+
+def audio_event(t: float, label: str, confidence: float) -> dict[str, Any]:
+    return {
+        "source": str(SRC), "start": t, "end": t + 1.5, "kind": "audio", "label": label,
+        "confidence": confidence,
+    }  # fmt: skip
+
+
 def ski_picks(
     tmp: Path,
     style: Style,
     tel: Telemetry,
     crashes: list[dict[str, Any]] = (),  # type: ignore[assignment]
     max_candidates: int | None = None,
+    windows: list[dict[str, Any]] = (),  # type: ignore[assignment]
+    audio_events: list[dict[str, Any]] = (),  # type: ignore[assignment]
 ) -> list[analyze.Candidate]:
     ctx = ski.SkiContext(
         project=tmp / "proj",
         telemetry={str(SRC): tel},
         speed_ref=np.linspace(0.0, 40.0, 100),
         crashes={ski._key(SRC): list(crashes)},
+        audio_events={ski._key(SRC): list(audio_events)},
+        windows={ski._key(SRC): list(windows)},
     )
     sig = {k: np.zeros(SKI_N) for k in SIGNALS}
     return analyze.pick_candidates(part(sig, SKI_N, str(SRC)), style, max_candidates, {}, ctx)
@@ -279,18 +314,91 @@ def test_a_learned_ski_preset_can_turn_must_include_off(tmp_path, no_layers):
     assert not any(c.must_include for c in cands)
 
 
-SKI_RANKS = [("airtime", "crash"), ("crash", "carve")]
+SKI_RANKS = [
+    ("airtime", "crash"),
+    ("crash", "carve"),
+    ("vlm", "speed"),
+    ("speed", "carve"),
+]
+
+
+def ski_moments(**at_time: float) -> tuple[Telemetry, list[dict[str, Any]]]:
+    """Telemetry and VLM windows with one equal moment per kind of ``at_time`` (kind -> time):
+    a grid bump, a top-speed stretch or a ``jump_air`` window."""
+    grids = {k: t for k, t in at_time.items() if k not in ("speed", "vlm")}
+    tel = ski_telemetry(**grids)
+    if "speed" in at_time:
+        ride(tel, at_time["speed"] - 8, at_time["speed"] + 8, 40.0)
+    windows = [vlm_window(at_time["vlm"])] if "vlm" in at_time else []
+    return tel, windows
 
 
 @pytest.mark.parametrize(("higher", "lower"), SKI_RANKS, ids=[f"{h} > {lo}" for h, lo in SKI_RANKS])
 def test_ski_ranks_a_moment_above_an_equal_one_of_a_lower_weighted_grid(
     tmp_path, no_layers, higher, lower
 ):
-    cands = ski_picks(tmp_path, STYLES["action-cam"], ski_telemetry(**{lower: 30.0, higher: 90.0}))
+    # The lower one comes first in time, so the order is not the chronological one.
+    tel, windows = ski_moments(**{lower: 30.0, higher: 90.0})
+    cands = ski_picks(tmp_path, STYLES["action-cam"], tel, windows=windows)
     hi, lo = at(cands, 90.0), at(cands, 30.0)
     assert hi is not None and lo is not None
     assert hi.kind == higher and lo.kind == lower
     assert hi.score > lo.score
+
+
+@pytest.mark.parametrize(
+    ("kmh", "picked"),
+    [(5.0, False), (20.0, False), (38.0, True)],
+    ids=["below the median", "at the median", "above the median"],
+)
+def test_ski_picks_riding_faster_than_the_days_median_only(tmp_path, no_layers, kmh, picked):
+    tel = ride(ski_telemetry(), 80.0, 100.0, kmh)
+    cands = ski_picks(tmp_path, STYLES["action-cam"], tel)
+    assert (at(cands, 90.0) is not None) is picked
+    if picked:
+        assert at(cands, 90.0).kind == "speed"
+
+
+@pytest.mark.parametrize(
+    ("vibration", "indoor", "picked"),
+    [(0.5, 0.0, True), (0.05, 0.0, False), (0.5, 1.0, False)],
+    ids=["riding", "no riding vibration", "indoors"],
+)
+def test_ski_without_gps_counts_the_wind_meter_only_while_riding_outdoors(
+    tmp_path, no_layers, vibration, indoor, picked
+):
+    tel = without_gps(ski_telemetry(), 80.0, 100.0, wind=1.0, vibration=vibration, indoor=indoor)
+    cands = ski_picks(tmp_path, STYLES["action-cam"], tel)
+    assert (at(cands, 90.0) is not None) is picked
+
+
+@pytest.mark.parametrize(
+    ("label", "confidence", "kind"),
+    [("Laughter", 0.12, "social"), ("Cheering", 0.3, "social"), ("Music", 0.9, None)],
+    ids=["laughter", "cheering", "other sound"],
+)
+def test_ski_picks_a_laugh_or_cheer_but_not_other_sounds(
+    tmp_path, no_layers, label, confidence, kind
+):
+    events = [audio_event(90.0, label, confidence)]
+    cands = ski_picks(tmp_path, STYLES["action-cam"], ski_telemetry(), audio_events=events)
+    got = at(cands, 90.5)
+    assert (got.kind if got else None) == kind
+
+
+def test_ski_picks_a_vlm_window_only_for_an_action_tag(tmp_path, no_layers):
+    windows = [vlm_window(30.0, "jump_air"), vlm_window(90.0, "scenic_vista")]
+    cands = ski_picks(tmp_path, STYLES["action-cam"], ski_telemetry(), windows=windows)
+    assert at(cands, 30.0) is not None and at(cands, 30.0).kind == "vlm"
+    assert at(cands, 90.0) is None  # scenic weighs nothing in action-cam
+
+
+@pytest.mark.parametrize("layer", ["beauty", "voice_laughter"])
+def test_ski_scores_a_moment_the_cached_layers_mark(tmp_path, monkeypatch, layer):
+    """A beauty / wind-gated voice laughter bump from the cached layers is a candidate."""
+    monkeypatch.setattr(ski, "layer_features", lambda *_a, **_k: {layer: bump(90.0, SKI_N)})
+    cands = ski_picks(tmp_path, STYLES["action-cam"], ski_telemetry())
+    assert at(cands, 90.0) is not None and at(cands, 90.0).kind == layer
 
 
 def test_ski_labels_jumps_and_crashes_from_their_telemetry_events(tmp_path, no_layers):
