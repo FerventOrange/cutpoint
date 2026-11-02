@@ -46,6 +46,8 @@ A `-m` on the command line replaces the default one. Markers (declared in `pypro
 - `ffmpeg`: runs real ffmpeg or ffprobe. Use `needs_ffmpeg` from `conftest` (it also skips
   without ffmpeg); otherwise add `@pytest.mark.ffmpeg`.
 - `hardware`: needs GPU hardware that CI lacks.
+- `script`: tests a development script in `scripts/` (in `tests/scripts/`, marked with
+  `pytestmark`); `-m "not hardware and not script"` runs the product suite alone.
 
 CI runs the same lint and format checks, and the tests on Windows and Linux. Optionally install
 the hooks with `uv run pre-commit install`; they run ruff on commit. Ruff settings

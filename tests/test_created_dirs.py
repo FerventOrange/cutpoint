@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from conftest import set_config, write
-from cutpoint import cache, refmatch, stage
+from cutpoint import cache, stage
 from cutpoint.events import discover, killfeed, visual
 from cutpoint.events.common import Source
 from cutpoint.ffmpeg_utils import output_dir
@@ -58,22 +58,6 @@ def test_failed_stage_leaves_no_new_stage_folder(home: Path, tmp_path: Path) -> 
         stage.stage_sources([tmp_path / "missing.mp4"])
     assert not stage_dir.exists()
     assert not (tmp_path / "fast").exists()
-
-
-def test_interrupted_check_frames_leaves_no_refmatch_check(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    shot = {
-        "matched": True, "shot": 1, "ref_start": 0.0, "ref_end": 2.0, "src_start": 5.0,
-        "source": str(tmp_path / "a.mp4"),
-    }  # fmt: skip
-    result = {"shots": [shot], "reference": str(tmp_path / "ref.mp4")}
-    out = tmp_path / "proj" / "refmatch_check"
-    monkeypatch.setattr(refmatch, "run", interrupt)
-    with pytest.raises(KeyboardInterrupt):
-        refmatch.check_frames(result, out)
-    assert not out.exists()
-    assert not (tmp_path / "proj").exists()
 
 
 def make_qa_clips(root: Path) -> Path:

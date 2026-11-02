@@ -9,7 +9,6 @@ import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -1041,8 +1040,6 @@ def test_a_red_highlight_the_levels_intend_is_counted_once():
     assert color._intended_clipping(frames, grade) == 2 / 400
     assert color._red_highlights(graded) == 3 / 400
     assert color._red_highlights(graded, color._intended_high(frames, grade)) == 1 / 400
-    # the harness reports the same share
-    assert _color_eval().evaluate(frames, grade)["red_highlights"] == 1 / 400
 
 
 @pytest.mark.parametrize(
@@ -1547,77 +1544,3 @@ def test_real_clips_color_underwater_records_the_grade_and_extend_redoes_it(
     redone = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"][0]
     assert redone["color"]["params"] == entry["color"]["params"]
     assert (out / "001_a.mp4").stat().st_size > 0
-
-
-def _color_eval():
-    import importlib.util  # noqa: PLC0415
-
-    path = Path(__file__).resolve().parents[1] / "scripts" / "color_eval.py"
-    spec = importlib.util.spec_from_file_location("color_eval", path)
-    assert spec is not None and spec.loader is not None
-    script = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(script)
-    return script
-
-
-@needs_ffmpeg
-def test_color_eval_script_reports_every_mode_and_levels_variant(tmp_path, capsys, lenient):
-    script = _color_eval()
-    src = _underwater_source(tmp_path / "reef.mkv")
-    saved = tmp_path / "stats"
-    assert script.main([f"{src}@0.5-2.5", "--json", "--save-stats", str(saved)]) == 0
-
-    (window,) = json.loads(capsys.readouterr().out)
-    assert window["frames"] > 0
-    assert {(v["mode"], v["levels"]) for v in window["variants"]} == {
-        (m, lv) for m in color.MODES for lv in color.LEVELS
-    }
-    assert {(v["mode"], v["levels"]) for v in window["variants"] if v["production"]} == set(
-        color.MODE_LEVELS.items()
-    )
-    # the saved frames replay to the same results without decoding
-    assert [f.name for f in saved.iterdir()] == ["reef_0.5-2.5.npz"]
-    assert script.main([f"{src}@0.5-2.5", "--json", "--stats", str(saved)]) == 0
-    (again,) = json.loads(capsys.readouterr().out)
-    assert again["variants"] == window["variants"]
-
-
-def test_color_eval_script_replays_saved_frames_by_their_file_name(tmp_path, capsys):
-    script = _color_eval()
-    stats = _stats(_underwater())
-    script.save_stats(tmp_path / "GX010819_3-17.npz", replace(stats, high_bit=True))
-    assert script.main(["--stats", str(tmp_path), "--json", "--modes", "underwater"]) == 0
-    (window,) = json.loads(capsys.readouterr().out)
-    assert (window["source"], window["start"], window["end"]) == ("GX010819", 3.0, 17.0)
-    assert window["high_bit"] and window["frames"] == len(stats.frames)
-    production = next(v for v in window["variants"] if v["production"])
-    assert production["skip"] == color.estimate(stats, "underwater").skip
-    assert isinstance(production["params"]["black"], list)
-
-
-def test_color_eval_script_replays_a_stem_with_a_dot_by_its_file_name(tmp_path, capsys):
-    """#494: ``Desktop ... 02.56.27.19.DVR.mp4`` is saved as ``...19.DVR_120-132.npz``; its
-    window's source is ``...19.DVR``, which Path.stem would cut to ``...19``."""
-    script = _color_eval()
-    name = "Desktop 2025.10.14 - 02.56.27.19.DVR_120-132.npz"
-    script.save_stats(tmp_path / name, _stats(_scene(2)))
-    (w,) = script.stats_windows(tmp_path)
-    assert (w["source"], w["start"], w["end"]) == ("Desktop 2025.10.14 - 02.56.27.19.DVR", 120, 132)
-    assert script.stats_name(w) == name
-    assert script.main(["--stats", str(tmp_path), "--json", "--modes", "auto"]) == 0
-    (window,) = json.loads(capsys.readouterr().out)
-    assert window["frames"] == 2 and window["gate"]["rg"] == pytest.approx(1.0, abs=0.2)
-
-
-def test_color_eval_script_skips_360_sources_as_clips_does(tmp_path, capsys, monkeypatch):
-    script = _color_eval()
-    lrv = tmp_path / "LRV_20250101_120000_01_001.lrv"
-    monkeypatch.setattr(script, "probe", lambda *_a: pytest.fail("a 360 source was sampled"))
-    assert script.main([f"{lrv}@1-9", "--json"]) == 0
-    (window,) = json.loads(capsys.readouterr().out)
-    assert {v["skip"] for v in window["variants"]} == {color.SKIP_360}
-    # a project's 360 clip by its pano.json, whatever its name
-    clip = str(tmp_path / "clip.mp4")
-    pano = {script.pano_project.norm(clip): SimpleNamespace(source=clip)}
-    assert script.is_360(clip, pano)
-    assert not script.is_360(clip, None) and not script.is_360(str(tmp_path / "b.mp4"), pano)

@@ -17,7 +17,6 @@ from cutpoint import cache, capabilities, cli, mix, stage
 from cutpoint.events import paths as event_paths
 from cutpoint.events import setup
 from cutpoint.mix import Cand
-from cutpoint.pano import check as pano_check
 from cutpoint.pano import director as D
 from cutpoint.pano import project as P
 from cutpoint.pano import qa as pano_qa
@@ -480,25 +479,6 @@ def test_360_stitch_json_nothing_selected(pano_project, capsys):
     assert "No 360 clips selected" in doc["error"]["message"]
 
 
-# ------------------------------------------------------------------------------ 360 check
-def test_360_check_json(home, monkeypatch, capsys):
-    clips_dir = home / "projects" / "trip" / "clips"
-    clips_dir.mkdir(parents=True)
-    check_dir = clips_dir.with_name("clips_check")
-
-    def sheets(d: Path, per_clip: int) -> list[Path]:
-        return [write(check_dir / "sheet_01.jpg", "jpg")]
-
-    monkeypatch.setattr(pano_check, "clip_sheets", sheets)
-    code, doc = run_json(capsys, ["360", "check", "projects/trip/clips"])
-    assert code == 0 and doc["ok"] is True and doc["command"] == "360 check"
-    assert doc["project"] == str(home / "projects" / "trip")
-    assert doc["outputs"] == {
-        "check_dir": str(check_dir),
-        "sheets": [str(check_dir / "sheet_01.jpg")],
-    }
-
-
 # --------------------------------------------------------------------------------- 360 qa
 def test_360_qa_json(home, monkeypatch, capsys):
     qa_dir = home / "projects" / "trip" / "pano_paths" / "mix"
@@ -567,7 +547,6 @@ MISSING_INPUT = {
     "360-scan": (["360", "scan", "{tmp}/nope", "--out", "trip"], "360 scan", ...),
     "360-analyze": (["360", "analyze", "nothing", "--views-only"], "360 analyze", ...),
     "360-status": (["360", "status", "nothing"], "360 status", ...),
-    "360-check": (["360", "check", "projects/trip/clips"], "360 check", ...),
     "360-qa": (["360", "qa", "projects/trip/clips"], "360 qa", ...),
     "360-repair": (["360", "repair", "trip", "--qa", "nope/qa.json"], "360 repair", "trip"),
 }
