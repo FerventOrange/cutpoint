@@ -567,6 +567,7 @@ def text_embeddings(prompts: tuple[str, ...], models: VisualModels | None = None
         key = (CLIP_ARCH, CLIP_PRETRAINED)
         loaded = _TEXT_MODEL.get(key)
         if loaded is None:
+            paths.apply_torch_home()  # also quiets the Hub's duplicate handler
             import open_clip  # noqa: PLC0415
 
             m, _, _ = open_clip.create_model_and_transforms(
