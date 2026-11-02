@@ -368,11 +368,16 @@ def public(text: str) -> str:
     return _USERINFO.sub("", text)
 
 
-def _key_hint(name: str, host: str) -> str:
+def _key_hint(name: str, host: str, *, shared: bool = True) -> str:
     """How to add ``name``'s key for ``host``: its own variable only for its own host,
-    :data:`keys.ENV_KEY` only for a host that is not official (#504), or the keyring."""
+    :data:`keys.ENV_KEY` only for a host that is not official (#504) and when ``shared`` (the
+    Vision role on another host than the assistant's never reads it), or the keyring."""
     ring = "save one in the Models tab (kept in the system keyring)"
     names = keys.env_names(name, host)
+    if not shared and keys.ENV_KEY in names:
+        names = [n for n in names if n != keys.ENV_KEY]
+        if not names:
+            return f"{ring} ({keys.ENV_KEY} is only for the assistant's host)"
     if not names:
         return ring
     note = ""
@@ -601,6 +606,8 @@ class _HttpProvider:
             LOCAL_CONTEXT_TOKENS if self.local else HOSTED_CONTEXT_TOKENS
         )
         self._key = key or None  # only ever sent in the request headers
+        # False: keys.ENV_KEY is not read for this provider (the Vision role on another host)
+        self.key_shared = True
         self.timeout = CHAT_TIMEOUT_S if self.local else HOSTED_TIMEOUT_S
         self._caps: Capabilities | None = None
 
@@ -626,7 +633,8 @@ class _HttpProvider:
     def _need_key(self) -> None:
         """A hosted server needs a key; a local one (LM Studio, llama-server) may not."""
         if self._key is None and not self.local:
-            raise ProviderError(f"No API key for {self.title}: {_key_hint(self.name, self.host)}")
+            hint = _key_hint(self.name, self.host, shared=self.key_shared)
+            raise ProviderError(f"No API key for {self.title}: {hint}")
 
     def _send(
         self,
@@ -795,7 +803,9 @@ class OpenAIProvider(_HttpProvider):
             endpoint, payload = "responses", self._responses_payload(messages, tools, schema)
         else:
             endpoint = "chat/completions"
-            payload = {"model": self.resolve_model(), "messages": messages}
+            # image parts (Vision) as image_url data URLs
+            wire = [_format_openai_message(m) for m in messages]
+            payload = {"model": self.resolve_model(), "messages": wire}
             if tools:
                 payload["tools"] = tools
             if schema:
@@ -1408,6 +1418,35 @@ def make(settings: AssistantSettings | None = None) -> Provider:
     """
     settings = settings or assistant_settings()
     return PROVIDERS[settings.provider](settings)
+
+
+def vision_key_shared(name: str, url: str, chat_name: str, chat_url: str) -> bool:
+    """Whether the Vision role's ``name`` provider at base URL ``url`` may use
+    :data:`keys.ENV_KEY`: only when the assistant's provider (``chat_name`` at ``chat_url``)
+    takes a key and sends it to the same host, the one that variable is set for.
+    :func:`keys.lookup` still never sends it to an official host (#504)."""
+    return chat_name in keys.KEYED and key_host(name, url) == key_host(chat_name, chat_url)
+
+
+def make_vision(settings: AssistantSettings, chat: AssistantSettings | None = None) -> Provider:
+    """The Vision role's provider (``vision_assistant`` in ``config.json``), with its key: as
+    :func:`make`, but :data:`keys.ENV_KEY` only for the key host of the assistant's provider
+    (``chat``, default: ``assistant`` in ``config.json``; :func:`vision_key_shared`), so a key
+    meant for one custom host never goes to another.
+
+    Raises:
+        ValueError: If ``config.json`` is invalid, or the Ollama URL has a bad port.
+    """
+    cls = _PRESET_CLASSES.get(settings.provider)
+    if cls is None:  # Ollama or a subscription: no API key
+        return make(settings)
+    chat = chat or assistant_settings()
+    shared = vision_key_shared(settings.provider, settings.url, chat.provider, chat.url)
+    host = key_host(settings.provider, settings.url)
+    key = keys.lookup(settings.provider, host, shared=shared)[0]
+    provider = cls(settings.url, settings.model, settings.context_tokens, key)
+    provider.key_shared = shared
+    return provider  # type: ignore[return-value]
 
 
 # (provider name, base URL) -> (when it was read, its models); successes only

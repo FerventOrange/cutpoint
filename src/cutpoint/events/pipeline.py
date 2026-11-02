@@ -190,6 +190,13 @@ def run_events(
     preflight(layers)
     rater = VisionRater(ollama_url, ollama_model)  # the shared vision client
     hosted = rater.provider_name != "ollama"
+    from cutpoint.assistant.providers import AUTO_SERVER_MODEL  # noqa: PLC0415
+
+    online: bool | None = None  # rater.available(), asked once
+    if hosted and "vlm" in layers and rater.model == AUTO_SERVER_MODEL:
+        # resolve the server's model before any cache lookup: the descriptions are keyed on
+        # it. Offline it stays the placeholder, and its cached descriptions are not found.
+        online = rater.available()
     vlm.model = f"{rater.provider_name}:{rater.model}" if hosted else rater.model
     sources = []
     seen: set[str] = set()
@@ -457,7 +464,9 @@ def run_events(
         missing = len(windows) - vstats["cached"] if "vlm" not in force else len(windows)
         if missing > 0:
             results = cached
-            if rater.available():
+            if online is None:
+                online = rater.available()
+            if online:
                 try:
                     with VramMonitor() as vm:
                         results, vstats = describe_windows(

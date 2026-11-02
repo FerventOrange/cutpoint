@@ -135,10 +135,10 @@ def lookup(provider: str, host: str, *, shared: bool = True) -> tuple[str | None
     return None, None
 
 
-def status(provider: str, host: str) -> str | None:
+def status(provider: str, host: str, *, shared: bool = True) -> str | None:
     """Where ``provider``'s key for ``host`` comes from (``"env"``, ``"keyring"``), or None:
-    never the key."""
-    return lookup(provider, host)[1]
+    never the key. ``shared`` as for :func:`lookup`."""
+    return lookup(provider, host, shared=shared)[1]
 
 
 def _check(provider: str) -> Any:

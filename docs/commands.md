@@ -231,8 +231,9 @@ read-only when `CUTPOINT_PROJECTS_DIR` is set, and it cannot be changed while a 
 The Models tab (next to AI Chat) sets the model for each role: Chat (the
 [`assistant`](configuration.md#assistant) of AI Chat) and Vision
 ([`vision_assistant`](configuration.md#vision_assistant), the model that rates frames), each
-with its own provider and model. Provider names say how they sign in: Anthropic API and OpenAI
-API use an API key; Claude Code subscription, Codex subscription and Antigravity subscription
+with its own provider and model; both roles offer the same providers. Provider names say how
+they sign in: Anthropic API, OpenAI API and xAI API use an API key (saved per provider and host, so
+one key serves both roles); Claude Code subscription, Codex subscription and Antigravity subscription
 use a login ("Connected accounts", managed via `cutpoint proxy` and `cutpoint login`). With the
 `cutpoint proxy` daemon running in the foreground and consent granted for the role, the tab lists
 each account's advertised models (Refresh catalog asks again); Other model… takes any id.
@@ -691,7 +692,7 @@ an analysed set processes only the new file.
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
 | `--vision` / `--no-vision` | Rate top candidates with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. See **Vision rating** below |
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
-| `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a subscription [`vision_assistant`](configuration.md#vision_assistant) in `config.json`, the frames (here and for `360 director --vl-check`) go to the subscription provider (`claude-code`, `codex`, `antigravity`) instead, once you agreed to it in the Models tab ("Allow vision requests"), and these two options are not used |
+| `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a [`vision_assistant`](configuration.md#vision_assistant) of any provider other than `ollama` in `config.json`, the frames (here and for `360 director --vl-check`) go to that provider instead: an API (`anthropic`, `openai`, `xai`, with your API key) or a subscription (`claude-code`, `codex`, `antigravity`), once you agreed to it in the Models tab ("Allow vision requests"), and these two options are not used |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
 | `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
 | `--skip STEP ...` | Leave out `reactions`, `keyframes` and/or `crashes` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
@@ -844,7 +845,7 @@ Footage that is not reachable (offline drive, moved file) is skipped with a `foo
 | `voice` | Wind-robust speech and laughter (Silero VAD + PANNs) |
 | `visual` | CLIP frame embeddings, person detection, beauty and group scores |
 | `crash` | Runs `cutpoint crashes` (action-cam projects) |
-| `vlm` | The shared vision model describes candidate windows from frames, the transcript and the other layers' hints (no audio is sent): Ollama with `qwen3.5:9b` (`CUTPOINT_VISION_MODEL` changes it), or the subscription Vision model of the Models tab in `cutpoint ui` ([`vision_assistant`](configuration.md#vision_assistant)) once you allowed vision requests there. Without either, the layer keeps its cached descriptions |
+| `vlm` | The shared vision model describes candidate windows from frames, the transcript and the other layers' hints (no audio is sent): Ollama with `qwen3.5:9b` (`CUTPOINT_VISION_MODEL` changes it), or the hosted (API or subscription) Vision model of the Models tab in `cutpoint ui` ([`vision_assistant`](configuration.md#vision_assistant)) once you allowed vision requests there. Without either, the layer keeps its cached descriptions |
 
 Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash vlm`.
 

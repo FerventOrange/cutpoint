@@ -1,4 +1,5 @@
-"""Optional frame rating through the configured local Ollama or subscription provider."""
+"""Optional frame rating through the configured local Ollama or hosted (API or subscription)
+provider."""
 
 from __future__ import annotations
 
@@ -115,13 +116,14 @@ class VisionResult:
 
 
 class AssistantVision:
-    """Frames are sent to the configured vision subscription provider with consent."""
+    """Frames are sent to the configured hosted vision provider (an API key or a subscription
+    login) once the user agreed to it for Vision."""
 
     def __init__(self, settings: Any = None) -> None:
         from cutpoint.assistant import providers  # noqa: PLC0415 (it imports this module)
 
         self.settings = settings or get_config().vision_assistant
-        self.provider = providers.make(self.settings)
+        self.provider = providers.make_vision(self.settings)
         self.model = self.provider.model
         self._ready: bool | None = None
 
@@ -135,14 +137,9 @@ class AssistantVision:
         from cutpoint.assistant import keys, providers  # noqa: PLC0415
 
         p = self.provider
-        if not providers.is_subscription(p):
-            logger.info(
-                "vision provider is %s; it must be %s",
-                p.name,
-                " or ".join(providers.SUBSCRIPTION_PROVIDERS),
-            )
-            return False
-        if providers.consent_key(p, "vision") not in self.settings.consent:
+        # None: a server on this machine (a local base URL in config.json), nothing leaves it
+        want = providers.consent_key(p, "vision")
+        if want is not None and want not in self.settings.consent:
             logger.info("Agree to send to %s for Vision first; skipping vision", p.name)
             return False
         if missing := providers.missing_key(p):
@@ -156,6 +153,9 @@ class AssistantVision:
         ) as err:
             logger.info("%s; skipping vision", keys.redact(str(err)))
             return False
+        # capabilities() resolved an unset model (an OpenAI-compatible server's only one): the
+        # caches are keyed on it, not on the placeholder AUTO_SERVER_MODEL
+        self.model = p.model
         return True
 
     def ask(self, prompt: str, jpegs: list[bytes], schema: dict | None = None) -> str | None:
@@ -223,7 +223,10 @@ class VisionRater:
         """True if the server answers and has the model pulled; records the model's
         ``digest`` for the rating cache."""
         if self.via:
-            return self.via.available()
+            if not self.via.available():
+                return False
+            self.model = self.via.model  # resolved by the check (the rating cache's key)
+            return True
         try:
             resp = requests.get(f"{self.url}/api/tags", timeout=3)
             resp.raise_for_status()
