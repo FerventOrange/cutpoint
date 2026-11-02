@@ -336,6 +336,7 @@ def test_a_local_provider_needs_no_consent(client: TestClient, monkeypatch, proj
         "key": None,
         "host": "localhost",
         "missing_key": None,
+        "missing_kind": None,
     }
     res = client.post("/api/assistant/consent", json={"key": "fake@localhost"})
     assert res.status_code == 409
@@ -354,6 +355,7 @@ def test_a_hosted_provider_gets_nothing_until_the_user_agrees_once(
         "key": want,
         "host": "api.anthropic.com",
         "missing_key": None,
+        "missing_kind": None,
     }
     assert got["provider"]["local"] is False
     assert got["provider"]["label"] == "Anthropic API · fake-model · api.anthropic.com"
@@ -616,6 +618,20 @@ def test_a_missing_key_comes_before_the_consent_box(
     monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
     got = client.get("/api/projects/cli/assistant")
     assert got.json()["consent"]["missing_key"] is None and SECRET not in got.text
+    assert got.json()["consent"]["missing_kind"] is None
+
+
+def test_a_subscription_provider_misses_a_login_not_a_key(
+    client: TestClient, monkeypatch, home: Path, proj
+) -> None:
+    set_config(home, assistant={"provider": "codex"})
+    why = "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
+    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": False, "error": why})
+    got = client.get("/api/projects/cli/assistant").json()["consent"]
+    assert got["missing_key"] == why and got["missing_kind"] == "login"
+    set_config(home, assistant={"provider": "anthropic"})
+    got = client.get("/api/projects/cli/assistant").json()["consent"]
+    assert got["missing_kind"] == "key"
 
 
 def test_settings_view_and_put_vision_assistant(client: TestClient, home: Path) -> None:
