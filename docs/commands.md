@@ -126,7 +126,7 @@ checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--cli
 | `360 qa` | `qa_dir`, `report`, `mode`, `sheets`, `clips` (each `file`, `score`, `pass`, `fails`), `count`, `passed`, `score`, `by_mode` and `by_self_method` (the `qa.json` edit's `edge_cut` breakdowns: per render `mode` or `self_method`, its `clips`, `frames`, `duration` and `edge_cut` share; `{}` without a checked clip). With `--compare`: `edge_gap` (its path), `mode` (`compare`), `rendered` and `paths` (the two `qa.json`), `clips` (each `file`, `rendered_only`, `causes`, `other_detail`), `count`, `rendered_only`, `causes`, `other_detail`, `by_mode` and `by_self_method` (`edge_gap.json`'s frame counts per rendered `mode` or `self_method`: `clips`, `frames`, `rendered_edge`, `paths_edge`, `rendered_only`; `unknown` for an older `qa.json`) (see [360 video](workflows/360.md#where-the-two-qas-disagree)) |
 | `360 repair` | The repair report's own keys, and `exclude_file` (`null` if there are no exclusions) |
 | `crashes` | `crashes` (the `crashes.json` path), `count`, `candidates` (strongest first, each with the `crashes.json` keys `id`, `source`, `t0` and `t1` (impact span, s), `confidence` (0-1), `confirmed` (dense check ran), `origin` (`telemetry` or `words`), `clip` (`start`, `end`, `until`, and `reaction` when planned) and `sheet` (when one was written)), `activity_file` (the `activity.json` path), `profile_name` |
-| `events` | `events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the ski re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed` and `suggested`, the number of extra notice regions listed under `suggested_regions` in `proposal.json` for a game that kept its preset, else 0; `preset` is `built-in` when the kept preset is marked `"builtin": true`, in the user or bundled presets folder). A ski re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files are `not_found` and name the `cutpoint setup` command. The VLM layer needs no model files: when its vision model does not answer, a WARNING says so and cached window descriptions are used |
+| `events` | `events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the ski re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed` and `suggested`, the number of extra notice regions listed under `suggested_regions` in `proposal.json` for a game that kept its preset, else 0). A ski re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files are `not_found` and name the `cutpoint setup` command. The VLM layer needs no model files: when its vision model does not answer, a WARNING says so and cached window descriptions are used |
 | `profile` | The `activity.json` record's own keys (as the older `profile --json` printed them: `version`, `request`, `name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `profile`, and when set `scores`, `description`, `described_by`, `model`), and `activity_file` (its path) |
 
 `360 qa --json-only` skips the contact sheets; it is a different option from `--json`.
@@ -531,8 +531,10 @@ server) is saved for that base URL or comes from `CUTPOINT_ASSISTANT_API_KEY`, a
 
 A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on
 another machine counts too) is hosted: before the first message the tab asks once, per provider
-and host, to send the project's moment labels, transcript snippets, file names (not full paths),
-times and your messages there. The answer is kept in `config.json` (`assistant.consent`); until
+and host, to send the project's analysis results (moment labels, scores and detection signals,
+transcript snippets, file names (not full paths) and times) and your messages, never video or
+audio. The answer is kept in `config.json` (`assistant.consent`, as
+`assistant-v2:<provider>@<host>`); it never covers the Vision role, which asks separately. Until
 then nothing is sent. A hosted reply is not streamed, so Cancel takes effect when it arrives.
 
 Its header shows the model and provider (local, or the hosted host), with a note
@@ -807,7 +809,7 @@ Footage that is not reachable (offline drive, moved file) is skipped with a `foo
 
 | Layer | What |
 |---|---|
-| `audio` | PANNs sound events: laughter, screams, cheering, gunfire, explosions |
+| `audio` | PANNs sound events: laughter, screams, cheering |
 | `ocr` | Game HUD text: kill feeds, round banners (see [game streams](workflows/game-streams.md)) |
 | `voice` | Wind-robust speech and laughter (Silero VAD + PANNs) |
 | `visual` | CLIP frame embeddings, person detection, beauty and group scores |

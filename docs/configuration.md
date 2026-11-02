@@ -361,14 +361,8 @@ Game-HUD OCR regions come from a preset, looked up in this order:
 
 The first preset whose `game` key (or file name, without `game`) matches wins: 1 overrides 2 and 3,
 and 2 overrides 3. To make a preset for a game, write one
-in folder 1 or 2, or let region discovery create it. The user folder (2) is trusted like the bundled one:
-the `"builtin"` key is honoured there and in the bundled folder, so a preset with `"builtin": true` in
-`<CUTPOINT_HOME>\presets` keeps its built-in interpretation and OCR cache keys. In a project
-`hud_presets` folder (1) `"builtin"` is ignored with a WARNING (shown once) and the preset is read
-as a generic JSON preset (generic kill-feed parsing, generic banners added, new OCR cache).
-
-A builtin preset's `banner_phrases` are not part of the OCR cache key. After editing them, run
-`cutpoint events <project> --force ocr` to read the footage again.
+in folder 1 or 2, or let region discovery create it. The user folder (2) is trusted like the bundled one.
+A `"builtin"` key, which older presets may have, is ignored.
 
 The OCR layer also keeps its raw read of each source (the text it read per frame) in the source's
 cache folder, `ocr-raw-*`. When an update changes only how that text is interpreted, the next run

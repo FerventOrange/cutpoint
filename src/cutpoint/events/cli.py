@@ -285,9 +285,7 @@ def _report_events(args: argparse.Namespace, jpath: Path, tpath: Path) -> None:
                 game: {
                     "proposal": Path(rec["proposal"]),
                     "overlay": Path(rec["overlay"]),
-                    "preset": rec.get("preset")
-                    if rec.get("preset") in (None, "built-in")
-                    else Path(rec["preset"]),
+                    "preset": None if rec.get("preset") is None else Path(rec["preset"]),
                     "installed": rec.get("installed"),
                     "suggested": len(rec.get("suggested_regions") or []),
                 }

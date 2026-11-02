@@ -371,11 +371,7 @@ def run_events(
                     make_engine=make_engine,
                 )
                 preset = load_preset(game_key_for_path(str(s.path), ocr.game, project), project)
-                link_teamkills(
-                    evs,
-                    tags=ocr.player_tags,
-                    generic_teamkills=bool(preset and preset.feed.get("teamkills")),
-                )
+                link_teamkills(evs, generic_teamkills=bool(preset and preset.feed.get("teamkills")))
                 derive_streaks(evs)
                 layer1[str(s.path)] += evs
                 ocr_stats[s.name] = st
@@ -666,7 +662,7 @@ def _discover(
                 "Installed discovered HUD preset for %r: %s (edit it to calibrate)", game, target
             )
         else:
-            rec["preset"] = str(existing.path or "built-in")
+            rec["preset"] = str(existing.path)
             rec["suggested_regions"] = list(proposal.get("suggested_regions") or [])
             logger.info(
                 "Kept existing HUD preset for %r (%s); discovery proposal: %s",

@@ -25,7 +25,7 @@ def fake_ocr(monkeypatch: pytest.MonkeyPatch) -> list[float]:
         ]
 
     class Engine:
-        def __init__(self, det_side=960, **_kwargs):
+        def __init__(self, **_kwargs):
             pass
 
         def __call__(self, img, min_score):
