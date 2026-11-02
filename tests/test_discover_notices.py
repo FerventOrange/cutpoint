@@ -434,7 +434,7 @@ def test_origin_changes_no_cache_key() -> None:
     assert OcrParams().key("verbfeed", a) == OcrParams().key("verbfeed", b)
 
     def raw(p: Any) -> dict[str, Any]:
-        return ocr_raw.raw_key(3.0, [r.key() for r in p.all_regions()], "bottom", 0.5, [], 960)
+        return ocr_raw.raw_key(3.0, [r.key() for r in p.all_regions()], "bottom", 0.5, [])
 
     assert raw(a) == raw(b)
 

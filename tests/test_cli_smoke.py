@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import cutpoint
 import cutpoint.analyze
-from cutpoint import cli
+from cutpoint import cli, hub, mix
 from cutpoint.assistant import cliproxy
 
 
@@ -217,10 +219,13 @@ def test_failed_analyze_leaves_no_new_project_folder(home, tmp_path, monkeypatch
     assert not projects.exists() or list(projects.iterdir()) == []
 
 
-def test_huggingface_warning_is_printed_once():
+def test_huggingface_warning_is_printed_once(monkeypatch):
     pytest.importorskip("huggingface_hub.utils.logging")
-    assert cli.main(["paths"]) == 0
-    assert logging.getLogger("huggingface_hub").handlers == []
+    hf_logger = logging.getLogger("huggingface_hub")
+    hf_logger.addHandler(logging.StreamHandler())  # as huggingface_hub adds on import
+    monkeypatch.setattr(hub, "_hub_handler_removed", False)
+    hub.quiet_hub_handler()  # before whisper loads
+    assert hf_logger.handlers == []
 
 
 @pytest.mark.parametrize("target", ["0", "-5"])
@@ -383,3 +388,61 @@ def test_logout_cli_command_error(monkeypatch, caplog):
             cli.main(["logout", "codex"])
         assert exc.value.code == 1
     assert "logout failed: daemon offline" in caplog.text
+
+
+@pytest.mark.slow
+def test_import_cli_skips_action_cam_and_proxy_modules():
+    """``import cutpoint.cli`` (every ``cutpoint`` start) loads them only when a command runs."""
+    lazy = (
+        "cutpoint.activity",
+        "cutpoint.crash",
+        "cutpoint.mix",
+        "cutpoint.assistant.cliproxy",
+        "huggingface_hub",
+    )
+    code = f"import sys, cutpoint.cli; print([m for m in {lazy!r} if m in sys.modules])"
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert proc.stdout.strip() == "[]"
+
+
+def test_parser_constants_match_their_modules():
+    assert cli.MIX_EXCLUDE_FILE == mix.EXCLUDE_FILE
+    assert cli.PROXY_PROVIDERS == cliproxy.PROVIDERS
+
+
+def test_assemble_project_options_come_from_its_project_group():
+    args = cli.build_parser().parse_args(["assemble", "clips"])
+    assert list(args.project_defaults) == [
+        "top", "ids", "segments", "max_total", "order", "vertical", "size", "force", "crop",
+        "smart_tail", "tail_min", "tail_max", "event_tails", "event_window", "extend",
+        "extend_start", "extend_end", "speech_aware", "speech_max_extend", "speech_max_lead",
+        "pano_source", "pano_cmd_every", "lut", "lut_strength", "color", "color_strength",
+    ]  # fmt: skip
+
+
+def test_login_timeout_cancels_session(monkeypatch, caplog):
+    cancelled = []
+    clock = iter(range(0, 1000, 100))  # every monotonic call: 100 s later
+    monkeypatch.setattr(cliproxy.time, "monotonic", lambda: float(next(clock)))
+    monkeypatch.setattr(cliproxy.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        cliproxy, "start_login", lambda p: {"url": "https://auth.example/test", "state": "s1"}
+    )
+    monkeypatch.setattr(cliproxy, "poll_login", lambda s: {"state": "pending", "error": None})
+    monkeypatch.setattr(cliproxy, "cancel_login", cancelled.append)
+    with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as exc:
+        cli.main(["login", "codex", "--no-browser"])
+    assert exc.value.code == 1
+    assert "login timed out" in caplog.text
+    assert cancelled == ["s1"]
+
+
+def test_login_start_failure_exits_1(monkeypatch, caplog):
+    def fail(provider):
+        raise cliproxy.ProxyError("daemon offline")
+
+    monkeypatch.setattr(cliproxy, "start_login", fail)
+    with caplog.at_level(logging.ERROR), pytest.raises(SystemExit) as exc:
+        cli.main(["login", "codex", "--no-browser"])
+    assert exc.value.code == 1
+    assert "could not start login for codex: daemon offline" in caplog.text

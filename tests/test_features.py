@@ -34,7 +34,7 @@ def test_builtin_style_weights_are_registered(name):
 
 def test_every_ski_feature_is_registered():
     """refmatch fits weights over ski.FEATURES, so a learned ski preset may name any of them."""
-    assert features.unknown(ski.FEATURES) == []
+    assert set(ski.FEATURES) <= set(features.REGISTRY)
     assert features.SKI_ALIASES["laughter"] in features.REGISTRY
 
 
@@ -203,7 +203,6 @@ def test_ski_score_is_renormalised_like_the_other_styles():
 
 def test_ski_features_come_from_the_registry_in_the_grid_order():
     assert ski.FEATURES == features.SKI_FEATURES
-    assert features.unknown(features.SKI_FEATURES) == []
     assert all(features.get(f).kind == "grid" for f in ski.FEATURES)
     # the voice and visual layers and the taste head, in the order they had before 1b
     assert ski.NEW_FEATURES == ("beauty", "people", "group", "voice_laughter", "voice", "taste")

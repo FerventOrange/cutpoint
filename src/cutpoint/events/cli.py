@@ -152,10 +152,10 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     )
     g.add_argument(
         "--preset-scope",
-        choices=["user", "project", "package"],
+        choices=["user", "project"],
         default="user",
         help="Where a newly discovered preset is saved: user = "
-        "<CUTPOINT_HOME>/presets (default; 'package' is an old alias) or "
+        "<CUTPOINT_HOME>/presets (default) or "
         "project = <project>/hud_presets",
     )
     g = ap.add_argument_group("VLM (Qwen2.5-Omni via llama-server)")
@@ -290,9 +290,7 @@ def _report_events(args: argparse.Namespace, jpath: Path, tpath: Path) -> None:
                 game: {
                     "proposal": Path(rec["proposal"]),
                     "overlay": Path(rec["overlay"]),
-                    "preset": rec.get("preset")
-                    if rec.get("preset") in (None, "built-in")
-                    else Path(rec["preset"]),
+                    "preset": None if rec.get("preset") is None else Path(rec["preset"]),
                     "installed": rec.get("installed"),
                     "suggested": len(rec.get("suggested_regions") or []),
                 }
