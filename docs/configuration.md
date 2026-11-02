@@ -159,12 +159,18 @@ moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other value
 The model that rates frames and describes the windows of the `events` VLM layer, chosen
 independently of the chat model. The same keys as
 [`assistant`](#assistant) (`provider`, `model`, `url`, `consent`), but `provider` is `ollama`
-(default), `claude-code`, `codex` or `antigravity`. With `ollama`, `model` and `url` are the
-Ollama model and URL (`--ollama-model`, `CUTPOINT_VISION_MODEL` and `--ollama-url` still win).
-Subscription providers use only their official host; a `url` for them is rejected.
+(default), an API (`anthropic`, `openai` or `xai`, with your API key from the environment or the
+keyring, as for the assistant; analyses started in `cutpoint ui` read it from the keyring only,
+which the Vision role's key field in the Models tab sets) or a subscription (`claude-code`,
+`codex` or `antigravity`). With `ollama`, `model` and `url` are the Ollama model and URL
+(`--ollama-model`, `CUTPOINT_VISION_MODEL` and `--ollama-url` still win). With an API provider, choose a `model`
+that accepts images; each request sends frames and is billed to your API key. Subscription
+providers use only their official host; a `url` for them is rejected. An API provider may have a
+`url` (an OpenAI-compatible or self-hosted server); one on this machine (`localhost` or a
+loopback address) needs no Vision consent, because nothing leaves it.
 The Models tab fetches the catalog from this configured Ollama URL, including custom servers.
 Without this section the frame rater uses Ollama. The Models tab of `cutpoint ui` writes it.
-Catalogs and frames go to a subscription provider only after you allow it there
+Catalogs and frames go to a hosted provider only after you allow it there
 (`vision_assistant.consent`, via "Allow vision requests"); choosing or saving a model never
 grants it. Once allowed, the provider receives video frames, transcript excerpts, file names and
 times, and detected on-screen text (such as player names) and telemetry (for frame ratings and
@@ -174,8 +180,8 @@ covers the other. Entries are `vision-v2:<provider>@<host>` (for example
 `vision-v2:codex@chatgpt.com`); an entry without the `vision-v2:` prefix, saved by an earlier
 version under a narrower description, no longer counts, and the Models tab asks again.
 **Use at your own risk** when selecting a hosted provider.
-`--ollama-url` and `--ollama-model` have no effect for subscription providers, whose ratings
-have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
+`--ollama-url` and `--ollama-model` have no effect for a provider other than `ollama`; ratings
+from those providers have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
 `analyze` always uses Ollama, independently of this selection.
 
 ### compress_peaks
@@ -279,7 +285,7 @@ host of its base URL. It is taken, in order, from:
 |---|---|
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` | that provider's own host only: `api.anthropic.com` / `api.openai.com` / `api.x.ai`. An OpenAI key is never sent to OpenRouter, a LAN server or a server on this machine, and an xAI key never anywhere but `api.x.ai` (not to the `openai` provider with an `api.x.ai` URL either) |
 | The system keyring (service `cutpoint`) | saved from the Models tab (Save key) for the provider and base URL saved there. The user is `anthropic`, `openai` or `xai` for the provider's own host, else `<provider>@<host>` (for example `openai@openrouter.ai`) |
-| `CUTPOINT_ASSISTANT_API_KEY` | custom and self-hosted base URLs only (for example an OpenRouter key, or a key for your own server). Never sent to `api.anthropic.com`, `api.openai.com` or `api.x.ai`, not even when no other key is set: those need their own variable or a keyring key |
+| `CUTPOINT_ASSISTANT_API_KEY` | custom and self-hosted base URLs only (for example an OpenRouter key, or a key for your own server). Never sent to `api.anthropic.com`, `api.openai.com` or `api.x.ai`, not even when no other key is set: those need their own variable or a keyring key. The [Vision role](#vision_assistant) uses it only when its key goes to the same host as the assistant's (an API provider); for another host, save the Vision key in the Models tab |
 
 A preset's key is for its own host, so it can be saved before the settings. For a custom base
 URL, save the model settings first, then save the key for it. The key is sent

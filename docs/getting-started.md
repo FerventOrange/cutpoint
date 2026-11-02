@@ -299,7 +299,7 @@ Ollama runs local models. Cutpoint works without it. Only these features use it:
   as the rating is done.
 - The VLM layer of `cutpoint events` (and `edit --events`): the same vision model describes
   candidate windows from frames, the transcript and the other layers' hints. Without Ollama, it
-  can use a subscription Vision model chosen in the Models tab once you allowed vision requests
+  can use a hosted (API or subscription) Vision model chosen in the Models tab once you allowed vision requests
   there ([`vision_assistant`](configuration.md#vision_assistant)); with neither, the layer is
   skipped with a WARNING and earlier descriptions are kept.
 - `360 director --vl-check` and building a new activity profile (see

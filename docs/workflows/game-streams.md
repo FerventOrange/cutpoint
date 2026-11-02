@@ -27,7 +27,7 @@ This needs your name set, as above; other styles are unchanged.
 |---|---|
 | `audio` | Laughter, screams, cheering (PANNs) |
 | `ocr` | Kill-feed rows (who killed whom, your kills and deaths), round banners, notices, multi-kills |
-| `vlm` | The shared vision model (Ollama `qwen3.5:9b`, or a subscription Vision model you allowed in the Models tab) describes candidate windows from frames, the transcript and the other layers' hints |
+| `vlm` | The shared vision model (Ollama `qwen3.5:9b`, or a hosted (API or subscription) Vision model you allowed in the Models tab) describes candidate windows from frames, the transcript and the other layers' hints |
 
 Outputs (written by `analyze` and by `events`): `events.json` and `events.txt`. `events.txt` interleaves the transcript with the
 events by time, which is the easiest file to read when picking segments:

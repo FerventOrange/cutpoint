@@ -10,14 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A Models tab in `cutpoint ui` sets the model of each role: Chat (`assistant`) and Vision (the new
-  `vision_assistant` section, same keys, any of Ollama, `claude-code`, `codex`, `antigravity`), each
+  `vision_assistant` section, same keys, the same providers as Chat), each
   with its own provider, model and, for hosted ones, permission. It replaces the AI assistant
   settings. With `cutpoint proxy` running, it lists models advertised by the proxy for each
   account after consent for the role. Anthropic API and OpenAI API (API key) are separate
   from Claude Code subscription and Codex subscription (login). Hosted API and subscription
   providers display "Use at your own risk"; Ollama/Local does not.
   Save models sits at the bottom of model selection under the Vision role, directly above Connected
-  accounts (which lists login status without model counts). Vision frames go to a subscription provider
+  accounts (which lists login status without model counts). Vision frames go to a hosted provider
   only after "Allow vision requests" in the tab (`vision_assistant.consent`; custom URLs are rejected
   for subscription providers).
   Without a `vision_assistant` section, frame rating uses Ollama. Activity detection in
@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never video or audio), and is versioned too (`assistant-v2:<provider>@<host>` in
   `assistant.consent`): an AI Chat consent saved without the prefix no longer counts, so AI Chat
   asks again.
+- The Vision role can use the Anthropic, OpenAI and xAI APIs (`vision_assistant.provider`
+  `anthropic`, `openai` or `xai`) as well as Ollama and the subscriptions. It uses your API key
+  (environment or keyring; the Vision role has its own key field in the Models tab, and a key
+  saved for a provider and host serves both roles), asks for the Vision consent of that provider
+  like the subscriptions do, and lists the provider's models as Chat does: pick one that accepts
+  images. Each request sends frames and is billed to your API key. Use at your own risk.
 - `cutpoint proxy` runs the authenticated CLIProxyAPI daemon in the foreground for Claude Code,
   Codex and Antigravity subscriptions (Use at your own risk), in full and lite installs. The first
   run downloads the checksum-verified ~24 MB binary (pinned 8.0.47) to

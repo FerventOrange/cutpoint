@@ -35,8 +35,8 @@ Replies in the AI Chat or `--vision` ratings that take very long usually mean th
 the CPU (it did not fit in GPU memory); a smaller model or a GPU helps.
 
 The VLM layer of `cutpoint events` uses the same vision model as `--vision`: Ollama with
-`qwen3.5:9b` (`CUTPOINT_VISION_MODEL` changes it), or the subscription Vision model of the
-Models tab once you allowed vision requests there. When neither answers, `events` logs
+`qwen3.5:9b` (`CUTPOINT_VISION_MODEL` changes it), or the hosted (API or subscription) Vision
+model of the Models tab once you allowed vision requests there. When neither answers, `events` logs
 `VLM: vision model ... not available`, keeps the window descriptions it has cached and goes on
 with the other layers. Check the points above, or pull the model with `ollama pull qwen3.5:9b`.
 
