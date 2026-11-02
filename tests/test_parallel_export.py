@@ -1112,6 +1112,14 @@ def test_ffprobe_failure_in_a_scope_is_the_same_error_as_outside(kids):
     assert str(outcome[0]).startswith("ffprobe failed on x.mp4 (exit 7)")
 
 
+def test_ffprobe_json_has_a_default_timeout():
+    import inspect  # noqa: PLC0415
+
+    default = inspect.signature(ffmpeg_utils.ffprobe_json).parameters["timeout"].default
+    assert default == ffmpeg_utils.FFPROBE_TIMEOUT_S
+    assert 60 <= default < float("inf")
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("scoped", [False, True])
 def test_ffprobe_json_timeout_kills_it_and_is_an_ffmpeg_error(kids, scoped):

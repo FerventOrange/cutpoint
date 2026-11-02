@@ -237,6 +237,8 @@ def test_drop_sightings() -> None:
         ("NymAssistVel", ("Nym", "Vel", "assist")),  # camelCase joined
         ("Ashdestroyed Kip", ("Ash", "Kip", "kill")),  # a long kill word joined to a name
         ("Nym skilled Vel", None),
+        ("Qorv2assist Vel", ("Qorv2", "Vel", "assist")),  # after digits
+        ("Nym SHOT  DOWN Vel", ("Nym", "Vel", "kill")),
     ],
 )
 def test_kill_words_match_whole_words(text: str, split: tuple | None) -> None:

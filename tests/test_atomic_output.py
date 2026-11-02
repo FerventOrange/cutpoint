@@ -1034,6 +1034,19 @@ def test_clips_force_and_a_clip_reached_through_source_remap(
         assert "reads as a source" in _warnings(caplog)
 
 
+@pytest.mark.parametrize(("winerror", "read_only_hint"), [(32, False), (5, True)])
+@pytest.mark.usefixtures("no_sleep")
+def test_lock_hint_mentions_read_only_only_for_access_denied(
+    monkeypatch, tmp_path, winerror, read_only_hint
+):
+    def op():
+        raise _locked(winerror)
+
+    with pytest.raises(PermissionError, match="open in another program") as exc:
+        ffmpeg_utils.retry_locked(op, tmp_path / "x.json", "write")
+    assert ("read-only" in str(exc.value)) is read_only_hint
+
+
 # --- #145: assemble recovers leftovers; one run at a time; renamed clips; foreign manifests ---
 
 
@@ -1254,6 +1267,17 @@ def test_pid_alive_takes_a_process_created_after_the_lock_for_another_one(
     monkeypatch.setattr(ffmpeg_utils, "_win_created", lambda _k32, _h: written + offset)
     assert ffmpeg_utils._pid_alive(os.getpid(), written) is alive
     assert ffmpeg_utils._pid_alive(os.getpid())  # no time to compare: running
+
+
+def test_stale_lock_check_passes_the_locks_mtime(monkeypatch, tmp_path):
+    lock = tmp_path / ".x.cutpoint-lock"
+    lock.write_bytes(_lock_record(4321))
+    seen = []
+    monkeypatch.setattr(
+        ffmpeg_utils, "_pid_alive", lambda pid, not_after=None: seen.append(not_after)
+    )
+    ffmpeg_utils._lock_stale(lock, json.loads(lock.read_bytes()))
+    assert seen == [lock.stat().st_mtime]
 
 
 def test_pid_alive_counts_a_process_it_cannot_open_as_alive():

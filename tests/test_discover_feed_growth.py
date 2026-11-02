@@ -60,6 +60,7 @@ def test_no_growth_without_rare_rows(caplog: pytest.LogCaptureFixture) -> None:
     feed = _feed(_frames(6, 3, set()))
     assert feed["evidence"]["grown_rows"] == 0
     assert feed["y"] >= 40 + 3 * PITCH - 24
+    assert "Feed growth" in caplog.text
     assert not any(n in caplog.text for n in NAMES)  # no OCR text in the log
 
 

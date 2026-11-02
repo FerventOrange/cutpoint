@@ -14,7 +14,7 @@ import pytest
 
 from conftest import media_info, needs_ffmpeg
 from cutpoint import assemble, encode, ffmpeg_utils, sources
-from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo
+from cutpoint.ffmpeg_utils import FFmpegError, MediaInfo, VideoEncoder
 
 
 def _info(duration: float, vduration: float) -> MediaInfo:
@@ -270,6 +270,25 @@ def test_audio_fade_filter_fades_out_at_the_end_of_shorter_audio():
     assert encode.audio_fade_filter(1.5, 0.25, 0.0) == ""
 
 
+def _export_graph(monkeypatch, info: MediaInfo, start: float, end: float) -> str:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(encode, "run", lambda args, **_: calls.append(args) or "")
+    fmt = encode.OutputFormat(64, 48, 25)
+    encode._encode(VideoEncoder("cpu"), info.path, info, start, end, Path("o.mp4"), fmt,
+                   False, None, 0.25)  # fmt: skip
+    return calls[0][calls[0].index("-filter_complex") + 1]
+
+
+@pytest.mark.parametrize(
+    ("audio_end", "fade_out"),
+    [(None, "st=1.250"), (20.0, "st=1.250"), (11.0, "st=0.750")],
+    ids=["unknown", "covers", "ends-early"],
+)
+def test_clip_export_fades_out_where_the_source_audio_ends(monkeypatch, audio_end, fade_out):
+    info = media_info(Path("v.mp4"), 12.0, audio_duration=audio_end)
+    assert f"afade=t=out:{fade_out}:d=0.250" in _export_graph(monkeypatch, info, 10.0, 11.5)
+
+
 def test_assemble_fades_out_where_the_clip_audio_ends():
     chain = assemble._audio_chain(0, _info(1.5, 1.5), 0.25)
     assert chain.endswith(f"{FADE_NORMAL}[a0]")
@@ -434,12 +453,13 @@ def test_burned_in_captions_transcribe_in_the_analysis_language(tmp_path, monkey
         ("cut", None, False),
         ("fade", "crossfade", False),
         ("fade", "cut", False),
+        ("fade", "echo", True),
     ],
 )
 def test_check_transitions_refuses_only_an_audio_crossfade_at_cuts(transition, audio, refused):
     why = assemble.check_transitions(transition, audio)
     assert (why is not None) is refused
-    if refused:
+    if refused and audio == "crossfade":
         assert "--transition fade" in why
 
 

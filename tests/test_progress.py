@@ -40,6 +40,29 @@ class FakeClock:
 
 
 # ----------------------------------------------------------------- pinned API
+def test_step_names_are_the_stable_api():
+    assert progress.ANALYZE_STEPS == (
+        "transcribe", "reactions", "keyframes", "crashes", "ranking", "vision",
+    )  # fmt: skip
+    assert (*progress.ANALYZE_STEPS, "clips", "assemble") == progress.EDIT_STEPS
+    assert progress.PANO_STEPS == ("scan", "views", "analyze", "events")
+    assert progress.SKIPPABLE == ("reactions", "keyframes", "crashes")
+    assert progress.LABELS == {
+        "transcribe": "Transcription",
+        "reactions": "Reactions",
+        "keyframes": "Keyframes",
+        "crashes": "Crashes",
+        "ranking": "Ranking",
+        "vision": "Vision rating",
+        "clips": "Clips",
+        "assemble": "Assemble",
+        "scan": "Read 360 clips",
+        "views": "360 views",
+        "analyze": "Transcription and ranking",
+        "events": "Events and re-rank",
+    }
+
+
 def test_line_keys_order_and_values(capsys):
     r = progress.Run(progress.ANALYZE_STEPS, active=True)
     r.start("transcribe", "first")

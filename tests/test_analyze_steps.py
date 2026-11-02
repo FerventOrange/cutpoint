@@ -1248,6 +1248,7 @@ def test_config_analysis_skip_is_the_default(home, tmp_path, monkeypatch, cfg, a
 @pytest.mark.parametrize(
     ("data", "message"),
     [
+        ({"analysis": []}, "analysis must be an object"),
         ({"analysis": {"skip": "crashes"}}, "analysis.skip must be a list"),
         ({"analysis": {"skip": ["ranking"]}}, "analysis.skip has 'ranking'"),
     ],
@@ -1319,6 +1320,14 @@ def test_plan_without_cuda_leaves_out_the_clip_keyframes(env, caplog):
     assert got["crashes"] == ("crash",)
     assert "No CUDA GPU" in caplog.text
     assert planned("funny")[0]["keyframes"] == ("ocr",)  # HUD text needs no CUDA
+
+
+def test_plan_cuda_check_uses_torch(env, monkeypatch):
+    monkeypatch.undo()  # the real _cuda
+    for on in (True, False):
+        fake = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda on=on: on))
+        monkeypatch.setitem(sys.modules, "torch", fake)
+        assert analyze._cuda() is on
 
 
 @pytest.mark.parametrize("broken", ["import", "call"])

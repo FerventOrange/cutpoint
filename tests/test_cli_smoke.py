@@ -39,6 +39,7 @@ def test_paths_command_uses_isolated_home(home, capsys):
         (["clips", "some-project", "--top", "-1"], "must be greater than 0"),
         (["edit", "video.mp4", "--vision-top", "0"], "must be greater than 0"),
         (["analyze", "video.mp4", "--must-include-crash", "1.5"], "must be from 0 to 1"),
+        (["assemble", "c", "--transition", "fade", "--fade-dur", "0"], "must be greater than 0"),
     ],
 )
 def test_bad_option_value_is_a_usage_error(capsys, argv, message):
@@ -264,6 +265,15 @@ def test_login_antigravity_confirmation(monkeypatch, caplog):
 
     monkeypatch.setattr("builtins.input", interrupt)
     assert cli.main(["login", "antigravity", "--no-browser"]) == 130
+
+
+def test_logout_cli_command(monkeypatch, caplog):
+    logged_out = []
+    monkeypatch.setattr(cliproxy, "logout", lambda p: logged_out.append(p))
+    with caplog.at_level(logging.INFO):
+        assert cli.main(["logout", "codex"]) == 0
+    assert logged_out == ["codex"]
+    assert "logged out of" in caplog.text
 
 
 def test_logout_cli_command_error(monkeypatch, caplog):
