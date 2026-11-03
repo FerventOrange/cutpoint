@@ -439,9 +439,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   near the margin made bad stretches long enough to turn whole friend shots into a view
   cut-away. `legacy` paths are unchanged. Planned camera paths change, so cached candidate
   paths are planned again.
+- The 360 director no longer swings or spins the view with a handheld or pole-mounted camera
+  (an upright clip, lenses horizontal) (#547). This is the fix for the reported spinning:
+  the view followed the camera's heading, smoothed over only 1.5 s, so twisting the camera
+  back and forth or turning it around turned the picture with it. On the Aug '24 cruise
+  footage that was up to 81 deg in a 5 s moment, now 10. Such clips are now planned in a frame
+  that follows the heading only through a 30 s low-pass (new `pano.director` setting
+  `upright_hold_s`; `0` follows the camera as before). Safe-area fixes and cut-aways hold their
+  view the same way, and the geometric QA judges these clips' pans in the world, as the viewer
+  sees them. Helmet, chest and bike mount paths are unchanged.
+  The `spin` flag measures an upright clip's turning in the world too. For every clip it now
+  also fires on short moments: under 30 s its travel thresholds scale with the moment's length,
+  down to 120 deg turned one way. A 40-90 deg turn in a short moment is one pan and is
+  deliberately left unflagged. The UI's spin reason names a short moment's own length.
+  Candidate paths are planned anew on the next `360 analyze` (cache version 3).
+- Ollama vision ratings and `360 director --vl-check` frame checks are cached per server
+  (host and port of the Ollama URL), so a local and a remote Ollama with the same model no
+  longer share results; existing ones are rated again once (#673).
+- OCR menu detection (#554): a still screen with no new menu text counts as a menu only
+  when another menu frame (box, list or text rule) lies within 15 s, or it holds still for
+  45 s. Still gameplay (respawn and spectator waits, a preparation phase) is no longer
+  flagged as a menu. On hand-labelled War Thunder footage the menu precision rose from 0.65
+  to 1.00 at the same recall (0.44), and on R6 from 0.69 to 0.93. Cached OCR results are
+  replayed once.
 - AI Chat's `find_moments` matches a word at the start of a word in labels, transcripts and
   what the vision model saw, so "air" finds air, airs and airtime but no longer chair, and the
   proxy's periodic credential sync tightens loosened permissions even when nothing changed (#663).
+- `edit --events` no longer fails after an in-process PANNs run with `panns_inference.__spec__
+  is None` (#669).
 - `analyze --ollama-url` and `--ollama-model` now reach the VLM layer of its events step, which
   used the configured Ollama instead (#660).
 - `edit --events` honours `--skip`: `--skip keyframes` no longer runs HUD discovery (#659).
@@ -499,8 +524,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*.localhost` name is hosted and needs consent (#619).
 - Hosted vision ratings, `events` VLM descriptions and `360 director --vl-check` frame checks
   are cached per provider and host, so one model id at two servers no longer shares results.
-  Results cached from a hosted provider before this change are asked again once; Ollama vision
-  ratings and frame checks are unchanged (#621).
+  Results cached from a hosted provider before this change are asked again once (#621); for
+  Ollama see #670 and #673.
 - `events` VLM descriptions from Ollama are cached per host too (`ollama@<host>[:<port>]:<model>`,
   as for hosted providers), so a local and a remote Ollama with the same model no longer share
   descriptions. Descriptions cached before this change are described again once, on the next

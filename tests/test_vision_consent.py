@@ -203,13 +203,23 @@ def test_the_settings_view_lists_the_proxy_port_as_hosted() -> None:
 # -- rating_key -------------------------------------------------------------------------------
 
 
-def test_the_rating_key_tells_hosts_apart_for_a_hosted_provider_only() -> None:
-    def key(provider: str, host: str) -> str:
-        return vision.rating_key("m", "gaming", [1.0, 2.0], provider=provider, host=host)
+def _rating_key(provider: str, host: str) -> str:
+    return vision.rating_key("m", "gaming", [1.0, 2.0], provider=provider, host=host)
 
-    assert key("openai", "a.example:1") != key("openai", "b.example:1")
-    assert key("openai", "a.example:1") != key("openai", "")
-    assert key("ollama", "a.example:1") == key("ollama", "") == key("", "")
+
+def test_the_rating_key_tells_hosts_apart() -> None:
+    assert _rating_key("openai", "a.example:1") != _rating_key("openai", "b.example:1")
+    assert _rating_key("openai", "a.example:1") != _rating_key("openai", "")
+    # Ollama too (#673); without a host it keeps the old key
+    assert _rating_key("ollama", "127.0.0.1:11434") != _rating_key("ollama", "10.0.0.5:11434")
+    assert _rating_key("ollama", "10.0.0.5:11434") != _rating_key("ollama", "10.0.0.5:11435")
+    assert _rating_key("ollama", "") == _rating_key("", "")
+
+
+def test_hosted_rating_keys_are_unchanged() -> None:
+    # Pinned: a change here drops every user's cached hosted ratings (#621)
+    assert _rating_key("openai", "a.example:1") == "89335c0665@1.000,2.000"
+    assert _rating_key("openai", "") == "4b4446f1ba@1.000,2.000"
 
 
 # -- VisionRater ------------------------------------------------------------------------------
@@ -265,10 +275,19 @@ def test_with_consent_a_remote_ollama_is_used(home, monkeypatch) -> None:
     assert rater.available()
 
 
-def test_the_rating_cache_of_ollama_ignores_the_host(home) -> None:
+def test_the_rating_cache_of_ollama_keys_on_the_host(home, monkeypatch) -> None:
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
     here = vision.VisionRater(url="http://127.0.0.1:11434", model="m")
     there = vision.VisionRater(url=REMOTE, model="m")
-    assert here.host == there.host == ""
+    port = vision.VisionRater(url="http://10.0.0.5:11435", model="m")
+    assert (here.host, there.host, port.host) == (
+        "127.0.0.1:11434",
+        "10.0.0.5:11434",
+        "10.0.0.5:11435",
+    )
+    # the default URL: the same host on every run, so the same key
+    default = vision.VisionRater(model="m")
+    assert default.host == vision.VisionRater(model="m").host == "127.0.0.1:11434"
 
 
 # -- the steps that use the rater -------------------------------------------------------------
@@ -677,7 +696,7 @@ def test_the_events_descriptions_of_an_ollama_are_keyed_on_its_host(
     assert model("http://10.0.0.5:11435") != remote  # another port is another server
 
 
-def test_the_pano_frame_key_tells_hosts_apart_for_a_hosted_provider_only() -> None:
+def test_the_pano_frame_key_tells_hosts_apart() -> None:
     path = {"keys": [{"t": 0.0, "yaw": 0, "pitch": 0, "fov": 90}]}
 
     def key(provider: str, host: str) -> str:
@@ -686,12 +705,22 @@ def test_the_pano_frame_key_tells_hosts_apart_for_a_hosted_provider_only() -> No
     assert key("openai", "a.example:1") != key("openai", "b.example:1")
     assert key("openai", "a.example:1") != key("openai", "")
     assert key("openai", "") == vlcheck.frame_key(path, 1.0, "m", provider="openai")
-    assert key("ollama", "a.example:1") == key("ollama", "") == key("", "")
-    assert key("", "") == vlcheck.frame_key(path, 1.0, "m")  # Ollama keys unchanged
+    # hosted keys are unchanged (#621)
+    assert key("openai", "a.example:1") == "2|m|openai@a.example:1|h|1.00|0|0|90"
+    # Ollama keys on its host too (#673), in the same format
+    assert key("ollama", "127.0.0.1:11434") == "2|m|ollama@127.0.0.1:11434|h|1.00|0|0|90"
+    assert key("ollama", "127.0.0.1:11434") != key("ollama", "10.0.0.5:11434")
+    assert key("ollama", "10.0.0.5:11434") != key("ollama", "10.0.0.5:11435")
+    assert key("ollama", "") == key("", "") == vlcheck.frame_key(path, 1.0, "m")
+    with_wording = vlcheck.frame_key(path, 1.0, "m", provider="ollama", wording="ab", host="h:1")
+    assert with_wording == "2|m|ollama@h:1|wab|h|1.00|0|0|90"
 
 
-def test_the_vl_checker_keys_on_the_rater_host(home) -> None:
-    assert vlcheck.VLChecker(url=REMOTE, model="m").host == ""  # Ollama: no host
+def test_the_vl_checker_keys_on_the_rater_host(home, monkeypatch) -> None:
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    assert vlcheck.VLChecker(url=REMOTE, model="m").host == "10.0.0.5:11434"
+    assert vlcheck.VLChecker(url="http://127.0.0.1:11434", model="m").host == "127.0.0.1:11434"
+    assert vlcheck.VLChecker(model="m").host == vlcheck.VLChecker(model="m").host
 
 
 # -- the settings view ------------------------------------------------------------------------

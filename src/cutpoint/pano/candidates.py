@@ -53,7 +53,11 @@ Diagnostics (:func:`diagnostics`; shares of the segment, sampled at :data:`DIAG_
     flags            stable codes, see FLAGS
 
 Angles are the director's display frame (horizon-levelled from the IMU, see
-:mod:`cutpoint.pano.director`). Flag thresholds are **provisional** (set from first
+:mod:`cutpoint.pano.director`), except the yaw measures (``peak_yaw_rate``, ``yaw_travel``,
+``net_turns``) of an upright clip given its orientation track: its display frame turns with
+the camera's heading, so they are measured in the world, as the viewer sees the turning.
+``spin`` scales its travel guards with segments shorter than ``SPIN_WINDOW_S`` (down to
+``SPIN_SHORT_MIN_DEG``). Flag thresholds are **provisional** (set from first
 principles; to be tuned on a project with known-bad director cuts); :func:`path_flags`
 applies the current ones, so the read API reflects a change without re-planning. The flag
 codes are a stable API: :data:`FLAGS`.
@@ -84,8 +88,8 @@ from cutpoint.pano import geometry as G
 logger = logging.getLogger(__name__)
 
 CACHE_DIR = "pano_candidates"
-CACHE_VERSION = 2  # bump when the file layout, the key or the diagnostics change
-# (2: yaw_travel_per_min, net_turns)
+CACHE_VERSION = 3  # bump when the file layout, the key or the diagnostics change
+# (2: yaw_travel_per_min, net_turns; 3: upright clips' yaw measures in the world)
 DIAG_FPS = 10.0  # path samples per second for the shares
 RATE_FPS = 30.0  # ... for the yaw rate (as qa.pan_metrics)
 
@@ -102,6 +106,9 @@ SPIN_MIN_TRAVEL_DEG = 360.0  # ... with at least a full turn of travel in the se
 # few seconds of one deliberate pan is over the rate, but no spinning camera) ...
 SPIN_TRAVEL_MIN_TURNS = 0.5  # ... and at least this many net turns (half a turn one way in a
 # window): gentle sweeps back and forth travel far but go nowhere
+SPIN_SHORT_MIN_DEG = 120.0  # segments shorter than SPIN_WINDOW_S: both travel guards scale
+# with the segment's length, but never below this (a third of a turn: one quick deliberate
+# 90 deg pan is no spin, a short moment turning 120 deg or more one way is; #547)
 CUTS_MAX_PER_MIN = 6.0  # flag ``cuts`` above this many hard cuts per minute ...
 CUTS_MIN = 2  # ... and from this many cuts on (one cut in a short span is no cut-heavy path)
 WEARER_MAX_SHARE = 0.25  # flag ``wearer`` above this share with the wearer in frame
@@ -438,6 +445,10 @@ def diagnostics(
         wearer = _share(_in_frame(d, yaw, pitch, fov, size) & ~_selfie(path, times))
     rt = start + np.arange(0.0, max(dur, 1.0 / RATE_FPS), 1.0 / RATE_FPS)
     ry, _, _ = D.evaluate(path, rt)
+    if orient is not None and orient.forward_axis == G.axis_name(G.LENS_V):
+        # upright: the display frame turns with the camera's heading, so the view's turning
+        # is measured in the world (what the viewer sees; display yaw = world yaw + heading)
+        ry = ry - np.interp(rt, orient.t, orient.heading_smooth)
     seg = D.shot_index(path, rt)
     step = np.where(seg[1:] == seg[:-1], np.diff(ry), 0.0)  # yaw change within shots
     rate = np.abs(step[seg[1:] == seg[:-1]]) * RATE_FPS
@@ -489,11 +500,13 @@ def path_flags(diag: dict[str, Any]) -> list[str]:
     if over("peak_yaw_rate", WHIP_DEG_S):
         out.append("whip")
     turns = num("net_turns")
+    # a short segment cannot travel a full turn below 60 deg/s: its guards scale with it
+    scale = min(1.0, (num("seconds") or SPIN_WINDOW_S) / SPIN_WINDOW_S)
     if (turns is not None and turns >= SPIN_TURNS) or (
         over("yaw_travel_per_min", SPIN_TRAVEL_DEG_MIN)
-        and (num("yaw_travel") or 0.0) >= SPIN_MIN_TRAVEL_DEG
+        and (num("yaw_travel") or 0.0) >= max(SPIN_SHORT_MIN_DEG, SPIN_MIN_TRAVEL_DEG * scale)
         and turns is not None
-        and turns >= SPIN_TRAVEL_MIN_TURNS
+        and turns >= round(max(SPIN_SHORT_MIN_DEG / 360.0, SPIN_TRAVEL_MIN_TURNS * scale), 2)
     ):
         out.append("spin")
     if over("cuts_per_min", CUTS_MAX_PER_MIN) and over("cuts", CUTS_MIN - 1):

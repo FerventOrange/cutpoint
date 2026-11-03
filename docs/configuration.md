@@ -338,7 +338,7 @@ Settings for the optional 360 module. Every key is optional.
 | `max_follow_deg` | Largest camera lean, in degrees from the clip's average attitude, that the view follows when `level_strength` is below 1. A larger lean (a fall, the camera being handled) is followed as this much. Default 30 |
 | `imu_offset_s` | Time offset in seconds between the motion sensor and the video, if a clip's correction looks early or late. Default 0 |
 | `equirect_yaw_offset` | Degrees added to the director's yaw for Studio exports whose yaw 0 is not the camera's forward direction. Default 0 |
-| `director` | `DirectorParams` overrides for `cutpoint 360 director`, for example `{"max_speed": 35, "min_hold_s": 3.0}`. `--param KEY=VALUE` overrides them. Unknown keys and bad values are errors. `edge_rule` (`include_exclude`, the default, or `legacy`) chooses how people at the frame edge are fixed; its tuning keys are `w_shift`, `w_widen`, `include_margin`, `include_max_shift`, `include_min_subject_h`, `include_bridge_s`, `exclude_clear_deg`, `near_min_h_deg`, `near_min_score`, `near_box_scale`, `cut_min_gain_s` and `cut_min_gap_s`. See [360 director](workflows/360-director.md#director) |
+| `director` | `DirectorParams` overrides for `cutpoint 360 director`, for example `{"max_speed": 35, "min_hold_s": 3.0}`. `--param KEY=VALUE` overrides them. Unknown keys and bad values are errors. `edge_rule` (`include_exclude`, the default, or `legacy`) chooses how people at the frame edge are fixed; its tuning keys are `w_shift`, `w_widen`, `include_margin`, `include_max_shift`, `include_min_subject_h`, `include_bridge_s`, `exclude_clear_deg`, `near_min_h_deg`, `near_min_score`, `near_box_scale`, `cut_min_gain_s` and `cut_min_gap_s`. `upright_hold_s` (default 30 s; 0 follows the camera, as the legacy preset does) sets how slowly the view of a handheld or pole-mounted clip follows the camera's heading. See [360 director](workflows/360-director.md#director) |
 
 ## Styles
 
@@ -403,8 +403,10 @@ treats a screen that holds still as a menu (hangar and crew screens show as litt
 HUD): a 32x18 grey thumbnail of the HUD area within 3 grey levels of the first frame, more than 2 s
 from any feed sighting or kill, for at least 5 s when new menu text shows (at least 2 text lines
 that are no preset phrase, first read in the still stretch or up to 2 s before it, each on screen
-for at least half of it) and at least 10 s otherwise, so
-still gameplay (scoped, about 6 s) keeps its banners; it runs only when the bounding box of the
+for at least half of it); without new menu text it needs at least 10 s plus another menu frame
+(box, list or text screen) within 15 s, or at least 45 s of holding still, so still gameplay
+(respawn and spectator waits, a preparation phase, scoped moments of about 6 s) keeps its
+banners; it runs only when the bounding box of the
 preset's regions is at least a quarter of the frame. Feed sightings and kills are never dropped,
 by any menu test. A discovered kill feed takes in the rows above and below
 it that show only when the feed is full (up to twice its height), counted from its outermost

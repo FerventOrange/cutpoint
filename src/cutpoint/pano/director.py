@@ -33,6 +33,11 @@ person would still be cut by the frame edge (``edge_rule``: each near person is
 framed whole or kept out, see :func:`_include_exclude`); keys then carry ``subj``
 (yaw, pitch, width, height; path version 2).
 
+An upright clip (handheld, on a pole) has no travel direction: it is planned in a held
+frame that follows the camera's heading only slowly (``upright_hold_s``, see
+:func:`hold_offset`), so twisting or turning the camera does not swing or spin the view;
+its keys are display yaws as for any clip.
+
 The result is a JSON-able dict saved per clip (``<project>/pano_paths/*.json``)
 that the renderer reads, with a ``quality`` block: the geometric direction QA
 of the segment (:func:`cutpoint.pano.qa_paths.path_quality`). It is plain JSON on purpose: edit ``keys`` (time,
@@ -96,6 +101,9 @@ class DirectorParams:
     cut_cost: float = 1.6
     min_hold_s: float = 3.0
     smooth_s: float = 1.0
+    # upright (handheld / pole) clips: hold the view in the world, following the camera's
+    # heading only through a low-pass of this sigma (s); 0 follows it as on a mount (#547)
+    upright_hold_s: float = 30.0
     pitch_default: float = -8.0
     pitch_min: float = -32.0
     pitch_max: float = 5.0
@@ -185,6 +193,7 @@ class DirectorParams:
             cut_cost=1.6,
             min_hold_s=2.5,
             smooth_s=1.0,
+            upright_hold_s=0.0,
             pitch_default=-8.0,
             pitch_min=-25.0,
             pitch_max=5.0,
@@ -241,6 +250,7 @@ POSITIVE_PARAMS = (
     "near_box_scale",
 )
 NONNEG_PARAMS = (
+    "upright_hold_s",
     "w_shift",
     "w_widen",
     "include_margin",
@@ -436,6 +446,53 @@ def _limit(y: np.ndarray, dt: float, vmax: float, amax: float) -> np.ndarray:
     f = one(y)
     b = one(y[::-1])[::-1]
     return 0.5 * (f + b)
+
+
+def hold_offset(orient: G.Orientation, times: np.ndarray, p: DirectorParams) -> np.ndarray | None:
+    """Per time: display yaw of the held frame's yaw 0 (deg), or None when the view follows
+    the camera's heading (a mounted clip, or ``upright_hold_s`` 0).
+
+    An upright clip (handheld, on a pole: yaw 0 is the lens axis) has no travel direction:
+    the display frame follows the camera's heading smoothed over ``heading_smooth_s``, so
+    a camera twisted back and forth or turned around would swing or spin the view with it
+    (#547). The director plans such a clip in a held frame instead, whose yaw 0 follows the
+    heading low-passed over ``upright_hold_s`` (Gaussian sigma): display yaw = held yaw +
+    this offset (a world-fixed direction sits at display yaw = world yaw + heading).
+    """
+    if not p.upright_hold_s or orient.forward_axis != G.axis_name(G.LENS_V):
+        return None
+    h = np.asarray(orient.heading_smooth, float)
+    slow = G.gauss_smooth(h, max(1.0, p.upright_hold_s * float(orient.meta["fps"])))
+    return np.interp(times, orient.t, h - slow)
+
+
+def _held_bins(a: np.ndarray, shift: np.ndarray) -> np.ndarray:
+    """``(T, nb, ...)`` per-bin values of the display frame in the held frame: held bin
+    ``k`` of row ``i`` is display bin ``k + shift[i]``."""
+    nb = a.shape[1]
+    idx = (np.arange(nb)[None, :] + shift[:, None]) % nb
+    return a[np.arange(len(a))[:, None], idx]
+
+
+def _held_grid(sg: dict[str, Any], hold: np.ndarray, p: DirectorParams, pv: Any) -> dict[str, Any]:
+    """The score grid ``sg`` in the held frame (:func:`hold_offset` ``hold`` per step): the
+    scene's scores and the person pitch turn with the camera's heading, the forward bias
+    stays put (the holder's facing, slowly), the selfie score is the wearer's own."""
+    bw = 360.0 / p.n_bins
+    shift = np.round(hold / bw).astype(int)
+    fwd = p.w_forward * np.exp(
+        -0.5 * (G.wrap_deg(sg["centres"] - sg["forward_yaw"]) / p.forward_width_deg) ** 2
+    )
+    out = dict(sg)
+    out["yaw_score"] = _held_bins(sg["yaw_score"] - fwd[None, :], shift) + fwd[None, :]
+    for k in ("people", "person_pitch", "occlude", "wearer"):
+        out[k] = _held_bins(sg[k], shift)
+    if sg.get("subject") is not None and pv is not None and len(pv.t):
+        hf = np.interp(pv.t.astype(float), sg["times"], hold)
+        subj = _held_bins(sg["subject"].astype(float), np.round(hf / bw).astype(int))
+        subj[..., 0] -= hf[:, None]
+        out["subject"] = subj
+    return out
 
 
 NO_SELFIE = -1e3  # selfie score where the selfie is off or gated (never chosen)
@@ -960,6 +1017,7 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
     base_run = int(SAFE_MIN_S / p.dt) + 1
     cut_deg = SAFE_SPEED * p.max_speed * p.dt + 1e-6  # farther per step: a cut
     cut_after = ctx.setdefault("cut_after", set())  # steps a shot ends at: a cut follows
+    hold = ctx.get("hold")  # upright: display yaw = held yaw + hold (#547)
     memo: dict[tuple, list[float]] = {}
     rays: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
@@ -1168,7 +1226,10 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
 
     def is_cut(i: int) -> bool:
         """A cut between steps ``i`` and ``i + 1``."""
-        return i in cut_after or abs(float(G.wrap_deg(yaw[i + 1] - yaw[i]))) > cut_deg
+        if i in cut_after:
+            return True
+        dh = 0.0 if hold is None else float(hold[i + 1] - hold[i])  # the held step's own change
+        return abs(float(G.wrap_deg(yaw[i + 1] - yaw[i] - dh))) > cut_deg
 
     def held(i: int) -> list[np.ndarray]:
         """People step ``i``'s view is held over until a cut to step ``i + 1``: halfway
@@ -1427,11 +1488,14 @@ def _reframe(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorParams) -
             fov[a:b] = np.clip(
                 _limit(base_f + _gauss(df, sm / 2), p.dt, p.fov_rate, 2 * p.fov_rate), lo, hi
             )
-            yaw[a:b] = _limit(
-                base_y + _gauss(dy, sm / 2),
-                p.dt,
-                SAFE_SPEED * p.max_speed,
-                SAFE_SPEED * p.max_accel,
+            yaw[a:b] = _held(
+                ctx,
+                a,
+                b,
+                base_y,
+                lambda y, dy=dy: _limit(
+                    y + _gauss(dy, sm / 2), p.dt, SAFE_SPEED * p.max_speed, SAFE_SPEED * p.max_accel
+                ),
             )
 
         _keep_if_better(ctx, chk, a, b, apply)
@@ -1611,11 +1675,14 @@ def _include_exclude(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorP
         def apply(dy: np.ndarray = dy) -> None:
             f = _limit(base_f + _gauss(df, sm / 2), p.dt, p.fov_rate, 2 * p.fov_rate)
             fov[a:b] = np.clip(f, lo, top)
-            yaw[a:b] = _limit(
-                base_y + _gauss(dy, sm / 2),
-                p.dt,
-                SAFE_SPEED * p.max_speed,
-                SAFE_SPEED * p.max_accel,
+            yaw[a:b] = _held(
+                ctx,
+                a,
+                b,
+                base_y,
+                lambda y, dy=dy: _limit(
+                    y + _gauss(dy, sm / 2), p.dt, SAFE_SPEED * p.max_speed, SAFE_SPEED * p.max_accel
+                ),
             )
 
         if max(shifts) - min(shifts) > 1e-6:  # one shift held, not chasing each step's least
@@ -1646,16 +1713,27 @@ def _include_exclude(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorP
     return kept
 
 
+def _held(ctx: dict[str, Any], a: int, b: int, y: np.ndarray, fn: Any) -> np.ndarray:
+    """``fn`` (a smoothing / limit) of the display yaws ``y`` of steps ``[a, b)``, applied in
+    the held frame of an upright clip (``ctx["hold"]``, :func:`hold_offset`; #547)."""
+    hold = ctx.get("hold")
+    h = 0.0 if hold is None else hold[a:b]
+    return fn(y - h) + h
+
+
 def _relimit(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorParams) -> None:
     """Follow the subject without the dead zone, at :data:`SAFE_SPEED` x the limits."""
     sm = p.smooth_s / p.dt
 
     def apply() -> None:
-        ctx["yaw"][a:b] = _limit(
-            _gauss(ctx["raw_yaw"][a:b], sm / 2),
-            p.dt,
-            SAFE_SPEED * p.max_speed,
-            SAFE_SPEED * p.max_accel,
+        ctx["yaw"][a:b] = _held(
+            ctx,
+            a,
+            b,
+            ctx["raw_yaw"][a:b],
+            lambda y: _limit(
+                _gauss(y, sm / 2), p.dt, SAFE_SPEED * p.max_speed, SAFE_SPEED * p.max_accel
+            ),
         )
 
     _keep_if_better(ctx, chk, a, b, apply)
@@ -1666,10 +1744,14 @@ def _apply_away(ctx: dict[str, Any], c0: int, c1: int, ctr: float, p: DirectorPa
     yaw = ctx["yaw"]
     prev_yaw = yaw[c0 - 1] if c0 > 0 else ctr
     yaw[c0:c1] = prev_yaw + G.wrap_deg(ctr - prev_yaw)
+    h0 = 0.0
+    if (hold := ctx.get("hold")) is not None:  # upright: held in the held frame (#547)
+        h0 = float(hold[c0])
+        yaw[c0:c1] += hold[c0:c1] - h0
     ctx["pitch"][c0:c1] = p.pitch_default
     ctx["fov"][c0:c1] = ctx["fov_wide"]
     ctx["subj"][c0:c1] = np.nan
-    fwd = abs(G.wrap_deg(ctr - ctx["forward_yaw"])) <= 30
+    fwd = abs(G.wrap_deg(ctr - h0 - ctx["forward_yaw"])) <= 30  # forward_yaw: held frame
     ctx["target"][c0:c1] = ["forward" if fwd else "view"] * (c1 - c0)
 
 
@@ -1763,7 +1845,8 @@ def _cut_away(
             away &= np.abs(G.wrap_deg(cen - y)) > ctx["fov_wide"] / 2 + 10.0
         away &= ctx["people"][c0:c1].max(0) <= 0.3
         cands = [float(cen[k]) for k in np.flatnonzero(away)[np.argsort(-score[away])]]
-        best = _best_away(ctx, chk, c0, c1, cands or [float(ctx["forward_yaw"])], p)
+        h0 = 0.0 if ctx.get("hold") is None else float(ctx["hold"][c0])
+        best = _best_away(ctx, chk, c0, c1, cands or [float(ctx["forward_yaw"]) + h0], p)
         now = chk.n_bad(c0, c1 + 1)
         cuts = (c0 > a) + (c1 < pb and merged is None)  # cuts the cut-away adds
         if best[0] >= now or now[0] - best[0][0] < gain * max(1, cuts):
@@ -1967,10 +2050,14 @@ def compute_path(
     axis = wearer_axis(pv) if pv is not None else G.WEARER_V
     sg = score_grid(clip, t0, t1, p, pv, orient=orient, vertical=vertical)
     nb = p.n_bins
+    # upright: planned in the held frame (hold_offset); the keys get display yaws below
+    hold = hold_offset(orient, sg["times"], p)
+    hg = sg if hold is None else _held_grid(sg, hold, p, pv)
     # upright: ties break as in the views' -z frame (its bin k is bin k + n_bins / 2 here)
-    states = _viterbi(sg, p, roll=nb // 2 if orient.forward_axis == G.axis_name(G.LENS_V) else 0)
-    if grid is not None:
-        grid.update(sg, states=states.copy())
+    states = _viterbi(hg, p, roll=nb // 2 if orient.forward_axis == G.axis_name(G.LENS_V) else 0)
+    if grid is not None:  # display bins, as the grid's
+        shift = 0 if hold is None else np.round(hold / (360.0 / nb)).astype(int)
+        grid.update(sg, states=np.where(states < nb, (states + shift) % nb, states))
     times = sg["times"]
     subject_mode = p.framing == "subject"
     if subject_mode:  # shots measured within the segment; gated selfie steps stay out
@@ -1992,7 +2079,7 @@ def compute_path(
     subj = np.full((len(times), 4), np.nan)
     raw_yaw = np.zeros(len(times))
     if subject_mode:
-        subj = _track_subject(pv, sg.get("subject"), times, states, shots)
+        subj = _track_subject(pv, hg.get("subject"), times, states, shots)
     for a, b in shots:
         st = states[a:b]
         if st[0] == nb:  # selfie shot: follow the wearer (fixed in the camera)
@@ -2010,8 +2097,8 @@ def compute_path(
                 target[i] = "selfie"
             continue
         y = np.degrees(np.unwrap(np.radians(sg["centres"][st])))
-        pp = np.array([sg["person_pitch"][a + i, s] for i, s in enumerate(st)])
-        pe = np.array([sg["people"][a + i, s] for i, s in enumerate(st)])
+        pp = np.array([hg["person_pitch"][a + i, s] for i, s in enumerate(st)])
+        pe = np.array([hg["people"][a + i, s] for i, s in enumerate(st)])
         if subject_mode:
             yaw[a:b], pitch[a:b], fov[a:b] = _refine_shot(
                 y, subj[a:b], pe, pp, p, (ff, fw, lo, hi), size
@@ -2032,6 +2119,12 @@ def compute_path(
                 if abs(G.wrap_deg(sg["centres"][st[i - a]] - sg["forward_yaw"])) <= 30
                 else "view"
             )
+    off = None  # display yaw - held yaw per step (0 on selfie shots, which follow the wearer)
+    if hold is not None:  # held frame -> display
+        off = np.where(np.array(target) == "selfie", 0.0, hold)
+        yaw += off
+        raw_yaw += off
+        subj[:, 0] += off
     legacy_edges = p.edge_rule == "legacy"
     fixed = (t0, t1)
     if subject_mode and pv is not None:
@@ -2052,6 +2145,7 @@ def compute_path(
             "fov_lo": lo,
             "fov_wide": fw,
             "raw_yaw": raw_yaw,
+            "hold": off,
         }
         span = (int(np.searchsorted(times, start - 1e-6)), int(np.searchsorted(times, end + 1e-6)))
         if legacy_edges:  # the version 4 rule fixes the segment only
@@ -2121,7 +2215,7 @@ def compute_path(
     if pv is not None and len(pv.t):
         from cutpoint.pano.qa_paths import path_quality  # noqa: PLC0415
 
-        path["quality"] = path_quality(path, pv, start, end)
+        path["quality"] = path_quality(path, pv, start, end, orient=orient)
     return path
 
 

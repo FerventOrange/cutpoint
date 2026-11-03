@@ -91,6 +91,7 @@ from cutpoint.utils import clip_files
 
 if TYPE_CHECKING:
     from cutpoint.activity import Prompts
+    from cutpoint.pano import geometry as G
 
 logger = logging.getLogger(__name__)
 
@@ -363,10 +364,28 @@ def frame_flags(
 
 
 # --------------------------------------------------------------------------- path metrics
+def upright_orientation(path: dict[str, Any]) -> G.Orientation | None:
+    """The cached orientation track of an upright clip's path (``forward_axis`` the lens
+    axis), for :func:`pan_metrics`; None for a mounted clip or an uncached track."""
+    from cutpoint.pano import geometry as G  # noqa: PLC0415
+
+    if path.get("forward_axis") != G.axis_name(G.LENS_V) or not path.get("source"):
+        return None
+    return G.load_orientation(Path(path["source"]))
+
+
 def pan_metrics(
-    path: dict[str, Any], start: float, dur: float, fps: float = 30.0
+    path: dict[str, Any],
+    start: float,
+    dur: float,
+    fps: float = 30.0,
+    orient: G.Orientation | None = None,
 ) -> dict[str, Any]:
     """Pan speed / acceleration / jerk / FOV rate and cuts of ``[start, start + dur]``.
+
+    ``orient`` (the clip's orientation track): an upright clip's yaw is judged in the
+    world, as the viewer sees it, since its display frame turns with the camera's heading
+    and the director holds the view against it (:func:`cutpoint.pano.director.hold_offset`).
 
     Speed is the angular rate of the view direction (yaw scaled by cos pitch,
     plus pitch) at ``fps`` samples, with differences across hard cuts dropped;
@@ -374,10 +393,13 @@ def pan_metrics(
     (key interpolation can step the velocity at keys, which makes raw second
     differences impulsive).
     """
+    from cutpoint.pano import geometry as G  # noqa: PLC0415
     from cutpoint.pano.director import evaluate, shot_index  # noqa: PLC0415
 
     times = start + np.arange(0.0, max(dur, 1.0 / fps), 1.0 / fps)
     yaw, pitch, fov = evaluate(path, times)
+    if orient is not None and orient.forward_axis == G.axis_name(G.LENS_V):
+        yaw = yaw - np.interp(times, orient.t, orient.heading_smooth)
     seg = shot_index(path, times)
 
     def rate(a: np.ndarray, b: np.ndarray, scale: np.ndarray | None = None) -> np.ndarray:
@@ -994,7 +1016,11 @@ def qa_clip(
     from cutpoint.ffmpeg_utils import probe  # noqa: PLC0415
 
     dur = float(probe(item["video"]).duration)
-    pan = pan_metrics(item["path"], item["offset"], dur) if item["path"] else None
+    pan = (
+        pan_metrics(item["path"], item["offset"], dur, orient=upright_orientation(item["path"]))
+        if item["path"]
+        else None
+    )
     hor = None
     if item["path"] is not None:
         hor = horizon_summary(

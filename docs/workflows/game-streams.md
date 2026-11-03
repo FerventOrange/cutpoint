@@ -80,8 +80,10 @@ Menus with little text (hangar or crew screens) are found because they hold stil
 static screen when a small grey thumbnail of the HUD area stays nearly the same, with no feed
 sighting or kill within 2 s, for at least 5 s when new menu text shows (at least 2 text lines
 that are no preset phrase, first read in that stretch or just before it, each on screen for at
-least half of it; one gameplay notice is not enough) or 10 s without, so still gameplay (scoped,
-about 6 s) keeps its banners. Kills and other feed sightings are never dropped, even in a menu
+least half of it; one gameplay notice is not enough). Without new menu text the screen needs at
+least 10 s plus another menu frame (box, list or text screen) within 15 s, or must hold still
+for at least 45 s, so still gameplay (respawn and spectator waits, a preparation phase, scoped
+moments of about 6 s) keeps its banners. Kills and other feed sightings are never dropped, even in a menu
 frame. Menus that keep moving (lobbies, operator select, deploy maps, result screens with
 animated backgrounds) are found by their text: a frame is a text screen when at least 5 lines
 of new menu text are on screen at once, each staying 6 to 60 s, at least 3 of them first read
