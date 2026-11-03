@@ -503,6 +503,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   weights), the reactions step no longer reads it a second time for the voice layer and reports
   the failure once (one ERROR line, one `step_failed` warning); the voice layer is skipped with an
   INFO line, and voice grids already cached are kept (#629).
+- `analyze`: when the HUD OCR of the keyframes step fails (out of memory or any other error),
+  one WARNING and one `step_failed` warning (`files`: the sources not read) now say what is
+  skipped: "OCR failed (<reason>): menu filtering and HUD events (kill feed, banners, notices)
+  skipped for <file>" (and how many later sources; "in HUD region discovery ... no HUD preset
+  installed" when discovery failed, "for some games" when it had more than one to discover;
+  "for the sources not read yet" when the failure is outside discovery and the reads). Instead of an empty "Keyframes failed: " for a
+  `MemoryError`, out of memory is named, with "close other programs or pass --skip keyframes"
+  (and `CUTPOINT_ANALYZE_OVERLAP=0` when the OCR ran in the background). The sources read before
+  the failure keep their menu spans and HUD events. The exit code stays 0 (#555).
 
 ## [0.4.0] - 2026-10-29
 

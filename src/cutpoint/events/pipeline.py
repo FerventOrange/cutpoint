@@ -22,7 +22,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from cutpoint import cache, jsonout, progress
 from cutpoint import paths as cutpoint_paths
@@ -73,6 +73,39 @@ SKI_LAYERS = ("audio", "voice", "visual", "crash", "vlm")
 # per-source OCR takes the rest. Measured first runs: discovery was about 4 of 7 min of
 # OCR on a 7 min file and 7 of 14 min on two 10 min files.
 DISCOVERY_PCT = 50.0
+_FAILURE = "_cutpoint_ocr_failure"  # the attribute :func:`ocr_failure` reads
+
+
+class OcrFailure(NamedTuple):
+    """Where the OCR layer failed (:func:`ocr_failure`)."""
+
+    not_read: list[str]  # the paths of the sources it did not read, the failing one first
+    discovery: bool  # in HUD region discovery: it read none
+    background: bool  # the failing read ran in the background (:class:`OcrPrefetch`)
+    games: int  # discovery: the games it was to discover (0: not known yet)
+
+
+def _mark_ocr_failure(
+    err: BaseException,
+    not_read: list[Any],
+    *,
+    discovery: bool,
+    background: bool = False,
+    games: int = 0,
+) -> None:
+    """Note on ``err`` (re-raised unchanged) the sources the OCR layer did not read."""
+    paths = [str(s.path) for s in not_read]
+    setattr(err, _FAILURE, OcrFailure(paths, discovery, background, games))
+
+
+def ocr_failure(err: BaseException) -> OcrFailure | None:
+    """Where the OCR layer failed with ``err``: the sources it did not read (the one it
+    failed on first), whether it failed in HUD region discovery (then it read none, and no
+    preset was installed for at least one game), whether the failing read ran in the
+    background and how many games discovery was to discover. The sources read before keep
+    their events and menu spans. None: ``err`` did not come from the OCR layer's discovery
+    or per-source reads."""
+    return getattr(err, _FAILURE, None)
 
 
 def _require_events_extra(layers: tuple[str, ...]) -> None:
@@ -341,9 +374,14 @@ def run_events(
     with stage("ocr") if "ocr" in layers else contextlib.nullcontext():
         base = 0.0  # progress the per-source OCR starts at (after discovery)
         if "ocr" in layers and discover is not False:
-            stats["discovery"] = _discover(
-                project, sources, ocr, discover, discover_bursts, preset_scope
-            )
+            try:
+                stats["discovery"] = _discover(
+                    project, sources, ocr, discover, discover_bursts, preset_scope
+                )
+            except Exception as err:
+                if ocr_failure(err) is None:  # before _discover knew its games
+                    _mark_ocr_failure(err, sources, discovery=True)
+                raise
             timings["discovery_s"] = round(time.perf_counter() - t0, 1)
             if stats["discovery"]:
                 base = DISCOVERY_PCT
@@ -358,7 +396,8 @@ def run_events(
                 "or pass --player NAME.",
                 cutpoint_paths.config_file(),
             )
-        ocr_stats = {}
+        ocr_stats: dict[str, Any] = {}
+        stats["ocr"] = ocr_stats  # the sources read before a failure keep their menu spans
         with VramMonitor() as vm:
             ocr_sources = sources if "ocr" in layers or cached_ocr else []  # ski: no HUD
             shown = [base]  # the step's pct never goes back
@@ -380,29 +419,38 @@ def run_events(
                     )
                 on_progress = (lambda share, i=i: on_source(i + share)) if "ocr" in layers else None
                 got = None
-                if prefetch is not None:  # the background read of these exact inputs
-                    plain = "ocr" not in force and not ocr_debug and not bad.get(str(s.path))
-                    if "ocr" in layers and plain:
-                        got = prefetch.take(s, ocr, on_progress)
-                    else:
-                        prefetch.close()
-                    if got is None and prefetch.stuck:  # it outlived close(): not its engine
-                        prefetch.wait_for(s.path)  # nor the raw cache of the source it is on
-                        if make_engine is prefetch.make_engine:
-                            make_engine = functools.cache(OcrEngine)
-                evs, st = got or detect_ocr_events(
-                    s,
-                    ocr,
-                    None,
-                    force="ocr" in force,
-                    debug_dir=ocr_debug,
-                    avoid=bad.get(str(s.path)),
-                    on_progress=on_progress,
-                    make_engine=make_engine,
-                )
-                preset = load_preset(game_key_for_path(str(s.path), ocr.game, project), project)
-                link_teamkills(evs, generic_teamkills=bool(preset and preset.feed.get("teamkills")))
-                derive_streaks(evs)
+                background = False  # the failing read ran in the background
+                try:
+                    if prefetch is not None:  # the background read of these exact inputs
+                        plain = "ocr" not in force and not ocr_debug and not bad.get(str(s.path))
+                        if "ocr" in layers and plain:
+                            background = True
+                            got = prefetch.take(s, ocr, on_progress)
+                            background = False
+                        else:
+                            prefetch.close()
+                        if got is None and prefetch.stuck:  # it outlived close(): not its engine
+                            prefetch.wait_for(s.path)  # nor the raw cache of the source it is on
+                            if make_engine is prefetch.make_engine:
+                                make_engine = functools.cache(OcrEngine)
+                    evs, st = got or detect_ocr_events(
+                        s,
+                        ocr,
+                        None,
+                        force="ocr" in force,
+                        debug_dir=ocr_debug,
+                        avoid=bad.get(str(s.path)),
+                        on_progress=on_progress,
+                        make_engine=make_engine,
+                    )
+                    game = game_key_for_path(str(s.path), ocr.game, project)
+                    preset = load_preset(game, project)
+                    teamkills = bool(preset and preset.feed.get("teamkills"))
+                    link_teamkills(evs, generic_teamkills=teamkills)
+                    derive_streaks(evs)
+                except Exception as err:
+                    _mark_ocr_failure(err, ocr_sources[i:], discovery=False, background=background)
+                    raise
                 layer1[str(s.path)] += evs
                 ocr_stats[s.name] = st
         vram["ocr"] = vm.summary()
@@ -671,14 +719,18 @@ def _discover(
             regs = data.get("regions") if isinstance(data, dict) else None
             outside = sum(isinstance(r, dict) and r.get("origin") == "outside" for r in regs or [])
             covered = {"covered": existing.all_regions(), "outside": outside}
-        proposal = discover_regions(
-            srcs,
-            project / "discovery" / game,
-            game,
-            DiscoverParams(bursts=bursts),
-            on_frame=on_frame,
-            **covered,
-        )
+        try:
+            proposal = discover_regions(
+                srcs,
+                project / "discovery" / game,
+                game,
+                DiscoverParams(bursts=bursts),
+                on_frame=on_frame,
+                **covered,
+            )
+        except Exception as err:  # the games before it have their presets
+            _mark_ocr_failure(err, sources, discovery=True, games=len(todo))
+            raise
         rec: dict[str, Any] = {
             "proposal": str(project / "discovery" / game / "proposal.json"),
             "overlay": str(project / "discovery" / game / "overlay.jpg"),

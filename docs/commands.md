@@ -92,7 +92,7 @@ So do these combinations:
 | `pano_mixed_sources` | `clips` (so `edit`), `assemble <project>` | The run's 360 clips are not rendered like-for-like: stitched and dual fisheye sources mixed, or an equirect rendered without the IMU levelling (FlowState, no sidecar, Studio export); `files` names the 360 clips (empty for a temporary export: `assemble <project>`, `edit --no-keep-clips`). Export with `--pano-source dfisheye` to compare their `360 qa` with the previews (see [360 video](workflows/360.md#render-sources)) |
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
 | `loudness_below_target` | `assemble` (so `edit`) | `--loudnorm` left the final more than 1 LU below -14 LUFS: the limiter took the peaks the gain pushed over the ceiling; `--compress-peaks` leaves it more room |
-| `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it |
+| `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it. A failed HUD OCR (keyframes for `gaming` and `funny`) is a `WARNING` instead, whose message names the effect (menu filtering and HUD events skipped) and the source it failed on; `files` lists the sources it did not read. Out of memory says so, with what to try |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
 | `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
 | `content_qa_failed` | `mix` | The content checks of the mix failed |
@@ -779,7 +779,10 @@ OCR in the background removes them.
 
 Nothing new is required. Without the `events` extra or the model files, a step is skipped with an
 `INFO` line and nothing is downloaded; `cutpoint setup` and the extra add them. A step that fails
-logs an `ERROR`, adds a `step_failed` warning and the run continues without it. The VLM
+logs an `ERROR`, adds a `step_failed` warning and the run continues without it. A failed HUD
+OCR logs a `WARNING` instead, naming the sources left without menu filtering and HUD events
+(for out of memory: close other programs, set `CUTPOINT_ANALYZE_OVERLAP=0` or pass
+`--skip keyframes`); the sources read before it keep theirs. The VLM
 layer is not part of `analyze`; it stays in [`events`](#events) and `edit --events`.
 
 `analyze` also writes `events.json` and `events.txt` (and `crashes.json` for action footage).
