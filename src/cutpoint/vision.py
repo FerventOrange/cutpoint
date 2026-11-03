@@ -303,7 +303,8 @@ class VisionRater:
         message = (
             f"Ollama at {providers.host_port(self.url)} is not on this machine: allow vision "
             "requests to it in the Models tab of `cutpoint ui` (Vision role, Ollama with this "
-            f"URL) first; {skipping}"
+            f'URL), or add "{self.consent_needed}" to vision_assistant.consent in config.json; '
+            f"{skipping}"
         )
         if not self._consent_warned:
             self._consent_warned = True

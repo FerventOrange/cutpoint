@@ -1110,6 +1110,9 @@ NO_VISUAL_REASON = {
     SKIP_NO_EXTRA: "the events extra is not installed",
     SKIP_NO_CUDA: "no CUDA GPU for the keyframes step",
 }
+# How to avoid HUD discovery during analyze (no --game or --no-discover here), after "Put a
+# preset in <presets dir>" (run_events' discover_hint)
+DISCOVER_HINT = "or pass --skip keyframes to leave out the whole keyframes step"
 LAYER_STEP = {
     "audio": "reactions",
     "voice": "reactions",
@@ -1380,6 +1383,7 @@ def _run_layers(
                 cached_ocr=plan.game,
                 llm=llm,
                 prefetch=prefetch,
+                discover_hint=DISCOVER_HINT,
             )
     except Exception as err:
         if steps.current == "ranking":

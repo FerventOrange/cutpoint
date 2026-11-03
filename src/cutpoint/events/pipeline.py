@@ -73,6 +73,9 @@ SKI_LAYERS = ("audio", "voice", "visual", "crash", "vlm")
 # per-source OCR takes the rest. Measured first runs: discovery was about 4 of 7 min of
 # OCR on a 7 min file and 7 of 14 min on two 10 min files.
 DISCOVERY_PCT = 50.0
+# How to avoid HUD discovery, after "Put a preset in <presets dir>" (``cutpoint events``'
+# options; ``cutpoint analyze`` passes its own: :data:`cutpoint.analyze.DISCOVER_HINT`)
+EVENTS_DISCOVER_HINT = "and pass --game, or --no-discover to skip"
 
 
 def _require_events_extra(layers: tuple[str, ...]) -> None:
@@ -134,6 +137,7 @@ def run_events(
     encoder: Any = None,
     ollama_url: str | None = None,
     ollama_model: str | None = None,
+    discover_hint: str = EVENTS_DISCOVER_HINT,
 ) -> tuple[Path, Path]:
     """Run the event layers on every source of ``project``.
 
@@ -174,6 +178,9 @@ def run_events(
             or the crash layer does not run.
         ollama_url, ollama_model: Ollama base URL and vision model for the VLM layer
             (None: from config.json and the environment, as for ``analyze --vision``).
+        discover_hint: How to avoid discovery, after "Put a preset in <presets dir>" in the
+            INFO line before it runs (the caller's options: ``cutpoint analyze`` has no
+            ``--game`` or ``--no-discover``).
 
     Returns:
         Paths of events.json and events.txt.
@@ -333,7 +340,7 @@ def run_events(
         base = 0.0  # progress the per-source OCR starts at (after discovery)
         if "ocr" in layers and discover is not False:
             stats["discovery"] = _discover(
-                project, sources, ocr, discover, discover_bursts, preset_scope
+                project, sources, ocr, discover, discover_bursts, preset_scope, discover_hint
             )
             timings["discovery_s"] = round(time.perf_counter() - t0, 1)
             if stats["discovery"]:
@@ -614,7 +621,13 @@ def _auto_max_windows(layer1: dict[str, list[dict[str, Any]]]) -> int:
 
 
 def _discover(
-    project: Path, sources: list[Any], ocr: OcrParams, force: bool | None, bursts: int, scope: str
+    project: Path,
+    sources: list[Any],
+    ocr: OcrParams,
+    force: bool | None,
+    bursts: int,
+    scope: str,
+    hint: str = EVENTS_DISCOVER_HINT,
 ) -> dict[str, Any]:
     """Run region discovery per game where needed; install new presets.
 
@@ -641,10 +654,11 @@ def _discover(
             progress.update(detail=f"{first}discovering HUD regions")
             logger.info(
                 "No HUD preset matches %s; discovering regions as %r (a few minutes). "
-                "Put a preset in %s and pass --game, or --no-discover to skip",
+                "Put a preset in %s %s",
                 srcs[0].path,
                 game,
                 cutpoint_paths.presets_dir(),
+                hint,
             )
 
         def on_frame(done: int, total: int, gi: int = gi, first: str = first) -> None:

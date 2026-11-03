@@ -128,8 +128,14 @@ def test_a_remote_ollama_needs_consent_and_is_not_contacted(home, wire, caplog) 
         assert rater._rate_frames(Path("a.mp4"), [1.0], "gaming") is None
     assert wire == []
     assert caplog.text.count("not on this machine") == 1  # warned once
-    assert "10.0.0.5:11434" in caplog.text
     assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+    want = (
+        "Ollama at 10.0.0.5:11434 is not on this machine: allow vision requests to it in the "
+        "Models tab of `cutpoint ui` (Vision role, Ollama with this URL), or add "
+        f'"{KEY}" to vision_assistant.consent in config.json; skipping vision'
+    )
+    assert want in caplog.text
+    assert res.warnings[0]["message"] == want
 
 
 @pytest.mark.parametrize(
@@ -178,9 +184,10 @@ def test_analyze_vision_skips_a_remote_ollama_without_consent(
     with caplog.at_level(logging.WARNING), jsonout.run("analyze") as res:
         run.go(vision=True, ollama_url=REMOTE)
     state = last_states(progress_lines(capsys))["vision"]
-    assert state["state"] == "skipped" and "not on this machine" in state["detail"]
-    assert "not on this machine" in caplog.text
+    assert state["state"] == "skipped" and f'add "{KEY}" to' in state["detail"]
+    assert f'add "{KEY}" to vision_assistant.consent' in caplog.text
     assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+    assert KEY in res.warnings[0]["message"]
     assert wire == []
     assert (run.proj / "highlights.json").is_file()  # the run succeeds
 
@@ -196,8 +203,9 @@ def test_events_vlm_layer_skips_a_remote_ollama_without_consent(
     with caplog.at_level(logging.WARNING), jsonout.run("events") as res:
         data = _run_vlm(tmp_path, monkeypatch, ollama_url=REMOTE, ollama_model="qwen3.5:9b")
     assert not [e for e in data["events"] if e["kind"] == "vlm"]
-    assert "not on this machine" in caplog.text
-    assert "vision_consent_needed" in [w["code"] for w in res.warnings]
+    assert f'add "{KEY}" to vision_assistant.consent' in caplog.text
+    msgs = [w["message"] for w in res.warnings if w["code"] == "vision_consent_needed"]
+    assert len(msgs) == 1 and KEY in msgs[0]
     assert wire == []
 
 
@@ -226,6 +234,7 @@ def test_the_pano_vl_check_sends_no_frame_to_a_remote_ollama_without_consent(
     assert wire == []
     assert "not on this machine" in caplog.text
     assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+    assert KEY in res.warnings[0]["message"]
 
 
 # -- activity detection (profile --context, crashes, the crash step of analyze) ---------------
@@ -239,8 +248,10 @@ def test_activity_detection_sends_nothing_to_a_remote_ollama_without_consent(
         assert activity.default_ask() == (None, None)
     assert wire == []
     assert caplog.text.count("not on this machine") == 1
-    assert "activity detection goes on without the vision model" in caplog.text
+    tail = f'"{KEY}" to vision_assistant.consent in config.json; activity detection goes on'
+    assert f"{tail} without the vision model" in caplog.text
     assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+    assert KEY in res.warnings[0]["message"]
 
 
 def test_activity_detection_is_not_unlocked_by_the_assistant_consent(home, wire) -> None:
@@ -290,6 +301,7 @@ def test_resolve_falls_back_without_the_model_and_warns_once(
     assert caplog.text.count("not on this machine") == 1
     codes = [w["code"] for w in res.warnings]
     assert codes == ["vision_consent_needed", "context_not_applied"]
+    assert KEY in res.warnings[0]["message"]
 
 
 # -- the description and frame caches of hosted providers (#621) ------------------------------
