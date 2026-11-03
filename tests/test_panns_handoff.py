@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import types
 from pathlib import Path
 
@@ -28,7 +29,7 @@ def _source(tmp_path: Path, name: str) -> Source:
 def _cache_voice(src: Source) -> None:
     path = voice.cache_path(src, voice.VoiceParams())
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"")  # needs_run checks only that the file exists
+    path.write_bytes(b"")  # needs_run checks only that the file exists at the keyed path
 
 
 @pytest.fixture
@@ -173,6 +174,24 @@ def test_needs_run_checks_the_cache_files(tmp_path: Path):
     assert not voice.needs_run([a], params)
     assert voice.needs_run([a], params, force=True)
     assert voice.needs_run([a, b], params)
+
+
+def test_needs_run_reruns_a_changed_source(tmp_path: Path, monkeypatch):
+    """The cache path carries the source key (path, size, mtime): a changed source misses
+    the old grids (#661)."""
+    monkeypatch.setenv("CUTPOINT_CACHE_DIR", str(tmp_path / "cache"))
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x" * 10)
+    os.utime(video, ns=(1, 10**18))
+    params = voice.VoiceParams()
+    _cache_voice(common.load_source(video))
+    assert not voice.needs_run([common.load_source(video)], params)  # unchanged
+    os.utime(video, ns=(1, 2 * 10**18))
+    assert voice.needs_run([common.load_source(video)], params)  # mtime changed
+    _cache_voice(common.load_source(video))
+    video.write_bytes(b"y" * 20)
+    os.utime(video, ns=(1, 2 * 10**18))  # same mtime, new size
+    assert voice.needs_run([common.load_source(video)], params)
 
 
 def test_run_layer_leaves_a_given_detector_open(tmp_path: Path, monkeypatch):
