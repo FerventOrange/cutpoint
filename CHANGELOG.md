@@ -499,6 +499,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model no longer blocks for about 20 minutes before the generic profile is used (#608).
 - `events`: on a project's first run the contact sheets now use the activity profile the
   crash layer chose instead of the ski captions (#609).
+- `analyze`: when the PANNs checkpoint cannot be loaded (missing, corrupt or refused as more than
+  weights), the reactions step no longer reads it a second time for the voice layer and reports
+  the failure once (one ERROR line, one `step_failed` warning); the voice layer is skipped with an
+  INFO line, and voice grids already cached are kept (#629).
 
 ## [0.4.0] - 2026-10-29
 
