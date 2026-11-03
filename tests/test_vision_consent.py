@@ -128,8 +128,14 @@ def test_a_remote_ollama_needs_consent_and_is_not_contacted(home, wire, caplog) 
         assert rater._rate_frames(Path("a.mp4"), [1.0], "gaming") is None
     assert wire == []
     assert caplog.text.count("not on this machine") == 1  # warned once
-    assert "10.0.0.5:11434" in caplog.text
     assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+    want = (
+        "Ollama at 10.0.0.5:11434 is not on this machine: allow vision requests to it in the "
+        "Models tab of `cutpoint ui` (Vision role, Ollama with this URL), or add "
+        f'"{KEY}" to vision_assistant.consent in config.json; skipping vision'
+    )
+    assert want in caplog.text
+    assert res.warnings[0]["message"] == want
 
 
 @pytest.mark.parametrize(
@@ -178,9 +184,10 @@ def test_analyze_vision_skips_a_remote_ollama_without_consent(
     with caplog.at_level(logging.WARNING), jsonout.run("analyze") as res:
         run.go(vision=True, ollama_url=REMOTE)
     state = last_states(progress_lines(capsys))["vision"]
-    assert state["state"] == "skipped" and "not on this machine" in state["detail"]
-    assert "not on this machine" in caplog.text
+    assert state["state"] == "skipped" and f'add "{KEY}" to' in state["detail"]
+    assert f'add "{KEY}" to vision_assistant.consent' in caplog.text
     assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+    assert KEY in res.warnings[0]["message"]
     assert wire == []
     assert (run.proj / "highlights.json").is_file()  # the run succeeds
 
@@ -196,8 +203,9 @@ def test_events_vlm_layer_skips_a_remote_ollama_without_consent(
     with caplog.at_level(logging.WARNING), jsonout.run("events") as res:
         data = _run_vlm(tmp_path, monkeypatch, ollama_url=REMOTE, ollama_model="qwen3.5:9b")
     assert not [e for e in data["events"] if e["kind"] == "vlm"]
-    assert "not on this machine" in caplog.text
-    assert "vision_consent_needed" in [w["code"] for w in res.warnings]
+    assert f'add "{KEY}" to vision_assistant.consent' in caplog.text
+    msgs = [w["message"] for w in res.warnings if w["code"] == "vision_consent_needed"]
+    assert len(msgs) == 1 and KEY in msgs[0]
     assert wire == []
 
 
@@ -226,6 +234,7 @@ def test_the_pano_vl_check_sends_no_frame_to_a_remote_ollama_without_consent(
     assert wire == []
     assert "not on this machine" in caplog.text
     assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+    assert KEY in res.warnings[0]["message"]
 
 
 # -- activity detection (profile --context, crashes, the crash step of analyze) ---------------
@@ -239,8 +248,10 @@ def test_activity_detection_sends_nothing_to_a_remote_ollama_without_consent(
         assert activity.default_ask() == (None, None)
     assert wire == []
     assert caplog.text.count("not on this machine") == 1
-    assert "activity detection goes on without the vision model" in caplog.text
+    tail = f'"{KEY}" to vision_assistant.consent in config.json; activity detection goes on'
+    assert f"{tail} without the vision model" in caplog.text
     assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+    assert KEY in res.warnings[0]["message"]
 
 
 def test_activity_detection_is_not_unlocked_by_the_assistant_consent(home, wire) -> None:
@@ -290,6 +301,209 @@ def test_resolve_falls_back_without_the_model_and_warns_once(
     assert caplog.text.count("not on this machine") == 1
     codes = [w["code"] for w in res.warnings]
     assert codes == ["vision_consent_needed", "context_not_applied"]
+    assert KEY in res.warnings[0]["message"]
+
+
+# -- a hosted Vision provider without consent --------------------------------------------------
+
+HOSTED_KEY = "vision-v2:openai@api.openai.com"
+HOSTED_WANT = (
+    "Vision provider openai (api.openai.com) needs your consent before frames are sent to it: "
+    "allow it in the Models tab of `cutpoint ui` (Vision role), or add "
+    f'"{HOSTED_KEY}" to vision_assistant.consent in config.json; skipping vision'
+)
+
+
+@pytest.fixture
+def hosted(home, wire, monkeypatch) -> list[str]:
+    """The Vision role on OpenAI's API without its consent (the assistant's does not count);
+    any request, also through a session, fails the test."""
+    set_config(
+        home,
+        vision_assistant={"provider": "openai", "consent": ["assistant-v2:openai@api.openai.com"]},
+    )
+
+    def record(_self: Any, _method: str, url: str, *_a: Any, **_k: Any) -> Any:
+        wire.append(url)
+        raise AssertionError(f"a request went out to {url}")
+
+    monkeypatch.setattr(vision.requests.Session, "request", record)
+    return wire
+
+
+def test_a_hosted_provider_without_consent_warns_once_with_its_key(hosted, caplog) -> None:
+    rater = vision.VisionRater()
+    assert rater.via is not None and rater.consent_needed == HOSTED_KEY
+    with caplog.at_level(logging.INFO), jsonout.run("x") as res:
+        assert not rater.via._check()
+        assert not rater.via._check()
+        assert not rater.available()
+        assert rater.ask_json("q") is None
+        assert rater.describe("q", [b"\xff\xd8"], {}) is None
+        assert rater._rate_frames(Path("a.mp4"), [1.0], "gaming") is None
+        assert rater.warn_consent() == HOSTED_WANT
+    assert hosted == []
+    assert caplog.text.count("needs your consent") == 1  # warned once
+    assert HOSTED_WANT in caplog.text
+    assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+    assert res.warnings[0]["message"] == HOSTED_WANT
+
+
+@pytest.mark.parametrize("remote", [False, True], ids=["hosted", "remote-ollama"])
+def test_two_raters_in_one_run_warn_once(home, hosted, remote, caplog) -> None:
+    """edit --vision --events builds one rater for analyze and one for the VLM layer."""
+    make = (lambda: vision.VisionRater(url=REMOTE, model="m")) if remote else vision.VisionRater
+    if remote:
+        set_config(home, vision_assistant={"provider": "ollama"})
+    with caplog.at_level(logging.WARNING), jsonout.run("edit") as res:
+        first, second = make(), make()
+        assert first is not second and first.consent_needed and second.consent_needed
+        assert not first.available()
+        assert not second.available()
+        assert first.warn_consent() == second.warn_consent()
+    assert hosted == []
+    assert len(caplog.records) == 1
+    assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+
+
+def test_with_consent_a_hosted_provider_needs_none(home) -> None:
+    set_config(home, vision_assistant={"provider": "openai", "consent": [HOSTED_KEY]})
+    assert vision.VisionRater().consent_needed is None
+
+
+def test_analyze_vision_skips_a_hosted_provider_without_consent(
+    run,  # noqa: F811
+    hosted,
+    capsys,
+    caplog,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(analyze, "VisionRater", vision.VisionRater)  # the run fixture fakes it
+    with caplog.at_level(logging.WARNING), jsonout.run("analyze") as res:
+        run.go(vision=True)
+    state = last_states(progress_lines(capsys))["vision"]
+    assert state["state"] == "skipped" and state["detail"] == HOSTED_WANT
+    assert caplog.text.count("needs your consent") == 1
+    assert [w["message"] for w in res.warnings if w["code"] == "vision_consent_needed"] == [
+        HOSTED_WANT
+    ]
+    assert hosted == []
+    assert (run.proj / "highlights.json").is_file()  # the run succeeds
+
+
+def test_events_vlm_layer_skips_a_hosted_provider_without_consent(
+    extra_ok,  # noqa: F811
+    hosted,
+    tmp_path,
+    monkeypatch,
+    caplog,
+) -> None:
+    with caplog.at_level(logging.WARNING), jsonout.run("events") as res:
+        data = _run_vlm(tmp_path, monkeypatch)
+    assert not [e for e in data["events"] if e["kind"] == "vlm"]
+    assert caplog.text.count("needs your consent") == 1
+    msgs = [w["message"] for w in res.warnings if w["code"] == "vision_consent_needed"]
+    assert msgs == [HOSTED_WANT]
+    assert hosted == []
+
+
+@pytest.mark.parametrize("agreed", [False, True], ids=["no-consent", "consent"])
+def test_events_uses_no_cached_descriptions_without_consent(
+    extra_ok,  # noqa: F811
+    home,
+    agreed,
+    tmp_path,
+    monkeypatch,
+    caplog,
+) -> None:
+    """Descriptions cached by the local Ollama are keyed on the model only: an Ollama on
+    another machine without consent gets none of them (as analyze's ratings), with it all."""
+    fake = Ollama()
+    fake.replies = [REPLY]
+    monkeypatch.setattr(vision.requests, "get", fake.get)
+    monkeypatch.setattr(vision.requests, "post", fake.post)
+    first = _run_vlm(tmp_path, monkeypatch)
+    assert [e for e in first["events"] if e["kind"] == "vlm"] and first["windows"]
+
+    sent: list[str] = []
+
+    def record(url: str, *_a: Any, **_k: Any) -> Any:
+        sent.append(url)
+        raise AssertionError(f"a request went out to {url}")
+
+    monkeypatch.setattr(vision.requests, "get", record)
+    monkeypatch.setattr(vision.requests, "post", record)
+    set_config(home, vision_assistant={"provider": "ollama", "consent": [KEY] if agreed else []})
+    with caplog.at_level(logging.WARNING), jsonout.run("events") as res:
+        data = _run_vlm(tmp_path, monkeypatch, ollama_url=REMOTE)
+    assert sent == []
+    vlm_events = [e for e in data["events"] if e["kind"] == "vlm"]
+    msgs = [w["message"] for w in res.warnings if w["code"] == "vision_consent_needed"]
+    if agreed:
+        assert vlm_events == [e for e in first["events"] if e["kind"] == "vlm"]
+        assert data["windows"] == first["windows"] and msgs == []
+    else:
+        assert vlm_events == [] and data["windows"] == []
+        assert len(msgs) == 1 and KEY in msgs[0]
+        assert caplog.text.count("not on this machine") == 1
+        assert not [w for w in res.warnings if w["code"] == "vlm_unavailable"]
+
+
+def test_action_cam_reused_windows_warn_without_consent_and_no_vlm_layer(
+    extra_ok,  # noqa: F811
+    home,
+    tmp_path,
+    monkeypatch,
+    caplog,
+) -> None:
+    """An action-cam rerun reuses earlier described windows; without consent they go, and a
+    run without the VLM layer says so once, also when its new windows have no cache."""
+    monkeypatch.setattr(pipeline, "project_kind", lambda hl: pipeline.ACTION_CAM)
+    monkeypatch.setattr(pipeline, "_telemetry_layer", lambda *a: {})
+    fake = Ollama()
+    fake.replies = [REPLY]
+    monkeypatch.setattr(vision.requests, "get", fake.get)
+    monkeypatch.setattr(vision.requests, "post", fake.post)
+    first = _run_vlm(tmp_path, monkeypatch)
+    assert first["windows"]
+    src = str(tmp_path / "game.mp4")
+    later = {"id": "h002", "source": src, "start": 45.0, "end": 49.0, "score": 70}
+    monkeypatch.setattr(
+        pipeline,
+        "load_highlights",
+        lambda p: {"sources": [{"path": src}], "candidates": [later]},
+    )
+
+    sent: list[str] = []
+
+    def record(url: str, *_a: Any, **_k: Any) -> Any:
+        sent.append(url)
+        raise AssertionError(f"a request went out to {url}")
+
+    monkeypatch.setattr(vision.requests, "get", record)
+    monkeypatch.setattr(vision.requests, "post", record)
+    set_config(home, vision_assistant={"provider": "ollama"})
+    with caplog.at_level(logging.WARNING), jsonout.run("events") as res:
+        jpath, _ = pipeline.run_events(tmp_path / "proj", layers=(), ollama_url=REMOTE)
+    data = json.loads(Path(jpath).read_text(encoding="utf-8"))
+    assert sent == []
+    assert not [e for e in data["events"] if e["kind"] == "vlm"]
+    msgs = [w["message"] for w in res.warnings if w["code"] == "vision_consent_needed"]
+    assert len(msgs) == 1 and KEY in msgs[0]
+
+
+def test_the_pano_vl_check_sends_no_frame_to_a_hosted_provider_without_consent(
+    hosted, caplog
+) -> None:
+    chk = vlcheck.VLChecker()
+    with caplog.at_level(logging.WARNING), jsonout.run("360") as res:
+        assert chk.ask(b"jpeg") is None
+        assert chk.ask(b"jpeg") is None
+    assert chk.dead
+    assert hosted == []
+    assert caplog.text.count("needs your consent") == 1
+    assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+    assert HOSTED_KEY in res.warnings[0]["message"]
 
 
 # -- the description and frame caches of hosted providers (#621) ------------------------------

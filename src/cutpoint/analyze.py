@@ -1110,6 +1110,9 @@ NO_VISUAL_REASON = {
     SKIP_NO_EXTRA: "the events extra is not installed",
     SKIP_NO_CUDA: "no CUDA GPU for the keyframes step",
 }
+# How to avoid HUD discovery during analyze (no --game or --no-discover here), after "Put a
+# preset in <presets dir>" (run_events' discover_hint)
+DISCOVER_HINT = "or pass --skip keyframes to leave out the whole keyframes step"
 LAYER_STEP = {
     "audio": "reactions",
     "voice": "reactions",
@@ -1139,15 +1142,15 @@ class LayerPlan:
         return tuple(x for x in LAYER_STEP if any(x in v for v in self.layers.values()))
 
 
-def has_telemetry(src: Path) -> bool:
+def has_telemetry(src: Path, timeout: float = 60) -> bool:
     """Whether ``src`` carries camera telemetry (a GoPro GPMF track or an Insta360 X3 IMU
-    trailer); only the container's stream list is read."""
+    trailer); only the container's stream list is read, within ``timeout`` seconds."""
     from cutpoint.insta360 import imu_source  # noqa: PLC0415
 
     try:
         if imu_source(src) is not None:
             return True
-        info = ffprobe_json(remap_source(src), entries="stream=codec_tag_string", timeout=60)
+        info = ffprobe_json(remap_source(src), entries="stream=codec_tag_string", timeout=timeout)
     except (OSError, FFmpegError):
         return False
     return any(s.get("codec_tag_string") == "gpmd" for s in info.get("streams") or [])
@@ -1380,6 +1383,7 @@ def _run_layers(
                 cached_ocr=plan.game,
                 llm=llm,
                 prefetch=prefetch,
+                discover_hint=DISCOVER_HINT,
             )
     except Exception as err:
         if steps.current == "ranking":
@@ -1844,8 +1848,8 @@ def _analyze(
                 **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
             )
         ).consent_needed:
-            # an Ollama on another machine the user did not agree to: no request, no cached
-            # ratings either (this run may not send to it at all)
+            # a provider the user did not agree to (a hosted one, or an Ollama on another
+            # machine): no request, no cached ratings either
             steps.skip("vision", rater.warn_consent())
         else:
             # vision_top itself stays None (auto) in the saved settings, for reanalyze

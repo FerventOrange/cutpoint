@@ -179,6 +179,7 @@ def test_events_run_once_with_all_planned_layers_before_highlights_exist(run):
     ((project, layers, kw),) = run.events_calls
     assert project == run.proj and layers == ("audio", "ocr")
     assert kw["cached_ocr"] is False and kw["llm"] is False
+    assert kw["discover_hint"] == analyze.DISCOVER_HINT  # no --no-discover on analyze
     assert (run.proj / "events.json").is_file()
     hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
     assert hl["candidates"][0]["id"] == "h001"
