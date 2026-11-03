@@ -58,6 +58,7 @@ from cutpoint.events.vlm_windows import (
     cached_windows,
     describe_windows,
     game_prompt,
+    has_kills,
     select_windows,
     windows_to_events,
 )
@@ -439,8 +440,12 @@ def run_events(
         for s in sources
     }
     # Game prompt and event types (custom seeds) from each source's HUD preset; ski has none.
+    # The prompt asks about kills only for footage with kills (#596).
     presets = {} if ski else {src: load_preset(g, project) for src, g in games.items()}
-    prompts = {src: game_prompt(games[src], p) for src, p in presets.items()}
+    prompts = {
+        src: game_prompt(games[src], p, has_kills(p, layer1.get(src, [])))
+        for src, p in presets.items()
+    }
     seed_types = {src: types_for(p) for src, p in presets.items()}
     windows = select_windows(
         sources, hl.get("candidates", []), layer1, vlm, seed_types, quiet="vlm" not in layers
