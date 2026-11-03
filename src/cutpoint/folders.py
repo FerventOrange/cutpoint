@@ -130,18 +130,36 @@ def resume_path(dst: Path) -> Path:
 
 def _keep_for_resume(tmp: Path, dst: Path) -> bool:
     """Rename the staging folder ``tmp`` of ``dst`` to :func:`resume_path` if it holds a
-    :data:`RESUME_FILE` (an older resume folder is replaced); False if it holds none or
-    cannot be renamed (the caller removes it)."""
+    :data:`RESUME_FILE`; False if it holds none. An older resume folder is removed only once
+    ``tmp`` was renamed next to it, so a failure never loses finished clips.
+
+    Raises:
+        PermissionError: If ``tmp`` cannot be renamed (a file in it is still open) or the older
+            resume folder cannot be removed; ``tmp`` is left as it was.
+        OSError: For any other failure, the same way.
+    """
     if not (tmp / RESUME_FILE).is_file():
         return False
     keep = resume_path(dst)
+    new = keep.with_name(f"{keep.name}-new")
+    try:
+        if new.exists():  # a hard kill between the two renames below
+            _remove_leftover(new, f"left over from keeping the finished clips of {dst}")
+        cache.retry_locked(partial(tmp.replace, new), new, "rename")
+    except OSError as err:
+        what = PermissionError if isinstance(err, PermissionError) else OSError
+        raise what(
+            f"Cannot keep the finished clips of an interrupted export into {dst} ({tmp}): "
+            f"{err.strerror or err}. Close any program using them and re-run."
+        ) from err
     try:
         if keep.exists():
             _remove_leftover(keep, f"the finished clips of an older interrupted export into {dst}")
-        cache.retry_locked(partial(tmp.replace, keep), keep, "rename")
-    except OSError as err:
-        logger.warning("Could not keep the finished clips in %s (%s)", keep, err)
-        return False
+        cache.retry_locked(partial(new.replace, keep), keep, "rename")
+    except OSError:
+        with suppress(OSError):  # back where the next run's recover_swap looks for it
+            new.replace(tmp)
+        raise
     logger.info(
         "Kept the finished clips in %s; the next run with the same clips takes them over", keep
     )
@@ -254,7 +272,8 @@ def recover_swap(dst: Path) -> None:
     Raises:
         RuntimeError: If the journal is unreadable or malformed; the backup is left as is.
         PermissionError: If a leftover backup or staging folder cannot be removed (a file
-            in it is still open); the next swap could not start with it in place.
+            in it is still open); the next swap could not start with it in place. A staging
+            folder with finished clips that cannot be kept for resume is left as it is.
     """
     if not dst.resolve().name:  # a drive root: nothing is ever staged next to it
         return
@@ -282,7 +301,19 @@ def recover_swap(dst: Path) -> None:
                 )
             _restore(dst, bak, journal)
             logger.warning("Put back the original files of %s from an interrupted replace", dst)
+    keep = resume_path(dst)
+    new = keep.with_name(f"{keep.name}-new")  # a hard kill inside _keep_for_resume
+    if new.exists():  # the newer clips: they replace an older resume folder
+        try:
+            if keep.exists():
+                _remove_leftover(
+                    keep, f"the finished clips of an older interrupted export into {dst}"
+                )
+            cache.retry_locked(partial(new.replace, keep), keep, "rename")
+        except OSError as err:
+            logger.warning("Could not tidy up %s (%s); the next run tries again", new, err)
     tmp = staging_path(dst)
+    # finished clips are kept (raises, leaving them, if they cannot be); else it goes
     if tmp.exists() and not _keep_for_resume(tmp, dst):
         _remove_leftover(tmp, f"left over from an interrupted export into {dst}")
 
@@ -362,10 +393,16 @@ def staged_dir(dst: Path, *, direct_if_empty: bool = False, resume: bool = False
                 pass
             elif not (resume and (tmp / RESUME_FILE).is_file()):
                 shutil.rmtree(tmp)
-            elif not _keep_for_resume(tmp, dst):  # a file still locked right after Ctrl+C
-                logger.warning(
-                    "Kept the finished clips in %s; the next run into %s takes them over", tmp, dst
-                )
+            else:
+                try:
+                    _keep_for_resume(tmp, dst)
+                except OSError as err:  # a file still locked right after Ctrl+C
+                    logger.warning(
+                        "Kept the finished clips in %s (%s); the next run into %s takes them over",
+                        tmp,
+                        err,
+                        dst,
+                    )
         except OSError as err:
             logger.warning("Could not remove %s (%s); the next run removes it", tmp, err)
         raise

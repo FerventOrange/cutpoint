@@ -265,6 +265,7 @@ class Transcriber:
         self._want = self.device  # the device to load on; a VRAM shortage moves one load only
         self.explicit = model is not None  # --model: kept on the CPU too
         self.model_name = model or default_model(self.device)
+        self.default_name = self.model_name  # before any CPU fallback
         self.language = language
         self._model: Any = None
         self._warned_kept = False
@@ -413,10 +414,12 @@ class Transcriber:
 
 def cache_names(tr: Any) -> list[str]:
     """Transcript cache file names of the transcriber ``tr`` to look up, in order: its model's
-    and, for a :class:`Transcriber` without ``--model``, the CPU default's (a CPU fallback
-    ran it, :meth:`Transcriber._cpu_model`)."""
+    and, for a :class:`Transcriber` without ``--model``, its first default's (sources cached
+    before a CPU fallback) and the CPU default's (a CPU fallback ran it,
+    :meth:`Transcriber._cpu_model`)."""
     names = [transcript_name(tr.model_name, tr.language)]
     if getattr(tr, "explicit", True) is False:
+        names.append(transcript_name(tr.default_name, tr.language))
         names.append(transcript_name(default_model("cpu"), tr.language))
     return list(dict.fromkeys(names))
 

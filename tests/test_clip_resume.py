@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 from pathlib import Path
 
 import pytest
@@ -343,3 +344,72 @@ def test_the_key_changes_with_the_lut_file_and_the_version(tmp_path, monkeypatch
     second = key()
     monkeypatch.setattr(clipresume, "__version__", "0.0.0-other")
     assert key() != second
+
+
+def test_a_hard_kill_leftover_that_cannot_be_renamed_is_left_alone(home, monkeypatch):
+    """F9: recover_swap stops with an error and never deletes finished clips it cannot keep;
+    an older resume folder is removed only once the rename went ahead."""
+    project = _project(home)
+    _Encoder(monkeypatch, stop_at="003_c.mp4")
+    assert _clips(project) == 130
+    older = _resume_dir(project)
+    tmp = project / ".clips.cutpoint-tmp"
+    shutil.copytree(older, tmp)  # a hard kill of a later run, next to an older resume folder
+    real = Path.replace
+
+    def replace(self, target):
+        if self == tmp:
+            raise PermissionError(13, "locked")
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    with pytest.raises(PermissionError, match="Cannot keep the finished clips"):
+        folders.recover_swap(project / "clips")
+    assert sorted(p.name for p in tmp.iterdir()) == ["001_a.mp4", "002_b.mp4", "resume.json"]
+    assert older.is_dir()  # not removed before the rename
+    monkeypatch.setattr(Path, "replace", real)
+    folders.recover_swap(project / "clips")
+    assert not tmp.exists() and older.is_dir()
+
+
+@pytest.mark.parametrize("older", [False, True], ids=["alone", "over-an-older-one"])
+def test_recover_swap_promotes_a_resume_new_folder_of_a_hard_kill(home, monkeypatch, older):
+    """The newer clips of -new are kept; an older resume folder goes."""
+    project = _project(home)
+    _Encoder(monkeypatch, stop_at="003_c.mp4")
+    assert _clips(project) == 130
+    keep = _resume_dir(project)
+    new = keep.with_name(f"{keep.name}-new")
+    if older:
+        shutil.copytree(keep, new)
+        (keep / "001_a.mp4").write_bytes(b"older")
+    else:
+        keep.rename(new)
+    folders.recover_swap(project / "clips")
+    assert not new.exists()
+    assert sorted(p.name for p in keep.iterdir()) == ["001_a.mp4", "002_b.mp4", "resume.json"]
+    assert (keep / "001_a.mp4").read_bytes() == b"clip 001_a.mp4 0.00"  # the newer one
+    second = _Encoder(monkeypatch)
+    assert _clips(project) == 0
+    assert second.encoded == ["003_c.mp4", "004_d.mp4"]
+
+
+def test_a_resume_new_folder_that_cannot_be_promoted_leaves_both(home, monkeypatch, caplog):
+    project = _project(home)
+    _Encoder(monkeypatch, stop_at="003_c.mp4")
+    assert _clips(project) == 130
+    keep = _resume_dir(project)
+    new = keep.with_name(f"{keep.name}-new")
+    shutil.copytree(keep, new)
+    real = shutil.rmtree
+
+    def rmtree(path, *a, **kw):
+        if Path(path) == keep:
+            raise PermissionError(13, "locked")
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(shutil, "rmtree", rmtree)
+    with caplog.at_level(logging.WARNING):
+        folders.recover_swap(project / "clips")
+    assert keep.is_dir() and new.is_dir()
+    assert "Could not tidy up" in caplog.text

@@ -469,3 +469,29 @@ def test_a_cpu_fallback_transcript_is_found_by_the_next_run(mem, monkeypatch, tm
     assert analyze._cached_transcripts([tmp_path / "a.wav"], later) == 1
     explicit = _transcriber(monkeypatch, "medium")
     assert analyze._cached_transcripts([tmp_path / "a.wav"], explicit) == 0
+
+
+def test_after_a_fallback_a_cached_medium_transcript_is_still_used(mem, monkeypatch, tmp_path):
+    """Review F10: a CPU fallback mid-run (small) still finds the medium transcripts."""
+    from cutpoint import analyze, transcribe  # noqa: PLC0415
+
+    runs = []
+
+    def run(self, wav, on_progress=None):
+        self._load()
+        runs.append(wav.name)
+        return [{"start": 0.0, "end": 1.0, "text": wav.name}]
+
+    monkeypatch.setattr(transcribe.Transcriber, "_run", run)
+    first, second = tmp_path / "one", tmp_path / "two"
+    first.mkdir()
+    second.mkdir()
+    (second / "transcript-medium.json").write_text(
+        '[{"start": 0.0, "end": 1.0, "text": "cached"}]', encoding="utf-8"
+    )
+    mem.vram = 0.1
+    tr = _transcriber(monkeypatch, None)
+    analyze._transcript(tmp_path / "a.wav", first, tr)
+    assert tr.model_name == "small" and runs == ["a.wav"]
+    assert analyze._transcript(tmp_path / "b.wav", second, tr)[0]["text"] == "cached"
+    assert runs == ["a.wav"]
