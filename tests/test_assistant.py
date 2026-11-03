@@ -179,7 +179,7 @@ def test_ollama_streams_native_chat_with_tools_format_and_num_ctx(monkeypatch) -
 
     monkeypatch.setattr(providers.requests, "post", post)
     p = providers.OllamaProvider("http://h:1/", "qwen3.5:9b", 8192)
-    assert p.capabilities() == Capabilities(True, True)
+    assert p.capabilities() == Capabilities(True, True, False)
     msgs = [{"role": "user", "content": "hi"}]
     reply = p.chat(msgs, tools=session.TOOLS)
     assert reply.tool_calls == [ToolCall("get_moment", {"id": "m2"})]

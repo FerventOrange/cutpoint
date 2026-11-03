@@ -808,6 +808,9 @@ body.tips-off .flag-tip { display: none; }
 .msg.bad { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }
 .msg.pending { flex-direction: row; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .msg.previewing { border-color: var(--amber-text); }
+/* view_moment without frame consent (#640): an allow box in the turn, like the consent box */
+.msg.frames-consent { border-color: var(--amber-text); }
+.msg.frames-consent .msg-title { font-weight: 650; }
 .msg-meta { color: var(--muted); font-size: 12.5px; }
 .msg-acts { display: flex; flex-wrap: wrap; gap: 6px; }
 .msg-acts .btn { white-space: normal; text-align: left; }

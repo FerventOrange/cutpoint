@@ -38,8 +38,9 @@ Trust boundaries:
   409 naming the file and the error; session, pick and settings keep working.
 * The assistant (``/api/projects/<id>/assistant/...``) takes the token header only, never
   ``?t=``. It only proposes sequence changes, which the page applies to its working sequence; it
-  writes only ``ui/assistant/chat.json`` and ``ui/assistant/history.json``, never
-  ``review.json``, and runs no commands. Project text (labels, transcripts, file names, never
+  writes only ``ui/assistant/chat.json``, ``ui/assistant/history.json`` and the cached timeline
+  sheets in ``ui/assistant/sheets``, never ``review.json``, and runs no commands (frame grabs
+  aside). Project text (labels, transcripts, file names, never
   paths) reaches the model only inside marked data blocks. Its GET routes only read.
 * A hosted assistant provider (any whose host is not this machine) gets no project text until
   the user agrees once for it (``POST /api/assistant/consent``, an ``assistant-v2:`` key kept in
@@ -47,6 +48,11 @@ Trust boundaries:
   and without a key. The Vision role's hosted provider has its own consent (``role: vision``, a
   ``vision-v2:`` key): agreeing for one role never covers the other, and an unprefixed key from an
   older version covers neither.
+  Video frames (``view_moment``, :mod:`cutpoint.assistant.watch`) go to a hosted chat provider
+  only once the user allowed that provider and host for that project
+  (``POST /api/projects/<id>/assistant/frames-consent``, a ``frames-v1:`` key kept per project
+  folder in ``assistant.frames_consent`` of ``config.json``); a provider on this machine needs
+  none. The sheets are cached in ``ui/assistant/sheets``.
   API keys come from the environment or the system keyring (``POST /api/assistant/key``,
   ``.../key/clear``); no route returns one, only where it comes from. ``cutpoint ui`` takes the
   key variables out of its environment at startup, jobs get an environment without them, and
@@ -97,6 +103,7 @@ from cutpoint.assistant import ops as ai_ops
 from cutpoint.assistant import providers as ai_providers
 from cutpoint.assistant import session as ai_session
 from cutpoint.assistant import store as ai_store
+from cutpoint.assistant import watch as ai_watch
 from cutpoint.backends import ollama_url
 from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import (
@@ -4914,9 +4921,56 @@ def create_app(port: int) -> FastAPI:
         return {
             "provider": ai_providers.describe(provider),
             "consent": consent_view(provider),
+            "frames": frames_state(p, provider),
             "turns": ai_store.turns(p),
             "running": running,
         }
+
+    def frames_state(p: Path, provider: ai_providers.Provider) -> dict[str, Any]:
+        """Whether video frames of ``p`` may go to ``provider`` (:func:`ai_watch.frames_view`);
+        an unreadable config.json allows none."""
+        try:
+            data = load_config_data()
+        except ValueError:
+            data = {}
+        return ai_watch.frames_view(provider, p, data)
+
+    def frames_given(p: Path) -> tuple[str, ...]:
+        try:
+            return ai_watch.frames_consent(load_config_data(), p)
+        except ValueError:  # config.json became unreadable: no frames go out
+            return ()
+
+    @owned.post("/projects/{pid}/assistant/frames-consent")
+    def give_frames_consent(pid: str, body: dict[str, Any]):
+        """Allow video frames of this project to go to the assistant's provider, named by its
+        ``key`` (``frames-v1:<name>@<host>``), kept in ``assistant.frames_consent`` of
+        ``config.json`` under the project folder; 409 when the provider in use is another one
+        by now or is on this machine, or the user has not agreed to the assistant itself."""
+        p = project_dir(pid)
+        provider = assistant_provider()
+        want = ai_watch.frames_key(provider)
+        if want is None or body.get("key") != want:
+            raise bad("the assistant's provider changed: check it and allow again", 409)
+        if consent_view(provider)["needed"]:
+            raise bad(f"agree first to use {provider.host} in AI Chat", 409)
+        data = config_data()
+        raw = data.get("assistant")
+        section = dict(raw) if isinstance(raw, dict) else {}
+        given = section.get("frames_consent", {})
+        if not isinstance(given, dict):
+            raise bad("assistant.frames_consent in config.json must be an object", 409)
+        where = ai_watch.project_key(p)
+        keys_now = list(ai_watch.frames_consent(data, p))
+        if want not in keys_now:
+            frames = {**given, where: [*keys_now, want]}
+            try:
+                set_config_values({"assistant": {**section, "frames_consent": frames}})
+            except ValueError as err:
+                raise bad(str(err), 409) from err
+            except OSError as err:
+                raise bad(f"could not save the consent: {err.strerror or err}", 500) from err
+        return {"frames": frames_state(p, provider)}
 
     @owned.post("/projects/{pid}/assistant/turns")
     def start_turn(pid: str, body: dict[str, Any]):
@@ -4949,7 +5003,8 @@ def create_app(port: int) -> FastAPI:
         windows = ai_context.vlm_windows(_load(p, "events.json"))
         project = ai_session.Project(moments, segments, durations, transcript, key, windows)
         assistant_save(p, ai_store.CHAT)
-        turn = ai_session.Turn(provider, project, text.strip(), ai_store.turns(p))
+        viewer = ai_watch.Viewer(p, provider, resolve=remap_source, consent=lambda: frames_given(p))
+        turn = ai_session.Turn(provider, project, text.strip(), ai_store.turns(p), viewer=viewer)
         try:
             turns.start(str(p), turn, lambda t: ai_store.add_turn(p, t.record()))
         except ai_session.BusyError as err:

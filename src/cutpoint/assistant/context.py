@@ -414,7 +414,7 @@ def sequence_block(table: MomentTable) -> str:
     return data_block("sequence", _jsonl(rows) if rows else "(empty)")
 
 
-def seen_rules(table: MomentTable) -> str:
+def seen_rules(table: MomentTable, *, images: bool = False) -> str:
     """The rules' paragraph on what analysis saw, naming only the fields, cues and searches
     (:data:`RECIPES`) that the project's moments have."""
     looks = table.looks.values()
@@ -434,9 +434,8 @@ def seen_rules(table: MomentTable) -> str:
         )
     if not fields:
         return "Look moments up with find_moments before asking the user for moment ids."
-    out = [
-        f"What analysis saw of a moment (text and numbers; you never get images): {', '.join(fields)}."
-    ]
+    views = "view_moment shows frames of a moment" if images else "you never get images"
+    out = [f"What analysis saw of a moment (text and numbers; {views}): {', '.join(fields)}."]
     if have:
         names = [f"{k} ({CUE_HELP[k]})" if k in CUE_HELP else k for k in CUES if k in have]
         out.append(f"Cues: {', '.join(names)}.")
@@ -462,10 +461,10 @@ def seen_rules(table: MomentTable) -> str:
     return " ".join(out)
 
 
-def rules(table: MomentTable) -> str:
+def rules(table: MomentTable, *, images: bool = False) -> str:
     """:data:`RULES` with :func:`seen_rules` for ``table`` before the data paragraph."""
     at = RULES.index(_DATA_RULES)
-    return f"{RULES[:at]}{seen_rules(table)}\n\n{RULES[at:]}"
+    return f"{RULES[:at]}{seen_rules(table, images=images)}\n\n{RULES[at:]}"
 
 
 def build_messages(
@@ -475,6 +474,7 @@ def build_messages(
     plan: Budget,
     *,
     json_tools: list[str] | None = None,
+    images: bool = False,
 ) -> list[dict[str, Any]]:
     """The conversation for one new user message ``text``.
 
@@ -484,8 +484,11 @@ def build_messages(
         text: The user's message.
         plan: The size :func:`budget`.
         json_tools: Tool names, when the model answers in JSON mode instead of tool calls.
+        images: Whether view_moment is offered, so the rules say it shows frames.
     """
-    text_rules = rules(table) + (JSON_RULES + ", ".join(json_tools) + "." if json_tools else "")
+    text_rules = rules(table, images=images) + (
+        JSON_RULES + ", ".join(json_tools) + "." if json_tools else ""
+    )
     seq = sequence_block(table)
     room = plan.chars - len(text_rules) - len(text) - len(seq)
     history: list[dict[str, Any]] = []

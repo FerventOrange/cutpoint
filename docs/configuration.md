@@ -276,6 +276,13 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   This consent never covers the [Vision role](#vision_assistant), which has its own.
   Remove an entry to be asked again. A provider is local when its host is `localhost` or a
   loopback address; any other host, a LAN address too, is hosted.
+- `frames_consent`: the projects whose video frames AI Chat may send to a hosted provider
+  (`view_moment`, see [AI Chat](commands.md#ai-chat)): an object from a project folder to its
+  `frames-v1:<provider>@<host>` entries, for example
+  `{"D:\\Cutpoint\\projects\\dive": ["frames-v1:anthropic@api.anthropic.com"]}`; the allow box
+  in AI Chat adds them. Each watched moment sends one image of 6 to 9 frames from its clip with
+  their times, its transcript lines and detected sounds. Neither `consent` nor the Vision
+  consent covers it. A provider on this machine needs none. Remove an entry to be asked again.
 
 Other values are rejected.
 

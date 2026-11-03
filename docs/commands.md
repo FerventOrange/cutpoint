@@ -564,12 +564,36 @@ the Models tab, so "Allow vision requests" waits for a key saved there. The page
 
 A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on
 another machine counts too) is hosted: before the first message the tab asks once, per provider
-and host (with its port when that is not the default), to send the project's analysis results
-(moment labels, scores and detection signals, vision descriptions, transcript snippets, file names
-(not full paths) and times) and your messages, never video or
-audio. The answer is kept in `config.json` (`assistant.consent`, as
-`assistant-v2:<provider>@<host>`); it never covers the Vision role, which asks separately. Until
-then nothing is sent. A hosted reply is not streamed, so Cancel takes effect when it arrives.
+and host (with its port when that is not the default), to send the project's analysis results (moment labels, scores and detection signals, vision
+descriptions, transcript snippets, file names (not full paths) and times) and your messages, never video
+frames unless you allow them for a project (below), and never audio. The answer is kept in
+`config.json` (`assistant.consent`, as `assistant-v2:<provider>@<host>`); it never covers the
+Vision role, which asks separately. Until then nothing is sent. A hosted reply is not streamed,
+so Cancel takes effect when it arrives.
+
+**Watching a moment.** With a model that takes images, the assistant can look at a moment when
+the labels, transcripts and scores cannot answer (for example "show me the fish" or "which of
+these has the best view"); it is told never to watch every moment. Each watched moment sends one
+image, a timeline sheet: 6 frames spread across the clip (9 for a clip longer than 12 s), three
+per row, each stamped with its number and source time, about 1.5k image tokens on Claude, with
+the moment's transcript lines and the sounds heard in it (from `events.json`, such as laughter
+or a scream) as text. A message can watch at most 2 moments with a context of 8192 tokens or
+less (local models), 4 with a larger one; the steps show "Watched … (6 frames)". Sheets are
+cached in the project's `ui/assistant/sheets`, per moment, clip window and source file.
+
+- Which models: an Ollama model when Ollama lists `vision` for it (`qwen3.5:9b` does), every
+  Claude model, and any other model unless its name has `gpt-3.5`, `o1-mini`, `o3-mini`,
+  `grok-code`, `grok-build` or `codex`. Whether a model of another server (OpenRouter, LM
+  Studio, vLLM, a subscription) takes images is not known in advance: it is offered the tool,
+  and if its server refuses the image, the request is sent again without it and that model is
+  not offered the tool again until `cutpoint ui` restarts.
+- Consent: an Ollama on this machine (`localhost` or a loopback address) needs none. Any other
+  provider gets frames only once you allow that provider and host for that project. When the
+  model wants to watch without it, nothing is sent, the model is told to answer from the text,
+  and the chat shows a box: "Allow for this project", or "Allow and ask again", which also sends
+  your message again. The answer is kept in `config.json` (`assistant.frames_consent`, per
+  project folder, as `frames-v1:<provider>@<host>`); the AI Chat consent above is still needed,
+  and neither it nor the Vision consent covers frames. To take it back, remove the entry.
 
 Its header shows the model and provider (local, or the hosted host), with a note
 that a small local model can miss moments or misread a request. Type a request and press Enter
@@ -589,8 +613,8 @@ and `jump_air`). The instructions name only the cues the project has, and reques
 for them: action-cam footage with telemetry (`--style action-cam`), the `events` vision layer
 (window descriptions and tags) or visual-pool moments. Other styles have the vision rating
 label (with `--vision`), `loudness`, `laughter` and the laughter or screams heard, so the model
-finds their moments by those, the label and the transcript. Only these results are sent, never
-frames.
+finds their moments by those, the label and the transcript. Only these results are sent; video
+frames go only through view_moment (above), once allowed for the project.
 
 - Moments the model points to can be highlighted in the Moments list ("Highlight in list") or
   the list filtered by the model's search words (offered only when the list's search, which also
@@ -615,7 +639,13 @@ Nothing is applied without Apply. API: `GET /api/projects/<id>/assistant`, `POST
 `POST .../history/<change>/revert` (which returns a `revert-<change>` proposal with a `base_key`
 and writes nothing; applying it with another sequence or without that key is refused with 409).
 `GET .../assistant` also returns `consent` (`needed`, `key`, `host`, `missing_key`: how to add a missing API key or log in to a subscription, or null, and `missing_kind`: `"login"` for a subscription provider, `"key"` otherwise, null when nothing is missing); `POST .../turns` answers
-409 while `needed` is true. `POST /api/assistant/consent` with that `key` records the consent;
+409 while `needed` is true. `POST /api/assistant/consent` with that `key` records the consent.
+`GET .../assistant` also returns `frames` (`needed`, `key`: the `frames-v1:` key, null for a
+provider on this machine, `host`); `POST .../assistant/frames-consent` with that `key` allows
+frames of the project (409 when the provider changed, is on this machine, or the AI Chat
+consent is missing). A turn's events can include `frames_consent` (`id`, `key`, `host`) when the
+model asked to watch without it, and `tool` events named `view_moment` (`id`, `frames`,
+`cached`, or `error`: `limit` when the per-message limit was reached);
 `POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
 save or remove a keyring key for the host of the saved base URL and return only where each key
 comes from (`keys`) and the host it is for (`key_hosts`). `GET /api/assistant/models?provider=`

@@ -7826,16 +7826,18 @@ def test_the_ai_chat_tab_has_one_labelled_input_and_one_send_button() -> None:
 
 def test_the_consent_texts_name_what_each_role_sends() -> None:
     """The AI Chat consent names what context.py sends a hosted assistant (analysis results
-    only: no frames or audio, file names but not paths); the Vision consent names the frames,
-    transcript excerpts, file names and times, on-screen text and telemetry, and that this is
-    more data and more risk than the assistant."""
+    only: no audio, frames only once allowed for a project, file names but not paths); the
+    Vision consent names the frames, transcript excerpts, file names and times, on-screen text
+    and telemetry, and that this is more data and more risk than the assistant."""
     from cutpoint.assistant import context  # noqa: PLC0415
 
     sends = re.search(r'^const CONSENT_SENDS = "(.*)";$', _web("app.js"), re.M)[1]
     parts = ("labels", "scores", "signals", "vision descriptions", "transcript snippets")
     for part in (*parts, "file names", "times"):
         assert part in sends, part
-    assert "your messages" in sends and "never video or audio" in sends
+    assert "your messages" in sends and "never audio" in sends
+    # frames only under their own per-project consent (#640, view_moment)
+    assert "never video frames unless you allow them for a project" in sends
     cand = {
         "id": "h1",
         "source": "D:/Videos/clip.mp4",
