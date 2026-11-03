@@ -555,9 +555,12 @@ def _reusable(out_dir: Path) -> dict[str, tuple[str, dict[str, Any]]]:
 def _upright_views(clip: Any, seen: dict[str, bool]) -> bool:
     """Whether an upright clip's view layer is current (``seen`` caches it per clip). A path
     planned without it records no wearer model, so it is planned again once ``360 analyze``
-    has recomputed the views; a WARNING says so once per clip."""
+    has recomputed the views; a WARNING says so once per clip. A clip without an ``.lrv``
+    never gets a view layer (``360 analyze`` samples the proxy), so its paths are final."""
     from cutpoint.pano.views import load_views  # noqa: PLC0415
 
+    if not clip.lrv:
+        return True
     src = str(clip.source)
     if src not in seen:
         seen[src] = load_views(Path(src)) is not None

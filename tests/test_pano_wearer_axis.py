@@ -290,10 +290,12 @@ def test_director_without_views_places_the_wearer_from_the_track(tmp_path, monke
 
 
 # ------------------------------------------------------------------ director path reuse
-def _plan_twice(tmp_path, monkeypatch, axis: str, edit=None, views=True) -> tuple[int, dict]:
+def _plan_twice(
+    tmp_path, monkeypatch, axis: str, edit=None, views=True, lrv="x.lrv"
+) -> tuple[int, dict]:
     """Run ``360 director`` (no --force) twice on one segment of a clip whose forward axis is
     ``axis``; ``edit`` changes the saved path in between; ``views``: the clip's view layer is
-    current in the first run. Returns the plans of the second run and the path saved by the
+    current in the first run; ``lrv``: the clip's proxy. Returns the plans of the second run and the path saved by the
     first."""
     import argparse  # noqa: PLC0415
     from dataclasses import asdict  # noqa: PLC0415
@@ -303,7 +305,7 @@ def _plan_twice(tmp_path, monkeypatch, axis: str, edit=None, views=True) -> tupl
 
     proj = tmp_path / "proj"
     proj.mkdir(parents=True)
-    clip = SimpleNamespace(clip_id="001", lrv="x.lrv", source="x.lrv")
+    clip = SimpleNamespace(clip_id="001", lrv=lrv, source="x.lrv")
     seg = {"source": "x.lrv", "start": 1.0, "end": 4.0, "label": "a"}
     monkeypatch.setattr(PC, "_project", lambda arg: proj)
     monkeypatch.setattr(P, "load", lambda project: {"x.lrv": clip})
@@ -373,3 +375,12 @@ def test_upright_paths_planned_without_current_views_are_planned_again(
     assert "wearer_model" not in saved  # planned without the view layer: not final
     assert plans == 1
     assert sum("360 analyze" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_upright_paths_of_a_clip_without_a_proxy_stay_reused(tmp_path, monkeypatch, caplog):
+    """No ``.lrv``: ``360 analyze`` computes no view layer, so no warning and no re-plan."""
+    with caplog.at_level(logging.WARNING, logger="cutpoint"):
+        plans, saved = _plan_twice(tmp_path, monkeypatch, "+z", views=False, lrv=None)
+    assert saved["wearer_model"] == G.UPRIGHT_WEARER
+    assert plans == 0
+    assert not any("360 analyze" in r.getMessage() for r in caplog.records)
