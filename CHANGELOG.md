@@ -320,6 +320,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Action-cam vision prompts follow the activity profile (#7, #511): the `cutpoint events` VLM
+  window prompt and the `--vision` rating of action-cam projects no longer name skiing; their
+  wording comes from the new `vlm` section of the project's activity profile (`activity.json`).
+  The ski profile keeps the old ski text, `snowboard` has its own snowboarding text, and every
+  other profile uses the generic action-cam wording of `base.json`. A profile the local LLM
+  writes may reword it for the activity; values that are missing, invalid or too long use the
+  base text. The window tags (`jump_air`, `powder_spray`, `chairlift`, ...) keep their names in
+  `events.json`. One-time cost: the vision ratings of action-cam projects are made again
+  on the next run, and so are the VLM window descriptions of action-cam projects whose
+  profile is not `ski` (their cache keys changed). Ski projects keep their window
+  descriptions, because their prompt text is unchanged. Other styles keep both.
 - Browser workspace: uniform spacing (#534). Padding, margins, gaps and radii come from the `--space-*`
   and `--radius-*` scale, buttons and fields share `--control-h` (36 px, so the gear button is
   square), the three columns share a 16 px gutter and a symmetric padding, and the top bar, the

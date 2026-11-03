@@ -72,6 +72,7 @@ from cutpoint.utils import clock, find_videos, matches_glob, slugify
 from cutpoint.vision import VisionRater
 
 if TYPE_CHECKING:
+    from cutpoint.activity import Prompts
     from cutpoint.events.ocr_prefetch import OcrPrefetch
 
 logger = logging.getLogger(__name__)
@@ -135,9 +136,9 @@ class Candidate:
     transcript_unsure: list[tuple[int, float]] | None = None  # see _transcript_snippet
     score: float = 0.0
     label: str = ""
-    kind: str = ""  # ski: dominant feature of the clip (airtime, crash, speed, ...)
-    must_include: bool = False  # ski: confident crash (cutpoint clips always exports it)
-    event: dict[str, Any] | None = None  # ski: the crash behind a must-include clip
+    kind: str = ""  # action-cam: dominant feature of the clip (airtime, crash, speed, ...)
+    must_include: bool = False  # action-cam: confident crash (cutpoint clips always exports it)
+    event: dict[str, Any] | None = None  # action-cam: the crash behind a must-include clip
 
 
 # --------------------------------------------------------------------------- signals
@@ -1704,17 +1705,21 @@ def _rate_vision(
     rater: VisionRater,
     n_top: int,
     style: Style,
+    activity: Prompts | None = None,
 ) -> tuple[bool, int]:
     """Rate the first ``n_top`` candidates with Ollama and apply the rating to their
     analysis score (``score_pre_events`` once events rescored them) with
     :func:`vision_blend` and the style's ``vision_weight``; the model's label replaces a candidate's from
-    ``VISION_LABEL_MIN``. Returns ``(any rated, failures)``."""
+    ``VISION_LABEL_MIN``. ``activity`` words the action-cam prompt (the project's activity
+    prompt set). Returns ``(any rated, failures)``."""
     used, n_failed = False, 0
     top = cands[:n_top]
     try:
         for i, c in enumerate(top):
             progress.update(progress.fraction(i, len(top)))
-            res = rater.rate(remap_source(Path(c["source"])), c["start"], c["end"], style.base)
+            res = rater.rate(
+                remap_source(Path(c["source"])), c["start"], c["end"], style.base, activity=activity
+            )
             if res is None:
                 n_failed += 1
                 continue
@@ -2158,13 +2163,25 @@ def _analyze(
                 if vision_top is None
                 else vision_top
             )
+            # action-cam: worded for the project's activity.json (the default without one)
+            wording = None
+            if style.base == ACTION_CAM:
+                from cutpoint import activity  # noqa: PLC0415
+
+                wording = activity.project_prompts(out_dir)
             # available() first: it resolves a hosted provider's unset model, the cache key.
             # Offline, that model stays the placeholder and its cached ratings are not found.
             online, n_cached = rater.available(), 0
             if not online:  # Ollama down: the ratings already cached, no requests (#413)
                 rater.cache_only = True
                 n_cached = sum(
-                    rater.cached(remap_source(Path(c["source"])), c["start"], c["end"], style.base)
+                    rater.cached(
+                        remap_source(Path(c["source"])),
+                        c["start"],
+                        c["end"],
+                        style.base,
+                        activity=wording,
+                    )
                     is not None
                     for c in cands[:n_top]
                 )
@@ -2183,7 +2200,7 @@ def _analyze(
                     logger.info(
                         "Vision: rating top %d of %d candidates", min(n_top, len(cands)), len(cands)
                     )
-                    used, n_failed = _rate_vision(cands, rater, n_top, style)
+                    used, n_failed = _rate_vision(cands, rater, n_top, style, wording)
                     if ev:  # the blended analysis scores plus the event boosts again
                         rescore(hl, ev, out_dir)
                     timings["vision_s"] = round(time.perf_counter() - t0, 2)

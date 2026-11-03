@@ -29,7 +29,7 @@ import re
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from cutpoint import cache
 from cutpoint.config import source_path
@@ -40,6 +40,9 @@ from cutpoint.events.regions import HudPreset, is_installed_path, load_preset
 from cutpoint.ffmpeg_utils import grab_images
 from cutpoint.utils import clock
 from cutpoint.vision import VisionRater
+
+if TYPE_CHECKING:
+    from cutpoint.activity import Prompts
 
 logger = logging.getLogger(__name__)
 
@@ -90,9 +93,15 @@ RESPONSE_SCHEMA: dict[str, Any] = {
     "required": ["events", "summary", "funny_score", "highlight_score", "label"],
 }
 
-# Action-cam (``style_kind == "action-cam"``): per-window tag strengths for the ski scorer.
+# Action-cam (``style_kind == "action-cam"``): per-window tag strengths for the action-cam
+# scorer (cutpoint.ski). The tag keys are stored (events.json, the VLM cache) and read by
+# name, so they are the same for every activity; the profile's ``vlm`` section words them.
+# The wording comes from the project's activity profile. The ski profile's (the default) is
+# the text of 1 byte for byte, so ski windows keep this version and their cache entries
+# (the precedent of COMBAT_PROMPT_VERSION); any other wording adds its hash (``aw``) to the
+# key, so its windows are described again.
 ACTION_CAM_PROMPT_VERSION = 1
-SKI_TAGS = (
+ACTION_CAM_TAGS = (
     "jump_air",
     "landing",
     "crash_fall",
@@ -105,38 +114,65 @@ SKI_TAGS = (
     "standing_talking",
     "lodge",
 )
-RESPONSE_SCHEMA_SKI: dict[str, Any] = {
+RESPONSE_SCHEMA_ACTION_CAM: dict[str, Any] = {
     "type": "object",
     "properties": {
         **RESPONSE_SCHEMA["properties"],
         "tags": {
             "type": "object",
-            "properties": {t: {"type": "integer"} for t in SKI_TAGS},
-            "required": list(SKI_TAGS),
+            "properties": {t: {"type": "integer"} for t in ACTION_CAM_TAGS},
+            "required": list(ACTION_CAM_TAGS),
         },
     },
     "required": [*RESPONSE_SCHEMA["required"], "tags"],
 }
 # Move "tags" before the scores so the model looks before it rates.
-RESPONSE_SCHEMA_SKI["properties"] = {
-    k: RESPONSE_SCHEMA_SKI["properties"][k]
+RESPONSE_SCHEMA_ACTION_CAM["properties"] = {
+    k: RESPONSE_SCHEMA_ACTION_CAM["properties"][k]
     for k in ("events", "summary", "tags", "funny_score", "highlight_score", "label")
 }
-HYPE_SKI = (
-    "  hype: 0-1 standing around, riding a lift, indoors; 3-4 ordinary cruising; "
-    "6-7 fast riding, powder spray, tight trees, a small jump; 8-10 a big jump, "
-    "a crash or fall, a spectacular line, a near miss.\n"
-)
-SKI_TAG_HELP = (
-    "Tags (integers 0-10, how clearly each is present in this window; 0 = absent): "
-    "jump_air (the rider is airborne), landing, crash_fall (someone falls or crashes), "
-    "powder_spray (snow spraying from turns in deep snow), fast_groomer (fast riding "
-    "on a smooth groomed run), trees (riding between trees), scenic_vista (a wide "
-    "mountain view worth showing), friends_faces (other people clearly visible, "
-    "faces, interacting with the camera), chairlift (on a chairlift or gondola), "
-    "standing_talking (stopped, standing around or talking), lodge (indoors, lodge, "
-    "restaurant).\n"
-)
+
+
+@dataclass(frozen=True)
+class ActionCamWording:
+    """The activity wording of the action-cam window prompt: the profile's ``vlm`` strings
+    (:data:`cutpoint.activity.VLM_KEYS`) and tag descriptions, the floor's where it has none
+    (:attr:`cutpoint.activity.Prompts.vlm`). A tag without a description is listed bare."""
+
+    vlm: tuple[tuple[str, str], ...]
+    tags: tuple[tuple[str, str], ...]
+
+    def text(self, key: str) -> str:
+        return dict(self.vlm).get(key, "")
+
+    def tag_help(self) -> str:
+        """The tag rubric line."""
+        desc = dict(self.tags)
+        items = [f"{t} ({desc[t]})" if desc.get(t) else t for t in ACTION_CAM_TAGS]
+        return (
+            "Tags (integers 0-10, how clearly each is present in this window; 0 = absent): "
+            + ", ".join(items)
+            + ".\n"
+        )
+
+    def key(self) -> str:
+        """Cache-key part: empty for the default (ski) wording, else a short hash."""
+        if self == default_wording():
+            return ""
+        return cache.params_hash([self.vlm, self.tags], 8)
+
+
+def action_cam_wording(prompts: Prompts) -> ActionCamWording:
+    """The :class:`ActionCamWording` of an activity prompt set."""
+    return ActionCamWording(prompts.vlm, prompts.vlm_tags)
+
+
+def default_wording() -> ActionCamWording:
+    """The wording without a project profile: the default (ski) activity's."""
+    from cutpoint.activity import default_prompts  # noqa: PLC0415  (activity imports us)
+
+    return action_cam_wording(default_prompts())
+
 
 # The generic prompt has two variants: the combat one for footage with kills (OCR kill
 # events, or a preset with kill words) and a neutral one for every other game, so the
@@ -279,8 +315,10 @@ class VlmParams:
     transcript: bool = True
     hints: bool = True
     max_tokens: int = 700
-    ski: bool = False  # ski prompt + tags (set by the pipeline for ski projects)
-    max_fill_windows: int = 0  # ski: extra windows over stopped / lift footage
+    # action-cam prompt + tags in the project's activity wording (set by the pipeline for
+    # action-cam projects; None: the game prompt)
+    action_cam: ActionCamWording | None = None
+    max_fill_windows: int = 0  # action-cam: extra windows over stopped / lift footage
     # vision model that describes the windows, set by the pipeline
     # ("<provider>@<host>:<model>", "ollama@127.0.0.1:11434:qwen3.5:9b" for an Ollama)
     model: str = ""
@@ -291,14 +329,17 @@ class VlmParams:
         ``prompt`` is the generic version of the text in use: ``ACTION_CAM_BASE_PROMPT``
         for action-cam windows, ``COMBAT_PROMPT_VERSION`` for a combat ``prompt`` (the
         same key as before #596), else ``PROMPT_VERSION``. A ``prompt`` from a custom
-        project preset adds its hash as ``gp``.
+        project preset adds its hash as ``gp``; an action-cam wording other than the
+        default (ski) one adds its hash as ``aw``.
         """
-        if self.ski:
+        cam = self.action_cam
+        if cam is not None:
             version = ACTION_CAM_BASE_PROMPT
         elif prompt is not None and prompt.combat:
             version = COMBAT_PROMPT_VERSION
         else:
             version = PROMPT_VERSION
+        wording = cam.key() if cam is not None else ""
         return {
             "frames": self.frames,
             "h": FRAME_HEIGHT,
@@ -306,7 +347,8 @@ class VlmParams:
             "hints": self.hints,
             "prompt": version,
             "model": self.model,
-            **({"action_cam": ACTION_CAM_PROMPT_VERSION} if self.ski else {}),
+            **({"action_cam": ACTION_CAM_PROMPT_VERSION} if cam is not None else {}),
+            **({"aw": wording} if wording else {}),
             **({"gp": prompt.key()} if prompt and prompt.custom else {}),
         }
 
@@ -331,7 +373,7 @@ class Window:
 
 SEED_WEIGHTS = {"Laughter": 1.0, "Scream": 0.7, "Cheering": 0.6}
 TELEMETRY_SEEDS = {"crash": 2.0, "airtime": 1.0, "coverage": 0.25}
-# Stopped / lift footage (ski): described only where no other window exists, so
+# Stopped / lift footage (action-cam): described only where no other window exists, so
 # the mask exception (friends on the lift, banter at the top) can see it.
 GAP_FILL_TYPES = ("stopped/lift",)
 
@@ -393,7 +435,7 @@ def add_incremental(
 ) -> list[Window]:
     """``prev`` plus the windows of ``new`` that ``prev`` does not already cover.
 
-    Ski windows are seeded partly by highlights.json candidates, which change
+    Action-cam windows are seeded partly by highlights.json candidates, which change
     once VLM tags feed the scorer; reusing described windows keeps reruns
     cheap and only fills footage nobody has looked at yet.
     """
@@ -602,8 +644,8 @@ def build_messages(
     ``game`` is the window's :class:`GamePrompt`; None uses the generic (neutral)
     "video game" prompt.
     """
-    if params.ski:
-        return build_messages_ski(src, win, frames, params, transcript_lines, events)
+    if params.action_cam is not None:
+        return build_messages_action_cam(src, win, frames, params, transcript_lines, events)
     if game is None:
         game = game_prompt(None, None)
     dur = win.end - win.start
@@ -679,7 +721,7 @@ def _media_content(
     return content
 
 
-def build_messages_ski(
+def build_messages_action_cam(
     src: Source,
     win: Window,
     frames: list[bytes],
@@ -687,16 +729,17 @@ def build_messages_ski(
     transcript_lines: list[dict[str, Any]],
     events: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Ski/snowboard variant of :func:`build_messages` (adds the ``tags`` rubric)."""
+    """Action-cam variant of :func:`build_messages` (adds the ``tags`` rubric), worded for
+    the project's activity (``params.action_cam``)."""
+    w = params.action_cam or default_wording()
     dur = win.end - win.start
     content: list[dict[str, Any]] = [
         {
             "type": "text",
             "text": (
-                f"This is a {dur:.0f}-second window of a first-person GoPro skiing / snowboarding "
-                f"recording (helmet or chest mount), starting at {clock(win.start)} in "
-                f"{src.name}. The audio is the camera microphone: wind noise at speed, the "
-                f"rider and friends nearby. {len(frames)} frames follow, each labelled with "
+                f"This is a {dur:.0f}-second window of a {w.text('recording')}, starting at "
+                f"{clock(win.start)} in {src.name}. The audio is the camera microphone: "
+                f"{w.text('audio')}. {len(frames)} frames follow, each labelled with "
                 "seconds from the window start."
             ),
         }
@@ -706,19 +749,16 @@ def build_messages_ski(
         {
             "type": "text",
             "text": (
-                "Describe what actually happens in this window, in time order: the terrain "
-                "(groomed run, trees, powder, park), jumps (take-off, air, landing), falls, "
-                "friends on camera and what they do, lift rides, standing around or talking, "
-                "indoor scenes and views. Camera telemetry hints (accelerometer) are reliable "
+                "Describe what actually happens in this window, in time order: "
+                f"{w.text('describe')}. Camera telemetry hints (accelerometer) are reliable "
                 "for airtime and impacts. Listen for laughter, cheering and screams.\n"
-                + SKI_TAG_HELP
+                + w.tag_help()
                 + "Scoring rubric (integers 0-10):\n"
-                + HYPE_SKI
+                + f"  hype: {w.text('hype')}\n"
                 + "  funny: 0-1 nothing funny; 3-4 light banter; 6-7 a clear joke or people "
                 "laughing; 8-10 everyone laughing hard, a ridiculous fall.\n"
-                "  highlight_score: how much this window deserves a place in a ski highlight "
-                "edit (lifts, standing around and lodge scenes score low unless friends do "
-                "something funny).\n"
+                f"  highlight_score: how much this window deserves a place in a {w.text('edit')} "
+                f"({w.text('idle')} score low unless friends do something funny).\n"
                 "Event 't' is seconds from the window start. Reply with JSON only: "
                 '{"events": [{"t": number, "what": str, "funny": int, '
                 '"hype": int}], "summary": str, "tags": {<tag>: int, ...}, '
@@ -769,7 +809,7 @@ def parse_reply(text: str) -> dict[str, Any] | None:
         "label": label[:40],
     }
     if isinstance(data.get("tags"), dict):
-        out["tags"] = {t: score(data["tags"].get(t)) for t in SKI_TAGS}
+        out["tags"] = {t: score(data["tags"].get(t)) for t in ACTION_CAM_TAGS}
     return out
 
 
@@ -803,7 +843,7 @@ def _ask(
 ) -> tuple[str, dict[str, Any]]:
     """One request for a window: (reply text, usage). Raises :class:`VlmRequestError` when
     it fails."""
-    schema = RESPONSE_SCHEMA_SKI if params.ski else RESPONSE_SCHEMA
+    schema = RESPONSE_SCHEMA_ACTION_CAM if params.action_cam is not None else RESPONSE_SCHEMA
     prompt, images = vision_request(msgs)
     data = rater.describe(
         prompt,

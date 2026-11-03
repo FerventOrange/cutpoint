@@ -223,11 +223,13 @@ def test_vision_request_keeps_text_and_frames_in_order(tmp_path) -> None:
     assert prompt.rstrip().endswith('"label": "2-4 word slug"}')
 
 
-def _describe(tmp_path: Path, monkeypatch, rater: vision.VisionRater, ski: bool = False):
+def _describe(tmp_path: Path, monkeypatch, rater: vision.VisionRater, action_cam: bool = False):
     src = _source(tmp_path)
     monkeypatch.setattr(vw, "grab_frames", lambda *a, **k: list(JPEGS))
     win = vw.Window(str(src.path), 5.0, 20.0, 1.0, ["seed"])
-    params = vw.VlmParams(model="qwen3.5:9b", ski=ski)
+    params = vw.VlmParams(
+        model="qwen3.5:9b", action_cam=vw.default_wording() if action_cam else None
+    )
     results, stats = vw.describe_windows(rater, {str(src.path): src}, [win], params, {}, [], {})
     return src, params, results, stats
 
@@ -272,11 +274,13 @@ def test_describe_windows_log_shows_tokens_only_when_known(
     assert expected in line and absent not in line
 
 
-def test_describe_windows_ski_uses_the_ski_schema(ollama, tmp_path, monkeypatch) -> None:
-    tags = dict.fromkeys(vw.SKI_TAGS, 2) | {"jump_air": 8}
+def test_describe_windows_action_cam_uses_the_action_cam_schema(
+    ollama, tmp_path, monkeypatch
+) -> None:
+    tags = dict.fromkeys(vw.ACTION_CAM_TAGS, 2) | {"jump_air": 8}
     ollama.replies = [REPLY | {"tags": tags}]
-    _, _, (res,), _ = _describe(tmp_path, monkeypatch, vision.VisionRater(), ski=True)
-    assert ollama.chats[0]["format"] == vw.RESPONSE_SCHEMA_SKI
+    _, _, (res,), _ = _describe(tmp_path, monkeypatch, vision.VisionRater(), action_cam=True)
+    assert ollama.chats[0]["format"] == vw.RESPONSE_SCHEMA_ACTION_CAM
     assert res["tags"]["jump_air"] == 8
 
 

@@ -18,7 +18,7 @@ import requests
 
 import cutpoint.analyze
 from conftest import needs_ffmpeg
-from cutpoint import cache, cli, errors, vision
+from cutpoint import activity, cache, cli, errors, vision
 from cutpoint.styles import get_style
 
 
@@ -56,15 +56,45 @@ def _chat_prompts(posts: list[tuple[str, dict]]) -> list[str]:
     return [p["messages"][0]["content"] for u, p in posts if u.endswith("/api/chat")]
 
 
-def test_ski_retry_uses_the_ski_prompt(posts):
+# The action-cam rating prompt before the activity profile worded it: the ski profile gives
+# it with "ski highlight edit" for "ski edit" (the edit of the window prompt).
+OLD_SKI_PROMPT = (
+    "These are 3 frames, in order, from one short moment of a first-person skiing / "
+    "snowboarding video. Rate how highlight-worthy it is for a ski edit (0 = boring, "
+    "10 = must include). High: jumps, crashes, powder spray, fast riding, tight trees, "
+    "friends doing something funny, a stunning view. Low (0-2): riding a chairlift, "
+    "standing around, the lodge, the ground or the sky only. Respond with JSON only: "
+    '{"score": <0-10 number>, "label": "<2-4 word description>"}'
+)
+
+
+def test_action_cam_rating_is_worded_by_the_default_ski_profile(posts):
     res = vision.VisionRater(url="http://127.0.0.1:1", model="m").rate(
         Path("a.mp4"), 0, 4, "action-cam"
     )
     assert res == vision.VisionResult(7.0, "big jump")
     first, retry = _chat_prompts(posts)
-    assert first == vision._PROMPT_SKI.format(n=3, style="action-cam")
-    assert retry == vision._RETRY_PROMPT_SKI.format(n=3, style="action-cam")
-    assert "scoreboard" not in retry and "ski" in retry
+    assert first == OLD_SKI_PROMPT.replace("for a ski edit", "for a ski highlight edit")
+    assert retry.startswith("3 frames from a first-person skiing / snowboarding video moment.")
+    assert "ski highlight edit" in retry and "powder spray" in retry and "scoreboard" not in retry
+    assert "{" not in first.split("JSON")[0] and "{" not in retry.split("JSON")[0]
+
+
+def test_action_cam_rating_takes_the_projects_activity_wording(posts):
+    mtb = activity.prompts(activity.full(activity.builtin("mtb")))
+    vision.VisionRater(url="http://127.0.0.1:1", model="m").rate(
+        Path("a.mp4"), 0, 4, "action-cam", activity=mtb
+    )
+    first, retry = _chat_prompts(posts)
+    for text in (first, retry):  # mtb has no wording of its own: the base floor's
+        assert "first-person action-cam video" in text and "highlight edit" in text
+        assert "ski" not in text and "chairlift" not in text and "powder" not in text
+    ski = activity.default_prompts()
+    keys = {vision.rating_key("m", "action-cam", [1.0], activity=a) for a in (None, ski, mtb)}
+    assert len(keys) == 2  # None is the default (ski) wording; mtb rates apart
+    assert vision.rating_key("m", "gaming", [1.0], activity=mtb) == vision.rating_key(
+        "m", "gaming", [1.0]
+    )  # only the action-cam prompts are worded by the activity
 
 
 def test_other_styles_keep_the_default_prompts(posts):
@@ -157,7 +187,7 @@ class _ByStartRater:
     def __init__(self, ratings: dict[float, tuple[float, str]]) -> None:
         self.ratings = ratings
 
-    def rate(self, _src, start, _end, _style):
+    def rate(self, _src, start, _end, _style, activity=None):
         return vision.VisionResult(*self.ratings[start])
 
     def unload(self) -> None:
@@ -613,9 +643,13 @@ def test_only_the_qwen35_family_has_a_profile(model, profiled):
 def test_the_keys_of_models_without_a_profile_are_unchanged():
     """The profile joins the hash only for a profiled model, so qwen3-vl's cached ratings
     stay valid."""
-    # Pinned: a change here drops every user's cached qwen3-vl ratings.
+    # Pinned: a change here drops every user's cached qwen3-vl ratings (the action-cam retry
+    # prompt, worded by the activity profile since, re-keyed them once).
     times = vision._frame_times(0, 4, 3)
-    assert vision.rating_key("qwen3-vl:8b", "action-cam", times) == "08b2a0e48e@1.000,2.000,3.000"
+    assert vision.rating_key("qwen3-vl:8b", "action-cam", times) == "2e586c5fcf@1.000,2.000,3.000"
+    assert vision.rating_key("qwen3-vl:8b", "gaming", times) == (
+        "5c3d81f65e@1.000,2.000,3.000"  # other styles keep theirs
+    )
 
 
 def test_contact_sheet_tiles_the_frames_in_reading_order():

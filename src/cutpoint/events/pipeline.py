@@ -55,6 +55,7 @@ from cutpoint.events.report import normalize, write_outputs
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.events.vlm_windows import (
     VlmParams,
+    action_cam_wording,
     add_incremental,
     cached_windows,
     describe_windows,
@@ -230,7 +231,6 @@ def run_events(
         layers = SKI_LAYERS if ski else DEFAULT_LAYERS
     if cached_ocr is None:
         cached_ocr = not ski
-    vlm.ski = ski
     preflight(layers)
     rater = VisionRater(ollama_url, ollama_model)  # the shared vision client
     hosted = rater.provider_name != "ollama"
@@ -509,6 +509,8 @@ def run_events(
             logger.info("VLM: up to %d windows", vlm.max_windows)
 
     # ---- layer 2: VLM windows
+    # action-cam: worded for the activity.json the crash layer above may have just written
+    vlm.action_cam = action_cam_wording(project_prompts(project)) if ski else None
     if "vlm" in layers:
         free_torch()  # the CUDA memory torch still caches for the layers before
     t0 = time.perf_counter()

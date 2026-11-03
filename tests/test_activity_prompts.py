@@ -3,6 +3,7 @@ other activities get their own, lift detection is off without lift captions."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -221,6 +222,131 @@ def test_synthesized_profiles_take_the_floor_for_the_sections_the_llm_does_not_w
     new = {k: raw[k] for k in activity.SCHEMA_KEYS} | {"exclude_base": []}
     p = activity.prompts(activity.full(new))
     assert p.occluder == activity.prompts(activity.base()).occluder and not p.lift
+
+
+# ---------------------------------------------------------------- vlm wording (#7, #511)
+def test_vlm_wording_of_the_built_in_profiles():
+    floor = dict(activity.prompts(activity.base()).vlm)
+    assert set(floor) == set(activity.VLM_KEYS)  # the floor words every value
+    ski, board = (
+        dict(_ski().vlm),
+        dict(activity.prompts(activity.full(activity.builtin("snowboard"))).vlm),
+    )
+    assert (
+        ski["video"] == "first-person skiing / snowboarding video"
+        and ski["edit"] == "ski highlight edit"
+    )
+    assert (
+        board["video"] == "first-person snowboarding video"
+        and board["edit"] == "snowboard highlight edit"
+    )
+    for name in ("mtb", "generic", "surf", "hike", "moto", "skate"):  # no wording of their own
+        p = activity.prompts(activity.full(activity.builtin(name)))
+        assert dict(p.vlm) == floor and p.vlm_tags == activity.prompts(activity.base()).vlm_tags
+    tags = dict(_ski().vlm_tags)
+    assert "landing" not in tags and tags["chairlift"] == "on a chairlift or gondola"
+
+
+def test_vlm_wording_does_not_change_the_caption_key():
+    p = _ski()
+    assert dataclasses.replace(p, vlm=(), vlm_tags=()).key() == p.key()
+
+
+def test_invalid_or_too_long_vlm_values_fall_back_to_the_floor_one_by_one():
+    floor = activity.prompts(activity.base())
+    raw = {
+        "name": "x",
+        "vlm": {
+            "video": "  first-person   kayak video ",  # kept, on one line
+            "edit": "x" * (activity.MAX_VLM_CHARS + 1),  # over the cap: the floor's
+            "hype": 7,  # not a string: the floor's
+            "bogus": "an unknown key",
+            "tags": {"trees": "paddling past trees", "rapids": "a new tag", "lodge": ""},
+        },
+    }
+    prof = activity.validate(raw)
+    assert prof["vlm"] == {
+        "video": "first-person kayak video",
+        "tags": {"trees": "paddling past trees"},
+    }
+    p = activity.prompts(activity.full(prof))
+    vlm, tags = dict(p.vlm), dict(p.vlm_tags)
+    assert vlm["video"] == "first-person kayak video"
+    assert vlm["edit"] == dict(floor.vlm)["edit"] and vlm["hype"] == dict(floor.vlm)["hype"]
+    assert tags["trees"] == "paddling past trees" and tags["lodge"] == dict(floor.vlm_tags)["lodge"]
+    assert "rapids" not in tags and "bogus" not in vlm
+    # a hand-edited activity.json record is read the same way (not validated on load)
+    rec_prof = {**activity.full(activity.builtin("mtb")), "vlm": {"edit": 3, "video": "a"}}
+    p = activity.prompts(rec_prof)
+    assert dict(p.vlm)["edit"] == dict(floor.vlm)["edit"] and dict(p.vlm)["video"] == "a"
+
+
+def test_old_records_without_vlm_take_their_library_wording_else_the_floor(tmp_path):
+    ski = {k: v for k, v in activity.full(activity.builtin("ski")).items() if k != "vlm"}
+    _record(tmp_path, {"version": 1, "name": "ski", "source": "library", "profile": ski})
+    assert activity.project_prompts(tmp_path).vlm == _ski().vlm
+    # an LLM-written profile (since #588: every caption section) keeps its own captions
+    own = {**ski, "name": "kayak", "highlight": {"pos": ["a kayak in white water"], "neg": []}}
+    _record(tmp_path, {"version": 1, "name": "kayak", "source": "synthesized", "profile": own})
+    p = activity.project_prompts(tmp_path)
+    assert p.highlight_pos == ("a kayak in white water",)
+    assert p.vlm == activity.prompts(activity.base()).vlm
+
+
+def test_the_llm_flavours_the_base_vlm_wording_and_bad_values_fall_back(monkeypatch):
+    asked: list[tuple[str, dict | None]] = []
+    floor = activity.prompts(activity.base())
+    reply = {
+        "name": "kayak",
+        "description": "Whitewater kayaking.",
+        "detect": ["a kayak on a river"],
+        "incident": {"pos": ["a capsized kayak"], "neg": ["paddling"], "words": {"swim": 0.5}},
+        "highlight": {"pos": ["a big rapid"], "neg": []},
+        "low_info": [],
+        "vlm": {
+            "video": "first-person whitewater kayaking video",
+            "edit": "kayak edit",
+            "describe": "y" * 400,  # over the cap: the floor's
+            "rate_low": ["not", "a", "string"],  # invalid: the floor's
+            "tags": {"powder_spray": "white water spraying over the bow", "rapids": "new"},
+        },
+    }
+
+    def ask(prompt, imgs, schema):
+        asked.append((prompt, schema))
+        return reply
+
+    prof = activity.synthesize(
+        "whitewater kayaking", "my river trip", ask, [activity.builtin("mtb")]
+    )
+    assert prof is not None and len(asked) == 1
+    prompt, schema = asked[0]
+    assert json.dumps(activity.base()["vlm"]) in prompt  # the base wording to flavour
+    assert "vlm" in schema["properties"] and "vlm" not in schema["required"]  # optional
+    assert set(schema["properties"]["vlm"]["properties"]["tags"]["properties"]) == set(
+        activity.ACTION_CAM_TAGS
+    )  # the tag keys are fixed
+    p = activity.prompts(activity.full(prof))
+    vlm, tags = dict(p.vlm), dict(p.vlm_tags)
+    assert vlm["video"] == "first-person whitewater kayaking video" and vlm["edit"] == "kayak edit"
+    assert vlm["describe"] == dict(floor.vlm)["describe"]
+    assert vlm["rate_low"] == dict(floor.vlm)["rate_low"]
+    assert vlm["hype"] == dict(floor.vlm)["hype"]  # not written: the floor's
+    assert tags["powder_spray"] == "white water spraying over the bow" and "rapids" not in tags
+    assert tags["trees"] == dict(floor.vlm_tags)["trees"]
+
+
+def test_the_shorter_retry_asks_for_no_vlm_wording():
+    asked: list[tuple[str, dict | None]] = []
+
+    def ask(prompt, imgs, schema):
+        asked.append((prompt, schema))
+        return None  # unusable: the retry follows
+
+    assert activity.synthesize("kayaking", None, ask, []) is None
+    (first, s1), (retry, s2) = asked
+    assert "vlm" in s1["properties"] and "vlm (optional" in first
+    assert "vlm" not in s2["properties"] and "vlm (optional" not in retry
 
 
 def _fake_text(monkeypatch):

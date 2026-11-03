@@ -124,6 +124,29 @@
     "scenery": "the ground, water, sky and trees",
     "low_info": "only ground, water or sky"
   },
+  "vlm": {
+    "recording": "first-person action-cam recording (helmet, chest or handlebar mount)",
+    "video": "first-person action-cam video",
+    "audio": "wind noise at speed, the rider and friends nearby",
+    "describe": "the terrain, jumps (take-off, air, landing), falls, friends on camera and what they do, lift or shuttle rides, standing around or talking, indoor scenes and views",
+    "hype": "0-1 standing around, riding a lift, indoors; 3-4 ordinary cruising; 6-7 fast riding, spray from a hard turn, tight trees, a small jump; 8-10 a big jump, a crash or fall, a spectacular line, a near miss.",
+    "edit": "highlight edit",
+    "idle": "lifts, standing around and indoor scenes",
+    "rate_high": "jumps, crashes, spray from a hard turn, fast riding, tight trees, friends doing something funny, a stunning view",
+    "rate_low": "riding a lift, standing around, indoors, the ground or the sky only",
+    "tags": {
+      "jump_air": "the rider is airborne",
+      "crash_fall": "someone falls or crashes",
+      "powder_spray": "snow, dirt or water spraying from a hard turn",
+      "fast_groomer": "fast riding on smooth, open ground",
+      "trees": "riding between trees",
+      "scenic_vista": "a wide view worth showing",
+      "friends_faces": "other people clearly visible, faces, interacting with the camera",
+      "chairlift": "riding a lift, gondola or shuttle",
+      "standing_talking": "stopped, standing around or talking",
+      "lodge": "indoors, a building, a restaurant"
+    }
+  },
   "vocabulary": [
     "skiing", "snowboarding", "mountain biking", "road cycling", "BMX riding",
     "motocross", "dirt biking", "motorcycle riding on a road", "driving a car",

@@ -10,7 +10,7 @@ import math
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import requests
@@ -21,6 +21,9 @@ from cutpoint.config import get_config
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import grab_frame_jpeg
 from cutpoint.styles import ACTION_CAM
+
+if TYPE_CHECKING:
+    from cutpoint.activity import Prompts
 
 logger = logging.getLogger(__name__)
 
@@ -41,14 +44,15 @@ _PROMPT = (
     "loading screens, killcams and replays. Respond with JSON only: "
     '{{"score": <0-10 number>, "label": "<2-4 word description>"}}'
 )
-_PROMPT_SKI = (
-    "These are {n} frames, in order, from one short moment of a first-person skiing / "
-    "snowboarding video. Rate how highlight-worthy it is for a ski edit (0 = boring, "
-    "10 = must include). High: jumps, crashes, powder spray, fast riding, tight trees, "
-    "friends doing something funny, a stunning view. Low (0-2): riding a chairlift, "
-    "standing around, the lodge, the ground or the sky only. Respond with JSON only: "
+# Action-cam: {video}, {edit}, {rate_high} and {rate_low} are the activity profile's ``vlm``
+# wording (cutpoint.activity.VLM_KEYS), filled in by _prompts.
+_PROMPT_ACTION_CAM = (
+    "These are {n} frames, in order, from one short moment of a {video}. Rate how "
+    "highlight-worthy it is for a {edit} (0 = boring, 10 = must include). High: "
+    "{rate_high}. Low (0-2): {rate_low}. Respond with JSON only: "
     '{{"score": <0-10 number>, "label": "<2-4 word description>"}}'
 )
+_WORDING_KEYS = ("video", "edit", "rate_high", "rate_low")
 # Retry prompt: shorter, asks for no reasoning. Thinking variants of qwen3-vl
 # reason even with think=false; a long reasoning trace used to fill the
 # default 4096-token context and the reply came back empty (done_reason=length).
@@ -58,14 +62,13 @@ _RETRY_PROMPT = (
     "replays score 0-2. Output only JSON: "
     '{{"score": <number>, "label": "<2-4 words>"}}'
 )
-_RETRY_PROMPT_SKI = (
-    "{n} frames from a first-person skiing / snowboarding video moment. Answer "
-    "immediately, no reasoning. Score 0-10 for a ski edit; jumps, crashes, powder and "
-    "fast riding score high, chairlifts, standing around and the lodge score 0-2. "
+_RETRY_PROMPT_ACTION_CAM = (
+    "{n} frames from a {video} moment. Answer immediately, no reasoning. Score 0-10 for "
+    "a {edit}; {rate_high} score high; {rate_low} score 0-2. "
     'Output only JSON: {{"score": <number>, "label": "<2-4 words>"}}'
 )
 # (first prompt, retry prompt) per style; styles not listed use the default pair.
-_PROMPTS = {ACTION_CAM: (_PROMPT_SKI, _RETRY_PROMPT_SKI)}
+_PROMPTS = {ACTION_CAM: (_PROMPT_ACTION_CAM, _RETRY_PROMPT_ACTION_CAM)}
 _DEFAULT_PROMPTS = (_PROMPT, _RETRY_PROMPT)
 # (num_ctx, num_predict) per attempt. 3 frames at 640 px are ~3300 prompt
 # tokens, so num_ctx must leave room for the reasoning plus the JSON.
@@ -97,7 +100,7 @@ SHEET_QUALITY = 90  # JPEG quality of a contact sheet
 RATINGS_FILE = "vision-ratings.json"
 # Bump when the rating input or the reply parsing changes outside what rating_key hashes
 # (the prompts, attempt options and temperatures, frame width, rating profile, model, style
-# and frame times).
+# and frame times). The action-cam prompts' activity wording is in the hashed prompts.
 RATING_VERSION = 1
 
 
@@ -492,9 +495,18 @@ class VisionRater:
         return data
 
     def rate(
-        self, src: Path, start: float, end: float, style: str, n_frames: int = 3
+        self,
+        src: Path,
+        start: float,
+        end: float,
+        style: str,
+        n_frames: int = 3,
+        activity: Prompts | None = None,
     ) -> VisionResult | None:
         """Grab ``n_frames`` across [start, end] and ask the model for a rating.
+
+        An action-cam ``style`` is worded by ``activity`` (the project's activity prompt
+        set, :func:`cutpoint.activity.project_prompts`; None: the default activity's).
 
         Ratings are cached per source (``RATINGS_FILE`` in :func:`cutpoint.cache.source_dir`)
         under :func:`rating_key`, each written as soon as the model gives it, so a rerun asks
@@ -504,14 +516,14 @@ class VisionRater:
         """
         times = _frame_times(start, end, self._n_frames(n_frames))
         store = self._store(src)
-        key = rating_key(self.model, style, times, provider=self.provider_name, host=self.host)
+        key = rating_key(self.model, style, times, self.provider_name, self.host, activity=activity)
         if (hit := self._lookup(store, key)) is not None:
             self.hits += 1
             return hit
         if self.cache_only:
             self.missed += 1
             return None
-        result = self._rate_frames(src, times, style)
+        result = self._rate_frames(src, times, style, activity)
         if result is not None and store is not None:
             entry: dict[str, Any] = {"score": result.score, "label": result.label}
             store[1][key] = entry | ({"digest": self.digest} if self.digest else {})
@@ -522,7 +534,13 @@ class VisionRater:
         return result
 
     def cached(
-        self, src: Path, start: float, end: float, style: str, n_frames: int = 3
+        self,
+        src: Path,
+        start: float,
+        end: float,
+        style: str,
+        n_frames: int = 3,
+        activity: Prompts | None = None,
     ) -> VisionResult | None:
         """The rating :meth:`rate` would take from the cache, or None; counts nothing."""
         key = rating_key(
@@ -531,6 +549,7 @@ class VisionRater:
             _frame_times(start, end, self._n_frames(n_frames)),
             provider=self.provider_name,
             host=self.host,
+            activity=activity,
         )
         return self._lookup(self._store(src), key)
 
@@ -573,7 +592,9 @@ class VisionRater:
                 self._ratings[src] = (path, data if isinstance(data, dict) else {})
         return self._ratings[src]
 
-    def _rate_frames(self, src: Path, times: list[float], style: str) -> VisionResult | None:
+    def _rate_frames(
+        self, src: Path, times: list[float], style: str, activity: Prompts | None = None
+    ) -> VisionResult | None:
         """Grab the frames at ``times`` and ask the model for a rating (no cache)."""
         if self.consent_needed:
             self.warn_consent()
@@ -590,7 +611,7 @@ class VisionRater:
         images = [base64.b64encode(b).decode("ascii") for b in frames]
         self.asked += 1
         content = ""
-        steps = zip(_prompts(style, profile), _ATTEMPTS, _TEMPERATURES, strict=True)
+        steps = zip(_prompts(style, profile, activity), _ATTEMPTS, _TEMPERATURES, strict=True)
         for attempt, (prompt, (num_ctx, num_predict), temperature) in enumerate(steps, 1):
             text = prompt.format(n=n_frames, style=style)
             if self.via:
@@ -666,18 +687,24 @@ def _frame_times(start: float, end: float, n_frames: int) -> list[float]:
 
 
 def rating_key(
-    model: str, style: str, times: list[float], provider: str = "", host: str = ""
+    model: str,
+    style: str,
+    times: list[float],
+    provider: str = "",
+    host: str = "",
+    activity: Prompts | None = None,
 ) -> str:
     """Cache key of one rating: a hash of everything sent to the model except the frames
     (``RATING_VERSION``, model, style, both prompts, attempt options and temperatures, frame
     width and the model's :class:`RatingProfile` if it has one; the ``provider`` and its
     ``host``, so one model id at two servers rates apart: a hosted provider's endpoint, an
-    Ollama's host[:port] of its URL, #673), then the frame times to the millisecond (the
+    Ollama's host[:port] of its URL, #673; the action-cam prompts in ``activity``'s wording,
+    so each activity rates apart), then the frame times to the millisecond (the
     precision of the grab's seek). The model's digest is stored in the entry instead of hashed
     (:meth:`VisionRater._lookup`), so a rating can still be found when Ollama is down and the
     digest cannot be fetched."""
     profile = rating_profile(model)
-    prompts = _prompts(style, profile)
+    prompts = _prompts(style, profile, activity)
     params: dict[str, Any] = {
         "version": RATING_VERSION,
         "model": model,
@@ -696,10 +723,22 @@ def rating_key(
     return f"{cache.params_hash(params)}@" + ",".join(f"{t:.3f}" for t in times)
 
 
-def _prompts(style: str, profile: RatingProfile | None) -> tuple[str, str]:
+def _prompts(
+    style: str, profile: RatingProfile | None, activity: Prompts | None = None
+) -> tuple[str, str]:
     """(first prompt, retry prompt) of ``style``, worded for one contact sheet when the
-    profile sends one."""
+    profile sends one; the action-cam pair in the ``vlm`` wording of ``activity`` (None: the
+    default activity's)."""
     first, retry = _PROMPTS.get(style, _DEFAULT_PROMPTS)
+    if style == ACTION_CAM:
+        if activity is None:
+            from cutpoint.activity import default_prompts  # noqa: PLC0415  (imports us)
+
+            activity = default_prompts()
+        words = dict(activity.vlm)
+        for k in _WORDING_KEYS:  # braces escaped: the prompts are str.format()ted later
+            v = words.get(k, "").replace("{", "{{").replace("}", "}}")
+            first, retry = first.replace(f"{{{k}}}", v), retry.replace(f"{{{k}}}", v)
     if not profile:
         return first, retry
     sheet = "This image is a grid of {n} frames, in reading order (left to right, top to bottom),"

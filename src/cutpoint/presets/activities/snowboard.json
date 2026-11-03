@@ -51,5 +51,28 @@
       "a ski resort information sign"
     ]
   },
-  "low_info": ["a flat white foggy image", "an empty white snow surface"]
+  "low_info": ["a flat white foggy image", "an empty white snow surface"],
+  "vlm": {
+    "recording": "first-person GoPro snowboarding recording (helmet or chest mount)",
+    "video": "first-person snowboarding video",
+    "audio": "wind noise at speed, the rider and friends nearby",
+    "describe": "the terrain (groomed run, trees, powder, park), jumps (take-off, air, landing), falls, friends on camera and what they do, lift rides, standing around or talking, indoor scenes and views",
+    "hype": "0-1 standing around, riding a lift, indoors; 3-4 ordinary cruising; 6-7 fast riding, powder spray, tight trees, a small jump; 8-10 a big jump, a crash or fall, a spectacular line, a near miss.",
+    "edit": "snowboard highlight edit",
+    "idle": "lifts, standing around and lodge scenes",
+    "rate_high": "jumps, crashes, powder spray, fast riding, tight trees, friends doing something funny, a stunning view",
+    "rate_low": "riding a chairlift, standing around, the lodge, the ground or the sky only",
+    "tags": {
+      "jump_air": "the rider is airborne",
+      "crash_fall": "someone falls or crashes",
+      "powder_spray": "snow spraying from turns in deep snow",
+      "fast_groomer": "fast riding on a smooth groomed run",
+      "trees": "riding between trees",
+      "scenic_vista": "a wide mountain view worth showing",
+      "friends_faces": "other people clearly visible, faces, interacting with the camera",
+      "chairlift": "on a chairlift or gondola",
+      "standing_talking": "stopped, standing around or talking",
+      "lodge": "indoors, lodge, restaurant"
+    }
+  }
 }
