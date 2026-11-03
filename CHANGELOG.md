@@ -492,8 +492,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*.localhost` name is hosted and needs consent (#619).
 - Hosted vision ratings, `events` VLM descriptions and `360 director --vl-check` frame checks
   are cached per provider and host, so one model id at two servers no longer shares results.
-  Results cached from a hosted provider before this change are asked again once; Ollama caches
-  are unchanged (#621).
+  Results cached from a hosted provider before this change are asked again once; Ollama vision
+  ratings and frame checks are unchanged (#621).
+- `events` VLM descriptions from Ollama are cached per host too (`ollama@<host>[:<port>]:<model>`,
+  as for hosted providers), so a local and a remote Ollama with the same model no longer share
+  descriptions. Descriptions cached before this change are described again once, on the next
+  `cutpoint events` run; until then `analyze` ranks without them (#670).
 - The `vision_consent_needed` WARNING (and its `--json` warning message) names the exact consent
   key, for example `vision-v2:ollama@10.0.0.5:11434`: besides allowing vision requests in the
   Models tab of `cutpoint ui`, that key can be added to `vision_assistant.consent` in
