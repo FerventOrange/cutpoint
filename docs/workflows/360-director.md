@@ -56,15 +56,17 @@ in the spirit of Pano2Vid and AutoCam.
   and keeps the subject at least `include_min_subject_h` of the frame tall (or as tall as it
   was). The view is never narrowed. A person framed whole keeps `include_margin` (0.06) of the
   frame off the sides, as the detector on the rendered frame sees a close person near the edge
-  0.03-0.07 of the frame wider than its projected box; one kept out stays `exclude_clear_deg` outside it. The fix also aims for room: it treats the
-  person's box as `include_pad_deg` (5 degrees of yaw) wider on each side, as the detector's box
-  on the render grows past the projected one by a median 1-2 degrees (90th percentile 4-7) per
-  side. A person already counts as framed whole when the check, with only
-  `include_check_pad_deg` (1.5 degrees) of that pad, finds the box clear of the sides; the full
-  pad there turned friend shots of crash clips into cut-aways. A stretch keeps one choice
-  (in, or out to the same side) and holds one yaw shift over it where that fixes as much as
-  following each key's own shift (so the view does not drift after people who barely move), and
-  stretches closer than `include_bridge_s` are fixed as one.
+  0.03-0.07 of the frame wider than its projected box; one kept out stays `exclude_clear_deg`
+  outside it.
+  The fix also aims for room. It treats the person's box as `include_pad_deg` (5 degrees of yaw)
+  wider on each side. The detector's box on the render grows past the projected one by a median
+  1-2 degrees (90th percentile 4-7) per side.
+  A person already counts as framed whole when the check, with only `include_check_pad_deg`
+  (1.5 degrees) of that pad, finds the box clear of the sides. The full pad there turned friend
+  shots of crash clips into cut-aways.
+  A stretch keeps one choice (in, or out to the same side) and holds one yaw shift over it where
+  that fixes as much as following each key's own shift (so the view does not drift after people
+  who barely move). Stretches closer than `include_bridge_s` are fixed as one.
   The check is the one `360 qa --paths` makes (the subject and the largest person count at the
   edge too, and people at the side edge from 0.075 of the frame) at every 0.5 s key and between keys, and a fix is kept only when it lowers the
   edge cuts that check counts (then the other bad steps). Plain widening (as far as the
@@ -78,10 +80,12 @@ in the spirit of Pano2Vid and AutoCam.
   wearer where one is as good.
   With `near_soft_as_hard` (default off), a near person split by the edge also counts as a hard
   bad step, which can lead to a cut-away, when it is large and close to a side: its gap to the
-  side is under half of `include_margin` and its box covers at least 0.06 of the frame. Without
-  it, such a split is not counted as hard. When the view held before the cut is itself cut at the edge,
-  the cut-away starts one key earlier. `edge_rule` `legacy` keeps the earlier rule: widen, then reframe, then
-  cut away, inside the moment only.
+  side is under half of `include_margin` and its box covers at least 0.06 of the frame.
+  Without it, a split alone does not make the step hard.
+  When the view held before the cut is itself cut at the edge, the cut-away starts one key
+  earlier.
+  `edge_rule` `legacy` keeps the earlier rule: widen, then reframe, then cut away, inside the
+  moment only.
 - The fix covers the whole planned span, not only the moment, so padding and tails added later
   are clean too. Keys fall on the 0.5 s grid of the moment's start. The path records that span
   as `fixed`; `extend` reuses a recorded path when that span covers the new range, and an older
