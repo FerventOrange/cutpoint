@@ -432,6 +432,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ollama vision ratings and `360 director --vl-check` frame checks are cached per server
+  (host and port of the Ollama URL), so a local and a remote Ollama with the same model no
+  longer share results; existing ones are rated again once (#673).
 - OCR menu detection (#554): a still screen with no new menu text counts as a menu only
   when another menu frame (box, list or text rule) lies within 15 s, or it holds still for
   45 s. Still gameplay (respawn and spectator waits, a preparation phase) is no longer
@@ -500,8 +503,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*.localhost` name is hosted and needs consent (#619).
 - Hosted vision ratings, `events` VLM descriptions and `360 director --vl-check` frame checks
   are cached per provider and host, so one model id at two servers no longer shares results.
-  Results cached from a hosted provider before this change are asked again once; Ollama vision
-  ratings and frame checks are unchanged (#621).
+  Results cached from a hosted provider before this change are asked again once (#621); for
+  Ollama see #670 and #673.
 - `events` VLM descriptions from Ollama are cached per host too (`ollama@<host>[:<port>]:<model>`,
   as for hosted providers), so a local and a remote Ollama with the same model no longer share
   descriptions. Descriptions cached before this change are described again once, on the next
