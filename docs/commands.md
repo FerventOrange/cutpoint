@@ -583,7 +583,8 @@ cached in the project's `ui/assistant/sheets`, per moment, clip window and sourc
 
 - Which models: an Ollama model when Ollama lists `vision` for it (`qwen3.5:9b` does), every
   Claude model, and any other model unless its name has `gpt-3.5`, `o1-mini`, `o3-mini`,
-  `grok-code`, `grok-build` or `codex`. Whether a model of another server (OpenRouter, LM
+  `grok-3`, `grok-code` or `grok-build`, or it is a `grok-2` model without `vision` or `image`.
+  Whether a model of another server (OpenRouter, LM
   Studio, vLLM, a subscription) takes images is not known in advance: it is offered the tool,
   and if its server refuses the image, the request is sent again without it and that model is
   not offered the tool again until `cutpoint ui` restarts.

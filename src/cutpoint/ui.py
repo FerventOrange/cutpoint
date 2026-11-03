@@ -4003,7 +4003,8 @@ def create_app(port: int) -> FastAPI:
                 raise bad(f"unknown provider {provider}")
         except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
             raise bad(str(err), 409) from err
-        return ai_providers.model_list(p, settings.consent, role=role, refresh=refresh)
+        keep = settings.model if provider in (settings.provider, "custom") else ""
+        return ai_providers.model_list(p, settings.consent, role=role, refresh=refresh, keep=keep)
 
     # -- subscription logins (Claude Code, Codex, Antigravity): managed via CLIProxyAPI ----
     def login_provider(value: Any) -> str:
