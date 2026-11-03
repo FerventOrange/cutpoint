@@ -81,7 +81,9 @@ import copy
 import importlib.util
 import json
 import logging
+import os
 import sys
+import tempfile
 import wave
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -917,6 +919,11 @@ def _ratio(m: dict[str, Any], a: str, b: str) -> str:
     return f"{m[a]}/{m[b]}"
 
 
+def _w(header: str, width: int) -> int:
+    """A column's width: ``width``, or wider so the header keeps a space before it."""
+    return max(width, len(header) + 1)
+
+
 def print_clip(clip: dict[str, Any], tops: list[str]) -> None:
     """One table per clip: a row per variant and stage."""
     lab = clip["labels"]
@@ -926,17 +933,19 @@ def print_clip(clip: dict[str, Any], tops: list[str]) -> None:
         + (f"; tracks {tr}" if tr else "")
     )
     head = f"{'variant':<14}{'stage':<6}"
+    widths = {k: (_w("R@" + k, 14), _w("FP@" + k, 14), _w("G@" + k, 10)) for k in tops}
     for k in tops:
-        head += f"{'R@' + k:>14}{'FP@' + k:>14}{'mix':>5}{'G@' + k:>10}{'+/-':>7}"
+        wr, wf, wg = widths[k]
+        head += f"{'R@' + k:>{wr}}{'FP@' + k:>{wf}}{'mix':>5}{'G@' + k:>{wg}}{'+/-':>7}"
     print(head + f"{'loud%':>12}  note")
     for name, stages in clip["variants"].items():
         for stage, r in stages.items():
             row = f"{name:<14}{stage:<6}"
             for k in tops:
-                m = r["at"][k]
+                m, (wr, wf, wg) = r["at"][k], widths[k]
                 rk = _ratio(m, "hit", "reactions") + (f" ({m['n']})" if k == SUGGESTED else "")
-                row += f"{rk:>14}{_ratio(m, 'fp', 'n'):>14}{m['fp_mixed']:>5}"
-                row += f"{_ratio(m, 'game_reached', 'games'):>10}"
+                row += f"{rk:>{wr}}{_ratio(m, 'fp', 'n'):>{wf}}{m['fp_mixed']:>5}"
+                row += f"{_ratio(m, 'game_reached', 'games'):>{wg}}"
                 row += f"{'+' + str(m.get('gained', 0)) + '/-' + str(m.get('lost', 0)):>7}"
             ls = r["loud_share"]
             share = "-" if ls["mean"] is None else f"{ls['mean']:.2f}/{ls['max']:.2f}"
@@ -950,15 +959,17 @@ def print_pooled(pooled: dict[str, Any], tops: list[str]) -> None:
     """The pooled table and the criteria."""
     print("\nPooled")
     head = f"{'variant':<14}{'stage':<6}{'recs':>5}"
+    widths = {k: (_w("R@" + k, 12), _w("FP@" + k, 12)) for k in tops}
     for k in tops:
-        head += f"{'R@' + k:>12}{'FP@' + k:>12}{'mix':>5}{'+/-':>8}{'maxlost':>8}"
+        wr, wf = widths[k]
+        head += f"{'R@' + k:>{wr}}{'FP@' + k:>{wf}}{'mix':>5}{'+/-':>8}{'maxlost':>8}"
     print(head + "  criteria")
     for name, stages in pooled.items():
         for stage, p in stages.items():
             row = f"{name:<14}{stage:<6}{p['recordings']:>5}"
             for k in tops:
-                m = p["at"][k]
-                row += f"{_ratio(m, 'hit', 'reactions'):>12}{_ratio(m, 'fp', 'slots'):>12}"
+                m, (wr, wf) = p["at"][k], widths[k]
+                row += f"{_ratio(m, 'hit', 'reactions'):>{wr}}{_ratio(m, 'fp', 'slots'):>{wf}}"
                 row += f"{m['fp_mixed']:>5}"
                 row += f"{'+' + str(m['gained']) + '/-' + str(m['lost']):>8}{m['max_lost']:>8}"
             c = p.get("criteria")
@@ -972,6 +983,38 @@ def print_pooled(pooled: dict[str, Any], tops: list[str]) -> None:
 def labels_path(src: Path, labels_dir: Path | None) -> Path:
     """``<labels-dir>/<stem>.json`` (default ``labels/`` next to the source)."""
     return (labels_dir or src.parent / "labels") / f"{src.stem}.json"
+
+
+def label_dir_writable(folder: Path) -> bool:
+    """Whether label files can be written in ``folder``: a probe file in it, or in the nearest
+    existing parent when it does not exist yet (so no folder is created for the check). The
+    ``os.path`` checks report False where ``Path`` raises on a folder that cannot be opened."""
+    probe = folder
+    while not os.path.exists(probe):  # noqa: PTH110 - False, not raising, on OSError
+        if probe.parent == probe:
+            return False
+        probe = probe.parent
+    if not os.path.isdir(probe):  # noqa: PTH112 - False, not raising, on OSError
+        return False
+    try:
+        with tempfile.TemporaryFile(dir=probe):
+            pass
+    except OSError:
+        return False
+    return True
+
+
+def shared_label_file(src: Path, path: Path, seen: dict[str, Path]) -> bool:
+    """Whether an earlier source already uses ``path`` (same stem, also in another case on a
+    case-insensitive file system); warns and names both. ``seen`` is keyed by the normalized
+    path."""
+    key = os.path.normcase(os.path.abspath(path))  # noqa: PTH100 - normalises '..'
+    other = seen.get(key)
+    if other is not None:
+        logger.warning("%s and %s share the label file %s; %s skipped", other, src, path, src)
+        return True
+    seen[key] = src
+    return False
 
 
 def analyse(src: Path, style: Style, tr: Any, args: argparse.Namespace) -> SourceResult:
@@ -1034,6 +1077,13 @@ def main(argv: list[str] | None = None) -> int:
     for s in args.sources:
         if not s.is_file():
             ap.error(f"{s}: not a file")
+    if args.draft_labels:
+        targets = (labels_path(s, args.labels_dir) for s in args.sources)
+        folders = {p.parent for p in targets if args.force or not os.path.exists(p)}  # noqa: PTH110
+        for folder in sorted(folders):
+            if not label_dir_writable(folder):
+                logger.error("Cannot write label files in %s; pass a writable --labels-dir", folder)
+                return 1
     root = eval_cache(args.cache_dir)
     from cutpoint.transcribe import Transcriber  # noqa: PLC0415
 
@@ -1057,8 +1107,11 @@ def draft_main(
         logger.warning("Draft game moments without boom peaks: %s", no_panns)
     found: dict[str, list[dict[str, Any]]] = {}
     by_key: dict[str, Path] = {}
+    claimed: dict[str, Path] = {}
     for src in args.sources:
         path = labels_path(src, args.labels_dir)
+        if shared_label_file(src, path, claimed):
+            continue
         if path.exists() and not args.force:
             logger.warning("%s exists; not overwritten (use --force)", path)
             continue
@@ -1120,8 +1173,11 @@ def eval_main(
         "max_candidates": args.max_candidates,
     }
     clips = []
+    used: dict[str, Path] = {}
     for src in args.sources:
         lpath = labels_path(src, args.labels_dir)
+        if shared_label_file(src, lpath, used):
+            continue
         labels = load_labels(lpath, src)
         if labels is None:
             logger.warning("%s: no label file %s; skipped", src.name, lpath)
