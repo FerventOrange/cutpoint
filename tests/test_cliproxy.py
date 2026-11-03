@@ -1339,13 +1339,81 @@ def test_run_reports_a_supervisor_stuck_in_credential_cleanup(stuck_run) -> None
     assert started and started[0].terminated
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="bug: run()'s finally calls stop_guardian(), which raises ProxyError before the "
-    "loop that restores the SIGINT/SIGTERM/SIGBREAK handlers, so they stay hooked",
-)
 def test_run_restores_the_signal_handlers_when_the_supervisor_is_stuck(stuck_run) -> None:
     _, before = stuck_run
     with pytest.raises(cliproxy.ProxyError):
         cliproxy.run()
     assert {sig: signal.getsignal(sig) for sig in _HOOKED} == before
+
+
+class _StartingGuardian:
+    """A supervisor that stays alive, or exits with ``rc`` after ``polls`` polls."""
+
+    def __init__(self, *, rc: int | None = None, polls: int = 0, wait: float = 0.0) -> None:
+        self.rc, self.polls, self.delay = rc, polls, wait
+
+    def poll(self) -> int | None:
+        if self.rc is not None and self.polls <= 0:
+            return self.rc
+        self.polls -= 1
+        return None
+
+    def wait(self, timeout: float | None = None) -> int:
+        time.sleep(min(self.delay, timeout or 0))
+        raise subprocess.TimeoutExpired("guardian", timeout or 0)
+
+
+def _not_ready(calls: list[int], ready_after: int | None = None):
+    def ensure() -> None:
+        calls.append(1)
+        if ready_after is None or len(calls) <= ready_after:
+            raise cliproxy.ProxyConnectionError("connection refused")
+
+    return ensure
+
+
+def test_startup_keeps_waiting_while_a_slow_supervisor_is_alive(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The old fixed 40 attempts gave up on a healthy but slow start (#577)."""
+    calls: list[int] = []
+    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", _not_ready(calls, 100))
+    monkeypatch.setattr(cliproxy, "_STARTUP_NOTICE", 0.0)
+    with caplog.at_level("INFO", logger=cliproxy.logger.name):
+        cliproxy._wait_until_ready(_StartingGuardian())
+    assert len(calls) == 101
+    notices = [r for r in caplog.records if "Waiting for proxy" in r.getMessage()]
+    assert len(notices) == 1 and notices[0].levelname == "INFO"
+
+
+def test_startup_fails_fast_when_the_supervisor_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", _not_ready(calls))
+    started = time.monotonic()
+    with pytest.raises(cliproxy.ProxyError, match="non-zero code 3 before the proxy was ready"):
+        cliproxy._wait_until_ready(_StartingGuardian(rc=3, polls=2))
+    assert len(calls) == 2
+    assert time.monotonic() - started < 5
+
+
+def test_startup_returns_when_the_supervisor_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", lambda: pytest.fail("probed"))
+    cliproxy._wait_until_ready(_StartingGuardian(rc=0))
+
+
+def test_startup_gives_up_at_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", _not_ready(calls))
+    monkeypatch.setattr(cliproxy, "_STARTUP_TIMEOUT", 0.3)
+    started = time.monotonic()
+    with pytest.raises(cliproxy.ProxyConnectionError, match="did not become ready within"):
+        cliproxy._wait_until_ready(_StartingGuardian(wait=0.05))
+    assert 0.3 <= time.monotonic() - started < 5
+    assert len(calls) >= 2
+
+
+def test_startup_deadline_is_about_two_minutes() -> None:
+    assert 60 <= cliproxy._STARTUP_TIMEOUT <= 180
+    assert cliproxy._STARTUP_NOTICE < cliproxy._STARTUP_TIMEOUT

@@ -919,6 +919,48 @@ def _generate_config(
     }
 
 
+_STARTUP_TIMEOUT = 120.0  # covers a keyring unlock prompt, a virus scan or a slow disk
+_STARTUP_NOTICE = 5.0
+_STARTUP_RETRY = 0.2
+
+
+def _wait_until_ready(proc: subprocess.Popen[Any]) -> None:
+    """Wait while the supervisor is alive until the daemon answers and prefixes are set.
+
+    Returns early when the supervisor exits with code 0 (the caller then sees that code);
+    raises ProxyError at once on a non-zero exit, and after ``_STARTUP_TIMEOUT`` seconds.
+    """
+    started = time.monotonic()
+    noticed = False
+    while True:
+        rc = proc.poll()
+        if rc is not None:
+            if rc:
+                raise ProxyError(
+                    f"CLIProxyAPI supervisor exited with non-zero code {rc} before the proxy "
+                    "was ready"
+                )
+            return
+        try:
+            _ensure_credential_prefixes()
+            return
+        except ProxyConnectionError as err:
+            waited = time.monotonic() - started
+            if waited >= _STARTUP_TIMEOUT:
+                raise ProxyConnectionError(
+                    f"CLIProxyAPI did not become ready within {_STARTUP_TIMEOUT:.0f} s"
+                ) from err
+            if not noticed and waited >= _STARTUP_NOTICE:
+                logger.info(
+                    "Waiting for proxy: CLIProxyAPI is still starting (up to %.0f s)",
+                    _STARTUP_TIMEOUT,
+                )
+                noticed = True
+        # Waiting on the process (not sleeping) notices an early exit at once.
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=_STARTUP_RETRY)
+
+
 def run(port: int | None = None) -> None:
     """Run CLIProxyAPI in the foreground as an authenticated local loopback proxy."""
     if port is not None:
@@ -1032,21 +1074,7 @@ def run(port: int | None = None) -> None:
                     else 0,
                     start_new_session=os.name != "nt",
                 )
-                for attempt in range(40):
-                    rc = proc.poll()
-                    if rc is not None:
-                        if rc:
-                            raise ProxyError(
-                                f"CLIProxyAPI supervisor exited with non-zero code {rc}"
-                            )
-                        break
-                    try:
-                        _ensure_credential_prefixes()
-                        break
-                    except ProxyConnectionError:
-                        if attempt == 39:
-                            raise
-                        time.sleep(0.2)
+                _wait_until_ready(proc)
 
                 while True:
                     try:
@@ -1061,10 +1089,14 @@ def run(port: int | None = None) -> None:
                     raise ProxyError("proxy supervisor failed during interrupt cleanup") from None
                 raise
             finally:
-                if proc is not None and proc.poll() is None and stop_guardian() != 0:
-                    raise ProxyError("proxy supervisor failed during cleanup") from None
-                for sig, orig in orig_handlers.items():
-                    with contextlib.suppress(ValueError, OSError):
-                        signal.signal(sig, orig)
+                # Restore the handlers first: stop_guardian() raises when the supervisor is
+                # stuck in credential cleanup, and the handlers must not outlive run().
+                try:
+                    for sig, orig in orig_handlers.items():
+                        with contextlib.suppress(ValueError, OSError):
+                            signal.signal(sig, orig)
+                finally:
+                    if proc is not None and proc.poll() is None and stop_guardian() != 0:
+                        raise ProxyError("proxy supervisor failed during cleanup") from None
     except FolderBusyError as err:
         raise ProxyError(f"another cutpoint proxy is already running: {err}") from err

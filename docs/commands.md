@@ -1445,7 +1445,10 @@ credential persistence; Cutpoint does not fall back to permanent plaintext stora
 CLIProxyAPI needs private plaintext working files in `<CUTPOINT_HOME>/cliproxy/auths/`.
 An independent supervisor restores them only after acquiring the daemon lock, checkpoints
 refreshes and removals during the run, and stops and reaps the daemon before final persistence
-and cleanup. If a credential disappears or a read observes incomplete JSON or UTF-8 during a
+and cleanup. It scans the working files every 5 seconds and reads or writes the keyring and
+re-checks file permissions only when they changed since the last checkpoint (and always at
+start and at the final persistence on stop, so a refresh just before Ctrl+C is still saved).
+If a credential disappears or a read observes incomplete JSON or UTF-8 during a
 periodic scan, the whole snapshot is deferred until the next scan; no partial account map is
 committed. Unsafe paths and permission errors still stop persistence. The supervisor survives
 a foreground CLI hard kill on every supported
@@ -1481,6 +1484,9 @@ connection, before sending credentials or request bodies. There is no HTTP or un
 fallback. Startup also refuses occupied ports and requires the installation's running-daemon
 lock. This does not protect against same-user malware or administrators able to read the
 keyring or replace private files. Connection failures are distinguished from HTTP errors.
+Startup waits up to 120 seconds for the daemon to answer while the supervisor runs (an INFO
+line after a few seconds says it is still waiting, for example during a keyring unlock prompt)
+and fails at once if the supervisor exits first.
 Ctrl+C stops and reaps the daemon, completes credential cleanup, and exits with code `130`.
 
 TLS and encrypted recovery use the core `cryptography` package in both full and lite installs.

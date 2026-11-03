@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,10 @@ from cutpoint.errors import FolderBusyError
 
 _TERMINATE_TIMEOUT = 3.0
 _KILL_TIMEOUT = 2.0
-_POLL_INTERVAL = 0.5
+_POLL_INTERVAL = 0.5  # how often the daemon, the parent and stop requests are checked
+# How often runtime credentials are compared with the last commit. sync() skips the keyring and
+# permission checks when nothing changed; finish() always saves the latest state on stop.
+_SYNC_INTERVAL = 5.0
 
 _SUPERVISION_ERRORS = (
     KeyringError,
@@ -132,11 +136,14 @@ def main(argv: list[str] | None = None) -> int:
                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                     )
                     procs.kill_with_parent(child)
+                    next_sync = time.monotonic() + _SYNC_INTERVAL
                     while child.poll() is None and not (parent_gone() or stopping.is_set()):
                         try:
                             child.wait(timeout=_POLL_INTERVAL)
                         except subprocess.TimeoutExpired:
-                            store.sync()
+                            if time.monotonic() >= next_sync:
+                                store.sync()
+                                next_sync = time.monotonic() + _SYNC_INTERVAL
                     child_status = _cleanup_child(child) if child.poll() is None else child.wait()
             except _SUPERVISION_ERRORS as err:
                 failure = True
