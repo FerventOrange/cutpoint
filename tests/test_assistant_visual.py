@@ -117,6 +117,26 @@ def test_a_cue_word_matches_parts_of_cue_names_by_prefix() -> None:
     assert context._names("crash", "crash_fall") and not context._names("air", "chairlift")
 
 
+def test_a_text_word_matches_whole_words_by_prefix() -> None:
+    """#663: "air" in a summary or transcript finds air, airs and airtime, not chair."""
+    base = {"source": A, "start": 0.0, "end": 8.0, "score": 50, "label": "ride"}
+    cands = [
+        {**base, "id": "chair", "score": 90, "transcript": "sat on the chair lift"},
+        {**base, "id": "big", "transcript": "huge air off the kicker"},
+        {**base, "id": "airs", "label": "two airs"},
+        {**base, "id": "long", "vision_label": "long airtime"},
+        {**base, "id": "kind", "kind": "jump_air"},
+    ]
+    t = context.MomentTable(cands, [])
+    assert t.find("air") == ["big", "airs", "long", "kind"]
+    assert t.find("chair") == ["chair"]
+    assert t.find("jump") == ["kind"]
+    assert t.find("hair") == []
+    # a script without spaces keeps matching inside a run of text
+    cjk = context.MomentTable([{**base, "id": "cjk", "transcript": "我们去滑雪板吧"}], [])
+    assert cjk.find("滑雪板") == ["cjk"]
+
+
 def test_a_row_carries_compact_cues_seen_heard_and_kind() -> None:
     t = table()
     row = t.row("c3")

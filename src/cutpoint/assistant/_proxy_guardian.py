@@ -22,7 +22,8 @@ _TERMINATE_TIMEOUT = 3.0
 _KILL_TIMEOUT = 2.0
 _POLL_INTERVAL = 0.5  # how often the daemon, the parent and stop requests are checked
 # How often runtime credentials are compared with the last commit. sync() skips the keyring and
-# permission checks when nothing changed; finish() always saves the latest state on stop.
+# permission changes when nothing changed, but still checks the modes: a loosened one makes the
+# probe return None, so the full sync runs and tightens it. finish() always saves on stop.
 _SYNC_INTERVAL = 5.0
 
 _SUPERVISION_ERRORS = (

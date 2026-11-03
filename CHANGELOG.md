@@ -432,6 +432,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AI Chat's `find_moments` matches a word at the start of a word in labels, transcripts and
+  what the vision model saw, so "air" finds air, airs and airtime but no longer chair, and the
+  proxy's periodic credential sync tightens loosened permissions even when nothing changed (#663).
+
 - A provider URL on this machine on the port of the Cutpoint proxy (the running proxy's port,
   else `CUTPOINT_CLIPROXY_PORT`, the port saved at its last start, or 18317) is hosted: the proxy
   forwards to hosted models, so AI Chat, Vision and frames consent now apply to it, with keys
