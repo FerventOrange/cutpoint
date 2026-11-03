@@ -36,7 +36,8 @@ To let Claude Code find Cutpoint on its own, the user can install the skill with
 
 ## Calling the CLI
 
-- If installed as a tool (`uv tool install cutpoint`), run `cutpoint <command> ...`; from a
+- If installed with the installer (see
+  [docs/getting-started.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md#install)), run `cutpoint <command> ...`; from a
   clone, `uv run cutpoint <command> ...`. The examples below use `uv run cutpoint`; with a tool
   install, drop `uv run`. First-time setup is in
   [docs/getting-started.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md).

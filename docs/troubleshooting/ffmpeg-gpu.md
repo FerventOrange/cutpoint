@@ -111,8 +111,7 @@ INFO NVIDIA GPU found, but the CUDA libraries for whisper are not installed (...
 ```
 
 - Add the `gpu` extra with the command in that line. For a tool install that is the installer
-  again (it adds the `gpu` extra when it finds an NVIDIA GPU); in a clone, `uv sync`. With pip:
-  `pip install "cutpoint[gpu]"`.
+  again (it adds the `gpu` extra when it finds an NVIDIA GPU); in a clone, `uv sync`.
 - Update the NVIDIA driver. On Linux the pip-installed CUDA libraries are preloaded
   automatically; if Whisper still falls back to the CPU, check the driver with `nvidia-smi`.
 - AMD GPUs are not used for transcription: faster-whisper has no AMD GPU backend in Cutpoint, so
@@ -186,11 +185,7 @@ times longer. Check with `uv run python -c "import torch; print(torch.cuda.is_av
 In a clone, `uv sync` installs the CUDA 12.6 builds on Windows and Linux.
 
 For a tool install, run the installer again: it installs CUDA torch when it finds an NVIDIA GPU.
-Do not use `uv tool upgrade` or a plain `uv tool install "cutpoint[events]"`: without
-`--torch-backend` the torch build does not match the machine. The CUDA index in `pyproject.toml`
-also applies to `uv pip install` from a clone directory or git URL, so that needs no index flags (an
-already-installed CPU torch also needs `--reinstall-package torch --reinstall-package torchvision`).
-`pip` does not apply it.
+Do not use `uv tool upgrade` or a plain `uv tool install`: they drop the torch build for your GPU.
 
 ## Slow or odd video decoding
 

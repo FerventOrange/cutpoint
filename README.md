@@ -63,10 +63,11 @@ See the [command reference](https://github.com/FerventOrange/cutpoint/blob/main/
 
 ## Requirements
 
-- Windows or Linux
-- Python 3.12 and [uv](https://docs.astral.sh/uv/)
+- Windows, Linux or macOS (macOS: CPU only; CI tests Windows and Linux). The installer sets up
+  uv, Python 3.12 and ffmpeg for you
+- For a clone: [uv](https://docs.astral.sh/uv/) (it installs Python 3.12)
 - ffmpeg 5.1 or newer
-- An NVIDIA GPU is recommended (add the `gpu` extra for GPU Whisper). Without one, everything
+- An NVIDIA GPU is recommended (the full install adds the CUDA libraries for GPU Whisper). Without one, everything
   still runs but slower.
 - Optional: [Ollama](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)
   for AI frame rating, the scene descriptions of `cutpoint events` and the local AI Chat
@@ -75,19 +76,42 @@ See the [command reference](https://github.com/FerventOrange/cutpoint/blob/main/
 
 ## Install
 
-The installer sets up uv, ffmpeg and Cutpoint as a global `cutpoint` command, with the torch
-build for your machine (run it again to upgrade):
+Run the installer. It sets up uv, ffmpeg and Cutpoint as a global `cutpoint` command, with the
+torch build for your machine.
 
-```powershell
-irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex
-```
+Linux and macOS (macOS gets CPU torch only):
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh
 ```
 
-For the lite edition without torch, use `curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh -s -- --lite` (on Windows, set `$env:CUTPOINT_LITE = 1` before the `irm` command). To work
-from a clone instead:
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex
+```
+
+- **Full or lite.** The default is full: every feature, with CUDA torch on an NVIDIA GPU (several
+  GB). Lite has no torch and no Ollama; analyze, clips, assemble and edit still work. Ask for it
+  with `curl ... | CUTPOINT_LITE=1 sh` (or `sh -s -- --lite`) on Linux and macOS, or
+  `$env:CUTPOINT_LITE = 1` before the `irm` command on Windows. To go back to full, run the installer again
+  without `--lite` and with `CUTPOINT_LITE` unset, or it installs lite again.
+- **Source.** `--source` is `pypi` (the
+  default), `git` or `git@REF` (a branch, tag or commit), or a local path (checkout, wheel or
+  sdist). Example: `curl ... | sh -s -- --source git`. On Windows use `$env:CUTPOINT_SOURCE = 'git'`
+  before the `irm` command.
+- **Prompts.** In full mode the installer can ask to install Ollama, run `cutpoint setup`
+  (about 2.5 GB, 3.5 GB with an NVIDIA GPU) and pull the `qwen3.5:9b` model (about 6.6 GB). The default
+  answer is No. `--yes` (`-Yes`, `CUTPOINT_YES=1`) answers yes to all; without a terminal the
+  answer is No. `--dry-run` prints what would run and changes nothing.
+- **Upgrade.** Run the installer again, with the same options as before. It remembers none: without
+  `--lite` a lite install becomes full, and without `--source` you go back to PyPI. Do not use
+  `uv tool upgrade`: it drops the torch build.
+
+`sh install.sh --help` and `.\install.ps1 -Help` list every option and variable. The details are
+in [Getting started](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md#install).
+
+To work from a clone instead:
 
 ```powershell
 winget install --id Gyan.FFmpeg -e
@@ -114,8 +138,8 @@ In a clone, `uv sync` installs everything, including torch and CUDA (about 7 GB 
 lite environment use `uv sync --no-group full` and `uv run --no-group full ...` (or set
 `UV_NO_GROUP=full`).
 
-A clone, and the installer on a machine with an NVIDIA GPU, include the `gpu` extra, so Whisper
-uses the GPU. The optional extras and model downloads are explained in
+A clone, and the full installer on a machine with an NVIDIA GPU, include the `gpu` extra, so
+Whisper uses the GPU. The optional extras and model downloads are explained in
 [Getting started](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md).
 
 AMD GPUs encode video (VAAPI on Linux, AMF where FFmpeg and the driver support it) but

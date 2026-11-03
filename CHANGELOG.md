@@ -251,6 +251,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Docs: README and Getting started now lead with the one-step installers (`install.sh`, `install.ps1`).
+  They document full and lite (`--lite`, `-Lite`, `CUTPOINT_LITE`, and unsetting it to return to
+  full), `--source` and `CUTPOINT_SOURCE`, the optional prompts (Ollama, the `qwen3.5:9b` model,
+  `cutpoint setup`) with `--yes`, and upgrading by running the installer again instead of
+  `uv tool upgrade`. The old `uv tool install "cutpoint[...]"` extras instructions are replaced by the installers, with a short
+  "Other sources" note for forks, wheel or sdist URLs and your own virtual environment. The docs
+  say to repeat your options when you upgrade (#528).
 - **BREAKING:** the `ski` style is renamed `action-cam`, with no alias: it is the
   telemetry-driven scorer for any action-cam footage, not only skiing. Use `--style action-cam`
   on `analyze`, `edit` and `360 analyze`; `style` and `style_kind` in `highlights.json`,
@@ -433,6 +440,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - UI build progress no longer jumps backwards with ffmpeg 7 and newer (#678).
+- The 360 director keeps more friend shots on crash clips (#604): a person framed whole counts
+  as framed well with `include_check_pad_deg` (new `pano.director` key, default 1.5 deg) of
+  room inside the side margin, not the full `include_pad_deg` (5 deg). A fix (a wider view or a
+  yaw shift) still aims for the full 5 deg. With the full pad in the check too, people framed
+  near the margin made bad stretches long enough to turn whole friend shots into a view
+  cut-away. `legacy` paths are unchanged. Planned camera paths change, so cached candidate
+  paths are planned again.
 - The 360 director no longer swings or spins the view with a handheld or pole-mounted camera
   (an upright clip, lenses horizontal) (#547). This is the fix for the reported spinning:
   the view followed the camera's heading, smoothed over only 1.5 s, so twisting the camera
