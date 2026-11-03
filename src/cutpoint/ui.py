@@ -2136,7 +2136,8 @@ def _pano_reasons(
         elif f == "spin" and (turns := num("net_turns")) is not None:
             per_min = num("yaw_travel_per_min")
             pan = f", {per_min:g} deg of pan per minute" if per_min is not None else ""
-            text += f" (up to {turns:g} turns one way in {SPIN_WINDOW_S:g} s{pan})"
+            win = min(SPIN_WINDOW_S, num("seconds") or SPIN_WINDOW_S)  # a short moment: all of it
+            text += f" (up to {turns:g} turns one way in {win:g} s{pan})"
         elif f == "cuts" and (n := num("cuts")) is not None:
             text += f" ({n:g} in the moment)"
         elif f == "qa_fail":

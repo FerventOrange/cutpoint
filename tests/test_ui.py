@@ -1162,6 +1162,17 @@ def test_a_spinning_camera_path_reaches_the_moment_badges(
     assert pano["reasons"][0]["text"].startswith(pano_candidates.FLAGS["spin"])
 
 
+def test_the_spin_reason_names_a_short_moment_s_own_length() -> None:
+    """#547: under SPIN_WINDOW_S the turns are counted over the whole moment, so the reason
+    names its length, not the 30 s window."""
+    diag = {"net_turns": 0.42, "yaw_travel_per_min": 1500.0}
+    short = ui._pano_reasons(["spin"], {}, diag | {"seconds": 6.0})[0]["text"]
+    assert "0.42 turns one way in 6 s, 1500 deg of pan per minute" in short
+    for d in (diag | {"seconds": 45.0}, diag):  # a long moment, or a record without its length
+        text = ui._pano_reasons(["spin"], {}, d)[0]["text"]
+        assert f"one way in {pano_candidates.SPIN_WINDOW_S:g} s" in text
+
+
 def test_the_page_describes_camera_path_flags_accessibly() -> None:
     """Accessibility contract (#517): card badges' reasons are a tooltip that is also the card's
     description, shown on keyboard focus and hidden by Escape; the note has its own region."""
