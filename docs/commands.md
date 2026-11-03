@@ -1029,7 +1029,8 @@ Notes:
   measured frames predicts more clipping than the levels intend (`veto_clipped`; underwater,
   pixels whose red alone clips high, up to 3 % of the frame, do not count), a worse cast
   (`veto_cast`: the gray-world cast rises by more than 0.005 of the luma range, or to more than
-  1.5 times its value and by more than 0.002), a picture over 25 % more colorful (`veto_m3`) or
+  1.5 times its value and by more than 0.002), a picture over 25 % more colorful (`veto_m3`, a safety net: with the current levels
+  stretch and vibrance caps no grade reaches it) or
   a washed-out one: with `auto`, one that loses more than 15 % of its colorfulness
   (`veto_m3_drop`); underwater, one whose median saturation falls below 0.63 of its value, such
   as flat sand turned grey (`veto_faded`), or when its frames could not be decoded
