@@ -1011,6 +1011,7 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
     base_run = int(SAFE_MIN_S / p.dt) + 1
     cut_deg = SAFE_SPEED * p.max_speed * p.dt + 1e-6  # farther per step: a cut
     cut_after = ctx.setdefault("cut_after", set())  # steps a shot ends at: a cut follows
+    hold = ctx.get("hold")  # upright: display yaw = held yaw + hold (#547)
     memo: dict[tuple, list[float]] = {}
     rays: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
@@ -1219,7 +1220,10 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
 
     def is_cut(i: int) -> bool:
         """A cut between steps ``i`` and ``i + 1``."""
-        return i in cut_after or abs(float(G.wrap_deg(yaw[i + 1] - yaw[i]))) > cut_deg
+        if i in cut_after:
+            return True
+        dh = 0.0 if hold is None else float(hold[i + 1] - hold[i])  # the held step's own change
+        return abs(float(G.wrap_deg(yaw[i + 1] - yaw[i] - dh))) > cut_deg
 
     def held(i: int) -> list[np.ndarray]:
         """People step ``i``'s view is held over until a cut to step ``i + 1``: halfway

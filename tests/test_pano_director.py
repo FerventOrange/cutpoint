@@ -1121,6 +1121,21 @@ def test_a_shot_end_is_a_cut_for_the_midpoint() -> None:
     assert not chk.bad(9) and not chk.bad(10)  # a cut: the yaw 0 view is held
 
 
+def test_an_upright_hold_change_does_not_make_a_cut() -> None:
+    n = 20
+    ctx = safe_ctx(n, 0.0, 86.0)
+    ctx["yaw"][10:] = 24.0  # the display step is over the cut speed (22.75 deg) ...
+    ctx["subj"][:, 0] = ctx["yaw"]
+    empty = np.zeros((0, 4))
+    ctx["persons"] = [empty] * n
+    ctx["persons_mid"] = [empty] * (n - 1)
+    ctx["persons_mid"][9] = np.array([[55.0, -10.0, 4.0, 30.0]])  # split at yaw 12 only
+    p = D.DirectorParams()
+    assert not D._framing_checks(ctx, (0, n), p).bad(9)  # ... so a cut: the yaw 0 view is held
+    ctx["hold"] = np.where(np.arange(n) >= 10, 24.0, 0.0)  # ... but the hold made all of it
+    assert D._framing_checks(ctx, (0, n), p).bad(9)  # one shot: the view passes yaw 12
+
+
 def test_smoothing_keeps_a_smaller_subject_tall_enough() -> None:
     n = 20
     ctx = safe_ctx(n, 0.0, 86.0)
