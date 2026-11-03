@@ -88,3 +88,54 @@ jobs:
         with:
           repository-url: https://test.pypi.org/legacy/
           skip-existing: true
+
+  # Version-stamped installers and SHA256SUMS (#684). On a release they become release assets;
+  # on workflow_dispatch this is a dry run: stamp and checksum, upload only as a workflow artifact.
+  installers:
+    needs: [build, publish]
+    # publish is skipped on workflow_dispatch, so do not require it there.
+    if: ${{ !cancelled() && needs.build.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.publish.result == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release upload (the release event only)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Stamp the installers and write SHA256SUMS
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          pyproject_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' pyproject.toml | head -n1)"
+          if [ -z "$pyproject_version" ]; then
+            echo "::error::Could not read version from pyproject.toml"
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            version="${TAG#v}"
+            if [ "$version" != "$pyproject_version" ]; then
+              echo "::error::Release tag $TAG does not match pyproject.toml version $pyproject_version"
+              exit 1
+            fi
+          else
+            version="$pyproject_version"
+          fi
+          python3 scripts/stamp_installers.py "$version" installers-out
+          (cd installers-out && sha256sum -c SHA256SUMS)
+      - name: Upload the files as a workflow artifact (dry run)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installers
+          path: installers-out/
+          if-no-files-found: error
+      # Adding assets after publishing fails if immutable releases are turned on for the repository.
+      - name: Attach the files to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$TAG" \
+            installers-out/install.sh installers-out/install.ps1 installers-out/SHA256SUMS \
+            --clobber --repo "$GITHUB_REPOSITORY"

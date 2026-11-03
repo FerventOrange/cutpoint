@@ -60,7 +60,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import activity, cache, jsonout
+from cutpoint import activity, cache, jsonout, memguard, progress
 
 logger = logging.getLogger(__name__)
 # Why the run that calls detect_project has no visual layer (``analyze`` left the
@@ -422,7 +422,9 @@ class ClipEncoder:
         import torch  # noqa: PLC0415
 
         self.torch = torch
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = memguard.device_for(  # the GPU short of memory: on the CPU (float32)
+            "clip", device or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
         model = load_clip()  # local files only
         self.model = model.eval().to(self.device, self.dtype)
@@ -1139,6 +1141,7 @@ def detect_project(
     encoder: ClipEncoder | None = None,
     warn_unreachable: bool = True,
     llm: bool = True,
+    batch_size: int = 0,
 ) -> Path:
     """Find crashes in every source of a project and write ``crashes.json``.
 
@@ -1167,6 +1170,8 @@ def detect_project(
             both (the line is then logged at DEBUG).
         llm: Let the profile detection ask the local Ollama models
             (:func:`cutpoint.activity.resolve`); False: library and generic profiles only.
+        batch_size: ``--batch-size`` (#109): the CLIP model is closed after every this many
+            dense windows and loaded again for the next ones (0: kept for all of them).
 
     Returns:
         Path of crashes.json.
@@ -1254,15 +1259,32 @@ def detect_project(
     bypass = {id(c) for c in todo if c["pre_score"] < p.prefilter}
     enc = encoder
     stores: dict[str, dict[str, Any]] = {}
+    windows: set[tuple[str, str]] = set()
+    for c in todo:
+        src = c["source"]
+        if src not in stores:
+            stores[src] = {} if force else (cache.load_json(_dense_cache(Path(src), p)) or {})
+        windows.add((src, "{:.1f}-{:.1f}".format(*dense_window(c, p))))
+    progress.continuing("dense check", sum(k in stores[s] for s, k in windows), len(windows))
+    seen: set[tuple[str, str]] = set()  # the dense windows of this loop so far
     try:
         for c in todo:
             src = c["source"]
-            if src not in stores:
-                stores[src] = {} if force else (cache.load_json(_dense_cache(Path(src), p)) or {})
+            store = stores[src]
             a, b = dense_window(c, p)
-            if enc is None and f"{a:.1f}-{b:.1f}" not in stores[src]:
+            key = f"{a:.1f}-{b:.1f}"
+            if batch_size and seen and (src, key) not in seen and not len(seen) % batch_size:
+                if enc is not None:  # a batch boundary: CLIP is loaded again for the next ones
+                    enc.close()
+                    enc = None
+                progress.continuing("dense check", len(seen), len(windows))
+            seen.add((src, key))
+            if enc is None and key not in store:
                 enc = ClipEncoder()
-            c["dense"] = dense_feature(enc, inputs[src], c, p, stores[src])
+            new = key not in store
+            c["dense"] = dense_feature(enc, inputs[src], c, p, store)
+            if new and key in store:  # saved at once: an interrupted run keeps its windows
+                cache.save_json(_dense_cache(Path(src), p), store)
     finally:
         if enc is not None:
             enc.close()

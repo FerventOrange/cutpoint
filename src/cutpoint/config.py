@@ -40,6 +40,7 @@ ASSISTANT_PROVIDERS = (
     "codex",
     "antigravity",
 )
+MEMORY_GUARD_GB = 2.0  # memory_guard default: GB of RAM left free when a model loads (#109)
 MIN_CONTEXT_TOKENS = 2048  # room for the rules, a few moments and one reply
 
 
@@ -72,6 +73,7 @@ class Config:
     assistant: AssistantSettings = field(default_factory=AssistantSettings)
     color: str = "off"
     vision_assistant: AssistantSettings = field(default_factory=AssistantSettings)
+    memory_guard: float = MEMORY_GUARD_GB  # GB of RAM left free when a model loads (0: off)
 
 
 def load_config_data(path: Path | None = None) -> dict:
@@ -226,7 +228,19 @@ def _load_config(path: Path) -> Config:
         _assistant(path, data),
         color,
         v_ast,
+        _memory_guard(path, data),
     )
+
+
+def _memory_guard(path: Path, data: dict) -> float:
+    """``memory_guard``: GB of RAM the memory guard keeps free (:mod:`cutpoint.memguard`), 0
+    or more; 0 turns it off. Default :data:`MEMORY_GUARD_GB`."""
+    value = data.get("memory_guard")
+    if value is None:
+        return MEMORY_GUARD_GB
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        raise ValueError(f"{path}: memory_guard is {value!r}; expected GB of RAM, 0 or more")
+    return float(value)
 
 
 def _export_workers(path: Path, data: dict) -> int | None:

@@ -9,6 +9,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Run state for later resume (#109): `analyze`, `edit`, `events`, `crashes`, `profile` and
+  `360 analyze` keep `<project>/progress.json` (the command line, a key of its options, status
+  `running`, `done`, `interrupted` or `failed` with the error code, process, working folder,
+  sources and the state of each step), written atomically on each step change and at the end,
+  also without `CUTPOINT_PROGRESS`. A re-run on an existing project writes it from the start; a
+  first `analyze` or `edit` writes it only once its first source is transcribed, so one stopped
+  earlier still leaves no project folder, and `360 analyze --scan` once the scan made the
+  project. A folder that is not a project (no `highlights.json`, `pano.json` or
+  `progress.json`) gets no file. These commands also hold
+  a project run lock, `.analysis.run.cutpoint-lock`: a second run on the same project stops
+  with `folder_busy` (exit 1) instead of writing the same caches, and a lock left by a process
+  that is gone is taken over. Result files, `--json` and `PROGRESS` lines are unchanged.
+- `cutpoint resume <project> [--dry-run] [--json]` (#109): runs the command recorded in the
+  project's `progress.json` again, as recorded (a recorded `--force` too) and from its working
+  folder; cached work (transcripts, layer caches, VLM windows) is skipped, so an interrupted run
+  continues where it stopped. A finished run is not run again (`outputs.resumed` false); no
+  `progress.json` is `not_found`, a run still going `folder_busy`; `--dry-run` prints the
+  command and its recorded step counts. With `--json` the envelope's `command` is the resumed
+  command, with `outputs.resume` (`argv`, `status_before`, `done_before`), and the warnings
+  `resume_sources_changed` (recorded sources that are gone) and, on a run that replaces an
+  interrupted record of another command or other options, `resume_args_changed`. A resumed
+  `edit` that had finished its clips keeps them when their `manifest.json` is unchanged.
+- Resumable clip exports (#109): a `clips` or `extend` export that fails, is interrupted or is
+  killed keeps its finished clips in the hidden `.<folder>.cutpoint-resume` next to the clips
+  folder (with a `resume.json` written after each clip) instead of deleting them; the clips
+  folder stays as it was. The next run into that folder with the same clips takes them over and
+  encodes only the missing ones; a run with other clips removes the folder. `clips` now records
+  `progress.json` (never over an interrupted run of another command) and holds the project run
+  lock, so `cutpoint resume <project>` continues an
+  interrupted `clips` (a recorded `--force` too) or `edit` export.
+- `--batch-size N` on `analyze`, `events` and `360 analyze` (#109): each model (Whisper,
+  PANNs, the voice and visual layers, the HUD OCR engine, the 360 views, the crash layer's CLIP
+  after N dense windows, an Ollama vision model after N VLM windows) is closed after N sources
+  and loaded again for the next ones, to give memory back on long runs. Each boundary logs
+  `<step>: N/M done, continuing` and updates `progress.json`, so `cutpoint resume` replays the
+  option. Off by default (0); the result files are the same with or without it. `events`
+  records its layers (`audio`, `voice`, `visual`, `ocr`, `crash`, `vlm`, `write`) as steps of
+  `progress.json` (no `PROGRESS` lines), so `resume --dry-run` lists them.
+- Footage category detection (#513): `cutpoint detect <inputs> [--json]` tells whether the
+  footage is gameplay, action cam, talk or general, from the container tags, the camera
+  telemetry and 32 small grey frames per source (a static HUD marks gameplay; cached as
+  `category-v2.json`), and which style `--style auto` would use. `--style auto` on `analyze`
+  and `edit` (opt-in; the defaults are unchanged) maps action cam to `action-cam`, gameplay to
+  `gaming`, talk (decided after transcription) to `commentary` and general to `action`, or every
+  category to `funny` for `edit --kind funny-moments`; it never picks `sport`. The detected
+  category plans the HUD OCR and CLIP layers of `analyze`'s own steps (`edit --events` and
+  `cutpoint events` still choose by style). Unclear footage gets the default style (`gaming`,
+  or the kind's style on `edit`) with a `style_ambiguous` warning; sources of another category
+  over 10% of the footage give `style_sources_disagree`; talky gameplay stays gameplay with a
+  hint to try `--style commentary`. `highlights.json` keeps the picked style in `style` and
+  adds `settings.style_requested` and a `detection` block, which `events` and re-runs reuse;
+  `analyze --json` reports it as `outputs.detection`. A learned preset named `auto.json` is
+  ignored with a warning.
+- HUD text check for `cutpoint detect` and `--style auto` (#513): a source the frame probe leaves
+  unsure between gameplay and general (no camera tags, not a still picture) gets the HUD OCR
+  engine on 8 frames; at least 3 text boxes that stay in place make it sure gameplay, so
+  more gameplay with a thin HUD (War Thunder, Battlefield) gets the gaming style instead of
+  the default. Clocks, dates, speeds, GPS positions and the subtitle band do not count, so a
+  camera's usual burned-in overlay does not make camera footage gameplay. A few seconds per unsure
+  source, cached as `category-text-v1.json`; skipped in Cutpoint lite (the source stays
+  ambiguous), and never run with an explicit `--style`.
+- `scripts/style_auto_eval.py` (#513, development harness): runs the footage category detection
+  on sources with known categories (a local labels file) and reports the confusion by
+  sure or ambiguous, the sure-wrong sources, the ambiguous share by count and minutes, the style
+  `--style auto` uses per project against the right one, the time per source, and whether the
+  "flip ready" criteria for making auto the default are met (no sure-wrong source, every label's
+  ambiguous share at most `--max-ambiguous` by count and by minutes, every project's style right;
+  each failed criterion is printed with its numbers). `--out` writes JSON and `--compare OLD.json` shows the changes against
+  an earlier run. Only reads the sources.
+- Releases attach `install.sh`, `install.ps1` and `SHA256SUMS` with the release version stamped in
+  as the default, so `releases/download/X.Y.Z/install.sh` (or `releases/latest/download/`) installs that
+  version from PyPI; the README and Getting started document the pinned one-liners and the checksum
+  check. The stamping is `scripts/stamp_installers.py` (#684).
 - Visual candidates: `analyze` with the `action-cam`, `action` or `sport` style lists scenic
   views, group shots and steady cruising runs after the scored candidates (`"pool": "visual"`,
   ids `v001`..., `kind` `view`, `crew` or `cruise`, labels such as "scenic view / beauty shot"),
@@ -271,8 +344,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   judged with its own captions. The `ski` profile reproduces the earlier captions exactly;
   `ski` and `snowboard` have `lift` captions, and chairlift detection is off for the others.
 
+- Memory guard (#109): before a model loads, Cutpoint checks its estimated memory need plus
+  `memory_guard` GB of free RAM (`config.json`, default 2, 0 = off); when short it frees cached
+  models and unloads Ollama's, then stops with the new `--json` error code `low_memory` (exit 1,
+  `progress.json` status `low_memory`) and an `ERROR` naming `cutpoint resume <project>`. Linux
+  and Windows; a local non-Ollama vision server gets the RAM check and a `WARNING`.
+
 ### Changed
 
+- Whisper on the CPU without `--model` (#109): when the GPU is short of memory or CUDA fails and
+  transcription falls back to the CPU, a run without `--model` uses the CPU default (`small`)
+  instead of `medium` when `small` is downloaded already, and the WARNING says so; else it keeps
+  `medium` (nothing is downloaded mid-run) and a WARNING names the `cutpoint setup` command for
+  `small`. An explicit `--model` is kept. The transcript is cached under the model that ran and
+  marked as a fallback (`fallback-transcript-small.json`), and a later run without `--model`
+  (also on the GPU, and `cutpoint resume`) reuses that marked `small` transcript with an INFO
+  line instead of transcribing again (never one of `--model small`); give `--model medium` to
+  redo it.
+- `--batch-size` on `events`: the vision model is unloaded only at a source boundary after at
+  least N windows, so a small N no longer reloads it every few windows of one recording.
+- Action-cam vision prompts follow the activity profile (#7, #511): the `cutpoint events` VLM
+  window prompt and the `--vision` rating of action-cam projects no longer name skiing; their
+  wording comes from the new `vlm` section of the project's activity profile (`activity.json`).
+  The ski profile keeps the old ski text, `snowboard` has its own snowboarding text, and every
+  other profile uses the generic action-cam wording of `base.json`. A profile the local LLM
+  writes may reword it for the activity; values that are missing, invalid or too long use the
+  base text. The window tags (`jump_air`, `powder_spray`, `chairlift`, ...) keep their names in
+  `events.json`. One-time cost: action-cam projects whose profile is not `ski` get their VLM
+  window descriptions and vision ratings made again on the next run (their cache keys
+  changed). Ski projects keep both, because their prompt text is unchanged byte for byte.
+  Other styles keep both too.
+- Docs: the 360 director settings `include_pad_deg`, `include_check_pad_deg` and `near_soft_as_hard`, and the sliver grid of `360 qa --paths` (#614).
+- Browser workspace: uniform spacing (#534). Padding, margins, gaps and radii come from the `--space-*`
+  and `--radius-*` scale, buttons and fields share `--control-h` (36 px, so the gear button is
+  square), the three columns share a 16 px gutter and a symmetric padding, and the top bar, the
+  Moments band and the tab bar share one band height (`--band-h`, when the Moments band fits one
+  row). Dialogs, popovers, callouts and cards use the same padding and corner radius.
+- A step that starts when part of its work is already cached (for example after an
+  interruption) says how far it got (#109): `transcribe: N/M done, continuing` (sources with a
+  cached transcript), `vlm: N/M done, continuing` (described VLM windows) and `dense check: N/M
+  done, continuing` (crash dense windows), as an INFO line and as the running step's
+  `PROGRESS` `detail`. Fresh runs and re-runs with everything cached log nothing new; the
+  `PROGRESS` keys and states are unchanged.
 - Docs: README and Getting started now lead with the one-step installers (`install.sh`, `install.ps1`).
   They document full and lite (`--lite`, `-Lite`, `CUTPOINT_LITE`, and unsetting it to return to
   full), `--source` and `CUTPOINT_SOURCE`, the optional prompts (Ollama, the `qwen3.5:9b` model,
@@ -461,6 +574,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The memory guard's `low_memory` error quotes the project path in its
+  `cutpoint resume <project>` hint (a path with a space copies as one argument), and a stop for
+  VRAM no longer says how much RAM `memory_guard` keeps free.
+- `cutpoint detect` and `--style auto` no longer call camera footage with a news lower third
+  sure gameplay (#701). An opaque box across most of the bottom of the picture (a lower third,
+  a news ticker) has text that stays put like a HUD's, so a re-encoded clip without camera tags
+  scored as gameplay from that text alone. The frame probe now finds such a box; neither its
+  static text nor its text in the HUD text check counts as HUD, so the clip is ambiguous and
+  gets the default style with `style_ambiguous`. Game HUDs in corners and along the edges count
+  as before; a game whose HUD is an opaque panel across most of the bottom (a Doom-style status
+  bar, an RTS console) is also taken for a box and can become ambiguous. The probe cache is now `category-v2.json`, so each source's frame probe runs again
+  once.
+- Run state (#109): the `folder_busy` message of the project run lock names the project, not
+  `<project>/analysis.run`; and `events`, `crashes` or `profile` on a folder that holds only the
+  `progress.json` of an interrupted first `analyze` stop with `not_found` and keep that record
+  instead of overwriting it. An action-cam `events` re-run that reuses described VLM windows
+  keeps their `reasons` in `events.json` (they read `cached` before).
+- Recordings whose audio tracks are copies of each other (OBS writing the same mix to several
+  tracks) are analysed at the level of one track (#685). `analyze` summed every track into its
+  analysis audio, so 5 identical tracks came out about 14 dB too loud and clipped, flattening
+  the loudness peaks it scores; it now leaves the copies out as clip exports do (#365). A track
+  is left out only when it copies another across the whole recording, so a game and a separate
+  mic track are still both summed, also when the mic talks only now and then. Such recordings
+  are analysed again once (audio extract, loudness, transcript and the audio events layers);
+  recordings with one track or with distinct tracks keep their cache.
+- Interrupted runs lose less work and free memory sooner (#109). The dense crash check saves
+  each window to its cache as it finishes, so a run stopped by Ctrl+C or a kill keeps the
+  windows it checked and the next run computes only the rest (before, every check of the run
+  was lost). `events` and `analyze` release the HUD OCR engine after the OCR layer and torch's
+  cached CUDA memory before the VLM layer, instead of keeping both through it. Outputs of an
+  uninterrupted run are unchanged.
 - 360 clips filmed with the camera upright (lenses horizontal, on a pole or stick above you)
   now place the wearer below the camera (#573). The wearer cone (the rendered QA's self tags,
   the `--paths` QA's wearer exclusion), the director's wearer rule, the travel direction and

@@ -15,6 +15,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from cutpoint import cache, memguard
+from cutpoint.errors import LowMemoryError
 from cutpoint.extras import LITE, edition, install_hint
 from cutpoint.ffmpeg_utils import pcm_float
 from cutpoint.hub import quiet_hub_handler
@@ -191,6 +193,9 @@ def default_model(device: str | None = None) -> str:
     return "medium" if device == "cuda" else "small"
 
 
+_CPU_DEFAULT = " (the CPU default without --model)"
+
+
 def _sized(name: str) -> str:
     size = MODEL_SIZES.get(name)
     return f"Whisper {name} (~{size})" if size else f"Whisper {name}"
@@ -257,30 +262,84 @@ class Transcriber:
 
     def __init__(self, model: str | None = None, language: str | None = None) -> None:
         self.device = "cuda" if cuda_available() else "cpu"
+        self._want = self.device  # the device to load on; a VRAM shortage moves one load only
+        self.explicit = model is not None  # --model: kept on the CPU too
         self.model_name = model or default_model(self.device)
+        self.default_name = self.model_name  # before any CPU fallback
         self.language = language
         self._model: Any = None
+        self._warned_kept = False
+
+    def _cpu_model(self, name: str) -> str:
+        """The model to run on the CPU instead of ``name``: ``--model`` as given; without it
+        the CPU default (small) when it is downloaded already (never a download mid-run),
+        else ``name`` (:meth:`_kept_on_cpu` says so)."""
+        cpu = default_model("cpu")
+        if self.explicit or name == cpu:
+            return name
+        try:
+            return cpu if cached_model(cpu) is not None else name
+        except (ImportError, OSError, ValueError):
+            return name
+
+    def _kept_on_cpu(self, name: str) -> None:
+        """WARNING (once): Whisper ``name`` runs on the CPU as the CPU default is not there."""
+        cpu = default_model("cpu")
+        if self.explicit or name == cpu or self._warned_kept:
+            return
+        self._warned_kept = True
+        logger.warning(
+            "Whisper %s runs on the CPU, as the faster CPU model Whisper %s is not downloaded; "
+            "`%s` gets it",
+            name,
+            cpu,
+            setup_command(cpu),
+        )
 
     def _load(self) -> Any:
         if self._model is None:
+            # the GPU short of memory (a game, OBS): Whisper runs on the CPU, without --model
+            # as the CPU default (small) when it is downloaded
+            # (on the CPU from the start or after a CUDA failure: the model already chosen)
+            gpu = self._want == "cuda" and not self.explicit
+            name = default_model("cuda") if gpu else self.model_name
+            cpu = self._cpu_model(name) if self._want == "cuda" else name
+            self.device = memguard.device_for(
+                memguard.whisper_need(name),
+                self._want,
+                label=f"Whisper {name}",
+                cpu_model=memguard.whisper_need(cpu),
+                cpu_label=None if cpu == name else f"Whisper {cpu}{_CPU_DEFAULT}",
+            )
+            if self.device != self._want and cpu == name:
+                self._kept_on_cpu(name)
+            self.model_name = name if self.device == self._want else cpu
             compute = "float16" if self.device == "cuda" else "int8"
             logger.info("Loading whisper %s on %s (%s)", self.model_name, self.device, compute)
             self._model = load_model(self.model_name, self.device, compute)  # local first
         return self._model
 
     def _fallback_to_cpu(self, err: Exception) -> None:
+        cpu = self._cpu_model(self.model_name)
+        switch = "" if cpu == self.model_name else f", with Whisper {cpu}{_CPU_DEFAULT}"
         text = str(err).lower()
         if any(k in text for k in ("cublas", "cudnn", "cudart", ".dll", ".so")):
             logger.warning(
                 "CUDA libraries for whisper failed to load (%s); falling back to "
-                "CPU int8 (much slower). Make sure the 'gpu' extra is installed (%s) "
+                "CPU int8%s (much slower). Make sure the 'gpu' extra is installed (%s) "
                 "and the NVIDIA driver supports CUDA 12",
                 err,
+                switch,
                 install_hint("gpu"),
             )
         else:
-            logger.warning("CUDA transcription failed (%s); falling back to CPU int8", err)
-        self.device = "cpu"
+            logger.warning(
+                "CUDA transcription failed (%s); falling back to CPU int8%s", err, switch
+            )
+        self.device = self._want = "cpu"  # a CUDA failure: on the CPU from now on
+        if cpu == self.model_name:
+            self._kept_on_cpu(cpu)
+        self.model_name = cpu
         self.close()
 
     def transcribe(
@@ -291,6 +350,8 @@ class Transcriber:
         try:
             return self._run(wav, on_progress)
         except (RuntimeError, OSError) as err:
+            if isinstance(err, LowMemoryError):  # the memory guard: no CPU fallback either
+                raise
             # A model the Hub cannot give (offline, unknown repo) is not there on the CPU either
             if self.device != "cuda" or type(err).__module__.startswith("huggingface_hub"):
                 raise
@@ -349,6 +410,49 @@ class Transcriber:
         """Release the model (frees VRAM before e.g. the vision model loads)."""
         self._model = None
         gc.collect()
+
+
+def fallback_marker(path: Path) -> Path:
+    """``fallback-<transcript>.json`` next to the transcript ``path``: it was made by a CPU
+    fallback without ``--model`` (:func:`record_transcript`)."""
+    return path.with_name(f"fallback-{path.name}")
+
+
+def _no_model(tr: Any) -> bool:
+    return getattr(tr, "explicit", True) is False  # a Transcriber without --model
+
+
+def cached_transcript(tr: Any, cdir: Path) -> Path | None:
+    """The cached transcript in ``cdir`` the transcriber ``tr`` uses, or None: its model's and,
+    without ``--model``, its first default's (sources cached before a CPU fallback); else the
+    CPU default's only when :func:`record_transcript` marked it as a CPU fallback of that
+    default (not one of an explicit ``--model small``, nor an unmarked older one)."""
+    own = [transcript_name(tr.model_name, tr.language)]
+    if _no_model(tr):
+        own.append(transcript_name(tr.default_name, tr.language))
+    for name in dict.fromkeys(own):
+        if (cdir / name).is_file():
+            return cdir / name
+    if not _no_model(tr):
+        return None
+    path = cdir / transcript_name(default_model("cpu"), tr.language)
+    mark = cache.load_json(fallback_marker(path))
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    ok = isinstance(mark, dict) and mark.get("fallback_of") == tr.default_name
+    return path if ok and mark.get("size") == size else None
+
+
+def record_transcript(tr: Any, path: Path) -> None:
+    """``tr`` just saved the transcript ``path``: mark it as a CPU fallback of its default
+    (no ``--model``, another model ran), else drop a mark an earlier run left."""
+    marker = fallback_marker(path)
+    if _no_model(tr) and tr.model_name != tr.default_name:
+        cache.save_json(marker, {"fallback_of": tr.default_name, "size": path.stat().st_size})
+    else:
+        marker.unlink(missing_ok=True)
 
 
 def transcript_name(model: str, language: str | None = None) -> str:

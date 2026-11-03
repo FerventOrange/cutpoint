@@ -31,7 +31,7 @@ def pipeline(home, tmp_path, monkeypatch):
     state = SimpleNamespace(video=video, calls=calls, write_srt=True, fail_assemble=None)
 
     def analyze(targets, style, out, **kw):
-        calls.append(("analyze", (targets, style.name, out), kw))
+        calls.append(("analyze", (targets, getattr(style, "name", style), out), kw))
         out.mkdir(parents=True, exist_ok=True)
         (out / "highlights.json").write_text("{}", encoding="utf-8")
 
@@ -205,6 +205,48 @@ def test_edit_events_leaves_out_the_layers_of_skipped_steps(
     assert ran == [expected]
 
 
+@pytest.mark.parametrize(
+    ("kind", "telemetry", "emphasis", "layers"),
+    [
+        ("highlights", True, "hype", ("audio", "voice", "visual", "crash", "vlm")),
+        ("funny-moments", True, "funny", ("audio", "ocr", "vlm")),  # funny: not action-cam
+        ("highlights", False, "hype", ("audio", "ocr", "vlm")),
+    ],
+)
+def test_edit_style_auto_probes_before_the_events_preflight(
+    pipeline, monkeypatch, kind, telemetry, emphasis, layers
+):
+    from cutpoint import category  # noqa: PLC0415
+    from cutpoint.events import cli as events_cli  # noqa: PLC0415
+    from cutpoint.events import pipeline as events_pipeline  # noqa: PLC0415
+
+    checked: list[tuple[str, ...]] = []
+    monkeypatch.setattr(events_pipeline, "preflight", lambda layers: checked.append(layers))
+    monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: None)
+    monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
+    monkeypatch.setattr(
+        category, "probe_source", lambda src: category.SourceProbe(str(src), 60.0, telemetry)
+    )
+    argv = ["edit", str(pipeline.video), "--kind", kind, "--style", "auto", "--events"]
+    assert cli.main(argv) == 0
+    assert checked == [layers]
+    request = pipeline.calls[0][1][1]
+    assert (request.emphasis, request.fallback) == (emphasis, edit.KINDS[kind].style)
+
+
+def test_edit_with_an_explicit_style_never_probes(pipeline, monkeypatch):
+    from cutpoint import category  # noqa: PLC0415
+    from cutpoint.events import cli as events_cli  # noqa: PLC0415
+    from cutpoint.events import pipeline as events_pipeline  # noqa: PLC0415
+
+    monkeypatch.setattr(events_pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: None)
+    monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
+    monkeypatch.setattr(category, "probe_source", lambda src: pytest.fail("probed"))
+    monkeypatch.setattr(category, "text_probe", lambda *a: pytest.fail("OCR check"))
+    assert cli.main(["edit", str(pipeline.video), "--style", "gaming", "--events"]) == 0
+
+
 def test_edit_vertical_names_its_outputs(pipeline, home):
     assert cli.main(["edit", str(pipeline.video), "--vertical"]) == 0
     project = home / "projects" / "My Clip"
@@ -301,7 +343,9 @@ def test_edit_no_keep_clips_assembles_temporary_clips_and_leaves_none(pipeline, 
     assert tmp.parent == project and tmp.name.startswith(".assemble-tmp-")
     assert clips_call[2]["temporary"] is True
     run_lock = f".{tmp.name}.run.cutpoint-lock"  # held while the temporary clips exist
-    assert pipeline.listed == sorted([run_lock, tmp.name, "clips", "highlights.json"])
+    project_lock = ".analysis.run.cutpoint-lock"  # held by the whole edit run (#109)
+    listed = [run_lock, project_lock, tmp.name, "clips", "highlights.json"]
+    assert pipeline.listed == sorted(listed)
     assert assemble_call[1] == (tmp, project / "final.mp4")
     assert not tmp.exists()
     assert sorted(p.name for p in project.iterdir()) == [

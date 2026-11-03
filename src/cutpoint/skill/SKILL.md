@@ -28,7 +28,9 @@ it: it is the full reference.
 Style (`--style` on `cutpoint edit` and `cutpoint analyze`): go by what the user says about the
 footage, not the file name alone. Pick `funny`, `gaming`, `action`, `sport`, `commentary` (long
 talk) or `action-cam` (action-cam footage, best with telemetry); anything else: `action` or
-`gaming`.
+`gaming`. If the user says nothing about the footage, `cutpoint detect <video> --json` names its
+category and the style `--style auto` would use (`outputs.styles`); a `style_ambiguous` warning
+means it could not tell, so ask the user or keep the default.
 
 One step ("edit this into a montage"):
 
@@ -74,13 +76,21 @@ Choosing the moments yourself:
   errors go to stderr as `HH:MM:SS LEVEL message`; exit code `0` is success.
 - `--json` prints the result as one JSON object on stdout (logs stay on stderr): `ok`, `command`,
   `schema`, `project`, `outputs` (absolute paths and key facts), `warnings` (`code`, `message`,
-  `files`) and `error` (`code`, `message`, or `null`). It works on `paths`, `analyze`, `clips`,
+  `files`) and `error` (`code`, `message`, or `null`). It works on `paths`, `analyze`, `detect`, `clips`,
   `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `events`, `crashes`,
-  `profile` and every `360` subcommand.
+  `profile`, `resume` and every `360` subcommand.
+- After an interrupted or failed `analyze`, `edit`, `events`, `crashes`, `profile`,
+  `360 analyze` or `clips`, `cutpoint resume <project>` replays the recorded command (`--dry-run` shows it).
+  On `low_memory` (too little free memory for a model), ask the user to close other programs,
+  then run the command the ERROR line names (`cutpoint resume <project>`, or the same command
+  again when no progress.json was written yet).
 - If `clips`, `extend` or `assemble` stops with an `ERROR` that another run holds the folder's
   lock (`.<folder>.cutpoint-lock`; with `--json`, `error.code` is `folder_busy`), wait or
   retry; delete the lock file only if no run is active. If `clips --force` or `extend` refuses
   a `manifest.json` Cutpoint did not write, tell the user; never delete it.
+- `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` and `clips` hold
+  `<project>/.analysis.run.cutpoint-lock`; on `folder_busy` wait or retry, and delete the lock
+  only if no run is active.
 - Check `cutpoint <command> --help`; never invent options.
 - When done, report the absolute paths of `final.mp4` (and the `<name>-final.mp4` copy after
   `cutpoint edit`), its `.srt` and the clips folder, exactly as the last log lines print them;

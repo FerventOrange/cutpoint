@@ -15,6 +15,7 @@ On Windows, paths such as ``D:\\Videos\\360`` and ``projects\\trip-360\\clips`` 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -24,7 +25,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache, jsonout, progress
+from cutpoint import cache, jsonout, progress, runstate
 from cutpoint.utils import parse_size, positive_float, positive_int
 
 logger = logging.getLogger("cutpoint")
@@ -292,7 +293,6 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
         reanalyze_if_reachable,
         report_highlights,
     )
-    from cutpoint.pano import views  # noqa: PLC0415
     from cutpoint.styles import get_style  # noqa: PLC0415
 
     t_start = time.perf_counter()  # total_s: the whole run, scan included
@@ -309,6 +309,7 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
         with steps.step("scan"):
             _scan(project, a.scan, only=a.only, allow_empty=False, timings=timings)
         clips = _clips(project)
+        runstate.project_made(project)  # a new project: lock and record it, now it exists
     clips = [c for c in clips if c.lrv]
     if a.only:
         clips = [c for c in clips if c.clip_id in a.only]
@@ -323,7 +324,7 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
 
     t0 = time.perf_counter()
     with steps.step("views"):
-        st = views.run_layer(clips, force=a.force_views, handoff=handoff if keep else None)
+        st = _views(clips, a, handoff if keep else None)
     timings["views"] = {**st, "total_s": round(time.perf_counter() - t0, 1)}
     jsonout.output("timings", project / TIMINGS_FILE)
     jsonout.output("views", {k: st.get(k) for k in ("cached", "computed")})
@@ -347,6 +348,7 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
                 model=a.model,
                 language=a.language,
                 use_scenes=False,
+                batch_size=a.batch_size,
             )
         timings["analyze_s"] = round(time.perf_counter() - t1, 1)
         if a.no_events:
@@ -358,7 +360,12 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
 
         t2 = time.perf_counter()
         with steps.step("events"):
-            run_events(project, layers=EVENT_LAYERS, encoder=kept[0] if kept else None)
+            run_events(
+                project,
+                layers=EVENT_LAYERS,
+                encoder=kept[0] if kept else None,
+                batch_size=a.batch_size,
+            )
             rescored = reanalyze_if_reachable(project)
         timings["events_s"] = round(time.perf_counter() - t2, 1)
         jsonout.output("events", project / "events.json")
@@ -386,6 +393,33 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
     logger.info(
         "360 analysis done in %.0fs; next: cutpoint clips %s", time.perf_counter() - t0, a.project
     )
+
+
+def _views(clips: list[Any], a: argparse.Namespace, handoff: Any) -> dict[str, Any]:
+    """The view layer of ``clips``, in batches of ``--batch-size`` clips (its models closed
+    between two; ``handoff`` only in the last); the stats of one run."""
+    from cutpoint.events.common import free_torch  # noqa: PLC0415
+    from cutpoint.events.pipeline import merge_stats  # noqa: PLC0415
+    from cutpoint.pano import views  # noqa: PLC0415
+
+    parts = progress.batches(clips, a.batch_size)
+    st: dict[str, Any] = {}
+    for k, part in enumerate(parts):
+        if k:  # a batch boundary: run_layer closed the models of the batch before
+            free_torch()
+            progress.continuing("views", k * a.batch_size, len(clips))
+        last = handoff if k == len(parts) - 1 else None
+        start = k * a.batch_size
+        # each batch's progress in its share of the step (one batch: as run_layer reports it)
+        bar = (
+            progress.share(100 * start / len(clips), 100 * (start + len(part)) / len(clips))
+            if len(parts) > 1
+            else contextlib.nullcontext()
+        )
+        with bar:
+            got = views.run_layer(list(part), force=a.force_views, handoff=last)
+        st = merge_stats(st, got) if k else got
+    return st
 
 
 def _plan_paths(project: Path, timings: dict[str, Any]) -> None:
@@ -1069,7 +1103,10 @@ def cmd_repair(a: argparse.Namespace) -> None:
 # --------------------------------------------------------------------------- parser
 def add_parser(sub: Any) -> None:
     """Register ``cutpoint 360 ...`` on the main CLI's subparsers."""
-    from cutpoint.cli import _add_json_argument  # noqa: PLC0415 - cli imports this module
+    from cutpoint.cli import (  # noqa: PLC0415 - cli imports this module
+        _add_json_argument,
+        add_batch_size_argument,
+    )
     from cutpoint.styles import style_arg, style_names  # noqa: PLC0415
 
     p = sub.add_parser(
@@ -1115,6 +1152,7 @@ def add_parser(sub: Any) -> None:
     an.add_argument("--views-only", action="store_true", help="only the 360 view layer")
     an.add_argument("--no-events", action="store_true", help="skip cutpoint events")
     an.add_argument("--force-views", action="store_true", help="recompute the view layer")
+    add_batch_size_argument(an)
     _add_json_argument(an)
     an.set_defaults(func=cmd_analyze)
 

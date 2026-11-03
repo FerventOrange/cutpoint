@@ -77,6 +77,7 @@ with `_` are ignored.
   "ollama_url": "http://127.0.0.1:11434",
   "video_encoder": "auto",
   "export_workers": "auto",
+  "memory_guard": 2,
   "vision": false,
   "compress_peaks": "off",
   "color": "off",
@@ -226,6 +227,16 @@ The clips, their names and manifest.json are the same as with 1, and the per-cli
 
 Failure handling: the first failure or Ctrl+C stops every export in progress and removes its partial file. With `video_encoder` `auto`, when a GPU encode fails and is redone on the CPU, a clip after it that was already encoding on the GPU at that moment keeps its GPU encode; clips that start later, during the redo too, are encoded on the CPU (with 1, every clip after the failed one is encoded on the CPU). It has the same frames and length; only the encoder differs. When NVENC has no free encode session (consumer NVIDIA drivers limit them, and ShadowPlay or OBS may hold one), the clip is not redone on the CPU: the rest of the run exports one clip at a time (one INFO line, "NVENC has no free encode session; exporting one clip at a time") and the clip is encoded on the GPU again once it runs alone; only if that fails too is it redone on the CPU as above.
 
+### memory_guard
+
+GB of RAM left free when a model loads (default `2`; `0` turns the memory guard off). Before
+Whisper, the event layers' models or the vision model load, Cutpoint checks that the model's
+estimated need plus this much RAM is free (on the GPU: the model's VRAM, and this much RAM);
+when it is not, it frees cached models and unloads Ollama's, and if that does not help it stops
+with `low_memory` (exit 1) so `cutpoint resume <project>` can continue later. Whisper, PANNs
+and the crash check's CLIP short of VRAM run on the CPU instead. Checked on Linux and Windows. See
+[docs/commands.md](commands.md#memory-guard).
+
 ### assistant
 
 Settings for the `cutpoint ui` [AI Chat tab](commands.md#ai-chat), served by the UI's API
@@ -338,7 +349,7 @@ Settings for the optional 360 module. Every key is optional.
 | `max_follow_deg` | Largest camera lean, in degrees from the clip's average attitude, that the view follows when `level_strength` is below 1. A larger lean (a fall, the camera being handled) is followed as this much. Default 30 |
 | `imu_offset_s` | Time offset in seconds between the motion sensor and the video, if a clip's correction looks early or late. Default 0 |
 | `equirect_yaw_offset` | Degrees added to the director's yaw for Studio exports whose yaw 0 is not the camera's forward direction. Default 0 |
-| `director` | `DirectorParams` overrides for `cutpoint 360 director`, for example `{"max_speed": 35, "min_hold_s": 3.0}`. `--param KEY=VALUE` overrides them. Unknown keys and bad values are errors. `edge_rule` (`include_exclude`, the default, or `legacy`) chooses how people at the frame edge are fixed; its tuning keys are `w_shift`, `w_widen`, `include_margin`, `include_max_shift`, `include_min_subject_h`, `include_bridge_s`, `exclude_clear_deg`, `near_min_h_deg`, `near_min_score`, `near_box_scale`, `cut_min_gain_s` and `cut_min_gap_s`. `upright_hold_s` (default 30 s; 0 follows the camera, as the legacy preset does) sets how slowly the view of a handheld or pole-mounted clip follows the camera's heading. See [360 director](workflows/360-director.md#director) |
+| `director` | `DirectorParams` overrides for `cutpoint 360 director`, for example `{"max_speed": 35, "min_hold_s": 3.0}`. `--param KEY=VALUE` overrides them. Unknown keys and bad values are errors. `edge_rule` (`include_exclude`, the default, or `legacy`) chooses how people at the frame edge are fixed; its tuning keys are `w_shift`, `w_widen`, `include_margin` (0.06), `include_pad_deg` (5.0, degrees of yaw, 0 or more), `include_check_pad_deg` (1.5, degrees, 0 or more), `near_soft_as_hard` (false; `true` or `false`), `include_max_shift`, `include_min_subject_h`, `include_bridge_s`, `exclude_clear_deg`, `near_min_h_deg`, `near_min_score`, `near_box_scale`, `cut_min_gain_s` and `cut_min_gap_s`. `upright_hold_s` (default 30 s; 0 follows the camera, as the legacy preset does) sets how slowly the view of a handheld or pole-mounted clip follows the camera's heading. See [360 director](workflows/360-director.md#director) |
 
 ## Styles
 

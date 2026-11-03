@@ -20,11 +20,13 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from cutpoint import cache, folders, jsonout, progress
+from cutpoint import cache, category, folders, jsonout, progress, runstate
 from cutpoint.assemble import assemble, temporary_clips
+from cutpoint.category import FUNNY, HYPE
 from cutpoint.clips import export_clips
 from cutpoint.encode import Lut
-from cutpoint.styles import ACTION_CAM, get_style
+from cutpoint.planning import report_clips
+from cutpoint.styles import ACTION_CAM, AUTO, AutoRequest, Style, get_style
 from cutpoint.utils import file_stamp, find_videos, input_name
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,10 @@ class Kind:
         transition: ``assemble --transition``.
         loudnorm: ``assemble --loudnorm``.
         captions: ``assemble --captions`` (burned in; whisper runs on the final).
+        emphasis: ``--style auto``'s emphasis (:class:`~cutpoint.styles.AutoRequest`):
+            ``funny`` for funny-moments, else ``hype``.
+        auto: ``--style auto``: the style is detected from the footage; ``style`` is then
+            the fallback for an ambiguous detection.
     """
 
     style: str
@@ -51,13 +57,17 @@ class Kind:
     transition: str = "cut"
     loudnorm: bool = True
     captions: bool = False
+    emphasis: str = HYPE
+    auto: bool = False
 
 
 KINDS: dict[str, Kind] = {
     "highlights": Kind("action", max_total=180, order="chronological", transition="fade"),
     "montage": Kind("action", max_total=60, order="score", transition="fade"),
     "clips": Kind("action", top=10, order="score", transition="cut"),
-    "funny-moments": Kind("funny", top=8, order="chronological", transition="cut", captions=True),
+    "funny-moments": Kind(
+        "funny", top=8, order="chronological", transition="cut", captions=True, emphasis=FUNNY
+    ),
 }
 
 
@@ -68,8 +78,12 @@ def resolve_kind(
     top: int | None = None,
     max_total: float | None = None,
 ) -> Kind:
-    """The :data:`KINDS` entry ``kind`` with the options the user gave replacing its own."""
+    """The :data:`KINDS` entry ``kind`` with the options the user gave replacing its own
+    (``style`` :data:`~cutpoint.styles.AUTO` sets ``auto`` and keeps the kind's style as the
+    fallback)."""
     given = {"style": style, "top": top, "max_total": max_total}
+    if style == AUTO:
+        given = {"auto": True, "top": top, "max_total": max_total}
     return replace(KINDS[kind], **{k: v for k, v in given.items() if v is not None})
 
 
@@ -87,6 +101,17 @@ def _events_namespace(project: Path, layers: tuple[str, ...] | None) -> argparse
     parser = argparse.ArgumentParser()
     add_arguments(parser)
     return parser.parse_args([str(project), *(["--layers", *layers] if layers else [])])
+
+
+def _action_cam(style: Style | AutoRequest, videos: list[Path]) -> bool:
+    """Whether the analysis will use an action-cam style (``cutpoint events`` then runs its
+    layers); for ``--style auto`` the sources are probed (:func:`cutpoint.category.detect`,
+    cached for the analysis), talk aside: it never makes the style an action-cam one."""
+    if isinstance(style, AutoRequest):
+        _probes, det = category.detect(videos)
+        name, _fallback = category.choose_style(det, style.emphasis, style.fallback)
+        style = get_style(name)
+    return style.kind == ACTION_CAM
 
 
 def _link_or_copy(src: Path, dst: Path) -> None:
@@ -217,15 +242,18 @@ def _run_edit(
     keys = set().union(*(folders.file_keys(v) for v in videos))
     folders.check_not_sources(project, [named.name, named_srt.name], keys)
     # The checks clips makes, before hours of analysis rather than after.
-    if keep_clips and clips_dir.exists() and any(clips_dir.iterdir()) and not force:
+    # cutpoint resume of a run that finished its clips: they are kept (runstate.clips_kept)
+    kept = keep_clips and runstate.clips_kept(project, clips_dir)
+    if keep_clips and clips_dir.exists() and any(clips_dir.iterdir()) and not (force or kept):
         raise FileExistsError(f"{clips_dir} is not empty; use --force to replace its clips")
-    style = get_style(kind.style)
+    style = AutoRequest(kind.emphasis, kind.style) if kind.auto else get_style(kind.style)
     event_layers = None  # the events defaults
     if events:
         from cutpoint.analyze import LAYER_STEP  # noqa: PLC0415
         from cutpoint.events.pipeline import DEFAULT_LAYERS, SKI_LAYERS, preflight  # noqa: PLC0415
 
-        defaults = SKI_LAYERS if style.kind == ACTION_CAM else DEFAULT_LAYERS
+        ski = _action_cam(style, videos)
+        defaults = SKI_LAYERS if ski else DEFAULT_LAYERS
         # --skip leaves out the layers of its steps here too (keyframes: no HUD discovery).
         kept = tuple(x for x in defaults if LAYER_STEP.get(x) not in skip)
         event_layers = kept if kept != defaults else None
@@ -257,20 +285,26 @@ def _run_edit(
     before = file_stamp(srt)  # an earlier run's final.srt is not this run's subtitles
     with temporary_clips(project) if not keep_clips else nullcontext(clips_dir) as work:
         temporary = {} if keep_clips else {"out_dir": work, "temporary": True}
-        with steps.step("clips"):
-            export_clips(
-                project,
-                top=kind.top,
-                max_total=kind.max_total,
-                order=kind.order,
-                vertical=vertical,
-                force=force,
-                compress_peaks=compress_peaks,
-                lut=lut,
-                color=color,
-                color_strength=color_strength,
-                **temporary,
-            )
+        with steps.step("clips", "kept from the interrupted run" if kept else None):
+            if kept:
+                logger.info("%s: the clips of the interrupted run are kept", clips_dir)
+                report_clips(clips_dir)
+            else:
+                export_clips(
+                    project,
+                    top=kind.top,
+                    max_total=kind.max_total,
+                    order=kind.order,
+                    vertical=vertical,
+                    force=force,
+                    compress_peaks=compress_peaks,
+                    lut=lut,
+                    color=color,
+                    color_strength=color_strength,
+                    **temporary,
+                )
+        if keep_clips:
+            runstate.clips_written(project, clips_dir)
         steps.start("assemble")
         final = assemble(
             work,

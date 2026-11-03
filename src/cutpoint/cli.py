@@ -23,7 +23,7 @@ from importlib.resources import files
 from pathlib import Path, PurePath
 from typing import NoReturn
 
-from cutpoint import __version__, cache, jsonout, paths, stage
+from cutpoint import __version__, cache, jsonout, paths, runstate, stage
 from cutpoint.assemble import (
     AUDIO_TRANSITIONS,
     OUTPUT_FORMATS,
@@ -32,6 +32,7 @@ from cutpoint.assemble import (
     check_transitions,
 )
 from cutpoint.boundaries import SpeechSettings
+from cutpoint.category import FUNNY, HYPE
 from cutpoint.clips import export_clips
 from cutpoint.config import (
     COLOR_MODES,
@@ -40,21 +41,31 @@ from cutpoint.config import (
     color_default,
     compress_peaks_default,
     get_config,
+    path_key,
     projects_dir,
     resolve_project_path,
     vision_default,
 )
 from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
 from cutpoint.encode import LUT_SUFFIXES, Lut, check_lut
-from cutpoint.errors import FFmpegError
+from cutpoint.errors import FFmpegError, FolderBusyError
 from cutpoint.events import paths as event_paths
 from cutpoint.extend import extend_clips, manifest_project
 from cutpoint.planning import Padding
 from cutpoint.progress import SKIPPABLE
-from cutpoint.styles import get_style, style_arg, style_names
-from cutpoint.utils import input_name, parse_size, positive_float, positive_int, unit_float
+from cutpoint.styles import AUTO, AutoRequest, Style, get_style, style_arg, style_names
+from cutpoint.utils import (
+    command_line,
+    input_name,
+    parse_size,
+    positive_float,
+    positive_int,
+    unit_float,
+)
 
 logger = logging.getLogger("cutpoint")
+
+ANALYZE_STYLE = "gaming"  # analyze's default --style (and --style auto's fallback)
 
 # Parser-time constants of modules imported only when their command runs, so that every
 # ``cutpoint`` start does not load the action-cam and proxy code (tests check they match).
@@ -165,23 +176,62 @@ def _add_skip_argument(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _batch_size(text: str) -> int:
+    """argparse type of ``--batch-size``: a whole number, 0 or more."""
+    try:
+        n = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected a whole number") from exc
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"{text!r}: must be 0 or more")
+    return n
+
+
+def add_batch_size_argument(p: argparse.ArgumentParser, *, vlm: bool = False) -> None:
+    """``--batch-size N`` (#109): each model is closed after N sources and loaded again;
+    ``vlm``: the command runs the VLM layer (``events``), so its help names the windows."""
+    windows = (
+        " (the vision model at the next source after N VLM windows, so not within one recording)"
+        if vlm
+        else ""
+    )
+    p.add_argument(
+        "--batch-size",
+        type=_batch_size,
+        default=0,
+        metavar="N",
+        help=f"close each model after N sources{windows} and load it again for the next "
+        "ones, to give back memory on long runs; the results are the same (default: 0, keep "
+        "it loaded)",
+    )
+
+
+def _analyze_project(a: argparse.Namespace) -> Path:
+    """``analyze``'s project folder: ``--out``, else one input's name or several inputs'
+    common parent folder's name."""
+    targets = [Path(t) for t in a.inputs]
+    if a.out:
+        return resolve_project_path(a.out)
+    name = (
+        input_name(targets[0], "project")
+        if len(targets) == 1
+        else (Path(os.path.commonpath([t.resolve() for t in targets])).name or "multi")
+    )
+    return projects_dir() / name
+
+
 def _cmd_analyze(a: argparse.Namespace) -> None:
     from cutpoint.analyze import analyze  # noqa: PLC0415
 
     targets = [Path(t) for t in a.inputs]
-    if a.out:
-        out = resolve_project_path(a.out)
-    else:  # one input: its name; several: their common parent folder's name
-        name = (
-            input_name(targets[0], "project")
-            if len(targets) == 1
-            else (Path(os.path.commonpath([t.resolve() for t in targets])).name or "multi")
-        )
-        out = projects_dir() / name
+    out = _analyze_project(a)
     jsonout.set_project(out)
-    style = get_style(a.style)
-    if a.must_include_crash is not None:
-        style = replace(style, must_include_crash=a.must_include_crash)
+    if a.style == AUTO:  # detected from the footage; ambiguous: today's default, gaming
+        style: Style | AutoRequest = AutoRequest(HYPE, ANALYZE_STYLE, a.must_include_crash)
+    else:
+        style = get_style(a.style)
+        if a.must_include_crash is not None:
+            style = replace(style, must_include_crash=a.must_include_crash)
     # A failed or interrupted analyze removes the (still empty) folders it created.
     analyze(
         targets,
@@ -200,12 +250,57 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
         recover=a.recover,
         layers=True,
         skip=_skip(a),
+        batch_size=a.batch_size,
     )
+
+
+def _cmd_detect(a: argparse.Namespace) -> None:
+    """``cutpoint detect``: the footage category of the inputs and the style ``--style auto``
+    would pick; talk only for sources already transcribed (by an earlier analysis)."""
+    from cutpoint import category  # noqa: PLC0415
+    from cutpoint.analyze import find_sources  # noqa: PLC0415
+    from cutpoint.sources import source_segments  # noqa: PLC0415
+
+    found = find_sources([Path(t) for t in a.inputs], a.exclude or [], a.recursive)
+    probes = [category.probe_source(s) for s in found]
+    speech = {}
+    for src, p in zip(found, probes, strict=True):
+        segments = source_segments(src)
+        if segments is not None:
+            speech[p.path] = round(category.speech_coverage(segments, p.duration), 3)
+    det = category.decide(probes, speech)
+    hype, fallback = category.choose_style(det, HYPE, ANALYZE_STYLE)
+    funny, _ = category.choose_style(det, FUNNY, KINDS["funny-moments"].style)
+    category.warn(det, hype, fallback)
+    if jsonout.active():
+        rec = det.record(HYPE, hype, fallback)
+        for key in ("category", "ambiguous", "reason", "scores", "suggest", "sources"):
+            jsonout.output(key, rec[key])
+        jsonout.output("pending", det.pending)
+        jsonout.output("styles", {"analyze": hype, "funny-moments": funny})
+        return
+    for s in det.sources:
+        print(
+            f"{Path(s.path).name}: {category.label(s.category)}"
+            f"{' (ambiguous)' if s.ambiguous else ''} - {s.reason}"
+        )
+    note = " (ambiguous: the default)" if fallback else ""
+    print(
+        f"Footage: {category.label(det.category)}{note}; analyze --style auto uses {hype}, "
+        f"edit --kind funny-moments {funny}"
+    )
+    if det.pending:
+        print("Talk is not checked: a source has no transcript yet (analyze transcribes it)")
+
+
+def _edit_project(a: argparse.Namespace) -> Path:
+    """``edit``'s project folder: ``--out``, else named after the first input."""
+    return resolve_project_path(a.out) if a.out else projects_dir() / edit_name(Path(a.inputs[0]))
 
 
 def _cmd_edit(a: argparse.Namespace) -> None:
     targets = [Path(t) for t in a.inputs]
-    project = resolve_project_path(a.out) if a.out else projects_dir() / edit_name(targets[0])
+    project = _edit_project(a)
     jsonout.set_project(project)
     jsonout.output("kind", a.kind)
     lut = _lut(a)  # before hours of analysis
@@ -359,9 +454,11 @@ def _clip_overrides(items: list[list[str]] | None) -> dict[str, dict[str, float]
 
 
 def _cmd_events(a: argparse.Namespace) -> None:
+    from cutpoint import progress  # noqa: PLC0415
     from cutpoint.events.cli import run_args  # noqa: PLC0415
 
-    run_args(a)
+    with progress.run(progress.EVENTS_STEPS, quiet=True):  # steps in progress.json only
+        run_args(a)
 
 
 def _cmd_stage(a: argparse.Namespace) -> None:
@@ -466,6 +563,74 @@ _CRASH_SUMMARY_KEYS = (
     "clip",
     "sheet",
 )
+
+
+def _cmd_resume(a: argparse.Namespace) -> int:
+    """Replay the run recorded in ``progress.json`` (#109); see :func:`_resume_command`."""
+    project = resolve_project_path(a.project).absolute()  # before the chdir below
+    jsonout.set_project(project)
+    rec = runstate.resumable(project)
+    argv, status = rec["argv"], rec.get("status")
+    counts = runstate.step_counts(rec)
+    jsonout.output("resume", {"argv": argv, "status_before": status, "done_before": counts})
+    jsonout.output("resumed", False)
+    if status == "running":  # read() turns the record of a dead process into interrupted
+        raise FolderBusyError(
+            f"A cutpoint run (process {rec.get('pid')} on {rec.get('host')}) is still running "
+            f"on {project}. Wait until it has finished, or stop it, and resume again."
+        )
+    if status == "done":
+        logger.info("%s: its last run (%s) finished; nothing to resume", project, rec["command"])
+        return 0
+    if missing := runstate.missing_sources(rec):
+        message = f"{len(missing)} source(s) of the recorded run are not there now"
+        logger.warning("%s: %s", message, ", ".join(missing))
+        jsonout.warn("resume_sources_changed", message, missing)
+    join = command_line
+    if a.dry_run:
+        print(f"cutpoint {join(argv)}")
+        print(f"  in {rec['cwd']}, last run {status}")
+        for name, c in counts.items():
+            done = f"{c['done']}/{c['total']} done" if c["total"] is not None else ""
+            print(f"  {name}: {c['state']}{', ' + done if done else ''}")
+        return 0
+    cut = argv.index("--") if "--" in argv else len(argv)  # resume's own --json decides
+    tokens = [t for t in argv[:cut] if not _json_requested([t])] + argv[cut:]
+    try:
+        args = _parse(build_parser(), tokens)
+    except UsageError as err:
+        jsonout.fail(jsonout.BAD_ARGS, f"the recorded command line: {err.message}")
+        return 2
+    args.json_result = a.json_result
+    here = Path.cwd()
+    os.chdir(rec["cwd"])
+    try:
+        other = _run_project(args)
+        if other is not None and path_key(str(other.absolute())) != path_key(
+            str(project)
+        ):  # a copied project: its record names the original
+            message = f"{project / runstate.FILE} records a run on {other.absolute()}"
+            logger.error("%s", message)
+            jsonout.fail(jsonout.ERROR, message)
+            return 1
+        logger.info("Resuming in %s: cutpoint %s", rec["cwd"], join(argv))
+        jsonout.output("resumed", True)
+        with runstate.resuming(rec):
+            return _run(args, argv)  # records progress.json as the recorded command
+    finally:
+        os.chdir(here)
+
+
+def _resume_command(args: argparse.Namespace) -> str:
+    """The ``--json`` envelope's ``command``: ``resume`` reports as the command it replays,
+    once its ``progress.json`` is read (also for a finished run and ``--dry-run``); else
+    (none, unreadable) as ``resume``."""
+    if args.func is not _cmd_resume:
+        return args.json_command
+    try:
+        return runstate.resumable(resolve_project_path(args.project))["command"]
+    except (OSError, ValueError):
+        return args.json_command
 
 
 def _cmd_profile(a: argparse.Namespace) -> None:
@@ -1182,8 +1347,9 @@ def build_parser() -> argparse.ArgumentParser:
     ed.add_argument(
         "--style",
         type=style_arg,  # ski: an error naming action-cam
-        choices=style_names(),
-        help="analysis preset (default: funny for funny-moments, else action)",
+        choices=[AUTO, *style_names()],
+        help="analysis preset (default: funny for funny-moments, else action); auto picks "
+        "one from the footage (gameplay, action cam, talk or general; ambiguous: the default)",
     )
     ed.add_argument(
         "--out",
@@ -1227,6 +1393,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json_argument(ed)
     ed.set_defaults(func=_cmd_edit, usage_check=lambda a: _check_edit(ed, a))
 
+    dt = sub.add_parser(
+        "detect",
+        help="detect the footage category (gameplay, action cam, talk, general) and the "
+        "style --style auto picks; reads only a few frames and the container tags",
+    )
+    dt.add_argument(
+        "inputs", nargs="+", metavar="input", help="one or more video files and/or folders"
+    )
+    _add_source_filter_arguments(dt)
+    _add_json_argument(dt)
+    dt.set_defaults(func=_cmd_detect)
+
     an = sub.add_parser("analyze", help="find and rank highlight candidates")
     an.add_argument(
         "inputs", nargs="+", metavar="input", help="one or more video files and/or folders"
@@ -1235,10 +1413,12 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument(
         "--style",
         type=style_arg,
-        choices=style_names(),
-        default="gaming",
-        help="preset (default: gaming); learned presets in <CUTPOINT_HOME>/styles/*.json are "
-        "listed too (action-cam: telemetry-driven action-cam footage, formerly ski)",
+        choices=[AUTO, *style_names()],
+        default=ANALYZE_STYLE,
+        help=f"preset (default: {ANALYZE_STYLE}); learned presets in "
+        "<CUTPOINT_HOME>/styles/*.json are listed too (action-cam: telemetry-driven "
+        "action-cam footage, formerly ski); auto picks one from the footage (gameplay, "
+        f"action cam, talk or general, see cutpoint detect; ambiguous: {ANALYZE_STYLE})",
     )
     an.add_argument(
         "--out",
@@ -1273,6 +1453,7 @@ def build_parser() -> argparse.ArgumentParser:
         "least this confidence, 0-1 (default: style, 0.6 for action-cam; 0 = off)",
     )
     _add_skip_argument(an)
+    add_batch_size_argument(an)
     _add_json_argument(an)
     an.set_defaults(func=_cmd_analyze)
 
@@ -1356,6 +1537,7 @@ def build_parser() -> argparse.ArgumentParser:
     from cutpoint.events.cli import add_arguments as add_event_arguments  # noqa: PLC0415
 
     add_event_arguments(ev)
+    add_batch_size_argument(ev, vlm=True)
     _add_json_argument(ev)
     ev.set_defaults(func=_cmd_events)
 
@@ -1449,6 +1631,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_activity_arguments(pf)
     _add_json_argument(pf)
     pf.set_defaults(func=_cmd_profile)
+
+    rs = sub.add_parser(
+        "resume",
+        help="continue the interrupted run of a project (analyze, edit, events, crashes, "
+        "profile, 360 analyze): runs its recorded command again, cached work is skipped",
+    )
+    rs.add_argument("project", help="project with a progress.json (bare name = projects folder)")
+    rs.add_argument(
+        "--dry-run", action="store_true", help="print the command and its step counts only"
+    )
+    _add_json_argument(rs)
+    rs.set_defaults(func=_cmd_resume)
 
     mx = sub.add_parser(
         "mix",
@@ -1742,19 +1936,43 @@ def main(argv: list[str] | None = None) -> int:
         "numba",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    tokens = list(sys.argv[1:] if argv is None else argv)
     if not getattr(args, "json_result", False):
-        return _run(args)
-    with jsonout.run(args.json_command):
-        code = _run(args)
+        return _run(args, tokens)
+    with jsonout.run(_resume_command(args)):
+        code = _run(args, tokens)
         if code:
             jsonout.fail(jsonout.ERROR, f"exit code {code}")
     return code
 
 
-def _run(args: argparse.Namespace) -> int:
-    """Run the command; errors are logged (and recorded for --json) as an exit code."""
+def _recorded(args: argparse.Namespace, argv: Sequence[str]) -> contextlib.AbstractContextManager:
+    """:func:`cutpoint.runstate.record` of a command that keeps ``progress.json`` and the
+    project run lock (``analyze``, ``edit``, ``events``, ``crashes``, ``profile``,
+    ``360 analyze``, ``clips``), else a no-op."""
+    project = _run_project(args)
+    if project is None:
+        return contextlib.nullcontext()
+    return runstate.record(args.json_command, argv, project, vars(args))
+
+
+def _run_project(args: argparse.Namespace) -> Path | None:
+    """The project folder of a command that keeps ``progress.json``, else None."""
+    command = getattr(args, "json_command", None)
+    if command not in runstate.COMMANDS:
+        return None
+    if command == "analyze":
+        return _analyze_project(args)
+    if command == "edit":
+        return _edit_project(args)
+    return resolve_project_path(args.project)
+
+
+def _run(args: argparse.Namespace, argv: Sequence[str] = ()) -> int:
+    """Run the command; errors are logged (and recorded for --json) as an exit code.
+    ``argv``: the command line, for ``progress.json``."""
     try:
-        with _stop_signal_as_interrupt():
+        with _stop_signal_as_interrupt(), _recorded(args, argv):
             code = args.func(args)
     except ModuleNotFoundError as err:
         from cutpoint.extras import missing_module_message  # noqa: PLC0415

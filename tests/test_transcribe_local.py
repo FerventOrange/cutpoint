@@ -197,12 +197,13 @@ def test_model_folder_loads_as_given(fakes, tmp_path):
 def test_cpu_fallback_loads_local_only(fakes, hf_cache, monkeypatch, tmp_path):
     monkeypatch.setattr(transcribe, "cuda_available", lambda: True)
     cache_model(hf_cache, "medium")
+    cache_model(hf_cache, "small")  # without --model the CPU fallback runs small (#712)
     fakes.fail_on = {"cuda"}
     tr = transcribe.Transcriber()
     assert tr.transcribe(tmp_path / "a.wav") == []
-    assert [(c["device"], c["local_files_only"]) for c in fakes.loads] == [
-        ("cuda", True),
-        ("cpu", True),
+    assert [(c["name"], c["device"], c["local_files_only"]) for c in fakes.loads] == [
+        ("medium", "cuda", True),
+        ("small", "cpu", True),
     ]
     assert fakes.downloads == [] and tr.device == "cpu"
 

@@ -18,7 +18,7 @@ import functools
 import importlib.util
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
 from dataclasses import asdict
 from pathlib import Path
@@ -35,6 +35,7 @@ from cutpoint.events.audio_events import (
 )
 from cutpoint.events.common import (
     VramMonitor,
+    free_torch,
     load_highlights,
     load_source,
     load_transcript_lines,
@@ -54,6 +55,7 @@ from cutpoint.events.report import normalize, write_outputs
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.events.vlm_windows import (
     VlmParams,
+    action_cam_wording,
     add_incremental,
     cached_windows,
     describe_windows,
@@ -174,6 +176,7 @@ def run_events(
     ollama_url: str | None = None,
     ollama_model: str | None = None,
     discover_hint: str = EVENTS_DISCOVER_HINT,
+    batch_size: int = 0,
 ) -> tuple[Path, Path]:
     """Run the event layers on every source of ``project``.
 
@@ -200,7 +203,9 @@ def run_events(
             "visual", "ocr", "crash"; not "vlm"), then with "write" for the events
             collected and written; the context manager it returns wraps that part
             (``cutpoint analyze`` reports its steps with it, and may suppress a layer's
-            error to go on without it).
+            error to go on without it). None: each layer starts its step of the active
+            progress run if it has one (``cutpoint events``, :data:`progress.EVENTS_STEPS`),
+            the VLM layer too.
         cached_ocr: Read cached HUD OCR events when the OCR layer does not run
             (None: unless ski, which has no HUD).
         llm: Let the crash layer's activity profile ask the local Ollama models.
@@ -217,19 +222,23 @@ def run_events(
         discover_hint: How to avoid discovery, after "Put a preset in <presets dir>" in the
             INFO line before it runs (the caller's options: ``cutpoint analyze`` has no
             ``--game`` or ``--no-discover``).
+        batch_size: ``--batch-size`` (#109): a layer's model is closed after every this many
+            sources and loaded again for the next ones, the vision model's (Ollama) at the
+            first source boundary after at least this many VLM windows (:func:`vlm_batches`),
+            the crash layer's CLIP after every this many dense windows (0: one batch). The
+            results are the same.
 
     Returns:
         Paths of events.json and events.txt.
     """
     audio, ocr, vlm = audio or AudioParams(), ocr or OcrParams(), vlm or VlmParams()
-    stage = stage or (lambda _layer: contextlib.nullcontext())
+    stage = stage or _layer_step
     hl = load_highlights(project)
     ski = project_kind(hl) == ACTION_CAM
     if layers is None:
         layers = SKI_LAYERS if ski else DEFAULT_LAYERS
     if cached_ocr is None:
         cached_ocr = not ski
-    vlm.ski = ski
     preflight(layers)
     rater = VisionRater(ollama_url, ollama_model)  # the shared vision client
     hosted = rater.provider_name != "ollama"
@@ -293,6 +302,11 @@ def run_events(
             with VramMonitor() as vm:
                 try:
                     for i, s in enumerate(sources):
+                        if batch_size and i and not i % batch_size:  # a batch boundary
+                            if det is not None:
+                                det.close()
+                                det = None
+                            _boundary("audio", i, len(sources))
                         progress.update(progress.fraction(i, len(sources)))
                         evs = None if "audio" in force else cached_audio_events(s, audio)
                         if evs is None and not s.audio_parts:
@@ -307,19 +321,18 @@ def run_events(
                                 except Exception:
                                     panns_failed = True
                                     raise
+                                # the device of this run, as voice and visual record theirs:
+                                # a run that only reads cached events loads no PANNs
+                                stats["audio_device"] = det.device
                             evs = detect_audio_events(s, det, audio, force=True)  # miss or forced
                         layer1[str(s.path)] += [{**e, "kind": "audio"} for e in evs]
                 except BaseException:
                     keep = False  # the layer failed: free the model now
                     raise
                 finally:
-                    if det is not None:
-                        # the device of this run, as voice and visual record theirs: a run
-                        # that only reads cached events loads no PANNs and leaves it out
-                        stats["audio_device"] = det.device
-                        if not keep:
-                            det.close()
-                            det = None
+                    if det is not None and not keep:
+                        det.close()
+                        det = None
             vram["audio"] = vm.summary()
     else:
         for s in sources:
@@ -335,9 +348,14 @@ def run_events(
         t0 = time.perf_counter()
         try:
             with stage("voice"), VramMonitor() as vm:
-                stats["voice"] = voice_layer.run_layer(
-                    sources, voice_params, force="voice" in force, det=det
-                )
+                for k, part in enumerate(progress.batches(sources, batch_size)):
+                    if k:  # a batch boundary: the PANNs of the batch before is closed
+                        if det is not None:
+                            det.close()
+                            det = None
+                        _boundary("voice", k * batch_size, len(sources))
+                    st = voice_layer.run_layer(part, voice_params, force="voice" in force, det=det)
+                    stats["voice"] = merge_stats(stats["voice"], st) if k else st
         finally:
             if det is not None:  # closed before the next layer loads its model
                 det.close()
@@ -360,13 +378,23 @@ def run_events(
         handoff = crash_run and "ocr" not in layers and encoder is None
         t0 = time.perf_counter()
         with stage("visual"), VramMonitor() as vm, use_prompts(prompts):
-            stats["visual"] = visual_layer.run_layer(
-                sources,
-                visual_layer.VisualParams(hwaccel=ocr.hwaccel),
-                force="visual" in force,
-                bad=bad,
-                handoff=(lambda m: kept.append(ClipEncoder.from_visual(m))) if handoff else None,
-            )
+            parts = progress.batches(sources, batch_size)
+            for k, part in enumerate(parts):
+                if k:  # a batch boundary: run_layer closed the models of the batch before
+                    _boundary("visual", k * batch_size, len(sources))
+                last = k == len(parts) - 1  # only the last batch hands CLIP over
+                st = visual_layer.run_layer(
+                    part,
+                    visual_layer.VisualParams(hwaccel=ocr.hwaccel),
+                    force="visual" in force,
+                    bad=bad,
+                    handoff=(
+                        (lambda m: kept.append(ClipEncoder.from_visual(m)))
+                        if handoff and last
+                        else None
+                    ),
+                )
+                stats["visual"] = merge_stats(stats["visual"], st) if k else st
         vram["visual"] = vm.summary()
         timings["visual_s"] = round(time.perf_counter() - t0, 1)
 
@@ -382,6 +410,7 @@ def run_events(
     # ---- layer 1b: OCR (with region discovery for games without a preset)
     t0 = time.perf_counter()
     ocr.project = project
+    make_engine = None  # set before discovery: the stage may suppress its error
     with stage("ocr") if "ocr" in layers else contextlib.nullcontext():
         base = 0.0  # progress the per-source OCR starts at (after discovery)
         if "ocr" in layers and discover is not False:
@@ -397,7 +426,6 @@ def run_events(
             if stats["discovery"]:
                 base = DISCOVERY_PCT
         # the OCR model loads only when a source's footage is read (not for a replay)
-        make_engine = None
         if "ocr" in layers:
             make_engine = prefetch.make_engine if prefetch else functools.cache(OcrEngine)
         if not ocr.player_tags and sources and ("ocr" in layers or cached_ocr):
@@ -420,6 +448,12 @@ def run_events(
                     progress.update(pct)
 
             for i, s in enumerate(ocr_sources):
+                if batch_size and i and not i % batch_size and "ocr" in layers:
+                    # a batch boundary: the engine is made again for the next batch (the
+                    # background reader's is in use until it is stopped)
+                    if prefetch is None or make_engine is not prefetch.make_engine:
+                        _release_engine(make_engine)
+                    _boundary("ocr", i, len(ocr_sources))
                 if "ocr" in layers:  # a cached read only is no step of its own
                     shown[0] = max(
                         shown[0], base + (100 - base) * progress.fraction(i, len(ocr_sources)) / 100
@@ -467,6 +501,11 @@ def run_events(
         vram["ocr"] = vm.summary()
         stats["ocr"] = ocr_stats
     timings["ocr_s"] = round(time.perf_counter() - t0, 1)
+    if make_engine is not None:  # no OCR after this: the engine is not kept through the VLM
+        if prefetch is not None and make_engine is prefetch.make_engine:
+            prefetch.close()  # its worker uses the engine: stopped first (idempotent)
+        _release_engine(make_engine)
+        make_engine = None
 
     # ---- crashes (after voice + visual, whose caches it reads): crashes.json
     if crash_run:
@@ -482,6 +521,7 @@ def run_events(
                     encoder=enc,
                     warn_unreachable=False,
                     llm=llm,
+                    batch_size=batch_size,
                 )
         finally:
             if enc is not None:
@@ -503,6 +543,12 @@ def run_events(
             logger.info("VLM: up to %d windows", vlm.max_windows)
 
     # ---- layer 2: VLM windows
+    # action-cam: worded for the activity.json the crash layer above may have just written
+    cam_prompts = project_prompts(project) if ski else None
+    vlm.action_cam = action_cam_wording(cam_prompts) if cam_prompts is not None else None
+    if "vlm" in layers:
+        progress.start("vlm")  # cutpoint events: the step of progress.json
+        free_torch()  # the CUDA memory torch still caches for the layers before
     t0 = time.perf_counter()
     games = {
         str(s.path): ACTION_CAM if ski else game_key_for_path(str(s.path), ocr.game, project)
@@ -532,7 +578,10 @@ def run_events(
         prev = cached_windows(sources, vlm)
         if prev:
             n_new = len(windows)
-            windows = add_incremental(prev, windows)
+            # a reused window this run selects again keeps its reasons (#109: a resumed run's
+            # events.json equals an uninterrupted one's)
+            chosen = {(w.source, w.key): w for w in windows}
+            windows = [chosen.get((w.source, w.key), w) for w in add_incremental(prev, windows)]
             logger.log(
                 logging.INFO if "vlm" in layers else logging.DEBUG,
                 "VLM (action-cam, incremental): %d cached windows reused, %d of %d new "
@@ -561,6 +610,8 @@ def run_events(
             None, by_path, windows, vlm, prompts, transcript, layer1, force="vlm" in force
         )
         missing = len(windows) - vstats["cached"] if "vlm" not in force else len(windows)
+        if "vlm" not in force:
+            progress.continuing("vlm", vstats["cached"], len(windows))
         if missing > 0:
             results = cached
             if online is None:
@@ -568,7 +619,7 @@ def run_events(
             if online:
                 try:
                     with VramMonitor() as vm:
-                        results, vstats = describe_windows(
+                        results, vstats = _describe_batches(
                             rater,
                             by_path,
                             windows,
@@ -577,6 +628,8 @@ def run_events(
                             transcript,
                             layer1,
                             force="vlm" in force,
+                            batch_size=batch_size,
+                            unload=not hosted,
                         )
                     vram["vlm"] = vm.summary()
                 finally:
@@ -613,12 +666,16 @@ def run_events(
             if e.get("type") not in ("coverage", "coverage_masked")
         ]
         events += [normalize(e["source"], e) for e in windows_to_events(results)]
+        vlm_settings = asdict(vlm)
+        if cam_prompts is not None and vlm.action_cam is not None:  # the activity, not its text
+            wording = vlm.action_cam.key() or "default"
+            vlm_settings["action_cam"] = {"activity": cam_prompts.name, "wording": wording}
         settings = {
             "layers": list(layers),
             "avoid": dict(bad),
             "audio": audio.key(),
             "ocr": ocr.key(None) | {"game": ocr.game},
-            "vlm": asdict(vlm),
+            "vlm": vlm_settings,
         }
         return write_outputs(
             project,
@@ -630,6 +687,101 @@ def run_events(
             timings,
             stats,
         )
+
+
+@contextlib.contextmanager
+def _layer_step(layer: str) -> Iterator[None]:
+    """:func:`run_events`' default ``stage``: ``layer`` is its step of the active progress
+    run while the block runs, if the run has one (``cutpoint events``)."""
+    progress.start(layer)
+    yield
+    r = progress.current()
+    if r is not None and r.current == layer:
+        r.done()
+
+
+def _boundary(layer: str, done: int, total: int) -> None:
+    """A ``--batch-size`` boundary of ``layer`` after ``done`` of ``total`` units: the model
+    is closed, so torch's cached memory is freed; logged and recorded as
+    :func:`progress.continuing` does."""
+    free_torch()
+    progress.continuing(layer, done, total)
+
+
+def merge_stats(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
+    """The stats of two batches of a layer as one run's: counts added, lists joined, dicts
+    merged, anything else (a device) from ``b``; the keys in the order one run gives them."""
+    out = dict(a)
+    for k, v in b.items():
+        old = out.get(k)
+        number = isinstance(v, int | float) and not isinstance(v, bool)
+        if isinstance(v, dict) and isinstance(old, dict):
+            out[k] = {**old, **v}
+        elif (isinstance(v, list) and isinstance(old, list)) or (
+            number and isinstance(old, int | float)
+        ):
+            out[k] = old + v
+        else:
+            out[k] = v
+    return out
+
+
+def _describe_batches(
+    rater: VisionRater,
+    by_path: dict[str, Any],
+    windows: list[Any],
+    vlm: VlmParams,
+    prompts: dict[str, Any],
+    transcript: list[dict[str, Any]],
+    layer1: dict[str, list[dict[str, Any]]],
+    *,
+    force: bool,
+    batch_size: int,
+    unload: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """:func:`describe_windows` in batches (``--batch-size``, :func:`vlm_batches`), with
+    ``unload`` (Ollama) its model unloaded between two; the results and stats of one call."""
+    results: list[dict[str, Any]] = []
+    stats: dict[str, Any] = {}
+    done = 0
+    for k, part in enumerate(vlm_batches(windows, batch_size)):
+        if k:  # a batch boundary
+            if unload:
+                rater.unload()
+            progress.continuing("vlm", done, len(windows))
+        res, st = describe_windows(
+            rater, by_path, list(part), vlm, prompts, transcript, layer1, force=force
+        )
+        results += res
+        stats = merge_stats(stats, st) if k else st
+        done += len(part)
+    return results, stats
+
+
+def vlm_batches(windows: list[Any], size: int) -> list[list[Any]]:
+    """The VLM windows in batches for ``--batch-size`` ``size``: a batch ends only where the
+    windows go on with another source, once it holds at least ``size`` windows, so the vision
+    model (6.6 GB for qwen3.5:9b) is not loaded again every few windows of one recording; 0:
+    one batch."""
+    if size <= 0:
+        return [list(windows)]
+    out: list[list[Any]] = []
+    part: list[Any] = []
+    for w in windows:
+        if part and len(part) >= size and w.source != part[-1].source:
+            out.append(part)
+            part = []
+        part.append(w)
+    return [*out, part] if part or not out else out
+
+
+def _release_engine(make_engine: Callable[[], OcrEngine]) -> None:
+    """Drop the OCR engine ``make_engine`` (a ``functools.cache``) made, if it made one, so
+    its memory is free before the next layers load their models. The next call of
+    ``make_engine`` makes a new one."""
+    if getattr(make_engine, "cache_info", None) is None:
+        return
+    make_engine.cache_clear()  # type: ignore[attr-defined]
 
 
 def _telemetry_layer(

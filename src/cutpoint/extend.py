@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import boundaries, cache, folders, jsonout, srt
+from cutpoint.clipresume import ClipResume, clip_key
 from cutpoint.color import COLOR_VERSION, AutoGrade
 from cutpoint.config import path_key, remap_source
 from cutpoint.crop import Crop, parse_spec
@@ -230,6 +231,12 @@ def _recorded_grade(name: str, entry: dict[str, Any]) -> Grade | None:
     return grade
 
 
+def _crop_box(entry: dict[str, Any]) -> Crop | None:
+    """The crop box manifest ``entry`` records (None: no crop)."""
+    box = parse_spec(entry.get("crop"))
+    return box if isinstance(box, Crop) else None
+
+
 def _reusable(
     old: dict[str, Any] | None, new: dict[str, Any], same_format: bool, audio_fade: float
 ) -> bool:
@@ -375,7 +382,8 @@ def _extend_locked(
     # bind mount before any export. A run that fails before writing anything leaves no
     # empty folder behind.
     staged = in_place or non_empty
-    with folders.staged_dir(out_dir) if staged else folders.output_dir(out_dir) as work:
+    staging = folders.staged_dir(out_dir, resume=True) if staged else None
+    with staging or folders.output_dir(out_dir) as work:
         by_file = {e["file"]: e for e in manifest.get("clips", [])}
         fmt_d = manifest.get("format") or {}
         fmt = OutputFormat(int(fmt_d["width"]), int(fmt_d["height"]), int(fmt_d["fps"]))
@@ -517,6 +525,30 @@ def _extend_locked(
             and path_key(Path(n).with_suffix(".mp4").name, out_dir) in gone
             and replaceable(d)
         ]
+        # A staged run takes over the finished clips of an interrupted one with the same plan
+        # and keeps its own when interrupted (cutpoint.clipresume); 360 clips are redone.
+        resume = None
+        if staged:
+            resume = ClipResume(
+                out_dir,
+                work,
+                "extend",
+                {
+                    p.name: clip_key(
+                        p.src,
+                        p.start,
+                        p.end,
+                        fmt,
+                        vertical,
+                        _crop_box(p.entry),
+                        audio_fade,
+                        "",
+                        grades[p.name],
+                    )
+                    for p in plans
+                    if not (pano is not None and p.entry.get("pano"))
+                },
+            )
         entries = []
         reused = 0
         for plan in plans:
@@ -535,7 +567,11 @@ def _extend_locked(
                     shutil.copy2(reuse_dir / name, part)
                 reused += 1
                 read_err = None
+                if resume is not None:
+                    resume.add(name, None)
                 logger.info("  %s: unchanged, copied from %s", name, reuse_dir.name)
+            elif resume is not None and name in resume.taken:
+                read_err = resume.taken[name]
             elif pano is not None and pano_rec:
                 old = Path(pano_rec["path_file"]) if pano_rec.get("path_file") else None
                 read_err, pano_rec = pano.export(
@@ -550,7 +586,6 @@ def _extend_locked(
                     grade=grades[name],
                 )
             else:
-                box = parse_spec(e.get("crop"))
                 read_err = export_clip_checked(
                     src,
                     info,
@@ -559,11 +594,13 @@ def _extend_locked(
                     work / name,
                     fmt,
                     vertical,
-                    box if isinstance(box, Crop) else None,
+                    _crop_box(e),
                     audio_fade,
                     "",  # extend does not compress peaks (warned above)
                     grades[name],
                 )
+                if resume is not None:
+                    resume.add(name, read_err)
             if read_err and read_err["end"] < end:
                 end = read_err["end"]
             sub = subs.write(work / name, e["source"], start, end)

@@ -86,7 +86,7 @@ a tool, or {"tool": "reply", "text": "..."} to answer in plain text. Tools: """
 # The cues of a moment, each on a 0-10 scale. Candidate signals that are 0-1 (cutpoint.features:
 # the action-cam grids' maximum over the clip, the generic transcript laughter and loudness) are
 # scaled by 10; ``vision`` (the vision rating) is 0-10 already, as are the events VLM window's
-# ``funny`` score and action-cam tags (cutpoint.events.vlm_windows.SKI_TAGS).
+# ``funny`` score and action-cam tags (cutpoint.events.vlm_windows.ACTION_CAM_TAGS).
 SIGNAL_CUES = (
     *("airtime", "crash", "wipeout", "speed", "carve", "stopped", "beauty", "scenic"),
     *("people", "group", "faces", "social", "voice_laughter", "laughter", "loudness"),

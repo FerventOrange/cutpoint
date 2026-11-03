@@ -88,6 +88,27 @@ read them from the project's `activity.json` (the crash step writes it; until th
 the ski captions). Only `ski` and `snowboard` have `lift` captions, so chairlift detection is
 off for other activities. `ski` reproduces the earlier built-in ski captions exactly.
 
+Profiles also have a `vlm` section: the wording of the prompts of the action-cam VLM layer of
+`cutpoint events` (the window prompt) and of the `--vision` frame rating, so neither names a
+sport the footage is not. Its fields are `recording` (what the window shows), `video`, `audio`,
+`describe`, `hype` (the 0-10 scale), `edit` (the kind of edit), `idle`, then for the rating
+`rate_edit` (its kind of edit), `rate_high` and `rate_low` (what rates high and low) and
+`retry_high` and `retry_low` (the shorter lists of its retry prompt), each a single line of at
+most 300 characters, and `tags`, a
+description for each window tag (at most 100 characters). The tag keys (`jump_air`,
+`powder_spray`, `chairlift` and the others) are fixed: they are the names stored in
+`events.json` and read by the scorer, so a profile, including one the LLM writes, can only
+reword their descriptions, not rename, add or drop a tag. `ski` and `snowboard` have their own
+wording; every other profile, library or built with `--context`, uses the generic wording of
+`base.json`. The `--context` writer starts from that generic wording and may reword it for the
+activity. A value that is missing, not a string, empty or over its cap is replaced by the
+`base.json` text, field by field. The `vlm` section of an `activity.json` written before
+profiles had one is filled from the profile's library entry, else `base.json`.
+
+The first run after this wording was added describes the windows and rates the frames again
+for action-cam projects whose profile is not `ski` (the wording is part of the cache keys).
+Ski projects keep both caches: the `ski` wording gives the earlier prompts byte for byte.
+
 New profiles need Ollama with a Qwen model (`CUTPOINT_VISION_MODEL`, default `qwen3.5:9b`).
 Text-only requests to a model whose name starts with `qwen` skip its reasoning step; other
 models are asked through the normal chat endpoint. The model is unloaded after use, so the GPU

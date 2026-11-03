@@ -17,23 +17,40 @@ rest of the run: emitting never stops the run itself.
 
 A cancelled run (Ctrl+C, exit 130) ends its current step ``failed`` with detail
 ``cancelled``; an error that stops the run ends it ``failed`` with the error text.
+
+A step that starts with part, not all, of its work cached (a re-run after an interruption) logs an
+INFO line ``<name>: N/M done, continuing`` and sends the same text at once as its
+``detail`` (:func:`continuing`).
+
+:attr:`Run.observers` get every state change and ``pct`` of the runs, whether or not
+``CUTPOINT_PROGRESS`` is set (``progress.json``, :mod:`cutpoint.runstate`); they never stop a run.
+
+``--batch-size N`` (#109) splits a step's sources into batches of N (:func:`batches`; the VLM
+layer's windows per source, :func:`cutpoint.events.pipeline.vlm_batches`); its model is closed
+between two, and the boundary is logged and recorded as :func:`continuing` does.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import sys
 import threading
 import time
-from collections.abc import Iterator, Sequence
-from typing import Any
+from collections.abc import Callable, Iterator, Sequence
+from typing import Any, ClassVar
+
+logger = logging.getLogger(__name__)
 
 ENV = "CUTPOINT_PROGRESS"
 ANALYZE_STEPS = ("transcribe", "reactions", "keyframes", "crashes", "ranking", "vision")
 EDIT_STEPS = (*ANALYZE_STEPS, "clips", "assemble")
 PANO_STEPS = ("scan", "views", "analyze", "events")  # ``cutpoint 360 analyze``
+# ``cutpoint events``: its layers in the order they run, recorded in progress.json only (a
+# quiet run, :func:`run`: no PROGRESS lines)
+EVENTS_STEPS = ("audio", "voice", "visual", "ocr", "crash", "vlm", "write")
 LABELS = {
     "transcribe": "Transcription",
     "reactions": "Reactions",
@@ -65,15 +82,25 @@ class Run:
     Use :func:`run` to make one; the methods are safe to call when progress is off.
     """
 
-    def __init__(self, steps: Sequence[str], *, active: bool | None = None) -> None:
+    # Called as ``observer(step, state, pct, done, total)`` on each state change and ``pct``
+    # update of an ``observed`` run (``done``/``total``: units cached at the step's start,
+    # from :func:`continuing`, else None).
+    observers: ClassVar[list[Callable[..., None]]] = []
+
+    def __init__(
+        self, steps: Sequence[str], *, active: bool | None = None, observed: bool = True
+    ) -> None:
         self.steps = tuple(steps)
         self.active = enabled() if active is None else active
+        self.observed = observed
         self.state: dict[str, str] = {}  # last emitted state per step
         self.reasons: dict[str, str] = {}  # planned skips, emitted when their turn comes
         self.current: str | None = None  # the running step
         self.stopped = False  # a step already ended failed by the error that stops the run
         self._pct: int | None = None
+        self._share: tuple[float, float] | None = None  # update()'s 0-100 maps to it (share)
         self._detail: str | None = None
+        self._continued: str | None = None  # the last continuing() text (said once)
         self._last = 0.0  # time of the last running line of the current step
         self._pending: dict[str, Any] | None = None  # a throttled running line
         self._sent: dict[str, Any] | None = None  # the last line written
@@ -103,6 +130,23 @@ class Run:
         except (OSError, ValueError, AttributeError):  # broken pipe, closed or no stderr
             self.active = False
 
+    def _notify(
+        self,
+        step: str,
+        state: str,
+        pct: int | None,
+        done: int | None = None,
+        total: int | None = None,
+    ) -> None:
+        """Tell :attr:`observers` (an observer's error is logged, never raised)."""
+        if not self.observed:
+            return
+        for observer in list(self.observers):
+            try:
+                observer(step, state, pct, done, total)
+            except Exception:  # recording progress never stops the run
+                logger.debug("progress observer failed", exc_info=True)
+
     def _emit(
         self, step: str, state: str, pct: int | None = None, detail: str | None = None
     ) -> None:
@@ -112,6 +156,7 @@ class Run:
             if state == "running":
                 self._last = time.monotonic()
             self._write(self._line(step, state, pct, detail))
+        self._notify(step, state, pct)
 
     def _cancel_pending(self) -> None:
         self._pending = None
@@ -153,9 +198,14 @@ class Run:
         if step is None or self.state.get(step) != "running":
             return
         if pct is not None:
+            if self._share is not None:
+                lo, hi = self._share
+                pct = lo + (hi - lo) * pct / 100
             self._pct = max(0, min(100, int(pct)))
         if detail is not None:
             self._detail = detail
+        if pct is not None:
+            self._notify(step, "running", self._pct)
         line = self._line(step, "running", self._pct, self._detail)
         with self._lock:
             if line == self._sent:  # nothing new (a pending change was undone)
@@ -172,6 +222,18 @@ class Run:
                 self._timer = threading.Timer(wait, self._flush_pending)
                 self._timer.daemon = True
                 self._timer.start()
+
+    def note(self, detail: str) -> None:
+        """Set the running step's ``detail`` and write it at once (not throttled), so the
+        updates that follow cannot replace it before it is sent."""
+        step = self.current
+        if step is None or self.state.get(step) != "running":
+            return
+        self._detail = detail
+        with self._lock:
+            self._cancel_pending()
+            self._last = time.monotonic()
+            self._write(self._line(step, "running", self._pct, detail))
 
     def _end(self, state: str, detail: str | None) -> None:
         step = self.current
@@ -244,21 +306,22 @@ def _error_text(err: BaseException) -> str:
 
 
 @contextlib.contextmanager
-def run(steps: Sequence[str], *, use: bool = True) -> Iterator[Run]:
+def run(steps: Sequence[str], *, use: bool = True, quiet: bool = False) -> Iterator[Run]:
     """The progress run of a command: a new :class:`Run` of ``steps``, or the run already
     active (``edit`` runs ``analyze`` inside its own); with ``use`` False a run that emits
-    nothing (``reanalyze`` inside ``events``).
+    nothing (``reanalyze`` inside ``events``); with ``quiet`` one that writes no PROGRESS
+    lines, but whose :attr:`Run.observers` see it (``cutpoint events``: progress.json).
 
     An exception ending the block ends the current step ``failed`` (``cancelled`` for
     KeyboardInterrupt) and propagates; a normal end emits the steps not emitted yet.
     """
     if not use:
-        yield Run(steps, active=False)
+        yield Run(steps, active=False, observed=False)
         return
     if _RUNS:
         yield _RUNS[-1]
         return
-    r = Run(steps)
+    r = Run(steps, active=False if quiet else None)
     _RUNS.append(r)
     try:
         yield r
@@ -283,6 +346,56 @@ def update(pct: float | None = None, detail: str | None = None) -> None:
     """:meth:`Run.update` of the active run (no-op without one)."""
     if _RUNS:
         _RUNS[-1].update(pct, detail)
+
+
+@contextlib.contextmanager
+def share(lo: float, hi: float) -> Iterator[None]:
+    """In the block, the active run's :meth:`Run.update` percentages (0-100) map to
+    ``[lo, hi]``: one batch of a step whose work reports per batch (``--batch-size``)."""
+    r = current()
+    if r is None:
+        yield
+        return
+    old, r._share = r._share, (lo, hi)
+    try:
+        yield
+    finally:
+        r._share = old
+
+
+def start(step: str) -> None:
+    """:meth:`Run.start` of ``step`` on the active run if it is one of its steps (the layers
+    of ``cutpoint events``, :data:`EVENTS_STEPS`); a no-op otherwise."""
+    if _RUNS and step in _RUNS[-1].steps:
+        _RUNS[-1].start(step)
+
+
+def continuing(name: str, done: int, total: int) -> None:
+    """``done`` of the ``total`` units (sources, windows) of ``name`` are cached at its
+    start: log ``<name>: N/M done, continuing`` (INFO) and send it as the running step's
+    detail (:meth:`Run.note`). Nothing when ``done`` is 0 (a fresh run looks as before) or
+    ``total`` (nothing left to continue: a re-run of finished work looks as before too), or
+    when the run said the same text last (a ``--batch-size`` boundary right after the cached
+    part). The counts go to the observers of the running step either way."""
+    if _RUNS and (r := _RUNS[-1]).current is not None:
+        r._notify(r.current, "running", r._pct, done, total)
+    if not 0 < done < total:
+        return
+    text = f"{name}: {done}/{total} done, continuing"
+    if _RUNS:
+        if _RUNS[-1]._continued == text:
+            return
+        _RUNS[-1]._continued = text
+    logger.info("%s", text)
+    if _RUNS:
+        _RUNS[-1].note(text)
+
+
+def batches[T](items: Sequence[T], size: int) -> list[Sequence[T]]:
+    """``items`` in batches of ``size`` (``--batch-size``); one batch for ``size`` 0."""
+    if size <= 0 or len(items) <= size:
+        return [items]
+    return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 def fraction(done: float, total: int) -> float:

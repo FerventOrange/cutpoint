@@ -17,12 +17,14 @@ prints tracebacks of errors.
 | [`capabilities`](#capabilities) | Report GPU vendors, working encoders, transcription, torch and SDK support |
 | [`edit`](#edit) | Analyze, export clips and assemble in one command |
 | [`analyze`](#analyze) | Find and rank highlight candidates |
+| [`detect`](#detect) | Detect the footage category and the style `--style auto` picks |
 | [`events`](#events) | Detect sounds, HUD events and describe windows with a model |
 | [`clips`](#clips) | Export moments as numbered clips |
 | [`extend`](#extend) | Re-export a clips folder with more padding |
 | [`assemble`](#assemble) | Join clips into one video |
 | [`stage`](#stage) | Copy slow-storage sources to a local disk |
 | [`crashes`](#crashes), [`mix`](#mix) | Action-cam module |
+| [`resume`](#resume) | Re-run an interrupted or failed run from its `progress.json` |
 | [`profile`](#profile) | Pick or build the project's activity profile for crash detection |
 | [`360 ...`](workflows/360.md) | Insta360 X3 module |
 | [`setup`](#setup), [`paths`](#paths), [`guide`](#guide), [`skill`](#skill) | Setup, data, the agent guide and skill |
@@ -31,8 +33,8 @@ prints tracebacks of errors.
 ## JSON output
 
 `--json` makes a command write its result as exactly one JSON object on stdout. It is available
-on `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
-`setup`, `events`, `crashes`, `profile` and every `360` subcommand (`scan`, `analyze`, `status`,
+on `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
+`setup`, `events`, `crashes`, `profile`, `resume` and every `360` subcommand (`scan`, `analyze`, `status`,
 `director`, `stitch`, `qa`, `repair`). `ui`, `guide`, `skill`, `proxy`, `login` and
 `logout` have no `--json`. Logs and errors stay on stderr, and
 output of child processes such as ffmpeg goes to stderr too, so stdout can be parsed as is. Exit
@@ -48,7 +50,7 @@ codes are unchanged.
 | Key | Content |
 |---|---|
 | `ok` | `true` unless the command failed |
-| `command` | The command as typed, such as `analyze` or `360 qa` |
+| `command` | The command as typed, such as `analyze` or `360 qa` (`resume`: the command it replays, see [resume](#resume)) |
 | `schema` | `1` |
 | `project` | Absolute path of the project folder, or `null` when the command has none (`paths`, `capabilities`, `setup`, `stage`, and `360 status` without a project) |
 | `outputs` | Object: the files written (absolute path strings) and key facts. The keys per command are below |
@@ -74,12 +76,15 @@ So do these combinations:
 | `ffmpeg_missing` | 1 | ffmpeg or ffprobe is not found |
 | `missing_extra` | 1 | An optional extra is not installed (the feature is not available in Cutpoint lite) |
 | `output_not_empty` | 1 | A file or folder is in the way; see `--force` |
-| `folder_busy` | 1 | Another cutpoint run holds the folder's lock (`.<folder>.cutpoint-lock`); wait and retry |
+| `folder_busy` | 1 | Another cutpoint run holds the folder's lock (`.<folder>.cutpoint-lock`); wait and retry. `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` and `clips` hold `<project>/.analysis.run.cutpoint-lock` (see [Run lock](#run-lock-and-progressjson)) |
+| `low_memory` | 1 | Too little free memory to load a model, also after Cutpoint freed cached models and unloaded Ollama's; close other programs, then run the command the `ERROR` line names (`cutpoint resume <project>`, or the same command again when no `progress.json` was written yet). See [Memory guard](#memory-guard) |
 | `interrupted` | 130 | Ctrl+C, Ctrl+Break or SIGTERM |
 | `error` | 1 | Anything else |
 
 | `warnings[].code` | Command | Meaning |
 |---|---|---|
+| `resume_sources_changed` | `resume` | Sources of the recorded run are missing now; `files` names them |
+| `resume_args_changed` | `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze`, `clips` | The run replaced the `progress.json` of an interrupted or `low_memory` run with a different command or options; `files` names `<project>/progress.json` |
 | `kept_clips` | `clips`, `extend` (so `edit`) | `.mp4` files the old manifest does not list stayed in the folder (the message names clips renamed during review); `assemble` includes them |
 | `kept_sources` | `clips`, `extend` | A file the run reads, or the clips were cut from, was not replaced |
 | `temporary_clips` | `assemble <project>`, `edit --no-keep-clips` | The clips were exported into a temporary folder and removed after the join; `outputs` lists no clips. Export them with `clips` to keep them |
@@ -93,6 +98,8 @@ So do these combinations:
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
 | `loudness_below_target` | `assemble` (so `edit`) | `--loudnorm` left the final more than 1 LU below -14 LUFS: the limiter took the peaks the gain pushed over the ceiling; `--compress-peaks` leaves it more room |
 | `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it. A failed HUD OCR (keyframes for `gaming` and `funny`) is a `WARNING` instead, whose message names the effect (menu filtering and HUD events skipped) and the source it failed on; `files` lists the sources it did not read. Out of memory says so, with what to try |
+| `style_ambiguous` | `analyze`, `detect` (so `edit`) | `--style auto` could not tell the footage category apart (the message gives the evidence), so the run used the default style: `gaming` for `analyze`, the kind's style for `edit`; `files` lists the sources that were not clear. Give `--style` to choose one |
+| `style_sources_disagree` | `analyze`, `detect` (so `edit`) | With `--style auto`, sources making up more than 10% of the footage look like another category than the project's; the whole project still gets one style. `files` names them: analyze them apart, or give `--style` |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
 | `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
 | `content_qa_failed` | `mix` | The content checks of the mix failed |
@@ -119,7 +126,9 @@ So do these combinations:
 | Command | `outputs` |
 |---|---|
 | `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
-| `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set), `style` |
+| `resume` | `resume` (`argv`, `status_before`, `done_before`), `resumed`, and the replayed command's outputs |
+| `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set), `style`; with `--style auto`, `detection` (the `highlights.json` block, see [detect](#detect)) |
+| `detect` | `category` (`gameplay`, `action-cam`, `talk` or `general`), `ambiguous`, `reason`, `scores` (share of the footage per category), `suggest` (`commentary` for talky gameplay, else `null`), `sources` (each `path`, `duration`, `category`, `ambiguous`, `reason`, `gameplay` (score 0-1, `null` with telemetry) and `speech` (share of the source covered by words, `null` before transcription)), `pending` (talk not checked yet: a long source has no transcript), `styles` (`analyze` and `funny-moments`: the style each would use) |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds` |
 | `extend` | As `clips`, and `seconds` (`{"start", "end"}`) |
 | `assemble` | `format` (`mp4`, `fcpxml` or `otio`); the file written: `final` (the video, `mp4`), or `fcpxml` or `otio` (the timeline); `srt` (`null` if none was written), `duration` (of the video or the timeline), `clip_count`. From a project with `--format fcpxml\|otio`, also the outputs of `clips` for the kept clips; with `mp4`, no clip paths (warning `temporary_clips`) |
@@ -187,6 +196,8 @@ Running updates come at most 2 per second. Steps run in table order. The `pct` o
 `360 analyze` has its own 4 steps: `scan` (Read 360 clips; skipped without `--scan`), `views`
 (360 views), `analyze` (Transcription and ranking) and `events` (Events and re-rank; skipped with
 `--no-events`). `scan` and `views` report `pct` and the clip as `detail`.
+
+When a step starts with part of its work cached (a rerun after an interruption, or a `--batch-size` boundary), it logs `<name>: N/M done, continuing` as an INFO line and sends the same text as the `detail`. `events` reports its layers (`audio`, `voice`, `visual`, `ocr`, `crash`, `vlm`, `write`) only in `progress.json` (no `PROGRESS` lines), so `resume --dry-run` lists them. After Ctrl+C or a failure, `progress.json` shows the step the run was in as `failed`, with `status` giving the reason; after a hard kill both stay `running` (see [Run lock and progress.json](#run-lock-and-progressjson)).
 
 On Ctrl+C the current step ends `failed` with detail `cancelled`. After a cancel or a fatal
 error, steps after the failed one are not emitted. A first-time HUD discovery shows
@@ -746,7 +757,7 @@ one of them is refused.
 
 | Option | Meaning |
 |---|---|
-| `--style`, `--top N`, `--max-total S` | Replace the kind's value; the others stay (`--kind montage --top 5`: the 5 best that fit in 60 s) |
+| `--style`, `--top N`, `--max-total S` | Replace the kind's value; the others stay (`--kind montage --top 5`: the 5 best that fit in 60 s). `--style auto` picks the style from the footage as [`detect`](#detect) does (the funny style for `funny-moments`), before the `--events` check; unclear footage keeps the kind's style |
 | `--out DIR` | Project folder. Default: `<projects>\<name>` (the first input's name, as above) |
 | `--vertical` | 9:16 clips in `clips_vertical`, `final_vertical.mp4`, `<name>-final_vertical.mp4` |
 | `--force` | Replace the clips of an earlier run, as `clips --force`. Without it a non-empty clips folder stops the run before the analysis |
@@ -782,7 +793,7 @@ an analysed set processes only the new file.
 
 | Option | Meaning |
 |---|---|
-| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `action-cam` (formerly `ski`, no longer accepted), or a learned preset |
+| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `action-cam` (formerly `ski`, no longer accepted), a learned preset, or `auto`: pick one from the footage, as [`detect`](#detect) does. `auto` never picks `sport` or `funny`; unclear footage gets `gaming` with a `style_ambiguous` warning. `highlights.json` keeps the style it picked in `style`, `settings.style_requested` is `auto` and `detection` holds the evidence, so `events` and re-runs keep it without detecting again |
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
@@ -796,6 +807,7 @@ an analysed set processes only the new file.
 | `--max-candidates N` | Candidates per source before merging |
 | `--recover` | After a read error, resume analysis past the bad region |
 | `--must-include-crash CONF` | Action-cam: always clip crashes with at least this confidence, 0 to 1 (0 disables) |
+| `--batch-size N` | Close each model (Whisper and the step models) after N sources and load it again for the next ones, to give memory back on long runs; the results are the same. Default 0: keep it loaded. Also on `360 analyze` (its view layer, analysis and events) |
 | `--json` | Result as one [JSON envelope](#json-output) on stdout |
 
 **Vision rating.** The 0-10 rating scales a candidate's score (5 leaves it as is, 10 lifts it
@@ -901,8 +913,8 @@ file, and a cancelled first run leaves none. The other result files are written 
 before it, each atomically: `transcript.txt`, `events.json`, `events.txt`, `crashes.json`, the
 `crash_check\` sheets, `activity.json` and, for `action-cam`, `telemetry.json` and `action_cam_features\`
 (older sheets and features of the project are removed at the same time). A failed or cancelled
-run, in any step, leaves all of them as they were, and a cancelled first run leaves no project
-folder, unless HUD discovery wrote its proposal (`discovery\`, below). A run stopped after the transcription therefore has no `transcript.txt` yet; the rerun
+run, in any step, leaves all of them as they were, and a first run cancelled before its first source is transcribed leaves no project
+folder (after that the folder keeps `progress.json`, see [`resume`](#resume)), unless HUD discovery wrote its proposal (`discovery\`, below). A run stopped after the transcription therefore has no `transcript.txt` yet; the rerun
 reads the cached transcription. What stays on purpose: the per-source caches outside the
 project (audio, transcript, scene cuts, event layers, dense crash checks), so a rerun resumes
 where it stopped; a HUD preset found by discovery, installed in the presets folder at once,
@@ -938,6 +950,52 @@ Windows. No analysis cache key includes the device, so the `reactions`, `keyfram
 `crashes` results are reused across devices (after a GPU run, a CPU run reuses them, and the
 other way round). The transcript is cached per Whisper model (`--model`; the default is `medium`
 on CUDA and `small` on CPU), so it is reused only when both runs use the same `--model`.
+
+## detect
+
+```text
+cutpoint detect <file|folder> [<file|folder> ...] [--exclude GLOB] [--recursive] [--json]
+```
+
+Tells which category the footage is and which style `--style auto` would use, without analyzing
+it. It reads the container tags, the camera telemetry and 32 small grey frames per source (a few
+seconds each; cached as `category-v2.json` in the source's cache folder), plus the HUD text
+check (below) for unsure sources, and writes nothing to a project.
+
+| Category | Evidence | `analyze --style auto` | `edit --kind funny-moments --style auto` |
+|---|---|---|---|
+| Action cam | Camera telemetry (GoPro GPMF, Insta360 X3 IMU) in at least half of the footage | `action-cam` | `funny` |
+| Gameplay | A static HUD: overlay pixels that stay put while the picture moves, or HUD text that stays in place (the HUD text check below); screen-recorder tags help | `gaming` | `funny` |
+| Talk | Not gameplay, and speech covers at least 55% of a source of 8 minutes or more | `commentary` | `funny` |
+| General | Anything else. Sure only with camera tags (a phone or camera make) | `action` | `funny` |
+
+The other kinds of `edit` (`highlights`, `montage`, `clips`) use the `analyze` column.
+
+The project gets one category, by the share of the footage duration; a source is only talk once
+it has a transcript (`detect` uses one from an earlier `analyze`; `analyze` decides talk after
+transcribing). A category with weak evidence (no HUD, only screen-recorder tags, which re-encoded
+camera footage also has, or speech coverage between 40% and 55%) is ambiguous: `--style auto`
+then uses the default style with a `style_ambiguous` warning. Gameplay with a lot of speech stays
+gameplay; an INFO line suggests `--style commentary`. An opaque box across most of the bottom
+of the picture (a news lower third or ticker) is not a HUD: its text counts for neither the
+static HUD nor the HUD text check, so camera footage with one is not called gameplay. A game whose HUD is such a panel (a
+Doom-style status bar, an RTS console) is taken for a box too and can become ambiguous.
+
+**HUD text check.** A thin HUD (a few lines of text, as in War Thunder, Rainbow Six or
+Battlefield) is too small to show in the small frames. So a source those leave unsure between
+gameplay and general, with no camera tags and not a still picture, also gets the HUD text check:
+the HUD OCR engine of `analyze` finds the text on 8 frames at 1280 px and reads each text box that
+stays in the same place in most of them. At least 3 such boxes make the source sure gameplay;
+clocks, dates, speeds, GPS positions (a camera's or dashcam's burned-in overlay) and the subtitle
+band at the bottom centre do not count. It takes a few seconds per unsure source, is cached as
+`category-text-v1.json` (read again when the OCR engine changes) and runs only for `detect` and
+`--style auto`. In Cutpoint lite, which has no OCR engine, it is skipped and the source stays
+ambiguous.
+
+`highlights.json` of an `auto` analysis has a `detection` block: `version`, `category`,
+`emphasis` (`hype`, or `funny` for `funny-moments`), `style`, `reason`, `ambiguous`, `scores`,
+`fallback` (the default style used when the category was unclear, else `null`), `suggest` and
+`sources` (as in the [`--json` outputs](#json-output)).
 
 ## events
 
@@ -975,6 +1033,7 @@ Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash 
 | `--max-windows N`, `--window S`, `--pre S`, `--post S`, `--window-at "GLOB@START-END"` | Model window count and geometry |
 | `--sheets` | Write contact sheets to `<project>\visual_check` |
 | `--no-rescore` | Do not touch `highlights.json` |
+| `--batch-size N` | Close each layer's model after N sources (the vision model at the next source boundary after at least N `vlm` windows, never within one source's windows; the crash layer's CLIP after N dense windows) and load it again; the results are the same. Default 0: keep it loaded |
 | `--json` | One [result envelope](#json-output) on stdout for the whole run |
 
 Tuning options, rarely needed:
@@ -1027,6 +1086,21 @@ folder, `clips --force` refuses before any export a non-empty output folder that
 root, a mount point or a bind mount; use `--out` with a folder on that drive. An empty drive
 root or mount point is exported into directly, each clip under a temporary name until it is
 complete; a failed run there may keep the finished clips. With `export_workers` above 1 these can include clips after the failed one, and some of them may have no `.srt`.
+
+### Resuming an export
+
+`clips`, and `extend` into a folder it replaces (in place, or `--out` a non-empty folder with
+`--force`), export into the hidden staging folder and record each finished clip in its
+`resume.json`. When the run fails, is interrupted (Ctrl+C) or is killed hard, the staging
+folder is kept as the hidden `.<folder>.cutpoint-resume` next to the clips folder, with the
+finished clips only; the clips folder itself is left as it was, so `assemble` never sees a new
+or partial clip. The next `clips` or `extend` run into that folder (the same command again, or
+`cutpoint resume <project>`) takes over every finished clip whose name, source, in and out
+points, format, crop, grade, audio fade and peak compression are unchanged, encodes only the
+others and removes the folder; a run with other clips removes it and encodes them all. 360
+clips and clips trimmed by a read error are always encoded again. Temporary clips (`assemble <project>`, `edit --no-keep-clips`)
+and an export straight into an empty drive root or mount point keep no resume folder. Delete
+the folder by hand to start over; it only holds clips Cutpoint exported.
 
 ### Folder lock
 
@@ -1456,6 +1530,87 @@ project from full-rate IMU data, visual, audio and transcript evidence, and writ
 [JSON envelope](#json-output) on stdout.
 
 Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, the default reanalyze step is skipped and `highlights.json` is left unchanged; rerun once the footage is back.
+
+## resume
+
+```text
+cutpoint resume <project> [--dry-run] [--json]
+```
+
+Re-runs the last `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` or `clips` of a
+project that was interrupted or failed, from the command line recorded in its `progress.json`
+(see [Run lock and progress.json](#run-lock-and-progressjson)). `<project>` is resolved like
+the project of other commands (a bare name is in the projects folder). The recorded command
+runs in the recorded working directory with its recorded options, a `--force` among them;
+`resume` has no `--force` (it is a `bad_args` error, exit 2). Per-source caches make the rerun
+continue where the run stopped. `edit` keeps its clips when the `clips` step was done and
+`clips/manifest.json` is unchanged since; an `edit` or `clips` stopped while exporting encodes
+only the clips it had not finished (see [Resuming an export](#resuming-an-export)).
+
+Statuses that are resumed: `interrupted` (also `running` with a dead process), `failed` and
+`low_memory`. Status `done` logs `nothing to resume` and exits 0. Sources of the record that
+are missing now log a WARNING (`resume_sources_changed`); the run continues.
+
+`--dry-run` runs nothing and prints:
+
+```text
+cutpoint <argv>
+  in <cwd>, last run <status>
+  <step>: <state>[, <done>/<total> done]
+```
+
+| Exit | Cause |
+|---|---|
+| the replayed command's own | The run was resumed |
+| 0 | Status `done`, or `--dry-run` |
+| 1 | No or unreadable `progress.json` (`not_found`); a record without a usable command (`error`); a live run holds the project (`folder_busy`) |
+| 2 | Bad arguments, such as `--force` |
+
+With `--json`, `outputs.resume` is `{argv, status_before, done_before}` (`done_before`: per
+step `{state, done, total}`) and `outputs.resumed` is `true` when the command was replayed,
+`false` for `done`, `--dry-run` or an error before the replay starts (`true` when the replayed command itself fails). Resume stops with `error` (exit 1) when `progress.json` records a run on another project (for example a copied project folder). The replayed command's own `outputs` and
+`warnings` are in the same envelope. `command` is the recorded command (`edit`, `analyze`, ...)
+once a valid `progress.json` was read (replay, done, `--dry-run`, `folder_busy`); it is
+`resume` when no record could be read and for bad arguments.
+
+### Memory guard
+
+Before a model loads (Whisper, PANNs, the visual models, CLIP, the OCR engine, and Ollama's
+vision model before the request that loads it), Cutpoint checks that the model's estimated need
+plus `memory_guard` GB of RAM (`config.json`, default `2`; `0` turns the check off) are free;
+a model on the GPU needs its VRAM instead, and Ollama's model the size Ollama reports, in RAM
+and VRAM together. When memory is short it frees cached models and unloads Ollama's, checks
+again and, still short, stops with `low_memory` (exit 1, `progress.json` status `low_memory`)
+and an `ERROR` naming `cutpoint resume <project>` (or, before `progress.json` is written, the
+same command again). Whisper, PANNs and the crash check's CLIP short of VRAM run on the CPU instead (a `WARNING`); Whisper without `--model` then runs the CPU default, `small`, as after a CUDA failure, when it is downloaded already (else `medium`, with a `WARNING` naming the `cutpoint setup` command for `small`); an explicit `--model` is kept. A later run without `--model` reuses that `small` transcript (an INFO line names it), never one an explicit `--model small` made. Free RAM is read on Linux and Windows only
+(elsewhere there is no check). A vision server on this machine that is not Ollama gets only the
+RAM check and a `WARNING`, as Cutpoint cannot unload it.
+
+### Run lock and progress.json
+
+`analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` and `clips` hold the lock
+file `<project>/.analysis.run.cutpoint-lock` while they run and record themselves in
+`<project>/progress.json` (`clips` only in a project with a `highlights.json` or `pano.json`,
+and never over the record of an interrupted run of another command, which `cutpoint resume`
+then still continues). A second run on the project stops with `folder_busy` and an `ERROR`
+naming the process, as for the [folder lock](#folder-lock) of `clips`: wait, or delete the
+lock file if no run is active. `events`, `crashes` and `profile` treat a folder with only a
+`progress.json` as no project: they write nothing and take no lock. A first `analyze` or
+`edit` writes `progress.json` only after its first source is transcribed. After Ctrl+C or a
+failure, the step the run was in reads `failed` (the `PROGRESS` states) and `status` says why.
+After a hard kill the file keeps `running`; `cutpoint resume` reads such a record, whose
+process is gone on this computer, as `interrupted`.
+
+| Key | Content |
+|---|---|
+| `version`, `generator` | Format version and the writer |
+| `command`, `argv`, `cwd` | The command, its full argument list and its working directory |
+| `options_key` | Identifies the command and options |
+| `status` | `running`, `done`, `interrupted`, `failed` or `low_memory` |
+| `pid`, `host`, `started`, `updated` | The process, its computer and times |
+| `exit_code`, `error` | Exit code and `{code, message}` of a finished run |
+| `sources` | The sources of the run |
+| `steps` | Per step name `{state, done, total, pct}`; `edit` adds `steps.clips.manifest` (`{path, stamp}`) |
 
 ## profile
 

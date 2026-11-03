@@ -145,6 +145,36 @@ def test_state_changes_are_never_throttled_and_drop_the_held_update(monkeypatch,
     assert clock.timers[0].cancelled  # the held update never goes out after the done line
 
 
+def test_continuing_is_logged_and_sent_at_once_then_updates_throttle_again(
+    monkeypatch, capsys, caplog
+):
+    """#109: the "N/M done, continuing" detail is not held back (the per-source updates
+    that follow would replace it); nothing at all for N = 0 or N = M."""
+    clock = FakeClock(monkeypatch)
+    monkeypatch.setenv(progress.ENV, "1")
+    with caplog.at_level("INFO"), progress.run(progress.ANALYZE_STEPS) as r:
+        r.start("transcribe")
+        progress.continuing("transcribe", 0, 3)  # a fresh run: as before
+        progress.continuing("transcribe", 3, 3)  # all cached, nothing to continue: as before
+        assert lines(capsys)[1:] == [] and not caplog.messages
+        r.update(10)  # held back
+        progress.continuing("transcribe", 2, 3)
+        got = lines(capsys)
+        assert [(g["pct"], g["detail"]) for g in got] == [(10, "transcribe: 2/3 done, continuing")]
+        assert {g["state"] for g in got} == {"running"}  # no new state
+        assert clock.timers[0].cancelled
+        r.update(20, "c.mp4")  # within the interval again: held
+        assert lines(capsys) == []
+        r.done()
+    assert caplog.messages == ["transcribe: 2/3 done, continuing"]
+
+
+def test_continuing_without_a_run_only_logs(caplog):
+    with caplog.at_level("INFO"):
+        progress.continuing("vlm", 4, 9)
+    assert caplog.messages == ["vlm: 4/9 done, continuing"]
+
+
 def test_update_without_a_running_step_and_pct_clamp(capsys):
     r = progress.Run(progress.ANALYZE_STEPS, active=True)
     r.update(50)  # no step yet

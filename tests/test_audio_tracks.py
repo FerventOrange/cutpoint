@@ -1,17 +1,22 @@
-"""Tests for duplicate audio tracks in clip exports (#365): detection, cache, filter graphs."""
+"""Tests for duplicate audio tracks in clip exports (#365) and the analysis audio (#685):
+detection, cache, filter graphs."""
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
+import wave
+from fractions import Fraction
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from conftest import media_info, needs_ffmpeg
-from cutpoint import audio_tracks, cache, encode, errors, ffmpeg_utils
-from cutpoint.ffmpeg_utils import VideoEncoder, measure_loudness
+from conftest import media_info, needs_ffmpeg, write
+from cutpoint import analyze, audio_tracks, cache, encode, errors, ffmpeg_utils
+from cutpoint.ffmpeg_utils import MediaInfo, VideoEncoder, measure_loudness
+from cutpoint.styles import get_style
 
 RNG = np.random.default_rng(365)
 GAME = RNG.normal(0, 0.1, 8000)
@@ -144,6 +149,98 @@ def test_a_clip_is_compared_to_its_end(monkeypatch, tmp_path):
     assert spans == [(5.0, 90.0, 90.0)]  # the whole span; the timeout grows with it
 
 
+def test_the_analysis_keeps_a_track_that_differs_between_the_windows(monkeypatch, tmp_path):
+    """#685 F1: the windows hear two copies, the mic talks at 75-77 s: the analysis audio
+    keeps it, checked in spans across the whole source, stopping once it is back."""
+    monkeypatch.setattr(audio_tracks, "ANALYSIS_SPAN_S", 50.0)
+    spans = _talking_mic(monkeypatch, tmp_path, (75.0, 77.0))
+    src = tmp_path / "s.mp4"
+    assert audio_tracks.analysis_tracks(src, 2, 120.0) == (0, 1)
+    assert [s[:2] for s in spans] == [(0.0, 50.0), (49.0, 50.0)]  # overlapping, then done
+    assert audio_tracks.export_tracks(src, 2, 120.0) == (0,)  # exports check their own span
+    cached = cache.load_json(cache.source_dir(src) / audio_tracks.TRACKS_CACHE)
+    assert cached["tracks"] == [0] and cached["analysis"] == [0, 1]
+    audio_tracks._KEPT.clear()
+    spans.clear()
+    assert audio_tracks.analysis_tracks(src, 2, 120.0) == (0, 1)
+    assert spans == []  # cached
+
+
+def test_the_analysis_leaves_out_a_copy_everywhere(monkeypatch, tmp_path):
+    monkeypatch.setattr(audio_tracks, "ANALYSIS_SPAN_S", 50.0)
+    spans = _talking_mic(monkeypatch, tmp_path)
+    assert audio_tracks.analysis_tracks(tmp_path / "s.mp4", 2, 120.0) == (0,)
+    assert [s[:2] for s in spans] == [(0.0, 50.0), (49.0, 50.0), (98.0, 22.0)]
+
+
+@pytest.mark.parametrize(
+    ("length", "silent"),
+    [(120.0, (49.0, 99.0)), (98.7, (98.0, 98.7))],  # the second span; the 0.7 s last span
+)
+def test_a_silent_span_brings_no_track_back(monkeypatch, tmp_path, length, silent):
+    """#685 F4: silence on every track proves no difference; the analysis keeps the copies
+    out, while an export of a silent clip mixes every track it cannot tell apart, as before."""
+    monkeypatch.setattr(audio_tracks, "ANALYSIS_SPAN_S", 50.0)
+    sr = audio_tracks.SR
+    game = (np.random.default_rng(1).normal(0, 0.1, int(length * sr)) * 32767).astype(np.int16)
+    game[int(silent[0] * sr) : int(silent[1] * sr)] = 0
+    tracks = np.stack([game, game, game])
+    spans: list[tuple] = []
+
+    def decode(_src, _n, *, sr, start, duration, timeout=None):
+        spans.append((start, round(duration, 3)))
+        return tracks[:, int(start * sr) : int((start + duration) * sr)]
+
+    monkeypatch.setattr(audio_tracks, "window_starts", lambda _d: [10.0, 30.0])  # sound there
+    monkeypatch.setattr(audio_tracks, "decode_tracks", decode)
+    src = write(tmp_path / "s.mp4")
+    assert audio_tracks.export_tracks(src, 3, length) == (0,)
+    spans.clear()
+    assert audio_tracks.analysis_tracks(src, 3, length) == (0,)
+    span = (silent[0], round(silent[1] - silent[0], 3))
+    assert span in spans  # checked, silent on every track
+    assert audio_tracks.export_tracks(src, 3, length, span) == (0, 1, 2)  # unchanged
+
+
+def test_a_failed_span_is_not_cached(monkeypatch, tmp_path):
+    """#685 F5: a span that fails to decode leaves the result for this run only; the next
+    run checks the source again."""
+    monkeypatch.setattr(audio_tracks, "ANALYSIS_SPAN_S", 50.0)
+    spans = _talking_mic(monkeypatch, tmp_path)
+    decode = audio_tracks.decode_tracks
+
+    def flaky(src, n, *, sr, start, duration, timeout=None):
+        if start == 49.0:
+            raise errors.FFmpegError("timed out")
+        return decode(src, n, sr=sr, start=start, duration=duration, timeout=timeout)
+
+    monkeypatch.setattr(audio_tracks, "decode_tracks", flaky)
+    src = tmp_path / "s.mp4"
+    assert audio_tracks.analysis_tracks(src, 2, 120.0) == (0,)
+    assert audio_tracks.analysis_tracks(src, 2, 120.0) == (0,)  # memoised for this run
+    assert [s[:2] for s in spans] == [(0.0, 50.0), (98.0, 22.0)]
+    assert "analysis" not in cache.load_json(cache.source_dir(src) / audio_tracks.TRACKS_CACHE)
+    audio_tracks._KEPT.clear()
+    monkeypatch.setattr(audio_tracks, "decode_tracks", decode)
+    spans.clear()
+    assert audio_tracks.analysis_tracks(src, 2, 120.0) == (0,)
+    assert [s[:2] for s in spans] == [(0.0, 50.0), (49.0, 50.0), (98.0, 22.0)]  # again
+    cached = cache.load_json(cache.source_dir(src) / audio_tracks.TRACKS_CACHE)
+    assert cached["analysis"] == [0]
+
+
+def test_the_analysis_says_when_nothing_was_compared(monkeypatch, tmp_path):
+    def fail(*_a, **_k):
+        raise errors.FFmpegError("read error")
+
+    monkeypatch.setattr(audio_tracks, "decode_tracks", fail)
+    src = write(tmp_path / "bad.mp4")
+    assert audio_tracks.analysis_tracks(src, 2, 30.0) is None
+    assert audio_tracks.analysis_tracks(tmp_path / "missing.mp4", 2, 30.0) is None
+    assert audio_tracks.analysis_tracks(src, 1, 30.0) == (0,)
+    assert audio_tracks.export_tracks(src, 2, 30.0) == (0, 1)  # exports mix every track
+
+
 def test_chunks_overlap_and_cover_the_span():
     sr = audio_tracks.SR
     pcm = np.zeros((2, int(2.7 * sr)), dtype=np.int16)
@@ -215,6 +312,227 @@ def test_clip_momentary_measures_the_tracks_the_export_mixes(monkeypatch):
 
 
 # -- real ffmpeg ------------------------------------------------------------------------
+
+
+def _extract_args(monkeypatch, streams: int, kept: tuple[int, ...] | None = None) -> list[str]:
+    """The ffmpeg arguments of the analysis audio extract between ``-vn`` and ``-ac``."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        ffmpeg_utils,
+        "run_progress",
+        lambda args, *_a, **_k: calls.append(args) or write(Path(args[-1])),
+    )
+    if kept is not None:
+        monkeypatch.setattr(audio_tracks, "analysis_tracks", lambda *_a, **_k: kept)
+    info = media_info(Path("v.mp4"), 12.0, audio_streams=streams)
+    ffmpeg_utils.extract_audio(info.path, Path("cache/audio16k.wav"), info)
+    args = calls[0]
+    return args[args.index("-vn") + 1 : args.index("-ac")]
+
+
+def test_analysis_audio_mixes_the_tracks_exports_mix(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    # single track: the command line as before #685
+    assert _extract_args(monkeypatch, 1) == ["-map", "0:a:0"]
+    # every track differs: summed as before #685
+    assert _extract_args(monkeypatch, 3, (0, 1, 2)) == [
+        "-filter_complex", f"{ffmpeg_utils.audio_mix_filter(3)}[a]", "-map", "[a]",
+    ]  # fmt: skip
+    # copies left out: the kept track alone, or the kept ones summed at full level
+    assert _extract_args(monkeypatch, 5, (0,)) == ["-map", "0:a:0"]
+    assert _extract_args(monkeypatch, 3, (0, 2)) == [
+        "-filter_complex", "[0:a:0][0:a:2]amix=inputs=2:normalize=0:duration=longest[a]",
+        "-map", "[a]",
+    ]  # fmt: skip
+
+
+def test_audio_window_fallback_mixes_the_analysis_tracks(monkeypatch, tmp_path):
+    """#685 F7: the cached analysis tracks when there are any, else the window's own export
+    check; never a decode of the whole source."""
+    seen: list[dict] = []
+    monkeypatch.setattr(
+        ffmpeg_utils, "decode_pcm", lambda *_a, **k: seen.append(k) or np.zeros(0, np.int16)
+    )
+    spans = _talking_mic(monkeypatch, tmp_path, (75.0, 77.0))
+    src = tmp_path / "s.mp4"
+    info = media_info(src, 120.0, audio_streams=2)
+    ffmpeg_utils.read_pcm_window(src, info, 10.0, 20.0)  # no analysis yet: this window only
+    ffmpeg_utils.read_pcm_window(src, info, 74.0, 78.0)
+    assert [s[:2] for s in spans] == [(10.0, 10.0), (74.0, 4.0)]
+    assert [k["tracks"] for k in seen] == [(0,), (0, 1)]
+    assert audio_tracks.analysis_tracks(src, 2, 120.0) == (0, 1)
+    audio_tracks._KEPT.clear()  # the next run: the analysis tracks come from the disk cache
+    spans.clear()
+    ffmpeg_utils.read_pcm_window(src, info, 10.0, 20.0)
+    assert spans == [] and seen[-1]["tracks"] == (0, 1)
+    assert ffmpeg_utils.decode_pcm_args("v.mp4", sr=16000, tracks=(1,))[-9:-7] == [
+        "-map", "0:a:1",
+    ]  # fmt: skip
+
+
+def _cdir(tmp_path: Path) -> Path:
+    """A cache folder with every analysis cache, audio and visual."""
+    cdir = tmp_path / "cache"
+    for name in (
+        "audio16k.wav",
+        "loudness.json",
+        "transcript-small.json",
+        "transcript-small-en.json",
+        "events-audio-ab12.json",
+        "voice-ab12.npz",
+        "scenes.json",
+        "events-ocr-ab12.json",
+        "visual-ab12.npz",
+        "audio-tracks.json",
+    ):
+        write(cdir / name)  # fmt: skip
+    return cdir
+
+
+AUDIO_DERIVED = {"audio16k.wav", "loudness.json", "transcript-small.json",
+                 "transcript-small-en.json", "events-audio-ab12.json", "voice-ab12.npz"}  # fmt: skip
+
+
+def test_a_wav_with_every_track_keeps_its_caches(tmp_path):
+    cdir = _cdir(tmp_path)
+    before = {f.name: f.stat().st_mtime_ns for f in cdir.iterdir()}
+    analyze._audio_mix(Path("a.mp4"), cdir, (0,), 1)  # one track
+    analyze._audio_mix(Path("a.mp4"), cdir, (0, 1, 2), 3)  # all distinct
+    assert {f.name: f.stat().st_mtime_ns for f in cdir.iterdir()} == before
+
+
+def test_a_wav_made_with_copies_is_analysed_again_once(tmp_path):
+    cdir = _cdir(tmp_path)
+    analyze._audio_mix(Path("a.mp4"), cdir, (0,), 5)
+    names = {f.name for f in cdir.iterdir()}
+    assert not names & AUDIO_DERIVED  # the hot WAV and everything made from it
+    assert {"scenes.json", "events-ocr-ab12.json", "visual-ab12.npz", "audio-tracks.json"} < names
+    assert cache.load_json(cdir / analyze.MIX_FILE) == {"tracks": [0]}
+    for name in AUDIO_DERIVED:  # the new WAV and its caches
+        write(cdir / name)
+    analyze._audio_mix(Path("a.mp4"), cdir, (0,), 5)
+    assert {f.name for f in cdir.iterdir()} > AUDIO_DERIVED
+    # other kept tracks than the WAV was made with (a new comparison): made again
+    analyze._audio_mix(Path("a.mp4"), cdir, (0, 3), 5)
+    assert not {f.name for f in cdir.iterdir()} & AUDIO_DERIVED
+    assert cache.load_json(cdir / analyze.MIX_FILE) == {"tracks": [0, 3]}
+    for name in AUDIO_DERIVED:
+        write(cdir / name)
+    analyze._audio_mix(Path("a.mp4"), cdir, (0, 1, 2, 3, 4), 5)  # every track again
+    assert not {f.name for f in cdir.iterdir()} & (AUDIO_DERIVED | {analyze.MIX_FILE})
+
+
+def test_an_uncompared_source_keeps_its_cached_audio(monkeypatch, tmp_path):
+    """#685 F2: when the tracks cannot be compared, the WAV's recorded tracks are used and
+    nothing is removed (no re-extract too hot, then again on the next good run)."""
+    cdir = _cdir(tmp_path)
+    cache.save_json(cdir / analyze.MIX_FILE, {"tracks": [0]})
+    before = {f.name: f.stat().st_mtime_ns for f in cdir.iterdir()}
+    monkeypatch.setattr(analyze, "source_tracks", lambda *_a: None)
+    info = media_info(Path("a.mp4"), 10.0, audio_streams=5)
+    assert analyze._analysis_tracks(Path("a.mp4"), Path("a.mp4"), info, cdir) == (0,)
+    assert {f.name: f.stat().st_mtime_ns for f in cdir.iterdir()} == before
+    for bad in ({"tracks": [0, 7]}, {"tracks": []}, ["x"]):  # no valid record: every track
+        cache.save_json(cdir / analyze.MIX_FILE, bad)
+        assert analyze._analysis_tracks(Path("a.mp4"), Path("a.mp4"), info, cdir) == (
+            0, 1, 2, 3, 4,
+        )  # fmt: skip
+    assert {f.name for f in cdir.iterdir()} > AUDIO_DERIVED
+
+
+def test_a_cache_that_cannot_be_removed_is_retried(monkeypatch, tmp_path, caplog):
+    """#685 F3: a WAV open in another program (Windows) stays; the record is not written, so
+    the next run removes it."""
+    cdir = _cdir(tmp_path)
+    unlink = Path.unlink
+
+    def locked(self, missing_ok=False):
+        if self.name == "audio16k.wav":
+            raise PermissionError("in use")
+        unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", locked)
+    caplog.set_level(logging.INFO, logger="cutpoint.analyze")
+    analyze._audio_mix(Path("a.mp4"), cdir, (0,), 5)
+    names = {f.name for f in cdir.iterdir()}
+    assert names & AUDIO_DERIVED == {"audio16k.wav"}
+    assert analyze.MIX_FILE not in names
+    assert "could not remove audio16k.wav" in caplog.text
+    assert "extracting it again" not in caplog.text  # the old WAV is kept
+    caplog.clear()
+    monkeypatch.setattr(Path, "unlink", unlink)
+    analyze._audio_mix(Path("a.mp4"), cdir, (0,), 5)
+    assert "extracting it again" in caplog.text
+    assert not {f.name for f in cdir.iterdir()} & AUDIO_DERIVED
+    assert cache.load_json(cdir / analyze.MIX_FILE) == {"tracks": [0]}
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_a_derived_cache_that_cannot_be_removed_keeps_the_wav(monkeypatch, tmp_path, caplog):
+    """#685 F6: a voice cache open in another program stays, and so does the WAV it was made
+    from (removed last), so the new WAV is never paired with a stale cache."""
+    cdir = _cdir(tmp_path)
+    unlink = Path.unlink
+
+    def locked(self, missing_ok=False):
+        if self.name == "voice-ab12.npz":
+            raise PermissionError("in use")
+        unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", locked)
+    caplog.set_level(logging.INFO, logger="cutpoint.analyze")
+    analyze._audio_mix(Path("a.mp4"), cdir, (0,), 5)
+    names = {f.name for f in cdir.iterdir()}
+    assert names & AUDIO_DERIVED == {"audio16k.wav", "voice-ab12.npz"}
+    assert analyze.MIX_FILE not in names
+    assert "could not remove voice-ab12.npz" in caplog.text
+    assert "extracting it again" not in caplog.text  # the old WAV is kept
+    caplog.clear()
+    monkeypatch.setattr(Path, "unlink", unlink)
+    analyze._audio_mix(Path("a.mp4"), cdir, (0,), 5)
+    assert "extracting it again" in caplog.text
+    assert not {f.name for f in cdir.iterdir()} & AUDIO_DERIVED
+    assert cache.load_json(cdir / analyze.MIX_FILE) == {"tracks": [0]}
+
+
+@pytest.mark.parametrize(("streams", "kept"), [(1, (0,)), (3, (0, 1, 2)), (3, (0,))])
+def test_analyze_source_extracts_the_kept_tracks(tmp_path, monkeypatch, streams, kept):
+    src = write(tmp_path / "a.mp4")
+    info = MediaInfo(src, 100.0, 100.0, 640, 360, Fraction(30), "yuv420p", "h264", streams,
+                     "aac", 16000, 1)  # fmt: skip
+    cdir = tmp_path / "cache"
+    for name in ("audio16k.wav", "loudness.json", "transcript-m.json"):  # an earlier analysis
+        write(cdir / name, "[[0.0], [0.0]]" if name == "loudness.json" else "[]")
+    monkeypatch.setattr(analyze, "probe", lambda path: info)
+    monkeypatch.setattr(analyze.cache, "source_dir", lambda s, off=0.0: cdir)
+    monkeypatch.setattr(analyze, "source_tracks", lambda s, i: kept)
+    extracts: list[tuple] = []
+    monkeypatch.setattr(
+        analyze, "extract_audio", lambda *a, **k: extracts.append(k["tracks"]) or write(a[1])
+    )
+    monkeypatch.setattr(analyze, "check_read", lambda *a: None)
+    monkeypatch.setattr(analyze, "_loudness", lambda wav, cdir: (np.zeros(1), np.zeros(1)))
+
+    class Tr:
+        model_name = "m"
+        language = None
+
+        def transcribe(self, wav):
+            raise _Stop  # transcribed again: the rest of the analysis is not needed here
+
+    stale = len(kept) < streams
+    try:
+        analyze.analyze_source(src, get_style("funny"), Tr(), False, None, {})
+    except _Stop:
+        assert stale
+    else:
+        assert not stale  # the cached transcript is used
+    assert extracts == ([kept] if stale else [])
+    assert (cdir / analyze.MIX_FILE).exists() == stale
+    assert (cdir / "audio16k.wav").exists()  # the same name either way
 
 
 def _source(path: Path, *tracks: str) -> Path:
@@ -296,3 +614,27 @@ def test_duplicate_tracks_export_at_single_track_loudness(tmp_path):
     assert tp3 <= tp1 + 0.5 and tp3 < 0.0
     # game + mic: two distinct tracks of equal level, still summed (about +3 LU)
     assert levels["gm.mp4"][0] - i1 == pytest.approx(3.0, abs=1.0)
+
+
+def _wav_rms_db(path: Path) -> float:
+    with wave.open(str(path), "rb") as w:
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float64)
+    return 10 * np.log10(np.mean((pcm / 32768.0) ** 2) + 1e-24)
+
+
+@pytest.mark.slow
+@needs_ffmpeg
+def test_duplicate_tracks_analyse_at_single_track_level(tmp_path):
+    """Acceptance of #685: 3 identical tracks summed into the analysis WAV came out 9.5 dB
+    hotter; a game and a mic track are still both summed."""
+    single = _source(tmp_path / "single.mp4", GAME_SRC)
+    dup = _source(tmp_path / "dup.mp4", GAME_SRC, GAME_SRC, GAME_SRC)
+    game_mic = _source(tmp_path / "gm.mp4", GAME_SRC, MIC_SRC)
+    levels = {}
+    for src in (single, dup, game_mic):
+        wav = tmp_path / f"{src.stem}.wav"
+        ffmpeg_utils.extract_audio(src, wav, ffmpeg_utils.probe(src))
+        levels[src.stem] = _wav_rms_db(wav)
+    assert levels["dup"] == pytest.approx(levels["single"], abs=0.5)
+    # two distinct tracks of equal level: about +3 dB
+    assert levels["gm"] - levels["single"] == pytest.approx(3.0, abs=1.0)

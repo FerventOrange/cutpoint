@@ -6,6 +6,7 @@ import contextlib
 import logging
 import re
 import subprocess
+import sys
 import threading
 import time
 import wave
@@ -275,9 +276,19 @@ def unload_ollama(url: str | None = None) -> list[str]:
 
 def gpu_memory_used_mib() -> int | None:
     """Current total GPU memory use in MiB via nvidia-smi (None if unavailable)."""
+    return _gpu_memory_mib("used")
+
+
+def gpu_memory_free_mib() -> int | None:
+    """Free memory of the first GPU in MiB via nvidia-smi (None if unavailable)."""
+    return _gpu_memory_mib("free")
+
+
+def _gpu_memory_mib(field: str) -> int | None:
+    """``memory.<field>`` of the first GPU in MiB via nvidia-smi (None if unavailable)."""
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", f"--query-gpu=memory.{field}", "--format=csv,noheader,nounits"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -339,14 +350,11 @@ class VramMonitor:
 
 
 def free_torch() -> None:
-    """Release cached CUDA memory held by torch (no-op without torch/CUDA)."""
+    """Release cached CUDA memory held by torch (no-op without torch/CUDA; torch is not
+    imported when nothing loaded it, as it then caches nothing)."""
     import gc  # noqa: PLC0415
 
     gc.collect()
-    try:
-        import torch  # noqa: PLC0415
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except ImportError:
-        pass
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()

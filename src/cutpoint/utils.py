@@ -7,8 +7,11 @@ import errno
 import fnmatch
 import logging
 import math
+import os
 import re
+import shlex
 import stat
+import subprocess
 import unicodedata
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path, PurePath
@@ -133,6 +136,12 @@ def input_name(target: Path, default: str) -> str:
 def natural_key(path: Path) -> list[object]:
     """Sort key so that ``2_x`` < ``10_x`` (case-insensitive)."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", path.name)]
+
+
+def command_line(args: Sequence[str]) -> str:
+    """``args`` as one command line to copy into this OS's shell (quoted where needed):
+    ``subprocess.list2cmdline`` on Windows, ``shlex.join`` elsewhere."""
+    return subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
 
 
 def clip_files(folder: Path) -> list[Path]:
