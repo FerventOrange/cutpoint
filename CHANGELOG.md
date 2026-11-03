@@ -470,6 +470,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The PANNs audio checkpoint loads as weights only, so a tampered file cannot run code; a
   checkpoint that holds more than weights is refused with an error that says to delete it and run
   `cutpoint setup --only panns` (#598).
+- Activity profile synthesis (`profile --context`, `crashes` and the crash step of `analyze`)
+  gives up on the local Ollama model after 120 s per request instead of 600 s, so a CPU-only
+  model no longer blocks for about 20 minutes before the generic profile is used (#608).
 
 ## [0.4.0] - 2026-10-29
 

@@ -172,5 +172,43 @@ def test_default_ask_stays_local_with_hosted_vision_role(home, monkeypatch):
     )
     monkeypatch.setattr(vision.VisionRater, "available", lambda self: True)
     ask, _ = activity.default_ask()
-    rater = getattr(ask, "__self__", None)
+    rater = getattr(getattr(ask, "func", ask), "__self__", None)
     assert rater is not None and rater.via is None and rater.provider_name == "ollama"
+
+
+def test_profile_ask_sends_the_short_read_timeout_to_ollama(home, monkeypatch):
+    """#608: a stalled CPU-only Ollama must not hold `profile` for ask_json's 600 s default."""
+    timeouts: list[float] = []
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"message": {"content": '{"name": "x"}'}}
+
+    def post(url, json, timeout):
+        timeouts.append(timeout)
+        return _Resp()
+
+    monkeypatch.setattr(vision.VisionRater, "available", lambda self: True)
+    monkeypatch.setattr(vision.requests, "post", post)
+    ask, _ = activity.default_ask()
+    assert ask is not None
+    assert ask("describe", [b"jpeg"], None) == {"name": "x"}
+    assert timeouts == [activity.PROFILE_TIMEOUT_S] == [120]
+    # other callers keep the long default
+    vision.VisionRater(local_only=True).ask_json("describe", [b"jpeg"])
+    assert timeouts[-1] == 600
+
+
+def test_resolve_unloads_the_default_ask_model_after_synthesis(
+    tmp_path: Path, home, monkeypatch: pytest.MonkeyPatch
+):
+    """default_ask() returns a functools.partial: resolve must still free the model (VRAM)."""
+    unloads: list[int] = []
+    monkeypatch.setattr(vision.VisionRater, "available", lambda self: True)
+    monkeypatch.setattr(vision.VisionRater, "unload", lambda self: unloads.append(1))
+    monkeypatch.setattr(activity, "synthesize", lambda *a, **k: None)
+    activity.resolve(tmp_path, activity="ski", context="slalom race", refresh=True)
+    assert unloads == [1]
