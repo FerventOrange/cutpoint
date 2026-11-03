@@ -319,7 +319,7 @@ def install_visual() -> None:
             raise ModuleNotFoundError(f"No module named {m!r}", name=m)
     from cutpoint.events.visual import VisualModels  # noqa: PLC0415
 
-    VisualModels().close()
+    VisualModels(download=True).close()  # the only CLIP load that may download
 
 
 def install_whisper(model: str | None = None) -> dict[str, str]:

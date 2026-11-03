@@ -45,6 +45,9 @@ with the other layers. Check the points above, or pull the model with `ollama pu
 - Downloads resume. Run `cutpoint setup` again, or only the failing part:
   `cutpoint setup --only visual`.
 - Components: `pip` (only checks Python packages), `whisper`, `panns`, `visual`, `voice`.
+- `CLIP weights not found in .../models/clip; run: cutpoint setup --only visual`: a step that
+  uses CLIP found no weights there. Only `cutpoint setup` downloads them; other commands load
+  them from disk and never download. Check `CUTPOINT_MODELS_DIR` points at the folder setup used.
 - Behind a proxy or offline, download manually and place files under `CUTPOINT_HOME` using the
   folder layout in [Configuration](../configuration.md#data-folder-cutpoint_home).
 - `panns` downloads the checkpoint from a Hugging Face copy of the Zenodo record (CC BY 4.0)
