@@ -432,6 +432,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 360 clips filmed with the camera upright (lenses horizontal, on a pole or stick above you)
+  now place the wearer below the camera (#573). The wearer cone (the rendered QA's self tags,
+  the `--paths` QA's wearer exclusion), the director's wearer rule, the travel direction and
+  the selfie view assumed the helmet mount, which on such a clip points 47 deg toward the
+  travel lens; where enough close people were found, their median was used instead, which on
+  rafting footage landed on the people beside you. An upright clip now takes the wearer from
+  its orientation track: its median down direction, tilted 15 deg away from the `_10_` lens,
+  with a 25 deg cone instead of 50 deg, so the people seated around the pole count as people,
+  not as you (measured on five upright clips). Its view layer is computed again by `360 analyze` (an
+  INFO line says so) when its selfie view looked elsewhere, and the candidates' camera paths
+  are planned again, as are an upright clip's paths already saved by `360 director` (no
+  `--force` needed). Helmet-mount clips are unchanged.
 - A provider URL on this machine on the port of the Cutpoint proxy (the running proxy's port,
   else `CUTPOINT_CLIPROXY_PORT`, the port saved at its last start, or 18317) is hosted: the proxy
   forwards to hosted models, so AI Chat, Vision and frames consent now apply to it, with keys

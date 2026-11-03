@@ -22,7 +22,10 @@ average attitude), so a fall or the camera being handled does not tip the view o
 `views.py` decodes the `.lrv` proxy at about 0.8 frames per second and resamples it into eight
 levelled horizon views (90 degrees wide, every 45 degrees of yaw) plus a downward "selfie" view at
 the wearer. CLIP embeddings give beauty and group scores per view; a person detector runs on a
-levelled equirect. People within 50 degrees of the wearer axis are treated as the wearer. The
+levelled equirect. People within the wearer cone around the wearer axis are treated as the
+wearer: 50 degrees around the mount direction on a helmet or mounted clip; 25 degrees on an
+upright or handheld X3 clip, whose axis is the orientation track's median down direction tilted
+15 degrees away from the `_10_` lens. The
 results are cached per clip, and the standard visual-layer cache is written too, so `events`
 does not decode again.
 
