@@ -594,6 +594,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Hugging Face Hub freshness check and no download in the middle of a run. Without the weights
   the step stops with `CLIP weights not found in <models>/clip; run: cutpoint setup --only
   visual` (#642).
+- The Faster R-CNN detector of the visual layer, `360 analyze` (views) and `360 qa` loads from
+  the checkpoint `cutpoint setup --only visual` downloaded into the torch hub cache, by file
+  path, outside `cutpoint setup`: torchvision no longer downloads it in the middle of a run
+  when it is missing. Without it the command stops with `Faster R-CNN detector weights not
+  found in <models>/torch/hub/checkpoints; run: cutpoint setup --only visual` (#654).
 - `analyze`: when the HUD OCR of the keyframes step fails (out of memory or any other error),
   one WARNING and one `step_failed` warning (`files`: the sources not read) now say what is
   skipped: "OCR failed (<reason>): menu filtering and HUD events (kill feed, banners, notices)

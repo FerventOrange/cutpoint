@@ -48,6 +48,10 @@ with the other layers. Check the points above, or pull the model with `ollama pu
 - `CLIP weights not found in .../models/clip; run: cutpoint setup --only visual`: a step that
   uses CLIP found no weights there. Only `cutpoint setup` downloads them; other commands load
   them from disk and never download. Check `CUTPOINT_MODELS_DIR` points at the folder setup used.
+- `Faster R-CNN detector weights not found in .../models/torch/hub/checkpoints; run: cutpoint
+  setup --only visual`: the visual layer, `360 analyze` or `360 qa` found no detector checkpoint
+  there (`TORCH_HOME/hub/checkpoints` when you set `TORCH_HOME`). Only `cutpoint setup`
+  downloads it; other commands load it from disk and never download.
 - Behind a proxy or offline, download manually and place files under `CUTPOINT_HOME` using the
   folder layout in [Configuration](../configuration.md#data-folder-cutpoint_home).
 - `panns` downloads the checkpoint from a Hugging Face copy of the Zenodo record (CC BY 4.0)
