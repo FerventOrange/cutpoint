@@ -97,9 +97,14 @@ TEXT_WEIGHT = 0.3  # gameplay score of a HUD's text
 SUBTITLE_BAND = (0.3, 0.7, 0.75)  # x from, x to, y from (share of the frame): subtitles
 CLOCK_RE = re.compile(
     r"\d{1,2}\s*[:.]\s*\d{2}(\s*[:.]\s*\d{2})?|\d{4}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{1,2}|"
-    r"\d{1,2}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{2,4}|\b[ap]\.?m\b|km/?h|mph|[NSEW]\s?\d{1,3}\.\d",
+    r"\d{1,2}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{2,4}|\b[ap]\.?m\b|km/?h|mph|[NSEW]\s?\d{1,3}\.\d|"
+    r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]{0,6}\.?\s*\d{1,2}\b|"
+    r"\b\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b|"
+    r"\d{1,3}\s*°\s*\d{1,2}\s*'|\d{1,3}\s*°\s*[CF]\b",
     re.I,
 )
+
+_TEXT_FAILED: set[Path] = set()  # cache folders whose text check failed in this process
 
 SCREEN_HANDLERS = ("videohandle",)  # NVIDIA ShadowPlay / the NVIDIA app
 CAMERA_RE = re.compile(
@@ -470,7 +475,7 @@ def needs_text(p: SourceProbe) -> bool:
 def _with_text(found: SourceProbe, cdir: Path, io: Path | None = None) -> SourceProbe:
     """``found`` with :attr:`SourceProbe.hud_text` when :func:`needs_text`: from
     :data:`TEXT_FILE`, else from :func:`text_probe` (cached); unchanged without the OCR
-    engine (Cutpoint lite) or when the check fails."""
+    engine (Cutpoint lite) or when the check fails (tried once per process)."""
     if not needs_text(found):
         return found
     from cutpoint.events.ocr_raw import engine_version  # noqa: PLC0415
@@ -483,6 +488,8 @@ def _with_text(found: SourceProbe, cdir: Path, io: Path | None = None) -> Source
         and isinstance(rec.get("anchors"), list)
     )
     if not fresh:
+        if cdir in _TEXT_FAILED:
+            return found
         if not ocr_installed():
             logger.debug("HUD text check of %s skipped: no OCR engine", found.path)
             return found
@@ -495,8 +502,10 @@ def _with_text(found: SourceProbe, cdir: Path, io: Path | None = None) -> Source
             rec = text_probe(io, info.duration, info.width, info.height)
         except Exception as err:  # noqa: BLE001 - an OCR or decode failure: the frame probe stands
             logger.warning("HUD text check of %s failed: %s", Path(found.path).name, err)
+            _TEXT_FAILED.add(cdir)
             return found
         if rec is None:
+            _TEXT_FAILED.add(cdir)
             return found
         logger.debug("HUD text check of %s: %.1fs", found.path, time.perf_counter() - t0)
         cache.save_json(cdir / TEXT_FILE, rec)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -220,6 +221,10 @@ def test_text_anchors_keep_boxes_that_stay_in_place():
         ({**text_box(0.85, 0.9), "text": "2025-03-14 12:34:56"}, False),  # a camera's clock
         ({**text_box(0.02, 0.02), "text": "2025/03/14"}, False),
         ({**text_box(0.8, 0.95), "text": "54 KM/H N49.1234 W122.98"}, False),  # a dashcam
+        ({**text_box(0.02, 0.02), "text": "MAR 14 2025"}, False),
+        ({**text_box(0.02, 0.9), "text": "N49°12'34\""}, False),
+        ({**text_box(0.8, 0.02), "text": "25°C 77°F"}, False),
+        ({**text_box(0.5, 0.1), "text": "275°"}, True),  # a War Thunder bearing
         ({**text_box(0.4, 0.88), "text": "Watch out for that rock"}, False),  # subtitles
         ({**text_box(0.85, 0.9), "score": 0.3}, False),  # not read
         ({**text_box(0.85, 0.9), "text": " "}, False),
@@ -259,6 +264,13 @@ def test_hud_text_makes_an_unsure_screen_recording_sure_gameplay():
     assert (det.category, det.ambiguous, det.suggest) == (GAMEPLAY, False, "commentary")
     det = category.decide([probe(**THIN_HUD, hud_text=few)])
     assert det.ambiguous and "no HUD text" in det.reason
+
+
+@pytest.fixture(autouse=True)
+def _reset_failed_text_checks():
+    category._TEXT_FAILED.clear()
+    yield
+    category._TEXT_FAILED.clear()
 
 
 @pytest.fixture
@@ -327,7 +339,7 @@ def test_a_failed_text_check_keeps_the_frame_probe_and_is_not_cached(text_check,
     monkeypatch.setattr(category, "text_probe", broken)
     assert category.probe_source(text_check.src).hud_text is None
     assert category.probe_source(text_check.src).hud_text is None
-    assert text_check.texts == 2
+    assert text_check.texts == 1  # one attempt per process (edit --style auto detects twice)
 
 
 def test_camera_overlays_never_make_camera_footage_sure_gameplay(text_check):
@@ -356,3 +368,36 @@ def test_sure_footage_and_stills_are_never_read(text_check, monkeypatch, frame, 
     monkeypatch.setattr(category, "_metadata", lambda data: meta)
     assert category.probe_source(text_check.src).hud_text is None
     assert text_check.texts == 0
+
+
+def test_text_probe_reads_a_real_hud_and_leaves_out_clock_and_subtitles(monkeypatch):
+    """The real OCR on synthetic frames: three fixed labels are HUD anchors, the clock and
+    the bottom-centre subtitle are not (box order, scaling and recognition end to end)."""
+    pytest.importorskip("rapidocr_onnxruntime")
+    cv2 = pytest.importorskip("cv2")
+    rng = np.random.default_rng(1)
+    w, h = 640, 360
+    frames = []
+    for _ in range(8):
+        f = np.full((h, w, 3), 30, np.uint8) + rng.integers(0, 20, (h, w, 3), dtype=np.uint8)
+        for text, org in [
+            ("HEALTH 100", (20, 300)),
+            ("AMMO 30", (480, 300)),
+            ("SCORE 4500", (480, 60)),
+            ("12:34:56", (20, 40)),
+            ("Watch out for that rock", (170, 335)),
+        ]:
+            cv2.putText(f, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+        frames.append(f)
+    monkeypatch.setattr(category, "_text_frames", lambda *a: frames)
+    rec = category.text_probe(Path("x"), 60.0, w, h)
+    assert rec["engine"] == ocr_raw.engine_version() and rec["frames"] == 8
+    assert all(0.0 <= v <= 1.0 for a in rec["anchors"] for v in a["box"])
+    assert category.hud_anchors(rec["anchors"]) == 3
+
+
+@needs_ffmpeg
+def test_text_frames_decodes_eight_frames_at_the_ocr_width(video):
+    frames = category._text_frames(video, 10.0, 160, 120)
+    assert len(frames) == category.TEXT_FRAMES
+    assert all(f.shape == (120, 160, 3) for f in frames)

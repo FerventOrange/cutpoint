@@ -119,7 +119,7 @@ flowchart TD
 
 One category per project, by the share of the footage duration (sources of another category
 over 10% of it: `style_sources_disagree`). The HUD text check only lifts an unsure source to
-sure gameplay; it never makes camera-tagged footage or a still picture gameplay. In `analyze`'s own steps the detected category, not
+sure gameplay; it does not make camera-tagged footage or a still picture gameplay. In `analyze`'s own steps the detected category, not
 the style, plans the HUD OCR and CLIP layers, so `funny` on camera footage gets the CLIP layer,
 not the HUD OCR. `edit --events` and `cutpoint events` still choose their layers by style.
 `funny-moments` maps every category to `funny`. `highlights.json` records the result; `events`
