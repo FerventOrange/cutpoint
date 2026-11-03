@@ -160,7 +160,11 @@ def test_run_events_visual_layer_and_sheets_use_the_projects_prompts(
     monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
     monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
     monkeypatch.setattr(
-        pipeline, "VisionRater", lambda *a, **k: SimpleNamespace(provider_name="ollama", model="m")
+        pipeline,
+        "VisionRater",
+        lambda *a, **k: SimpleNamespace(
+            provider_name="ollama", url="http://127.0.0.1:11434", model="m"
+        ),
     )
     monkeypatch.setattr(pipeline, "VramMonitor", _Mon)
     monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
@@ -201,7 +205,11 @@ def test_run_events_writes_sheets_after_the_crash_layer_under_the_profile_it_wro
     monkeypatch.setattr(pipeline, "VramMonitor", _Mon)
     monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
     monkeypatch.setattr(
-        pipeline, "VisionRater", lambda *a, **k: SimpleNamespace(provider_name="ollama", model="m")
+        pipeline,
+        "VisionRater",
+        lambda *a, **k: SimpleNamespace(
+            provider_name="ollama", url="http://127.0.0.1:11434", model="m"
+        ),
     )
     seen: list[tuple[str, str]] = []
 
