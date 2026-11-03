@@ -3286,6 +3286,27 @@ def _compress_peaks(body: dict[str, Any]) -> list[str]:
     return ["--compress-peaks", v]
 
 
+def _color_state(raw: Any) -> dict[str, Any] | None:
+    """The page's Color as ``{mode, strength}`` (strength 0-1) from an assistant request, or
+    None when it did not send one (or sent nonsense)."""
+    if not isinstance(raw, dict) or raw.get("mode") not in COLOR_MODES:
+        return None
+    strength = raw.get("strength")
+    ok = isinstance(strength, int | float) and not isinstance(strength, bool)
+    if not ok or not 0 <= strength <= 1:
+        return None
+    return {"mode": raw["mode"], "strength": float(strength)}
+
+
+def _color_after(target: dict[str, Any], now: dict[str, Any] | None) -> dict[str, Any]:
+    """The Color a proposal's color op gives: its ``target`` ``{mode, strength}``, where a
+    strength it leaves out (None) stays what the page has ``now``."""
+    strength = target.get("strength")
+    if strength is None:
+        strength = now["strength"] if now else 1.0
+    return {"mode": target["mode"], "strength": strength}
+
+
 def _color_args(body: dict[str, Any]) -> list[str]:
     """``--color`` and ``--color-strength`` with the page's choice. Not sent: no flag, so the CLI
     applies ``color`` in config.json itself (never to gaming footage, which an explicit flag
@@ -5029,11 +5050,15 @@ def create_app(port: int) -> FastAPI:
         (as it was before). When those or the analysis changed since the proposal was made, its
         ops are applied again to them; the result's ``after`` is the sequence to show.
         ``revert-<id>`` (from ``history/<id>/revert``) puts back the "before" of applied change
-        ``<id>``; ``base_key`` (from that preview) must still match ``segments``, else 409."""
+        ``<id>``; ``base_key`` (from that preview) must still match ``segments``, else 409.
+        ``color`` is the page's Color now (``{mode, strength}``); a proposal with a color op
+        (or a revert of one) records it as ``before`` with the Color it sets as ``after``."""
         p = project_dir(pid)
+        now = _color_state(body.get("color"))
         if prop.startswith(REVERT):
             undone, back = assistant_revert(p, prop.removeprefix(REVERT))
             found = (undone.get("turn"), {"summary": f"Revert: {undone.get('summary', '')}"})
+            color = (undone.get("color") or {}).get("before")
         else:
             back = None
             found = next(
@@ -5042,6 +5067,7 @@ def create_app(port: int) -> FastAPI:
             )
             if found is None and (saved := ai_store.find_proposal(p, prop)) is not None:
                 found = (saved[0].get("id"), saved[1])
+            color = (found[1] if found else {}).get("color")
         if found is None:
             raise bad("unknown proposal", 404)
         tid, proposal = found
@@ -5055,7 +5081,9 @@ def create_app(port: int) -> FastAPI:
                 )
             after, changes = back, ai_ops.diff(before, back)
         elif key != proposal.get("base_key"):
-            out = ai_ops.apply_ops(before, proposal.get("ops"), moments, durations)
+            # look_for moments are not in highlights.json: the proposal carries them
+            known = [*moments, *ai_ops.extra_moments(proposal.get("moments"))]
+            out = ai_ops.apply_ops(before, proposal.get("ops"), known, durations)
             if out.error:
                 raise bad(f"the proposal no longer applies to this sequence: {out.error}", 409)
             after, changes, rebased = out.after, out.diff, True
@@ -5071,6 +5099,8 @@ def create_app(port: int) -> FastAPI:
             "after": after,
             "diff": changes,
         }
+        if isinstance(color, dict) and color.get("mode") in COLOR_MODES:
+            entry["color"] = {"before": now, "after": _color_after(color, now)}
         assistant_save(p, ai_store.HISTORY)
         ai_store.add_applied(p, entry)
         return entry
@@ -5098,13 +5128,17 @@ def create_app(port: int) -> FastAPI:
         entry, back = assistant_revert(p, hid)
         now = validate_segments(body.get("segments"), sources.entries(p), media)
         changes = ai_ops.diff(now, back)
-        if not any(row["changes"] for row in changes):
+        color = (entry.get("color") or {}).get("before")
+        if color is not None and color == _color_state(body.get("color")):
+            color = None  # the Color is already as it was
+        if color is None and not any(row["changes"] for row in changes):
             raise bad("the sequence is already as it was before this change", 409)
         return {
             "id": f"{REVERT}{hid}",
             "summary": f"Revert: {entry.get('summary', '')}",
             "after": back,
             "diff": changes,
+            **({"color": color} if color is not None else {}),
             "base_key": assistant_state(p, now)[2],
         }
 

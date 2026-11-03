@@ -1,6 +1,7 @@
 """One chat turn, run in a thread: the model looks moments up and ends with a proposal or a reply.
 
-The loop offers the read tools (``find_moments``, ``get_moment``, ``get_transcript``,
+The loop offers the read tools (``find_moments``, ``look_for`` (CLIP search of the whole
+timeline, :mod:`cutpoint.assistant.lookfor`), ``get_moment``, ``get_transcript``,
 ``show_moments``, and ``view_moment`` for a model that takes images, :mod:`cutpoint.assistant.watch`)
 and the final ``propose_edit``, for at most :data:`MAX_ROUNDS` model replies.
 A proposal is checked with :func:`cutpoint.assistant.ops.apply_ops`; a rejected one goes back to
@@ -23,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from cutpoint.assistant import context, watch
+from cutpoint.assistant import context, lookfor, watch
 from cutpoint.assistant.ops import apply_ops
 from cutpoint.assistant.providers import (
     Provider,
@@ -60,7 +61,7 @@ _ID = {"type": "string", "description": "short moment id such as m3"}
 _OPS = {
     "type": "array",
     "items": {"type": "object"},
-    "description": "edits in order: add, remove, move, trim, order or sort ops",
+    "description": "edits in order: add, remove, move, trim, order, sort or color ops",
 }
 TOOLS = [
     _tool(
@@ -70,6 +71,7 @@ TOOLS = [
         {"query": {"type": "string"}, "limit": {"type": "integer"}},
         ["query"],
     ),
+    lookfor.TOOL,
     _tool("get_moment", "One moment with its whole transcript snippet.", {"id": _ID}, ["id"]),
     _tool(
         "get_transcript",
@@ -114,6 +116,7 @@ JSON_SCHEMA = {
 }
 _JSON_TOOLS = [
     "find_moments {query, limit?}",
+    lookfor.JSON_TOOL,
     "get_moment {id}",
     "get_transcript {id, pad?}",
     "show_moments {ids, note?}",
@@ -177,6 +180,10 @@ class Turn:
         self._viewed: set[str] = set()
         self._sheets: list[dict[str, Any]] = []
         self._images: list[dict[str, Any]] = []
+        # look_for: the finder (reads each source's cached embeddings once) and the new moments
+        # it made, which add ops can take and proposals carry
+        self._finder = lookfor.Finder(list(project.durations))
+        self.found: list[dict[str, Any]] = []
 
     # -- what the page sees ------------------------------------------------------------
     def view(self, after: int = 0) -> dict[str, Any]:
@@ -280,6 +287,7 @@ class Turn:
         out = context.build_messages(
             self.table, self.earlier, self.text, plan, json_tools=tools, images=bool(self._watch)
         )
+        out[0] = {**out[0], "content": out[0]["content"] + lookfor.rules(bool(self._watch))}
         if self._watch:  # how and when to watch, after the rules
             cap = str(watch.view_cap(self.provider))
             out[0] = {**out[0], "content": out[0]["content"] + watch.RULES.replace("{cap}", cap)}
@@ -406,6 +414,66 @@ class Turn:
         rows = "\n".join(json.dumps(self.table.row(r), ensure_ascii=False) for r in found)
         return context.data_block("moments", rows), False
 
+    def _tool_look_for(self, args: dict[str, Any]) -> tuple[str, bool]:
+        query = args.get("query")
+        if not isinstance(query, str) or not query.strip():
+            return "error: query must be text", False
+        query = query.strip()[: lookfor.MAX_QUERY]
+        limit = args.get("limit")
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            limit = lookfor.DEFAULT_LIMIT
+        limit = max(1, min(limit, lookfor.MAX_LIMIT))
+        p = self.project
+        covering = [*self.table.candidates.values(), *p.segments]
+        try:
+            got = self._finder.search(query, limit, covering, p.durations)
+        except lookfor.LookForError as err:
+            self._emit(
+                {"kind": "tool", "name": lookfor.NAME, "query": query[:200], "error": str(err)}
+            )
+            return f"error: look_for is not available: {err}", False
+        rows = []
+        for hit, covered in got.hits:
+            cover = covered
+            if cover is None:
+                cand = lookfor.new_moment(hit, query)
+                if cand["id"] not in self.table.candidates:
+                    self.found.append(cand)
+                cover = cand["id"]
+                self.table.add(cand)
+            row = {**self.table.row(cover), "match": hit.match, "confidence": hit.confidence}
+            if covered is None:  # a clear one is a new moment; the rest wait to be confirmed
+                row["new" if hit.clear else "unconfirmed"] = True
+            rows.append(row)
+        self._emit(
+            {
+                "kind": "tool",
+                "name": lookfor.NAME,
+                "query": query[:200],
+                "found": len(rows),
+                "new": sum(1 for r in rows if r.get("new")),
+                "weak": sum(1 for r in rows if r["confidence"] == "weak"),
+            }
+        )
+        skipped = got.total - got.searched
+        note = (
+            f" ({skipped} of {got.total} sources have no cached frames and were not searched)"
+            if skipped
+            else ""
+        )
+        if not rows:
+            return (
+                f"no window matches closely (the best frame is {got.best}/10){note}; "
+                "the footage probably does not show it, or find_moments may know it by words"
+            ), False
+        if any(r["confidence"] == "weak" or r.get("unconfirmed") for r in rows):
+            note += (
+                " (weak and unconfirmed windows are guesses: confirm them or call them uncertain)"
+            )
+        return context.data_block(
+            "look_for", chr(10).join(json.dumps(r, ensure_ascii=False) for r in rows)
+        ) + note, False
+
     def _tool_get_moment(self, args: dict[str, Any]) -> tuple[str, bool]:
         real, problem = self._moment(args.get("id"))
         if real is None:
@@ -475,12 +543,20 @@ class Turn:
         if mapped is None:
             return None, problem
         p = self.project
-        out = apply_ops(p.segments, mapped, p.candidates, p.durations, name=self.table.name)
+        out = apply_ops(
+            p.segments, mapped, [*p.candidates, *self.found], p.durations, name=self.table.name
+        )
         if out.error:
             return None, out.error
-        if not any(row["changes"] for row in out.diff):
+        if out.color is None and not any(row["changes"] for row in out.diff):
             return None, "these ops leave the sequence as it is"
-        return {"ops": mapped, "after": out.after, "diff": out.diff}, ""
+        checked: dict[str, Any] = {"ops": mapped, "after": out.after, "diff": out.diff}
+        if out.color is not None:
+            checked["color"] = out.color
+        used = {row["id"] for row in out.after or []}
+        if moments := [c for c in self.found if c["id"] in used]:
+            checked["moments"] = moments  # look_for finds: the page's analysis does not have them
+        return checked, ""
 
     def _tool_propose_edit(self, args: dict[str, Any]) -> tuple[str, bool]:
         summary = args.get("summary")

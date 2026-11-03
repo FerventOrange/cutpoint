@@ -7911,10 +7911,10 @@ def test_a_proposal_is_previewed_before_it_replaces_the_working_sequence() -> No
     assert "previewProposal(ev)" in on_event and "S.segments" not in on_event
     apply = _js_function(chat, "applyProposal")
     assert (
-        "/applied`), { method: 'POST', body: { segments: JSON.parse(key()), base_key: p.base_key } }"
-        in apply
+        "/applied`), { method: 'POST', body: { segments: JSON.parse(key()), base_key: p.base_key, "
+        "color: colorChoice() } }" in apply
     )
-    assert apply.index("await api(") < apply.index("remember();")
+    assert apply.index("await api(") < apply.index("remember(null, !!entry.color);")
     # "changed since" compares with the sequence the proposal was made on (its diff's "before"),
     # not with the sequence when the preview opened
     preview = _js_function(chat, "previewProposal")
@@ -7928,7 +7928,12 @@ def test_a_proposal_is_previewed_before_it_replaces_the_working_sequence() -> No
     # ... and finally's pending proposal does not replace that new preview
     again = apply.index("await revertChange(")
     assert apply.index("if (!err) S.pendingProposal = null;", again) < apply.index("finally")
-    assert apply.index("remember();") < apply.index("replaceSequence(entry.after);")
+    assert apply.index("remember(null, !!entry.color);") < apply.index(
+        "replaceSequence(entry.after);"
+    )
+    assert apply.index("replaceSequence(entry.after);") < apply.index(
+        "chooseColor(entry.color.after);"
+    )
     assert "e.status === 409" in apply and "entry.rebased" in apply
     assert "const MAX_SUGGESTIONS = 3;" in chat and ".slice(0, MAX_SUGGESTIONS)" in chat
     assert "onclick: () => reviewProposal(s)" in chat  # a suggestion previews like a proposal
@@ -7953,12 +7958,13 @@ def test_one_undo_stack_holds_manual_and_ai_edits_with_ctrl_z() -> None:
     js = _web("app.js")
     assert "  undo: []," in js and "  redo: []," in js and "const UNDO_MAX = 50;" in js
     assert "if (S.undo.length > UNDO_MAX) S.undo.shift();" in js
-    snap = re.search(r"const snapshot = \(\) => \(\{(.*?)\}\);", js)[1]
+    snap = re.search(r"const snapshot = \(withColor = false\) => \(\{(.*?)\}\);", js)[1]
     assert "structuredClone(S.segments)" in snap and "structuredClone(S.drafts)" in snap
+    assert "colorChoice()" in snap  # only an applied AI Chat change that sets Color keeps the Color
     for name in ("addSeg", "removeSeg", "moveSeg", "removeSelected", "finishRename"):
         assert "remember();" in _js_function(js, name), name
     assert "remember(`trim:${c.id}:${which}`)" in _js_function(js, "setRange")
-    assert "remember();" in _js_function(js, "applyProposal")
+    assert "remember(null, !!entry.color);" in _js_function(js, "applyProposal")
     keys = js[js.index("// Ctrl+Z / Ctrl+Y") : js.index("if (e.key === '[' || e.key === ']')")]
     assert "(k === 'z' || k === 'y')" in keys and "textarea" in keys
     assert "if (k === 'y' || e.shiftKey) redo();" in keys and "else undo();" in keys
