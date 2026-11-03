@@ -443,6 +443,123 @@ def test_compute_path_records_an_upright_forward_axis(stub_scores: dict) -> None
     assert path["forward_axis"] == "+z"
 
 
+def upright_turning(heading: np.ndarray, fps: float = 30.0) -> G.Orientation:
+    """An upright clip (lenses horizontal) whose camera heading follows ``heading`` (deg)."""
+    n = len(heading)
+    h = np.asarray(heading, float)
+    return G.Orientation(
+        t=np.arange(n) / fps,
+        up=np.tile([0.0, -1.0, 0.0], (n, 1)),
+        heading=h,
+        heading_smooth=h,
+        meta={"fps": fps},
+    )
+
+
+def world_yaw(path: dict, orient: G.Orientation, times: np.ndarray) -> np.ndarray:
+    """The view's yaw in the world (display yaw = world yaw + heading)."""
+    yaw, _, _ = D.evaluate(path, times)
+    return yaw - np.interp(times, orient.t, orient.heading_smooth)
+
+
+def test_an_upright_camera_twisted_back_and_forth_does_not_swing_the_view(
+    stub_scores: dict,
+) -> None:
+    """#547: a handheld 360 camera twisted +-60 deg (an 8 s sway, as on the cruise footage)
+    swung the view with it, as the display frame follows the camera's heading. The
+    director plans an upright clip in the held frame: the view stays put in the world."""
+    pv = make_views({}, "sway.lrv")
+    clip = SimpleNamespace(source="sway.lrv", duration=N * 1.2, clip_id="001")
+    t = np.arange(600) / 30.0
+    orient = upright_turning(60.0 * np.sin(2 * np.pi * t / 8.0))
+    rt = np.arange(2.0, 12.0, 0.1)
+    plain = {"w_wearer": 0.0}  # the wearer, turning with the camera, would move the view too
+    old = D.compute_path(
+        clip, 2.0, 12.0, orient=orient, pv=pv, margin=0.0, overrides=plain | {"upright_hold_s": 0}
+    )
+    assert np.ptp(D.evaluate(old, rt)[0]) < 1.0  # followed the camera: held display yaw
+    assert np.ptp(world_yaw(old, orient, rt)) > 100.0  # ... so the view swung +-60 deg
+    path = D.compute_path(clip, 2.0, 12.0, orient=orient, pv=pv, margin=0.0, overrides=plain)
+    assert path["params"]["upright_hold_s"] == D.DirectorParams().upright_hold_s > 0
+    assert np.ptp(world_yaw(path, orient, rt)) < 5.0
+    assert not path["cuts"]
+
+
+def test_an_upright_camera_twisted_back_and_forth_keeps_a_friend_framed(
+    stub_scores: dict,
+) -> None:
+    """#547: a friend standing still in the world, filmed by the swaying handheld camera,
+    moves in the display frame with the heading; planned in the held frame the view stays
+    on the friend in the world (the shift's sign: display yaw = world yaw + heading)."""
+    t = np.arange(600) / 30.0
+    head = 60.0 * np.sin(2 * np.pi * t / 8.0)
+    pv = make_views(
+        {
+            f: [(0.95, (90.0 + np.interp(f * 1.2, t, head)) % 360, -10.0, 10.0, 30.0, FWD_V)]
+            for f in range(N)
+        },
+        "friend.lrv",
+    )
+    clip = SimpleNamespace(source="friend.lrv", duration=N * 1.2, clip_id="001")
+    orient = upright_turning(head)
+    rt = np.arange(2.0, 12.0, 0.1)
+    path = D.compute_path(clip, 2.0, 12.0, orient=orient, pv=pv, margin=0.0)
+    wy = world_yaw(path, orient, rt)
+    assert np.ptp(wy) < 10.0 and np.abs(G.wrap_deg(wy - 90.0)).max() < 10.0
+    assert path["quality"]["pan_p95"] < 5.0  # pans judged in the world (#547 F2)
+    keys = [k for k in path["keys"] if 2.0 <= k["t"] <= 12.0]
+    assert keys and all("subj" in k for k in keys)
+    for k in keys:
+        want = (90.0 + np.interp(k["t"], t, head)) % 360
+        assert abs(G.wrap_deg(k["subj"][0] - want)) < 5.0
+    old = D.compute_path(
+        clip, 2.0, 12.0, orient=orient, pv=pv, margin=0.0, overrides={"upright_hold_s": 0}
+    )
+    assert np.ptp(world_yaw(old, orient, rt)) > 60.0
+
+
+def test_held_frame_only_for_upright_clips() -> None:
+    """A mounted clip (helmet, chest: yaw 0 is the travel direction) keeps following the
+    camera's heading; so does an upright clip with ``upright_hold_s`` 0."""
+    t = np.arange(300) / 30.0
+    turn = 30.0 * t
+    mounted = orientation(300)
+    mounted.heading_smooth = mounted.heading = turn
+    p = D.DirectorParams()
+    assert D.hold_offset(mounted, t, p) is None
+    upright = upright_turning(turn)
+    assert D.hold_offset(upright, t, D.with_params(p, {"upright_hold_s": 0})) is None
+    off = D.hold_offset(upright, t, p)
+    # held yaw 0 = the heading low-passed: the offset is the part of the turn not followed
+    assert off is not None and off.shape == t.shape
+    assert np.abs(off).max() > 30.0 and abs(off[150]) < 5.0  # a steady turn: followed mid-way
+    assert D.DirectorParams.legacy().upright_hold_s == 0.0
+    with pytest.raises(ValueError):
+        D.with_params(p, {"upright_hold_s": -1})
+
+
+def test_a_cut_away_of_an_upright_clip_is_held_in_the_held_frame() -> None:
+    """A safe-area cut-away holds one yaw; on an upright clip it is held in the held frame
+    (display yaw follows the hold offset), not in the turning display frame."""
+    n = 6
+    ctx = {
+        "yaw": np.zeros(n),
+        "pitch": np.zeros(n),
+        "fov": np.zeros(n),
+        "subj": np.zeros((n, 4)),
+        "target": ["view"] * n,
+        "fov_wide": 110.0,
+        "forward_yaw": 0.0,
+        "hold": np.arange(n) * 10.0,
+    }
+    p = D.DirectorParams()
+    D._apply_away(ctx, 2, 5, 90.0, p)
+    assert ctx["yaw"].tolist() == [0.0, 0.0, 90.0, 100.0, 110.0, 0.0]
+    ctx["hold"] = None  # a mounted clip: as before
+    D._apply_away(ctx, 2, 5, 90.0, p)
+    assert ctx["yaw"][2:5].tolist() == [90.0, 90.0, 90.0]
+
+
 def test_path_for_replans_a_reused_path_of_another_forward_axis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1002,6 +1119,21 @@ def test_a_shot_end_is_a_cut_for_the_midpoint() -> None:
     ctx["cut_after"] = {9}
     chk = D._framing_checks(ctx, (0, n), p)
     assert not chk.bad(9) and not chk.bad(10)  # a cut: the yaw 0 view is held
+
+
+def test_an_upright_hold_change_does_not_make_a_cut() -> None:
+    n = 20
+    ctx = safe_ctx(n, 0.0, 86.0)
+    ctx["yaw"][10:] = 24.0  # the display step is over the cut speed (22.75 deg) ...
+    ctx["subj"][:, 0] = ctx["yaw"]
+    empty = np.zeros((0, 4))
+    ctx["persons"] = [empty] * n
+    ctx["persons_mid"] = [empty] * (n - 1)
+    ctx["persons_mid"][9] = np.array([[55.0, -10.0, 4.0, 30.0]])  # split at yaw 12 only
+    p = D.DirectorParams()
+    assert not D._framing_checks(ctx, (0, n), p).bad(9)  # ... so a cut: the yaw 0 view is held
+    ctx["hold"] = np.where(np.arange(n) >= 10, 24.0, 0.0)  # ... but the hold made all of it
+    assert D._framing_checks(ctx, (0, n), p).bad(9)  # one shot: the view passes yaw 12
 
 
 def test_smoothing_keeps_a_smaller_subject_tall_enough() -> None:
