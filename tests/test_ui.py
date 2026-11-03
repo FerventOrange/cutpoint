@@ -8731,3 +8731,43 @@ def test_suggest_style_leaves_usable_360_footage_to_the_server(
     for source in (folder, folder / X3_00):
         res = client.post("/api/projects/suggest-style", json={"source": str(source)})
         assert res.json() == {"style": None}
+
+
+def test_suggest_style_probes_at_most_12_files_and_follows_recursive_and_exclude(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "footage"
+    (folder / "deep").mkdir(parents=True)
+    for i in range(13):
+        (folder / f"v{i:02}.mp4").write_bytes(b"x")
+    (folder / "deep" / "tel.mp4").write_bytes(b"x")
+    (folder / "DVR1.mp4").write_bytes(b"x")
+    probed: list[Path] = []
+    monkeypatch.setattr(
+        "cutpoint.analyze.has_telemetry",
+        lambda f, timeout=60: probed.append(f) or f.name in {"tel.mp4", "DVR1.mp4"},
+    )
+
+    def ask(**extra: object) -> object:
+        probed.clear()
+        res = client.post("/api/projects/suggest-style", json={"source": str(folder), **extra})
+        assert res.status_code == 200, res.text
+        return res.json()["style"]
+
+    assert ask(exclude=["*DVR*"]) is None and len(probed) == 12  # the 13th and deep/ stay unprobed
+    assert ask(exclude=["*DVR*", "v*"]) is None and probed == []  # nothing left, deep/ unsearched
+    assert ask(exclude=["*DVR*", "v*"], recursive=True) == "action-cam"  # deep/tel.mp4
+    assert ask(exclude=["v0*", "v1*"]) == "action-cam"  # DVR1.mp4 is among the first 12
+
+
+def test_suggest_style_gives_no_answer_while_another_probe_runs(
+    client: TestClient, tmp_path: Path
+) -> None:
+    f = tmp_path / "a.mp4"
+    f.write_bytes(b"x")
+    assert ui._suggest_lock.acquire(blocking=False)
+    try:
+        res = client.post("/api/projects/suggest-style", json={"source": str(f)})
+    finally:
+        ui._suggest_lock.release()
+    assert res.status_code == 200 and res.json() == {"style": None}

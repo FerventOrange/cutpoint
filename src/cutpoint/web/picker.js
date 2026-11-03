@@ -82,23 +82,39 @@ export function initNewProject(onCreated, canPick) {
   });
   const showStyleHint = () => ($('#newStyleHint').hidden = style.value !== 'action-cam');
   // Sources with GoPro or Insta360 telemetry preselect the style the server suggests, unless the
-  // user chose one; a reply for sources since changed is dropped.
+  // user chose one; a reply for sources since changed is dropped. A style set here goes back to
+  // what it was when later sources have no telemetry.
   let styleTouched = false;
   let suggestion = 0;
+  let before = null; // the style before an automatic preselect, or null
+  const status = $('#newStyleStatus');
   const suggestStyle = async () => {
     const mine = ++suggestion;
     const sources = sourceLines(source.value);
     if (!sources.length || styleTouched) return;
     try {
-      const { style: suggested } = await api('/api/projects/suggest-style', { method: 'POST', body: { sources } });
-      if (mine !== suggestion || styleTouched || !suggested) return;
-      if ([...style.options].some((o) => o.value === suggested)) style.value = suggested;
+      const body = { sources, recursive: recursive.checked, exclude: lines(exclude.value) };
+      const { style: suggested } = await api('/api/projects/suggest-style', { method: 'POST', body });
+      if (mine !== suggestion || styleTouched) return;
+      if (suggested && [...style.options].some((o) => o.value === suggested)) {
+        if (before === null) before = style.value;
+        style.value = suggested;
+        status.textContent = `Highlight style set to ${suggested}: the footage has camera telemetry.`;
+      } else if (before !== null) {
+        style.value = before;
+        before = null;
+        status.textContent = '';
+      }
       showStyleHint();
     } catch { /* a suggestion is optional: the style stays as it is */ }
   };
   source.addEventListener('change', suggestStyle);
+  recursive.addEventListener('change', suggestStyle);
+  exclude.addEventListener('change', suggestStyle);
   style.addEventListener('change', () => {
     styleTouched = true;
+    before = null;
+    status.textContent = '';
     showStyleHint();
   });
   $('#newCancel').addEventListener('click', () => dlg.close());
@@ -131,6 +147,8 @@ export function initNewProject(onCreated, canPick) {
 
   return function open(styles) {
     nameTouched = styleTouched = false;
+    before = null;
+    status.textContent = '';
     suggestion++;
     source.value = name.value = exclude.value = '';
     recursive.checked = false;

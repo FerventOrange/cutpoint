@@ -191,6 +191,7 @@ FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
 FRAME_CACHE_MAX = 1500  # stills kept per project; the least recently used go first
 SOURCES_CACHE_MAX = 32  # projects whose source lists are kept; the least recently used go first
 SOURCES_CACHE_S = 60.0  # rebuild a kept source list at least this often (what stats miss)
+_suggest_lock = threading.Lock()  # one style suggestion probes at a time; another gets no answer
 TELEMETRY_PROBE_TIMEOUT = 10  # seconds per ffprobe of that suggestion
 MAX_TELEMETRY_PROBES = 12  # files one style suggestion probes, so a big folder or a NAS stays quick
 MAX_INPUTS = 50  # files and folders one New project takes (analyze's positional inputs)
@@ -3211,34 +3212,29 @@ def _gaming_style(name: object) -> bool:
         return False
 
 
-def suggest_style(inputs: list[str]) -> str | None:
+def suggest_style(
+    inputs: list[str], exclude: list[str] = (), recursive: bool = False
+) -> str | None:
     """``action-cam`` when an input carries camera telemetry, else None (#633).
 
     Only the container's stream list is probed (``analyze.has_telemetry``: a GoPro GPMF track or an
     Insta360 IMU trailer), never the telemetry itself, within ``TELEMETRY_PROBE_TIMEOUT`` s per file
-    and stopping at the first hit. A folder gives its own videos (not its sub-folders); at most
-    ``MAX_TELEMETRY_PROBES`` files are probed. Unreadable inputs count as none. Usable 360 footage
-    gets no suggestion: the server picks its 360 style (``pano.default_style``) whatever is chosen.
+    and stopping at the first hit. The files are those ``analyze`` would find (``find_picked``:
+    ``recursive``, ``exclude`` and ``source_remap`` apply), the first ``MAX_TELEMETRY_PROBES`` of
+    them. Unreadable inputs count as none. Usable 360 footage gets no suggestion: the server picks
+    its 360 style (``pano.default_style``) whatever is chosen.
     """
     from cutpoint.analyze import has_telemetry  # noqa: PLC0415
 
-    files: list[Path] = []
-    for x in inputs:
-        src = Path(x)
-        try:
-            if not (src.is_file() or src.is_dir()):
-                continue
-            videos, clips, _ = inspect_source(src)
-        except OSError:
-            continue
-        if _usable(clips):
-            return None
-        files += [src] if src.is_file() else videos
-    return (
-        "action-cam"
-        if any(has_telemetry(f, TELEMETRY_PROBE_TIMEOUT) for f in files[:MAX_TELEMETRY_PROBES])
-        else None
-    )
+    try:
+        for x in inputs:
+            src = Path(x)
+            if (src.is_file() or src.is_dir()) and _usable(inspect_source(src)[1]):
+                return None
+        files = find_picked(inputs, exclude, recursive)[:MAX_TELEMETRY_PROBES]
+    except OSError:
+        return None
+    return "action-cam" if any(has_telemetry(f, TELEMETRY_PROBE_TIMEOUT) for f in files) else None
 
 
 def _ski_style(name: str) -> bool:
@@ -4147,7 +4143,14 @@ def create_app(port: int) -> FastAPI:
     @owned.post("/projects/suggest-style")
     def suggest_project_style(body: dict[str, Any]):
         """The style the New project dialog preselects for these sources (null: no suggestion)."""
-        style = suggest_style(_body_inputs(body))
+        inputs = _body_inputs(body)
+        recursive, exclude = _flag(body, "recursive"), _exclude_globs(body)
+        if not _suggest_lock.acquire(blocking=False):  # a suggestion is optional: never queue
+            return {"style": None}
+        try:
+            style = suggest_style(inputs, exclude, recursive)
+        finally:
+            _suggest_lock.release()
         return {"style": style if style in ui_styles() else None}
 
     @owned.post("/projects")

@@ -71,7 +71,9 @@ test('sources with telemetry preselect action-cam unless the user already chose 
   };
   doc.querySelector('#newBtn').click();
   await typeSource('/v/gopro.mp4');
-  assert.deepEqual(asked, [{ sources: ['/v/gopro.mp4'] }]);
+  assert.deepEqual(asked, [{ sources: ['/v/gopro.mp4'], recursive: false, exclude: [] }]);
+  assert.match(doc.querySelector('#newStyleStatus').textContent, /action-cam/);
+  assert.equal(style.getAttribute('aria-describedby'), 'newStyleHint');
   assert.equal(style.value, 'action-cam');
   assert.equal(doc.querySelector('#newStyleHint').hidden, false);
 
@@ -82,5 +84,64 @@ test('sources with telemetry preselect action-cam unless the user already chose 
   await typeSource('/v/gopro.mp4');
   assert.equal(style.value, 'funny');
   assert.equal(asked.length, 1);
+  page.assertNoUnhandled();
+});
+
+test('the preselect is undone when the sources change to footage without telemetry, and follows recursive and exclude', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const asked = [];
+  const page = await boot({
+    routes: {
+      'GET /api/session': () => ({ styles: ['funny', 'action-cam'], can_reveal: false, can_pick: false }),
+      'POST /api/projects/suggest-style': (req) => (asked.push(req.body), { style: req.body.sources[0].includes('gopro') ? 'action-cam' : null }),
+    },
+  });
+  t.after(() => page.close());
+  const doc = page.document;
+  const style = doc.querySelector('#newStyle');
+  const fire = async (el, v) => {
+    if (v !== undefined) el.value = v;
+    el.dispatchEvent(new page.window.Event('change'));
+    await new Promise((r) => setImmediate(r));
+  };
+  doc.querySelector('#newBtn').click();
+  await fire(doc.querySelector('#newSource'), '/v/gopro.mp4');
+  assert.equal(style.value, 'action-cam');
+  await fire(doc.querySelector('#newSource'), '/v/plain.mp4');
+  assert.equal(style.value, 'funny');
+  assert.equal(doc.querySelector('#newStyleHint').hidden, true);
+  assert.equal(doc.querySelector('#newStyleStatus').textContent, '');
+  await fire(doc.querySelector('#newExclude'), '*DVR*');
+  assert.deepEqual(asked.at(-1), { sources: ['/v/plain.mp4'], recursive: false, exclude: ['*DVR*'] });
+  doc.querySelector('#newRecursive').checked = true;
+  await fire(doc.querySelector('#newRecursive'));
+  assert.equal(asked.at(-1).recursive, true);
+  page.assertNoUnhandled();
+});
+
+test('a late reply for earlier sources does not change the style', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let release;
+  const first = new Promise((r) => (release = r));
+  let calls = 0;
+  const page = await boot({
+    routes: {
+      'GET /api/session': () => ({ styles: ['funny', 'action-cam'], can_reveal: false, can_pick: false }),
+      'POST /api/projects/suggest-style': () => (++calls === 1 ? first.then(() => ({ style: 'action-cam' })) : { style: null }),
+    },
+  });
+  t.after(() => page.close());
+  const doc = page.document;
+  const source = doc.querySelector('#newSource');
+  doc.querySelector('#newBtn').click();
+  source.value = '/v/gopro.mp4';
+  source.dispatchEvent(new page.window.Event('change'));
+  source.value = '/v/plain.mp4';
+  source.dispatchEvent(new page.window.Event('change'));
+  await new Promise((r) => setImmediate(r));
+  release();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 2);
+  assert.equal(doc.querySelector('#newStyle').value, 'funny');
   page.assertNoUnhandled();
 });
