@@ -53,8 +53,5 @@ ins_stitcher.h
 ins_common.h
 ins_realtime_stitcher.h
 
-# graft's local graph cache — regenerable, not committed (run `graft build`).
-/graft/
-
 # JS test harness (npm ci)
 node_modules/
