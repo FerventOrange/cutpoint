@@ -15,7 +15,7 @@ Usage::
 Labels are a JSON file (keep real ones out of the repository)::
 
     {"entries": [
-      {"project": "Day-1", "label": "action-cam", "inputs": ["Z:/Videos/Whistler/Day-1"]},
+      {"project": "Day-1", "label": "action-cam", "inputs": ["D:/Videos/trip"]},
       {"project": "Cuts", "label": "general", "inputs": ["cut1.mp4"], "recursive": false,
        "exclude": []}
     ]}
@@ -62,7 +62,7 @@ import statistics
 import sys
 import time
 from collections import Counter, defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -70,7 +70,9 @@ from typing import Any
 
 from cutpoint import category
 from cutpoint.analyze import find_sources
-from cutpoint.category import CATEGORIES, HYPE
+from cutpoint.category import CATEGORIES, HYPE, TALK_MIN_S
+from cutpoint.config import remap_source
+from cutpoint.errors import FFmpegError
 from cutpoint.sources import source_segments
 from cutpoint.styles import resolve_auto
 
@@ -95,6 +97,8 @@ class Row:
     reason: str
     probe_s: float
     ocr_s: float | None
+    speech: float | None = None
+    untranscribed: bool = False  # talk could apply (general, long) but there is no transcript
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -107,6 +111,8 @@ class Row:
             "reason": self.reason,
             "probe_s": round(self.probe_s, 2),
             "ocr_s": None if self.ocr_s is None else round(self.ocr_s, 2),
+            "speech": self.speech,
+            "untranscribed": self.untranscribed,
         }
 
 
@@ -125,7 +131,9 @@ def load_labels(path: Path) -> list[dict[str, Any]]:
         if not isinstance(e, dict):
             raise ValueError(f"{path}: entry {i} is not an object")
         if e.get("label") not in CATEGORIES:
-            raise ValueError(f"{path}: entry {i}: label must be one of {', '.join(CATEGORIES)}")
+            raise ValueError(
+                f"{path}: entry {i}: label {e.get('label')!r} is not one of {', '.join(CATEGORIES)}"
+            )
         inputs = e.get("inputs")
         if (
             not isinstance(inputs, list)
@@ -174,11 +182,32 @@ def project_label(rows: list[Row]) -> str:
     return max(weight, key=lambda k: weight[k])
 
 
-def evaluate(entries: list[dict[str, Any]]) -> tuple[list[Row], list[dict[str, Any]]]:
-    """Probe and decide every project of ``entries``: ``(rows, projects)``.
+def check_out(out: Path, groups: dict[str, list[tuple[Path, str]]], entries: list[dict]) -> None:
+    """Refuse an ``--out`` next to a source (either spelling, ``source_remap`` too) or inside
+    a folder given as an input: the sources' folders are read-only.
+
+    Raises:
+        ValueError: Naming the file.
+    """
+    out_dir = out.resolve().parent
+    homes = {Path(s).resolve().parent for items in groups.values() for s, _ in items}
+    homes |= {remap_source(s).resolve().parent for items in groups.values() for s, _ in items}
+    folders = [Path(p).resolve() for e in entries for p in e["inputs"] if Path(p).is_dir()]
+    if out_dir in homes or any(out_dir.is_relative_to(f) for f in folders):
+        raise ValueError(f"--out {out} is in a source's folder; write elsewhere")
+
+
+def evaluate(
+    entries: list[dict[str, Any]], out: Path | None = None
+) -> tuple[list[Row], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Probe and decide every project of ``entries``: ``(rows, projects, errors)``.
 
     Per project, the speech coverage of the cached transcripts is given to
-    :func:`cutpoint.category.decide` as ``cutpoint detect`` does.
+    :func:`cutpoint.category.decide` as ``cutpoint detect`` does (a source without a
+    transcript has no speech: analyze transcribes first, so :attr:`Row.untranscribed` marks
+    the ones where talk could still change the decision). A source ffprobe cannot read is
+    recorded in ``errors`` and left out. ``out`` is checked before any probing
+    (:func:`check_out`).
     """
     groups: dict[str, list[tuple[Path, str]]] = {}
     for e in entries:
@@ -186,17 +215,28 @@ def evaluate(entries: list[dict[str, Any]]) -> tuple[list[Row], list[dict[str, A
             [Path(p) for p in e["inputs"]], e.get("exclude") or [], bool(e.get("recursive"))
         )
         groups.setdefault(entry_project(e), []).extend((s, e["label"]) for s in found)
+    if out is not None:
+        check_out(out, groups, entries)
     rows: list[Row] = []
     projects: list[dict[str, Any]] = []
-    for name, items in groups.items():
-        probes, seconds, ocr = [], [], []
-        for src, _ in items:
+    errors: list[dict[str, Any]] = []
+    for name, all_items in groups.items():
+        items, probes, seconds, ocr = [], [], [], []
+        for src, lab in all_items:
             spent: list[float] = []
             t0 = time.perf_counter()
-            with timed_ocr(spent):
-                probes.append(category.probe_source(src))
+            try:
+                with timed_ocr(spent):
+                    probes.append(category.probe_source(src))
+            except FFmpegError as err:
+                logger.error("%s: %s", src, err)
+                errors.append({"path": str(src), "project": name, "label": lab, "error": str(err)})
+                continue
+            items.append((src, lab))
             seconds.append(time.perf_counter() - t0)
             ocr.append(sum(spent) if spent else None)
+        if not items:
+            continue
         speech: dict[str, float] = {}
         for (src, _), p in zip(items, probes, strict=True):
             segments = source_segments(src)
@@ -205,9 +245,20 @@ def evaluate(entries: list[dict[str, Any]]) -> tuple[list[Row], list[dict[str, A
         det = category.decide(probes, speech)
         mine = []
         for (src, lab), s, secs, o in zip(items, det.sources, seconds, ocr, strict=True):
+            open_talk = s.speech is None and s.category == category.GENERAL
             mine.append(
                 Row(
-                    str(src), name, lab, s.category, s.ambiguous, s.duration / 60, s.reason, secs, o
+                    str(src),
+                    name,
+                    lab,
+                    s.category,
+                    s.ambiguous,
+                    s.duration / 60,
+                    s.reason,
+                    secs,
+                    o,
+                    s.speech,
+                    open_talk and s.duration >= TALK_MIN_S,
                 )
             )
         rows.extend(mine)
@@ -228,7 +279,7 @@ def evaluate(entries: list[dict[str, Any]]) -> tuple[list[Row], list[dict[str, A
                 "right": style == right,
             }
         )
-    return rows, projects
+    return rows, projects, errors
 
 
 # --------------------------------------------------------------------------- summaries
@@ -314,15 +365,34 @@ def flip_ready(
     wrong: list[dict[str, Any]],
     projects: list[dict[str, Any]],
     max_ambiguous: float,
+    errors: Sequence[dict[str, Any]] = (),
+    ocr: bool = True,
 ) -> dict[str, Any]:
-    """The criteria, all required: no sure-wrong source; every label's ambiguous share at most
-    ``max_ambiguous``, by count and by minutes; every project's style right. Returns the
-    verdict, the failed criteria with their numbers and the text to print."""
+    """The criteria, all required: every label has sources and none failed to probe; the HUD
+    text check was available; no sure-wrong source; no long general source untranscribed
+    (talk unchecked); every label's ambiguous share at most ``max_ambiguous``, by count and by
+    minutes; every project's style right. Returns the verdict, the failed criteria with their
+    numbers and the text to print."""
     limit = f"{100 * max_ambiguous:.0f}%"
     failed: list[str] = []
+    rates = ambiguous_rates(rows)
+    for lab in CATEGORIES:
+        if lab not in rates:
+            failed.append(f"{lab}: no sources labelled (nothing measured)")
+    if errors:
+        failed.append(f"unreadable: {len(errors)} source(s) failed to probe > 0")
+    if not ocr:
+        failed.append("HUD text check unavailable (lite?): unsure sources were not checked")
     if wrong:
         failed.append(f"sure-wrong: {len(wrong)} source(s) > 0")
-    for lab, a in ambiguous_rates(rows).items():
+    open_talk = [r for r in rows if r.untranscribed]
+    if open_talk:
+        failed.append(
+            f"untranscribed: {len(open_talk)} general source(s) of at least "
+            f"{TALK_MIN_S / 60:.0f} min have no transcript, so talk was not checked "
+            "(analyze transcribes first) > 0"
+        )
+    for lab, a in rates.items():
         if lab == "all":
             continue
         if a["rate"] > max_ambiguous:
@@ -354,7 +424,11 @@ def flip_ready(
 
 
 def summarize(
-    rows: list[Row], projects: list[dict[str, Any]], max_ambiguous: float
+    rows: list[Row],
+    projects: list[dict[str, Any]],
+    max_ambiguous: float,
+    errors: Sequence[dict[str, Any]] = (),
+    ocr: bool = True,
 ) -> dict[str, Any]:
     wrong = sure_wrong(rows)
     return {
@@ -366,7 +440,9 @@ def summarize(
         "ambiguous": ambiguous_rates(rows),
         "projects": projects,
         "timing": timing(rows),
-        "flip_ready": flip_ready(rows, wrong, projects, max_ambiguous),
+        "ocr_available": ocr,
+        "errors": list(errors),
+        "flip_ready": flip_ready(rows, wrong, projects, max_ambiguous, errors, ocr),
     }
 
 
@@ -398,6 +474,13 @@ def print_summary(data: dict[str, Any]) -> None:
     n_right = sum(1 for p in data["projects"] if p["right"])
     print(f"  right style: {n_right}/{len(data['projects'])} projects")
     t = data["timing"]
+    unread = data.get("errors", [])
+    open_talk = sum(1 for s in data["sources"] if s.get("untranscribed"))
+    ocr = "available" if data.get("ocr_available", True) else "UNAVAILABLE"
+    print(f"\nHUD text check: {ocr}; untranscribed long general sources: {open_talk}")
+    print(f"UNREADABLE (failed to probe): {len(unread)}")
+    for e in unread:
+        print(f"  {e['path']}: {e['error']}")
     print("\nTIME PER SOURCE (probe includes the HUD text check)")
     for key, name in (("probe_s", "probe"), ("ocr_s", "HUD text check")):
         s = t[key]
@@ -417,7 +500,8 @@ def _key(s: dict[str, Any]) -> str:
 
 def compare(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
     """What changed from ``old`` to ``new`` (both ``--out`` JSON): sources whose decision
-    changed, sources added or removed, projects whose style changed, and the totals."""
+    changed, sources and projects added or removed, projects whose style changed, and the
+    totals."""
     olds = {s["path"]: s for s in old["sources"]}
     news = {s["path"]: s for s in new["sources"]}
     changed = [
@@ -440,6 +524,8 @@ def compare(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
         "changed": changed,
         "added": sorted(set(news) - set(olds)),
         "removed": sorted(set(olds) - set(news)),
+        "projects_added": sorted({p["project"] for p in new["projects"]} - set(oldp)),
+        "projects_removed": sorted(set(oldp) - {p["project"] for p in new["projects"]}),
         "styles": styles,
         "sure_wrong": [len(old["sure_wrong"]), len(new["sure_wrong"])],
         "ambiguous_rate": [old["ambiguous"]["all"]["rate"], new["ambiguous"]["all"]["rate"]],
@@ -460,6 +546,10 @@ def print_compare(diff: dict[str, Any], old_name: str) -> None:
         print(f"  added   {p}")
     for p in diff["removed"]:
         print(f"  removed {p}")
+    for p in diff["projects_added"]:
+        print(f"  project added   {p}")
+    for p in diff["projects_removed"]:
+        print(f"  project removed {p}")
     for s in diff["styles"]:
         print(f"  project {s['project']}: style {s['old']} -> {s['new']}")
     (w0, w1), (a0, a1), (f0, f1) = diff["sure_wrong"], diff["ambiguous_rate"], diff["flip_ready"]
@@ -468,6 +558,20 @@ def print_compare(diff: dict[str, Any], old_name: str) -> None:
 
 
 # --------------------------------------------------------------------------- main
+def load_old(path: Path) -> dict[str, Any]:
+    """The JSON of an earlier run, checked for what :func:`compare` reads.
+
+    Raises:
+        ValueError: Naming the file, if it is not a run of this script's schema.
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+    keys = ("sources", "projects", "sure_wrong", "ambiguous", "flip_ready")
+    ok = isinstance(data, dict) and data.get("schema") == SCHEMA and all(k in data for k in keys)
+    if not ok or not isinstance(data["ambiguous"], dict) or "all" not in data["ambiguous"]:
+        raise ValueError(f"{path}: not a style_auto_eval --out file (schema {SCHEMA})")
+    return data
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("labels", type=Path, help="labels JSON (entries of label and inputs)")
@@ -496,16 +600,12 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["CUTPOINT_CACHE_DIR"] = str(args.cache_dir)
     try:
         entries = load_labels(args.labels)
-        old = json.loads(args.compare.read_text(encoding="utf-8")) if args.compare else None
-        rows, projects = evaluate(entries)
-    except (OSError, ValueError, FileNotFoundError) as err:
+        old = load_old(args.compare) if args.compare else None
+        rows, projects, errors = evaluate(entries, args.out)  # --out checked before probing
+    except (OSError, ValueError, FileNotFoundError) as err:  # JSONDecodeError is a ValueError
         logger.error("%s", err)
         return 1
-    if args.out:  # never next to a source: the sources' folders are read-only
-        out_dir = args.out.resolve().parent
-        if any(out_dir == Path(r.path).resolve().parent for r in rows):
-            ap.error(f"--out {args.out} is in a source's folder; write elsewhere")
-    data = summarize(rows, projects, args.max_ambiguous)
+    data = summarize(rows, projects, args.max_ambiguous, errors, category.ocr_installed())
     print_summary(data)
     if old is not None:
         diff = compare(old, data)

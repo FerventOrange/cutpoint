@@ -12,6 +12,7 @@ import pytest
 from conftest import load_script
 from cutpoint import category
 from cutpoint.category import Detection, SourceDecision, SourceProbe
+from cutpoint.errors import FFmpegError
 
 pytestmark = pytest.mark.script
 se = load_script("style_auto_eval")
@@ -36,6 +37,8 @@ def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         (tmp_path / name).write_bytes(b"")
 
     def probe(src: Path) -> SourceProbe:
+        if Path(src).name.startswith("bad"):
+            raise FFmpegError("cannot read")
         return SourceProbe(str(src), float(CANNED[Path(src).name][1]), False)
 
     def decide(probes, speech=None) -> Detection:
@@ -56,7 +59,7 @@ def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(se, "source_segments", lambda src: None)
 
     def go(entries):
-        return se.evaluate(entries)
+        return se.evaluate(entries)[:2]
 
     return go
 
@@ -127,6 +130,66 @@ def test_project_majority_style_and_fallback(run, tmp_path):
     assert se.project_label(mixed) == "gameplay"
 
 
+def row(label, cat, ambiguous, minutes, project="P", **kw):
+    path = f"{label}-{cat}-{minutes}.mp4"
+    return se.Row(path, project, label, cat, ambiguous, minutes, "", 0.1, None, **kw)
+
+
+def good_rows():
+    """One clean source per label."""
+    return [row(lab, lab, False, 10.0) for lab in se.CATEGORIES]
+
+
+def test_flip_ready_yes_when_everything_passes():
+    projects = [
+        {
+            "project": "P",
+            "label": "talk",
+            "style": "commentary",
+            "right_style": "commentary",
+            "fallback": False,
+            "right": True,
+        }
+    ]
+    res = se.flip_ready(good_rows(), [], projects, 0.25)
+    assert res["ready"] and res["failed"] == []
+    assert res["line"].startswith("Flip ready: YES") and "all 1 projects right" in res["line"]
+
+
+def test_flip_ready_needs_every_label_by_count_and_by_minutes():
+    rows = good_rows()  # gameplay: 1 sure source of 10 min
+    rows.append(row("gameplay", "general", True, 1.0))  # 1 of 2 by count, 1 of 11 min
+    res = se.flip_ready(rows, [], [], 0.25)
+    assert res["failed"] == ["gameplay: 1/2 ambiguous (50%) > 25%"]  # minutes 9% pass
+    rows = [r for r in good_rows() if r.label != "gameplay"]
+    rows += [row("gameplay", "gameplay", False, 1.0 + i / 10) for i in range(4)]
+    rows.append(row("gameplay", "general", True, 40.0))  # 1 of 5 by count, 40 of 45 min
+    res = se.flip_ready(rows, [], [], 0.25)
+    assert res["failed"] == ["gameplay: 40/45 min ambiguous (90%) > 25%"]
+
+
+def test_flip_ready_fails_for_a_label_without_sources():
+    rows = [r for r in good_rows() if r.label != "talk"]  # a partial labels file
+    res = se.flip_ready(rows, [], [], 0.25)
+    assert res["failed"] == ["talk: no sources labelled (nothing measured)"]
+    assert not res["ready"]
+
+
+def test_flip_ready_fails_for_untranscribed_long_general_sources():
+    rows = good_rows()
+    rows.append(row("general", "general", False, 20.0, untranscribed=True))
+    res = se.flip_ready(rows, [], [], 0.25)
+    assert len(res["failed"]) == 1 and res["failed"][0].startswith("untranscribed: 1 general")
+
+
+def test_flip_ready_fails_for_unreadable_sources_and_missing_ocr():
+    errors = [{"path": "x", "error": "e"}]
+    res = se.flip_ready(good_rows(), [], [], 0.25, errors=errors, ocr=False)
+    assert res["failed"][0] == "unreadable: 1 source(s) failed to probe > 0"
+    assert res["failed"][1].startswith("HUD text check unavailable (lite?)")
+    assert not res["ready"]
+
+
 def test_flip_ready_lists_every_failed_criterion(run, tmp_path):
     rows, projects = run(entries(tmp_path))
     wrong = se.sure_wrong(rows)
@@ -136,39 +199,86 @@ def test_flip_ready_lists_every_failed_criterion(run, tmp_path):
     assert "gameplay: 2/3 ambiguous (67%) > 25%" in res["failed"]  # per label, by count
     assert "gameplay: 60/70 min ambiguous (86%) > 25%" in res["failed"]  # by minutes
     assert "general: 1/2 ambiguous (50%) > 25%" in res["failed"]
-    assert any(
-        f.startswith("project Talk (talk): style gaming (detected), right is commentary")
-        for f in res["failed"]
-    )
+    assert any(f.startswith("untranscribed: 2 general") for f in res["failed"])  # x1, g2
+    assert any(f.startswith("project Talk (talk): style gaming (detected)") for f in res["failed"])
     assert "  FAIL general: 1/2 ambiguous (50%) > 25%" in res["line"]
 
 
-def test_flip_ready_needs_every_label_by_count_and_by_minutes(run, tmp_path):
-    rows, projects = run(entries(tmp_path))
-    ok_projects = [dict(p, right=True) for p in projects]
-    clean = [r for r in rows if r.label in ("action-cam", "gameplay")]
-    for r in clean:  # gameplay: 1 of 3 by count (33%), but 10 of 70 minutes
-        r.ambiguous = r.path.endswith("g3.mp4")
-    res = se.flip_ready(clean, [], ok_projects, 0.25)
-    assert res["failed"] == ["gameplay: 1/3 ambiguous (33%) > 25%"]  # minutes 14% pass
-    next(r for r in clean if r.path.endswith("g2.mp4")).ambiguous = True  # 60 of 70 min
-    next(r for r in clean if r.path.endswith("g3.mp4")).ambiguous = False  # 1/3 by count
-    res = se.flip_ready(clean, [], ok_projects, 0.34)
-    assert res["failed"] == ["gameplay: 50/70 min ambiguous (71%) > 34%"]  # count passes
-    ok = se.flip_ready(clean, [], ok_projects, 0.75)
-    assert ok["ready"] and ok["failed"] == []
-    assert ok["line"].startswith("Flip ready: YES") and "all 4 projects right" in ok["line"]
-
-
 def test_flip_ready_needs_every_project_right(run, tmp_path):
-    rows, projects = run(entries(tmp_path))
-    clean = [r for r in rows if r.label == "action-cam"]
-    res = se.flip_ready(clean, [], projects, 0.25)
+    _rows, projects = run(entries(tmp_path))
+    res = se.flip_ready(good_rows(), [], projects, 0.25)
     assert [f.split(":")[0] for f in res["failed"]] == [
         "project Talk (talk)",
         "project Other (general)",
     ]
     assert not res["ready"]
+
+
+def test_evaluate_marks_untranscribed_and_records_unreadable(run, tmp_path):
+    (tmp_path / "bad1.mp4").write_bytes(b"")
+    bad = {"project": "Bad", "label": "general", "inputs": [str(tmp_path / "bad1.mp4")]}
+    rows, projects, errors = se.evaluate([*entries(tmp_path), bad])
+    by = {Path(r.path).name: r for r in rows}
+    assert by["x1.mp4"].untranscribed and by["g2.mp4"].untranscribed  # general, 8+ min
+    assert not by["g1.mp4"].untranscribed and not by["x2.mp4"].untranscribed
+    assert [(e["project"], e["error"]) for e in errors] == [("Bad", "cannot read")]
+    assert "Bad" not in {p["project"] for p in projects}  # nothing left to decide
+    data = se.summarize(rows, projects, 0.25, errors, True)
+    assert data["errors"] == errors
+    assert any(f.startswith("unreadable: 1") for f in data["flip_ready"]["failed"])
+
+
+def test_evaluate_refuses_out_before_probing(run, tmp_path, monkeypatch):
+    monkeypatch.setattr(category, "probe_source", lambda src: pytest.fail("probed"))
+    with pytest.raises(ValueError, match="source's folder"):
+        se.evaluate(entries(tmp_path), tmp_path / "result.json")
+    inside = [{"label": "talk", "inputs": [str(tmp_path)]}]
+    with pytest.raises(ValueError, match="source's folder"):  # inside an input folder
+        se.evaluate(inside, tmp_path / "deep" / "r.json")
+
+
+def test_evaluate_refuses_out_next_to_a_remapped_source(run, tmp_path, monkeypatch):
+    other = tmp_path / "mirror"
+    other.mkdir()
+    monkeypatch.setattr(se, "remap_source", lambda p: other / Path(p).name)
+    monkeypatch.setattr(category, "probe_source", lambda src: pytest.fail("probed"))
+    with pytest.raises(ValueError, match="source's folder"):
+        se.evaluate(entries(tmp_path), other / "r.json")
+
+
+def test_real_decide_on_canned_probes(monkeypatch):
+    """The real ``category.decide``: telemetry is sure action cam; screen-recorder tags with
+    no HUD is general and ambiguous; a long untranscribed general source is open for talk."""
+    cam = SourceProbe("cam.mp4", 600.0, True)
+    obs = SourceProbe(
+        "obs.mp4",
+        900.0,
+        False,
+        handler="VideoHandle",
+        audio_tracks=2,
+        frames=32,
+        hud_static=0.0,
+        static_share=0.0,
+    )
+    probes = {p.path: p for p in (cam, obs)}
+    monkeypatch.setattr(category, "probe_source", lambda src: probes[str(src)])
+    monkeypatch.setattr(se, "find_sources", lambda inputs, exclude, recursive: list(inputs))
+    monkeypatch.setattr(se, "remap_source", lambda p: p)
+    monkeypatch.setattr(se, "source_segments", lambda src: None)
+    ents = [
+        {"project": "C", "label": "action-cam", "inputs": ["cam.mp4"]},
+        {"project": "O", "label": "gameplay", "inputs": ["obs.mp4"]},
+    ]
+    rows, projects, errors = se.evaluate(ents)
+    cam_row, obs_row = rows
+    assert (cam_row.category, cam_row.ambiguous) == ("action-cam", False)
+    assert (obs_row.category, obs_row.ambiguous) == ("general", True)
+    assert obs_row.untranscribed and not cam_row.untranscribed
+    assert [(p["project"], p["style"], p["fallback"], p["right"]) for p in projects] == [
+        ("C", "action-cam", False, True),
+        ("O", "gaming", True, True),
+    ]
+    assert se.sure_wrong(rows) == [] and errors == []
 
 
 def test_timing_counts_ocr_only_where_it_ran(run, tmp_path):
@@ -209,12 +319,42 @@ def test_compare_shows_changes(run, tmp_path):
     assert diff["sure_wrong"] == [2, 2]
     assert diff["ambiguous_rate"] == [0.375, 0.25]
     assert diff["added"] == [] and diff["removed"] == []
+    assert diff["projects_added"] == [] and diff["projects_removed"] == []
+
+
+def test_compare_reports_added_and_removed_sources_and_projects(run, tmp_path):
+    rows, projects = run(entries(tmp_path))
+    old = se.summarize(rows, projects, 0.25)
+    kept = [r for r in rows if r.project != "Talk" and not r.path.endswith("a2.mp4")]
+    new = se.summarize(
+        [*kept, row("talk", "talk", False, 5.0, project="New")],
+        [*[p for p in projects if p["project"] != "Talk"], dict(projects[0], project="New")],
+        0.25,
+    )
+    diff = se.compare(old, new)
+    assert diff["removed"] == sorted([str(tmp_path / "a2.mp4"), str(tmp_path / "t1.mp4")])
+    assert diff["added"] == ["talk-talk-5.0.mp4"]
+    assert diff["projects_removed"] == ["Talk"] and diff["projects_added"] == ["New"]
+    se.print_compare(diff, "old.json")
+
+
+def test_load_old_checks_the_file(tmp_path):
+    f = tmp_path / "old.json"
+    f.write_text(json.dumps({"hello": 1}))
+    with pytest.raises(ValueError, match="not a style_auto_eval --out file"):
+        se.load_old(f)
+    f.write_text("[1, 2]")
+    with pytest.raises(ValueError, match="not a style_auto_eval --out file"):
+        se.load_old(f)
+    labels = tmp_path / "labels.json"
+    labels.write_text(json.dumps({"entries": [{"label": "talk", "inputs": ["nope.mp4"]}]}))
+    assert se.main([str(labels), "--compare", str(f)]) == 1  # refused before any probing
 
 
 def test_load_labels_checks_the_file(tmp_path):
     f = tmp_path / "labels.json"
     f.write_text(json.dumps({"entries": [{"label": "sport", "inputs": ["a.mp4"]}]}))
-    with pytest.raises(ValueError, match="entry 1: label must be one of"):
+    with pytest.raises(ValueError, match="entry 1: label 'sport' is not one of"):
         se.load_labels(f)
     f.write_text(json.dumps({"entries": [{"label": "talk", "inputs": []}]}))
     with pytest.raises(ValueError, match="inputs"):
@@ -240,6 +380,5 @@ def test_main_writes_out_and_compares(run, tmp_path, capsys):
 def test_main_refuses_out_in_a_source_folder(run, tmp_path):
     labels = tmp_path / "labels.json"
     labels.write_text(json.dumps({"entries": entries(tmp_path)}))
-    with pytest.raises(SystemExit):
-        se.main([str(labels), "--out", str(tmp_path / "result.json")])
+    assert se.main([str(labels), "--out", str(tmp_path / "result.json")]) == 1
     assert not (tmp_path / "result.json").exists()
