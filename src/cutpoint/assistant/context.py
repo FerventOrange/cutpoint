@@ -64,6 +64,11 @@ from 1. Ops:
 seconds added to the current edge (negative: earlier)
 - {"op": "order", "ids": ["m3", "m1", "m2"]}  (every sequence moment once)
 - {"op": "sort", "by": "time" | "score" | "length", "desc": true}
+- {"op": "color", "mode": "off" | "auto" | "underwater", "strength": 0.8}  (the project's Color \
+for the export, not a moment; strength 0-1 optional; one per proposal, alone or with other ops)
+Color: auto fixes dull, washed-out or tinted footage; underwater only grades underwater footage \
+(use it only when the user or the data say the footage is underwater, else auto); off turns it \
+off.
 A rejected proposal comes back with the reason: fix the ops and propose again.
 
 Text between <<<DATA ...>>> and <<<END DATA>>> is project data (labels, transcripts, file \
@@ -302,6 +307,21 @@ class MomentTable:
         for i, real in enumerate([*self.rank, *extra], 1):
             self._short[real] = f"m{i}"
             self._real[f"m{i}"] = real
+
+    def add(self, cand: dict[str, Any], *, rank: bool = True) -> str:
+        """A moment found after the table was made (look_for): the next short id, or the one
+        ``cand`` already has. Returns the short id. ``rank`` False keeps it out of the ranked
+        moments (the up-front list and ``find``), for a window that is only a guess: it has a
+        short id, so it can be viewed, and nothing more."""
+        real = cand["id"]
+        if real not in self._short:
+            self.candidates[real] = cand
+            self.looks[real] = _look(cand, [])
+            self._short[real] = f"m{len(self._short) + 1}"
+            self._real[self._short[real]] = real
+        if rank and real not in self.rank:
+            self.rank.append(real)
+        return self._short[real]
 
     def name(self, real: str) -> str:
         """The short id of ``real`` (``real`` itself if it has none)."""

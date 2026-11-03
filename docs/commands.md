@@ -619,6 +619,30 @@ label (with `--vision`), `loudness`, `laughter` and the laughter or screams hear
 finds their moments by those, the label and the transcript. Only these results are sent; video
 frames go only through view_moment (above), once allowed for the project.
 
+`look_for` searches the footage itself, with every chat provider, local or hosted. It compares a
+short English description ("powder spray", "sunset over the peaks") with the cached frame
+embeddings of every source of the project (the `events` visual layer, about one frame per second,
+the same ones the visual candidates read) using local CLIP, so it also finds footage the scorer
+never proposed. It decodes nothing and downloads nothing, and no frame leaves the machine: the
+model gets text only, the best windows as moment rows with `match` 0-10 and `confidence`:
+`strong` from a CLIP cosine of 0.222, `weak` from 0.202 (a few at most, so a query the footage
+may answer, such as "fish" in a reef, still lists its best guesses, while one it cannot answer
+lists nothing or a few weak ones). A window that a moment or a row of the sequence covers is that
+moment. A clear window nothing covers (cosine 0.26 or more) comes back as a new moment (`new:
+true`, labeled with the query, an id of the same kind as an analysis moment) that the proposal can
+add and that is saved with the proposal. Any other uncovered window is `unconfirmed`: it has an id
+so it can be watched, but it is never a new moment by itself, and `find_moments` and the moment
+list do not include it. The instructions tell the model to confirm a weak or unconfirmed window
+with `view_moment` when the chat model takes images, and otherwise to tell you it is uncertain,
+never to present it as confirmed. `propose_edit` refuses to add an unconfirmed window (also in a
+suggestion) until `view_moment` has shown it; the chat lists each one as "possible" with an
+"Add to sequence" button, and your click is the confirmation (it is a normal edit that Ctrl+Z
+undoes). The instructions say similarity is
+not certainty: a match is likely or possible, never sure. It needs the full edition (Cutpoint lite
+says "not available in Cutpoint lite" with the install command), the CLIP weights (`cutpoint
+setup --only visual`) and a cached visual layer (`analyze` writes it for the `action-cam`,
+`action` and `sport` styles); without one it says so and the model falls back on `find_moments`.
+
 - Moments the model points to can be highlighted in the Moments list ("Highlight in list") or
   the list filtered by the model's search words (offered only when the list's search, which also
   matches vision labels, finds one of them).
@@ -631,6 +655,13 @@ frames go only through view_moment (above), once allowed for the project.
   proposal's button reads "Review again"), Apply makes the change on the current sequence and
   says so, or tells you to discard it and ask again when it no longer fits. While Apply waits,
   Discard is off and a new proposal from the chat is previewed after it.
+- A proposal can also set Color (the Color slider of Export clips and One-Click Edit, #496):
+  `off`, `auto` or `underwater` with an optional strength. The preview names it ("Color: Auto,
+  strength 80% (now Off)"); Apply moves the sliders, which are saved for the project as if you had
+  moved them; Undo and Redo put the sliders back and forward with the sequence, and a change that
+  did not set Color never moves them. The instructions say `underwater` only grades underwater
+  footage (#495), so the assistant proposes it only when the footage is underwater. Applied
+  changes that set Color list it, and Revert puts the earlier Color back.
 - "Applied changes" lists the changes applied in this project; "Revert this change" previews a
   change that puts the sequence back as it was before, applied like any other. If the sequence
   changes after that preview, Apply previews the revert again on it instead.
@@ -638,7 +669,8 @@ frames go only through view_moment (above), once allowed for the project.
 
 Nothing is applied without Apply. API: `GET /api/projects/<id>/assistant`, `POST .../turns` and
 `GET .../turns/<turn>?after=<n>`, `POST .../turns/<turn>/cancel`,
-`POST .../proposals/<proposal>/applied`, `DELETE .../chat`, `GET .../history` and
+`POST .../proposals/<proposal>/applied` (the page sends its `color`, `{mode, strength}`, so a
+proposal's `color` op is recorded as `before` and `after`), `DELETE .../chat`, `GET .../history` and
 `POST .../history/<change>/revert` (which returns a `revert-<change>` proposal with a `base_key`
 and writes nothing; applying it with another sequence or without that key is refused with 409).
 `GET .../assistant` also returns `consent` (`needed`, `key`, `host`, `missing_key`: how to add a missing API key or log in to a subscription, or null, and `missing_kind`: `"login"` for a subscription provider, `"key"` otherwise, null when nothing is missing); `POST .../turns` answers
@@ -647,8 +679,11 @@ and writes nothing; applying it with another sequence or without that key is ref
 provider on this machine, `host`); `POST .../assistant/frames-consent` with that `key` allows
 frames of the project (409 when the provider changed, is on this machine, or the AI Chat
 consent is missing). A turn's events can include `frames_consent` (`id`, `key`, `host`) when the
-model asked to watch without it, and `tool` events named `view_moment` (`id`, `frames`,
-`cached`, or `error`: `limit` when the per-message limit was reached);
+model asked to watch without it, `tool` events named `view_moment` (`id`, `frames`,
+`cached`, or `error`: `limit` when the per-message limit was reached) and `look_for` (`query`,
+`found`, `new`, `weak`, `unconfirmed`, `possible` (the unconfirmed windows: `id`, `source`,
+`start`, `end`, `label`, `confidence`), or `error`: why it could not search); a `proposal` event can carry `color`
+(`mode`, `strength` or null) and `moments` (the `look_for` moments its ops add);
 `POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
 save or remove a keyring key for the host of the saved base URL and return only where each key
 comes from (`keys`) and the host it is for (`key_hosts`). `GET /api/assistant/models?provider=`

@@ -15,6 +15,9 @@ Ops (positions count from 1):
   in seconds added to the current edge (negative: earlier).
 * ``{"op": "order", "ids"}``: every sequence id once, in the new order.
 * ``{"op": "sort", "by": "time" | "score" | "length", "desc"?}``.
+* ``{"op": "color", "mode": "off" | "auto" | "underwater", "strength"?}``: the project's Color
+  setting (``strength`` 0-1; left as it is when omitted), not a row of the sequence. At most one
+  per proposal; :attr:`Outcome.color` has it.
 """
 
 from __future__ import annotations
@@ -27,11 +30,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from cutpoint.clips import MIN_EXPORT_S
+from cutpoint.config import COLOR_MODES
 
 MAX_SEGMENTS = 500  # as cutpoint.ui.MAX_SEGMENTS (ui needs the optional fastapi)
 MAX_OPS = 100  # ops in one proposal
 LABEL_MAX = 200
-OPS = ("add", "remove", "move", "trim", "order", "sort")
+OPS = ("add", "remove", "move", "trim", "order", "sort", "color")
 SORT_KEYS = ("time", "score", "length")
 
 
@@ -41,11 +45,13 @@ class OpsError(ValueError):
 
 @dataclass
 class Outcome:
-    """What :func:`apply_ops` gives: ``after`` and its ``diff``, or the ``error``."""
+    """What :func:`apply_ops` gives: ``after`` and its ``diff``, or the ``error``; ``color`` is
+    the ``color`` op's ``{mode, strength}`` (strength None: leave it), None without one."""
 
     after: list[dict[str, Any]] | None = None
     diff: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
+    color: dict[str, Any] | None = None
 
 
 class Durations(Mapping[str, float | None]):
@@ -99,11 +105,13 @@ def apply_ops(
         ``after`` (checked and cleaned as ``validate_segments`` cleans it) and a per-row
         :func:`diff`, or ``error`` naming the op or row and what is wrong.
     """
+    color: dict[str, Any] = {}
     try:
-        after = _check(_apply(before, ops, candidates, durations, name), durations, name)
+        rows = _apply(before, ops, candidates, durations, name, color)
+        after = _check(rows, durations, name)
     except OpsError as err:
         return Outcome(error=str(err))
-    return Outcome(after, diff(before, after))
+    return Outcome(after, diff(before, after), color=color or None)
 
 
 def _number(op: dict[str, Any], key: str, where: str) -> float | None:
@@ -130,6 +138,7 @@ def _apply(
     candidates: list[dict[str, Any]],
     durations: Mapping[str, float | None],
     name: Callable[[str], str],
+    color: dict[str, Any],
 ) -> list[dict[str, Any]]:
     if not isinstance(ops, list) or not ops:
         raise OpsError("ops must be a non-empty list of edits")
@@ -153,7 +162,11 @@ def _apply(
         kind = op["op"]
         sid = op.get("id")
         where = f"op {n} ({kind} {name(sid)})" if isinstance(sid, str) else f"op {n} ({kind})"
-        if kind == "add":
+        if kind == "color":
+            if color:
+                raise OpsError(f"{where}: only one color op in a proposal")
+            color.update(_color_op(op, where))
+        elif kind == "add":
             cand = cands.get(sid) if isinstance(sid, str) else None
             if cand is None:
                 raise OpsError(f"{where}: not a moment of this project")
@@ -221,6 +234,41 @@ def _apply(
             # sort(reverse=...) keeps tied rows in their order: no false "moved" rows
             rows.sort(key=keys[by], reverse=desc if desc is not None else by == "score")
     return rows
+
+
+def _color_op(op: dict[str, Any], where: str) -> dict[str, Any]:
+    """``{mode, strength}`` of a color op; ``strength`` is None for off (it has none) and when
+    the op gives none."""
+    mode = op.get("mode")
+    if mode not in COLOR_MODES:
+        raise OpsError(f"{where}: mode must be one of {', '.join(COLOR_MODES)}")
+    strength = op.get("strength")
+    if strength is not None and (
+        isinstance(strength, bool)
+        or not isinstance(strength, (int, float))
+        or not 0 <= strength <= 1
+    ):
+        raise OpsError(f"{where}: strength must be a number from 0 to 1")
+    if strength is not None:
+        strength = round(strength * 20) / 20  # the slider's 5% steps
+    return {"mode": mode, "strength": None if mode == "off" else strength}
+
+
+def extra_moments(raw: Any) -> list[dict[str, Any]]:
+    """The ``moments`` a saved proposal carries (look_for finds that are not in
+    highlights.json) that ``add`` can take again: dicts with an id, a source and times."""
+
+    def usable(m: Any) -> bool:
+        return (
+            isinstance(m, dict)
+            and isinstance(m.get("id"), str)
+            and isinstance(m.get("source"), str)
+            and all(
+                isinstance(m.get(k), (int, float)) and math.isfinite(m[k]) for k in ("start", "end")
+            )
+        )
+
+    return [m for m in raw if usable(m)] if isinstance(raw, list) else []
 
 
 def _score(cand: dict[str, Any] | None) -> float:

@@ -848,6 +848,7 @@ body.tips-off .flag-tip { display: none; }
 .prop-text { display: grid; gap: var(--space-0); min-width: 0; }
 .prop-title { font-weight: 650; overflow-wrap: anywhere; }
 .prop-time { color: var(--muted); font-size: 12.5px; }
+.prop-color { font-weight: 600; }
 .prop-marks { display: flex; flex-wrap: wrap; gap: var(--space-1); }
 .prop-mark { font-size: 12px; padding: 0 6px; border: 1px solid var(--line); border-radius: 3px; }
 .prop.added .prop-main { border-left-color: var(--ok); }
