@@ -8,6 +8,8 @@ const SOURCE_HINT_TYPED = 'Type or paste the full paths of videos, or of folders
 // Added for an Insta360 file (a 360 folder cannot be told apart here); the server sets the style.
 const PANO_HINT = 'Insta360 360 footage uses the 360 style (action-cam unless pano.default_style in config.json says otherwise), not the one chosen below.';
 
+const BUSY_RETRY_MS = 1000; // before asking for a style suggestion again after a busy reply
+
 let picking = false; // the server allows one open dialog at a time
 
 /**
@@ -88,14 +90,17 @@ export function initNewProject(onCreated, canPick) {
   let suggestion = 0;
   let before = null; // the style before an automatic preselect, or null
   const status = $('#newStyleStatus');
-  const suggestStyle = async () => {
-    const mine = ++suggestion;
+  const ask = async (mine, retry) => {
     const sources = sourceLines(source.value);
     if (!sources.length || styleTouched) return;
     try {
       const body = { sources, recursive: recursive.checked, exclude: lines(exclude.value) };
-      const { style: suggested } = await api('/api/projects/suggest-style', { method: 'POST', body });
+      const { style: suggested, busy } = await api('/api/projects/suggest-style', { method: 'POST', body });
       if (mine !== suggestion || styleTouched) return;
+      if (busy) { // another probe runs: not "no telemetry", so no undo; ask once more
+        if (retry) setTimeout(() => mine === suggestion && ask(mine, false), BUSY_RETRY_MS);
+        return;
+      }
       if (suggested && [...style.options].some((o) => o.value === suggested)) {
         if (before === null) before = style.value;
         style.value = suggested;
@@ -108,6 +113,7 @@ export function initNewProject(onCreated, canPick) {
       showStyleHint();
     } catch { /* a suggestion is optional: the style stays as it is */ }
   };
+  const suggestStyle = () => ask(++suggestion, true);
   source.addEventListener('change', suggestStyle);
   recursive.addEventListener('change', suggestStyle);
   exclude.addEventListener('change', suggestStyle);

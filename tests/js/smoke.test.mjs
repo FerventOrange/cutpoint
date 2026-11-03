@@ -145,3 +145,38 @@ test('a late reply for earlier sources does not change the style', async (t) => 
   assert.equal(doc.querySelector('#newStyle').value, 'funny');
   page.assertNoUnhandled();
 });
+
+test('a busy reply is not "no telemetry": the preselect stays and the request is retried once', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const replies = [{ style: 'action-cam' }, { style: null, busy: true }, { style: 'action-cam' }];
+  let calls = 0;
+  const page = await boot({
+    routes: {
+      'GET /api/session': () => ({ styles: ['funny', 'action-cam'], can_reveal: false, can_pick: false }),
+      'POST /api/projects/suggest-style': () => replies[calls++] ?? { style: null, busy: true },
+    },
+  });
+  t.after(() => page.close());
+  const doc = page.document;
+  const source = doc.querySelector('#newSource');
+  const style = doc.querySelector('#newStyle');
+  const change = async (v) => {
+    source.value = v;
+    source.dispatchEvent(new page.window.Event('change'));
+    await new Promise((r) => setImmediate(r));
+  };
+  doc.querySelector('#newBtn').click();
+  await change('/v/gopro.mp4');
+  assert.equal(style.value, 'action-cam');
+  await change('/v/gopro2.mp4'); // busy: no undo
+  assert.equal(style.value, 'action-cam');
+  assert.equal(calls, 2);
+  t.mock.timers.tick(1000); // the one retry
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 3);
+  assert.equal(style.value, 'action-cam');
+  t.mock.timers.tick(5000); // a busy reply is retried only once
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 3);
+  page.assertNoUnhandled();
+});

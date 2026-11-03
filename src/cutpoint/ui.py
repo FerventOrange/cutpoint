@@ -4165,7 +4165,7 @@ def create_app(port: int) -> FastAPI:
         inputs = _body_inputs(body)
         recursive, exclude = _flag(body, "recursive"), _exclude_globs(body)
         if not _suggest_lock.acquire(blocking=False):  # a suggestion is optional: never queue
-            return {"style": None}
+            return {"style": None, "busy": True}  # not "no telemetry": the page asks again
         try:
             style = suggest_style(inputs, exclude, recursive)
         finally:

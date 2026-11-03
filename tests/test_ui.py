@@ -8770,4 +8770,4 @@ def test_suggest_style_gives_no_answer_while_another_probe_runs(
         res = client.post("/api/projects/suggest-style", json={"source": str(f)})
     finally:
         ui._suggest_lock.release()
-    assert res.status_code == 200 and res.json() == {"style": None}
+    assert res.status_code == 200 and res.json() == {"style": None, "busy": True}
