@@ -343,7 +343,9 @@ def test_edit_no_keep_clips_assembles_temporary_clips_and_leaves_none(pipeline, 
     assert tmp.parent == project and tmp.name.startswith(".assemble-tmp-")
     assert clips_call[2]["temporary"] is True
     run_lock = f".{tmp.name}.run.cutpoint-lock"  # held while the temporary clips exist
-    assert pipeline.listed == sorted([run_lock, tmp.name, "clips", "highlights.json"])
+    project_lock = ".analysis.run.cutpoint-lock"  # held by the whole edit run (#109)
+    listed = [run_lock, project_lock, tmp.name, "clips", "highlights.json"]
+    assert pipeline.listed == sorted(listed)
     assert assemble_call[1] == (tmp, project / "final.mp4")
     assert not tmp.exists()
     assert sorted(p.name for p in project.iterdir()) == [

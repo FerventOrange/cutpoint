@@ -23,7 +23,7 @@ from importlib.resources import files
 from pathlib import Path, PurePath
 from typing import NoReturn
 
-from cutpoint import __version__, cache, jsonout, paths, stage
+from cutpoint import __version__, cache, jsonout, paths, runstate, stage
 from cutpoint.assemble import (
     AUDIO_TRANSITIONS,
     OUTPUT_FORMATS,
@@ -168,19 +168,25 @@ def _add_skip_argument(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _analyze_project(a: argparse.Namespace) -> Path:
+    """``analyze``'s project folder: ``--out``, else one input's name or several inputs'
+    common parent folder's name."""
+    targets = [Path(t) for t in a.inputs]
+    if a.out:
+        return resolve_project_path(a.out)
+    name = (
+        input_name(targets[0], "project")
+        if len(targets) == 1
+        else (Path(os.path.commonpath([t.resolve() for t in targets])).name or "multi")
+    )
+    return projects_dir() / name
+
+
 def _cmd_analyze(a: argparse.Namespace) -> None:
     from cutpoint.analyze import analyze  # noqa: PLC0415
 
     targets = [Path(t) for t in a.inputs]
-    if a.out:
-        out = resolve_project_path(a.out)
-    else:  # one input: its name; several: their common parent folder's name
-        name = (
-            input_name(targets[0], "project")
-            if len(targets) == 1
-            else (Path(os.path.commonpath([t.resolve() for t in targets])).name or "multi")
-        )
-        out = projects_dir() / name
+    out = _analyze_project(a)
     jsonout.set_project(out)
     if a.style == AUTO:  # detected from the footage; ambiguous: today's default, gaming
         style: Style | AutoRequest = AutoRequest(HYPE, ANALYZE_STYLE, a.must_include_crash)
@@ -248,9 +254,14 @@ def _cmd_detect(a: argparse.Namespace) -> None:
         print("Talk is not checked: a source has no transcript yet (analyze transcribes it)")
 
 
+def _edit_project(a: argparse.Namespace) -> Path:
+    """``edit``'s project folder: ``--out``, else named after the first input."""
+    return resolve_project_path(a.out) if a.out else projects_dir() / edit_name(Path(a.inputs[0]))
+
+
 def _cmd_edit(a: argparse.Namespace) -> None:
     targets = [Path(t) for t in a.inputs]
-    project = resolve_project_path(a.out) if a.out else projects_dir() / edit_name(targets[0])
+    project = _edit_project(a)
     jsonout.set_project(project)
     jsonout.output("kind", a.kind)
     lut = _lut(a)  # before hours of analysis
@@ -1802,19 +1813,37 @@ def main(argv: list[str] | None = None) -> int:
         "numba",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    tokens = list(sys.argv[1:] if argv is None else argv)
     if not getattr(args, "json_result", False):
-        return _run(args)
+        return _run(args, tokens)
     with jsonout.run(args.json_command):
-        code = _run(args)
+        code = _run(args, tokens)
         if code:
             jsonout.fail(jsonout.ERROR, f"exit code {code}")
     return code
 
 
-def _run(args: argparse.Namespace) -> int:
-    """Run the command; errors are logged (and recorded for --json) as an exit code."""
+def _recorded(args: argparse.Namespace, argv: Sequence[str]) -> contextlib.AbstractContextManager:
+    """:func:`cutpoint.runstate.record` of a command that keeps ``progress.json`` and the
+    project run lock (``analyze``, ``edit``, ``events``, ``crashes``, ``profile``,
+    ``360 analyze``), else a no-op."""
+    command = getattr(args, "json_command", None)
+    if command not in runstate.COMMANDS:
+        return contextlib.nullcontext()
+    if command == "analyze":
+        project = _analyze_project(args)
+    elif command == "edit":
+        project = _edit_project(args)
+    else:
+        project = resolve_project_path(args.project)
+    return runstate.record(command, argv, project, vars(args))
+
+
+def _run(args: argparse.Namespace, argv: Sequence[str] = ()) -> int:
+    """Run the command; errors are logged (and recorded for --json) as an exit code.
+    ``argv``: the command line, for ``progress.json``."""
     try:
-        with _stop_signal_as_interrupt():
+        with _stop_signal_as_interrupt(), _recorded(args, argv):
             code = args.func(args)
     except ModuleNotFoundError as err:
         from cutpoint.extras import missing_module_message  # noqa: PLC0415

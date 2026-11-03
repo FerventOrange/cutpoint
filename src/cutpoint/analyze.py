@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from cutpoint import cache, category, features, folders, jsonout, progress, scorer
+from cutpoint import cache, category, features, folders, jsonout, progress, runstate, scorer
 from cutpoint.config import remap_source, unc_path
 from cutpoint.dsp import conv_same
 from cutpoint.errors import FFmpegError
@@ -1875,6 +1875,7 @@ def _analyze(
         cat = stored if stored in category.CATEGORIES else None
     with (
         folders.output_dir(out_dir),  # a failed run leaves no empty project folder behind
+        runstate.project_ready(out_dir),  # the run lock of a new project, now it exists
         cache.hold_outputs(out_dir, HELD_OUTPUTS) as held,
         # HUD OCR in the background while the GPU steps run; stopped before the folder goes
         _ocr_prefetch(style, sources, skip, out_dir, layers, cat) as prefetch,
@@ -1981,6 +1982,7 @@ def _analyze(
                     rec["lost_s"],
                 )
                 offset, n_parts = resume, n_parts + 1
+            runstate.transcribed(out_dir, sources)  # progress.json from the first source on
         # Written with highlights.json at the end; the event layers read it from memory.
         transcript = "\n".join(transcript_lines)
         tr.close()  # Whisper out of memory before the next step loads a model
