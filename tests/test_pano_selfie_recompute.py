@@ -33,6 +33,7 @@ def pano(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(G, "orientation", lambda *a: orientation())
     monkeypatch.setattr(V, "iter_frames", frames)
     monkeypatch.setattr(V, "VisualModels", lambda **kw: Models(rec, **kw))
+    monkeypatch.setattr(V, "require_detector", lambda: None)  # the fake models need no file
     monkeypatch.setattr(V, "text_embeddings", lambda prompts, models=None: None)
     monkeypatch.setattr(insta360, "imu_source", lambda src: src)
     rec.p = views.ViewParams(view_px=4, eq_width=32)
