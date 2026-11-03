@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Footage category detection (#513): `cutpoint detect <inputs> [--json]` tells whether the
   footage is gameplay, action cam, talk or general, from the container tags, the camera
   telemetry and 32 small grey frames per source (a static HUD marks gameplay; cached as
-  `category-v1.json`), and which style `--style auto` would use. `--style auto` on `analyze`
+  `category-v2.json`), and which style `--style auto` would use. `--style auto` on `analyze`
   and `edit` (opt-in; the defaults are unchanged) maps action cam to `action-cam`, gameplay to
   `gaming`, talk (decided after transcription) to `commentary` and general to `action`, or every
   category to `funny` for `edit --kind funny-moments`; it never picks `sport`. The detected
@@ -529,6 +529,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint detect` and `--style auto` no longer call camera footage with a news lower third
+  sure gameplay (#701). An opaque box across most of the bottom of the picture (a lower third,
+  a news ticker) has text that stays put like a HUD's, so a re-encoded clip without camera tags
+  scored as gameplay from that text alone. The frame probe now finds such a box; neither its
+  static text nor its text in the HUD text check counts as HUD, so the clip is ambiguous and
+  gets the default style with `style_ambiguous`. Game HUDs in corners and along the edges count
+  as before; a game whose HUD is an opaque panel across most of the bottom (a Doom-style status
+  bar, an RTS console) is also taken for a box and can become ambiguous. The probe cache is now `category-v2.json`, so each source's frame probe runs again
+  once.
 - Run state (#109): the `folder_busy` message of the project run lock names the project, not
   `<project>/analysis.run`; and `events`, `crashes` or `profile` on a folder that holds only the
   `progress.json` of an interrupted first `analyze` stop with `not_found` and keep that record
