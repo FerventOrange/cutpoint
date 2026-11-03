@@ -516,6 +516,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model no longer blocks for about 20 minutes before the generic profile is used (#608).
 - `events`: on a project's first run the contact sheets now use the activity profile the
   crash layer chose instead of the ski captions (#609).
+- The VLM layer of `events` no longer makes the vision model invent kills or enemies in games
+  without combat: the generic prompt asks about kills, deaths and teamkills only when the OCR
+  layer found kills in the source or its HUD preset lists `kill_words`, and otherwise describes
+  hype in neutral terms (close calls, successes and fails, teamwork, reactions). A preset's own
+  `hype` line is kept. Only sources without kill evidence are described again on the next run
+  (prompt version 6); cached descriptions of sources with kills and of action-cam footage stay
+  valid. The `VLM WINDOW` line at the top of `events.txt` names the vision model in
+  use (#596).
 - `analyze`: when the PANNs checkpoint cannot be loaded (missing, corrupt or refused as more than
   weights), the reactions step no longer reads it a second time for the voice layer and reports
   the failure once (one ERROR line, one `step_failed` warning); the voice layer is skipped with an

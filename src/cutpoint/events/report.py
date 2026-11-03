@@ -150,10 +150,11 @@ def write_outputs(
     jpath = project / "events.json"
     cache.save_json(jpath, data)
 
+    model = (settings.get("vlm") or {}).get("model") or "Vision model"
     lines = [
         "# events.txt: transcript lines interleaved with detected events.",
         "# AUDIO = PANNs sound events (confidence, duration); OCR = on-screen HUD text;",
-        "# VLM WINDOW = Vision model summary of a window (hl = highlight 0-10);",
+        f"# VLM WINDOW = {model} summary of a window (hl = highlight 0-10);",
         "# VLM = moment inside a window. Times are source time.",
         "",
     ]

@@ -27,7 +27,7 @@ import logging
 import math
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +54,14 @@ class VlmRequestError(RuntimeError):
     """The shared vision client gave no usable reply (the reason is logged)."""
 
 
-PROMPT_VERSION = 5
+# Version of the generic prompt. 6 added the neutral variant (#596); the combat variant
+# is the text of 5 byte for byte, so its windows keep ``COMBAT_PROMPT_VERSION`` and their
+# old cache entries.
+PROMPT_VERSION = 6
+COMBAT_PROMPT_VERSION = 5
+# The generic version the action-cam caches were keyed with; the action-cam text itself
+# is versioned by ``ACTION_CAM_PROMPT_VERSION``, so a generic change does not re-key them.
+ACTION_CAM_BASE_PROMPT = 5
 
 # Property order matters: structured output emits keys in this order, so the
 # model describes the events before it commits to the scores.
@@ -131,12 +138,65 @@ SKI_TAG_HELP = (
     "restaurant).\n"
 )
 
-HYPE_GENERIC = (
+# The generic prompt has two variants: the combat one for footage with kills (OCR kill
+# events, or a preset with kill words) and a neutral one for every other game, so the
+# model does not invent kills or enemies in a game without combat (#596).
+HYPE_COMBAT = (
     "  hype: 0-1 driving/waiting, menus, hangar, loading, vehicle or respawn "
     "select, scoreboard, killcam, replay; 3-4 a single ordinary kill; 6-7 a "
     "multi-kill, a big explosion, a close call, a match win; 8-10 several "
     "kills in quick succession, a spectacular kill or a spectacular death.\n"
 )
+HYPE_NEUTRAL = (
+    "  hype: 0-1 menus, loading, waiting, standing around or ordinary travel, "
+    "scoreboards, replays; 3-4 an ordinary action or a small success; 6-7 a close "
+    "call or narrow escape, a big success or a big fail, good teamwork, a level or "
+    "match won; 8-10 a spectacular moment: a dramatic rescue, a huge fail, a "
+    "nail-biting finish, something everyone reacts to loudly.\n"
+)
+DESCRIBE_COMBAT = (
+    "Describe what actually happens in this window, in time order: what the "
+    "player does, kills and deaths (who kills whom, with what), teamkills, round "
+    "results, and how the friends react (laughing, shouting, banter, jokes). "
+    "Do not list transcript lines one by one: summarise a conversation as ONE "
+    "event and spend the other events on actions and reactions. Connect the "
+    "talk to the action: if a conversation is followed by a kill, a death, a "
+    "round win or laughter, say so explicitly ('after the argument, the player "
+    "gets a kill and the team laughs'). Look at the frames for weapons, kills "
+    "and deaths, and listen to the audio for laughter and tone. "
+)
+DESCRIBE_NEUTRAL = (
+    "Describe what actually happens in this window, in time order: what the "
+    "player and the people with them do (goals reached, successes and fails, close "
+    "calls, mistakes, teamwork), and how the friends react (laughing, shouting, "
+    "banter, jokes). "
+    "Do not list transcript lines one by one: summarise a conversation as ONE "
+    "event and spend the other events on actions and reactions. Connect the "
+    "talk to the action: if a conversation is followed by a success, a fail, a "
+    "close call or laughter, say so explicitly ('after the argument, the player "
+    "messes up and the team laughs'). Describe only what the frames show and the "
+    "audio says; do not add actions you cannot see or hear. Listen to the audio "
+    "for laughter and tone. "
+)
+FUNNY_COMBAT = (
+    "  funny: 0-1 no joke; 3-4 light banter; 6-7 a clear joke or people "
+    "laughing; 8-10 everyone laughing hard, an absurd mistake, a teamkill "
+    "followed by laughter.\n"
+)
+FUNNY_NEUTRAL = (
+    "  funny: 0-1 no joke; 3-4 light banter; 6-7 a clear joke or people "
+    "laughing; 8-10 everyone laughing hard, an absurd mistake, a fail "
+    "followed by laughter.\n"
+)
+KILL_TYPES = ("kill", "multikill")
+
+
+def has_kills(preset: HudPreset | None, events: list[dict[str, Any]]) -> bool:
+    """Whether a source's game has combat: its preset lists kill words, or the OCR
+    layer found kills in it (``events``: the source's layer-1 events)."""
+    if preset is not None and preset.feed.get("kill_words"):
+        return True
+    return any(ev.get("kind") == "ocr" and ev.get("type") in KILL_TYPES for ev in events)
 
 
 @dataclass(frozen=True)
@@ -147,6 +207,8 @@ class GamePrompt:
         name: Game name ("My Game", "video game").
         view: Camera view ("first-person"; empty: not mentioned).
         hype: The hype rubric line.
+        combat: The footage has kills (see :func:`has_kills`): the prompt asks about
+            kills and deaths; else it describes hype in neutral terms.
         custom: A project preset (not an installed user or bundled one) gives a
             prompt (name, view, hype) that differs from the reference prompt of its
             game key (the installed preset's, else the derived default), so the VLM
@@ -156,7 +218,8 @@ class GamePrompt:
 
     name: str = "video game"
     view: str = ""
-    hype: str = HYPE_GENERIC
+    hype: str = HYPE_NEUTRAL
+    combat: bool = False
     custom: bool = False
 
     def key(self) -> str:
@@ -165,22 +228,25 @@ class GamePrompt:
         return hashlib.sha1(text.encode("utf-8")).hexdigest()[:10]
 
 
-def _prompt_of(name: str, preset: HudPreset | None) -> GamePrompt:
+def _prompt_of(name: str, preset: HudPreset | None, combat: bool) -> GamePrompt:
     """Prompt fields of ``preset`` (``name``: the derived game name); a ``hype`` line
     is normalised to two leading spaces and one trailing newline."""
+    default = HYPE_COMBAT if combat else HYPE_NEUTRAL
     if preset is None:
-        return GamePrompt(name)
+        return GamePrompt(name, hype=default, combat=combat)
     hype = preset.hype.strip()
     return GamePrompt(
         name=preset.title or name,
         view=preset.view,
-        hype=f"  {hype}\n" if hype else HYPE_GENERIC,
+        hype=f"  {hype}\n" if hype else default,
+        combat=combat,
     )
 
 
-def game_prompt(game: str | None, preset: HudPreset | None) -> GamePrompt:
+def game_prompt(game: str | None, preset: HudPreset | None, combat: bool = False) -> GamePrompt:
     """The prompt fields for ``game``: the preset's ``title``/``view``/``hype``, else
-    the game key as a name ("some-game" -> "Some Game") and the generic rubric.
+    the game key as a name ("some-game" -> "Some Game") and the generic rubric
+    (the combat one when ``combat``, see :func:`has_kills`; else the neutral one).
 
     ``custom`` is set for a project preset whose prompt differs from the
     reference: the installed (user, else bundled) preset of the same game key,
@@ -188,13 +254,13 @@ def game_prompt(game: str | None, preset: HudPreset | None) -> GamePrompt:
     Presets without prompt fields (e.g. written by discovery) keep their VLM cache keys.
     """
     name = (game or "").replace("-", " ").title() or "video game"
-    prompt = _prompt_of(name, preset)
+    prompt = _prompt_of(name, preset, combat)
     if preset is None or is_installed_path(preset.path):
         return prompt
-    ref = _prompt_of(name, load_preset(game))
+    ref = _prompt_of(name, load_preset(game), combat)
     if prompt == ref:
         return prompt
-    return GamePrompt(prompt.name, prompt.view, prompt.hype, custom=True)
+    return replace(prompt, custom=True)
 
 
 @dataclass
@@ -222,14 +288,23 @@ class VlmParams:
     def key(self, prompt: GamePrompt | None = None) -> dict[str, Any]:
         """Parameters that change a window's result (selection params excluded).
 
-        A ``prompt`` from a custom project preset adds its hash as ``gp``.
+        ``prompt`` is the generic version of the text in use: ``ACTION_CAM_BASE_PROMPT``
+        for action-cam windows, ``COMBAT_PROMPT_VERSION`` for a combat ``prompt`` (the
+        same key as before #596), else ``PROMPT_VERSION``. A ``prompt`` from a custom
+        project preset adds its hash as ``gp``.
         """
+        if self.ski:
+            version = ACTION_CAM_BASE_PROMPT
+        elif prompt is not None and prompt.combat:
+            version = COMBAT_PROMPT_VERSION
+        else:
+            version = PROMPT_VERSION
         return {
             "frames": self.frames,
             "h": FRAME_HEIGHT,
             "transcript": self.transcript,
             "hints": self.hints,
-            "prompt": PROMPT_VERSION,
+            "prompt": version,
             "model": self.model,
             **({"action_cam": ACTION_CAM_PROMPT_VERSION} if self.ski else {}),
             **({"gp": prompt.key()} if prompt and prompt.custom else {}),
@@ -524,7 +599,8 @@ def build_messages(
 ) -> list[dict[str, Any]]:
     """OpenAI-style messages for one window.
 
-    ``game`` is the window's :class:`GamePrompt`; None uses the generic "video game" prompt.
+    ``game`` is the window's :class:`GamePrompt`; None uses the generic (neutral)
+    "video game" prompt.
     """
     if params.ski:
         return build_messages_ski(src, win, frames, params, transcript_lines, events)
@@ -548,22 +624,12 @@ def build_messages(
         {
             "type": "text",
             "text": (
-                "Describe what actually happens in this window, in time order: what the "
-                "player does, kills and deaths (who kills whom, with what), teamkills, round "
-                "results, and how the friends react (laughing, shouting, banter, jokes). "
-                "Do not list transcript lines one by one: summarise a conversation as ONE "
-                "event and spend the other events on actions and reactions. Connect the "
-                "talk to the action: if a conversation is followed by a kill, a death, a "
-                "round win or laughter, say so explicitly ('after the argument, the player "
-                "gets a kill and the team laughs'). Look at the frames for weapons, kills "
-                "and deaths, and listen to the audio for laughter and tone. "
-                "Use on-screen HUD text only as context; do not transcribe it.\n"
+                (DESCRIBE_COMBAT if game.combat else DESCRIBE_NEUTRAL)
+                + "Use on-screen HUD text only as context; do not transcribe it.\n"
                 "Scoring rubric (integers 0-10):\n"
                 + game.hype
-                + "  funny: 0-1 no joke; 3-4 light banter; 6-7 a clear joke or people "
-                "laughing; 8-10 everyone laughing hard, an absurd mistake, a teamkill "
-                "followed by laughter.\n"
-                "  highlight_score: how much this window deserves a place in a highlight "
+                + (FUNNY_COMBAT if game.combat else FUNNY_NEUTRAL)
+                + "  highlight_score: how much this window deserves a place in a highlight "
                 "montage (max of the best moment's hype and funny, plus 1 if both).\n"
                 "Event 't' is seconds from the window start. Reply with JSON only: "
                 '{"events": [{"t": number, "what": str, "funny": int, '
