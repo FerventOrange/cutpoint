@@ -288,6 +288,11 @@ browser (local storage); the source file only while the project stays open.
 Each card shows the rank and title with Add or Remove on the right, the candidate id, the times
 and length, the file name when the project has several sources, a strip of the moment's place in its source, the
 transcript, and the preview readiness (Ready, Encoding, Queued) at the bottom right.
+A moment with only a generic label (`action-moment`, `loud-moment`) is titled with what the
+vision model saw: its vision rating label, else the label of its `events` VLM window (the search
+finds both). `highlights.json`, the label a moment takes into the sequence and clip file names
+keep the analysis label. A moment of the visual pool (beauty shots, friends, cruising runs)
+carries a "visual" badge with its kind, such as "visual · view".
 
 While an analysis runs, the Moments column lists its steps (Transcription, Reactions, Keyframes,
 Crashes, Ranking, Vision rating; for a 360 project those of `360 analyze`) under "Analyze footage", or under the column header for "Analyze
@@ -559,8 +564,9 @@ the Models tab, so "Allow vision requests" waits for a key saved there. The page
 
 A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on
 another machine counts too) is hosted: before the first message the tab asks once, per provider
-and host (with its port when that is not the default), to send the project's analysis results (moment labels, scores and detection signals,
-transcript snippets, file names (not full paths) and times) and your messages, never video or
+and host (with its port when that is not the default), to send the project's analysis results
+(moment labels, scores and detection signals, vision descriptions, transcript snippets, file names
+(not full paths) and times) and your messages, never video or
 audio. The answer is kept in `config.json` (`assistant.consent`, as
 `assistant-v2:<provider>@<host>`); it never covers the Vision role, which asks separately. Until
 then nothing is sent. A hosted reply is not streamed, so Cancel takes effect when it arrives.
@@ -570,8 +576,25 @@ that a small local model can miss moments or misread a request. Type a request a
 or Send (Shift+Enter starts a new line); the reply shows the steps the model took ("Searched
 for …") and can be stopped with Cancel. The chat needs an analyzed project.
 
+The model reads the moments as text: label (a generic one replaced by what the vision model saw,
+as in the Moments list), score, times, transcript snippet and, when analysis has them, `kind`,
+`seen` (the vision rating label and the description of the `events` VLM window over the moment),
+`heard` (laughter or screams detected) and `cues`: visual, telemetry and vision-tag strengths on
+one 0-10 scale (`beauty`, `people`, `group`, `speed`, `carve`, `airtime`, `crash`, `wipeout`,
+`stopped`, the action-cam tags such as `chairlift` or `scenic_vista`, and more; the strongest six
+per moment in the list, all of them in `get_moment`). Its `find_moments` tool searches labels,
+transcripts, `seen` text, heard sounds and the names of cues of 5 or more (`air` finds `airtime`
+and `jump_air`). The instructions name only the cues the project has, and requests such as
+"beauty shots", "casual skiing" or "bloopers" work without moment ids only when it has the cues
+for them: action-cam footage with telemetry (`--style action-cam`), the `events` vision layer
+(window descriptions and tags) or visual-pool moments. Other styles have the vision rating
+label (with `--vision`), `loudness`, `laughter` and the laughter or screams heard, so the model
+finds their moments by those, the label and the transcript. Only these results are sent, never
+frames.
+
 - Moments the model points to can be highlighted in the Moments list ("Highlight in list") or
-  the list filtered by the model's search words.
+  the list filtered by the model's search words (offered only when the list's search, which also
+  matches vision labels, finds one of them).
 - A proposed change opens in the Sequence tab as a preview of the new sequence: each row is
   marked Added, Moved (old to new position), Trimmed (old to new times) or Renamed, removed clips are
   listed as Removed, the moments are marked in the Moments list, and the trim rail shows the new
