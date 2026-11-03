@@ -386,7 +386,8 @@ def test_360_analyze_records_once_and_does_not_lock_itself_out(project, monkeypa
     assert order == ["analyze", "events"]
     rec = _read(project)
     assert rec["command"] == "360 analyze" and rec["status"] == "done"
-    assert rec["sources"] == ["/v/a.lrv"]  # written from the start, then this run's sources
+    # written from the start, then this run's sources
+    assert rec["sources"] == [str(Path("/v/a.lrv"))]
     assert [rec["steps"][s]["state"] for s in progress.PANO_STEPS] == [
         "skipped", "done", "done", "done",
     ]  # fmt: skip
@@ -465,8 +466,8 @@ def test_360_analyze_scan_of_a_new_project_records_the_transcribed_sources(
     monkeypatch.setattr("cutpoint.styles.get_style", lambda name: name)
     monkeypatch.setattr(candidates, "cache_candidate_paths", lambda p: {"seconds": 0.0})
     assert cli.main(["360", "analyze", "new", "--scan", str(footage)]) == 0
-    assert seen == [["/v/a.lrv"]]  # written at once, not only at the end
+    assert seen == [[str(Path("/v/a.lrv"))]]  # written at once, not only at the end
     rec = _read(project)
     assert rec["command"] == "360 analyze" and rec["status"] == "done"
-    assert rec["sources"] == ["/v/a.lrv"]
+    assert rec["sources"] == [str(Path("/v/a.lrv"))]
     assert not (project / LOCK).exists()
