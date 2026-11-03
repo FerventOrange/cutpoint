@@ -3641,7 +3641,7 @@ function possibleItem(ev, id) {
   return h('li', { class: 'msg ai possible', 'data-id': `${id}-possible` },
     h('span', { class: 'vh', text: 'Assistant: ' }),
     h('p', { text: `Possible matches for “${ev.query}”, not confirmed. Check each in the video before you add it.` }),
-    h('ul', { class: 'possible-list' }, ev.possible.map((w) => {
+    h('ul', { class: 'possible-list', 'data-ev': id }, ev.possible.map((w) => {
       const inSeq = S.segments.some((x) => x.id === w.id);
       return h('li', { 'data-id': w.id },
         h('span', { class: 'tc', text: `${baseName(w.source)} ${fmt(w.start)}–${fmt(w.end)} (${w.confidence}) ` }),
@@ -3655,8 +3655,13 @@ function possibleItem(ev, id) {
 /** The user adds one of look_for's possible windows: the existing add path, with the window kept as a draft like a removed clip that is no moment. */
 function addPossible(w) {
   if (S.segments.some((x) => x.id === w.id)) return;
+  const list = document.activeElement?.closest?.('.possible-list');
   S.drafts[w.id] = { source: w.source, start: w.start, end: w.end, label: w.label };
   addSeg(w.id); // re-renders the chat, which shows it as in the sequence
+  // the pressed button is gone with the re-render: the next one to add in the same list, else the message box
+  const next = list && [...$('#chatLog').querySelectorAll('.possible-list')]
+    .find((l) => l.dataset.ev === list.dataset.ev)?.querySelector('[data-act="add-possible"]:not(:disabled)');
+  (next ?? $('#chatInput')).focus();
   $('#sideLive').textContent = `Added to the sequence: ${w.label}. Ctrl+Z undoes it.`;
 }
 

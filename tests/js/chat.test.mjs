@@ -344,6 +344,28 @@ test('look_for guesses are offered as possible windows; the user adds one, which
   assert.equal([...m.d.querySelectorAll('#chatLog .possible li')][1].querySelector('button').disabled, false);
 });
 
+test('adding a possible window keeps keyboard focus in the list: the next add button, else the message box', async (t) => {
+  const w = (n) => ({ id: `lf${n}`, source: '/videos/a.mp4', start: 10 * n, end: 10 * n + 5, label: 'powder spray', confidence: 'weak' });
+  const m = await chatPage(t, {
+    routes: turnRoutes([
+      { kind: 'tool', n: 0, name: 'look_for', query: 'powder spray', found: 2, new: 0, weak: 2, unconfirmed: 2, possible: [w(1), w(2)] },
+      { kind: 'reply', n: 1, text: 'Two possible windows.' },
+    ]),
+  });
+  await m.send('find powder spray');
+  await m.tick(1000);
+  const buttons = () => [...m.d.querySelectorAll('#chatLog .possible-list button')];
+  buttons()[0].focus();
+  buttons()[0].click();
+  await m.page.settle();
+  assert.deepEqual(m.seqIds(), ['lf1']);
+  assert.equal(m.d.activeElement, buttons()[1], 'the next window to add');
+  buttons()[1].click();
+  await m.page.settle();
+  assert.deepEqual(m.seqIds(), ['lf1', 'lf2']);
+  assert.equal(m.d.activeElement, m.$('#chatInput'), 'none left: the message box');
+});
+
 // ---- view_moment (#640) ----
 
 test('the consent text says frames go out only once allowed for a project', async (t) => {

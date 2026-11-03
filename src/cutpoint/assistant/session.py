@@ -326,6 +326,13 @@ class Turn:
             logger.info("assistant: %s takes no images (%s)", self.provider.model, err)
         watch.mark_text_only(self.provider)
         self._watch = False
+        # nothing was seen after all: no guess counts as viewed, and the rules stop saying it can
+        # be confirmed with view_moment
+        self._viewed.clear()
+        messages[0] = {
+            **messages[0],
+            "content": messages[0]["content"].replace(lookfor.WEAK_IMAGES, lookfor.WEAK_TEXT),
+        }
         for m in self._images:  # the same dicts as in messages
             m["content"] = "(the timeline sheet could not be sent: this model takes no images)"
         self._images = []
