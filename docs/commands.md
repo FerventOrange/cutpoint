@@ -197,7 +197,7 @@ Running updates come at most 2 per second. Steps run in table order. The `pct` o
 (360 views), `analyze` (Transcription and ranking) and `events` (Events and re-rank; skipped with
 `--no-events`). `scan` and `views` report `pct` and the clip as `detail`.
 
-When a step starts with part of its work cached (a rerun after an interruption, or a `--batch-size` boundary), it logs `<step>: N/M done, continuing` as an INFO line and sends the same text as the `detail`. `events` reports its layers (`audio`, `voice`, `visual`, `ocr`, `crash`, `vlm`, `write`) only in `progress.json` (no `PROGRESS` lines), so `resume --dry-run` lists them. The `progress.json` of a stopped run shows the step it was in as `failed`, with `status` giving the reason (see [Run lock and progress.json](#run-lock-and-progressjson)).
+When a step starts with part of its work cached (a rerun after an interruption, or a `--batch-size` boundary), it logs `<name>: N/M done, continuing` as an INFO line and sends the same text as the `detail`. `events` reports its layers (`audio`, `voice`, `visual`, `ocr`, `crash`, `vlm`, `write`) only in `progress.json` (no `PROGRESS` lines), so `resume --dry-run` lists them. After Ctrl+C or a failure, `progress.json` shows the step the run was in as `failed`, with `status` giving the reason; after a hard kill both stay `running` (see [Run lock and progress.json](#run-lock-and-progressjson)).
 
 On Ctrl+C the current step ends `failed` with detail `cancelled`. After a cancel or a fatal
 error, steps after the failed one are not emitted. A first-time HUD discovery shows
