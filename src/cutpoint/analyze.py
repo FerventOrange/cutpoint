@@ -1139,15 +1139,15 @@ class LayerPlan:
         return tuple(x for x in LAYER_STEP if any(x in v for v in self.layers.values()))
 
 
-def has_telemetry(src: Path) -> bool:
+def has_telemetry(src: Path, timeout: float = 60) -> bool:
     """Whether ``src`` carries camera telemetry (a GoPro GPMF track or an Insta360 X3 IMU
-    trailer); only the container's stream list is read."""
+    trailer); only the container's stream list is read, within ``timeout`` seconds."""
     from cutpoint.insta360 import imu_source  # noqa: PLC0415
 
     try:
         if imu_source(src) is not None:
             return True
-        info = ffprobe_json(remap_source(src), entries="stream=codec_tag_string", timeout=60)
+        info = ffprobe_json(remap_source(src), entries="stream=codec_tag_string", timeout=timeout)
     except (OSError, FFmpegError):
         return False
     return any(s.get("codec_tag_string") == "gpmd" for s in info.get("streams") or [])
