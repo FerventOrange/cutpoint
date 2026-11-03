@@ -631,9 +631,13 @@ lists nothing or a few weak ones). A window that a moment or a row of the sequen
 moment. A clear window nothing covers (cosine 0.26 or more) comes back as a new moment (`new:
 true`, labeled with the query, an id of the same kind as an analysis moment) that the proposal can
 add and that is saved with the proposal. Any other uncovered window is `unconfirmed`: it has an id
-so it can be watched, but it is never a new moment by itself. The instructions tell the model to
-confirm a weak or unconfirmed window with `view_moment` when the chat model takes images, and
-otherwise to tell you it is uncertain, never to present it as confirmed or add it unasked. The instructions say similarity is
+so it can be watched, but it is never a new moment by itself, and `find_moments` and the moment
+list do not include it. The instructions tell the model to confirm a weak or unconfirmed window
+with `view_moment` when the chat model takes images, and otherwise to tell you it is uncertain,
+never to present it as confirmed. `propose_edit` refuses to add an unconfirmed window (also in a
+suggestion) until `view_moment` has shown it; the chat lists each one as "possible" with an
+"Add to sequence" button, and your click is the confirmation (it is a normal edit that Ctrl+Z
+undoes). The instructions say similarity is
 not certainty: a match is likely or possible, never sure. It needs the full edition (Cutpoint lite
 says "not available in Cutpoint lite" with the install command), the CLIP weights (`cutpoint
 setup --only visual`) and a cached visual layer (`analyze` writes it for the `action-cam`,
@@ -677,7 +681,8 @@ frames of the project (409 when the provider changed, is on this machine, or the
 consent is missing). A turn's events can include `frames_consent` (`id`, `key`, `host`) when the
 model asked to watch without it, `tool` events named `view_moment` (`id`, `frames`,
 `cached`, or `error`: `limit` when the per-message limit was reached) and `look_for` (`query`,
-`found`, `new`, `weak`, or `error`: why it could not search); a `proposal` event can carry `color`
+`found`, `new`, `weak`, `unconfirmed`, `possible` (the unconfirmed windows: `id`, `source`,
+`start`, `end`, `label`, `confidence`), or `error`: why it could not search); a `proposal` event can carry `color`
 (`mode`, `strength` or null) and `moments` (the `look_for` moments its ops add);
 `POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
 save or remove a keyring key for the host of the saved base URL and return only where each key

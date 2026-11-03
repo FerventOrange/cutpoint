@@ -1996,6 +1996,8 @@ function renderAfterSeqChange() {
   renderExport();
   if (!current()) S.focus = cands()[0]?.id ?? S.segments[0]?.id ?? null;
   renderStage(false);
+  // look_for's possible windows show whether they are in the sequence
+  if (S.chat?.turns.some((t) => t.events.some((e) => e.possible?.length))) renderChat();
 }
 
 function changed() {
@@ -3569,7 +3571,7 @@ const TOOL_TEXT = {
   get_moment: (ev) => `Looked at ${momentName(ev.id)}`,
   get_transcript: (ev) => `Read the transcript around ${momentName(ev.id)}`,
   look_for: (ev) => ev.error ? `Could not look through the footage for “${ev.query}”`
-    : `Looked through the footage for “${ev.query}”: ${ev.found} found${ev.new ? `, ${ev.new} new` : ''}${ev.weak ? `, ${ev.weak} weak` : ''}`,
+    : `Looked through the footage for “${ev.query}”: ${ev.found} found${ev.new ? `, ${ev.new} new` : ''}${ev.weak ? `, ${ev.weak} weak` : ''}${ev.unconfirmed ? `, ${ev.unconfirmed} unconfirmed` : ''}`,
   view_moment: (ev) => ev.error === 'limit' ? `Did not watch ${momentName(ev.id)}: the limit of moments watched per message was reached`
     : ev.error ? `Could not watch ${momentName(ev.id)}: ${ev.error}`
       : `Watched ${momentName(ev.id)} (${ev.frames} frames)`,
@@ -3584,6 +3586,7 @@ function turnItems(t) {
     if (ev.kind === 'tool') {
       if (ev.name === 'find_moments') query = ev.query;
       items.push(h('li', { class: 'msg step', 'data-id': id, text: (TOOL_TEXT[ev.name] ?? (() => ev.name))(ev) }));
+      if (ev.name === 'look_for' && ev.possible?.length) items.push(possibleItem(ev, id));
     } else if (ev.kind === 'show') items.push(showItem(ev, id, query));
     else if (ev.kind === 'reply') items.push(h('li', { class: 'msg ai', 'data-id': id }, h('span', { class: 'vh', text: 'Assistant: ' }), h('p', { text: ev.text })));
     else if (ev.kind === 'proposal') items.push(proposalItem(ev, id));
@@ -3631,6 +3634,30 @@ function showItem(ev, id, query) {
           $('#chatLive').textContent = `Moments filtered by ${query}: ${n} shown${filtersOn(S.filters) ? '; Sort and filter is also on' : ''}`;
         },
       }, `Filter list by “${query}”`) : null));
+}
+
+/** look_for's guesses: windows the assistant cannot add by itself. Each is a button that adds it to the sequence, which is the user's confirmation (the same add as the Moments list). */
+function possibleItem(ev, id) {
+  return h('li', { class: 'msg ai possible', 'data-id': `${id}-possible` },
+    h('span', { class: 'vh', text: 'Assistant: ' }),
+    h('p', { text: `Possible matches for “${ev.query}”, not confirmed. Check each in the video before you add it.` }),
+    h('ul', { class: 'possible-list' }, ev.possible.map((w) => {
+      const inSeq = S.segments.some((x) => x.id === w.id);
+      return h('li', { 'data-id': w.id },
+        h('span', { class: 'tc', text: `${baseName(w.source)} ${fmt(w.start)}–${fmt(w.end)} (${w.confidence}) ` }),
+        h('button', {
+          type: 'button', class: 'btn small', 'data-act': 'add-possible', disabled: inSeq,
+          onclick: () => addPossible(w),
+        }, inSeq ? 'In the sequence' : 'Add to sequence'));
+    })));
+}
+
+/** The user adds one of look_for's possible windows: the existing add path, with the window kept as a draft like a removed clip that is no moment. */
+function addPossible(w) {
+  if (S.segments.some((x) => x.id === w.id)) return;
+  S.drafts[w.id] = { source: w.source, start: w.start, end: w.end, label: w.label };
+  addSeg(w.id); // re-renders the chat, which shows it as in the sequence
+  $('#sideLive').textContent = `Added to the sequence: ${w.label}. Ctrl+Z undoes it.`;
 }
 
 /** A proposal: its summary and changes, Review change (the preview in the Sequence tab) and up to three suggestions, previewed the same way. */

@@ -184,6 +184,7 @@ class Turn:
         # it made, which add ops can take and proposals carry
         self._finder = lookfor.Finder(list(project.durations))
         self.found: list[dict[str, Any]] = []
+        self._unsure: set[str] = set()  # ids of found windows that are only guesses
 
     # -- what the page sees ------------------------------------------------------------
     def view(self, after: int = 0) -> dict[str, Any]:
@@ -424,7 +425,9 @@ class Turn:
             limit = lookfor.DEFAULT_LIMIT
         limit = max(1, min(limit, lookfor.MAX_LIMIT))
         p = self.project
-        covering = [*self.table.candidates.values(), *p.segments]
+        # a guess is not a moment yet: a second look flags it again
+        covering = [c for c in self.table.candidates.values() if c["id"] not in self._unsure]
+        covering += p.segments
         try:
             got = self._finder.search(query, limit, covering, p.durations)
         except lookfor.LookForError as err:
@@ -433,6 +436,7 @@ class Turn:
             )
             return f"error: look_for is not available: {err}", False
         rows = []
+        possible = []
         for hit, covered in got.hits:
             cover = covered
             if cover is None:
@@ -440,10 +444,27 @@ class Turn:
                 if cand["id"] not in self.table.candidates:
                     self.found.append(cand)
                 cover = cand["id"]
-                self.table.add(cand)
+                # a clear one is a new moment; the rest are guesses, kept out of the ranked
+                # moments (find_moments, the table) and out of proposals until viewed
+                self.table.add(cand, rank=hit.clear)
+                if hit.clear:
+                    self._unsure.discard(cover)
+                else:
+                    self._unsure.add(cover)
             row = {**self.table.row(cover), "match": hit.match, "confidence": hit.confidence}
-            if covered is None:  # a clear one is a new moment; the rest wait to be confirmed
+            if covered is None:
                 row["new" if hit.clear else "unconfirmed"] = True
+                if not hit.clear:
+                    possible.append(
+                        {
+                            "id": cover,
+                            "source": self.table.candidates[cover]["source"],
+                            "start": self.table.candidates[cover]["start"],
+                            "end": self.table.candidates[cover]["end"],
+                            "label": self.table.candidates[cover]["label"],
+                            "confidence": hit.confidence,
+                        }
+                    )
             rows.append(row)
         self._emit(
             {
@@ -453,6 +474,8 @@ class Turn:
                 "found": len(rows),
                 "new": sum(1 for r in rows if r.get("new")),
                 "weak": sum(1 for r in rows if r["confidence"] == "weak"),
+                "unconfirmed": len(possible),
+                "possible": possible,  # the page offers each for the user to add
             }
         )
         skipped = got.total - got.searched
@@ -542,9 +565,20 @@ class Turn:
         mapped, problem = _real_ops(ops, self.table)
         if mapped is None:
             return None, problem
+        # a guess of look_for goes into the sequence only once view_moment showed it; the user
+        # can add it themself from the chat
+        blocked = self._unsure - self._viewed
+        for n, op in enumerate(mapped if isinstance(mapped, list) else [], 1):
+            if isinstance(op, dict) and op.get("op") == "add" and op.get("id") in blocked:
+                return None, (
+                    f"op {n}: {self.table.name(op['id'])} is an unconfirmed look_for window; "
+                    "confirm it with view_moment first, or tell the user it is uncertain "
+                    "(they can add it from the chat)"
+                )
         p = self.project
+        known = [c for c in self.found if c["id"] not in blocked]
         out = apply_ops(
-            p.segments, mapped, [*p.candidates, *self.found], p.durations, name=self.table.name
+            p.segments, mapped, [*p.candidates, *known], p.durations, name=self.table.name
         )
         if out.error:
             return None, out.error
@@ -554,7 +588,7 @@ class Turn:
         if out.color is not None:
             checked["color"] = out.color
         used = {row["id"] for row in out.after or []}
-        if moments := [c for c in self.found if c["id"] in used]:
+        if moments := [c for c in known if c["id"] in used]:
             checked["moments"] = moments  # look_for finds: the page's analysis does not have them
         return checked, ""
 

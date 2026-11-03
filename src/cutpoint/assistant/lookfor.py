@@ -98,10 +98,12 @@ sure, and name the moment so the user can check it. If {NAME} says it is not ava
 user what it says."""
 WEAK_IMAGES = f"""
 A weak or unconfirmed {NAME} window is not confirmed: check it with view_moment before you call \
-it a match, and never add it to the sequence unless it shows what the user asked for."""
+it a match. propose_edit refuses to add an unconfirmed window until view_moment has shown it; \
+the user sees each one as "possible" in the chat and can add it themself."""
 WEAK_TEXT = f"""
-A weak or unconfirmed {NAME} window is not confirmed and you cannot look at it: tell the user it \
-is uncertain, name it so they can check it, and never add it unless they ask for it."""
+A weak or unconfirmed {NAME} window is not confirmed and you cannot look at it: tell the user \
+it is uncertain and name it. propose_edit refuses to add an unconfirmed window; the user sees \
+each one as "possible" in the chat and can add it themself."""
 
 
 def rules(images: bool) -> str:

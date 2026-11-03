@@ -308,16 +308,19 @@ class MomentTable:
             self._short[real] = f"m{i}"
             self._real[f"m{i}"] = real
 
-    def add(self, cand: dict[str, Any]) -> str:
+    def add(self, cand: dict[str, Any], *, rank: bool = True) -> str:
         """A moment found after the table was made (look_for): the next short id, or the one
-        ``cand`` already has. Returns the short id."""
+        ``cand`` already has. Returns the short id. ``rank`` False keeps it out of the ranked
+        moments (the up-front list and ``find``), for a window that is only a guess: it has a
+        short id, so it can be viewed, and nothing more."""
         real = cand["id"]
         if real not in self._short:
             self.candidates[real] = cand
-            self.rank.append(real)
             self.looks[real] = _look(cand, [])
             self._short[real] = f"m{len(self._short) + 1}"
             self._real[self._short[real]] = real
+        if rank and real not in self.rank:
+            self.rank.append(real)
         return self._short[real]
 
     def name(self, real: str) -> str:

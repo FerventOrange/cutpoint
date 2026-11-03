@@ -624,6 +624,7 @@ def text_embeddings(
             m = load_clip()
             import open_clip  # noqa: PLC0415
 
+            m.visual = None  # text only: drops the image tower (most of the ~1.7 GB)
             loaded = _TEXT_MODEL[key] = (m.eval(), open_clip.get_tokenizer(CLIP_ARCH))
         model, tokenizer = loaded
         import torch  # noqa: PLC0415

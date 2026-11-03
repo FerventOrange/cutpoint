@@ -242,9 +242,15 @@ def _color_op(op: dict[str, Any], where: str) -> dict[str, Any]:
     mode = op.get("mode")
     if mode not in COLOR_MODES:
         raise OpsError(f"{where}: mode must be one of {', '.join(COLOR_MODES)}")
-    strength = _number(op, "strength", where)
-    if strength is not None and not 0 <= strength <= 1:
+    strength = op.get("strength")
+    if strength is not None and (
+        isinstance(strength, bool)
+        or not isinstance(strength, (int, float))
+        or not 0 <= strength <= 1
+    ):
         raise OpsError(f"{where}: strength must be a number from 0 to 1")
+    if strength is not None:
+        strength = round(strength * 20) / 20  # the slider's 5% steps
     return {"mode": mode, "strength": None if mode == "off" else strength}
 
 

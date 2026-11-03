@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util as util
 import json
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -253,6 +254,110 @@ def test_the_second_look_reuses_the_moment_and_its_short_id(clip) -> None:
     assert len(turn.found) == 3 and turn.table.name(turn.found[0]["id"]) == "m5"
 
 
+def unsure_ids(turn: session.Turn) -> dict[str, str]:
+    """short id -> real id of the guesses the turn found."""
+    return {turn.table.name(r): r for r in sorted(turn._unsure)}
+
+
+def test_a_guess_stays_a_guess_on_the_next_look_and_out_of_find_moments(clip) -> None:
+    """F1: an unconfirmed window is no ordinary moment: a second look flags it again, find_moments
+    and the up-front table do not list it (its label is the query), and the page is offered it."""
+    fake = FakeProvider(
+        [
+            call("look_for", query="powder spray"),
+            call("look_for", query="powder spray"),
+            call("find_moments", query="powder spray"),
+        ]
+    )
+    turn = run(fake)
+    first, second = ([e for e in turn.events if e.get("name") == "look_for"][i] for i in (0, 1))
+    assert first["unconfirmed"] == second["unconfirmed"] == 2
+    assert [p["confidence"] for p in first["possible"]] == ["strong", "weak"]
+    assert {p["id"] for p in first["possible"]} == set(turn._unsure) and len(turn._unsure) == 2
+    assert first["possible"][0]["label"] == "powder spray" and "source" in first["possible"][0]
+    rows = [
+        json.loads(line)
+        for line in fake.requests[2]["messages"][-1]["content"].splitlines()
+        if line.startswith("{")
+    ]
+    flagged = {r["id"] for r in rows if r.get("unconfirmed")}
+    assert flagged == set(unsure_ids(turn))  # again flagged, never a plain strong moment
+    assert not any(r["id"] in flagged and not r.get("unconfirmed") for r in rows)
+    found = fake.requests[3]["messages"][-1]["content"]
+    assert all(short not in found for short in flagged) and "m5" in found  # only the new moment
+    assert set(unsure_ids(turn).values()).isdisjoint(turn.table.rank)
+    msgs = context.build_messages(
+        turn.table, [], "powder spray", context.budget(8192), json_tools=[]
+    )
+    assert all(r not in msgs[1]["content"] for r in unsure_ids(turn).values())
+
+
+def test_a_guess_cannot_be_added_until_view_moment_showed_it(clip) -> None:
+    """F2: the model's add of an unconfirmed window is refused (main ops and suggestions); once
+    view_moment returned frames for it, it is allowed."""
+    turn = session.Turn(FakeProvider([]), project(), "x")
+    turn._tool_look_for({"query": "powder spray"})
+    shorts = unsure_ids(turn)
+    assert set(shorts) == {"m6", "m7"}
+    for short in shorts:
+        got, why = turn._checked([{"op": "add", "id": short}])
+        assert got is None and "unconfirmed look_for window" in why and short in why
+    got, _ = turn._checked([{"op": "add", "id": "m5"}, {"op": "color", "mode": "auto"}])
+    assert got is not None and [m["id"] for m in got["moments"]] == [turn.found[0]["id"]]
+    turn._viewed.add(shorts["m6"])  # view_moment showed frames of it
+    got, why = turn._checked([{"op": "add", "id": "m6"}])
+    assert got is not None, why
+    assert [m["id"] for m in got["moments"]] == [shorts["m6"]]
+    assert turn._checked([{"op": "add", "id": "m7"}])[0] is None  # still unviewed
+
+
+def test_a_proposal_with_a_guess_is_refused_and_the_suggestion_is_dropped(clip) -> None:
+    fake = FakeProvider(
+        [
+            call("look_for", query="powder spray"),
+            call("propose_edit", summary="Add the guess", ops=[{"op": "add", "id": "m7"}]),
+            call(
+                "propose_edit",
+                summary="Add the powder shot",
+                ops=[{"op": "add", "id": "m5"}],
+                suggestions=[
+                    {"label": "The guess", "ops": [{"op": "add", "id": "m6"}]},
+                    {"label": "Green", "ops": [{"op": "color", "mode": "auto"}]},
+                ],
+            ),
+        ]
+    )
+    turn = run(fake)
+    refused = fake.requests[2]["messages"][-1]["content"]
+    assert refused.startswith("error: proposal rejected: op 1: m7 is an unconfirmed look_for")
+    prop = turn.events[-1]
+    assert prop["kind"] == "proposal" and [s["summary"] for s in prop["suggestions"]] == ["Green"]
+    assert [m["id"] for m in prop["moments"]] == [lookfor.moment_id(B, 10.0, 15.0)]
+
+
+def test_the_text_tower_is_cached_without_the_image_tower(monkeypatch) -> None:
+    """F3: the first look_for caches the CLIP model for text only."""
+    torch = pytest.importorskip("torch")
+
+    class FakeClip:
+        visual = object()
+
+        def eval(self):
+            return self
+
+        def encode_text(self, tokens):
+            return torch.ones(len(tokens), 4)
+
+    key = (V.CLIP_ARCH, V.CLIP_PRETRAINED)
+    monkeypatch.setitem(sys.modules, "open_clip", SimpleNamespace(get_tokenizer=lambda _a: list))
+    monkeypatch.setattr(V, "load_clip", lambda **_k: FakeClip())
+    try:
+        out = V.text_embeddings(("a query",), save=False)
+        assert out.shape == (1, 4) and V._TEXT_MODEL[key][0].visual is None
+    finally:
+        V._TEXT_MODEL.pop(key, None)
+
+
 def test_a_failed_look_is_reported_to_the_model_and_the_page(clip, monkeypatch) -> None:
     monkeypatch.setattr(lookfor, "unavailable", lambda: "torch is not installed: lite")
     fake = FakeProvider([call("look_for", query="sunset")])
@@ -302,9 +407,9 @@ def test_look_for_works_with_tool_calls_and_in_json_mode(clip, caps) -> None:
 def test_the_rules_tell_the_model_what_to_do_about_weak_windows() -> None:
     images, text = lookfor.rules(True), lookfor.rules(False)
     assert lookfor.RULES in images and lookfor.RULES in text
-    assert "check it with view_moment" in images and "never add it" in images
+    assert "check it with view_moment" in images and "until view_moment has shown it" in images
     assert "view_moment" not in text and "you cannot look at it" in text
-    assert "tell the user it is uncertain" in text
+    assert "tell the user it is uncertain" in text and "can add it themself" in text
     assert "confirm" in lookfor.TOOL["function"]["description"]
     assert "weak" in lookfor.RULES and "confidence" in lookfor.RULES
 
@@ -331,6 +436,9 @@ def apply(*op: dict[str, Any]) -> ops.Outcome:
         ({"op": "color", "mode": "underwater"}, {"mode": "underwater", "strength": None}),
         ({"op": "color", "mode": "auto", "strength": 0}, {"mode": "auto", "strength": 0.0}),
         ({"op": "color", "mode": "off", "strength": 0.5}, {"mode": "off", "strength": None}),
+        # the slider moves in 5% steps: the op's strength is rounded to them
+        ({"op": "color", "mode": "auto", "strength": 0.83}, {"mode": "auto", "strength": 0.85}),
+        ({"op": "color", "mode": "auto", "strength": 0.97}, {"mode": "auto", "strength": 0.95}),
     ],
 )
 def test_a_color_op_alone_changes_no_row(op: dict, want: dict) -> None:
@@ -347,8 +455,8 @@ def test_a_color_op_alone_changes_no_row(op: dict, want: dict) -> None:
         ({"op": "color"}, "mode must be one of"),
         ({"op": "color", "mode": "auto", "strength": 1.5}, "from 0 to 1"),
         ({"op": "color", "mode": "auto", "strength": -0.1}, "from 0 to 1"),
-        ({"op": "color", "mode": "auto", "strength": "high"}, "strength must be a number"),
-        ({"op": "color", "mode": "auto", "strength": True}, "strength must be a number"),
+        ({"op": "color", "mode": "auto", "strength": "high"}, "a number from 0 to 1"),
+        ({"op": "color", "mode": "auto", "strength": True}, "a number from 0 to 1"),
     ],
 )
 def test_a_bad_color_op_is_refused_with_a_reason(op: dict, why: str) -> None:

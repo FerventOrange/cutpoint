@@ -309,6 +309,41 @@ test('look_for is a step, with the new moments it made', async (t) => {
   assert.match(log, /Could not look through the footage for “sunset”/);
 });
 
+test('look_for guesses are offered as possible windows; the user adds one, which Ctrl+Z undoes', async (t) => {
+  const possible = [
+    { id: 'lf1', source: '/videos/a.mp4', start: 50, end: 55, label: 'powder spray', confidence: 'strong' },
+    { id: 'lf2', source: '/videos/a.mp4', start: 70, end: 75, label: 'powder spray', confidence: 'weak' },
+  ];
+  const m = await chatPage(t, {
+    routes: turnRoutes([
+      { kind: 'tool', n: 0, name: 'look_for', query: 'powder spray', found: 2, new: 0, weak: 1, unconfirmed: 2, possible },
+      { kind: 'reply', n: 1, text: 'Two possible windows, not confirmed.' },
+    ]),
+  });
+  await m.send('find powder spray');
+  await m.tick(1000);
+  assert.match(m.log().join('\n'), /2 found, 1 weak, 2 unconfirmed/);
+  const rows = [...m.d.querySelectorAll('#chatLog .possible li')];
+  assert.equal(rows.length, 2);
+  assert.match(rows[0].textContent, /a\.mp4 .*\(strong\)/);
+  assert.match(rows[1].textContent, /\(weak\)/);
+  assert.match(m.$('#chatLog .possible').textContent, /not confirmed/);
+  assert.deepEqual(m.seqIds(), [], 'nothing is added by itself');
+
+  rows[1].querySelector('button').click(); // the user's click is the confirmation
+  await m.page.settle();
+  assert.deepEqual(m.seqIds(), ['lf2']);
+  assert.equal(m.page.requests.filter((r) => r.method === 'POST' && r.path === `${A}/turns`).length, 1);
+  const added = [...m.d.querySelectorAll('#chatLog .possible li')][1].querySelector('button');
+  assert.equal(added.disabled, true);
+  assert.equal(added.textContent, 'In the sequence');
+  assert.equal(m.$('#saveBtn').disabled, false);
+
+  await m.click('#undoBtn');
+  assert.deepEqual(m.seqIds(), []);
+  assert.equal([...m.d.querySelectorAll('#chatLog .possible li')][1].querySelector('button').disabled, false);
+});
+
 // ---- view_moment (#640) ----
 
 test('the consent text says frames go out only once allowed for a project', async (t) => {

@@ -26,7 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows per call, so a query the footage cannot answer lists nothing or a few guesses). Only a
   clear window (0.26 or more) becomes a new moment; the instructions tell the model to confirm a
   weak or unconfirmed window with `view_moment` (a model that takes images) or to say it is
-  uncertain, never to present it as confirmed. It works with every
+  uncertain, never to present it as confirmed. A guess stays out of `find_moments` and the moment
+  list, and `propose_edit` refuses to add one (also in a suggestion) until `view_moment` showed
+  it; the chat lists each as "possible" with an "Add to sequence" button, which is the user's
+  confirmation. The color op's strength is rounded to the slider's 5% steps. The first
+  `look_for` keeps only the CLIP text tower in memory. It works with every
   chat provider and sends text only (`match` 0-10 and `confidence`, never frames). It is not in Cutpoint lite (the
   message has the install command), says to run `cutpoint setup --only visual` when the CLIP
   weights are missing, and says so when no source has a cached visual layer. The instructions say
