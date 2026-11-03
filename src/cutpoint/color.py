@@ -118,6 +118,8 @@ VETO_CLIPPED = 0.005
 VETO_RESIDUAL_EPS = 0.005
 VETO_RESIDUAL_RATIO = 1.5
 VETO_RESIDUAL_FLOOR = 0.002
+# The M3 rise veto is a safety net: at the current caps (MAX_STRETCH, MAX_GAIN, the vibrance cap
+# below VETO_M3_RISE) no grade reaches it (#586); it guards against those caps being raised.
 VETO_M3_RISE = 0.25
 VETO_M3_DROP = 0.85
 VETO_SATURATION_DROP = 0.63

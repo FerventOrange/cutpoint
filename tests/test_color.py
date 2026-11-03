@@ -1002,6 +1002,26 @@ def test_veto_thresholds(after, veto, intended):
     assert color._veto(before, Metrics(**(before.to_json() | after)), intended) == veto
 
 
+@pytest.mark.parametrize("levels", ["luma", "channel"])
+@pytest.mark.parametrize(("lo", "hi"), [(0.1, 0.6), (0.2, 0.7), (0.3, 0.6)])
+def test_m3_rise_stays_below_the_veto_at_the_current_caps(lo, hi, levels):
+    grade = color.estimate(_stats(_flat(_scene(), lo, hi)), "auto", levels=levels)
+    assert grade.before is not None and grade.predicted is not None
+    assert grade.skip != color.VETO_COLOURFUL
+    assert grade.predicted.m3 <= grade.before.m3 * (1 + color.VETO_M3_RISE)
+
+
+def test_m3_veto_is_reached_through_estimate_when_the_caps_are_raised(monkeypatch):
+    monkeypatch.setattr(color, "MAX_STRETCH", 3.0)
+    monkeypatch.setattr(color, "MAX_BLACK", 0.4)
+    monkeypatch.setattr(color, "MIN_WHITE", 0.5)
+    monkeypatch.setattr(color, "VETO_CLIPPED", 0.05)
+    grade = color.estimate(_stats(_flat(_scene(), 0.2, 0.7)), "auto")
+    assert grade.skip == color.VETO_COLOURFUL
+    assert grade.predicted is not None and grade.before is not None
+    assert grade.predicted.m3 > grade.before.m3 * (1 + color.VETO_M3_RISE)
+
+
 @pytest.mark.parametrize(
     ("after", "red", "veto"),
     [
