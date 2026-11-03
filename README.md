@@ -91,6 +91,19 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex
 ```
 
+- **Pinned to a release.** Releases after 0.4.0 (0.4.0 and earlier have no such files)
+  have `install.sh`, `install.ps1` and `SHA256SUMS` as assets, with that
+  release's version stamped in as the default (`--source pypi` installs exactly it). Replace
+  `X.Y.Z` with a release tag such as `0.5.0` (tags have no `v`):
+  `curl -LsSf https://github.com/FerventOrange/cutpoint/releases/download/X.Y.Z/install.sh | sh`
+  and `irm https://github.com/FerventOrange/cutpoint/releases/download/X.Y.Z/install.ps1 | iex`.
+  For the newest release use
+  `https://github.com/FerventOrange/cutpoint/releases/latest/download/install.sh` (and `install.ps1`).
+  The `main` commands above install the version in `main`'s script, which can lag or lead the
+  newest release. To verify a download first, fetch the script and `SHA256SUMS` from the same
+  release, then run `sha256sum -c --ignore-missing SHA256SUMS` (Linux) or
+  `shasum -a 256 -c --ignore-missing SHA256SUMS` (macOS). On Windows compare
+  `(Get-FileHash install.ps1 -Algorithm SHA256).Hash` with the line for `install.ps1` in `SHA256SUMS`.
 - **Full or lite.** The default is full: every feature, with CUDA torch on an NVIDIA GPU (several
   GB). Lite has no torch and no Ollama; analyze, clips, assemble and edit still work. Ask for it
   with `curl ... | CUTPOINT_LITE=1 sh` (or `sh -s -- --lite`) on Linux and macOS, or
