@@ -279,12 +279,30 @@ def test_whisper_short_of_vram_transcribes_on_the_cpu(mem, monkeypatch, caplog):
     monkeypatch.setattr(transcribe, "load_model", lambda *a: loads.append(a) or object())
     mem.ram, mem.vram = 64.0, 0.5
     tr = transcribe.Transcriber(model="large-v3")
-    tr.device = "cuda"
+    tr.device = tr._want = "cuda"
     with caplog.at_level(logging.WARNING):
         tr._load()
     assert tr.device == "cpu" and loads == [("large-v3", "cpu", "int8")]
     assert mem.freed == mem.unloaded == 1  # freed first: still short
     assert any("0.5 GB VRAM free, 4.0 GB needed; running on the CPU" in m for m in caplog.messages)
+
+
+def test_whisper_goes_back_to_the_gpu_once_its_vram_is_free(mem, monkeypatch):
+    """Review F10: a VRAM shortage moves one load to the CPU; the next load (a --batch-size
+    boundary) is on the GPU again when its memory is free; a CUDA failure stays on the CPU."""
+    from cutpoint import transcribe  # noqa: PLC0415
+
+    monkeypatch.setattr(transcribe, "load_model", lambda *a: SimpleNamespace(device=a[1]))
+    monkeypatch.setattr(transcribe.Transcriber, "close", lambda self: setattr(self, "_model", None))
+    tr = transcribe.Transcriber(model="small")
+    tr.device = tr._want = "cuda"
+    mem.vram = 0.1
+    assert tr._load().device == "cpu"
+    tr.close()
+    mem.vram = 8.0
+    assert tr._load().device == "cuda" and tr.device == "cuda"
+    tr._fallback_to_cpu(RuntimeError("CUDA failed"))
+    assert tr._load().device == "cpu"
 
 
 def test_whisper_short_of_ram_stops_without_a_cpu_fallback(mem, monkeypatch):
@@ -293,7 +311,7 @@ def test_whisper_short_of_ram_stops_without_a_cpu_fallback(mem, monkeypatch):
     monkeypatch.setattr(transcribe, "load_model", lambda *a: pytest.fail("loaded"))
     mem.ram, mem.vram = 1.0, 0.5
     tr = transcribe.Transcriber(model="large-v3")
-    tr.device = "cuda"
+    tr.device = tr._want = "cuda"
     with pytest.raises(LowMemoryError, match="RAM free") as exc:
         tr.transcribe(Path("a.wav"))
     assert not isinstance(exc.value, LowVramError)

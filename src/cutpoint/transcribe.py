@@ -259,6 +259,7 @@ class Transcriber:
 
     def __init__(self, model: str | None = None, language: str | None = None) -> None:
         self.device = "cuda" if cuda_available() else "cpu"
+        self._want = self.device  # the device to load on; a VRAM shortage moves one load only
         self.model_name = model or default_model(self.device)
         self.language = language
         self._model: Any = None
@@ -268,7 +269,7 @@ class Transcriber:
             # the GPU short of memory (a game, OBS): Whisper runs on the CPU
             self.device = memguard.device_for(
                 memguard.whisper_need(self.model_name),
-                self.device,
+                self._want,
                 label=f"Whisper {self.model_name}",
             )
             compute = "float16" if self.device == "cuda" else "int8"
@@ -288,7 +289,7 @@ class Transcriber:
             )
         else:
             logger.warning("CUDA transcription failed (%s); falling back to CPU int8", err)
-        self.device = "cpu"
+        self.device = self._want = "cpu"  # a CUDA failure: on the CPU from now on
         self.close()
 
     def transcribe(
