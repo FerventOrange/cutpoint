@@ -112,6 +112,8 @@ def test_a_cue_word_matches_parts_of_cue_names_by_prefix() -> None:
     t = context.MomentTable([lift, jump], [], wins)
     assert t.find("big air") == ["jump"]
     assert t.find("chair") == ["lift"]
+    assert t.find("lift") == ["lift"]
+    assert not context._names("air", "chairlift")
     assert context._names("crash", "crash_fall") and not context._names("air", "chairlift")
 
 

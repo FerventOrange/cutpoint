@@ -266,8 +266,9 @@ def _look(cand: dict[str, Any], windows: list[dict[str, Any]]) -> Look:
 
 def _names(word: str, cue: str) -> bool:
     """Whether search ``word`` names ``cue``: a part of the cue name (split at ``_``) starts
-    with it, so ``air`` names airtime and jump_air but not chairlift."""
-    return any(part.startswith(word) for part in cue.split("_"))
+    with it, or ends with it for words of 4+ letters, so ``air`` names airtime and jump_air
+    but not chairlift, while ``lift`` names chairlift."""
+    return any(p.startswith(word) or (len(word) >= 4 and p.endswith(word)) for p in cue.split("_"))
 
 
 def _jsonl(rows: list[dict[str, Any]]) -> str:
