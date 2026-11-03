@@ -484,6 +484,16 @@ def test_label_dir_writable_leaves_no_probe_file(tmp_path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
+def test_label_dir_writable_warns_when_the_probe_file_stays(tmp_path, monkeypatch, caplog) -> None:
+    def refuse(self, *_a, **_k):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+    assert le.label_dir_writable(tmp_path)
+    (warn,) = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert "Could not remove the probe file" in warn and str(tmp_path) in warn
+
+
 def test_draft_folder_check_skips_label_files_kept_without_force(
     tmp_path, monkeypatch, offline
 ) -> None:

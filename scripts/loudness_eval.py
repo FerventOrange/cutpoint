@@ -1000,12 +1000,15 @@ def label_dir_writable(folder: Path) -> bool:
     probe_file = Path(probe) / f".loudness-eval-probe-{os.getpid()}"
     try:
         fd = os.open(probe_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        try:
-            os.close(fd)
-        finally:
-            probe_file.unlink()
     except OSError:
         return False
+    try:
+        os.close(fd)
+    finally:
+        try:
+            probe_file.unlink()
+        except OSError:
+            logger.warning("Could not remove the probe file %s; delete it by hand", probe_file)
     return True
 
 
