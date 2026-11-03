@@ -410,6 +410,122 @@ def test_draft_mode_skips_existing_label_files_before_analysing(tmp_path, monkey
     assert data["draft"] and {m["kind"] for m in data["moments"]} == {"reaction", "game"}
 
 
+def test_draft_mode_skips_a_second_source_with_the_same_stem(
+    tmp_path, monkeypatch, caplog, offline
+) -> None:
+    srcs = [write(tmp_path / "a" / "rec.mp4"), write(tmp_path / "b" / "rec.mp4")]
+    seen = []
+
+    def analyse(src, *_a):
+        seen.append(src)
+        return _result(src, _signals())
+
+    monkeypatch.setattr(le, "analyse", analyse)
+    argv = [*map(str, srcs), "--draft-labels", "--labels-dir", str(tmp_path / "lab")]
+    assert le.main(argv) == 0
+    assert seen == [srcs[0]]
+    assert json.loads((tmp_path / "lab" / "rec.json").read_text())["draft"]
+    (warn,) = [r.getMessage() for r in caplog.records if "share the label file" in r.getMessage()]
+    assert str(srcs[0]) in warn and str(srcs[1]) in warn
+
+
+def test_eval_mode_skips_a_second_source_with_the_same_stem(
+    tmp_path, monkeypatch, caplog, offline
+) -> None:
+    srcs = [write(tmp_path / "a" / "clip.mp4"), write(tmp_path / "b" / "clip.mp4")]
+    write(tmp_path / "lab" / "clip.json", json.dumps({"source": "clip.mp4", "moments": LABELS}))
+    seen = []
+
+    def analyse(src, *_a):
+        seen.append(src)
+        return _result(src, _signals())
+
+    monkeypatch.setattr(le, "analyse", analyse)
+    argv = [*map(str, srcs), "--labels-dir", str(tmp_path / "lab"), "--variant", "baseline"]
+    assert le.main(argv) == 0
+    assert seen == [srcs[0]]
+    assert any("share the label file" in r.getMessage() for r in caplog.records)
+
+
+def test_draft_mode_fails_on_an_unwritable_label_folder_before_analysing(
+    tmp_path, monkeypatch, caplog, offline
+) -> None:
+    src = write(tmp_path / "rec.mp4")
+
+    def analyse(*_a):
+        raise AssertionError("analysed before the folder check")
+
+    monkeypatch.setattr(le, "analyse", analyse)
+    monkeypatch.setattr(le, "label_dir_writable", lambda folder: False)
+    assert le.main([str(src), "--draft-labels"]) == 1
+    (err,) = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert str(tmp_path / "labels") in err and "--labels-dir" in err
+    assert not (tmp_path / "labels").exists()
+
+
+def test_label_dir_writable_probes_without_creating_the_folder(tmp_path) -> None:
+    assert le.label_dir_writable(tmp_path)
+    assert le.label_dir_writable(tmp_path / "new" / "labels")
+    assert not (tmp_path / "new").exists()
+    blocker = write(tmp_path / "file.txt")
+    assert not le.label_dir_writable(blocker / "labels")
+
+
+def test_label_dir_writable_is_false_when_the_probe_file_fails(tmp_path, monkeypatch) -> None:
+    def refuse(*_a, **_k):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(le.os, "open", refuse)
+    assert not le.label_dir_writable(tmp_path)
+
+
+def test_label_dir_writable_leaves_no_probe_file(tmp_path) -> None:
+    assert le.label_dir_writable(tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_label_dir_writable_warns_when_the_probe_file_stays(tmp_path, monkeypatch, caplog) -> None:
+    def refuse(self, *_a, **_k):
+        raise PermissionError("in use")
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+    assert le.label_dir_writable(tmp_path)
+    (warn,) = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert "Could not remove the probe file" in warn and str(tmp_path) in warn
+
+
+def test_draft_folder_check_skips_label_files_kept_without_force(
+    tmp_path, monkeypatch, offline
+) -> None:
+    src = write(tmp_path / "rec.mp4")
+    write(tmp_path / "labels" / "rec.json", "{}")
+
+    def analyse(*_a):
+        raise AssertionError("analysed")
+
+    monkeypatch.setattr(le, "analyse", analyse)
+    monkeypatch.setattr(le, "label_dir_writable", lambda f: False)
+    assert le.main([str(src), "--draft-labels"]) == 0  # nothing to write, nothing checked
+    assert le.main([str(src), "--draft-labels", "--force"]) == 1
+
+
+def test_same_label_file_in_another_case_is_a_clash(tmp_path, monkeypatch, caplog, offline):
+    monkeypatch.setattr(le.os.path, "normcase", str.lower)  # as on Windows
+    srcs = [write(tmp_path / "a" / "Rec.mp4"), write(tmp_path / "b" / "rec.mp4")]
+    seen = []
+
+    def analyse(src, *_a):
+        seen.append(src)
+        return _result(src, _signals())
+
+    monkeypatch.setattr(le, "analyse", analyse)
+    argv = [*map(str, srcs), "--draft-labels", "--labels-dir", str(tmp_path / "lab")]
+    assert le.main(argv) == 0
+    assert seen == [srcs[0]]
+    assert (tmp_path / "lab" / "Rec.json").is_file()
+    assert any("share the label file" in r.getMessage() for r in caplog.records)
+
+
 def test_eval_main_writes_tables_and_json(tmp_path, monkeypatch, capsys, offline) -> None:
     src = write(tmp_path / "clip.mp4")
     write(tmp_path / "lab" / "clip.json", json.dumps({"source": "clip.mp4", "moments": LABELS}))
@@ -420,6 +536,12 @@ def test_eval_main_writes_tables_and_json(tmp_path, monkeypatch, capsys, offline
     assert le.main([*argv, "--out", str(out)]) == 0  # the default sweep
     text = capsys.readouterr().out
     assert "clip.mp4: 1 reaction, 1 game labels" in text and "Pooled" in text
+    # columns keep a space between wide headers such as the suggested top's
+    heads = [line.split() for line in text.splitlines() if line.startswith("variant")]
+    assert len(heads) == 2  # the clip and the pooled table
+    for head in heads:
+        assert {"R@suggested", "FP@suggested"} <= set(head)
+    assert "G@suggested" in heads[0]
     assert "boom variants skipped: PANNs is not installed" in text
     assert "reweight variants skipped" in text
     data = json.loads(out.read_text())
