@@ -35,6 +35,7 @@ from cutpoint.events.audio_events import (
 )
 from cutpoint.events.common import (
     VramMonitor,
+    free_torch,
     load_highlights,
     load_source,
     load_transcript_lines,
@@ -382,6 +383,7 @@ def run_events(
     # ---- layer 1b: OCR (with region discovery for games without a preset)
     t0 = time.perf_counter()
     ocr.project = project
+    make_engine = None  # set before discovery: the stage may suppress its error
     with stage("ocr") if "ocr" in layers else contextlib.nullcontext():
         base = 0.0  # progress the per-source OCR starts at (after discovery)
         if "ocr" in layers and discover is not False:
@@ -397,7 +399,6 @@ def run_events(
             if stats["discovery"]:
                 base = DISCOVERY_PCT
         # the OCR model loads only when a source's footage is read (not for a replay)
-        make_engine = None
         if "ocr" in layers:
             make_engine = prefetch.make_engine if prefetch else functools.cache(OcrEngine)
         if not ocr.player_tags and sources and ("ocr" in layers or cached_ocr):
@@ -467,6 +468,11 @@ def run_events(
         vram["ocr"] = vm.summary()
         stats["ocr"] = ocr_stats
     timings["ocr_s"] = round(time.perf_counter() - t0, 1)
+    if make_engine is not None:  # no OCR after this: the engine is not kept through the VLM
+        if prefetch is not None and make_engine is prefetch.make_engine:
+            prefetch.close()  # its worker uses the engine: stopped first (idempotent)
+        _release_engine(make_engine)
+        make_engine = None
 
     # ---- crashes (after voice + visual, whose caches it reads): crashes.json
     if crash_run:
@@ -503,6 +509,8 @@ def run_events(
             logger.info("VLM: up to %d windows", vlm.max_windows)
 
     # ---- layer 2: VLM windows
+    if "vlm" in layers:
+        free_torch()  # the CUDA memory torch still caches for the layers before
     t0 = time.perf_counter()
     games = {
         str(s.path): ACTION_CAM if ski else game_key_for_path(str(s.path), ocr.game, project)
@@ -561,6 +569,8 @@ def run_events(
             None, by_path, windows, vlm, prompts, transcript, layer1, force="vlm" in force
         )
         missing = len(windows) - vstats["cached"] if "vlm" not in force else len(windows)
+        if "vlm" not in force:
+            progress.continuing("vlm", vstats["cached"], len(windows))
         if missing > 0:
             results = cached
             if online is None:
@@ -630,6 +640,15 @@ def run_events(
             timings,
             stats,
         )
+
+
+def _release_engine(make_engine: Callable[[], OcrEngine]) -> None:
+    """Drop the OCR engine ``make_engine`` (a ``functools.cache``) made, if it made one, so
+    its memory is free before the next layers load their models. The next call of
+    ``make_engine`` makes a new one."""
+    if getattr(make_engine, "cache_info", None) is None:
+        return
+    make_engine.cache_clear()  # type: ignore[attr-defined]
 
 
 def _telemetry_layer(

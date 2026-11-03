@@ -341,6 +341,18 @@ def _audio_mix(src: Path, cdir: Path, tracks: tuple[int, ...], streams: int) -> 
         cache.save_json(cdir / MIX_FILE, {"tracks": want})
 
 
+def _cached_transcripts(sources: Sequence[Path], tr: Transcriber | None) -> int:
+    """How many of ``sources`` have their (whole-file) transcript of ``tr`` cached;
+    unreachable ones count as not cached, and none without a transcriber."""
+    if tr is None:
+        return 0
+    n = 0
+    for src in sources:
+        with contextlib.suppress(OSError):
+            n += (cache.source_dir(src) / transcript_name(tr.model_name, tr.language)).is_file()
+    return n
+
+
 @contextlib.contextmanager
 def _watch_extract(
     wav: Path, seconds: float, report: Callable[[float], None] | None
@@ -1905,6 +1917,7 @@ def _analyze(
         pending = auto is not None and det.pending  # the style's text signals wait for talk
         results: list[SourceResult] = []
         transcript_lines: list[str] = []
+        progress.continuing("transcribe", _cached_transcripts(sources, tr), len(sources))
         for i, src in enumerate(sources):
             steps.update(progress.fraction(i, len(sources)), src.name)
 

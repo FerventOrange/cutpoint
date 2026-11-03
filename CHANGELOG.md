@@ -297,6 +297,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   square), the three columns share a 16 px gutter and a symmetric padding, and the top bar, the
   Moments band and the tab bar share one band height (`--band-h`, when the Moments band fits one
   row). Dialogs, popovers, callouts and cards use the same padding and corner radius.
+- A step that starts when part of its work is already cached (for example after an
+  interruption) says how far it got (#109): `transcribe: N/M done, continuing` (sources with a
+  cached transcript), `vlm: N/M done, continuing` (described VLM windows) and `dense check: N/M
+  done, continuing` (crash dense windows), as an INFO line and as the running step's
+  `PROGRESS` `detail`. Fresh runs and re-runs with everything cached log nothing new; the
+  `PROGRESS` keys and states are unchanged.
 - Docs: README and Getting started now lead with the one-step installers (`install.sh`, `install.ps1`).
   They document full and lite (`--lite`, `-Lite`, `CUTPOINT_LITE`, and unsetting it to return to
   full), `--source` and `CUTPOINT_SOURCE`, the optional prompts (Ollama, the `qwen3.5:9b` model,
@@ -493,6 +499,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mic track are still both summed, also when the mic talks only now and then. Such recordings
   are analysed again once (audio extract, loudness, transcript and the audio events layers);
   recordings with one track or with distinct tracks keep their cache.
+- Interrupted runs lose less work and free memory sooner (#109). The dense crash check saves
+  each window to its cache as it finishes, so a run stopped by Ctrl+C or a kill keeps the
+  windows it checked and the next run computes only the rest (before, every check of the run
+  was lost). `events` and `analyze` release the HUD OCR engine after the OCR layer and torch's
+  cached CUDA memory before the VLM layer, instead of keeping both through it. Outputs of an
+  uninterrupted run are unchanged.
 - 360 clips filmed with the camera upright (lenses horizontal, on a pole or stick above you)
   now place the wearer below the camera (#573). The wearer cone (the rendered QA's self tags,
   the `--paths` QA's wearer exclusion), the director's wearer rule, the travel direction and

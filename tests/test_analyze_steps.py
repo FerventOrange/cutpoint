@@ -512,6 +512,36 @@ def test_whisper_progress_is_passed_only_on_a_transcript_cache_miss(tmp_path):
     assert calls == [1.0]  # cached: Whisper does not run
 
 
+@pytest.mark.parametrize("cached", [0, 2])
+def test_transcribe_says_how_many_sources_are_cached_on_a_rerun(run, capsys, caplog, cached):
+    """#109: "transcribe: N/M done, continuing" (INFO and the step's PROGRESS detail) only
+    when transcripts of this model are cached; a fresh run looks as before."""
+    videos = [run.video, write(run.video.with_name("b.mp4")), write(run.video.with_name("c.mp4"))]
+    for v in videos[:cached]:
+        write(cache.source_dir(v) / transcribe.transcript_name("stub"), "[]")
+    write(cache.source_dir(videos[2]) / transcribe.transcript_name("other"), "[]")  # other model
+    with caplog.at_level("INFO"):
+        analyze.analyze(
+            run.video.parent,
+            get_style("funny"),
+            run.proj,
+            vision=False,
+            use_scenes=False,
+            layers=True,
+        )
+    text = "transcribe: 2/3 done, continuing"
+    details = [g["detail"] for g in progress_lines(capsys) if g["step"] == "transcribe"]
+    assert (text in caplog.messages) is bool(cached)
+    assert (text in details) is bool(cached)
+    assert not any("continuing" in m for m in caplog.messages if m != text)
+
+
+def test_cached_transcripts_without_a_transcriber_counts_none(tmp_path):
+    """#109: no transcriber (stubbed out by callers that fail analyze early) counts 0
+    cached transcripts, so no "continuing" line, instead of failing on ``model_name``."""
+    assert analyze._cached_transcripts([write(tmp_path / "a.mp4")], None) == 0
+
+
 # ----------------------------------------------------------------- failures
 def test_a_layer_failure_fails_its_step_warns_and_the_later_steps_run(run, capsys, caplog):
     run.plan = plan(reactions=("audio", "voice"), keyframes=("visual",), crashes=("crash",))
