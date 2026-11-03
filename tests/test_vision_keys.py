@@ -170,7 +170,7 @@ def test_the_events_cache_is_looked_up_under_the_resolved_model(
     monkeypatch.setattr(pipeline.importlib.util, "find_spec", lambda name: object())
     local_server.answers[1] = oa_reply(json.dumps(tvv.REPLY))  # /models, then the window
     first = tvv._run_vlm(tmp_path, monkeypatch)
-    assert first["settings"]["vlm"]["model"] == "openai:served-7b"
+    assert first["settings"]["vlm"]["model"] == "openai@localhost:1234:served-7b"
     assert [e["label"] for e in first["events"] if e["kind"] == "vlm"] == ["player gets a kill"]
 
     raters: list[Any] = []

@@ -246,15 +246,42 @@ def unambiguous(url: str) -> bool:
 
 
 def is_local(url: str) -> bool:
-    """Whether ``url`` is on this machine: ``localhost`` (or ``*.localhost``) or a loopback
-    address (``127.0.0.0/8``, ``::1``). Anything else, a LAN address too, counts as hosted."""
+    """Whether ``url`` is on this machine: ``localhost`` or a loopback address
+    (``127.0.0.0/8``, ``::1``). Anything else, a LAN address or a ``*.localhost`` name (a
+    resolver may send it to the network) too, counts as hosted."""
     host = host_of(url)
-    if host == "localhost" or host.endswith(".localhost"):
+    if host == "localhost":
         return True
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def host_port(url: str) -> str:
+    """The host of ``url`` (:func:`host_of`) with its port when that is not the scheme's
+    default: ``192.168.1.5:8080``, an IPv6 address bracketed (``[fd00::5]:8080``); the host
+    alone for ``https://api.openai.com`` or ``http://host:80``."""
+    host = host_of(url)
+    try:
+        parsed = parse_url(_with_scheme(url))
+    except (LocationParseError, ValueError):
+        return host
+    port, scheme = parsed.port, (parsed.scheme or "http").lower()
+    if not host or port is None or port == _DEFAULT_PORTS.get(scheme):
+        return host
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+def endpoint(provider: Provider) -> str:
+    """Where ``provider``'s requests go, for consent and cache keys: :func:`host_port` of its
+    URL, so two servers on one host are told apart; a subscription's ``host`` as is (its
+    requests go through the local proxy, not to its URL)."""
+    url = getattr(provider, "url", "")
+    return host_port(url) if url and host_of(url) == provider.host else provider.host
 
 
 # Prefixes of the consent keys. Each role's consent is its own and is versioned: consent given
@@ -270,12 +297,13 @@ def consent_key(provider: Provider, role: str = "assistant") -> str | None:
     (``"assistant"`` or ``"vision"``): ``assistant-v2:<name>@<host>``
     (:data:`ASSISTANT_CONSENT_PREFIX`) for the assistant, ``vision-v2:<name>@<host>``
     (:data:`VISION_CONSENT_PREFIX`) for Vision, so neither consent unlocks the other and an
-    unprefixed entry from an older version unlocks neither; None for a local provider (nothing
-    leaves the machine)."""
+    unprefixed entry from an older version unlocks neither; ``<host>`` has the port when it is
+    not the scheme's default (:func:`endpoint`: ``vision-v2:openai@192.168.1.5:8080``); None
+    for a local provider (nothing leaves the machine)."""
     if provider.local:
         return None
     prefix = VISION_CONSENT_PREFIX if role == "vision" else ASSISTANT_CONSENT_PREFIX
-    return f"{prefix}{provider.name}@{provider.host}"
+    return f"{prefix}{provider.name}@{endpoint(provider)}"
 
 
 def check(provider: Provider) -> str | None:

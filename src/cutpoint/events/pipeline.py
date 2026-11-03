@@ -198,7 +198,9 @@ def run_events(
         # resolve the server's model before any cache lookup: the descriptions are keyed on
         # it. Offline it stays the placeholder, and its cached descriptions are not found.
         online = rater.available()
-    vlm.model = f"{rater.provider_name}:{rater.model}" if hosted else rater.model
+    # a hosted provider's descriptions are keyed on its host too: one model id at two
+    # servers describes apart (rater.host: providers.endpoint)
+    vlm.model = f"{rater.provider_name}@{rater.host}:{rater.model}" if hosted else rater.model
     sources = []
     seen: set[str] = set()
     unreachable: list[tuple[str, OSError]] = []
@@ -235,11 +237,13 @@ def run_events(
     det = None
     voice_params = None
     keep = False  # hand PANNs to the voice layer instead of loading it again (#372)
+    voice_needs = False
+    panns_failed = False  # the audio layer could not load PANNs: voice does not retry (#629)
     if "voice" in layers:
         from cutpoint.events import voice as voice_layer  # noqa: PLC0415
 
         voice_params = voice_layer.VoiceParams()
-        keep = voice_layer.needs_run(sources, voice_params, force="voice" in force)
+        keep = voice_needs = voice_layer.needs_run(sources, voice_params, force="voice" in force)
     if "audio" in layers:
         with stage("audio"):
             unload_ollama()
@@ -254,7 +258,12 @@ def run_events(
                             )
                             evs = []  # nothing to detect: no model load
                         if evs is None:
-                            det = det or PannsDetector()
+                            if det is None:
+                                try:
+                                    det = PannsDetector()
+                                except Exception:
+                                    panns_failed = True
+                                    raise
                             evs = detect_audio_events(s, det, audio, force=True)  # miss or forced
                         layer1[str(s.path)] += [{**e, "kind": "audio"} for e in evs]
                 except BaseException:
@@ -277,7 +286,9 @@ def run_events(
     timings["audio_s"] = round(time.perf_counter() - t0, 1)
 
     # ---- layer 1c/1d: wind-robust voice grids, frame embeddings + people
-    if "voice" in layers:
+    if "voice" in layers and panns_failed and voice_needs:
+        logger.info("Voice layer skipped: PANNs did not load (see the audio layer's error)")
+    elif "voice" in layers:
         t0 = time.perf_counter()
         try:
             with stage("voice"), VramMonitor() as vm:

@@ -583,7 +583,9 @@ def _named_profile(context: str, lib: dict[str, dict[str, Any]]) -> str | None:
 
 
 def default_ask() -> tuple[Ask | None, str | None]:
-    """The local Ollama vision model as an :data:`Ask` (``(None, None)`` if unavailable)."""
+    """The local Ollama vision model as an :data:`Ask` (``(None, None)`` if unavailable, or
+    if that Ollama is on another machine without the user's Vision consent: nothing is sent,
+    and :meth:`VisionRater.warn_consent` warns once)."""
     rater = VisionRater(local_only=True)
     if not rater.available():
         return None, None
