@@ -95,8 +95,9 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
   the final video (clips kept). `--vision` adds the optional frame rating (Ollama by default;
   the Vision role in the `cutpoint ui` Models tab can route it to a hosted provider). It is off
   for every style unless `"vision": true` in the user's `config.json` turns it on; `--no-vision`
-  then skips it. An `--ollama-url` on another machine needs the user's Vision consent (Models
-  tab); without it vision is skipped with a `vision_consent_needed` warning: tell the user.
+  then skips it. An `--ollama-url` on another machine, or a hosted Vision provider in the
+  Models tab, needs the user's Vision consent (Models tab); without it vision is skipped with a
+  `vision_consent_needed` warning: tell the user.
   `--vision-top`, `--ollama-url`, `--ollama-model` and `--skip` work as on
   `analyze`; `--compress-peaks`, `--lut`, `--lut-strength`, `--color` and `--color-strength` as
   on `clips`.

@@ -453,7 +453,9 @@ function renderMoments() {
     .map((c, i) => ({ c, rank: i + 1 }))
     .filter(({ c }) => {
       const seg = segOf(c);
-      return momentMatches({ ...c, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f);
+      // the filter finds a moment by the label it shows, its analysis label and vision label
+      const label = filterLabel(c);
+      return momentMatches({ ...c, label, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f);
     });
   if (S.order === 'position') items.sort((a, b) => positionCompare(a.c, b.c)); // the badge keeps the score rank
   const listHadFocus = $('#candList').contains(document.activeElement);
@@ -467,12 +469,14 @@ function renderMoments() {
         const picked = !!seg;
         const badge = prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] });
         const tip = c.pano?.flags?.length ? `tip-${c.id}` : null;
+        const title = c.display_label || c.label || c.cli_id || c.id;
         return h('li', { class: `cand${picked ? ' picked' : ''}`, 'data-id': c.id, 'aria-current': c.id === S.focus ? 'true' : null },
           h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', 'aria-describedby': tip, onclick: () => focusMoment(c.id) },
             h('span', { class: 'cand-top' },
               h('span', { class: 'rank tc', text: `#${rank}` }),
-              h('span', { class: 'cand-title', text: c.label || c.cli_id || c.id }),
-              c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null),
+              h('span', { class: 'cand-title', text: title }),
+              c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null,
+              poolBadge(c)),
             h('span', { class: 'cand-time tc' },
               // the CLI id (h001) as text, for Candidate ids and clips --ids (#487)
               c.cli_id ? [h('span', { class: 'cand-id' }, h('span', { class: 'vh', text: 'Candidate ' }), c.cli_id), ' '] : null,
@@ -487,7 +491,7 @@ function renderMoments() {
               : null),
           h('button', {
             type: 'button', class: 'btn small', 'data-act': 'toggle',
-            'aria-label': `${picked ? 'Remove' : 'Add'} ${c.label || c.cli_id || c.id} ${picked ? 'from' : 'to'} sequence`,
+            'aria-label': `${picked ? 'Remove' : 'Add'} ${title} ${picked ? 'from' : 'to'} sequence`,
             onclick: () => (picked ? removeSeg(c.id) : addSeg(c.id)),
           }, picked ? 'Remove' : 'Add'),
           // the reasons of the camera path badges (#517): shown on hover and keyboard focus, read as the card's description
@@ -554,6 +558,24 @@ function prepBadge(src, seg) {
   const [name, word] = PREP[state];
   return h('span', { class: 'prep', 'data-state': state, title: `Preview ${word.toLowerCase()}` },
     icon(name), h('span', { class: 'vh', text: 'Preview ' }), word);
+}
+
+/** The name of a moment whose row is called ``label``: the Moments list's title (display_label,
+ * what the vision model saw for a generic label; #634) unless the row was renamed. */
+function shownName(cand, label) {
+  return cand?.display_label && (label == null || label === cand.label) ? cand.display_label : label;
+}
+
+/** The labels the list filter searches: the title, the analysis label and the vision label. */
+const filterLabel = (c) => [c.display_label, c.label, c.vision_label].filter(Boolean).join(' ');
+
+/** "visual · view": a moment of the visual pool (#635: beauty shots, friends, cruising runs that
+ * analysis adds without a sound or speech cue), with its kind when it has one. */
+function poolBadge(c) {
+  if (c.pool !== 'visual') return null;
+  const kind = typeof c.kind === 'string' && c.kind ? c.kind : null;
+  return h('span', { class: 'tag pool' }, 'visual',
+    kind ? [h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' }), kind] : null);
 }
 
 /**
@@ -757,7 +779,7 @@ function renderStage(seekToStart, keepVideo = false) {
   const c = current();
   $('#stageBody').hidden = !c;
   $('#toggleBtn').hidden = !c;
-  $('#stageMeta').textContent = c ? `${c.label} from ${baseName(c.source)}` : '';
+  $('#stageMeta').textContent = c ? `${shownName(c.cand, c.seg ? c.label : null) || c.label} from ${baseName(c.source)}` : '';
   renderFullPrep(c);
   renderNerdStats(c);
   renderPanoNote(c);
@@ -3192,13 +3214,17 @@ const MAX_HISTORY_SHOWN = 20; // newest applied changes listed for Revert
 const PROVIDER_NAMES = { ollama: 'Ollama', openai: 'OpenAI-compatible', anthropic: 'Anthropic' };
 // What a hosted provider gets: analysis results only (context.py sends only these; file names,
 // never paths); video frames only once allowed for a project (view_moment, #640), never audio
-const CONSENT_SENDS = "this project's analysis results (moment labels, scores and detection signals, transcript snippets, file names (not full paths) and times) and your messages; never video frames unless you allow them for a project, and never audio";
+const CONSENT_SENDS = "this project's analysis results (moment labels, scores and detection signals, vision descriptions, transcript snippets, file names (not full paths) and times) and your messages; never video frames unless you allow them for a project, and never audio";
 // What view_moment sends a hosted model once allowed (watch.py): one image per watched moment
 const FRAMES_SENDS = (host) => `To answer questions about what can be seen, the assistant can watch a few moments. Each one sends ${host} one image of 6 to 9 frames from the moment's clip, with its times, transcript and detected sounds. Nothing was sent. You allow it once for this project and host; Cutpoint saves it in config.json.`;
 const CHANGE_NAMES = { added: 'added', removed: 'removed', moved: 'moved', trimmed: 'trimmed', relabelled: 'renamed' };
 const SMALL_MODEL_NOTE = 'A small local model can miss moments or misread a request. Check each change in the preview before you apply it.';
 const aiUrl = (path = '') => `/api/projects/${encodeURIComponent(S.id)}/assistant${path}`;
-const momentName = (id) => (cands().find((c) => c.id === id) ?? S.segments.find((s) => s.id === id))?.label || id;
+// a moment's name as the Moments list shows it (shownName; #634)
+const momentName = (id) => {
+  const c = cands().find((m) => m.id === id);
+  return c?.display_label || (c ?? S.segments.find((s) => s.id === id))?.label || id;
+};
 const REVERT = 'revert-';
 const isRevert = (p) => p.id.startsWith(REVERT);
 /** The sequence a proposal was made on, from its diff's "before" rows, as [id, start, end] in order. */
@@ -3421,7 +3447,7 @@ function renderPropBar() {
 
 /** One row of the previewed sequence, with its change in words: Added, Removed, Moved 3 → 1, Trimmed 0:10.00–0:18.00 → .... */
 function propRow(r) {
-  const name = r.label || momentName(r.id);
+  const name = shownName(cands().find((c) => c.id === r.id), r.label) || momentName(r.id);
   const at = r.after ?? r.before;
   const span = (s) => `${fmt(s.start)}–${fmt(s.end)}`;
   const marks = r.changes.map((c) => h('span', { class: `prop-mark ${c}` },
@@ -3559,6 +3585,11 @@ function turnItems(t) {
 
 /** show_moments: the moments, highlighted in the list (a toggle) or, by the words the model searched for, filtered through the list's own filter. */
 function showItem(ev, id, query) {
+  // Filter only when the list's filter finds one of these moments by the model's words
+  const found = query && ev.ids.some((x) => {
+    const c = cands().find((m) => m.id === x);
+    return c && momentMatches({ ...c, label: filterLabel(c) }, query, NO_FILTERS);
+  });
   const on = !!S.shown && S.shown.size === ev.ids.length && ev.ids.every((x) => S.shown.has(x));
   const n = ev.ids.length;
   return h('li', { class: 'msg ai', 'data-id': id },
@@ -3574,7 +3605,7 @@ function showItem(ev, id, query) {
           renderChat();
         },
       }, 'Highlight in list'),
-      query ? h('button', {
+      found ? h('button', {
         type: 'button', class: 'btn small', 'data-act': 'filter',
         onclick: () => {
           S.filter = query;
@@ -5481,7 +5512,7 @@ function bind() {
     const c = current();
     if (!c) return;
     (c.seg ? removeSeg : addSeg)(c.id);
-    $('#seqLive').textContent = `${c.label} ${c.seg ? 'removed from' : 'added to'} the sequence`;
+    $('#seqLive').textContent = `${shownName(c.cand, c.seg ? c.label : null) || c.label} ${c.seg ? 'removed from' : 'added to'} the sequence`;
   });
   $('#seqPlayBtn').addEventListener('click', () => (S.seqPlay ? seqStop() : seqStart()));
   $('#undoBtn').addEventListener('click', undo);

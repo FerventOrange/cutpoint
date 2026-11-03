@@ -19,7 +19,7 @@ import re
 import secrets
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -65,7 +65,8 @@ _OPS = {
 TOOLS = [
     _tool(
         "find_moments",
-        "Moments whose label or transcript has the query's words, best match first.",
+        "Moments whose label, transcript, seen text, heard sounds or cue names (5+ of 10, "
+        "such as beauty or crash) have the query's words, best match first.",
         {"query": {"type": "string"}, "limit": {"type": "integer"}},
         ["query"],
     ),
@@ -133,6 +134,7 @@ class Project:
     durations: Mapping[str, float | None]  # the project's sources (ops.Durations)
     transcript: str  # transcript.txt ("" when there is none)
     base_key: str  # ops.base_key of segments and highlights.json
+    windows: list[dict[str, Any]] = field(default_factory=list)  # context.vlm_windows(events.json)
 
 
 def _now() -> str:
@@ -158,7 +160,7 @@ class Turn:
             {"user": str(t.get("user", "")), "reply": str(t.get("reply", ""))}
             for t in earlier or []
         ]
-        self.table = context.MomentTable(project.candidates, project.segments)
+        self.table = context.MomentTable(project.candidates, project.segments, project.windows)
         self.status = "running"  # running | done | failed | cancelled
         self.error: str | None = None
         self.events: list[dict[str, Any]] = []
@@ -398,7 +400,7 @@ class Turn:
             {"kind": "tool", "name": "find_moments", "query": query[:200], "found": len(found)}
         )
         if not found:
-            return "no moment's label or transcript has those words", False
+            return "no moment's label, transcript, seen text or cues have those words", False
         rows = "\n".join(json.dumps(self.table.row(r), ensure_ascii=False) for r in found)
         return context.data_block("moments", rows), False
 

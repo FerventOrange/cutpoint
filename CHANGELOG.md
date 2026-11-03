@@ -26,6 +26,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   versioned (`frames-v1:<provider>@<host>` in `assistant.frames_consent` of `config.json`,
   per project folder); the AI Chat and Vision consents never cover it. The AI Chat consent text
   now says it never sends video frames unless you allow them for a project.
+- AI Chat sees what analysis saw (#634): each moment carries `seen` (the vision rating label and
+  the description of its `events` VLM window), `heard` (laughter or screams detected) and `cues`,
+  visual, telemetry and vision-tag strengths on one 0-10 scale (beauty, people, speed, carve,
+  airtime, crash, stopped, chairlift, scenic_vista and more; six per moment in the list, about
+  25 characters more per moment on average, at most ~300). `find_moments` also searches the vision
+  labels, the VLM window descriptions and the names of strong cues, and the instructions tell the
+  model to rank by them ("beauty shots", "casual skiing", "bloopers") before asking for moment
+  ids, naming only the cues the project has. Those searches need action-cam footage with
+  telemetry, the `events` vision layer or visual-pool moments; other styles have the vision
+  rating label, loudness, laughter and the sounds heard. A cue word matches the start of a part of
+  a cue name (`air`: airtime, jump_air; not chairlift). Only text and numbers are sent, never
+  frames.
+- A moment with a generic label (`action-moment`) is titled with what the vision model saw in AI
+  Chat and in the `cutpoint ui` Moments list; `highlights.json` and clip file names keep the
+  analysis label. Moments of the visual pool carry a "visual" badge with their kind. The AI Chat
+  consent and its docs now name the vision descriptions it sends; the consent version is the same,
+  so no one is asked again.
 - `cutpoint ui` offers the `action-cam` style in Highlight style for standard (non-360) footage,
   single and multi-input, with a hint: best with GoPro or Insta360 telemetry, fed by the
   reactions, keyframes and crash steps (events extra, `cutpoint setup`); in Cutpoint lite it still
@@ -438,6 +455,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are cached per provider and host, so one model id at two servers no longer shares results.
   Results cached from a hosted provider before this change are asked again once; Ollama caches
   are unchanged (#621).
+- The `vision_consent_needed` WARNING (and its `--json` warning message) names the exact consent
+  key, for example `vision-v2:ollama@10.0.0.5:11434`: besides allowing vision requests in the
+  Models tab of `cutpoint ui`, that key can be added to `vision_assistant.consent` in
+  `config.json`. A hosted Vision provider without consent (an API key or a subscription login,
+  such as `vision-v2:openai@api.openai.com`) now gets the same WARNING and `--json` warning once
+  per run, naming the provider, its host and its key, instead of an INFO line; `analyze` then
+  skips the vision step with that message, as for an Ollama on another machine. Both come once
+  per run, also when one run uses the vision model twice (`edit --vision --events`). Without
+  that consent `events` no longer uses cached VLM descriptions either (as `analyze` skips cached
+  ratings): the VLM layer is skipped with the same warning.
+- The INFO line before HUD region discovery no longer suggests `--game` and `--no-discover`
+  during `analyze`, which has neither option: there it suggests `--skip keyframes`. `events`
+  keeps its hint.
 - 360 clips filmed with the camera upright (lenses horizontal: handheld, on a pole) no longer
   spin or drift: the view layer, the director and the renderer took yaw 0 from the camera axis
   that points ahead on a helmet mount, which is near vertical when the camera stands upright,

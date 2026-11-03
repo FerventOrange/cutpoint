@@ -239,7 +239,8 @@ def test_the_assistant_consent_does_not_unlock_vision_for_an_api_provider(
     with caplog.at_level(logging.INFO, logger="cutpoint.vision"):
         assert not ast.available()
         assert ast.ask("describe", [JPEG]) is None
-    assert "Agree to send to" in caplog.text and "for Vision" in caplog.text
+    assert "needs your consent before frames are sent to it" in caplog.text
+    assert f'add "vision-v2:{name}@{host}" to vision_assistant.consent' in caplog.text
     assert wire.sent == []
 
 

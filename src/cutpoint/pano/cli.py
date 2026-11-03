@@ -658,7 +658,7 @@ def _vl_checker(a: argparse.Namespace) -> Any:
     checker = VLChecker()
     if not checker.available():
         if checker.rater.consent_needed:
-            why = "the Ollama on another machine is not allowed for Vision"
+            why = "the Vision provider (hosted, or an Ollama on another machine) needs consent"
         else:
             why = "local vision model unavailable"
         logger.warning("--vl-check: %s; skipping the check", why)
