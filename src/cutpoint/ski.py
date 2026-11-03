@@ -37,7 +37,7 @@ Features from the ``cutpoint events`` voice and visual layers (0 until they ran)
     voice_laughter PANNs laughter on 200 Hz high-passed audio above a
              wind-raised threshold (wind from the low-band energy and telemetry
              speed); called ``laughter`` before #514 phase 1b, which older
-             learned presets and ski_features files still say (read as this)
+             learned presets and saved feature files still say (read as this)
     voice    Silero VAD and PANNs speech both above wind-raised thresholds
 
 From ``cutpoint crashes`` (``<project>/crashes.json``, 0 until it ran):
@@ -85,7 +85,7 @@ VLM_ACTION_TAGS = ("jump_air", "landing", "powder_spray")
 VLM_IDLE_TAGS = ("chairlift", "standing_talking", "lodge")  # friends do not count there
 FRIENDS_STRONG = 7  # default mask_friends: > 0 = hard lift/still mask, 0 = soft
 STRETCH = 0.7  # a pick takes the run around its peak that stays above this share of it
-FEATURES_DIR = "ski_features"
+FEATURES_DIR = "action_cam_features"
 # Clip geometry per dominant feature: (min_len, max_len, pre, post) around the peak.
 GEOMETRY: dict[str, tuple[float, float, float, float]] = {
     "airtime": (3.0, 6.0, 1.5, 1.5),  # pre/post relative to take-off / landing
@@ -172,7 +172,7 @@ def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> 
         for w in ev.get("windows", []):
             ctx.windows.setdefault(_key(w["source"]), []).append(w)
         logger.info(
-            "ski: using events.json (%d audio events, %d VLM windows)",
+            "action-cam: using events.json (%d audio events, %d VLM windows)",
             sum(map(len, ctx.audio_events.values())),
             sum(map(len, ctx.windows.values())),
         )
@@ -184,7 +184,7 @@ def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> 
             ctx.crashes.setdefault(_key(c["source"]), []).append(c)
         top = max((c["confidence"] for c in cr.get("crashes", [])), default=0.0)
         logger.info(
-            "ski: using crashes.json (%d candidates, best confidence %.2f)",
+            "action-cam: using crashes.json (%d candidates, best confidence %.2f)",
             len(cr.get("crashes", [])),
             top,
         )
@@ -618,7 +618,7 @@ def merge_must_include(picks: list[Pick], forced: list[Pick]) -> list[Pick]:
 
 # --------------------------------------------------------------------------- persistence
 def features_path(project: Path, src: Path, offset: float = 0.0) -> Path:
-    """``<project>/ski_features/<stem>-<digest>.npz`` for one source (part)."""
+    """``<project>/action_cam_features/<stem>-<digest>.npz`` for one source (part)."""
     digest = hashlib.sha1(f"{_key(src)}|{offset:.3f}".encode()).hexdigest()[:8]
     return project / FEATURES_DIR / f"{source_path(src).stem}-{digest}.npz"
 

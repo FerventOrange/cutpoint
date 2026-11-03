@@ -786,7 +786,7 @@ layer is not part of `analyze`; it stays in [`events`](#events) and `edit --even
 `highlights.json` is written once, atomically, at the end: a cancelled run leaves the previous
 file, and a cancelled first run leaves none. The other result files are written with it, just
 before it, each atomically: `transcript.txt`, `events.json`, `events.txt`, `crashes.json`, the
-`crash_check\` sheets, `activity.json` and, for `action-cam`, `telemetry.json` and `ski_features\`
+`crash_check\` sheets, `activity.json` and, for `action-cam`, `telemetry.json` and `action_cam_features\`
 (older sheets and features of the project are removed at the same time). A failed or cancelled
 run, in any step, leaves all of them as they were, and a cancelled first run leaves no project
 folder, unless HUD discovery wrote its proposal (`discovery\`, below). A run stopped after the transcription therefore has no `transcript.txt` yet; the rerun

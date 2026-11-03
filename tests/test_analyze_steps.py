@@ -826,7 +826,7 @@ OLD_FILES = {
     "crash_check/c001_old_5.jpg": b"old sheet",
     "activity.json": b'{"name": "old"}',
     "telemetry.json": b'{"old": true}',
-    "ski_features/old-0123abcd.npz": b"old features",
+    "action_cam_features/old-0123abcd.npz": b"old features",
 }
 
 
@@ -1116,8 +1116,8 @@ def test_a_cancel_during_the_final_commit_leaves_every_result_file_new(run, monk
     assert renamed[-1] == "highlights.json"
     got = tree(run.proj)
     assert sorted(got) == [
-        "activity.json", "crash_check/c001_a_10.jpg", "crashes.json", "events.json",
-        "events.txt", "highlights.json", "ski_features/old-0123abcd.npz", "telemetry.json",
+        "action_cam_features/old-0123abcd.npz", "activity.json", "crash_check/c001_a_10.jpg",
+        "crashes.json", "events.json", "events.txt", "highlights.json", "telemetry.json",
         "transcript.txt",
     ]  # fmt: skip
     for name in ["activity.json", "crashes.json", "events.json", "events.txt"]:
@@ -1151,7 +1151,7 @@ def test_action_cam_candidates_are_picked_with_the_projects_activity_prompts(
 def test_ski_features_and_telemetry_json_are_written_at_the_end(run, monkeypatch, cancel):
     """The stale features go and the new ones and telemetry.json come only when the run
     completes; the second ski.prepare reads this run's crashes.json from memory."""
-    for name in ("telemetry.json", "ski_features/old-0123abcd.npz"):
+    for name in ("telemetry.json", "action_cam_features/old-0123abcd.npz"):
         write(run.proj / name, OLD_FILES[name])
     monkeypatch.setattr(analyze, "probe", lambda path: SimpleNamespace(duration=60.0))
     monkeypatch.setattr(ski, "extract", lambda src, duration: None)  # no telemetry
@@ -1172,10 +1172,12 @@ def test_ski_features_and_telemetry_json_are_written_at_the_end(run, monkeypatch
     assert seen == [(1, False)]
     got = tree(run.proj)
     if cancel:
-        assert got == {k: OLD_FILES[k] for k in ("telemetry.json", "ski_features/old-0123abcd.npz")}
+        assert got == {
+            k: OLD_FILES[k] for k in ("telemetry.json", "action_cam_features/old-0123abcd.npz")
+        }
         return
     new = ski.features_path(run.proj, run.video)
-    assert "ski_features/old-0123abcd.npz" not in got
+    assert "action_cam_features/old-0123abcd.npz" not in got
     assert ski.load_features(new)["features"]["speed"].tolist() == [0.0] * 5
     assert json.loads(got["telemetry.json"])["sources"] == {str(run.video): None}
 

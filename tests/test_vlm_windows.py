@@ -91,3 +91,10 @@ def test_gp_reference_is_bundled_without_user_preset(tmp_path, home, monkeypatch
     assert "gp" not in _gp("verbfeed", load_preset("verbfeed", proj))
     write_preset(proj / "hud_presets", verbfeed(view="side-on"))
     assert "gp" in _gp("verbfeed", load_preset("verbfeed", proj))
+
+
+def test_action_cam_windows_cache_under_the_action_cam_key():
+    key = vw.VlmParams(ski=True).key()
+    assert "ski" not in key
+    assert key["action_cam"] == vw.ACTION_CAM_PROMPT_VERSION
+    assert "action_cam" not in vw.VlmParams().key()

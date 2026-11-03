@@ -107,8 +107,8 @@ HELD_OUTPUTS = (
     "crashes.json",
     "crash_check",  # the crash contact sheets crashes.json names
     "activity.json",
-    "telemetry.json",  # ski
-    "ski_features",
+    "telemetry.json",  # action-cam
+    "action_cam_features",
 )
 
 

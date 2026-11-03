@@ -17,6 +17,8 @@ from cryptography import x509
 
 from cutpoint.assistant import cliproxy, proxy_tls
 
+pytestmark = pytest.mark.network  # a loopback TLS/HTTP server
+
 
 class RecordingHandler(http.server.BaseHTTPRequestHandler):
     records: ClassVar[list[tuple[str, str, bytes]]] = []

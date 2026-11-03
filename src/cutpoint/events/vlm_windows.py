@@ -84,7 +84,7 @@ RESPONSE_SCHEMA: dict[str, Any] = {
 }
 
 # Action-cam (``style_kind == "action-cam"``): per-window tag strengths for the ski scorer.
-SKI_PROMPT_VERSION = 1
+ACTION_CAM_PROMPT_VERSION = 1
 SKI_TAGS = (
     "jump_air",
     "landing",
@@ -231,7 +231,7 @@ class VlmParams:
             "hints": self.hints,
             "prompt": PROMPT_VERSION,
             "model": self.model,
-            **({"ski": SKI_PROMPT_VERSION} if self.ski else {}),
+            **({"action_cam": ACTION_CAM_PROMPT_VERSION} if self.ski else {}),
             **({"gp": prompt.key()} if prompt and prompt.custom else {}),
         }
 

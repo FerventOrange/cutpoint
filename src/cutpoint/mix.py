@@ -1,6 +1,6 @@
 """Variety selection (``cutpoint mix``): a balanced set of moments from a ski day.
 
-The ``cutpoint analyze --style action-cam`` features (``<project>/ski_features``) are
+The ``cutpoint analyze --style action-cam`` features (``<project>/action_cam_features``) are
 peak-picked once per *category* with :func:`cutpoint.ski.pick` and
 category-specific weights, so a day of 360 footage does not collapse to the
 one signal that happens to be strong (laughs, group shots):

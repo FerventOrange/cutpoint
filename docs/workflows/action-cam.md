@@ -22,7 +22,7 @@ cutpoint assemble projects/trip/clips --loudnorm
   steps when the `events` extra and models are installed, writing `events.json` and
   `crashes.json` (`--skip` leaves steps out); the Ollama frame rating runs only with `--vision`;
 - writes `telemetry.json` (day summary, runs, per-source events);
-- writes these files, `crash_check\` and `ski_features\` only when it completes: a cancelled
+- writes these files, `crash_check\` and `action_cam_features\` only when it completes: a cancelled
   run leaves the previous ones as they were ([analyze](../commands.md#analyze));
 - orders clips by start time (GPS time, else the camera clock) and splits the day into runs at
   lift segments and gaps over 4 minutes.
