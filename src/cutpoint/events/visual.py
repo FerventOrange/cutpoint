@@ -203,8 +203,17 @@ def iter_frames(path: Path, width: int, height: int, keyframes: bool, hwaccel: b
 
 
 # --------------------------------------------------------------------------- models
-class ClipWeightsMissing(FileNotFoundError):
+class WeightsMissing(FileNotFoundError):
+    """Model weights ``cutpoint setup --only visual`` downloads are not on disk."""
+
+
+class ClipWeightsMissing(WeightsMissing):
     """The CLIP weights ``cutpoint setup --only visual`` downloads are not on disk."""
+
+
+class DetectorWeightsMissing(WeightsMissing):
+    """The Faster R-CNN v2 checkpoint ``cutpoint setup --only visual`` downloads is not on
+    disk."""
 
 
 def load_clip(*, download: bool = False) -> Any:
@@ -236,10 +245,50 @@ def load_clip(*, download: bool = False) -> Any:
     return model
 
 
+def load_detector(
+    det_thresh: float, min_size: int, max_size: int, *, download: bool = False
+) -> Any:
+    """The Faster R-CNN v2 COCO detector (torchvision, CPU) from the checkpoint at
+    :func:`paths.detector_weights`.
+
+    Builds the model without weights (``weights_backbone=None`` too, so torchvision fetches
+    no ImageNet backbone) and loads the checkpoint file setup wrote, so torchvision never goes
+    through ``load_state_dict_from_url``. Only ``cutpoint setup`` passes ``download``, which
+    asks for ``weights=COCO_V1`` and lets torchvision fetch the file into the torch hub cache.
+
+    Raises:
+        DetectorWeightsMissing: without ``download`` when the checkpoint is not on disk.
+    """
+    paths.apply_torch_home()
+    import torch  # noqa: PLC0415
+    import torchvision  # noqa: PLC0415
+
+    det = torchvision.models.detection
+    size = {"box_score_thresh": det_thresh, "min_size": min_size, "max_size": max_size}
+    if download:
+        return det.fasterrcnn_resnet50_fpn_v2(
+            weights=det.FasterRCNN_ResNet50_FPN_V2_Weights.COCO_V1, **size
+        )
+    ckpt = paths.detector_weights()
+    if not ckpt.is_file():
+        raise DetectorWeightsMissing(
+            f"Faster R-CNN detector weights not found in {ckpt.parent}; "
+            "run: cutpoint setup --only visual"
+        )
+    # COCO_V1 has 91 categories; the same build torchvision does before loading its weights.
+    model = det.fasterrcnn_resnet50_fpn_v2(
+        weights=None, weights_backbone=None, num_classes=91, **size
+    )
+    model.load_state_dict(torch.load(ckpt, map_location="cpu", weights_only=True))
+    return model
+
+
 class VisualModels:
     """CLIP ViT-L/14 image encoder + Faster R-CNN v2, loaded once per run.
 
     ``download``: only for ``cutpoint setup``, which loads them once to fetch the weights.
+    Without it both load from local files only (:class:`ClipWeightsMissing`,
+    :class:`DetectorWeightsMissing` when they are not on disk).
     """
 
     def __init__(
@@ -254,7 +303,7 @@ class VisualModels:
         paths.apply_torch_home()
         import open_clip  # noqa: PLC0415
         import torch  # noqa: PLC0415
-        import torchvision  # noqa: PLC0415
+        import torchvision  # noqa: F401, PLC0415 - a missing extra fails before any load
 
         self.torch = torch
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -263,13 +312,9 @@ class VisualModels:
         model = load_clip(download=download)
         self.clip = model.eval().to(self.device, self.dtype)
         self.tokenizer = open_clip.get_tokenizer(CLIP_ARCH)
-        det = torchvision.models.detection
         self.det = (
-            det.fasterrcnn_resnet50_fpn_v2(
-                weights=det.FasterRCNN_ResNet50_FPN_V2_Weights.COCO_V1,
-                box_score_thresh=det_thresh,
-                min_size=det_min_size,
-                max_size=int(det_min_size * 16 / 9) + 1,
+            load_detector(
+                det_thresh, det_min_size, int(det_min_size * 16 / 9) + 1, download=download
             )
             .eval()
             .to(self.device)

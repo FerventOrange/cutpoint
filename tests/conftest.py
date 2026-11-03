@@ -30,6 +30,11 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     for name in list(os.environ):
         if name.startswith("CUTPOINT_"):
             monkeypatch.delenv(name)
+    # A user's TORCH_HOME would point paths.detector_weights() at their real checkpoint. The
+    # setenv records its value (or its absence), so a TORCH_HOME apply_torch_home sets during
+    # the test is undone too.
+    monkeypatch.setenv("TORCH_HOME", "")
+    monkeypatch.delenv("TORCH_HOME")
     home = tmp_path / "home"
     monkeypatch.setenv("CUTPOINT_HOME", str(home))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
