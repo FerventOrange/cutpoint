@@ -452,7 +452,9 @@ function renderMoments() {
     .map((c, i) => ({ c, rank: i + 1 }))
     .filter(({ c }) => {
       const seg = segOf(c);
-      return momentMatches({ ...c, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f);
+      // the filter finds a moment by the label it shows and by its analysis label
+      const label = [c.display_label, c.label].filter(Boolean).join(' ');
+      return momentMatches({ ...c, label, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f);
     });
   if (S.order === 'position') items.sort((a, b) => positionCompare(a.c, b.c)); // the badge keeps the score rank
   const listHadFocus = $('#candList').contains(document.activeElement);
@@ -466,12 +468,14 @@ function renderMoments() {
         const picked = !!seg;
         const badge = prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] });
         const tip = c.pano?.flags?.length ? `tip-${c.id}` : null;
+        const title = c.display_label || c.label || c.cli_id || c.id;
         return h('li', { class: `cand${picked ? ' picked' : ''}`, 'data-id': c.id, 'aria-current': c.id === S.focus ? 'true' : null },
           h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', 'aria-describedby': tip, onclick: () => focusMoment(c.id) },
             h('span', { class: 'cand-top' },
               h('span', { class: 'rank tc', text: `#${rank}` }),
-              h('span', { class: 'cand-title', text: c.label || c.cli_id || c.id }),
-              c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null),
+              h('span', { class: 'cand-title', text: title }),
+              c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null,
+              poolBadge(c)),
             h('span', { class: 'cand-time tc' },
               // the CLI id (h001) as text, for Candidate ids and clips --ids (#487)
               c.cli_id ? [h('span', { class: 'cand-id' }, h('span', { class: 'vh', text: 'Candidate ' }), c.cli_id), ' '] : null,
@@ -486,7 +490,7 @@ function renderMoments() {
               : null),
           h('button', {
             type: 'button', class: 'btn small', 'data-act': 'toggle',
-            'aria-label': `${picked ? 'Remove' : 'Add'} ${c.label || c.cli_id || c.id} ${picked ? 'from' : 'to'} sequence`,
+            'aria-label': `${picked ? 'Remove' : 'Add'} ${title} ${picked ? 'from' : 'to'} sequence`,
             onclick: () => (picked ? removeSeg(c.id) : addSeg(c.id)),
           }, picked ? 'Remove' : 'Add'),
           // the reasons of the camera path badges (#517): shown on hover and keyboard focus, read as the card's description
@@ -559,6 +563,15 @@ function prepBadge(src, seg) {
  * The camera path flags of a 360 moment (#517) as small badges (words, never colour alone), or null.
  * Their reasons are the card's tooltip and description (``flag-tip``) and the preview's note.
  */
+/** "visual · view": a moment of the visual pool (#635: beauty shots, friends, cruising runs that
+ * analysis adds without a sound or speech cue), with its kind when it has one. */
+function poolBadge(c) {
+  if (c.pool !== 'visual') return null;
+  const kind = typeof c.kind === 'string' && c.kind ? c.kind : null;
+  return h('span', { class: 'tag pool' }, 'visual',
+    kind ? [h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' }), kind] : null);
+}
+
 function flagBadges(pano) {
   if (!pano?.flags?.length) return null;
   return h('span', { class: 'cand-flags' },
@@ -756,7 +769,9 @@ function renderStage(seekToStart, keepVideo = false) {
   const c = current();
   $('#stageBody').hidden = !c;
   $('#toggleBtn').hidden = !c;
-  $('#stageMeta').textContent = c ? `${c.label} from ${baseName(c.source)}` : '';
+  // the Moments list's title (display_label) unless the sequence row was renamed
+  const title = c && (c.cand?.display_label && (!c.seg || c.seg.label === c.cand.label) ? c.cand.display_label : c.label);
+  $('#stageMeta').textContent = c ? `${title} from ${baseName(c.source)}` : '';
   renderFullPrep(c);
   renderNerdStats(c);
   renderPanoNote(c);
@@ -3191,11 +3206,15 @@ const MAX_HISTORY_SHOWN = 20; // newest applied changes listed for Revert
 const PROVIDER_NAMES = { ollama: 'Ollama', openai: 'OpenAI-compatible', anthropic: 'Anthropic' };
 // What a hosted provider gets: analysis results only, never video or audio (context.py sends
 // only these; file names, never paths)
-const CONSENT_SENDS = "this project's analysis results (moment labels, scores and detection signals, transcript snippets, file names (not full paths) and times) and your messages; never video or audio";
+const CONSENT_SENDS = "this project's analysis results (moment labels, scores and detection signals, vision descriptions, transcript snippets, file names (not full paths) and times) and your messages; never video or audio";
 const CHANGE_NAMES = { added: 'added', removed: 'removed', moved: 'moved', trimmed: 'trimmed', relabelled: 'renamed' };
 const SMALL_MODEL_NOTE = 'A small local model can miss moments or misread a request. Check each change in the preview before you apply it.';
 const aiUrl = (path = '') => `/api/projects/${encodeURIComponent(S.id)}/assistant${path}`;
-const momentName = (id) => (cands().find((c) => c.id === id) ?? S.segments.find((s) => s.id === id))?.label || id;
+// a moment's display_label (what the vision model saw, for a generic label; #634) as in the Moments list
+const momentName = (id) => {
+  const c = cands().find((m) => m.id === id);
+  return c?.display_label || (c ?? S.segments.find((s) => s.id === id))?.label || id;
+};
 const REVERT = 'revert-';
 const isRevert = (p) => p.id.startsWith(REVERT);
 /** The sequence a proposal was made on, from its diff's "before" rows, as [id, start, end] in order. */

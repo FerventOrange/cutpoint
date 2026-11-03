@@ -91,6 +91,7 @@ from fastapi.staticfiles import StaticFiles
 from cutpoint import cache, folders, insta360, paths, procs, progress
 from cutpoint.assemble import AUDIO_TRANSITIONS, OUTPUT_FORMATS, default_audio_transition
 from cutpoint.assistant import cliproxy
+from cutpoint.assistant import context as ai_context
 from cutpoint.assistant import keys as ai_keys
 from cutpoint.assistant import ops as ai_ops
 from cutpoint.assistant import providers as ai_providers
@@ -2747,7 +2748,10 @@ def source_folder(p: Path) -> Path | None:
 
 def moments_view(hl: dict[str, Any] | None) -> dict[str, Any] | None:
     """Keep saved trims attached to source intervals, not mutable CLI ranks; ``cli_id`` keeps the
-    CLI id (h001) that the cards show and ``clips --ids`` takes."""
+    CLI id (h001) that the cards show and ``clips --ids`` takes. ``display_label`` is the label
+    the moments list shows: a generic one (``action-moment``) gives way to what the vision model
+    saw (:func:`cutpoint.assistant.context.shown_label`, as in AI Chat); ``label`` stays the
+    analysis label, which a moment added to the sequence takes."""
     if hl is None:
         return None
     return {
@@ -2756,6 +2760,7 @@ def moments_view(hl: dict[str, Any] | None) -> dict[str, Any] | None:
             {
                 **c,
                 "cli_id": c.get("id"),
+                "display_label": ai_context.shown_label(c.get("label"), c),
                 "id": hashlib.sha1(
                     f"{os.path.realpath(c['source'])}|{float(c['start'])}|{float(c['end'])}".encode()
                 ).hexdigest()[:12],
@@ -4867,7 +4872,8 @@ def create_app(port: int) -> FastAPI:
         if consent_view(provider)["needed"]:
             raise bad(
                 f"agree first to send this project's analysis results (moment labels, scores "
-                f"and signals, transcript snippets, file names and times) to {provider.host}",
+                f"and signals, vision descriptions, transcript snippets, file names and times) "
+                f"to {provider.host}",
                 409,
             )
         text = body.get("text")
@@ -4883,7 +4889,9 @@ def create_app(port: int) -> FastAPI:
         if _inside(p, "transcript.txt"):
             with contextlib.suppress(OSError, UnicodeDecodeError):
                 transcript = (p / "transcript.txt").read_text(encoding="utf-8-sig")
-        project = ai_session.Project(moments, segments, durations, transcript, key)
+        # the events VLM windows: what the vision model saw, which find_moments searches
+        windows = ai_context.vlm_windows(_load(p, "events.json"))
+        project = ai_session.Project(moments, segments, durations, transcript, key, windows)
         assistant_save(p, ai_store.CHAT)
         turn = ai_session.Turn(provider, project, text.strip(), ai_store.turns(p))
         try:

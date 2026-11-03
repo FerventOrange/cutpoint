@@ -268,7 +268,7 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   AI Chat tab adds them. An entry without the `assistant-v2:` prefix, saved by an earlier version
   under a shorter description, no longer counts, and AI Chat asks again.
   The assistant gets only analysis results (moment labels, scores and detection signals,
-  transcript snippets, file names without paths, times) and your messages, never video or audio.
+  vision descriptions, transcript snippets, file names without paths, times) and your messages, never video or audio.
   This consent never covers the [Vision role](#vision_assistant), which has its own.
   Remove an entry to be asked again. A provider is local when its host is `localhost` or a
   loopback address; any other host, a LAN address too, is hosted.

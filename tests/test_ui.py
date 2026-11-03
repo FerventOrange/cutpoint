@@ -7772,7 +7772,8 @@ def test_the_consent_texts_name_what_each_role_sends() -> None:
     from cutpoint.assistant import context  # noqa: PLC0415
 
     sends = re.search(r'^const CONSENT_SENDS = "(.*)";$', _web("app.js"), re.M)[1]
-    for part in ("labels", "scores", "signals", "transcript snippets", "file names", "times"):
+    parts = ("labels", "scores", "signals", "vision descriptions", "transcript snippets")
+    for part in (*parts, "file names", "times"):
         assert part in sends, part
     assert "your messages" in sends and "never video or audio" in sends
     cand = {
@@ -7787,9 +7788,11 @@ def test_the_consent_texts_name_what_each_role_sends() -> None:
         "signals": {"keywords": ["look"], "events": {"laughter": 0.4}},
     }
     table = context.MomentTable([cand], [])
+    # kind, seen, cues, heard (#634): what analysis saw, as labels, scores and signals
     disclosed = {"id", "file", "start", "end", "analyzed", "score", "seq", "label", "said"}
+    disclosed |= {"kind", "seen", "cues", "heard"}
     assert set(table.row("h1")) <= disclosed
-    assert set(table.row("h1", full=True)) <= disclosed | {"kind", "signals"}
+    assert set(table.row("h1", full=True)) <= disclosed | {"signals"}
     msgs = context.build_messages(table, [], "hi", context.budget(8192))
     assert all(isinstance(m["content"], str) for m in msgs)  # text only: no image parts
     assert "D:/Videos" not in "".join(m["content"] for m in msgs)
@@ -8050,7 +8053,8 @@ def test_render_moments_filters_with_util_and_says_which_filter_matched_nothing(
     sorts; the empty state names the filters when any is on."""
     js = _web("app.js")
     render = _js_function(js, "renderMoments")
-    assert "momentMatches({ ...c, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f)" in render  # fmt: skip
+    # the filter also finds the label the card shows (display_label, #634)
+    assert "momentMatches({ ...c, label, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f)" in render  # fmt: skip
     assert "source: multi && sources.includes(S.filters.source) ? S.filters.source : ''" in render
     assert render.index("momentMatches(") < render.index("positionCompare")
     assert "No moments match ${filtersOn(f) ? 'these filters' : 'this filter'}." in render
@@ -8658,3 +8662,11 @@ def test_a_login_whose_poll_fails_reports_the_error_and_can_start_again(
 
     assert login_state(client, "codex") == {"state": "error", "error": error or str(err)}
     assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
+
+
+def test_chat_diffs_name_a_moment_by_its_display_label() -> None:
+    """#634: momentName (the AI Chat diff rows) uses the Moments list's title, display_label,
+    and falls back to the label and the id."""
+    js = _web("app.js")
+    body = js[js.index("const momentName = (id) =>") :][:300]
+    assert "c?.display_label || (c ?? S.segments.find((s) => s.id === id))?.label || id" in body

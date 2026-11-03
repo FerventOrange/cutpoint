@@ -427,6 +427,8 @@ select { max-width: 100%; }
 .cand-id { color: var(--text); white-space: nowrap; margin-right: 0.3em; }
 .tag { font-size: 12px; color: var(--amber-ink); background: var(--amber); border-radius: 3px; padding: 0 5px; }
 .cand-top .tag { flex: none; white-space: nowrap; } /* the title wraps first */
+/* a visual-pool moment (#635): an outline, so it does not read as the amber must include */
+.tag.pool { color: var(--text); background: none; border: 1px solid var(--line); line-height: 16px; }
 /* a moment's place in its source, read-only (the preview's overview in small): --gold on --deep, 3:1 or more in every theme */
 .cand-strip { position: relative; display: block; height: 8px; margin: var(--space-0) 0; background: var(--deep); border: 1px solid var(--line); border-radius: var(--radius-xs); overflow: hidden; }
 .cand-strip-clip { position: absolute; top: 1px; bottom: 1px; min-width: 4px; background: var(--gold); }

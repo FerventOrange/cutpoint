@@ -6,7 +6,7 @@ Ollama models), so the agent only issues commands and reads small JSON and text
 files. Video files are never uploaded, and local models are the default for the model features. A
 hosted provider is used only after you give consent in the Models tab or AI Chat of `cutpoint ui`.
 AI Chat then sends only analysis results as text (moment labels, scores and detection signals,
-transcript snippets, file names, times). A hosted Vision role sends still frames, transcript
+vision descriptions, transcript snippets, file names, times). A hosted Vision role sends still frames, transcript
 excerpts, file names and times, and detected on-screen text (such as player names) and telemetry
 (for frame ratings and the `events` window descriptions), never the video file. Vision sends more
 data and carries more risk, so it has its own consent: agreeing for AI Chat never covers Vision,

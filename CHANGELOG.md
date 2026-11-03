@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- AI Chat sees what analysis saw (#634): each moment carries `seen` (the vision rating label and
+  the description of its `events` VLM window), `heard` (laughter or screams detected) and `cues`,
+  visual, telemetry and vision-tag strengths on one 0-10 scale (beauty, people, speed, carve,
+  airtime, crash, stopped, chairlift, scenic_vista and more; six per moment in the list, about
+  25 characters more per moment on average, at most ~300). `find_moments` also searches the vision
+  labels, the VLM window descriptions and the names of strong cues, and the instructions tell the
+  model to rank by them ("beauty shots", "casual skiing", "bloopers") before asking for moment
+  ids. Only text and numbers are sent, never frames.
+- A moment with a generic label (`action-moment`) is titled with what the vision model saw in AI
+  Chat and in the `cutpoint ui` Moments list; `highlights.json` and clip file names keep the
+  analysis label. Moments of the visual pool carry a "visual" badge with their kind. The AI Chat
+  consent and its docs now name the vision descriptions it sends; the consent version is the same,
+  so no one is asked again.
 - A Models tab in `cutpoint ui` sets the model of each role: Chat (`assistant`) and Vision (the new
   `vision_assistant` section, same keys, the same providers as Chat), each
   with its own provider, model and, for hosted ones, permission. It replaces the AI assistant

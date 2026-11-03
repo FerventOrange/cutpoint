@@ -285,6 +285,11 @@ browser (local storage); the source file only while the project stays open.
 Each card shows the rank and title with Add or Remove on the right, the candidate id, the times
 and length, the file name when the project has several sources, a strip of the moment's place in its source, the
 transcript, and the preview readiness (Ready, Encoding, Queued) at the bottom right.
+A moment with only a generic label (`action-moment`, `loud-moment`) is titled with what the
+vision model saw: its vision rating label, else the label of its `events` VLM window (the search
+finds both). `highlights.json`, the label a moment takes into the sequence and clip file names
+keep the analysis label. A moment of the visual pool (beauty shots, friends, cruising runs)
+carries a "visual" badge with its kind, such as "visual · view".
 
 While an analysis runs, the Moments column lists its steps (Transcription, Reactions, Keyframes,
 Crashes, Ranking, Vision rating; for a 360 project those of `360 analyze`) under "Analyze footage", or under the column header for "Analyze
@@ -555,7 +560,7 @@ server) is saved for that base URL or comes from `CUTPOINT_ASSISTANT_API_KEY`, a
 A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on
 another machine counts too) is hosted: before the first message the tab asks once, per provider
 and host, to send the project's analysis results (moment labels, scores and detection signals,
-transcript snippets, file names (not full paths) and times) and your messages, never video or
+vision descriptions, transcript snippets, file names (not full paths) and times) and your messages, never video or
 audio. The answer is kept in `config.json` (`assistant.consent`, as
 `assistant-v2:<provider>@<host>`); it never covers the Vision role, which asks separately. Until
 then nothing is sent. A hosted reply is not streamed, so Cancel takes effect when it arrives.
@@ -564,6 +569,16 @@ Its header shows the model and provider (local, or the hosted host), with a note
 that a small local model can miss moments or misread a request. Type a request and press Enter
 or Send (Shift+Enter starts a new line); the reply shows the steps the model took ("Searched
 for …") and can be stopped with Cancel. The chat needs an analyzed project.
+
+The model reads the moments as text: label (a generic one replaced by what the vision model saw,
+as in the Moments list), score, times, transcript snippet and, when analysis has them, `kind`,
+`seen` (the vision rating label and the description of the `events` VLM window over the moment),
+`heard` (laughter or screams detected) and `cues`: visual, telemetry and vision-tag strengths on
+one 0-10 scale (`beauty`, `people`, `group`, `speed`, `carve`, `airtime`, `crash`, `wipeout`,
+`stopped`, the action-cam tags such as `chairlift` or `scenic_vista`, and more; the strongest six
+per moment in the list, all of them in `get_moment`). Its `find_moments` tool searches labels,
+transcripts, `seen` text, heard sounds and the names of cues of 5 or more, so "beauty shots",
+"casual skiing" or "bloopers" work without moment ids. Only these results are sent, never frames.
 
 - Moments the model points to can be highlighted in the Moments list ("Highlight in list") or
   the list filtered by the model's search words.
