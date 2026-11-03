@@ -855,6 +855,7 @@ def test_360_qa_json_has_the_edge_cut_breakdowns(home, monkeypatch, capsys) -> N
 
     monkeypatch.setattr(qa, "run_qa", run_qa)
     monkeypatch.setattr(qa, "log_report", lambda report: None)
+    monkeypatch.setattr("cutpoint.pano.cli._require_detector", lambda: None)
     code, doc = run_json(capsys, ["360", "qa", "projects/trip/clips", "--json-only"])
     assert code == 0
     assert (doc["outputs"]["by_mode"], doc["outputs"]["by_self_method"]) == (by_mode, by_self)

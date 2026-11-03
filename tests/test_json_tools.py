@@ -503,6 +503,7 @@ def test_360_qa_json(home, monkeypatch, capsys):
 
     monkeypatch.setattr(pano_qa, "run_qa", run_qa)
     monkeypatch.setattr(pano_qa, "log_report", lambda report: None)
+    monkeypatch.setattr("cutpoint.pano.cli._require_detector", lambda: None)
     code, doc = run_json(capsys, ["360", "qa", "projects/trip/pano_paths/mix", "--json-only"])
     assert seen == {"json_only": True}
     assert code == 0 and doc["ok"] is True and doc["command"] == "360 qa"

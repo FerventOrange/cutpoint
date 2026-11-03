@@ -438,6 +438,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flagged as a menu. On hand-labelled War Thunder footage the menu precision rose from 0.65
   to 1.00 at the same recall (0.44), and on R6 from 0.69 to 0.93. Cached OCR results are
   replayed once.
+- AI Chat's `find_moments` matches a word at the start of a word in labels, transcripts and
+  what the vision model saw, so "air" finds air, airs and airtime but no longer chair, and the
+  proxy's periodic credential sync tightens loosened permissions even when nothing changed (#663).
+- `analyze --ollama-url` and `--ollama-model` now reach the VLM layer of its events step, which
+  used the configured Ollama instead (#660).
+- `edit --events` honours `--skip`: `--skip keyframes` no longer runs HUD discovery (#659).
 - A provider URL on this machine on the port of the Cutpoint proxy (the running proxy's port,
   else `CUTPOINT_CLIPROXY_PORT`, the port saved at its last start, or 18317) is hosted: the proxy
   forwards to hosted models, so AI Chat, Vision and frames consent now apply to it, with keys
@@ -624,6 +630,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path, outside `cutpoint setup`: torchvision no longer downloads it in the middle of a run
   when it is missing. Without it the command stops with `Faster R-CNN detector weights not
   found in <models>/torch/hub/checkpoints; run: cutpoint setup --only visual` (#654).
+- `360 analyze` and `360 qa` stop at once when the Faster R-CNN detector checkpoint is
+  missing, with `run: cutpoint setup --only visual` (`not_found` with `--json`;
+  `missing_extra` in Cutpoint lite): `360 analyze --scan` before the scan, also when the views
+  are cached, otherwise before the view layer loads CLIP; `360 qa` before its CLIP load and
+  its `_qa` folder (`--paths` and `--compare` need no detector) (#662).
 - `analyze`: when the HUD OCR of the keyframes step fails (out of memory or any other error),
   one WARNING and one `step_failed` warning (`files`: the sources not read) now say what is
   skipped: "OCR failed (<reason>): menu filtering and HUD events (kill feed, banners, notices)

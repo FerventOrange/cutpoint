@@ -419,11 +419,22 @@ class CredentialStore:
         """Digest the runtime files without the lock, permission changes or the keyring.
 
         Reads what ``_snapshot`` reads, so an unchanged digest means an unchanged snapshot.
-        Anything unusual (a missing, unsafe or unreadable entry) returns None, and the caller
-        then runs the full, checked sync, which reports or defers it as before.
+        Anything unusual (a missing, unsafe or unreadable entry, or on POSIX a loosened mode of
+        the store, its marker, the auth folder or a credential file) returns None, and the
+        caller then runs the full, checked sync, which reports, defers or tightens it as before.
         """
+
+        def loose(mode: int) -> bool:
+            return os.name != "nt" and bool(mode & 0o077)  # Windows: the full sync's ACLs only
+
         try:
-            if not stat.S_ISDIR(self.auth_dir.lstat().st_mode):
+            if loose(self.root.lstat().st_mode):
+                return None
+            with contextlib.suppress(FileNotFoundError):
+                if loose(self._marker.lstat().st_mode):
+                    return None
+            mode = self.auth_dir.lstat().st_mode
+            if not stat.S_ISDIR(mode) or loose(mode):
                 return None
             snapshot: dict[str, str] = {}
             for path in self.auth_dir.iterdir():
@@ -431,6 +442,8 @@ class CredentialStore:
                 if not stat.S_ISREG(mode):
                     return None
                 if path.suffix.lower() == ".json":
+                    if loose(mode):
+                        return None
                     snapshot[path.name] = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             return None
@@ -588,8 +601,9 @@ class CredentialStore:
         """Commit the runtime credentials to the keyring when they differ from it.
 
         A periodic (non-final) sync first compares a digest of the runtime files with the one
-        it last found committed and returns without the lock, permission checks or keyring
-        reads when nothing changed. The first periodic sync, every change and every final sync
+        it last found committed and returns without the lock, permission changes or keyring
+        reads when nothing changed and no mode was loosened (:meth:`_probe`).
+        The first periodic sync, every change and every final sync
         (``checkpoint``) do the full checked sync; ``finish`` always compares with the keyring,
         so a change written after the last periodic sync is saved on stop, and an ``active``
         marker left by a crash makes the next ``prepare`` commit the runtime files.

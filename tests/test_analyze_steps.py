@@ -185,6 +185,22 @@ def test_events_run_once_with_all_planned_layers_before_highlights_exist(run):
     assert hl["candidates"][0]["id"] == "h001"
 
 
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ({"ollama_url": "http://10.0.0.5:11434", "ollama_model": "qwen3.5:9b"},
+         ("http://10.0.0.5:11434", "qwen3.5:9b")),
+        ({}, (None, None)),  # none given: run_events reads config.json and the environment
+    ],
+)  # fmt: skip
+def test_the_ollama_options_reach_the_event_layers(run, given, expected):
+    """#660: analyze --ollama-url/--ollama-model reach run_events (the VLM layer)."""
+    run.plan = plan(reactions=("audio",))
+    run.go(**given)
+    ((_project, _layers, kw),) = run.events_calls
+    assert (kw["ollama_url"], kw["ollama_model"]) == expected
+
+
 def test_skipped_steps_carry_the_plan_reasons(run, capsys):
     run.plan = analyze.LayerPlan(
         skipped={

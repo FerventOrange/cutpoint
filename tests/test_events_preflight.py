@@ -138,6 +138,7 @@ def _analyze_stubs(monkeypatch, tmp_path: Path) -> list[str]:
     monkeypatch.setattr(cli, "_project", lambda arg: tmp_path)
     monkeypatch.setattr(cli, "_clips", lambda project: [clip])
     monkeypatch.setattr(pipeline, "preflight", lambda layers: order.append("preflight"))
+    monkeypatch.setattr(cli, "_require_detector", lambda: order.append("detector"))
     monkeypatch.setattr(pipeline, "run_events", lambda *a, **k: order.append("events"))
     monkeypatch.setattr(
         views, "run_layer", lambda clips, force=False, handoff=None: order.append("views") or {}
@@ -200,7 +201,7 @@ def test_cmd_analyze_scan_runs_before_views_and_reports_the_four_steps(
     monkeypatch.setenv("CUTPOINT_PROGRESS", "1")
     monkeypatch.setattr(cli, "_scan", lambda *a, **k: order.append("scan"))
     cli.cmd_analyze(_args(scan=["cam"]))
-    assert order == ["preflight", "scan", "views", "analyze", "events"]
+    assert order == ["preflight", "detector", "scan", "views", "analyze", "events"]
     steps = [s for s in _progress_steps(capsys) if s[1] in ("running", "done")]
     assert [s for s, st in steps if st == "running"] == ["scan", "views", "analyze", "events"]
 

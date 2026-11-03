@@ -864,6 +864,33 @@ def test_periodic_sync_still_rejects_an_unsafe_entry_after_a_skip(
         store.sync()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes; Windows ACLs are set by a full sync")
+def test_periodic_sync_tightens_loosened_modes_while_unchanged(
+    tmp_path: Path, ring: FakeRing, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#663: an unchanged snapshot still gets its loosened modes tightened, by a full sync."""
+    store = CredentialStore(tmp_path / "proxy")
+    account = store.auth_dir / "account.json"
+    _auth(account, {"token": "value"})
+    store.prepare()
+    store.sync()
+    counts = _count_access(ring, monkeypatch)
+    for path, loose, private in (
+        (account, 0o644, 0o600),
+        (store.auth_dir, 0o755, 0o700),
+        (store._marker, 0o640, 0o600),
+        (store.root, 0o750, 0o700),
+    ):
+        path.chmod(loose)
+        store.sync()
+        assert path.stat().st_mode & 0o777 == private
+    assert counts["private_file"] > 0
+    counts.update(keyring=0, private_file=0)
+    store.sync()  # all private again: the cheap skip is back
+    assert counts == {"keyring": 0, "private_file": 0}
+    assert _stored_snapshot(store, ring) == {"account.json": json.dumps({"token": "value"})}
+
+
 def test_final_sync_and_finish_never_skip(
     tmp_path: Path, ring: FakeRing, monkeypatch: pytest.MonkeyPatch
 ) -> None:
