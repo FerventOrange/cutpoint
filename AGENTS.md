@@ -217,7 +217,8 @@ Variants:
 | `<name>-final.mp4` (or `.fcpxml` / `.otio`), `<name>-final.srt` | `edit` | Copy of the final video (or timeline) and its subtitles; `<name>` is the first input's name (a file's name without extension, or the folder's name) |
 | `.assemble-tmp-<id>/` | `assemble <project>`, `edit --no-keep-clips` | Temporary clips, removed when the run ends; never edit them |
 | `crashes.json`, `telemetry.json`, `mix_segments.json` | action-cam commands; `crashes.json` also `analyze` (action footage) | See the action-cam page |
-| `progress.json` | `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` | Last run: `command`, `argv`, `cwd`, `status`, `steps`. A first `analyze` or `edit` writes it only after its first source is transcribed. Read by `resume` |
+| `progress.json` | `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze`, `clips` | Last run: `command`, `argv`, `cwd`, `status`, `steps`. A first `analyze` or `edit` writes it only after its first source is transcribed. Read by `resume` |
+| `.<folder>.cutpoint-resume/` | `clips`, `extend` (after a failed or interrupted export) | Finished clips kept for the next run; not a clips folder, leave it alone |
 | `activity.json` | `profile`, `crashes` | Activity profile in use: `name`, `source`, `profile` |
 
 ## When something fails

@@ -197,6 +197,8 @@ Running updates come at most 2 per second. Steps run in table order. The `pct` o
 (360 views), `analyze` (Transcription and ranking) and `events` (Events and re-rank; skipped with
 `--no-events`). `scan` and `views` report `pct` and the clip as `detail`.
 
+When a step starts with part of its work cached (a rerun after an interruption, or a `--batch-size` boundary), it logs `<name>: N/M done, continuing` as an INFO line and sends the same text as the `detail`. `events` reports its layers (`audio`, `voice`, `visual`, `ocr`, `crash`, `vlm`, `write`) only in `progress.json` (no `PROGRESS` lines), so `resume --dry-run` lists them. After Ctrl+C or a failure, `progress.json` shows the step the run was in as `failed`, with `status` giving the reason; after a hard kill both stay `running` (see [Run lock and progress.json](#run-lock-and-progressjson)).
+
 On Ctrl+C the current step ends `failed` with detail `cancelled`. After a cancel or a fatal
 error, steps after the failed one are not emitted. A first-time HUD discovery shows
 `first run for <game>: discovering HUD regions` as the detail of `keyframes`.
@@ -1594,8 +1596,10 @@ then still continues). A second run on the project stops with `folder_busy` and 
 naming the process, as for the [folder lock](#folder-lock) of `clips`: wait, or delete the
 lock file if no run is active. `events`, `crashes` and `profile` treat a folder with only a
 `progress.json` as no project: they write nothing and take no lock. A first `analyze` or
-`edit` writes `progress.json` only after its first source is transcribed. The step a stopped
-run was in reads `failed` (the `PROGRESS` states); `status` says why.
+`edit` writes `progress.json` only after its first source is transcribed. After Ctrl+C or a
+failure, the step the run was in reads `failed` (the `PROGRESS` states) and `status` says why.
+After a hard kill the file keeps `running`; `cutpoint resume` reads such a record, whose
+process is gone on this computer, as `interrupted`.
 
 | Key | Content |
 |---|---|
