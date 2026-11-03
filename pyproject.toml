@@ -117,6 +117,7 @@ addopts = "-m \"not hardware\" --strict-markers"
 markers = [
     "slow: real subprocess or interpreter spawns, process trees, or over about 2 s",
     "ffmpeg: runs the real ffmpeg or ffprobe",
+    "network: opens loopback-only sockets (a local test server or a free-port probe); CI runs them",
     "hardware: needs real GPU hardware (for example a VAAPI device), which CI does not have",
 ]
 

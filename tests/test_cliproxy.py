@@ -24,6 +24,8 @@ from cutpoint import folders, procs
 from cutpoint.assistant import cliproxy, keys
 from cutpoint.assistant.proxy_credentials import CredentialStore
 
+pytestmark = pytest.mark.network  # the temp_home fixture probes a free loopback port
+
 
 def _install_child_runtime(tmp_path: Path) -> None:
     module_dir = tmp_path / "test_child_modules"

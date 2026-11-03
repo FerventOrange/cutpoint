@@ -28,6 +28,12 @@ from cutpoint.pano import project, stitch
 from cutpoint.pano.x3 import X3Clip
 from pano_helpers import x3clip
 
+
+def _cannot_exec(cmd, *args, **kwargs):
+    """``subprocess.Popen`` for a program that is not there; spawns nothing."""
+    raise FileNotFoundError(2, "No such file or directory", str(cmd[0]))
+
+
 # --------------------------------------------------------------------------- synthetic output
 P = stitch.PROGRESS_KEY
 
@@ -417,7 +423,8 @@ class TestProbeSdk:
         got = stitch.probe_sdk(Path("sdk.exe"))
         assert got["runs"] is False and got["version"] is None and got["error"]
 
-    def test_missing_exe(self, tmp_path):
+    def test_missing_exe(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(subprocess, "Popen", _cannot_exec)  # as if the file were not there
         got = stitch.probe_sdk(tmp_path / "missing" / "MediaSDKTest.exe")
         assert got["runs"] is False and got["version"] is None
         assert got["error"]
@@ -549,7 +556,8 @@ class TestStitchOne:
         assert not part.exists()
         assert "interrupted" in _log(out_dir)
 
-    def test_cannot_start_returns_failed_record(self, clip, paths_, tmp_path):
+    def test_cannot_start_returns_failed_record(self, clip, paths_, tmp_path, monkeypatch):
+        monkeypatch.setattr(subprocess, "Popen", _cannot_exec)  # as if the file were not there
         out_dir, out, part = paths_
         cmd = [str(tmp_path / "missing-sdk.exe"), "-inputs", "a"]
         rec = stitch._stitch_one(clip, cmd, part, out, out_dir, None)
