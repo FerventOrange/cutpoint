@@ -392,7 +392,7 @@ def test_logout_cli_command_error(monkeypatch, caplog):
 
 
 @pytest.mark.slow
-def test_import_cli_skips_action_cam_and_proxy_modules():
+def test_import_cli_skips_action_cam_proxy_and_http_modules():
     """``import cutpoint.cli`` (every ``cutpoint`` start) loads them only when a command runs."""
     lazy = (
         "cutpoint.activity",
@@ -400,6 +400,7 @@ def test_import_cli_skips_action_cam_and_proxy_modules():
         "cutpoint.mix",
         "cutpoint.assistant.cliproxy",
         "huggingface_hub",
+        "requests",
     )
     code = f"import sys, cutpoint.cli; print([m for m in {lazy!r} if m in sys.modules])"
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
