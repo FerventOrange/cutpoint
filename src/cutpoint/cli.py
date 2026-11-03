@@ -528,7 +528,7 @@ _CRASH_SUMMARY_KEYS = (
 
 def _cmd_resume(a: argparse.Namespace) -> int:
     """Replay the run recorded in ``progress.json`` (#109); see :func:`_resume_command`."""
-    project = resolve_project_path(a.project)
+    project = resolve_project_path(a.project).absolute()  # before the chdir below
     jsonout.set_project(project)
     rec = runstate.resumable(project)
     argv, status = rec["argv"], rec.get("status")
@@ -563,16 +563,18 @@ def _cmd_resume(a: argparse.Namespace) -> int:
         jsonout.fail(jsonout.BAD_ARGS, f"the recorded command line: {err.message}")
         return 2
     args.json_result = a.json_result
-    logger.info("Resuming in %s: cutpoint %s", rec["cwd"], join(argv))
     here = Path.cwd()
     os.chdir(rec["cwd"])
     try:
         other = _run_project(args)
         if other is not None and path_key(str(other.absolute())) != path_key(
-            str(project.absolute())
+            str(project)
         ):  # a copied project: its record names the original
-            jsonout.fail(jsonout.ERROR, f"{project / runstate.FILE} records a run on {other}")
+            message = f"{project / runstate.FILE} records a run on {other.absolute()}"
+            logger.error("%s", message)
+            jsonout.fail(jsonout.ERROR, message)
             return 1
+        logger.info("Resuming in %s: cutpoint %s", rec["cwd"], join(argv))
         jsonout.output("resumed", True)
         with runstate.resuming(rec):
             return _run(args, argv)  # records progress.json as the recorded command

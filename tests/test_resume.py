@@ -165,17 +165,57 @@ def test_a_missing_recorded_cwd_is_not_found_and_not_resumed(
     assert doc["outputs"]["resumed"] is False and calls == []
 
 
-def test_a_copied_project_does_not_replay_on_the_original(project, monkeypatch, capsys):
+@pytest.mark.parametrize("json_flag", [True, False], ids=["json", "plain"])
+def test_a_copied_project_does_not_replay_on_the_original(
+    project, monkeypatch, capsys, caplog, json_flag
+):
     """After copying p to p2, p2's record names p: resume p2 stops instead of running on p."""
     calls = _fake_events(monkeypatch)
     _record(project, argv=["events", "p", "--force", "vlm"])
     copy = project.parent / "p2"
     copy.mkdir()
     (copy / runstate.FILE).write_bytes((project / runstate.FILE).read_bytes())
-    code = cli.main(["resume", "p2", "--json"])
-    doc = envelope(capsys.readouterr().out)
+    code = cli.main(["resume", "p2", *(["--json"] if json_flag else [])])
+    out = capsys.readouterr().out
+    assert code == 1 and calls == []
+    if json_flag:
+        doc = envelope(out)
+        assert doc["error"]["code"] == "error"
+        assert f"records a run on {project}" in doc["error"]["message"]
+        assert doc["outputs"]["resumed"] is False
+    else:
+        assert out == ""
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert errors == [f"{copy / runstate.FILE} records a run on {project}"]
+    assert not any("Resuming in" in r.getMessage() for r in caplog.records)
+    assert _read(project)["status"] == "interrupted" and not (project / LOCK).exists()
+
+
+def test_resume_of_a_relative_project_path_from_the_projects_folder(project, monkeypatch, capsys):
+    """``resume p`` inside the projects folder names the same project: it is replayed."""
+    calls = _fake_events(monkeypatch)
+    _record(project)
+    monkeypatch.chdir(project.parent)
+    code, doc = _resume(capsys)
+    assert code == 0 and doc["outputs"]["resumed"] is True
+    assert doc["project"] == str(project)
+    assert len(calls) == 1 and Path.cwd() == project.parent
+
+
+def test_a_relative_copy_does_not_replay_on_the_original(project, tmp_path, monkeypatch, capsys):
+    """A copy ``./p`` of a project whose run was recorded from the projects folder: its
+    record's ``p`` is the original there, so resume stops instead of running on it."""
+    calls = _fake_events(monkeypatch)
+    _record(project, cwd=str(project.parent))
+    elsewhere = tmp_path / "elsewhere"
+    copy = elsewhere / "p"
+    copy.mkdir(parents=True)
+    (copy / runstate.FILE).write_bytes((project / runstate.FILE).read_bytes())
+    monkeypatch.chdir(elsewhere)
+    code, doc = _resume(capsys)
     assert code == 1 and doc["error"]["code"] == "error"
     assert f"records a run on {project}" in doc["error"]["message"]
+    assert doc["project"] == str(copy)
     assert doc["outputs"]["resumed"] is False and calls == []
     assert _read(project)["status"] == "interrupted" and not (project / LOCK).exists()
 
