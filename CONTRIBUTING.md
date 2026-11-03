@@ -111,10 +111,13 @@ skill names exists.
 
 Publishing the release runs `.github/workflows/release.yml`, which builds the package, checks
 that its version equals the tag, and publishes it to PyPI with Trusted Publishing.
+Once PyPI has it, the workflow attaches `install.sh` and `install.ps1` with the release version
+stamped in as the default, plus `SHA256SUMS`, to the release (#684; `scripts/stamp_installers.py`).
 
 To test the release pipeline without releasing, run the Release workflow manually (Actions tab,
 "Run workflow"). It builds `<pyproject version>.dev<run number>` and publishes it to TestPyPI
-only, never to PyPI. One-time setup first: add a pending trusted publisher on test.pypi.org for
+only, never to PyPI. It also stamps and checksums the installers and uploads them as an `installers`
+workflow artifact only, not to a release. One-time setup first: add a pending trusted publisher on test.pypi.org for
 project `cutpoint` (owner `FerventOrange`, repository `cutpoint`, workflow `release.yml`,
 environment `testpypi`), and create a `testpypi` environment in the repository settings.
 
