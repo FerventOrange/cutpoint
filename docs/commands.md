@@ -24,6 +24,7 @@ prints tracebacks of errors.
 | [`assemble`](#assemble) | Join clips into one video |
 | [`stage`](#stage) | Copy slow-storage sources to a local disk |
 | [`crashes`](#crashes), [`mix`](#mix) | Action-cam module |
+| [`resume`](#resume) | Re-run an interrupted or failed run from its `progress.json` |
 | [`profile`](#profile) | Pick or build the project's activity profile for crash detection |
 | [`360 ...`](workflows/360.md) | Insta360 X3 module |
 | [`setup`](#setup), [`paths`](#paths), [`guide`](#guide), [`skill`](#skill) | Setup, data, the agent guide and skill |
@@ -33,7 +34,7 @@ prints tracebacks of errors.
 
 `--json` makes a command write its result as exactly one JSON object on stdout. It is available
 on `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
-`setup`, `events`, `crashes`, `profile` and every `360` subcommand (`scan`, `analyze`, `status`,
+`setup`, `events`, `crashes`, `profile`, `resume` and every `360` subcommand (`scan`, `analyze`, `status`,
 `director`, `stitch`, `qa`, `repair`). `ui`, `guide`, `skill`, `proxy`, `login` and
 `logout` have no `--json`. Logs and errors stay on stderr, and
 output of child processes such as ffmpeg goes to stderr too, so stdout can be parsed as is. Exit
@@ -49,7 +50,7 @@ codes are unchanged.
 | Key | Content |
 |---|---|
 | `ok` | `true` unless the command failed |
-| `command` | The command as typed, such as `analyze` or `360 qa` |
+| `command` | The command as typed, such as `analyze` or `360 qa` (`resume`: the command it replays, see [resume](#resume)) |
 | `schema` | `1` |
 | `project` | Absolute path of the project folder, or `null` when the command has none (`paths`, `capabilities`, `setup`, `stage`, and `360 status` without a project) |
 | `outputs` | Object: the files written (absolute path strings) and key facts. The keys per command are below |
@@ -75,12 +76,14 @@ So do these combinations:
 | `ffmpeg_missing` | 1 | ffmpeg or ffprobe is not found |
 | `missing_extra` | 1 | An optional extra is not installed (the feature is not available in Cutpoint lite) |
 | `output_not_empty` | 1 | A file or folder is in the way; see `--force` |
-| `folder_busy` | 1 | Another cutpoint run holds the folder's lock (`.<folder>.cutpoint-lock`); wait and retry |
+| `folder_busy` | 1 | Another cutpoint run holds the folder's lock (`.<folder>.cutpoint-lock`); wait and retry. `analyze`, `edit`, `events`, `crashes`, `profile` and `360 analyze` hold `<project>/.analysis.run.cutpoint-lock` (see [Run lock](#run-lock-and-progressjson)) |
 | `interrupted` | 130 | Ctrl+C, Ctrl+Break or SIGTERM |
 | `error` | 1 | Anything else |
 
 | `warnings[].code` | Command | Meaning |
 |---|---|---|
+| `resume_sources_changed` | `resume` | Sources of the recorded run are missing now; `files` names them |
+| `resume_args_changed` | `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` | The run replaced the `progress.json` of an interrupted or `low_memory` run with a different command or options; `files` names `<project>/progress.json` |
 | `kept_clips` | `clips`, `extend` (so `edit`) | `.mp4` files the old manifest does not list stayed in the folder (the message names clips renamed during review); `assemble` includes them |
 | `kept_sources` | `clips`, `extend` | A file the run reads, or the clips were cut from, was not replaced |
 | `temporary_clips` | `assemble <project>`, `edit --no-keep-clips` | The clips were exported into a temporary folder and removed after the join; `outputs` lists no clips. Export them with `clips` to keep them |
@@ -122,6 +125,7 @@ So do these combinations:
 | Command | `outputs` |
 |---|---|
 | `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
+| `resume` | `resume` (`argv`, `status_before`, `done_before`), `resumed`, and the replayed command's outputs |
 | `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set), `style`; with `--style auto`, `detection` (the `highlights.json` block, see [detect](#detect)) |
 | `detect` | `category` (`gameplay`, `action-cam`, `talk` or `general`), `ambiguous`, `reason`, `scores` (share of the footage per category), `suggest` (`commentary` for talky gameplay, else `null`), `sources` (each `path`, `duration`, `category`, `ambiguous`, `reason`, `gameplay` (score 0-1, `null` with telemetry) and `speech` (share of the source covered by words, `null` before transcription)), `pending` (talk not checked yet: a long source has no transcript), `styles` (`analyze` and `funny-moments`: the style each would use) |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds` |
@@ -905,8 +909,8 @@ file, and a cancelled first run leaves none. The other result files are written 
 before it, each atomically: `transcript.txt`, `events.json`, `events.txt`, `crashes.json`, the
 `crash_check\` sheets, `activity.json` and, for `action-cam`, `telemetry.json` and `action_cam_features\`
 (older sheets and features of the project are removed at the same time). A failed or cancelled
-run, in any step, leaves all of them as they were, and a cancelled first run leaves no project
-folder, unless HUD discovery wrote its proposal (`discovery\`, below). A run stopped after the transcription therefore has no `transcript.txt` yet; the rerun
+run, in any step, leaves all of them as they were, and a first run cancelled before its first source is transcribed leaves no project
+folder (after that the folder keeps `progress.json`, see [`resume`](#resume)), unless HUD discovery wrote its proposal (`discovery\`, below). A run stopped after the transcription therefore has no `transcript.txt` yet; the rerun
 reads the cached transcription. What stays on purpose: the per-source caches outside the
 project (audio, transcript, scene cuts, event layers, dense crash checks), so a rerun resumes
 where it stopped; a HUD preset found by discovery, installed in the presets folder at once,
@@ -1503,6 +1507,68 @@ project from full-rate IMU data, visual, audio and transcript evidence, and writ
 [JSON envelope](#json-output) on stdout.
 
 Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, the default reanalyze step is skipped and `highlights.json` is left unchanged; rerun once the footage is back.
+
+## resume
+
+```text
+cutpoint resume <project> [--dry-run] [--json]
+```
+
+Re-runs the last `analyze`, `edit`, `events`, `crashes`, `profile` or `360 analyze` of a
+project that was interrupted or failed, from the command line recorded in its `progress.json`
+(see [Run lock and progress.json](#run-lock-and-progressjson)). `<project>` is resolved like
+the project of other commands (a bare name is in the projects folder). The recorded command
+runs in the recorded working directory with its recorded options, a `--force` among them;
+`resume` has no `--force` (it is a `bad_args` error, exit 2). Per-source caches make the rerun
+continue where the run stopped. `edit` keeps its clips when the `clips` step was done and
+`clips/manifest.json` is unchanged since.
+
+Statuses that are resumed: `interrupted` (also `running` with a dead process), `failed` and
+`low_memory`. Status `done` logs `nothing to resume` and exits 0. Sources of the record that
+are missing now log a WARNING (`resume_sources_changed`); the run continues.
+
+`--dry-run` runs nothing and prints:
+
+```text
+cutpoint <argv>
+  in <cwd>, last run <status>
+  <step>: <state>[, <done>/<total> done]
+```
+
+| Exit | Cause |
+|---|---|
+| the replayed command's own | The run was resumed |
+| 0 | Status `done`, or `--dry-run` |
+| 1 | No or unreadable `progress.json` (`not_found`); a record without a usable command (`error`); a live run holds the project (`folder_busy`) |
+| 2 | Bad arguments, such as `--force` |
+
+With `--json`, `outputs.resume` is `{argv, status_before, done_before}` (`done_before`: per
+step `{state, done, total}`) and `outputs.resumed` is `true` when the command was replayed,
+`false` for `done`, `--dry-run` or an error before the replay starts (`true` when the replayed command itself fails). Resume stops with `error` (exit 1) when `progress.json` records a run on another project (for example a copied project folder). The replayed command's own `outputs` and
+`warnings` are in the same envelope. `command` is the recorded command (`edit`, `analyze`, ...)
+once a valid `progress.json` was read (replay, done, `--dry-run`, `folder_busy`); it is
+`resume` when no record could be read and for bad arguments.
+
+### Run lock and progress.json
+
+`analyze`, `edit`, `events`, `crashes`, `profile` and `360 analyze` hold the lock file
+`<project>/.analysis.run.cutpoint-lock` while they run and record themselves in
+`<project>/progress.json`. A second run on the project stops with `folder_busy` and an `ERROR`
+naming the process, as for the [folder lock](#folder-lock) of `clips`: wait, or delete the
+lock file if no run is active. `events`, `crashes` and `profile` treat a folder with only a
+`progress.json` as no project: they write nothing and take no lock. A first `analyze` or
+`edit` writes `progress.json` only after its first source is transcribed.
+
+| Key | Content |
+|---|---|
+| `version`, `generator` | Format version and the writer |
+| `command`, `argv`, `cwd` | The command, its full argument list and its working directory |
+| `options_key` | Identifies the command and options |
+| `status` | `running`, `done`, `interrupted`, `failed` or `low_memory` |
+| `pid`, `host`, `started`, `updated` | The process, its computer and times |
+| `exit_code`, `error` | Exit code and `{code, message}` of a finished run |
+| `sources` | The sources of the run |
+| `steps` | Per step name `{state, done, total, pct}`; `edit` adds `steps.clips.manifest` (`{path, stamp}`) |
 
 ## profile
 

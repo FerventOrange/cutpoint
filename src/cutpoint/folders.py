@@ -483,6 +483,7 @@ def _lock_stale(lock: Path, rec: dict[str, Any] | None) -> bool:
 
 
 def _busy_error(dst: Path, lock: Path, rec: dict[str, Any] | None) -> FolderBusyError:
+    """``dst``: what the message names as in use (the folder, or ``swap_lock``'s subject)."""
     if rec is None:
         who = "Another cutpoint run is starting on"
     else:
@@ -565,8 +566,9 @@ def _open_lock(lock: Path) -> int | None:
 
 
 @contextmanager
-def swap_lock(dst: Path) -> Iterator[None]:
-    """Hold the lock of the folder ``dst`` (:func:`lock_path`) for one run.
+def swap_lock(dst: Path, subject: Path | None = None) -> Iterator[None]:
+    """Hold the lock of the folder ``dst`` (:func:`lock_path`) for one run. ``subject``: what
+    the busy message names as in use instead of ``dst`` (e.g. the project of a run lock).
 
     Missing parent folders are created (removed again on failure while empty, as
     :func:`output_dir`). The lock is removed on exit, Ctrl+C included; one left by a run that
@@ -598,7 +600,7 @@ def swap_lock(dst: Path) -> Iterator[None]:
                     continue
                 raw, rec = found
                 if not _lock_stale(lock, rec):
-                    raise _busy_error(dst, lock, rec) from None
+                    raise _busy_error(subject or dst, lock, rec) from None
                 _take_stale(lock, raw)
                 continue
             if fd is None:
@@ -612,7 +614,7 @@ def swap_lock(dst: Path) -> Iterator[None]:
             break
         else:
             found = _read_lock(lock)
-            raise _busy_error(dst, lock, found[1] if found else None)
+            raise _busy_error(subject or dst, lock, found[1] if found else None)
         key = path_key(str(lock))
         _HELD_LOCKS.add(key)
         try:

@@ -14,12 +14,13 @@ everything into a project folder.
 |---|---|
 | CLI `cutpoint` with the commands below | `--context` on `edit`, clip order chosen by a local model |
 | `cutpoint edit`: analyze, clips and assemble in one command | |
+| `cutpoint resume <project>`: re-runs an interrupted or failed run from its `progress.json` | |
 | `cutpoint analyze` includes the reaction, keyframe and crash steps | |
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for the other layers and for games |
 | Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | |
 | Footage category detection: `cutpoint detect`, and `--style auto` on `analyze` and `edit` (opt-in; unclear footage gets the default style) | |
 | VLM layer of `cutpoint events` through the shared vision model: Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the Models tab of `cutpoint ui` | |
-| `--json` result envelope on stdout: `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `events`, `360 ...` | |
+| `--json` result envelope on stdout: `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `events`, `resume`, `360 ...` | |
 | Agent skill: `cutpoint skill install` (Claude Code), `cutpoint skill print` | |
 | Color grade with a 3D LUT the user supplies: `--lut FILE` and `--lut-strength` on `clips` and `edit` | Color matching between clips |
 | Automatic color correction per clip: `--color auto\|underwater` and `--color-strength` on `clips` and `edit` (not with `--lut`) | |
@@ -69,6 +70,9 @@ To let Claude Code find Cutpoint on its own, the user can install the skill with
   the user; move them out only if you exported them, and never delete a file you did not
   export. If such a clip has the name of a new clip, the run stops before exporting with an
   `ERROR` naming it; tell the user to move or rename it.
+- `analyze`, `edit`, `events`, `crashes`, `profile` and `360 analyze` hold
+  `<project>/.analysis.run.cutpoint-lock` while they run. A second run gets `folder_busy`: wait
+  or retry; delete the lock file only if you are sure no run is active.
 - One run at a time works on a clips folder (lock file `.<folder>.cutpoint-lock`). If `clips`,
   `extend` or `assemble` stops with an `ERROR` that another run holds the lock, wait for it;
   delete the lock file only if you are sure no run is active. If `clips --force` or `extend`
@@ -185,6 +189,7 @@ Variants:
 | Highlights of a specific length | `clips <project> --max-total <seconds>` |
 | "Extra" instruction such as "only funny moments" or "keep the speech intact" | Choose `--style`, filter candidates by `transcript`/`label`, use `--segments`. The CLI does not parse these instructions |
 | The user says what the footage is ("downhill mtb, chest mount, muddy lens") | Before `crashes`, run `profile <project> --context "<the user's words>"`; check the choice with `profile <project> --json` (`outputs.name` and `outputs.source`; a `context_not_applied` warning means the user's words were not used; with `vision_consent_needed` the user's Ollama is on another machine and needs their Vision consent in the Models tab: tell them). Use `--activity NAME` only when the user names a sport that has a profile. Do not edit profile files |
+| A run was interrupted or failed | `resume <project>` (`--dry-run` shows the recorded command and step counts). It replays the recorded command line, including a recorded `--force`, and takes no `--force` itself. Status `done`: nothing to resume |
 | Room to trim in an editor | `clips ... --extend 1.5` or `extend <clips_dir> --seconds 2` |
 | The user asks to fix dull, washed-out or tinted colors | `clips <project> --color auto` (or on `edit`); `--color underwater` only for underwater footage or when an INFO line suggests it. Clips that look good, log footage, 360 clips and clips a safety check vetoes stay as they are: tell the user which clips were not graded and why, from `color.skip` of each clip in `clips/manifest.json` (codes: [docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#clips), **Automatic color**). `assemble <project>` (mp4) and `edit --no-keep-clips` keep no manifest: use the per-clip INFO lines of the run instead |
 | The user gives a LUT for log or flat footage ("use my GoPro Flat LUT") | `clips <project> --lut <file>.cube` (or on `edit`); `--lut-strength 0.5` for half the grade. Only with a LUT the user names; never pick one for them |
@@ -206,6 +211,7 @@ Variants:
 | `<name>-final.mp4` (or `.fcpxml` / `.otio`), `<name>-final.srt` | `edit` | Copy of the final video (or timeline) and its subtitles; `<name>` is the first input's name (a file's name without extension, or the folder's name) |
 | `.assemble-tmp-<id>/` | `assemble <project>`, `edit --no-keep-clips` | Temporary clips, removed when the run ends; never edit them |
 | `crashes.json`, `telemetry.json`, `mix_segments.json` | action-cam commands; `crashes.json` also `analyze` (action footage) | See the action-cam page |
+| `progress.json` | `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` | Last run: `command`, `argv`, `cwd`, `status`, `steps`. A first `analyze` or `edit` writes it only after its first source is transcribed. Read by `resume` |
 | `activity.json` | `profile`, `crashes` | Activity profile in use: `name`, `source`, `profile` |
 
 ## When something fails
