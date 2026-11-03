@@ -179,6 +179,18 @@ to the sequence. Reorder and save the sequence, export clips, then assemble a fi
 The final preview includes download links for the final video or, with a timeline output format,
 the FCPXML or OTIO file, plus the `.srt` subtitles.
 
+If a run stopped (interrupted, `low_memory`, or failed before `highlights.json` was written), the
+project page offers **Resume analysis**, **Resume export** or **Resume one-click edit**, matching
+the stopped run. It first shows a dialog with what `cutpoint resume --dry-run` reports: the
+status, the steps done so far, any warnings and the command it will replay (check it before
+confirming: a recorded `--force` is replayed too). Confirm to replay the run with the same options,
+keeping the work it finished. A project with only a `progress.json` (a first command-line
+analysis that stopped) is listed as "(interrupted)" in the project list. While another run holds
+the project, the page says "Analysis is running on this project; wait for it to finish" and
+checks again every 5 seconds. Export always writes a fresh clips folder; **Resume export** is
+how a cancelled export continues, and the page then shows "N clips taken over from the stopped
+export". See [`resume`](commands.md#resume).
+
 The workspace is local-only and supports standard video. Source files are never modified.
 Insta360 X3 folders and files (`.insv`, `.lrv`) make 360 projects, analyzed and reframed as by
 the CLI ([360 video](workflows/360.md#in-the-ui)); a folder mixing 360 and regular videos is refused.
