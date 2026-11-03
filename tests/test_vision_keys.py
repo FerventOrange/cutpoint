@@ -10,7 +10,9 @@ import json
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
+import test_ui as tui
 import test_vlm_vision as tvv
 from conftest import set_config
 from cutpoint import ui, vision
@@ -218,3 +220,109 @@ def test_the_vision_key_hints_name_the_shared_variable_only_where_it_is_read(
     assert env["openai"] == ([keys.ENV_KEY] if shared else [])
     chat = {p["name"]: p["key_env"] for p in ui.assistant_view(data)["providers"]}
     assert chat["openai"] == [keys.ENV_KEY]  # the assistant's own: unchanged
+
+
+# -- an environment-only key: jobs started from cutpoint ui get no key variables ----------------
+
+
+def test_the_vision_key_hint_puts_the_keyring_first_and_the_variable_on_the_command_line(
+    home,
+) -> None:
+    set_config(home, assistant={"provider": "openai"})
+    missing = providers.missing_key(providers.make_vision(_vision("openai")))
+    assert missing is not None and "before starting cutpoint ui" not in missing
+    assert missing.startswith("No API key for OpenAI API: save one in the Models tab")
+    assert "for command-line runs only, set OPENAI_API_KEY" in missing
+    chat = providers.missing_key(providers.make(AssistantSettings(provider="openai", model="m")))
+    assert chat is not None and "set OPENAI_API_KEY before starting cutpoint ui" in chat
+
+
+@pytest.mark.parametrize(
+    ("chat", "vision_url", "var"),
+    [(("ollama", ""), "", "OPENAI_API_KEY"), (("openai", OPENROUTER), OPENROUTER, keys.ENV_KEY)],
+)
+def test_an_environment_only_vision_key_is_missing_for_ui_jobs(
+    home, monkeypatch, chat, vision_url, var
+) -> None:
+    """The consent box asks for a keyring key instead of offering Allow (UI jobs get no key
+    variables); the command line still reads the variable, and AI Chat (in this process) too."""
+    monkeypatch.setenv(var, KEY)
+    set_config(home, assistant={"provider": chat[0], "url": chat[1]})
+    p = providers.make_vision(_vision("openai", vision_url))
+    assert p.has_key and providers.missing_key(p) is None  # the CLI: unchanged
+    got = ui.consent_view(p, consent=(), role="vision")
+    assert got["needed"] is True and got["missing_kind"] == "key"
+    assert "jobs started from cutpoint ui" in got["missing_key"]
+    assert "Models tab" in got["missing_key"]
+    assert f"{var} works for command-line runs only" in got["missing_key"]
+    assert KEY not in got["missing_key"]
+    data = {
+        "assistant": {"provider": chat[0], "url": chat[1]},
+        "vision_assistant": {"provider": "openai", "model": "m", "url": vision_url},
+    }
+    assert ui.settings_view(data)["vision_consent"]["missing_key"] == got["missing_key"]
+    chat_p = providers.make(AssistantSettings(provider="openai", model="m", url=vision_url))
+    assert ui.consent_view(chat_p, consent=(), role="assistant")["missing_key"] is None
+
+
+def test_a_keyring_vision_key_needs_no_variable(home, monkeypatch) -> None:
+    fake = FakeRing()
+    monkeypatch.setattr(keys, "_keyring", lambda: fake)
+    monkeypatch.setenv("OPENAI_API_KEY", KEY)
+    keys.save("openai", "sk-ring-key-1234567890", "api.openai.com")
+    set_config(home)
+    got = ui.consent_view(providers.make_vision(_vision("openai")), consent=(), role="vision")
+    assert got["needed"] is True and got["missing_key"] is None and got["missing_kind"] is None
+
+
+def test_a_rejected_vision_key_points_to_the_models_tab_and_the_chat_s_to_both(home) -> None:
+    set_config(home, assistant={"provider": "openai", "url": OPENROUTER})
+    reject = _Resp({"error": {"message": "bad key"}}, 401)
+    got = str(providers.make_vision(_vision("openai"))._fail(reject))
+    assert got.endswith(
+        "check the key saved in the Models tab (or, for command-line runs, OPENAI_API_KEY)"
+    )
+    other = str(providers.make_vision(_vision("openai", OTHER_HOST))._fail(reject))
+    assert other.endswith("check the key saved in the Models tab")  # the shared key: not read
+    chat = providers.make(AssistantSettings(provider="openai", model="m"))
+    assert str(chat._fail(reject)).endswith(
+        "check OPENAI_API_KEY or the key saved in the Models tab"
+    )
+    missing = str(chat._fail(_Resp({"error": {"message": "nope"}}, 404)))
+    assert missing.endswith("check the model and base URL in the Models tab")
+
+
+def test_a_vision_key_the_keyring_refuses_names_the_variable_for_the_command_line_only() -> None:
+    with pytest.raises(keys.KeyringError) as err:
+        keys.save("openai", KEY, "api.openai.com", vision=True)
+    got = str(err.value)
+    assert "before starting cutpoint ui" not in got and KEY not in got
+    assert got.endswith(
+        "; Vision jobs started from cutpoint ui need the keyring "
+        "(OPENAI_API_KEY works for command-line runs only)"
+    )
+    with pytest.raises(keys.KeyringError) as err:
+        keys.save("openai", KEY, "llm.example.com", vision=True, shared=False)
+    assert str(err.value).endswith("need the keyring")
+    with pytest.raises(keys.KeyringError, match="or set OPENAI_API_KEY before starting"):
+        keys.save("openai", KEY, "api.openai.com")  # the assistant's: unchanged
+
+
+def test_the_vision_key_route_uses_the_vision_hint(home) -> None:
+    set_config(
+        home,
+        assistant={"provider": "openai", "url": OPENROUTER},
+        vision_assistant={"provider": "openai", "url": OTHER_HOST},
+    )
+    app = ui.create_app(tui.PORT)
+    with TestClient(app, base_url=f"http://127.0.0.1:{tui.PORT}") as client:
+        client.headers["X-Cutpoint-Token"] = app.state.token
+        res = client.post(
+            "/api/assistant/key", json={"provider": "openai", "key": KEY, "role": "vision"}
+        )
+        assert res.status_code == 500 and KEY not in res.text
+        assert res.json()["detail"].endswith(
+            "need the keyring"
+        )  # the shared key: not for this host
+        res = client.post("/api/assistant/key", json={"provider": "openai", "key": KEY})
+        assert "before starting cutpoint ui" in res.json()["detail"]

@@ -423,6 +423,14 @@ for (const [kind, missing, title] of [['key', 'Set OPENAI_API_KEY or save a key 
   });
 }
 
+test('vision consent: a hint that already ends in a period gets no second one', async (t) => {
+  const key = 'vision-v2:openai@api.openai.com';
+  const missing = 'No API key for OpenAI API in jobs started from cutpoint ui: save one in the Models tab.';
+  const m = await apiTab(t, { visionProvider: 'openai', consent: { key, needed: true, host: 'api.openai.com', missing_key: missing, missing_kind: 'key' } });
+  assert.equal(m.$('#visionConsentText').textContent, missing);
+  assert.equal(m.$('#visionConsentOk').hidden, true);
+});
+
 test('vision key status says an environment key is for the CLI only; chat keeps "set (env)"', async (t) => {
   const keys = { ...NO_KEYS, openai: 'env' };
   const st = apiSettings();

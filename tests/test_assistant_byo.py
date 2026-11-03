@@ -350,7 +350,7 @@ def test_a_local_openai_server_needs_no_key_and_serves_its_only_model(monkeypatc
 
 def test_an_openai_server_with_several_models_asks_for_one(monkeypatch) -> None:
     Wire(monkeypatch, _Resp({"data": [{"id": "a"}, {"id": "b"}]}))
-    with pytest.raises(ProviderError, match=r"Choose a model .* in Settings; it lists a, b"):
+    with pytest.raises(ProviderError, match=r"Choose a model .* in the Models tab; it lists a, b"):
         OpenAIProvider("http://localhost:1234", "", 0, None).capabilities()
 
 

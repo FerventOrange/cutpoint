@@ -551,7 +551,7 @@ server) is saved for that base URL or comes from `CUTPOINT_ASSISTANT_API_KEY`, a
 `https://` ([keys](configuration.md#assistant)). The Models tab only says "set (env)", "set
 (keyring)" or "not set"; for Vision, a key that comes only from an environment variable shows
 "env (CLI only)": analyses started from `cutpoint ui` get no key variables and use the key saved in
-the Models tab. The page never receives a key. To install Ollama and its models, see
+the Models tab, so "Allow vision requests" waits for a key saved there. The page never receives a key. To install Ollama and its models, see
 [getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat).
 
 A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on

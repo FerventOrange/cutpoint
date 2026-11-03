@@ -271,6 +271,7 @@ const banner = (msg) => {
   b.hidden = !msg;
 };
 const fail = (e) => banner(e.message || String(e));
+const sentence = (text) => (/[.!?]$/.test(text) ? text : `${text}.`); // one final period, never two
 
 // A restarted server issues a new token: say so once and stop every timer, so the page neither
 // hammers the server nor waits on "Loading video…" forever.
@@ -3631,7 +3632,7 @@ function renderChat() {
   $('#chatConsentTitle').textContent = !noKey ? 'Send project data to a hosted model?'
     : c.consent.missing_kind === 'login' ? 'Login needed' : 'API key needed';
   $('#chatConsentOk').hidden = !consent;
-  $('#chatConsentText').textContent = noKey ? `${noKey}.`
+  $('#chatConsentText').textContent = noKey ? sentence(noKey)
     : consent
     ? `Each message sends ${CONSENT_SENDS} to ${PROVIDER_NAMES[prov?.name] ?? prov?.name ?? 'the provider'} at ${consent.host}. Nothing is sent until you agree. You agree once for this provider and host; Cutpoint saves it in config.json. Change the provider in the Models tab.`
     : '';
@@ -4025,7 +4026,7 @@ function renderVisionConsent() {
     const host = consent.host || 'the remote service';
     $('#visionConsentTitle').textContent = noKey ? (consent.missing_kind === 'login' ? 'Login needed' : 'API key needed') : `Send video frames to ${host}?`;
     $('#visionConsentText').textContent = `Rating moments and describing event windows with this hosted vision provider sends video frames, transcript excerpts, file names and times, detected on-screen text (such as player names) and telemetry to ${host}. That is more data, and more risk, than the AI Chat assistant, which gets only analysis results; agreeing for one never covers the other. Nothing is sent until you explicitly grant permission. Permission is saved in config.json.`;
-    if (noKey) $('#visionConsentText').textContent = `${noKey}.`;
+    if (noKey) $('#visionConsentText').textContent = sentence(noKey);
     $('#visionConsentOk').hidden = !!noKey;
     $('#visionConsentOk').disabled = false;
   } else {

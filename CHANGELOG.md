@@ -386,7 +386,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shown for Vision (or the reverse) without its own request (#622).
 - The Models tab Vision key status says "env (CLI only)" for a key that only comes from an
   environment variable: analyses started from `cutpoint ui` get no key variables and use the key
-  saved in the Models tab (#617).
+  saved in the Models tab (#617). Its "Allow vision requests" box asks for a key saved in the
+  Models tab instead of offering Allow when the key is only in an environment variable, which
+  still works for command-line runs, and the Vision key hints (a missing or rejected key, a key
+  the keyring could not save) name the Models tab first. Model, base URL and rejected-key
+  errors of the hosted providers say "Models tab" instead of "Settings".
 - 360 clips filmed with the camera upright (lenses horizontal: handheld, on a pole) no longer
   spin or drift: the view layer, the director and the renderer took yaw 0 from the camera axis
   that points ahead on a helmet mount, which is near vertical when the camera stands upright,
