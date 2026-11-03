@@ -169,6 +169,42 @@ def test_edit_events_passes_the_ollama_options_to_the_vlm_layer(pipeline, monkey
     assert got == [{"ollama_url": None, "ollama_model": None}]  # config.json and env decide
 
 
+@pytest.mark.parametrize(
+    ("argv", "layers", "expected"),
+    [
+        ([], ("audio", "ocr", "vlm"), None),  # None: no --layers, the events defaults
+        (["--skip", "crashes"], ("audio", "ocr", "vlm"), None),  # drops no default layer
+        (["--skip", "keyframes"], ("audio", "vlm"), ["audio", "vlm"]),  # no HUD discovery (#659)
+        (["--skip", "reactions"], ("ocr", "vlm"), ["ocr", "vlm"]),
+        (["--skip", "reactions", "keyframes", "crashes"], ("vlm",), ["vlm"]),
+        (
+            ["--style", "action-cam", "--skip", "keyframes"],
+            ("audio", "voice", "crash", "vlm"),
+            ["audio", "voice", "crash", "vlm"],
+        ),
+        (
+            ["--style", "action-cam", "--skip", "crashes"],
+            ("audio", "voice", "visual", "vlm"),
+            ["audio", "voice", "visual", "vlm"],
+        ),
+    ],
+)
+def test_edit_events_leaves_out_the_layers_of_skipped_steps(
+    pipeline, monkeypatch, argv, layers, expected
+):
+    from cutpoint.events import cli as events_cli  # noqa: PLC0415
+    from cutpoint.events import pipeline as events_pipeline  # noqa: PLC0415
+
+    checked: list[tuple[str, ...]] = []
+    ran: list[list[str] | None] = []
+    monkeypatch.setattr(events_pipeline, "preflight", lambda layers: checked.append(layers))
+    monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: ran.append(args.layers))
+    monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
+    assert cli.main(["edit", str(pipeline.video), "--events", *argv]) == 0
+    assert checked == [layers]
+    assert ran == [expected]
+
+
 def test_edit_vertical_names_its_outputs(pipeline, home):
     assert cli.main(["edit", str(pipeline.video), "--vertical"]) == 0
     project = home / "projects" / "My Clip"
