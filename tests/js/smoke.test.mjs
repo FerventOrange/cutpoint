@@ -32,3 +32,55 @@ test('an unmocked route is recorded and fails loudly', async (t) => {
   assert.deepEqual(page.unhandled, ['GET /api/nope']);
   assert.throws(() => page.assertNoUnhandled(), /unhandled fetch routes/);
 });
+
+test('the New project dialog shows the telemetry hint only for the action-cam style', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const page = await boot({ routes: { 'GET /api/session': () => ({ styles: ['funny', 'action-cam'], can_reveal: false, can_pick: false }) } });
+  t.after(() => page.close());
+  const doc = page.document;
+  const hint = doc.querySelector('#newStyleHint');
+  const style = doc.querySelector('#newStyle');
+  doc.querySelector('#newBtn').click();
+  assert.deepEqual([...style.options].map((o) => o.value), ['funny', 'action-cam']);
+  assert.equal(hint.hidden, true);
+  style.value = 'action-cam';
+  style.dispatchEvent(new page.window.Event('change'));
+  assert.equal(hint.hidden, false);
+  assert.match(hint.textContent, /telemetry/);
+  assert.match(hint.textContent, /lite/);
+  page.assertNoUnhandled();
+});
+
+test('sources with telemetry preselect action-cam unless the user already chose a style', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const asked = [];
+  const page = await boot({
+    routes: {
+      'GET /api/session': () => ({ styles: ['funny', 'action-cam'], can_reveal: false, can_pick: false }),
+      'POST /api/projects/suggest-style': (req) => (asked.push(req.body), { style: 'action-cam' }),
+    },
+  });
+  t.after(() => page.close());
+  const doc = page.document;
+  const source = doc.querySelector('#newSource');
+  const style = doc.querySelector('#newStyle');
+  const typeSource = async (v) => {
+    source.value = v;
+    source.dispatchEvent(new page.window.Event('change'));
+    await new Promise((r) => setImmediate(r));
+  };
+  doc.querySelector('#newBtn').click();
+  await typeSource('/v/gopro.mp4');
+  assert.deepEqual(asked, [{ sources: ['/v/gopro.mp4'] }]);
+  assert.equal(style.value, 'action-cam');
+  assert.equal(doc.querySelector('#newStyleHint').hidden, false);
+
+  doc.querySelector('#newBtn').click(); // reopening starts over
+  assert.equal(style.value, 'funny');
+  style.value = 'funny';
+  style.dispatchEvent(new page.window.Event('change')); // the user's choice
+  await typeSource('/v/gopro.mp4');
+  assert.equal(style.value, 'funny');
+  assert.equal(asked.length, 1);
+  page.assertNoUnhandled();
+});

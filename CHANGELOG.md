@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui` offers the `action-cam` style in Highlight style for standard (non-360) footage,
+  single and multi-input, with a hint: best with GoPro or Insta360 telemetry, fed by the
+  reactions, keyframes and crash steps (events extra, `cutpoint setup`); in Cutpoint lite it still
+  works on telemetry and transcript. When at least one input has GoPro or Insta360 telemetry
+  (a stream-list probe of up to 12 files, not a telemetry read), the dialog preselects it unless
+  you already chose a style (#633).
 - A Models tab in `cutpoint ui` sets the model of each role: Chat (`assistant`) and Vision (the new
   `vision_assistant` section, same keys, the same providers as Chat), each
   with its own provider, model and, for hosted ones, permission. It replaces the AI assistant

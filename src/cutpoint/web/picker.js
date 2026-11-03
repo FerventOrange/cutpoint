@@ -65,6 +65,7 @@ export function initNewProject(onCreated, canPick) {
         if (!path) return;
         if (!have.includes(path)) source.value = [...have, path].join('\n'); // a line more
         source.dispatchEvent(new Event('input')); // as if typed: the name follows
+        suggestStyle();
         source.focus();
       } catch (e) {
         setError(e.message);
@@ -78,6 +79,27 @@ export function initNewProject(onCreated, canPick) {
     const paths = sourceLines(source.value);
     if (!nameTouched) name.value = defaultName(paths);
     $('#newSourceHint').textContent = paths.some((p) => /\.(insv|lrv)$/i.test(p)) ? `${hint} ${PANO_HINT}` : hint;
+  });
+  const showStyleHint = () => ($('#newStyleHint').hidden = style.value !== 'action-cam');
+  // Sources with GoPro or Insta360 telemetry preselect the style the server suggests, unless the
+  // user chose one; a reply for sources since changed is dropped.
+  let styleTouched = false;
+  let suggestion = 0;
+  const suggestStyle = async () => {
+    const mine = ++suggestion;
+    const sources = sourceLines(source.value);
+    if (!sources.length || styleTouched) return;
+    try {
+      const { style: suggested } = await api('/api/projects/suggest-style', { method: 'POST', body: { sources } });
+      if (mine !== suggestion || styleTouched || !suggested) return;
+      if ([...style.options].some((o) => o.value === suggested)) style.value = suggested;
+      showStyleHint();
+    } catch { /* a suggestion is optional: the style stays as it is */ }
+  };
+  source.addEventListener('change', suggestStyle);
+  style.addEventListener('change', () => {
+    styleTouched = true;
+    showStyleHint();
   });
   $('#newCancel').addEventListener('click', () => dlg.close());
 
@@ -108,12 +130,14 @@ export function initNewProject(onCreated, canPick) {
   });
 
   return function open(styles) {
-    nameTouched = false;
+    nameTouched = styleTouched = false;
+    suggestion++;
     source.value = name.value = exclude.value = '';
     recursive.checked = false;
     $('#newSourceHint').textContent = hint;
     setError('');
     style.replaceChildren(...styles.map((s) => h('option', { value: s, text: s })));
+    showStyleHint();
     dlg.showModal();
     source.focus();
   };
