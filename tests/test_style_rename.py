@@ -26,6 +26,14 @@ def test_style_ski_is_refused_naming_action_cam(capsys, command):
     assert "'ski' was renamed to 'action-cam'" in err and "--style action-cam" in err
 
 
+def test_style_auto_is_offered_by_analyze_and_edit_only():
+    parser = cli.build_parser()
+    for command in (["analyze", "a.mp4"], ["edit", "a.mp4"]):
+        assert parser.parse_args([*command, "--style", "auto"]).style == "auto"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["360", "analyze", "p", "--style", "auto"])
+
+
 def test_analyze_help_lists_action_cam_not_ski(capsys):
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["analyze", "--help"])

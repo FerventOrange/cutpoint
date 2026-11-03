@@ -17,6 +17,7 @@ prints tracebacks of errors.
 | [`capabilities`](#capabilities) | Report GPU vendors, working encoders, transcription, torch and SDK support |
 | [`edit`](#edit) | Analyze, export clips and assemble in one command |
 | [`analyze`](#analyze) | Find and rank highlight candidates |
+| [`detect`](#detect) | Detect the footage category and the style `--style auto` picks |
 | [`events`](#events) | Detect sounds, HUD events and describe windows with a model |
 | [`clips`](#clips) | Export moments as numbered clips |
 | [`extend`](#extend) | Re-export a clips folder with more padding |
@@ -31,7 +32,7 @@ prints tracebacks of errors.
 ## JSON output
 
 `--json` makes a command write its result as exactly one JSON object on stdout. It is available
-on `paths`, `analyze`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
+on `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
 `setup`, `events`, `crashes`, `profile` and every `360` subcommand (`scan`, `analyze`, `status`,
 `director`, `stitch`, `qa`, `repair`). `ui`, `guide`, `skill`, `proxy`, `login` and
 `logout` have no `--json`. Logs and errors stay on stderr, and
@@ -93,6 +94,8 @@ So do these combinations:
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
 | `loudness_below_target` | `assemble` (so `edit`) | `--loudnorm` left the final more than 1 LU below -14 LUFS: the limiter took the peaks the gain pushed over the ceiling; `--compress-peaks` leaves it more room |
 | `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it. A failed HUD OCR (keyframes for `gaming` and `funny`) is a `WARNING` instead, whose message names the effect (menu filtering and HUD events skipped) and the source it failed on; `files` lists the sources it did not read. Out of memory says so, with what to try |
+| `style_ambiguous` | `analyze`, `detect` (so `edit`) | `--style auto` could not tell the footage category apart (the message gives the evidence), so the run used the default style: `gaming` for `analyze`, the kind's style for `edit`; `files` lists the sources that were not clear. Give `--style` to choose one |
+| `style_sources_disagree` | `analyze`, `detect` (so `edit`) | With `--style auto`, sources making up more than 10% of the footage look like another category than the project's; the whole project still gets one style. `files` names them: analyze them apart, or give `--style` |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
 | `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
 | `content_qa_failed` | `mix` | The content checks of the mix failed |
@@ -119,7 +122,8 @@ So do these combinations:
 | Command | `outputs` |
 |---|---|
 | `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
-| `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set), `style` |
+| `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set), `style`; with `--style auto`, `detection` (the `highlights.json` block, see [detect](#detect)) |
+| `detect` | `category` (`gameplay`, `action-cam`, `talk` or `general`), `ambiguous`, `reason`, `scores` (share of the footage per category), `suggest` (`commentary` for talky gameplay, else `null`), `sources` (each `path`, `duration`, `category`, `ambiguous`, `reason`, `gameplay` (score 0-1, `null` with telemetry) and `speech` (share of the source covered by words, `null` before transcription)), `pending` (talk not checked yet: a long source has no transcript), `styles` (`analyze` and `funny-moments`: the style each would use) |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds` |
 | `extend` | As `clips`, and `seconds` (`{"start", "end"}`) |
 | `assemble` | `format` (`mp4`, `fcpxml` or `otio`); the file written: `final` (the video, `mp4`), or `fcpxml` or `otio` (the timeline); `srt` (`null` if none was written), `duration` (of the video or the timeline), `clip_count`. From a project with `--format fcpxml\|otio`, also the outputs of `clips` for the kept clips; with `mp4`, no clip paths (warning `temporary_clips`) |
@@ -746,7 +750,7 @@ one of them is refused.
 
 | Option | Meaning |
 |---|---|
-| `--style`, `--top N`, `--max-total S` | Replace the kind's value; the others stay (`--kind montage --top 5`: the 5 best that fit in 60 s) |
+| `--style`, `--top N`, `--max-total S` | Replace the kind's value; the others stay (`--kind montage --top 5`: the 5 best that fit in 60 s). `--style auto` picks the style from the footage as [`detect`](#detect) does (the funny style for `funny-moments`), before the `--events` check; unclear footage keeps the kind's style |
 | `--out DIR` | Project folder. Default: `<projects>\<name>` (the first input's name, as above) |
 | `--vertical` | 9:16 clips in `clips_vertical`, `final_vertical.mp4`, `<name>-final_vertical.mp4` |
 | `--force` | Replace the clips of an earlier run, as `clips --force`. Without it a non-empty clips folder stops the run before the analysis |
@@ -782,7 +786,7 @@ an analysed set processes only the new file.
 
 | Option | Meaning |
 |---|---|
-| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `action-cam` (formerly `ski`, no longer accepted), or a learned preset |
+| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `action-cam` (formerly `ski`, no longer accepted), a learned preset, or `auto`: pick one from the footage, as [`detect`](#detect) does. `auto` never picks `sport` or `funny`; unclear footage gets `gaming` with a `style_ambiguous` warning. `highlights.json` keeps the style it picked in `style`, `settings.style_requested` is `auto` and `detection` holds the evidence, so `events` and re-runs keep it without detecting again |
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
@@ -938,6 +942,38 @@ Windows. No analysis cache key includes the device, so the `reactions`, `keyfram
 `crashes` results are reused across devices (after a GPU run, a CPU run reuses them, and the
 other way round). The transcript is cached per Whisper model (`--model`; the default is `medium`
 on CUDA and `small` on CPU), so it is reused only when both runs use the same `--model`.
+
+## detect
+
+```text
+cutpoint detect <file|folder> [<file|folder> ...] [--exclude GLOB] [--recursive] [--json]
+```
+
+Tells which category the footage is and which style `--style auto` would use, without analyzing
+it. It reads the container tags, the camera telemetry and 32 small grey frames per source (a few
+seconds each; cached as `category-v1.json` in the source's cache folder) and writes nothing to
+a project.
+
+| Category | Evidence | `analyze --style auto` | `edit --kind funny-moments --style auto` |
+|---|---|---|---|
+| Action cam | Camera telemetry (GoPro GPMF, Insta360 X3 IMU) in at least half of the footage | `action-cam` | `funny` |
+| Gameplay | A static HUD: overlay pixels that stay put while the picture moves; screen-recorder tags help | `gaming` | `funny` |
+| Talk | Not gameplay, and speech covers at least 55% of a source of 8 minutes or more | `commentary` | `funny` |
+| General | Anything else. Sure only with camera tags (a phone or camera make) | `action` | `funny` |
+
+The other kinds of `edit` (`highlights`, `montage`, `clips`) use the `analyze` column.
+
+The project gets one category, by the share of the footage duration; a source is only talk once
+it has a transcript (`detect` uses one from an earlier `analyze`; `analyze` decides talk after
+transcribing). A category with weak evidence (no HUD, only screen-recorder tags, which re-encoded
+camera footage also has, or speech coverage between 40% and 55%) is ambiguous: `--style auto`
+then uses the default style with a `style_ambiguous` warning. Gameplay with a lot of speech stays
+gameplay; an INFO line suggests `--style commentary`.
+
+`highlights.json` of an `auto` analysis has a `detection` block: `version`, `category`,
+`emphasis` (`hype`, or `funny` for `funny-moments`), `style`, `reason`, `ambiguous`, `scores`,
+`fallback` (the default style used when the category was unclear, else `null`), `suggest` and
+`sources` (as in the [`--json` outputs](#json-output)).
 
 ## events
 

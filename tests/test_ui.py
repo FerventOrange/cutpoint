@@ -6853,7 +6853,7 @@ def test_side_tabs_share_the_column_width_evenly_at_any_width() -> None:
     band = re.search(r"^\.side-tabs \{([^}]*)\}", css, re.M)[1]
     assert "display: grid;" in band and "grid-auto-flow: column;" in band
     assert "grid-auto-columns: minmax(0, 1fr);" in band  # equal, for any number of tabs
-    assert "margin: -12px -14px 0;" in band  # the .col padding: edge to edge
+    assert "margin: -12px -16px 0;" in band  # the .col padding: edge to edge
     assert "gap" not in band and "padding" not in band
     tab = re.search(r"^\.side-tab \{([^}]*)\}", css, re.M)[1]
     for decl in ("min-width: 0;", "overflow: hidden;", "white-space: nowrap;",
@@ -6883,7 +6883,7 @@ def test_side_tabs_and_panel_headers_stay_put_while_a_panel_scrolls() -> None:
     heads = re.search(
         r"^#panelSequence > \.col-head, #panelAssistant > \.chat-head \{([^}]*)\}", css, re.M
     )[1]
-    assert "position: sticky; top: calc(var(--control-h-lg) + 1px - 12px);" in heads
+    assert "position: sticky; top: calc(var(--band-h) - 12px);" in heads
     batch = re.search(r"^\.seq-batch \{([^}]*)\}", css, re.M)[1]
     assert "top: calc(var(--side-bars, 12px) - 12px);" in batch
     narrow = css[css.index("@media (max-width: 960px)") :]

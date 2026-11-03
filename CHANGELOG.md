@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Footage category detection (#513): `cutpoint detect <inputs> [--json]` tells whether the
+  footage is gameplay, action cam, talk or general, from the container tags, the camera
+  telemetry and 32 small grey frames per source (a static HUD marks gameplay; cached as
+  `category-v1.json`), and which style `--style auto` would use. `--style auto` on `analyze`
+  and `edit` (opt-in; the defaults are unchanged) maps action cam to `action-cam`, gameplay to
+  `gaming`, talk (decided after transcription) to `commentary` and general to `action`, or every
+  category to `funny` for `edit --kind funny-moments`; it never picks `sport`. The detected
+  category plans the HUD OCR and CLIP layers of `analyze`'s own steps (`edit --events` and
+  `cutpoint events` still choose by style). Unclear footage gets the default style (`gaming`,
+  or the kind's style on `edit`) with a `style_ambiguous` warning; sources of another category
+  over 10% of the footage give `style_sources_disagree`; talky gameplay stays gameplay with a
+  hint to try `--style commentary`. `highlights.json` keeps the picked style in `style` and
+  adds `settings.style_requested` and a `detection` block, which `events` and re-runs reuse;
+  `analyze --json` reports it as `outputs.detection`. A learned preset named `auto.json` is
+  ignored with a warning.
+- Releases attach `install.sh`, `install.ps1` and `SHA256SUMS` with the release version stamped in
+  as the default, so `releases/download/X.Y.Z/install.sh` (or `releases/latest/download/`) installs that
+  version from PyPI; the README and Getting started document the pinned one-liners and the checksum
+  check. The stamping is `scripts/stamp_installers.py` (#684).
 - Visual candidates: `analyze` with the `action-cam`, `action` or `sport` style lists scenic
   views, group shots and steady cruising runs after the scored candidates (`"pool": "visual"`,
   ids `v001`..., `kind` `view`, `crew` or `cruise`, labels such as "scenic view / beauty shot"),
@@ -273,6 +292,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Browser workspace: uniform spacing (#534). Padding, margins, gaps and radii come from the `--space-*`
+  and `--radius-*` scale, buttons and fields share `--control-h` (36 px, so the gear button is
+  square), the three columns share a 16 px gutter and a symmetric padding, and the top bar, the
+  Moments band and the tab bar share one band height (`--band-h`, when the Moments band fits one
+  row). Dialogs, popovers, callouts and cards use the same padding and corner radius.
 - A step that starts when part of its work is already cached (for example after an
   interruption) says how far it got (#109): `transcribe: N/M done, continuing` (sources with a
   cached transcript), `vlm: N/M done, continuing` (described VLM windows) and `dense check: N/M
@@ -467,6 +491,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Recordings whose audio tracks are copies of each other (OBS writing the same mix to several
+  tracks) are analysed at the level of one track (#685). `analyze` summed every track into its
+  analysis audio, so 5 identical tracks came out about 14 dB too loud and clipped, flattening
+  the loudness peaks it scores; it now leaves the copies out as clip exports do (#365). A track
+  is left out only when it copies another across the whole recording, so a game and a separate
+  mic track are still both summed, also when the mic talks only now and then. Such recordings
+  are analysed again once (audio extract, loudness, transcript and the audio events layers);
+  recordings with one track or with distinct tracks keep their cache.
 - Interrupted runs lose less work and free memory sooner (#109). The dense crash check saves
   each window to its cache as it finishes, so a run stopped by Ctrl+C or a kill keeps the
   windows it checked and the next run computes only the rest (before, every check of the run
