@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import requests
 
-from cutpoint import cache, paths
+from cutpoint import cache, paths, state
 from cutpoint.backends import ollama_url
 from cutpoint.config import get_config
 from cutpoint.errors import FFmpegError
@@ -131,6 +131,29 @@ def _ollama_consent_key(url: str) -> str | None:
     return providers.consent_key(providers.OllamaProvider(url, "", 0), "vision")
 
 
+def _consent_message(lead: str, key: str, skipping: str = "skipping vision") -> str:
+    """The ``vision_consent_needed`` message: ``lead`` (where frames would go and how to allow
+    it in the Models tab of cutpoint ui), then the consent ``key`` for config.json."""
+    return f'{lead}, or add "{key}" to vision_assistant.consent in config.json; {skipping}'
+
+
+# the vision_consent_needed messages already given: once per run, also when one run builds
+# several raters (edit --vision --events); emptied by reset_state
+_consent_warned: set[str] = state.register_container(__name__, "_consent_warned", set())
+
+
+def _warn_consent(message: str) -> str:
+    """Log ``message`` as a WARNING and add it as the ``vision_consent_needed`` warning of
+    ``--json``, once per run (:data:`_consent_warned`); returns ``message``."""
+    from cutpoint import jsonout  # noqa: PLC0415
+
+    if message not in _consent_warned:
+        _consent_warned.add(message)
+        logger.warning("%s", message)
+        jsonout.warn("vision_consent_needed", message)
+    return message
+
+
 def ollama_allowed(url: str) -> bool:
     """True if the Ollama at ``url`` is on this machine or the user agreed to it for Vision."""
     url = url.rstrip("/")
@@ -149,6 +172,12 @@ class AssistantVision:
         self.provider = providers.make_vision(self.settings)
         self.model = self.provider.model
         self._ready: bool | None = None
+        # the vision-v2: key the provider still needs; None: on this machine (a local base URL
+        # in config.json, nothing leaves it) or agreed to
+        want = providers.consent_key(self.provider, "vision")
+        self.consent_needed = (
+            want if want is not None and want not in self.settings.consent else None
+        )
 
     def available(self) -> bool:
         """Whether frames may go to the provider; the reason is logged. Checked once."""
@@ -160,10 +189,8 @@ class AssistantVision:
         from cutpoint.assistant import keys, providers  # noqa: PLC0415
 
         p = self.provider
-        # None: a server on this machine (a local base URL in config.json), nothing leaves it
-        want = providers.consent_key(p, "vision")
-        if want is not None and want not in self.settings.consent:
-            logger.info("Agree to send to %s for Vision first; skipping vision", p.name)
+        if self.consent_needed:
+            self.warn_consent()
             return False
         if missing := providers.missing_key(p):
             logger.info("%s; skipping vision", keys.redact(missing))
@@ -180,6 +207,18 @@ class AssistantVision:
         # caches are keyed on it, not on the placeholder AUTO_SERVER_MODEL
         self.model = p.model
         return True
+
+    def warn_consent(self) -> str:
+        """Log (once, a WARNING and the ``vision_consent_needed`` warning of ``--json``) and
+        return why no frame goes to the provider: :attr:`consent_needed`."""
+        from cutpoint.assistant import providers  # noqa: PLC0415 (it imports this module)
+
+        p = self.provider
+        lead = (
+            f"Vision provider {p.name} ({providers.endpoint(p)}) needs your consent before "
+            "frames are sent to it: allow it in the Models tab of `cutpoint ui` (Vision role)"
+        )
+        return _warn_consent(_consent_message(lead, str(self.consent_needed)))
 
     def ask(self, prompt: str, jpegs: list[bytes], schema: dict | None = None) -> str | None:
         """The provider's reply to ``prompt`` with the JPEG frames (constrained to ``schema``
@@ -214,10 +253,9 @@ class VisionRater:
         v_ast = cfg.vision_assistant
         self.via = AssistantVision(v_ast) if not local_only and v_ast.provider != "ollama" else None
         env_model = paths.env("VISION_MODEL")
-        # the vision-v2: key an Ollama on another machine still needs; None: on this machine,
-        # agreed to, or a hosted provider (AssistantVision checks its own)
+        # the vision-v2: key the provider still needs (an Ollama on another machine, or the
+        # hosted provider of self.via); None: on this machine or agreed to
         self.consent_needed: str | None = None
-        self._consent_warned = False
         self.local_only = local_only  # activity detection: the Ollama only, never self.via
         if self.via:
             self.model = self.via.model
@@ -225,6 +263,7 @@ class VisionRater:
             self.provider_name = self.via.provider.name
             # the cache key's host (rating_key): one model id on two servers rates apart
             self.host = _endpoint(self.via.provider)
+            self.consent_needed = self.via.consent_needed
         else:
             self.provider_name = "ollama"
             self.model = (
@@ -291,26 +330,23 @@ class VisionRater:
 
     def warn_consent(self) -> str:
         """Log (once, a WARNING and the ``vision_consent_needed`` warning of ``--json``) and
-        return why nothing goes to the Ollama on another machine: :attr:`consent_needed`."""
-        from cutpoint import jsonout  # noqa: PLC0415
+        return why nothing goes to the Ollama on another machine or the hosted provider:
+        :attr:`consent_needed`."""
         from cutpoint.assistant import providers  # noqa: PLC0415 (it imports this module)
 
+        if self.via:
+            return self.via.warn_consent()
         skipping = (
             "activity detection goes on without the vision model"
             if self.local_only
             else "skipping vision"
         )
-        message = (
+        lead = (
             f"Ollama at {providers.host_port(self.url)} is not on this machine: allow vision "
             "requests to it in the Models tab of `cutpoint ui` (Vision role, Ollama with this "
-            f'URL), or add "{self.consent_needed}" to vision_assistant.consent in config.json; '
-            f"{skipping}"
+            "URL)"
         )
-        if not self._consent_warned:
-            self._consent_warned = True
-            logger.warning("%s", message)
-            jsonout.warn("vision_consent_needed", message)
-        return message
+        return _warn_consent(_consent_message(lead, str(self.consent_needed), skipping))
 
     def ask_json(
         self,

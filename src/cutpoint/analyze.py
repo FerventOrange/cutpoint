@@ -1848,8 +1848,8 @@ def _analyze(
                 **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
             )
         ).consent_needed:
-            # an Ollama on another machine the user did not agree to: no request, no cached
-            # ratings either (this run may not send to it at all)
+            # a provider the user did not agree to (a hosted one, or an Ollama on another
+            # machine): no request, no cached ratings either
             steps.skip("vision", rater.warn_consent())
         else:
             # vision_top itself stays None (auto) in the saved settings, for reanalyze

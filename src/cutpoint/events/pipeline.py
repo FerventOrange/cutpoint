@@ -454,7 +454,11 @@ def run_events(
     windows = select_windows(
         sources, hl.get("candidates", []), layer1, vlm, seed_types, quiet="vlm" not in layers
     )
-    if ski and "vlm" not in force:  # reuse described windows; only fill new footage
+    # a provider the user did not agree to (a hosted one, or an Ollama on another machine): no
+    # request, no cached descriptions or windows either, as for analyze's vision ratings
+    no_consent = rater.consent_needed is not None
+    if ski and "vlm" not in force and not no_consent:
+        # reuse described windows; only fill new footage
         prev = cached_windows(sources, vlm)
         if prev:
             n_new = len(windows)
@@ -473,7 +477,16 @@ def run_events(
         if not any(w.start < b + 2 and w.end > a - 2 for a, b in bad.get(w.source, []))
     ]
     results: list[dict[str, Any]] = []
-    if "vlm" in layers:
+    if no_consent:
+        cached, _ = describe_windows(None, by_path, windows, vlm, prompts, transcript, layer1)
+        # the VLM layer is skipped; say why cached descriptions (or reused windows) are gone
+        if (
+            "vlm" in layers
+            or cached
+            or (ski and "vlm" not in force and cached_windows(sources, vlm))
+        ):
+            rater.warn_consent()
+    elif "vlm" in layers:
         cached, vstats = describe_windows(
             None, by_path, windows, vlm, prompts, transcript, layer1, force="vlm" in force
         )

@@ -196,6 +196,12 @@ class VLChecker:
     def _post(self, prompt: str, image: str, num_predict: int) -> dict[str, Any] | None:
         import requests  # noqa: PLC0415
 
+        # a provider the user did not agree to (a hosted one, or an Ollama on another machine):
+        # no request, only the consent warning
+        if self.rater.consent_needed:
+            self.rater.warn_consent()
+            self.dead = True
+            return None
         if self.rater.via:  # the frame is a JPEG; the prompt asks for JSON, no sampling options
             text = self.rater.via.ask(prompt, [base64.b64decode(image)])
             if text is None:
@@ -203,10 +209,6 @@ class VLChecker:
                 self.dead = True
                 return None
             return {"content": text}
-        if self.rater.consent_needed:  # an Ollama on another machine the user did not agree to
-            self.rater.warn_consent()
-            self.dead = True
-            return None
 
         payload = {
             "model": self.model,
