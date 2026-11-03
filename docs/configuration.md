@@ -163,7 +163,9 @@ independently of the chat model. The same keys as
 keyring, as for the assistant; analyses started in `cutpoint ui` read it from the keyring only,
 which the Vision role's key field in the Models tab sets) or a subscription (`claude-code`,
 `codex` or `antigravity`). With `ollama`, `model` and `url` are the Ollama model and URL
-(`--ollama-model`, `CUTPOINT_VISION_MODEL` and `--ollama-url` still win). With an API provider, choose a `model`
+(`--ollama-model`, `CUTPOINT_VISION_MODEL` and `--ollama-url` still win); an Ollama URL on
+another machine (not `localhost` or a loopback address) is hosted and needs the Vision consent
+below, else vision is skipped with a WARNING. With an API provider, choose a `model`
 that accepts images; each request sends frames and is billed to your API key. Subscription
 providers use only their official host; a `url` for them is rejected. An API provider may have a
 `url` (an OpenAI-compatible or self-hosted server); one on this machine (`localhost` or a
@@ -177,12 +179,14 @@ times, and detected on-screen text (such as player names) and telemetry (for fra
 the `events` window descriptions), never the video file. That is more data, and more risk, than
 the assistant gets, so this consent is separate from the assistant's: agreeing to one never
 covers the other. Entries are `vision-v2:<provider>@<host>` (for example
-`vision-v2:codex@chatgpt.com`); an entry without the `vision-v2:` prefix, saved by an earlier
+`vision-v2:codex@chatgpt.com`, or `vision-v2:ollama@192.168.1.5:11434`: the host has its port
+when that is not the scheme's default); an entry without the `vision-v2:` prefix, saved by an earlier
 version under a narrower description, no longer counts, and the Models tab asks again.
 **Use at your own risk** when selecting a hosted provider.
 `--ollama-url` and `--ollama-model` have no effect for a provider other than `ollama`; ratings
 from those providers have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
-`analyze` always uses Ollama, independently of this selection.
+`analyze` always uses Ollama, independently of this selection; an Ollama on another machine
+needs this Vision consent for its URL there too, else the profile falls back without the model.
 
 ### compress_peaks
 
@@ -264,8 +268,8 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   model on this machine (and any Ollama), 32768 for a hosted one; more lets the model see more
   moments and turns.
 - `consent`: the hosted providers the user agreed to send project text to, as
-  `assistant-v2:<provider>@<host>` (for example `assistant-v2:anthropic@api.anthropic.com`); the
-  AI Chat tab adds them. An entry without the `assistant-v2:` prefix, saved by an earlier version
+  `assistant-v2:<provider>@<host>` (for example `assistant-v2:anthropic@api.anthropic.com`; the
+  host has its port when that is not the scheme's default); the AI Chat tab adds them. An entry without the `assistant-v2:` prefix, saved by an earlier version
   under a shorter description, no longer counts, and AI Chat asks again.
   The assistant gets only analysis results (moment labels, scores and detection signals,
   vision descriptions, transcript snippets, file names without paths, times) and your messages, never video or audio.

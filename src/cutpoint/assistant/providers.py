@@ -246,15 +246,42 @@ def unambiguous(url: str) -> bool:
 
 
 def is_local(url: str) -> bool:
-    """Whether ``url`` is on this machine: ``localhost`` (or ``*.localhost``) or a loopback
-    address (``127.0.0.0/8``, ``::1``). Anything else, a LAN address too, counts as hosted."""
+    """Whether ``url`` is on this machine: ``localhost`` or a loopback address
+    (``127.0.0.0/8``, ``::1``). Anything else, a LAN address or a ``*.localhost`` name (a
+    resolver may send it to the network) too, counts as hosted."""
     host = host_of(url)
-    if host == "localhost" or host.endswith(".localhost"):
+    if host == "localhost":
         return True
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def host_port(url: str) -> str:
+    """The host of ``url`` (:func:`host_of`) with its port when that is not the scheme's
+    default: ``192.168.1.5:8080``, an IPv6 address bracketed (``[fd00::5]:8080``); the host
+    alone for ``https://api.openai.com`` or ``http://host:80``."""
+    host = host_of(url)
+    try:
+        parsed = parse_url(_with_scheme(url))
+    except (LocationParseError, ValueError):
+        return host
+    port, scheme = parsed.port, (parsed.scheme or "http").lower()
+    if not host or port is None or port == _DEFAULT_PORTS.get(scheme):
+        return host
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+def endpoint(provider: Provider) -> str:
+    """Where ``provider``'s requests go, for consent and cache keys: :func:`host_port` of its
+    URL, so two servers on one host are told apart; a subscription's ``host`` as is (its
+    requests go through the local proxy, not to its URL)."""
+    url = getattr(provider, "url", "")
+    return host_port(url) if url and host_of(url) == provider.host else provider.host
 
 
 # Prefixes of the consent keys. Each role's consent is its own and is versioned: consent given
@@ -270,12 +297,13 @@ def consent_key(provider: Provider, role: str = "assistant") -> str | None:
     (``"assistant"`` or ``"vision"``): ``assistant-v2:<name>@<host>``
     (:data:`ASSISTANT_CONSENT_PREFIX`) for the assistant, ``vision-v2:<name>@<host>``
     (:data:`VISION_CONSENT_PREFIX`) for Vision, so neither consent unlocks the other and an
-    unprefixed entry from an older version unlocks neither; None for a local provider (nothing
-    leaves the machine)."""
+    unprefixed entry from an older version unlocks neither; ``<host>`` has the port when it is
+    not the scheme's default (:func:`endpoint`: ``vision-v2:openai@192.168.1.5:8080``); None
+    for a local provider (nothing leaves the machine)."""
     if provider.local:
         return None
     prefix = VISION_CONSENT_PREFIX if role == "vision" else ASSISTANT_CONSENT_PREFIX
-    return f"{prefix}{provider.name}@{provider.host}"
+    return f"{prefix}{provider.name}@{endpoint(provider)}"
 
 
 def check(provider: Provider) -> str | None:
@@ -300,6 +328,29 @@ def missing_key(provider: Provider) -> str | None:
     except ProviderError as err:
         return str(err)
     return None
+
+
+def missing_ui_job_key(provider: Provider) -> str | None:
+    """As :func:`missing_key`, for the Vision role in jobs ``cutpoint ui`` starts: they get no
+    key variables (:func:`keys.child_env`), so a key that only a variable holds is missing
+    there; the hint says it still works for command-line runs."""
+    missing = missing_key(provider)
+    name, host = provider.name, provider.host
+    # a server on this machine may take no key; a subscription logs in instead
+    if missing is not None or provider.local or name not in keys.KEYED:
+        return missing
+    if not getattr(provider, "has_key", False) or keys.in_keyring(name, host):
+        return None
+    names = keys.env_names(name, host)
+    if not getattr(provider, "key_shared", True):
+        names = [n for n in names if n != keys.ENV_KEY]
+    var = names[0] if names else "the environment variable"
+    title = getattr(provider, "title", name)
+    return (
+        f"No API key for {title} in jobs started from cutpoint ui (they get no key variables): "
+        f"save one in the Models tab (kept in the system keyring); {var} works for command-line "
+        "runs only"
+    )
 
 
 KEY_CHECKED_LATER = "The key is checked when you send the first message."
@@ -328,15 +379,18 @@ def check_note(provider: Provider) -> str | None:
     return None
 
 
-def _redirect(title: str, resp: requests.Response, setting: str) -> ProviderError | None:
+def _redirect(
+    title: str, resp: requests.Response, setting: str, where: str = "Settings"
+) -> ProviderError | None:
     """The error for a redirect answer (never followed: requests would resend the key, and on
-    307/308 the body, to the new address), or None for any other answer."""
+    307/308 the body, to the new address), or None for any other answer; ``where`` names the
+    place ``setting`` is changed."""
     if not 300 <= resp.status_code < 400:
         return None
     to = host_of((getattr(resp, "headers", None) or {}).get("Location") or "")
     return ProviderError(
         f"{title} answered {resp.status_code}, redirecting to {to or 'another address'}; "
-        f"set that as the {setting} in Settings"
+        f"set that as the {setting} in {where}"
     )
 
 
@@ -368,10 +422,12 @@ def public(text: str) -> str:
     return _USERINFO.sub("", text)
 
 
-def _key_hint(name: str, host: str, *, shared: bool = True) -> str:
+def _key_hint(name: str, host: str, *, shared: bool = True, vision: bool = False) -> str:
     """How to add ``name``'s key for ``host``: its own variable only for its own host,
     :data:`keys.ENV_KEY` only for a host that is not official (#504) and when ``shared`` (the
-    Vision role on another host than the assistant's never reads it), or the keyring."""
+    Vision role on another host than the assistant's never reads it), or the keyring. For the
+    Vision role (``vision``) the keyring comes first and a variable is for command-line runs
+    only: jobs started from ``cutpoint ui`` get none (:func:`keys.child_env`)."""
     ring = "save one in the Models tab (kept in the system keyring)"
     names = keys.env_names(name, host)
     if not shared and keys.ENV_KEY in names:
@@ -383,6 +439,8 @@ def _key_hint(name: str, host: str, *, shared: bool = True) -> str:
     note = ""
     if names[0] != keys.ENV_KEY and keys.has_shared():  # set, but never sent to this host
         note = f" ({keys.ENV_KEY} is only for custom base URLs)"
+    if vision:
+        return f"{ring}, or, for command-line runs only, set {names[0]}{note}"
     return f"set {names[0]} before starting cutpoint ui{note}, or {ring}"
 
 
@@ -608,6 +666,7 @@ class _HttpProvider:
         self._key = key or None  # only ever sent in the request headers
         # False: keys.ENV_KEY is not read for this provider (the Vision role on another host)
         self.key_shared = True
+        self.vision = False  # True: the Vision role (make_vision), whose key hints differ
         self.timeout = CHAT_TIMEOUT_S if self.local else HOSTED_TIMEOUT_S
         self._caps: Capabilities | None = None
 
@@ -633,7 +692,7 @@ class _HttpProvider:
     def _need_key(self) -> None:
         """A hosted server needs a key; a local one (LM Studio, llama-server) may not."""
         if self._key is None and not self.local:
-            hint = _key_hint(self.name, self.host, shared=self.key_shared)
+            hint = _key_hint(self.name, self.host, shared=self.key_shared, vision=self.vision)
             raise ProviderError(f"No API key for {self.title}: {hint}")
 
     def _send(
@@ -664,7 +723,7 @@ class _HttpProvider:
         except requests.RequestException as err:
             why = keys.redact(public(f"{self.title} is not reachable at {self.url} ({err})"))
             raise ProviderError(why) from err
-        if moved := _redirect(self.title, resp, "base URL"):
+        if moved := _redirect(self.title, resp, "base URL", "the Models tab"):
             raise moved
         return resp
 
@@ -687,15 +746,21 @@ class _HttpProvider:
         code = resp.status_code
         why = self._why(resp) if why is None else why
         if code in (401, 403):
+            names = keys.env_names(self.name, self.host)
+            if not self.key_shared:  # never read for this host (the Vision role)
+                names = [n for n in names if n != keys.ENV_KEY]
+            check = "".join(f"{n} or " for n in names) + "the key saved in the Models tab"
+            if self.vision:  # UI jobs get no key variables: they use the keyring's only
+                check = "the key saved in the Models tab" + "".join(
+                    f" (or, for command-line runs, {n})" for n in names[:1]
+                )
             return ProviderError(
-                f"{self.title} rejected the API key ({code}: {why}); check "
-                + "".join(f"{n} or " for n in keys.env_names(self.name, self.host))
-                + "the key saved in Settings"
+                f"{self.title} rejected the API key ({code}: {why}); check {check}"
             )
         if code == 404:
             return ProviderError(
                 f"{self.title} has no model {self.model} at {public(self.url)} (404: {why}); "
-                "check the model and base URL in Settings"
+                "check the model and base URL in the Models tab"
             )
         if code == 429:
             return ProviderError(
@@ -774,7 +839,7 @@ class OpenAIProvider(_HttpProvider):
             ids = self._models()
             if len(ids) != 1:
                 listed = f"; it lists {', '.join(ids[:8])}" if ids else ""
-                raise ProviderError(f"Choose a model for {self.title} in Settings{listed}")
+                raise ProviderError(f"Choose a model for {self.title} in the Models tab{listed}")
             self._model = ids[0]
         return self._model
 
@@ -1446,11 +1511,12 @@ def make_vision(settings: AssistantSettings, chat: AssistantSettings | None = No
     key = keys.lookup(settings.provider, host, shared=shared)[0]
     provider = cls(settings.url, settings.model, settings.context_tokens, key)
     provider.key_shared = shared
+    provider.vision = True
     return provider  # type: ignore[return-value]
 
 
-# (provider name, base URL) -> (when it was read, its models); successes only
-_MODELS: dict[tuple[str, str], tuple[float, list[dict[str, str]]]] = {}
+# (provider name, base URL, role) -> (when it was read, its models); successes only
+_MODELS: dict[tuple[str, str, str], tuple[float, list[dict[str, str]]]] = {}
 _MODELS_LOCK = threading.Lock()
 _clock = time.monotonic  # replaced by tests
 
@@ -1476,7 +1542,7 @@ def model_list(
     of ``config.json`` for ``role``, :func:`consent_key`; nothing is sent otherwise),
     ``"unsupported"`` or ``"error"``
     (``message`` says why, keys redacted): the field then takes any typed name. A list is kept
-    for :data:`MODELS_TTL_S` per provider and base URL; ``refresh`` asks again.
+    for :data:`MODELS_TTL_S` per provider, base URL and role; ``refresh`` asks again.
     """
     lister = getattr(provider, "list_models", None)
     if lister is None:
@@ -1493,7 +1559,7 @@ def model_list(
                 f"use {provider.host}."
             ),
         }
-    cache_key = (provider.name, str(getattr(provider, "url", "")))
+    cache_key = (provider.name, str(getattr(provider, "url", "")), role)
     now = _clock()
     with _MODELS_LOCK:
         hit = _MODELS.get(cache_key)

@@ -242,8 +242,12 @@ def unload_ollama(url: str | None = None) -> list[str]:
     Returns:
         Names of the models that were unloaded (empty if Ollama is not running).
     """
+    from cutpoint.vision import ollama_allowed  # noqa: PLC0415
+
     try:
         url = url or ollama_url()
+        if not ollama_allowed(url):  # an Ollama on another machine the user did not agree to
+            return []
         loaded = requests.get(f"{url}/api/ps", timeout=3).json().get("models", [])
     except (requests.RequestException, ValueError):
         return []

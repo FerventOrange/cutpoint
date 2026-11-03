@@ -160,7 +160,7 @@ def tool_use(cid: str, name: str, **args: Any) -> dict[str, Any]:
         ("http://127.0.0.1:11434", True),
         ("localhost:1234", True),
         ("http://LOCALHOST:8080/v1", True),
-        ("http://box.localhost:8080", True),
+        ("http://box.localhost:8080", False),  # a resolver may send *.localhost to the network
         ("http://[::1]:11434", True),
         ("http://10.10.10.235:11434", False),
         ("http://0.0.0.0:11434", False),
@@ -181,7 +181,7 @@ def test_a_remote_ollama_is_hosted_and_needs_consent() -> None:
     assert providers.describe(here)["label"] == "Ollama · m · this machine"
     assert not there.local and there.host == "10.10.10.235"
     assert providers.describe(there)["label"] == "Ollama · m · 10.10.10.235"
-    assert providers.consent_key(there) == "assistant-v2:ollama@10.10.10.235"
+    assert providers.consent_key(there) == "assistant-v2:ollama@10.10.10.235:11434"
 
 
 # -- OpenAI-compatible -----------------------------------------------------------------------
@@ -350,7 +350,7 @@ def test_a_local_openai_server_needs_no_key_and_serves_its_only_model(monkeypatc
 
 def test_an_openai_server_with_several_models_asks_for_one(monkeypatch) -> None:
     Wire(monkeypatch, _Resp({"data": [{"id": "a"}, {"id": "b"}]}))
-    with pytest.raises(ProviderError, match=r"Choose a model .* in Settings; it lists a, b"):
+    with pytest.raises(ProviderError, match=r"Choose a model .* in the Models tab; it lists a, b"):
         OpenAIProvider("http://localhost:1234", "", 0, None).capabilities()
 
 
@@ -1050,6 +1050,28 @@ def test_model_list_subscription_login_requires_project_consent(
         providers.model_list(codex, consent=(providers.consent_key(codex),), refresh=True)["state"]
         == "key_needed"
     )
+
+
+def test_model_list_cache_is_kept_per_role(monkeypatch) -> None:
+    providers.clear_model_cache()
+    calls = []
+
+    def fake_list(p):
+        calls.append(1)
+        return [{"id": f"m{len(calls)}", "name": "M"}]
+
+    monkeypatch.setattr(providers.cliproxy, "status", lambda p: {"logged_in": True})
+    monkeypatch.setattr(providers.cliproxy, "list_models", fake_list)
+    codex = providers.SubscriptionProvider("codex", "", "", 0)
+    both = (providers.consent_key(codex), providers.consent_key(codex, "vision"))
+    chat = providers.model_list(codex, consent=both)
+    assert providers.model_list(codex, consent=both)["models"] == chat["models"]
+    assert len(calls) == 1
+    # Vision does not get the list Chat loaded: it asks for its own
+    vision = providers.model_list(codex, consent=both, role="vision")
+    assert vision["models"][0]["id"] == "m2"
+    assert len(calls) == 2
+    providers.clear_model_cache()
 
 
 def test_clear_model_cache_invalidates_transient_cache(monkeypatch) -> None:

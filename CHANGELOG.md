@@ -397,6 +397,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Models tab no longer offers "Allow vision requests" while the Vision provider has no API key
+  or login: it shows the missing key or login hint instead (#620).
+- The model list is cached per role as well as provider and URL, so a list Chat loaded is no longer
+  shown for Vision (or the reverse) without its own request (#622).
+- The Models tab Vision key status says "env (CLI only)" for a key that only comes from an
+  environment variable: analyses started from `cutpoint ui` get no key variables and use the key
+  saved in the Models tab (#617). Its "Allow vision requests" box asks for a key saved in the
+  Models tab instead of offering Allow when the key is only in an environment variable, which
+  still works for command-line runs, and the Vision key hints (a missing or rejected key, a key
+  the keyring could not save) name the Models tab first. Model, base URL and rejected-key
+  errors of the hosted providers say "Models tab" instead of "Settings".
+- Vision no longer sends frames to an Ollama on another machine without consent. An Ollama URL
+  that is not `localhost` or a loopback address (from `--ollama-url`, `vision_assistant.url`, `OLLAMA_HOST` or `ollama_url` in `config.json`)
+  is hosted, as it already was for AI Chat: `analyze --vision`, the `events` VLM layer and
+  `360 director --vl-check` skip vision with a WARNING (`--json` warning `vision_consent_needed`)
+  until "Allow vision requests" in the Models tab of `cutpoint ui` grants the `vision-v2:`
+  consent for it, and the run goes on without it. Activity detection (`profile`, `crashes` and
+  the crash step of `analyze`) follows the same rule: without that consent it sends nothing,
+  falls back to the nearest library profile or `generic` and warns the same way. The Models tab
+  now shows that consent box for a non-local Ollama. An Ollama on this machine needs no consent,
+  as before (#601).
+- Consent keys include the port when it is not the scheme's default
+  (`vision-v2:openai@192.168.1.5:8080`, also `assistant-v2:`), so two servers on one host no
+  longer share a consent. Keys for default ports are unchanged; a server on another port (an
+  Ollama on another machine at `:11434` too) is asked for consent again once (#618).
+- Only `localhost` and loopback addresses (`127.0.0.0/8`, `::1`) count as this machine; a
+  `*.localhost` name is hosted and needs consent (#619).
+- Hosted vision ratings, `events` VLM descriptions and `360 director --vl-check` frame checks
+  are cached per provider and host, so one model id at two servers no longer shares results.
+  Results cached from a hosted provider before this change are asked again once; Ollama caches
+  are unchanged (#621).
 - 360 clips filmed with the camera upright (lenses horizontal: handheld, on a pole) no longer
   spin or drift: the view layer, the director and the renderer took yaw 0 from the camera axis
   that points ahead on a helmet mount, which is near vertical when the camera stands upright,
@@ -492,6 +523,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model no longer blocks for about 20 minutes before the generic profile is used (#608).
 - `events`: on a project's first run the contact sheets now use the activity profile the
   crash layer chose instead of the ski captions (#609).
+- `analyze`: when the PANNs checkpoint cannot be loaded (missing, corrupt or refused as more than
+  weights), the reactions step no longer reads it a second time for the voice layer and reports
+  the failure once (one ERROR line, one `step_failed` warning); the voice layer is skipped with an
+  INFO line, and voice grids already cached are kept (#629).
 
 ## [0.4.0] - 2026-10-29
 

@@ -599,7 +599,9 @@ def test_the_save_check_contacts_no_unconsented_host(
     assert sent == []  # nothing at all went to the host
     assert out["assistant_check"] is None and host in out["assistant_note"]
     assert "AI Chat" in out["assistant_note"] and SECRET not in json.dumps(out)
-    set_config(home, assistant={**body, "consent": [f"assistant-v2:{body['provider']}@{host}"]})
+    # the consent key has the port when it is not the scheme's default (a second Ollama on one host)
+    key_host = f"{host}:11434" if body["provider"] == "ollama" else host
+    set_config(home, assistant={**body, "consent": [f"assistant-v2:{body['provider']}@{key_host}"]})
     out = client.put("/api/settings", json={"assistant": body}).json()
     assert sent and all(host in s["url"] for s in sent)  # agreed: now it is checked
     if env:

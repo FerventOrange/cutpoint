@@ -126,7 +126,7 @@ def test_unload_ollama_all_unloads_fail_returns_without_waiting(monkeypatch):
 
     monkeypatch.setattr(common.requests, "get", get)
     monkeypatch.setattr(common.requests, "post", post)
-    assert common.unload_ollama("http://x") == []
+    assert common.unload_ollama("http://127.0.0.1:11434") == []
     assert len(gets) == 1
 
 

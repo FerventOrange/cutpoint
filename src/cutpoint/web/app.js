@@ -271,6 +271,7 @@ const banner = (msg) => {
   b.hidden = !msg;
 };
 const fail = (e) => banner(e.message || String(e));
+const sentence = (text) => (/[.!?]$/.test(text) ? text : `${text}.`); // one final period, never two
 
 // A restarted server issues a new token: say so once and stop every timer, so the page neither
 // hammers the server nor waits on "Loading video…" forever.
@@ -3650,7 +3651,7 @@ function renderChat() {
   $('#chatConsentTitle').textContent = !noKey ? 'Send project data to a hosted model?'
     : c.consent.missing_kind === 'login' ? 'Login needed' : 'API key needed';
   $('#chatConsentOk').hidden = !consent;
-  $('#chatConsentText').textContent = noKey ? `${noKey}.`
+  $('#chatConsentText').textContent = noKey ? sentence(noKey)
     : consent
     ? `Each message sends ${CONSENT_SENDS} to ${PROVIDER_NAMES[prov?.name] ?? prov?.name ?? 'the provider'} at ${consent.host}. Nothing is sent until you agree. You agree once for this provider and host; Cutpoint saves it in config.json. Change the provider in the Models tab.`
     : '';
@@ -3838,6 +3839,8 @@ async function saveSettings() {
 
 // ---------- Models tab: role management and subscription accounts ----------
 const KEY_WHERE = { env: 'set (env)', keyring: 'set (keyring)' };
+// jobs started from the UI get no key variables (keys.child_env), so a Vision key from the environment is CLI only
+const VISION_KEY_WHERE = { ...KEY_WHERE, env: 'env (CLI only)' };
 const AI_CUSTOM = 'custom';
 const PROVIDER_TITLES = {
   ollama: 'Ollama (local)',
@@ -4001,7 +4004,9 @@ function renderVisionRoleKey(p) {
   if (!keyed) return;
   const where = S.visionAi.keys[p.name];
   const host = S.visionAi.key_hosts?.[p.name] ?? '';
-  $('#visionRoleKeyStatus').textContent = `API key${host ? ` for ${host}` : ''}: ${KEY_WHERE[where] ?? 'not set'}`;
+  const keyStatus = $('#visionRoleKeyStatus');
+  keyStatus.textContent = `API key${host ? ` for ${host}` : ''}: ${VISION_KEY_WHERE[where] ?? 'not set'}`;
+  keyStatus.title = where === 'env' ? 'Analyses started from cutpoint ui use the key saved in the Models tab, not this environment variable.' : '';
   // jobs started here get no key variables (keys.child_env): only the keyring reaches them
   const env = (p.key_env || []).join(' or ');
   $('#visionRoleKeyHint').textContent = `Analyses started here read it from the system keyring${env ? `; ${env} counts only for cutpoint commands run in a terminal` : ''}. Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown. A key for the same host serves both roles.`;
@@ -4033,11 +4038,15 @@ function renderVisionConsent() {
     return;
   }
 
-  if (consent.needed) {
+  // A missing key or login comes first: no allowing a provider that cannot be asked yet.
+  const noKey = consent.missing_key || '';
+  if (consent.needed || noKey) {
     box.hidden = false;
     const host = consent.host || 'the remote service';
-    $('#visionConsentTitle').textContent = `Send video frames to ${host}?`;
+    $('#visionConsentTitle').textContent = noKey ? (consent.missing_kind === 'login' ? 'Login needed' : 'API key needed') : `Send video frames to ${host}?`;
     $('#visionConsentText').textContent = `Rating moments and describing event windows with this hosted vision provider sends video frames, transcript excerpts, file names and times, detected on-screen text (such as player names) and telemetry to ${host}. That is more data, and more risk, than the AI Chat assistant, which gets only analysis results; agreeing for one never covers the other. Nothing is sent until you explicitly grant permission. Permission is saved in config.json.`;
+    if (noKey) $('#visionConsentText').textContent = sentence(noKey);
+    $('#visionConsentOk').hidden = !!noKey;
     $('#visionConsentOk').disabled = false;
   } else {
     status.textContent = `Permission granted: frame ratings allowed with ${consent.host || 'this provider'}.`;
@@ -4185,7 +4194,6 @@ async function enumerateSubCatalogs(refresh) {
   }
 
   const chatSeq = S.chatModelsSeq;
-  const visionSeq = S.visionModelsSeq;
   const seq = (S.subCatalogSeq = (S.subCatalogSeq ?? 0) + 1);
   await Promise.all(subs.map(async (l) => {
     try {
@@ -4194,10 +4202,6 @@ async function enumerateSubCatalogs(refresh) {
       if (r.state === 'ok') {
         S.aiModels ??= {};
         S.aiModels[l.provider] = r.models ?? [];
-        if (VISION_PROVIDERS.includes(l.provider)) {
-          S.visionModels ??= {};
-          S.visionModels[l.provider] = r.models ?? [];
-        }
         S.subCatalogs[l.provider] = { state: 'ok', count: (r.models ?? []).length };
       } else {
         S.subCatalogs[l.provider] = { state: r.state, error: r.message, count: 0 };
@@ -4219,12 +4223,7 @@ async function enumerateSubCatalogs(refresh) {
     }
   }
   const visionProv = $('#visionRoleProvider')?.value;
-  if (subs.some((s) => s.provider === visionProv) && visionSeq === S.visionModelsSeq) {
-    renderRoleModelList('vision');
-    if ($('#visionRoleModelsStatus')?.textContent === 'Loading the model list…') {
-      $('#visionRoleModelsStatus').textContent = '';
-    }
-  }
+  if (subs.some((s) => s.provider === visionProv)) loadRoleModels('vision', refresh);
 }
 
 
@@ -4356,6 +4355,7 @@ async function subLogin(provider) {
   }
   S.loginPending.delete(provider);
   await loadLogins();
+  await refreshVisionConsent();
   for (const statusId of ['#chatRoleModelsStatus', '#visionRoleModelsStatus']) {
     const el = $(statusId);
     if (el && el.textContent.includes('Account not connected')) {
@@ -4377,6 +4377,7 @@ async function subLogout(provider) {
   delete S.visionModels?.[provider];
   delete S.subCatalogs?.[provider];
   await loadLogins();
+  await refreshVisionConsent();
 
   const chatProv = $('#chatRoleProvider')?.value;
   if (chatProv === provider) {
@@ -4420,7 +4421,10 @@ async function saveAiKey(clear, role = 'chat') {
     return;
   }
   renderChatRoleFields();
-  if (S.visionAi && $('#visionRoleProvider')?.value === p.name) renderVisionRoleFields();
+  if (S.visionAi && $('#visionRoleProvider')?.value === p.name) {
+    renderVisionRoleFields();
+    await refreshVisionConsent();
+  }
   $('#chatRoleKeyStatus').textContent += clear
     ? '. Removed from the keyring.'
     : '. Saved in the system keyring; it is checked when you send the first message.';
@@ -4462,7 +4466,18 @@ async function saveVisionKey(clear) {
   renderVisionRoleFields();
   $('#visionRoleKeyStatus').textContent += clear ? '. Removed from the keyring.' : '. Saved in the system keyring.';
   if (S.ai && $('#chatRoleProvider')?.value === p.name) renderChatRoleFields();
+  await refreshVisionConsent();
   if (!clear) loadRoleModels('vision', false);
+}
+
+/** The consent box depends on keys and logins: re-read it after they change. */
+async function refreshVisionConsent() {
+  try {
+    S.visionConsent = (await api('/api/settings')).vision_consent ?? null;
+  } catch {
+    // keep the last state
+  }
+  renderVisionConsent();
 }
 
 function fillChatRoleSettings(a) {
