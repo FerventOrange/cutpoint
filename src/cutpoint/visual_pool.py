@@ -60,11 +60,12 @@ DT = ski.DT
 # 0.55, the pool lists a little more, so the assistant can find it.
 VIEW_MIN = 0.5
 VIEW_LEN = (3.0, 5.0)
-# crew: 0.6 people + 0.4 group; people needs a detected person, so a crowd-like scene with
-# nobody close cannot pass on the group prompt alone (CREW_PEOPLE_MIN).
+# crew: 0.6 people + 0.4 group; people needs a person close to the camera, so a crowd-like
+# scene with nobody close cannot pass on the group prompt alone (CREW_PEOPLE_MIN: distant
+# skiers score about 0.45-0.5 there, real crew shots 0.8 and more).
 CREW_W = {"people": 0.6, "group": 0.4}
 CREW_MIN = 0.5
-CREW_PEOPLE_MIN = 0.3
+CREW_PEOPLE_MIN = 0.6
 CREW_LEN = (4.0, 6.0)
 # cruise: GPS km/h; casual skiing / riding is ~15-35 km/h, walking under 8.
 CRUISE_MIN_KMH = 8.0

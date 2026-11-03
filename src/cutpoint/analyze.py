@@ -2039,7 +2039,7 @@ def _analyze(
         if ev:  # ranked with the events: a pre-events copy of an older analysis is stale
             cache.remove(out_dir / "highlights.pre-events.json")
         held.commit()  # every HELD_OUTPUTS file at once (a cancel in it waits for the last)
-        logger.info("Wrote %d candidates to %s (%.1fs)", len(cands), out, took)
+        logger.info("Wrote %d candidates to %s (%.1fs)", len(hl["candidates"]), out, took)
         report_highlights(out_dir, out)
         return out
 

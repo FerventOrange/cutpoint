@@ -93,6 +93,15 @@ def test_weak_peaks_and_group_without_people_are_not_windows():
     assert visual_pool.part_windows(part(), g, np.zeros(N), None) == []
 
 
+def test_crew_needs_a_close_person_not_distant_skiers():
+    # distant skiers score people ~0.45-0.49: a high group peak alone is no crew pick
+    far = grids(people=bump(N, 100, 0.49, 4), group=bump(N, 100, 1.0, 4))
+    assert visual_pool.part_windows(part(), far, np.zeros(N), None) == []
+    near = grids(people=bump(N, 100, visual_pool.CREW_PEOPLE_MIN, 4), group=bump(N, 100, 1.0, 4))
+    got = visual_pool.part_windows(part(), near, np.zeros(N), None)
+    assert [w.kind for w in got] == ["crew"] and got[0].signals["people"] == 0.6
+
+
 def test_windows_are_in_source_time_for_a_recovered_part():
     p = part(offset=500.0)
     got = visual_pool.part_windows(p, grids(beauty=bump(N, 40, 0.8)), np.zeros(N), None)
