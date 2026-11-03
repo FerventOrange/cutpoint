@@ -45,11 +45,30 @@ def clip_dir() -> Path:
 def clip_weights() -> Path:
     """CLIP ViT-L/14 weights in the Hugging Face cache under :func:`clip_dir`.
 
-    The repo folder (not a file) when they are not downloaded.
+    The snapshot ``refs/main`` names when it holds the checkpoint, else the newest snapshot
+    (by modification time) that does; the repo folder (not a file) when none does. Reads the
+    cache layout directly (no huggingface_hub import, no network).
     """
     repo = clip_dir() / ("models--" + CLIP_HF_REPO.replace("/", "--"))
-    hits = sorted(repo.glob("snapshots/*/open_clip_*model.*"))
-    return hits[0] if hits else repo
+
+    def checkpoint(snap: Path) -> Path | None:
+        hits = sorted(p for p in snap.glob("open_clip_*model.*") if p.is_file())
+        return hits[0] if hits else None
+
+    try:
+        ref = (repo / "refs" / "main").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        ref = ""
+    if ref.isalnum():  # a commit hash, never a path
+        hit = checkpoint(repo / "snapshots" / ref)
+        if hit is not None:
+            return hit
+    snaps = [s for s in (repo / "snapshots").glob("*") if s.is_dir()]
+    for snap in sorted(snaps, key=lambda s: (s.stat().st_mtime, s.name), reverse=True):
+        hit = checkpoint(snap)
+        if hit is not None:
+            return hit
+    return repo
 
 
 def torch_home() -> Path:
