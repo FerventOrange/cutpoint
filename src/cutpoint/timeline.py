@@ -26,6 +26,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from cutpoint.ffmpeg_utils import MediaInfo
+from cutpoint.folders import atomic_output
 
 logger = logging.getLogger(__name__)
 
@@ -166,9 +167,11 @@ def write_fcpxml(
             )
     ET.indent(root)
     body = ET.tostring(root, encoding="unicode")
-    out.write_text(
-        f'<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n{body}\n', encoding="utf-8"
-    )
+    with atomic_output(out) as part:
+        part.write_text(
+            f'<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE fcpxml>\n{body}\n',
+            encoding="utf-8",
+        )
     return out
 
 
@@ -237,7 +240,8 @@ def write_otio(
             )
     timeline.tracks.append(video)
     timeline.tracks.append(audio)
-    otio.adapters.write_to_file(timeline, str(out))
+    with atomic_output(out) as part:  # the part keeps .otio, so the adapter is the same
+        otio.adapters.write_to_file(timeline, str(part))
     return out
 
 

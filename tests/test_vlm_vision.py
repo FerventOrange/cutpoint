@@ -258,6 +258,20 @@ def test_describe_windows_with_the_vision_client(ollama, tmp_path, monkeypatch) 
     assert stats["cached"] == 1 and len(ollama.chats) == 1 and again[0]["label"] == res["label"]
 
 
+@pytest.mark.parametrize(
+    ("body_extra", "expected", "absent"),
+    [({"prompt_eval_count": 321}, "s, 321 tok):", "None"), ({}, "s): hl", "tok")],
+)
+def test_describe_windows_log_shows_tokens_only_when_known(
+    ollama, tmp_path, monkeypatch, caplog, body_extra, expected, absent
+) -> None:
+    ollama.replies = [Resp({"message": {"content": _dumps(REPLY)}, **body_extra})]
+    with caplog.at_level(logging.INFO, logger=vw.logger.name):
+        _describe(tmp_path, monkeypatch, vision.VisionRater())
+    (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("VLM ")]
+    assert expected in line and absent not in line
+
+
 def test_describe_windows_ski_uses_the_ski_schema(ollama, tmp_path, monkeypatch) -> None:
     tags = dict.fromkeys(vw.SKI_TAGS, 2) | {"jump_air": 8}
     ollama.replies = [REPLY | {"tags": tags}]
