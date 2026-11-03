@@ -51,6 +51,9 @@ test('the model picker keeps a model the list lacks (so opening never changes it
 
   r = u.aiModelChoices('typed-id', listed, { typing: true });
   assert.equal(r.value, u.AI_OTHER, 'an id being typed stays under Other model…');
+
+  r = u.aiModelChoices('m', [{ id: 'm', name: 'm (may not accept images)' }]);
+  assert.equal(r.options[1].text, 'm (may not accept images)', 'a name that starts with the id is not repeated');
 });
 
 test('colorNote says how many clips were graded and why the others were not; a LUT or Strength 0 says nothing', () => {

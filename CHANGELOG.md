@@ -424,6 +424,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Vision role's model list in the Models tab no longer offers models known to take no images
+  (OpenAI gpt-3.5, o1-mini, o3-mini; xAI grok-3, grok-2 without vision): models known to take
+  images come first, unknown ones follow, and the saved model stays, marked "may not accept
+  images". When that would leave the list empty, the whole list is shown (#623).
 - `cutpoint proxy` no longer gives up after a fixed 8 seconds when CLIProxyAPI starts slowly (a
   keyring unlock prompt, a virus scan of the binary, a slow disk): it waits up to 120 seconds
   while the supervisor runs, logs an INFO line when the wait takes more than a few seconds, and

@@ -117,14 +117,25 @@ NON_CHAT_PREFIXES = (
 NON_CHAT_PARTS = ("-tts", "-transcribe", "-realtime", "-audio", "-image", "imagine", "codex")
 # Model names known to take no images (a part of the id, case-insensitive), checked first, then
 # those known to take them (an id starting with one): accepts_images. Any other id is unknown.
-TEXT_ONLY_MODEL_PARTS = ("gpt-3.5", "o1-mini", "o3-mini", "grok-code", "grok-build", "codex")
+TEXT_ONLY_MODEL_PARTS = (
+    "gpt-3.5",
+    "o1-mini",
+    "o3-mini",
+    "grok-3",
+    "grok-code",
+    "grok-build",
+    "codex",
+)
 IMAGE_MODEL_PREFIXES = (
     "claude-",
     "gpt-4o",
     "gpt-4.1",
     "gpt-5",
     "gpt-6",
+    "o3",
+    "o4-mini",
     "grok-4",
+    "grok-2-vision",
     "gemini-",
     "qwen3.5",
     "qwen3-vl",
@@ -213,6 +224,9 @@ def accepts_images(provider: str | Provider, model: str) -> bool | None:
     name = provider if isinstance(provider, str) else provider.name
     low = model.strip().lower()
     if any(part in low for part in TEXT_ONLY_MODEL_PARTS):
+        return False
+    # xAI's grok-2 takes images only as grok-2-vision (or an -image id)
+    if low.startswith("grok-2") and "vision" not in low and "image" not in low:
         return False
     if name == "anthropic" or low.startswith(IMAGE_MODEL_PREFIXES):
         return True
@@ -1583,8 +1597,33 @@ def clear_model_cache(provider: str | None = None) -> None:
                 del _MODELS[k]
 
 
+NO_IMAGES_NOTE = "may not accept images"
+
+
+def vision_models(models: list[dict[str, str]], keep: str = "") -> list[dict[str, str]]:
+    """``models`` as the Vision role lists them (none of Ollama, which says what it takes): the
+    ones known to take images first, then unknown, then the known text-only ones, which are left
+    out (:func:`accepts_images` False), except ``keep`` (the saved model). When that leaves
+    nothing the whole list stays. A text-only model that stays is marked :data:`NO_IMAGES_NOTE`."""
+    rank = {True: 0, None: 1, False: 2}
+    sure = {m["id"]: accepts_images("", m["id"]) for m in models}
+    shown = [m for m in models if sure[m["id"]] is not False or m["id"] == keep]
+    if not any(sure[m["id"]] is not False for m in shown):
+        shown = list(models)
+    shown.sort(key=lambda m: rank[sure[m["id"]]])
+    return [
+        {**m, "name": f"{m['id']} ({NO_IMAGES_NOTE})"} if sure[m["id"]] is False else m
+        for m in shown
+    ]
+
+
 def model_list(
-    provider: Provider, consent: tuple[str, ...], *, role: str = "assistant", refresh: bool = False
+    provider: Provider,
+    consent: tuple[str, ...],
+    *,
+    role: str = "assistant",
+    refresh: bool = False,
+    keep: str = "",
 ) -> dict[str, Any]:
     """The models ``provider`` offers, for Settings' Model field: ``{state, models, message}``.
 
@@ -1593,7 +1632,8 @@ def model_list(
     of ``config.json`` for ``role``, :func:`consent_key`; nothing is sent otherwise),
     ``"unsupported"`` or ``"error"``
     (``message`` says why, keys redacted): the field then takes any typed name. A list is kept
-    for :data:`MODELS_TTL_S` per provider, base URL and role; ``refresh`` asks again.
+    for :data:`MODELS_TTL_S` per provider, base URL and role; ``refresh`` asks again. For the
+    Vision role the list is :func:`vision_models` of it (``keep``: the saved model).
     """
     lister = getattr(provider, "list_models", None)
     if lister is None:
@@ -1615,11 +1655,15 @@ def model_list(
     with _MODELS_LOCK:
         hit = _MODELS.get(cache_key)
     if hit is not None and not refresh and now - hit[0] < MODELS_TTL_S:
-        return {"state": "ok", "models": list(hit[1]), "message": None}
-    try:
-        models = lister()
-    except ProviderError as err:
-        return {"state": "error", "models": [], "message": keys.redact(public(str(err)))}
-    with _MODELS_LOCK:
-        _MODELS[cache_key] = (now, models)
-    return {"state": "ok", "models": list(models), "message": None}
+        models = list(hit[1])
+    else:
+        try:
+            models = lister()
+        except ProviderError as err:
+            return {"state": "error", "models": [], "message": keys.redact(public(str(err)))}
+        with _MODELS_LOCK:
+            _MODELS[cache_key] = (now, models)
+        models = list(models)
+    if role == "vision" and provider.name not in ("ollama", "anthropic"):
+        models = vision_models(models, keep)
+    return {"state": "ok", "models": models, "message": None}
