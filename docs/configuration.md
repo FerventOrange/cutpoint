@@ -77,6 +77,7 @@ with `_` are ignored.
   "ollama_url": "http://127.0.0.1:11434",
   "video_encoder": "auto",
   "export_workers": "auto",
+  "memory_guard": 2,
   "vision": false,
   "compress_peaks": "off",
   "color": "off",
@@ -225,6 +226,16 @@ How many clips `clips` and `edit` export at once. `auto` (default) exports 2 at 
 The clips, their names and manifest.json are the same as with 1, and the per-clip log lines come in clip order; warnings from an export are logged when they happen. 
 
 Failure handling: the first failure or Ctrl+C stops every export in progress and removes its partial file. With `video_encoder` `auto`, when a GPU encode fails and is redone on the CPU, a clip after it that was already encoding on the GPU at that moment keeps its GPU encode; clips that start later, during the redo too, are encoded on the CPU (with 1, every clip after the failed one is encoded on the CPU). It has the same frames and length; only the encoder differs. When NVENC has no free encode session (consumer NVIDIA drivers limit them, and ShadowPlay or OBS may hold one), the clip is not redone on the CPU: the rest of the run exports one clip at a time (one INFO line, "NVENC has no free encode session; exporting one clip at a time") and the clip is encoded on the GPU again once it runs alone; only if that fails too is it redone on the CPU as above.
+
+### memory_guard
+
+GB of RAM left free when a model loads (default `2`; `0` turns the memory guard off). Before
+Whisper, the event layers' models or the vision model load, Cutpoint checks that the model's
+estimated need plus this much RAM is free (on the GPU: the model's VRAM, and this much RAM);
+when it is not, it frees cached models and unloads Ollama's, and if that does not help it stops
+with `low_memory` (exit 1) so `cutpoint resume <project>` can continue later. Whisper, PANNs
+and the crash check's CLIP short of VRAM run on the CPU instead. Checked on Linux and Windows. See
+[docs/commands.md](commands.md#memory-guard).
 
 ### assistant
 

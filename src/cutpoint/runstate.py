@@ -17,8 +17,10 @@ the end. Schema (``version`` 1)::
      "exit_code": null, "error": null, "sources": ["/videos/clip.mp4"],
      "steps": {"transcribe": {"state": "running", "done": 1, "total": 3, "pct": 40}}}
 
-``status`` is ``running``, then ``done`` (exit 0), ``interrupted`` (130) or ``failed`` (1, with
-``error`` ``{"code", "message"}`` as the ``--json`` envelope's); ``low_memory`` is reserved.
+``status`` is ``running``, then ``done`` (exit 0), ``interrupted`` (130), ``low_memory`` (1:
+the memory guard stopped it, :mod:`cutpoint.memguard`) or ``failed`` (1); the last three with
+``error`` ``{"code", "message"}`` as the ``--json`` envelope's. The step a stopped run was in
+reads ``failed`` (the step states are those of the ``PROGRESS`` lines); ``status`` says why.
 :func:`read` reports a ``running`` record whose process is gone as ``interrupted``.
 
 Only a project folder (``highlights.json`` or ``pano.json`` in it; for ``analyze``, ``edit`` and
@@ -59,6 +61,7 @@ from typing import Any
 
 from cutpoint import __version__, cache, folders, jsonout, procs
 from cutpoint.config import path_key
+from cutpoint.errors import LowMemoryError
 from cutpoint.progress import Run
 from cutpoint.utils import file_stamp
 
@@ -245,7 +248,7 @@ class Recorder:
                 self._write()
 
     def end(self, err: BaseException | None) -> None:
-        """Write the final status (once): done, interrupted or failed."""
+        """Write the final status (once): done, interrupted, low_memory or failed."""
         if self.ended:
             return
         self.ended = True
@@ -254,6 +257,8 @@ class Recorder:
         elif isinstance(err, KeyboardInterrupt):
             status, code = "interrupted", 130
             error = {"code": jsonout.INTERRUPTED, "message": "interrupted"}  # as the envelope
+        elif isinstance(err, LowMemoryError):
+            status, code, error = "low_memory", 1, _error(err)
         else:
             status, code, error = "failed", 1, _error(err)
         with self._lock:
@@ -292,6 +297,13 @@ def record(
             Run.observers.remove(rec.observe)
         _ACTIVE = None
         rec.unlock()
+
+
+def resume_project() -> Path | None:
+    """The project ``cutpoint resume`` continues if this run stops now: the active record's,
+    once ``progress.json`` is written (None before, or outside :func:`record`)."""
+    rec = _ACTIVE
+    return rec.project if rec is not None and rec.armed else None
 
 
 def _active(project: Path) -> Recorder | None:

@@ -412,6 +412,20 @@ def test_a_failed_text_check_keeps_the_frame_probe_and_is_not_cached(text_check,
     assert text_check.texts == 1  # one attempt per process (edit --style auto detects twice)
 
 
+def test_a_text_check_short_of_memory_stops_the_detection(text_check, monkeypatch):
+    """Review F2 (#109): the OCR engine short of memory is no failed check; the detection
+    does not go on without it (nor mark the check failed for the resumed run)."""
+    from cutpoint.errors import LowMemoryError  # noqa: PLC0415
+
+    def short(*a):
+        raise LowMemoryError("Not enough memory for the OCR engine")
+
+    monkeypatch.setattr(category, "text_probe", short)
+    with pytest.raises(LowMemoryError):
+        category.probe_source(text_check.src)
+    assert not category._TEXT_FAILED
+
+
 def test_a_news_clip_stays_unsure_after_the_text_check(text_check, monkeypatch):
     """The lower third's two lines and the channel logo are all text in place; only the
     logo is outside the box, too little for a HUD."""

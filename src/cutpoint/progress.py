@@ -25,9 +25,9 @@ INFO line ``<name>: N/M done, continuing`` and sends the same text at once as it
 :attr:`Run.observers` get every state change and ``pct`` of the runs, whether or not
 ``CUTPOINT_PROGRESS`` is set (``progress.json``, :mod:`cutpoint.runstate`); they never stop a run.
 
-``--batch-size N`` (#109) splits a step's sources (the VLM layer's windows) into batches of N
-(:func:`batches`); its model is closed between two, and the boundary is logged and recorded as
-:func:`continuing` does.
+``--batch-size N`` (#109) splits a step's sources into batches of N (:func:`batches`; the VLM
+layer's windows per source, :func:`cutpoint.events.pipeline.vlm_batches`); its model is closed
+between two, and the boundary is logged and recorded as :func:`continuing` does.
 """
 
 from __future__ import annotations
@@ -100,6 +100,7 @@ class Run:
         self._pct: int | None = None
         self._share: tuple[float, float] | None = None  # update()'s 0-100 maps to it (share)
         self._detail: str | None = None
+        self._continued: str | None = None  # the last continuing() text (said once)
         self._last = 0.0  # time of the last running line of the current step
         self._pending: dict[str, Any] | None = None  # a throttled running line
         self._sent: dict[str, Any] | None = None  # the last line written
@@ -373,13 +374,18 @@ def continuing(name: str, done: int, total: int) -> None:
     """``done`` of the ``total`` units (sources, windows) of ``name`` are cached at its
     start: log ``<name>: N/M done, continuing`` (INFO) and send it as the running step's
     detail (:meth:`Run.note`). Nothing when ``done`` is 0 (a fresh run looks as before) or
-    ``total`` (nothing left to continue: a re-run of finished work looks as before too).
-    The counts go to the observers of the running step either way."""
+    ``total`` (nothing left to continue: a re-run of finished work looks as before too), or
+    when the run said the same text last (a ``--batch-size`` boundary right after the cached
+    part). The counts go to the observers of the running step either way."""
     if _RUNS and (r := _RUNS[-1]).current is not None:
         r._notify(r.current, "running", r._pct, done, total)
     if not 0 < done < total:
         return
     text = f"{name}: {done}/{total} done, continuing"
+    if _RUNS:
+        if _RUNS[-1]._continued == text:
+            return
+        _RUNS[-1]._continued = text
     logger.info("%s", text)
     if _RUNS:
         _RUNS[-1].note(text)

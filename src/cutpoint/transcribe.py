@@ -15,6 +15,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from cutpoint import memguard
+from cutpoint.errors import LowMemoryError
 from cutpoint.extras import LITE, edition, install_hint
 from cutpoint.ffmpeg_utils import pcm_float
 from cutpoint.hub import quiet_hub_handler
@@ -257,12 +259,19 @@ class Transcriber:
 
     def __init__(self, model: str | None = None, language: str | None = None) -> None:
         self.device = "cuda" if cuda_available() else "cpu"
+        self._want = self.device  # the device to load on; a VRAM shortage moves one load only
         self.model_name = model or default_model(self.device)
         self.language = language
         self._model: Any = None
 
     def _load(self) -> Any:
         if self._model is None:
+            # the GPU short of memory (a game, OBS): Whisper runs on the CPU
+            self.device = memguard.device_for(
+                memguard.whisper_need(self.model_name),
+                self._want,
+                label=f"Whisper {self.model_name}",
+            )
             compute = "float16" if self.device == "cuda" else "int8"
             logger.info("Loading whisper %s on %s (%s)", self.model_name, self.device, compute)
             self._model = load_model(self.model_name, self.device, compute)  # local first
@@ -280,7 +289,7 @@ class Transcriber:
             )
         else:
             logger.warning("CUDA transcription failed (%s); falling back to CPU int8", err)
-        self.device = "cpu"
+        self.device = self._want = "cpu"  # a CUDA failure: on the CPU from now on
         self.close()
 
     def transcribe(
@@ -291,6 +300,8 @@ class Transcriber:
         try:
             return self._run(wav, on_progress)
         except (RuntimeError, OSError) as err:
+            if isinstance(err, LowMemoryError):  # the memory guard: no CPU fallback either
+                raise
             # A model the Hub cannot give (offline, unknown repo) is not there on the CPU either
             if self.device != "cuda" or type(err).__module__.startswith("huggingface_hub"):
                 raise

@@ -276,9 +276,19 @@ def unload_ollama(url: str | None = None) -> list[str]:
 
 def gpu_memory_used_mib() -> int | None:
     """Current total GPU memory use in MiB via nvidia-smi (None if unavailable)."""
+    return _gpu_memory_mib("used")
+
+
+def gpu_memory_free_mib() -> int | None:
+    """Free memory of the first GPU in MiB via nvidia-smi (None if unavailable)."""
+    return _gpu_memory_mib("free")
+
+
+def _gpu_memory_mib(field: str) -> int | None:
+    """``memory.<field>`` of the first GPU in MiB via nvidia-smi (None if unavailable)."""
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", f"--query-gpu=memory.{field}", "--format=csv,noheader,nounits"],
             capture_output=True,
             text=True,
             timeout=5,

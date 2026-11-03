@@ -184,7 +184,11 @@ def _batch_size(text: str) -> int:
 def add_batch_size_argument(p: argparse.ArgumentParser, *, vlm: bool = False) -> None:
     """``--batch-size N`` (#109): each model is closed after N sources and loaded again;
     ``vlm``: the command runs the VLM layer (``events``), so its help names the windows."""
-    windows = " (the vision model after N VLM windows)" if vlm else ""
+    windows = (
+        " (the vision model at the next source after N VLM windows, so not within one recording)"
+        if vlm
+        else ""
+    )
     p.add_argument(
         "--batch-size",
         type=_batch_size,

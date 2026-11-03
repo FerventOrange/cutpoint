@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
+import re
 import shutil
 from fractions import Fraction
 from pathlib import Path
@@ -18,7 +20,7 @@ import pytest
 
 import cutpoint.analyze
 from conftest import envelope, write
-from cutpoint import cache, cli, progress, runstate
+from cutpoint import cache, cli, memguard, progress, runstate
 from cutpoint.events import common, pipeline
 from cutpoint.events.common import AudioPart, Source
 from cutpoint.ffmpeg_utils import MediaInfo
@@ -557,3 +559,150 @@ def test_the_360_views_bar_never_goes_back_across_batches(monkeypatch, size):
         pano_cli._views(clips, args, None)
     assert seen == sorted(seen)  # without the shares: 0, 20, 0, 20, 0
     assert sorted(set(seen)) == [0, 20, 40, 60, 80]
+
+
+# -- W-F1: the VLM layer's batches ------------------------------------------------------------
+
+
+def _windows(*sources: str) -> list[SimpleNamespace]:
+    return [SimpleNamespace(source=s, key=f"{s}{i}") for i, s in enumerate(sources)]
+
+
+def test_vlm_batches_end_only_at_a_source_after_n_windows():
+    ws = _windows("a", "a", "a", "b", "b", "c")
+    keys = [[w.key for w in part] for part in pipeline.vlm_batches(ws, 2)]
+    assert keys == [["a0", "a1", "a2"], ["b3", "b4"], ["c5"]]
+    assert pipeline.vlm_batches(ws, 4) == [ws[:5], ws[5:]]
+    assert pipeline.vlm_batches(ws, 0) == [ws] == pipeline.vlm_batches(ws, 9)
+    one = _windows(*"a" * 41)  # one recording: never reloaded within it (Windows design note)
+    assert pipeline.vlm_batches(one, 2) == [one]
+    assert pipeline.vlm_batches([], 2) == [[]]
+
+
+@pytest.mark.parametrize(("size", "unload", "unloads"), [(2, True, 2), (2, False, 0), (0, True, 0)])
+def test_describe_batches_gives_the_results_of_one_call(monkeypatch, size, unload, unloads):
+    """Windows W-F1: 5 windows of three sources in batches of 2 per source give the results and
+    stats of one call; the model is unloaded at each boundary (2x), never without ``unload``."""
+    calls: list[list[str]] = []
+
+    def describe(rater, by_path, part, vlm, prompts, transcript, layer1, force=False):
+        calls.append([w.key for w in part])
+        res = [{"key": w.key, "source": w.source} for w in part]
+        return res, {"requested": len(part), "ok": len(part), "seconds": [1.0] * len(part)}
+
+    rater = SimpleNamespace(unloads=0)
+    rater.unload = lambda: setattr(rater, "unloads", rater.unloads + 1)
+    monkeypatch.setattr(pipeline, "describe_windows", describe)
+    ws = _windows("a", "a", "b", "b", "c")
+
+    def run(n: int, unload: bool) -> tuple[list, dict]:
+        return pipeline._describe_batches(
+            rater, {}, ws, None, {}, [], {}, force=False, batch_size=n, unload=unload
+        )
+
+    reference = run(0, True)
+    calls.clear()
+    rater.unloads = 0
+    assert run(size, unload) == reference
+    assert rater.unloads == unloads
+    assert calls == ([["a0", "a1"], ["b2", "b3"], ["c4"]] if size else [[w.key for w in ws]])
+
+
+# -- the memory guard (#109 phase 5) at a batch; the boundary after the cached part --------
+
+
+def _resume_target(message: str) -> Path:
+    found = re.search(r"`cutpoint resume (.+?)` to continue", message)
+    assert found, message
+    return Path(found.group(1)).resolve()
+
+
+class _GuardedWhisper(_Whisper):
+    """The fake Whisper, checking the memory guard as it loads (as the real one does)."""
+
+    def transcribe(self, wav: Path, on_progress=None) -> list[dict]:
+        if not self.loaded:
+            memguard.check("whisper-small", label="Whisper small")
+        return super().transcribe(wav, on_progress)
+
+
+def test_analyze_stops_with_low_memory_at_a_batch_and_resume_finishes(
+    analyze_run, mem, monkeypatch, capsys, caplog
+):
+    """Whisper loads again after a --batch-size boundary with too little memory: stopped
+    resumable after the first batch; resume with memory free writes the outputs of a plain
+    run and transcribes only the rest."""
+    r = analyze_run
+    monkeypatch.setattr(cutpoint.analyze, "Transcriber", _GuardedWhisper)
+    assert cli.main(r.argv) == 0
+    reference = r.outputs()
+    for name in ("highlights.json", "transcript.txt"):
+        (r.project / name).unlink()
+    r.fresh()
+    loads: list[int] = []
+
+    def check(model, **kw):
+        loads.append(1)
+        if len(loads) == 2:  # the second batch's load
+            mem.ram = 1.0
+        return real(model, **kw)
+
+    real = memguard.check
+    monkeypatch.setattr(memguard, "check", check)
+    argv = [*r.argv, "--batch-size", "2"]
+    capsys.readouterr()
+    with caplog.at_level(logging.ERROR):
+        assert cli.main([*argv, "--json"]) == 1
+    doc = envelope(capsys.readouterr().out)
+    assert doc["error"]["code"] == "low_memory"
+    assert mem.unloaded == 1 and mem.freed >= 1  # analyze frees at its boundaries too
+    rec = json.loads((r.project / runstate.FILE).read_text(encoding="utf-8"))
+    assert rec["status"] == "low_memory"
+    assert rec["steps"]["transcribe"]["state"] == "failed"  # the PROGRESS states
+    message = next(r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+    assert _resume_target(message) == r.project.resolve()
+    assert not (r.project / "highlights.json").exists()
+    mem.ram = 64.0
+    _Whisper.calls.clear()
+    assert cli.main(["resume", "p"]) == 0
+    assert len(_Whisper.calls) == 3  # the first batch's transcripts are cached
+    assert r.outputs() == reference
+    assert json.loads((r.project / runstate.FILE).read_text(encoding="utf-8"))["status"] == "done"
+
+
+def test_a_resumed_batch_boundary_after_the_cached_part_says_continuing_once(analyze_run, caplog):
+    """Windows cosmetic: resume with --batch-size 1 after one cached source logs
+    ``transcribe: 1/N done, continuing`` once, not again at the boundary right after it."""
+    r = analyze_run
+    _Whisper.stop = 2
+    assert cli.main([*r.argv, "--batch-size", "1"]) == 130
+    _Whisper.stop = None
+    with caplog.at_level(logging.INFO):
+        assert cli.main(["resume", "p"]) == 0
+    done = [m for m in caplog.messages if m.startswith("transcribe: ")]
+    assert done == [f"transcribe: {k}/5 done, continuing" for k in range(1, 5)]
+
+
+def test_a_layer_short_of_memory_stops_analyze_with_low_memory(analyze_run, monkeypatch, capsys):
+    """Review F7: PANNs short of memory in the reactions step is no failed step analyze goes
+    on without: exit 1, low_memory in the envelope and progress.json, no step_failed."""
+    r = analyze_run
+    plan = cutpoint.analyze.LayerPlan(layers={"reactions": ("audio",)})
+    monkeypatch.setattr(cutpoint.analyze, "plan_layers", lambda *a: plan)
+
+    def run_events(project, *, stage, **kw):
+        with stage("audio"):
+            memguard.check("panns", label="PANNs")  # as PannsDetector does
+        pytest.fail("went on after the layer")
+
+    monkeypatch.setattr(pipeline, "run_events", run_events)
+    monkeypatch.setattr(memguard, "_free", lambda url=None: None)
+    monkeypatch.setattr(memguard, "ram_free", lambda: memguard.GIB)  # 1 GB: short
+    capsys.readouterr()
+    assert cli.main([*r.argv, "--json"]) == 1
+    doc = envelope(capsys.readouterr().out)
+    assert doc["error"]["code"] == "low_memory"
+    assert "step_failed" not in [w["code"] for w in doc["warnings"]]
+    rec = _read(r.project)
+    assert rec["status"] == "low_memory" and rec["steps"]["reactions"]["state"] == "failed"
+    assert not (r.project / "highlights.json").exists()

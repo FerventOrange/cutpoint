@@ -57,7 +57,8 @@ To let Claude Code find Cutpoint on its own, the user can install the skill with
   `error` (`code`, `message`, or `null`). `error.code` is `bad_args` (exit 2 for the command
   line, 1 when a command rejects an option value itself, such as a `--lut` file or
   `--clip-override`), `not_found`,
-  `ffmpeg_missing`, `missing_extra`, `output_not_empty`, `folder_busy` (another run holds the folder's lock: wait or retry),
+  `ffmpeg_missing`, `missing_extra`, `output_not_empty`, `folder_busy` (another run holds the folder's lock: wait or retry), `low_memory` (too little free
+  memory for a model: tell the user to close other programs, then run the command the ERROR line names (`cutpoint resume <project>`, or the same command again when no progress.json was written yet)),
   `interrupted` (130) or `error`.
   Read `warnings` such as `kept_clips`, `kept_sources` and `step_failed` and tell the user.
   With `CUTPOINT_PROGRESS=1`, stderr also has `PROGRESS {...}` lines per step. Keys of both:

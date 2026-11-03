@@ -28,7 +28,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache
+from cutpoint import cache, memguard
 from cutpoint.events import paths
 from cutpoint.events.common import Source, free_torch, iter_audio_blocks, layer_cache_path
 
@@ -155,7 +155,9 @@ class PannsDetector:
                 f"{paths.panns_ckpt()} missing; run cutpoint setup --only panns"
             )
         self.torch = torch
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = memguard.device_for(  # the GPU short of memory: on the CPU
+            "panns", device or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
         models = _import_panns_models()
         self.model = models.Cnn14_DecisionLevelMax(
             sample_rate=MODEL_SR,

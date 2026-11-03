@@ -77,6 +77,7 @@ So do these combinations:
 | `missing_extra` | 1 | An optional extra is not installed (the feature is not available in Cutpoint lite) |
 | `output_not_empty` | 1 | A file or folder is in the way; see `--force` |
 | `folder_busy` | 1 | Another cutpoint run holds the folder's lock (`.<folder>.cutpoint-lock`); wait and retry. `analyze`, `edit`, `events`, `crashes`, `profile` and `360 analyze` hold `<project>/.analysis.run.cutpoint-lock` (see [Run lock](#run-lock-and-progressjson)) |
+| `low_memory` | 1 | Too little free memory to load a model, also after Cutpoint freed cached models and unloaded Ollama's; close other programs, then run the command the `ERROR` line names (`cutpoint resume <project>`, or the same command again when no `progress.json` was written yet). See [Memory guard](#memory-guard) |
 | `interrupted` | 130 | Ctrl+C, Ctrl+Break or SIGTERM |
 | `error` | 1 | Anything else |
 
@@ -1030,7 +1031,7 @@ Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash 
 | `--max-windows N`, `--window S`, `--pre S`, `--post S`, `--window-at "GLOB@START-END"` | Model window count and geometry |
 | `--sheets` | Write contact sheets to `<project>\visual_check` |
 | `--no-rescore` | Do not touch `highlights.json` |
-| `--batch-size N` | Close each layer's model after N sources (the vision model after N `vlm` windows, the crash layer's CLIP after N dense windows) and load it again; the results are the same. Default 0: keep it loaded |
+| `--batch-size N` | Close each layer's model after N sources (the vision model at the next source boundary after at least N `vlm` windows, never within one source's windows; the crash layer's CLIP after N dense windows) and load it again; the results are the same. Default 0: keep it loaded |
 | `--json` | One [result envelope](#json-output) on stdout for the whole run |
 
 Tuning options, rarely needed:
@@ -1554,6 +1555,19 @@ step `{state, done, total}`) and `outputs.resumed` is `true` when the command wa
 once a valid `progress.json` was read (replay, done, `--dry-run`, `folder_busy`); it is
 `resume` when no record could be read and for bad arguments.
 
+### Memory guard
+
+Before a model loads (Whisper, PANNs, the visual models, CLIP, the OCR engine, and Ollama's
+vision model before the request that loads it), Cutpoint checks that the model's estimated need
+plus `memory_guard` GB of RAM (`config.json`, default `2`; `0` turns the check off) are free;
+a model on the GPU needs its VRAM instead, and Ollama's model the size Ollama reports, in RAM
+and VRAM together. When memory is short it frees cached models and unloads Ollama's, checks
+again and, still short, stops with `low_memory` (exit 1, `progress.json` status `low_memory`)
+and an `ERROR` naming `cutpoint resume <project>` (or, before `progress.json` is written, the
+same command again). Whisper, PANNs and the crash check's CLIP short of VRAM run on the CPU instead (a `WARNING`). Free RAM is read on Linux and Windows only
+(elsewhere there is no check). A vision server on this machine that is not Ollama gets only the
+RAM check and a `WARNING`, as Cutpoint cannot unload it.
+
 ### Run lock and progress.json
 
 `analyze`, `edit`, `events`, `crashes`, `profile` and `360 analyze` hold the lock file
@@ -1562,7 +1576,8 @@ once a valid `progress.json` was read (replay, done, `--dry-run`, `folder_busy`)
 naming the process, as for the [folder lock](#folder-lock) of `clips`: wait, or delete the
 lock file if no run is active. `events`, `crashes` and `profile` treat a folder with only a
 `progress.json` as no project: they write nothing and take no lock. A first `analyze` or
-`edit` writes `progress.json` only after its first source is transcribed.
+`edit` writes `progress.json` only after its first source is transcribed. The step a stopped
+run was in reads `failed` (the `PROGRESS` states); `status` says why.
 
 | Key | Content |
 |---|---|

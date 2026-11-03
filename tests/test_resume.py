@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import socket
 from fractions import Fraction
 from pathlib import Path
@@ -12,7 +14,7 @@ import pytest
 
 import cutpoint.analyze
 from conftest import envelope, write
-from cutpoint import cache, cli, folders, procs, progress, runstate
+from cutpoint import cache, cli, folders, memguard, procs, progress, runstate
 from cutpoint.errors import FolderBusyError
 from cutpoint.ffmpeg_utils import MediaInfo
 
@@ -517,12 +519,13 @@ def test_events_resumed_after_a_vlm_window_equal_an_uninterrupted_run(
     assert _read(s.project)["status"] == "done"
 
 
-@pytest.mark.parametrize("size", ["0", "2", "4"])
-def test_events_batch_size_unloads_ollama_every_n_windows_with_the_same_events(
-    vlm_project, size, caplog
+@pytest.mark.parametrize(("size", "unloads"), [("0", 1), ("1", 2), ("2", 2), ("4", 1)])
+def test_events_batch_size_unloads_ollama_per_source_with_the_same_events(
+    vlm_project, size, unloads, caplog
 ):
-    """#109 --batch-size: the vision model is unloaded after every N windows (and at the
-    end), loaded again by the next request; events.json is the same."""
+    """#109 --batch-size: the vision model is unloaded at the first source boundary after at
+    least N windows (and at the end), loaded again by the next request, never within one
+    source's windows (3 per source here); events.json is the same."""
     s = vlm_project
     s.highlights(None)
     argv = ["events", "p", "--layers", "vlm", "--no-rescore"]
@@ -533,10 +536,9 @@ def test_events_batch_size_unloads_ollama_every_n_windows_with_the_same_events(
     with caplog.at_level("INFO"):
         assert cli.main([*argv, "--batch-size", size]) == 0
     assert _events_json(s.project) == reference
-    assert s.ollama.unloads == -(-6 // (int(size) or 6))
+    assert s.ollama.unloads == unloads
     done = [m for m in caplog.messages if m.startswith("vlm: ")]
-    step = int(size) or 6
-    assert done == [f"vlm: {k}/6 done, continuing" for k in range(step, 6, step)]
+    assert done == (["vlm: 3/6 done, continuing"] if unloads == 2 else [])
     rec = _read(s.project)
     assert rec["steps"]["vlm"]["state"] == "done" and rec["steps"]["vlm"]["total"] == 6
 
@@ -552,7 +554,7 @@ def test_events_batch_size_interrupted_resumes_to_the_same_events(vlm_project, w
     s.ollama.asked.clear()
     s.frames.clear()
     if where == "boundary":
-        s.stop_frames = 5  # the first window of the second batch of four
+        s.stop_frames = 5  # the second source's second window (one batch: 3 + 3 >= 4)
     else:
         s.ollama.stop = 2  # the second window of the first batch
     assert cli.main([*argv, "--batch-size", "4"]) == 130
@@ -684,3 +686,49 @@ def test_edit_keeps_clips_only_on_resume_of_the_same_manifest(edit_run, project,
         doc = envelope(capsys.readouterr().out)
     assert code == 1 and doc["error"]["code"] == "output_not_empty"
     assert len(edit_run["clips"]) == 1 and len(edit_run["assemble"]) == 1
+
+
+# -- the memory guard (#109 phase 5): low_memory, then resume ------------------------------
+
+
+def _resume_target(message: str) -> Path:
+    found = re.search(r"`cutpoint resume (.+?)` to continue", message)
+    assert found, message
+    return Path(found.group(1))
+
+
+def test_events_stops_with_low_memory_and_resume_finishes(
+    vlm_project, mem, monkeypatch, capsys, caplog
+):
+    """The VLM layer: memory short before the vision model loads, also after freeing: exit 1,
+    ``low_memory`` in the envelope and progress.json, an ERROR naming cutpoint resume; with
+    memory free, resume describes the windows to the events.json of a plain run."""
+    s = vlm_project
+    s.highlights(None)
+    monkeypatch.setattr(memguard, "_ollama_loaded", lambda url, model: False)
+    argv = ["events", "p", "--layers", "vlm", "--no-rescore"]
+    assert cli.main(argv) == 0
+    reference = _events_json(s.project)
+    s.cache = "run"
+    s.ollama.asked.clear()
+    mem.ram = 4.0  # 2 GB headroom + 7 GB (no size from Ollama): short
+    capsys.readouterr()
+    with caplog.at_level(logging.ERROR):
+        assert cli.main([*argv, "--json"]) == 1
+    doc = envelope(capsys.readouterr().out)
+    assert doc["ok"] is False and doc["error"]["code"] == "low_memory"
+    assert mem.freed == mem.unloaded == 1
+    assert s.ollama.asked == []  # nothing sent to the model
+    rec = json.loads((s.project / runstate.FILE).read_text(encoding="utf-8"))
+    assert rec["status"] == "low_memory" and rec["exit_code"] == 1
+    assert rec["error"]["code"] == "low_memory"
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and _resume_target(errors[0]).resolve() == s.project.resolve()
+    mem.ram = 64.0
+    capsys.readouterr()
+    assert cli.main(["resume", "p", "--json"]) == 0
+    doc = envelope(capsys.readouterr().out)
+    assert doc["outputs"]["resume"]["status_before"] == "low_memory"
+    assert len(s.ollama.asked) == 6
+    assert _events_json(s.project) == reference
+    assert json.loads((s.project / runstate.FILE).read_text(encoding="utf-8"))["status"] == "done"
