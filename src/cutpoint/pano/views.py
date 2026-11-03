@@ -6,13 +6,13 @@ every second keyframe, the GOP is 0.6 s) feeds the existing visual models
 
 * **Views for CLIP ViT-L/14**: 8 horizon-levelled perspective views (90 deg,
   yaw 0, 45, ..., 315, pitch -10) plus the downward *selfie* view at the
-  wearer (``geometry.WEARER_V``, fixed in camera coordinates), 224x224 each.
+  wearer (:func:`wearer_axis`, fixed in camera coordinates), 224x224 each.
   The embeddings feed the existing zero-shot prompts (beauty, friends/group),
   the LAION aesthetic head and the crash prompts.
 * **Faster R-CNN v2 on a levelled equirect** (1280x512: 1024 px for 360 deg
   plus 45 deg of wrap on each side, so people at yaw +-180 are not cut).
   Person boxes become (yaw, pitch, angular size); boxes inside the wearer cone
-  (``WEARER_CONE_DEG`` around the wearer axis, in camera coordinates) are the
+  (:func:`wearer_cone` around the wearer axis, in camera coordinates) are the
   wearer, the rest go through the existing own-body CLIP classifier.
 
 Directions are in the display frame of :mod:`cutpoint.pano.geometry`
@@ -147,6 +147,28 @@ def cache_path(src: Path, params: ViewParams | None = None) -> Path:
 
 
 _STALE_AXIS: set[str] = set()  # sources whose stale-axis view layer was logged
+SELFIE_RECOMPUTE_DEG = 25.0  # a selfie view this far from the wearer axis is recomputed
+
+
+def _stale_selfie(src: Path, meta: dict[str, Any]) -> bool:
+    """An upright clip's cached selfie view looks more than :data:`SELFIE_RECOMPUTE_DEG`
+    away from its wearer direction (:func:`geometry.wearer_direction`; a layer computed
+    before it was derived from the track); logged at INFO once per source."""
+    want = G.cached_wearer_direction(src)
+    have = meta.get("wearer_v")
+    if want is None or have is None:
+        return False
+    have = np.asarray(have, float) / (np.linalg.norm(have) + 1e-12)
+    if math.degrees(math.acos(float(np.clip(have @ want, -1, 1)))) <= SELFIE_RECOMPUTE_DEG:
+        return False
+    if str(src) not in _STALE_AXIS:
+        _STALE_AXIS.add(str(src))
+        logger.info(
+            "%s: view layer computed with another wearer direction (upright clip); not used "
+            "until `cutpoint 360 analyze` recomputes it",
+            src.name,
+        )
+    return True
 
 
 def load_views(src: Path, params: ViewParams | None = None) -> PanoViews | None:
@@ -172,6 +194,8 @@ def load_views(src: Path, params: ViewParams | None = None) -> PanoViews | None:
                 "until `cutpoint 360 analyze` recomputes it",
                 Path(src).name,
             )
+        return None
+    if upright and _stale_selfie(Path(src), meta):
         return None
     with np.load(path) as z:
         return PanoViews(
@@ -427,6 +451,21 @@ def save_views(src: Path, data: PanoViews, params: ViewParams) -> Path:
 _AXES: dict[str, np.ndarray] = state.register_container(__name__, "_AXES", {})
 
 
+def _upright_wearer(pv: PanoViews) -> np.ndarray | None:
+    """:func:`geometry.wearer_direction` of an upright clip's cached track, else None."""
+    if pv.meta.get("forward_axis") != G.axis_name(G.LENS_V) or not pv.meta.get("source"):
+        return None
+    return G.cached_wearer_direction(Path(pv.meta["source"]))
+
+
+def wearer_cone(pv: PanoViews, cone_deg: float = G.WEARER_CONE_DEG) -> float:
+    """Half angle (deg) of the wearer cone around :func:`wearer_axis`: ``cone_deg`` (the
+    helmet mount's ``WEARER_CONE_DEG``), or ``geometry.UPRIGHT_WEARER_CONE_DEG`` on an
+    upright clip whose axis comes from its track (the people seated around a pole
+    mount are closer to the wearer's direction than a helmet's cone allows)."""
+    return G.UPRIGHT_WEARER_CONE_DEG if _upright_wearer(pv) is not None else cone_deg
+
+
 def wearer_axis(pv: PanoViews, min_boxes: int = 15) -> np.ndarray:
     """The wearer's direction in camera coordinates for this clip.
 
@@ -436,6 +475,11 @@ def wearer_axis(pv: PanoViews, min_boxes: int = 15) -> np.ndarray:
     45 deg; ``geometry.WEARER_V`` when there are fewer than ``min_boxes``.
     Measured: clip 030 (pole mount) -> about (0.09, 0.63, 0.69); clip 020 (4K
     mode, held in front of the face) -> a different axis, hence per clip.
+
+    An upright clip (``forward_axis`` ``+z``) takes the direction from its cached
+    orientation track instead (:func:`geometry.wearer_direction`: below the camera):
+    seen from above, the wearer is rarely a person box, while the people around are
+    (on aug-24-cruise the box median landed on the neighbours).
     """
     key = str(pv.meta.get("source"))
     cached = _AXES.get(key)
@@ -443,7 +487,10 @@ def wearer_axis(pv: PanoViews, min_boxes: int = 15) -> np.ndarray:
         return cached
     d = pv.det
     axis = G.WEARER_V
-    if len(d):
+    upright = _upright_wearer(pv)
+    if upright is not None:
+        axis = upright
+    elif len(d):
         big = (d[:, 1] == 1) & (d[:, 2] >= 0.8) & (d[:, 6] >= 45.0)
         if big.sum() >= min_boxes:
             v = d[big, 8:11].astype(np.float64)
@@ -521,7 +568,12 @@ def other_people(
     keep = (
         (d[:, 1] == 1)
         & (d[:, 2] >= r.min_score)
-        & ~is_wearer(d, r.wearer_cone_deg, r.wearer_max_height_deg, axis=wearer_axis(pv))
+        & ~is_wearer(
+            d,
+            wearer_cone(pv, r.wearer_cone_deg),
+            r.wearer_max_height_deg,
+            axis=wearer_axis(pv),
+        )
         & (d[:, 6] >= r.min_height_deg)
     )
     if len(pv.box_idx):
@@ -623,7 +675,9 @@ def frame_people(pv: PanoViews, rules: PeopleRules360 | None = None) -> dict[str
     np.add.at(out["count"], fi[keep], 1.0)
     np.maximum.at(out["close"], fi[keep], np.clip(d[keep, 6] / r.close_height_deg, 0, 1))
     np.maximum.at(
-        out["self"], fi[(d[:, 1] == 1) & is_wearer(d, r.wearer_cone_deg, axis=wearer_axis(pv))], 1.0
+        out["self"],
+        fi[(d[:, 1] == 1) & is_wearer(d, wearer_cone(pv, r.wearer_cone_deg), axis=wearer_axis(pv))],
+        1.0,
     )
     return out
 
@@ -919,7 +973,11 @@ def write_standard_visual(src: Path, pv: PanoViews) -> Path:
     vp = V.VisualParams()
     path = V.cache_path(src, vp)
     d = pv.det
-    keep = np.flatnonzero(~is_wearer(d, axis=wearer_axis(pv))) if len(d) else np.zeros(0, int)
+    keep = (
+        np.flatnonzero(~is_wearer(d, wearer_cone(pv), axis=wearer_axis(pv)))
+        if len(d)
+        else np.zeros(0, int)
+    )
     std = np.zeros((len(keep), 7), np.float32)
     if len(keep):
         dk = d[keep]
@@ -1006,13 +1064,16 @@ def run_layer(
             c0 = time.perf_counter()
             prior = load_views(src, p)  # a forced re-run reuses the clip's wearer axis
             _AXES.pop(str(src), None)
-            prior_axis = wearer_axis(prior) if prior is not None else G.WEARER_V
+            prior_axis = wearer_axis(prior) if prior is not None else orient.wearer
             data = compute_views(c, models, p, orient, wearer_v=prior_axis)
             if data is None:
                 continue
             _AXES.pop(str(src), None)
             axis = wearer_axis(data)
-            if math.degrees(math.acos(float(np.clip(axis @ prior_axis, -1, 1)))) > 25:
+            if (
+                math.degrees(math.acos(float(np.clip(axis @ prior_axis, -1, 1))))
+                > SELFIE_RECOMPUTE_DEG
+            ):
                 logger.info(
                     "clip %s: wearer at %s in camera coordinates (not the default "
                     "mount); recomputing the selfie view",

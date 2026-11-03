@@ -9,7 +9,7 @@ nearest view frame, ~0.8 fps), clipped to the frame, and go through the rendered
 same flags, score, pass rule and ``qa.json`` schema (``mode: "paths"``).
 
 The wearer's own body is a *self* box: a detection centred inside the wearer
-cone around the clip's wearer axis (:func:`views.wearer_axis`); projected into
+cone around the clip's wearer axis (:func:`views.wearer_axis`, :func:`views.wearer_cone`); projected into
 the view it drives ``occluded`` like the rendered QA's self boxes. Unlike
 :func:`views.other_people`, the >70 deg height rule and the own-body CLIP
 classifier are not used: on 16 rendered clips both labelled close friends
@@ -74,13 +74,13 @@ def paths_thresholds(th: Q.QAThresholds) -> Q.QAThresholds:
 
 def person_rows(pv: Any) -> tuple[np.ndarray, np.ndarray]:
     """``(person, is_self)`` per det row of the view layer (self: centre in the wearer cone)."""
-    from cutpoint.pano.views import is_wearer, wearer_axis  # noqa: PLC0415
+    from cutpoint.pano.views import is_wearer, wearer_axis, wearer_cone  # noqa: PLC0415
 
     d = pv.det
     if not len(d):
         return np.zeros(0, bool), np.zeros(0, bool)
     person = d[:, 1].astype(int) == 1
-    wear = is_wearer(d, G.WEARER_CONE_DEG, max_height_deg=np.inf, axis=wearer_axis(pv))
+    wear = is_wearer(d, wearer_cone(pv), max_height_deg=np.inf, axis=wearer_axis(pv))
     return person, person & wear
 
 
