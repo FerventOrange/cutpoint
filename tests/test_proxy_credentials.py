@@ -770,3 +770,121 @@ def test_missing_active_directory_cannot_be_snapshotted_as_empty(
     with pytest.raises(OSError, match="directory is missing"):
         CredentialStore(root).prepare()
     assert _manifest(store, ring) == old_manifest
+
+
+def _count_access(ring: FakeRing, monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """Count keyring reads/writes and permission checks from here on."""
+    counts = {"keyring": 0, "private_file": 0}
+    get, set_ = ring.get_password, ring.set_password
+    private_file = proxy_credentials.private_file
+
+    def counted_get(service: str, user: str) -> str | None:
+        counts["keyring"] += 1
+        return get(service, user)
+
+    def counted_set(service: str, user: str, value: str) -> None:
+        counts["keyring"] += 1
+        set_(service, user, value)
+
+    def counted_private(path: Path) -> None:
+        counts["private_file"] += 1
+        private_file(path)
+
+    monkeypatch.setattr(ring, "get_password", counted_get)
+    monkeypatch.setattr(ring, "set_password", counted_set)
+    monkeypatch.setattr(proxy_credentials, "private_file", counted_private)
+    return counts
+
+
+def test_periodic_sync_skips_the_keyring_while_the_snapshot_is_unchanged(
+    tmp_path: Path, ring: FakeRing, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#576: an unchanged runtime snapshot costs no keyring calls or permission resets."""
+    store = CredentialStore(tmp_path / "proxy")
+    _auth(store.auth_dir / "account.json", {"token": "value"})
+    store.prepare()
+    counts = _count_access(ring, monkeypatch)
+    store.sync()  # the first periodic sync is a full, checked one
+    assert counts["keyring"] > 0 and counts["private_file"] > 0
+    counts.update(keyring=0, private_file=0)
+    for _ in range(5):
+        store.sync()
+    assert counts == {"keyring": 0, "private_file": 0}
+
+
+def test_periodic_sync_commits_a_changed_snapshot(
+    tmp_path: Path, ring: FakeRing, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = CredentialStore(tmp_path / "proxy")
+    account = store.auth_dir / "account.json"
+    _auth(account, {"token": "old"})
+    store.prepare()
+    store.sync()
+    counts = _count_access(ring, monkeypatch)
+    _auth(account, {"token": "rotated"})
+    _auth(store.auth_dir / "added.json", {"token": "new"})
+    store.sync()
+    assert counts["private_file"] > 0  # permissions are checked again on a change
+    assert _stored_snapshot(store, ring) == {
+        "account.json": json.dumps({"token": "rotated"}),
+        "added.json": json.dumps({"token": "new"}),
+    }
+    (store.auth_dir / "added.json").unlink()
+    store.sync()
+    assert _stored_snapshot(store, ring) == {"account.json": json.dumps({"token": "rotated"})}
+    counts.update(keyring=0, private_file=0)
+    store.sync()
+    assert counts == {"keyring": 0, "private_file": 0}
+
+
+def test_periodic_sync_retries_a_deferred_snapshot(tmp_path: Path, ring: FakeRing) -> None:
+    """A partial write is not remembered as synced, so the next sync still commits it."""
+    store = CredentialStore(tmp_path / "proxy")
+    account = store.auth_dir / "account.json"
+    _auth(account, {"token": "old"})
+    store.prepare()
+    store.sync()
+    account.write_bytes(b'{"token":')
+    store.sync()
+    assert _stored_snapshot(store, ring) == {"account.json": json.dumps({"token": "old"})}
+    _auth(account, {"token": "complete"})
+    store.sync()
+    assert _stored_snapshot(store, ring) == {"account.json": json.dumps({"token": "complete"})}
+
+
+def test_periodic_sync_still_rejects_an_unsafe_entry_after_a_skip(
+    tmp_path: Path, ring: FakeRing
+) -> None:
+    store = CredentialStore(tmp_path / "proxy")
+    store.prepare()
+    store.sync()
+    store.sync()
+    (store.auth_dir / "nested").mkdir()
+    with pytest.raises(OSError, match="unsafe credential path"):
+        store.sync()
+
+
+def test_final_sync_and_finish_never_skip(
+    tmp_path: Path, ring: FakeRing, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A change after the last periodic sync is saved on stop (finish) and by checkpoint."""
+    root = tmp_path / "proxy"
+    store = CredentialStore(root)
+    account = store.auth_dir / "account.json"
+    _auth(account, {"token": "old"})
+    store.prepare()
+    store.sync()
+    # The keyring copy is lost behind the periodic sync's back: a final sync restores it.
+    ring.saved.pop((keys.SERVICE, f"{store.user}-manifest"))
+    store.sync()
+    assert (keys.SERVICE, f"{store.user}-manifest") not in ring.saved
+    store.sync(final=True)
+    assert _stored_snapshot(store, ring) == {"account.json": json.dumps({"token": "old"})}
+    # Written just before shutdown, after the last periodic sync.
+    store.sync()
+    _auth(account, {"token": "rotated-before-stop"})
+    store.finish()
+    assert not account.exists()
+    assert _stored_snapshot(store, ring) == {
+        "account.json": json.dumps({"token": "rotated-before-stop"})
+    }

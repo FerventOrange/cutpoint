@@ -100,6 +100,9 @@ class CredentialStore:
         self.root = Path(root)
         self.auth_dir = self.root / "auths"
         self._cached_recovery_key: bytes | None = None
+        # Digest of the runtime snapshot the last periodic sync found committed; None forces a
+        # full sync. Only a hash is kept, never the credentials.
+        self._synced_digest: str | None = None
 
     @property
     def user(self) -> str:
@@ -407,6 +410,32 @@ class CredentialStore:
             snapshot[path.name] = raw
         return snapshot
 
+    @staticmethod
+    def _digest(snapshot: dict[str, str]) -> str:
+        payload = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _probe(self) -> str | None:
+        """Digest the runtime files without the lock, permission changes or the keyring.
+
+        Reads what ``_snapshot`` reads, so an unchanged digest means an unchanged snapshot.
+        Anything unusual (a missing, unsafe or unreadable entry) returns None, and the caller
+        then runs the full, checked sync, which reports or defers it as before.
+        """
+        try:
+            if not stat.S_ISDIR(self.auth_dir.lstat().st_mode):
+                return None
+            snapshot: dict[str, str] = {}
+            for path in self.auth_dir.iterdir():
+                mode = path.lstat().st_mode
+                if not stat.S_ISREG(mode):
+                    return None
+                if path.suffix.lower() == ".json":
+                    snapshot[path.name] = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return None
+        return self._digest(snapshot)
+
     def _marker_data(self) -> dict[str, Any] | None:
         if not self._marker.exists() and not self._marker.is_symlink():
             return None
@@ -493,6 +522,7 @@ class CredentialStore:
             self._write_marker("stored", managed)
 
     def prepare(self) -> None:
+        self._synced_digest = None
         with self._locked(wait=True):
             ring = self._ring()
             has_journal = self._recovery_journal.exists() or self._recovery_journal.is_symlink()
@@ -555,6 +585,20 @@ class CredentialStore:
             self._write_marker("active", set(stored or {}))
 
     def sync(self, *, final: bool = False) -> None:
+        """Commit the runtime credentials to the keyring when they differ from it.
+
+        A periodic (non-final) sync first compares a digest of the runtime files with the one
+        it last found committed and returns without the lock, permission checks or keyring
+        reads when nothing changed. The first periodic sync, every change and every final sync
+        (``checkpoint``) do the full checked sync; ``finish`` always compares with the keyring,
+        so a change written after the last periodic sync is saved on stop, and an ``active``
+        marker left by a crash makes the next ``prepare`` commit the runtime files.
+        """
+        if not final:
+            probe = self._probe()
+            if probe is not None and probe == self._synced_digest:
+                return
+        self._synced_digest = None
         try:
             with self._locked(wait=final):
                 marker = self._marker_data()
@@ -570,6 +614,7 @@ class CredentialStore:
                 if stored is None or current != stored:
                     self._commit(ring, current)
                     self._write_marker("active", set(marker.get("managed", [])) | set(current))
+                self._synced_digest = self._digest(current)
         except FolderBusyError:
             if final:
                 raise keys.KeyringError(
@@ -578,6 +623,7 @@ class CredentialStore:
             return
 
     def finish(self) -> None:
+        self._synced_digest = None
         with self._locked(wait=True):
             marker = self._marker_data()
             if not marker:

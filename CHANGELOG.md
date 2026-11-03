@@ -407,6 +407,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint proxy` no longer gives up after a fixed 8 seconds when CLIProxyAPI starts slowly (a
+  keyring unlock prompt, a virus scan of the binary, a slow disk): it waits up to 120 seconds
+  while the supervisor runs, logs an INFO line when the wait takes more than a few seconds, and
+  fails at once with a clear error if the supervisor exits first (#577).
+- `cutpoint proxy` no longer reads the keyring and resets file permissions every 0.5 seconds
+  while it runs: the supervisor scans the credential files every 5 seconds and checks
+  permissions and syncs the keyring only when they changed, at start and on stop. A change
+  written just before shutdown is still saved (#576).
+- `cutpoint proxy` restores its Ctrl+C and termination signal handlers when the supervisor is
+  stuck in credential cleanup, instead of leaving them installed after it returns (#585).
 - The Models tab no longer offers "Allow vision requests" while the Vision provider has no API key
   or login: it shows the missing key or login hint instead (#620).
 - The model list is cached per role as well as provider and URL, so a list Chat loaded is no longer
