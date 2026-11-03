@@ -31,7 +31,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache
+from cutpoint import cache, memguard
 from cutpoint.events import ocr_raw
 from cutpoint.events.common import Source, layer_cache_path
 from cutpoint.events.discover import DiscoverParams, _centre_cover, gameplay_frames
@@ -697,6 +697,7 @@ class OcrEngine:
     def __init__(self, lanes: int | None = None, rec_batch: int | None = None) -> None:
         from rapidocr_onnxruntime import RapidOCR  # noqa: PLC0415
 
+        memguard.check("ocr")
         self.lanes = OCR_LANES if lanes is None else lanes
         self.rec_batch = rec_batch
         extra = {} if rec_batch is None else {"rec_batch_num": rec_batch}

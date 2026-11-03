@@ -223,9 +223,10 @@ def run_events(
             INFO line before it runs (the caller's options: ``cutpoint analyze`` has no
             ``--game`` or ``--no-discover``).
         batch_size: ``--batch-size`` (#109): a layer's model is closed after every this many
-            sources and loaded again for the next ones, the vision model's (Ollama) after every
-            this many VLM windows, the crash layer's CLIP after every this many dense windows
-            (0: one batch). The results are the same.
+            sources and loaded again for the next ones, the vision model's (Ollama) at the
+            first source boundary after at least this many VLM windows (:func:`vlm_batches`),
+            the crash layer's CLIP after every this many dense windows (0: one batch). The
+            results are the same.
 
     Returns:
         Paths of events.json and events.txt.
@@ -738,12 +739,12 @@ def _describe_batches(
     batch_size: int,
     unload: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """:func:`describe_windows` in batches of ``batch_size`` windows (``--batch-size``), with
+    """:func:`describe_windows` in batches (``--batch-size``, :func:`vlm_batches`), with
     ``unload`` (Ollama) its model unloaded between two; the results and stats of one call."""
     results: list[dict[str, Any]] = []
     stats: dict[str, Any] = {}
     done = 0
-    for k, part in enumerate(progress.batches(windows, batch_size)):
+    for k, part in enumerate(vlm_batches(windows, batch_size)):
         if k:  # a batch boundary
             if unload:
                 rater.unload()
@@ -755,6 +756,23 @@ def _describe_batches(
         stats = merge_stats(stats, st) if k else st
         done += len(part)
     return results, stats
+
+
+def vlm_batches(windows: list[Any], size: int) -> list[list[Any]]:
+    """The VLM windows in batches for ``--batch-size`` ``size``: a batch ends only where the
+    windows go on with another source, once it holds at least ``size`` windows, so the vision
+    model (6.6 GB for qwen3.5:9b) is not loaded again every few windows of one recording; 0:
+    one batch."""
+    if size <= 0:
+        return [list(windows)]
+    out: list[list[Any]] = []
+    part: list[Any] = []
+    for w in windows:
+        if part and len(part) >= size and w.source != part[-1].source:
+            out.append(part)
+            part = []
+        part.append(w)
+    return [*out, part] if part or not out else out
 
 
 def _release_engine(make_engine: Callable[[], OcrEngine]) -> None:

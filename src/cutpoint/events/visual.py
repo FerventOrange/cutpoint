@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from cutpoint import cache, state
+from cutpoint import cache, memguard, state
 from cutpoint.errors import FFmpegError
 from cutpoint.events import paths
 from cutpoint.events.common import Source, free_torch, nearest_index, params_key
@@ -326,6 +326,8 @@ class VisualModels:
         self.torch = torch
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
+        if not download:  # cutpoint setup loads them once only to fetch the weights
+            memguard.check("visual", gpu=self.device == "cuda")
         t0 = time.perf_counter()
         model = load_clip(download=download)
         self.clip = model.eval().to(self.device, self.dtype)

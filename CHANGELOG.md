@@ -336,8 +336,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   judged with its own captions. The `ski` profile reproduces the earlier captions exactly;
   `ski` and `snowboard` have `lift` captions, and chairlift detection is off for the others.
 
+- Memory guard (#109): before a model loads, Cutpoint checks its estimated memory need plus
+  `memory_guard` GB of free RAM (`config.json`, default 2, 0 = off); when short it frees cached
+  models and unloads Ollama's, then stops with the new `--json` error code `low_memory` (exit 1,
+  `progress.json` status `low_memory`) and an `ERROR` naming `cutpoint resume <project>`. Linux
+  and Windows; a local non-Ollama vision server gets the RAM check and a `WARNING`.
+
 ### Changed
 
+- `--batch-size` on `events`: the vision model is unloaded only at a source boundary after at
+  least N windows, so a small N no longer reloads it every few windows of one recording.
 - Action-cam vision prompts follow the activity profile (#7, #511): the `cutpoint events` VLM
   window prompt and the `--vision` rating of action-cam projects no longer name skiing; their
   wording comes from the new `vlm` section of the project's activity profile (`activity.json`).

@@ -81,6 +81,9 @@ Choosing the moments yourself:
   `profile`, `resume` and every `360` subcommand.
 - After an interrupted or failed `analyze`, `edit`, `events`, `crashes`, `profile` or
   `360 analyze`, `cutpoint resume <project>` replays the recorded command (`--dry-run` shows it).
+  On `low_memory` (too little free memory for a model), ask the user to close other programs,
+  then run the command the ERROR line names (`cutpoint resume <project>`, or the same command
+  again when no progress.json was written yet).
 - If `clips`, `extend` or `assemble` stops with an `ERROR` that another run holds the folder's
   lock (`.<folder>.cutpoint-lock`; with `--json`, `error.code` is `folder_busy`), wait or
   retry; delete the lock file only if no run is active. If `clips --force` or `extend` refuses

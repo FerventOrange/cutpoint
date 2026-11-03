@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import requests
 
-from cutpoint import cache, paths, state
+from cutpoint import cache, memguard, paths, state
 from cutpoint.backends import ollama_url
 from cutpoint.config import get_config
 from cutpoint.errors import FFmpegError
@@ -302,8 +302,10 @@ class VisionRater:
         self.hits = 0  # ratings taken from the cache by rate()
         self.asked = 0  # ratings rate() asked the model for (failed ones included)
         self.missed = 0  # cache misses rate() gave no rating for (cache_only)
-        # the model's digest from /api/tags (set by available()); None: not known
+        # the model's digest and size in bytes from /api/tags (set by available()); None: not
+        # known. The size is the memory guard's need for the model (cutpoint.memguard)
         self.digest: str | None = None
+        self.size: int | None = None
         # True: rate() gives only cached ratings and asks the model nothing (Ollama down)
         self.cache_only = False
         self.last_prompt_tokens: int | None = None  # of the last describe() (Ollama only)
@@ -340,9 +342,22 @@ class VisionRater:
             )
             return False
         found = (m for m in models if m.get("name") in (self.model, f"{self.model}:latest"))
-        digest = next(found, {}).get("digest")
+        entry = next(found, {})
+        digest, size = entry.get("digest"), entry.get("size")
         self.digest = digest if isinstance(digest, str) and digest else None
+        self.size = size if isinstance(size, int) and not isinstance(size, bool) and size else None
         return True
+
+    def check_memory(self) -> None:
+        """The memory guard before a request (:func:`cutpoint.memguard.check_vision`): before
+        the first one to Ollama after a load or :meth:`unload`; before each one to a server on
+        this machine Cutpoint cannot unload.
+
+        Raises:
+            LowMemoryError: If the model's memory is not free, also after freeing cached models.
+        """
+        if not self.used:
+            memguard.check_vision(self)
 
     def warn_consent(self) -> str:
         """Log (once, a WARNING and the ``vision_consent_needed`` warning of ``--json``) and
@@ -382,6 +397,7 @@ class VisionRater:
         ``<think></think>`` block already written; other models use ``/api/chat``.
         """
         if self.via:
+            self.check_memory()
             reply = self.via.ask(prompt, images or [])
             try:
                 data = _json_object(reply) if reply else None
@@ -409,6 +425,7 @@ class VisionRater:
                 "options": options,
             }
             endpoint = "generate"
+        self.check_memory()
         self.used = True
         try:
             resp = requests.post(f"{self.url}/api/{endpoint}", json=payload, timeout=timeout)
@@ -441,6 +458,7 @@ class VisionRater:
         """
         self.last_prompt_tokens = None
         if self.via:
+            self.check_memory()
             reply = self.via.ask(prompt, images, schema=schema)
             if reply is None:
                 return None
@@ -470,6 +488,7 @@ class VisionRater:
             "format": schema,
             "options": {"temperature": temperature, "num_ctx": num_ctx, "num_predict": num_predict},
         }
+        self.check_memory()
         self.used = True
         try:
             resp = requests.post(
@@ -619,6 +638,7 @@ class VisionRater:
             text = prompt.format(n=n_frames, style=style)
             if self.via:
                 body: dict[str, Any] = {}
+                self.check_memory()
                 reply = self.via.ask(text, frames)
                 if reply is None:
                     return None
@@ -638,6 +658,7 @@ class VisionRater:
                 }
                 if profile and profile.expected:
                     payload |= {"logprobs": True, "top_logprobs": _TOP_LOGPROBS}
+                self.check_memory()
                 self.used = True
                 try:
                     resp = requests.post(f"{self.url}/api/chat", json=payload, timeout=300)

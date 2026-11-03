@@ -23,7 +23,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePath
 from typing import Any, TextIO
 
-from cutpoint.errors import FFmpegNotFoundError, FolderBusyError
+from cutpoint.errors import FFmpegNotFoundError, FolderBusyError, LowMemoryError
 
 SCHEMA = 1
 
@@ -35,6 +35,7 @@ FFMPEG_MISSING = "ffmpeg_missing"  # FFmpegNotFoundError: ffmpeg / ffprobe not f
 MISSING_EXTRA = "missing_extra"  # an optional extra is not installed
 OUTPUT_NOT_EMPTY = "output_not_empty"  # FileExistsError: an output is in the way (--force)
 FOLDER_BUSY = "folder_busy"  # FolderBusyError: another run holds the folder's lock
+LOW_MEMORY = "low_memory"  # LowMemoryError: the memory guard stopped the run (exit 1)
 INTERRUPTED = "interrupted"  # Ctrl+C, Ctrl+Break, SIGTERM (exit 130)
 ERROR = "error"  # anything else
 
@@ -127,6 +128,8 @@ def error_code(err: BaseException) -> str:
         return INTERRUPTED
     if isinstance(err, FolderBusyError):
         return FOLDER_BUSY
+    if isinstance(err, LowMemoryError):
+        return LOW_MEMORY
     if isinstance(err, FFmpegNotFoundError):
         return FFMPEG_MISSING
     if isinstance(err, FileExistsError):

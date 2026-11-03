@@ -60,7 +60,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import activity, cache, jsonout, progress
+from cutpoint import activity, cache, jsonout, memguard, progress
 
 logger = logging.getLogger(__name__)
 # Why the run that calls detect_project has no visual layer (``analyze`` left the
@@ -422,7 +422,9 @@ class ClipEncoder:
         import torch  # noqa: PLC0415
 
         self.torch = torch
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = memguard.device_for(  # the GPU short of memory: on the CPU (float32)
+            "clip", device or ("cuda" if torch.cuda.is_available() else "cpu")
+        )
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
         model = load_clip()  # local files only
         self.model = model.eval().to(self.device, self.dtype)

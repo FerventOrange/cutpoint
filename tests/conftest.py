@@ -10,6 +10,7 @@ import sys
 import time
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -71,14 +72,46 @@ class _NoNvidiaSmi:
 def no_host_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the host out of the tests: no ``nvidia-smi`` spawn (the GPU probes see no GPU) and no
     gcc/ld/ldconfig run by ``ctypes.util.find_library`` (keyring's macOS backend calls it on
-    import). A test of a probe patches ``subprocess.run`` or the probe itself, as before."""
+    import), and no read of the host's free RAM (the memory guard is off, as on an unknown
+    platform). A test of a probe patches ``subprocess.run`` or the probe itself, as before."""
     import ctypes.util  # noqa: PLC0415
 
+    from cutpoint import memguard  # noqa: PLC0415
     from cutpoint.events import common, ocr_prefetch  # noqa: PLC0415
+
+    monkeypatch.setattr(memguard, "ram_free", lambda: None)
 
     monkeypatch.setattr(ocr_prefetch, "subprocess", _NoNvidiaSmi())
     monkeypatch.setattr(common, "subprocess", _NoNvidiaSmi())
     monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+
+
+@pytest.fixture
+def mem(monkeypatch):
+    """The memory guard's view (#109): free RAM and VRAM in GB (``vram`` None: no GPU known),
+    and the calls of free_models / unload_ollama; ``after`` is the RAM free once they ran."""
+    from cutpoint import analyze, memguard  # noqa: PLC0415
+    from cutpoint.events import common  # noqa: PLC0415
+
+    gb = memguard.GIB
+    state = SimpleNamespace(ram=64.0, vram=None, after=None, freed=0, unloaded=0)
+
+    def free_models() -> None:
+        state.freed += 1
+
+    def unload_ollama(url: str | None = None) -> list[str]:
+        state.unloaded += 1
+        if state.after is not None:
+            state.ram = state.after
+        return []
+
+    monkeypatch.setattr(memguard, "ram_free", lambda: None if state.ram is None else state.ram * gb)
+    monkeypatch.setattr(
+        memguard, "vram_free", lambda: None if state.vram is None else state.vram * gb
+    )
+    monkeypatch.setattr(analyze, "free_models", free_models)
+    monkeypatch.setattr(common, "unload_ollama", unload_ollama)
+    return state
 
 
 @pytest.fixture

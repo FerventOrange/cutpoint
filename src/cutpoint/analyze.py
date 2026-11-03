@@ -36,7 +36,7 @@ import numpy as np
 from cutpoint import cache, category, features, folders, jsonout, progress, runstate, scorer
 from cutpoint.config import remap_source, unc_path
 from cutpoint.dsp import conv_same
-from cutpoint.errors import FFmpegError
+from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events import paths as event_paths
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.events.scoring import rescore
@@ -1461,6 +1461,8 @@ class _StepHook:
             return
         try:
             yield
+        except LowMemoryError:  # the memory guard stops the run (resumable), not the layer
+            raise
         except Exception as err:
             logger.debug("%s layer failed", layer, exc_info=True)
             files: list[str] = []
@@ -1604,7 +1606,7 @@ def _run_layers(
                 batch_size=batch_size,
             )
     except Exception as err:
-        if steps.current == "ranking":
+        if steps.current == "ranking" or isinstance(err, LowMemoryError):
             raise
         message = f"Analysis steps failed: {err}; continuing without them"
         logger.debug("event layers failed", exc_info=True)

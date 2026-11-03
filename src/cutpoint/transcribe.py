@@ -15,6 +15,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from cutpoint import memguard
+from cutpoint.errors import LowMemoryError
 from cutpoint.extras import LITE, edition, install_hint
 from cutpoint.ffmpeg_utils import pcm_float
 from cutpoint.hub import quiet_hub_handler
@@ -263,6 +265,12 @@ class Transcriber:
 
     def _load(self) -> Any:
         if self._model is None:
+            # the GPU short of memory (a game, OBS): Whisper runs on the CPU
+            self.device = memguard.device_for(
+                memguard.whisper_need(self.model_name),
+                self.device,
+                label=f"Whisper {self.model_name}",
+            )
             compute = "float16" if self.device == "cuda" else "int8"
             logger.info("Loading whisper %s on %s (%s)", self.model_name, self.device, compute)
             self._model = load_model(self.model_name, self.device, compute)  # local first
@@ -291,6 +299,8 @@ class Transcriber:
         try:
             return self._run(wav, on_progress)
         except (RuntimeError, OSError) as err:
+            if isinstance(err, LowMemoryError):  # the memory guard: no CPU fallback either
+                raise
             # A model the Hub cannot give (offline, unknown repo) is not there on the CPU either
             if self.device != "cuda" or type(err).__module__.startswith("huggingface_hub"):
                 raise

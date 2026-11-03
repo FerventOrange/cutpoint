@@ -18,3 +18,18 @@ class EncoderUnavailableError(FFmpegError):
 class FolderBusyError(RuntimeError):
     """Another cutpoint run holds the lock of the folder (see
     :func:`cutpoint.folders.swap_lock`)."""
+
+
+class LowMemoryError(RuntimeError):
+    """Not enough free memory to load a model, also after freeing cached ones
+    (:mod:`cutpoint.memguard`); ``cutpoint resume`` continues the run. ``args[1]``, when
+    given: what is short (``"1.2 GB RAM free, 3.5 GB needed"``); ``str()`` is the message."""
+
+    def __str__(self) -> str:
+        return str(self.args[0]) if self.args else ""
+
+
+class LowVramError(LowMemoryError):
+    """:class:`LowMemoryError` where the GPU's memory alone is short: Whisper, PANNs and the
+    crash check's CLIP run on the CPU instead (:func:`cutpoint.memguard.device_for`); the
+    visual models stop the run."""

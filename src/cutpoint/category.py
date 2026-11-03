@@ -35,7 +35,7 @@ import numpy as np
 
 from cutpoint import cache
 from cutpoint.config import remap_source
-from cutpoint.errors import FFmpegError
+from cutpoint.errors import FFmpegError, LowMemoryError
 
 logger = logging.getLogger(__name__)
 
@@ -551,6 +551,8 @@ def _with_text(found: SourceProbe, cdir: Path, io: Path | None = None) -> Source
         try:
             info = probe(io)
             rec = text_probe(io, info.duration, info.width, info.height)
+        except LowMemoryError:  # the memory guard stops the run; no guess without the HUD check
+            raise
         except Exception as err:  # noqa: BLE001 - an OCR or decode failure: the frame probe stands
             logger.warning("HUD text check of %s failed: %s", Path(found.path).name, err)
             _TEXT_FAILED.add(cdir)
