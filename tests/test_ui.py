@@ -68,7 +68,10 @@ def fake_start(captured: list[list[str]]):
 
 
 @pytest.fixture
-def client() -> Iterator[TestClient]:
+def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    # job subprocesses inherit the CPU codecs: no NVENC/NVDEC contention under a loaded suite
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    monkeypatch.setenv("CUTPOINT_VIDEO_DECODER", "cpu")
     app = ui.create_app(PORT)
     # ``with`` runs the app's shutdown (jobs.shutdown kills any job still running)
     with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
@@ -1182,7 +1185,7 @@ def test_find_videos_never_returns_raw_360_files(tmp_path: Path) -> None:
     assert [p.name for p in find_videos([tmp_path])] == ["a.mp4"]
 
 
-def wait_job(client: TestClient, timeout: float = 180) -> dict:
+def wait_job(client: TestClient, timeout: float = 600) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         jobs = client.get("/api/jobs").json()["jobs"]
@@ -3691,8 +3694,15 @@ def test_check_projects_dir_removes_its_own_folder_when_the_write_probe_fails(
     ],
 )
 def test_project_routes_name_a_rejected_config_file_and_settings_still_work(
-    client: TestClient, home: Path, tmp_path: Path, text: str, error: str
+    client: TestClient,
+    home: Path,
+    tmp_path: Path,
+    text: str,
+    error: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # the env var would win over the bogus config value
+    monkeypatch.delenv("CUTPOINT_VIDEO_ENCODER")
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
     cfg = home / "config.json"
     cfg.parent.mkdir(parents=True, exist_ok=True)
