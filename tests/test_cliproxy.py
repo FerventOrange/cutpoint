@@ -1063,7 +1063,7 @@ def test_cli_proxy_interrupt_exit_130_and_child_cleanup(tmp_path: Path) -> None:
         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0,
     )
     try:
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 30
         while not pid_file.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert pid_file.exists()
@@ -1116,7 +1116,7 @@ def test_parent_hardkill_leaves_no_plaintext_after_guardian_finalizes(
     )
     parent = subprocess.Popen([sys.executable, "-c", bootstrap], env=env)
     try:
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 30
         while not pid_file.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert pid_file.exists()

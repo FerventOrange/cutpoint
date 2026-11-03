@@ -474,6 +474,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are planned again, as are an upright clip's paths already saved by `360 director` (no
   `--force` needed; until `360 analyze` has recomputed the view layer, a WARNING says so and
   the paths are planned again on the next run). Helmet-mount clips are unchanged.
+- UI build progress no longer jumps backwards with ffmpeg 7 and newer (#678).
 - The 360 director keeps more friend shots on crash clips (#604): a person framed whole counts
   as framed well with `include_check_pad_deg` (new `pano.director` key, default 1.5 deg) of
   room inside the side margin, not the full `include_pad_deg` (5 deg). A fix (a wider view or a
