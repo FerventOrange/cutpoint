@@ -5401,8 +5401,13 @@ class LineProc:
         (["out_time_us=15000000"], 10.0, [1.0, 1.0]),  # a rounding overshoot is capped
         (["out_time_us=N/A", "out_time_us=5000000"], 10.0, [0.0, 0.5, 0.5]),
         (["out_time_us=5000000"], 0.0, [0.0, 0.0]),  # an unknown duration shows nothing
+        (
+            ["out_time_us=5000000", "out_time_us=3000000", "out_time_us=7000000"],
+            10.0,
+            [0.5, 0.5, 0.7, 0.7],  # a report that steps back never lowers the bar
+        ),
     ],
-    ids=["updates", "capped", "not-available", "no-duration"],
+    ids=["updates", "capped", "not-available", "no-duration", "steps-back"],
 )
 def test_read_progress_turns_out_time_into_a_share_of_the_duration(
     lines: list[str], duration: float, expected: list[float]
