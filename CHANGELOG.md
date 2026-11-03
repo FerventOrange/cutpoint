@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds `settings.style_requested` and a `detection` block, which `events` and re-runs reuse;
   `analyze --json` reports it as `outputs.detection`. A learned preset named `auto.json` is
   ignored with a warning.
+- HUD text check for `cutpoint detect` and `--style auto` (#513): a source the frame probe leaves
+  unsure between gameplay and general (no camera tags, not a still picture) gets the HUD OCR
+  engine on 8 frames; at least 3 text boxes that stay in place make it sure gameplay, so
+  gameplay with a thin HUD (War Thunder, Rainbow Six, Battlefield) no longer falls back to the
+  default style. Clocks, dates, speeds, GPS positions and the subtitle band do not count, so a
+  camera's burned-in overlay never makes camera footage gameplay. A few seconds per unsure
+  source, cached as `category-text-v1.json`; skipped in Cutpoint lite (the source stays
+  ambiguous), and never run with an explicit `--style`.
 - Releases attach `install.sh`, `install.ps1` and `SHA256SUMS` with the release version stamped in
   as the default, so `releases/download/X.Y.Z/install.sh` (or `releases/latest/download/`) installs that
   version from PyPI; the README and Getting started document the pinned one-liners and the checksum
