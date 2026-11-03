@@ -209,7 +209,9 @@ folder or file of Insta360 X3 footage makes a 360 project, analyzed with `360 an
 (see [360 video](workflows/360.md#in-the-ui)); its moments preview through the director's camera
 path (the one the analysis cached when it is current), with badges for poor paths
 ([Director preview](workflows/360.md#director-preview-and-camera-path-flags)). It does not expose
-the action-cam commands or the other `360` commands.
+the action-cam commands or the other `360` commands; for standard footage, Highlight style lists the
+`action-cam` style, which the dialog preselects when an input has GoPro or Insta360 telemetry (a
+stream-list probe of the first 12 files `analyze` would find) unless you chose another style.
 
 New Project's Source field takes the full paths of one or more videos and folders, one per line,
 that you type or paste; it always accepts them. A leading `~` is the home folder of the computer
@@ -550,7 +552,9 @@ Clear key), then, only for a custom base URL, from `CUTPOINT_ASSISTANT_API_KEY`.
 three; a key for another host (OpenRouter, a LAN
 server) is saved for that base URL or comes from `CUTPOINT_ASSISTANT_API_KEY`, and goes only over
 `https://` ([keys](configuration.md#assistant)). The Models tab only says "set (env)", "set
-(keyring)" or "not set"; the page never receives a key. To install Ollama and its models, see
+(keyring)" or "not set"; for Vision, a key that comes only from an environment variable shows
+"env (CLI only)": analyses started from `cutpoint ui` get no key variables and use the key saved in
+the Models tab, so "Allow vision requests" waits for a key saved there. The page never receives a key. To install Ollama and its models, see
 [getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat).
 
 A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on
@@ -1058,7 +1062,8 @@ Notes:
   measured frames predicts more clipping than the levels intend (`veto_clipped`; underwater,
   pixels whose red alone clips high, up to 3 % of the frame, do not count), a worse cast
   (`veto_cast`: the gray-world cast rises by more than 0.005 of the luma range, or to more than
-  1.5 times its value and by more than 0.002), a picture over 25 % more colorful (`veto_m3`) or
+  1.5 times its value and by more than 0.002), a picture over 25 % more colorful (`veto_m3`, a safety net: with the current levels
+  stretch and vibrance caps no grade reaches it) or
   a washed-out one: with `auto`, one that loses more than 15 % of its colorfulness
   (`veto_m3_drop`); underwater, one whose median saturation falls below 0.63 of its value, such
   as flat sand turned grey (`veto_faded`), or when its frames could not be decoded

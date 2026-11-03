@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   versioned (`frames-v1:<provider>@<host>` in `assistant.frames_consent` of `config.json`,
   per project folder); the AI Chat and Vision consents never cover it. The AI Chat consent text
   now says it never sends video frames unless you allow them for a project.
+- `cutpoint ui` offers the `action-cam` style in Highlight style for standard (non-360) footage,
+  single and multi-input, with a hint: best with GoPro or Insta360 telemetry, fed by the
+  reactions, keyframes and crash steps (events extra, `cutpoint setup`); in Cutpoint lite it still
+  works on telemetry and transcript. When at least one input has GoPro or Insta360 telemetry
+  (a stream-list probe of up to 12 files, not a telemetry read), the dialog preselects it unless
+  you already chose a style (#633).
 - A Models tab in `cutpoint ui` sets the model of each role: Chat (`assistant`) and Vision (the new
   `vision_assistant` section, same keys, the same providers as Chat), each
   with its own provider, model and, for hosted ones, permission. It replaces the AI assistant
@@ -401,6 +407,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Models tab no longer offers "Allow vision requests" while the Vision provider has no API key
+  or login: it shows the missing key or login hint instead (#620).
+- The model list is cached per role as well as provider and URL, so a list Chat loaded is no longer
+  shown for Vision (or the reverse) without its own request (#622).
+- The Models tab Vision key status says "env (CLI only)" for a key that only comes from an
+  environment variable: analyses started from `cutpoint ui` get no key variables and use the key
+  saved in the Models tab (#617). Its "Allow vision requests" box asks for a key saved in the
+  Models tab instead of offering Allow when the key is only in an environment variable, which
+  still works for command-line runs, and the Vision key hints (a missing or rejected key, a key
+  the keyring could not save) name the Models tab first. Model, base URL and rejected-key
+  errors of the hosted providers say "Models tab" instead of "Settings".
 - Vision no longer sends frames to an Ollama on another machine without consent. An Ollama URL
   that is not `localhost` or a loopback address (from `--ollama-url`, `vision_assistant.url`, `OLLAMA_HOST` or `ollama_url` in `config.json`)
   is hosted, as it already was for AI Chat: `analyze --vision`, the `events` VLM layer and
@@ -516,6 +533,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model no longer blocks for about 20 minutes before the generic profile is used (#608).
 - `events`: on a project's first run the contact sheets now use the activity profile the
   crash layer chose instead of the ski captions (#609).
+- The VLM layer of `events` no longer makes the vision model invent kills or enemies in games
+  without combat: the generic prompt asks about kills, deaths and teamkills only when the OCR
+  layer found kills in the source or its HUD preset lists `kill_words`, and otherwise describes
+  hype in neutral terms (close calls, successes and fails, teamwork, reactions). A preset's own
+  `hype` line is kept. Only sources without kill evidence are described again on the next run
+  (prompt version 6); cached descriptions of sources with kills and of action-cam footage stay
+  valid. The `VLM WINDOW` line at the top of `events.txt` names the vision model in
+  use (#596).
+- `analyze`: when the PANNs checkpoint cannot be loaded (missing, corrupt or refused as more than
+  weights), the reactions step no longer reads it a second time for the voice layer and reports
+  the failure once (one ERROR line, one `step_failed` warning); the voice layer is skipped with an
+  INFO line, and voice grids already cached are kept (#629).
 
 ## [0.4.0] - 2026-10-29
 

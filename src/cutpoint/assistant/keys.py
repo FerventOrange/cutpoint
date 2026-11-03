@@ -141,14 +141,26 @@ def status(provider: str, host: str, *, shared: bool = True) -> str | None:
     return lookup(provider, host, shared=shared)[1]
 
 
+def in_keyring(provider: str, host: str) -> bool:
+    """Whether the keyring holds a key for ``provider`` at ``host`` (never the key)."""
+    try:
+        return bool((_keyring().get_password(SERVICE, ring_user(provider, host)) or "").strip())
+    except Exception as err:  # noqa: BLE001 - no backend, a locked store: as if no key
+        logger.debug("keyring: could not read the %s key (%s)", provider, type(err).__name__)
+        return False
+
+
 def _check(provider: str) -> Any:
     if provider not in KEYED:
         raise ValueError(f"provider must be one of {', '.join(KEYED)}")
     return _keyring()
 
 
-def save(provider: str, key: str, host: str) -> None:
+def save(provider: str, key: str, host: str, *, vision: bool = False, shared: bool = True) -> None:
     """Save ``key`` for ``provider`` at ``host`` in the system keyring (:func:`ring_user`).
+    ``vision``: for the Vision role, whose jobs started from ``cutpoint ui`` get no key
+    variables, so a failure names a variable (:data:`ENV_KEY` only when ``shared``) for
+    command-line runs only.
 
     Raises:
         ValueError: An unknown provider, or a key that is empty, too long or has spaces.
@@ -162,8 +174,12 @@ def save(provider: str, key: str, host: str) -> None:
     try:
         ring.set_password(SERVICE, ring_user(provider, host), key)
     except Exception as err:  # noqa: BLE001 - any backend error, named without the key
-        names = env_names(provider, host)
+        names = [n for n in env_names(provider, host) if shared or n != ENV_KEY]
         hint = f"; or set {names[0]} before starting cutpoint ui" if names else ""
+        if vision:
+            hint = "; Vision jobs started from cutpoint ui need the keyring" + (
+                f" ({names[0]} works for command-line runs only)" if names else ""
+            )
         raise KeyringError(
             f"the keyring did not save the key ({type(err).__name__}){hint}"
         ) from None

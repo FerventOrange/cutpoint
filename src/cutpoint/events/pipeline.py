@@ -58,6 +58,7 @@ from cutpoint.events.vlm_windows import (
     cached_windows,
     describe_windows,
     game_prompt,
+    has_kills,
     select_windows,
     windows_to_events,
 )
@@ -236,11 +237,13 @@ def run_events(
     det = None
     voice_params = None
     keep = False  # hand PANNs to the voice layer instead of loading it again (#372)
+    voice_needs = False
+    panns_failed = False  # the audio layer could not load PANNs: voice does not retry (#629)
     if "voice" in layers:
         from cutpoint.events import voice as voice_layer  # noqa: PLC0415
 
         voice_params = voice_layer.VoiceParams()
-        keep = voice_layer.needs_run(sources, voice_params, force="voice" in force)
+        keep = voice_needs = voice_layer.needs_run(sources, voice_params, force="voice" in force)
     if "audio" in layers:
         with stage("audio"):
             unload_ollama()
@@ -255,7 +258,12 @@ def run_events(
                             )
                             evs = []  # nothing to detect: no model load
                         if evs is None:
-                            det = det or PannsDetector()
+                            if det is None:
+                                try:
+                                    det = PannsDetector()
+                                except Exception:
+                                    panns_failed = True
+                                    raise
                             evs = detect_audio_events(s, det, audio, force=True)  # miss or forced
                         layer1[str(s.path)] += [{**e, "kind": "audio"} for e in evs]
                 except BaseException:
@@ -278,7 +286,9 @@ def run_events(
     timings["audio_s"] = round(time.perf_counter() - t0, 1)
 
     # ---- layer 1c/1d: wind-robust voice grids, frame embeddings + people
-    if "voice" in layers:
+    if "voice" in layers and panns_failed and voice_needs:
+        logger.info("Voice layer skipped: PANNs did not load (see the audio layer's error)")
+    elif "voice" in layers:
         t0 = time.perf_counter()
         try:
             with stage("voice"), VramMonitor() as vm:
@@ -441,8 +451,12 @@ def run_events(
         for s in sources
     }
     # Game prompt and event types (custom seeds) from each source's HUD preset; ski has none.
+    # The prompt asks about kills only for footage with kills (#596).
     presets = {} if ski else {src: load_preset(g, project) for src, g in games.items()}
-    prompts = {src: game_prompt(games[src], p) for src, p in presets.items()}
+    prompts = {
+        src: game_prompt(games[src], p, has_kills(p, layer1.get(src, [])))
+        for src, p in presets.items()
+    }
     seed_types = {src: types_for(p) for src, p in presets.items()}
     windows = select_windows(
         sources, hl.get("candidates", []), layer1, vlm, seed_types, quiet="vlm" not in layers

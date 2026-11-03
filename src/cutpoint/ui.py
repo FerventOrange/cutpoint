@@ -198,6 +198,9 @@ FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
 FRAME_CACHE_MAX = 1500  # stills kept per project; the least recently used go first
 SOURCES_CACHE_MAX = 32  # projects whose source lists are kept; the least recently used go first
 SOURCES_CACHE_S = 60.0  # rebuild a kept source list at least this often (what stats miss)
+_suggest_lock = threading.Lock()  # one style suggestion probes at a time; another gets no answer
+TELEMETRY_PROBE_TIMEOUT = 10  # seconds per ffprobe of that suggestion
+MAX_TELEMETRY_PROBES = 12  # files one style suggestion probes, so a big folder or a NAS stays quick
 MAX_INPUTS = 50  # files and folders one New project takes (analyze's positional inputs)
 MAX_EXCLUDES = 20  # analyze --exclude patterns one New project takes
 MAX_GLOB = 200  # characters of one --exclude pattern
@@ -733,8 +736,14 @@ def key_status(data: dict[str, Any], section_name: str = "assistant") -> dict[st
     def shared(p: str) -> bool:
         return not vision or _vision_key_shared(data, p)
 
+    def where(p: str) -> str | None:
+        # UI jobs read the keyring first for the Vision role, even when a variable is set
+        if vision and ai_keys.in_keyring(p, hosts[p]):
+            return "keyring"
+        return ai_keys.status(p, hosts[p], shared=shared(p))
+
     return {
-        "keys": {p: ai_keys.status(p, hosts[p], shared=shared(p)) for p in ai_keys.KEYED},
+        "keys": {p: where(p) for p in ai_keys.KEYED},
         "key_hosts": hosts,
     }
 
@@ -790,7 +799,8 @@ def consent_view(
     ``role`` (``"assistant"`` or ``"vision"``): ``{needed, key, host, missing_key,
     missing_kind}``; ``key`` (:func:`cutpoint.assistant.providers.consent_key`) is None for a
     local provider; ``missing_key``: how to add the API key (or log in) it needs, which comes
-    before agreeing; ``missing_kind``: ``"login"`` for a subscription provider (no key: a proxy
+    before agreeing (for Vision, a key only in an environment variable is missing: UI jobs get
+    none); ``missing_kind``: ``"login"`` for a subscription provider (no key: a proxy
     login), ``"key"`` otherwise, None when nothing is missing. ``consent`` defaults to the
     role's own list in ``config.json``: one role's consent never covers the other's."""
     key = ai_providers.consent_key(provider, role)
@@ -801,7 +811,12 @@ def consent_view(
             ).consent
         except (ValueError, TypeError):  # config.json is invalid: no consent is known
             consent = ()
-    missing = ai_providers.missing_key(provider)
+    # a Vision job started here gets no key variables: only a keyring key counts for it
+    missing = (
+        ai_providers.missing_ui_job_key(provider)
+        if role == "vision"
+        else ai_providers.missing_key(provider)
+    )
     kind = "login" if ai_providers.is_subscription(provider) else "key"
     return {
         "needed": key is not None and key not in consent,
@@ -3191,7 +3206,7 @@ def new_project(name: str, source: str, style: str, **extra: Any) -> dict[str, s
 
 
 def ui_styles() -> list[str]:
-    """Styles for standard video (telemetry-driven action-cam styles are command-line only).
+    """Styles for standard video, the telemetry-driven action-cam styles included (#633).
 
     A learned style that fails to load is left out with a warning, so one bad file does not
     break the UI.
@@ -3199,12 +3214,11 @@ def ui_styles() -> list[str]:
     names = []
     for n in style_names():
         try:
-            style = get_style(n)
+            get_style(n)
         except (ValueError, TypeError, AttributeError) as e:
             logger.warning("skipping learned style %s: %s", learned_styles().get(n, n), e)
             continue
-        if style.kind != ACTION_CAM:
-            names.append(n)
+        names.append(n)
     return names
 
 
@@ -3217,8 +3231,33 @@ def _gaming_style(name: object) -> bool:
         return False
 
 
+def suggest_style(
+    inputs: list[str], exclude: list[str] = (), recursive: bool = False
+) -> str | None:
+    """``action-cam`` when an input carries camera telemetry, else None (#633).
+
+    Only the container's stream list is probed (``analyze.has_telemetry``: a GoPro GPMF track or an
+    Insta360 IMU trailer), never the telemetry itself, within ``TELEMETRY_PROBE_TIMEOUT`` s per file
+    and stopping at the first hit. The files are those ``analyze`` would find (``find_picked``:
+    ``recursive``, ``exclude`` and ``source_remap`` apply), the first ``MAX_TELEMETRY_PROBES`` of
+    them. Unreadable inputs count as none. Usable 360 footage gets no suggestion: the server picks
+    its 360 style (``pano.default_style``) whatever is chosen.
+    """
+    from cutpoint.analyze import has_telemetry  # noqa: PLC0415
+
+    try:
+        for x in inputs:
+            src = Path(x)
+            if (src.is_file() or src.is_dir()) and _usable(inspect_source(src)[1]):
+                return None
+        files = find_picked(inputs, exclude, recursive)[:MAX_TELEMETRY_PROBES]
+    except OSError:
+        return None
+    return "action-cam" if any(has_telemetry(f, TELEMETRY_PROBE_TIMEOUT) for f in files) else None
+
+
 def _ski_style(name: str) -> bool:
-    """``name`` is a telemetry-driven action-cam style (``kind`` action-cam), accepted for 360 sources."""
+    """``name`` is a telemetry-driven action-cam style (``kind`` action-cam): kept as given for 360 sources."""
     try:
         return get_style(name).kind == ACTION_CAM
     except (ValueError, TypeError, AttributeError):
@@ -3862,7 +3901,14 @@ def create_app(port: int) -> FastAPI:
         section = key_section(body)
         data = config_data()
         try:
-            ai_keys.save(name, body.get("key"), key_hosts(data, section)[name])
+            vision = section == "vision_assistant"
+            ai_keys.save(
+                name,
+                body.get("key"),
+                key_hosts(data, section)[name],
+                vision=vision,
+                shared=not vision or _vision_key_shared(data, name),
+            )
         except ValueError as err:
             raise bad(str(err)) from None
         except ai_keys.KeyringError as err:
@@ -4120,6 +4166,19 @@ def create_app(port: int) -> FastAPI:
             found.append({"id": d.name, "name": read_meta(d).get("name") or d.name})
         return {"projects": found}
 
+    @owned.post("/projects/suggest-style")
+    def suggest_project_style(body: dict[str, Any]):
+        """The style the New project dialog preselects for these sources (null: no suggestion)."""
+        inputs = _body_inputs(body)
+        recursive, exclude = _flag(body, "recursive"), _exclude_globs(body)
+        if not _suggest_lock.acquire(blocking=False):  # a suggestion is optional: never queue
+            return {"style": None, "busy": True}  # not "no telemetry": the page asks again
+        try:
+            style = suggest_style(inputs, exclude, recursive)
+        finally:
+            _suggest_lock.release()
+        return {"style": style if style in ui_styles() else None}
+
     @owned.post("/projects")
     def create_project(body: dict[str, Any]):
         name, style = body.get("name"), body.get("style", "gaming")
@@ -4139,8 +4198,6 @@ def create_app(port: int) -> FastAPI:
                 raise bad(f"source is not readable: {err}") from err
             if problem:
                 raise bad(problem)
-            if ski:  # action-cam styles need telemetry: 360 footage only in the UI
-                raise bad(f"unknown style {style!r}")
             full = [os.path.abspath(x) for x in inputs]  # noqa: PTH100
             extra: dict[str, Any] = {"inputs": full} if len(full) > 1 else {}
             extra |= ({"recursive": True} if recursive else {}) | (
@@ -4157,8 +4214,6 @@ def create_app(port: int) -> FastAPI:
         if problem:
             raise bad(problem)
         if not usable:
-            if ski:  # action-cam styles need telemetry: 360 footage only in the UI
-                raise bad(f"unknown style {style!r}")
             return new_project(name.strip(), os.path.abspath(source), style)  # noqa: PTH100
         # 360: the action-cam styles as given, any other the 360 default (pano.default_style)
         try:
