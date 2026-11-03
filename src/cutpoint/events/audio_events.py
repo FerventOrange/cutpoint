@@ -17,6 +17,8 @@ from __future__ import annotations
 import csv
 import importlib.util
 import logging
+import pickle
+import re
 import sys
 import time
 import types
@@ -30,6 +32,8 @@ from cutpoint.events import paths
 from cutpoint.events.common import Source, free_torch, iter_audio_blocks, layer_cache_path
 
 logger = logging.getLogger(__name__)
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 MODEL_SR = 32000
 FRAME_S = 0.01  # framewise output resolution of Cnn14_DecisionLevelMax (hop 320 @ 32 kHz)
@@ -158,7 +162,22 @@ class PannsDetector:
             fmax=14000,
             classes_num=527,
         )
-        ckpt = torch.load(paths.panns_ckpt(), map_location="cpu", weights_only=False)
+        try:
+            # weights_only: the checkpoint is a dict of tensors; never unpickle arbitrary code
+            ckpt = torch.load(paths.panns_ckpt(), map_location="cpu", weights_only=True)
+        except pickle.UnpicklingError as e:
+            detail = next(
+                (
+                    _ANSI.sub("", line).strip()
+                    for line in str(e).splitlines()
+                    if "Unsupported global" in line
+                ),
+                "",
+            )
+            raise RuntimeError(
+                f"{paths.panns_ckpt()} cannot be loaded safely (it holds more than weights"
+                f"{': ' + detail if detail else ''}); delete it and run cutpoint setup --only panns"
+            ) from e
         self.model.load_state_dict(ckpt["model"])
         self.model.to(self.device).eval()
         if self.device == "cpu":

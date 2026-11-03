@@ -94,6 +94,9 @@ MAX_VL_CHARS = 80
 MATCH_SHARE = 0.5  # library match: mean zero-shot share of the best profile ...
 MATCH_MARGIN = 0.2  # ... and its lead over the runner-up
 DESCRIBE_FRAMES = 4
+# Read timeout of one synthesis request: a CPU-only Ollama can take minutes per reply, and the
+# 600 s default of VisionRater.ask_json would stall `profile` and `crashes` that long (#608).
+PROFILE_TIMEOUT_S = 120
 
 # (prompt, JPEG frames, JSON schema of the reply or None) -> the model's JSON reply, or None.
 Ask = Callable[[str, list[bytes], dict[str, Any] | None], dict[str, Any] | None]
@@ -584,7 +587,9 @@ def default_ask() -> tuple[Ask | None, str | None]:
     if that Ollama is on another machine without the user's Vision consent: nothing is sent,
     and :meth:`VisionRater.warn_consent` warns once)."""
     rater = VisionRater(local_only=True)
-    return (rater.ask_json, rater.model) if rater.available() else (None, None)
+    if not rater.available():
+        return None, None
+    return functools.partial(rater.ask_json, timeout=PROFILE_TIMEOUT_S), rater.model
 
 
 # --------------------------------------------------------------------------- resolve
@@ -665,7 +670,8 @@ def resolve(
             examples = [lib[seed]] if seed else [lib[k] for k in dict.fromkeys(near[:2])]
             new = synthesize(desc, context, ask, examples) if desc or context else None
             rec.update(description=desc, described_by=how, model=model)
-            if isinstance(rater := getattr(ask, "__self__", None), VisionRater):
+            target = getattr(ask, "func", ask)  # default_ask() wraps the method in a partial
+            if isinstance(rater := getattr(target, "__self__", None), VisionRater):
                 rater.unload()  # done with it: VRAM for the CLIP steps, other models stay
             if new is not None:  # LLM words add phrases, never re-weight known ones
                 known = (profile if seed else base())["incident"]["words"]
