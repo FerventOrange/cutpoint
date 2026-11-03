@@ -233,16 +233,17 @@ def run_events(
     preflight(layers)
     rater = VisionRater(ollama_url, ollama_model)  # the shared vision client
     hosted = rater.provider_name != "ollama"
-    from cutpoint.assistant.providers import AUTO_SERVER_MODEL  # noqa: PLC0415
+    from cutpoint.assistant.providers import AUTO_SERVER_MODEL, host_port  # noqa: PLC0415
 
     online: bool | None = None  # rater.available(), asked once
     if hosted and "vlm" in layers and rater.model == AUTO_SERVER_MODEL:
         # resolve the server's model before any cache lookup: the descriptions are keyed on
         # it. Offline it stays the placeholder, and its cached descriptions are not found.
         online = rater.available()
-    # a hosted provider's descriptions are keyed on its host too: one model id at two
-    # servers describes apart (rater.host: providers.endpoint)
-    vlm.model = f"{rater.provider_name}@{rater.host}:{rater.model}" if hosted else rater.model
+    # the descriptions are keyed on the host too: one model id at two servers describes
+    # apart (rater.host: providers.endpoint; an Ollama's host[:port] of its URL, #670)
+    host = rater.host if hosted else host_port(rater.url)
+    vlm.model = f"{rater.provider_name}@{host}:{rater.model}"
     sources = []
     seen: set[str] = set()
     unreachable: list[tuple[str, OSError]] = []
