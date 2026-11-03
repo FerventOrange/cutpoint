@@ -96,6 +96,25 @@ def test_find_moments_matches_strong_cues_by_name_strongest_first() -> None:
     assert context.MomentTable([lo, hi], []).find("speed") == ["w2", "w1"]
 
 
+def test_a_cue_word_matches_parts_of_cue_names_by_prefix() -> None:
+    """#634 F1: "air" names airtime and jump_air, not chairlift, so a lift ride never outranks
+    a jump for "big air"."""
+    lift = {"id": "lift", "source": A, "start": 0.0, "end": 8.0, "score": 90, "label": "ride"}
+    jump = {**lift, "id": "jump", "start": 20.0, "end": 28.0, "score": 50, "label": "send"}
+    wins = context.vlm_windows(
+        {
+            "windows": [
+                {"source": A, "start": 0.0, "end": 8.0, "tags": {"chairlift": 9}},
+                {"source": A, "start": 20.0, "end": 28.0, "tags": {"jump_air": 8}},
+            ]
+        }
+    )
+    t = context.MomentTable([lift, jump], [], wins)
+    assert t.find("big air") == ["jump"]
+    assert t.find("chair") == ["lift"]
+    assert context._names("crash", "crash_fall") and not context._names("air", "chairlift")
+
+
 def test_a_row_carries_compact_cues_seen_heard_and_kind() -> None:
     t = table()
     row = t.row("c3")
@@ -158,12 +177,40 @@ def test_the_moments_list_shows_the_same_label_and_keeps_the_analysis_one() -> N
 
 
 def test_the_rules_and_tool_say_to_use_the_visual_fields_before_asking() -> None:
-    rules = context.RULES
-    for word in ("seen", "cues", "heard", "beauty", "chairlift", "bloopers", "find_moments"):
+    rules = context.rules(table())
+    for word in (
+        "seen",
+        "cues",
+        "heard",
+        "kind",
+        "beauty (a steady",
+        "scenic_vista",
+        "find_moments",
+    ):
         assert word in rules, word
+    assert "beauty shots = high beauty or scenic_vista with stopped" in rules
+    assert "casual riding = high speed or carve or fast_groomer." in rules  # no airtime or crash
     assert "before asking the user for moment ids" in rules
+    msgs = context.build_messages(table(), [], "hi", context.budget(8192))
+    assert msgs[0]["content"] == rules
     find = next(t for t in session.TOOLS if t["function"]["name"] == "find_moments")
     assert "cue names" in find["function"]["description"]
+
+
+def test_the_rules_name_only_the_cues_the_project_has() -> None:
+    """#634 F6: a gaming or funny project gets no action-cam cue names or searches."""
+    funny = [{**CANDS[0], "signals": {"laughter": 0.8, "events": {"laughter": 0.3}}}]
+    rules = context.rules(context.MomentTable(funny, []))
+    assert "Cues: laughter (said)." in rules and "heard (" in rules
+    for word in ("beauty", "chairlift", "airtime", "bloopers", "casual", "seen (", "kind ("):
+        assert word not in rules, word
+    bare = context.rules(context.MomentTable([{**CANDS[0], "signals": {}}], []))
+    assert "What analysis saw" not in bare
+    assert "Look moments up with find_moments before asking the user for moment ids." in bare
+    crash = [{**CANDS[0], "signals": {"crash": 0.9, "events": {"laughter": 0.2}}}]
+    assert "bloopers = high crash with laughter heard" in context.rules(
+        context.MomentTable(crash, [])
+    )
 
 
 def test_a_turn_searches_the_windows_of_its_project() -> None:

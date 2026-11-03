@@ -8665,8 +8665,21 @@ def test_a_login_whose_poll_fails_reports_the_error_and_can_start_again(
 
 
 def test_chat_diffs_name_a_moment_by_its_display_label() -> None:
-    """#634: momentName (the AI Chat diff rows) uses the Moments list's title, display_label,
-    and falls back to the label and the id."""
+    """#634: a proposal row (propRow) and a found moment (momentName) are named as the Moments
+    list names them: display_label while the row keeps the analysis label (shownName), the row's
+    own label once renamed, else the label and the id."""
     js = _web("app.js")
+    shown = _js_function(js, "shownName")
+    assert "cand?.display_label && (label == null || label === cand.label)" in shown
+    row = _js_function(js, "propRow")
+    assert "shownName(cands().find((c) => c.id === r.id), r.label) || momentName(r.id)" in row
     body = js[js.index("const momentName = (id) =>") :][:300]
     assert "c?.display_label || (c ?? S.segments.find((s) => s.id === id))?.label || id" in body
+
+
+def test_chat_filter_button_shows_only_when_the_list_filter_finds_a_moment() -> None:
+    """#634 F3: "Filter list by" is offered only when the list's own filter (labels, vision
+    label, transcript) finds one of the moments shown, so it never filters the list to 0."""
+    item = _js_function(_web("app.js"), "showItem")
+    assert "momentMatches({ ...c, label: filterLabel(c) }, query, NO_FILTERS)" in item
+    assert "found ? h('button'" in item

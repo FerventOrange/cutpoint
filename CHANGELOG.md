@@ -16,7 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   25 characters more per moment on average, at most ~300). `find_moments` also searches the vision
   labels, the VLM window descriptions and the names of strong cues, and the instructions tell the
   model to rank by them ("beauty shots", "casual skiing", "bloopers") before asking for moment
-  ids. Only text and numbers are sent, never frames.
+  ids, naming only the cues the project has. Those searches need action-cam footage with
+  telemetry, the `events` vision layer or visual-pool moments; other styles have the vision
+  rating label, loudness, laughter and the sounds heard. A cue word matches the start of a part of
+  a cue name (`air`: airtime, jump_air; not chairlift). Only text and numbers are sent, never
+  frames.
 - A moment with a generic label (`action-moment`) is titled with what the vision model saw in AI
   Chat and in the `cutpoint ui` Moments list; `highlights.json` and clip file names keep the
   analysis label. Moments of the visual pool carry a "visual" badge with their kind. The AI Chat

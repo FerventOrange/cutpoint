@@ -453,8 +453,8 @@ function renderMoments() {
     .map((c, i) => ({ c, rank: i + 1 }))
     .filter(({ c }) => {
       const seg = segOf(c);
-      // the filter finds a moment by the label it shows and by its analysis label
-      const label = [c.display_label, c.label].filter(Boolean).join(' ');
+      // the filter finds a moment by the label it shows, its analysis label and vision label
+      const label = filterLabel(c);
       return momentMatches({ ...c, label, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f);
     });
   if (S.order === 'position') items.sort((a, b) => positionCompare(a.c, b.c)); // the badge keeps the score rank
@@ -560,10 +560,15 @@ function prepBadge(src, seg) {
     icon(name), h('span', { class: 'vh', text: 'Preview ' }), word);
 }
 
-/**
- * The camera path flags of a 360 moment (#517) as small badges (words, never colour alone), or null.
- * Their reasons are the card's tooltip and description (``flag-tip``) and the preview's note.
- */
+/** The name of a moment whose row is called ``label``: the Moments list's title (display_label,
+ * what the vision model saw for a generic label; #634) unless the row was renamed. */
+function shownName(cand, label) {
+  return cand?.display_label && (label == null || label === cand.label) ? cand.display_label : label;
+}
+
+/** The labels the list filter searches: the title, the analysis label and the vision label. */
+const filterLabel = (c) => [c.display_label, c.label, c.vision_label].filter(Boolean).join(' ');
+
 /** "visual · view": a moment of the visual pool (#635: beauty shots, friends, cruising runs that
  * analysis adds without a sound or speech cue), with its kind when it has one. */
 function poolBadge(c) {
@@ -573,6 +578,10 @@ function poolBadge(c) {
     kind ? [h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' }), kind] : null);
 }
 
+/**
+ * The camera path flags of a 360 moment (#517) as small badges (words, never colour alone), or null.
+ * Their reasons are the card's tooltip and description (``flag-tip``) and the preview's note.
+ */
 function flagBadges(pano) {
   if (!pano?.flags?.length) return null;
   return h('span', { class: 'cand-flags' },
@@ -770,9 +779,7 @@ function renderStage(seekToStart, keepVideo = false) {
   const c = current();
   $('#stageBody').hidden = !c;
   $('#toggleBtn').hidden = !c;
-  // the Moments list's title (display_label) unless the sequence row was renamed
-  const title = c && (c.cand?.display_label && (!c.seg || c.seg.label === c.cand.label) ? c.cand.display_label : c.label);
-  $('#stageMeta').textContent = c ? `${title} from ${baseName(c.source)}` : '';
+  $('#stageMeta').textContent = c ? `${shownName(c.cand, c.seg ? c.label : null) || c.label} from ${baseName(c.source)}` : '';
   renderFullPrep(c);
   renderNerdStats(c);
   renderPanoNote(c);
@@ -3211,7 +3218,7 @@ const CONSENT_SENDS = "this project's analysis results (moment labels, scores an
 const CHANGE_NAMES = { added: 'added', removed: 'removed', moved: 'moved', trimmed: 'trimmed', relabelled: 'renamed' };
 const SMALL_MODEL_NOTE = 'A small local model can miss moments or misread a request. Check each change in the preview before you apply it.';
 const aiUrl = (path = '') => `/api/projects/${encodeURIComponent(S.id)}/assistant${path}`;
-// a moment's display_label (what the vision model saw, for a generic label; #634) as in the Moments list
+// a moment's name as the Moments list shows it (shownName; #634)
 const momentName = (id) => {
   const c = cands().find((m) => m.id === id);
   return c?.display_label || (c ?? S.segments.find((s) => s.id === id))?.label || id;
@@ -3437,7 +3444,7 @@ function renderPropBar() {
 
 /** One row of the previewed sequence, with its change in words: Added, Removed, Moved 3 → 1, Trimmed 0:10.00–0:18.00 → .... */
 function propRow(r) {
-  const name = r.label || momentName(r.id);
+  const name = shownName(cands().find((c) => c.id === r.id), r.label) || momentName(r.id);
   const at = r.after ?? r.before;
   const span = (s) => `${fmt(s.start)}–${fmt(s.end)}`;
   const marks = r.changes.map((c) => h('span', { class: `prop-mark ${c}` },
@@ -3571,6 +3578,11 @@ function turnItems(t) {
 
 /** show_moments: the moments, highlighted in the list (a toggle) or, by the words the model searched for, filtered through the list's own filter. */
 function showItem(ev, id, query) {
+  // Filter only when the list's filter finds one of these moments by the model's words
+  const found = query && ev.ids.some((x) => {
+    const c = cands().find((m) => m.id === x);
+    return c && momentMatches({ ...c, label: filterLabel(c) }, query, NO_FILTERS);
+  });
   const on = !!S.shown && S.shown.size === ev.ids.length && ev.ids.every((x) => S.shown.has(x));
   const n = ev.ids.length;
   return h('li', { class: 'msg ai', 'data-id': id },
@@ -3586,7 +3598,7 @@ function showItem(ev, id, query) {
           renderChat();
         },
       }, 'Highlight in list'),
-      query ? h('button', {
+      found ? h('button', {
         type: 'button', class: 'btn small', 'data-act': 'filter',
         onclick: () => {
           S.filter = query;
@@ -5449,7 +5461,7 @@ function bind() {
     const c = current();
     if (!c) return;
     (c.seg ? removeSeg : addSeg)(c.id);
-    $('#seqLive').textContent = `${c.label} ${c.seg ? 'removed from' : 'added to'} the sequence`;
+    $('#seqLive').textContent = `${shownName(c.cand, c.seg ? c.label : null) || c.label} ${c.seg ? 'removed from' : 'added to'} the sequence`;
   });
   $('#seqPlayBtn').addEventListener('click', () => (S.seqPlay ? seqStop() : seqStart()));
   $('#undoBtn').addEventListener('click', undo);

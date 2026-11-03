@@ -581,11 +581,18 @@ as in the Moments list), score, times, transcript snippet and, when analysis has
 one 0-10 scale (`beauty`, `people`, `group`, `speed`, `carve`, `airtime`, `crash`, `wipeout`,
 `stopped`, the action-cam tags such as `chairlift` or `scenic_vista`, and more; the strongest six
 per moment in the list, all of them in `get_moment`). Its `find_moments` tool searches labels,
-transcripts, `seen` text, heard sounds and the names of cues of 5 or more, so "beauty shots",
-"casual skiing" or "bloopers" work without moment ids. Only these results are sent, never frames.
+transcripts, `seen` text, heard sounds and the names of cues of 5 or more (`air` finds `airtime`
+and `jump_air`). The instructions name only the cues the project has, and requests such as
+"beauty shots", "casual skiing" or "bloopers" work without moment ids only when it has the cues
+for them: action-cam footage with telemetry (`--style action-cam`), the `events` vision layer
+(window descriptions and tags) or visual-pool moments. Other styles have the vision rating
+label (with `--vision`), `loudness`, `laughter` and the laughter or screams heard, so the model
+finds their moments by those, the label and the transcript. Only these results are sent, never
+frames.
 
 - Moments the model points to can be highlighted in the Moments list ("Highlight in list") or
-  the list filtered by the model's search words.
+  the list filtered by the model's search words (offered only when the list's search, which also
+  matches vision labels, finds one of them).
 - A proposed change opens in the Sequence tab as a preview of the new sequence: each row is
   marked Added, Moved (old to new position), Trimmed (old to new times) or Renamed, removed clips are
   listed as Removed, the moments are marked in the Moments list, and the trim rail shows the new

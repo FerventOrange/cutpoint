@@ -65,3 +65,24 @@ test('the preview title uses display_label; a renamed sequence row keeps its own
   assert.equal(await focus('h003'), 'my pick from a.mp4');
   page.assertNoUnhandled();
 });
+
+test('the filter finds a vision label; Add on the preview announces the display_label', async (t) => {
+  const p = project();
+  p.highlights.candidates[2] = { ...p.highlights.candidates[2], vision_label: 'static group shot' };
+  const page = await open(t, p);
+  const d = page.document;
+  const filter = d.querySelector('#filter');
+  filter.value = 'group shot';
+  filter.dispatchEvent(new page.window.Event('input', { bubbles: true }));
+  await page.settle();
+  assert.deepEqual([...d.querySelectorAll('#candList li.cand')].map((li) => li.dataset.id), ['h003']);
+  filter.value = '';
+  filter.dispatchEvent(new page.window.Event('input', { bubbles: true }));
+  await page.settle();
+  d.querySelector('#candList li.cand[data-id="h001"] .cand-main').click();
+  await page.settle();
+  d.querySelector('#toggleBtn').click();
+  await page.settle();
+  assert.equal(d.querySelector('#seqLive').textContent, 'smooth skiing run added to the sequence');
+  page.assertNoUnhandled();
+});
