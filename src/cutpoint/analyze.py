@@ -269,6 +269,16 @@ def _transcript(
     return data
 
 
+def _cached_transcripts(sources: Sequence[Path], tr: Transcriber) -> int:
+    """How many of ``sources`` have their (whole-file) transcript of ``tr`` cached;
+    unreachable ones count as not cached."""
+    n = 0
+    for src in sources:
+        with contextlib.suppress(OSError):
+            n += (cache.source_dir(src) / transcript_name(tr.model_name, tr.language)).is_file()
+    return n
+
+
 @contextlib.contextmanager
 def _watch_extract(
     wav: Path, seconds: float, report: Callable[[float], None] | None
@@ -1756,6 +1766,7 @@ def _analyze(
             timings["telemetry_s"] = telemetry_s
         results: list[SourceResult] = []
         transcript_lines: list[str] = []
+        progress.continuing("transcribe", _cached_transcripts(sources, tr), len(sources))
         for i, src in enumerate(sources):
             steps.update(progress.fraction(i, len(sources)), src.name)
 

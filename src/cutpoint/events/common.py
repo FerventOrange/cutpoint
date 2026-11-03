@@ -6,6 +6,7 @@ import contextlib
 import logging
 import re
 import subprocess
+import sys
 import threading
 import time
 import wave
@@ -339,14 +340,11 @@ class VramMonitor:
 
 
 def free_torch() -> None:
-    """Release cached CUDA memory held by torch (no-op without torch/CUDA)."""
+    """Release cached CUDA memory held by torch (no-op without torch/CUDA; torch is not
+    imported when nothing loaded it, as it then caches nothing)."""
     import gc  # noqa: PLC0415
 
     gc.collect()
-    try:
-        import torch  # noqa: PLC0415
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except ImportError:
-        pass
+    torch = sys.modules.get("torch")
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()

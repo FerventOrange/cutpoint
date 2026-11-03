@@ -17,18 +17,25 @@ rest of the run: emitting never stops the run itself.
 
 A cancelled run (Ctrl+C, exit 130) ends its current step ``failed`` with detail
 ``cancelled``; an error that stops the run ends it ``failed`` with the error text.
+
+A step that starts with part, not all, of its work cached (a re-run after an interruption) logs an
+INFO line ``<name>: N/M done, continuing`` and sends the same text at once as its
+``detail`` (:func:`continuing`).
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import sys
 import threading
 import time
 from collections.abc import Iterator, Sequence
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 ENV = "CUTPOINT_PROGRESS"
 ANALYZE_STEPS = ("transcribe", "reactions", "keyframes", "crashes", "ranking", "vision")
@@ -173,6 +180,18 @@ class Run:
                 self._timer.daemon = True
                 self._timer.start()
 
+    def note(self, detail: str) -> None:
+        """Set the running step's ``detail`` and write it at once (not throttled), so the
+        updates that follow cannot replace it before it is sent."""
+        step = self.current
+        if step is None or self.state.get(step) != "running":
+            return
+        self._detail = detail
+        with self._lock:
+            self._cancel_pending()
+            self._last = time.monotonic()
+            self._write(self._line(step, "running", self._pct, detail))
+
     def _end(self, state: str, detail: str | None) -> None:
         step = self.current
         if step is None:
@@ -283,6 +302,19 @@ def update(pct: float | None = None, detail: str | None = None) -> None:
     """:meth:`Run.update` of the active run (no-op without one)."""
     if _RUNS:
         _RUNS[-1].update(pct, detail)
+
+
+def continuing(name: str, done: int, total: int) -> None:
+    """``done`` of the ``total`` units (sources, windows) of ``name`` are cached at its
+    start: log ``<name>: N/M done, continuing`` (INFO) and send it as the running step's
+    detail (:meth:`Run.note`). Nothing when ``done`` is 0 (a fresh run looks as before) or
+    ``total`` (nothing left to continue: a re-run of finished work looks as before too)."""
+    if not 0 < done < total:
+        return
+    text = f"{name}: {done}/{total} done, continuing"
+    logger.info("%s", text)
+    if _RUNS:
+        _RUNS[-1].note(text)
 
 
 def fraction(done: float, total: int) -> float:

@@ -60,7 +60,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import activity, cache, jsonout
+from cutpoint import activity, cache, jsonout, progress
 
 logger = logging.getLogger(__name__)
 # Why the run that calls detect_project has no visual layer (``analyze`` left the
@@ -1254,15 +1254,25 @@ def detect_project(
     bypass = {id(c) for c in todo if c["pre_score"] < p.prefilter}
     enc = encoder
     stores: dict[str, dict[str, Any]] = {}
+    windows: set[tuple[str, str]] = set()
+    for c in todo:
+        src = c["source"]
+        if src not in stores:
+            stores[src] = {} if force else (cache.load_json(_dense_cache(Path(src), p)) or {})
+        windows.add((src, "{:.1f}-{:.1f}".format(*dense_window(c, p))))
+    progress.continuing("dense check", sum(k in stores[s] for s, k in windows), len(windows))
     try:
         for c in todo:
             src = c["source"]
-            if src not in stores:
-                stores[src] = {} if force else (cache.load_json(_dense_cache(Path(src), p)) or {})
+            store = stores[src]
             a, b = dense_window(c, p)
-            if enc is None and f"{a:.1f}-{b:.1f}" not in stores[src]:
+            key = f"{a:.1f}-{b:.1f}"
+            if enc is None and key not in store:
                 enc = ClipEncoder()
-            c["dense"] = dense_feature(enc, inputs[src], c, p, stores[src])
+            new = key not in store
+            c["dense"] = dense_feature(enc, inputs[src], c, p, store)
+            if new and key in store:  # saved at once: an interrupted run keeps its windows
+                cache.save_json(_dense_cache(Path(src), p), store)
     finally:
         if enc is not None:
             enc.close()

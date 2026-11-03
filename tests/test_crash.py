@@ -234,6 +234,102 @@ def test_detect_project_dense_zero_never_lowers_a_speed_drop_bypass(tmp_path, mo
     assert got["normal"]["confidence"] < round(pre["normal"], 3)  # a normal candidate still drops
 
 
+@pytest.fixture
+def dense_run(tmp_path, monkeypatch):
+    """``detect_project`` over four candidates with distinct dense windows, the real dense
+    store and :func:`crash.dense_feature`; the decode and the CLIP embedding are fakes.
+    ``state.stop_at`` interrupts the decode of that window (KeyboardInterrupt)."""
+    src = tmp_path / "s.mp4"
+    src.write_bytes(b"x")
+    project = _project(tmp_path, src)
+    state = SimpleNamespace(src=src, project=project, decoded=[], stop_at=None, loads=0)
+    starts = (10.0, 40.0, 70.0, 100.0)  # 4 s before, 6 s after: no two windows overlap
+
+    def cands(inp, p):
+        out = []
+        for k, t0 in enumerate(starts):
+            c = _cand(f"c{k}", 0.9 - 0.1 * k, 10, 10)  # strongest first: c0 .. c3
+            c.update(source=str(src), t0=t0, t1=t0 + 2.0)
+            out.append(c)
+        return out
+
+    def decode(path, a, b, fps):
+        if a == state.stop_at:
+            raise KeyboardInterrupt
+        state.decoded.append(a)
+        ts = np.arange(a, b, 1.0)
+        return ts, np.zeros((len(ts), 2, 2, 3), np.uint8)
+
+    class Enc:
+        def __init__(self):
+            state.loads += 1
+
+        def embed(self, frames):
+            n = len(frames)
+            return np.tile(np.linspace(0.1, 0.9, n)[:, None, None], (1, 3, 4))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(crash, "load_inputs", lambda *a: _inputs(spike=False))
+    monkeypatch.setattr(crash, "candidate_events", cands)
+    monkeypatch.setattr(crash, "score_candidate", lambda inp, c, p: c)
+    monkeypatch.setattr(crash, "plan_clip", lambda i, c, p: {"start": c["t0"], "end": c["t1"]})
+    monkeypatch.setattr(crash, "decode_window", decode)
+    monkeypatch.setattr(crash, "crash_prompt_scores", lambda emb, p: emb[:, 1, 0])
+    monkeypatch.setattr(crash, "ClipEncoder", Enc)
+    params = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())
+    state.store = crash._dense_cache(src, params)
+    state.go = lambda: crash.detect_project(project, params=params, sheets=0)
+    state.windows = [round(max(0.0, t - params.dense_pre_s), 1) for t in starts]
+    return state
+
+
+def _crashes(project: Path) -> dict:
+    data = json.loads((project / crash.CRASHES_FILE).read_text(encoding="utf-8"))
+    return {k: v for k, v in data.items() if k not in ("created", "timings")}
+
+
+def test_dense_windows_are_saved_as_they_finish_and_a_rerun_computes_only_the_rest(
+    dense_run, caplog
+):
+    """#109: Ctrl+C after window k keeps windows 1..k; the re-run decodes only k+1.. and
+    ends with the same dense store and crashes.json as an uninterrupted run."""
+    w = dense_run.windows
+    dense_run.go()  # uninterrupted
+    full, crashes = dense_run.store.read_bytes(), _crashes(dense_run.project)
+    assert dense_run.decoded == w
+    dense_run.store.unlink()
+    dense_run.decoded.clear()
+
+    dense_run.stop_at = w[2]  # interrupted after the second window
+    with caplog.at_level("INFO"), pytest.raises(KeyboardInterrupt):
+        dense_run.go()
+    assert dense_run.decoded == w[:2]
+    assert list(json.loads(dense_run.store.read_text(encoding="utf-8"))) == [
+        f"{a:.1f}-{a + 12.0:.1f}" for a in w[:2]
+    ]
+    assert "continuing" not in caplog.text  # a fresh run looks as before
+
+    dense_run.stop_at, dense_run.loads = None, 0
+    dense_run.decoded.clear()
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        dense_run.go()
+    assert dense_run.decoded == w[2:]
+    assert "dense check: 2/4 done, continuing" in caplog.messages
+    assert dense_run.store.read_bytes() == full
+    assert _crashes(dense_run.project) == crashes
+
+    dense_run.decoded.clear()
+    dense_run.loads = 0
+    caplog.clear()
+    with caplog.at_level("INFO"):
+        dense_run.go()  # everything cached: no model, no decode, nothing to continue
+    assert dense_run.decoded == [] and dense_run.loads == 0
+    assert not any("continuing" in m for m in caplog.messages)
+
+
 # -- IMU parse shared with telemetry ----------------------------------------------------------
 
 

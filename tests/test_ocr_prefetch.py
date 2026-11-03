@@ -18,7 +18,7 @@ import pytest
 
 from conftest import needs_ffmpeg
 from cutpoint import analyze, ffmpeg_utils, jsonout, progress
-from cutpoint.events import ocr_prefetch, pipeline
+from cutpoint.events import ocr_prefetch, pipeline, vlm_windows
 from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrCancelled, OcrParams
 from cutpoint.styles import get_style
@@ -827,3 +827,88 @@ def test_an_outside_stop_of_ffmpeg_is_reported(tmp_path, monkeypatch) -> None:
     os.kill(procs[0].pid, signal.SIGINT)
     list(frames)  # how many frames still arrive depends on ffmpeg's internal queues
     assert codes and codes[0] != 0
+
+
+# ----------------------------------------------------------------- before the VLM layer (#109)
+@pytest.fixture
+def released(ocr_run, monkeypatch: pytest.MonkeyPatch):
+    """Fake OCR engines (made by every read through ``make_engine``) and the order of
+    ``made``, ``free_torch`` and ``vlm`` (the VLM layer's first call)."""
+    log: list[str] = []
+
+    class Engine:
+        def __init__(self) -> None:
+            log.append("made")
+
+    def detect(src, params, engine, *, make_engine=None, **kw):
+        make_engine()
+        return [], {}
+
+    def vlm(*a, **k):
+        log.append("vlm")
+        raise _Stop
+
+    monkeypatch.setattr(pipeline, "OcrEngine", Engine)
+    monkeypatch.setattr(pipeline, "detect_ocr_events", detect)
+    monkeypatch.setattr(pipeline, "free_torch", lambda: log.append("free_torch"))
+    monkeypatch.setattr(pipeline, "game_prompt", vlm)
+    monkeypatch.setattr(ocr_prefetch, "OcrEngine", Engine)
+    ocr_run.log = log
+    return ocr_run
+
+
+def test_the_ocr_engine_and_the_cuda_cache_are_freed_before_the_vlm_layer(released) -> None:
+    with pytest.raises(_Stop):
+        pipeline.run_events(released.project, layers=("ocr", "vlm"), ocr=OcrParams(game="zonewar"))
+    assert released.log == ["made", "free_torch", "vlm"]  # one engine for both reads
+
+
+def test_the_prefetch_engine_is_freed_with_its_worker_before_the_vlm_layer(released) -> None:
+    pre = released.make()
+    pre.offer(released.paths[0], 60.0, False)  # nothing in the background: read with its engine
+    with pytest.raises(_Stop):
+        pipeline.run_events(
+            released.project, layers=("ocr", "vlm"), ocr=OcrParams(game="zonewar"), prefetch=pre
+        )
+    assert released.log == ["made", "free_torch", "vlm"]
+    assert pre.make_engine.cache_info().currsize == 0
+
+
+def test_without_the_vlm_layer_torch_is_left_alone(released, monkeypatch) -> None:
+    monkeypatch.setattr(pipeline, "select_windows", lambda *a, **k: [])
+    monkeypatch.setattr(pipeline, "game_prompt", lambda *a: "")
+    monkeypatch.setattr(pipeline, "write_outputs", lambda *a, **k: _Stop())
+    pipeline.run_events(released.project, layers=("ocr",), ocr=OcrParams(game="zonewar"))
+    assert released.log == ["made"]
+
+
+@pytest.mark.parametrize("cached", [0, 2])
+def test_a_partly_described_vlm_layer_says_how_far_it_got(
+    ocr_run, monkeypatch, capsys, caplog, cached
+) -> None:
+    """#109: "vlm: N/M done, continuing" (INFO and the step's PROGRESS detail) only when
+    windows are cached; a fresh run logs nothing new."""
+    src = str(ocr_run.paths[0])
+    windows = [vlm_windows.Window(src, t, t + 10.0, 1.0, []) for t in (0.0, 20.0, 40.0)]
+    monkeypatch.setattr(pipeline, "game_prompt", lambda *a: "")
+    monkeypatch.setattr(pipeline, "select_windows", lambda *a, **k: windows)
+    monkeypatch.setattr(
+        pipeline, "describe_windows", lambda server, *a, **k: ([], {"cached": cached})
+    )
+
+    def available(self):
+        raise _Stop  # the VLM layer is about to load its model
+
+    monkeypatch.setattr(pipeline.VisionRater, "available", available)
+    with (
+        caplog.at_level(logging.INFO),
+        progress.run(("keyframes", "ranking")) as steps,
+        pytest.raises(_Stop),
+    ):
+        steps.start("keyframes")
+        pipeline.run_events(ocr_run.project, layers=("vlm",), ocr=OcrParams(game="zonewar"))
+    details = [g["detail"] for g in _lines(capsys)]
+    text = "vlm: 2/3 done, continuing"
+    assert (text in caplog.messages) is bool(cached)
+    assert (text in details) is bool(cached)
+    assert not any("continuing" in m for m in caplog.messages if m != text)
