@@ -854,13 +854,14 @@ def describe_windows(
         stats["seconds"].append(elapsed)
         stats["prompt_tokens"].append(usage.get("prompt_tokens"))
         results.append({**rec, "reasons": win.reasons, "priority": win.priority})
+        tokens = usage.get("prompt_tokens")
         logger.info(
-            "VLM %s %s-%s (%.1fs, %s tok): hl %d funny %d '%s' %s",
+            "VLM %s %s-%s (%.1fs%s): hl %d funny %d '%s' %s",
             src.name,
             clock(win.start),
             clock(win.end),
             elapsed,
-            usage.get("prompt_tokens"),
+            "" if tokens is None else f", {tokens} tok",
             parsed["highlight_score"],
             parsed["funny_score"],
             parsed["label"],
