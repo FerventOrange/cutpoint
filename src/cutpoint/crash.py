@@ -415,23 +415,16 @@ class ClipEncoder:
 
     def __init__(self, device: str | None = None) -> None:
         from cutpoint.events import paths  # noqa: PLC0415
-        from cutpoint.events.visual import (  # noqa: PLC0415
-            CLIP_ARCH,
-            CLIP_MEAN,
-            CLIP_PRETRAINED,
-            CLIP_STD,
-        )
+        from cutpoint.events.visual import CLIP_MEAN, CLIP_STD, load_clip  # noqa: PLC0415
 
         paths.apply_torch_home()
-        import open_clip  # noqa: PLC0415
+        import open_clip  # noqa: F401, PLC0415 - fails first without the events extra
         import torch  # noqa: PLC0415
 
         self.torch = torch
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
-        model, _, _ = open_clip.create_model_and_transforms(
-            CLIP_ARCH, pretrained=CLIP_PRETRAINED, cache_dir=str(paths.clip_dir())
-        )
+        model = load_clip()  # local files only
         self.model = model.eval().to(self.device, self.dtype)
         self.on_device = True
         self.mean = torch.tensor(CLIP_MEAN, device=self.device).view(1, 3, 1, 1)

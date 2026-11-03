@@ -203,8 +203,44 @@ def iter_frames(path: Path, width: int, height: int, keyframes: bool, hwaccel: b
 
 
 # --------------------------------------------------------------------------- models
+class ClipWeightsMissing(FileNotFoundError):
+    """The CLIP weights ``cutpoint setup --only visual`` downloads are not on disk."""
+
+
+def load_clip(*, download: bool = False) -> Any:
+    """The CLIP ViT-L/14 model (open_clip, CPU, float32) from the weights under
+    :func:`paths.clip_dir`.
+
+    Loads the checkpoint file setup wrote (``paths.clip_weights``) by path, so open_clip never
+    goes through the Hugging Face Hub: no freshness check, no download. Only ``cutpoint
+    setup`` passes ``download``, which loads by tag and lets the Hub fetch the weights.
+
+    Raises:
+        ClipWeightsMissing: without ``download`` when the weights are not on disk.
+    """
+    paths.apply_torch_home()  # also quiets the Hub's duplicate handler
+    import open_clip  # noqa: PLC0415
+
+    if download:
+        model, _, _ = open_clip.create_model_and_transforms(
+            CLIP_ARCH, pretrained=CLIP_PRETRAINED, cache_dir=str(paths.clip_dir())
+        )
+        return model
+    weights = paths.clip_weights()
+    if not weights.is_file():
+        raise ClipWeightsMissing(
+            f"CLIP weights not found in {paths.clip_dir()}; run: cutpoint setup --only visual"
+        )
+    # A file path is not a tag: open_clip loads it directly (the arch has QuickGELU built in).
+    model, _, _ = open_clip.create_model_and_transforms(CLIP_ARCH, pretrained=str(weights))
+    return model
+
+
 class VisualModels:
-    """CLIP ViT-L/14 image encoder + Faster R-CNN v2, loaded once per run."""
+    """CLIP ViT-L/14 image encoder + Faster R-CNN v2, loaded once per run.
+
+    ``download``: only for ``cutpoint setup``, which loads them once to fetch the weights.
+    """
 
     def __init__(
         self,
@@ -213,6 +249,7 @@ class VisualModels:
         det_thresh: float = 0.3,
         box_min_score: float = 0.5,
         box_max: int = 6,
+        download: bool = False,
     ) -> None:
         paths.apply_torch_home()
         import open_clip  # noqa: PLC0415
@@ -223,9 +260,7 @@ class VisualModels:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = torch.float16 if self.device == "cuda" else torch.float32
         t0 = time.perf_counter()
-        model, _, _ = open_clip.create_model_and_transforms(
-            CLIP_ARCH, pretrained=CLIP_PRETRAINED, cache_dir=str(paths.clip_dir())
-        )
+        model = load_clip(download=download)
         self.clip = model.eval().to(self.device, self.dtype)
         self.tokenizer = open_clip.get_tokenizer(CLIP_ARCH)
         det = torchvision.models.detection
@@ -508,7 +543,8 @@ def text_embeddings(prompts: tuple[str, ...], models: VisualModels | None = None
     """Text embeddings for ``prompts`` (cached in ``models/clip/text-<hash>.npy``).
 
     On a cache miss the CLIP text tower is loaded (on the CPU unless ``models``
-    is given), which takes a few seconds once per process.
+    is given), which takes a few seconds once per process; from local files only
+    (:func:`load_clip`, :class:`ClipWeightsMissing` without them).
     """
     path = _prompt_file(prompts)
     if path.exists():
@@ -519,12 +555,9 @@ def text_embeddings(prompts: tuple[str, ...], models: VisualModels | None = None
         key = (CLIP_ARCH, CLIP_PRETRAINED)
         loaded = _TEXT_MODEL.get(key)
         if loaded is None:
-            paths.apply_torch_home()  # also quiets the Hub's duplicate handler
+            m = load_clip()
             import open_clip  # noqa: PLC0415
 
-            m, _, _ = open_clip.create_model_and_transforms(
-                CLIP_ARCH, pretrained=CLIP_PRETRAINED, cache_dir=str(paths.clip_dir())
-            )
             loaded = _TEXT_MODEL[key] = (m.eval(), open_clip.get_tokenizer(CLIP_ARCH))
         model, tokenizer = loaded
         import torch  # noqa: PLC0415

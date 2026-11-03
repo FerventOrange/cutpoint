@@ -8,9 +8,10 @@ import types
 
 import pytest
 
+from conftest import write
 from cutpoint import hub
 from cutpoint.crash import ClipEncoder
-from cutpoint.events import visual
+from cutpoint.events import paths, visual
 
 
 class _Loaded(Exception):
@@ -29,8 +30,13 @@ def hub_handler(monkeypatch):
 
 @pytest.fixture
 def stub_open_clip(monkeypatch, hub_handler):
-    """Stub open_clip, torch and torchvision; the open_clip load records the Hub's handlers."""
+    """Stub open_clip, torch and torchvision; the open_clip load records the Hub's handlers.
+
+    Fake CLIP weights sit where setup puts them, so the local-only load reaches open_clip.
+    """
     seen: list[list[logging.Handler]] = []
+    snap = paths.clip_dir() / ("models--" + paths.CLIP_HF_REPO.replace("/", "--")) / "snapshots"
+    write(snap / "abc" / "open_clip_model.safetensors")
 
     def create_model_and_transforms(*_a, **_kw):
         seen.append(list(hub_handler.handlers))
