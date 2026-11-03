@@ -130,8 +130,12 @@ class DirectorParams:
     # near the edge 0.03-0.07 of the frame wider than its projected box (#11)
     include_margin: float = 0.06
     # ... and this many deg of yaw more on each side: the detector's box on the render
-    # grows past the projected one by a median 1-2, p90 4-7 deg per side (#11)
+    # grows past the projected one by a median 1-2, p90 4-7 deg per side (#11); the room a
+    # fix (widen or shift) aims for
     include_pad_deg: float = 5.0
+    # ... while a person counts as framed whole (no fix needed) with this pad: the full pad
+    # in the check too turned friend shots of crash clips into cut-aways (#604)
+    include_check_pad_deg: float = 1.5
     # a near person split by the edge with a gap under NEAR_HARD_GAP x include_margin and
     # an area of NEAR_HARD_AREA or more counts as a hard bad step (a cut-away may follow)
     near_soft_as_hard: bool = False
@@ -208,6 +212,7 @@ class DirectorParams:
             w_widen=0.8,
             include_margin=0.03,
             include_pad_deg=0.0,
+            include_check_pad_deg=0.0,
             near_soft_as_hard=False,
             exclude_clear_deg=3.0,
             include_max_shift=0.35,
@@ -240,6 +245,7 @@ NONNEG_PARAMS = (
     "w_widen",
     "include_margin",
     "include_pad_deg",
+    "include_check_pad_deg",
     "exclude_clear_deg",
     "include_max_shift",
     "include_min_subject_h",
@@ -1063,7 +1069,7 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
         near = near_rows(rows, sj)
         c = 2 * p.exclude_clear_deg
         wide = near + np.array([0.0, 0.0, c, c])  # OUT: clear of the view
-        pad = near + np.array([0.0, 0.0, 2 * p.include_pad_deg, 0.0])  # IN: padded sides
+        pad = near + np.array([0.0, 0.0, 2 * p.include_check_pad_deg, 0.0])  # IN: padded
         own = [] if sj is None else [sj[:4]]
         res = project_boxes(
             vy, vp, vf, size, np.concatenate([np.reshape(own, (-1, 4)), rows[:, :4], pad, wide])
@@ -1849,9 +1855,10 @@ def _safe_area_pass(
     ``include_exclude`` (default): the subject and wearer rules as above; a near
     person (``near_min_h_deg`` tall, ``near_min_score``, not the wearer or the subject;
     its unclipped projected box) is fine framed whole (its box widened by
-    ``include_pad_deg`` per side, ``include_margin`` off the left and right edges) or out
-    of view (its box widened by ``exclude_clear_deg`` per side entirely outside, or
-    behind the camera), and at any size a bad step when split by the edge (a hard one
+    ``include_check_pad_deg`` per side, ``include_margin`` off the left and right edges; a
+    fix aims for the wider ``include_pad_deg``, :func:`_solve_step`) or out of view (its
+    box widened by ``exclude_clear_deg`` per side entirely outside, or behind the
+    camera), and at any size a bad step when split by the edge (a hard one
     with ``near_soft_as_hard``, :data:`NEAR_HARD_GAP`); and a step is bad where the
     geometric QA would count an edge cut (any confident person, its sliver rules
     included), or the view halfway to a

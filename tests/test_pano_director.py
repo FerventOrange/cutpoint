@@ -897,7 +897,8 @@ def test_a_stretch_keeps_one_side() -> None:
     a = np.array([[40.0, -10.0, 12.0, 30.0], [-100.0, -10.0, 12.0, 30.0]])  # A split
     b = np.array([[100.0, -10.0, 12.0, 30.0], [-40.0, -10.0, 12.0, 30.0]])  # then B
     ctx["near"] = [a] * 10 + [b] * 10
-    p = D.DirectorParams(include_margin=0.03, include_pad_deg=0.0)  # the hold, not the margin
+    # the hold, not the margin
+    p = D.DirectorParams(include_margin=0.03, include_pad_deg=0.0, include_check_pad_deg=0.0)
     chk = D._framing_checks(ctx, (0, n), p)
     free = [D._solve_step(ctx, chk, i, p)[1] for i in (0, 19)]
     assert free[0] > 0 > free[1]  # each alone: shifted towards the person, framed whole
@@ -1106,7 +1107,8 @@ def test_violations_close_together_get_one_cut_away() -> None:
 
 def test_the_tighter_margin_retry_avoids_a_cut(monkeypatch: pytest.MonkeyPatch) -> None:
     n = 30
-    p = D.DirectorParams(include_pad_deg=0.0)  # the retry halves the margin only
+    # the retry halves the margin only
+    p = D.DirectorParams(include_pad_deg=0.0, include_check_pad_deg=0.0)
 
     def run() -> dict:
         ctx = safe_ctx(n, 0.0, 86.0)
@@ -1331,7 +1333,7 @@ def test_a_held_shift_that_fixes_fewer_steps_falls_back_to_the_interpolated_shif
             rows.append([-rng.uniform(36, 50), -10.0, 12.0, 30.0])
         near.append(np.array(rows))
     ctx["near"] = near
-    p = D.DirectorParams(include_margin=0.03, include_pad_deg=0.0)
+    p = D.DirectorParams(include_margin=0.03, include_pad_deg=0.0, include_check_pad_deg=0.0)
     chk = D._framing_checks(ctx, (0, n), p)
     assert chk.n_bad(0, n) == (11, 19)
     assert D._include_exclude(ctx, chk, 0, n, p)
@@ -1376,7 +1378,9 @@ def test_the_framing_check_counts_a_side_cut_from_the_paths_floor() -> None:
     sliver = [55.0, -10.0, 40.0, 30.0]
     ctx = safe_ctx(n, 0.0, 86.0)
     ctx["near"] = ctx["persons"] = [np.array([[*sliver, 0.0, 0.55]])] * n  # under the QA's score
-    p = D.DirectorParams(include_margin=0.0, include_pad_deg=0.0, near_min_score=0.5)
+    p = D.DirectorParams(
+        include_margin=0.0, include_pad_deg=0.0, include_check_pad_deg=0.0, near_min_score=0.5
+    )
     chk = D._framing_checks(ctx, (0, n), p)
     assert chk.bad(0) and not chk.qa_bad(0)
     ctx = safe_ctx(n, 55.0, 86.0)
@@ -1425,6 +1429,7 @@ def test_an_included_person_keeps_the_pad_inside_the_margin(near_yaw: float) -> 
     ctx["near"] = ctx["persons"] = [near] * n
     p = D.DirectorParams()
     assert p.include_pad_deg == 5.0 and D.DirectorParams.legacy().include_pad_deg == 0.0
+    assert p.include_check_pad_deg == 1.5 and D.DirectorParams.legacy().include_check_pad_deg == 0
     D._safe_area_pass(ctx, [(0, n)], (0, n), p)
     assert set(ctx["target"]) == {"friend"}
     y, f = float(ctx["yaw"][10]), float(ctx["fov"][10])
@@ -1433,6 +1438,37 @@ def test_an_included_person_keeps_the_pad_inside_the_margin(near_yaw: float) -> 
     a_in = math.degrees(math.atan((1 - 2 * p.include_margin) * t))  # the margin line
     left, right = (math.degrees(math.atan((2 * x - 1) * t)) for x in (x1, x2))
     assert min(left + a_in, a_in - right) >= 0.95 * p.include_pad_deg
+
+
+def test_a_person_inside_the_check_pad_only_is_left_as_framed() -> None:
+    """#604: a person framed whole about 3 deg inside the include_margin line (more than
+    include_check_pad_deg, less than include_pad_deg) is no bad step, and the path keeps
+    its view; checked with the full pad, as before, the same step is bad and gets fixed."""
+    n = 20
+    near = np.array([[31.0, -12.0, 14.0, 30.0, 0.0, 0.9]])
+    p = D.DirectorParams()
+    f = 86.0
+    x2 = G.project_box_visible(0.0, -10.0, f, 1920, 1080, *near[0, :4])[0][2]
+    t = math.tan(math.radians(f) / 2)
+    gap = math.degrees(math.atan((1 - 2 * p.include_margin) * t))
+    gap -= math.degrees(math.atan((2 * x2 - 1) * t))
+    assert p.include_check_pad_deg < gap < p.include_pad_deg
+
+    def run(params: D.DirectorParams) -> tuple[dict, bool]:
+        ctx = safe_ctx(n, 0.0, f)
+        ctx["near"] = ctx["persons"] = [near] * n
+        bad = D._framing_checks(ctx, (0, n), params).bad(5)
+        D._safe_area_pass(ctx, [(0, n)], (0, n), params)
+        return ctx, bad
+
+    ctx, bad = run(p)
+    assert not bad
+    assert set(ctx["target"]) == {"friend"}
+    assert np.allclose(ctx["yaw"], 0.0) and np.allclose(ctx["fov"], f)
+    full = D.with_params(p, {"include_check_pad_deg": p.include_pad_deg})
+    ctx, bad = run(full)
+    assert bad
+    assert not (np.allclose(ctx["yaw"], 0.0) and np.allclose(ctx["fov"], f))
 
 
 def test_a_near_person_close_to_the_side_is_hard_only_with_near_soft_as_hard() -> None:
