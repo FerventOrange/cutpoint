@@ -7,7 +7,10 @@ and masked on lifts and stops). Candidates are picked on this raw sum (``analyze
 available. A candidate's 0-100 score is its peak divided by the weights of the available
 features (:func:`cutpoint.features.to_score`): on Cutpoint lite the ``events`` features are left
 out of the divisor and the score is capped at 100; with every feature available it is the sum
-of all weights.
+of all weights. Ski's ``social`` stays in the lite divisor: it is core, built from transcript
+laughter (``social_said``, which runs on lite) and sound events (``social_heard``, ``events``
+only), so a lite peak reaches at most 100 and the cap guards only grids cached by a full
+install and learned presets.
 
 Bonus stage: :func:`rescore_events` adds the ``events.json`` points (sound events, HUD event
 types, reactions) to each candidate's analysis score and blends in the best overlapping VLM
