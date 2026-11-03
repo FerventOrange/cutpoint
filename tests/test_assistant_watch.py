@@ -421,6 +421,22 @@ def test_the_tool_is_hidden_for_text_only_models(
     assert ("view_moment" in rules) is offered
 
 
+def test_the_rules_never_say_no_images_when_view_moment_is_offered(
+    proj_dir: Path, src: Path
+) -> None:
+    cands = [{**c, "kind": "view"} for c in CANDS]
+    for view in (viewer(proj_dir, FakeProvider([answer()]), src), None):
+        fake = FakeProvider([answer()])
+        turn = session.Turn(
+            fake, session.Project(cands, [], durations(), TRANSCRIPT, "k0"), "hi", viewer=view
+        )
+        turn.start()
+        assert turn.done.wait(10)
+        rules = fake.requests[0]["messages"][0]["content"]
+        assert ("never get images" not in rules) is (view is not None)
+        assert ("view_moment shows frames of a moment" in rules) is (view is not None)
+
+
 def test_no_viewer_no_tool_and_an_unoffered_call_is_unknown(proj_dir: Path) -> None:
     fake = FakeProvider([call("view_moment", id="m1"), answer()])
     run(fake, None)

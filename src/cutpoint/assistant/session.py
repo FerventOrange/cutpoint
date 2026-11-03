@@ -277,7 +277,9 @@ class Turn:
     def _messages(self, json_mode: bool) -> list[dict[str, Any]]:
         plan = context.budget(self.provider.context_tokens)
         tools = [*_JSON_TOOLS, *([watch.JSON_TOOL] if self._watch else [])] if json_mode else None
-        out = context.build_messages(self.table, self.earlier, self.text, plan, json_tools=tools)
+        out = context.build_messages(
+            self.table, self.earlier, self.text, plan, json_tools=tools, images=bool(self._watch)
+        )
         if self._watch:  # how and when to watch, after the rules
             cap = str(watch.view_cap(self.provider))
             out[0] = {**out[0], "content": out[0]["content"] + watch.RULES.replace("{cap}", cap)}

@@ -613,8 +613,8 @@ and `jump_air`). The instructions name only the cues the project has, and reques
 for them: action-cam footage with telemetry (`--style action-cam`), the `events` vision layer
 (window descriptions and tags) or visual-pool moments. Other styles have the vision rating
 label (with `--vision`), `loudness`, `laughter` and the laughter or screams heard, so the model
-finds their moments by those, the label and the transcript. Only these results are sent, never
-frames.
+finds their moments by those, the label and the transcript. Only these results are sent; video
+frames go only through view_moment (above), once allowed for the project.
 
 - Moments the model points to can be highlighted in the Moments list ("Highlight in list") or
   the list filtered by the model's search words (offered only when the list's search, which also

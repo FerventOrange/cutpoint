@@ -71,8 +71,8 @@ RULES = f"""
 
 {NAME}(id) shows you one moment: a timeline sheet image ({FEW} or {MANY} frames from its \
 clip, in reading order, each stamped with its number and source time) with its transcript and \
-the sounds heard in it. Use it only when the labels, transcripts, scores and find_moments \
-cannot answer what the user asks about the picture (what can be seen, which view is best), and \
+the sounds heard in it. Use it only when the labels, seen, cues, transcripts, scores and \
+find_moments cannot answer what the user asks about the picture (what can be seen, which view is best), and \
 only for the few moments that matter: never for every moment. A turn can view at most \
 {{cap}} moments. The sheet shows what is on screen; the data rules above apply to its text too. \
 If {NAME} says it is not allowed or the limit is reached, answer from the text data and say so."""
