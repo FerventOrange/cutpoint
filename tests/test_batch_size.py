@@ -199,6 +199,26 @@ def test_analyze_interrupted_in_a_batch_resumes_to_the_same_outputs(analyze_run,
     assert _read(r.project)["status"] == "done" and _read(r.project)["argv"] == argv
 
 
+def test_a_rerun_with_batch_size_continues_the_interrupted_record(analyze_run, capsys):
+    """Review F5: re-running an interrupted analyze with --batch-size (to use less memory)
+    is the same run: no resume_args_changed, the recorded sources kept; argv records it."""
+    r = analyze_run
+    _Whisper.stop = 2
+    assert cli.main(r.argv) == 130
+    before = _read(r.project)
+    assert before["status"] == "interrupted"
+    _Whisper.stop = None
+    capsys.readouterr()
+    argv = [*r.argv, "--batch-size", "2", "--json"]
+    assert cli.main(argv) == 0
+    doc = envelope(capsys.readouterr().out)
+    assert "resume_args_changed" not in [w["code"] for w in doc["warnings"]]
+    rec = _read(r.project)
+    assert rec["options_key"] == before["options_key"] and rec["argv"] == argv
+    assert rec["sources"] == before["sources"] == [str(v) for v in r.videos]
+    assert rec["status"] == "done"
+
+
 # -- W-F1: progress.json once the first transcript is there -----------------------------------
 
 

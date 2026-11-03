@@ -71,8 +71,9 @@ COMMANDS = frozenset({"analyze", "edit", "events", "crashes", "profile", "360 an
 AFTER_TRANSCRIPT = frozenset({"analyze", "edit"})  # progress.json once a source is transcribed
 STATUSES = ("running", "done", "interrupted", "failed", "low_memory")
 PCT_INTERVAL_S = 5.0
-# Parsed arguments that are no options of the run (callables are left out too).
-_NOT_OPTIONS = frozenset({"json_command", "json_result", "verbose"})
+# Parsed arguments that are no options of the run (callables are left out too); --batch-size
+# changes no result, so a re-run with it (to use less memory) continues the record.
+_NOT_OPTIONS = frozenset({"json_command", "json_result", "verbose", "batch_size"})
 
 RESUMABLE = frozenset({"interrupted", "low_memory"})  # a record that resume continues
 _ACTIVE: Recorder | None = None
