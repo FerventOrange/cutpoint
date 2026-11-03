@@ -432,6 +432,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Ollama vision ratings and `360 director --vl-check` frame checks are cached per server
+  (host and port of the Ollama URL), so a local and a remote Ollama with the same model no
+  longer share results; existing ones are rated again once (#673).
 - AI Chat's `find_moments` matches a word at the start of a word in labels, transcripts and
   what the vision model saw, so "air" finds air, airs and airtime but no longer chair, and the
   proxy's periodic credential sync tightens loosened permissions even when nothing changed (#663).
@@ -492,8 +495,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*.localhost` name is hosted and needs consent (#619).
 - Hosted vision ratings, `events` VLM descriptions and `360 director --vl-check` frame checks
   are cached per provider and host, so one model id at two servers no longer shares results.
-  Results cached from a hosted provider before this change are asked again once; Ollama caches
-  are unchanged (#621).
+  Results cached from a hosted provider before this change are asked again once (#621); for
+  Ollama ratings and frame checks see #673.
 - The `vision_consent_needed` WARNING (and its `--json` warning message) names the exact consent
   key, for example `vision-v2:ollama@10.0.0.5:11434`: besides allowing vision requests in the
   Models tab of `cutpoint ui`, that key can be added to `vision_assistant.consent` in
