@@ -59,6 +59,18 @@ FORWARD_MIN_HORIZONTAL = 0.5  # forward_axis keeps FORWARD_V while its median |h
 # (0.09, 0.63, 0.69)); detections within a cone around it are the wearer.
 WEARER_V = np.array([0.05, 0.68, 0.73]) / np.linalg.norm([0.05, 0.68, 0.73])
 WEARER_CONE_DEG = 50.0
+# An upright clip (forward_axis LENS_V) has the camera on a pole or stick above the wearer:
+# the wearer is straight below it, leaning away from the travel lens. Measured on the five
+# upright clips of aug-24-cruise (029, 031-033, 040, contact sheets around the nadir): the
+# head 0-10 deg from the nadir, the body up to 40 deg from it toward the _00_ lens; the
+# people seated around the pole start at 25-30 deg (no person box within 20 deg of the
+# nadir: the detector misses the wearer seen from above). Hence a narrower cone than the
+# helmet's; tilt 15 / cone 25 left no wearer_overlap frame in `360 qa --compare` on the
+# same director paths, cone 30 and 50 tagged seated people (see wearer_direction).
+UPRIGHT_WEARER_TILT_DEG = 15.0
+UPRIGHT_WEARER_CONE_DEG = 25.0
+# that wearer model, recorded in upright director paths (cli._reusable re-plans other ones)
+UPRIGHT_WEARER = f"down-tilt-{UPRIGHT_WEARER_TILT_DEG:g}/cone-{UPRIGHT_WEARER_CONE_DEG:g}"
 DFISHEYE_FOV = 200.0  # v360 ih_fov / iv_fov used for analysis and rendering
 G = 9.80665
 
@@ -167,6 +179,29 @@ def forward_axis(up: np.ndarray) -> np.ndarray:
     return LENS_V if hz > hy else FORWARD_V
 
 
+def wearer_direction(up: np.ndarray, fwd: np.ndarray | None = None) -> np.ndarray:
+    """The wearer's direction in camera coordinates for a clip, from its forward axis and
+    ``up`` track (``fwd``: its :func:`forward_axis`, computed when None).
+
+    :data:`WEARER_V` (the measured helmet mount) unless the clip is upright (``fwd`` is
+    :data:`LENS_V`): then the camera stands on a pole or stick above the wearer, so the
+    wearer is its median down direction tilted :data:`UPRIGHT_WEARER_TILT_DEG` away from
+    the travel lens (the body behind the head, seen from above).
+    """
+    up = np.asarray(up, float).reshape(-1, 3)
+    if fwd is None:
+        fwd = forward_axis(up)
+    if not np.array_equal(fwd, LENS_V) or not len(up):
+        return WEARER_V
+    down = -np.median(up, 0)
+    down /= np.linalg.norm(down) + 1e-12
+    f = fwd - (fwd @ down) * down  # the travel lens, made level
+    f /= np.linalg.norm(f) + 1e-12
+    a = math.radians(UPRIGHT_WEARER_TILT_DEG)
+    w = math.cos(a) * down - math.sin(a) * f
+    return w / np.linalg.norm(w)
+
+
 def flat_fov(h_fov: float, width: int, height: int) -> float:
     """Vertical FOV (deg) of a rectilinear view with horizontal FOV ``h_fov``."""
     return math.degrees(2 * math.atan(math.tan(math.radians(h_fov) / 2) * height / width))
@@ -189,6 +224,8 @@ class Orientation:
             ``meta["q_offset_s"]`` after each frame time; used by the renderer.
             ``up`` / ``heading`` stay the director's frame.
         fwd: The camera axis of yaw 0 (:func:`forward_axis` of ``up``; set on creation).
+        wearer: The wearer's direction in camera coordinates before any detection
+            (:func:`wearer_direction`; set on creation).
     """
 
     t: np.ndarray
@@ -198,9 +235,11 @@ class Orientation:
     meta: dict[str, Any]
     q: np.ndarray | None = None
     fwd: np.ndarray = field(init=False, repr=False, compare=False)
+    wearer: np.ndarray = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.fwd = forward_axis(self.up)
+        self.wearer = wearer_direction(self.up, self.fwd)
         if self.forward_axis != axis_name(FORWARD_V):  # upright: recorded (helmet meta as is)
             self.meta["forward_axis"] = self.forward_axis
 
@@ -281,6 +320,17 @@ def cached_forward_axis(source: Path) -> str | None:
         path = _orient_path(source)
         with np.load(path) as z:
             return axis_name(forward_axis(z["up"]))
+    except _NPZ_ERRORS:
+        return None
+
+
+def cached_wearer_direction(source: Path) -> np.ndarray | None:
+    """:attr:`Orientation.wearer` of a clip's cached track (reads only its ``up``), or None
+    when there is none (never parses the IMU)."""
+    try:
+        path = _orient_path(source)
+        with np.load(path) as z:
+            return wearer_direction(z["up"])
     except _NPZ_ERRORS:
         return None
 

@@ -88,7 +88,7 @@ def pano(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(V, "text_embeddings", lambda prompts, models=None: None)
     monkeypatch.setattr(common, "free_torch", free_torch)
     monkeypatch.setattr(insta360, "imu_source", lambda src: src)
-    monkeypatch.setattr(G, "orientation", lambda *a: None)
+    monkeypatch.setattr(G, "orientation", lambda *a: SimpleNamespace(wearer=G.WEARER_V))
     monkeypatch.setattr(views, "load_views", lambda src, p=None: None)
     monkeypatch.setattr(views, "compute_views", compute)
     monkeypatch.setattr(views, "wearer_axis", lambda data: G.WEARER_V)
