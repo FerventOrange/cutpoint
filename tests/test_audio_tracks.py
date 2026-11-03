@@ -3,6 +3,7 @@ detection, cache, filter graphs."""
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 import wave
@@ -451,13 +452,17 @@ def test_a_cache_that_cannot_be_removed_is_retried(monkeypatch, tmp_path, caplog
         unlink(self, missing_ok=missing_ok)
 
     monkeypatch.setattr(Path, "unlink", locked)
+    caplog.set_level(logging.INFO, logger="cutpoint.analyze")
     analyze._audio_mix(Path("a.mp4"), cdir, (0,), 5)
     names = {f.name for f in cdir.iterdir()}
     assert names & AUDIO_DERIVED == {"audio16k.wav"}
     assert analyze.MIX_FILE not in names
     assert "could not remove audio16k.wav" in caplog.text
+    assert "extracting it again" not in caplog.text  # the old WAV is kept
+    caplog.clear()
     monkeypatch.setattr(Path, "unlink", unlink)
     analyze._audio_mix(Path("a.mp4"), cdir, (0,), 5)
+    assert "extracting it again" in caplog.text
     assert not {f.name for f in cdir.iterdir()} & AUDIO_DERIVED
     assert cache.load_json(cdir / analyze.MIX_FILE) == {"tracks": [0]}
 
@@ -478,13 +483,17 @@ def test_a_derived_cache_that_cannot_be_removed_keeps_the_wav(monkeypatch, tmp_p
         unlink(self, missing_ok=missing_ok)
 
     monkeypatch.setattr(Path, "unlink", locked)
+    caplog.set_level(logging.INFO, logger="cutpoint.analyze")
     analyze._audio_mix(Path("a.mp4"), cdir, (0,), 5)
     names = {f.name for f in cdir.iterdir()}
     assert names & AUDIO_DERIVED == {"audio16k.wav", "voice-ab12.npz"}
     assert analyze.MIX_FILE not in names
     assert "could not remove voice-ab12.npz" in caplog.text
+    assert "extracting it again" not in caplog.text  # the old WAV is kept
+    caplog.clear()
     monkeypatch.setattr(Path, "unlink", unlink)
     analyze._audio_mix(Path("a.mp4"), cdir, (0,), 5)
+    assert "extracting it again" in caplog.text
     assert not {f.name for f in cdir.iterdir()} & AUDIO_DERIVED
     assert cache.load_json(cdir / analyze.MIX_FILE) == {"tracks": [0]}
 

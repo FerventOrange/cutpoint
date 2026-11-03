@@ -314,10 +314,6 @@ def _audio_mix(src: Path, cdir: Path, tracks: tuple[int, ...], streams: int) -> 
     if _mixed_tracks(cdir, streams) == want:
         return
     stale = [f for pattern in AUDIO_CACHES for f in cdir.glob(pattern)]
-    if stale:
-        logger.info(
-            "%s: the cached analysis audio mixed other tracks; extracting it again", src.name
-        )
     kept: list[Path] = []
     for f in stale:
         if kept and f.name == "audio16k.wav":
@@ -334,7 +330,12 @@ def _audio_mix(src: Path, cdir: Path, tracks: tuple[int, ...], streams: int) -> 
             src.name,
             ", ".join(f.name for f in kept),
         )
-    elif want is None:
+        return
+    if stale:  # the WAV (removed last) is gone: extracted again
+        logger.info(
+            "%s: the cached analysis audio mixed other tracks; extracting it again", src.name
+        )
+    if want is None:
         (cdir / MIX_FILE).unlink(missing_ok=True)
     else:
         cache.save_json(cdir / MIX_FILE, {"tracks": want})
