@@ -432,6 +432,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `analyze --ollama-url` and `--ollama-model` now reach the VLM layer of its events step, which
+  used the configured Ollama instead (#660).
 - A provider URL on this machine on the port of the Cutpoint proxy (the running proxy's port,
   else `CUTPOINT_CLIPROXY_PORT`, the port saved at its last start, or 18317) is hosted: the proxy
   forwards to hosted models, so AI Chat, Vision and frames consent now apply to it, with keys
