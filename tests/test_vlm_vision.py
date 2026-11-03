@@ -351,7 +351,7 @@ def test_run_events_describes_windows_with_the_vision_client(
     ollama.replies = [REPLY]
     data = _run_vlm(tmp_path, monkeypatch)
     assert len(ollama.chats) == 1 and ollama.unloads == [{"model": "qwen3.5:9b", "keep_alive": 0}]
-    assert data["settings"]["vlm"]["model"] == "qwen3.5:9b"
+    assert data["settings"]["vlm"]["model"] == "ollama@127.0.0.1:11434:qwen3.5:9b"
     assert "audio" not in data["settings"]["vlm"]
     vlm = [e for e in data["events"] if e["kind"] == "vlm"]
     assert [e["label"] for e in vlm] == ["player gets a kill"]
@@ -413,4 +413,4 @@ def test_run_events_passes_the_ollama_options_to_the_vision_client(
         tmp_path, monkeypatch, ollama_url="http://gpu-box:11434", ollama_model="my-vl:7b"
     )
     assert seen == [(("http://gpu-box:11434", "my-vl:7b"), {})]
-    assert data["settings"]["vlm"]["model"] == "my-vl:7b"
+    assert data["settings"]["vlm"]["model"] == "ollama@gpu-box:11434:my-vl:7b"
