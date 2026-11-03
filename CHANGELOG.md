@@ -355,6 +355,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer score: a `REVERSE FRIENDLY FIRE` banner is neither a teamkill nor a payoff banner
   (no points, no clip-tail payoff, the VLM seed of any other banner), and kill rows that
   mark only the player are no player kills.
+- **BREAKING:** action-cam projects keep their features in `action_cam_features/` (was
+  `ski_features/`, which is no longer read; old folders can be deleted). The VLM cache key was
+  renamed too, so existing action-cam projects run the VLM step of `events` once more and
+  `analyze` rebuilds the features (#610).
 
 ### Removed
 
@@ -473,6 +477,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Activity profile synthesis (`profile --context`, `crashes` and the crash step of `analyze`)
   gives up on the local Ollama model after 120 s per request instead of 600 s, so a CPU-only
   model no longer blocks for about 20 minutes before the generic profile is used (#608).
+- `events`: on a project's first run the contact sheets now use the activity profile the
+  crash layer chose instead of the ski captions (#609).
 
 ## [0.4.0] - 2026-10-29
 
