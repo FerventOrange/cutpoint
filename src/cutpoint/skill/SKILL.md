@@ -28,7 +28,9 @@ it: it is the full reference.
 Style (`--style` on `cutpoint edit` and `cutpoint analyze`): go by what the user says about the
 footage, not the file name alone. Pick `funny`, `gaming`, `action`, `sport`, `commentary` (long
 talk) or `action-cam` (action-cam footage, best with telemetry); anything else: `action` or
-`gaming`.
+`gaming`. If the user says nothing about the footage, `cutpoint detect <video> --json` names its
+category and the style `--style auto` would use (`outputs.styles`); a `style_ambiguous` warning
+means it could not tell, so ask the user or keep the default.
 
 One step ("edit this into a montage"):
 

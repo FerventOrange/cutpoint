@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Footage category detection (#513): `cutpoint detect <inputs> [--json]` tells whether the
+  footage is gameplay, action cam, talk or general, from the container tags, the camera
+  telemetry and 32 small grey frames per source (a static HUD marks gameplay; cached as
+  `category-v1.json`), and which style `--style auto` would use. `--style auto` on `analyze`
+  and `edit` (opt-in; the defaults are unchanged) maps action cam to `action-cam`, gameplay to
+  `gaming`, talk (decided after transcription) to `commentary` and general to `action`, or every
+  category to `funny` for `edit --kind funny-moments`; it never picks `sport`. The detected
+  category plans the HUD OCR and CLIP layers. Unclear footage gets the default style (`gaming`,
+  or the kind's style on `edit`) with a `style_ambiguous` warning; sources of another category
+  over 10% of the footage give `style_sources_disagree`; talky gameplay stays gameplay with a
+  hint to try `--style commentary`. `highlights.json` keeps the picked style in `style` and
+  adds `settings.style_requested` and a `detection` block, which `events` and re-runs reuse;
+  `analyze --json` reports it as `outputs.detection`. A learned preset named `auto.json` is
+  ignored with a warning.
 - Visual candidates: `analyze` with the `action-cam`, `action` or `sport` style lists scenic
   views, group shots and steady cruising runs after the scored candidates (`"pool": "visual"`,
   ids `v001`..., `kind` `view`, `crew` or `cruise`, labels such as "scenic view / beauty shot"),
