@@ -11,29 +11,115 @@
 | Ollama (optional) | Only for `analyze --vision`, `edit --vision`, `360 director --vl-check`, new activity profiles and the local AI Chat ([setup](#optional-ollama-for-frame-rating-and-ai-chat)). |
 | Disk space | Caches and models live under the data folder. Models for `cutpoint setup` are large (see [Download models](#download-models-only-for-cutpoint-events)). Clips and finals are re-encoded, so budget for them in the project folder. |
 
-Windows and Linux are tested (CI runs the tests on both). The base
-install transcribes on the CPU. For GPU Whisper on an NVIDIA GPU, add the `gpu` extra (the CUDA
-libraries cuBLAS and cuDNN, about 3.6 GB).
+Windows and Linux are tested (CI runs the tests on both). Lite
+transcribes on the CPU. For GPU Whisper on an NVIDIA GPU, use the full install, which includes
+the `gpu` extra (the CUDA libraries cuBLAS and cuDNN, about 3.6 GB).
 
 ## Install
 
-The installer is the quickest way. It installs uv and ffmpeg when they are missing, then
-Cutpoint as a global `cutpoint` command with the torch build for your machine (CUDA with an
-NVIDIA GPU, which includes the `gpu` extra). Run it again to upgrade or switch edition.
+Run the installer. It installs uv and ffmpeg when they are missing, then Cutpoint as a global
+`cutpoint` command with the torch build for your machine.
 
-```powershell
-irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex
-```
+Linux and macOS (macOS gets CPU torch only):
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh
 ```
 
-For the lite edition (no torch), set `$env:CUTPOINT_LITE = 1` first on Windows, or use
-`sh -s -- --lite` on Linux and macOS. `sh install.sh --help` and `.\install.ps1 -Help` list the
-options.
+Windows (PowerShell):
 
-To work from a clone instead, install ffmpeg and uv. On Windows:
+```powershell
+irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex
+```
+
+`sh install.sh --help` and `.\install.ps1 -Help` list every option and variable. `irm | iex`
+cannot pass parameters, so on Windows each option also has a `CUTPOINT_*` variable; the variables
+work in `install.sh` too. A flag wins over its variable, and an empty value or
+`0` counts as off. So do `no` and `false`: on Windows in any case, in `install.sh` exactly as
+`no`, `NO`, `false` or `FALSE`. Any other value counts as on.
+
+### Full or lite
+
+| Edition | What you get | How to ask for it |
+|---|---|---|
+| Full (default) | Every feature. With an NVIDIA GPU: CUDA torch and the GPU libraries (several GB). Without: CPU torch | No option |
+| Lite | No torch, no `events` or `gpu` extras, no Ollama. `analyze`, `clips`, `assemble`, `edit` and `cutpoint ui` still run on the CPU | `sh -s -- --lite`, `curl ... \| CUTPOINT_LITE=1 sh`, `.\install.ps1 -Lite`, or `$env:CUTPOINT_LITE = 1` before `irm \| iex` |
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh -s -- --lite
+```
+
+```powershell
+$env:CUTPOINT_LITE = 1; irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex
+```
+
+To go from lite to full, run the installer again without `--lite` (`-Lite`) and with
+`CUTPOINT_LITE` unset (`Remove-Item Env:CUTPOINT_LITE` in PowerShell, `unset CUTPOINT_LITE` in a
+shell). If the variable is still set, the installer installs lite again. `--lite` cannot be
+combined with `--cpu` or `--cuda`. `cutpoint capabilities` shows the edition.
+
+### Other options
+
+- `--source SRC` (`-Source`, `CUTPOINT_SOURCE`; for example `sh -s -- --source git`, or
+  `$env:CUTPOINT_SOURCE = 'git'` before `irm | iex`): `pypi` (the default, the pinned release), `git`
+  or `git@REF` (a branch, tag or commit of the GitHub repository), or a local path (a checkout,
+  wheel or sdist). `CUTPOINT_VERSION=X.Y.Z` picks the release for `pypi`.
+- `--cpu` / `--cuda` (`CUTPOINT_TORCH=cpu|cuda`): force the CPU or the CUDA (cu126) torch build.
+- `--no-ffmpeg`: do not install ffmpeg. `CUTPOINT_NO_MODIFY_PATH=1`: do not run
+  `uv tool update-shell`.
+- `--dry-run` (`-DryRun`): print every command and change nothing.
+
+### Prompts
+
+In full mode the installer asks up to three optional questions. The default answer is No. They
+read from the terminal, so they also work under `curl | sh`; with no terminal the answer is No.
+
+1. Install Ollama, when it is not found (`winget` on Windows, `brew` on macOS, Ollama's own
+   script on Linux, which needs sudo). A declined or failed Ollama install never fails the
+   Cutpoint install.
+2. Run `cutpoint setup` (model weights, about 2.5 GB, 3.5 GB with an NVIDIA GPU).
+3. Pull the `qwen3.5:9b` model (about 6.6 GB), when Ollama is running.
+
+Lite asks none of them. To skip the prompts: `--yes` (`-Yes`, `CUTPOINT_YES=1`) answers yes to
+all; `--ollama` / `--no-ollama` (`-Ollama` / `-NoOllama`, `CUTPOINT_OLLAMA=1|0`) decide only the
+Ollama question. If you answer No, run `cutpoint setup` later.
+
+### Upgrade
+
+Run the installer again. Do not use `uv tool upgrade` or a plain `uv tool install`: they drop the
+torch build chosen for your machine.
+
+The installer remembers none of your earlier options. Give the same ones again: without `--lite`
+a lite install becomes full, and without `--source` a git or path install goes back to PyPI.
+
+### Other sources
+
+The installers install from PyPI, from `github.com/FerventOrange/cutpoint` (`--source git[@REF]`)
+or from a local path. For a fork, or a wheel or sdist URL, install the tool with uv and choose the
+torch build yourself. Use `cpu`, or `cu126` with an NVIDIA GPU:
+
+```bash
+uv tool install "cutpoint[events,gpu] @ URL" --torch-backend cu126 --python 3.12 --reinstall --no-sources
+```
+
+Without `--torch-backend`, uv picks a torch build that may not match the machine. The `--lite`
+equivalent is `"cutpoint[ui,keyring,ski] @ URL"` (no `--torch-backend`). The runtime hints print
+this form with the extras in use.
+
+To install into your own virtual environment instead, use `uv pip` or `pip`. For CUDA torch add
+the PyTorch index; an already-installed CPU torch also needs a reinstall:
+
+```bash
+uv pip install "cutpoint[events,gpu]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match --reinstall-package torch --reinstall-package torchvision
+pip install "cutpoint[events,gpu]" --extra-index-url https://download.pytorch.org/whl/cu126 --force-reinstall
+```
+
+Without an NVIDIA GPU, leave out the index and reinstall flags and `gpu`. A plain PyPI install of
+torch is CPU-only on Windows. Check the result with `cutpoint capabilities`.
+
+### From a clone
+
+Install ffmpeg and uv. On Windows:
 
 ```powershell
 winget install --id Gyan.FFmpeg -e
@@ -134,39 +220,10 @@ With an NVIDIA GPU, `uv sync --no-group full --extra gpu` is the minimum for GPU
 To add a missing extra later, use the form that matches how you installed Cutpoint. In a clone a
 plain `uv sync` already has every extra; in a lite environment use `uv sync --no-group full
 --extra X` plus your other extras. For a tool install, run the installer again (without
-`--lite`); a plain `uv tool install --reinstall` drops the torch build for your GPU.
+`--lite`, see [Full or lite](#full-or-lite)). Do not use `uv tool install --reinstall`: it drops
+the torch build for your GPU.
 
-### Install as a tool (optional)
-
-To get a global `cutpoint` command instead of `uv run cutpoint`, install it from PyPI:
-
-```powershell
-uv tool install cutpoint
-```
-
-Or install from a clone of the repository:
-
-```powershell
-uv tool install .
-```
-
-Add extras with `uv tool install "cutpoint[events,gpu]"` (or `".[events,gpu]"` from a
-clone); with pip, `pip install "cutpoint[gpu]"`. This path is not exercised by the project's tests; if it fails, use `uv sync` and
-`uv run`.
-
-Where the torch build comes from:
-
-- A tool install from PyPI or a wheel gets torch from PyPI, which is CPU-only on Windows. With an
-  NVIDIA GPU and the `events` extra, pass the CUDA backend as the installer does (`all` is
-  `events` and `gpu`; on an existing tool install, add `--reinstall`):
-  `uv tool install "cutpoint[all]" --torch-backend cu126`.
-- The CUDA 12.6 index in `pyproject.toml` applies to a clone, to tool installs from a clone
-  directory (including `--editable`) or a git URL, and to `uv pip install` from a clone directory
-  or git URL; these need no flags. `uv pip` keeps an already-installed CPU-only torch unless you
-  add `--reinstall-package torch --reinstall-package torchvision`.
-- `pip` does not apply that index.
-
-Check it with `& "$(uv tool dir)\cutpoint\Scripts\python.exe" -c "import torch; print(torch.cuda.is_available())"`
+The installer picks the torch build. To check a tool install, run `& "$(uv tool dir)\cutpoint\Scripts\python.exe" -c "import torch; print(torch.cuda.is_available())"`
 (`True` means the GPU is used). On Linux:
 `"$(uv tool dir)/cutpoint/bin/python" -c "import torch; print(torch.cuda.is_available())"`. See [ffmpeg and GPU](troubleshooting/ffmpeg-gpu.md#events-is-very-slow).
 
