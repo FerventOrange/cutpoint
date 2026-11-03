@@ -432,6 +432,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- OCR menu detection (#554): a still screen with no new menu text counts as a menu only
+  when another menu frame (box, list or text rule) lies within 15 s, or it holds still for
+  45 s. Still gameplay (respawn and spectator waits, a preparation phase) is no longer
+  flagged as a menu. On hand-labelled War Thunder footage the menu precision rose from 0.65
+  to 1.00 at the same recall (0.44), and on R6 from 0.69 to 0.93. Cached OCR results are
+  replayed once.
 - A provider URL on this machine on the port of the Cutpoint proxy (the running proxy's port,
   else `CUTPOINT_CLIPROXY_PORT`, the port saved at its last start, or 18317) is hosted: the proxy
   forwards to hosted models, so AI Chat, Vision and frames consent now apply to it, with keys
