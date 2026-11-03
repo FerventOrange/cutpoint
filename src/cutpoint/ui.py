@@ -726,8 +726,14 @@ def key_status(data: dict[str, Any], section_name: str = "assistant") -> dict[st
     def shared(p: str) -> bool:
         return not vision or _vision_key_shared(data, p)
 
+    def where(p: str) -> str | None:
+        # UI jobs read the keyring first for the Vision role, even when a variable is set
+        if vision and ai_keys.in_keyring(p, hosts[p]):
+            return "keyring"
+        return ai_keys.status(p, hosts[p], shared=shared(p))
+
     return {
-        "keys": {p: ai_keys.status(p, hosts[p], shared=shared(p)) for p in ai_keys.KEYED},
+        "keys": {p: where(p) for p in ai_keys.KEYED},
         "key_hosts": hosts,
     }
 
@@ -783,7 +789,8 @@ def consent_view(
     ``role`` (``"assistant"`` or ``"vision"``): ``{needed, key, host, missing_key,
     missing_kind}``; ``key`` (:func:`cutpoint.assistant.providers.consent_key`) is None for a
     local provider; ``missing_key``: how to add the API key (or log in) it needs, which comes
-    before agreeing; ``missing_kind``: ``"login"`` for a subscription provider (no key: a proxy
+    before agreeing (for Vision, a key only in an environment variable is missing: UI jobs get
+    none); ``missing_kind``: ``"login"`` for a subscription provider (no key: a proxy
     login), ``"key"`` otherwise, None when nothing is missing. ``consent`` defaults to the
     role's own list in ``config.json``: one role's consent never covers the other's."""
     key = ai_providers.consent_key(provider, role)
@@ -794,7 +801,12 @@ def consent_view(
             ).consent
         except (ValueError, TypeError):  # config.json is invalid: no consent is known
             consent = ()
-    missing = ai_providers.missing_key(provider)
+    # a Vision job started here gets no key variables: only a keyring key counts for it
+    missing = (
+        ai_providers.missing_ui_job_key(provider)
+        if role == "vision"
+        else ai_providers.missing_key(provider)
+    )
     kind = "login" if ai_providers.is_subscription(provider) else "key"
     return {
         "needed": key is not None and key not in consent,
@@ -3855,7 +3867,14 @@ def create_app(port: int) -> FastAPI:
         section = key_section(body)
         data = config_data()
         try:
-            ai_keys.save(name, body.get("key"), key_hosts(data, section)[name])
+            vision = section == "vision_assistant"
+            ai_keys.save(
+                name,
+                body.get("key"),
+                key_hosts(data, section)[name],
+                vision=vision,
+                shared=not vision or _vision_key_shared(data, name),
+            )
         except ValueError as err:
             raise bad(str(err)) from None
         except ai_keys.KeyringError as err:

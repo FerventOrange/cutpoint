@@ -384,6 +384,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Models tab no longer offers "Allow vision requests" while the Vision provider has no API key
+  or login: it shows the missing key or login hint instead (#620).
+- The model list is cached per role as well as provider and URL, so a list Chat loaded is no longer
+  shown for Vision (or the reverse) without its own request (#622).
+- The Models tab Vision key status says "env (CLI only)" for a key that only comes from an
+  environment variable: analyses started from `cutpoint ui` get no key variables and use the key
+  saved in the Models tab (#617). Its "Allow vision requests" box asks for a key saved in the
+  Models tab instead of offering Allow when the key is only in an environment variable, which
+  still works for command-line runs, and the Vision key hints (a missing or rejected key, a key
+  the keyring could not save) name the Models tab first. Model, base URL and rejected-key
+  errors of the hosted providers say "Models tab" instead of "Settings".
 - Vision no longer sends frames to an Ollama on another machine without consent. An Ollama URL
   that is not `localhost` or a loopback address (from `--ollama-url`, `vision_assistant.url`, `OLLAMA_HOST` or `ollama_url` in `config.json`)
   is hosted, as it already was for AI Chat: `analyze --vision`, the `events` VLM layer and
