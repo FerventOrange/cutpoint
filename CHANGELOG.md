@@ -603,6 +603,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MemoryError`, out of memory is named, with "close other programs or pass --skip keyframes"
   (and `CUTPOINT_ANALYZE_OVERLAP=0` when the OCR ran in the background). The sources read before
   the failure keep their menu spans and HUD events. The exit code stays 0 (#555).
+- Whisper loads from the Hugging Face cache first (`analyze`, `assemble --captions`, `edit`, the
+  360 analyze, also after a CUDA failure falls back to the CPU): once the model is there, a run
+  makes no Hugging Face Hub request. Only a model missing from the cache (or partly downloaded)
+  is downloaded on first use, as before, with an INFO line such as "Downloading Whisper medium
+  (~1.5 GB) on first use (cutpoint setup --only whisper fetches it ahead of time)". A model
+  folder given to `--model` loads as before. New `cutpoint setup --only whisper` downloads the
+  default model ahead of time (medium with CUDA, small without; `--whisper-model NAME` for
+  another name or repo id); it needs no extra, so it works in Cutpoint lite, and the default
+  `cutpoint setup` includes it (#651).
 
 ## [0.4.0] - 2026-10-29
 

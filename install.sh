@@ -79,7 +79,7 @@ with no terminal the answer is No unless --yes is given):
     ~/.local/state/cutpoint/ollama-serve.log). A declined or failed
     Ollama install never fails the Cutpoint install.
   - Pull qwen3.5:9b (about 6.6 GB), full mode only, when Ollama is running.
-  - "cutpoint setup" (model weights, about 2 GB), full mode only.
+  - "cutpoint setup" (model weights, about 2.5 GB, 3.5 GB with an NVIDIA GPU), full mode only.
 EOF
 }
 
@@ -813,7 +813,7 @@ optional_downloads() {
     offer_ollama
   fi
   if [ "$LITE" = 0 ]; then
-    if ask "Download models now with 'cutpoint setup' (about 2 GB)?"; then
+    if ask "Download models now with 'cutpoint setup' (about 2.5 GB, 3.5 GB with an NVIDIA GPU)?"; then
       if run cutpoint setup; then
         SETUP_DONE=yes
       else
@@ -875,7 +875,7 @@ summary() {
     say "  - Ollama model pulled: $OLLAMA_MODEL (used by --vision and AI Chat)."
   fi
   if [ "$LITE" = 0 ] && [ "$SETUP_DONE" != yes ]; then
-    say "  - Download the models (about 2 GB): cutpoint setup"
+    say "  - Download the models (about 2.5 GB, 3.5 GB with an NVIDIA GPU): cutpoint setup"
   fi
   say "  - Start the browser workspace: cutpoint ui"
   say "  - Edit a video: cutpoint edit PATH-TO-VIDEO"

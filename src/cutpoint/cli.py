@@ -673,7 +673,7 @@ def _cmd_setup(a: argparse.Namespace) -> int:
     try:
         return run_setup(a)
     finally:  # also after a failed step: what is there by then
-        _report_setup(a.only, before)
+        _report_setup(a.only, before, getattr(a, "_whisper_result", None))
 
 
 def _setup_files(component: str) -> list[Path]:
@@ -702,8 +702,11 @@ def _setup_state(files: list[Path]) -> dict[Path, tuple[int, int] | None]:
     return state
 
 
-def _report_setup(components: list[str], before: dict[str, dict]) -> None:
-    """``--json`` outputs of ``setup``: per component the files downloaded or found."""
+def _report_setup(
+    components: list[str], before: dict[str, dict], whisper: dict[str, str] | None = None
+) -> None:
+    """``--json`` outputs of ``setup``: per component the files downloaded or found; for
+    ``whisper`` the result of its step (``whisper``; None: it did not finish)."""
     from cutpoint.events.setup import EVENTS_MODULES  # noqa: PLC0415
     from cutpoint.extras import LITE, install_hint  # noqa: PLC0415
 
@@ -719,6 +722,9 @@ def _report_setup(components: list[str], before: dict[str, dict]) -> None:
                     f"cutpoint events is {LITE}. To add the events extra: "
                     f"{install_hint('events')}",
                 )
+            continue
+        if name == "whisper":
+            report[name] = whisper or {"model": None, "path": None, "status": "missing"}
             continue
         files = []
         for path, now in _setup_state(_setup_files(name)).items():
@@ -1559,15 +1565,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     su = sub.add_parser(
         "setup",
-        help="install the cutpoint events models "
-        "(PANNs, CLIP, detector, Silero VAD) "
-        "into CUTPOINT_HOME",
+        help="install the models: Whisper (into the Hugging Face cache) and the events "
+        "models (PANNs, CLIP, detector, Silero VAD) into CUTPOINT_HOME",
     )
     from cutpoint.events.setup import add_arguments as add_setup_arguments  # noqa: PLC0415
+    from cutpoint.events.setup import check_args as check_setup_args  # noqa: PLC0415
 
     add_setup_arguments(su)
     _add_json_argument(su)
-    su.set_defaults(func=_cmd_setup)
+    su.set_defaults(func=_cmd_setup, usage_check=lambda a: check_setup_args(su, a))
 
     pa = sub.add_parser(
         "paths",

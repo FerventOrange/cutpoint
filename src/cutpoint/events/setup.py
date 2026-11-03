@@ -4,6 +4,7 @@ Usage::
 
     cutpoint setup                        # everything
     cutpoint setup --only panns voice
+    cutpoint setup --only whisper --whisper-model large-v3
 
 The Python packages (torch, torchvision, panns-inference, ...) are not installed
 here: they are the ``events`` extra of the package, so their versions live in
@@ -15,6 +16,10 @@ from the installer when it is not lite; torch then comes from the PyTorch CUDA
 Components (models go to CUTPOINT_HOME, see ``cutpoint paths``):
     pip      check that the ``events`` extra is installed; print the install
              command when it is not (installs nothing)
+    whisper  the faster-whisper model ``analyze`` uses by default (medium with CUDA,
+             small without; ``--whisper-model`` for another name or Hub repo id) -> the
+             Hugging Face cache. Needs no extra: it works in Cutpoint lite. Runs download
+             it on first use too, and load it from the cache without a Hub request after.
     panns    Cnn14_DecisionLevelMax checkpoint + AudioSet label CSV -> models/panns.
              The checkpoint comes from the first mirror that works (see
              PANNS_CKPT_MIRRORS); set CUTPOINT_PANNS_URL to try your own URL first.
@@ -86,7 +91,7 @@ EVENTS_MODULES = (
     "onnxruntime",
     "scipy",
 )
-COMPONENTS = ("pip", "panns", "visual", "voice")
+COMPONENTS = ("pip", "whisper", "panns", "visual", "voice")
 
 
 class SlowDownloadError(Exception):
@@ -317,6 +322,20 @@ def install_visual() -> None:
     VisualModels(download=True).close()  # the only CLIP load that may download
 
 
+def install_whisper(model: str | None = None) -> dict[str, str]:
+    """Download the whisper model ``model`` (default: the one ``analyze`` picks here).
+
+    Returns:
+        ``model`` (its name), ``path`` (its folder) and ``status``: ``found`` when it was in
+        the cache before, else ``downloaded``.
+    """
+    from cutpoint import transcribe  # noqa: PLC0415 - no torch: works in Cutpoint lite
+
+    name = model or transcribe.default_model()
+    status = "found" if transcribe.cached_model(name) else "downloaded"
+    return {"model": name, "path": transcribe.fetch_model(name), "status": status}
+
+
 def install_voice() -> None:
     """Download the Silero VAD ONNX model."""
     download(paths.SILERO_URL, paths.silero_vad())
@@ -331,13 +350,33 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         default=list(COMPONENTS),
         help="components to install (default: all)",
     )
+    ap.add_argument(
+        "--whisper-model",
+        metavar="NAME",
+        help="whisper model for the whisper component: a faster-whisper name such as "
+        "large-v3, or a Hugging Face repo id (default: medium with CUDA, small without)",
+    )
+
+
+def check_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Refuse ``--whisper-model`` without the whisper component (exit 2)."""
+    if args.whisper_model and "whisper" not in args.only:
+        parser.error("--whisper-model needs the whisper component: add whisper to --only")
 
 
 def run_args(args: argparse.Namespace) -> int:
-    """Run the setup steps selected in ``args``; returns a process exit code."""
+    """Run the setup steps selected in ``args``; returns a process exit code.
+
+    The whisper step leaves its result (:func:`install_whisper`) in ``args._whisper_result``.
+    """
     logger.info("models -> %s", cutpoint_paths.models_dir())
+
+    def whisper() -> None:
+        args._whisper_result = install_whisper(getattr(args, "whisper_model", None))
+
     steps = {
         "pip": check_python_packages,
+        "whisper": whisper,
         "panns": install_panns,
         "visual": install_visual,
         "voice": install_voice,

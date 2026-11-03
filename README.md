@@ -70,8 +70,8 @@ See the [command reference](https://github.com/FerventOrange/cutpoint/blob/main/
   still runs but slower.
 - Optional: [Ollama](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)
   for AI frame rating, the scene descriptions of `cutpoint events` and the local AI Chat
-- Optional: `cutpoint setup` downloads (about 2 GB) for sound, on-screen text and visual
-  features
+- Optional: `cutpoint setup` downloads (about 2.5 GB, 3.5 GB with an NVIDIA GPU) for sound,
+  on-screen text and visual features, and the Whisper model (else fetched on first use)
 
 ## Install
 
