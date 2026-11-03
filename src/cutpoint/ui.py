@@ -1916,8 +1916,11 @@ class Media:
                 if line:
                     rest.append(line)
             elif m[1] == "out_time_us" and m[2].isdigit() and duration > 0:  # "N/A" at first
+                # Never lower: ffmpeg reports the furthest stream not yet finished, so it steps
+                # back when audio ends ahead of a video encode that is still catching up.
                 with self.lock:
-                    self.progress[key] = min(1.0, int(m[2]) / 1e6 / duration)
+                    done = min(1.0, int(m[2]) / 1e6 / duration)
+                    self.progress[key] = max(self.progress.get(key, 0.0), done)
         proc.wait()
         return "\n".join(rest)[-500:]
 
