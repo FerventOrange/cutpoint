@@ -730,6 +730,54 @@ def test_gentle_sweeps_travel_far_but_do_not_spin() -> None:
     assert d["yaw_travel_per_min"] > C.SPIN_TRAVEL_DEG_MIN and d["flags"] == ["spin"]
 
 
+def test_short_moments_that_turn_fast_one_way_spin() -> None:
+    """#547: a moment of about 6 s cannot travel a full turn below 60 deg/s; under
+    SPIN_WINDOW_S the travel guards scale with the span, down to SPIN_SHORT_MIN_DEG."""
+    t = np.arange(41) * 0.5
+    d = C.diagnostics(keys_path(25.0 * t), 2.0, 8.0)  # 150 deg one way in 6 s
+    assert d["yaw_travel"] < C.SPIN_MIN_TRAVEL_DEG and d["net_turns"] < C.SPIN_TRAVEL_MIN_TURNS
+    assert d["flags"] == ["spin"]
+    # a quick deliberate pan (90 deg in 6 s) stays no spin, nor does a fast sway of 6 s
+    d = C.diagnostics(keys_path(15.0 * t), 2.0, 8.0)
+    assert d["yaw_travel_per_min"] > C.SPIN_TRAVEL_DEG_MIN and d["flags"] == []
+    d = C.diagnostics(keys_path(30.0 * np.sin(2 * np.pi * t / 4.0)), 2.0, 8.0)  # +-30 deg
+    assert d["yaw_travel"] > C.SPIN_SHORT_MIN_DEG and d["flags"] == []
+    # 20 s: the guards are 2/3 of the 30 s ones (240 deg of travel, 1/3 turn one way)
+    d = C.diagnostics(keys_path(10.0 * t), 0.0, 20.0)  # 200 deg
+    assert d["flags"] == []
+    d = C.diagnostics(keys_path(13.0 * t), 0.0, 20.0)  # 260 deg
+    assert d["flags"] == ["spin"]
+    # a record without its length keeps the 30 s guards
+    rec = {"yaw_travel": 150.0, "yaw_travel_per_min": 1500.0, "net_turns": 0.42}
+    assert C.path_flags(rec) == [] and C.path_flags(rec | {"seconds": 6.0}) == ["spin"]
+
+
+def test_an_upright_clip_turning_the_view_with_its_camera_spins() -> None:
+    """#547: an upright clip's display frame turns with the camera's heading, so a path
+    holding its display yaw still spins the view in the world; its yaw measures are taken
+    in the world. A mounted clip's stay in the display frame."""
+    n = 1200
+    turn = 25.0 * np.arange(n) / 30.0  # the camera turns 25 deg/s
+    upright = G.Orientation(
+        t=np.arange(n) / 30.0,
+        up=np.tile([0.0, -1.0, 0.0], (n, 1)),
+        heading=turn,
+        heading_smooth=turn,
+        meta={"fps": 30.0},
+    )
+    path = keys_path(0.0)
+    d = C.diagnostics(path, 2.0, 8.0, orient=upright)
+    assert d["yaw_travel"] == pytest.approx(150.0, abs=1.0) and d["flags"] == ["spin"]
+    assert d["peak_yaw_rate"] == pytest.approx(25.0, abs=0.5)
+    # a path countering the turn holds the view in the world
+    d = C.diagnostics(keys_path(25.0 * np.arange(41) * 0.5), 2.0, 8.0, orient=upright)
+    assert d["yaw_travel"] < 1.0 and d["flags"] == []
+    mounted = helpers.orientation(n)
+    mounted.heading = mounted.heading_smooth = turn
+    d = C.diagnostics(path, 2.0, 8.0, orient=mounted)
+    assert d["yaw_travel"] == 0.0 and "spin" not in d["flags"]
+
+
 def test_wearer_in_view_is_measured_from_the_orientation() -> None:
     orient = helpers.orientation()
     wy, wp = G.ray_yaw_pitch(orient.r_vw(0.0).T @ G.WEARER_V)
@@ -792,7 +840,7 @@ def test_version_1_entries_are_planned_again(project) -> None:
     st = C.cache_candidate_paths(proj)
     assert (st["computed"], st["cached"]) == (1, 1)
     new = cache.load_json(file)
-    assert new["version"] == C.CACHE_VERSION == 2 and "net_turns" in new["diagnostics"]
+    assert new["version"] == C.CACHE_VERSION == 3 and "net_turns" in new["diagnostics"]
     assert set(C.candidate_flags(proj)) == {"h001", "h002"}
 
 

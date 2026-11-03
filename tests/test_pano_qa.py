@@ -203,6 +203,32 @@ def test_pan_metrics_excludes_cut_crossing_and_measures_shots() -> None:
     assert m["cuts_per_min"] == pytest.approx(6.0)
 
 
+def test_pan_metrics_judge_an_upright_clip_s_pans_in_the_world(monkeypatch) -> None:
+    """#547: the director counters an upright clip's camera heading (display yaw = world
+    yaw + heading), so its display yaw turns with the camera; the view the viewer sees holds
+    still, and its pans are judged in the world. A mounted clip's stay in the display."""
+    n = 900
+    turn = 25.0 * np.arange(n) / 30.0  # the camera turns 25 deg/s
+    upright = G.Orientation(
+        t=np.arange(n) / 30.0,
+        up=np.tile([0.0, -1.0, 0.0], (n, 1)),
+        heading=turn,
+        heading_smooth=turn,
+        meta={"fps": 30.0},
+    )
+    path = make_path(speed=25.0)  # held in the world
+    assert qa.pan_metrics(path, 2.0, 10.0)["speed_p95"] == pytest.approx(25.0, abs=0.5)
+    assert qa.pan_metrics(path, 2.0, 10.0, orient=upright)["speed_p95"] < 0.5
+    mounted = orientation(n)
+    mounted.heading = mounted.heading_smooth = turn
+    m = qa.pan_metrics(path, 2.0, 10.0, orient=mounted)
+    assert m["speed_p95"] == pytest.approx(25.0, abs=0.5)
+    # the QA of rendered paths loads the cached track of an upright clip's path only
+    monkeypatch.setattr(G, "load_orientation", lambda source: upright)
+    assert qa.upright_orientation(path | {"source": "x.lrv"}) is None
+    assert qa.upright_orientation(path | {"source": "x.lrv", "forward_axis": "+z"}) is upright
+
+
 def test_targets_at_nearest_key() -> None:
     path = make_path(cut_at=6.0)
     assert qa.targets_at(path, np.array([1.0, 7.2])) == ["friend", "view"]

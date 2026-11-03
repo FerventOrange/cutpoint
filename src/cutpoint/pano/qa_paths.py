@@ -342,9 +342,11 @@ def path_quality(
     end: float,
     th: Q.QAThresholds | None = None,
     fps: float = 2.0,
+    orient: Any = None,
 ) -> dict[str, Any]:
     """The path's ``quality`` block: geometric QA shares of ``[start, end]``
-    (:func:`paths_thresholds` of ``th``)."""
+    (:func:`paths_thresholds` of ``th``; ``orient``: the clip's orientation track, for the
+    pans of an upright clip, see :func:`~cutpoint.pano.qa.pan_metrics`)."""
     th = paths_thresholds(th or Q.QAThresholds())
     size = (OUT_SIZE[1], OUT_SIZE[0]) if path.get("vertical") else OUT_SIZE
     dur = max(end - start, 0.0)
@@ -354,7 +356,7 @@ def path_quality(
         r["t"] = round(float(t - start), 2)
     for r, tg in zip(recs, Q.targets_at(path, times), strict=True):
         r["target"] = tg
-    pan = Q.pan_metrics(path, start, dur) if dur > 0 else None
+    pan = Q.pan_metrics(path, start, dur, orient=orient) if dur > 0 else None
     agg = Q.aggregate_clip(recs, fps, pan, None, th)
     s = agg["share"]
     keys = ("occluded", "too_close", "edge_cut", "too_far", "subject_present", "size_ok")
@@ -438,7 +440,7 @@ def qa_path_clip(item: dict[str, Any], pv: Any, fps: float, th: Q.QAThresholds) 
     for t, tg, r in zip(times, Q.targets_at(path, times), recs, strict=True):
         r["t"] = round(float(t - off), 2)
         r["target"] = tg
-    pan = Q.pan_metrics(path, off, dur)
+    pan = Q.pan_metrics(path, off, dur, orient=Q.upright_orientation(path))
     hor = Q.horizon_summary(
         Q.horizon(item, off + np.arange(0.0, dur, 1 / 30.0)), Q.horizon_source(item)
     )
