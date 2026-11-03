@@ -222,6 +222,12 @@ def test_text_anchors_keep_boxes_that_stay_in_place():
         ({**text_box(0.02, 0.02), "text": "2025/03/14"}, False),
         ({**text_box(0.8, 0.95), "text": "54 KM/H N49.1234 W122.98"}, False),  # a dashcam
         ({**text_box(0.02, 0.02), "text": "MAR 14 2025"}, False),
+        ({**text_box(0.02, 0.02), "text": "March 14"}, False),
+        ({**text_box(0.02, 0.02), "text": "Sept. 3"}, False),
+        ({**text_box(0.85, 0.9), "text": "Deck 3"}, True),
+        ({**text_box(0.85, 0.9), "text": "Marine 2"}, True),
+        ({**text_box(0.85, 0.9), "text": "Market 12"}, True),
+        ({**text_box(0.85, 0.9), "text": "Octane 5"}, True),
         ({**text_box(0.02, 0.9), "text": "N49°12'34\""}, False),
         ({**text_box(0.8, 0.02), "text": "25°C 77°F"}, False),
         ({**text_box(0.5, 0.1), "text": "275°"}, True),  # a War Thunder bearing

@@ -98,7 +98,8 @@ SUBTITLE_BAND = (0.3, 0.7, 0.75)  # x from, x to, y from (share of the frame): s
 CLOCK_RE = re.compile(
     r"\d{1,2}\s*[:.]\s*\d{2}(\s*[:.]\s*\d{2})?|\d{4}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{1,2}|"
     r"\d{1,2}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{2,4}|\b[ap]\.?m\b|km/?h|mph|[NSEW]\s?\d{1,3}\.\d|"
-    r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]{0,6}\.?\s*\d{1,2}\b|"
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+    r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b\.?\s*\d{1,2}\b|"
     r"\b\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b|"
     r"\d{1,3}\s*°\s*\d{1,2}\s*'|\d{1,3}\s*°\s*[CF]\b",
     re.I,
