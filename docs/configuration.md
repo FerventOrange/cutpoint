@@ -171,8 +171,8 @@ that accepts images; each request sends frames and is billed to your API key. Su
 providers use only their official host; a `url` for them is rejected. An API provider may have a
 `url` (an OpenAI-compatible or self-hosted server); one on this machine (`localhost` or a
 loopback address) needs no Vision consent, because nothing leaves it, except on the port of the
-[`cutpoint proxy`](commands.md#proxy) (18317 or `CUTPOINT_CLIPROXY_PORT`), which forwards to
-hosted models.
+[`cutpoint proxy`](commands.md#proxy) (the running proxy's port, else `CUTPOINT_CLIPROXY_PORT`,
+the port saved at its last start, or 18317), which forwards to hosted models.
 The Models tab fetches the catalog from this configured Ollama URL, including custom servers.
 Without this section the frame rater uses Ollama. The Models tab of `cutpoint ui` writes it.
 Catalogs and frames go to a hosted provider only after you allow it there
@@ -278,8 +278,8 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   vision descriptions, transcript snippets, file names without paths, times) and your messages, never video or audio.
   This consent never covers the [Vision role](#vision_assistant), which has its own.
   Remove an entry to be asked again. A provider is local when its host is `localhost` or a
-  loopback address, except on the port of the [`cutpoint proxy`](commands.md#proxy) (18317 or
-  `CUTPOINT_CLIPROXY_PORT`), which forwards to hosted models; any other host, a LAN address too,
+  loopback address, except on the port of the [`cutpoint proxy`](commands.md#proxy) (the running
+  proxy's port, else `CUTPOINT_CLIPROXY_PORT`, the port saved at its last start, or 18317), which forwards to hosted models; any other host, a LAN address too,
   is hosted.
 - `frames_consent`: the projects whose video frames AI Chat may send to a hosted provider
   (`view_moment`, see [AI Chat](commands.md#ai-chat)): an object from a project folder to its

@@ -564,7 +564,7 @@ the Models tab, so "Allow vision requests" waits for a key saved there. The page
 
 A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on
 another machine counts too), or whose URL is on this machine on the port of the Cutpoint
-[proxy](#proxy) (18317 or `CUTPOINT_CLIPROXY_PORT`, which forwards to hosted models), is hosted: before the first message the tab asks once, per provider
+[proxy](#proxy), which forwards to hosted models (the running proxy's port, else `CUTPOINT_CLIPROXY_PORT`, the port saved at its last start, or 18317), is hosted: before the first message the tab asks once, per provider
 and host (with its port when that is not the default), to send the project's analysis results (moment labels, scores and detection signals, vision
 descriptions, transcript snippets, file names (not full paths) and times) and your messages, never video
 frames unless you allow them for a project (below), and never audio. The answer is kept in
