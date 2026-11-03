@@ -290,10 +290,11 @@ def test_director_without_views_places_the_wearer_from_the_track(tmp_path, monke
 
 
 # ------------------------------------------------------------------ director path reuse
-def _plan_twice(tmp_path, monkeypatch, axis: str, edit=None) -> tuple[int, dict]:
+def _plan_twice(tmp_path, monkeypatch, axis: str, edit=None, views=True) -> tuple[int, dict]:
     """Run ``360 director`` (no --force) twice on one segment of a clip whose forward axis is
-    ``axis``; ``edit`` changes the saved path in between. Returns the plans of the second run
-    and the path saved by the first."""
+    ``axis``; ``edit`` changes the saved path in between; ``views``: the clip's view layer is
+    current in the first run. Returns the plans of the second run and the path saved by the
+    first."""
     import argparse  # noqa: PLC0415
     from dataclasses import asdict  # noqa: PLC0415
 
@@ -309,6 +310,7 @@ def _plan_twice(tmp_path, monkeypatch, axis: str, edit=None) -> tuple[int, dict]
     monkeypatch.setattr(P, "clip_for", lambda clips, src: clip)
     monkeypatch.setattr(PC, "_selected_segments", lambda project, a: [seg])
     monkeypatch.setattr(G, "cached_forward_axis", lambda src: axis)
+    monkeypatch.setattr(VW, "load_views", lambda src: SimpleNamespace() if views else None)
     planned: list[str] = []
 
     def compute(clip, start, end, *, vertical, kind, **kw):
@@ -337,6 +339,7 @@ def _plan_twice(tmp_path, monkeypatch, axis: str, edit=None) -> tuple[int, dict]
     if edit is not None:
         cache.save_json(f, edit(dict(saved)))
     planned.clear()
+    views = True  # `360 analyze` has run since
     PC.cmd_director(a)
     return len(planned), saved
 
@@ -360,3 +363,13 @@ def test_helmet_director_paths_have_no_wearer_model_and_stay_reused(tmp_path, mo
     plans, saved = _plan_twice(tmp_path, monkeypatch, G.axis_name(G.FORWARD_V))
     assert "wearer_model" not in saved and "forward_axis" not in saved
     assert plans == 0
+
+
+def test_upright_paths_planned_without_current_views_are_planned_again(
+    tmp_path, monkeypatch, caplog
+):
+    with caplog.at_level(logging.WARNING, logger="cutpoint"):
+        plans, saved = _plan_twice(tmp_path, monkeypatch, "+z", views=False)
+    assert "wearer_model" not in saved  # planned without the view layer: not final
+    assert plans == 1
+    assert sum("360 analyze" in r.getMessage() for r in caplog.records) == 1

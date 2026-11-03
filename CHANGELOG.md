@@ -443,7 +443,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not as you (measured on five upright clips). Its view layer is computed again by `360 analyze` (an
   INFO line says so) when its selfie view looked elsewhere, and the candidates' camera paths
   are planned again, as are an upright clip's paths already saved by `360 director` (no
-  `--force` needed). Helmet-mount clips are unchanged.
+  `--force` needed; until `360 analyze` has recomputed the view layer, a WARNING says so and
+  the paths are planned again on the next run). Helmet-mount clips are unchanged.
 - Ollama vision ratings and `360 director --vl-check` frame checks are cached per server
   (host and port of the Ollama URL), so a local and a remote Ollama with the same model no
   longer share results; existing ones are rated again once (#673).

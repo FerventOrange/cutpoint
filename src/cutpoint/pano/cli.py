@@ -552,6 +552,24 @@ def _reusable(out_dir: Path) -> dict[str, tuple[str, dict[str, Any]]]:
     return found
 
 
+def _upright_views(clip: Any, seen: dict[str, bool]) -> bool:
+    """Whether an upright clip's view layer is current (``seen`` caches it per clip). A path
+    planned without it records no wearer model, so it is planned again once ``360 analyze``
+    has recomputed the views; a WARNING says so once per clip."""
+    from cutpoint.pano.views import load_views  # noqa: PLC0415
+
+    src = str(clip.source)
+    if src not in seen:
+        seen[src] = load_views(Path(src)) is not None
+        if not seen[src]:
+            logger.warning(
+                "%s: no current view layer (upright clip); its paths are planned without it "
+                "and planned again after `cutpoint 360 analyze`",
+                Path(src).name,
+            )
+    return seen[src]
+
+
 def _without_vl(path: Any) -> Any:
     """``path`` without its ``vl`` answers (they and their timing differ on every run)."""
     return {k: v for k, v in path.items() if k != "vl"} if isinstance(path, dict) else path
@@ -727,6 +745,7 @@ def _direct(
     # take over such a name; its backup is redundant once the run saved the path anew)
     carried = {reuse[k][0] for stem, _, _, k in segs if k in reuse and reuse[k][0] != stem}
     redundant: list[Path] = []  # backups of carried paths, dropped after the loop
+    views_ok: dict[str, bool] = {}  # upright clip source -> its view layer is current
     for stem, m, clip, key in segs:
         preview = out_dir / f"{stem}.mp4"
         old_stem, path = reuse.get(key, (None, None))
@@ -754,8 +773,8 @@ def _direct(
             )
             if prompts:  # read back by _reusable
                 path["prompts"] = prompts
-            if "forward_axis" in path:  # upright: the wearer model it was planned with
-                path["wearer_model"] = G.UPRIGHT_WEARER
+            if "forward_axis" in path and _upright_views(clip, views_ok):
+                path["wearer_model"] = G.UPRIGHT_WEARER  # planned with that model's views
 
         def render(
             path: Any = path, clip: Any = clip, m: dict[str, Any] = m, preview: Path = preview
