@@ -432,6 +432,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `edit --events` no longer fails after an in-process PANNs run with `panns_inference.__spec__
+  is None` (#669).
 - `analyze --ollama-url` and `--ollama-model` now reach the VLM layer of its events step, which
   used the configured Ollama instead (#660).
 - `edit --events` honours `--skip`: `--skip keyframes` no longer runs HUD discovery (#659).

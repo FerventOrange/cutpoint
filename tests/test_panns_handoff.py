@@ -258,3 +258,29 @@ def test_panns_checkpoint_with_code_in_it_is_refused_unexecuted(panns_ckpt):
     with pytest.raises(RuntimeError, match="cannot be loaded safely"):
         audio_events.PannsDetector(device="cpu")
     assert RAN == []
+
+
+def test_panns_stub_package_keeps_the_events_extra_check_working(tmp_path: Path, monkeypatch):
+    """#669: the ``panns_inference`` stub has a spec, so a later ``find_spec`` works."""
+    import importlib.util  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    from cutpoint.events import audio_events  # noqa: PLC0415
+
+    pkg = tmp_path / "panns_inference"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(
+        "raise RuntimeError('package __init__ ran')\n", encoding="utf-8"
+    )
+    (pkg / "models.py").write_text("class Cnn14_DecisionLevelMax: ...\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in ("panns_inference", "panns_inference.models"):
+        monkeypatch.setitem(sys.modules, name, None)  # undo restores or removes the key
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(pipeline, "EVENTS_MODULES", ("panns_inference",))
+
+    models = audio_events._import_panns_models()
+
+    assert models.Cnn14_DecisionLevelMax
+    assert importlib.util.find_spec("panns_inference") is not None
+    pipeline._require_events_extra(("audio",))
