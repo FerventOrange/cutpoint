@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -12,6 +13,7 @@ import pytest
 from conftest import envelope, needs_ffmpeg
 from cutpoint import category, cli, paths, styles
 from cutpoint.category import ACTION_CAM, GAMEPLAY, GENERAL, TALK, SourceProbe
+from cutpoint.events import ocr_raw
 
 RNG = np.random.default_rng(7)
 H, W = category.GRID[1], category.GRID[0]
@@ -196,3 +198,212 @@ def test_probe_source_measures_frames_once_and_detect_reports_it(video, capsys, 
     assert out["category"] in category.CATEGORIES
     assert set(out["styles"]) == {"analyze", "funny-moments"}
     assert [s["path"] for s in out["sources"]] == [str(video)]
+
+
+# --------------------------------------------------------------------------- HUD text (OCR)
+def text_box(x0: float, y0: float, w: float = 0.08, h: float = 0.025) -> dict:
+    return {"box": [x0, y0, x0 + w, y0 + h], "text": "AMMO 30", "score": 0.9}
+
+
+def test_text_anchors_keep_boxes_that_stay_in_place():
+    """A HUD number keeps its place while its width changes; a box in a few frames (a
+    passing sign) is no anchor."""
+    hud = [(1100.0, 650.0, 1180.0 + 6 * (i % 2), 670.0) for i in range(8)]  # 30 / 120
+    sign = [(400.0, 300.0, 500.0, 330.0)] * 3 + [()] * 5
+    frames = [[hud[i], *([sign[i]] if sign[i] else [])] for i in range(8)]
+    assert category.text_anchors(frames) == [(0, hud[0])]
+
+
+@pytest.mark.parametrize(
+    ("anchor", "kept"),
+    [
+        (text_box(0.85, 0.9), True),  # ammo, bottom right
+        ({**text_box(0.85, 0.9), "text": "2025-03-14 12:34:56"}, False),  # a camera's clock
+        ({**text_box(0.02, 0.02), "text": "2025/03/14"}, False),
+        ({**text_box(0.8, 0.95), "text": "54 KM/H N49.1234 W122.98"}, False),  # a dashcam
+        ({**text_box(0.02, 0.02), "text": "MAR 14 2025"}, False),
+        ({**text_box(0.02, 0.02), "text": "March 14"}, False),
+        ({**text_box(0.02, 0.02), "text": "Sept. 3"}, False),
+        ({**text_box(0.85, 0.9), "text": "Deck 3"}, True),
+        ({**text_box(0.85, 0.9), "text": "Marine 2"}, True),
+        ({**text_box(0.85, 0.9), "text": "Market 12"}, True),
+        ({**text_box(0.85, 0.9), "text": "Octane 5"}, True),
+        ({**text_box(0.02, 0.9), "text": "N49°12'34\""}, False),
+        ({**text_box(0.8, 0.02), "text": "25°C 77°F"}, False),
+        ({**text_box(0.5, 0.1), "text": "275°"}, True),  # a War Thunder bearing
+        ({**text_box(0.4, 0.88), "text": "Watch out for that rock"}, False),  # subtitles
+        ({**text_box(0.85, 0.9), "score": 0.3}, False),  # not read
+        ({**text_box(0.85, 0.9), "text": " "}, False),
+    ],
+)
+def test_hud_anchors_leave_out_camera_overlays(anchor, kept):
+    assert category.hud_anchors([anchor]) == int(kept)
+
+
+THIN_HUD = {**GAME, "hud_static": 0.0}  # screen recorder tags, a HUD too thin for GRID
+
+
+@pytest.mark.parametrize(
+    ("fields", "needs"),
+    [
+        (THIN_HUD, True),  # unsure general (0.4)
+        ({**THIN_HUD, "handler": "", "hud_static": 0.002}, True),  # unsure gameplay (0.55)
+        (GAME, False),  # sure gameplay
+        ({**THIN_HUD, "make": "Apple"}, False),  # camera tags: sure general, never lifted
+        ({**THIN_HUD, "static_share": 0.9}, False),  # a still (a desktop, a menu)
+        ({**THIN_HUD, "telemetry": True}, False),
+        ({**THIN_HUD, "hud_static": None, "frames": 2}, False),  # no frame measures
+    ],
+)
+def test_the_text_check_runs_only_for_unsure_footage(fields, needs):
+    assert category.needs_text(probe(**fields)) is needs
+
+
+def test_hud_text_makes_an_unsure_screen_recording_sure_gameplay():
+    """Enough HUD text lifts a thin-HUD recording to sure gameplay, also when it is talky
+    (the commentary hint stays); too little keeps it unsure."""
+    many, few = category.TEXT_ANCHORS, category.TEXT_ANCHORS - 1
+    det = category.decide([probe(**THIN_HUD, hud_text=many)])
+    assert (det.category, det.ambiguous) == (GAMEPLAY, False)
+    assert f"HUD text in {many} places" in det.reason
+    det = category.decide([probe(**THIN_HUD, hud_text=many)], {"a.mp4": 0.9})
+    assert (det.category, det.ambiguous, det.suggest) == (GAMEPLAY, False, "commentary")
+    det = category.decide([probe(**THIN_HUD, hud_text=few)])
+    assert det.ambiguous and "no HUD text" in det.reason
+
+
+@pytest.fixture(autouse=True)
+def _reset_failed_text_checks():
+    category._TEXT_FAILED.clear()
+    yield
+    category._TEXT_FAILED.clear()
+
+
+@pytest.fixture
+def text_check(faked_probe, monkeypatch):
+    """``faked_probe`` of a thin-HUD screen recording, with the OCR faked:
+    ``state.anchors`` is what :func:`category.text_probe` finds, ``state.texts`` counts
+    its runs."""
+    state = faked_probe
+    state.anchors, state.texts = [text_box(0.02 + 0.2 * i, 0.03) for i in range(5)], 0
+    state.frame = {"frames": 16, "hud_static": 0.0, "static_share": 0.05}
+
+    def frame_probe(*a):
+        state.probes += 1
+        return dict(state.frame)
+
+    def text_probe(*a):
+        state.texts += 1
+        return {"version": 1, "engine": "x", "frames": 8, "anchors": state.anchors}
+
+    monkeypatch.setattr(category, "_frame_probe", frame_probe)
+    monkeypatch.setattr(category, "text_probe", text_probe)
+    monkeypatch.setattr(ocr_raw, "engine_version", lambda: "x")
+    monkeypatch.setattr(category, "_metadata", lambda data: {"handler": "VideoHandle"})
+    return state
+
+
+def test_the_text_check_is_cached_apart_and_lifts_the_source(text_check):
+    from cutpoint import cache  # noqa: PLC0415
+
+    src = text_check.src
+    first = category.probe_source(src)
+    assert first.hud_text == 5 and text_check.texts == 1
+    assert "hud_text" not in cache.load_json(cache.source_dir(src) / category.CACHE_FILE)
+    again = category.probe_source(src)  # both records cached
+    assert again == first and (text_check.probes, text_check.texts) == (1, 1)
+    assert category.decide([again]).ambiguous is False
+
+
+def test_a_new_ocr_engine_reads_the_text_again(text_check, monkeypatch):
+    category.probe_source(text_check.src)
+    monkeypatch.setattr(ocr_raw, "engine_version", lambda: "y")
+    category.probe_source(text_check.src)
+    assert text_check.texts == 2
+
+
+def test_without_the_ocr_engine_the_check_is_skipped_quietly(text_check, monkeypatch, caplog):
+    """Cutpoint lite: no check, nothing cached, the detection stays ambiguous; installing
+    the engine later runs it."""
+    from cutpoint import cache  # noqa: PLC0415
+
+    monkeypatch.setattr(category, "ocr_installed", lambda: False)
+    with caplog.at_level(logging.INFO):
+        p = category.probe_source(text_check.src)
+    assert p.hud_text is None and text_check.texts == 0 and caplog.text == ""
+    assert not (cache.source_dir(text_check.src) / category.TEXT_FILE).exists()
+    assert category.decide([p]).ambiguous
+    monkeypatch.setattr(category, "ocr_installed", lambda: True)
+    assert category.probe_source(text_check.src).hud_text == 5
+
+
+def test_a_failed_text_check_keeps_the_frame_probe_and_is_not_cached(text_check, monkeypatch):
+    def broken(*a):
+        text_check.texts += 1
+        raise RuntimeError("onnxruntime fell over")
+
+    monkeypatch.setattr(category, "text_probe", broken)
+    assert category.probe_source(text_check.src).hud_text is None
+    assert category.probe_source(text_check.src).hud_text is None
+    assert text_check.texts == 1  # one attempt per process (edit --style auto detects twice)
+
+
+def test_camera_overlays_never_make_camera_footage_sure_gameplay(text_check):
+    """A burned-in clock, a dashcam's speed and position, and subtitles are all text in
+    place, but none is a HUD's."""
+    text_check.anchors = [
+        {**text_box(0.8, 0.93), "text": "2025-03-14 12:34:56"},
+        {**text_box(0.02, 0.03), "text": "2025/03/14 00:00:20"},
+        {**text_box(0.75, 0.95), "text": "59 KM/H N49.1234 W122.9876"},
+        {**text_box(0.35, 0.85), "text": "We are heading down the ridge now"},
+    ]
+    p = category.probe_source(text_check.src)
+    assert p.hud_text == 0 and category.decide([p]).ambiguous
+
+
+@pytest.mark.parametrize(
+    ("frame", "meta"),
+    [
+        ({"hud_static": 0.01}, {"handler": "VideoHandle"}),  # a static HUD: sure gameplay
+        ({}, {"make": "Apple"}),  # camera tags: sure general
+        ({"static_share": 0.9}, {"handler": "VideoHandle"}),  # a still picture
+    ],
+)
+def test_sure_footage_and_stills_are_never_read(text_check, monkeypatch, frame, meta):
+    text_check.frame.update(frame)
+    monkeypatch.setattr(category, "_metadata", lambda data: meta)
+    assert category.probe_source(text_check.src).hud_text is None
+    assert text_check.texts == 0
+
+
+def test_text_probe_reads_a_real_hud_and_leaves_out_clock_and_subtitles(monkeypatch):
+    """The real OCR on synthetic frames: three fixed labels are HUD anchors, the clock and
+    the bottom-centre subtitle are not (box order, scaling and recognition end to end)."""
+    pytest.importorskip("rapidocr_onnxruntime")
+    cv2 = pytest.importorskip("cv2")
+    rng = np.random.default_rng(1)
+    w, h = 640, 360
+    frames = []
+    for _ in range(8):
+        f = np.full((h, w, 3), 30, np.uint8) + rng.integers(0, 20, (h, w, 3), dtype=np.uint8)
+        for text, org in [
+            ("HEALTH 100", (20, 300)),
+            ("AMMO 30", (480, 300)),
+            ("SCORE 4500", (480, 60)),
+            ("12:34:56", (20, 40)),
+            ("Watch out for that rock", (170, 335)),
+        ]:
+            cv2.putText(f, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+        frames.append(f)
+    monkeypatch.setattr(category, "_text_frames", lambda *a: frames)
+    rec = category.text_probe(Path("x"), 60.0, w, h)
+    assert rec["engine"] == ocr_raw.engine_version() and rec["frames"] == 8
+    assert all(0.0 <= v <= 1.0 for a in rec["anchors"] for v in a["box"])
+    assert category.hud_anchors(rec["anchors"]) == 3
+
+
+@needs_ffmpeg
+def test_text_frames_decodes_eight_frames_at_the_ocr_width(video):
+    frames = category._text_frames(video, 10.0, 160, 120)
+    assert len(frames) == category.TEXT_FRAMES
+    assert all(f.shape == (120, 160, 3) for f in frames)

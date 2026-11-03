@@ -243,6 +243,7 @@ def test_edit_with_an_explicit_style_never_probes(pipeline, monkeypatch):
     monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: None)
     monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
     monkeypatch.setattr(category, "probe_source", lambda src: pytest.fail("probed"))
+    monkeypatch.setattr(category, "text_probe", lambda *a: pytest.fail("OCR check"))
     assert cli.main(["edit", str(pipeline.video), "--style", "gaming", "--events"]) == 0
 
 

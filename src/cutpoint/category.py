@@ -12,15 +12,20 @@ A source is one of four categories (#513):
 :func:`decide` turns the probes and the speech coverage into a :class:`Detection`, without
 I/O. The project gets one category by duration-weighted majority; :func:`resolve_auto` in
 :mod:`cutpoint.styles` maps it and the emphasis to a style. Nothing here needs torch: the
-frame probe is 32 small grey frames and numpy.
+frame probe is 32 small grey frames and numpy. A source the frames leave unsure between
+gameplay and general also gets the HUD text check (:func:`text_probe`, cached as
+:data:`TEXT_FILE`): the HUD OCR engine of the events extra looks for text that stays in place
+over a few frames, as a thin game HUD has; without the extra it is skipped.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import itertools
 import logging
 import math
 import re
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -75,6 +80,33 @@ SPEECH_BRIDGE_S = 1.0  # pauses up to this long between words count as speech
 TELEMETRY_SHARE = 0.5  # action cam wins with telemetry in at least this share of the footage
 DISAGREE_SHARE = 0.10  # minorities above this share of the footage: style_sources_disagree
 
+# ---- the HUD text check (OCR), for a source the frame probe leaves unsure
+# A thin HUD (a few lines of text) is too small to stay static at GRID; the HUD OCR engine
+# finds its text at TEXT_WIDTH. Only text boxes in the same place in most frames count, less
+# clocks, dates, speeds and GPS positions (a camera's or dashcam's burned-in overlay) and the
+# subtitle band.
+TEXT_VERSION = 1
+TEXT_FILE = f"category-text-v{TEXT_VERSION}.json"  # in the source's cache folder
+TEXT_FRAMES = 8  # frames spread over SPAN
+TEXT_WIDTH = 1280  # OCR frame width (a narrower source: its own)
+TEXT_MIN_FRAMES = 6  # fewer frames decoded: no check (and nothing cached)
+TEXT_KEEP = 0.6  # a text anchor: a box in the same place in this share of the frames
+TEXT_MIN_SCORE = 0.7  # recognition score below which an anchor's text does not count (noise)
+TEXT_ANCHORS = 3  # kept anchors from which the text is a HUD's
+TEXT_WEIGHT = 0.3  # gameplay score of a HUD's text
+SUBTITLE_BAND = (0.3, 0.7, 0.75)  # x from, x to, y from (share of the frame): subtitles
+CLOCK_RE = re.compile(
+    r"\d{1,2}\s*[:.]\s*\d{2}(\s*[:.]\s*\d{2})?|\d{4}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{1,2}|"
+    r"\d{1,2}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{2,4}|\b[ap]\.?m\b|km/?h|mph|[NSEW]\s?\d{1,3}\.\d|"
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|"
+    r"sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b\.?\s*\d{1,2}\b|"
+    r"\b\d{1,2}\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b|"
+    r"\d{1,3}\s*°\s*\d{1,2}\s*'|\d{1,3}\s*°\s*[CF]\b",
+    re.I,
+)
+
+_TEXT_FAILED: set[Path] = set()  # cache folders whose text check failed in this process
+
 SCREEN_HANDLERS = ("videohandle",)  # NVIDIA ShadowPlay / the NVIDIA app
 CAMERA_RE = re.compile(
     r"gopro|dji|insta360|ambarella|apple|iphone|android|samsung|pixel|sony|canon|nikon|"
@@ -101,6 +133,8 @@ class SourceProbe:
         static_share: Share of the picture that never changes at all.
         noise_floor: Luma noise sigma in flat areas of the native-resolution crops.
         shake: Median shift (px) between consecutive frames of the crops.
+        hud_text: HUD text anchors the HUD text check kept (None: not checked). Cached
+            apart, in :data:`TEXT_FILE`, so not in :meth:`to_json`.
     """
 
     path: str
@@ -116,9 +150,12 @@ class SourceProbe:
     static_share: float | None = None
     noise_floor: float | None = None
     shake: float | None = None
+    hud_text: int | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {"version": VERSION, **asdict(self)}
+        data = asdict(self)
+        del data["hud_text"]
+        return {"version": VERSION, **data}
 
     @classmethod
     def from_json(cls, data: Any) -> SourceProbe | None:
@@ -296,11 +333,192 @@ def _frame_probe(io: Path, duration: float, width: int, height: int) -> dict[str
     return frame_measures(spread, pairs)
 
 
+# --------------------------------------------------------------------------- HUD text
+Box = tuple[float, float, float, float]  # (x0, y0, x1, y1) in frame pixels
+
+
+def _same_place(a: Box, b: Box) -> bool:
+    """Two text boxes of one HUD element: the same line (centres within half the lower
+    box's height, heights within 1.6x) and overlapping by half the narrower box, so a
+    number whose width changes still matches."""
+    ah, bh = a[3] - a[1], b[3] - b[1]
+    if min(ah, bh) <= 0 or max(ah, bh) > 1.6 * min(ah, bh):
+        return False
+    if abs((a[1] + a[3]) - (b[1] + b[3])) / 2 > min(ah, bh) / 2:
+        return False
+    return min(a[2], b[2]) - max(a[0], b[0]) >= 0.5 * min(a[2] - a[0], b[2] - b[0])
+
+
+def text_anchors(frames: Sequence[Sequence[Box]]) -> list[tuple[int, Box]]:
+    """``(first frame, box)`` of every text anchor of the text boxes per frame: a box in
+    the same place (:func:`_same_place`) in at least :data:`TEXT_KEEP` of the frames."""
+    groups: list[tuple[int, Box, set[int]]] = []
+    for i, boxes in enumerate(frames):
+        for b in boxes:
+            for _first, rep, seen in groups:
+                if i not in seen and _same_place(rep, b):
+                    seen.add(i)
+                    break
+            else:
+                groups.append((i, b, {i}))
+    need = max(2, math.ceil(TEXT_KEEP * len(frames)))
+    return [(first, rep) for first, rep, seen in groups if len(seen) >= need]
+
+
+def hud_anchors(anchors: Sequence[Mapping[str, Any]]) -> int:
+    """How many of the HUD text check's ``anchors`` (``box`` as shares of the frame,
+    ``text``, ``score``) are a HUD's: read (score of at least :data:`TEXT_MIN_SCORE`), not
+    a clock, date, speed or position (a camera's burned-in overlay) and not in the subtitle
+    band."""
+    x_lo, x_hi, y_lo = SUBTITLE_BAND
+    kept = 0
+    for a in anchors:
+        x0, y0, x1, y1 = a["box"]
+        text = str(a.get("text") or "")
+        if a.get("score", 0.0) < TEXT_MIN_SCORE or not text.strip() or CLOCK_RE.search(text):
+            continue
+        if (y0 + y1) / 2 >= y_lo and x_lo <= (x0 + x1) / 2 <= x_hi:
+            continue
+        kept += 1
+    return kept
+
+
+def _text_frames(io: Path, duration: float, width: int, height: int) -> list[np.ndarray]:
+    """:data:`TEXT_FRAMES` BGR frames of ``io`` spread over :data:`SPAN`, at most
+    :data:`TEXT_WIDTH` wide (a failed read is left out)."""
+    from cutpoint.ffmpeg_utils import decode_raw  # noqa: PLC0415
+
+    w = min(TEXT_WIDTH, width) // 2 * 2
+    size = (w, max(2, round(w * height / width / 2) * 2))
+    lo, hi = SPAN
+    out = []
+    for i in range(TEXT_FRAMES):
+        t = duration * (lo + (hi - lo) * i / (TEXT_FRAMES - 1))
+        try:
+            for _t, frame in decode_raw(
+                io,
+                size=size,
+                vf=f"scale={size[0]}:{size[1]}",
+                pix_fmt="bgr24",
+                start=t,
+                duration=2.0,
+                hwaccel=None,
+                timeout=FRAME_TIMEOUT_S,
+            ):
+                out.append(frame)
+                break
+        except FFmpegError as err:
+            logger.debug("text probe of %s at %.1fs failed: %s", io, t, err)
+    return out
+
+
+def text_probe(io: Path, duration: float, width: int, height: int) -> dict[str, Any] | None:
+    """The HUD text check of one source, as cached in :data:`TEXT_FILE`: text detection
+    (no recognition) on :data:`TEXT_FRAMES` frames, then one recognition of each text
+    anchor (:func:`text_anchors`) in the first frame that has it. None when too few
+    frames were read.
+
+    Needs ``rapidocr_onnxruntime`` (the events extra).
+    """
+    from cutpoint.events.killfeed import OcrEngine  # noqa: PLC0415
+    from cutpoint.events.ocr_raw import engine_version  # noqa: PLC0415
+
+    frames = _text_frames(io, duration, width, height)
+    if len(frames) < TEXT_MIN_FRAMES:
+        return None
+    engine = OcrEngine()
+
+    def boxes(frame: np.ndarray) -> list[Box]:
+        found = []
+        for quad in engine.detect(frame):
+            xs, ys = [p[0] for p in quad], [p[1] for p in quad]
+            found.append((min(xs), min(ys), max(xs), max(ys)))
+        return found
+
+    anchors = text_anchors(engine.map(boxes, frames))
+    fh, fw = frames[0].shape[:2]
+    out = []
+    for first, (x0, y0, x1, y1) in anchors:
+        read = engine.read_rows(frames[first], [(y0, x0, y1, x1)], 0.0)
+        text = " ".join(t for _box, t, _s in read)
+        score = min((s for _box, _t, s in read), default=0.0)
+        out.append(
+            {
+                "box": [round(x0 / fw, 4), round(y0 / fh, 4), round(x1 / fw, 4), round(y1 / fh, 4)],
+                "text": text,
+                "score": round(score, 3),
+            }
+        )
+    return {
+        "version": TEXT_VERSION,
+        "engine": engine_version(),
+        "frames": len(frames),
+        "anchors": out,
+    }
+
+
+def ocr_installed() -> bool:
+    """Whether the HUD OCR engine (the events extra, not in Cutpoint lite) is installed."""
+    return importlib.util.find_spec("rapidocr_onnxruntime") is not None
+
+
+def needs_text(p: SourceProbe) -> bool:
+    """Whether the HUD text check can settle ``p``: no telemetry, no camera tags, a frame
+    probe that is not a still picture, and a gameplay score that is neither sure gameplay
+    nor sure general (the text never makes camera-tagged footage or a still gameplay)."""
+    if p.telemetry or p.camera_marks or p.hud_static is None:
+        return False
+    if p.static_share is not None and p.static_share > STILL_SHARE:
+        return False
+    return GENERAL_SURE <= gameplay_score(replace(p, hud_text=None))[0] < GAMEPLAY_SURE
+
+
+def _with_text(found: SourceProbe, cdir: Path, io: Path | None = None) -> SourceProbe:
+    """``found`` with :attr:`SourceProbe.hud_text` when :func:`needs_text`: from
+    :data:`TEXT_FILE`, else from :func:`text_probe` (cached); unchanged without the OCR
+    engine (Cutpoint lite) or when the check fails (tried once per process)."""
+    if not needs_text(found):
+        return found
+    from cutpoint.events.ocr_raw import engine_version  # noqa: PLC0415
+
+    rec = cache.load_json(cdir / TEXT_FILE)
+    fresh = (
+        isinstance(rec, dict)
+        and rec.get("version") == TEXT_VERSION
+        and rec.get("engine") == engine_version()
+        and isinstance(rec.get("anchors"), list)
+    )
+    if not fresh:
+        if cdir in _TEXT_FAILED:
+            return found
+        if not ocr_installed():
+            logger.debug("HUD text check of %s skipped: no OCR engine", found.path)
+            return found
+        from cutpoint.ffmpeg_utils import probe  # noqa: PLC0415
+
+        io = io or remap_source(Path(found.path))
+        t0 = time.perf_counter()
+        try:
+            info = probe(io)
+            rec = text_probe(io, info.duration, info.width, info.height)
+        except Exception as err:  # noqa: BLE001 - an OCR or decode failure: the frame probe stands
+            logger.warning("HUD text check of %s failed: %s", Path(found.path).name, err)
+            _TEXT_FAILED.add(cdir)
+            return found
+        if rec is None:
+            _TEXT_FAILED.add(cdir)
+            return found
+        logger.debug("HUD text check of %s: %.1fs", found.path, time.perf_counter() - t0)
+        cache.save_json(cdir / TEXT_FILE, rec)
+    return replace(found, hud_text=hud_anchors(rec["anchors"]))
+
+
 def probe_source(src: Path) -> SourceProbe:
     """Measure ``src`` for :func:`decide`; cached in its cache folder as :data:`CACHE_FILE`.
 
     The telemetry check and the container tags are always read; the frame probe
-    (:data:`SPREAD` scaled frames and :data:`PAIRS` pairs of crops) only without telemetry.
+    (:data:`SPREAD` scaled frames and :data:`PAIRS` pairs of crops) only without telemetry,
+    and the HUD text check only when the rest leaves the source unsure (:func:`needs_text`).
 
     Raises:
         FFmpegError: If ffprobe cannot read the file.
@@ -311,7 +529,7 @@ def probe_source(src: Path) -> SourceProbe:
     cdir = cache.source_dir(src)
     cached = SourceProbe.from_json(cache.load_json(cdir / CACHE_FILE))
     if cached is not None:  # saved under the path of its first run, maybe another remap
-        return replace(cached, path=str(src))
+        return _with_text(replace(cached, path=str(src)), cdir)
     io = remap_source(src)
     info = probe(io)
     meta = _metadata(ffprobe_json(io, show_format=True, show_streams=True, timeout=60))
@@ -321,7 +539,7 @@ def probe_source(src: Path) -> SourceProbe:
             setattr(found, key, round(value, 5) if isinstance(value, float) else value)
     if found.telemetry or found.frames >= MIN_FRAMES:  # else a read failure that may pass
         cache.save_json(cdir / CACHE_FILE, found.to_json())
-    return found
+    return _with_text(found, cdir, io)
 
 
 # --------------------------------------------------------------------------- speech
@@ -422,6 +640,12 @@ def gameplay_score(p: SourceProbe) -> tuple[float, list[str]]:
             hud = min(1.0, p.hud_static / HUD_FULL)
             score += HUD_WEIGHT * hud
             why.append(f"static HUD {_pct(p.hud_static)}" if hud >= 0.5 else "no static HUD")
+    if p.hud_text is not None:  # only checked when the above is unsure (needs_text)
+        if p.hud_text >= TEXT_ANCHORS:
+            score += TEXT_WEIGHT
+            why.append(f"HUD text in {p.hud_text} places")
+        else:
+            why.append("no HUD text")
     return round(max(0.0, min(1.0, score)), 3), why
 
 

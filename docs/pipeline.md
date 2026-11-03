@@ -17,7 +17,7 @@ flowchart TD
     subgraph ANALYZE["cutpoint analyze  (steps 1-6)"]
         direction TB
         ANA["Find inputs"]
-        DET["--style auto: detect the category (tags, telemetry, 32 frames)"]
+        DET["--style auto: detect the category (tags, telemetry, 32 frames, HUD text when unsure)"]
         AUD["1 Transcribe: extract audio, read check, loudness"]
         TR["1 Transcribe: Whisper"]
         SC["1 Transcribe: scene cuts"]
@@ -100,9 +100,13 @@ All kinds also set loudnorm on. `--style`, `--top` and `--max-total` override th
 ```mermaid
 flowchart TD
     P["Per source: container tags, telemetry, 32 grey frames (cached)"]
-    P --> T{{"Telemetry in at least half of the footage?"}}
+    P --> U{{"Unsure between gameplay and general, no camera tags, not a still?"}}
+    U -->|yes| OCR["HUD text check: OCR of 8 frames, text that stays in place, less clocks, dates and subtitles (cached; skipped in lite)"]
+    U -->|no| T
+    OCR --> T
+    T{{"Telemetry in at least half of the footage?"}}
     T -->|yes| AC["Action cam: action-cam"]
-    T -->|no| G{{"Gameplay (static HUD) the largest share?"}}
+    T -->|no| G{{"Gameplay (static HUD or HUD text) the largest share?"}}
     G -->|yes| GP["Gameplay: gaming"]
     G -->|no| S{{"After transcription: speech covers 55% of a long source?"}}
     S -->|yes| TK["Talk: commentary"]
@@ -114,7 +118,8 @@ flowchart TD
 ```
 
 One category per project, by the share of the footage duration (sources of another category
-over 10% of it: `style_sources_disagree`). In `analyze`'s own steps the detected category, not
+over 10% of it: `style_sources_disagree`). The HUD text check only lifts an unsure source to
+sure gameplay; it does not make camera-tagged footage or a still picture gameplay. In `analyze`'s own steps the detected category, not
 the style, plans the HUD OCR and CLIP layers, so `funny` on camera footage gets the CLIP layer,
 not the HUD OCR. `edit --events` and `cutpoint events` still choose their layers by style.
 `funny-moments` maps every category to `funny`. `highlights.json` records the result; `events`

@@ -951,13 +951,13 @@ cutpoint detect <file|folder> [<file|folder> ...] [--exclude GLOB] [--recursive]
 
 Tells which category the footage is and which style `--style auto` would use, without analyzing
 it. It reads the container tags, the camera telemetry and 32 small grey frames per source (a few
-seconds each; cached as `category-v1.json` in the source's cache folder) and writes nothing to
-a project.
+seconds each; cached as `category-v1.json` in the source's cache folder), plus the HUD text
+check (below) for unsure sources, and writes nothing to a project.
 
 | Category | Evidence | `analyze --style auto` | `edit --kind funny-moments --style auto` |
 |---|---|---|---|
 | Action cam | Camera telemetry (GoPro GPMF, Insta360 X3 IMU) in at least half of the footage | `action-cam` | `funny` |
-| Gameplay | A static HUD: overlay pixels that stay put while the picture moves; screen-recorder tags help | `gaming` | `funny` |
+| Gameplay | A static HUD: overlay pixels that stay put while the picture moves, or HUD text that stays in place (the HUD text check below); screen-recorder tags help | `gaming` | `funny` |
 | Talk | Not gameplay, and speech covers at least 55% of a source of 8 minutes or more | `commentary` | `funny` |
 | General | Anything else. Sure only with camera tags (a phone or camera make) | `action` | `funny` |
 
@@ -969,6 +969,17 @@ transcribing). A category with weak evidence (no HUD, only screen-recorder tags,
 camera footage also has, or speech coverage between 40% and 55%) is ambiguous: `--style auto`
 then uses the default style with a `style_ambiguous` warning. Gameplay with a lot of speech stays
 gameplay; an INFO line suggests `--style commentary`.
+
+**HUD text check.** A thin HUD (a few lines of text, as in War Thunder, Rainbow Six or
+Battlefield) is too small to show in the small frames. So a source those leave unsure between
+gameplay and general, with no camera tags and not a still picture, also gets the HUD text check:
+the HUD OCR engine of `analyze` finds the text on 8 frames at 1280 px and reads each text box that
+stays in the same place in most of them. At least 3 such boxes make the source sure gameplay;
+clocks, dates, speeds, GPS positions (a camera's or dashcam's burned-in overlay) and the subtitle
+band at the bottom centre do not count. It takes a few seconds per unsure source, is cached as
+`category-text-v1.json` (read again when the OCR engine changes) and runs only for `detect` and
+`--style auto`. In Cutpoint lite, which has no OCR engine, it is skipped and the source stays
+ambiguous.
 
 `highlights.json` of an `auto` analysis has a `detection` block: `version`, `category`,
 `emphasis` (`hype`, or `funny` for `funny-moments`), `style`, `reason`, `ambiguous`, `scores`,

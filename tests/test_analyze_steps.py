@@ -1688,7 +1688,9 @@ def test_talk_is_decided_after_transcription(probed, monkeypatch):
 
 
 def test_an_explicit_style_never_probes(run, capsys, monkeypatch):
+    """No frame probe and no HUD text check (OCR) with an explicit style."""
     monkeypatch.setattr(category, "probe_source", lambda src: pytest.fail("probed"))
+    monkeypatch.setattr(category, "text_probe", lambda *a: pytest.fail("OCR check"))
     run.go("gaming")
     code, doc = run_json(capsys, ["analyze", str(run.video), "--style", "gaming", "--out", "s"])
     assert code == 0 and "detection" not in doc["outputs"]
