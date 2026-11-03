@@ -435,7 +435,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AI Chat's `find_moments` matches a word at the start of a word in labels, transcripts and
   what the vision model saw, so "air" finds air, airs and airtime but no longer chair, and the
   proxy's periodic credential sync tightens loosened permissions even when nothing changed (#663).
-
 - `analyze --ollama-url` and `--ollama-model` now reach the VLM layer of its events step, which
   used the configured Ollama instead (#660).
 - `edit --events` honours `--skip`: `--skip keyframes` no longer runs HUD discovery (#659).
