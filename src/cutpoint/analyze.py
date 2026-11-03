@@ -55,6 +55,7 @@ from cutpoint.ffmpeg_utils import (
     read_window_ok,
     run_progress,
     single_video_stream,
+    source_tracks,
     wav_duration,
 )
 from cutpoint.progress import ANALYZE_STEPS, LABELS, SKIPPABLE
@@ -90,6 +91,12 @@ EXTRACT_SHARE = 0.1  # the audio extract's share of a source in the transcribe s
 EXTRACT_POLL_S = 0.5  # how often the growing WAV is measured for that pct
 WAV_BYTES_PER_S = 16000 * 2  # extract_audio's 16 kHz mono s16 output
 WAV_HEADER = 44
+# The audio tracks the analysis WAV mixes, saved next to it only when copies of another track
+# are left out (#685); without it the WAV mixes every track
+MIX_FILE = "audio16k-tracks.json"
+# The caches made from the analysis WAV and, last, the WAV, removed when it mixed other tracks
+AUDIO_CACHES = ("loudness.json", "transcript-*.json", "events-audio-*.json", "voice-*.npz",
+                "audio16k.wav")  # fmt: skip
 RESUME_REFINE = 2  # bisection probes to lose less footage before the resume point
 RESUME_MARGIN_S = 1.0  # start the recovered part a little after the first good probe
 MAX_RECOVERED_PARTS = 5  # per source
@@ -267,6 +274,70 @@ def _transcript(
         data = tr.transcribe(wav, on_progress) if on_progress else tr.transcribe(wav)
         cache.save_json(path, data)
     return data
+
+
+def _mixed_tracks(cdir: Path, streams: int) -> list[int] | None:
+    """The tracks :data:`MIX_FILE` in ``cdir`` says its WAV mixes; None without a valid one
+    (the WAV mixes every track)."""
+    mix = cache.load_json(cdir / MIX_FILE)
+    have = mix.get("tracks") if isinstance(mix, dict) else None
+    if not isinstance(have, list) or not have:
+        return None
+    return have if all(isinstance(i, int) and 0 <= i < streams for i in have) else None
+
+
+def _analysis_tracks(src: Path, io: Path, info: MediaInfo, cdir: Path) -> tuple[int, ...]:
+    """Audio tracks the analysis WAV of ``src`` (read as ``io``) mixes, with ``cdir`` made to
+    hold only audio caches of that mix (:func:`_audio_mix`). When the tracks could not be
+    compared, the cached WAV's tracks (or every track) are used and nothing is removed."""
+    found = source_tracks(io, info)  # copies of another track left out (#685)
+    if found is None:
+        have = _mixed_tracks(cdir, info.audio_streams)
+        return tuple(range(info.audio_streams)) if have is None else tuple(have)
+    _audio_mix(src, cdir, found, info.audio_streams)
+    return found
+
+
+def _audio_mix(src: Path, cdir: Path, tracks: tuple[int, ...], streams: int) -> None:
+    """Make ``cdir`` hold only audio caches of a WAV mixing ``tracks`` (of ``streams``).
+
+    A WAV made before duplicate tracks were left out (#685), or with other tracks, is
+    removed with every cache made from it (:data:`AUDIO_CACHES`), so it is extracted and
+    analysed again once. :data:`MIX_FILE` records ``tracks`` when they are not all
+    ``streams``; a WAV mixing every track (one track included) has none, so its folder
+    stays as it was. A file that cannot be removed (open in another program) is named in a
+    WARNING and the record is left as it was, so the next run tries again; the WAV is then
+    kept too (removed last, only once every cache made from it is gone), so the old WAV and
+    the caches left are used together meanwhile.
+    """
+    want = list(tracks) if len(tracks) < streams else None
+    if _mixed_tracks(cdir, streams) == want:
+        return
+    stale = [f for pattern in AUDIO_CACHES for f in cdir.glob(pattern)]
+    if stale:
+        logger.info(
+            "%s: the cached analysis audio mixed other tracks; extracting it again", src.name
+        )
+    kept: list[Path] = []
+    for f in stale:
+        if kept and f.name == "audio16k.wav":
+            continue  # an unfinished purge keeps the old WAV its remaining caches match
+        try:
+            f.unlink(missing_ok=True)
+        except OSError as err:
+            kept.append(f)
+            logger.debug("removing %s failed: %s", f, err)
+    if kept:
+        logger.warning(
+            "%s: could not remove %s (open in another program?); its analysis uses the old "
+            "audio this time and is made again on the next run",
+            src.name,
+            ", ".join(f.name for f in kept),
+        )
+    elif want is None:
+        (cdir / MIX_FILE).unlink(missing_ok=True)
+    else:
+        cache.save_json(cdir / MIX_FILE, {"tracks": want})
 
 
 @contextlib.contextmanager
@@ -831,9 +902,10 @@ def analyze_source(
             if report is not None:
                 report(EXTRACT_SHARE + (1 - EXTRACT_SHARE) * at(frac))
 
+        tracks = _analysis_tracks(src, io, info, cdir)
         if not wav.exists():
             with _watch_extract(wav, span, extracted if report else None):
-                res = extract_audio(io, wav, info, start=offset)
+                res = extract_audio(io, wav, info, start=offset, tracks=tracks)
         tick("audio_extract_s", t0)
         read_error = check_read(src, info, offset, wav, cdir, res)
         if read_error:

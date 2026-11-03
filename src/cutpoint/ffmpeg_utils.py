@@ -544,14 +544,50 @@ def mix_head(tracks: Sequence[int], input_idx: int = 0) -> str:
     return f"{ins}amix=inputs={len(tracks)}:normalize=0," if len(tracks) > 1 else ins
 
 
-def extract_audio(src: Path, dst: Path, info: MediaInfo, start: float = 0.0) -> ProgressResult:
-    """Extract all audio tracks of ``src`` mixed down to 16 kHz mono WAV.
+def _map_tracks(tracks: Sequence[int]) -> list[str]:
+    """ffmpeg arguments reading ``tracks`` (audio track indices) of input 0 as one stream:
+    several are summed as :func:`audio_mix_filter` sums them, one is mapped directly."""
+    if len(tracks) < 2:  # none: ffmpeg reports the missing stream, as before
+        return ["-map", f"0:a:{tracks[0] if tracks else 0}"]
+    ins = "".join(f"[0:a:{i}]" for i in tracks)
+    return ["-filter_complex", f"{ins}amix=inputs={len(tracks)}:normalize=0:duration=longest[a]",
+            "-map", "[a]"]  # fmt: skip
+
+
+def source_tracks(src: Path, info: MediaInfo) -> tuple[int, ...] | None:
+    """Audio tracks of ``src`` the analysis audio mixes: every track but copies of another
+    across the whole source (:func:`cutpoint.audio_tracks.analysis_tracks`); None when they
+    could not be compared."""
+    from cutpoint.audio_tracks import analysis_tracks  # noqa: PLC0415 - it imports this module
+
+    return analysis_tracks(src, info.audio_streams, info.audio_duration or info.duration)
+
+
+def _tracks_or_every(src: Path, info: MediaInfo) -> tuple[int, ...]:
+    """:func:`source_tracks`, or every track when they could not be compared (as before)."""
+    found = source_tracks(src, info)
+    return tuple(range(info.audio_streams)) if found is None else found
+
+
+def extract_audio(
+    src: Path,
+    dst: Path,
+    info: MediaInfo,
+    start: float = 0.0,
+    tracks: Sequence[int] | None = None,
+) -> ProgressResult:
+    """Extract the audio tracks of ``src`` mixed down to 16 kHz mono WAV.
+
+    Tracks that copy another one (OBS writes the same mix to several) are left out: summed,
+    N copies would come out 20*log10(N) dB too loud and clip.
 
     Args:
         src: Source video.
         dst: Output WAV path.
         info: Probe result for ``src``.
         start: Seek here first (input seek, so the WAV starts at ``start``).
+        tracks: Audio tracks to mix; default :func:`source_tracks` (every track when they
+            could not be compared).
 
     Returns:
         ffmpeg's diagnostics; check them (and the WAV length) for read errors.
@@ -562,11 +598,7 @@ def extract_audio(src: Path, dst: Path, info: MediaInfo, start: float = 0.0) -> 
     tmp = dst.with_suffix(".tmp.wav")
     seek = ["-ss", f"{start:.3f}"] if start > 0 else []
     args = ["ffmpeg", "-y", "-v", "error", *seek, "-i", str(src), "-vn"]
-    mix = audio_mix_filter(info.audio_streams)
-    if mix:
-        args += ["-filter_complex", f"{mix}[a]", "-map", "[a]"]
-    else:
-        args += ["-map", "0:a:0"]
+    args += _map_tracks(_tracks_or_every(src, info) if tracks is None else tracks)
     args += ["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(tmp)]
     try:
         res = run_progress(args, info.duration - start, f"audio extract {src.name}")
@@ -614,13 +646,17 @@ def read_window_ok(src: Path, t: float, dur: float = 3.0) -> bool:
 def read_pcm_window(src: Path, info: MediaInfo, t0: float, t1: float) -> bytes:
     """16 kHz mono s16le PCM of ``[t0, t1]`` decoded straight from ``src``.
 
-    Fallback for when no cached analysis WAV covers the window.
+    Fallback for when no cached analysis WAV covers the window: the tracks are mixed as in
+    that WAV when its tracks are cached, else as a clip export of the window mixes them
+    (:func:`cutpoint.audio_tracks.window_tracks`), so the window never decodes the whole
+    source.
     """
+    from cutpoint.audio_tracks import window_tracks  # noqa: PLC0415 - it imports this module
+
     start = max(0.0, t0)
+    tracks = window_tracks(src, info.audio_streams, info.duration, (start, t1 - start))
     try:
-        pcm = decode_pcm(
-            src, sr=16000, start=start, duration=t1 - start, audio_streams=info.audio_streams
-        )
+        pcm = decode_pcm(src, sr=16000, start=start, duration=t1 - start, tracks=tracks)
     except FFmpegError as err:
         raise FFmpegError(f"Audio window {t0:.1f}-{t1:.1f}s of {src.name} failed: {err}") from err
     return pcm.tobytes()
@@ -2165,6 +2201,7 @@ def decode_pcm_args(
     duration: float | None = None,
     mono: bool = True,
     audio_streams: int | None = None,
+    tracks: Sequence[int] | None = None,
 ) -> list[str]:
     """ffmpeg arguments (without the executable) for :func:`decode_pcm`."""
     args = ["-hide_banner", "-v", "error"]
@@ -2174,7 +2211,9 @@ def decode_pcm_args(
     if duration is not None:
         args += ["-t", f"{duration:.3f}"]
     args.append("-vn")
-    if audio_streams is not None:
+    if tracks is not None:
+        args += _map_tracks(tracks)
+    elif audio_streams is not None:
         mix = audio_mix_filter(audio_streams)
         args += ["-filter_complex", f"{mix}[a]", "-map", "[a]"] if mix else ["-map", "0:a:0"]
     if mono:
@@ -2191,6 +2230,7 @@ def decode_pcm(
     mono: bool = True,
     audio_streams: int | None = None,
     timeout: float | None = None,
+    tracks: Sequence[int] | None = None,
 ) -> np.ndarray:
     """Decode the audio of ``path`` (its staged copy if any) to 16-bit PCM.
 
@@ -2205,6 +2245,8 @@ def decode_pcm(
             2 or more are mixed (:func:`audio_mix_filter`), fewer map ``0:a:0``.
             ``None`` leaves the choice to ffmpeg's default stream selection.
         timeout: Seconds before ffmpeg is killed.
+        tracks: Audio track indices to mix instead (one is mapped directly); overrides
+            ``audio_streams``.
 
     Returns:
         Read-only ``int16`` samples (1-D); ``pcm_float`` turns them into -1..1 floats.
@@ -2213,7 +2255,13 @@ def decode_pcm(
         FFmpegError: If ffmpeg exits non-zero or times out.
     """
     args = decode_pcm_args(
-        path, sr=sr, start=start, duration=duration, mono=mono, audio_streams=audio_streams
+        path,
+        sr=sr,
+        start=start,
+        duration=duration,
+        mono=mono,
+        audio_streams=audio_streams,
+        tracks=tracks,
     )
     proc = _exec("ffmpeg", args, timeout, path)
     if proc.returncode != 0:
