@@ -9188,6 +9188,34 @@ def test_resuming_an_export_with_a_ui_file_in_the_way_is_refused_before_it_start
     assert res.status_code == 409 and "is not a folder" in res.json()["detail"]
 
 
+@pytest.mark.parametrize("command", ["analyze", "edit"])
+@pytest.mark.parametrize("skip", [True, False])
+def test_resuming_an_analysis_with_skip_and_a_ui_file_in_the_way_is_refused_before_it_starts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, command: str, skip: bool
+) -> None:
+    """resumed() saves a recorded --skip into ui/analysis.json: a ui file refuses the job first."""
+    p, _ = cli_project(tmp_path)
+    argv = [command, "clip.mp4", "--out", str(p), *(["--skip", "reactions"] if skip else [])]
+    progress_record(p, command=command, argv=argv)
+    (p / "ui").write_text("not a folder", encoding="utf-8")
+    res, _ = resume_job(client, monkeypatch, "cli")
+    if skip or command == "edit":  # edit registers its export in ui/exports.json too
+        assert res.status_code == 409 and "is not a folder" in res.json()["detail"]
+    else:  # nothing goes into ui: the analysis may resume
+        assert res.status_code == 200, res.text
+
+
+def test_resuming_an_analysis_with_skip_makes_the_ui_folder_first(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p, _ = cli_project(tmp_path)
+    argv = ["analyze", "clip.mp4", "--out", str(p), "--skip", "reactions"]
+    progress_record(p, argv=argv)
+    res, _ = resume_job(client, monkeypatch, "cli")
+    assert res.status_code == 200, res.text
+    assert (p / "ui").is_dir()
+
+
 @pytest.mark.parametrize(
     ("argv", "seg", "picks"),
     [

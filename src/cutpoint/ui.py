@@ -4968,8 +4968,14 @@ def create_app(port: int) -> FastAPI:
             run = run_state(p, hl is not None)
             if rec is None or run is None or not run["resumable"]:
                 raise bad("this project has no stopped run to resume", 409)
+            skips = run["command"] in ("analyze", "edit") and _skip_after(
+                [str(a) for a in rec.get("argv") or []]
+            )
+            if skips:
+                _own(p, ANALYSIS_FILE)  # resumed() saves the --skip: refuse now, not after
             if run["command"] in ("clips", "edit"):
                 _own(p, f"{UI_DIR}/exports.json")  # refuse now, not after the run
+            if skips or run["command"] in ("clips", "edit"):
 
                 def prepare() -> None:
                     _ui_folder(p)  # as the edit's: a ui file refuses the job before it starts
