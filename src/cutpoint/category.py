@@ -716,8 +716,8 @@ def _source(p: SourceProbe, speech: float | None) -> SourceDecision:
         why = [f"speech {_pct(speech)} of {p.duration / 60:.0f} min", *why]
         # partial HUD evidence (not a still picture) keeps a talky game stream unsure
         part_hud = (
-            p.hud is not None
-            and p.hud >= HUD_FULL / 4
+            p.hud_static is not None
+            and p.hud_static >= HUD_FULL / 4
             and not (p.static_share is not None and p.static_share > STILL_SHARE)
         )
         ambiguous = speech < TALK_SPEECH or part_hud

@@ -91,6 +91,11 @@ def test_a_lower_third_and_a_channel_logo_are_not_sure_gameplay():
     assert (det.category, det.ambiguous) == (GAMEPLAY, False)
 
 
+def test_a_talky_box_source_stays_unsure():
+    det = category.decide([probe(**NEWS, duration=900)], {"a.mp4": 0.7})
+    assert (det.category, det.ambiguous) == (TALK, True)
+
+
 def test_probes_cached_before_the_box_are_measured_again():
     assert category.CACHE_FILE == "category-v2.json"
     assert SourceProbe.from_json({**probe(**GAME).to_json(), "version": 1}) is None

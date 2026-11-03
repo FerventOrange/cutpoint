@@ -970,7 +970,8 @@ camera footage also has, or speech coverage between 40% and 55%) is ambiguous: `
 then uses the default style with a `style_ambiguous` warning. Gameplay with a lot of speech stays
 gameplay; an INFO line suggests `--style commentary`. An opaque box across most of the bottom
 of the picture (a news lower third or ticker) is not a HUD: its text counts for neither the
-static HUD nor the HUD text check, so camera footage with one is not called gameplay.
+static HUD nor the HUD text check, so camera footage with one is not called gameplay. A game whose HUD is such a panel (a
+Doom-style status bar, an RTS console) is taken for a box too and can become ambiguous.
 
 **HUD text check.** A thin HUD (a few lines of text, as in War Thunder, Rainbow Six or
 Battlefield) is too small to show in the small frames. So a source those leave unsure between
