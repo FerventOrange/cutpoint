@@ -657,10 +657,12 @@ def _vl_checker(a: argparse.Namespace) -> Any:
 
     checker = VLChecker()
     if not checker.available():
-        logger.warning("--vl-check: local vision model unavailable; skipping the check")
-        jsonout.warn(
-            "vl_check_unavailable", "--vl-check: local vision model unavailable; not checked"
-        )
+        if checker.rater.consent_needed:
+            why = "the Ollama on another machine is not allowed for Vision"
+        else:
+            why = "local vision model unavailable"
+        logger.warning("--vl-check: %s; skipping the check", why)
+        jsonout.warn("vl_check_unavailable", f"--vl-check: {why}; not checked")
         return None
     return checker
 

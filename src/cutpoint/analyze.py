@@ -1839,10 +1839,15 @@ def _analyze(
             steps.skip("vision", "vision is off (Settings, config.json or --vision)")
         elif not cands:
             steps.skip("vision", "no candidates to rate")
-        else:
-            rater = VisionRater(
+        elif (
+            rater := VisionRater(
                 **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
             )
+        ).consent_needed:
+            # an Ollama on another machine the user did not agree to: no request, no cached
+            # ratings either (this run may not send to it at all)
+            steps.skip("vision", rater.warn_consent())
+        else:
             # vision_top itself stays None (auto) in the saved settings, for reanalyze
             n_top = (
                 auto_vision_top(sum(r.duration for r in results))

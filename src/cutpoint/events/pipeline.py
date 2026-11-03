@@ -197,7 +197,9 @@ def run_events(
         # resolve the server's model before any cache lookup: the descriptions are keyed on
         # it. Offline it stays the placeholder, and its cached descriptions are not found.
         online = rater.available()
-    vlm.model = f"{rater.provider_name}:{rater.model}" if hosted else rater.model
+    # a hosted provider's descriptions are keyed on its host too: one model id at two
+    # servers describes apart (rater.host: providers.endpoint)
+    vlm.model = f"{rater.provider_name}@{rater.host}:{rater.model}" if hosted else rater.model
     sources = []
     seen: set[str] = set()
     unreachable: list[tuple[str, OSError]] = []

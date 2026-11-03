@@ -110,6 +110,7 @@ def run(home, tmp_path, monkeypatch):
 
     class FakeRater:
         hits = asked = missed = 0
+        consent_needed = None
 
         def __init__(self, **_):
             pass
@@ -246,6 +247,7 @@ def test_vision_counts_the_candidates_without_a_cached_rating(run, caplog, monke
     class Rater:
         cache_only = False
         hits = asked = missed = 0
+        consent_needed = None
 
         def __init__(self, **_):
             pass

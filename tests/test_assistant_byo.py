@@ -160,7 +160,7 @@ def tool_use(cid: str, name: str, **args: Any) -> dict[str, Any]:
         ("http://127.0.0.1:11434", True),
         ("localhost:1234", True),
         ("http://LOCALHOST:8080/v1", True),
-        ("http://box.localhost:8080", True),
+        ("http://box.localhost:8080", False),  # a resolver may send *.localhost to the network
         ("http://[::1]:11434", True),
         ("http://10.10.10.235:11434", False),
         ("http://0.0.0.0:11434", False),
@@ -181,7 +181,7 @@ def test_a_remote_ollama_is_hosted_and_needs_consent() -> None:
     assert providers.describe(here)["label"] == "Ollama · m · this machine"
     assert not there.local and there.host == "10.10.10.235"
     assert providers.describe(there)["label"] == "Ollama · m · 10.10.10.235"
-    assert providers.consent_key(there) == "assistant-v2:ollama@10.10.10.235"
+    assert providers.consent_key(there) == "assistant-v2:ollama@10.10.10.235:11434"
 
 
 # -- OpenAI-compatible -----------------------------------------------------------------------

@@ -115,6 +115,29 @@ class VisionResult:
     label: str
 
 
+def _endpoint(provider: Any) -> str:
+    """:func:`cutpoint.assistant.providers.endpoint` of ``provider`` (imported here: that
+    module imports this one)."""
+    from cutpoint.assistant import providers  # noqa: PLC0415
+
+    return providers.endpoint(provider)
+
+
+def _ollama_consent_key(url: str) -> str | None:
+    """The ``vision-v2:`` key an Ollama at ``url`` needs (None: on this machine), as the Models
+    tab of cutpoint ui saves it."""
+    from cutpoint.assistant import providers  # noqa: PLC0415
+
+    return providers.consent_key(providers.OllamaProvider(url, "", 0), "vision")
+
+
+def ollama_allowed(url: str) -> bool:
+    """True if the Ollama at ``url`` is on this machine or the user agreed to it for Vision."""
+    url = url.rstrip("/")
+    want = _ollama_consent_key(url if url.startswith("http") else f"http://{url}")
+    return want is None or want in get_config().vision_assistant.consent
+
+
 class AssistantVision:
     """Frames are sent to the configured hosted vision provider (an API key or a subscription
     login) once the user agreed to it for Vision."""
@@ -191,10 +214,17 @@ class VisionRater:
         v_ast = cfg.vision_assistant
         self.via = AssistantVision(v_ast) if not local_only and v_ast.provider != "ollama" else None
         env_model = paths.env("VISION_MODEL")
+        # the vision-v2: key an Ollama on another machine still needs; None: on this machine,
+        # agreed to, or a hosted provider (AssistantVision checks its own)
+        self.consent_needed: str | None = None
+        self._consent_warned = False
+        self.local_only = local_only  # activity detection: the Ollama only, never self.via
         if self.via:
             self.model = self.via.model
             self.url = self.via.provider.url if hasattr(self.via.provider, "url") else ""
             self.provider_name = self.via.provider.name
+            # the cache key's host (rating_key): one model id on two servers rates apart
+            self.host = _endpoint(self.via.provider)
         else:
             self.provider_name = "ollama"
             self.model = (
@@ -207,6 +237,12 @@ class VisionRater:
                 url or (v_ast.url if v_ast.provider == "ollama" else "") or ollama_url()
             ).rstrip("/")
             self.url = raw_url if raw_url.startswith("http") else f"http://{raw_url}"
+            self.host = ""
+            # an Ollama on another machine is hosted, as for AI Chat: frames go there only once
+            # the user agreed to it for Vision (the Models tab of cutpoint ui). Activity
+            # detection (local_only) too: it sends frames and the user's words
+            want = _ollama_consent_key(self.url)
+            self.consent_needed = want if want is not None and want not in v_ast.consent else None
         self.used = False  # True once a request went to the model: unload() frees it
         self.hits = 0  # ratings taken from the cache by rate()
         self.asked = 0  # ratings rate() asked the model for (failed ones included)
@@ -227,6 +263,9 @@ class VisionRater:
                 return False
             self.model = self.via.model  # resolved by the check (the rating cache's key)
             return True
+        if self.consent_needed:
+            self.warn_consent()
+            return False
         try:
             resp = requests.get(f"{self.url}/api/tags", timeout=3)
             resp.raise_for_status()
@@ -249,6 +288,28 @@ class VisionRater:
         digest = next(found, {}).get("digest")
         self.digest = digest if isinstance(digest, str) and digest else None
         return True
+
+    def warn_consent(self) -> str:
+        """Log (once, a WARNING and the ``vision_consent_needed`` warning of ``--json``) and
+        return why nothing goes to the Ollama on another machine: :attr:`consent_needed`."""
+        from cutpoint import jsonout  # noqa: PLC0415
+        from cutpoint.assistant import providers  # noqa: PLC0415 (it imports this module)
+
+        skipping = (
+            "activity detection goes on without the vision model"
+            if self.local_only
+            else "skipping vision"
+        )
+        message = (
+            f"Ollama at {providers.host_port(self.url)} is not on this machine: allow vision "
+            "requests to it in the Models tab of `cutpoint ui` (Vision role, Ollama with this "
+            f"URL) first; {skipping}"
+        )
+        if not self._consent_warned:
+            self._consent_warned = True
+            logger.warning("%s", message)
+            jsonout.warn("vision_consent_needed", message)
+        return message
 
     def ask_json(
         self,
@@ -273,6 +334,9 @@ class VisionRater:
                 logger.warning("Assistant reply is not JSON: %s", err)
                 return None
             return data if isinstance(data, dict) else None
+        if self.consent_needed:
+            self.warn_consent()
+            return None
         options = {"temperature": 0.2, "num_ctx": 8192, "num_predict": num_predict}
         payload: dict = {"model": self.model, "stream": False, "format": schema or "json"}
         raw = not images and self.model.lower().startswith("qwen")
@@ -334,6 +398,9 @@ class VisionRater:
                 logger.warning("Vision reply has no JSON object: %.120s", reply)
                 return None
             return data
+        if self.consent_needed:
+            self.warn_consent()
+            return None
         payload = {
             "model": self.model,
             "messages": [
@@ -388,7 +455,7 @@ class VisionRater:
         """
         times = _frame_times(start, end, self._n_frames(n_frames))
         store = self._store(src)
-        key = rating_key(self.model, style, times, provider=self.provider_name)
+        key = rating_key(self.model, style, times, provider=self.provider_name, host=self.host)
         if (hit := self._lookup(store, key)) is not None:
             self.hits += 1
             return hit
@@ -414,6 +481,7 @@ class VisionRater:
             style,
             _frame_times(start, end, self._n_frames(n_frames)),
             provider=self.provider_name,
+            host=self.host,
         )
         return self._lookup(self._store(src), key)
 
@@ -458,6 +526,9 @@ class VisionRater:
 
     def _rate_frames(self, src: Path, times: list[float], style: str) -> VisionResult | None:
         """Grab the frames at ``times`` and ask the model for a rating (no cache)."""
+        if self.consent_needed:
+            self.warn_consent()
+            return None
         n_frames = len(times)
         profile = rating_profile(self.model)
         try:
@@ -545,10 +616,13 @@ def _frame_times(start: float, end: float, n_frames: int) -> list[float]:
     return [start + span * (i + 1) / (n_frames + 1) for i in range(n_frames)]
 
 
-def rating_key(model: str, style: str, times: list[float], provider: str = "") -> str:
+def rating_key(
+    model: str, style: str, times: list[float], provider: str = "", host: str = ""
+) -> str:
     """Cache key of one rating: a hash of everything sent to the model except the frames
     (``RATING_VERSION``, model, style, both prompts, attempt options and temperatures, frame
-    width and the model's :class:`RatingProfile` if it has one), then the frame times to the
+    width and the model's :class:`RatingProfile` if it has one; a hosted ``provider`` and its
+    ``host``, so one model id at two servers rates apart), then the frame times to the
     millisecond (the precision of the grab's seek). The Ollama URL is not part of it: the
     same model on another server rates the same. The model's digest is stored in the entry
     instead of hashed (:meth:`VisionRater._lookup`), so a rating can still be found when
@@ -566,6 +640,8 @@ def rating_key(model: str, style: str, times: list[float], provider: str = "") -
     }
     if provider and provider != "ollama":
         params["provider"] = provider
+        if host:
+            params["host"] = host
     if profile:  # only then, so the keys of the other models stay as they were
         params["profile"] = asdict(profile)
     return f"{cache.params_hash(params)}@" + ",".join(f"{t:.3f}" for t in times)

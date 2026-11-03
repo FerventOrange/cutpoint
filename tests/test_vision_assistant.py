@@ -273,7 +273,7 @@ def test_a_local_openai_server_needs_no_vision_consent_and_no_key(
 @pytest.mark.parametrize(
     ("url", "host"),
     [
-        ("http://192.168.1.5:1234/v1", "192.168.1.5"),
+        ("http://192.168.1.5:1234/v1", "192.168.1.5:1234"),
         ("https://openrouter.ai/api/v1", "openrouter.ai"),
     ],
 )
