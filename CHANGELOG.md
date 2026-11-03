@@ -17,6 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   place of a crash, a jump or a must-include moment, including a moment over a `crashes.json`
   crash of at least 0.2 confidence); `--ids v001` picks one directly. `analyze --json` adds `visual_candidates` (their
   count) for these styles. Other styles are unchanged (#635).
+- AI Chat `look_for` tool (#529): the assistant ranks the whole timeline by a text query
+  ("powder spray", "sunset over the peaks") with local CLIP over the cached ~1 fps frame
+  embeddings of every source, not only the existing moments. A clear hit no moment covers
+  becomes a new moment the proposal can add (saved with the proposal, so it still applies after a
+  restart or on a changed sequence); a covered one is reported as that moment. Every window is
+  `strong` (CLIP cosine of 0.222 or more) or `weak` (0.202 or more, at most 4 weak or unconfirmed
+  rows per call, so a query the footage cannot answer lists nothing or a few guesses). Only a
+  clear window (0.26 or more) becomes a new moment; the instructions tell the model to confirm a
+  weak or unconfirmed window with `view_moment` (a model that takes images) or to say it is
+  uncertain, never to present it as confirmed. It works with every
+  chat provider and sends text only (`match` 0-10 and `confidence`, never frames). It is not in Cutpoint lite (the
+  message has the install command), says to run `cutpoint setup --only visual` when the CLIP
+  weights are missing, and says so when no source has a cached visual layer. The instructions say
+  to use it when labels and transcripts do not match and that similarity is not certainty.
+- AI Chat `color` op (#529): a proposal can set Color to `off`, `auto` or `underwater` with a
+  strength. The preview shows it, Apply sets the project's Color slider, and Undo, Redo and
+  Revert in Applied changes put the earlier Color back. The instructions say `underwater` only
+  grades underwater footage (#495).
 - AI Chat can watch a moment (#640): with a chat model that takes images, the assistant gets a
   `view_moment` tool that returns one timeline sheet (6 frames for a clip up to 12 s, else 9, in
   a 3-wide grid, each stamped with its number and source time, sized for about 1.5k image tokens
