@@ -209,7 +209,9 @@ folder or file of Insta360 X3 footage makes a 360 project, analyzed with `360 an
 (see [360 video](workflows/360.md#in-the-ui)); its moments preview through the director's camera
 path (the one the analysis cached when it is current), with badges for poor paths
 ([Director preview](workflows/360.md#director-preview-and-camera-path-flags)). It does not expose
-the action-cam commands or the other `360` commands.
+the action-cam commands or the other `360` commands; for standard footage, Highlight style lists the
+`action-cam` style, which the dialog preselects when an input has GoPro or Insta360 telemetry (a
+stream-list probe of the first 12 files `analyze` would find) unless you chose another style.
 
 New Project's Source field takes the full paths of one or more videos and folders, one per line,
 that you type or paste; it always accepts them. A leading `~` is the home folder of the computer
@@ -1052,7 +1054,8 @@ Notes:
   measured frames predicts more clipping than the levels intend (`veto_clipped`; underwater,
   pixels whose red alone clips high, up to 3 % of the frame, do not count), a worse cast
   (`veto_cast`: the gray-world cast rises by more than 0.005 of the luma range, or to more than
-  1.5 times its value and by more than 0.002), a picture over 25 % more colorful (`veto_m3`) or
+  1.5 times its value and by more than 0.002), a picture over 25 % more colorful (`veto_m3`, a safety net: with the current levels
+  stretch and vibrance caps no grade reaches it) or
   a washed-out one: with `auto`, one that loses more than 15 % of its colorfulness
   (`veto_m3_drop`); underwater, one whose median saturation falls below 0.63 of its value, such
   as flat sand turned grey (`veto_faded`), or when its frames could not be decoded

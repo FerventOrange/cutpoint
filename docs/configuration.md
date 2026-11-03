@@ -432,7 +432,7 @@ before.
 ```
 
 - `title`, `view`, `hype`: the game name, the camera view and the hype rubric line in the VLM
-  prompt. Unset `title`: a name built from the game key (`some-game` becomes "Some Game"); unset `view`: not mentioned; unset `hype`: the generic rubric. A `hype` value is trimmed, then indented and ended with a newline, so a plain one-liner works.
+  prompt. Unset `title`: a name built from the game key (`some-game` becomes "Some Game"); unset `view`: not mentioned; unset `hype`: the generic rubric, which asks about kills and deaths only when the OCR layer found kills in the source or the preset's `feed` lists `kill_words`, and otherwise describes hype in neutral terms (close calls, successes and fails, teamwork, reactions). A `hype` value is trimmed, then indented and ended with a newline, so a plain one-liner works.
 - `events`: custom event types. Each has `name` (the key in `signals.events`), `when` (matchers;
   any one is enough) and optional `score` (points per event, clamped to 0-12; unset: no boost),
   `max` (events counted per candidate, clamped to 1-3, default 1), `payoff` (true: the event ends

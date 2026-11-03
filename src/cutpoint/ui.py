@@ -192,6 +192,9 @@ FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
 FRAME_CACHE_MAX = 1500  # stills kept per project; the least recently used go first
 SOURCES_CACHE_MAX = 32  # projects whose source lists are kept; the least recently used go first
 SOURCES_CACHE_S = 60.0  # rebuild a kept source list at least this often (what stats miss)
+_suggest_lock = threading.Lock()  # one style suggestion probes at a time; another gets no answer
+TELEMETRY_PROBE_TIMEOUT = 10  # seconds per ffprobe of that suggestion
+MAX_TELEMETRY_PROBES = 12  # files one style suggestion probes, so a big folder or a NAS stays quick
 MAX_INPUTS = 50  # files and folders one New project takes (analyze's positional inputs)
 MAX_EXCLUDES = 20  # analyze --exclude patterns one New project takes
 MAX_GLOB = 200  # characters of one --exclude pattern
@@ -3201,7 +3204,7 @@ def new_project(name: str, source: str, style: str, **extra: Any) -> dict[str, s
 
 
 def ui_styles() -> list[str]:
-    """Styles for standard video (telemetry-driven action-cam styles are command-line only).
+    """Styles for standard video, the telemetry-driven action-cam styles included (#633).
 
     A learned style that fails to load is left out with a warning, so one bad file does not
     break the UI.
@@ -3209,12 +3212,11 @@ def ui_styles() -> list[str]:
     names = []
     for n in style_names():
         try:
-            style = get_style(n)
+            get_style(n)
         except (ValueError, TypeError, AttributeError) as e:
             logger.warning("skipping learned style %s: %s", learned_styles().get(n, n), e)
             continue
-        if style.kind != ACTION_CAM:
-            names.append(n)
+        names.append(n)
     return names
 
 
@@ -3227,8 +3229,33 @@ def _gaming_style(name: object) -> bool:
         return False
 
 
+def suggest_style(
+    inputs: list[str], exclude: list[str] = (), recursive: bool = False
+) -> str | None:
+    """``action-cam`` when an input carries camera telemetry, else None (#633).
+
+    Only the container's stream list is probed (``analyze.has_telemetry``: a GoPro GPMF track or an
+    Insta360 IMU trailer), never the telemetry itself, within ``TELEMETRY_PROBE_TIMEOUT`` s per file
+    and stopping at the first hit. The files are those ``analyze`` would find (``find_picked``:
+    ``recursive``, ``exclude`` and ``source_remap`` apply), the first ``MAX_TELEMETRY_PROBES`` of
+    them. Unreadable inputs count as none. Usable 360 footage gets no suggestion: the server picks
+    its 360 style (``pano.default_style``) whatever is chosen.
+    """
+    from cutpoint.analyze import has_telemetry  # noqa: PLC0415
+
+    try:
+        for x in inputs:
+            src = Path(x)
+            if (src.is_file() or src.is_dir()) and _usable(inspect_source(src)[1]):
+                return None
+        files = find_picked(inputs, exclude, recursive)[:MAX_TELEMETRY_PROBES]
+    except OSError:
+        return None
+    return "action-cam" if any(has_telemetry(f, TELEMETRY_PROBE_TIMEOUT) for f in files) else None
+
+
 def _ski_style(name: str) -> bool:
-    """``name`` is a telemetry-driven action-cam style (``kind`` action-cam), accepted for 360 sources."""
+    """``name`` is a telemetry-driven action-cam style (``kind`` action-cam): kept as given for 360 sources."""
     try:
         return get_style(name).kind == ACTION_CAM
     except (ValueError, TypeError, AttributeError):
@@ -4137,6 +4164,19 @@ def create_app(port: int) -> FastAPI:
             found.append({"id": d.name, "name": read_meta(d).get("name") or d.name})
         return {"projects": found}
 
+    @owned.post("/projects/suggest-style")
+    def suggest_project_style(body: dict[str, Any]):
+        """The style the New project dialog preselects for these sources (null: no suggestion)."""
+        inputs = _body_inputs(body)
+        recursive, exclude = _flag(body, "recursive"), _exclude_globs(body)
+        if not _suggest_lock.acquire(blocking=False):  # a suggestion is optional: never queue
+            return {"style": None, "busy": True}  # not "no telemetry": the page asks again
+        try:
+            style = suggest_style(inputs, exclude, recursive)
+        finally:
+            _suggest_lock.release()
+        return {"style": style if style in ui_styles() else None}
+
     @owned.post("/projects")
     def create_project(body: dict[str, Any]):
         name, style = body.get("name"), body.get("style", "gaming")
@@ -4156,8 +4196,6 @@ def create_app(port: int) -> FastAPI:
                 raise bad(f"source is not readable: {err}") from err
             if problem:
                 raise bad(problem)
-            if ski:  # action-cam styles need telemetry: 360 footage only in the UI
-                raise bad(f"unknown style {style!r}")
             full = [os.path.abspath(x) for x in inputs]  # noqa: PTH100
             extra: dict[str, Any] = {"inputs": full} if len(full) > 1 else {}
             extra |= ({"recursive": True} if recursive else {}) | (
@@ -4174,8 +4212,6 @@ def create_app(port: int) -> FastAPI:
         if problem:
             raise bad(problem)
         if not usable:
-            if ski:  # action-cam styles need telemetry: 360 footage only in the UI
-                raise bad(f"unknown style {style!r}")
             return new_project(name.strip(), os.path.abspath(source), style)  # noqa: PTH100
         # 360: the action-cam styles as given, any other the 360 default (pano.default_style)
         try:

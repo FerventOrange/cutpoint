@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   analysis label. Moments of the visual pool carry a "visual" badge with their kind. The AI Chat
   consent and its docs now name the vision descriptions it sends; the consent version is the same,
   so no one is asked again.
+- `cutpoint ui` offers the `action-cam` style in Highlight style for standard (non-360) footage,
+  single and multi-input, with a hint: best with GoPro or Insta360 telemetry, fed by the
+  reactions, keyframes and crash steps (events extra, `cutpoint setup`); in Cutpoint lite it still
+  works on telemetry and transcript. When at least one input has GoPro or Insta360 telemetry
+  (a stream-list probe of up to 12 files, not a telemetry read), the dialog preselects it unless
+  you already chose a style (#633).
 - A Models tab in `cutpoint ui` sets the model of each role: Chat (`assistant`) and Vision (the new
   `vision_assistant` section, same keys, the same providers as Chat), each
   with its own provider, model and, for hosted ones, permission. It replaces the AI assistant
@@ -527,6 +533,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model no longer blocks for about 20 minutes before the generic profile is used (#608).
 - `events`: on a project's first run the contact sheets now use the activity profile the
   crash layer chose instead of the ski captions (#609).
+- The VLM layer of `events` no longer makes the vision model invent kills or enemies in games
+  without combat: the generic prompt asks about kills, deaths and teamkills only when the OCR
+  layer found kills in the source or its HUD preset lists `kill_words`, and otherwise describes
+  hype in neutral terms (close calls, successes and fails, teamwork, reactions). A preset's own
+  `hype` line is kept. Only sources without kill evidence are described again on the next run
+  (prompt version 6); cached descriptions of sources with kills and of action-cam footage stay
+  valid. The `VLM WINDOW` line at the top of `events.txt` names the vision model in
+  use (#596).
 - `analyze`: when the PANNs checkpoint cannot be loaded (missing, corrupt or refused as more than
   weights), the reactions step no longer reads it a second time for the voice layer and reports
   the failure once (one ERROR line, one `step_failed` warning); the voice layer is skipped with an
