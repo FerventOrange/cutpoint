@@ -86,8 +86,8 @@ So do these combinations:
 | `temporary_clips_left` | `assemble <project>`, `edit --no-keep-clips` | A temporary clips folder could not be removed (a file in it is open in another program); `files` names it. Delete it, or the next such run in the project removes it |
 | `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
 | `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
-| `vision_consent_needed` | `analyze`, `events`, `360 director` (so `edit`, `360 analyze`), `profile`, `crashes` | The Vision role's Ollama is on another machine (`--ollama-url`, `vision_assistant.url`, `OLLAMA_HOST` or `ollama_url` is not `localhost` or a loopback address) and the Vision consent for it was not given, so nothing was sent to it: vision was skipped, or the activity profile fell back without the model; allow vision requests in the Models tab of `cutpoint ui` (Vision role, Ollama with that URL) |
-| `vlm_unavailable` | `events` (so `edit --events`) | The VLM layer ran but the vision model (Ollama, or a hosted Vision role without consent) is not available; windows not described yet stayed undescribed and cached descriptions were used (the message gives the count) |
+| `vision_consent_needed` | `analyze`, `events`, `360 director` (so `edit`, `360 analyze`), `profile`, `crashes` | The Vision role's provider needs the Vision consent and it was not given, so nothing was sent to it: a hosted provider (an API key or a subscription login), or an Ollama on another machine (`--ollama-url`, `vision_assistant.url`, `OLLAMA_HOST` or `ollama_url` is not `localhost` or a loopback address; `profile` and `crashes` use only that Ollama). Vision was skipped, or the activity profile fell back without the model; allow vision requests in the Models tab of `cutpoint ui` (Vision role), or add the key the message names (`vision-v2:<provider>@<host>[:port]`, such as `vision-v2:ollama@10.0.0.5:11434` or `vision-v2:openai@api.openai.com`) to the [`vision_assistant.consent`](configuration.md#vision_assistant) list in `config.json` |
+| `vlm_unavailable` | `events` (so `edit --events`) | The VLM layer ran but the vision model (Ollama or the hosted Vision role) is not available; windows not described yet stayed undescribed and cached descriptions were used (the message gives the count) |
 | `grade_dropped` | `clips` (so `edit`) | `--force` replaced clips whose manifest recorded a grade (`lut` or `color`) and this run grades none; give `--lut` or `--color` again to keep it |
 | `pano_mixed_sources` | `clips` (so `edit`), `assemble <project>` | The run's 360 clips are not rendered like-for-like: stitched and dual fisheye sources mixed, or an equirect rendered without the IMU levelling (FlowState, no sidecar, Studio export); `files` names the 360 clips (empty for a temporary export: `assemble <project>`, `edit --no-keep-clips`). Export with `--pano-source dfisheye` to compare their `360 qa` with the previews (see [360 video](workflows/360.md#render-sources)) |
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
@@ -209,7 +209,9 @@ folder or file of Insta360 X3 footage makes a 360 project, analyzed with `360 an
 (see [360 video](workflows/360.md#in-the-ui)); its moments preview through the director's camera
 path (the one the analysis cached when it is current), with badges for poor paths
 ([Director preview](workflows/360.md#director-preview-and-camera-path-flags)). It does not expose
-the action-cam commands or the other `360` commands.
+the action-cam commands or the other `360` commands; for standard footage, Highlight style lists the
+`action-cam` style, which the dialog preselects when an input has GoPro or Insta360 telemetry (a
+stream-list probe of the first 12 files `analyze` would find) unless you chose another style.
 
 New Project's Source field takes the full paths of one or more videos and folders, one per line,
 that you type or paste; it always accepts them. A leading `~` is the home folder of the computer
@@ -851,7 +853,7 @@ Footage that is not reachable (offline drive, moved file) is skipped with a `foo
 | `voice` | Wind-robust speech and laughter (Silero VAD + PANNs) |
 | `visual` | CLIP frame embeddings, person detection, beauty and group scores |
 | `crash` | Runs `cutpoint crashes` (action-cam projects) |
-| `vlm` | The shared vision model describes candidate windows from frames, the transcript and the other layers' hints (no audio is sent): Ollama with `qwen3.5:9b` (`CUTPOINT_VISION_MODEL` changes it), or the hosted (API or subscription) Vision model of the Models tab in `cutpoint ui` ([`vision_assistant`](configuration.md#vision_assistant)) once you allowed vision requests there. Without either, the layer keeps its cached descriptions |
+| `vlm` | The shared vision model describes candidate windows from frames, the transcript and the other layers' hints (no audio is sent): Ollama with `qwen3.5:9b` (`CUTPOINT_VISION_MODEL` changes it), or the hosted (API or subscription) Vision model of the Models tab in `cutpoint ui` ([`vision_assistant`](configuration.md#vision_assistant)) once you allowed vision requests there. If the model does not answer, the layer keeps its cached descriptions; without the Vision consent for the provider it uses none of them and warns (`vision_consent_needed`) |
 
 Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash vlm`.
 
