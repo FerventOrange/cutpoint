@@ -3610,15 +3610,16 @@ function framesItem(ev, id, t) {
   const f = S.chat?.frames;
   const allowed = !!f && !f.needed && f.key === ev.key;
   const busy = !!S.turn || S.sending;
-  return h('li', { class: 'msg ai frames-consent', 'data-id': id, role: 'group', 'aria-label': 'Video frames' },
-    h('p', { class: 'msg-title', text: allowed ? `Video frames of this project are allowed for ${ev.host}.` : `Let the assistant watch ${momentName(ev.id)}?` }),
-    allowed ? null : h('p', { class: 'msg-meta', text: FRAMES_SENDS(ev.host) }),
-    h('span', { class: 'msg-acts' },
-      allowed ? null : h('button', { type: 'button', class: 'btn small primary', 'data-act': 'frames-allow', onclick: () => giveFramesConsent(ev.key, '') }, 'Allow for this project'),
-      h('button', {
-        type: 'button', class: 'btn small', 'data-act': 'frames-ask', disabled: busy,
-        onclick: () => (allowed ? askAgain(t.user) : giveFramesConsent(ev.key, t.user)),
-      }, allowed ? 'Ask again' : 'Allow and ask again')));
+  return h('li', { class: 'msg ai frames-consent', 'data-id': id },
+    h('div', { role: 'group', 'aria-label': 'Video frames' },
+      h('p', { class: 'msg-title', text: allowed ? `Video frames of this project are allowed for ${ev.host}.` : `Let the assistant watch ${momentName(ev.id)}?` }),
+      allowed ? null : h('p', { class: 'msg-meta', text: FRAMES_SENDS(ev.host) }),
+      h('span', { class: 'msg-acts' },
+        allowed ? null : h('button', { type: 'button', class: 'btn small primary', 'data-act': 'frames-allow', onclick: () => giveFramesConsent(ev.key, '') }, 'Allow for this project'),
+        h('button', {
+          type: 'button', class: 'btn small', 'data-act': 'frames-ask', disabled: busy,
+          onclick: () => (allowed ? askAgain(t.user) : giveFramesConsent(ev.key, t.user)),
+        }, allowed ? 'Ask again' : 'Allow and ask again'))));
 }
 
 /** Allow frames of this project for the provider in use (the server checks it is still the one asked about), then send ``again`` if given. */

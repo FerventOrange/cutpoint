@@ -287,6 +287,44 @@ def test_hosted_without_frames_consent_sends_no_frame_and_says_so(
     }
 
 
+def test_two_denied_views_in_one_turn_show_one_consent_box(proj_dir: Path, src: Path) -> None:
+    grab = Grab()
+    fake = Hosted([call("view_moment", id="m1"), call("view_moment", id="m2"), answer("No.")])
+    turn = run(fake, viewer(proj_dir, fake, src, grab))
+    assert turn.status == "done" and grab.times == []
+    assert len([e for e in turn.events if e["kind"] == "frames_consent"]) == 1
+    denied = [e for e in turn.events if e["kind"] == "tool"]
+    assert [(e["id"], e["error"]) for e in denied] == [("c2", "frames not allowed")]
+    first, second = (fake.requests[1]["messages"][-1], fake.requests[2]["messages"][-1])
+    assert first["content"] == second["content"] and "nothing was sent" in second["content"]
+
+
+def test_a_subscription_provider_needs_its_own_frames_consent(proj_dir: Path, src: Path) -> None:
+    sub = providers.SubscriptionProvider("claude-code", model="claude-x")
+    key = "frames-v1:claude-code@api.anthropic.com"
+    assert watch.frames_key(sub) == key
+    assert not viewer(proj_dir, sub, src).allowed()
+    assert viewer(proj_dir, sub, src, given=[key]).allowed()
+    item = {"source": "/v/a.mp4", "start": 10.0, "end": 20.0}
+    grab = Grab()
+    seen = viewer(proj_dir, sub, src, grab).view("m1", "c1", item, {}, "")
+    assert seen.sheet is None and seen.event["kind"] == "frames_consent"
+    assert seen.event["key"] == key and grab.times == []
+
+
+def test_a_second_image_refusal_fails_the_turn_after_three_requests(
+    proj_dir: Path, src: Path
+) -> None:
+    def refuse(_messages):
+        raise ProviderError("OpenAI-compatible x answered 400: image input is not supported")
+
+    fake = FakeProvider([call("view_moment", id="m1"), refuse, refuse])
+    fake.model = "local-llama"
+    turn = run(fake, viewer(proj_dir, fake, src))
+    assert turn.status == "failed" and len(fake.requests) == 3
+    assert not images_in(fake.requests[2]["messages"])
+
+
 def test_a_local_model_watches_without_consent(proj_dir: Path, src: Path) -> None:
     proj_dir.joinpath("events.json").write_text(json.dumps(EVENTS), "utf-8")
     fake = FakeProvider([call("view_moment", id="m1"), answer("A fish.")])

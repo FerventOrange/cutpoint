@@ -337,6 +337,7 @@ class Viewer:
         self.consent = consent
         self.grab = grab or (lambda src, t: grab_frame(src, t))
         self._events: list[Any] | None = None
+        self._asked = False  # the turn's consent box is out: later denials show none
 
     def allowed(self) -> bool:
         key = frames_key(self.provider)
@@ -392,18 +393,22 @@ class Viewer:
         source = str(item["source"])
         if not self.allowed():
             host = self.provider.host
-            return View(
+            text = (
                 f"error: the user has not allowed video frames of this project to go to {host}; "
                 "nothing was sent. Tell the user they can allow it in the box shown in the chat "
-                "and then ask again; meanwhile answer from the text data.",
-                None,
-                {
-                    "kind": "frames_consent",
-                    "id": real,
-                    "key": frames_key(self.provider),
-                    "host": host,
-                },
+                "and then ask again; meanwhile answer from the text data."
             )
+            if self._asked:  # the turn's one box is shown already
+                event = {"kind": "tool", "name": NAME, "id": real, "error": "frames not allowed"}
+                return View(text, None, event)
+            self._asked = True
+            event = {
+                "kind": "frames_consent",
+                "id": real,
+                "key": frames_key(self.provider),
+                "host": host,
+            }
+            return View(text, None, event)
         try:
             jpeg, cached = self.sheet(real, source, start, end)
         except (OSError, FFmpegError, ValueError) as err:
