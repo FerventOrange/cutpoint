@@ -22,6 +22,9 @@ jobs:
           enable-cache: true
       - run: uvx ruff@0.17.1 check src tests
       - run: uvx ruff@0.17.1 format --check src tests
+      # The uv pin must match in the Dockerfile, install.sh and install.ps1 (Dependabot bumps only
+      # the Dockerfile), and the pinned installer URLs must resolve (#613).
+      - run: python3 scripts/check_uv_pin.py --urls
 
   js:
     runs-on: ubuntu-latest
