@@ -424,6 +424,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- CLIP loads the weights of the snapshot the Hugging Face cache's `refs/main` names under
+  `models/clip`, not the first snapshot folder in name order, so a stale or partial snapshot left
+  from an older revision is no longer picked. Without a usable `refs/main` it takes the newest
+  snapshot that holds the checkpoint; with none, it still asks for
+  `cutpoint setup --only visual` (#655).
 - The Vision role's model list in the Models tab no longer offers models known to take no images
   (OpenAI gpt-3.5, o1-mini, o3-mini; xAI grok-3, grok-2 without vision): models known to take
   images come first, unknown ones follow, and the saved model stays, marked "may not accept
