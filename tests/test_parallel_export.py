@@ -29,10 +29,12 @@ FMT = OutputFormat(1920, 1080, 30)
 WAIT_S = 30  # upper bound of every wait; nothing takes this long unless a test is failing
 
 # A stand-in for ffmpeg: runs until the flag file appears, then exits with code 7
-# (a stopped ffmpeg exits non-zero); a killed one never reaches the exit.
+# (a stopped ffmpeg exits non-zero); a killed one never reaches the exit. Its own deadline is
+# well past every wait of the tests (WAIT_S, 3 * WAIT_S, 2 * WAIT_S soft stops), so a child
+# that was not killed is told apart from one that gave up by itself under load.
 CHILD = """\
 import os, sys, time
-deadline = time.monotonic() + 30
+deadline = time.monotonic() + 150
 while not os.path.exists(sys.argv[1]) and time.monotonic() < deadline:
     time.sleep(0.02)
 sys.exit(7)
@@ -81,8 +83,12 @@ def kids(monkeypatch, tmp_path):
             state.killed.append(self)
             super().kill()
 
+    # The base interpreter, not the venv's: on Windows the venv python.exe is a launcher that
+    # starts the real interpreter, so a kill right after Popen could end the launcher only and
+    # leave the interpreter holding the pipes. CHILD imports only os, sys and time.
+    python = getattr(sys, "_base_executable", sys.executable)
     monkeypatch.setattr(
-        ffmpeg_utils, "_command", lambda tool, args: [sys.executable, "-c", CHILD, str(flag)]
+        ffmpeg_utils, "_command", lambda tool, args: [python, "-c", CHILD, str(flag)]
     )
     monkeypatch.setattr(ffmpeg_utils.subprocess, "Popen", Spy)
     yield state
@@ -256,11 +262,14 @@ def test_soft_interrupt_lets_ffmpeg_that_got_the_ctrl_c_exit_without_a_kill(
 
 @pytest.mark.slow
 def test_second_interrupt_kills_ffmpeg_at_once(monkeypatch, tmp_path, kids, main_thread_interrupt):
-    monkeypatch.setattr(procs, "SOFT_STOP_S", float(WAIT_S))
+    soft_stop = 2.0 * WAIT_S  # the stop time a missing kill would wait for
+    monkeypatch.setattr(procs, "SOFT_STOP_S", soft_stop)
     seen = interruptible_encodes(monkeypatch, kids)
+    fired_at: list[float] = []
 
     def interrupt_when_running(self, clip, source, start, end):
         until(lambda: len(kids.procs) == 2, "both encodes to run ffmpeg")
+        fired_at.append(time.monotonic())  # from here on: only the stop is timed
         main_thread_interrupt.fired.set()
         raise main_thread_interrupt.exc
 
@@ -275,11 +284,14 @@ def test_second_interrupt_kills_ffmpeg_at_once(monkeypatch, tmp_path, kids, main
         return real_wait(futures, timeout)
 
     monkeypatch.setattr(clips, "wait", wait)
-    t0 = time.monotonic()
     with pytest.raises(KeyboardInterrupt) as err:
         render([plan(0), plan(1), plan(2)], tmp_path, workers=3)
+    stopped_in = time.monotonic() - fired_at[0]
     assert err.value is main_thread_interrupt.exc
-    assert time.monotonic() - t0 < WAIT_S / 2  # not the soft stop time
+    # Timed from the Ctrl+C: only the stop is timed, not the Popen calls before it. A kill takes
+    # milliseconds; the soft stop time (2 * WAIT_S) is the bug, so WAIT_S leaves a 2x margin on
+    # both sides.
+    assert stopped_in < WAIT_S, f"stop took {stopped_in:.1f}s (soft stop is {soft_stop:.0f}s)"
     assert len(kids.killed) == 2
     assert {type(e) for e in seen.values()} == {KeyboardInterrupt}
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["000_c.mp4"]
@@ -1056,7 +1068,7 @@ def test_scope_kill_kills_ffprobe_span_check_and_decode_children(kids, fn):
     t, outcome = in_worker(scope, fn)
     until(lambda: kids.procs, "the child to start")
     scope.kill()
-    t.join(WAIT_S)
+    t.join(3 * WAIT_S)  # a kill ends it in milliseconds; this only survives a stalled runner
     assert not t.is_alive()
     assert [type(e) for e in outcome] == [KeyboardInterrupt]
     assert kids.procs[0].poll() not in (None, 7)  # killed, not run to its exit
