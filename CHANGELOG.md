@@ -493,6 +493,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Recordings whose audio tracks are copies of each other (OBS writing the same mix to several
+  tracks) are analysed at the level of one track (#685). `analyze` summed every track into its
+  analysis audio, so 5 identical tracks came out about 14 dB too loud and clipped, flattening
+  the loudness peaks it scores; it now leaves the copies out as clip exports do (#365). A track
+  is left out only when it copies another across the whole recording, so a game and a separate
+  mic track are still both summed, also when the mic talks only now and then. Such recordings
+  are analysed again once (audio extract, loudness, transcript and the audio events layers);
+  recordings with one track or with distinct tracks keep their cache.
 - 360 clips filmed with the camera upright (lenses horizontal, on a pole or stick above you)
   now place the wearer below the camera (#573). The wearer cone (the rendered QA's self tags,
   the `--paths` QA's wearer exclusion), the director's wearer rule, the travel direction and
