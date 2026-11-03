@@ -158,23 +158,114 @@ def _cuda_libs_hint() -> str:
     return f"For GPU transcription add the 'gpu' extra: {install_hint('gpu')}"
 
 
+# Approximate download size of faster-whisper's model names (their model.bin), for the
+# first-use download line; other names and repo ids are logged without a size.
+MODEL_SIZES = {
+    "tiny": "75 MB",
+    "tiny.en": "75 MB",
+    "base": "145 MB",
+    "base.en": "145 MB",
+    "small": "480 MB",
+    "small.en": "480 MB",
+    "distil-small.en": "330 MB",
+    "medium": "1.5 GB",
+    "medium.en": "1.5 GB",
+    "distil-medium.en": "790 MB",
+    "large-v1": "3 GB",
+    "large-v2": "3 GB",
+    "large-v3": "3 GB",
+    "large": "3 GB",
+    "distil-large-v2": "1.5 GB",
+    "distil-large-v3": "1.5 GB",
+    "distil-large-v3.5": "1.5 GB",
+    "large-v3-turbo": "1.6 GB",
+    "turbo": "1.6 GB",
+}
+
+
+def default_model(device: str | None = None) -> str:
+    """The whisper model used without ``--model``: medium on CUDA, small on the CPU
+    (``device`` None: the one :func:`cuda_available` picks)."""
+    if device is None:
+        device = "cuda" if cuda_available() else "cpu"
+    return "medium" if device == "cuda" else "small"
+
+
+def _sized(name: str) -> str:
+    size = MODEL_SIZES.get(name)
+    return f"Whisper {name} (~{size})" if size else f"Whisper {name}"
+
+
+def setup_command(name: str) -> str:
+    """The ``cutpoint setup`` command that downloads the whisper model ``name``."""
+    if name == default_model():
+        return "cutpoint setup --only whisper"
+    return f"cutpoint setup --only whisper --whisper-model {name}"
+
+
+def cached_model(name: str) -> str | None:
+    """The folder of the whisper model ``name`` in the Hugging Face cache, or None when it is
+    missing or incomplete there (no network)."""
+    quiet_hub_handler()
+    from faster_whisper.utils import download_model  # noqa: PLC0415
+    from huggingface_hub.utils import LocalEntryNotFoundError  # noqa: PLC0415
+
+    try:
+        return download_model(name, local_files_only=True)
+    except LocalEntryNotFoundError:
+        return None
+
+
+def fetch_model(name: str) -> str:
+    """Download the whisper model ``name`` (a faster-whisper name or Hub repo id) into the
+    Hugging Face cache, or check the cached copy; returns its folder. ``cutpoint setup``."""
+    quiet_hub_handler()
+    from faster_whisper.utils import download_model  # noqa: PLC0415
+
+    logger.info("%s -> Hugging Face cache", _sized(name))
+    path = download_model(name)
+    logger.info("Whisper %s in %s", name, path)
+    return path
+
+
+def load_model(name: str, device: str, compute_type: str) -> Any:
+    """``WhisperModel(name)`` from local files first: no Hub request when the model is cached
+    (or ``name`` is a model folder).
+
+    Only when huggingface_hub reports the model missing or incomplete in the cache
+    (``LocalEntryNotFoundError``), it is downloaded once, as before, with an INFO line. Any
+    other error (a corrupt model, a bad name) is raised as it is.
+    """
+    quiet_hub_handler()
+    from faster_whisper import WhisperModel  # noqa: PLC0415
+    from huggingface_hub.utils import LocalEntryNotFoundError  # noqa: PLC0415
+
+    try:
+        return WhisperModel(name, device=device, compute_type=compute_type, local_files_only=True)
+    except LocalEntryNotFoundError as err:
+        logger.debug("whisper %s not cached: %s", name, err)
+    logger.info(
+        "Downloading %s on first use (%s fetches it ahead of time)",
+        _sized(name),
+        setup_command(name),
+    )
+    return WhisperModel(name, device=device, compute_type=compute_type)
+
+
 class Transcriber:
     """Lazily-loaded WhisperModel that falls back to CPU int8 on CUDA failure."""
 
     def __init__(self, model: str | None = None, language: str | None = None) -> None:
         self.device = "cuda" if cuda_available() else "cpu"
-        self.model_name = model or ("medium" if self.device == "cuda" else "small")
+        self.model_name = model or default_model(self.device)
         self.language = language
         self._model: Any = None
 
     def _load(self) -> Any:
-        quiet_hub_handler()
-        from faster_whisper import WhisperModel  # noqa: PLC0415
-
         if self._model is None:
             compute = "float16" if self.device == "cuda" else "int8"
             logger.info("Loading whisper %s on %s (%s)", self.model_name, self.device, compute)
-            self._model = WhisperModel(self.model_name, device=self.device, compute_type=compute)
+            self._model = load_model(self.model_name, self.device, compute)  # local first
         return self._model
 
     def _fallback_to_cpu(self, err: Exception) -> None:
@@ -200,7 +291,8 @@ class Transcriber:
         try:
             return self._run(wav, on_progress)
         except (RuntimeError, OSError) as err:
-            if self.device != "cuda":
+            # A model the Hub cannot give (offline, unknown repo) is not there on the CPU either
+            if self.device != "cuda" or type(err).__module__.startswith("huggingface_hub"):
                 raise
             self._fallback_to_cpu(err)
             return self._run(wav, on_progress)

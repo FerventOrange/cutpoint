@@ -242,9 +242,10 @@ action-cam telemetry are in every install.
 
 ## Rules
 
-- Ask the user before running `cutpoint setup` (about 2 GB of downloads), `cutpoint stage`
-  (copies footage to local disk), `clips --force` or `edit --force` over an existing folder or
-  `cutpoint skill install` (writes to their Claude Code settings folder).
+- Ask the user before running `cutpoint setup` (about 2.5 GB of downloads, 3.5 GB with an
+  NVIDIA GPU), `cutpoint stage` (copies footage to local disk), `clips --force` or `edit --force`
+  over an existing folder or `cutpoint skill install` (writes to their Claude Code settings
+  folder).
 - Do not paste Insta360 SDK files, documentation or output into any file or message, other than
   `error:` lines.
 - Do not invent options. Check `--help`.

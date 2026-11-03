@@ -44,7 +44,7 @@ with the other layers. Check the points above, or pull the model with `ollama pu
 
 - Downloads resume. Run `cutpoint setup` again, or only the failing part:
   `cutpoint setup --only visual`.
-- Components: `pip` (only checks Python packages), `panns`, `visual`, `voice`.
+- Components: `pip` (only checks Python packages), `whisper`, `panns`, `visual`, `voice`.
 - Behind a proxy or offline, download manually and place files under `CUTPOINT_HOME` using the
   folder layout in [Configuration](../configuration.md#data-folder-cutpoint_home).
 - `panns` downloads the checkpoint from a Hugging Face copy of the Zenodo record (CC BY 4.0)
@@ -66,9 +66,13 @@ and the 360 module are in every install.
 
 ## Whisper model download
 
-The Whisper model downloads into the Hugging Face cache on first use. If that fails (offline,
-proxy), pre-download it on a machine with access, or set `HF_HOME` to a folder that already has
-it. Use `analyze --model small` for a smaller download.
+The Whisper model downloads into the Hugging Face cache on first use, with an INFO line such as
+`Downloading Whisper medium (~1.5 GB) on first use (cutpoint setup --only whisper fetches it
+ahead of time)`. Once it is cached, runs load it without a Hugging Face Hub request. To fetch it
+before a run, use `cutpoint setup --only whisper` (`--whisper-model NAME` for another model);
+an interrupted download resumes. If that fails (offline, proxy), pre-download it on a machine
+with access, or set `HF_HOME` to a folder that already has it, or pass a model folder to
+`--model`. Use `analyze --model small` for a smaller download.
 
 ## Wrong language or poor transcript
 
