@@ -1596,8 +1596,10 @@ then still continues). A second run on the project stops with `folder_busy` and 
 naming the process, as for the [folder lock](#folder-lock) of `clips`: wait, or delete the
 lock file if no run is active. `events`, `crashes` and `profile` treat a folder with only a
 `progress.json` as no project: they write nothing and take no lock. A first `analyze` or
-`edit` writes `progress.json` only after its first source is transcribed. The step a stopped
-run was in reads `failed` (the `PROGRESS` states); `status` says why.
+`edit` writes `progress.json` only after its first source is transcribed. After Ctrl+C or a
+failure, the step the run was in reads `failed` (the `PROGRESS` states) and `status` says why.
+After a hard kill the file keeps `running`; `cutpoint resume` reads such a record, whose
+process is gone on this computer, as `interrupted`.
 
 | Key | Content |
 |---|---|
