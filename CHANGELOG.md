@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `edit` (opt-in; the defaults are unchanged) maps action cam to `action-cam`, gameplay to
   `gaming`, talk (decided after transcription) to `commentary` and general to `action`, or every
   category to `funny` for `edit --kind funny-moments`; it never picks `sport`. The detected
-  category plans the HUD OCR and CLIP layers. Unclear footage gets the default style (`gaming`,
+  category plans the HUD OCR and CLIP layers of `analyze`'s own steps (`edit --events` and
+  `cutpoint events` still choose by style). Unclear footage gets the default style (`gaming`,
   or the kind's style on `edit`) with a `style_ambiguous` warning; sources of another category
   over 10% of the footage give `style_sources_disagree`; talky gameplay stays gameplay with a
   hint to try `--style commentary`. `highlights.json` keeps the picked style in `style` and

@@ -22,7 +22,7 @@ import logging
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -165,7 +165,7 @@ def _metadata(data: Mapping[str, Any]) -> dict[str, Any]:
         elif low.endswith("model"):
             model = model or value
         elif CAMERA_TAG_RE.match(key) and not make:
-            make = key.split(".")[2] if low.startswith("com.") else "camera"
+            make = key.split(".")[1] if low.startswith("com.") else "camera"
     return {
         "handler": vtags.get("handler_name", ""),
         "encoder": vtags.get("encoder") or ftags.get("encoder", ""),
@@ -310,8 +310,8 @@ def probe_source(src: Path) -> SourceProbe:
 
     cdir = cache.source_dir(src)
     cached = SourceProbe.from_json(cache.load_json(cdir / CACHE_FILE))
-    if cached is not None:
-        return cached
+    if cached is not None:  # saved under the path of its first run, maybe another remap
+        return replace(cached, path=str(src))
     io = remap_source(src)
     info = probe(io)
     meta = _metadata(ffprobe_json(io, show_format=True, show_streams=True, timeout=60))
@@ -319,7 +319,8 @@ def probe_source(src: Path) -> SourceProbe:
     if not found.telemetry:
         for key, value in _frame_probe(io, info.duration, info.width, info.height).items():
             setattr(found, key, round(value, 5) if isinstance(value, float) else value)
-    cache.save_json(cdir / CACHE_FILE, found.to_json())
+    if found.telemetry or found.frames >= MIN_FRAMES:  # else a read failure that may pass
+        cache.save_json(cdir / CACHE_FILE, found.to_json())
     return found
 
 
@@ -437,7 +438,13 @@ def _source(p: SourceProbe, speech: float | None) -> SourceDecision:
         )
     if speech is not None and speech >= TALK_BAND and p.duration >= TALK_MIN_S:
         why = [f"speech {_pct(speech)} of {p.duration / 60:.0f} min", *why]
-        ambiguous = speech < TALK_SPEECH
+        # partial HUD evidence (not a still picture) keeps a talky game stream unsure
+        part_hud = (
+            p.hud_static is not None
+            and p.hud_static >= HUD_FULL / 4
+            and not (p.static_share is not None and p.static_share > STILL_SHARE)
+        )
+        ambiguous = speech < TALK_SPEECH or part_hud
         return SourceDecision(p.path, p.duration, TALK, ambiguous, ", ".join(why), score, speech)
     if speech is not None:
         why.append(f"speech {_pct(speech)}")

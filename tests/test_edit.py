@@ -234,6 +234,18 @@ def test_edit_style_auto_probes_before_the_events_preflight(
     assert (request.emphasis, request.fallback) == (emphasis, edit.KINDS[kind].style)
 
 
+def test_edit_with_an_explicit_style_never_probes(pipeline, monkeypatch):
+    from cutpoint import category  # noqa: PLC0415
+    from cutpoint.events import cli as events_cli  # noqa: PLC0415
+    from cutpoint.events import pipeline as events_pipeline  # noqa: PLC0415
+
+    monkeypatch.setattr(events_pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: None)
+    monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
+    monkeypatch.setattr(category, "probe_source", lambda src: pytest.fail("probed"))
+    assert cli.main(["edit", str(pipeline.video), "--style", "gaming", "--events"]) == 0
+
+
 def test_edit_vertical_names_its_outputs(pipeline, home):
     assert cli.main(["edit", str(pipeline.video), "--vertical"]) == 0
     project = home / "projects" / "My Clip"

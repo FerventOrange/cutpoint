@@ -71,6 +71,12 @@ CAMERA = {"make": "Apple", "frames": 16, "hud_static": 0.0, "static_share": 0.0,
         ([probe(**CAMERA)], None, (GENERAL, False, True)),  # talk still open
         ([probe(**CAMERA)], {"a.mp4": 0.7}, (TALK, False, False)),
         ([probe(**CAMERA)], {"a.mp4": 0.45}, (TALK, True, False)),  # the band: ambiguous
+        # a talky stream with a thin HUD (score 0.45): talk, but not sure
+        (
+            [probe(**{**CAMERA, "make": "", "hud_static": 0.0012})],
+            {"a.mp4": 0.7},
+            (TALK, True, False),
+        ),
         ([probe(duration=60.0, **CAMERA)], None, (GENERAL, False, False)),  # too short for talk
         # screen-recorder tags without a HUD: OBS re-encodes of camera footage have them too
         ([probe(duration=60.0, **{**GAME, "hud_static": 0.0})], None, (GENERAL, True, False)),
@@ -115,6 +121,64 @@ def test_a_learned_auto_style_is_ignored_with_a_warning(home, caplog):
     assert "reserved for --style auto" in caplog.text
     with pytest.raises(ValueError, match="not a style itself"):
         styles.get_style("auto")
+
+
+def test_camera_tag_reason_names_the_maker():
+    for key, maker in (
+        ("com.apple.quicktime.software", "Apple"),
+        ("com.android.version", "Android"),
+    ):
+        meta = category._metadata({"format": {"tags": {key: "x"}}})
+        assert meta["make"] == maker.lower()
+        reason = category.gameplay_score(probe(make=meta["make"]))[1]
+        assert reason == [f"camera tags ({maker.lower()})"]
+
+
+@pytest.fixture
+def faked_probe(home, tmp_path, monkeypatch):
+    """``probe_source`` of a tiny file with ffprobe, the telemetry check and the frame probe
+    faked; ``state.frames`` is the number of spread frames the fake decodes."""
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from cutpoint import analyze, ffmpeg_utils  # noqa: PLC0415
+
+    state = SimpleNamespace(src=tmp_path / "v" / "a.mp4", frames=16, probes=0)
+    state.src.parent.mkdir()
+    state.src.write_bytes(b"x")
+    monkeypatch.setattr(
+        ffmpeg_utils, "probe", lambda p: SimpleNamespace(duration=60.0, width=640, height=360)
+    )
+    monkeypatch.setattr(ffmpeg_utils, "ffprobe_json", lambda *a, **k: {})
+    monkeypatch.setattr(analyze, "has_telemetry", lambda p: False)
+
+    def frame_probe(*a):
+        state.probes += 1
+        return {"frames": state.frames}
+
+    monkeypatch.setattr(category, "_frame_probe", frame_probe)
+    return state
+
+
+def test_a_cached_probe_takes_the_path_it_is_asked_for(faked_probe):
+    from cutpoint import cache  # noqa: PLC0415
+
+    src = faked_probe.src
+    first = category.probe_source(src)
+    cached = cache.source_dir(src) / category.CACHE_FILE
+    cache.save_json(cached, {**first.to_json(), "path": "Z:/elsewhere/a.mp4"})
+    again = category.probe_source(src)
+    assert again.path == str(src) and faked_probe.probes == 1
+
+
+def test_a_failed_frame_read_is_not_cached(faked_probe):
+    faked_probe.frames = category.MIN_FRAMES - 1  # a timeout on the NAS
+    category.probe_source(faked_probe.src)
+    category.probe_source(faked_probe.src)
+    assert faked_probe.probes == 2
+    faked_probe.frames = category.SPREAD
+    category.probe_source(faked_probe.src)
+    category.probe_source(faked_probe.src)
+    assert faked_probe.probes == 3
 
 
 @needs_ffmpeg

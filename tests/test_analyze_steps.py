@@ -1657,6 +1657,30 @@ def test_talk_is_decided_after_transcription(probed, monkeypatch):
     assert probed.cats == ["talk"]
 
 
+def test_an_explicit_style_never_probes(run, capsys, monkeypatch):
+    monkeypatch.setattr(category, "probe_source", lambda src: pytest.fail("probed"))
+    run.go("gaming")
+    code, doc = run_json(capsys, ["analyze", str(run.video), "--style", "gaming", "--out", "s"])
+    assert code == 0 and "detection" not in doc["outputs"]
+
+
+def test_sources_of_two_categories_warn_in_the_json_envelope(probed, capsys, monkeypatch):
+    other = write(probed.video.parent / "b.mp4")
+    fields = {str(probed.video): GAME_PROBE, str(other): CAMERA_PROBE}
+    monkeypatch.setattr(
+        category,
+        "probe_source",
+        lambda src: category.SourceProbe(str(src), 60.0, False, **fields[str(src)]),
+    )
+    code, doc = run_json(
+        capsys, ["analyze", str(probed.video.parent), "--style", "auto", "--out", "s"]
+    )
+    assert code == 0
+    [warning] = [w for w in doc["warnings"] if w["code"] == "style_sources_disagree"]
+    assert len(warning["files"]) == 1 and warning["files"][0] in fields
+    assert set(doc["outputs"]["detection"]["scores"].values()) >= {0.5}
+
+
 def test_reanalyze_keeps_the_detection_and_never_probes_again(probed, monkeypatch):
     probed.go(analyze.AutoRequest("hype", "gaming"))
     before = _hl(probed)
