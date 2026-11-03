@@ -589,6 +589,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   weights), the reactions step no longer reads it a second time for the voice layer and reports
   the failure once (one ERROR line, one `step_failed` warning); the voice layer is skipped with an
   INFO line, and voice grids already cached are kept (#629).
+- CLIP loads from the weights `cutpoint setup` downloaded, by file path, outside `cutpoint setup`
+  (`analyze`, `events`, `crashes`, `profile`, the 360 commands and action-cam ranking): no
+  Hugging Face Hub freshness check and no download in the middle of a run. Without the weights
+  the step stops with `CLIP weights not found in <models>/clip; run: cutpoint setup --only
+  visual` (#642).
 - `analyze`: when the HUD OCR of the keyframes step fails (out of memory or any other error),
   one WARNING and one `step_failed` warning (`files`: the sources not read) now say what is
   skipped: "OCR failed (<reason>): menu filtering and HUD events (kill feed, banners, notices)
