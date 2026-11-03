@@ -951,7 +951,7 @@ cutpoint detect <file|folder> [<file|folder> ...] [--exclude GLOB] [--recursive]
 
 Tells which category the footage is and which style `--style auto` would use, without analyzing
 it. It reads the container tags, the camera telemetry and 32 small grey frames per source (a few
-seconds each; cached as `category-v1.json` in the source's cache folder), plus the HUD text
+seconds each; cached as `category-v2.json` in the source's cache folder), plus the HUD text
 check (below) for unsure sources, and writes nothing to a project.
 
 | Category | Evidence | `analyze --style auto` | `edit --kind funny-moments --style auto` |
@@ -968,7 +968,10 @@ it has a transcript (`detect` uses one from an earlier `analyze`; `analyze` deci
 transcribing). A category with weak evidence (no HUD, only screen-recorder tags, which re-encoded
 camera footage also has, or speech coverage between 40% and 55%) is ambiguous: `--style auto`
 then uses the default style with a `style_ambiguous` warning. Gameplay with a lot of speech stays
-gameplay; an INFO line suggests `--style commentary`.
+gameplay; an INFO line suggests `--style commentary`. An opaque box across most of the bottom
+of the picture (a news lower third or ticker) is not a HUD: its text counts for neither the
+static HUD nor the HUD text check, so camera footage with one is not called gameplay. A game whose HUD is such a panel (a
+Doom-style status bar, an RTS console) is taken for a box too and can become ambiguous.
 
 **HUD text check.** A thin HUD (a few lines of text, as in War Thunder, Rainbow Six or
 Battlefield) is too small to show in the small frames. So a source those leave unsure between
