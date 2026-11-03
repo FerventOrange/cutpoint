@@ -542,7 +542,10 @@ def run_events(
         prev = cached_windows(sources, vlm)
         if prev:
             n_new = len(windows)
-            windows = add_incremental(prev, windows)
+            # a reused window this run selects again keeps its reasons (#109: a resumed run's
+            # events.json equals an uninterrupted one's)
+            chosen = {(w.source, w.key): w for w in windows}
+            windows = [chosen.get((w.source, w.key), w) for w in add_incremental(prev, windows)]
             logger.log(
                 logging.INFO if "vlm" in layers else logging.DEBUG,
                 "VLM (action-cam, incremental): %d cached windows reused, %d of %d new "

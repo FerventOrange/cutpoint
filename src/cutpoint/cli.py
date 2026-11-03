@@ -11,6 +11,7 @@ import contextlib
 import importlib.util
 import logging
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -41,13 +42,14 @@ from cutpoint.config import (
     color_default,
     compress_peaks_default,
     get_config,
+    path_key,
     projects_dir,
     resolve_project_path,
     vision_default,
 )
 from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
 from cutpoint.encode import LUT_SUFFIXES, Lut, check_lut
-from cutpoint.errors import FFmpegError
+from cutpoint.errors import FFmpegError, FolderBusyError
 from cutpoint.events import paths as event_paths
 from cutpoint.extend import extend_clips, manifest_project
 from cutpoint.planning import Padding
@@ -522,6 +524,74 @@ _CRASH_SUMMARY_KEYS = (
     "clip",
     "sheet",
 )
+
+
+def _cmd_resume(a: argparse.Namespace) -> int:
+    """Replay the run recorded in ``progress.json`` (#109); see :func:`_resume_command`."""
+    project = resolve_project_path(a.project).absolute()  # before the chdir below
+    jsonout.set_project(project)
+    rec = runstate.resumable(project)
+    argv, status = rec["argv"], rec.get("status")
+    counts = runstate.step_counts(rec)
+    jsonout.output("resume", {"argv": argv, "status_before": status, "done_before": counts})
+    jsonout.output("resumed", False)
+    if status == "running":  # read() turns the record of a dead process into interrupted
+        raise FolderBusyError(
+            f"A cutpoint run (process {rec.get('pid')} on {rec.get('host')}) is still running "
+            f"on {project}. Wait until it has finished, or stop it, and resume again."
+        )
+    if status == "done":
+        logger.info("%s: its last run (%s) finished; nothing to resume", project, rec["command"])
+        return 0
+    if missing := runstate.missing_sources(rec):
+        message = f"{len(missing)} source(s) of the recorded run are not there now"
+        logger.warning("%s: %s", message, ", ".join(missing))
+        jsonout.warn("resume_sources_changed", message, missing)
+    join = subprocess.list2cmdline if os.name == "nt" else shlex.join
+    if a.dry_run:
+        print(f"cutpoint {join(argv)}")
+        print(f"  in {rec['cwd']}, last run {status}")
+        for name, c in counts.items():
+            done = f"{c['done']}/{c['total']} done" if c["total"] is not None else ""
+            print(f"  {name}: {c['state']}{', ' + done if done else ''}")
+        return 0
+    cut = argv.index("--") if "--" in argv else len(argv)  # resume's own --json decides
+    tokens = [t for t in argv[:cut] if not _json_requested([t])] + argv[cut:]
+    try:
+        args = _parse(build_parser(), tokens)
+    except UsageError as err:
+        jsonout.fail(jsonout.BAD_ARGS, f"the recorded command line: {err.message}")
+        return 2
+    args.json_result = a.json_result
+    here = Path.cwd()
+    os.chdir(rec["cwd"])
+    try:
+        other = _run_project(args)
+        if other is not None and path_key(str(other.absolute())) != path_key(
+            str(project)
+        ):  # a copied project: its record names the original
+            message = f"{project / runstate.FILE} records a run on {other.absolute()}"
+            logger.error("%s", message)
+            jsonout.fail(jsonout.ERROR, message)
+            return 1
+        logger.info("Resuming in %s: cutpoint %s", rec["cwd"], join(argv))
+        jsonout.output("resumed", True)
+        with runstate.resuming(rec):
+            return _run(args, argv)  # records progress.json as the recorded command
+    finally:
+        os.chdir(here)
+
+
+def _resume_command(args: argparse.Namespace) -> str:
+    """The ``--json`` envelope's ``command``: ``resume`` reports as the command it replays,
+    once its ``progress.json`` is read (also for a finished run and ``--dry-run``); else
+    (none, unreadable) as ``resume``."""
+    if args.func is not _cmd_resume:
+        return args.json_command
+    try:
+        return runstate.resumable(resolve_project_path(args.project))["command"]
+    except (OSError, ValueError):
+        return args.json_command
 
 
 def _cmd_profile(a: argparse.Namespace) -> None:
@@ -1521,6 +1591,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json_argument(pf)
     pf.set_defaults(func=_cmd_profile)
 
+    rs = sub.add_parser(
+        "resume",
+        help="continue the interrupted run of a project (analyze, edit, events, crashes, "
+        "profile, 360 analyze): runs its recorded command again, cached work is skipped",
+    )
+    rs.add_argument("project", help="project with a progress.json (bare name = projects folder)")
+    rs.add_argument(
+        "--dry-run", action="store_true", help="print the command and its step counts only"
+    )
+    _add_json_argument(rs)
+    rs.set_defaults(func=_cmd_resume)
+
     mx = sub.add_parser(
         "mix",
         help="(action-cam module) pick a varied set of moments (runs, jumps, "
@@ -1816,7 +1898,7 @@ def main(argv: list[str] | None = None) -> int:
     tokens = list(sys.argv[1:] if argv is None else argv)
     if not getattr(args, "json_result", False):
         return _run(args, tokens)
-    with jsonout.run(args.json_command):
+    with jsonout.run(_resume_command(args)):
         code = _run(args, tokens)
         if code:
             jsonout.fail(jsonout.ERROR, f"exit code {code}")
@@ -1827,16 +1909,22 @@ def _recorded(args: argparse.Namespace, argv: Sequence[str]) -> contextlib.Abstr
     """:func:`cutpoint.runstate.record` of a command that keeps ``progress.json`` and the
     project run lock (``analyze``, ``edit``, ``events``, ``crashes``, ``profile``,
     ``360 analyze``), else a no-op."""
+    project = _run_project(args)
+    if project is None:
+        return contextlib.nullcontext()
+    return runstate.record(args.json_command, argv, project, vars(args))
+
+
+def _run_project(args: argparse.Namespace) -> Path | None:
+    """The project folder of a command that keeps ``progress.json``, else None."""
     command = getattr(args, "json_command", None)
     if command not in runstate.COMMANDS:
-        return contextlib.nullcontext()
+        return None
     if command == "analyze":
-        project = _analyze_project(args)
-    elif command == "edit":
-        project = _edit_project(args)
-    else:
-        project = resolve_project_path(args.project)
-    return runstate.record(command, argv, project, vars(args))
+        return _analyze_project(args)
+    if command == "edit":
+        return _edit_project(args)
+    return resolve_project_path(args.project)
 
 
 def _run(args: argparse.Namespace, argv: Sequence[str] = ()) -> int:

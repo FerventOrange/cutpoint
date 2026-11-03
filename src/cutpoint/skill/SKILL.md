@@ -76,13 +76,18 @@ Choosing the moments yourself:
   errors go to stderr as `HH:MM:SS LEVEL message`; exit code `0` is success.
 - `--json` prints the result as one JSON object on stdout (logs stay on stderr): `ok`, `command`,
   `schema`, `project`, `outputs` (absolute paths and key facts), `warnings` (`code`, `message`,
-  `files`) and `error` (`code`, `message`, or `null`). It works on `paths`, `analyze`, `clips`,
+  `files`) and `error` (`code`, `message`, or `null`). It works on `paths`, `analyze`, `detect`, `clips`,
   `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `events`, `crashes`,
-  `profile` and every `360` subcommand.
+  `profile`, `resume` and every `360` subcommand.
+- After an interrupted or failed `analyze`, `edit`, `events`, `crashes`, `profile` or
+  `360 analyze`, `cutpoint resume <project>` replays the recorded command (`--dry-run` shows it).
 - If `clips`, `extend` or `assemble` stops with an `ERROR` that another run holds the folder's
   lock (`.<folder>.cutpoint-lock`; with `--json`, `error.code` is `folder_busy`), wait or
   retry; delete the lock file only if no run is active. If `clips --force` or `extend` refuses
   a `manifest.json` Cutpoint did not write, tell the user; never delete it.
+- `analyze`, `edit`, `events`, `crashes`, `profile` and `360 analyze` hold
+  `<project>/.analysis.run.cutpoint-lock`; on `folder_busy` wait or retry, and delete the lock
+  only if no run is active.
 - Check `cutpoint <command> --help`; never invent options.
 - When done, report the absolute paths of `final.mp4` (and the `<name>-final.mp4` copy after
   `cutpoint edit`), its `.srt` and the clips folder, exactly as the last log lines print them;
