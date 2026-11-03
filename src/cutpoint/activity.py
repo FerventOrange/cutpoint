@@ -16,8 +16,9 @@ A profile is a small JSON document (any sport, game or kind of video)::
      "scene": [ordinary footage: negatives of occluder and low_info],
      "vl": {"video": "...", "gear": "...", "scenery": "...", "low_info": "..."},
      "vlm": {"recording": "...", "video": "...", "audio": "...", "describe": "...",
-             "hype": "...", "edit": "...", "idle": "...", "rate_high": "...",
-             "rate_low": "...", "tags": {"<tag>": "..."}},
+             "hype": "...", "edit": "...", "idle": "...", "rate_edit": "...",
+             "rate_high": "...", "rate_low": "...", "retry_high": "...",
+             "retry_low": "...", "tags": {"<tag>": "..."}},
      "exclude_base": [base entries this profile replaces], "<section>": {...}}
 
 Every profile inherits the shared floor ``presets/activities/base.json`` (generic
@@ -129,8 +130,12 @@ VLM_KEYS = (
     "hype",
     "edit",
     "idle",
+    # the vision rating's alone (the window prompt has its own ``edit``)
+    "rate_edit",
     "rate_high",
     "rate_low",
+    "retry_high",  # the shorter retry prompt's lists
+    "retry_low",
 )
 # The prompt set outside a use_prompts block and for a project without activity.json:
 # the ski lists they always used.

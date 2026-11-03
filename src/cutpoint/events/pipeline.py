@@ -510,7 +510,8 @@ def run_events(
 
     # ---- layer 2: VLM windows
     # action-cam: worded for the activity.json the crash layer above may have just written
-    vlm.action_cam = action_cam_wording(project_prompts(project)) if ski else None
+    cam_prompts = project_prompts(project) if ski else None
+    vlm.action_cam = action_cam_wording(cam_prompts) if cam_prompts is not None else None
     if "vlm" in layers:
         free_torch()  # the CUDA memory torch still caches for the layers before
     t0 = time.perf_counter()
@@ -628,12 +629,16 @@ def run_events(
             if e.get("type") not in ("coverage", "coverage_masked")
         ]
         events += [normalize(e["source"], e) for e in windows_to_events(results)]
+        vlm_settings = asdict(vlm)
+        if cam_prompts is not None and vlm.action_cam is not None:  # the activity, not its text
+            wording = vlm.action_cam.key() or "default"
+            vlm_settings["action_cam"] = {"activity": cam_prompts.name, "wording": wording}
         settings = {
             "layers": list(layers),
             "avoid": dict(bad),
             "audio": audio.key(),
             "ocr": ocr.key(None) | {"game": ocr.game},
-            "vlm": asdict(vlm),
+            "vlm": vlm_settings,
         }
         return write_outputs(
             project,

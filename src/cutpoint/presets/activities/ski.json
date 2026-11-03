@@ -200,8 +200,11 @@
     "hype": "0-1 standing around, riding a lift, indoors; 3-4 ordinary cruising; 6-7 fast riding, powder spray, tight trees, a small jump; 8-10 a big jump, a crash or fall, a spectacular line, a near miss.",
     "edit": "ski highlight edit",
     "idle": "lifts, standing around and lodge scenes",
+    "rate_edit": "ski edit",
     "rate_high": "jumps, crashes, powder spray, fast riding, tight trees, friends doing something funny, a stunning view",
     "rate_low": "riding a chairlift, standing around, the lodge, the ground or the sky only",
+    "retry_high": "jumps, crashes, powder and fast riding",
+    "retry_low": "chairlifts, standing around and the lodge",
     "tags": {
       "jump_air": "the rider is airborne",
       "crash_fall": "someone falls or crashes",

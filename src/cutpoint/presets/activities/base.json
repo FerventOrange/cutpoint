@@ -132,8 +132,11 @@
     "hype": "0-1 standing around, riding a lift, indoors; 3-4 ordinary cruising; 6-7 fast riding, spray from a hard turn, tight trees, a small jump; 8-10 a big jump, a crash or fall, a spectacular line, a near miss.",
     "edit": "highlight edit",
     "idle": "lifts, standing around and indoor scenes",
+    "rate_edit": "highlight edit",
     "rate_high": "jumps, crashes, spray from a hard turn, fast riding, tight trees, friends doing something funny, a stunning view",
     "rate_low": "riding a lift, standing around, indoors, the ground or the sky only",
+    "retry_high": "jumps, crashes and fast riding",
+    "retry_low": "lifts, standing around and indoor scenes",
     "tags": {
       "jump_air": "the rider is airborne",
       "crash_fall": "someone falls or crashes",

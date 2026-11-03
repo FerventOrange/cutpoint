@@ -56,15 +56,30 @@ def _chat_prompts(posts: list[tuple[str, dict]]) -> list[str]:
     return [p["messages"][0]["content"] for u, p in posts if u.endswith("/api/chat")]
 
 
-# The action-cam rating prompt before the activity profile worded it: the ski profile gives
-# it with "ski highlight edit" for "ski edit" (the edit of the window prompt).
+# The action-cam rating prompts before the activity profile worded them (``_PROMPT_SKI`` and
+# ``_RETRY_PROMPT_SKI``, unformatted): the ski profile must render them byte for byte, so
+# its cached ratings stay valid.
 OLD_SKI_PROMPT = (
-    "These are 3 frames, in order, from one short moment of a first-person skiing / "
+    "These are {n} frames, in order, from one short moment of a first-person skiing / "
     "snowboarding video. Rate how highlight-worthy it is for a ski edit (0 = boring, "
     "10 = must include). High: jumps, crashes, powder spray, fast riding, tight trees, "
     "friends doing something funny, a stunning view. Low (0-2): riding a chairlift, "
     "standing around, the lodge, the ground or the sky only. Respond with JSON only: "
-    '{"score": <0-10 number>, "label": "<2-4 word description>"}'
+    '{{"score": <0-10 number>, "label": "<2-4 word description>"}}'
+)
+OLD_SKI_RETRY = (
+    "{n} frames from a first-person skiing / snowboarding video moment. Answer "
+    "immediately, no reasoning. Score 0-10 for a ski edit; jumps, crashes, powder and "
+    "fast riding score high, chairlifts, standing around and the lodge score 0-2. "
+    'Output only JSON: {{"score": <number>, "label": "<2-4 words>"}}'
+)
+# The same with the qwen3.5 contact sheet.
+OLD_SKI_SHEET_PROMPT = OLD_SKI_PROMPT.replace(
+    "These are {n} frames, in order,",
+    "This image is a grid of {n} frames, in reading order (left to right, top to bottom),",
+)
+OLD_SKI_SHEET_RETRY = OLD_SKI_RETRY.replace(
+    "{n} frames from", "A grid of {n} frames, in reading order, from"
 )
 
 
@@ -74,10 +89,43 @@ def test_action_cam_rating_is_worded_by_the_default_ski_profile(posts):
     )
     assert res == vision.VisionResult(7.0, "big jump")
     first, retry = _chat_prompts(posts)
-    assert first == OLD_SKI_PROMPT.replace("for a ski edit", "for a ski highlight edit")
-    assert retry.startswith("3 frames from a first-person skiing / snowboarding video moment.")
-    assert "ski highlight edit" in retry and "powder spray" in retry and "scoreboard" not in retry
-    assert "{" not in first.split("JSON")[0] and "{" not in retry.split("JSON")[0]
+    assert first == OLD_SKI_PROMPT.format(n=3)
+    assert retry == OLD_SKI_RETRY.format(n=3)
+
+
+@pytest.mark.parametrize("model", ["m", "qwen3.5:9b"])
+def test_the_ski_profile_renders_the_old_ski_prompts(model):
+    profile = vision.rating_profile(model)
+    old = (
+        (OLD_SKI_SHEET_PROMPT, OLD_SKI_SHEET_RETRY) if profile else (OLD_SKI_PROMPT, OLD_SKI_RETRY)
+    )
+    ski = activity.prompts(activity.full(activity.builtin("ski")))
+    for act in (None, ski):  # None: the default activity, ski
+        assert vision._prompts("action-cam", profile, act) == old
+
+
+def test_snowboard_rates_with_its_own_wording():
+    board = activity.prompts(activity.full(activity.builtin("snowboard")))
+    first, retry = vision._prompts("action-cam", None, board)
+    assert first == OLD_SKI_PROMPT.replace("skiing / snowboarding", "snowboarding").replace(
+        "a ski edit", "a snowboard edit"
+    )
+    assert retry == OLD_SKI_RETRY.replace("skiing / snowboarding", "snowboarding").replace(
+        "a ski edit", "a snowboard edit"
+    )
+
+
+def test_profile_wording_with_braces_cannot_break_the_prompt():
+    """A value is filled in once and never searched again: ``{edit}``, ``{n}`` or a lone
+    brace in a profile's text stays literal instead of raising in ``str.format``."""
+    odd = activity.prompts(
+        activity.full(
+            activity.validate({"name": "odd", "vlm": {"video": "a {rate_edit} {n} } { video"}})
+        )
+    )
+    first, retry = vision._prompts("action-cam", None, odd)
+    for text in (first.format(n=3, style="action-cam"), retry.format(n=3, style="action-cam")):
+        assert "a {rate_edit} {n} } { video" in text
 
 
 def test_action_cam_rating_takes_the_projects_activity_wording(posts):
@@ -643,10 +691,10 @@ def test_only_the_qwen35_family_has_a_profile(model, profiled):
 def test_the_keys_of_models_without_a_profile_are_unchanged():
     """The profile joins the hash only for a profiled model, so qwen3-vl's cached ratings
     stay valid."""
-    # Pinned: a change here drops every user's cached qwen3-vl ratings (the action-cam retry
-    # prompt, worded by the activity profile since, re-keyed them once).
+    # Pinned: a change here drops every user's cached qwen3-vl ratings (the default ski
+    # wording of the action-cam prompts renders the old text, so it keeps its key).
     times = vision._frame_times(0, 4, 3)
-    assert vision.rating_key("qwen3-vl:8b", "action-cam", times) == "2e586c5fcf@1.000,2.000,3.000"
+    assert vision.rating_key("qwen3-vl:8b", "action-cam", times) == "08b2a0e48e@1.000,2.000,3.000"
     assert vision.rating_key("qwen3-vl:8b", "gaming", times) == (
         "5c3d81f65e@1.000,2.000,3.000"  # other styles keep theirs
     )

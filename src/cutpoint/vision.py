@@ -44,15 +44,18 @@ _PROMPT = (
     "loading screens, killcams and replays. Respond with JSON only: "
     '{{"score": <0-10 number>, "label": "<2-4 word description>"}}'
 )
-# Action-cam: {video}, {edit}, {rate_high} and {rate_low} are the activity profile's ``vlm``
-# wording (cutpoint.activity.VLM_KEYS), filled in by _prompts.
+# Action-cam: {video}, {rate_edit}, {rate_high}, {rate_low}, {retry_high} and {retry_low}
+# are the activity profile's ``vlm`` wording (cutpoint.activity.VLM_KEYS), filled in by
+# _prompts. The ski profile's renders the ski prompts from before profiles byte for byte,
+# so its cached ratings stay valid.
 _PROMPT_ACTION_CAM = (
     "These are {n} frames, in order, from one short moment of a {video}. Rate how "
-    "highlight-worthy it is for a {edit} (0 = boring, 10 = must include). High: "
+    "highlight-worthy it is for a {rate_edit} (0 = boring, 10 = must include). High: "
     "{rate_high}. Low (0-2): {rate_low}. Respond with JSON only: "
     '{{"score": <0-10 number>, "label": "<2-4 word description>"}}'
 )
-_WORDING_KEYS = ("video", "edit", "rate_high", "rate_low")
+_WORDING_KEYS = ("video", "rate_edit", "rate_high", "rate_low", "retry_high", "retry_low")
+_WORDING_RE = re.compile(r"\{(" + "|".join(_WORDING_KEYS) + r")\}")
 # Retry prompt: shorter, asks for no reasoning. Thinking variants of qwen3-vl
 # reason even with think=false; a long reasoning trace used to fill the
 # default 4096-token context and the reply came back empty (done_reason=length).
@@ -64,7 +67,7 @@ _RETRY_PROMPT = (
 )
 _RETRY_PROMPT_ACTION_CAM = (
     "{n} frames from a {video} moment. Answer immediately, no reasoning. Score 0-10 for "
-    "a {edit}; {rate_high} score high; {rate_low} score 0-2. "
+    "a {rate_edit}; {retry_high} score high, {retry_low} score 0-2. "
     'Output only JSON: {{"score": <number>, "label": "<2-4 words>"}}'
 )
 # (first prompt, retry prompt) per style; styles not listed use the default pair.
@@ -736,9 +739,13 @@ def _prompts(
 
             activity = default_prompts()
         words = dict(activity.vlm)
-        for k in _WORDING_KEYS:  # braces escaped: the prompts are str.format()ted later
-            v = words.get(k, "").replace("{", "{{").replace("}", "}}")
-            first, retry = first.replace(f"{{{k}}}", v), retry.replace(f"{{{k}}}", v)
+
+        def fill(m: re.Match[str]) -> str:
+            # braces escaped: the prompts are str.format()ted later
+            return words.get(m[1], "").replace("{", "{{").replace("}", "}}")
+
+        # one pass, so a value is never searched again for another placeholder
+        first, retry = _WORDING_RE.sub(fill, first), _WORDING_RE.sub(fill, retry)
     if not profile:
         return first, retry
     sheet = "This image is a grid of {n} frames, in reading order (left to right, top to bottom),"
