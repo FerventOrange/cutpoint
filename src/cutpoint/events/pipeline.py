@@ -445,7 +445,12 @@ def run_events(
     prompts = {src: game_prompt(games[src], p) for src, p in presets.items()}
     seed_types = {src: types_for(p) for src, p in presets.items()}
     windows = select_windows(
-        sources, hl.get("candidates", []), layer1, vlm, seed_types, quiet="vlm" not in layers
+        sources,
+        [c for c in hl.get("candidates", []) if c.get("pool") != "visual"],  # no pool seeds
+        layer1,
+        vlm,
+        seed_types,
+        quiet="vlm" not in layers,
     )
     if ski and "vlm" not in force:  # reuse described windows; only fill new footage
         prev = cached_windows(sources, vlm)

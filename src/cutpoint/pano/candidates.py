@@ -553,7 +553,12 @@ def _cache_candidate_paths(project: Path) -> dict[str, Any]:
         "seconds": 0.0,
     }
     clips = load(project)
-    todo = [(c, clip) for c in _candidates(project) if (clip := clip_for(clips, c["source"]))]
+    todo = [
+        (c, clip)
+        for c in _candidates(project)
+        if c.get("pool") != "visual"  # visual pool moments get no planned path
+        and (clip := clip_for(clips, c["source"]))
+    ]
     stats["candidates"] = len(todo)
     try:
         overrides = D.config_overrides() or None
@@ -753,6 +758,8 @@ def _kind_for(project: Path, clip: Any, start: float, end: float) -> str | None:
     clips = load(project)
     best, kind = 0.0, None
     for c in _candidates(project):
+        if c.get("pool") == "visual":  # its kind (view, crew, cruise) is not a path kind
+            continue
         try:
             ov = min(end, float(c["end"])) - max(start, float(c["start"]))
         except (KeyError, TypeError, ValueError):

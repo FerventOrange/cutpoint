@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Visual candidates: `analyze` with the `action-cam`, `action` or `sport` style lists scenic
+  views, group shots and steady cruising runs after the scored candidates (`"pool": "visual"`,
+  ids `v001`..., `kind` `view`, `crew` or `cruise`, labels such as "scenic view / beauty shot"),
+  from cached layers only. `clips`, `edit` and `assemble <project>` reserve about one automatic
+  pick in eight for them (at most 2, none below 5 picks, only above a quality bar and never in
+  place of a crash, a jump or a must-include moment, including a moment over a `crashes.json`
+  crash of at least 0.2 confidence); `--ids v001` picks one directly. `analyze --json` adds `visual_candidates` (their
+  count) for these styles. Other styles are unchanged (#635).
 - A Models tab in `cutpoint ui` sets the model of each role: Chat (`assistant`) and Vision (the new
   `vision_assistant` section, same keys, the same providers as Chat), each
   with its own provider, model and, for hosted ones, permission. It replaces the AI assistant

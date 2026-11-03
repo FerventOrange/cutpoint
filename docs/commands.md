@@ -119,7 +119,7 @@ So do these combinations:
 | Command | `outputs` |
 |---|---|
 | `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
-| `analyze` | `highlights`, `transcript`, `candidates` (count), `suggested_top` (when set), `style` |
+| `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set), `style` |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds` |
 | `extend` | As `clips`, and `seconds` (`{"start", "end"}`) |
 | `assemble` | `format` (`mp4`, `fcpxml` or `otio`); the file written: `final` (the video, `mp4`), or `fcpxml` or `otio` (the timeline); `srt` (`null` if none was written), `duration` (of the video or the timeline), `clip_count`. From a project with `--format fcpxml\|otio`, also the outputs of `clips` for the kept clips; with `mp4`, no clip paths (warning `temporary_clips`) |
@@ -129,7 +129,7 @@ So do these combinations:
 | `stage` | `stage_dir`. Staging: `files`, `copied`, `skipped`, `bytes`, `read_s`, `mb_per_s`. `--list`: `files` (each `source`, `staged`, `bytes`, `read_s`). `--clear`: `removed` |
 | `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`); for `pip`, `installed` and `missing` |
 | `360 scan` | `pano`, `timings`, `clips` (each `id`, `mode`, `duration`, `frames`, `insv`, `insv_bytes`, `lrv`), `count`, `total_seconds` |
-| `360 analyze` | `timings` (`pano_timings.json`: this run's `views`, `analyze_s`, `events_s`, `paths_s`, `scan_s` with `--scan` and `total_s`; with `--views-only` the earlier file's keys stay, with this run's `views` and `views_only_s`; `analyze_total_s` was removed, older files may still have it; see [360 video](workflows/360.md#commands); `null` in the envelope of a run that failed after `highlights.json` changed, as the earlier run's file was removed, or kept with a `stale_timings_kept` warning), `views` (`cached`, `computed`); with `--scan`, also those of `360 scan`; unless `--views-only`, also the outputs of `analyze` (`highlights`, `transcript`, `candidates`, `suggested_top`, `style`); unless `--views-only` or `--no-events`, also `events`; unless `--views-only`, also `candidate_paths` (`dir`, `candidates`, `computed`, `cached`, `skipped`, `failed`, `seconds`, `flags`: candidates per flag code; see [360 video](workflows/360.md#camera-paths-of-the-candidates)) |
+| `360 analyze` | `timings` (`pano_timings.json`: this run's `views`, `analyze_s`, `events_s`, `paths_s`, `scan_s` with `--scan` and `total_s`; with `--views-only` the earlier file's keys stay, with this run's `views` and `views_only_s`; `analyze_total_s` was removed, older files may still have it; see [360 video](workflows/360.md#commands); `null` in the envelope of a run that failed after `highlights.json` changed, as the earlier run's file was removed, or kept with a `stale_timings_kept` warning), `views` (`cached`, `computed`); with `--scan`, also those of `360 scan`; unless `--views-only`, also the outputs of `analyze` (`highlights`, `transcript`, `candidates`, `visual_candidates`, `suggested_top`, `style`); unless `--views-only` or `--no-events`, also `events`; unless `--views-only`, also `candidate_paths` (`dir`, `candidates`, `computed`, `cached`, `skipped`, `failed`, `seconds`, `flags`: candidates per flag code; see [360 video](workflows/360.md#camera-paths-of-the-candidates)) |
 | `360 status` | `sdk` (`exe`, `origin`, `found`, `runs`, `version`); with a project, `clips` (each `id`, `mode`, `duration`, `views`, `render`, `render_file`) |
 | `360 director` | `paths_dir`, `paths` (each `path`, `preview`), `count`, `vl_check` |
 | `360 stitch` | `clips` (each `clip`, `output`, `status`, `seconds`, `log_file`, `estimated_gb`), `dry_run`. Never the SDK's own output |
@@ -141,7 +141,7 @@ So do these combinations:
 
 ### events outputs
 
-`events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the action-cam re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed` and `suggested`, the number of extra notice regions listed under `suggested_regions` in `proposal.json` for a game that kept its preset, else 0). An action-cam re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files are `not_found` and name the `cutpoint setup` command. The VLM layer needs no model files: when its vision model does not answer, a WARNING says so and cached window descriptions are used
+`events` and `events_txt` (the `events.json` and `events.txt` paths), `layers` (the layers in `events.json`), `count` (events), `windows` (model windows), `highlights` (its path once re-ranked, `null` with `--no-rescore` or when the action-cam re-rank was skipped), `highlights_backup` (`highlights.pre-events.json`, when this run created it); when written, `crashes` (the `crashes.json` path, from the `crash` layer), `sheets` (contact sheet paths, `--sheets`) and `discovery` (per game `proposal`, `overlay`, `preset`, `installed` and `suggested`, the number of extra notice regions listed under `suggested_regions` in `proposal.json` for a game that kept its preset, else 0). An action-cam re-rank re-runs `analyze`, so its outputs (`transcript`, `candidates`, `visual_candidates`, `suggested_top`, `style`) are added. A missing `events` extra (torch and the other layer modules) is `missing_extra`; missing model files are `not_found` and name the `cutpoint setup` command. The VLM layer needs no model files: when its vision model does not answer, a WARNING says so and cached window descriptions are used
 
 `360 qa --json-only` skips the contact sheets; it is a different option from `--json`.
 
@@ -735,6 +735,19 @@ analysis; a re-rank of an earlier analysis (`events` on action-cam projects, `36
 `crashes --reanalyze`) keeps that `total_s` and records its own time as `rerank_s`.
 `transcript.txt` has one line per pause or sentence: `[Round1.mp4 00:12:31.4-00:12:38.9] text`.
 
+Visual candidates (`action-cam`, `action` and `sport` styles, and learned styles based on
+them). The scorer ranks scenery and steady riding low, so `analyze` also lists a few of them
+after the scored candidates, from the cached visual layer, action-cam grids and GPS speed
+(no extra decode): entries with `"pool": "visual"`, ids `v001`, `v002`, ... and a `kind`:
+`view` (a beauty peak of at least 0.5, 3-5 s, label "scenic view / beauty shot"), `crew`
+(people close to the camera, 4-6 s, "group / friends shot") or `cruise` (8 s of a steady
+speed of at least 8 km/h with no jump, crash or wipeout, "casual cruising run"; only with GPS
+speed). None is on a lift, standing still or within a `crashes.json` crash; per source at most
+2 of a kind and 5 in all, and none overlapping a scored candidate by half of the shorter clip.
+Their `score` is the peak times 10 (0-10, display only; the peak is `signals.peak`, 0-1);
+they are not in `suggested_top`, not re-ranked by `events` and stay last.
+`settings.visual_pool` has their `count` and `kinds`.
+
 ### Analysis steps
 
 The steps run one after another, and only one model is loaded at a time. One exception: with a
@@ -950,6 +963,17 @@ computer (a network folder) is not, so delete it by hand if no run is active.
 | `--mix` | Action-cam: export `mix_segments.json` in arc order |
 | `--pano-source`, `--pano-cmd-every` | 360 clips only |
 | `--json` | Result as one [JSON envelope](#json-output) on stdout |
+
+Reserved slots for visual candidates. An automatic choice (`--top`, the default
+`suggested_top` and `--max-total`, so also `edit` and `assemble <project>`) in a project of
+an `action-cam`, `action` or `sport` style keeps about one pick in eight for the
+[visual candidates](#analyze): none below 5 picks, one from 5, two from 16 (at most 2; with
+`--max-total`, counted from the moments that fit). They go by peak, and only one with a peak
+of at least 0.6 that overlaps no picked moment takes a slot, in place of the lowest-scoring
+pick that is not a must-include crash, a crash or a jump (an action-cam crash, jump or
+wipeout moment, or a moment overlapping a `crashes.json` crash of at least 0.2 confidence; with
+`--max-total` only when the total still fits). A slot no visual candidate qualifies for keeps
+its scored moment, and other styles choose as before. `--ids v001` exports a visual candidate in any project.
 
 Segments file (`--segments`). Relative `source` paths resolve against the JSON file's folder
 (on Windows, a drive-relative path such as `D:foo.mp4` is an error; give the full path):

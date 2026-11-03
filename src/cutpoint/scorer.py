@@ -88,10 +88,12 @@ def rescore_events(hl: dict[str, Any], ev: dict[str, Any], project: Path) -> int
 
     Each candidate keeps its analysis score as ``score_pre_events`` (so re-running is
     idempotent) and records the evidence in ``signals.events``. The candidates are re-sorted
-    and ``suggested_top`` is recomputed.
+    and ``suggested_top`` is recomputed. Visual pool moments (:mod:`cutpoint.visual_pool`)
+    are left as they are, last, in their order, and outside ``suggested_top``.
     """
     from cutpoint.events import scoring  # noqa: PLC0415 - the evidence; imports this module
     from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, resolve  # noqa: PLC0415
+    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports ski, which imports this
 
     by_src: dict[str, list[dict[str, Any]]] = {}
     for e in ev.get("events", []):
@@ -102,7 +104,9 @@ def rescore_events(hl: dict[str, Any], ev: dict[str, Any], project: Path) -> int
     language = (hl.get("settings") or {}).get("language")
     segments: dict[str, list[dict[str, Any]] | None] = {}
     changed = 0
-    for c in hl.get("candidates", []):
+    cands = [c for c in hl.get("candidates", []) if not is_pool(c)]
+    pool = [c for c in hl.get("candidates", []) if is_pool(c)]
+    for c in cands:
         base = c.get("score_pre_events", c["score"])
         src = c["source"]
         src_types = types.get(src, DEFAULT_EVENT_TYPES)
@@ -128,11 +132,12 @@ def rescore_events(hl: dict[str, Any], ev: dict[str, Any], project: Path) -> int
         if score != c["score"]:
             changed += 1
         c["score"] = score
-    hl["candidates"].sort(key=lambda c: -c["score"])
+    cands.sort(key=lambda c: -c["score"])
+    hl["candidates"][:] = cands + pool  # in place, as the sort was
     target = (hl.get("settings") or {}).get("target_total")
     if target:
         total, n = 0.0, 0
-        for c in hl["candidates"]:
+        for c in cands:
             if total >= target:
                 break
             total += c["end"] - c["start"]

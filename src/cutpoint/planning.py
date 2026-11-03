@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from cutpoint import boundaries, cache, jsonout, sources
+from cutpoint import boundaries, cache, jsonout, sources, visual_pool
 from cutpoint.config import path_key
 from cutpoint.events.tails import load_events
 from cutpoint.ffmpeg_utils import MediaInfo
@@ -51,6 +51,18 @@ def select_moments(
     Candidates marked ``must_include`` (confident crashes) are added to an
     automatic selection and kept even past ``max_total``.
 
+    Visual pool moments (``pool: "visual"``, :mod:`cutpoint.visual_pool`) are left out of
+    the automatic ranking. In a project of a pool style, an automatic selection reserves
+    :func:`~cutpoint.visual_pool.reserved_slots` of its picks for them (by peak, only those
+    with a peak of at least :data:`~cutpoint.visual_pool.SLOT_MIN_PEAK` that overlap no
+    picked moment): each takes the place of the lowest-ranked pick that is not
+    must-include, a crash or a jump (an action-cam ``kind`` of
+    :data:`~cutpoint.visual_pool.PROTECTED_KINDS`, or overlapping a ``crashes.json`` crash of
+    at least :data:`~cutpoint.visual_pool.CRASH_PROTECT_MIN` confidence, any pool style), and
+    with ``max_total`` only when the total still fits.
+    A reserved slot nobody qualifies for stays with its scored pick. ``ids`` may name pool
+    moments.
+
     Returns:
         ``(moments, style name)``: the chosen candidate dicts (ids order, else
         by score) and the analysis style (default ``gaming``).
@@ -74,6 +86,9 @@ def select_moments(
             "re-run `cutpoint analyze` to rewrite it"
         )
     cands: list[dict[str, Any]] = data["candidates"]
+    pool = (
+        [c for c in cands if visual_pool.is_pool(c)] if visual_pool.project_has_pool(data) else []
+    )
     if ids:
         by_id = {c["id"]: c for c in cands}
         missing = [i for i in ids if i not in by_id]
@@ -81,13 +96,14 @@ def select_moments(
             raise jsonout.ArgumentError(f"Unknown ids: {', '.join(missing)}")
         chosen = [by_id[i] for i in ids]
     else:
-        ranked = sorted(cands, key=lambda c: -c["score"])
+        ranked = sorted((c for c in cands if not visual_pool.is_pool(c)), key=lambda c: -c["score"])
         n = (
             top
             if top is not None
             else (len(ranked) if max_total else data.get("suggested_top") or 5)
         )
         chosen = ranked[:n]
+        picks = len(chosen)
         # Confident crashes (ski analyze, crashes.json) are never left out.
         forced = [c for c in ranked if c.get("must_include") and c not in chosen]
         if forced:
@@ -105,9 +121,65 @@ def select_moments(
                 fitted.append(c)
                 total += c["duration"]
         chosen = [c for c in chosen if c in fitted]
+    if not ids and pool:
+        chosen = _reserve(project, chosen, pool, len(chosen) if max_total else picks, max_total)
     if not chosen:
         raise ValueError("No moments selected")
     return chosen, data.get("style", "gaming")
+
+
+def _overlaps(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    return (
+        path_key(str(a["source"])) == path_key(str(b["source"]))
+        and a["start"] < b["end"]
+        and b["start"] < a["end"]
+    )
+
+
+def _reserve(
+    project: Path,
+    chosen: list[dict[str, Any]],
+    pool: list[dict[str, Any]],
+    picks: int,
+    max_total: float | None,
+) -> list[dict[str, Any]]:
+    """``chosen`` (an automatic selection of ``picks`` picks) with its reserved slots
+    given to the qualifying ``pool`` moments (see :func:`select_moments`); the picks of
+    :func:`~cutpoint.visual_pool.is_protected` (with ``project``'s crashes.json) keep theirs."""
+    from cutpoint.crash import load_crashes  # noqa: PLC0415
+
+    slots = visual_pool.reserved_slots(picks)
+    if not slots:
+        return chosen
+    spans = visual_pool.protected_spans(load_crashes(project))
+    victims = sorted(
+        (c for c in chosen if not visual_pool.is_protected(c, spans)),
+        key=lambda c: c["score"],
+    )  # lowest-ranked first
+    total = sum(c["duration"] for c in chosen)
+    taken: list[dict[str, Any]] = []
+    for p in sorted(pool, key=lambda c: -visual_pool.peak_of(c)):
+        if len(taken) == slots or not victims:
+            break
+        if visual_pool.peak_of(p) < visual_pool.SLOT_MIN_PEAK:
+            break  # sorted: nothing after it qualifies either
+        if any(_overlaps(p, c) for c in chosen):
+            continue
+        v = victims[0]
+        after = total - v["duration"] + p["duration"]
+        if max_total and after > max_total and p["duration"] > v["duration"]:
+            continue
+        victims.pop(0)
+        chosen = [c for c in chosen if c is not v]
+        total = after
+        taken.append(p)
+    if taken:
+        logger.info(
+            "Reserved %d slot(s) for visual moments: %s",
+            len(taken),
+            ", ".join(c["id"] for c in taken),
+        )
+    return chosen + taken
 
 
 @dataclass(frozen=True)
