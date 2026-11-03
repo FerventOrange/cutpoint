@@ -267,7 +267,10 @@ def compute_voice(
 
 
 def needs_run(sources: list[Source], params: VoiceParams, force: bool = False) -> bool:
-    """Whether :func:`run_layer` would compute any grids (checks the cache files only)."""
+    """Whether :func:`run_layer` would compute any grids (checks the cache files only).
+
+    The cache path carries the source key (path, size, mtime; see
+    :func:`cutpoint.cache.source_dir`), so a changed source has no grids there yet."""
     if force:
         return True
     for s in sources:
