@@ -273,6 +273,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Browser workspace: uniform spacing (#534). Padding, margins, gaps and radii come from the `--space-*`
+  and `--radius-*` scale, buttons and fields share `--control-h` (36 px, so the gear button is
+  square), the three columns share a 16 px gutter and a symmetric padding, and the top bar, the
+  Moments band and the tab bar share one band height (`--band-h`, when the Moments band fits one
+  row). Dialogs, popovers, callouts and cards use the same padding and corner radius.
 - Docs: README and Getting started now lead with the one-step installers (`install.sh`, `install.ps1`).
   They document full and lite (`--lite`, `-Lite`, `CUTPOINT_LITE`, and unsetting it to return to
   full), `--source` and `CUTPOINT_SOURCE`, the optional prompts (Ollama, the `qwen3.5:9b` model,
