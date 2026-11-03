@@ -421,6 +421,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are cached per provider and host, so one model id at two servers no longer shares results.
   Results cached from a hosted provider before this change are asked again once; Ollama caches
   are unchanged (#621).
+- The `vision_consent_needed` WARNING (and its `--json` warning message) names the exact consent
+  key, for example `vision-v2:ollama@10.0.0.5:11434`: besides allowing vision requests in the
+  Models tab of `cutpoint ui`, that key can be added to `vision_assistant.consent` in
+  `config.json`. A hosted Vision provider without consent (an API key or a subscription login,
+  such as `vision-v2:openai@api.openai.com`) now gets the same WARNING and `--json` warning once
+  per run, naming the provider, its host and its key, instead of an INFO line; `analyze` then
+  skips the vision step with that message, as for an Ollama on another machine. Both come once
+  per run, also when one run uses the vision model twice (`edit --vision --events`). Without
+  that consent `events` no longer uses cached VLM descriptions either (as `analyze` skips cached
+  ratings): the VLM layer is skipped with the same warning.
+- The INFO line before HUD region discovery no longer suggests `--game` and `--no-discover`
+  during `analyze`, which has neither option: there it suggests `--skip keyframes`. `events`
+  keeps its hint.
 - 360 clips filmed with the camera upright (lenses horizontal: handheld, on a pole) no longer
   spin or drift: the view layer, the director and the renderer took yaw 0 from the camera axis
   that points ahead on a helmet mount, which is near vertical when the camera stands upright,
