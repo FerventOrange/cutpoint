@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 
 from cutpoint import state
 from cutpoint.errors import LowMemoryError, LowVramError
+from cutpoint.utils import command_line
 
 if TYPE_CHECKING:
     from cutpoint.vision import VisionRater
@@ -176,7 +177,7 @@ def _resume_hint() -> str:
     project = runstate.resume_project()
     if project is None:
         return "then run the command again"
-    return f"then run `cutpoint resume {project}` to continue"
+    return f"then run `{command_line(['cutpoint', 'resume', str(project)])}` to continue"
 
 
 def _guard(
@@ -205,8 +206,10 @@ def _guard(
         return
     short, vram_only = found
     error = LowVramError if vram_only else LowMemoryError
+    # a VRAM shortage is not about the RAM memory_guard keeps free
+    keeps = "" if vram_only else f" (memory_guard keeps {head:g} GB of RAM free)"
     raise error(
-        f"Not enough memory for {what}: {short} (memory_guard keeps {head:g} GB of RAM free); "
+        f"Not enough memory for {what}: {short}{keeps}; "
         f"close other programs, {_resume_hint()} (memory_guard 0 in config.json turns this "
         "check off)",
         short,
@@ -230,10 +233,20 @@ def check(model: str, *, gpu: bool = False, label: str | None = None) -> None:
         _guard(what, ram_gb, None)
 
 
-def device_for(model: str, device: str, *, label: str | None = None) -> str:
+def device_for(
+    model: str,
+    device: str,
+    *,
+    label: str | None = None,
+    cpu_model: str | None = None,
+    cpu_label: str | None = None,
+) -> str:
     """:func:`check` of ``model`` (a :data:`NEEDS` key) on ``device``, for a model that runs on
     the CPU too (Whisper, PANNs, the crash check's CLIP): ``device``, or ``"cpu"`` with a
     WARNING when the GPU's memory is what is short (a game or OBS holds it), checked for RAM.
+    ``cpu_model`` and ``cpu_label``: the :data:`NEEDS` key and name of what runs on the CPU
+    instead (Whisper without ``--model``: the CPU default), named in the WARNING (default
+    ``model``).
 
     Raises:
         LowMemoryError: If the RAM it needs is not free, also after freeing cached models.
@@ -242,8 +255,9 @@ def device_for(model: str, device: str, *, label: str | None = None) -> str:
         check(model, gpu=device == "cuda", label=label)
     except LowVramError as err:
         what = label or LABELS.get(model, model)
-        logger.warning("%s: %s; running on the CPU", what, err.args[1])
-        check(model, label=label)
+        on_cpu = f" with {cpu_label}" if cpu_label else ""
+        logger.warning("%s: %s; running on the CPU%s", what, err.args[1], on_cpu)
+        check(cpu_model or model, label=cpu_label or label)
         return "cpu"
     return device
 

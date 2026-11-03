@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 from cutpoint import boundaries, cache, folders, jsonout, procs, sources, srt
 from cutpoint.audio_tracks import export_tracks
+from cutpoint.clipresume import ClipResume, clip_key
 from cutpoint.color import SKIP_360, SKIP_LOG, SKIP_NOT_UNDERWATER, AutoGrade, auto_grade
 from cutpoint.config import (
     COLOR_MODES,
@@ -770,6 +771,7 @@ def render_clips(
     language: str | None = None,
     grades: list[Grade | None] | None = None,
     workers: int = 1,
+    resume: ClipResume | None = None,
 ) -> list[RenderResult]:
     """Encode every planned clip into ``out_dir`` (360 clips through ``pano``), each with
     its ``.srt`` subtitles from the cached source transcript (none, with one INFO line,
@@ -790,6 +792,9 @@ def render_clips(
     ``workers``: clips encoded at once (:func:`export_workers`; 360 plans are always encoded
     one at a time); the results, logs and subtitles stay in plan order.
 
+    ``resume``: clips it took over from an interrupted run are not encoded again; every
+    other finished clip is recorded in it (:mod:`cutpoint.clipresume`).
+
     Returns:
         One :class:`RenderResult` per plan, in order.
 
@@ -802,7 +807,9 @@ def render_clips(
     grades = grades or [None] * len(plans)
 
     def encode(plan: ClipPlan, peak: str, grade: Grade | None) -> dict[str, Any] | None:
-        return export_clip_checked(
+        if resume is not None and plan.name in resume.taken:
+            return resume.taken[plan.name]
+        read_err = export_clip_checked(
             plan.src,
             plan.info,
             plan.start,
@@ -815,6 +822,9 @@ def render_clips(
             peak,
             grade,
         )
+        if resume is not None:
+            resume.add(plan.name, read_err)
+        return read_err
 
     pool = None
     if workers > 1 and not any(p.pano for p in plans):
@@ -1493,7 +1503,7 @@ def export_clips(
     with (
         _claimed(out_dir, force),
         folders.output_dir(out_dir.parent),
-        folders.staged_dir(out_dir, direct_if_empty=True) as work,
+        folders.staged_dir(out_dir, direct_if_empty=True, resume=not temporary) as work,
     ):
         from cutpoint.pano.render import exporter_for  # noqa: PLC0415
 
@@ -1568,6 +1578,21 @@ def export_clips(
             grades = _color_grades(plans, color_mode, color_strength, fmt, vertical)
         if force and not any(grades):
             _warn_dropped_grade(out_dir)
+        # The finished clips of an interrupted run into out_dir with the same plan are taken
+        # over; the next run takes this one's over when it is interrupted (not for temporary
+        # clips, removed right after the join).
+        resume = None
+        if work != out_dir and not temporary:
+            resume = ClipResume(
+                out_dir,
+                work,
+                "clips",
+                {
+                    p.name: clip_key(p.src, p.start, p.end, fmt, vertical, p.crop, audio_fade, k, g)
+                    for p, k, g in zip(plans, peaks, grades, strict=True)
+                    if not p.pano
+                },
+            )
         workers = export_workers(plans)
         if workers > 1:
             logger.info("Exporting %d clips at a time (export_workers)", workers)
@@ -1584,6 +1609,7 @@ def export_clips(
             language=language,
             grades=grades,
             workers=workers,
+            resume=resume,
         )
         _warn_pano_sources(plans, results, None if temporary else out_dir)
         write_manifest(
@@ -1607,6 +1633,8 @@ def export_clips(
             grades=grades,
         )
         if work != out_dir:  # staged, not exported into directly
+            if resume is not None:
+                resume.discard()
             folders.swap_in(work, out_dir, [*replace, "manifest.json"])
     hint = "assemble includes them, so move them out if they are not part of the edit"
     if kept_sources:

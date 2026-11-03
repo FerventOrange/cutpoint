@@ -11,7 +11,6 @@ import contextlib
 import importlib.util
 import logging
 import os
-import shlex
 import shutil
 import signal
 import subprocess
@@ -55,7 +54,14 @@ from cutpoint.extend import extend_clips, manifest_project
 from cutpoint.planning import Padding
 from cutpoint.progress import SKIPPABLE
 from cutpoint.styles import AUTO, AutoRequest, Style, get_style, style_arg, style_names
-from cutpoint.utils import input_name, parse_size, positive_float, positive_int, unit_float
+from cutpoint.utils import (
+    command_line,
+    input_name,
+    parse_size,
+    positive_float,
+    positive_int,
+    unit_float,
+)
 
 logger = logging.getLogger("cutpoint")
 
@@ -580,7 +586,7 @@ def _cmd_resume(a: argparse.Namespace) -> int:
         message = f"{len(missing)} source(s) of the recorded run are not there now"
         logger.warning("%s: %s", message, ", ".join(missing))
         jsonout.warn("resume_sources_changed", message, missing)
-    join = subprocess.list2cmdline if os.name == "nt" else shlex.join
+    join = command_line
     if a.dry_run:
         print(f"cutpoint {join(argv)}")
         print(f"  in {rec['cwd']}, last run {status}")
@@ -1943,7 +1949,7 @@ def main(argv: list[str] | None = None) -> int:
 def _recorded(args: argparse.Namespace, argv: Sequence[str]) -> contextlib.AbstractContextManager:
     """:func:`cutpoint.runstate.record` of a command that keeps ``progress.json`` and the
     project run lock (``analyze``, ``edit``, ``events``, ``crashes``, ``profile``,
-    ``360 analyze``), else a no-op."""
+    ``360 analyze``, ``clips``), else a no-op."""
     project = _run_project(args)
     if project is None:
         return contextlib.nullcontext()

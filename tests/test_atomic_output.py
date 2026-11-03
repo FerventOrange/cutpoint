@@ -168,7 +168,14 @@ def test_failed_export_leaves_no_new_empty_clips_folder(monkeypatch, home, preex
         clips.export_clips(project, segments=seg)
     assert leftovers() == []
     assert out.is_dir() is preexisting
-    assert sorted(p.name for p in project.iterdir() if p.name.startswith(".")) == []
+    # #109 phase 6: the finished first clip is kept for the next run, hidden next to clips
+    assert sorted(p.name for p in project.iterdir() if p.name.startswith(".")) == [
+        ".clips.cutpoint-resume"
+    ]
+    assert sorted(p.name for p in (project / ".clips.cutpoint-resume").iterdir()) == [
+        "001_a.mp4",
+        "resume.json",
+    ]
 
     def broken_probe(_path):
         raise FFmpegError("ffprobe failed")
@@ -314,8 +321,10 @@ def _argv(cmd: str, project: Path, *extra: str) -> list[str]:
     return ["extend", clips_dir, "--seconds", "1", "--no-speech-aware", "--out", clips_dir, *extra]
 
 
-def _only_original_folders(project: Path) -> None:
-    assert sorted(p.name for p in project.iterdir()) == ["clips", "seg.json", "src.mp4"]
+def _only_original_folders(project: Path, resume: bool = False) -> None:
+    """No staging, backup or lock left; with ``resume``, the kept finished clips (#109)."""
+    kept = [".clips.cutpoint-resume"] if resume else []
+    assert sorted(p.name for p in project.iterdir()) == [*kept, "clips", "seg.json", "src.mp4"]
 
 
 @pytest.mark.parametrize("exc", FAILURES, ids=["ffmpeg-error", "ctrl-c"])
@@ -336,7 +345,7 @@ def test_clips_force_that_fails_before_the_swap_keeps_the_old_clips(monkeypatch,
     )
     assert len(calls) == 2
     assert _snapshot(project / "clips") == before
-    _only_original_folders(project)
+    _only_original_folders(project, resume=True)  # the finished first clip
 
 
 def _fail_nth_swap_replace(monkeypatch, project: Path, n: int, mode: str, folder: str = "clips"):
@@ -429,7 +438,14 @@ def test_extend_out_force_into_a_non_empty_folder_stays_unchanged_when_it_fails(
     if seen is not None:
         assert len(seen) >= n, "the swap never reached the failing move"
     assert _snapshot(out) == before
-    assert sorted(p.name for p in project.iterdir()) == ["clips", "out", "seg.json", "src.mp4"]
+    kept = [".out.cutpoint-resume"] if fail == "export-ctrl-c" else []  # the finished first clip
+    assert sorted(p.name for p in project.iterdir()) == [
+        *kept,
+        "clips",
+        "out",
+        "seg.json",
+        "src.mp4",
+    ]
 
 
 def test_extend_out_finishes_a_killed_earlier_replace_before_checking_it_is_empty(

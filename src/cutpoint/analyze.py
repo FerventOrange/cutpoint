@@ -68,6 +68,9 @@ from cutpoint.transcribe import (
     flat_words,
     transcript_name,
 )
+from cutpoint.transcribe import (
+    cache_names as transcript_cache_names,
+)
 from cutpoint.utils import clock, find_videos, matches_glob, slugify
 from cutpoint.vision import VisionRater
 
@@ -269,10 +272,15 @@ def _loudness(wav: Path, cdir: Path) -> tuple[np.ndarray, np.ndarray]:
 def _transcript(
     wav: Path, cdir: Path, tr: Transcriber, on_progress: Callable[[float], None] | None = None
 ) -> list[Segment]:
-    path = cdir / transcript_name(tr.model_name, tr.language)
-    data = cache.load_json(path)
+    data = None
+    for name in transcript_cache_names(tr):  # without --model also a CPU fallback's (small)
+        data = cache.load_json(cdir / name)
+        if data is not None:
+            break
     if data is None:
         data = tr.transcribe(wav, on_progress) if on_progress else tr.transcribe(wav)
+        # the model that ran: without --model, a CPU fallback runs the CPU default (small)
+        path = cdir / transcript_name(tr.model_name, tr.language)
         cache.save_json(path, data)
     return data
 
@@ -350,7 +358,8 @@ def _cached_transcripts(sources: Sequence[Path], tr: Transcriber | None) -> int:
     n = 0
     for src in sources:
         with contextlib.suppress(OSError):
-            n += (cache.source_dir(src) / transcript_name(tr.model_name, tr.language)).is_file()
+            cdir = cache.source_dir(src)
+            n += any((cdir / name).is_file() for name in transcript_cache_names(tr))
     return n
 
 

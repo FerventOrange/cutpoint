@@ -792,7 +792,10 @@ def test_failed_parallel_export_leaves_no_clips_folder_or_partials(home, monkeyp
     with pytest.raises(FFmpegError):
         clips.export_clips(project, segments=seg)
     assert not (project / "clips").exists()
-    assert sorted(p.name for p in project.iterdir() if p.name.startswith(".")) == []
+    # #109 phase 6: only the finished clips are kept, hidden, for the next run
+    kept = project / ".clips.cutpoint-resume"
+    assert sorted(p.name for p in project.iterdir() if p.name.startswith(".")) == [kept.name]
+    assert "002" not in " ".join(p.name for p in kept.iterdir())
 
 
 # -- #470: NVENC session limit -----------------------------------------------------------------

@@ -88,7 +88,7 @@ Choosing the moments yourself:
   lock (`.<folder>.cutpoint-lock`; with `--json`, `error.code` is `folder_busy`), wait or
   retry; delete the lock file only if no run is active. If `clips --force` or `extend` refuses
   a `manifest.json` Cutpoint did not write, tell the user; never delete it.
-- `analyze`, `edit`, `events`, `crashes`, `profile` and `360 analyze` hold
+- `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` and `clips` hold
   `<project>/.analysis.run.cutpoint-lock`; on `folder_busy` wait or retry, and delete the lock
   only if no run is active.
 - Check `cutpoint <command> --help`; never invent options.
