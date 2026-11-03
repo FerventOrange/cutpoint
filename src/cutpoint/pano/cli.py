@@ -24,7 +24,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache, jsonout, progress
+from cutpoint import cache, jsonout, progress, runstate
 from cutpoint.utils import parse_size, positive_float, positive_int
 
 logger = logging.getLogger("cutpoint")
@@ -309,6 +309,7 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
         with steps.step("scan"):
             _scan(project, a.scan, only=a.only, allow_empty=False, timings=timings)
         clips = _clips(project)
+        runstate.project_made(project)  # a new project: lock and record it, now it exists
     clips = [c for c in clips if c.lrv]
     if a.only:
         clips = [c for c in clips if c.clip_id in a.only]

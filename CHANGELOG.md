@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Run state for later resume (#109): `analyze`, `edit`, `events`, `crashes`, `profile` and
+  `360 analyze` keep `<project>/progress.json` (the command line, a key of its options, status
+  `running`, `done`, `interrupted` or `failed` with the error code, process, working folder,
+  sources and the state of each step), written atomically on each step change and at the end,
+  also without `CUTPOINT_PROGRESS`. A re-run on an existing project writes it from the start; a
+  first `analyze` or `edit` writes it only once its first source is transcribed, so one stopped
+  earlier still leaves no project folder, and `360 analyze --scan` once the scan made the
+  project. A folder that is not a project (no `highlights.json`, `pano.json` or
+  `progress.json`) gets no file. These commands also hold
+  a project run lock, `.analysis.run.cutpoint-lock`: a second run on the same project stops
+  with `folder_busy` (exit 1) instead of writing the same caches, and a lock left by a process
+  that is gone is taken over. Result files, `--json` and `PROGRESS` lines are unchanged.
 - Footage category detection (#513): `cutpoint detect <inputs> [--json]` tells whether the
   footage is gameplay, action cam, talk or general, from the container tags, the camera
   telemetry and 32 small grey frames per source (a static HUD marks gameplay; cached as

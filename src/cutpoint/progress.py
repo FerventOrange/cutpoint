@@ -21,6 +21,9 @@ A cancelled run (Ctrl+C, exit 130) ends its current step ``failed`` with detail
 A step that starts with part, not all, of its work cached (a re-run after an interruption) logs an
 INFO line ``<name>: N/M done, continuing`` and sends the same text at once as its
 ``detail`` (:func:`continuing`).
+
+:attr:`Run.observers` get every state change and ``pct`` of the runs, whether or not
+``CUTPOINT_PROGRESS`` is set (``progress.json``, :mod:`cutpoint.runstate`); they never stop a run.
 """
 
 from __future__ import annotations
@@ -32,8 +35,8 @@ import os
 import sys
 import threading
 import time
-from collections.abc import Iterator, Sequence
-from typing import Any
+from collections.abc import Callable, Iterator, Sequence
+from typing import Any, ClassVar
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +75,17 @@ class Run:
     Use :func:`run` to make one; the methods are safe to call when progress is off.
     """
 
-    def __init__(self, steps: Sequence[str], *, active: bool | None = None) -> None:
+    # Called as ``observer(step, state, pct, done, total)`` on each state change and ``pct``
+    # update of an ``observed`` run (``done``/``total``: units cached at the step's start,
+    # from :func:`continuing`, else None).
+    observers: ClassVar[list[Callable[..., None]]] = []
+
+    def __init__(
+        self, steps: Sequence[str], *, active: bool | None = None, observed: bool = True
+    ) -> None:
         self.steps = tuple(steps)
         self.active = enabled() if active is None else active
+        self.observed = observed
         self.state: dict[str, str] = {}  # last emitted state per step
         self.reasons: dict[str, str] = {}  # planned skips, emitted when their turn comes
         self.current: str | None = None  # the running step
@@ -110,6 +121,23 @@ class Run:
         except (OSError, ValueError, AttributeError):  # broken pipe, closed or no stderr
             self.active = False
 
+    def _notify(
+        self,
+        step: str,
+        state: str,
+        pct: int | None,
+        done: int | None = None,
+        total: int | None = None,
+    ) -> None:
+        """Tell :attr:`observers` (an observer's error is logged, never raised)."""
+        if not self.observed:
+            return
+        for observer in list(self.observers):
+            try:
+                observer(step, state, pct, done, total)
+            except Exception:  # recording progress never stops the run
+                logger.debug("progress observer failed", exc_info=True)
+
     def _emit(
         self, step: str, state: str, pct: int | None = None, detail: str | None = None
     ) -> None:
@@ -119,6 +147,7 @@ class Run:
             if state == "running":
                 self._last = time.monotonic()
             self._write(self._line(step, state, pct, detail))
+        self._notify(step, state, pct)
 
     def _cancel_pending(self) -> None:
         self._pending = None
@@ -163,6 +192,8 @@ class Run:
             self._pct = max(0, min(100, int(pct)))
         if detail is not None:
             self._detail = detail
+        if pct is not None:
+            self._notify(step, "running", self._pct)
         line = self._line(step, "running", self._pct, self._detail)
         with self._lock:
             if line == self._sent:  # nothing new (a pending change was undone)
@@ -272,7 +303,7 @@ def run(steps: Sequence[str], *, use: bool = True) -> Iterator[Run]:
     KeyboardInterrupt) and propagates; a normal end emits the steps not emitted yet.
     """
     if not use:
-        yield Run(steps, active=False)
+        yield Run(steps, active=False, observed=False)
         return
     if _RUNS:
         yield _RUNS[-1]
@@ -308,7 +339,10 @@ def continuing(name: str, done: int, total: int) -> None:
     """``done`` of the ``total`` units (sources, windows) of ``name`` are cached at its
     start: log ``<name>: N/M done, continuing`` (INFO) and send it as the running step's
     detail (:meth:`Run.note`). Nothing when ``done`` is 0 (a fresh run looks as before) or
-    ``total`` (nothing left to continue: a re-run of finished work looks as before too)."""
+    ``total`` (nothing left to continue: a re-run of finished work looks as before too).
+    The counts go to the observers of the running step either way."""
+    if _RUNS and (r := _RUNS[-1]).current is not None:
+        r._notify(r.current, "running", r._pct, done, total)
     if not 0 < done < total:
         return
     text = f"{name}: {done}/{total} done, continuing"
