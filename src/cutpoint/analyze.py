@@ -1490,6 +1490,59 @@ def _candidate_record(c: Candidate, source_index: int, style: Style) -> dict[str
     }
 
 
+def _visual_pool(
+    project: Path, results: list[SourceResult], style: Style, hl: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """The visual pool candidates of a run (:mod:`cutpoint.visual_pool`), ids ``v001``...,
+    recorded in ``hl``'s ``settings.visual_pool``. A failure logs a WARNING and adds none."""
+    from cutpoint import visual_pool  # noqa: PLC0415
+    from cutpoint.crash import load_crashes  # noqa: PLC0415
+
+    parts = [
+        visual_pool.Part(r.source, i, r.offset, r.duration, r.signals.n)
+        for i, r in enumerate(results)
+        if r.signals is not None
+    ]
+    try:
+        found = visual_pool.build(project, parts, style, hl["candidates"], load_crashes(project))
+    except Exception as err:  # optional: never fails the analysis
+        logger.debug("visual pool failed", exc_info=True)
+        logger.warning("Visual candidates skipped: %s", err)
+        found = []
+    out = []
+    for i, w in enumerate(found, 1):
+        r = results[w.index]
+        words = r.signals.words if r.signals is not None else []
+        said = [x for x in words if w.start - r.offset <= x["start"] <= w.end - r.offset]
+        transcript, unsure = _transcript_snippet(said)
+        out.append(
+            {
+                "id": f"v{i:03d}",
+                "source": str(w.source),
+                "source_index": w.index,
+                "start": w.start,
+                "end": w.end,
+                "duration": round(w.end - w.start, 3),
+                "score": round(10 * w.peak, 1),
+                "signals": w.signals,
+                "label": visual_pool.LABELS[w.kind],
+                "kind": w.kind,
+                "pool": visual_pool.POOL,
+                "transcript": transcript,
+                **({"transcript_unsure": unsure} if unsure else {}),
+            }
+        )
+    kinds = {k: sum(c["kind"] == k for c in out) for k in visual_pool.KINDS}
+    hl["settings"]["visual_pool"] = {"count": len(out), "kinds": kinds}
+    if out:
+        logger.info(
+            "Visual candidates: %d (%s)",
+            len(out),
+            ", ".join(f"{n} {k}" for k, n in kinds.items() if n),
+        )
+    return out
+
+
 def _rate_vision(
     cands: list[dict[str, Any]],
     rater: VisionRater,
@@ -1964,6 +2017,11 @@ def _analyze(
             suggested += 1
         hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]
         hl["suggested_top"] = suggested
+        from cutpoint import visual_pool  # noqa: PLC0415
+
+        if visual_pool.is_pool_style(style):
+            # visual pool moments: after the scored ones, outside suggested_top
+            hl["candidates"] += _visual_pool(out_dir, results, style, hl)
         hl["created"] = datetime.now().isoformat(timespec="seconds")
         took = round(time.perf_counter() - t_start, 2)
         if earlier_total_s is None:
@@ -1981,7 +2039,7 @@ def _analyze(
         if ev:  # ranked with the events: a pre-events copy of an older analysis is stale
             cache.remove(out_dir / "highlights.pre-events.json")
         held.commit()  # every HELD_OUTPUTS file at once (a cancel in it waits for the last)
-        logger.info("Wrote %d candidates to %s (%.1fs)", len(cands), out, took)
+        logger.info("Wrote %d candidates to %s (%.1fs)", len(hl["candidates"]), out, took)
         report_highlights(out_dir, out)
         return out
 
@@ -1996,6 +2054,11 @@ def report_highlights(out_dir: Path, highlights: Path) -> None:
     jsonout.output("highlights", highlights)
     jsonout.output("transcript", out_dir / "transcript.txt")
     jsonout.output("candidates", len(saved.get("candidates") or []))
+    from cutpoint import visual_pool  # noqa: PLC0415
+
+    if visual_pool.project_has_pool(saved):  # absent for the other styles
+        cands = saved.get("candidates") or []
+        jsonout.output("visual_candidates", sum(visual_pool.is_pool(c) for c in cands))
     if "suggested_top" in saved:
         jsonout.output("suggested_top", saved["suggested_top"])
     jsonout.output("style", saved.get("style"))

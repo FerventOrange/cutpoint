@@ -230,6 +230,18 @@ def load_json(path: Path) -> Any | None:
         return None
 
 
+def load_bytes(path: Path) -> bytes | None:
+    """The bytes of ``path`` (from a hold when it has them, :func:`hold_outputs`), or None
+    if it is missing, deleted in a hold or cannot be read."""
+    found, data = _held_bytes(path)
+    if found:
+        return data
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
 def read_json(path: Path, hint: str = "") -> Any:
     """Load JSON from ``path`` like :func:`load_json`, but raise instead of returning None.
 

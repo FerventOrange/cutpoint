@@ -654,10 +654,11 @@ def save_features(
     return path
 
 
-def load_features(path: Path) -> dict[str, Any]:
-    """Inverse of :func:`save_features`. A grid saved under its old name
-    (:data:`cutpoint.features.SKI_ALIASES`) is read under the new one, in its place."""
-    with np.load(path) as z:
+def load_features(path: Path, data: bytes | None = None) -> dict[str, Any]:
+    """Inverse of :func:`save_features` (of the file ``path``, or of its bytes ``data``).
+    A grid saved under its old name (:data:`cutpoint.features.SKI_ALIASES`) is read under
+    the new one, in its place."""
+    with np.load(path if data is None else io.BytesIO(data)) as z:
         meta = json.loads(str(z["meta"]))
         grids = {k[2:]: z[k].astype(float) for k in z.files if k.startswith("f_")}
         return {
@@ -666,6 +667,15 @@ def load_features(path: Path) -> dict[str, Any]:
             "friends": z["friends"].astype(float),
             "features": features.ski_names(grids, str(path)),
         }
+
+
+def load_part(project: Path, src: Path, offset: float = 0.0) -> dict[str, Any] | None:
+    """:func:`load_features` of one source (part) of ``project``, also while ``analyze``
+    still holds this run's file back (:func:`cutpoint.cache.hold_outputs`); None without
+    one."""
+    path = features_path(project, src, offset)
+    data = cache.load_bytes(path)
+    return None if data is None else load_features(path, data)
 
 
 def load_project_features(project: Path) -> list[dict[str, Any]]:

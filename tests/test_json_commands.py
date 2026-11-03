@@ -238,6 +238,7 @@ EDIT_KEYS = {
     "clips_dir", "manifest", "clips", "count", "total_seconds",
     "format", "final", "srt", "duration", "clip_count", "copy", "copy_srt",
 }  # fmt: skip
+POOL_KEYS = {"visual_candidates"}  # analyze adds it for the pool styles (action-cam, action, sport)
 
 
 @pytest.mark.slow
@@ -253,8 +254,9 @@ def test_edit_json_is_one_envelope_with_the_sub_steps_outputs_and_warnings(
     assert code == 0 and doc["ok"] is True and doc["command"] == "edit"
     assert doc["project"] == str(project)
     out = doc["outputs"]
-    assert set(out) == EDIT_KEYS
+    assert set(out) == EDIT_KEYS | POOL_KEYS  # --kind clips is style action, a pool style
     assert out["kind"] == "clips" and out["style"] == "action"
+    assert isinstance(out["visual_candidates"], int) and out["visual_candidates"] >= 0
     assert out["copy"] == str(project / "clip-final.mp4")
     assert out["copy_srt"] == str(project / "clip-final.srt")
     assert out["final"] == str(project / "final.mp4")

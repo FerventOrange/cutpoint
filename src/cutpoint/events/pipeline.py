@@ -516,7 +516,12 @@ def run_events(
     }
     seed_types = {src: types_for(p) for src, p in presets.items()}
     windows = select_windows(
-        sources, hl.get("candidates", []), layer1, vlm, seed_types, quiet="vlm" not in layers
+        sources,
+        [c for c in hl.get("candidates", []) if c.get("pool") != "visual"],  # no pool seeds
+        layer1,
+        vlm,
+        seed_types,
+        quiet="vlm" not in layers,
     )
     # a provider the user did not agree to (a hosted one, or an Ollama on another machine): no
     # request, no cached descriptions or windows either, as for analyze's vision ratings

@@ -194,7 +194,7 @@ Variants:
 
 | File | Written by | Content |
 |---|---|---|
-| `highlights.json` | `analyze` (written once, at the end), `events` | Ranked candidates and settings |
+| `highlights.json` | `analyze` (written once, at the end), `events` | Ranked candidates (`h001`...) and settings; action, sport and action-cam projects also list visual candidates last (`v001`..., `"pool": "visual"`, `kind` `view`, `crew` or `cruise`, `score` 0-10) |
 | `transcript.txt` | `analyze` | Time-stamped transcript |
 | `events.json`, `events.txt` | `analyze`, `events` | Detected sounds, HUD events, model descriptions |
 | `clips/manifest.json` | `clips`, `extend` | Per clip: source, start, end, score, label, tail, crop, lut or color, srt |
