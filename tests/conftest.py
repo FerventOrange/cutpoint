@@ -43,6 +43,35 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     reset_state()
 
 
+class _NoNvidiaSmi:
+    """Stands in for ``subprocess`` inside the modules that probe the GPU: an ``nvidia-smi``
+    command fails as if the tool were missing; every other command goes to the real
+    ``subprocess.run``, looked up at call time so tests that patch it still work."""
+
+    def __getattr__(self, name: str):
+        return getattr(subprocess, name)
+
+    @staticmethod
+    def run(cmd, *args, **kwargs):
+        if isinstance(cmd, (list, tuple)) and cmd and Path(str(cmd[0])).stem == "nvidia-smi":
+            raise FileNotFoundError("nvidia-smi")
+        return subprocess.run(cmd, *args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def no_host_probes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the host out of the tests: no ``nvidia-smi`` spawn (the GPU probes see no GPU) and no
+    gcc/ld/ldconfig run by ``ctypes.util.find_library`` (keyring's macOS backend calls it on
+    import). A test of a probe patches ``subprocess.run`` or the probe itself, as before."""
+    import ctypes.util  # noqa: PLC0415
+
+    from cutpoint.events import common, ocr_prefetch  # noqa: PLC0415
+
+    monkeypatch.setattr(ocr_prefetch, "subprocess", _NoNvidiaSmi())
+    monkeypatch.setattr(common, "subprocess", _NoNvidiaSmi())
+    monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+
+
 @pytest.fixture
 def home(isolated_env: Path) -> Path:
     return isolated_env

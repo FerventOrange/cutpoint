@@ -11,6 +11,7 @@ import json
 import logging
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -130,8 +131,11 @@ def _render(clip, tmp_path, progress):
     )
 
 
-def test_progress_rises_to_one_and_stops(fake_ffmpeg, tmp_path) -> None:
+def test_progress_rises_to_one_and_stops(fake_ffmpeg, tmp_path, monkeypatch) -> None:
     calls, _ = fake_ffmpeg
+    scratch = tmp_path / "scratch"  # a private temp dir: a parallel run must not leak into the glob
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
     clip = helpers.x3clip(lrv="x.lrv", fps=30.0, frames=300, duration=10.0)
     seen: list[tuple[float, float]] = []
     _render(clip, tmp_path, lambda f: seen.append((f, time.monotonic())))
@@ -143,7 +147,10 @@ def test_progress_rises_to_one_and_stops(fake_ffmpeg, tmp_path) -> None:
     assert (gaps >= R.PROGRESS_MIN_S - 0.01).all()
     time.sleep(0.3)
     assert len(seen) == n  # nothing after the return
-    assert not list(Path(calls[0][calls[0].index("-progress") + 1]).parent.glob("cutpoint-pro*"))
+    progress_file = Path(calls[0][calls[0].index("-progress") + 1])
+    # the file was made in the private dir, so the glob below really checks cleanup
+    assert progress_file.parent == scratch
+    assert not list(scratch.glob("cutpoint-pro*"))
 
 
 def test_a_raising_callback_does_not_break_the_render(fake_ffmpeg, tmp_path, caplog) -> None:
