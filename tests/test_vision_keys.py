@@ -122,6 +122,14 @@ def test_the_models_tab_vision_key_status_says_whether_the_shared_key_is_used(
     assert vp is not None and vp.has_key is (where == "env")
 
 
+def test_the_models_tab_vision_key_status_prefers_the_keyring_jobs_read(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", KEY)
+    monkeypatch.setattr(keys, "in_keyring", lambda provider, host: provider == "openai")
+    data = {"vision_assistant": {"provider": "openai"}}
+    assert ui.key_status(data, "vision_assistant")["keys"]["openai"] == "keyring"
+    assert ui.key_status(data)["keys"]["openai"] == "env"
+
+
 # -- F4: the caches are keyed on the resolved model ---------------------------------------------
 
 

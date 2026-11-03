@@ -1449,8 +1449,8 @@ def make_vision(settings: AssistantSettings, chat: AssistantSettings | None = No
     return provider  # type: ignore[return-value]
 
 
-# (provider name, base URL) -> (when it was read, its models); successes only
-_MODELS: dict[tuple[str, str], tuple[float, list[dict[str, str]]]] = {}
+# (provider name, base URL, role) -> (when it was read, its models); successes only
+_MODELS: dict[tuple[str, str, str], tuple[float, list[dict[str, str]]]] = {}
 _MODELS_LOCK = threading.Lock()
 _clock = time.monotonic  # replaced by tests
 
@@ -1476,7 +1476,7 @@ def model_list(
     of ``config.json`` for ``role``, :func:`consent_key`; nothing is sent otherwise),
     ``"unsupported"`` or ``"error"``
     (``message`` says why, keys redacted): the field then takes any typed name. A list is kept
-    for :data:`MODELS_TTL_S` per provider and base URL; ``refresh`` asks again.
+    for :data:`MODELS_TTL_S` per provider, base URL and role; ``refresh`` asks again.
     """
     lister = getattr(provider, "list_models", None)
     if lister is None:
@@ -1493,7 +1493,7 @@ def model_list(
                 f"use {provider.host}."
             ),
         }
-    cache_key = (provider.name, str(getattr(provider, "url", "")))
+    cache_key = (provider.name, str(getattr(provider, "url", "")), role)
     now = _clock()
     with _MODELS_LOCK:
         hit = _MODELS.get(cache_key)

@@ -1052,6 +1052,28 @@ def test_model_list_subscription_login_requires_project_consent(
     )
 
 
+def test_model_list_cache_is_kept_per_role(monkeypatch) -> None:
+    providers.clear_model_cache()
+    calls = []
+
+    def fake_list(p):
+        calls.append(1)
+        return [{"id": f"m{len(calls)}", "name": "M"}]
+
+    monkeypatch.setattr(providers.cliproxy, "status", lambda p: {"logged_in": True})
+    monkeypatch.setattr(providers.cliproxy, "list_models", fake_list)
+    codex = providers.SubscriptionProvider("codex", "", "", 0)
+    both = (providers.consent_key(codex), providers.consent_key(codex, "vision"))
+    chat = providers.model_list(codex, consent=both)
+    assert providers.model_list(codex, consent=both)["models"] == chat["models"]
+    assert len(calls) == 1
+    # Vision does not get the list Chat loaded: it asks for its own
+    vision = providers.model_list(codex, consent=both, role="vision")
+    assert vision["models"][0]["id"] == "m2"
+    assert len(calls) == 2
+    providers.clear_model_cache()
+
+
 def test_clear_model_cache_invalidates_transient_cache(monkeypatch) -> None:
     providers.clear_model_cache()
     call_count = 0

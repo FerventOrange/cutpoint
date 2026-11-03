@@ -380,6 +380,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Models tab no longer offers "Allow vision requests" while the Vision provider has no API key
+  or login: it shows the missing key or login hint instead (#620).
+- The model list is cached per role as well as provider and URL, so a list Chat loaded is no longer
+  shown for Vision (or the reverse) without its own request (#622).
+- The Models tab Vision key status says "env (CLI only)" for a key that only comes from an
+  environment variable: analyses started from `cutpoint ui` get no key variables and use the key
+  saved in the Models tab (#617).
 - 360 clips filmed with the camera upright (lenses horizontal: handheld, on a pole) no longer
   spin or drift: the view layer, the director and the renderer took yaw 0 from the camera axis
   that points ahead on a helmet mount, which is near vertical when the camera stands upright,

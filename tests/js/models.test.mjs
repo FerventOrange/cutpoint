@@ -410,3 +410,58 @@ test('vision consent: the box shows for a saved API provider and granting posts 
   assert.deepEqual(m.page.requests.find((r) => r.path === '/api/assistant/consent').body, { role: 'vision', key });
   assert.equal(m.$('#visionConsent').hidden, true);
 });
+
+for (const [kind, missing, title] of [['key', 'Set OPENAI_API_KEY or save a key here', 'API key needed'], ['login', 'Log in to Codex under Connected accounts', 'Login needed']]) {
+  test(`vision consent: a missing ${kind} shows its hint and no Allow button`, async (t) => {
+    const key = 'vision-v2:openai@api.openai.com';
+    const consent = { key, needed: true, host: 'api.openai.com', missing_key: missing, missing_kind: kind };
+    const m = await apiTab(t, { visionProvider: 'openai', consent });
+    assert.equal(m.$('#visionConsent').hidden, false);
+    assert.equal(m.$('#visionConsentTitle').textContent, title);
+    assert.equal(m.$('#visionConsentText').textContent, `${missing}.`);
+    assert.equal(m.$('#visionConsentOk').hidden, true);
+  });
+}
+
+test('vision key status says an environment key is for the CLI only; chat keeps "set (env)"', async (t) => {
+  const keys = { ...NO_KEYS, openai: 'env' };
+  const st = apiSettings();
+  st.assistant = { ...st.assistant, keys };
+  st.vision_assistant = { ...st.vision_assistant, keys };
+  const m = await modelsTab(t, { st });
+  await m.choose('#visionRoleProvider', 'openai');
+  await m.choose('#chatRoleProvider', 'openai');
+  assert.match(m.$('#visionRoleKeyStatus').textContent, /env \(CLI only\)/);
+  assert.match(m.$('#visionRoleKeyStatus').title, /use the key saved in the Models tab/);
+  assert.match(m.$('#chatRoleKeyStatus').textContent, /set \(env\)/);
+});
+
+test('vision consent: saving the key re-reads the consent, so the Allow button appears', async (t) => {
+  const key = 'vision-v2:openai@api.openai.com';
+  const missing = { key, needed: true, host: 'api.openai.com', missing_key: 'Set OPENAI_API_KEY or save a key here', missing_kind: 'key' };
+  const m = await apiTab(t, { visionProvider: 'openai', consent: missing }, {
+    routes: { 'POST /api/assistant/key': () => ({ keys: { ...NO_KEYS, openai: 'keyring' }, key_hosts: { ...OFFICIAL } }) },
+  });
+  assert.equal(m.$('#visionConsentOk').hidden, true);
+  m.state.st = apiSettings({ visionProvider: 'openai', consent: { key, needed: true, host: 'api.openai.com', missing_key: null } });
+  m.$('#visionRoleKeyInput').value = 'sk-test';
+  await m.click('#visionRoleKeySave');
+  assert.equal(m.$('#visionConsentOk').hidden, false);
+});
+
+test('Refresh catalog loads the Vision list for the Vision role, not the Chat list', async (t) => {
+  const m = await apiTab(t, { visionProvider: 'codex' }, {
+    routes: {
+      'GET /api/assistant/models': (req) => {
+        const q = new URLSearchParams(req.query);
+        return q.get('role') === 'vision'
+          ? { state: 'consent_needed', models: [], message: 'Allow vision requests first' }
+          : { state: 'ok', models: [{ id: 'chat-only-model' }] };
+      },
+    },
+  });
+  const refresh = [...m.d.querySelectorAll('#modelsSubsList button')].find((b) => b.textContent === 'Refresh catalog');
+  refresh.click();
+  await m.page.settle();
+  assert.ok(!m.optionValues('#visionRoleModel').includes('chat-only-model'));
+});

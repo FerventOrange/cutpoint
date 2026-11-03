@@ -141,6 +141,15 @@ def status(provider: str, host: str, *, shared: bool = True) -> str | None:
     return lookup(provider, host, shared=shared)[1]
 
 
+def in_keyring(provider: str, host: str) -> bool:
+    """Whether the keyring holds a key for ``provider`` at ``host`` (never the key)."""
+    try:
+        return bool((_keyring().get_password(SERVICE, ring_user(provider, host)) or "").strip())
+    except Exception as err:  # noqa: BLE001 - no backend, a locked store: as if no key
+        logger.debug("keyring: could not read the %s key (%s)", provider, type(err).__name__)
+        return False
+
+
 def _check(provider: str) -> Any:
     if provider not in KEYED:
         raise ValueError(f"provider must be one of {', '.join(KEYED)}")

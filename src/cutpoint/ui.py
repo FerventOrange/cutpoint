@@ -725,8 +725,14 @@ def key_status(data: dict[str, Any], section_name: str = "assistant") -> dict[st
     def shared(p: str) -> bool:
         return not vision or _vision_key_shared(data, p)
 
+    def where(p: str) -> str | None:
+        # UI jobs read the keyring first for the Vision role, even when a variable is set
+        if vision and ai_keys.in_keyring(p, hosts[p]):
+            return "keyring"
+        return ai_keys.status(p, hosts[p], shared=shared(p))
+
     return {
-        "keys": {p: ai_keys.status(p, hosts[p], shared=shared(p)) for p in ai_keys.KEYED},
+        "keys": {p: where(p) for p in ai_keys.KEYED},
         "key_hosts": hosts,
     }
 
