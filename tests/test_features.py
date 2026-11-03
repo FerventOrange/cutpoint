@@ -133,8 +133,8 @@ def test_register_rejects_a_different_feature_of_the_same_name():
 
 def test_available_by_installed_extras():
     lite, full = features.available(()), features.available(("events",))
-    assert full == set(features.REGISTRY)
-    assert {"loudness", "speech", "laughter", "continuity", "scene", "airtime"} <= lite
+    assert full == set(features.REGISTRY) - set(features.names("part"))
+    assert {"loudness", "speech", "laughter", "continuity", "scene", "airtime", "social"} <= lite
     assert not {"vlm", "beauty", "voice_laughter", "vlm_window"} & lite
 
 
@@ -246,11 +246,167 @@ def test_old_ski_features_file_reads_laughter_as_voice_laughter(tmp_path):
     assert d["features"]["voice_laughter"].tolist() == [0.25] * 4
 
 
-def test_lite_ski_score_is_capped_at_100():
-    """social still has transcript laughter on lite, so a peak can pass the core divisor."""
+def test_social_is_core_and_records_its_two_parts():
+    social = features.get("social")
+    assert social.extra is None and social.kind == "grid"
+    assert social.parts == ("social_said", "social_heard")
+    said, heard = (features.get(p) for p in social.parts)
+    assert (said.kind, said.layer, said.extra) == ("part", "transcript", None)
+    assert (heard.kind, heard.layer, heard.extra) == ("part", "events", "events")
+    assert features.names("part") == ["social_heard", "social_said"]
+
+
+@pytest.mark.parametrize("installed", [(), ("events",)], ids=["lite", "full"])
+def test_parts_are_not_available_weighted_or_ski_grids(installed):
+    parts = set(features.names("part"))
+    assert not parts & features.available(installed)
+    assert not parts & set(features.names("grid")) and not parts & set(ski.FEATURES)
+    with pytest.raises(ValueError, match="'social_said'"):
+        styles.validate("x", {"social_said": 0.1})
+    w = {"airtime": 0.5, "social_heard": 0.5}  # a hand-edited preset: an unknown weight
+    assert features.divisor(w, features.available(installed)) == 1.0
+
+
+def test_register_rejects_parts_that_are_not_part_features():
+    with pytest.raises(ValueError, match="not registered part features"):
+        features.register(Feature("x", "audio", "d", parts=("loudness",)))
+    with pytest.raises(ValueError, match="not registered part features"):
+        features.register(Feature("x", "audio", "d", parts=("nope",)))
+    assert "x" not in features.REGISTRY
+
+
+def test_lite_ski_peak_tops_out_at_exactly_100():
+    """social counts in the lite divisor (its transcript part runs on lite), so every grid a
+    lite install computes at its maximum, 1.0, scores exactly 100 before any cap (#556)."""
     w = STYLES["action-cam"].weights
     lite = features.available(())
-    peak = sum(v for k, v in w.items() if k in lite) + w["social"]
-    assert features.divisor(w, lite) == pytest.approx(0.67)
+    assert "social" in lite and "social" not in features.dropped(w, lite)
+    assert features.divisor(w, lite) == pytest.approx(0.72)
+    n = 10
+    grids = {k: np.full(n, 1.0 if k in lite else 0.0) for k in ski.FEATURES}
+    peak = float(scorer.ski_combined(grids, w, np.ones(n)).max())
+    # to_score's quotient before its cap; the grid sum and the divisor differ by one ulp
+    # (sequential float64 sum, Python's compensated sum()), which the rounding drops.
+    assert peak / features.divisor(w, lite) == pytest.approx(1.0, rel=1e-12, abs=0)
+    assert round(100 * (peak / features.divisor(w, lite)), 1) == 100.0
     assert features.to_score(peak, w, lite) == 100.0
     assert features.dropped(w, features.available(("events",))) == []
+
+
+def test_lite_ski_score_is_still_capped_at_100():
+    """The cap guards a left-out feature's grid a full install cached in a shared project."""
+    w = STYLES["action-cam"].weights
+    lite = features.available(())
+    peak = sum(v for k, v in w.items() if k in lite) + w["vlm"]
+    assert features.to_score(peak, w, lite) == 100.0
+
+
+# --------------------------------------------------------------------------- social (#556)
+SOCIAL_N = 1200  # 120 s on the 0.1 s grid
+
+
+def _bump(t: float, height: float = 1.0, width: float = 1.0) -> np.ndarray:
+    x = np.arange(SOCIAL_N) * 0.1
+    return height * np.exp(-(((x - t) / width) ** 2))
+
+
+def _social_ski_run(tmp_path: Path, monkeypatch) -> tuple[list[analyze.Candidate], dict]:
+    """An action-cam part with every kind of grid: telemetry, VLM, PANNs and transcript
+    laughter, a crash, voice and visual layers; returns its candidates and saved features."""
+    from cutpoint.telemetry import DT, Telemetry, paint_spans  # noqa: PLC0415
+
+    n, src = SOCIAL_N, Path("ride.mp4")
+    z = np.zeros(n)
+    grid = {k: z.copy() for k in ("airtime", "crash", "carve", "wind", "vibration", "indoor")}
+    grid |= {"faces": z.copy(), "still_mask": z.copy(), "gps_ok": np.ones(n)}
+    grid["speed_kmh"] = 20.0 + 15.0 * _bump(60.0, width=8.0)
+    grid["lift_mask"] = paint_spans(n, [(100.0, 110.0, 1.0)])
+    grid["airtime"], grid["crash"], grid["carve"] = _bump(15.0), _bump(40.0, 0.8), _bump(60.0)
+    events = [
+        {"type": "airtime", "t": 14.5, "end": 15.5, "air_s": 1.0},
+        {"type": "crash", "t": 39.8, "end": 40.8, "impact_t": 40.0, "peak_g": 7.4},
+    ]
+    tel = Telemetry(source=str(src), duration=n * DT, grid=grid, events=events)
+    layers = {
+        "voice_laughter": _bump(85.0, 0.7),
+        "voice": _bump(86.0, 0.5),
+        "beauty": _bump(25.0, 0.6),
+        "people": _bump(72.0, 0.9),
+        "group": _bump(72.0, 0.4),
+    }
+    monkeypatch.setattr(ski, "layer_features", lambda *_a, **_k: dict(layers))
+    key = ski._key(src)
+    heard = [
+        {"source": str(src), "start": 80.0, "end": 81.5, "label": "Laughter", "confidence": 0.09},
+        {"source": str(src), "start": 92.0, "end": 93.0, "label": "Cheering", "confidence": 0.2},
+    ]
+    tags = {"jump_air": 6, "scenic_vista": 8, "friends_faces": 7}
+    window = {"source": str(src), "start": 64.0, "end": 76.0, "tags": tags}
+    crash = {"source": str(src), "id": "c1", "t0": 50.0, "t1": 51.0, "confidence": 0.4}
+    ctx = ski.SkiContext(
+        project=tmp_path / "proj",
+        telemetry={str(src): tel},
+        speed_ref=np.linspace(0.0, 40.0, 100),
+        audio_events={key: heard},
+        windows={key: [window]},
+        crashes={key: [crash]},
+    )
+    sig = {k: np.zeros(n) for k in ("loudness", "speech", "laughter", "scene", "continuity")}
+    sig["speech"], sig["laughter"] = _bump(30.0, 0.6), _bump(95.0, 0.8)
+    ps = analyze.PartSignals(n, sig, [], [], [], [], [])
+    res = analyze.SourceResult(src, None, 0.0, n / 10, [], [], None, ps)
+    cands = analyze.pick_candidates(res, STYLES["action-cam"], None, {}, ctx)
+    saved = ski.load_part(ctx.project, src)
+    assert saved is not None
+    return cands, saved
+
+
+def _digest(cands: list[analyze.Candidate], saved: dict) -> dict[str, object]:
+    import hashlib  # noqa: PLC0415
+
+    h = hashlib.sha256()
+    for k, v in saved["features"].items():
+        h.update(k.encode() + v.astype(np.float32).tobytes())
+    h.update(saved["mask"].astype(np.float32).tobytes())
+    h.update(saved["friends"].astype(np.float32).tobytes())
+    return {
+        "scores": [c.score for c in cands],
+        "kinds": [c.kind for c in cands],
+        "times": [(c.start, c.end, round(c.peak_t, 3)) for c in cands],
+        "signals": hashlib.sha256(
+            json.dumps([c.signals for c in cands], sort_keys=False).encode()
+        ).hexdigest(),
+        "npz_keys": list(saved["features"]),
+        "npz": h.hexdigest(),
+    }
+
+
+def test_full_install_action_cam_output_is_pinned(tmp_path, monkeypatch):
+    """Pinned on base 13d26aa, before #556: splitting ``social`` into registry parts changes
+    nothing on a full install (features_available, cache key, scores, signals, npz)."""
+    monkeypatch.setattr(extras, "edition", lambda: "full")
+    reset_state()
+    cands, saved = _social_ski_run(tmp_path, monkeypatch)
+    assert _digest(cands, saved) == {
+        "scores": [24.5, 22.3, 15.7, 3.9, 3.7, 2.9],
+        "kinds": ["airtime", "vlm", "crash", "social", "social", "beauty"],
+        "times": [
+            (13.0, 17.0, 15.0),
+            (61.0, 67.0, 64.0),
+            (38.0, 44.0, 40.0),
+            (91.5, 97.5, 95.0),
+            (78.5, 84.5, 82.0),
+            (23.5, 26.5, 25.0),
+        ],
+        "signals": "bd0392ee8b34bd3029102b605a055cac838333992b3bb18bc81ee392182ab8ab",
+        "npz_keys": [*ski.FEATURES, "friends_vlm"],
+        "npz": "ee9c92a531d59a301912d09dd7645416fb29433f61857e621989ba5209f1f4d9",
+    }
+    assert ski.features_path(tmp_path, Path("ride.mp4")).name == "ride-919e6a6c.npz"
+    assert sorted(features.available()) == [  # settings.features_available
+        "airtime", "beauty", "carve", "continuity", "crash", "event_laughter",
+        "event_reactions", "event_scream", "event_types", "faces", "group", "laughter",
+        "loudness", "people", "scene", "scenic", "short_clip", "social", "speech", "speed",
+        "stopped", "vlm", "vlm_window", "voice", "voice_laughter", "wipeout",
+    ]  # fmt: skip
+    assert features.dropped(STYLES["action-cam"].weights, features.available()) == []

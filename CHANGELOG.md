@@ -320,14 +320,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ski styles score on the feature registry (#514 phase 1b). On a full install every ski score,
   pick and clip is the same as before. On Cutpoint lite a ski score now divides by the weights
   of the features lite can compute, as the generic styles do since phase 1a. The `events`
-  features are left out: `vlm`, `social`, `voice_laughter` and `beauty` (0.20, 0.05, 0.05 and
-  0.05 in the built-in `action-cam` style), and `scenic`, `people`, `group` and `voice` (0
-  there). The divisor goes from 1.02 to 0.67, so a built-in `action-cam` score on lite is about
-  52% higher (x1.52), and capped at 100. The picks do not change. Candidates capped at 100 tie, so
-  among themselves they keep the analysis order (source by source). Lite scores above about 65.7
-  before become 100. Must-include crash scores (the crash's confidence) do not change. A learned
-  ski preset shifts by its own weights. Any score renormalised this way is capped at 100: on lite,
-  `social` still carries the transcript's laughter, so a peak can pass the smaller divisor.
+  features are left out: `vlm`, `voice_laughter` and `beauty` (0.20, 0.05 and 0.05 in the
+  built-in `action-cam` style), and `scenic`, `people`, `group` and `voice` (0 there). The
+  divisor goes from 1.02 to 0.72, so a built-in `action-cam` score on lite is about 42% higher
+  (x1.42). The picks do not change. `social` counts on lite (its transcript laughter runs there,
+  #556), so a lite score reaches at most 100; the cap guards grids and events a full install
+  cached in a shared project, and learned presets. Candidates capped at 100 tie, so among
+  themselves they keep the analysis order (source by source). Must-include crash scores (the
+  crash's confidence) do not change. A learned ski preset shifts by its own weights.
   Full-install scores are never capped.
 - The ski feature `laughter` (laughter heard over the wind noise, from the voice layer) is now
   `voice_laughter`, its name in the feature registry; `laughter` is the transcript feature of

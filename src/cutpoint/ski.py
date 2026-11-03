@@ -13,7 +13,8 @@ analysis grid of one source:
     speed    GPS speed percentile within the day (above-median part, 0-1); the
              GoPro wind meter stands in where there is no GPS fix
     social   PANNs Laughter / Scream / Cheering (after ``cutpoint events``) and
-             transcript laughter
+             transcript laughter, the larger of the two (registry parts
+             ``social_heard`` and ``social_said``); core, so lite counts it
     carve    telemetry turn rhythm x speed
     scenic   VLM tag scenic_vista
     speech   capped style keywords (kept low: wind and chatter are constant)

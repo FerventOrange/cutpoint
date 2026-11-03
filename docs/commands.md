@@ -779,8 +779,10 @@ these features. The `score` is a candidate's weighted peak divided by the weight
 features this install can compute. A feature that needs a missing extra (the `events` extra
 in Cutpoint lite) is left out, so the built-in generic styles (gaming, action, sport, funny,
 commentary) score the same on lite and full installs. Action-cam styles are renormalised the same way:
-on lite their `events` features (`vlm`, `social`, `voice_laughter`, `beauty`, `scenic`,
-`people`, `group`, `voice`) are left out, and a renormalised score is capped at 100.
+on lite their `events` features (`vlm`, `voice_laughter`, `beauty`, `scenic`, `people`, `group`,
+`voice`) are left out, and a renormalised score is capped at 100. `social` counts on lite too:
+there it takes the laughter written in the transcript; full installs also take the laughter,
+screams and cheering heard (`events`).
 The features it could compute are in `settings.features_available`. Action-cam candidates' `signals`
 name the action-cam features; `voice_laughter` (laughter heard over the wind noise) was `laughter`
 before #514 phase 1b.
