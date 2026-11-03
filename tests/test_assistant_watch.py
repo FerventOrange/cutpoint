@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint.assistant import providers, session, watch
+from cutpoint.assistant import lookfor, providers, session, watch
 from cutpoint.assistant.providers import (
     AnthropicProvider,
     Capabilities,
@@ -40,6 +40,7 @@ from test_assistant_byo import (
     tool_use,
 )
 from test_assistant_byo import no_keys as no_keys  # the autouse fixture
+from test_assistant_lookfor import clip as clip  # CLIP stubbed: look_for guesses
 
 cv2 = pytest.importorskip("cv2")
 
@@ -680,3 +681,39 @@ def test_accepts_images_by_name_only(provider: str, model: str, want: bool | Non
     hosted = FakeProvider([])
     hosted.name, hosted.model = provider, model
     assert providers.accepts_images(hosted, model) is want
+
+
+def test_a_guess_viewed_by_a_model_that_then_refuses_images_is_not_confirmed(
+    proj_dir: Path, src: Path, clip
+) -> None:
+    """F7: the sheet of a look_for guess went out, the model refused images, so nothing was
+    seen: the guess no longer counts as viewed, the rules stop offering view_moment for it, and
+    propose_edit still refuses to add it."""
+
+    def refuse(_messages):
+        raise ProviderError("OpenAI-compatible x answered 400: image input is not supported")
+
+    fake = FakeProvider(
+        [
+            call("look_for", query="powder spray"),
+            call("view_moment", id="m5"),  # the unconfirmed window at A 50 s
+            refuse,
+            call("propose_edit", summary="Add it", ops=[{"op": "add", "id": "m5"}]),
+            answer("It is uncertain."),
+        ]
+    )
+    fake.model = "local-llama"
+    turn = session.Turn(fake, proj(), "find powder", viewer=viewer(proj_dir, fake, src))
+    turn.start()
+    assert turn.done.wait(10)
+    assert turn.status == "done", turn.error
+    assert turn.table.name(next(iter(turn._unsure & {turn.found[1]["id"]}))) == "m5"
+    # the sheet was taken out again; nothing counts as viewed any more
+    assert not images_in(fake.requests[3]["messages"])
+    assert turn._viewed == set()
+    rules = fake.requests[3]["messages"][0]["content"]
+    assert lookfor.WEAK_TEXT in rules and lookfor.WEAK_IMAGES not in rules
+    assert "view_moment" not in names(fake.requests[3]["tools"])
+    refused = fake.requests[4]["messages"][-1]["content"]
+    assert refused.startswith("error: proposal rejected: op 1: m5 is an unconfirmed look_for")
+    assert not any(e["kind"] == "proposal" for e in turn.events)

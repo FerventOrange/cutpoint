@@ -20,8 +20,8 @@ a loopback address, except on the port of the Cutpoint proxy, which forwards to 
 needs no consent; an Ollama on another machine is hosted and needs the same consents: until Vision is allowed for it, vision steps skip it with a WARNING.
 
 The instructions the agent itself should follow are in [AGENTS.md](../AGENTS.md) at the
-repository root; `cutpoint guide` prints the same text, so an agent using a PyPI install
-(`uv tool install cutpoint`) can read it too. This page is for the person setting it up.
+repository root; `cutpoint guide` prints the same text, so an agent using the installed
+`cutpoint` command can read it too. This page is for the person setting it up.
 
 ## What exists today
 
@@ -41,7 +41,7 @@ Read D:\tools\cutpoint\AGENTS.md first. Never edit source videos.
 
 On Linux, for example `uv run cutpoint ...` in ~/tools/cutpoint, and read ~/tools/cutpoint/AGENTS.md.
 
-With a tool install (`uv tool install cutpoint`) there is no repository path:
+With a tool install (the installer) there is no repository path:
 
 ```markdown
 Video editing: use the Cutpoint CLI (`cutpoint ...`). Run `cutpoint guide` and follow it first.

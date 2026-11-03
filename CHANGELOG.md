@@ -17,6 +17,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   place of a crash, a jump or a must-include moment, including a moment over a `crashes.json`
   crash of at least 0.2 confidence); `--ids v001` picks one directly. `analyze --json` adds `visual_candidates` (their
   count) for these styles. Other styles are unchanged (#635).
+- AI Chat `look_for` tool (#529): the assistant ranks the whole timeline by a text query
+  ("powder spray", "sunset over the peaks") with local CLIP over the cached ~1 fps frame
+  embeddings of every source, not only the existing moments. A clear hit no moment covers
+  becomes a new moment the proposal can add (saved with the proposal, so it still applies after a
+  restart or on a changed sequence); a covered one is reported as that moment. Every window is
+  `strong` (CLIP cosine of 0.222 or more) or `weak` (0.202 or more, at most 4 weak or unconfirmed
+  rows per call, so a query the footage cannot answer lists nothing or a few guesses). Only a
+  clear window (0.26 or more) becomes a new moment; the instructions tell the model to confirm a
+  weak or unconfirmed window with `view_moment` (a model that takes images) or to say it is
+  uncertain, never to present it as confirmed. A guess stays out of `find_moments` and the moment
+  list, and `propose_edit` refuses to add one (also in a suggestion) until `view_moment` showed
+  it; the chat lists each as "possible" with an "Add to sequence" button, which is the user's
+  confirmation. The color op's strength is rounded to the slider's 5% steps. The first
+  `look_for` keeps only the CLIP text tower in memory. It works with every
+  chat provider and sends text only (`match` 0-10 and `confidence`, never frames). It is not in Cutpoint lite (the
+  message has the install command), says to run `cutpoint setup --only visual` when the CLIP
+  weights are missing, and says so when no source has a cached visual layer. The instructions say
+  to use it when labels and transcripts do not match and that similarity is not certainty.
+- AI Chat `color` op (#529): a proposal can set Color to `off`, `auto` or `underwater` with a
+  strength. The preview shows it, Apply sets the project's Color slider, and Undo, Redo and
+  Revert in Applied changes put the earlier Color back. The instructions say `underwater` only
+  grades underwater footage (#495).
 - AI Chat can watch a moment (#640): with a chat model that takes images, the assistant gets a
   `view_moment` tool that returns one timeline sheet (6 frames for a clip up to 12 s, else 9, in
   a 3-wide grid, each stamped with its number and source time, sized for about 1.5k image tokens
@@ -251,6 +273,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Docs: README and Getting started now lead with the one-step installers (`install.sh`, `install.ps1`).
+  They document full and lite (`--lite`, `-Lite`, `CUTPOINT_LITE`, and unsetting it to return to
+  full), `--source` and `CUTPOINT_SOURCE`, the optional prompts (Ollama, the `qwen3.5:9b` model,
+  `cutpoint setup`) with `--yes`, and upgrading by running the installer again instead of
+  `uv tool upgrade`. The old `uv tool install "cutpoint[...]"` extras instructions are replaced by the installers, with a short
+  "Other sources" note for forks, wheel or sdist URLs and your own virtual environment. The docs
+  say to repeat your options when you upgrade (#528).
 - **BREAKING:** the `ski` style is renamed `action-cam`, with no alias: it is the
   telemetry-driven scorer for any action-cam footage, not only skiing. Use `--style action-cam`
   on `analyze`, `edit` and `360 analyze`; `style` and `style_kind` in `highlights.json`,
@@ -320,14 +349,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ski styles score on the feature registry (#514 phase 1b). On a full install every ski score,
   pick and clip is the same as before. On Cutpoint lite a ski score now divides by the weights
   of the features lite can compute, as the generic styles do since phase 1a. The `events`
-  features are left out: `vlm`, `social`, `voice_laughter` and `beauty` (0.20, 0.05, 0.05 and
-  0.05 in the built-in `action-cam` style), and `scenic`, `people`, `group` and `voice` (0
-  there). The divisor goes from 1.02 to 0.67, so a built-in `action-cam` score on lite is about
-  52% higher (x1.52), and capped at 100. The picks do not change. Candidates capped at 100 tie, so
-  among themselves they keep the analysis order (source by source). Lite scores above about 65.7
-  before become 100. Must-include crash scores (the crash's confidence) do not change. A learned
-  ski preset shifts by its own weights. Any score renormalised this way is capped at 100: on lite,
-  `social` still carries the transcript's laughter, so a peak can pass the smaller divisor.
+  features are left out: `vlm`, `voice_laughter` and `beauty` (0.20, 0.05 and 0.05 in the
+  built-in `action-cam` style), and `scenic`, `people`, `group` and `voice` (0 there). The
+  divisor goes from 1.02 to 0.72, so a built-in `action-cam` score on lite is about 42% higher
+  (x1.42). The picks do not change. `social` counts on lite (its transcript laughter runs there,
+  #556), so a lite score reaches at most 100; the cap guards grids and events a full install
+  cached in a shared project, and learned presets. Candidates capped at 100 tie, so among
+  themselves they keep the analysis order (source by source). Must-include crash scores (the
+  crash's confidence) do not change. A learned ski preset shifts by its own weights.
   Full-install scores are never capped.
 - The ski feature `laughter` (laughter heard over the wind noise, from the voice layer) is now
   `voice_laughter`, its name in the feature registry; `laughter` is the transcript feature of
@@ -445,6 +474,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are planned again, as are an upright clip's paths already saved by `360 director` (no
   `--force` needed; until `360 analyze` has recomputed the view layer, a WARNING says so and
   the paths are planned again on the next run). Helmet-mount clips are unchanged.
+- The 360 director keeps more friend shots on crash clips (#604): a person framed whole counts
+  as framed well with `include_check_pad_deg` (new `pano.director` key, default 1.5 deg) of
+  room inside the side margin, not the full `include_pad_deg` (5 deg). A fix (a wider view or a
+  yaw shift) still aims for the full 5 deg. With the full pad in the check too, people framed
+  near the margin made bad stretches long enough to turn whole friend shots into a view
+  cut-away. `legacy` paths are unchanged. Planned camera paths change, so cached candidate
+  paths are planned again.
 - The 360 director no longer swings or spins the view with a handheld or pole-mounted camera
   (an upright clip, lenses horizontal) (#547). This is the fix for the reported spinning:
   the view followed the camera's heading, smoothed over only 1.5 s, so twisting the camera

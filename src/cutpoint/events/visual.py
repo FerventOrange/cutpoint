@@ -602,15 +602,18 @@ _TEXT_MODEL: dict[tuple[str, str], tuple[Any, Any]] = state.register_container(
 )
 
 
-def text_embeddings(prompts: tuple[str, ...], models: VisualModels | None = None) -> np.ndarray:
-    """Text embeddings for ``prompts`` (cached in ``models/clip/text-<hash>.npy``).
+def text_embeddings(
+    prompts: tuple[str, ...], models: VisualModels | None = None, *, save: bool = True
+) -> np.ndarray:
+    """Text embeddings for ``prompts`` (cached in ``models/clip/text-<hash>.npy``; ``save``
+    False neither reads nor writes that file, for free-text queries).
 
     On a cache miss the CLIP text tower is loaded (on the CPU unless ``models``
     is given), which takes a few seconds once per process; from local files only
     (:func:`load_clip`, :class:`ClipWeightsMissing` without them).
     """
     path = _prompt_file(prompts)
-    if path.exists():
+    if save and path.exists():
         return np.load(path)
     if models is not None:
         e = models.encode_text(prompts)
@@ -621,6 +624,7 @@ def text_embeddings(prompts: tuple[str, ...], models: VisualModels | None = None
             m = load_clip()
             import open_clip  # noqa: PLC0415
 
+            m.visual = None  # text only: drops the image tower (most of the ~1.7 GB)
             loaded = _TEXT_MODEL[key] = (m.eval(), open_clip.get_tokenizer(CLIP_ARCH))
         model, tokenizer = loaded
         import torch  # noqa: PLC0415
@@ -628,8 +632,9 @@ def text_embeddings(prompts: tuple[str, ...], models: VisualModels | None = None
         with torch.inference_mode():
             e = model.encode_text(tokenizer(list(prompts))).float()
             e = (e / e.norm(dim=-1, keepdim=True)).numpy()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, e.astype(np.float32))
+    if save:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(path, e.astype(np.float32))
     return e.astype(np.float32)
 
 

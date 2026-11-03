@@ -113,7 +113,7 @@ Options:
   -Help             Show this help.
 
 Environment (`irm | iex` cannot pass parameters; a parameter wins over its variable; any value
-except empty or 0 counts as on):
+except empty, 0, no or false counts as on, in any letter case):
   CUTPOINT_LITE=1          same as -Lite
   CUTPOINT_YES=1           same as -Yes
   CUTPOINT_DRY_RUN=1       same as -DryRun
@@ -133,8 +133,8 @@ Optional prompts (default No; with no interactive console the answer is No unles
     when winget is missing or fails. Afterwards it waits for the server; it starts `ollama serve`
     (hidden) only when the Ollama app has not. A declined or failed Ollama install never fails the
     Cutpoint install.
-  - Pull qwen3.5:9b (about 6.6 GB), full mode only, when Ollama is running.
   - "cutpoint setup" (model weights, about 2.5 GB, 3.5 GB with an NVIDIA GPU), full mode only.
+  - Pull qwen3.5:9b (about 6.6 GB), full mode only, when Ollama is running.
 '@
     }
 

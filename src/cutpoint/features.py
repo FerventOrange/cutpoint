@@ -3,14 +3,16 @@
 Every style weighs features registered here (:mod:`cutpoint.styles` checks each weight name).
 A ``grid`` feature is a 0-1 signal on the 0.1 s analysis grid; the weighted sum of the grids is
 peak-picked into candidates (:mod:`cutpoint.scorer`). A ``bonus`` feature adds points to a
-candidate's score afterwards (the events rescore).
+candidate's score afterwards (the events rescore). A ``part`` records what a grid feature is
+built from (ski's ``social``: ``social_said`` and ``social_heard``); it cannot be weighted, is
+not listed as available and adds no grid of its own.
 
 A feature is *available* when the extra it needs is installed. On Cutpoint lite (no ``events``
 extra) the features of that extra never run, so the score divides by the weights of the
 available features only: a 0-100 score then means the same on lite and full installs, and such
-a renormalised score is capped at 100. With every feature available (a full install, or a style
-of core features only) the divisor is the sum of all weights and nothing is capped, as before
-the registry.
+a renormalised score is capped at 100 (a guard for grids cached by a full install and for
+learned presets). With every feature available (a full install, or a style of core features
+only) the divisor is the sum of all weights and nothing is capped, as before the registry.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from cutpoint import extras, state
 logger = logging.getLogger(__name__)
 
 LAYERS = ("audio", "transcript", "telemetry", "events", "visual")
-KINDS = ("grid", "bonus")
+KINDS = ("grid", "bonus", "part")
 
 
 @dataclass(frozen=True)
@@ -40,8 +42,12 @@ class Feature:
             ``visual``.
         description: What it measures, in plain language.
         extra: The optional extra it needs (``"events"``), or None for core.
-        kind: ``"grid"`` (0-1 on the analysis grid, weighted and summed) or ``"bonus"``
-            (points added to a candidate's score).
+        kind: ``"grid"`` (0-1 on the analysis grid, weighted and summed), ``"bonus"``
+            (points added to a candidate's score) or ``"part"`` (one source of a grid
+            feature's ``parts``: not weighted, not available on its own, no grid).
+        parts: The ``part`` features a grid feature is built from, if it records them. The
+            feature's own ``extra`` says where it runs: a core feature can have a part that
+            needs an extra (it is 0 without it).
     """
 
     name: str
@@ -49,6 +55,7 @@ class Feature:
     description: str
     extra: str | None = None
     kind: str = "grid"
+    parts: tuple[str, ...] = ()
 
 
 REGISTRY: dict[str, Feature] = {}
@@ -58,12 +65,16 @@ def register(feature: Feature) -> Feature:
     """Add ``feature`` to :data:`REGISTRY` and return it.
 
     Raises:
-        ValueError: For an unknown layer or kind, or another feature of the same name.
+        ValueError: For an unknown layer or kind, another feature of the same name, or a
+            ``parts`` name that is not a registered ``part`` feature.
     """
     if feature.layer not in LAYERS:
         raise ValueError(f"{feature.name}: unknown layer {feature.layer!r}; choose from {LAYERS}")
     if feature.kind not in KINDS:
         raise ValueError(f"{feature.name}: unknown kind {feature.kind!r}; choose from {KINDS}")
+    bad = [p for p in feature.parts if p not in REGISTRY or REGISTRY[p].kind != "part"]
+    if bad:
+        raise ValueError(f"{feature.name}: parts {bad} are not registered part features")
     old = REGISTRY.get(feature.name)
     if old is not None and old != feature:
         raise ValueError(f"A different feature named {feature.name!r} is already registered")
@@ -97,14 +108,17 @@ def installed_extras() -> frozenset[str]:
 
 
 def available(installed: Collection[str] | None = None) -> frozenset[str]:
-    """Names of the features whose extra is installed (core features always).
+    """Names of the features whose extra is installed (core features always); never a
+    ``part``, which is not a feature of its own.
 
     Args:
         installed: The installed extras; default :func:`installed_extras`. Tests pass
             ``()`` for lite or ``("events",)`` for full.
     """
     have = installed_extras() if installed is None else frozenset(installed)
-    return frozenset(n for n, f in REGISTRY.items() if f.extra is None or f.extra in have)
+    return frozenset(
+        n for n, f in REGISTRY.items() if f.kind != "part" and (f.extra is None or f.extra in have)
+    )
 
 
 def divisor(weights: Mapping[str, float], avail: Collection[str] | None = None) -> float:
@@ -155,10 +169,14 @@ def to_score(peak: float, weights: Mapping[str, float], avail: Collection[str] |
     """A combined-grid peak as a 0-100 score (one decimal), renormalised over ``avail``
     (:func:`divisor`).
 
-    A renormalised score is capped at 100: a grid of a left-out feature can still be above 0
-    (ski's ``social`` takes transcript laughter as well as the ``events`` sound events), so the
-    peak can pass the smaller divisor. With nothing left out (every full install) the score is
-    the plain quotient, as before the registry.
+    A renormalised score is capped at 100. A built-in style analysed on lite stays within it:
+    every grid is 0-1 and the grids of left-out features are 0, so the peak is at most the
+    divisor. Ski's ``social`` counts in that divisor: it is core, as its ``social_said`` part
+    (transcript laughter) runs on lite, and only its ``social_heard`` part (sound events) is 0
+    there. The cap guards what can still pass it: grids and events a full install cached in
+    a shared project (the voice and visual layers, ``events.json``) and learned presets. With
+    nothing left out (every full install) the score is the plain quotient, as before the
+    registry.
     """
     score = round(100 * (peak / divisor(weights, avail)), 1)
     return min(100.0, score) if dropped(weights, avail) else score
@@ -175,6 +193,19 @@ for _f in (
     register(_f)
 
 # --------------------------------------------------------------------------- ski features
+# The parts of ski's social grid (#556): cutpoint.ski takes the larger of the two. social is
+# core, so it counts in the lite divisor: there only social_said runs.
+for _f in (
+    Feature("social_said", "transcript", "Laughter written in the transcript", kind="part"),
+    Feature(
+        "social_heard",
+        "events",
+        "Laughter, screams or cheering heard (PANNs sound events)",
+        "events",
+        "part",
+    ),
+):
+    register(_f)
 # cutpoint.ski builds these grids; the scorer weighs them like the generic ones (#514 phase 1b).
 for _f in (
     Feature("airtime", "telemetry", "Time in the air on a jump, from the camera's motion sensors"),
@@ -189,7 +220,12 @@ for _f in (
         "vlm", "events", "Jumps, landings, spray or friends seen by the vision model", "events"
     ),
     Feature("scenic", "events", "A scenic view, as the vision model tags it", "events"),
-    Feature("social", "events", "Laughter, screams or cheering heard, or laughter said", "events"),
+    Feature(
+        "social",
+        "events",
+        "Laughter, screams or cheering heard, or laughter said",
+        parts=("social_said", "social_heard"),
+    ),
     Feature("voice_laughter", "audio", "Laughter heard over the wind noise", "events"),
     Feature("voice", "audio", "Someone talking over the wind noise", "events"),
     Feature("beauty", "visual", "A steady, good-looking view", "events"),

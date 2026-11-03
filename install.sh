@@ -54,7 +54,8 @@ Options:
   --no-ffmpeg       Do not install ffmpeg.
   --help, -h        Show this help.
 
-Environment (a flag wins over its variable; any value except empty or 0 counts as on):
+Environment (a flag wins over its variable; empty, 0, no, NO, false and FALSE count as off;
+any other value counts as on):
   CUTPOINT_LITE=1          same as --lite
   CUTPOINT_YES=1           same as --yes
   CUTPOINT_DRY_RUN=1       same as --dry-run
@@ -78,8 +79,8 @@ with no terminal the answer is No unless --yes is given):
     Only when no service exists does it start `ollama serve` in the background (log:
     ~/.local/state/cutpoint/ollama-serve.log). A declined or failed
     Ollama install never fails the Cutpoint install.
-  - Pull qwen3.5:9b (about 6.6 GB), full mode only, when Ollama is running.
   - "cutpoint setup" (model weights, about 2.5 GB, 3.5 GB with an NVIDIA GPU), full mode only.
+  - Pull qwen3.5:9b (about 6.6 GB), full mode only, when Ollama is running.
 EOF
 }
 
