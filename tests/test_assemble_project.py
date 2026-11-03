@@ -205,7 +205,7 @@ def test_project_mp4_refuses_force(home, capsys):
 def test_project_timeline_format_keeps_the_clips(project, capsys):
     code, doc = run_json(capsys, ["assemble", "p", "--format", "fcpxml", *NO_SHAPING])
     assert code == 0, doc
-    clip_keys = {"clips_dir", "manifest", "clips", "count", "total_seconds"}  # kept: listed
+    clip_keys = {"clips_dir", "manifest", "clips", "count", "total_seconds", "taken_over"}  # kept
     assert set(doc["outputs"]) == {"format", "fcpxml", "srt", "duration", "clip_count"} | clip_keys
     assert doc["outputs"]["clips_dir"] == str(project / "clips")
     assert doc["warnings"] == []

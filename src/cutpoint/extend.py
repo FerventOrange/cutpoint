@@ -549,6 +549,8 @@ def _extend_locked(
                     if not (pano is not None and p.entry.get("pano"))
                 },
             )
+        # --json: finished clips of a stopped run this one did not encode again
+        jsonout.output("taken_over", len(resume.taken) if resume is not None else 0)
         entries = []
         reused = 0
         for plan in plans:

@@ -605,6 +605,14 @@ def _lock_stale(lock: Path, rec: dict[str, Any] | None) -> bool:
     return not procs.pid_alive(rec["pid"], written)
 
 
+def lock_held(dst: Path) -> bool:
+    """Whether a run holds the lock of ``dst`` (:func:`swap_lock`) now: its lock file is there
+    and not stale (a run on another computer counts as holding it). Only reads."""
+    lock = lock_path(dst)
+    got = _read_lock(lock) if lock is not None else None
+    return got is not None and not _lock_stale(lock, got[1])
+
+
 def _busy_error(dst: Path, lock: Path, rec: dict[str, Any] | None) -> FolderBusyError:
     """``dst``: what the message names as in use (the folder, or ``swap_lock``'s subject)."""
     if rec is None:
