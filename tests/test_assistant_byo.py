@@ -1101,6 +1101,13 @@ def test_vision_list_keeps_saved_text_only_model_marked(monkeypatch) -> None:
     assert got[1]["name"] == "gpt-3.5-turbo (may not accept images)"
 
 
+def test_vision_list_keeps_codex_models(monkeypatch) -> None:
+    got = _vision_list(
+        monkeypatch, ["gpt-5.3-codex", "codex-mini-latest", "gpt-3.5-turbo"], role="vision"
+    )
+    assert [m["id"] for m in got] == ["gpt-5.3-codex", "codex-mini-latest"]
+
+
 def test_vision_list_empty_after_filter_shows_everything(monkeypatch) -> None:
     got = _vision_list(monkeypatch, ["o3-mini", "gpt-3.5-turbo"], role="vision")
     assert [m["id"] for m in got] == ["o3-mini", "gpt-3.5-turbo"]

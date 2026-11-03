@@ -124,7 +124,6 @@ TEXT_ONLY_MODEL_PARTS = (
     "grok-3",
     "grok-code",
     "grok-build",
-    "codex",
 )
 IMAGE_MODEL_PREFIXES = (
     "claude-",

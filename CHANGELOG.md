@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   8192 tokens or less (local models), 4 with a larger one. Sheets are cached in
   `ui/assistant/sheets` per moment, window and source file. A local Ollama model gets the tool
   when Ollama lists `vision` for it, Claude always, other models unless their name is a known
-  text-only one (`gpt-3.5`, `o1-mini`, `o3-mini`, `grok-code`, `grok-build`, `codex`); a model
+  text-only one (`gpt-3.5`, `o1-mini`, `o3-mini`, `grok-code`, `grok-build`); a model
   that refuses the image is asked again without it and is not offered the tool again until
   `cutpoint ui` restarts. Frames go to a provider that is not on this machine only once you
   allow that provider and host for that project: the chat shows an allow box ("Allow for this

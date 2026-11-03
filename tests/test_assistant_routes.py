@@ -740,6 +740,40 @@ def test_models_route_role_consent_gating(client: TestClient, monkeypatch, home:
     assert seen == [("vision-v2:codex@chatgpt.com",)]
 
 
+def test_vision_models_route_keeps_saved_model_only_for_its_provider(
+    client: TestClient, monkeypatch, home: Path
+) -> None:
+    set_config(
+        home,
+        vision_assistant={
+            "provider": "codex",
+            "model": "gpt-3.5-turbo",
+            "consent": [
+                providers.consent_key(providers.SubscriptionProvider(n), "vision")
+                for n in ("codex", "claude-code")
+            ],
+        },
+    )
+    providers.clear_model_cache()
+    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": True})
+    monkeypatch.setattr(
+        ui.cliproxy,
+        "list_models",
+        lambda *a, **k: [
+            {"id": "gpt-3.5-turbo", "name": "gpt-3.5-turbo"},
+            {"id": "gpt-5", "name": "gpt-5"},
+        ],
+    )
+    got = client.get("/api/assistant/models?role=vision&provider=codex").json()
+    assert [m["id"] for m in got["models"]] == ["gpt-5", "gpt-3.5-turbo"]
+    assert got["models"][1]["name"] == "gpt-3.5-turbo (may not accept images)"
+
+    providers.clear_model_cache()
+    got = client.get("/api/assistant/models?role=vision&provider=claude-code").json()
+    assert "gpt-3.5-turbo" not in [m["id"] for m in got["models"]]
+    providers.clear_model_cache()
+
+
 def test_role_aware_consent_endpoint(client: TestClient, monkeypatch, home: Path) -> None:
     set_config(
         home,

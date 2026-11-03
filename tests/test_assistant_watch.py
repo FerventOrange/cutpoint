@@ -407,7 +407,7 @@ def names(tools: list[dict[str, Any]] | None) -> list[str]:
         (Capabilities(True, True), "gpt-6-astra", True),  # unknown: offered
         (Capabilities(True, True), "grok-code-fast-1", False),  # a known text-only name
         (Capabilities(True, True), "gpt-3.5-turbo", False),
-        (Capabilities(True, True), "gpt-5.3-codex", False),
+        (Capabilities(True, True), "gpt-5.3-codex", True),  # Codex models take images
     ],
 )
 def test_the_tool_is_hidden_for_text_only_models(
@@ -639,7 +639,9 @@ def test_ollama_turns_image_parts_into_images_only_for_list_content() -> None:
         ("claude-code", "claude-opus-5-5", True),
         ("openai", "gpt-6-astra", True),
         ("openai", "GPT-5.6-sol", True),
-        ("openai", "gpt-5.3-codex", False),  # text-only parts win over the prefixes
+        ("openai", "gpt-5.3-codex", True),  # Codex models take images
+        ("codex", "gpt-5.3-codex", True),
+        ("openai", "codex-mini-latest", None),  # unknown: no image prefix matches
         ("openai", "gpt-3.5-turbo", False),
         ("openai", "o3-mini", False),
         ("xai", "grok-4.7", True),
