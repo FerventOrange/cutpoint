@@ -214,12 +214,17 @@ def test_director_reuse_key_has_the_axis_only_when_upright(tmp_path) -> None:
         "params": {"a": 1},
     }
     cache.save_json(tmp_path / "001_a.json", base)
-    upright = {"clip": "002", "forward_axis": "+z", "det_frame": VW.DET_FRAME}
+    upright = {
+        "clip": "002",
+        "forward_axis": "+z",
+        "det_frame": VW.DET_FRAME,
+        "wearer_model": G.UPRIGHT_WEARER,
+    }
     cache.save_json(tmp_path / "002_b.json", base | upright)
     cache.save_json(tmp_path / "003_c.json", base | upright | {"clip": "003", "det_frame": None})
     found = PC._reusable(tmp_path)
     assert PC._plan_key(*seg) in found
-    now = PC._axis_key("+z", VW.DET_FRAME)
+    now = PC._axis_key("+z", VW.DET_FRAME, G.UPRIGHT_WEARER)
     assert PC._plan_key("002", *seg[1:], now) in found
     assert PC._plan_key("002", *seg[1:]) not in found  # planned upright, now default: re-plan
     assert PC._plan_key("003", *seg[1:], now) not in found  # d10b5c0's +z views: re-plan

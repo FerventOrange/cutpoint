@@ -461,6 +461,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- 360 clips filmed with the camera upright (lenses horizontal, on a pole or stick above you)
+  now place the wearer below the camera (#573). The wearer cone (the rendered QA's self tags,
+  the `--paths` QA's wearer exclusion), the director's wearer rule, the travel direction and
+  the selfie view assumed the helmet mount, which on such a clip points 47 deg toward the
+  travel lens; where enough close people were found, their median was used instead, which on
+  rafting footage landed on the people beside you. An upright clip now takes the wearer from
+  its orientation track: its median down direction, tilted 15 deg away from the `_10_` lens,
+  with a 25 deg cone instead of 50 deg, so the people seated around the pole count as people,
+  not as you (measured on five upright clips). Its view layer is computed again by `360 analyze` (an
+  INFO line says so) when its selfie view looked elsewhere, and the candidates' camera paths
+  are planned again, as are an upright clip's paths already saved by `360 director` (no
+  `--force` needed; until `360 analyze` has recomputed the view layer, a WARNING says so and
+  the paths are planned again on the next run). Helmet-mount clips are unchanged.
+- UI build progress no longer jumps backwards with ffmpeg 7 and newer (#678).
+- A parallel export that cannot kill one of its ffmpeg runs on a stop now says so in a DEBUG
+  line with the process id and the error, instead of ignoring it silently (#686).
 - The 360 director keeps more friend shots on crash clips (#604): a person framed whole counts
   as framed well with `include_check_pad_deg` (new `pano.director` key, default 1.5 deg) of
   room inside the side margin, not the full `include_pad_deg` (5 deg). A fix (a wider view or a

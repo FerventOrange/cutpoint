@@ -42,7 +42,7 @@ Self boxes: when the clip's director path, IMU orientation and 360 view layer ar
 hand and the render was levelled with that IMU (dual fisheye, or an SDK stitch without
 FlowState), a person box is the wearer when its centre, seen through the rotation the
 clip was rendered with, lies in the wearer cone (:func:`cone_self`: the cone the
-geometric QA and the director use, ``WEARER_CONE_DEG`` around the clip's wearer axis).
+geometric QA and the director use, :func:`views.wearer_cone` around the clip's wearer axis).
 The own-body CLIP classifier (:func:`cutpoint.events.visual.self_boxes`) misses the
 wearer's head, goggles and gloves at the frame edge; it still runs, and a box either one
 tags is self (``self_method`` ``cone+clip``), or alone when the cone is unavailable
@@ -539,8 +539,9 @@ def cone_self(item: dict[str, Any], det: np.ndarray, src_times: np.ndarray) -> n
     picture: each box centre ``(cx, cy)`` (``det`` in :func:`frame_flags` layout,
     frame index into ``src_times``) is the output ray of a rectilinear frame with the
     path's FOV at that time, turned into camera coordinates with
-    :func:`render_rotations`, and is the wearer within ``WEARER_CONE_DEG`` of the
-    clip's wearer axis (:func:`views.wearer_axis`).
+    :func:`render_rotations`, and is the wearer within the clip's wearer cone
+    (:func:`views.wearer_cone`, ``WEARER_CONE_DEG`` on a helmet mount) of its wearer
+    axis (:func:`views.wearer_axis`).
 
     Returns:
         The boolean array, or None (use the CLIP classifier) when the clip has no
@@ -551,7 +552,7 @@ def cone_self(item: dict[str, Any], det: np.ndarray, src_times: np.ndarray) -> n
     from cutpoint.config import remap_source  # noqa: PLC0415
     from cutpoint.pano import geometry as G  # noqa: PLC0415
     from cutpoint.pano.director import evaluate  # noqa: PLC0415
-    from cutpoint.pano.views import load_views, wearer_axis  # noqa: PLC0415
+    from cutpoint.pano.views import load_views, wearer_axis, wearer_cone  # noqa: PLC0415
 
     path = item.get("path")
     if path is None or not item.get("imu_levelled") or not path.get("source"):
@@ -578,7 +579,7 @@ def cone_self(item: dict[str, Any], det: np.ndarray, src_times: np.ndarray) -> n
     d /= np.linalg.norm(d, axis=1, keepdims=True)
     cam = np.einsum("kij,kj->ki", rot[fi], d)
     ang = np.degrees(np.arccos(np.clip(cam @ wearer_axis(pv), -1.0, 1.0)))
-    return ang <= G.WEARER_CONE_DEG
+    return ang <= wearer_cone(pv)
 
 
 # --------------------------------------------------------------------------- aggregation
