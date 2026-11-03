@@ -83,7 +83,8 @@ The workspace is local-only and supports standard video. Source files are never 
 Insta360 X3 folders and files (`.insv`, `.lrv`) make 360 projects, analyzed and reframed as by
 the CLI ([360 video](workflows/360.md#in-the-ui)); a folder mixing 360 and regular videos is refused.
 Analysis can download a Whisper model when speech transcription first needs it, just as the
-CLI does; the UI does not run `cutpoint setup`. Selecting a browser-incompatible source prepares
+CLI does; the UI does not run `cutpoint setup` (`cutpoint setup --only whisper` fetches the
+model ahead of time). Selecting a browser-incompatible source prepares
 a cached preview conversion, which may take time and extra disk space.
 
 Use `--port 8766` if the default port is occupied. Stop the server with Ctrl+C; this also stops
@@ -218,7 +219,8 @@ A `Permission denied` on `/data` with a volume from the 0.2.0 image: see
 Inside the UI, choose sources under `/footage`; the bind mount is read-only, so your videos are never
 modified. The `cutpoint-data` volume is `CUTPOINT_HOME=/data` and keeps projects, models and the
 Hugging Face cache (`HF_HOME=/data/huggingface`) between runs. The only automatic download is the
-Whisper model on first transcription.
+Whisper model on first transcription (`cutpoint setup --only whisper` fetches it ahead of
+time).
 
 For `cutpoint events`, build with `--build-arg INSTALL_EVENTS=true` (tag it `cutpoint:events`) and
 download the models explicitly into the same volume:
@@ -267,7 +269,9 @@ Projects go to `<CUTPOINT_HOME>\projects` unless you set `projects_dir` in `conf
 ### Download models (only for `cutpoint events`)
 
 `analyze`, `clips`, `extend` and `assemble` need no model download beyond the Whisper model,
-which is fetched into the Hugging Face cache on first use.
+which is fetched into the Hugging Face cache on first use. To fetch it ahead of time (in every
+install, also Cutpoint lite): `uv run cutpoint setup --only whisper` (`--whisper-model NAME`
+for another model). Once it is cached, runs load it without a Hugging Face Hub request.
 
 For `cutpoint events`, install the `events` extra and run:
 
@@ -275,15 +279,16 @@ For `cutpoint events`, install the `events` extra and run:
 uv run cutpoint setup
 ```
 
-This downloads about 2 GB into `CUTPOINT_HOME`: the PANNs sound-event checkpoint, CLIP ViT-L/14,
-a Faster R-CNN person detector, an aesthetic head and Silero VAD. Downloads resume if
+This downloads about 2.5 GB (3.5 GB with an NVIDIA GPU): the Whisper model into the Hugging
+Face cache, and into `CUTPOINT_HOME` the PANNs sound-event checkpoint, CLIP ViT-L/14, a Faster
+R-CNN person detector, an aesthetic head and Silero VAD. Downloads resume if
 interrupted. Choose parts with `--only`:
 
 ```powershell
 uv run cutpoint setup --only panns voice
 ```
 
-Valid components: `pip`, `panns`, `visual`, `voice`. `setup` installs no Python
+Valid components: `pip`, `whisper`, `panns`, `visual`, `voice`. `setup` installs no Python
 packages; the `pip` step only checks them and prints the install command. The VLM layer of
 `cutpoint events` downloads nothing here: it uses the shared vision model (see
 [Ollama](#optional-ollama-for-frame-rating-and-ai-chat)).

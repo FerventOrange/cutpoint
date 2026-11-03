@@ -127,7 +127,7 @@ So do these combinations:
 | `capabilities` | The report's own keys (as printed by `capabilities` without `--json`, including `edition`, `torch` and `insta360_sdk`) |
 | `mix` | `segments`, `report`, `sheet`, `moments` (each `id`, `source`, `start`, `end`, `duration`, `category`), `count`, `total_seconds`, `target_seconds`, `categories` (per category `n` and `seconds`), `content_qa_pass` |
 | `stage` | `stage_dir`. Staging: `files`, `copied`, `skipped`, `bytes`, `read_s`, `mb_per_s`. `--list`: `files` (each `source`, `staged`, `bytes`, `read_s`). `--clear`: `removed` |
-| `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`); for `pip`, `installed` and `missing` |
+| `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`); for `pip`, `installed` and `missing`; for `whisper`, `model` (its name), `path` (its folder in the Hugging Face cache) and `status` (`downloaded`, `found`, or `missing` with `model` and `path` `null` when the step did not finish) |
 | `360 scan` | `pano`, `timings`, `clips` (each `id`, `mode`, `duration`, `frames`, `insv`, `insv_bytes`, `lrv`), `count`, `total_seconds` |
 | `360 analyze` | `timings` (`pano_timings.json`: this run's `views`, `analyze_s`, `events_s`, `paths_s`, `scan_s` with `--scan` and `total_s`; with `--views-only` the earlier file's keys stay, with this run's `views` and `views_only_s`; `analyze_total_s` was removed, older files may still have it; see [360 video](workflows/360.md#commands); `null` in the envelope of a run that failed after `highlights.json` changed, as the earlier run's file was removed, or kept with a `stale_timings_kept` warning), `views` (`cached`, `computed`); with `--scan`, also those of `360 scan`; unless `--views-only`, also the outputs of `analyze` (`highlights`, `transcript`, `candidates`, `suggested_top`, `style`); unless `--views-only` or `--no-events`, also `events`; unless `--views-only`, also `candidate_paths` (`dir`, `candidates`, `computed`, `cached`, `skipped`, `failed`, `seconds`, `flags`: candidates per flag code; see [360 video](workflows/360.md#camera-paths-of-the-candidates)) |
 | `360 status` | `sdk` (`exe`, `origin`, `found`, `runs`, `version`); with a project, `clips` (each `id`, `mode`, `duration`, `views`, `render`, `render_file`) |
@@ -1440,11 +1440,18 @@ fails with `ERROR Nothing selected in <project>: ...`, exit code 1, and writes n
 ## setup
 
 ```text
-cutpoint setup [--only pip panns visual voice] [--json]
+cutpoint setup [--only pip whisper panns visual voice] [--whisper-model NAME] [--json]
 ```
 
-Downloads the models for `events` (about 2 GB): PANNs, CLIP ViT-L/14, the Faster R-CNN detector,
-the aesthetic head and Silero VAD. The VLM layer uses the shared vision model instead (Ollama with
+Downloads the Whisper model and the models for `events` (about 2.5 GB, 3.5 GB with an NVIDIA
+GPU): Whisper, PANNs, CLIP ViT-L/14, the Faster R-CNN detector, the aesthetic head and Silero
+VAD. `whisper` fetches the model `analyze` uses without `--model` (`medium` with CUDA, about
+1.5 GB; `small` without, about 0.5 GB) into the Hugging Face cache; `--whisper-model NAME` fetches
+another faster-whisper name (such as `large-v3`) or Hugging Face repo id instead (with
+`whisper` in `--only`; without it, exit 2). It needs no
+extra, so `setup --only whisper` works in Cutpoint lite (the `visual` step of a full `setup`
+needs the `events` extra). Without it, a run downloads the model it needs on first use; once the
+model is cached, runs load it without a Hugging Face Hub request. The VLM layer uses the shared vision model instead (Ollama with
 `qwen3.5:9b`, or a hosted Vision model), which `setup` does not download. `--json` writes the result as one [JSON envelope](#json-output) on stdout. See [Getting started](getting-started.md#download-models-only-for-cutpoint-events).
 
 ## paths
