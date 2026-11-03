@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- AI Chat can watch a moment (#640): with a chat model that takes images, the assistant gets a
+  `view_moment` tool that returns one timeline sheet (6 frames for a clip up to 12 s, else 9, in
+  a 3-wide grid, each stamped with its number and source time, sized for about 1.5k image tokens
+  on Claude) with the moment's transcript lines and the sounds `events.json` heard in it
+  (laughter, scream). The instructions say to watch only when labels, transcripts and scores
+  cannot answer, never every moment. A message can watch at most 2 moments with a context of
+  8192 tokens or less (local models), 4 with a larger one. Sheets are cached in
+  `ui/assistant/sheets` per moment, window and source file. A local Ollama model gets the tool
+  when Ollama lists `vision` for it, Claude always, other models unless their name is a known
+  text-only one (`gpt-3.5`, `o1-mini`, `o3-mini`, `grok-code`, `grok-build`, `codex`); a model
+  that refuses the image is asked again without it and is not offered the tool again until
+  `cutpoint ui` restarts. Frames go to a provider that is not on this machine only once you
+  allow that provider and host for that project: the chat shows an allow box ("Allow for this
+  project", "Allow and ask again") when the model wants to watch. The consent is its own and
+  versioned (`frames-v1:<provider>@<host>` in `assistant.frames_consent` of `config.json`,
+  per project folder); the AI Chat and Vision consents never cover it. The AI Chat consent text
+  now says it never sends video frames unless you allow them for a project.
 - A Models tab in `cutpoint ui` sets the model of each role: Chat (`assistant`) and Vision (the new
   `vision_assistant` section, same keys, the same providers as Chat), each
   with its own provider, model and, for hosted ones, permission. It replaces the AI assistant

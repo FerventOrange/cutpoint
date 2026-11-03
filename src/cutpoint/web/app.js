@@ -3189,9 +3189,11 @@ const CHAT_POLL_MS = 1000;
 const MAX_SUGGESTIONS = 3; // suggestion buttons under a proposal
 const MAX_HISTORY_SHOWN = 20; // newest applied changes listed for Revert
 const PROVIDER_NAMES = { ollama: 'Ollama', openai: 'OpenAI-compatible', anthropic: 'Anthropic' };
-// What a hosted provider gets: analysis results only, never video or audio (context.py sends
-// only these; file names, never paths)
-const CONSENT_SENDS = "this project's analysis results (moment labels, scores and detection signals, transcript snippets, file names (not full paths) and times) and your messages; never video or audio";
+// What a hosted provider gets: analysis results only (context.py sends only these; file names,
+// never paths); video frames only once allowed for a project (view_moment, #640), never audio
+const CONSENT_SENDS = "this project's analysis results (moment labels, scores and detection signals, transcript snippets, file names (not full paths) and times) and your messages; never video frames unless you allow them for a project, and never audio";
+// What view_moment sends a hosted model once allowed (watch.py): one image per watched moment
+const FRAMES_SENDS = (host) => `To answer questions about what can be seen, the assistant can watch a few moments. Each one sends ${host} one image of 6 to 9 frames from the moment's clip, with its times, transcript and detected sounds. Nothing was sent. You allow it once for this project and host; Cutpoint saves it in config.json.`;
 const CHANGE_NAMES = { added: 'added', removed: 'removed', moved: 'moved', trimmed: 'trimmed', relabelled: 'renamed' };
 const SMALL_MODEL_NOTE = 'A small local model can miss moments or misread a request. Check each change in the preview before you apply it.';
 const aiUrl = (path = '') => `/api/projects/${encodeURIComponent(S.id)}/assistant${path}`;
@@ -3219,7 +3221,7 @@ async function loadAssistant() {
   const pid = S.id;
   clearTimeout(S.chatTimer);
   S.turn = null;
-  const chat = S.chat = pid ? { pid, provider: null, consent: null, turns: [], error: '', loaded: false } : null;
+  const chat = S.chat = pid ? { pid, provider: null, consent: null, frames: null, turns: [], error: '', loaded: false } : null;
   S.history = [];
   chatError('');
   renderChat();
@@ -3229,6 +3231,7 @@ async function loadAssistant() {
     if (S.chat !== chat) return; // another project opened meanwhile
     chat.provider = a.provider;
     chat.consent = a.consent ?? null;
+    chat.frames = a.frames ?? null;
     chat.turns = (a.turns ?? []).map(chatTurn);
     S.history = hist.applied ?? [];
     const run = a.running?.[0];
@@ -3524,6 +3527,9 @@ const TOOL_TEXT = {
   find_moments: (ev) => `Searched for “${ev.query}”: ${ev.found} found`,
   get_moment: (ev) => `Looked at ${momentName(ev.id)}`,
   get_transcript: (ev) => `Read the transcript around ${momentName(ev.id)}`,
+  view_moment: (ev) => ev.error === 'limit' ? `Did not watch ${momentName(ev.id)}: the limit of moments watched per message was reached`
+    : ev.error ? `Could not watch ${momentName(ev.id)}: ${ev.error}`
+      : `Watched ${momentName(ev.id)} (${ev.frames} frames)`,
 };
 
 /** Chat bubbles of turn ``t``: the user's message, then the model's steps, its answer and its proposals. */
@@ -3538,6 +3544,7 @@ function turnItems(t) {
     } else if (ev.kind === 'show') items.push(showItem(ev, id, query));
     else if (ev.kind === 'reply') items.push(h('li', { class: 'msg ai', 'data-id': id }, h('span', { class: 'vh', text: 'Assistant: ' }), h('p', { text: ev.text })));
     else if (ev.kind === 'proposal') items.push(proposalItem(ev, id));
+    else if (ev.kind === 'frames_consent') items.push(framesItem(ev, id, t));
     else if (ev.kind === 'error') items.push(h('li', { class: 'msg ai bad', 'data-id': id, text: ev.text }));
   }
   if (t.status === 'running')
@@ -3595,6 +3602,49 @@ function proposalItem(ev, id) {
         type: 'button', class: `btn small outline${S.proposal?.id === s.id ? ' on' : ''}`, 'data-act': `suggest${i}`,
         title: changeCounts(s.diff), onclick: () => reviewProposal(s),
       }, s.summary))) : null);
+}
+
+/** view_moment without frame consent: allow video frames of this project to go to the host (and ask again). */
+function framesItem(ev, id, t) {
+  const f = S.chat?.frames;
+  const allowed = !!f && !f.needed && f.key === ev.key;
+  const busy = !!S.turn || S.sending;
+  return h('li', { class: 'msg ai frames-consent', 'data-id': id, role: 'group', 'aria-label': 'Video frames' },
+    h('p', { class: 'msg-title', text: allowed ? `Video frames of this project are allowed for ${ev.host}.` : `Let the assistant watch ${momentName(ev.id)}?` }),
+    allowed ? null : h('p', { class: 'msg-meta', text: FRAMES_SENDS(ev.host) }),
+    h('span', { class: 'msg-acts' },
+      allowed ? null : h('button', { type: 'button', class: 'btn small primary', 'data-act': 'frames-allow', onclick: () => giveFramesConsent(ev.key, '') }, 'Allow for this project'),
+      h('button', {
+        type: 'button', class: 'btn small', 'data-act': 'frames-ask', disabled: busy,
+        onclick: () => (allowed ? askAgain(t.user) : giveFramesConsent(ev.key, t.user)),
+      }, allowed ? 'Ask again' : 'Allow and ask again')));
+}
+
+/** Allow frames of this project for the provider in use (the server checks it is still the one asked about), then send ``again`` if given. */
+async function giveFramesConsent(key, again) {
+  const chat = S.chat;
+  if (!chat || !key) return;
+  chatError('');
+  try {
+    const r = await api(aiUrl('/frames-consent'), { method: 'POST', body: { key } });
+    if (S.chat !== chat) return;
+    chat.frames = r.frames;
+  } catch (e) {
+    if (S.chat !== chat) return;
+    if (e.status === 409) await loadAssistant(); // the provider changed: show the one in use
+    return chatError(e.message);
+  }
+  $('#chatLive').textContent = 'Video frames allowed for this project.';
+  renderChat();
+  if (again) askAgain(again);
+  else $('#chatInput').focus(); // the button is gone
+}
+
+/** Send ``text`` again as a new message. */
+function askAgain(text) {
+  if (S.turn || S.sending) return;
+  $('#chatInput').value = text;
+  $('#chatForm').requestSubmit();
 }
 
 function historyRow(entry) {

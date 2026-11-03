@@ -1,7 +1,8 @@
 """One chat turn, run in a thread: the model looks moments up and ends with a proposal or a reply.
 
 The loop offers the read tools (``find_moments``, ``get_moment``, ``get_transcript``,
-``show_moments``) and the final ``propose_edit``, for at most :data:`MAX_ROUNDS` model replies.
+``show_moments``, and ``view_moment`` for a model that takes images, :mod:`cutpoint.assistant.watch`)
+and the final ``propose_edit``, for at most :data:`MAX_ROUNDS` model replies.
 A proposal is checked with :func:`cutpoint.assistant.ops.apply_ops`; a rejected one goes back to
 the model with the reason. A model without tool calls (or one that refuses them) answers in JSON
 mode: one ``{"tool", "arguments"}`` object per reply, constrained by :data:`JSON_SCHEMA`.
@@ -22,11 +23,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from cutpoint.assistant import context
+from cutpoint.assistant import context, watch
 from cutpoint.assistant.ops import apply_ops
 from cutpoint.assistant.providers import (
     Provider,
     ProviderError,
+    Reply,
     ToolCall,
     ToolsUnsupportedError,
     describe,
@@ -146,6 +148,7 @@ class Turn:
         project: Project,
         text: str,
         earlier: list[dict[str, Any]] | None = None,
+        viewer: watch.Viewer | None = None,
     ) -> None:
         self.id = secrets.token_hex(6)
         self.provider = provider
@@ -165,6 +168,13 @@ class Turn:
         self.on_finish: Callable[[Turn], None] | None = None
         self._proposals = 0
         self._saved = False
+        # view_moment: offered (decided in _loop), moments viewed, sheets waiting to be sent and
+        # the image messages sent (taken out again if the model refuses images)
+        self.viewer = viewer
+        self._watch = False
+        self._viewed: set[str] = set()
+        self._sheets: list[dict[str, Any]] = []
+        self._images: list[dict[str, Any]] = []
 
     # -- what the page sees ------------------------------------------------------------
     def view(self, after: int = 0) -> dict[str, Any]:
@@ -264,8 +274,49 @@ class Turn:
 
     def _messages(self, json_mode: bool) -> list[dict[str, Any]]:
         plan = context.budget(self.provider.context_tokens)
-        tools = _JSON_TOOLS if json_mode else None
-        return context.build_messages(self.table, self.earlier, self.text, plan, json_tools=tools)
+        tools = [*_JSON_TOOLS, *([watch.JSON_TOOL] if self._watch else [])] if json_mode else None
+        out = context.build_messages(self.table, self.earlier, self.text, plan, json_tools=tools)
+        if self._watch:  # how and when to watch, after the rules
+            cap = str(watch.view_cap(self.provider))
+            out[0] = {**out[0], "content": out[0]["content"] + watch.RULES.replace("{cap}", cap)}
+        return out
+
+    def _tools(self) -> list[dict[str, Any]]:
+        return [*TOOLS, watch.TOOL] if self._watch else TOOLS
+
+    def _schema(self) -> dict[str, Any]:
+        if not self._watch:
+            return JSON_SCHEMA
+        names = [*TOOL_NAMES, watch.NAME, "reply"]
+        props = {**JSON_SCHEMA["properties"], "tool": {"type": "string", "enum": names}}
+        return {**JSON_SCHEMA, "properties": props}
+
+    def _ask(self, messages: list[dict[str, Any]], json_mode: bool) -> Reply:
+        """One reply. A model that refuses the sheets sent (:func:`watch.rejected_image`) is
+        asked once more with them taken out, and is offered no more this session."""
+
+        def once() -> Reply:
+            return self.provider.chat(
+                messages,
+                tools=None if json_mode else self._tools(),
+                schema=self._schema() if json_mode else None,
+                cancelled=lambda: self.status != "running",
+            )
+
+        try:
+            return once()
+        except ToolsUnsupportedError:
+            raise
+        except ProviderError as err:
+            if not self._images or not watch.rejected_image(err):
+                raise
+            logger.info("assistant: %s takes no images (%s)", self.provider.model, err)
+        watch.mark_text_only(self.provider)
+        self._watch = False
+        for m in self._images:  # the same dicts as in messages
+            m["content"] = "(the timeline sheet could not be sent: this model takes no images)"
+        self._images = []
+        return once()
 
     def _loop(self) -> None:
         caps = self.provider.capabilities()
@@ -275,17 +326,13 @@ class Turn:
                 "choose another model"
             )
         json_mode = not caps.tool_calls
+        self._watch = self.viewer is not None and watch.takes_images(self.provider, caps)
         messages = self._messages(json_mode)
         for _ in range(MAX_ROUNDS):
             if self.status != "running":
                 return
             try:
-                reply = self.provider.chat(
-                    messages,
-                    tools=None if json_mode else TOOLS,
-                    schema=JSON_SCHEMA if json_mode else None,
-                    cancelled=lambda: self.status != "running",
-                )
+                reply = self._ask(messages, json_mode)
             except ToolsUnsupportedError:
                 json_mode = True
                 messages = self._messages(True)
@@ -317,18 +364,20 @@ class Turn:
                     messages.append({"role": "user", "content": f"{call.name} result:\n{result}"})
                 else:
                     messages.append(self.provider.tool_result(call, result))
+            # sheets after every tool result of the reply (OpenAI wants the results together)
+            messages += self._sheets
+            self._images += self._sheets
+            self._sheets = []
 
     # -- tools -------------------------------------------------------------------------
     def _call(self, call: ToolCall) -> tuple[str, bool]:
         """``(result for the model, whether the turn is over)``."""
         if call.error:
             return f"error: {call.name}: {call.error}", False
-        handler = getattr(self, f"_tool_{call.name}", None) if call.name in TOOL_NAMES else None
+        names = [*TOOL_NAMES, *([watch.NAME] if self._watch else [])]
+        handler = getattr(self, f"_tool_{call.name}", None) if call.name in names else None
         if handler is None:
-            return (
-                f"error: unknown tool {call.name!r}; the tools are {', '.join(TOOL_NAMES)}",
-                False,
-            )
+            return f"error: unknown tool {call.name!r}; the tools are {', '.join(names)}", False
         return handler(call.arguments)
 
     def _moment(self, short: Any) -> tuple[str | None, str]:
@@ -389,6 +438,31 @@ class Turn:
         note = args.get("note") if isinstance(args.get("note"), str) else ""
         self._emit({"kind": "show", "ids": list(dict.fromkeys(real)), "note": note[:MAX_SUMMARY]})
         return f"{len(set(real))} moments shown to the user", False
+
+    def _tool_view_moment(self, args: dict[str, Any]) -> tuple[str, bool]:
+        real, problem = self._moment(args.get("id"))
+        if real is None or self.viewer is None:
+            return problem or "error: view_moment is not available", False
+        short = self.table.name(real)
+        if real in self._viewed:
+            return f"{short} was already viewed in this turn: its sheet is above", False
+        cap = watch.view_cap(self.provider)
+        if len(self._viewed) >= cap:
+            self._emit({"kind": "tool", "name": watch.NAME, "id": real, "error": "limit"})
+            return (
+                f"error: at most {cap} moments can be viewed per message; answer with what you "
+                "have seen, or ask the user to send another message",
+                False,
+            )
+        item = next((s for s in self.project.segments if s["id"] == real), None)
+        item = item or self.table.candidates[real]
+        view = self.viewer.view(short, real, item, self.table.row(real), self.project.transcript)
+        self._emit(view.event)
+        if view.sheet is not None:
+            self._viewed.add(real)
+            text = f"{watch.NAME} {short}: timeline sheet"
+            self._sheets.append(watch.image_message(text, view.sheet))
+        return view.text, False
 
     def _checked(self, ops: Any) -> tuple[dict[str, Any] | None, str]:
         """``ops`` with real ids, applied to the turn's sequence: ``({ops, after, diff}, "")``
