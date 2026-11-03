@@ -439,6 +439,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The 360 director keeps more friend shots on crash clips (#604): a person framed whole counts
+  as framed well with `include_check_pad_deg` (new `pano.director` key, default 1.5 deg) of
+  room inside the side margin, not the full `include_pad_deg` (5 deg). A fix (a wider view or a
+  yaw shift) still aims for the full 5 deg. With the full pad in the check too, people framed
+  near the margin made bad stretches long enough to turn whole friend shots into a view
+  cut-away. `legacy` paths are unchanged. Planned camera paths change, so cached candidate
+  paths are planned again.
 - The 360 director no longer swings or spins the view with a handheld or pole-mounted camera
   (an upright clip, lenses horizontal) (#547). This is the fix for the reported spinning:
   the view followed the camera's heading, smoothed over only 1.5 s, so twisting the camera
