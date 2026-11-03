@@ -34,8 +34,9 @@ irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | 
 
 `sh install.sh --help` and `.\install.ps1 -Help` list every option and variable. `irm | iex`
 cannot pass parameters, so on Windows each option also has a `CUTPOINT_*` variable; the variables
-work in `install.sh` too. A flag wins over its variable, and empty, `0`, `no`, `NO`,
-`false` and `FALSE` count as off; any other value counts as on.
+work in `install.sh` too. A flag wins over its variable, and an empty value or
+`0` counts as off. So do `no` and `false`: on Windows in any case, in `install.sh` exactly as
+`no`, `NO`, `false` or `FALSE`. Any other value counts as on.
 
 ### Full or lite
 
@@ -90,6 +91,31 @@ torch build chosen for your machine.
 
 The installer remembers none of your earlier options. Give the same ones again: without `--lite`
 a lite install becomes full, and without `--source` a git or path install goes back to PyPI.
+
+### Other sources
+
+The installers install from PyPI, from `github.com/FerventOrange/cutpoint` (`--source git[@REF]`)
+or from a local path. For a fork, or a wheel or sdist URL, install the tool with uv and choose the
+torch build yourself. Use `cpu`, or `cu126` with an NVIDIA GPU:
+
+```bash
+uv tool install "cutpoint[events,gpu] @ URL" --torch-backend cu126 --python 3.12 --reinstall --no-sources
+```
+
+Without `--torch-backend`, uv picks a torch build that may not match the machine. The `--lite`
+equivalent is `"cutpoint[ui,keyring,ski] @ URL"` (no `--torch-backend`). The runtime hints print
+this form with the extras in use.
+
+To install into your own virtual environment instead, use `uv pip` or `pip`. For CUDA torch add
+the PyTorch index; an already-installed CPU torch also needs a reinstall:
+
+```bash
+uv pip install "cutpoint[events,gpu]" --index https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match --reinstall-package torch --reinstall-package torchvision
+pip install "cutpoint[events,gpu]" --extra-index-url https://download.pytorch.org/whl/cu126 --force-reinstall
+```
+
+Without an NVIDIA GPU, leave out the index and reinstall flags and `gpu`. A plain PyPI install of
+torch is CPU-only on Windows. Check the result with `cutpoint capabilities`.
 
 ### From a clone
 

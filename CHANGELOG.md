@@ -255,8 +255,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   They document full and lite (`--lite`, `-Lite`, `CUTPOINT_LITE`, and unsetting it to return to
   full), `--source` and `CUTPOINT_SOURCE`, the optional prompts (Ollama, the `qwen3.5:9b` model,
   `cutpoint setup`) with `--yes`, and upgrading by running the installer again instead of
-  `uv tool upgrade`. The old `uv tool install "cutpoint[...]"`, `--torch-backend`, `uv pip` and `pip` extras
-  instructions are removed, and the docs say to repeat your options when you upgrade (#528).
+  `uv tool upgrade`. The old `uv tool install "cutpoint[...]"` extras instructions are replaced by the installers, with a short
+  "Other sources" note for forks, wheel or sdist URLs and your own virtual environment. The docs
+  say to repeat your options when you upgrade (#528).
 - **BREAKING:** the `ski` style is renamed `action-cam`, with no alias: it is the
   telemetry-driven scorer for any action-cam footage, not only skiing. Use `--style action-cam`
   on `analyze`, `edit` and `360 analyze`; `style` and `style_kind` in `highlights.json`,
