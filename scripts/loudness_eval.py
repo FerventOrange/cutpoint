@@ -83,7 +83,6 @@ import json
 import logging
 import os
 import sys
-import tempfile
 import wave
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -996,9 +995,15 @@ def label_dir_writable(folder: Path) -> bool:
         probe = probe.parent
     if not os.path.isdir(probe):  # noqa: PTH112 - False, not raising, on OSError
         return False
+    # One exclusive create: tempfile retries random names on a PermissionError (an ACL that
+    # denies file creation on Windows) and can hang for minutes.
+    probe_file = Path(probe) / f".loudness-eval-probe-{os.getpid()}"
     try:
-        with tempfile.TemporaryFile(dir=probe):
-            pass
+        fd = os.open(probe_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        try:
+            os.close(fd)
+        finally:
+            probe_file.unlink()
     except OSError:
         return False
     return True

@@ -472,11 +472,16 @@ def test_label_dir_writable_probes_without_creating_the_folder(tmp_path) -> None
 
 
 def test_label_dir_writable_is_false_when_the_probe_file_fails(tmp_path, monkeypatch) -> None:
-    def refuse(**_k):
+    def refuse(*_a, **_k):
         raise PermissionError("read-only")
 
-    monkeypatch.setattr(le.tempfile, "TemporaryFile", refuse)
+    monkeypatch.setattr(le.os, "open", refuse)
     assert not le.label_dir_writable(tmp_path)
+
+
+def test_label_dir_writable_leaves_no_probe_file(tmp_path) -> None:
+    assert le.label_dir_writable(tmp_path)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_draft_folder_check_skips_label_files_kept_without_force(
