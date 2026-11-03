@@ -403,8 +403,10 @@ treats a screen that holds still as a menu (hangar and crew screens show as litt
 HUD): a 32x18 grey thumbnail of the HUD area within 3 grey levels of the first frame, more than 2 s
 from any feed sighting or kill, for at least 5 s when new menu text shows (at least 2 text lines
 that are no preset phrase, first read in the still stretch or up to 2 s before it, each on screen
-for at least half of it) and at least 10 s otherwise, so
-still gameplay (scoped, about 6 s) keeps its banners; it runs only when the bounding box of the
+for at least half of it); without new menu text it needs at least 10 s plus another menu frame
+(box, list or text screen) within 15 s, or at least 45 s of holding still, so still gameplay
+(respawn and spectator waits, a preparation phase, scoped moments of about 6 s) keeps its
+banners; it runs only when the bounding box of the
 preset's regions is at least a quarter of the frame. Feed sightings and kills are never dropped,
 by any menu test. A discovered kill feed takes in the rows above and below
 it that show only when the feed is full (up to twice its height), counted from its outermost
