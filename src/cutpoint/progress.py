@@ -24,6 +24,10 @@ INFO line ``<name>: N/M done, continuing`` and sends the same text at once as it
 
 :attr:`Run.observers` get every state change and ``pct`` of the runs, whether or not
 ``CUTPOINT_PROGRESS`` is set (``progress.json``, :mod:`cutpoint.runstate`); they never stop a run.
+
+``--batch-size N`` (#109) splits a step's sources (the VLM layer's windows) into batches of N
+(:func:`batches`); its model is closed between two, and the boundary is logged and recorded as
+:func:`continuing` does.
 """
 
 from __future__ import annotations
@@ -44,6 +48,9 @@ ENV = "CUTPOINT_PROGRESS"
 ANALYZE_STEPS = ("transcribe", "reactions", "keyframes", "crashes", "ranking", "vision")
 EDIT_STEPS = (*ANALYZE_STEPS, "clips", "assemble")
 PANO_STEPS = ("scan", "views", "analyze", "events")  # ``cutpoint 360 analyze``
+# ``cutpoint events``: its layers in the order they run, recorded in progress.json only (a
+# quiet run, :func:`run`: no PROGRESS lines)
+EVENTS_STEPS = ("audio", "voice", "visual", "ocr", "crash", "vlm", "write")
 LABELS = {
     "transcribe": "Transcription",
     "reactions": "Reactions",
@@ -91,6 +98,7 @@ class Run:
         self.current: str | None = None  # the running step
         self.stopped = False  # a step already ended failed by the error that stops the run
         self._pct: int | None = None
+        self._share: tuple[float, float] | None = None  # update()'s 0-100 maps to it (share)
         self._detail: str | None = None
         self._last = 0.0  # time of the last running line of the current step
         self._pending: dict[str, Any] | None = None  # a throttled running line
@@ -189,6 +197,9 @@ class Run:
         if step is None or self.state.get(step) != "running":
             return
         if pct is not None:
+            if self._share is not None:
+                lo, hi = self._share
+                pct = lo + (hi - lo) * pct / 100
             self._pct = max(0, min(100, int(pct)))
         if detail is not None:
             self._detail = detail
@@ -294,10 +305,11 @@ def _error_text(err: BaseException) -> str:
 
 
 @contextlib.contextmanager
-def run(steps: Sequence[str], *, use: bool = True) -> Iterator[Run]:
+def run(steps: Sequence[str], *, use: bool = True, quiet: bool = False) -> Iterator[Run]:
     """The progress run of a command: a new :class:`Run` of ``steps``, or the run already
     active (``edit`` runs ``analyze`` inside its own); with ``use`` False a run that emits
-    nothing (``reanalyze`` inside ``events``).
+    nothing (``reanalyze`` inside ``events``); with ``quiet`` one that writes no PROGRESS
+    lines, but whose :attr:`Run.observers` see it (``cutpoint events``: progress.json).
 
     An exception ending the block ends the current step ``failed`` (``cancelled`` for
     KeyboardInterrupt) and propagates; a normal end emits the steps not emitted yet.
@@ -308,7 +320,7 @@ def run(steps: Sequence[str], *, use: bool = True) -> Iterator[Run]:
     if _RUNS:
         yield _RUNS[-1]
         return
-    r = Run(steps)
+    r = Run(steps, active=False if quiet else None)
     _RUNS.append(r)
     try:
         yield r
@@ -335,6 +347,28 @@ def update(pct: float | None = None, detail: str | None = None) -> None:
         _RUNS[-1].update(pct, detail)
 
 
+@contextlib.contextmanager
+def share(lo: float, hi: float) -> Iterator[None]:
+    """In the block, the active run's :meth:`Run.update` percentages (0-100) map to
+    ``[lo, hi]``: one batch of a step whose work reports per batch (``--batch-size``)."""
+    r = current()
+    if r is None:
+        yield
+        return
+    old, r._share = r._share, (lo, hi)
+    try:
+        yield
+    finally:
+        r._share = old
+
+
+def start(step: str) -> None:
+    """:meth:`Run.start` of ``step`` on the active run if it is one of its steps (the layers
+    of ``cutpoint events``, :data:`EVENTS_STEPS`); a no-op otherwise."""
+    if _RUNS and step in _RUNS[-1].steps:
+        _RUNS[-1].start(step)
+
+
 def continuing(name: str, done: int, total: int) -> None:
     """``done`` of the ``total`` units (sources, windows) of ``name`` are cached at its
     start: log ``<name>: N/M done, continuing`` (INFO) and send it as the running step's
@@ -349,6 +383,13 @@ def continuing(name: str, done: int, total: int) -> None:
     logger.info("%s", text)
     if _RUNS:
         _RUNS[-1].note(text)
+
+
+def batches[T](items: Sequence[T], size: int) -> list[Sequence[T]]:
+    """``items`` in batches of ``size`` (``--batch-size``); one batch for ``size`` 0."""
+    if size <= 0 or len(items) <= size:
+        return [items]
+    return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 def fraction(done: float, total: int) -> float:

@@ -383,12 +383,14 @@ class _Ollama:
     def __init__(self) -> None:
         self.asked: list[str] = []
         self.stop: int | None = None
+        self.unloads = 0
 
     def get(self, url: str, **_kw: Any) -> Any:
         return _Resp({"models": [{"name": "qwen3.5:9b", "digest": "d1"}]})
 
     def post(self, url: str, json: dict[str, Any], **_kw: Any) -> Any:
         if url.endswith("/api/generate"):  # unload
+            self.unloads += 1
             return _Resp({})
         import base64  # noqa: PLC0415
 
@@ -513,6 +515,53 @@ def test_events_resumed_after_a_vlm_window_equal_an_uninterrupted_run(
     assert asked == (2 if where == "boundary" else 3)
     assert _events_json(s.project) == reference  # the action-cam path: reasons kept too
     assert _read(s.project)["status"] == "done"
+
+
+@pytest.mark.parametrize("size", ["0", "2", "4"])
+def test_events_batch_size_unloads_ollama_every_n_windows_with_the_same_events(
+    vlm_project, size, caplog
+):
+    """#109 --batch-size: the vision model is unloaded after every N windows (and at the
+    end), loaded again by the next request; events.json is the same."""
+    s = vlm_project
+    s.highlights(None)
+    argv = ["events", "p", "--layers", "vlm", "--no-rescore"]
+    assert cli.main(argv) == 0
+    reference = _events_json(s.project)
+    assert s.ollama.unloads == 1
+    s.cache, s.ollama.unloads = "batched", 0
+    with caplog.at_level("INFO"):
+        assert cli.main([*argv, "--batch-size", size]) == 0
+    assert _events_json(s.project) == reference
+    assert s.ollama.unloads == -(-6 // (int(size) or 6))
+    done = [m for m in caplog.messages if m.startswith("vlm: ")]
+    step = int(size) or 6
+    assert done == [f"vlm: {k}/6 done, continuing" for k in range(step, 6, step)]
+    rec = _read(s.project)
+    assert rec["steps"]["vlm"]["state"] == "done" and rec["steps"]["vlm"]["total"] == 6
+
+
+@pytest.mark.parametrize("where", ["boundary", "inside"])
+def test_events_batch_size_interrupted_resumes_to_the_same_events(vlm_project, where):
+    s = vlm_project
+    s.highlights(None)
+    argv = ["events", "p", "--layers", "vlm", "--no-rescore"]
+    assert cli.main(argv) == 0
+    reference = _events_json(s.project)
+    s.cache = "run"
+    s.ollama.asked.clear()
+    s.frames.clear()
+    if where == "boundary":
+        s.stop_frames = 5  # the first window of the second batch of four
+    else:
+        s.ollama.stop = 2  # the second window of the first batch
+    assert cli.main([*argv, "--batch-size", "4"]) == 130
+    s.stop_frames = s.ollama.stop = None
+    s.ollama.asked.clear()
+    assert cli.main(["resume", "p"]) == 0
+    assert len(s.ollama.asked) == (2 if where == "boundary" else 5)
+    assert _events_json(s.project) == reference
+    assert _read(s.project)["argv"] == [*argv, "--batch-size", "4"]
 
 
 # -- analyze: interrupted while transcribing source 2 of 3 -----------------------------------

@@ -356,6 +356,7 @@ def test_360_analyze_plans_paths_into_the_envelope_and_timings(
         style=None,
         model="m",
         language=None,
+        batch_size=0,
     )
     with jsonout.run("360 analyze") as res:
         cli.cmd_analyze(args)
@@ -414,7 +415,7 @@ def _timing_run(monkeypatch, tmp_path: Path) -> list[dict | None]:
 def _run_analyze(**over: object) -> None:
     base = {"project": "p", "only": None, "scan": None, "no_events": False}
     base |= {"views_only": False, "force_views": False, "style": None, "model": "m"}
-    cli.cmd_analyze(argparse.Namespace(**{**base, "language": None, **over}))
+    cli.cmd_analyze(argparse.Namespace(**{**base, "language": None, "batch_size": 0, **over}))
 
 
 @pytest.mark.parametrize(("over", "keys"), list(TIMING_RUNS.values()), ids=list(TIMING_RUNS))

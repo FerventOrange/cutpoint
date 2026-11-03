@@ -170,6 +170,32 @@ def _add_skip_argument(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _batch_size(text: str) -> int:
+    """argparse type of ``--batch-size``: a whole number, 0 or more."""
+    try:
+        n = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected a whole number") from exc
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"{text!r}: must be 0 or more")
+    return n
+
+
+def add_batch_size_argument(p: argparse.ArgumentParser, *, vlm: bool = False) -> None:
+    """``--batch-size N`` (#109): each model is closed after N sources and loaded again;
+    ``vlm``: the command runs the VLM layer (``events``), so its help names the windows."""
+    windows = " (the vision model after N VLM windows)" if vlm else ""
+    p.add_argument(
+        "--batch-size",
+        type=_batch_size,
+        default=0,
+        metavar="N",
+        help=f"close each model after N sources{windows} and load it again for the next "
+        "ones, to give back memory on long runs; the results are the same (default: 0, keep "
+        "it loaded)",
+    )
+
+
 def _analyze_project(a: argparse.Namespace) -> Path:
     """``analyze``'s project folder: ``--out``, else one input's name or several inputs'
     common parent folder's name."""
@@ -214,6 +240,7 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
         recover=a.recover,
         layers=True,
         skip=_skip(a),
+        batch_size=a.batch_size,
     )
 
 
@@ -417,9 +444,11 @@ def _clip_overrides(items: list[list[str]] | None) -> dict[str, dict[str, float]
 
 
 def _cmd_events(a: argparse.Namespace) -> None:
+    from cutpoint import progress  # noqa: PLC0415
     from cutpoint.events.cli import run_args  # noqa: PLC0415
 
-    run_args(a)
+    with progress.run(progress.EVENTS_STEPS, quiet=True):  # steps in progress.json only
+        run_args(a)
 
 
 def _cmd_stage(a: argparse.Namespace) -> None:
@@ -1414,6 +1443,7 @@ def build_parser() -> argparse.ArgumentParser:
         "least this confidence, 0-1 (default: style, 0.6 for action-cam; 0 = off)",
     )
     _add_skip_argument(an)
+    add_batch_size_argument(an)
     _add_json_argument(an)
     an.set_defaults(func=_cmd_analyze)
 
@@ -1497,6 +1527,7 @@ def build_parser() -> argparse.ArgumentParser:
     from cutpoint.events.cli import add_arguments as add_event_arguments  # noqa: PLC0415
 
     add_event_arguments(ev)
+    add_batch_size_argument(ev, vlm=True)
     _add_json_argument(ev)
     ev.set_defaults(func=_cmd_events)
 

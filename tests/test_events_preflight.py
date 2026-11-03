@@ -161,6 +161,7 @@ def _args(**kw) -> argparse.Namespace:
         "style": None,
         "model": "m",
         "language": None,
+        "batch_size": 0,
     }
     return argparse.Namespace(**{**base, **kw})
 
