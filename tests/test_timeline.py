@@ -186,3 +186,31 @@ def test_otio_audio_cut_keeps_a_clip_without_audio_as_a_gap_in_line(tmp_path):
     v1, a1 = tl.tracks
     assert v1.duration().value == a1.duration().value
     assert [type(c).__name__ for c in a1] == ["Clip", "Gap", "Clip"]
+
+
+@pytest.mark.parametrize("fmt", ["fcpxml", "otio"])
+def test_timeline_write_is_atomic_when_it_fails_midway(tmp_path, monkeypatch, fmt):
+    """A failed write keeps the old timeline and leaves no ``.final.part.*`` file (#600)."""
+    out = tmp_path / f"final.{fmt}"
+    out.write_text("OLD", encoding="utf-8")
+
+    real_write_text = Path.write_text
+
+    def partial_write(target, *args, **kwargs):
+        real_write_text(Path(target), "PARTIAL", encoding="utf-8")
+        raise OSError("disk full")
+
+    if fmt == "fcpxml":
+        monkeypatch.setattr(Path, "write_text", lambda self, *a, **k: partial_write(self))
+        write = write_fcpxml
+    else:
+        otio = pytest.importorskip("opentimelineio")
+        monkeypatch.setattr(
+            otio.adapters, "write_to_file", lambda tl, name, *a, **k: partial_write(name)
+        )
+        write = write_otio
+    with pytest.raises(OSError, match="disk full"):
+        write(_clips(), out, "final", FADE)
+    monkeypatch.undo()
+    assert out.read_text(encoding="utf-8") == "OLD"
+    assert [p.name for p in tmp_path.iterdir()] == [out.name]

@@ -256,6 +256,8 @@ class VisionRater:
         images: list[bytes] | None = None,
         schema: dict | None = None,
         num_predict: int = 4096,
+        *,
+        timeout: float = 600,
     ) -> dict | None:
         """One turn (text, optionally with JPEG frames); the reply's JSON object or None.
 
@@ -292,7 +294,7 @@ class VisionRater:
             endpoint = "generate"
         self.used = True
         try:
-            resp = requests.post(f"{self.url}/api/{endpoint}", json=payload, timeout=600)
+            resp = requests.post(f"{self.url}/api/{endpoint}", json=payload, timeout=timeout)
             resp.raise_for_status()
             body = resp.json()
             content = body["response"] if raw else body["message"]["content"]
