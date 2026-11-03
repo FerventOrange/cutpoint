@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   adds `settings.style_requested` and a `detection` block, which `events` and re-runs reuse;
   `analyze --json` reports it as `outputs.detection`. A learned preset named `auto.json` is
   ignored with a warning.
+- Releases attach `install.sh`, `install.ps1` and `SHA256SUMS` with the release version stamped in
+  as the default, so `releases/download/X.Y.Z/install.sh` (or `releases/latest/download/`) installs that
+  version from PyPI; the README and Getting started document the pinned one-liners and the checksum
+  check. The stamping is `scripts/stamp_installers.py` (#684).
 - Visual candidates: `analyze` with the `action-cam`, `action` or `sport` style lists scenic
   views, group shots and steady cruising runs after the scored candidates (`"pool": "visual"`,
   ids `v001`..., `kind` `view`, `crew` or `cruise`, labels such as "scenic view / beauty shot"),
