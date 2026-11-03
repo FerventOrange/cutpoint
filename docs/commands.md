@@ -1580,7 +1580,7 @@ a model on the GPU needs its VRAM instead, and Ollama's model the size Ollama re
 and VRAM together. When memory is short it frees cached models and unloads Ollama's, checks
 again and, still short, stops with `low_memory` (exit 1, `progress.json` status `low_memory`)
 and an `ERROR` naming `cutpoint resume <project>` (or, before `progress.json` is written, the
-same command again). Whisper, PANNs and the crash check's CLIP short of VRAM run on the CPU instead (a `WARNING`); Whisper without `--model` then runs the CPU default, `small`, as after a CUDA failure, when it is downloaded already (else `medium`, with a `WARNING` naming the `cutpoint setup` command for `small`); an explicit `--model` is kept. A later run without `--model` reuses that `small` transcript. Free RAM is read on Linux and Windows only
+same command again). Whisper, PANNs and the crash check's CLIP short of VRAM run on the CPU instead (a `WARNING`); Whisper without `--model` then runs the CPU default, `small`, as after a CUDA failure, when it is downloaded already (else `medium`, with a `WARNING` naming the `cutpoint setup` command for `small`); an explicit `--model` is kept. A later run without `--model` reuses that `small` transcript (an INFO line names it), never one an explicit `--model small` made. Free RAM is read on Linux and Windows only
 (elsewhere there is no check). A vision server on this machine that is not Ollama gets only the
 RAM check and a `WARNING`, as Cutpoint cannot unload it.
 

@@ -394,7 +394,8 @@ def test_failed_swap_puts_every_original_back(monkeypatch, home, caplog, cmd, mo
     else:
         assert rc == 130
     assert _snapshot(project / "clips") == before
-    _only_original_folders(project)
+    # #109: a failed swap keeps the new clips for the next run (Ctrl+C before a clip too)
+    _only_original_folders(project, resume=(project / ".clips.cutpoint-resume").exists())
 
 
 @pytest.mark.parametrize(
@@ -438,7 +439,7 @@ def test_extend_out_force_into_a_non_empty_folder_stays_unchanged_when_it_fails(
     if seen is not None:
         assert len(seen) >= n, "the swap never reached the failing move"
     assert _snapshot(out) == before
-    kept = [".out.cutpoint-resume"] if fail == "export-ctrl-c" else []  # the finished first clip
+    kept = [".out.cutpoint-resume"]  # the finished clips: of a Ctrl+C or a failed swap (#109)
     assert sorted(p.name for p in project.iterdir()) == [
         *kept,
         "clips",
@@ -723,11 +724,26 @@ def test_rollback_with_one_stuck_original_restores_the_rest_and_finishes_next_ru
     assert (bak / ".cutpoint-swap.json").exists()
     for name in ("002_b.mp4", "003_c.mp4", "manifest.json"):  # the rest came back
         assert (clips_dir / name).read_bytes() == before[name]
+    # #109: the new clips stay resumable, in the staging folder or kept for resume
+    kept = next(
+        f
+        for f in (project / ".clips.cutpoint-tmp", project / ".clips.cutpoint-resume")
+        if (f / "resume.json").is_file()
+    )
+
+    def new_clips(folder: Path) -> None:
+        for name in NAMES:
+            assert (folder / name).read_bytes() == b"new"
+        listed = json.loads((folder / "resume.json").read_text(encoding="utf-8"))["clips"]
+        assert sorted(listed) == NAMES
+
+    new_clips(kept)
 
     locked.clear()  # the lock is gone; no --force needed to recover
     cli.main(_argv("clips", project))
     assert _snapshot(clips_dir) == before
-    _only_original_folders(project)
+    _only_original_folders(project, resume=True)  # the new clips of the failed swap (#109)
+    new_clips(project / ".clips.cutpoint-resume")
 
 
 def test_failed_swap_keeps_an_original_named_in_another_case_than_its_replacement(
@@ -1110,7 +1126,7 @@ def test_assemble_first_puts_back_the_originals_of_a_killed_replace(monkeypatch,
     assert cli.main(["assemble", str(project / "clips")]) == 0
     assert seen == before  # the clips were put back before they were listed
     assert "Put back the original files" in _warnings(caplog)  # as clips says it
-    _only_original_folders(project)  # no backup, staging or lock left
+    _only_original_folders(project, resume=True)  # no backup, staging or lock left; #109
 
 
 def test_assemble_removes_a_leftover_staging_folder(monkeypatch, home):

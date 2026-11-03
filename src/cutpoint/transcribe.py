@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from cutpoint import memguard
+from cutpoint import cache, memguard
 from cutpoint.errors import LowMemoryError
 from cutpoint.extras import LITE, edition, install_hint
 from cutpoint.ffmpeg_utils import pcm_float
@@ -412,16 +412,47 @@ class Transcriber:
         gc.collect()
 
 
-def cache_names(tr: Any) -> list[str]:
-    """Transcript cache file names of the transcriber ``tr`` to look up, in order: its model's
-    and, for a :class:`Transcriber` without ``--model``, its first default's (sources cached
-    before a CPU fallback) and the CPU default's (a CPU fallback ran it,
-    :meth:`Transcriber._cpu_model`)."""
-    names = [transcript_name(tr.model_name, tr.language)]
-    if getattr(tr, "explicit", True) is False:
-        names.append(transcript_name(tr.default_name, tr.language))
-        names.append(transcript_name(default_model("cpu"), tr.language))
-    return list(dict.fromkeys(names))
+def fallback_marker(path: Path) -> Path:
+    """``fallback-<transcript>.json`` next to the transcript ``path``: it was made by a CPU
+    fallback without ``--model`` (:func:`record_transcript`)."""
+    return path.with_name(f"fallback-{path.name}")
+
+
+def _no_model(tr: Any) -> bool:
+    return getattr(tr, "explicit", True) is False  # a Transcriber without --model
+
+
+def cached_transcript(tr: Any, cdir: Path) -> Path | None:
+    """The cached transcript in ``cdir`` the transcriber ``tr`` uses, or None: its model's and,
+    without ``--model``, its first default's (sources cached before a CPU fallback); else the
+    CPU default's only when :func:`record_transcript` marked it as a CPU fallback of that
+    default (not one of an explicit ``--model small``, nor an unmarked older one)."""
+    own = [transcript_name(tr.model_name, tr.language)]
+    if _no_model(tr):
+        own.append(transcript_name(tr.default_name, tr.language))
+    for name in dict.fromkeys(own):
+        if (cdir / name).is_file():
+            return cdir / name
+    if not _no_model(tr):
+        return None
+    path = cdir / transcript_name(default_model("cpu"), tr.language)
+    mark = cache.load_json(fallback_marker(path))
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    ok = isinstance(mark, dict) and mark.get("fallback_of") == tr.default_name
+    return path if ok and mark.get("size") == size else None
+
+
+def record_transcript(tr: Any, path: Path) -> None:
+    """``tr`` just saved the transcript ``path``: mark it as a CPU fallback of its default
+    (no ``--model``, another model ran), else drop a mark an earlier run left."""
+    marker = fallback_marker(path)
+    if _no_model(tr) and tr.model_name != tr.default_name:
+        cache.save_json(marker, {"fallback_of": tr.default_name, "size": path.stat().st_size})
+    else:
+        marker.unlink(missing_ok=True)
 
 
 def transcript_name(model: str, language: str | None = None) -> str:

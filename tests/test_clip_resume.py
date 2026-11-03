@@ -413,3 +413,106 @@ def test_a_resume_new_folder_that_cannot_be_promoted_leaves_both(home, monkeypat
         folders.recover_swap(project / "clips")
     assert keep.is_dir() and new.is_dir()
     assert "Could not tidy up" in caplog.text
+
+
+@pytest.mark.parametrize("where", ["backing-up", "moving-in"])
+def test_a_failed_swap_after_a_takeover_loses_no_new_clip(home, monkeypatch, where):
+    """Windows F1: an old clip held open during the swap; the new clips stay resumable."""
+    monkeypatch.setattr(cache.time, "sleep", lambda _s: None)
+    project = _project(home)
+    _Encoder(monkeypatch)
+    assert _clips(project) == 0
+    clips_dir = project / "clips"
+    before = {p.name: p.read_bytes() for p in clips_dir.iterdir()}
+    _project(home, shift=1.0)
+    _Encoder(monkeypatch, stop_at="003_c.mp4")
+    assert _clips(project, "--force") == 130
+    tmp = project / ".clips.cutpoint-tmp"
+    real = Path.replace
+
+    def replace(self, target):
+        old = self == clips_dir / "003_c.mp4"  # the old clip, to the backup
+        new = self == tmp / "003_c.mp4"  # the new one, into clips
+        if old if where == "backing-up" else new:
+            raise PermissionError(13, "locked")
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    second = _Encoder(monkeypatch)
+    assert _clips(project, "--force") == 1
+    assert second.encoded == ["003_c.mp4", "004_d.mp4"]
+    assert {p.name: p.read_bytes() for p in clips_dir.iterdir()} == before
+    done = json.loads((_resume_dir(project) / "resume.json").read_text(encoding="utf-8"))
+    assert sorted(done["clips"]) == NAMES
+    monkeypatch.setattr(Path, "replace", real)
+    third = _Encoder(monkeypatch)
+    assert _clips(project, "--force") == 0
+    assert third.encoded == []
+    assert (clips_dir / "004_d.mp4").read_bytes() == b"clip 004_d.mp4 16.00"
+    assert not _resume_dir(project).exists() and not tmp.exists()
+
+
+def test_a_locked_staging_folder_warning_names_it_once(home, monkeypatch, caplog):
+    """Windows F2: the WARNING names the staging folder and gives the hint once."""
+    monkeypatch.setattr(cache.time, "sleep", lambda _s: None)
+    project = _project(home)
+    tmp = project / ".clips.cutpoint-tmp"
+    real = Path.replace
+
+    def replace(self, target):
+        if self == tmp:
+            err = PermissionError(13, "The process cannot access the file")
+            err.winerror = 32
+            raise err
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    _Encoder(monkeypatch, stop_at="003_c.mp4")
+    with caplog.at_level(logging.WARNING):
+        assert _clips(project) == 130
+    warning = next(m for m in caplog.messages if m.startswith("Kept the finished clips"))
+    assert str(tmp) in warning and "cutpoint-resume-new" not in warning
+    assert "re-run" not in warning and "open in another program" in warning
+
+
+def test_recover_swap_after_a_hard_kill_mid_swap_keeps_the_moved_in_clips(home, monkeypatch):
+    """W1: killed while moving the new clips in (001/002 in clips, 003/004 still staged, the
+    originals in the backup with the journal): recovery puts the originals back and moves the
+    new clips back into the resume folder, so the next run encodes nothing."""
+    project = _project(home)
+    _Encoder(monkeypatch)
+    assert _clips(project) == 0
+    clips_dir = project / "clips"
+    before = {p.name: p.read_bytes() for p in clips_dir.iterdir()}
+    _project(home, shift=1.0)
+    _Encoder(monkeypatch, stop_at="nothing")
+    # the new set, exported but not swapped in: build it by interrupting just before the swap
+    real_swap = folders.swap_in
+    monkeypatch.setattr(
+        clips.folders, "swap_in", lambda *a: (_ for _ in ()).throw(KeyboardInterrupt)
+    )
+    assert _clips(project, "--force") == 130
+    monkeypatch.setattr(clips.folders, "swap_in", real_swap)
+    keep = _resume_dir(project)
+    tmp = project / ".clips.cutpoint-tmp"
+    keep.rename(tmp)
+    new = {n: (tmp / n).read_bytes() for n in NAMES}
+    bak = project / ".clips.cutpoint-bak"
+    bak.mkdir()
+    olds = sorted(before)
+    for n in olds:
+        (clips_dir / n).replace(bak / n)
+    for n in NAMES[:2]:
+        (tmp / n).replace(clips_dir / n)
+    names = sorted(p.name for p in tmp.iterdir() if p.name != "resume.json")
+    journal = {"old": olds, "new": sorted({*names, *NAMES[:2]}), "created": False}
+    (bak / ".cutpoint-swap.json").write_text(json.dumps(journal), encoding="utf-8")
+
+    folders.recover_swap(clips_dir)
+    assert {p.name: p.read_bytes() for p in clips_dir.iterdir()} == before
+    assert not bak.exists() and not tmp.exists()
+    assert {n: (keep / n).read_bytes() for n in NAMES} == new
+    again = _Encoder(monkeypatch)
+    assert _clips(project, "--force") == 0
+    assert again.encoded == []
+    assert {n: (clips_dir / n).read_bytes() for n in NAMES} == new

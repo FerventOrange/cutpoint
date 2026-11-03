@@ -356,9 +356,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transcription falls back to the CPU, a run without `--model` uses the CPU default (`small`)
   instead of `medium` when `small` is downloaded already, and the WARNING says so; else it keeps
   `medium` (nothing is downloaded mid-run) and a WARNING names the `cutpoint setup` command for
-  `small`. An explicit `--model` is kept. The transcript is cached under the model that ran, and
-  a later run without `--model` (also on the GPU, and `cutpoint resume`) reuses a `small`
-  transcript instead of transcribing again; give `--model medium` to redo it.
+  `small`. An explicit `--model` is kept. The transcript is cached under the model that ran and
+  marked as a fallback (`fallback-transcript-small.json`), and a later run without `--model`
+  (also on the GPU, and `cutpoint resume`) reuses that marked `small` transcript with an INFO
+  line instead of transcribing again (never one of `--model small`); give `--model medium` to
+  redo it.
 - `--batch-size` on `events`: the vision model is unloaded only at a source boundary after at
   least N windows, so a small N no longer reloads it every few windows of one recording.
 - Action-cam vision prompts follow the activity profile (#7, #511): the `cutpoint events` VLM

@@ -140,8 +140,3 @@ class ClipResume:
         with self._lock:
             self.data["clips"][name] = {"key": key, "size": size, "read_error": read_error}
             cache.save_json(self.path, self.data)
-
-    def discard(self) -> None:
-        """Every clip is exported: drop ``resume.json`` before the clips are swapped in."""
-        with self._lock:
-            self.path.unlink(missing_ok=True)

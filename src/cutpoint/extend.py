@@ -667,8 +667,6 @@ def _extend_locked(
             },
         )
         if staged:  # all or nothing; only the clips and .srt files named above are replaced
-            if resume is not None:
-                resume.discard()
             folders.swap_in(work, out_dir, old_files)
     if staged:
         written = {path_key(e["file"], out_dir) for e in entries}

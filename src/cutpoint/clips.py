@@ -1633,8 +1633,6 @@ def export_clips(
             grades=grades,
         )
         if work != out_dir:  # staged, not exported into directly
-            if resume is not None:
-                resume.discard()
             folders.swap_in(work, out_dir, [*replace, "manifest.json"])
     hint = "assemble includes them, so move them out if they are not part of the edit"
     if kept_sources:

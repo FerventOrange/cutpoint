@@ -495,3 +495,37 @@ def test_after_a_fallback_a_cached_medium_transcript_is_still_used(mem, monkeypa
     assert tr.model_name == "small" and runs == ["a.wav"]
     assert analyze._transcript(tmp_path / "b.wav", second, tr)[0]["text"] == "cached"
     assert runs == ["a.wav"]
+
+
+@pytest.mark.parametrize("marked", [True, False], ids=["fallback", "explicit-small"])
+def test_a_gpu_run_reuses_only_a_small_transcript_of_a_fallback(
+    mem, monkeypatch, tmp_path, caplog, marked
+):
+    """Windows F3: a no-model GPU run reuses transcript-small.json only when a CPU fallback
+    of its default made it (marked), with an INFO; not an explicit --model small one."""
+    from cutpoint import analyze, transcribe  # noqa: PLC0415
+
+    runs = []
+
+    def run(self, wav, on_progress=None):
+        self._load()
+        runs.append(self.model_name)
+        return [{"start": 0.0, "end": 1.0, "text": self.model_name}]
+
+    monkeypatch.setattr(transcribe.Transcriber, "_run", run)
+    cdir = tmp_path / "cache"
+    cdir.mkdir()
+    mem.vram = 0.1 if marked else 8.0
+    first = _transcriber(monkeypatch, None if marked else "small")
+    analyze._transcript(tmp_path / "a.wav", cdir, first)
+    assert runs == ["small"]
+    assert (cdir / "fallback-transcript-small.json").is_file() is marked
+    mem.vram = 8.0
+    later = _transcriber(monkeypatch, None)
+    with caplog.at_level(logging.INFO):
+        text = analyze._transcript(tmp_path / "a.wav", cdir, later)[0]["text"]
+    if marked:
+        assert text == "small" and runs == ["small"]
+        assert any("Reusing transcript-small.json" in m for m in caplog.messages)
+    else:
+        assert text == "medium" and runs == ["small", "medium"]
