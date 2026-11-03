@@ -1011,7 +1011,16 @@ def test_m3_rise_stays_below_the_veto_at_the_current_caps(lo, hi, levels):
     assert grade.predicted.m3 <= grade.before.m3 * (1 + color.VETO_M3_RISE)
 
 
+@pytest.mark.parametrize("red", [0.5, 0.65, 0.75])
+def test_underwater_m3_rise_stays_below_the_veto(lenient, red):
+    grade = color.estimate(_stats(_underwater(red=red)), "underwater")
+    assert grade.before is not None and grade.predicted is not None
+    assert grade.skip != color.VETO_COLOURFUL
+    assert grade.predicted.m3 <= grade.before.m3 * (1 + color.VETO_M3_RISE)
+
+
 def test_m3_veto_is_reached_through_estimate_when_the_caps_are_raised(monkeypatch):
+    # The black/white clamps and the clipping veto also hold the stretch back; raise them too.
     monkeypatch.setattr(color, "MAX_STRETCH", 3.0)
     monkeypatch.setattr(color, "MAX_BLACK", 0.4)
     monkeypatch.setattr(color, "MIN_WHITE", 0.5)
