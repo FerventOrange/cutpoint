@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import types
 from pathlib import Path
 
@@ -36,7 +37,13 @@ def run(tmp_path: Path, monkeypatch):
     and a log of ``made``/``detect``/``close``/``voice``/``after`` steps. Stops before
     the visual sheets ("after")."""
 
-    def go(srcs: list[Source], layers: tuple[str, ...], fail: bool = False):
+    def go(
+        srcs: list[Source],
+        layers: tuple[str, ...],
+        fail: bool = False,
+        load_fail: bool = False,
+        stage=None,
+    ):
         by_path = {str(s.path): s for s in srcs}
         monkeypatch.setattr(
             pipeline, "load_highlights", lambda p: {"sources": [{"path": k} for k in by_path]}
@@ -55,6 +62,9 @@ def run(tmp_path: Path, monkeypatch):
             device = "cpu"
 
             def __init__(self):
+                if load_fail:
+                    log.append(("load_failed", None))
+                    raise RuntimeError("panns.pth cannot be loaded safely")
                 made.append(self)
                 log.append(("made", self))
 
@@ -69,6 +79,8 @@ def run(tmp_path: Path, monkeypatch):
 
         def run_layer(sources, params, force=False, det=None):
             log.append(("voice", det))
+            if det is None and voice.needs_run(sources, params, force):
+                Det()  # loads its own PANNs, as the real one does
             return {}
 
         def stop(project, sources):
@@ -79,8 +91,9 @@ def run(tmp_path: Path, monkeypatch):
         monkeypatch.setattr(pipeline, "detect_audio_events", detect)
         monkeypatch.setattr(voice, "run_layer", run_layer)
         monkeypatch.setattr(sheets, "write_visual_sheets", stop)
-        with pytest.raises(RuntimeError if fail else _Stop):
-            pipeline.run_events(tmp_path, layers=layers, discover=False, sheets=True)
+        stops = RuntimeError if (fail or load_fail) and stage is None else _Stop
+        with pytest.raises(stops):
+            pipeline.run_events(tmp_path, layers=layers, discover=False, sheets=True, stage=stage)
         return made, log
 
     return go
@@ -116,6 +129,41 @@ def test_one_audio_detector_is_shared_and_closed_once_before_it_is_not_needed(
         assert ("after", None) not in log
     else:
         assert log.index(("close", det)) < log.index(("after", None))
+
+
+@pytest.mark.parametrize("cached", [False, True], ids=["voice-needs-panns", "cached-voice"])
+def test_a_failed_panns_load_in_analyze_is_tried_once_and_fails_the_step_once(
+    tmp_path: Path, run, monkeypatch, caplog, cached
+):
+    """#629: the voice layer does not load PANNs again after the audio layer failed to."""
+    from cutpoint import analyze, progress  # noqa: PLC0415
+
+    warned: list[str] = []
+    monkeypatch.setattr(
+        analyze.jsonout, "warn", lambda code, message, files=(): warned.append(code)
+    )
+    srcs = [_source(tmp_path, "a"), _source(tmp_path, "b")]
+    if cached:
+        for src in srcs:
+            _cache_voice(src)
+    caplog.set_level(logging.INFO)
+    with progress.run(("reactions",)) as steps:
+        made, log = run(srcs, ("audio", "voice"), load_fail=True, stage=analyze._StepHook(steps))
+    assert made == [] and log.count(("load_failed", None)) == 1
+    assert warned == ["step_failed"]
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert len(errors) == 1 and "cannot be loaded safely" in errors[0].getMessage()
+    skipped = [r for r in caplog.records if "Voice layer skipped" in r.getMessage()]
+    if cached:  # nothing to compute: the voice layer runs as before and loads nothing
+        assert [d for k, d in log if k == "voice"] == [None] and skipped == []
+    else:
+        assert [k for k, _ in log if k == "voice"] == []
+        assert [r.levelno for r in skipped] == [logging.INFO]
+
+
+def test_a_failed_panns_load_in_events_stops_before_the_voice_layer(tmp_path: Path, run):
+    made, log = run([_source(tmp_path, "a")], ("audio", "voice"), load_fail=True)
+    assert made == [] and log == [("load_failed", None)]
 
 
 def test_needs_run_checks_the_cache_files(tmp_path: Path):
