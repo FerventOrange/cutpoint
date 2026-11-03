@@ -1593,6 +1593,8 @@ def export_clips(
                     if not p.pano
                 },
             )
+        if not temporary:  # --json: finished clips of a stopped run this one did not encode again
+            jsonout.output("taken_over", len(resume.taken) if resume is not None else 0)
         workers = export_workers(plans)
         if workers > 1:
             logger.info("Exporting %d clips at a time (export_workers)", workers)

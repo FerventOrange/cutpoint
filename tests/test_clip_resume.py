@@ -516,3 +516,43 @@ def test_recover_swap_after_a_hard_kill_mid_swap_keeps_the_moved_in_clips(home, 
     assert _clips(project, "--force") == 0
     assert again.encoded == []
     assert {n: (clips_dir / n).read_bytes() for n in NAMES} == new
+
+
+# -- --json taken_over (#109 UI) ---------------------------------------------------------------
+def _taken_over(capsys, argv: list[str]) -> tuple[int, object]:
+    capsys.readouterr()
+    code = cli.main([*argv, "--json"])
+    doc = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    return code, doc["outputs"].get("taken_over")
+
+
+def test_clips_json_reports_the_clips_taken_over(home, monkeypatch, capsys):
+    project = _project(home)
+    seg = ["clips", "p", "--segments", str(project / "seg.json")]
+    _Encoder(monkeypatch, stop_at="003_c.mp4")
+    assert _taken_over(capsys, seg) == (130, 0)  # nothing to take over yet
+    _Encoder(monkeypatch)
+    assert _taken_over(capsys, seg) == (0, 2)
+    _Encoder(monkeypatch)
+    assert _taken_over(capsys, [*seg, "--force"]) == (0, 0)
+
+
+def test_extend_json_reports_the_clips_taken_over(home, monkeypatch, capsys):
+    project = _project(home)
+    _Encoder(monkeypatch)
+    assert _clips(project) == 0
+    clips_dir = str(project / "clips")
+    argv = [
+        "extend",
+        clips_dir,
+        "--seconds",
+        "1",
+        "--no-speech-aware",
+        "--out",
+        clips_dir,
+        "--force",
+    ]
+    _Encoder(monkeypatch, stop_at="002_b.mp4")
+    assert _taken_over(capsys, argv) == (130, 0)
+    _Encoder(monkeypatch)
+    assert _taken_over(capsys, argv) == (0, 1)

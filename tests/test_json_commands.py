@@ -58,6 +58,7 @@ def _assert_clips(outputs: dict, clips_dir: Path) -> None:
     assert outputs["count"] == len(manifest) > 0
     total = sum(e["end"] - e["start"] for e in manifest)
     assert outputs["total_seconds"] == pytest.approx(total, abs=0.001)
+    assert outputs["taken_over"] == 0  # no stopped export to take clips over from
     for c, e in zip(outputs["clips"], manifest, strict=True):
         assert set(c) == {"file", "srt", "label", "source", "start", "end", "score"}
         assert Path(c["file"]).is_file()
@@ -194,7 +195,10 @@ def test_extend_json(video, home, capsys, caplog):
     assert code == 0 and doc["ok"] is True and doc["command"] == "extend"
     assert doc["project"] == str(project)
     out = doc["outputs"]
-    assert set(out) == {"clips_dir", "manifest", "clips", "count", "total_seconds", "seconds"}
+    assert set(out) == {
+        "clips_dir", "manifest", "clips", "count", "total_seconds", "taken_over", "seconds",
+    }  # fmt: skip
+    assert out["taken_over"] == 0
     _assert_clips(out, project / "clips_ext0p5s")
     assert out["seconds"] == {"start": 0.5, "end": 0.5}
     [warning] = doc["warnings"]
@@ -248,7 +252,7 @@ def test_extend_argument_errors_are_bad_args(home, tmp_path, capsys, caplog, ext
 # ------------------------------------------------------------------------------------ edit
 EDIT_KEYS = {
     "kind", "highlights", "transcript", "candidates", "suggested_top", "style",
-    "clips_dir", "manifest", "clips", "count", "total_seconds",
+    "clips_dir", "manifest", "clips", "count", "total_seconds", "taken_over",
     "format", "final", "srt", "duration", "clip_count", "copy", "copy_srt",
 }  # fmt: skip
 POOL_KEYS = {"visual_candidates"}  # analyze adds it for the pool styles (action-cam, action, sport)

@@ -359,6 +359,7 @@ select { max-width: 100%; }
 .fresh-why { color: var(--bad); font-size: 13.5px; }
 .fresh-why.progress { color: var(--muted); }
 .fresh-note { font-size: 13px; }
+.run-busy { margin: 4px 0 8px; font-size: 13px; }
 /* analysis steps: under "Analyze footage", or under the Moments header while "Analyze again" runs */
 .steps { display: grid; gap: var(--space-2); text-align: start; justify-self: stretch; margin-bottom: var(--space-2); font-size: 13.5px; }
 .steps-head { color: var(--muted); font-weight: 600; }

@@ -1181,6 +1181,27 @@ def _lock_record(pid: int, host: str | None = None) -> bytes:
     return json.dumps(rec).encode("utf-8")
 
 
+@pytest.mark.parametrize(
+    ("data", "held"),
+    [
+        (None, False),
+        (_lock_record(4321), True),  # a live process on this host
+        (_lock_record(1234), False),  # its process is gone
+        (_lock_record(1234, "other-pc"), True),  # another computer: cannot tell
+        (b"", True),  # created, not yet written
+    ],
+    ids=["none", "running", "dead", "other-host", "starting"],
+)
+def test_lock_held_tells_a_live_lock_from_a_stale_one(monkeypatch, tmp_path, data, held):
+    dst = tmp_path / "clips"
+    if data is not None:
+        (tmp_path / ".clips.cutpoint-lock").write_bytes(data)
+    monkeypatch.setattr(procs, "pid_alive", lambda pid, _t=None: pid == 4321)
+    assert folders.lock_held(dst) is held
+    if data is not None:  # it only reads
+        assert (tmp_path / ".clips.cutpoint-lock").read_bytes() == data
+
+
 @pytest.mark.parametrize("holder", ["running", "other-host", "starting"])
 def test_lock_of_another_run_stops_the_run_before_anything_is_touched(
     monkeypatch, home, caplog, capsys, holder
