@@ -242,7 +242,7 @@ def dense_run(tmp_path, monkeypatch):
     src = tmp_path / "s.mp4"
     src.write_bytes(b"x")
     project = _project(tmp_path, src)
-    state = SimpleNamespace(src=src, project=project, decoded=[], stop_at=None, loads=0)
+    state = SimpleNamespace(src=src, project=project, decoded=[], stop_at=None, loads=0, closes=0)
     starts = (10.0, 40.0, 70.0, 100.0)  # 4 s before, 6 s after: no two windows overlap
 
     def cands(inp, p):
@@ -269,7 +269,7 @@ def dense_run(tmp_path, monkeypatch):
             return np.tile(np.linspace(0.1, 0.9, n)[:, None, None], (1, 3, 4))
 
         def close(self):
-            pass
+            state.closes += 1
 
     monkeypatch.setattr(crash, "load_inputs", lambda *a: _inputs(spike=False))
     monkeypatch.setattr(crash, "candidate_events", cands)
@@ -280,7 +280,7 @@ def dense_run(tmp_path, monkeypatch):
     monkeypatch.setattr(crash, "ClipEncoder", Enc)
     params = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())
     state.store = crash._dense_cache(src, params)
-    state.go = lambda: crash.detect_project(project, params=params, sheets=0)
+    state.go = lambda **kw: crash.detect_project(project, params=params, sheets=0, **kw)
     state.windows = [round(max(0.0, t - params.dense_pre_s), 1) for t in starts]
     return state
 
@@ -328,6 +328,42 @@ def test_dense_windows_are_saved_as_they_finish_and_a_rerun_computes_only_the_re
         dense_run.go()  # everything cached: no model, no decode, nothing to continue
     assert dense_run.decoded == [] and dense_run.loads == 0
     assert not any("continuing" in m for m in caplog.messages)
+
+
+@pytest.mark.parametrize("size", [0, 1, 3, 4])
+def test_batch_size_closes_clip_every_n_dense_windows_with_the_same_crashes(
+    dense_run, caplog, size
+):
+    """#109 --batch-size: CLIP is loaded ceil(4/N) times and closed as often; same output."""
+    dense_run.go()
+    full, crashes = dense_run.store.read_bytes(), _crashes(dense_run.project)
+    dense_run.store.unlink()
+    dense_run.loads = dense_run.closes = 0
+    with caplog.at_level("INFO"):
+        dense_run.go(batch_size=size)
+    want = -(-4 // size) if size else 1
+    assert dense_run.loads == dense_run.closes == want
+    assert dense_run.store.read_bytes() == full and _crashes(dense_run.project) == crashes
+    done = [m for m in caplog.messages if m.startswith("dense check: ")]
+    want_done = range(size, 4, size) if size else []
+    assert done == [f"dense check: {k}/4 done, continuing" for k in want_done]
+
+
+@pytest.mark.parametrize("stop", [2, 1], ids=["at-boundary", "inside"])
+def test_batch_size_interrupted_dense_check_resumes_to_the_same_crashes(dense_run, stop):
+    w = dense_run.windows
+    dense_run.go()
+    full, crashes = dense_run.store.read_bytes(), _crashes(dense_run.project)
+    dense_run.store.unlink()
+    dense_run.decoded.clear()
+    dense_run.stop_at = w[stop]
+    with pytest.raises(KeyboardInterrupt):
+        dense_run.go(batch_size=2)
+    dense_run.stop_at = None
+    dense_run.decoded.clear()
+    dense_run.go(batch_size=2)
+    assert dense_run.decoded == w[stop:]
+    assert dense_run.store.read_bytes() == full and _crashes(dense_run.project) == crashes
 
 
 # -- IMU parse shared with telemetry ----------------------------------------------------------

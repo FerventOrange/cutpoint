@@ -40,6 +40,7 @@ def _args(**over) -> argparse.Namespace:
         "style": None,
         "model": None,
         "language": None,
+        "batch_size": 0,
     }
     return argparse.Namespace(**(base | over))
 
@@ -72,7 +73,7 @@ def pano(tmp_path: Path, monkeypatch):
             raise RuntimeError("views failed")
         return SimpleNamespace(t=np.zeros(3), det=np.zeros((0, 7)))
 
-    def run_events(project, *, layers, encoder=None):
+    def run_events(project, *, layers, encoder=None, batch_size=0):
         rec.encoders.append(encoder)
         if rec.events_fail:
             raise RuntimeError("events failed")
@@ -125,7 +126,9 @@ def test_run_events_gets_the_views_clip_object(pano, monkeypatch):
     monkeypatch.setattr(crash.ClipEncoder, "from_visual", spy)
     got = []
     monkeypatch.setattr(
-        pipeline, "run_events", lambda project, *, layers, encoder=None: got.append(encoder.model)
+        pipeline,
+        "run_events",
+        lambda project, *, layers, encoder=None, batch_size=0: got.append(encoder.model),
     )
     cli.cmd_analyze(_args())
     assert len(pano.built) == 1 and len(got) == 1 and got[0] is clips[0]
@@ -200,7 +203,7 @@ def events(tmp_path: Path, monkeypatch):
         rec.handoff.append(handoff)
         return {}
 
-    def detect(project, force=False, encoder=None, warn_unreachable=True, llm=True):
+    def detect(project, force=False, encoder=None, warn_unreachable=True, llm=True, batch_size=0):
         rec.encoder.append(encoder)
         if rec.fail:
             raise RuntimeError("crash failed")

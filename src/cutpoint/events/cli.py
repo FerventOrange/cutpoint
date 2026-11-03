@@ -231,6 +231,7 @@ def run_args(
         sheets=args.sheets,
         ollama_url=ollama_url,
         ollama_model=ollama_model,
+        batch_size=getattr(args, "batch_size", 0),  # edit --events: none
     )
     log = logging.getLogger(__name__)
     log.info("Wrote %s and %s", jpath, tpath)

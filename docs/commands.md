@@ -804,6 +804,7 @@ an analysed set processes only the new file.
 | `--max-candidates N` | Candidates per source before merging |
 | `--recover` | After a read error, resume analysis past the bad region |
 | `--must-include-crash CONF` | Action-cam: always clip crashes with at least this confidence, 0 to 1 (0 disables) |
+| `--batch-size N` | Close each model (Whisper and the step models) after N sources and load it again for the next ones, to give memory back on long runs; the results are the same. Default 0: keep it loaded. Also on `360 analyze` (its view layer, analysis and events) |
 | `--json` | Result as one [JSON envelope](#json-output) on stdout |
 
 **Vision rating.** The 0-10 rating scales a candidate's score (5 leaves it as is, 10 lifts it
@@ -1029,6 +1030,7 @@ Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash 
 | `--max-windows N`, `--window S`, `--pre S`, `--post S`, `--window-at "GLOB@START-END"` | Model window count and geometry |
 | `--sheets` | Write contact sheets to `<project>\visual_check` |
 | `--no-rescore` | Do not touch `highlights.json` |
+| `--batch-size N` | Close each layer's model after N sources (the vision model after N `vlm` windows, the crash layer's CLIP after N dense windows) and load it again; the results are the same. Default 0: keep it loaded |
 | `--json` | One [result envelope](#json-output) on stdout for the whole run |
 
 Tuning options, rarely needed:

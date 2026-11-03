@@ -895,6 +895,7 @@ def analyze_source(
     report: Callable[[float], None] | None = None,
     read_checked: Callable[[MediaInfo, dict[str, Any] | None], Any] | None = None,
     text: bool = True,
+    on_transcript: Callable[[], None] | None = None,
 ) -> SourceResult:
     """Compute signals for one source (or a recovered part starting at ``offset``).
 
@@ -911,6 +912,8 @@ def analyze_source(
     the probe and the read-error record (None: a clean read) as soon as they are known,
     before loudness, Whisper and the scene cuts; what it returns goes to
     :func:`scene_cuts` as ``shared`` (a scene proxy made in the background, or None).
+    ``on_transcript`` is called once the transcript is there (made or cached), before the
+    scene cuts.
     """
 
     def tick(name: str, t0: float) -> None:
@@ -960,6 +963,8 @@ def analyze_source(
         t0 = time.perf_counter()
         segments = _transcript(wav, cdir, tr, transcribed if report else None)
         tick("transcribe_s", t0)
+        if on_transcript is not None:
+            on_transcript()
         segments, dropped = filter_hallucinations(segments)
         if dropped:
             logger.info("%s: dropped %d likely-hallucinated transcript segments", src.name, dropped)
@@ -1556,6 +1561,7 @@ def _run_layers(
     transcript: str | None = None,
     ollama_url: str | None = None,
     ollama_model: str | None = None,
+    batch_size: int = 0,
 ) -> bool:
     """Run the planned event layers on the analysis ``hl`` (not written yet) and write
     events.json, as ``cutpoint events`` would (held back with the other
@@ -1563,7 +1569,8 @@ def _run_layers(
     ``prefetch``: the background OCR reader (:func:`_ocr_prefetch`) or None; ``transcript``:
     the transcript.txt text, not written yet either (None: read from the project);
     ``ollama_url``, ``ollama_model``: the VLM layer's Ollama (``analyze --ollama-url``, #660;
-    None: from config.json and the environment)."""
+    None: from config.json and the environment); ``batch_size``: ``--batch-size``
+    (:func:`~cutpoint.events.pipeline.run_events`)."""
     from cutpoint.crash import no_visual_reason  # noqa: PLC0415
     from cutpoint.events.audio_events import AudioParams  # noqa: PLC0415
     from cutpoint.events.common import pending_highlights  # noqa: PLC0415
@@ -1593,6 +1600,7 @@ def _run_layers(
                 ollama_url=ollama_url,
                 ollama_model=ollama_model,
                 discover_hint=DISCOVER_HINT,
+                batch_size=batch_size,
             )
     except Exception as err:
         if steps.current == "ranking":
@@ -1755,6 +1763,7 @@ def analyze(
     skip: Collection[str] = (),
     earlier_total_s: float | None = None,
     detection: dict[str, Any] | None = None,
+    batch_size: int = 0,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -1804,6 +1813,10 @@ def analyze(
         detection: The ``detection`` block of the auto analysis this run re-ranks
             (:func:`reanalyze`, with the style it chose): recorded again as it is, and its
             category plans the layers. Nothing is detected again.
+        batch_size: ``--batch-size`` (#109): Whisper is closed after every this many sources
+            and loaded again for the next ones, and so are the event layers' models
+            (:func:`~cutpoint.events.pipeline.run_events`); 0: one batch. The results are
+            the same.
 
     Returns:
         Path of the written highlights.json.
@@ -1829,6 +1842,7 @@ def analyze(
             skip=skip,
             earlier_total_s=earlier_total_s,
             detection=detection,
+            batch_size=batch_size,
         )
 
 
@@ -1853,6 +1867,7 @@ def _analyze(
     skip: Collection[str],
     earlier_total_s: float | None,
     detection: dict[str, Any] | None,
+    batch_size: int,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
@@ -1920,6 +1935,10 @@ def _analyze(
         transcript_lines: list[str] = []
         progress.continuing("transcribe", _cached_transcripts(sources, tr), len(sources))
         for i, src in enumerate(sources):
+            if batch_size and i and not i % batch_size:  # a batch boundary (--batch-size)
+                tr.close()  # loaded again by the next transcript to make
+                free_models()
+                progress.continuing("transcribe", i, len(sources))
             steps.update(progress.fraction(i, len(sources)), src.name)
 
             shown = 0.0  # this source's share in the pct so far
@@ -1952,6 +1971,8 @@ def _analyze(
                     report=report if steps.active else None,
                     read_checked=read_checked(src, offset),
                     text=not pending,
+                    # progress.json from the first transcript on, before the scene cuts
+                    on_transcript=lambda: runstate.transcribed(out_dir, sources),
                 )
                 results.append(res)
                 name = f"{src.name}@{offset:.0f}" if offset else src.name
@@ -1982,7 +2003,7 @@ def _analyze(
                     rec["lost_s"],
                 )
                 offset, n_parts = resume, n_parts + 1
-            runstate.transcribed(out_dir, sources)  # progress.json from the first source on
+            runstate.transcribed(out_dir, sources)  # a source without audio: once analyzed
         # Written with highlights.json at the end; the event layers read it from memory.
         transcript = "\n".join(transcript_lines)
         tr.close()  # Whisper out of memory before the next step loads a model
@@ -2109,6 +2130,7 @@ def _analyze(
                     transcript=transcript,
                     ollama_url=ollama_url,
                     ollama_model=ollama_model,
+                    batch_size=batch_size,
                 )
                 timings["events_s"] = round(time.perf_counter() - t0, 2)
                 free_models()

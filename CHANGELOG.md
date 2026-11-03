@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `resume_sources_changed` (recorded sources that are gone) and, on a run that replaces an
   interrupted record of another command or other options, `resume_args_changed`. A resumed
   `edit` that had finished its clips keeps them when their `manifest.json` is unchanged.
+- `--batch-size N` on `analyze`, `events` and `360 analyze` (#109): each model (Whisper,
+  PANNs, the voice and visual layers, the HUD OCR engine, the 360 views, the crash layer's CLIP
+  after N dense windows, an Ollama vision model after N VLM windows) is closed after N sources
+  and loaded again for the next ones, to give memory back on long runs. Each boundary logs
+  `<step>: N/M done, continuing` and updates `progress.json`, so `cutpoint resume` replays the
+  option. Off by default (0); the result files are the same with or without it. `events`
+  records its layers (`audio`, `voice`, `visual`, `ocr`, `crash`, `vlm`, `write`) as steps of
+  `progress.json` (no `PROGRESS` lines), so `resume --dry-run` lists them.
 - Footage category detection (#513): `cutpoint detect <inputs> [--json]` tells whether the
   footage is gameplay, action cam, talk or general, from the container tags, the camera
   telemetry and 32 small grey frames per source (a static HUD marks gameplay; cached as

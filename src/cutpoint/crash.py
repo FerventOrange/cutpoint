@@ -1139,6 +1139,7 @@ def detect_project(
     encoder: ClipEncoder | None = None,
     warn_unreachable: bool = True,
     llm: bool = True,
+    batch_size: int = 0,
 ) -> Path:
     """Find crashes in every source of a project and write ``crashes.json``.
 
@@ -1167,6 +1168,8 @@ def detect_project(
             both (the line is then logged at DEBUG).
         llm: Let the profile detection ask the local Ollama models
             (:func:`cutpoint.activity.resolve`); False: library and generic profiles only.
+        batch_size: ``--batch-size`` (#109): the CLIP model is closed after every this many
+            dense windows and loaded again for the next ones (0: kept for all of them).
 
     Returns:
         Path of crashes.json.
@@ -1261,12 +1264,19 @@ def detect_project(
             stores[src] = {} if force else (cache.load_json(_dense_cache(Path(src), p)) or {})
         windows.add((src, "{:.1f}-{:.1f}".format(*dense_window(c, p))))
     progress.continuing("dense check", sum(k in stores[s] for s, k in windows), len(windows))
+    seen: set[tuple[str, str]] = set()  # the dense windows of this loop so far
     try:
         for c in todo:
             src = c["source"]
             store = stores[src]
             a, b = dense_window(c, p)
             key = f"{a:.1f}-{b:.1f}"
+            if batch_size and seen and (src, key) not in seen and not len(seen) % batch_size:
+                if enc is not None:  # a batch boundary: CLIP is loaded again for the next ones
+                    enc.close()
+                    enc = None
+                progress.continuing("dense check", len(seen), len(windows))
+            seen.add((src, key))
             if enc is None and key not in store:
                 enc = ClipEncoder()
             new = key not in store
