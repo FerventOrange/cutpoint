@@ -79,8 +79,8 @@ Choosing the moments yourself:
   `files`) and `error` (`code`, `message`, or `null`). It works on `paths`, `analyze`, `detect`, `clips`,
   `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `events`, `crashes`,
   `profile`, `resume` and every `360` subcommand.
-- After an interrupted or failed `analyze`, `edit`, `events`, `crashes`, `profile` or
-  `360 analyze`, `cutpoint resume <project>` replays the recorded command (`--dry-run` shows it).
+- After an interrupted or failed `analyze`, `edit`, `events`, `crashes`, `profile`,
+  `360 analyze` or `clips`, `cutpoint resume <project>` replays the recorded command (`--dry-run` shows it).
   On `low_memory` (too little free memory for a model), ask the user to close other programs,
   then run the command the ERROR line names (`cutpoint resume <project>`, or the same command
   again when no progress.json was written yet).
