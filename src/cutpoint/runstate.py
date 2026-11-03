@@ -290,8 +290,9 @@ def project_made(project: Path) -> None:
 
 def transcribed(project: Path, sources: Sequence[Path]) -> None:
     """A source of ``analyze`` is transcribed: record ``sources`` and write ``progress.json``
-    from now on (no-op outside :func:`record`). On a re-run of ``analyze`` or ``edit``, written
-    from the start, the sources of ``highlights.json`` are replaced by this run's, once."""
+    from now on (no-op outside :func:`record`). On a re-run of ``analyze``, ``edit`` or
+    ``360 analyze``, written from the start, the sources of ``highlights.json`` are replaced by
+    this run's, once."""
     rec = _active(project)
     if rec is None or not rec.locked:
         return
@@ -300,7 +301,7 @@ def transcribed(project: Path, sources: Sequence[Path]) -> None:
         rec.data["sources"] = names
         rec.arm()
         return
-    if rec.command in AFTER_TRANSCRIPT:
+    if rec.command in AFTER_TRANSCRIPT or rec.command == "360 analyze":
         with rec._lock:
             if rec.data["sources"] != names:
                 rec.data["sources"] = names

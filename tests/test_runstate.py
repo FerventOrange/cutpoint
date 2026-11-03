@@ -364,7 +364,7 @@ def test_360_analyze_records_once_and_does_not_lock_itself_out(project, monkeypa
 
     def analyze(sources, style, out_dir, **kw):
         with folders.output_dir(out_dir), runstate.project_ready(out_dir):
-            runstate.transcribed(out_dir, sources)  # analyze's own hooks: no-ops here
+            runstate.transcribed(out_dir, sources)  # replaces the highlights.json sources
             order.append("analyze")
 
     def run_events(project, **kw):
@@ -386,7 +386,7 @@ def test_360_analyze_records_once_and_does_not_lock_itself_out(project, monkeypa
     assert order == ["analyze", "events"]
     rec = _read(project)
     assert rec["command"] == "360 analyze" and rec["status"] == "done"
-    assert rec["sources"] == ["/videos/a.mp4"]  # an existing project: written from the start
+    assert rec["sources"] == ["/v/a.lrv"]  # written from the start, then this run's sources
     assert [rec["steps"][s]["state"] for s in progress.PANO_STEPS] == [
         "skipped", "done", "done", "done",
     ]  # fmt: skip
@@ -424,4 +424,49 @@ def test_360_analyze_scan_of_a_new_project_locks_and_records_once_scanned(
     assert locked == [True]
     rec = _read(project)
     assert rec["command"] == "360 analyze" and rec["status"] == "done"
+    assert not (project / LOCK).exists()
+
+
+def test_360_analyze_scan_of_a_new_project_records_the_transcribed_sources(
+    home, tmp_path, monkeypatch
+):
+    """``360 analyze new --scan F``: no highlights.json, so the record starts with no sources;
+    the nested analyze's transcribed sources replace them."""
+    from cutpoint.events import pipeline  # noqa: PLC0415
+    from cutpoint.pano import candidates, views  # noqa: PLC0415
+    from cutpoint.pano import cli as pano_cli  # noqa: PLC0415
+
+    project = home / "projects" / "new"
+    footage = tmp_path / "x3"
+    footage.mkdir()
+
+    def scan(project, root, **kw):
+        project.mkdir(parents=True, exist_ok=True)
+        cache.save_json(project / "pano.json", {"clips": []})
+        return 1
+
+    seen = []
+
+    def analyze(sources, style, out_dir, **kw):
+        with folders.output_dir(out_dir), runstate.project_ready(out_dir):
+            runstate.transcribed(out_dir, sources)
+            seen.append(_read(out_dir)["sources"])
+
+    monkeypatch.setattr(pano_cli, "_scan", scan)
+    monkeypatch.setattr(pano_cli, "_require_detector", lambda: None)
+    monkeypatch.setattr(pano_cli, "_clips", lambda p: [argparse.Namespace(lrv="/v/a.lrv")])
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(pipeline, "run_events", lambda project, **kw: None)
+    monkeypatch.setattr("cutpoint.crash.dense_needs_run", lambda sources: False)
+    monkeypatch.setattr(views, "run_layer", lambda clips, force=False, handoff=None: {})
+    monkeypatch.setattr(cutpoint.analyze, "analyze", analyze)
+    monkeypatch.setattr(cutpoint.analyze, "reanalyze_if_reachable", lambda p: None)
+    monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "action-cam")
+    monkeypatch.setattr("cutpoint.styles.get_style", lambda name: name)
+    monkeypatch.setattr(candidates, "cache_candidate_paths", lambda p: {"seconds": 0.0})
+    assert cli.main(["360", "analyze", "new", "--scan", str(footage)]) == 0
+    assert seen == [["/v/a.lrv"]]  # written at once, not only at the end
+    rec = _read(project)
+    assert rec["command"] == "360 analyze" and rec["status"] == "done"
+    assert rec["sources"] == ["/v/a.lrv"]
     assert not (project / LOCK).exists()
