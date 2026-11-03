@@ -180,6 +180,7 @@ class VLChecker:
         self.rater = VisionRater(url, model)
         self.model = self.rater.model
         self.provider_name = getattr(self.rater, "provider_name", "ollama")
+        self.host = getattr(self.rater, "host", "")  # a hosted provider's (the frame cache's key)
         self.dead = False  # set when the server stops answering: no more requests
 
     def available(self) -> bool:
@@ -202,6 +203,10 @@ class VLChecker:
                 self.dead = True
                 return None
             return {"content": text}
+        if self.rater.consent_needed:  # an Ollama on another machine the user did not agree to
+            self.rater.warn_consent()
+            self.dead = True
+            return None
 
         payload = {
             "model": self.model,
@@ -272,13 +277,20 @@ def _cache_file(clip_id: str) -> Path:
 
 
 def frame_key(
-    path: dict[str, Any], t: float, model: str, provider: str = "", wording: str = ""
+    path: dict[str, Any],
+    t: float,
+    model: str,
+    provider: str = "",
+    wording: str = "",
+    host: str = "",
 ) -> str:
     """Cache key of the preview frame at source time ``t``: what the view shows there
-    (``wording``: :func:`wording_id`)."""
+    (``wording``: :func:`wording_id`; a hosted ``provider`` with its ``host``, so one model id
+    at two servers checks apart)."""
     k = nearest_keys(path["keys"], [t])[0]
     vert = "v" if path.get("vertical") else "h"
     prov = f"|{provider}" if provider and provider != "ollama" else ""
+    prov += f"@{host}" if prov and host else ""
     prov += f"|w{wording}" if wording else ""
     return (
         f"{VL_VERSION}|{model}{prov}|{vert}|{t:.2f}|"
@@ -317,6 +329,7 @@ def check_preview(
             checker.model,
             provider=getattr(checker, "provider_name", ""),
             wording=getattr(checker, "wording", ""),
+            host=getattr(checker, "host", ""),
         )
         reply = store.get(key)
         if reply is None:

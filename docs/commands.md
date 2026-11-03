@@ -86,6 +86,7 @@ So do these combinations:
 | `temporary_clips_left` | `assemble <project>`, `edit --no-keep-clips` | A temporary clips folder could not be removed (a file in it is open in another program); `files` names it. Delete it, or the next such run in the project removes it |
 | `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
 | `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
+| `vision_consent_needed` | `analyze`, `events`, `360 director` (so `edit`, `360 analyze`), `profile`, `crashes` | The Vision role's Ollama is on another machine (`--ollama-url`, `vision_assistant.url`, `OLLAMA_HOST` or `ollama_url` is not `localhost` or a loopback address) and the Vision consent for it was not given, so nothing was sent to it: vision was skipped, or the activity profile fell back without the model; allow vision requests in the Models tab of `cutpoint ui` (Vision role, Ollama with that URL) |
 | `vlm_unavailable` | `events` (so `edit --events`) | The VLM layer ran but the vision model (Ollama, or a hosted Vision role without consent) is not available; windows not described yet stayed undescribed and cached descriptions were used (the message gives the count) |
 | `grade_dropped` | `clips` (so `edit`) | `--force` replaced clips whose manifest recorded a grade (`lut` or `color`) and this run grades none; give `--lut` or `--color` again to keep it |
 | `pano_mixed_sources` | `clips` (so `edit`), `assemble <project>` | The run's 360 clips are not rendered like-for-like: stitched and dual fisheye sources mixed, or an equirect rendered without the IMU levelling (FlowState, no sidecar, Studio export); `files` names the 360 clips (empty for a temporary export: `assemble <project>`, `edit --no-keep-clips`). Export with `--pano-source dfisheye` to compare their `360 qa` with the previews (see [360 video](workflows/360.md#render-sources)) |
@@ -556,7 +557,7 @@ the Models tab, so "Allow vision requests" waits for a key saved there. The page
 
 A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on
 another machine counts too) is hosted: before the first message the tab asks once, per provider
-and host, to send the project's analysis results (moment labels, scores and detection signals,
+and host (with its port when that is not the default), to send the project's analysis results (moment labels, scores and detection signals,
 transcript snippets, file names (not full paths) and times) and your messages, never video or
 audio. The answer is kept in `config.json` (`assistant.consent`, as
 `assistant-v2:<provider>@<host>`); it never covers the Vision role, which asks separately. Until
@@ -694,7 +695,7 @@ an analysed set processes only the new file.
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
 | `--vision` / `--no-vision` | Rate top candidates with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. See **Vision rating** below |
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
-| `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a [`vision_assistant`](configuration.md#vision_assistant) of any provider other than `ollama` in `config.json`, the frames (here and for `360 director --vl-check`) go to that provider instead: an API (`anthropic`, `openai`, `xai`, with your API key) or a subscription (`claude-code`, `codex`, `antigravity`), once you agreed to it in the Models tab ("Allow vision requests"), and these two options are not used |
+| `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a [`vision_assistant`](configuration.md#vision_assistant) of any provider other than `ollama` in `config.json`, the frames (here and for `360 director --vl-check`) go to that provider instead: an API (`anthropic`, `openai`, `xai`, with your API key) or a subscription (`claude-code`, `codex`, `antigravity`), once you agreed to it in the Models tab ("Allow vision requests"), and these two options are not used. An Ollama URL that is not this machine (`localhost` or a loopback address) needs that Vision consent too; without it vision is skipped with a WARNING (`vision_consent_needed`) |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
 | `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
 | `--skip STEP ...` | Leave out `reactions`, `keyframes` and/or `crashes` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
@@ -787,7 +788,7 @@ layer is not part of `analyze`; it stays in [`events`](#events) and `edit --even
 `highlights.json` is written once, atomically, at the end: a cancelled run leaves the previous
 file, and a cancelled first run leaves none. The other result files are written with it, just
 before it, each atomically: `transcript.txt`, `events.json`, `events.txt`, `crashes.json`, the
-`crash_check\` sheets, `activity.json` and, for `action-cam`, `telemetry.json` and `ski_features\`
+`crash_check\` sheets, `activity.json` and, for `action-cam`, `telemetry.json` and `action_cam_features\`
 (older sheets and features of the project are removed at the same time). A failed or cancelled
 run, in any step, leaves all of them as they were, and a cancelled first run leaves no project
 folder, unless HUD discovery wrote its proposal (`discovery\`, below). A run stopped after the transcription therefore has no `transcript.txt` yet; the rerun
@@ -1354,7 +1355,10 @@ Needs the visual layer of `events` for detection, and Ollama with a Qwen model
 (`CUTPOINT_VISION_MODEL`;
 [install](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) for new profiles
 and `--context`. Without them it falls back to the nearest library profile or `generic`, and
-tries again on the next run.
+tries again on the next run. An Ollama on another machine (not `localhost` or a loopback
+address) gets frames and the `--context` text only once the Vision consent for it was given in
+the Models tab of `cutpoint ui`; until then it is not used, with a WARNING
+(`vision_consent_needed`).
 
 ## mix
 
@@ -1520,7 +1524,8 @@ An enabled, nonexpired account remains connected during a temporary provider err
 cooldown. Requests then report the proxy's availability condition instead of requiring fresh login.
 
 Activity detection for `profile`, `crashes` and the crash step of `analyze` stays on Ollama,
-regardless of the selected Vision provider.
+regardless of the selected Vision provider. An Ollama on another machine needs the Vision consent
+for its URL here too; without it nothing is sent and the profile falls back (`vision_consent_needed`).
 
 Logging in to Antigravity upstream may auto-provision a free-tier companion project if your account
 does not already have one. Cutpoint discloses this during sign-in and in the UI.

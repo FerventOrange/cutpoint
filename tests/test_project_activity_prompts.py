@@ -181,6 +181,47 @@ def test_run_events_visual_layer_and_sheets_use_the_projects_prompts(
     assert seen == [("visual", want), ("sheets", want)]
 
 
+def test_run_events_writes_sheets_after_the_crash_layer_under_the_profile_it_wrote(
+    home, tmp_path, monkeypatch
+):
+    """First run, no activity.json yet: the sheets follow the crash layer and use its profile."""
+    from cutpoint.events import sheets  # noqa: PLC0415
+    from cutpoint.events import visual as visual_layer  # noqa: PLC0415
+
+    src = tmp_path / "a.mp4"
+    src.write_bytes(b"x")
+    s = SimpleNamespace(path=src, name="a.mp4")
+    monkeypatch.setattr(
+        pipeline, "load_highlights", lambda project: {"sources": [{"path": str(src)}]}
+    )
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: s)
+    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
+    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
+    monkeypatch.setattr(pipeline, "VramMonitor", _Mon)
+    monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
+    monkeypatch.setattr(
+        pipeline, "VisionRater", lambda *a, **k: SimpleNamespace(provider_name="ollama", model="m")
+    )
+    seen: list[tuple[str, str]] = []
+
+    def detect(project, **kw):
+        seen.append(("crash", activity.active_prompts().name))
+        _write(project, "mtb")  # the profile this run resolved
+        return {}
+
+    def write_sheets(project, sources):
+        seen.append(("sheets", activity.active_prompts().name))
+        raise _Stop
+
+    monkeypatch.setattr(visual_layer, "run_layer", lambda *a, **k: {})
+    monkeypatch.setattr(crash, "detect_project", detect)
+    monkeypatch.setattr(sheets, "write_visual_sheets", write_sheets)
+    with pytest.raises(_Stop):
+        pipeline.run_events(tmp_path, layers=("visual", "crash"), sheets=True, cached_ocr=False)
+    assert seen == [("crash", "ski"), ("sheets", "mtb")]
+
+
 # ----------------------------------------------------------------- activity.record_profile
 @pytest.mark.parametrize("source", ["context", "synthesized"])
 def test_an_old_llm_record_keeps_incident_and_identity_and_takes_the_rest_from_the_library(

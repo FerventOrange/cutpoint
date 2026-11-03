@@ -84,7 +84,7 @@ RESPONSE_SCHEMA: dict[str, Any] = {
 }
 
 # Action-cam (``style_kind == "action-cam"``): per-window tag strengths for the ski scorer.
-SKI_PROMPT_VERSION = 1
+ACTION_CAM_PROMPT_VERSION = 1
 SKI_TAGS = (
     "jump_air",
     "landing",
@@ -215,8 +215,8 @@ class VlmParams:
     max_tokens: int = 700
     ski: bool = False  # ski prompt + tags (set by the pipeline for ski projects)
     max_fill_windows: int = 0  # ski: extra windows over stopped / lift footage
-    # vision model that describes the windows, set by the pipeline ("<provider>:<model>"
-    # for a hosted provider)
+    # vision model that describes the windows, set by the pipeline
+    # ("<provider>@<host>:<model>" for a hosted provider)
     model: str = ""
 
     def key(self, prompt: GamePrompt | None = None) -> dict[str, Any]:
@@ -231,7 +231,7 @@ class VlmParams:
             "hints": self.hints,
             "prompt": PROMPT_VERSION,
             "model": self.model,
-            **({"ski": SKI_PROMPT_VERSION} if self.ski else {}),
+            **({"action_cam": ACTION_CAM_PROMPT_VERSION} if self.ski else {}),
             **({"gp": prompt.key()} if prompt and prompt.custom else {}),
         }
 

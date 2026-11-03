@@ -285,6 +285,8 @@ VISION_MSG = "vision rating requested but Ollama/model unavailable; continuing w
 class _NoOllama:
     """A VisionRater whose server or model is not there."""
 
+    consent_needed = None
+
     def __init__(self, **_kw) -> None:
         pass
 

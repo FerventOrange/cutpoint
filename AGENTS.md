@@ -95,7 +95,9 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
   the final video (clips kept). `--vision` adds the optional frame rating (Ollama by default;
   the Vision role in the `cutpoint ui` Models tab can route it to a hosted provider). It is off
   for every style unless `"vision": true` in the user's `config.json` turns it on; `--no-vision`
-  then skips it. `--vision-top`, `--ollama-url`, `--ollama-model` and `--skip` work as on
+  then skips it. An `--ollama-url` on another machine needs the user's Vision consent (Models
+  tab); without it vision is skipped with a `vision_consent_needed` warning: tell the user.
+  `--vision-top`, `--ollama-url`, `--ollama-model` and `--skip` work as on
   `analyze`; `--compress-peaks`, `--lut`, `--lut-strength`, `--color` and `--color-strength` as
   on `clips`.
 - Outputs: the project `<projects>/clip` (`--out NAME` to change it) with the clips,
@@ -179,7 +181,7 @@ Variants:
 | Short clip or reel for social media | `clips <project> --vertical --max-total 60`, then `assemble projects/<project>/clips_vertical --captions` |
 | Highlights of a specific length | `clips <project> --max-total <seconds>` |
 | "Extra" instruction such as "only funny moments" or "keep the speech intact" | Choose `--style`, filter candidates by `transcript`/`label`, use `--segments`. The CLI does not parse these instructions |
-| The user says what the footage is ("downhill mtb, chest mount, muddy lens") | Before `crashes`, run `profile <project> --context "<the user's words>"`; check the choice with `profile <project> --json` (`outputs.name` and `outputs.source`; a `context_not_applied` warning means the user's words were not used). Use `--activity NAME` only when the user names a sport that has a profile. Do not edit profile files |
+| The user says what the footage is ("downhill mtb, chest mount, muddy lens") | Before `crashes`, run `profile <project> --context "<the user's words>"`; check the choice with `profile <project> --json` (`outputs.name` and `outputs.source`; a `context_not_applied` warning means the user's words were not used; with `vision_consent_needed` the user's Ollama is on another machine and needs their Vision consent in the Models tab: tell them). Use `--activity NAME` only when the user names a sport that has a profile. Do not edit profile files |
 | Room to trim in an editor | `clips ... --extend 1.5` or `extend <clips_dir> --seconds 2` |
 | The user asks to fix dull, washed-out or tinted colors | `clips <project> --color auto` (or on `edit`); `--color underwater` only for underwater footage or when an INFO line suggests it. Clips that look good, log footage, 360 clips and clips a safety check vetoes stay as they are: tell the user which clips were not graded and why, from `color.skip` of each clip in `clips/manifest.json` (codes: [docs/commands.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#clips), **Automatic color**). `assemble <project>` (mp4) and `edit --no-keep-clips` keep no manifest: use the per-clip INFO lines of the run instead |
 | The user gives a LUT for log or flat footage ("use my GoPro Flat LUT") | `clips <project> --lut <file>.cube` (or on `edit`); `--lut-strength 0.5` for half the grade. Only with a LUT the user names; never pick one for them |

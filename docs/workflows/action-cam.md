@@ -22,7 +22,7 @@ cutpoint assemble projects/trip/clips --loudnorm
   steps when the `events` extra and models are installed, writing `events.json` and
   `crashes.json` (`--skip` leaves steps out); the Ollama frame rating runs only with `--vision`;
 - writes `telemetry.json` (day summary, runs, per-source events);
-- writes these files, `crash_check\` and `ski_features\` only when it completes: a cancelled
+- writes these files, `crash_check\` and `action_cam_features\` only when it completes: a cancelled
   run leaves the previous ones as they were ([analyze](../commands.md#analyze));
 - orders clips by start time (GPS time, else the camera clock) and splits the day into runs at
   lift segments and gaps over 4 minutes.
@@ -59,7 +59,9 @@ crash words from the project's activity profile, chosen or built without manual 
    built-in profiles as examples. It is checked and capped, then saved to
    `<CUTPOINT_HOME>\profiles\`, so the next video of that kind matches it in step 3.
 5. If no model answers, the nearest library profile or `generic` is used (`source: fallback`),
-   and the next run tries again.
+   and the next run tries again. An Ollama on another machine is not asked until the Vision
+   consent for it was given in the Models tab of `cutpoint ui` (WARNING
+   `vision_consent_needed`).
 
 `--context "..."` passes the user's own words ("enduro race in the rain, mud on the lens"). The
 LLM adds crash captions, normal-riding captions and slang on top of the chosen profile; words

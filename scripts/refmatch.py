@@ -473,7 +473,7 @@ class FitData:
 
 
 def load_fit_data(project: Path, result: dict[str, Any] | None = None) -> FitData:
-    """Load ``refmatch.json`` (unless given) and the project's ``ski_features``.
+    """Load ``refmatch.json`` (unless given) and the project's ``action_cam_features``.
 
     Raises:
         FileNotFoundError: If the project has no refmatch.json / ski features.

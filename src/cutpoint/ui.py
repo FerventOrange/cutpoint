@@ -552,7 +552,8 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
     vis_section = data.get("vision_assistant")
     vis_consent = _tuple_of_str(vis_section.get("consent")) if isinstance(vis_section, dict) else ()
     vp = _vision_provider_from_data(data)
-    if vp is not None and vp.name != "ollama":  # Ollama is rated by VisionRater, never asked here
+    # an Ollama on this machine needs no consent; one on another machine does, as for AI Chat
+    if vp is not None and (vp.name != "ollama" or not vp.local):
         v_consent_info = consent_view(vp, consent=vis_consent, role="vision")
     else:
         v_consent_info = {

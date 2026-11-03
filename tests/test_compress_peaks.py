@@ -469,6 +469,7 @@ def test_threshold_stays_in_the_range_acompressor_takes(level):
     assert encode.PEAK_THRESHOLD_MIN <= plan.threshold <= encode.PEAK_THRESHOLD_MAX
 
 
+@pytest.mark.ffmpeg  # has_soxr asks the real ffmpeg
 def test_clip_export_tags_compressed_clips_only(monkeypatch):
     def args(peaks):
         calls: list[list[str]] = []

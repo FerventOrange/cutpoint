@@ -45,6 +45,7 @@ from cutpoint import (
     procs,
     ui,
 )
+from cutpoint.assistant import keys
 from cutpoint.assistant import session as ai_session
 from cutpoint.pano import candidates as pano_candidates
 from cutpoint.pano import director as pano_director
@@ -79,6 +80,14 @@ def client() -> Iterator[TestClient]:
 def no_nvenc(monkeypatch: pytest.MonkeyPatch) -> None:
     """Proxies encode with libx264 unless a test says otherwise: no GPU probe in tests."""
     monkeypatch.setattr(ui, "video_encoder", lambda: ui.VideoEncoder("cpu"))
+
+
+@pytest.fixture(autouse=True)
+def no_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The settings reply reports where each provider key comes from: no keyring, so no D-Bus probe."""
+    monkeypatch.setattr(
+        keys, "_keyring", lambda: SimpleNamespace(get_password=lambda service, user: None)
+    )
 
 
 def make_project(client: TestClient, tmp_path: Path, files: dict[str, bytes]) -> tuple[str, Path]:
@@ -2708,6 +2717,7 @@ def test_still_is_converted_to_what_the_export_shows_and_cached_under_a_new_name
     assert still.is_file()
 
 
+@pytest.mark.network
 def test_ui_on_a_taken_port_fails_cleanly_without_printing_a_url(
     capsys: pytest.CaptureFixture[str],
     caplog: pytest.LogCaptureFixture,
@@ -5728,6 +5738,7 @@ def prune_setup(tmp_path: Path) -> tuple[ui.Media, Path, list[str], str, str]:
     return ui.Media(), folder, paths, keys[0], keys[1]
 
 
+@pytest.mark.ffmpeg  # probes the sources with the real ffprobe
 def test_prune_proxies_removes_leftovers_and_adopts_the_windows_that_are_still_wanted(
     tmp_path: Path,
 ) -> None:
@@ -5905,6 +5916,7 @@ def test_prune_proxies_deletes_stale_whole_proxies(
     assert sorted(f.name for f in folder.iterdir()) == sorted(keep)
 
 
+@pytest.mark.ffmpeg  # probes the sources with the real ffprobe
 def test_prune_proxies_keeps_what_another_run_may_be_encoding_or_serving(
     tmp_path: Path,
 ) -> None:
@@ -5929,6 +5941,7 @@ def test_prune_proxies_keeps_what_another_run_may_be_encoding_or_serving(
     assert [f.name for f in folder.iterdir()] == [f"{a}.mp4"]
 
 
+@pytest.mark.ffmpeg  # probes the sources with the real ffprobe
 def test_prune_proxies_skips_a_file_it_cannot_delete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

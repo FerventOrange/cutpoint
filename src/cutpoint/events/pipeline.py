@@ -197,7 +197,9 @@ def run_events(
         # resolve the server's model before any cache lookup: the descriptions are keyed on
         # it. Offline it stays the placeholder, and its cached descriptions are not found.
         online = rater.available()
-    vlm.model = f"{rater.provider_name}:{rater.model}" if hosted else rater.model
+    # a hosted provider's descriptions are keyed on its host too: one model id at two
+    # servers describes apart (rater.host: providers.endpoint)
+    vlm.model = f"{rater.provider_name}@{rater.host}:{rater.model}" if hosted else rater.model
     sources = []
     seen: set[str] = set()
     unreachable: list[tuple[str, OSError]] = []
@@ -291,8 +293,9 @@ def run_events(
         timings["voice_s"] = round(time.perf_counter() - t0, 1)
     crash_run = "crash" in layers and not only  # project-wide ranking: all sources
     kept: list[Any] = []  # the visual layer's CLIP, reused by the crash dense confirm
-    # The visual layer's caption embeddings and the contact sheets use the captions of the
-    # project's activity.json (ski until the crash layer below writes one).
+    # The visual layer's caption embeddings use the captions of the project's activity.json
+    # (ski until the crash layer below writes one); the contact sheets are written after the
+    # crash layer when it runs, so a first run's sheets use the profile it resolves.
     from cutpoint.activity import project_prompts, use_prompts  # noqa: PLC0415
 
     prompts = project_prompts(project)
@@ -313,11 +316,15 @@ def run_events(
             )
         vram["visual"] = vm.summary()
         timings["visual_s"] = round(time.perf_counter() - t0, 1)
-    if sheets:
+
+    def write_sheets(prompt_set: Any) -> None:
         from cutpoint.events.sheets import write_visual_sheets  # noqa: PLC0415
 
-        with use_prompts(prompts):
+        with use_prompts(prompt_set):
             stats["sheets"] = [str(p) for p in write_visual_sheets(project, sources)]
+
+    if sheets and not crash_run:
+        write_sheets(prompts)
 
     # ---- layer 1b: OCR (with region discovery for games without a preset)
     t0 = time.perf_counter()
@@ -413,6 +420,8 @@ def run_events(
                 enc.close()
         vram["crash"] = vm.summary()
         timings["crash_s"] = round(time.perf_counter() - t0, 1)
+        if sheets:  # under the activity.json the crash layer just wrote
+            write_sheets(project_prompts(project))
 
     # ---- telemetry (ski): airtime / crash seeds + coverage of the riding
     if ski:
@@ -428,7 +437,7 @@ def run_events(
     # ---- layer 2: VLM windows
     t0 = time.perf_counter()
     games = {
-        str(s.path): "ski" if ski else game_key_for_path(str(s.path), ocr.game, project)
+        str(s.path): ACTION_CAM if ski else game_key_for_path(str(s.path), ocr.game, project)
         for s in sources
     }
     # Game prompt and event types (custom seeds) from each source's HUD preset; ski has none.
@@ -445,7 +454,7 @@ def run_events(
             windows = add_incremental(prev, windows)
             logger.log(
                 logging.INFO if "vlm" in layers else logging.DEBUG,
-                "VLM (ski, incremental): %d cached windows reused, %d of %d new "
+                "VLM (action-cam, incremental): %d cached windows reused, %d of %d new "
                 "windows cover footage not described yet",
                 len(prev),
                 len(windows) - len(prev),
