@@ -390,6 +390,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Vision no longer sends frames to an Ollama on another machine without consent. An Ollama URL
+  that is not `localhost` or a loopback address (from `--ollama-url`, `vision_assistant.url`, `OLLAMA_HOST` or `ollama_url` in `config.json`)
+  is hosted, as it already was for AI Chat: `analyze --vision`, the `events` VLM layer and
+  `360 director --vl-check` skip vision with a WARNING (`--json` warning `vision_consent_needed`)
+  until "Allow vision requests" in the Models tab of `cutpoint ui` grants the `vision-v2:`
+  consent for it, and the run goes on without it. Activity detection (`profile`, `crashes` and
+  the crash step of `analyze`) follows the same rule: without that consent it sends nothing,
+  falls back to the nearest library profile or `generic` and warns the same way. The Models tab
+  now shows that consent box for a non-local Ollama. An Ollama on this machine needs no consent,
+  as before (#601).
+- Consent keys include the port when it is not the scheme's default
+  (`vision-v2:openai@192.168.1.5:8080`, also `assistant-v2:`), so two servers on one host no
+  longer share a consent. Keys for default ports are unchanged; a server on another port (an
+  Ollama on another machine at `:11434` too) is asked for consent again once (#618).
+- Only `localhost` and loopback addresses (`127.0.0.0/8`, `::1`) count as this machine; a
+  `*.localhost` name is hosted and needs consent (#619).
+- Hosted vision ratings, `events` VLM descriptions and `360 director --vl-check` frame checks
+  are cached per provider and host, so one model id at two servers no longer shares results.
+  Results cached from a hosted provider before this change are asked again once; Ollama caches
+  are unchanged (#621).
 - 360 clips filmed with the camera upright (lenses horizontal: handheld, on a pole) no longer
   spin or drift: the view layer, the director and the renderer took yaw 0 from the camera axis
   that points ahead on a helmet mount, which is near vertical when the camera stands upright,

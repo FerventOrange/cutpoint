@@ -11,8 +11,11 @@ excerpts, file names and times, and detected on-screen text (such as player name
 (for frame ratings and the `events` window descriptions), never the video file. Vision sends more
 data and carries more risk, so it has its own consent: agreeing for AI Chat never covers Vision,
 or the reverse. Both consents are versioned (`assistant-v2:<provider>@<host>` and
-`vision-v2:<provider>@<host>` in `config.json`): a consent saved by an earlier version, under a
-shorter description, no longer counts, so you are asked again. Ollama stays local.
+`vision-v2:<provider>@<host>` in `config.json`, the host with its port when that is not the
+default, such as `192.168.1.5:8080`): a consent saved by an earlier version, under a shorter
+description, no longer counts, so you are asked again. An Ollama on this machine (`localhost` or
+a loopback address) needs no consent; an Ollama on another machine is hosted and needs the same
+consents: until Vision is allowed for it, vision steps skip it with a WARNING.
 
 The instructions the agent itself should follow are in [AGENTS.md](../AGENTS.md) at the
 repository root; `cutpoint guide` prints the same text, so an agent using a PyPI install

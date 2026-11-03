@@ -250,6 +250,7 @@ def test_vision_and_unload_use_the_same_url(monkeypatch):
         raise requests.ConnectionError
 
     monkeypatch.setattr(common.requests, "get", fake_get)
+    monkeypatch.setattr(vision, "ollama_allowed", lambda url: True)  # consent is tested elsewhere
     assert common.unload_ollama() == []
     assert seen == ["http://gpu-box:1234/api/ps"]
     assert vision.VisionRater().url == "http://gpu-box:1234"

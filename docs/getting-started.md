@@ -97,7 +97,8 @@ current browser tab's session storage. After restarting the server, open its new
 **Use at your own risk** when using a hosted API or subscription provider. In the Models tab,
 choose Chat and Vision independently; saving a model does not grant permission. Hosted model
 catalogs and requests load only after consent for that role. Ollama/Local shows no risk warning.
-Activity detection always uses Ollama, not the hosted Vision selection.
+Activity detection always uses Ollama, not the hosted Vision selection; an Ollama on another
+machine needs the Vision consent for it there too.
 
 For Claude Code, Codex or Antigravity subscriptions, run `uv run cutpoint proxy` in a dedicated
 terminal, then `uv run cutpoint login claude-code` (or `codex` / `antigravity`), or sign in under
@@ -347,7 +348,8 @@ Models tab under Chat role ([`assistant.model`](configuration.md#assistant)).
 [`ollama_url`](configuration.md#ollama_url) in `config.json`, else `http://127.0.0.1:11434`;
 `analyze --ollama-url` overrides it for one run and `assistant.url` sets
 it for the chat. For an Ollama on another machine use that machine's address. The AI Chat treats
-it as hosted and asks for [consent](commands.md#ai-chat) before the first message, and the Models tab
+it as hosted and asks for [consent](commands.md#ai-chat) before the first message, Vision sends
+it frames only after "Allow vision requests" in the Models tab, and the Models tab
 refuses a URL with a user name or password.
 
 **Turn it on.** Run `analyze --vision` or `edit --vision`, or set `"vision": true`. For the chat,
