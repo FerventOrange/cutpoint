@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a project run lock, `.analysis.run.cutpoint-lock`: a second run on the same project stops
   with `folder_busy` (exit 1) instead of writing the same caches, and a lock left by a process
   that is gone is taken over. Result files, `--json` and `PROGRESS` lines are unchanged.
+- `cutpoint resume <project> [--dry-run] [--json]` (#109): runs the command recorded in the
+  project's `progress.json` again, as recorded (a recorded `--force` too) and from its working
+  folder; cached work (transcripts, layer caches, VLM windows) is skipped, so an interrupted run
+  continues where it stopped. A finished run is not run again (`outputs.resumed` false); no
+  `progress.json` is `not_found`, a run still going `folder_busy`; `--dry-run` prints the
+  command and its recorded step counts. With `--json` the envelope's `command` is the resumed
+  command, with `outputs.resume` (`argv`, `status_before`, `done_before`), and the warnings
+  `resume_sources_changed` (recorded sources that are gone) and, on a run that replaces an
+  interrupted record of another command or other options, `resume_args_changed`. A resumed
+  `edit` that had finished its clips keeps them when their `manifest.json` is unchanged.
 - Footage category detection (#513): `cutpoint detect <inputs> [--json]` tells whether the
   footage is gameplay, action cam, talk or general, from the container tags, the camera
   telemetry and 32 small grey frames per source (a static HUD marks gameplay; cached as
@@ -529,6 +539,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as before; a game whose HUD is an opaque panel across most of the bottom (a Doom-style status
   bar, an RTS console) is also taken for a box and can become ambiguous. The probe cache is now `category-v2.json`, so each source's frame probe runs again
   once.
+- Run state (#109): the `folder_busy` message of the project run lock names the project, not
+  `<project>/analysis.run`; and `events`, `crashes` or `profile` on a folder that holds only the
+  `progress.json` of an interrupted first `analyze` stop with `not_found` and keep that record
+  instead of overwriting it. An action-cam `events` re-run that reuses described VLM windows
+  keeps their `reasons` in `events.json` (they read `cached` before).
 - Recordings whose audio tracks are copies of each other (OBS writing the same mix to several
   tracks) are analysed at the level of one track (#685). `analyze` summed every track into its
   analysis audio, so 5 identical tracks came out about 14 dB too loud and clipped, flattening

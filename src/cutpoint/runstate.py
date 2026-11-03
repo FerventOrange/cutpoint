@@ -21,8 +21,9 @@ the end. Schema (``version`` 1)::
 ``error`` ``{"code", "message"}`` as the ``--json`` envelope's); ``low_memory`` is reserved.
 :func:`read` reports a ``running`` record whose process is gone as ``interrupted``.
 
-Only a project folder (``highlights.json``, ``pano.json`` or ``progress.json`` in it) is recorded
-from the start; a folder that is no project gets no record and, but from ``analyze`` and
+Only a project folder (``highlights.json`` or ``pano.json`` in it; for ``analyze``, ``edit`` and
+``360 analyze`` also ``progress.json`` alone, :meth:`Recorder.is_project`) is recorded from the
+start; a folder that is no project gets no record and, but from ``analyze`` and
 ``edit`` that make it one, no lock, so a command that stops on it with ``not_found`` leaves it
 as it was. A first ``analyze`` or ``edit`` creates its
 project folder only for the run and removes it again when the run fails or is cancelled while
@@ -35,6 +36,12 @@ names this run's. ``360 analyze --scan`` on a new project locks and records once
 the folder (:func:`project_made`). It is never one of the held
 outputs (``highlights.json`` and the rest of :data:`cutpoint.analyze.HELD_OUTPUTS` stay one
 commit).
+
+``cutpoint resume <project>`` (:func:`resumable`, :func:`resuming`) replays a record's ``argv``
+from its ``cwd``; the replayed command records as usual. A run that replaces an interrupted
+record of another command or other options warns ``resume_args_changed``. ``edit`` keeps the
+stamp of the clips' ``manifest.json`` under ``steps.clips.manifest`` (:func:`clips_written`), so
+its resume skips clips it finished (:func:`clips_kept`).
 """
 
 from __future__ import annotations
@@ -53,6 +60,7 @@ from typing import Any
 from cutpoint import __version__, cache, folders, jsonout, procs
 from cutpoint.config import path_key
 from cutpoint.progress import Run
+from cutpoint.utils import file_stamp
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +74,9 @@ PCT_INTERVAL_S = 5.0
 # Parsed arguments that are no options of the run (callables are left out too).
 _NOT_OPTIONS = frozenset({"json_command", "json_result", "verbose"})
 
+RESUMABLE = frozenset({"interrupted", "low_memory"})  # a record that resume continues
 _ACTIVE: Recorder | None = None
+_RESUMING: dict[str, Any] | None = None  # the record cutpoint resume replays
 
 
 def _now() -> str:
@@ -108,6 +118,8 @@ class Recorder:
         self._lock = threading.Lock()
         self._last = 0.0  # time of the last write
         self._warned = False
+        self.previous: dict[str, Any] | None = None  # the record this run replaces
+        self.resuming = _RESUMING is not None  # replayed by cutpoint resume
         self.data: dict[str, Any] = {
             "version": VERSION,
             "generator": f"cutpoint {__version__}",
@@ -127,8 +139,14 @@ class Recorder:
         }
 
     def is_project(self) -> bool:
-        """The folder is a project: ``highlights.json``, ``pano.json`` or ``progress.json``."""
-        return any((self.project / n).is_file() for n in ("highlights.json", "pano.json", FILE))
+        """The folder is a project: ``highlights.json`` or ``pano.json``; ``progress.json``
+        alone only for ``analyze``, ``edit`` and ``360 analyze``, which resume it, so that
+        ``events``, ``crashes`` or ``profile`` stop with ``not_found`` and leave the record of
+        an interrupted first ``analyze`` as it was."""
+        names = ["highlights.json", "pano.json"]
+        if self.command in AFTER_TRANSCRIPT or self.command == "360 analyze":
+            names.append(FILE)
+        return any((self.project / n).is_file() for n in names)
 
     def begin(self) -> None:
         """Lock an existing project and write the record (sources from ``highlights.json``).
@@ -139,15 +157,46 @@ class Recorder:
                 self.lock()
             return  # project_ready / project_made lock a new project
         self.lock()
+        self.previous = read(self.project)
         hl = cache.load_json(self.project / "highlights.json")
         srcs = hl.get("sources") if isinstance(hl, dict) else None
+        if self.same_run() and self.previous and isinstance(self.previous.get("sources"), list):
+            srcs = self.previous["sources"]  # resumed: the sources the run had, until replaced
+        elif isinstance(srcs, list):
+            srcs = [s["path"] for s in srcs if isinstance(s, dict)]
         if isinstance(srcs, list):
-            self.data["sources"] = [s["path"] for s in srcs if isinstance(s, dict)]
+            self.data["sources"] = [str(s) for s in srcs]
         self.arm()
+
+    def same_run(self) -> bool:
+        """The record this run replaces is of the same command and options."""
+        prev = self.previous
+        return bool(prev) and (prev.get("command"), prev.get("options_key")) == (
+            self.command,
+            self.data["options_key"],
+        )
+
+    def _warn_replaced(self) -> None:
+        """INFO and ``resume_args_changed``: this run replaces an interrupted record of
+        another command or other options, which ``cutpoint resume`` can no longer continue."""
+        prev = self.previous
+        if not prev or prev.get("status") not in RESUMABLE or self.same_run():
+            return
+        this = (
+            "this run with other options"
+            if prev.get("command") == self.command
+            else f"this '{self.command}' run"
+        )
+        message = (
+            f"{self.path} recorded an interrupted '{prev.get('command')}' run; {this} "
+            f"replaces it, so cutpoint resume continues this one"
+        )
+        logger.info("%s", message)
+        jsonout.warn("resume_args_changed", message, [self.path])
 
     def lock(self) -> None:
         if not self.locked:
-            self._stack.enter_context(folders.swap_lock(self.project / LOCK_NAME))
+            self._stack.enter_context(folders.swap_lock(self.project / LOCK_NAME, self.project))
             self.locked = True
 
     def unlock(self) -> None:
@@ -158,6 +207,7 @@ class Recorder:
         with self._lock:
             if not self.armed:
                 self.armed = True
+                self._warn_replaced()
                 self._write()
 
     def _write(self) -> None:
@@ -329,3 +379,94 @@ def read(project: Path) -> dict[str, Any] | None:
             written = None
         alive = procs.pid_alive(pid, written)
     return data if alive else {**data, "status": "interrupted"}
+
+
+@contextmanager
+def resuming(rec: dict[str, Any]) -> Iterator[None]:
+    """``cutpoint resume`` replays ``rec`` in the block: the :class:`Recorder` of the replayed
+    command knows it resumes (:func:`clips_kept`)."""
+    global _RESUMING
+    _RESUMING = rec
+    try:
+        yield
+    finally:
+        _RESUMING = None
+
+
+def resumable(project: Path) -> dict[str, Any]:
+    """The record ``cutpoint resume`` replays: ``progress.json`` of ``project``.
+
+    Raises:
+        FileNotFoundError: If there is none (or it cannot be read).
+        ValueError: If it names no command line of :data:`COMMANDS`.
+    """
+    rec = read(project)
+    if rec is None:
+        raise FileNotFoundError(f"No {FILE} in {project}: no run of this project to resume")
+    argv = rec.get("argv")
+    if (
+        rec.get("command") not in COMMANDS
+        or not isinstance(argv, list)
+        or not all(isinstance(a, str) for a in argv)
+        or not isinstance(rec.get("cwd"), str)
+    ):
+        raise ValueError(f"{project / FILE} names no command to resume")
+    return rec
+
+
+def missing_sources(rec: dict[str, Any]) -> list[str]:
+    """The recorded ``sources`` that are not there now (relative ones from the record's
+    ``cwd``)."""
+    base = Path(rec.get("cwd") or ".")
+    sources = rec.get("sources") if isinstance(rec.get("sources"), list) else []
+    return [str(s) for s in sources if not (base / str(s)).exists()]
+
+
+def step_counts(rec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """``{step: {state, done, total}}`` of the record (``outputs.resume.done_before``)."""
+    steps = rec.get("steps") if isinstance(rec.get("steps"), dict) else {}
+    return {
+        name: {k: s.get(k) for k in ("state", "done", "total")}
+        for name, s in steps.items()
+        if isinstance(s, dict)
+    }
+
+
+def _stamp(path: Path) -> list[int] | None:
+    stamp = file_stamp(path)
+    return list(stamp) if stamp is not None else None
+
+
+def clips_written(project: Path, clips_dir: Path) -> None:
+    """``edit`` exported (or kept) the clips of ``clips_dir``: record the stamp of their
+    ``manifest.json`` (no-op outside :func:`record` or before ``progress.json``)."""
+    rec = _active(project)
+    stamp = _stamp(clips_dir / "manifest.json")
+    if rec is None or stamp is None:
+        return
+    with rec._lock:
+        entry = rec.data["steps"].setdefault(
+            "clips", {"state": None, "done": None, "total": None, "pct": None}
+        )
+        entry["manifest"] = {"path": str(clips_dir / "manifest.json"), "stamp": stamp}
+        rec._write()
+
+
+def clips_kept(project: Path, clips_dir: Path) -> bool:
+    """``cutpoint resume`` of an ``edit`` whose clips step finished: the replaced record has
+    the clips step done and the stamp of ``clips_dir``'s ``manifest.json`` as it is now (the
+    same command line made it, and nothing changed it since), so the clips are kept."""
+    rec = _active(project)
+    if rec is None or not rec.resuming or not rec.same_run() or rec.previous is None:
+        return False
+    steps = rec.previous.get("steps")
+    entry = steps.get("clips") if isinstance(steps, dict) else None
+    if not isinstance(entry, dict) or entry.get("state") != "done":
+        return False
+    manifest = entry.get("manifest")
+    if not isinstance(manifest, dict):
+        return False
+    path = clips_dir / "manifest.json"
+    return path_key(str(manifest.get("path"))) == path_key(str(path)) and manifest.get(
+        "stamp"
+    ) == _stamp(path)

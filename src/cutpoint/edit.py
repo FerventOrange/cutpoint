@@ -20,11 +20,12 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from cutpoint import cache, category, folders, jsonout, progress
+from cutpoint import cache, category, folders, jsonout, progress, runstate
 from cutpoint.assemble import assemble, temporary_clips
 from cutpoint.category import FUNNY, HYPE
 from cutpoint.clips import export_clips
 from cutpoint.encode import Lut
+from cutpoint.planning import report_clips
 from cutpoint.styles import ACTION_CAM, AUTO, AutoRequest, Style, get_style
 from cutpoint.utils import file_stamp, find_videos, input_name
 
@@ -241,7 +242,9 @@ def _run_edit(
     keys = set().union(*(folders.file_keys(v) for v in videos))
     folders.check_not_sources(project, [named.name, named_srt.name], keys)
     # The checks clips makes, before hours of analysis rather than after.
-    if keep_clips and clips_dir.exists() and any(clips_dir.iterdir()) and not force:
+    # cutpoint resume of a run that finished its clips: they are kept (runstate.clips_kept)
+    kept = keep_clips and runstate.clips_kept(project, clips_dir)
+    if keep_clips and clips_dir.exists() and any(clips_dir.iterdir()) and not (force or kept):
         raise FileExistsError(f"{clips_dir} is not empty; use --force to replace its clips")
     style = AutoRequest(kind.emphasis, kind.style) if kind.auto else get_style(kind.style)
     event_layers = None  # the events defaults
@@ -282,20 +285,26 @@ def _run_edit(
     before = file_stamp(srt)  # an earlier run's final.srt is not this run's subtitles
     with temporary_clips(project) if not keep_clips else nullcontext(clips_dir) as work:
         temporary = {} if keep_clips else {"out_dir": work, "temporary": True}
-        with steps.step("clips"):
-            export_clips(
-                project,
-                top=kind.top,
-                max_total=kind.max_total,
-                order=kind.order,
-                vertical=vertical,
-                force=force,
-                compress_peaks=compress_peaks,
-                lut=lut,
-                color=color,
-                color_strength=color_strength,
-                **temporary,
-            )
+        with steps.step("clips", "kept from the interrupted run" if kept else None):
+            if kept:
+                logger.info("%s: the clips of the interrupted run are kept", clips_dir)
+                report_clips(clips_dir)
+            else:
+                export_clips(
+                    project,
+                    top=kind.top,
+                    max_total=kind.max_total,
+                    order=kind.order,
+                    vertical=vertical,
+                    force=force,
+                    compress_peaks=compress_peaks,
+                    lut=lut,
+                    color=color,
+                    color_strength=color_strength,
+                    **temporary,
+                )
+        if keep_clips:
+            runstate.clips_written(project, clips_dir)
         steps.start("assemble")
         final = assemble(
             work,
