@@ -1062,6 +1062,7 @@ def run(port: int | None = None) -> None:
                             "proxy supervisor did not finish credential cleanup"
                         ) from err
 
+            completed = False
             try:
                 proc = subprocess.Popen(
                     guardian_cmd,
@@ -1084,6 +1085,7 @@ def run(port: int | None = None) -> None:
                         continue
                 if rc != 0:
                     raise ProxyError(f"CLIProxyAPI supervisor exited with non-zero code {rc}")
+                completed = True
             except KeyboardInterrupt:
                 if proc is not None and stop_guardian() != 0:
                     raise ProxyError("proxy supervisor failed during interrupt cleanup") from None
@@ -1096,7 +1098,15 @@ def run(port: int | None = None) -> None:
                         with contextlib.suppress(ValueError, OSError):
                             signal.signal(sig, orig)
                 finally:
-                    if proc is not None and proc.poll() is None and stop_guardian() != 0:
+                    if not completed:
+                        # Startup or the run already failed: keep that error as the main
+                        # one and only log a cleanup failure (#577).
+                        try:
+                            if proc is not None and proc.poll() is None and stop_guardian() != 0:
+                                logger.warning("proxy supervisor failed during cleanup")
+                        except ProxyError as err:
+                            logger.warning("proxy supervisor cleanup failed: %s", err)
+                    elif proc is not None and proc.poll() is None and stop_guardian() != 0:
                         raise ProxyError("proxy supervisor failed during cleanup") from None
     except FolderBusyError as err:
         raise ProxyError(f"another cutpoint proxy is already running: {err}") from err

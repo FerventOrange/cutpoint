@@ -1346,6 +1346,50 @@ def test_run_restores_the_signal_handlers_when_the_supervisor_is_stuck(stuck_run
     assert {sig: signal.getsignal(sig) for sig in _HOOKED} == before
 
 
+def test_run_keeps_the_startup_error_when_the_cleanup_also_fails(
+    stuck_run, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The deadline error is not hidden by the stop of a supervisor stuck in prepare() (#577)."""
+    started, _ = stuck_run
+    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", lambda: None)
+
+    def deadline(proc: object) -> None:
+        raise cliproxy.ProxyConnectionError("did not become ready within 120 s")
+
+    monkeypatch.setattr(cliproxy, "_wait_until_ready", deadline)
+    with (
+        caplog.at_level("WARNING", logger=cliproxy.logger.name),
+        pytest.raises(cliproxy.ProxyConnectionError, match="did not become ready"),
+    ):
+        cliproxy.run()
+    assert started and started[0].terminated
+    assert any("did not finish credential cleanup" in r.getMessage() for r in caplog.records)
+
+
+class _ExitsThenStuck(_StuckGuardian):
+    """Exits with 0 on the first wait of ``run()``; later waits time out."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waits = 0
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.waits += 1
+        if self.waits == 1:
+            return 0
+        return super().wait(timeout)
+
+
+def test_run_raises_a_cleanup_failure_after_a_successful_run(
+    stuck_run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", lambda: None)
+    monkeypatch.setattr(cliproxy, "_wait_until_ready", lambda proc: None)
+    monkeypatch.setattr(cliproxy.subprocess, "Popen", lambda *a, **k: _ExitsThenStuck())
+    with pytest.raises(cliproxy.ProxyError, match="did not finish credential cleanup"):
+        cliproxy.run()
+
+
 class _StartingGuardian:
     """A supervisor that stays alive, or exits with ``rc`` after ``polls`` polls."""
 
