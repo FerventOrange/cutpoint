@@ -320,6 +320,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Docs: the 360 director settings `include_pad_deg`, `include_check_pad_deg` and `near_soft_as_hard`, and the sliver grid of `360 qa --paths` (#614).
 - Browser workspace: uniform spacing (#534). Padding, margins, gaps and radii come from the `--space-*`
   and `--radius-*` scale, buttons and fields share `--control-h` (36 px, so the gear button is
   square), the three columns share a 16 px gutter and a symmetric padding, and the top bar, the
