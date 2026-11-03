@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `resume_sources_changed` (recorded sources that are gone) and, on a run that replaces an
   interrupted record of another command or other options, `resume_args_changed`. A resumed
   `edit` that had finished its clips keeps them when their `manifest.json` is unchanged.
+- Resumable clip exports (#109): a `clips` or `extend` export that fails, is interrupted or is
+  killed keeps its finished clips in the hidden `.<folder>.cutpoint-resume` next to the clips
+  folder (with a `resume.json` written after each clip) instead of deleting them; the clips
+  folder stays as it was. The next run into that folder with the same clips takes them over and
+  encodes only the missing ones; a run with other clips removes the folder. `clips` now records
+  `progress.json` (never over an interrupted run of another command) and holds the project run
+  lock, so `cutpoint resume <project>` continues an
+  interrupted `clips` (a recorded `--force` too) or `edit` export.
 - `--batch-size N` on `analyze`, `events` and `360 analyze` (#109): each model (Whisper,
   PANNs, the voice and visual layers, the HUD OCR engine, the 360 views, the crash layer's CLIP
   after N dense windows, an Ollama vision model after N VLM windows) is closed after N sources
@@ -344,6 +352,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Whisper on the CPU without `--model` (#109): when the GPU is short of memory or CUDA fails and
+  transcription falls back to the CPU, a run without `--model` uses the CPU default (`small`)
+  instead of `medium` when `small` is downloaded already, and the WARNING says so; else it keeps
+  `medium` (nothing is downloaded mid-run) and a WARNING names the `cutpoint setup` command for
+  `small`. An explicit `--model` is kept. The transcript is cached under the model that ran and
+  marked as a fallback (`fallback-transcript-small.json`), and a later run without `--model`
+  (also on the GPU, and `cutpoint resume`) reuses that marked `small` transcript with an INFO
+  line instead of transcribing again (never one of `--model small`); give `--model medium` to
+  redo it.
 - `--batch-size` on `events`: the vision model is unloaded only at a source boundary after at
   least N windows, so a small N no longer reloads it every few windows of one recording.
 - Action-cam vision prompts follow the activity profile (#7, #511): the `cutpoint events` VLM
@@ -557,6 +574,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The memory guard's `low_memory` error quotes the project path in its
+  `cutpoint resume <project>` hint (a path with a space copies as one argument), and a stop for
+  VRAM no longer says how much RAM `memory_guard` keeps free.
 - `cutpoint detect` and `--style auto` no longer call camera footage with a news lower third
   sure gameplay (#701). An opaque box across most of the bottom of the picture (a lower third,
   a news ticker) has text that stays put like a HUD's, so a re-encoded clip without camera tags

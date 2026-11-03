@@ -64,8 +64,10 @@ from cutpoint.styles import ACTION_CAM, AUTO, LAUGHTER, PROFANITY, AutoRequest, 
 from cutpoint.transcribe import (
     Segment,
     Transcriber,
+    cached_transcript,
     filter_hallucinations,
     flat_words,
+    record_transcript,
     transcript_name,
 )
 from cutpoint.utils import clock, find_videos, matches_glob, slugify
@@ -96,8 +98,8 @@ WAV_HEADER = 44
 # are left out (#685); without it the WAV mixes every track
 MIX_FILE = "audio16k-tracks.json"
 # The caches made from the analysis WAV and, last, the WAV, removed when it mixed other tracks
-AUDIO_CACHES = ("loudness.json", "transcript-*.json", "events-audio-*.json", "voice-*.npz",
-                "audio16k.wav")  # fmt: skip
+AUDIO_CACHES = ("loudness.json", "transcript-*.json", "fallback-transcript-*.json",
+                "events-audio-*.json", "voice-*.npz", "audio16k.wav")  # fmt: skip
 RESUME_REFINE = 2  # bisection probes to lose less footage before the resume point
 RESUME_MARGIN_S = 1.0  # start the recovered part a little after the first good probe
 MAX_RECOVERED_PARTS = 5  # per source
@@ -269,11 +271,29 @@ def _loudness(wav: Path, cdir: Path) -> tuple[np.ndarray, np.ndarray]:
 def _transcript(
     wav: Path, cdir: Path, tr: Transcriber, on_progress: Callable[[float], None] | None = None
 ) -> list[Segment]:
-    path = cdir / transcript_name(tr.model_name, tr.language)
-    data = cache.load_json(path)
+    path = cached_transcript(tr, cdir)  # without --model also a marked CPU fallback's
+    data = cache.load_json(path) if path is not None else None
+    if (
+        data is not None
+        and path is not None
+        and path.name
+        not in {
+            transcript_name(m, tr.language)
+            for m in (tr.model_name, getattr(tr, "default_name", ""))
+        }
+    ):
+        logger.info(
+            "Reusing %s, made by a CPU fallback of an earlier run without --model "
+            "(--model %s transcribes it again)",
+            path.name,
+            tr.default_name,
+        )
     if data is None:
         data = tr.transcribe(wav, on_progress) if on_progress else tr.transcribe(wav)
+        # the model that ran: without --model, a CPU fallback runs the CPU default (small)
+        path = cdir / transcript_name(tr.model_name, tr.language)
         cache.save_json(path, data)
+        record_transcript(tr, path)
     return data
 
 
@@ -350,7 +370,8 @@ def _cached_transcripts(sources: Sequence[Path], tr: Transcriber | None) -> int:
     n = 0
     for src in sources:
         with contextlib.suppress(OSError):
-            n += (cache.source_dir(src) / transcript_name(tr.model_name, tr.language)).is_file()
+            cdir = cache.source_dir(src)
+            n += cached_transcript(tr, cdir) is not None
     return n
 
 

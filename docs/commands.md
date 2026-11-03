@@ -76,7 +76,7 @@ So do these combinations:
 | `ffmpeg_missing` | 1 | ffmpeg or ffprobe is not found |
 | `missing_extra` | 1 | An optional extra is not installed (the feature is not available in Cutpoint lite) |
 | `output_not_empty` | 1 | A file or folder is in the way; see `--force` |
-| `folder_busy` | 1 | Another cutpoint run holds the folder's lock (`.<folder>.cutpoint-lock`); wait and retry. `analyze`, `edit`, `events`, `crashes`, `profile` and `360 analyze` hold `<project>/.analysis.run.cutpoint-lock` (see [Run lock](#run-lock-and-progressjson)) |
+| `folder_busy` | 1 | Another cutpoint run holds the folder's lock (`.<folder>.cutpoint-lock`); wait and retry. `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` and `clips` hold `<project>/.analysis.run.cutpoint-lock` (see [Run lock](#run-lock-and-progressjson)) |
 | `low_memory` | 1 | Too little free memory to load a model, also after Cutpoint freed cached models and unloaded Ollama's; close other programs, then run the command the `ERROR` line names (`cutpoint resume <project>`, or the same command again when no `progress.json` was written yet). See [Memory guard](#memory-guard) |
 | `interrupted` | 130 | Ctrl+C, Ctrl+Break or SIGTERM |
 | `error` | 1 | Anything else |
@@ -84,7 +84,7 @@ So do these combinations:
 | `warnings[].code` | Command | Meaning |
 |---|---|---|
 | `resume_sources_changed` | `resume` | Sources of the recorded run are missing now; `files` names them |
-| `resume_args_changed` | `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` | The run replaced the `progress.json` of an interrupted or `low_memory` run with a different command or options; `files` names `<project>/progress.json` |
+| `resume_args_changed` | `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze`, `clips` | The run replaced the `progress.json` of an interrupted or `low_memory` run with a different command or options; `files` names `<project>/progress.json` |
 | `kept_clips` | `clips`, `extend` (so `edit`) | `.mp4` files the old manifest does not list stayed in the folder (the message names clips renamed during review); `assemble` includes them |
 | `kept_sources` | `clips`, `extend` | A file the run reads, or the clips were cut from, was not replaced |
 | `temporary_clips` | `assemble <project>`, `edit --no-keep-clips` | The clips were exported into a temporary folder and removed after the join; `outputs` lists no clips. Export them with `clips` to keep them |
@@ -1085,6 +1085,21 @@ root, a mount point or a bind mount; use `--out` with a folder on that drive. An
 root or mount point is exported into directly, each clip under a temporary name until it is
 complete; a failed run there may keep the finished clips. With `export_workers` above 1 these can include clips after the failed one, and some of them may have no `.srt`.
 
+### Resuming an export
+
+`clips`, and `extend` into a folder it replaces (in place, or `--out` a non-empty folder with
+`--force`), export into the hidden staging folder and record each finished clip in its
+`resume.json`. When the run fails, is interrupted (Ctrl+C) or is killed hard, the staging
+folder is kept as the hidden `.<folder>.cutpoint-resume` next to the clips folder, with the
+finished clips only; the clips folder itself is left as it was, so `assemble` never sees a new
+or partial clip. The next `clips` or `extend` run into that folder (the same command again, or
+`cutpoint resume <project>`) takes over every finished clip whose name, source, in and out
+points, format, crop, grade, audio fade and peak compression are unchanged, encodes only the
+others and removes the folder; a run with other clips removes it and encodes them all. 360
+clips and clips trimmed by a read error are always encoded again. Temporary clips (`assemble <project>`, `edit --no-keep-clips`)
+and an export straight into an empty drive root or mount point keep no resume folder. Delete
+the folder by hand to start over; it only holds clips Cutpoint exported.
+
 ### Folder lock
 
 One run at a time works on a folder: `clips`, `extend` and `assemble` hold the lock file
@@ -1520,14 +1535,15 @@ Footage that is not reachable (offline drive, moved file) is skipped with a `foo
 cutpoint resume <project> [--dry-run] [--json]
 ```
 
-Re-runs the last `analyze`, `edit`, `events`, `crashes`, `profile` or `360 analyze` of a
+Re-runs the last `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` or `clips` of a
 project that was interrupted or failed, from the command line recorded in its `progress.json`
 (see [Run lock and progress.json](#run-lock-and-progressjson)). `<project>` is resolved like
 the project of other commands (a bare name is in the projects folder). The recorded command
 runs in the recorded working directory with its recorded options, a `--force` among them;
 `resume` has no `--force` (it is a `bad_args` error, exit 2). Per-source caches make the rerun
 continue where the run stopped. `edit` keeps its clips when the `clips` step was done and
-`clips/manifest.json` is unchanged since.
+`clips/manifest.json` is unchanged since; an `edit` or `clips` stopped while exporting encodes
+only the clips it had not finished (see [Resuming an export](#resuming-an-export)).
 
 Statuses that are resumed: `interrupted` (also `running` with a dead process), `failed` and
 `low_memory`. Status `done` logs `nothing to resume` and exits 0. Sources of the record that
@@ -1564,15 +1580,17 @@ a model on the GPU needs its VRAM instead, and Ollama's model the size Ollama re
 and VRAM together. When memory is short it frees cached models and unloads Ollama's, checks
 again and, still short, stops with `low_memory` (exit 1, `progress.json` status `low_memory`)
 and an `ERROR` naming `cutpoint resume <project>` (or, before `progress.json` is written, the
-same command again). Whisper, PANNs and the crash check's CLIP short of VRAM run on the CPU instead (a `WARNING`). Free RAM is read on Linux and Windows only
+same command again). Whisper, PANNs and the crash check's CLIP short of VRAM run on the CPU instead (a `WARNING`); Whisper without `--model` then runs the CPU default, `small`, as after a CUDA failure, when it is downloaded already (else `medium`, with a `WARNING` naming the `cutpoint setup` command for `small`); an explicit `--model` is kept. A later run without `--model` reuses that `small` transcript (an INFO line names it), never one an explicit `--model small` made. Free RAM is read on Linux and Windows only
 (elsewhere there is no check). A vision server on this machine that is not Ollama gets only the
 RAM check and a `WARNING`, as Cutpoint cannot unload it.
 
 ### Run lock and progress.json
 
-`analyze`, `edit`, `events`, `crashes`, `profile` and `360 analyze` hold the lock file
-`<project>/.analysis.run.cutpoint-lock` while they run and record themselves in
-`<project>/progress.json`. A second run on the project stops with `folder_busy` and an `ERROR`
+`analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` and `clips` hold the lock
+file `<project>/.analysis.run.cutpoint-lock` while they run and record themselves in
+`<project>/progress.json` (`clips` only in a project with a `highlights.json` or `pano.json`,
+and never over the record of an interrupted run of another command, which `cutpoint resume`
+then still continues). A second run on the project stops with `folder_busy` and an `ERROR`
 naming the process, as for the [folder lock](#folder-lock) of `clips`: wait, or delete the
 lock file if no run is active. `events`, `crashes` and `profile` treat a folder with only a
 `progress.json` as no project: they write nothing and take no lock. A first `analyze` or

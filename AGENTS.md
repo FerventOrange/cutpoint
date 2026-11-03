@@ -71,9 +71,14 @@ To let Claude Code find Cutpoint on its own, the user can install the skill with
   the user; move them out only if you exported them, and never delete a file you did not
   export. If such a clip has the name of a new clip, the run stops before exporting with an
   `ERROR` naming it; tell the user to move or rename it.
-- `analyze`, `edit`, `events`, `crashes`, `profile` and `360 analyze` hold
+- `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` and `clips` hold
   `<project>/.analysis.run.cutpoint-lock` while they run. A second run gets `folder_busy`: wait
   or retry; delete the lock file only if you are sure no run is active.
+- A `clips` or `extend` run that fails or is interrupted keeps its finished clips in the
+  hidden `.<folder>.cutpoint-resume` next to the clips folder (never in it, so `assemble` sees
+  none of them). The next run into that folder with the same clips encodes only the missing ones
+  (`cutpoint resume <project>` replays an `edit` or `clips` run); a run with other clips removes
+  the folder. Leave it alone; it is not a clips folder.
 - One run at a time works on a clips folder (lock file `.<folder>.cutpoint-lock`). If `clips`,
   `extend` or `assemble` stops with an `ERROR` that another run holds the lock, wait for it;
   delete the lock file only if you are sure no run is active. If `clips --force` or `extend`

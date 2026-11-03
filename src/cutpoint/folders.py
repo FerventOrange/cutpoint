@@ -5,7 +5,8 @@
 it on success; :func:`staged_dir` and :func:`swap_in` replace a folder's files all or
 nothing (:func:`recover_swap` finishes one a hard kill interrupted); :func:`check_not_sources`
 refuses to overwrite a file the run reads; :func:`swap_lock` lets one run at a time work on a
-folder. None of it runs ffmpeg.
+folder. A staging folder with finished clips is kept as :func:`resume_path` for the next run
+(:mod:`cutpoint.clipresume`). None of it runs ffmpeg.
 """
 
 from __future__ import annotations
@@ -87,7 +88,13 @@ def atomic_output(out: Path) -> Iterator[Path]:
 # is a drive root (no parent to hold them), a mount point or a bind mount before any export,
 # unless an empty one is exported into directly (``direct_if_empty``).
 
+#
+# A staging folder holding ``resume.json`` (finished clips, :mod:`cutpoint.clipresume`) is not
+# removed on failure, Ctrl+C or after a hard kill: it is renamed to ``.<name>.cutpoint-resume``
+# (:func:`resume_path`), whose matching clips the next run takes over. recover_swap leaves it.
+
 _SWAP_JOURNAL = ".cutpoint-swap.json"
+RESUME_FILE = "resume.json"
 _SWAP_PROBE = ".cutpoint-swap-probe"
 _SWAP_FIX = "use --out with a folder on that drive"
 
@@ -106,6 +113,68 @@ def staging_path(dst: Path) -> Path:
     if not res.name:
         raise _root_error(dst)
     return res.with_name(f".{res.name}.cutpoint-tmp")
+
+
+def resume_path(dst: Path) -> Path:
+    """Hidden folder with the finished clips of an interrupted export into ``dst``:
+    ``.<name>.cutpoint-resume`` next to it.
+
+    Raises:
+        ValueError: If ``dst`` is a drive root.
+    """
+    res = dst.resolve()
+    if not res.name:
+        raise _root_error(dst)
+    return res.with_name(f".{res.name}.cutpoint-resume")
+
+
+def _short(err: OSError) -> str:
+    """Why ``err`` happened, without the hints of the errors it wraps: "is open in another
+    program" for a lock (:func:`cutpoint.cache.retry_locked`), else the system's message."""
+    root: BaseException = err
+    while isinstance(root.__cause__, OSError):
+        root = root.__cause__
+    if isinstance(root, PermissionError) or isinstance(err, PermissionError):
+        return f"is {cache._LOCK_HINT.removeprefix('it is ')}"
+    return getattr(root, "strerror", None) or str(root)
+
+
+def _keep_for_resume(tmp: Path, dst: Path) -> bool:
+    """Rename the staging folder ``tmp`` of ``dst`` to :func:`resume_path` if it holds a
+    :data:`RESUME_FILE`; False if it holds none. An older resume folder is removed only once
+    ``tmp`` was renamed next to it, so a failure never loses finished clips.
+
+    Raises:
+        PermissionError: If ``tmp`` cannot be renamed (a file in it is still open) or the older
+            resume folder cannot be removed; ``tmp`` is left as it was.
+        OSError: For any other failure, the same way.
+    """
+    if not (tmp / RESUME_FILE).is_file():
+        return False
+    keep = resume_path(dst)
+    new = keep.with_name(f"{keep.name}-new")
+    try:
+        if new.exists():  # a hard kill between the two renames below
+            _remove_leftover(new, f"left over from keeping the finished clips of {dst}")
+        cache.retry_locked(partial(tmp.replace, new), tmp, "rename")
+    except OSError as err:
+        what = PermissionError if isinstance(err, PermissionError) else OSError
+        raise what(
+            f"Cannot keep the finished clips of an interrupted export into {dst}: a file in "
+            f"{tmp} {_short(err)}. Close it and re-run."
+        ) from err
+    try:
+        if keep.exists():
+            _remove_leftover(keep, f"the finished clips of an older interrupted export into {dst}")
+        cache.retry_locked(partial(new.replace, keep), keep, "rename")
+    except OSError:
+        with suppress(OSError):  # back where the next run's recover_swap looks for it
+            new.replace(tmp)
+        raise
+    logger.info(
+        "Kept the finished clips in %s; the next run with the same clips takes them over", keep
+    )
+    return True
 
 
 def backup_path(dst: Path) -> Path:
@@ -166,8 +235,10 @@ def _check_rename(tmp: Path, dst: Path) -> None:
         (dst / _SWAP_PROBE).unlink()
 
 
-def _restore(dst: Path, bak: Path, journal: dict[str, Any]) -> None:
-    """Put the originals in ``bak`` back into ``dst`` and drop the new-only files there.
+def _restore(dst: Path, bak: Path, journal: dict[str, Any], back: Path | None = None) -> None:
+    """Put the originals in ``bak`` back into ``dst`` and drop the new-only files there
+    (with ``back``, the folder they came from: move every new file already in ``dst`` back
+    into it first, so a failed swap loses none of them).
 
     Both steps are best effort: one locked file does not stop the others. The journal is
     removed last and only if every file went back, so a restore that fails half-way is
@@ -178,6 +249,21 @@ def _restore(dst: Path, bak: Path, journal: dict[str, Any]) -> None:
     """
     errors: list[OSError] = []
     old = {path_key(n, dst) for n in journal["old"]}
+    for name in journal["new"] if back is not None else ():
+        f = dst / name
+        # moved in already: it is no longer in back (an original never left dst otherwise)
+        if (
+            not (back / name).exists()
+            and (f.exists() or f.is_symlink())
+            # a name of an original too: only once that original left dst
+            and (
+                path_key(name, dst) not in old or (bak / name).exists() or (bak / name).is_symlink()
+            )
+        ):
+            try:
+                cache.retry_locked(partial(f.replace, back / name), f, "move back")
+            except OSError as err:
+                errors.append(err)
     for name in journal["old"]:
         src = bak / name
         if src.exists() or src.is_symlink():  # else it never left dst
@@ -207,17 +293,23 @@ def recover_swap(dst: Path) -> None:
     """Clean up after a :func:`swap_in` or staged export killed hard (``taskkill /F``).
 
     With a journal the originals are put back; a backup without one is from a completed
-    swap and is removed. A stale staging folder (only this tool's output) is removed.
+    swap and is removed. A stale staging folder (only this tool's output) is removed, or
+    renamed to :func:`resume_path` when it lists finished clips (a hard kill during an
+    export); an existing resume folder is left alone.
 
     Raises:
         RuntimeError: If the journal is unreadable or malformed; the backup is left as is.
         PermissionError: If a leftover backup or staging folder cannot be removed (a file
-            in it is still open); the next swap could not start with it in place.
+            in it is still open); the next swap could not start with it in place. A staging
+            folder with finished clips that cannot be kept for resume is left as it is.
     """
     if not dst.resolve().name:  # a drive root: nothing is ever staged next to it
         return
     with suppress(OSError):  # a probe of _check_rename left by a hard kill
         (dst / _SWAP_PROBE).unlink(missing_ok=True)
+    tmp = staging_path(dst)
+    # the new clips already moved in go back to their resumable folder, never deleted
+    back = next((f for f in (tmp, resume_path(dst)) if (f / RESUME_FILE).is_file()), None)
     bak = backup_path(dst)
     if bak.exists():
         path = bak / _SWAP_JOURNAL
@@ -238,10 +330,21 @@ def recover_swap(dst: Path) -> None:
                     f"be read. The original files are in {bak}: move them back into {dst} by "
                     f"hand, then delete {bak} and re-run."
                 )
-            _restore(dst, bak, journal)
+            _restore(dst, bak, journal, back)
             logger.warning("Put back the original files of %s from an interrupted replace", dst)
-    tmp = staging_path(dst)
-    if tmp.exists():
+    keep = resume_path(dst)
+    new = keep.with_name(f"{keep.name}-new")  # a hard kill inside _keep_for_resume
+    if new.exists():  # the newer clips: they replace an older resume folder
+        try:
+            if keep.exists():
+                _remove_leftover(
+                    keep, f"the finished clips of an older interrupted export into {dst}"
+                )
+            cache.retry_locked(partial(new.replace, keep), keep, "rename")
+        except OSError as err:
+            logger.warning("Could not tidy up %s (%s); the next run tries again", new, err)
+    # finished clips are kept (raises, leaving them, if they cannot be); else it goes
+    if tmp.exists() and not _keep_for_resume(tmp, dst):
         _remove_leftover(tmp, f"left over from an interrupted export into {dst}")
 
 
@@ -272,8 +375,9 @@ def _remove_leftover(path: Path, why: str) -> None:
 
 
 @contextmanager
-def staged_dir(dst: Path, *, direct_if_empty: bool = False) -> Iterator[Path]:
-    """Yield a fresh :func:`staging_path` of ``dst`` to export into, removed on failure.
+def staged_dir(dst: Path, *, direct_if_empty: bool = False, resume: bool = False) -> Iterator[Path]:
+    """Yield a fresh :func:`staging_path` of ``dst`` to export into, removed on failure
+    (with ``resume``, renamed to :func:`resume_path` instead when it lists finished clips).
 
     The caller moves the result in with :func:`swap_in`, unless ``dst`` itself was yielded:
     with ``direct_if_empty``, an existing empty ``dst`` that cannot be staged (a drive root,
@@ -314,8 +418,22 @@ def staged_dir(dst: Path, *, direct_if_empty: bool = False) -> Iterator[Path]:
     except BaseException:
         # A still-locked part (Windows, right after Ctrl+C) must not replace the real error.
         try:
-            if work is tmp:  # a direct export keeps its finished clips
+            # a direct export keeps its finished clips; a staged one keeps them for resume
+            if work is not tmp:
+                pass
+            elif not (resume and (tmp / RESUME_FILE).is_file()):
                 shutil.rmtree(tmp)
+            else:
+                try:
+                    _keep_for_resume(tmp, dst)
+                except OSError as err:  # a file still locked right after Ctrl+C
+                    logger.warning(
+                        "Kept the finished clips in %s (a file in it %s); the next run into %s "
+                        "takes them over",
+                        tmp,
+                        _short(err),
+                        dst,
+                    )
         except OSError as err:
             logger.warning("Could not remove %s (%s); the next run removes it", tmp, err)
         raise
@@ -382,8 +500,12 @@ def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
             :func:`cutpoint.cache.retry_locked`).
     """
     created = not dst.exists()
-    # manifest.json last in, first out: it never lists a clip that is not there
-    names = sorted((p.name for p in new.iterdir()), key=lambda n: (n == "manifest.json", n))
+    # manifest.json last in, first out: it never lists a clip that is not there; the resume
+    # record stays in new until every file is in (a failed swap keeps the clips resumable)
+    names = sorted(
+        (p.name for p in new.iterdir() if p.name != RESUME_FILE),
+        key=lambda n: (n == "manifest.json", n),
+    )
     # one file per path_key (the first spelling): a case variant would move it twice
     present = {
         path_key(n, dst): n
@@ -405,7 +527,7 @@ def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
     except BaseException:
         try:
             if (bak / _SWAP_JOURNAL).exists():
-                _restore(dst, bak, journal)
+                _restore(dst, bak, journal, new)
             else:
                 bak.rmdir()
         except BaseException as err:  # a second Ctrl+C too: say where the originals are
@@ -427,6 +549,7 @@ def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
     except OSError as err:  # still open (a virus scanner): recover_swap removes it later
         logger.warning("Could not remove %s (%s); the next run removes it", bak, err)
     with suppress(OSError):  # still open (a virus scanner): recover_swap removes it later
+        (new / RESUME_FILE).unlink(missing_ok=True)
         new.rmdir()
 
 

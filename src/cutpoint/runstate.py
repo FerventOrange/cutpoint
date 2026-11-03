@@ -1,7 +1,7 @@
 """Run state of the long project commands (#109): ``<project>/progress.json`` and the project
 run lock.
 
-``analyze``, ``edit``, ``events``, ``crashes``, ``profile`` and ``360 analyze`` run inside
+``analyze``, ``edit``, ``events``, ``crashes``, ``profile``, ``360 analyze`` and ``clips`` run inside
 :func:`record`, entered once per process by the CLI (``edit`` running ``analyze``, or
 ``360 analyze`` running ``analyze`` and the events, record and lock once). It holds the
 project's run lock ``<project>/.analysis.run.cutpoint-lock`` (:func:`cutpoint.folders.swap_lock`,
@@ -70,7 +70,8 @@ logger = logging.getLogger(__name__)
 VERSION = 1
 FILE = "progress.json"
 LOCK_NAME = "analysis.run"  # swap_lock(<project>/analysis.run): .analysis.run.cutpoint-lock
-COMMANDS = frozenset({"analyze", "edit", "events", "crashes", "profile", "360 analyze"})
+# clips: so cutpoint resume replays an interrupted export (cutpoint.clipresume)
+COMMANDS = frozenset({"analyze", "edit", "events", "crashes", "profile", "360 analyze", "clips"})
 AFTER_TRANSCRIPT = frozenset({"analyze", "edit"})  # progress.json once a source is transcribed
 STATUSES = ("running", "done", "interrupted", "failed", "low_memory")
 PCT_INTERVAL_S = 5.0
@@ -162,6 +163,18 @@ class Recorder:
             return  # project_ready / project_made lock a new project
         self.lock()
         self.previous = read(self.project)
+        prev = self.previous or {}
+        if (
+            self.command == "clips"
+            and prev.get("status") in RESUMABLE
+            and prev.get("command") not in (None, "clips")
+        ):
+            # an export never replaces the record of an interrupted analysis (or edit)
+            logger.info(
+                "progress.json keeps the interrupted '%s' run; cutpoint resume continues that one",
+                prev.get("command"),
+            )
+            return
         hl = cache.load_json(self.project / "highlights.json")
         srcs = hl.get("sources") if isinstance(hl, dict) else None
         if self.same_run() and self.previous and isinstance(self.previous.get("sources"), list):
