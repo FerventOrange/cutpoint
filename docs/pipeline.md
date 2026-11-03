@@ -17,17 +17,19 @@ flowchart TD
     subgraph ANALYZE["cutpoint analyze  (steps 1-6)"]
         direction TB
         ANA["Find inputs"]
+        DET["--style auto: detect the category (tags, telemetry, 32 frames)"]
         AUD["1 Transcribe: extract audio, read check, loudness"]
         TR["1 Transcribe: Whisper"]
         SC["1 Transcribe: scene cuts"]
-        PL["Plan layers by style"]
+        PL["Plan layers by style or detected category"]
+        TALK["--style auto: talk decided from the transcript"]
         RE["2 Reactions: PANNs audio events"]
         KF["3 Keyframes: HUD OCR for game styles, CLIP for action"]
         DISC["HUD discovery, preset per game"]
         CR["4 Crashes: action-cam footage only"]
         RK["5 Ranking: signals plus events rescore"]
         VIS["6 Vision rating: Ollama, opt-in"]
-        ANA --> AUD --> TR --> SC --> PL --> RE --> KF --> CR --> RK --> VIS
+        ANA --> DET --> AUD --> TR --> TALK --> SC --> PL --> RE --> KF --> CR --> RK --> VIS
         DISC --> KF
     end
 
@@ -90,6 +92,33 @@ flowchart LR
 ```
 
 All kinds also set loudnorm on. `--style`, `--top` and `--max-total` override the kind.
+`--style auto` picks the style from the footage before the `--events` check (the funny style for
+`funny-moments`); unclear footage keeps the kind's style.
+
+## Style auto (`--style auto`, `cutpoint detect`)
+
+```mermaid
+flowchart TD
+    P["Per source: container tags, telemetry, 32 grey frames (cached)"]
+    P --> T{{"Telemetry in at least half of the footage?"}}
+    T -->|yes| AC["Action cam: action-cam"]
+    T -->|no| G{{"Gameplay (static HUD) the largest share?"}}
+    G -->|yes| GP["Gameplay: gaming"]
+    G -->|no| S{{"After transcription: speech covers 55% of a long source?"}}
+    S -->|yes| TK["Talk: commentary"]
+    S -->|no| GE["General: action"]
+    AMB["Weak evidence: ambiguous, default style and style_ambiguous warning"]
+    GP -.-> AMB
+    GE -.-> AMB
+    TK -.-> AMB
+```
+
+One category per project, by the share of the footage duration (sources of another category
+over 10% of it: `style_sources_disagree`). In `analyze`'s own steps the detected category, not
+the style, plans the HUD OCR and CLIP layers, so `funny` on camera footage gets the CLIP layer,
+not the HUD OCR. `edit --events` and `cutpoint events` still choose their layers by style.
+`funny-moments` maps every category to `funny`. `highlights.json` records the result; `events`
+and re-runs reuse it.
 
 ## Legend
 
