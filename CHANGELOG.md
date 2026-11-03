@@ -17,6 +17,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   place of a crash, a jump or a must-include moment, including a moment over a `crashes.json`
   crash of at least 0.2 confidence); `--ids v001` picks one directly. `analyze --json` adds `visual_candidates` (their
   count) for these styles. Other styles are unchanged (#635).
+- AI Chat can watch a moment (#640): with a chat model that takes images, the assistant gets a
+  `view_moment` tool that returns one timeline sheet (6 frames for a clip up to 12 s, else 9, in
+  a 3-wide grid, each stamped with its number and source time, sized for about 1.5k image tokens
+  on Claude) with the moment's transcript lines and the sounds `events.json` heard in it
+  (laughter, scream). The instructions say to watch only when labels, transcripts and scores
+  cannot answer, never every moment. A message can watch at most 2 moments with a context of
+  8192 tokens or less (local models), 4 with a larger one. Sheets are cached in
+  `ui/assistant/sheets` per moment, window and source file. A local Ollama model gets the tool
+  when Ollama lists `vision` for it, Claude always, other models unless their name is a known
+  text-only one (`gpt-3.5`, `o1-mini`, `o3-mini`, `grok-code`, `grok-build`); a model
+  that refuses the image is asked again without it and is not offered the tool again until
+  `cutpoint ui` restarts. Frames go to a provider that is not on this machine only once you
+  allow that provider and host for that project: the chat shows an allow box ("Allow for this
+  project", "Allow and ask again") when the model wants to watch. The consent is its own and
+  versioned (`frames-v1:<provider>@<host>` in `assistant.frames_consent` of `config.json`,
+  per project folder); the AI Chat and Vision consents never cover it. The AI Chat consent text
+  now says it never sends video frames unless you allow them for a project.
+- AI Chat sees what analysis saw (#634): each moment carries `seen` (the vision rating label and
+  the description of its `events` VLM window), `heard` (laughter or screams detected) and `cues`,
+  visual, telemetry and vision-tag strengths on one 0-10 scale (beauty, people, speed, carve,
+  airtime, crash, stopped, chairlift, scenic_vista and more; six per moment in the list, about
+  25 characters more per moment on average, at most ~300). `find_moments` also searches the vision
+  labels, the VLM window descriptions and the names of strong cues, and the instructions tell the
+  model to rank by them ("beauty shots", "casual skiing", "bloopers") before asking for moment
+  ids, naming only the cues the project has. Those searches need action-cam footage with
+  telemetry, the `events` vision layer or visual-pool moments; other styles have the vision
+  rating label, loudness, laughter and the sounds heard. A cue word matches the start of a part of
+  a cue name (`air`: airtime, jump_air; not chairlift). Only text and numbers are sent, never
+  frames.
+- A moment with a generic label (`action-moment`) is titled with what the vision model saw in AI
+  Chat and in the `cutpoint ui` Moments list; `highlights.json` and clip file names keep the
+  analysis label. Moments of the visual pool carry a "visual" badge with their kind. The AI Chat
+  consent and its docs now name the vision descriptions it sends; the consent version is the same,
+  so no one is asked again.
+- `cutpoint ui` offers the `action-cam` style in Highlight style for standard (non-360) footage,
+  single and multi-input, with a hint: best with GoPro or Insta360 telemetry, fed by the
+  reactions, keyframes and crash steps (events extra, `cutpoint setup`); in Cutpoint lite it still
+  works on telemetry and transcript. When at least one input has GoPro or Insta360 telemetry
+  (a stream-list probe of up to 12 files, not a telemetry read), the dialog preselects it unless
+  you already chose a style (#633).
 - A Models tab in `cutpoint ui` sets the model of each role: Chat (`assistant`) and Vision (the new
   `vision_assistant` section, same keys, the same providers as Chat), each
   with its own provider, model and, for hosted ones, permission. It replaces the AI assistant
@@ -392,6 +432,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Vision role's model list in the Models tab no longer offers models known to take no images
+  (OpenAI gpt-3.5, o1-mini, o3-mini; xAI grok-3, grok-2 without vision): models known to take
+  images come first, unknown ones follow, and the saved model stays, marked "may not accept
+  images". When that would leave the list empty, the whole list is shown (#623).
+- `cutpoint proxy` no longer gives up after a fixed 8 seconds when CLIProxyAPI starts slowly (a
+  keyring unlock prompt, a virus scan of the binary, a slow disk): it waits up to 120 seconds
+  while the supervisor runs, logs an INFO line when the wait takes more than a few seconds, and
+  fails at once with a clear error if the supervisor exits first (#577).
+- `cutpoint proxy` no longer reads the keyring and resets file permissions every 0.5 seconds
+  while it runs: the supervisor scans the credential files every 5 seconds and checks
+  permissions and syncs the keyring only when they changed, at start and on stop. A change
+  written just before shutdown is still saved (#576).
+- `cutpoint proxy` restores its Ctrl+C and termination signal handlers when the supervisor is
+  stuck in credential cleanup, instead of leaving them installed after it returns (#585).
 - The Models tab no longer offers "Allow vision requests" while the Vision provider has no API key
   or login: it shows the missing key or login hint instead (#620).
 - The model list is cached per role as well as provider and URL, so a list Chat loaded is no longer
@@ -423,6 +477,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are cached per provider and host, so one model id at two servers no longer shares results.
   Results cached from a hosted provider before this change are asked again once; Ollama caches
   are unchanged (#621).
+- The `vision_consent_needed` WARNING (and its `--json` warning message) names the exact consent
+  key, for example `vision-v2:ollama@10.0.0.5:11434`: besides allowing vision requests in the
+  Models tab of `cutpoint ui`, that key can be added to `vision_assistant.consent` in
+  `config.json`. A hosted Vision provider without consent (an API key or a subscription login,
+  such as `vision-v2:openai@api.openai.com`) now gets the same WARNING and `--json` warning once
+  per run, naming the provider, its host and its key, instead of an INFO line; `analyze` then
+  skips the vision step with that message, as for an Ollama on another machine. Both come once
+  per run, also when one run uses the vision model twice (`edit --vision --events`). Without
+  that consent `events` no longer uses cached VLM descriptions either (as `analyze` skips cached
+  ratings): the VLM layer is skipped with the same warning.
+- The INFO line before HUD region discovery no longer suggests `--game` and `--no-discover`
+  during `analyze`, which has neither option: there it suggests `--skip keyframes`. `events`
+  keeps its hint.
 - 360 clips filmed with the camera upright (lenses horizontal: handheld, on a pole) no longer
   spin or drift: the view layer, the director and the renderer took yaw 0 from the camera axis
   that points ahead on a helmet mount, which is near vertical when the camera stands upright,
@@ -518,10 +585,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model no longer blocks for about 20 minutes before the generic profile is used (#608).
 - `events`: on a project's first run the contact sheets now use the activity profile the
   crash layer chose instead of the ski captions (#609).
+- The VLM layer of `events` no longer makes the vision model invent kills or enemies in games
+  without combat: the generic prompt asks about kills, deaths and teamkills only when the OCR
+  layer found kills in the source or its HUD preset lists `kill_words`, and otherwise describes
+  hype in neutral terms (close calls, successes and fails, teamwork, reactions). A preset's own
+  `hype` line is kept. Only sources without kill evidence are described again on the next run
+  (prompt version 6); cached descriptions of sources with kills and of action-cam footage stay
+  valid. The `VLM WINDOW` line at the top of `events.txt` names the vision model in
+  use (#596).
 - `analyze`: when the PANNs checkpoint cannot be loaded (missing, corrupt or refused as more than
   weights), the reactions step no longer reads it a second time for the voice layer and reports
   the failure once (one ERROR line, one `step_failed` warning); the voice layer is skipped with an
   INFO line, and voice grids already cached are kept (#629).
+- CLIP loads from the weights `cutpoint setup` downloaded, by file path, outside `cutpoint setup`
+  (`analyze`, `events`, `crashes`, `profile`, the 360 commands and action-cam ranking): no
+  Hugging Face Hub freshness check and no download in the middle of a run. Without the weights
+  the step stops with `CLIP weights not found in <models>/clip; run: cutpoint setup --only
+  visual` (#642).
+- `analyze`: when the HUD OCR of the keyframes step fails (out of memory or any other error),
+  one WARNING and one `step_failed` warning (`files`: the sources not read) now say what is
+  skipped: "OCR failed (<reason>): menu filtering and HUD events (kill feed, banners, notices)
+  skipped for <file>" (and how many later sources; "in HUD region discovery ... no HUD preset
+  installed" when discovery failed, "for some games" when it had more than one to discover;
+  "for the sources not read yet" when the failure is outside discovery and the reads). Instead of an empty "Keyframes failed: " for a
+  `MemoryError`, out of memory is named, with "close other programs or pass --skip keyframes"
+  (and `CUTPOINT_ANALYZE_OVERLAP=0` when the OCR ran in the background). The sources read before
+  the failure keep their menu spans and HUD events. The exit code stays 0 (#555).
+- Whisper loads from the Hugging Face cache first (`analyze`, `assemble --captions`, `edit`, the
+  360 analyze, also after a CUDA failure falls back to the CPU): once the model is there, a run
+  makes no Hugging Face Hub request. Only a model missing from the cache (or partly downloaded)
+  is downloaded on first use, as before, with an INFO line such as "Downloading Whisper medium
+  (~1.5 GB) on first use (cutpoint setup --only whisper fetches it ahead of time)". A model
+  folder given to `--model` loads as before. New `cutpoint setup --only whisper` downloads the
+  default model ahead of time (medium with CUDA, small without; `--whisper-model NAME` for
+  another name or repo id); it needs no extra, so it works in Cutpoint lite, and the default
+  `cutpoint setup` includes it (#651).
 
 ## [0.4.0] - 2026-10-29
 

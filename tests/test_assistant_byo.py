@@ -409,7 +409,7 @@ def test_anthropic_messages_api_with_tool_use(monkeypatch) -> None:
     )
     p = AnthropicProvider("", "", 0, KEY)
     assert p.model == "claude-sonnet-5-5" and p.url == "https://api.anthropic.com"
-    assert p.capabilities() == providers.Capabilities(True, False)
+    assert p.capabilities() == providers.Capabilities(True, False, True)
     check = wire.sent[0]
     assert check["url"] == "https://api.anthropic.com/v1/models/claude-sonnet-5-5"
     assert check["headers"] == {"anthropic-version": "2023-06-01", "x-api-key": KEY}
@@ -1072,6 +1072,49 @@ def test_model_list_cache_is_kept_per_role(monkeypatch) -> None:
     assert vision["models"][0]["id"] == "m2"
     assert len(calls) == 2
     providers.clear_model_cache()
+
+
+def _vision_list(monkeypatch, ids, **kw):
+    providers.clear_model_cache()
+    monkeypatch.setattr(providers.cliproxy, "status", lambda p: {"logged_in": True})
+    monkeypatch.setattr(
+        providers.cliproxy, "list_models", lambda p: [{"id": i, "name": i} for i in ids]
+    )
+    codex = providers.SubscriptionProvider("codex", "", "", 0)
+    both = (providers.consent_key(codex), providers.consent_key(codex, "vision"))
+    out = providers.model_list(codex, consent=both, **kw)["models"]
+    providers.clear_model_cache()
+    return out
+
+
+def test_vision_list_hides_text_only_and_orders_known_first(monkeypatch) -> None:
+    ids = ["gpt-3.5-turbo", "mystery-1", "gpt-5", "o3-mini", "grok-3"]
+    got = _vision_list(monkeypatch, ids, role="vision")
+    assert [m["id"] for m in got] == ["gpt-5", "mystery-1"]
+    # the Chat list is unchanged
+    assert [m["id"] for m in _vision_list(monkeypatch, ids)] == ids
+
+
+def test_vision_list_keeps_saved_text_only_model_marked(monkeypatch) -> None:
+    got = _vision_list(monkeypatch, ["gpt-3.5-turbo", "gpt-5"], role="vision", keep="gpt-3.5-turbo")
+    assert [m["id"] for m in got] == ["gpt-5", "gpt-3.5-turbo"]
+    assert got[1]["name"] == "gpt-3.5-turbo (may not accept images)"
+
+
+def test_vision_list_keeps_codex_models(monkeypatch) -> None:
+    got = _vision_list(
+        monkeypatch, ["gpt-5.3-codex", "codex-mini-latest", "gpt-3.5-turbo"], role="vision"
+    )
+    assert [m["id"] for m in got] == ["gpt-5.3-codex", "codex-mini-latest"]
+
+
+def test_vision_list_empty_after_filter_shows_everything(monkeypatch) -> None:
+    got = _vision_list(monkeypatch, ["o3-mini", "gpt-3.5-turbo"], role="vision")
+    assert [m["id"] for m in got] == ["o3-mini", "gpt-3.5-turbo"]
+    assert all(m["name"].endswith("(may not accept images)") for m in got)
+    # a kept model alone does not count as a list left
+    got = _vision_list(monkeypatch, ["o3-mini", "gpt-3.5-turbo"], role="vision", keep="o3-mini")
+    assert len(got) == 2
 
 
 def test_clear_model_cache_invalidates_transient_cache(monkeypatch) -> None:

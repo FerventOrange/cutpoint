@@ -179,16 +179,76 @@ def test_create_project_makes_a_360_project_from_x3_footage(
     assert ("clips" in saved) == ("clips" in meta)
 
 
-def test_create_project_refuses_an_action_cam_style_on_flat_footage(
+def test_ui_styles_lists_action_cam() -> None:
+    """#633: the telemetry-driven style is offered for standard footage too."""
+    assert "action-cam" in ui.ui_styles()
+
+
+def test_create_project_accepts_an_action_cam_style_on_flat_footage(
     client: TestClient, tmp_path: Path
 ) -> None:
     folder = tmp_path / "footage"
     folder.mkdir()
     (folder / "a.mp4").write_bytes(b"x")
-    body = {"name": "T", "source": str(folder), "style": "action-cam"}
+    (folder / "b.mp4").write_bytes(b"x")
+    for source in (folder / "a.mp4", folder):  # one file, one folder
+        body = {"name": "T", "source": str(source), "style": "action-cam"}
+        res = client.post("/api/projects", json=body)
+        assert res.status_code == 200, res.text
+        meta = ui.read_meta(ui.project_dir(res.json()["id"]))
+        assert meta["style"] == "action-cam" and meta.get("kind") != "360"
+
+
+def test_create_project_accepts_an_action_cam_style_for_several_inputs(
+    client: TestClient, tmp_path: Path
+) -> None:
+    files = [tmp_path / "a.mp4", tmp_path / "b.mp4"]
+    for f in files:
+        f.write_bytes(b"x")
+    body = {"name": "T", "sources": [str(f) for f in files], "style": "action-cam"}
     res = client.post("/api/projects", json=body)
-    assert res.status_code == 400 and "unknown style" in res.json()["detail"]
-    assert client.get("/api/projects").json() == {"projects": []}
+    assert res.status_code == 200, res.text
+    meta = ui.read_meta(ui.project_dir(res.json()["id"]))
+    assert meta["style"] == "action-cam" and len(meta["inputs"]) == 2
+
+
+def test_suggest_style_probes_streams_of_every_input(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#633: action-cam when at least one input (a folder: its videos) has telemetry."""
+    gopro, plain = tmp_path / "gopro.mp4", tmp_path / "plain.mp4"
+    folder = tmp_path / "folder"
+    folder.mkdir()
+    (folder / "x.mp4").write_bytes(b"x")
+    for f in (gopro, plain):
+        f.write_bytes(b"x")
+    probed: list[Path] = []
+
+    timeouts: list[float] = []
+
+    def has_telemetry(f: Path, timeout: float = 60) -> bool:
+        probed.append(f)
+        timeouts.append(timeout)
+        return f == gopro
+
+    monkeypatch.setattr("cutpoint.analyze.has_telemetry", has_telemetry)
+
+    def ask(*sources: Path) -> dict:
+        res = client.post(
+            "/api/projects/suggest-style", json={"sources": [str(x) for x in sources]}
+        )
+        assert res.status_code == 200, res.text
+        return res.json()
+
+    assert ask(plain) == {"style": None}
+    assert ask(plain, gopro) == {"style": "action-cam"}
+    assert ask(folder) == {"style": None} and folder / "x.mp4" in probed
+    assert ask(tmp_path / "missing.mp4") == {"style": None}
+    assert set(timeouts) == {ui.TELEMETRY_PROBE_TIMEOUT}
+    probed.clear()
+    assert ask(gopro, plain) == {"style": "action-cam"} and probed == [gopro]  # stops at the hit
+    res = client.post("/api/projects/suggest-style", json={"sources": ["relative.mp4"]})
+    assert res.status_code == 400
 
 
 def test_create_project_refuses_the_old_ski_style_naming_action_cam(
@@ -7766,15 +7826,18 @@ def test_the_ai_chat_tab_has_one_labelled_input_and_one_send_button() -> None:
 
 def test_the_consent_texts_name_what_each_role_sends() -> None:
     """The AI Chat consent names what context.py sends a hosted assistant (analysis results
-    only: no frames or audio, file names but not paths); the Vision consent names the frames,
-    transcript excerpts, file names and times, on-screen text and telemetry, and that this is
-    more data and more risk than the assistant."""
+    only: no audio, frames only once allowed for a project, file names but not paths); the
+    Vision consent names the frames, transcript excerpts, file names and times, on-screen text
+    and telemetry, and that this is more data and more risk than the assistant."""
     from cutpoint.assistant import context  # noqa: PLC0415
 
     sends = re.search(r'^const CONSENT_SENDS = "(.*)";$', _web("app.js"), re.M)[1]
-    for part in ("labels", "scores", "signals", "transcript snippets", "file names", "times"):
+    parts = ("labels", "scores", "signals", "vision descriptions", "transcript snippets")
+    for part in (*parts, "file names", "times"):
         assert part in sends, part
-    assert "your messages" in sends and "never video or audio" in sends
+    assert "your messages" in sends and "never audio" in sends
+    # frames only under their own per-project consent (#640, view_moment)
+    assert "never video frames unless you allow them for a project" in sends
     cand = {
         "id": "h1",
         "source": "D:/Videos/clip.mp4",
@@ -7787,9 +7850,11 @@ def test_the_consent_texts_name_what_each_role_sends() -> None:
         "signals": {"keywords": ["look"], "events": {"laughter": 0.4}},
     }
     table = context.MomentTable([cand], [])
+    # kind, seen, cues, heard (#634): what analysis saw, as labels, scores and signals
     disclosed = {"id", "file", "start", "end", "analyzed", "score", "seq", "label", "said"}
+    disclosed |= {"kind", "seen", "cues", "heard"}
     assert set(table.row("h1")) <= disclosed
-    assert set(table.row("h1", full=True)) <= disclosed | {"kind", "signals"}
+    assert set(table.row("h1", full=True)) <= disclosed | {"signals"}
     msgs = context.build_messages(table, [], "hi", context.budget(8192))
     assert all(isinstance(m["content"], str) for m in msgs)  # text only: no image parts
     assert "D:/Videos" not in "".join(m["content"] for m in msgs)
@@ -8050,7 +8115,8 @@ def test_render_moments_filters_with_util_and_says_which_filter_matched_nothing(
     sorts; the empty state names the filters when any is on."""
     js = _web("app.js")
     render = _js_function(js, "renderMoments")
-    assert "momentMatches({ ...c, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f)" in render  # fmt: skip
+    # the filter also finds the label the card shows (display_label, #634)
+    assert "momentMatches({ ...c, label, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f)" in render  # fmt: skip
     assert "source: multi && sources.includes(S.filters.source) ? S.filters.source : ''" in render
     assert render.index("momentMatches(") < render.index("positionCompare")
     assert "No moments match ${filtersOn(f) ? 'these filters' : 'this filter'}." in render
@@ -8658,3 +8724,77 @@ def test_a_login_whose_poll_fails_reports_the_error_and_can_start_again(
 
     assert login_state(client, "codex") == {"state": "error", "error": error or str(err)}
     assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
+
+
+def test_chat_diffs_name_a_moment_by_its_display_label() -> None:
+    """#634: a proposal row (propRow) and a found moment (momentName) are named as the Moments
+    list names them: display_label while the row keeps the analysis label (shownName), the row's
+    own label once renamed, else the label and the id."""
+    js = _web("app.js")
+    shown = _js_function(js, "shownName")
+    assert "cand?.display_label && (label == null || label === cand.label)" in shown
+    row = _js_function(js, "propRow")
+    assert "shownName(cands().find((c) => c.id === r.id), r.label) || momentName(r.id)" in row
+    body = js[js.index("const momentName = (id) =>") :][:300]
+    assert "c?.display_label || (c ?? S.segments.find((s) => s.id === id))?.label || id" in body
+
+
+def test_chat_filter_button_shows_only_when_the_list_filter_finds_a_moment() -> None:
+    """#634 F3: "Filter list by" is offered only when the list's own filter (labels, vision
+    label, transcript) finds one of the moments shown, so it never filters the list to 0."""
+    item = _js_function(_web("app.js"), "showItem")
+    assert "momentMatches({ ...c, label: filterLabel(c) }, query, NO_FILTERS)" in item
+    assert "found ? h('button'" in item
+
+
+def test_suggest_style_leaves_usable_360_footage_to_the_server(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    for name in X3_CLIPS:
+        (folder / name).write_bytes(b"")
+    monkeypatch.setattr("cutpoint.analyze.has_telemetry", lambda f, timeout=60: True)
+    for source in (folder, folder / X3_00):
+        res = client.post("/api/projects/suggest-style", json={"source": str(source)})
+        assert res.json() == {"style": None}
+
+
+def test_suggest_style_probes_at_most_12_files_and_follows_recursive_and_exclude(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "footage"
+    (folder / "deep").mkdir(parents=True)
+    for i in range(13):
+        (folder / f"v{i:02}.mp4").write_bytes(b"x")
+    (folder / "deep" / "tel.mp4").write_bytes(b"x")
+    (folder / "DVR1.mp4").write_bytes(b"x")
+    probed: list[Path] = []
+    monkeypatch.setattr(
+        "cutpoint.analyze.has_telemetry",
+        lambda f, timeout=60: probed.append(f) or f.name in {"tel.mp4", "DVR1.mp4"},
+    )
+
+    def ask(**extra: object) -> object:
+        probed.clear()
+        res = client.post("/api/projects/suggest-style", json={"source": str(folder), **extra})
+        assert res.status_code == 200, res.text
+        return res.json()["style"]
+
+    assert ask(exclude=["*DVR*"]) is None and len(probed) == 12  # the 13th and deep/ stay unprobed
+    assert ask(exclude=["*DVR*", "v*"]) is None and probed == []  # nothing left, deep/ unsearched
+    assert ask(exclude=["*DVR*", "v*"], recursive=True) == "action-cam"  # deep/tel.mp4
+    assert ask(exclude=["v0*", "v1*"]) == "action-cam"  # DVR1.mp4 is among the first 12
+
+
+def test_suggest_style_gives_no_answer_while_another_probe_runs(
+    client: TestClient, tmp_path: Path
+) -> None:
+    f = tmp_path / "a.mp4"
+    f.write_bytes(b"x")
+    assert ui._suggest_lock.acquire(blocking=False)
+    try:
+        res = client.post("/api/projects/suggest-style", json={"source": str(f)})
+    finally:
+        ui._suggest_lock.release()
+    assert res.status_code == 200 and res.json() == {"style": None, "busy": True}

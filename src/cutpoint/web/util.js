@@ -156,7 +156,7 @@ export function aiModelChoices(current, listed, { typing = false, required = fal
   const first = { value: '', text: required ? 'Choose a model' : placeholder ? `Default (${placeholder})` : 'Default' };
   const came = listed?.length > 0;
   const models = came
-    ? listed.map((m) => ({ value: m.id, text: m.name && m.name !== m.id ? `${m.name} (${m.id})` : m.id }))
+    ? listed.map((m) => ({ value: m.id, text: m.name && m.name !== m.id && !m.name.startsWith(m.id + ' ') ? `${m.name} (${m.id})` : m.name || m.id }))
     : fallback.map((id) => ({ value: id, text: id }));
   const options = [first, ...models];
   const known = current === '' && !typing ? true : models.some((o) => o.value === current);

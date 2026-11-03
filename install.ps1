@@ -134,7 +134,7 @@ Optional prompts (default No; with no interactive console the answer is No unles
     (hidden) only when the Ollama app has not. A declined or failed Ollama install never fails the
     Cutpoint install.
   - Pull qwen3.5:9b (about 6.6 GB), full mode only, when Ollama is running.
-  - "cutpoint setup" (model weights, about 2 GB), full mode only.
+  - "cutpoint setup" (model weights, about 2.5 GB, 3.5 GB with an NVIDIA GPU), full mode only.
 '@
     }
 
@@ -714,7 +714,7 @@ Optional prompts (default No; with no interactive console the answer is No unles
             return
         }
         Invoke-OllamaOffer
-        if (Ask "Download models now with 'cutpoint setup' (about 2 GB)?") {
+        if (Ask "Download models now with 'cutpoint setup' (about 2.5 GB, 3.5 GB with an NVIDIA GPU)?") {
             if (Invoke-Run @("cutpoint", "setup")) {
                 $S.SetupDone = "yes"
             } else {
@@ -772,7 +772,7 @@ Optional prompts (default No; with no interactive console the answer is No unles
             Say "  - Ollama model pulled: $OLLAMA_MODEL (used by --vision and AI Chat)."
         }
         if ((-not $S.Lite) -and $S.SetupDone -ne "yes") {
-            Say "  - Download the models (about 2 GB): cutpoint setup"
+            Say "  - Download the models (about 2.5 GB, 3.5 GB with an NVIDIA GPU): cutpoint setup"
         }
         Say "  - Start the browser workspace: cutpoint ui"
         Say "  - Edit a video: cutpoint edit PATH-TO-VIDEO"

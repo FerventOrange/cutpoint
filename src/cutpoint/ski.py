@@ -349,7 +349,11 @@ def layer_features(
     vd = V.load_visual(src)
     if vd is not None and len(vd.t):
         t = vd.t.astype(float) - offset
-        sc = V.frame_scores(vd)
+        try:
+            sc = V.frame_scores(vd)
+        except V.ClipWeightsMissing as err:  # new captions need CLIP; nothing is downloaded
+            logger.warning("%s: visual features skipped: %s", src.name, err)
+            return out
         steady = None
         if speed_kmh is not None:  # telemetry speed at the frame times
             idx = np.clip(np.round(t / DT).astype(int), 0, n - 1)

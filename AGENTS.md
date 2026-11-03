@@ -95,8 +95,9 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
   the final video (clips kept). `--vision` adds the optional frame rating (Ollama by default;
   the Vision role in the `cutpoint ui` Models tab can route it to a hosted provider). It is off
   for every style unless `"vision": true` in the user's `config.json` turns it on; `--no-vision`
-  then skips it. An `--ollama-url` on another machine needs the user's Vision consent (Models
-  tab); without it vision is skipped with a `vision_consent_needed` warning: tell the user.
+  then skips it. An `--ollama-url` on another machine, or a hosted Vision provider in the
+  Models tab, needs the user's Vision consent (Models tab); without it vision is skipped with a
+  `vision_consent_needed` warning: tell the user.
   `--vision-top`, `--ollama-url`, `--ollama-model` and `--skip` work as on
   `analyze`; `--compress-peaks`, `--lut`, `--lut-strength`, `--color` and `--color-strength` as
   on `clips`.
@@ -241,9 +242,10 @@ action-cam telemetry are in every install.
 
 ## Rules
 
-- Ask the user before running `cutpoint setup` (about 2 GB of downloads), `cutpoint stage`
-  (copies footage to local disk), `clips --force` or `edit --force` over an existing folder or
-  `cutpoint skill install` (writes to their Claude Code settings folder).
+- Ask the user before running `cutpoint setup` (about 2.5 GB of downloads, 3.5 GB with an
+  NVIDIA GPU), `cutpoint stage` (copies footage to local disk), `clips --force` or `edit --force`
+  over an existing folder or `cutpoint skill install` (writes to their Claude Code settings
+  folder).
 - Do not paste Insta360 SDK files, documentation or output into any file or message, other than
   `error:` lines.
 - Do not invent options. Check `--help`.

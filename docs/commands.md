@@ -86,13 +86,13 @@ So do these combinations:
 | `temporary_clips_left` | `assemble <project>`, `edit --no-keep-clips` | A temporary clips folder could not be removed (a file in it is open in another program); `files` names it. Delete it, or the next such run in the project removes it |
 | `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
 | `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
-| `vision_consent_needed` | `analyze`, `events`, `360 director` (so `edit`, `360 analyze`), `profile`, `crashes` | The Vision role's Ollama is on another machine (`--ollama-url`, `vision_assistant.url`, `OLLAMA_HOST` or `ollama_url` is not `localhost` or a loopback address) and the Vision consent for it was not given, so nothing was sent to it: vision was skipped, or the activity profile fell back without the model; allow vision requests in the Models tab of `cutpoint ui` (Vision role, Ollama with that URL) |
-| `vlm_unavailable` | `events` (so `edit --events`) | The VLM layer ran but the vision model (Ollama, or a hosted Vision role without consent) is not available; windows not described yet stayed undescribed and cached descriptions were used (the message gives the count) |
+| `vision_consent_needed` | `analyze`, `events`, `360 director` (so `edit`, `360 analyze`), `profile`, `crashes` | The Vision role's provider needs the Vision consent and it was not given, so nothing was sent to it: a hosted provider (an API key or a subscription login), or an Ollama on another machine (`--ollama-url`, `vision_assistant.url`, `OLLAMA_HOST` or `ollama_url` is not `localhost` or a loopback address; `profile` and `crashes` use only that Ollama). Vision was skipped, or the activity profile fell back without the model; allow vision requests in the Models tab of `cutpoint ui` (Vision role), or add the key the message names (`vision-v2:<provider>@<host>[:port]`, such as `vision-v2:ollama@10.0.0.5:11434` or `vision-v2:openai@api.openai.com`) to the [`vision_assistant.consent`](configuration.md#vision_assistant) list in `config.json` |
+| `vlm_unavailable` | `events` (so `edit --events`) | The VLM layer ran but the vision model (Ollama or the hosted Vision role) is not available; windows not described yet stayed undescribed and cached descriptions were used (the message gives the count) |
 | `grade_dropped` | `clips` (so `edit`) | `--force` replaced clips whose manifest recorded a grade (`lut` or `color`) and this run grades none; give `--lut` or `--color` again to keep it |
 | `pano_mixed_sources` | `clips` (so `edit`), `assemble <project>` | The run's 360 clips are not rendered like-for-like: stitched and dual fisheye sources mixed, or an equirect rendered without the IMU levelling (FlowState, no sidecar, Studio export); `files` names the 360 clips (empty for a temporary export: `assemble <project>`, `edit --no-keep-clips`). Export with `--pano-source dfisheye` to compare their `360 qa` with the previews (see [360 video](workflows/360.md#render-sources)) |
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
 | `loudness_below_target` | `assemble` (so `edit`) | `--loudnorm` left the final more than 1 LU below -14 LUFS: the limiter took the peaks the gain pushed over the ceiling; `--compress-peaks` leaves it more room |
-| `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it |
+| `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it. A failed HUD OCR (keyframes for `gaming` and `funny`) is a `WARNING` instead, whose message names the effect (menu filtering and HUD events skipped) and the source it failed on; `files` lists the sources it did not read. Out of memory says so, with what to try |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
 | `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
 | `content_qa_failed` | `mix` | The content checks of the mix failed |
@@ -127,7 +127,7 @@ So do these combinations:
 | `capabilities` | The report's own keys (as printed by `capabilities` without `--json`, including `edition`, `torch` and `insta360_sdk`) |
 | `mix` | `segments`, `report`, `sheet`, `moments` (each `id`, `source`, `start`, `end`, `duration`, `category`), `count`, `total_seconds`, `target_seconds`, `categories` (per category `n` and `seconds`), `content_qa_pass` |
 | `stage` | `stage_dir`. Staging: `files`, `copied`, `skipped`, `bytes`, `read_s`, `mb_per_s`. `--list`: `files` (each `source`, `staged`, `bytes`, `read_s`). `--clear`: `removed` |
-| `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`); for `pip`, `installed` and `missing` |
+| `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`); for `pip`, `installed` and `missing`; for `whisper`, `model` (its name), `path` (its folder in the Hugging Face cache) and `status` (`downloaded`, `found`, or `missing` with `model` and `path` `null` when the step did not finish) |
 | `360 scan` | `pano`, `timings`, `clips` (each `id`, `mode`, `duration`, `frames`, `insv`, `insv_bytes`, `lrv`), `count`, `total_seconds` |
 | `360 analyze` | `timings` (`pano_timings.json`: this run's `views`, `analyze_s`, `events_s`, `paths_s`, `scan_s` with `--scan` and `total_s`; with `--views-only` the earlier file's keys stay, with this run's `views` and `views_only_s`; `analyze_total_s` was removed, older files may still have it; see [360 video](workflows/360.md#commands); `null` in the envelope of a run that failed after `highlights.json` changed, as the earlier run's file was removed, or kept with a `stale_timings_kept` warning), `views` (`cached`, `computed`); with `--scan`, also those of `360 scan`; unless `--views-only`, also the outputs of `analyze` (`highlights`, `transcript`, `candidates`, `visual_candidates`, `suggested_top`, `style`); unless `--views-only` or `--no-events`, also `events`; unless `--views-only`, also `candidate_paths` (`dir`, `candidates`, `computed`, `cached`, `skipped`, `failed`, `seconds`, `flags`: candidates per flag code; see [360 video](workflows/360.md#camera-paths-of-the-candidates)) |
 | `360 status` | `sdk` (`exe`, `origin`, `found`, `runs`, `version`); with a project, `clips` (each `id`, `mode`, `duration`, `views`, `render`, `render_file`) |
@@ -209,7 +209,9 @@ folder or file of Insta360 X3 footage makes a 360 project, analyzed with `360 an
 (see [360 video](workflows/360.md#in-the-ui)); its moments preview through the director's camera
 path (the one the analysis cached when it is current), with badges for poor paths
 ([Director preview](workflows/360.md#director-preview-and-camera-path-flags)). It does not expose
-the action-cam commands or the other `360` commands.
+the action-cam commands or the other `360` commands; for standard footage, Highlight style lists the
+`action-cam` style, which the dialog preselects when an input has GoPro or Insta360 telemetry (a
+stream-list probe of the first 12 files `analyze` would find) unless you chose another style.
 
 New Project's Source field takes the full paths of one or more videos and folders, one per line,
 that you type or paste; it always accepts them. A leading `~` is the home folder of the computer
@@ -286,6 +288,11 @@ browser (local storage); the source file only while the project stays open.
 Each card shows the rank and title with Add or Remove on the right, the candidate id, the times
 and length, the file name when the project has several sources, a strip of the moment's place in its source, the
 transcript, and the preview readiness (Ready, Encoding, Queued) at the bottom right.
+A moment with only a generic label (`action-moment`, `loud-moment`) is titled with what the
+vision model saw: its vision rating label, else the label of its `events` VLM window (the search
+finds both). `highlights.json`, the label a moment takes into the sequence and clip file names
+keep the analysis label. A moment of the visual pool (beauty shots, friends, cruising runs)
+carries a "visual" badge with its kind, such as "visual · view".
 
 While an analysis runs, the Moments column lists its steps (Transcription, Reactions, Keyframes,
 Crashes, Ranking, Vision rating; for a 360 project those of `360 analyze`) under "Analyze footage", or under the column header for "Analyze
@@ -557,19 +564,62 @@ the Models tab, so "Allow vision requests" waits for a key saved there. The page
 
 A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on
 another machine counts too) is hosted: before the first message the tab asks once, per provider
-and host (with its port when that is not the default), to send the project's analysis results (moment labels, scores and detection signals,
-transcript snippets, file names (not full paths) and times) and your messages, never video or
-audio. The answer is kept in `config.json` (`assistant.consent`, as
-`assistant-v2:<provider>@<host>`); it never covers the Vision role, which asks separately. Until
-then nothing is sent. A hosted reply is not streamed, so Cancel takes effect when it arrives.
+and host (with its port when that is not the default), to send the project's analysis results (moment labels, scores and detection signals, vision
+descriptions, transcript snippets, file names (not full paths) and times) and your messages, never video
+frames unless you allow them for a project (below), and never audio. The answer is kept in
+`config.json` (`assistant.consent`, as `assistant-v2:<provider>@<host>`); it never covers the
+Vision role, which asks separately. Until then nothing is sent. A hosted reply is not streamed,
+so Cancel takes effect when it arrives.
+
+**Watching a moment.** With a model that takes images, the assistant can look at a moment when
+the labels, transcripts and scores cannot answer (for example "show me the fish" or "which of
+these has the best view"); it is told never to watch every moment. Each watched moment sends one
+image, a timeline sheet: 6 frames spread across the clip (9 for a clip longer than 12 s), three
+per row, each stamped with its number and source time, about 1.5k image tokens on Claude, with
+the moment's transcript lines and the sounds heard in it (from `events.json`, such as laughter
+or a scream) as text. A message can watch at most 2 moments with a context of 8192 tokens or
+less (local models), 4 with a larger one; the steps show "Watched … (6 frames)". Sheets are
+cached in the project's `ui/assistant/sheets`, per moment, clip window and source file.
+
+- Which models: an Ollama model when Ollama lists `vision` for it (`qwen3.5:9b` does), every
+  Claude model, and any other model unless its name has `gpt-3.5`, `o1-mini`, `o3-mini`,
+  `grok-3`, `grok-code` or `grok-build`, or it is a `grok-2` model without `vision` or `image`.
+  Whether a model of another server (OpenRouter, LM
+  Studio, vLLM, a subscription) takes images is not known in advance: it is offered the tool,
+  and if its server refuses the image, the request is sent again without it and that model is
+  not offered the tool again until `cutpoint ui` restarts.
+- Consent: an Ollama on this machine (`localhost` or a loopback address) needs none. Any other
+  provider gets frames only once you allow that provider and host for that project. When the
+  model wants to watch without it, nothing is sent, the model is told to answer from the text,
+  and the chat shows a box: "Allow for this project", or "Allow and ask again", which also sends
+  your message again. The answer is kept in `config.json` (`assistant.frames_consent`, per
+  project folder, as `frames-v1:<provider>@<host>`); the AI Chat consent above is still needed,
+  and neither it nor the Vision consent covers frames. To take it back, remove the entry.
 
 Its header shows the model and provider (local, or the hosted host), with a note
 that a small local model can miss moments or misread a request. Type a request and press Enter
 or Send (Shift+Enter starts a new line); the reply shows the steps the model took ("Searched
 for …") and can be stopped with Cancel. The chat needs an analyzed project.
 
+The model reads the moments as text: label (a generic one replaced by what the vision model saw,
+as in the Moments list), score, times, transcript snippet and, when analysis has them, `kind`,
+`seen` (the vision rating label and the description of the `events` VLM window over the moment),
+`heard` (laughter or screams detected) and `cues`: visual, telemetry and vision-tag strengths on
+one 0-10 scale (`beauty`, `people`, `group`, `speed`, `carve`, `airtime`, `crash`, `wipeout`,
+`stopped`, the action-cam tags such as `chairlift` or `scenic_vista`, and more; the strongest six
+per moment in the list, all of them in `get_moment`). Its `find_moments` tool searches labels,
+transcripts, `seen` text, heard sounds and the names of cues of 5 or more (`air` finds `airtime`
+and `jump_air`). The instructions name only the cues the project has, and requests such as
+"beauty shots", "casual skiing" or "bloopers" work without moment ids only when it has the cues
+for them: action-cam footage with telemetry (`--style action-cam`), the `events` vision layer
+(window descriptions and tags) or visual-pool moments. Other styles have the vision rating
+label (with `--vision`), `loudness`, `laughter` and the laughter or screams heard, so the model
+finds their moments by those, the label and the transcript. Only these results are sent; video
+frames go only through view_moment (above), once allowed for the project.
+
 - Moments the model points to can be highlighted in the Moments list ("Highlight in list") or
-  the list filtered by the model's search words.
+  the list filtered by the model's search words (offered only when the list's search, which also
+  matches vision labels, finds one of them).
 - A proposed change opens in the Sequence tab as a preview of the new sequence: each row is
   marked Added, Moved (old to new position), Trimmed (old to new times) or Renamed, removed clips are
   listed as Removed, the moments are marked in the Moments list, and the trim rail shows the new
@@ -590,7 +640,13 @@ Nothing is applied without Apply. API: `GET /api/projects/<id>/assistant`, `POST
 `POST .../history/<change>/revert` (which returns a `revert-<change>` proposal with a `base_key`
 and writes nothing; applying it with another sequence or without that key is refused with 409).
 `GET .../assistant` also returns `consent` (`needed`, `key`, `host`, `missing_key`: how to add a missing API key or log in to a subscription, or null, and `missing_kind`: `"login"` for a subscription provider, `"key"` otherwise, null when nothing is missing); `POST .../turns` answers
-409 while `needed` is true. `POST /api/assistant/consent` with that `key` records the consent;
+409 while `needed` is true. `POST /api/assistant/consent` with that `key` records the consent.
+`GET .../assistant` also returns `frames` (`needed`, `key`: the `frames-v1:` key, null for a
+provider on this machine, `host`); `POST .../assistant/frames-consent` with that `key` allows
+frames of the project (409 when the provider changed, is on this machine, or the AI Chat
+consent is missing). A turn's events can include `frames_consent` (`id`, `key`, `host`) when the
+model asked to watch without it, and `tool` events named `view_moment` (`id`, `frames`,
+`cached`, or `error`: `limit` when the per-message limit was reached);
 `POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
 save or remove a keyring key for the host of the saved base URL and return only where each key
 comes from (`keys`) and the host it is for (`key_hosts`). `GET /api/assistant/models?provider=`
@@ -794,7 +850,10 @@ OCR in the background removes them.
 
 Nothing new is required. Without the `events` extra or the model files, a step is skipped with an
 `INFO` line and nothing is downloaded; `cutpoint setup` and the extra add them. A step that fails
-logs an `ERROR`, adds a `step_failed` warning and the run continues without it. The VLM
+logs an `ERROR`, adds a `step_failed` warning and the run continues without it. A failed HUD
+OCR logs a `WARNING` instead, naming the sources left without menu filtering and HUD events
+(for out of memory: close other programs, set `CUTPOINT_ANALYZE_OVERLAP=0` or pass
+`--skip keyframes`); the sources read before it keep theirs. The VLM
 layer is not part of `analyze`; it stays in [`events`](#events) and `edit --events`.
 
 `analyze` also writes `events.json` and `events.txt` (and `crashes.json` for action footage).
@@ -861,7 +920,7 @@ Footage that is not reachable (offline drive, moved file) is skipped with a `foo
 | `voice` | Wind-robust speech and laughter (Silero VAD + PANNs) |
 | `visual` | CLIP frame embeddings, person detection, beauty and group scores |
 | `crash` | Runs `cutpoint crashes` (action-cam projects) |
-| `vlm` | The shared vision model describes candidate windows from frames, the transcript and the other layers' hints (no audio is sent): Ollama with `qwen3.5:9b` (`CUTPOINT_VISION_MODEL` changes it), or the hosted (API or subscription) Vision model of the Models tab in `cutpoint ui` ([`vision_assistant`](configuration.md#vision_assistant)) once you allowed vision requests there. Without either, the layer keeps its cached descriptions |
+| `vlm` | The shared vision model describes candidate windows from frames, the transcript and the other layers' hints (no audio is sent): Ollama with `qwen3.5:9b` (`CUTPOINT_VISION_MODEL` changes it), or the hosted (API or subscription) Vision model of the Models tab in `cutpoint ui` ([`vision_assistant`](configuration.md#vision_assistant)) once you allowed vision requests there. If the model does not answer, the layer keeps its cached descriptions; without the Vision consent for the provider it uses none of them and warns (`vision_consent_needed`) |
 
 Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash vlm`.
 
@@ -1053,7 +1112,8 @@ Notes:
   measured frames predicts more clipping than the levels intend (`veto_clipped`; underwater,
   pixels whose red alone clips high, up to 3 % of the frame, do not count), a worse cast
   (`veto_cast`: the gray-world cast rises by more than 0.005 of the luma range, or to more than
-  1.5 times its value and by more than 0.002), a picture over 25 % more colorful (`veto_m3`) or
+  1.5 times its value and by more than 0.002), a picture over 25 % more colorful (`veto_m3`, a safety net: with the current levels
+  stretch and vibrance caps no grade reaches it) or
   a washed-out one: with `auto`, one that loses more than 15 % of its colorfulness
   (`veto_m3_drop`); underwater, one whose median saturation falls below 0.63 of its value, such
   as flat sand turned grey (`veto_faded`), or when its frames could not be decoded
@@ -1402,11 +1462,18 @@ fails with `ERROR Nothing selected in <project>: ...`, exit code 1, and writes n
 ## setup
 
 ```text
-cutpoint setup [--only pip panns visual voice] [--json]
+cutpoint setup [--only pip whisper panns visual voice] [--whisper-model NAME] [--json]
 ```
 
-Downloads the models for `events` (about 2 GB): PANNs, CLIP ViT-L/14, the Faster R-CNN detector,
-the aesthetic head and Silero VAD. The VLM layer uses the shared vision model instead (Ollama with
+Downloads the Whisper model and the models for `events` (about 2.5 GB, 3.5 GB with an NVIDIA
+GPU): Whisper, PANNs, CLIP ViT-L/14, the Faster R-CNN detector, the aesthetic head and Silero
+VAD. `whisper` fetches the model `analyze` uses without `--model` (`medium` with CUDA, about
+1.5 GB; `small` without, about 0.5 GB) into the Hugging Face cache; `--whisper-model NAME` fetches
+another faster-whisper name (such as `large-v3`) or Hugging Face repo id instead (with
+`whisper` in `--only`; without it, exit 2). It needs no
+extra, so `setup --only whisper` works in Cutpoint lite (the `visual` step of a full `setup`
+needs the `events` extra). Without it, a run downloads the model it needs on first use; once the
+model is cached, runs load it without a Hugging Face Hub request. The VLM layer uses the shared vision model instead (Ollama with
 `qwen3.5:9b`, or a hosted Vision model), which `setup` does not download. `--json` writes the result as one [JSON envelope](#json-output) on stdout. See [Getting started](getting-started.md#download-models-only-for-cutpoint-events).
 
 ## paths
@@ -1468,7 +1535,10 @@ credential persistence; Cutpoint does not fall back to permanent plaintext stora
 CLIProxyAPI needs private plaintext working files in `<CUTPOINT_HOME>/cliproxy/auths/`.
 An independent supervisor restores them only after acquiring the daemon lock, checkpoints
 refreshes and removals during the run, and stops and reaps the daemon before final persistence
-and cleanup. If a credential disappears or a read observes incomplete JSON or UTF-8 during a
+and cleanup. It scans the working files every 5 seconds and reads or writes the keyring and
+re-checks file permissions only when they changed since the last checkpoint (and always at
+start and at the final persistence on stop, so a refresh just before Ctrl+C is still saved).
+If a credential disappears or a read observes incomplete JSON or UTF-8 during a
 periodic scan, the whole snapshot is deferred until the next scan; no partial account map is
 committed. Unsafe paths and permission errors still stop persistence. The supervisor survives
 a foreground CLI hard kill on every supported
@@ -1504,6 +1574,9 @@ connection, before sending credentials or request bodies. There is no HTTP or un
 fallback. Startup also refuses occupied ports and requires the installation's running-daemon
 lock. This does not protect against same-user malware or administrators able to read the
 keyring or replace private files. Connection failures are distinguished from HTTP errors.
+Startup waits up to 120 seconds for the daemon to answer while the supervisor runs (an INFO
+line after a few seconds says it is still waiting, for example during a keyring unlock prompt)
+and fails at once if the supervisor exits first.
 Ctrl+C stops and reaps the daemon, completes credential cleanup, and exits with code `130`.
 
 TLS and encrypted recovery use the core `cryptography` package in both full and lite installs.

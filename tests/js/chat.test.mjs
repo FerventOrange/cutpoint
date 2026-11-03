@@ -216,3 +216,94 @@ test('Revert previews the change\'s before-state; applying a stale revert previe
   assert.equal(m.$('#propPanel').hidden, false);
   assert.match(m.$('#sideLive').textContent, /previewed again/);
 });
+
+// ---- view_moment (#640) ----
+
+test('the consent text says frames go out only once allowed for a project', async (t) => {
+  const consent = { needed: true, key: 'assistant-v2:anthropic@api.anthropic.com', host: 'api.anthropic.com' };
+  const m = await chatPage(t, { assistant: { provider: { name: 'anthropic', label: 'Anthropic', local: false }, consent } });
+  assert.match(m.$('#chatConsentText').textContent, /never video frames unless you allow them for a project, and never audio/);
+});
+
+test('a watched moment is a step; one the limit stopped says so', async (t) => {
+  const m = await chatPage(t, {
+    routes: turnRoutes([
+      { kind: 'tool', n: 0, name: 'view_moment', id: 'h001', frames: 6, cached: false },
+      { kind: 'tool', n: 1, name: 'view_moment', id: 'h002', error: 'limit' },
+      { kind: 'reply', n: 2, text: 'A fish in the first one.' },
+    ]),
+  });
+  await m.send('show me the fish');
+  await m.tick(1000);
+  const log = m.log().join('\n');
+  assert.match(log, /Watched Big laugh \(6 frames\)/);
+  assert.match(log, /Did not watch Fall: the limit of moments watched per message was reached/);
+});
+
+test('view_moment without frame consent: Allow and ask again allows this project and sends the message again', async (t) => {
+  const prov = { name: 'anthropic', label: 'Anthropic', local: false };
+  const key = 'frames-v1:anthropic@api.anthropic.com';
+  const frames = { needed: true, key, host: 'api.anthropic.com' };
+  let turnsPosted = 0;
+  let consentCalls = 0;
+  let gets = 0;
+  const askEvents = [{ kind: 'frames_consent', n: 0, id: 'h001', key, host: 'api.anthropic.com' }, { kind: 'reply', n: 1, text: 'Allow frames to let me look.' }];
+  const m = await chatPage(t, {
+    routes: {
+      // after the first load, the server has the finished turn in chat.json
+      [`GET ${A}`]: () => ({
+        provider: prov, consent: { needed: false, key: 'a', host: 'api.anthropic.com' }, frames, running: [],
+        turns: ++gets === 1 ? [] : [{ id: 't1', user: 'show me the fish', status: 'done', events: askEvents }],
+      }),
+      [`POST ${A}/turns`]: () => ({ id: `t${++turnsPosted}`, status: 'running', provider: prov }),
+      [`GET ${A}/turns/t1`]: {
+        status: 'done', next: 2, events: askEvents,
+      },
+      [`GET ${A}/turns/t2`]: { status: 'done', next: 1, events: [{ kind: 'reply', n: 0, text: 'A fish.' }] },
+      [`POST ${A}/frames-consent`]: () => (++consentCalls === 1 ? reply(409, { detail: 'the provider changed' }) : { frames: { ...frames, needed: false } }),
+    },
+  });
+  await m.send('show me the fish');
+  await m.tick(1000);
+  const box = m.$('#chatLog li.frames-consent');
+  assert.ok(box, 'an allow box in the turn');
+  assert.match(box.textContent, /Let the assistant watch Big laugh\?/);
+  assert.match(box.textContent, /sends api\.anthropic\.com one image of 6 to 9 frames/);
+  assert.match(box.textContent, /Nothing was sent/);
+
+  const loads = () => m.page.requests.filter((r) => r.method === 'GET' && r.path === A).length;
+  const before = loads();
+  await m.click('#chatLog button[data-act=frames-ask]'); // 409: reloads, sends nothing
+  assert.equal(loads(), before + 1);
+  assert.equal(m.$('#chatError').textContent, 'the provider changed');
+  assert.equal(turnsPosted, 1);
+
+  await m.click('#chatLog button[data-act=frames-ask]');
+  assert.deepEqual(m.posts('/frames-consent')[1].body, { key });
+  assert.equal(turnsPosted, 2);
+  assert.equal(m.posts('/turns')[1].body.text, 'show me the fish');
+  await m.tick(1000);
+  assert.match(m.log().join('\n'), /A fish\./);
+  const done = m.$('#chatLog li.frames-consent');
+  assert.match(done.textContent, /allowed for api\.anthropic\.com/);
+  assert.equal(done.querySelector('button[data-act=frames-allow]'), null);
+  m.page.assertNoUnhandled();
+});
+
+test('Allow for this project allows without sending again', async (t) => {
+  const key = 'frames-v1:anthropic@api.anthropic.com';
+  const prov = { name: 'anthropic', label: 'Anthropic', local: false };
+  const m = await chatPage(t, {
+    assistant: {
+      provider: prov,
+      frames: { needed: true, key, host: 'api.anthropic.com' },
+      turns: [{ id: 't0', user: 'which has the best view?', status: 'done', events: [{ kind: 'frames_consent', n: 0, id: 'h002', key, host: 'api.anthropic.com' }] }],
+    },
+    routes: { [`POST ${A}/frames-consent`]: { frames: { needed: false, key, host: 'api.anthropic.com' } } },
+  });
+  await m.click('#chatLog button[data-act=frames-allow]');
+  assert.equal(m.posts('/frames-consent').length, 1);
+  assert.equal(m.posts('/turns').length, 0);
+  assert.equal(m.$('#chatLive').textContent, 'Video frames allowed for this project.');
+  assert.equal(m.$('#chatLog button[data-act=frames-ask]').textContent, 'Ask again');
+});

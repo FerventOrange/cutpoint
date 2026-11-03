@@ -38,8 +38,9 @@ Trust boundaries:
   409 naming the file and the error; session, pick and settings keep working.
 * The assistant (``/api/projects/<id>/assistant/...``) takes the token header only, never
   ``?t=``. It only proposes sequence changes, which the page applies to its working sequence; it
-  writes only ``ui/assistant/chat.json`` and ``ui/assistant/history.json``, never
-  ``review.json``, and runs no commands. Project text (labels, transcripts, file names, never
+  writes only ``ui/assistant/chat.json``, ``ui/assistant/history.json`` and the cached timeline
+  sheets in ``ui/assistant/sheets``, never ``review.json``, and runs no commands (frame grabs
+  aside). Project text (labels, transcripts, file names, never
   paths) reaches the model only inside marked data blocks. Its GET routes only read.
 * A hosted assistant provider (any whose host is not this machine) gets no project text until
   the user agrees once for it (``POST /api/assistant/consent``, an ``assistant-v2:`` key kept in
@@ -47,6 +48,11 @@ Trust boundaries:
   and without a key. The Vision role's hosted provider has its own consent (``role: vision``, a
   ``vision-v2:`` key): agreeing for one role never covers the other, and an unprefixed key from an
   older version covers neither.
+  Video frames (``view_moment``, :mod:`cutpoint.assistant.watch`) go to a hosted chat provider
+  only once the user allowed that provider and host for that project
+  (``POST /api/projects/<id>/assistant/frames-consent``, a ``frames-v1:`` key kept per project
+  folder in ``assistant.frames_consent`` of ``config.json``); a provider on this machine needs
+  none. The sheets are cached in ``ui/assistant/sheets``.
   API keys come from the environment or the system keyring (``POST /api/assistant/key``,
   ``.../key/clear``); no route returns one, only where it comes from. ``cutpoint ui`` takes the
   key variables out of its environment at startup, jobs get an environment without them, and
@@ -91,11 +97,13 @@ from fastapi.staticfiles import StaticFiles
 from cutpoint import cache, folders, insta360, paths, procs, progress
 from cutpoint.assemble import AUDIO_TRANSITIONS, OUTPUT_FORMATS, default_audio_transition
 from cutpoint.assistant import cliproxy
+from cutpoint.assistant import context as ai_context
 from cutpoint.assistant import keys as ai_keys
 from cutpoint.assistant import ops as ai_ops
 from cutpoint.assistant import providers as ai_providers
 from cutpoint.assistant import session as ai_session
 from cutpoint.assistant import store as ai_store
+from cutpoint.assistant import watch as ai_watch
 from cutpoint.backends import ollama_url
 from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import (
@@ -191,6 +199,9 @@ FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
 FRAME_CACHE_MAX = 1500  # stills kept per project; the least recently used go first
 SOURCES_CACHE_MAX = 32  # projects whose source lists are kept; the least recently used go first
 SOURCES_CACHE_S = 60.0  # rebuild a kept source list at least this often (what stats miss)
+_suggest_lock = threading.Lock()  # one style suggestion probes at a time; another gets no answer
+TELEMETRY_PROBE_TIMEOUT = 10  # seconds per ffprobe of that suggestion
+MAX_TELEMETRY_PROBES = 12  # files one style suggestion probes, so a big folder or a NAS stays quick
 MAX_INPUTS = 50  # files and folders one New project takes (analyze's positional inputs)
 MAX_EXCLUDES = 20  # analyze --exclude patterns one New project takes
 MAX_GLOB = 200  # characters of one --exclude pattern
@@ -2760,7 +2771,10 @@ def source_folder(p: Path) -> Path | None:
 
 def moments_view(hl: dict[str, Any] | None) -> dict[str, Any] | None:
     """Keep saved trims attached to source intervals, not mutable CLI ranks; ``cli_id`` keeps the
-    CLI id (h001) that the cards show and ``clips --ids`` takes."""
+    CLI id (h001) that the cards show and ``clips --ids`` takes. ``display_label`` is the label
+    the moments list shows: a generic one (``action-moment``) gives way to what the vision model
+    saw (:func:`cutpoint.assistant.context.shown_label`, as in AI Chat); ``label`` stays the
+    analysis label, which a moment added to the sequence takes."""
     if hl is None:
         return None
     return {
@@ -2769,6 +2783,7 @@ def moments_view(hl: dict[str, Any] | None) -> dict[str, Any] | None:
             {
                 **c,
                 "cli_id": c.get("id"),
+                "display_label": ai_context.shown_label(c.get("label"), c),
                 "id": hashlib.sha1(
                     f"{os.path.realpath(c['source'])}|{float(c['start'])}|{float(c['end'])}".encode()
                 ).hexdigest()[:12],
@@ -3196,7 +3211,7 @@ def new_project(name: str, source: str, style: str, **extra: Any) -> dict[str, s
 
 
 def ui_styles() -> list[str]:
-    """Styles for standard video (telemetry-driven action-cam styles are command-line only).
+    """Styles for standard video, the telemetry-driven action-cam styles included (#633).
 
     A learned style that fails to load is left out with a warning, so one bad file does not
     break the UI.
@@ -3204,12 +3219,11 @@ def ui_styles() -> list[str]:
     names = []
     for n in style_names():
         try:
-            style = get_style(n)
+            get_style(n)
         except (ValueError, TypeError, AttributeError) as e:
             logger.warning("skipping learned style %s: %s", learned_styles().get(n, n), e)
             continue
-        if style.kind != ACTION_CAM:
-            names.append(n)
+        names.append(n)
     return names
 
 
@@ -3222,8 +3236,33 @@ def _gaming_style(name: object) -> bool:
         return False
 
 
+def suggest_style(
+    inputs: list[str], exclude: list[str] = (), recursive: bool = False
+) -> str | None:
+    """``action-cam`` when an input carries camera telemetry, else None (#633).
+
+    Only the container's stream list is probed (``analyze.has_telemetry``: a GoPro GPMF track or an
+    Insta360 IMU trailer), never the telemetry itself, within ``TELEMETRY_PROBE_TIMEOUT`` s per file
+    and stopping at the first hit. The files are those ``analyze`` would find (``find_picked``:
+    ``recursive``, ``exclude`` and ``source_remap`` apply), the first ``MAX_TELEMETRY_PROBES`` of
+    them. Unreadable inputs count as none. Usable 360 footage gets no suggestion: the server picks
+    its 360 style (``pano.default_style``) whatever is chosen.
+    """
+    from cutpoint.analyze import has_telemetry  # noqa: PLC0415
+
+    try:
+        for x in inputs:
+            src = Path(x)
+            if (src.is_file() or src.is_dir()) and _usable(inspect_source(src)[1]):
+                return None
+        files = find_picked(inputs, exclude, recursive)[:MAX_TELEMETRY_PROBES]
+    except OSError:
+        return None
+    return "action-cam" if any(has_telemetry(f, TELEMETRY_PROBE_TIMEOUT) for f in files) else None
+
+
 def _ski_style(name: str) -> bool:
-    """``name`` is a telemetry-driven action-cam style (``kind`` action-cam), accepted for 360 sources."""
+    """``name`` is a telemetry-driven action-cam style (``kind`` action-cam): kept as given for 360 sources."""
     try:
         return get_style(name).kind == ACTION_CAM
     except (ValueError, TypeError, AttributeError):
@@ -3964,7 +4003,8 @@ def create_app(port: int) -> FastAPI:
                 raise bad(f"unknown provider {provider}")
         except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
             raise bad(str(err), 409) from err
-        return ai_providers.model_list(p, settings.consent, role=role, refresh=refresh)
+        keep = settings.model if provider in (settings.provider, "custom") else ""
+        return ai_providers.model_list(p, settings.consent, role=role, refresh=refresh, keep=keep)
 
     # -- subscription logins (Claude Code, Codex, Antigravity): managed via CLIProxyAPI ----
     def login_provider(value: Any) -> str:
@@ -4132,6 +4172,19 @@ def create_app(port: int) -> FastAPI:
             found.append({"id": d.name, "name": read_meta(d).get("name") or d.name})
         return {"projects": found}
 
+    @owned.post("/projects/suggest-style")
+    def suggest_project_style(body: dict[str, Any]):
+        """The style the New project dialog preselects for these sources (null: no suggestion)."""
+        inputs = _body_inputs(body)
+        recursive, exclude = _flag(body, "recursive"), _exclude_globs(body)
+        if not _suggest_lock.acquire(blocking=False):  # a suggestion is optional: never queue
+            return {"style": None, "busy": True}  # not "no telemetry": the page asks again
+        try:
+            style = suggest_style(inputs, exclude, recursive)
+        finally:
+            _suggest_lock.release()
+        return {"style": style if style in ui_styles() else None}
+
     @owned.post("/projects")
     def create_project(body: dict[str, Any]):
         name, style = body.get("name"), body.get("style", "gaming")
@@ -4151,8 +4204,6 @@ def create_app(port: int) -> FastAPI:
                 raise bad(f"source is not readable: {err}") from err
             if problem:
                 raise bad(problem)
-            if ski:  # action-cam styles need telemetry: 360 footage only in the UI
-                raise bad(f"unknown style {style!r}")
             full = [os.path.abspath(x) for x in inputs]  # noqa: PTH100
             extra: dict[str, Any] = {"inputs": full} if len(full) > 1 else {}
             extra |= ({"recursive": True} if recursive else {}) | (
@@ -4169,8 +4220,6 @@ def create_app(port: int) -> FastAPI:
         if problem:
             raise bad(problem)
         if not usable:
-            if ski:  # action-cam styles need telemetry: 360 footage only in the UI
-                raise bad(f"unknown style {style!r}")
             return new_project(name.strip(), os.path.abspath(source), style)  # noqa: PTH100
         # 360: the action-cam styles as given, any other the 360 default (pano.default_style)
         try:
@@ -4873,9 +4922,56 @@ def create_app(port: int) -> FastAPI:
         return {
             "provider": ai_providers.describe(provider),
             "consent": consent_view(provider),
+            "frames": frames_state(p, provider),
             "turns": ai_store.turns(p),
             "running": running,
         }
+
+    def frames_state(p: Path, provider: ai_providers.Provider) -> dict[str, Any]:
+        """Whether video frames of ``p`` may go to ``provider`` (:func:`ai_watch.frames_view`);
+        an unreadable config.json allows none."""
+        try:
+            data = load_config_data()
+        except ValueError:
+            data = {}
+        return ai_watch.frames_view(provider, p, data)
+
+    def frames_given(p: Path) -> tuple[str, ...]:
+        try:
+            return ai_watch.frames_consent(load_config_data(), p)
+        except ValueError:  # config.json became unreadable: no frames go out
+            return ()
+
+    @owned.post("/projects/{pid}/assistant/frames-consent")
+    def give_frames_consent(pid: str, body: dict[str, Any]):
+        """Allow video frames of this project to go to the assistant's provider, named by its
+        ``key`` (``frames-v1:<name>@<host>``), kept in ``assistant.frames_consent`` of
+        ``config.json`` under the project folder; 409 when the provider in use is another one
+        by now or is on this machine, or the user has not agreed to the assistant itself."""
+        p = project_dir(pid)
+        provider = assistant_provider()
+        want = ai_watch.frames_key(provider)
+        if want is None or body.get("key") != want:
+            raise bad("the assistant's provider changed: check it and allow again", 409)
+        if consent_view(provider)["needed"]:
+            raise bad(f"agree first to use {provider.host} in AI Chat", 409)
+        data = config_data()
+        raw = data.get("assistant")
+        section = dict(raw) if isinstance(raw, dict) else {}
+        given = section.get("frames_consent", {})
+        if not isinstance(given, dict):
+            raise bad("assistant.frames_consent in config.json must be an object", 409)
+        where = ai_watch.project_key(p)
+        keys_now = list(ai_watch.frames_consent(data, p))
+        if want not in keys_now:
+            frames = {**given, where: [*keys_now, want]}
+            try:
+                set_config_values({"assistant": {**section, "frames_consent": frames}})
+            except ValueError as err:
+                raise bad(str(err), 409) from err
+            except OSError as err:
+                raise bad(f"could not save the consent: {err.strerror or err}", 500) from err
+        return {"frames": frames_state(p, provider)}
 
     @owned.post("/projects/{pid}/assistant/turns")
     def start_turn(pid: str, body: dict[str, Any]):
@@ -4887,7 +4983,8 @@ def create_app(port: int) -> FastAPI:
         if consent_view(provider)["needed"]:
             raise bad(
                 f"agree first to send this project's analysis results (moment labels, scores "
-                f"and signals, transcript snippets, file names and times) to {provider.host}",
+                f"and signals, vision descriptions, transcript snippets, file names and times) "
+                f"to {provider.host}",
                 409,
             )
         text = body.get("text")
@@ -4903,9 +5000,12 @@ def create_app(port: int) -> FastAPI:
         if _inside(p, "transcript.txt"):
             with contextlib.suppress(OSError, UnicodeDecodeError):
                 transcript = (p / "transcript.txt").read_text(encoding="utf-8-sig")
-        project = ai_session.Project(moments, segments, durations, transcript, key)
+        # the events VLM windows: what the vision model saw, which find_moments searches
+        windows = ai_context.vlm_windows(_load(p, "events.json"))
+        project = ai_session.Project(moments, segments, durations, transcript, key, windows)
         assistant_save(p, ai_store.CHAT)
-        turn = ai_session.Turn(provider, project, text.strip(), ai_store.turns(p))
+        viewer = ai_watch.Viewer(p, provider, resolve=remap_source, consent=lambda: frames_given(p))
+        turn = ai_session.Turn(provider, project, text.strip(), ai_store.turns(p), viewer=viewer)
         try:
             turns.start(str(p), turn, lambda t: ai_store.add_turn(p, t.record()))
         except ai_session.BusyError as err:

@@ -1110,6 +1110,9 @@ NO_VISUAL_REASON = {
     SKIP_NO_EXTRA: "the events extra is not installed",
     SKIP_NO_CUDA: "no CUDA GPU for the keyframes step",
 }
+# How to avoid HUD discovery during analyze (no --game or --no-discover here), after "Put a
+# preset in <presets dir>" (run_events' discover_hint)
+DISCOVER_HINT = "or pass --skip keyframes to leave out the whole keyframes step"
 LAYER_STEP = {
     "audio": "reactions",
     "voice": "reactions",
@@ -1139,15 +1142,15 @@ class LayerPlan:
         return tuple(x for x in LAYER_STEP if any(x in v for v in self.layers.values()))
 
 
-def has_telemetry(src: Path) -> bool:
+def has_telemetry(src: Path, timeout: float = 60) -> bool:
     """Whether ``src`` carries camera telemetry (a GoPro GPMF track or an Insta360 X3 IMU
-    trailer); only the container's stream list is read."""
+    trailer); only the container's stream list is read, within ``timeout`` seconds."""
     from cutpoint.insta360 import imu_source  # noqa: PLC0415
 
     try:
         if imu_source(src) is not None:
             return True
-        info = ffprobe_json(remap_source(src), entries="stream=codec_tag_string", timeout=60)
+        info = ffprobe_json(remap_source(src), entries="stream=codec_tag_string", timeout=timeout)
     except (OSError, FFmpegError):
         return False
     return any(s.get("codec_tag_string") == "gpmd" for s in info.get("streams") or [])
@@ -1241,10 +1244,58 @@ def plan_layers(style: Style, sources: Sequence[Path], skip: Collection[str]) ->
     return plan
 
 
+# An error text of a failed allocation: torch ("CUDA out of memory"), onnxruntime
+# ("Failed to allocate memory"), OpenCV ("Insufficient memory"), C++ (std::bad_alloc).
+OOM_RE = re.compile(
+    r"out of memory|insufficient memory|(?:unable|failed) to allocate|bad[ _]alloc", re.I
+)
+REASON_CHARS = 120  # the reason of a failed OCR layer is cut to this
+
+
+def _ocr_failed(err: BaseException) -> tuple[str, list[str]]:
+    """The WARNING (and ``step_failed`` message) of an OCR layer that failed with ``err``,
+    naming what it costs, and the paths of the sources it did not read (none when the
+    failure is not tagged with them, :func:`~cutpoint.events.pipeline.ocr_failure`). The
+    out-of-memory hint names ``CUTPOINT_ANALYZE_OVERLAP`` only when the failing read ran in
+    the background while Whisper ran (:func:`_ocr_prefetch`)."""
+    from cutpoint.events.pipeline import ocr_failure  # noqa: PLC0415
+
+    lines = str(err).strip().splitlines()
+    oom = isinstance(err, MemoryError) or bool(OOM_RE.search(str(err)))
+    if oom:
+        reason = "out of memory"
+    else:
+        reason = lines[0].strip() if lines else type(err).__name__
+        if len(reason) > REASON_CHARS:
+            reason = reason[: REASON_CHARS - 3].rstrip() + "..."
+    where = ocr_failure(err)
+    paths = where.not_read if where else []
+    effect = "menu filtering and HUD events (kill feed, banners, notices) skipped for"
+    if where is None:  # setup or bookkeeping outside the reads: which sources is not known
+        message = f"OCR failed ({reason}): {effect} the sources not read yet"
+    elif where.discovery:
+        games = " for some games" if where.games > 1 else ""
+        message = (
+            f"OCR failed in HUD region discovery ({reason}): no HUD preset installed{games}, "
+            f"{effect} every source"
+        )
+    elif not paths:
+        message = f"OCR failed ({reason}): {effect} every source"
+    else:
+        later = len(paths) - 1
+        rest = f" and {later} later source{'s' if later != 1 else ''}" if later else ""
+        message = f"OCR failed ({reason}): {effect} {Path(paths[0]).name}{rest}"
+    if oom:
+        hint = ", set CUTPOINT_ANALYZE_OVERLAP=0" if where and where.background else ""
+        message += f"; close other programs{hint} or pass --skip keyframes"
+    return message, paths
+
+
 class _StepHook:
     """``run_events``'s ``stage`` for :func:`analyze`: each layer reports as its step; a
-    layer that fails fails its step (an ERROR line and a ``step_failed`` warning), and the
-    next steps still run."""
+    layer that fails fails its step (an ERROR line and a ``step_failed`` warning; for the
+    OCR layer a WARNING naming the sources without menu filtering and HUD events, see
+    :func:`_ocr_failed`), and the next steps still run."""
 
     def __init__(self, steps: progress.Run) -> None:
         self.steps = steps
@@ -1261,10 +1312,15 @@ class _StepHook:
         try:
             yield
         except Exception as err:
-            message = f"{LABELS[step]} failed: {err}; continuing without it"
             logger.debug("%s layer failed", layer, exc_info=True)
-            logger.error("%s", message)
-            jsonout.warn("step_failed", message)
+            files: list[str] = []
+            if layer == "ocr":  # analyze goes on, ranked without the HUD: a WARNING
+                message, files = _ocr_failed(err)
+                logger.warning("%s", message)
+            else:
+                message = f"{LABELS[step]} failed: {err}; continuing without it"
+                logger.error("%s", message)
+            jsonout.warn("step_failed", message, files)
             if self.steps.current == step:
                 self.steps.fail(message)
             self.failed.add(step)
@@ -1380,6 +1436,7 @@ def _run_layers(
                 cached_ocr=plan.game,
                 llm=llm,
                 prefetch=prefetch,
+                discover_hint=DISCOVER_HINT,
             )
     except Exception as err:
         if steps.current == "ranking":
@@ -1897,8 +1954,8 @@ def _analyze(
                 **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
             )
         ).consent_needed:
-            # an Ollama on another machine the user did not agree to: no request, no cached
-            # ratings either (this run may not send to it at all)
+            # a provider the user did not agree to (a hosted one, or an Ollama on another
+            # machine): no request, no cached ratings either
             steps.skip("vision", rater.warn_consent())
         else:
             # vision_top itself stays None (auto) in the saved settings, for reanalyze
