@@ -92,7 +92,7 @@ So do these combinations:
 | `pano_mixed_sources` | `clips` (so `edit`), `assemble <project>` | The run's 360 clips are not rendered like-for-like: stitched and dual fisheye sources mixed, or an equirect rendered without the IMU levelling (FlowState, no sidecar, Studio export); `files` names the 360 clips (empty for a temporary export: `assemble <project>`, `edit --no-keep-clips`). Export with `--pano-source dfisheye` to compare their `360 qa` with the previews (see [360 video](workflows/360.md#render-sources)) |
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
 | `loudness_below_target` | `assemble` (so `edit`) | `--loudnorm` left the final more than 1 LU below -14 LUFS: the limiter took the peaks the gain pushed over the ceiling; `--compress-peaks` leaves it more room |
-| `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it |
+| `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it. A failed HUD OCR (keyframes for `gaming` and `funny`) is a `WARNING` instead, whose message names the effect (menu filtering and HUD events skipped) and the source it failed on; `files` lists the sources it did not read. Out of memory says so, with what to try |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
 | `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
 | `content_qa_failed` | `mix` | The content checks of the mix failed |
@@ -288,6 +288,11 @@ browser (local storage); the source file only while the project stays open.
 Each card shows the rank and title with Add or Remove on the right, the candidate id, the times
 and length, the file name when the project has several sources, a strip of the moment's place in its source, the
 transcript, and the preview readiness (Ready, Encoding, Queued) at the bottom right.
+A moment with only a generic label (`action-moment`, `loud-moment`) is titled with what the
+vision model saw: its vision rating label, else the label of its `events` VLM window (the search
+finds both). `highlights.json`, the label a moment takes into the sequence and clip file names
+keep the analysis label. A moment of the visual pool (beauty shots, friends, cruising runs)
+carries a "visual" badge with its kind, such as "visual · view".
 
 While an analysis runs, the Moments column lists its steps (Transcription, Reactions, Keyframes,
 Crashes, Ranking, Vision rating; for a 360 project those of `360 analyze`) under "Analyze footage", or under the column header for "Analyze
@@ -559,19 +564,61 @@ the Models tab, so "Allow vision requests" waits for a key saved there. The page
 
 A provider whose host is not this machine (`localhost` or a loopback address; an Ollama on
 another machine counts too) is hosted: before the first message the tab asks once, per provider
-and host (with its port when that is not the default), to send the project's analysis results (moment labels, scores and detection signals,
-transcript snippets, file names (not full paths) and times) and your messages, never video or
-audio. The answer is kept in `config.json` (`assistant.consent`, as
-`assistant-v2:<provider>@<host>`); it never covers the Vision role, which asks separately. Until
-then nothing is sent. A hosted reply is not streamed, so Cancel takes effect when it arrives.
+and host (with its port when that is not the default), to send the project's analysis results (moment labels, scores and detection signals, vision
+descriptions, transcript snippets, file names (not full paths) and times) and your messages, never video
+frames unless you allow them for a project (below), and never audio. The answer is kept in
+`config.json` (`assistant.consent`, as `assistant-v2:<provider>@<host>`); it never covers the
+Vision role, which asks separately. Until then nothing is sent. A hosted reply is not streamed,
+so Cancel takes effect when it arrives.
+
+**Watching a moment.** With a model that takes images, the assistant can look at a moment when
+the labels, transcripts and scores cannot answer (for example "show me the fish" or "which of
+these has the best view"); it is told never to watch every moment. Each watched moment sends one
+image, a timeline sheet: 6 frames spread across the clip (9 for a clip longer than 12 s), three
+per row, each stamped with its number and source time, about 1.5k image tokens on Claude, with
+the moment's transcript lines and the sounds heard in it (from `events.json`, such as laughter
+or a scream) as text. A message can watch at most 2 moments with a context of 8192 tokens or
+less (local models), 4 with a larger one; the steps show "Watched … (6 frames)". Sheets are
+cached in the project's `ui/assistant/sheets`, per moment, clip window and source file.
+
+- Which models: an Ollama model when Ollama lists `vision` for it (`qwen3.5:9b` does), every
+  Claude model, and any other model unless its name has `gpt-3.5`, `o1-mini`, `o3-mini`,
+  `grok-code`, `grok-build` or `codex`. Whether a model of another server (OpenRouter, LM
+  Studio, vLLM, a subscription) takes images is not known in advance: it is offered the tool,
+  and if its server refuses the image, the request is sent again without it and that model is
+  not offered the tool again until `cutpoint ui` restarts.
+- Consent: an Ollama on this machine (`localhost` or a loopback address) needs none. Any other
+  provider gets frames only once you allow that provider and host for that project. When the
+  model wants to watch without it, nothing is sent, the model is told to answer from the text,
+  and the chat shows a box: "Allow for this project", or "Allow and ask again", which also sends
+  your message again. The answer is kept in `config.json` (`assistant.frames_consent`, per
+  project folder, as `frames-v1:<provider>@<host>`); the AI Chat consent above is still needed,
+  and neither it nor the Vision consent covers frames. To take it back, remove the entry.
 
 Its header shows the model and provider (local, or the hosted host), with a note
 that a small local model can miss moments or misread a request. Type a request and press Enter
 or Send (Shift+Enter starts a new line); the reply shows the steps the model took ("Searched
 for …") and can be stopped with Cancel. The chat needs an analyzed project.
 
+The model reads the moments as text: label (a generic one replaced by what the vision model saw,
+as in the Moments list), score, times, transcript snippet and, when analysis has them, `kind`,
+`seen` (the vision rating label and the description of the `events` VLM window over the moment),
+`heard` (laughter or screams detected) and `cues`: visual, telemetry and vision-tag strengths on
+one 0-10 scale (`beauty`, `people`, `group`, `speed`, `carve`, `airtime`, `crash`, `wipeout`,
+`stopped`, the action-cam tags such as `chairlift` or `scenic_vista`, and more; the strongest six
+per moment in the list, all of them in `get_moment`). Its `find_moments` tool searches labels,
+transcripts, `seen` text, heard sounds and the names of cues of 5 or more (`air` finds `airtime`
+and `jump_air`). The instructions name only the cues the project has, and requests such as
+"beauty shots", "casual skiing" or "bloopers" work without moment ids only when it has the cues
+for them: action-cam footage with telemetry (`--style action-cam`), the `events` vision layer
+(window descriptions and tags) or visual-pool moments. Other styles have the vision rating
+label (with `--vision`), `loudness`, `laughter` and the laughter or screams heard, so the model
+finds their moments by those, the label and the transcript. Only these results are sent; video
+frames go only through view_moment (above), once allowed for the project.
+
 - Moments the model points to can be highlighted in the Moments list ("Highlight in list") or
-  the list filtered by the model's search words.
+  the list filtered by the model's search words (offered only when the list's search, which also
+  matches vision labels, finds one of them).
 - A proposed change opens in the Sequence tab as a preview of the new sequence: each row is
   marked Added, Moved (old to new position), Trimmed (old to new times) or Renamed, removed clips are
   listed as Removed, the moments are marked in the Moments list, and the trim rail shows the new
@@ -592,7 +639,13 @@ Nothing is applied without Apply. API: `GET /api/projects/<id>/assistant`, `POST
 `POST .../history/<change>/revert` (which returns a `revert-<change>` proposal with a `base_key`
 and writes nothing; applying it with another sequence or without that key is refused with 409).
 `GET .../assistant` also returns `consent` (`needed`, `key`, `host`, `missing_key`: how to add a missing API key or log in to a subscription, or null, and `missing_kind`: `"login"` for a subscription provider, `"key"` otherwise, null when nothing is missing); `POST .../turns` answers
-409 while `needed` is true. `POST /api/assistant/consent` with that `key` records the consent;
+409 while `needed` is true. `POST /api/assistant/consent` with that `key` records the consent.
+`GET .../assistant` also returns `frames` (`needed`, `key`: the `frames-v1:` key, null for a
+provider on this machine, `host`); `POST .../assistant/frames-consent` with that `key` allows
+frames of the project (409 when the provider changed, is on this machine, or the AI Chat
+consent is missing). A turn's events can include `frames_consent` (`id`, `key`, `host`) when the
+model asked to watch without it, and `tool` events named `view_moment` (`id`, `frames`,
+`cached`, or `error`: `limit` when the per-message limit was reached);
 `POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
 save or remove a keyring key for the host of the saved base URL and return only where each key
 comes from (`keys`) and the host it is for (`key_hosts`). `GET /api/assistant/models?provider=`
@@ -783,7 +836,10 @@ OCR in the background removes them.
 
 Nothing new is required. Without the `events` extra or the model files, a step is skipped with an
 `INFO` line and nothing is downloaded; `cutpoint setup` and the extra add them. A step that fails
-logs an `ERROR`, adds a `step_failed` warning and the run continues without it. The VLM
+logs an `ERROR`, adds a `step_failed` warning and the run continues without it. A failed HUD
+OCR logs a `WARNING` instead, naming the sources left without menu filtering and HUD events
+(for out of memory: close other programs, set `CUTPOINT_ANALYZE_OVERLAP=0` or pass
+`--skip keyframes`); the sources read before it keep theirs. The VLM
 layer is not part of `analyze`; it stays in [`events`](#events) and `edit --events`.
 
 `analyze` also writes `events.json` and `events.txt` (and `crashes.json` for action footage).
@@ -1447,7 +1503,10 @@ credential persistence; Cutpoint does not fall back to permanent plaintext stora
 CLIProxyAPI needs private plaintext working files in `<CUTPOINT_HOME>/cliproxy/auths/`.
 An independent supervisor restores them only after acquiring the daemon lock, checkpoints
 refreshes and removals during the run, and stops and reaps the daemon before final persistence
-and cleanup. If a credential disappears or a read observes incomplete JSON or UTF-8 during a
+and cleanup. It scans the working files every 5 seconds and reads or writes the keyring and
+re-checks file permissions only when they changed since the last checkpoint (and always at
+start and at the final persistence on stop, so a refresh just before Ctrl+C is still saved).
+If a credential disappears or a read observes incomplete JSON or UTF-8 during a
 periodic scan, the whole snapshot is deferred until the next scan; no partial account map is
 committed. Unsafe paths and permission errors still stop persistence. The supervisor survives
 a foreground CLI hard kill on every supported
@@ -1483,6 +1542,9 @@ connection, before sending credentials or request bodies. There is no HTTP or un
 fallback. Startup also refuses occupied ports and requires the installation's running-daemon
 lock. This does not protect against same-user malware or administrators able to read the
 keyring or replace private files. Connection failures are distinguished from HTTP errors.
+Startup waits up to 120 seconds for the daemon to answer while the supervisor runs (an INFO
+line after a few seconds says it is still waiting, for example during a keyring unlock prompt)
+and fails at once if the supervisor exits first.
 Ctrl+C stops and reaps the daemon, completes credential cleanup, and exits with code `130`.
 
 TLS and encrypted recovery use the core `cryptography` package in both full and lite installs.

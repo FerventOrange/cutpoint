@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import needs_ffmpeg
-from cutpoint import analyze, ffmpeg_utils, progress
+from cutpoint import analyze, ffmpeg_utils, jsonout, progress
 from cutpoint.events import ocr_prefetch, pipeline
 from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrCancelled, OcrParams
@@ -26,6 +26,9 @@ from cutpoint.styles import get_style
 
 class _Stop(Exception):
     pass
+
+
+_REAL_DISCOVER = pipeline._discover  # the fixture replaces it
 
 
 class _Records(logging.Handler):
@@ -331,6 +334,239 @@ def test_a_worker_error_fails_only_the_keyframes_step(ocr_run, capsys) -> None:
     got = [(g["step"], g["state"]) for g in _lines(capsys)]
     assert ("keyframes", "failed") in got
     assert ocr_run.reads == ["a.mp4"]
+
+
+def _ocr_warnings(caplog) -> list[tuple[int, str]]:
+    return [
+        (r.levelno, r.getMessage())
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and "player_tags" not in r.getMessage()
+    ]
+
+
+def test_a_worker_out_of_memory_names_its_source_effect_and_remedy(ocr_run, caplog) -> None:
+    """#555: a bare MemoryError (no text) in the background read of the second source: one
+    WARNING and one step_failed warning name the effect, the file and what to try."""
+
+    def read(src, cancel):
+        if src.name == "b.mp4":
+            raise MemoryError
+        return [], {"menu_spans": [[1.0, 2.0]]}
+
+    ocr_run.read = read
+    pre = ocr_run.make()
+    for p in ocr_run.paths:
+        pre.offer(p, 60.0, True)
+    with jsonout.run("analyze") as res:
+        ocr_run.run(pre, stage=analyze._StepHook)
+    want = (
+        "OCR failed (out of memory): menu filtering and HUD events (kill feed, banners, "
+        "notices) skipped for b.mp4; close other programs, set CUTPOINT_ANALYZE_OVERLAP=0 "
+        "or pass --skip keyframes"
+    )
+    assert _ocr_warnings(caplog) == [(logging.WARNING, want)]
+    assert res.warnings == [
+        {"code": "step_failed", "message": want, "files": [str(ocr_run.paths[1])]}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("err", "reason", "remedy"),
+    [
+        (
+            RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB"),
+            "out of memory",
+            "; close other programs or pass --skip keyframes",
+        ),
+        (RuntimeError("decoder broke\nmore detail"), "decoder broke", ""),
+        (ValueError(), "ValueError", ""),
+    ],
+)
+def test_an_inline_ocr_failure_names_every_source_not_read(
+    ocr_run, caplog, err, reason, remedy
+) -> None:
+    def read(src, cancel):
+        raise err
+
+    ocr_run.read = read
+    with jsonout.run("analyze") as res:
+        ocr_run.run(stage=analyze._StepHook)
+    want = (
+        f"OCR failed ({reason}): menu filtering and HUD events (kill feed, banners, notices) "
+        f"skipped for a.mp4 and 1 later source{remedy}"
+    )
+    assert _ocr_warnings(caplog) == [(logging.WARNING, want)]
+    assert [(w["code"], w["message"], len(w["files"])) for w in res.warnings] == [
+        ("step_failed", want, 2)
+    ]
+    assert ocr_run.reads == ["a.mp4"]  # the layer stops at its first failure
+
+
+def test_the_sources_read_before_a_failure_keep_their_menu_spans(ocr_run, monkeypatch) -> None:
+    """#555: the stats of a.mp4 (its menu spans) are written although b.mp4 failed."""
+
+    def read(src, cancel):
+        if src.name == "b.mp4":
+            raise MemoryError
+        return [], {"menu_spans": [[1.0, 2.0]]}
+
+    written = []
+
+    def write_outputs(project, sources, events, results, transcript, settings, timings, stats):
+        written.append(stats["ocr"])
+        raise _Stop
+
+    ocr_run.read = read
+    monkeypatch.setattr(pipeline, "game_prompt", lambda *a: "")
+    monkeypatch.setattr(pipeline, "select_windows", lambda *a, **k: [])
+    monkeypatch.setattr(pipeline, "describe_windows", lambda *a, **k: ([], {}))
+    monkeypatch.setattr(pipeline, "write_outputs", write_outputs)
+    with jsonout.run("analyze"):
+        ocr_run.run(stage=analyze._StepHook)
+    assert written == [{"a.mp4": {"menu_spans": [[1.0, 2.0]]}}]
+
+
+def test_a_discovery_failure_names_the_missing_preset(ocr_run, caplog, monkeypatch) -> None:
+    def discover(*a):
+        raise MemoryError("Unable to allocate 3.1 GiB for an array")
+
+    monkeypatch.setattr(pipeline, "_discover", discover)
+    with jsonout.run("analyze") as res:
+        ocr_run.run(stage=analyze._StepHook)
+    want = (
+        "OCR failed in HUD region discovery (out of memory): no HUD preset installed, menu "
+        "filtering and HUD events (kill feed, banners, notices) skipped for every source; "
+        "close other programs or pass --skip keyframes"
+    )
+    assert _ocr_warnings(caplog) == [(logging.WARNING, want)]
+    assert [w["message"] for w in res.warnings] == [want]
+    assert ocr_run.reads == []
+
+
+OOM_HINT = "; close other programs or pass --skip keyframes"
+
+
+def test_out_of_memory_in_a_read_the_reader_declined_leaves_out_the_overlap(
+    ocr_run, caplog
+) -> None:
+    """#555: the reader exists but declines (too little VRAM): the source is read inline,
+    so CUTPOINT_ANALYZE_OVERLAP=0 would not help."""
+
+    def read(src, cancel):
+        raise MemoryError
+
+    ocr_run.read = read
+    ocr_run.vram = False
+    pre = ocr_run.make()
+    for p in ocr_run.paths:
+        pre.offer(p, 60.0, True)
+    with jsonout.run("analyze") as res:
+        ocr_run.run(pre, stage=analyze._StepHook)
+    want = (
+        "OCR failed (out of memory): menu filtering and HUD events (kill feed, banners, "
+        f"notices) skipped for a.mp4 and 1 later source{OOM_HINT}"
+    )
+    assert _ocr_warnings(caplog) == [(logging.WARNING, want)]
+    assert [w["message"] for w in res.warnings] == [want]
+    assert ocr_run.reads == ["a.mp4"]  # inline, after the reader declined
+
+
+def test_out_of_memory_in_discovery_with_a_reader_leaves_out_the_overlap(
+    ocr_run, caplog, monkeypatch
+) -> None:
+    def discover(*a):
+        raise MemoryError
+
+    monkeypatch.setattr(pipeline, "_discover", discover)
+    pre = ocr_run.make()
+    for p in ocr_run.paths:
+        pre.offer(p, 60.0, True)
+    with jsonout.run("analyze"):
+        ocr_run.run(pre, stage=analyze._StepHook)
+    ((_, message),) = _ocr_warnings(caplog)
+    assert message.startswith("OCR failed in HUD region discovery (out of memory): ")
+    assert message.endswith(f"every source{OOM_HINT}")
+
+
+def test_a_discovery_failure_for_the_second_game_says_some_games(
+    ocr_run, caplog, monkeypatch
+) -> None:
+    """Two games to discover (no presets): the first may have installed its preset."""
+    from cutpoint.events import discover  # noqa: PLC0415
+
+    def discover_regions(srcs, *a, **k):
+        if srcs[0].name == "b.mp4":
+            raise RuntimeError("decoder broke")
+        return {"regions": []}
+
+    monkeypatch.setattr(pipeline, "_discover", _REAL_DISCOVER)
+    monkeypatch.setattr(pipeline, "game_key_for_path", lambda path, game, project: Path(path).stem)
+    monkeypatch.setattr(discover, "discover_regions", discover_regions)
+    monkeypatch.setattr(pipeline.cache, "save_json", lambda *a: None)
+    monkeypatch.setattr(pipeline.cutpoint_paths, "presets_dir", lambda: ocr_run.project / "p")
+    with jsonout.run("analyze") as res:
+        ocr_run.run(stage=analyze._StepHook)
+    want = (
+        "OCR failed in HUD region discovery (decoder broke): no HUD preset installed for some "
+        "games, menu filtering and HUD events (kill feed, banners, notices) skipped for every "
+        "source"
+    )
+    assert _ocr_warnings(caplog) == [(logging.WARNING, want)]
+    assert res.warnings[0]["files"] == [str(p) for p in ocr_run.paths]
+    assert ocr_run.reads == []
+
+
+def test_a_failure_after_a_read_names_its_source(ocr_run, caplog, monkeypatch) -> None:
+    """#555: link_teamkills (after the read) fails on b.mp4: the WARNING names b.mp4, and
+    a.mp4 keeps its events."""
+    seen = []
+
+    def link_teamkills(evs, **k):
+        if evs and evs[0]["src"] == "b.mp4":
+            raise ValueError("bad feed")
+        seen.append(evs)
+
+    monkeypatch.setattr(pipeline, "link_teamkills", link_teamkills)
+    with jsonout.run("analyze") as res:
+        ocr_run.run(stage=analyze._StepHook)
+    want = (
+        "OCR failed (bad feed): menu filtering and HUD events (kill feed, banners, notices) "
+        "skipped for b.mp4"
+    )
+    assert _ocr_warnings(caplog) == [(logging.WARNING, want)]
+    assert res.warnings[0]["files"] == [str(ocr_run.paths[1])]
+    assert [evs[0]["src"] for evs in seen] == ["a.mp4"]
+
+
+def test_an_untagged_ocr_failure_does_not_claim_every_source(ocr_run, caplog, monkeypatch) -> None:
+    """A failure in the OCR layer's setup, outside discovery and the reads."""
+
+    def vram_monitor():
+        raise RuntimeError("no monitor")
+
+    monkeypatch.setattr(pipeline, "VramMonitor", vram_monitor)
+    with jsonout.run("analyze") as res:
+        ocr_run.run(stage=analyze._StepHook)
+    want = (
+        "OCR failed (no monitor): menu filtering and HUD events (kill feed, banners, notices) "
+        "skipped for the sources not read yet"
+    )
+    assert _ocr_warnings(caplog) == [(logging.WARNING, want)]
+    assert res.warnings == [{"code": "step_failed", "message": want, "files": []}]
+
+
+def test_without_the_hook_the_ocr_error_is_raised_unchanged(ocr_run, monkeypatch) -> None:
+    """``cutpoint events`` (no stage): the same exception, as before."""
+    err = MemoryError()
+
+    def read(src, cancel):
+        raise err
+
+    ocr_run.read = read
+    with pytest.raises(MemoryError) as got:
+        pipeline.run_events(ocr_run.project, layers=("ocr",), ocr=OcrParams(game="zonewar"))
+    assert got.value is err
+    assert pipeline.ocr_failure(err) == ([str(p) for p in ocr_run.paths], False, False, 0)
 
 
 def test_an_engine_is_shared_with_the_inline_reads(ocr_run, monkeypatch) -> None:

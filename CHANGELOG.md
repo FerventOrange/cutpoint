@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- AI Chat can watch a moment (#640): with a chat model that takes images, the assistant gets a
+  `view_moment` tool that returns one timeline sheet (6 frames for a clip up to 12 s, else 9, in
+  a 3-wide grid, each stamped with its number and source time, sized for about 1.5k image tokens
+  on Claude) with the moment's transcript lines and the sounds `events.json` heard in it
+  (laughter, scream). The instructions say to watch only when labels, transcripts and scores
+  cannot answer, never every moment. A message can watch at most 2 moments with a context of
+  8192 tokens or less (local models), 4 with a larger one. Sheets are cached in
+  `ui/assistant/sheets` per moment, window and source file. A local Ollama model gets the tool
+  when Ollama lists `vision` for it, Claude always, other models unless their name is a known
+  text-only one (`gpt-3.5`, `o1-mini`, `o3-mini`, `grok-code`, `grok-build`, `codex`); a model
+  that refuses the image is asked again without it and is not offered the tool again until
+  `cutpoint ui` restarts. Frames go to a provider that is not on this machine only once you
+  allow that provider and host for that project: the chat shows an allow box ("Allow for this
+  project", "Allow and ask again") when the model wants to watch. The consent is its own and
+  versioned (`frames-v1:<provider>@<host>` in `assistant.frames_consent` of `config.json`,
+  per project folder); the AI Chat and Vision consents never cover it. The AI Chat consent text
+  now says it never sends video frames unless you allow them for a project.
+- AI Chat sees what analysis saw (#634): each moment carries `seen` (the vision rating label and
+  the description of its `events` VLM window), `heard` (laughter or screams detected) and `cues`,
+  visual, telemetry and vision-tag strengths on one 0-10 scale (beauty, people, speed, carve,
+  airtime, crash, stopped, chairlift, scenic_vista and more; six per moment in the list, about
+  25 characters more per moment on average, at most ~300). `find_moments` also searches the vision
+  labels, the VLM window descriptions and the names of strong cues, and the instructions tell the
+  model to rank by them ("beauty shots", "casual skiing", "bloopers") before asking for moment
+  ids, naming only the cues the project has. Those searches need action-cam footage with
+  telemetry, the `events` vision layer or visual-pool moments; other styles have the vision
+  rating label, loudness, laughter and the sounds heard. A cue word matches the start of a part of
+  a cue name (`air`: airtime, jump_air; not chairlift). Only text and numbers are sent, never
+  frames.
+- A moment with a generic label (`action-moment`) is titled with what the vision model saw in AI
+  Chat and in the `cutpoint ui` Moments list; `highlights.json` and clip file names keep the
+  analysis label. Moments of the visual pool carry a "visual" badge with their kind. The AI Chat
+  consent and its docs now name the vision descriptions it sends; the consent version is the same,
+  so no one is asked again.
 - `cutpoint ui` offers the `action-cam` style in Highlight style for standard (non-360) footage,
   single and multi-input, with a hint: best with GoPro or Insta360 telemetry, fed by the
   reactions, keyframes and crash steps (events extra, `cutpoint setup`); in Cutpoint lite it still
@@ -390,6 +424,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint proxy` no longer gives up after a fixed 8 seconds when CLIProxyAPI starts slowly (a
+  keyring unlock prompt, a virus scan of the binary, a slow disk): it waits up to 120 seconds
+  while the supervisor runs, logs an INFO line when the wait takes more than a few seconds, and
+  fails at once with a clear error if the supervisor exits first (#577).
+- `cutpoint proxy` no longer reads the keyring and resets file permissions every 0.5 seconds
+  while it runs: the supervisor scans the credential files every 5 seconds and checks
+  permissions and syncs the keyring only when they changed, at start and on stop. A change
+  written just before shutdown is still saved (#576).
+- `cutpoint proxy` restores its Ctrl+C and termination signal handlers when the supervisor is
+  stuck in credential cleanup, instead of leaving them installed after it returns (#585).
 - The Models tab no longer offers "Allow vision requests" while the Vision provider has no API key
   or login: it shows the missing key or login hint instead (#620).
 - The model list is cached per role as well as provider and URL, so a list Chat loaded is no longer
@@ -546,6 +590,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Hugging Face Hub freshness check and no download in the middle of a run. Without the weights
   the step stops with `CLIP weights not found in <models>/clip; run: cutpoint setup --only
   visual` (#642).
+- `analyze`: when the HUD OCR of the keyframes step fails (out of memory or any other error),
+  one WARNING and one `step_failed` warning (`files`: the sources not read) now say what is
+  skipped: "OCR failed (<reason>): menu filtering and HUD events (kill feed, banners, notices)
+  skipped for <file>" (and how many later sources; "in HUD region discovery ... no HUD preset
+  installed" when discovery failed, "for some games" when it had more than one to discover;
+  "for the sources not read yet" when the failure is outside discovery and the reads). Instead of an empty "Keyframes failed: " for a
+  `MemoryError`, out of memory is named, with "close other programs or pass --skip keyframes"
+  (and `CUTPOINT_ANALYZE_OVERLAP=0` when the OCR ran in the background). The sources read before
+  the failure keep their menu spans and HUD events. The exit code stays 0 (#555).
 
 ## [0.4.0] - 2026-10-29
 

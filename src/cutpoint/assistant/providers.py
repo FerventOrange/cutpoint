@@ -115,6 +115,21 @@ NON_CHAT_PREFIXES = (
     "babbage-",
 )
 NON_CHAT_PARTS = ("-tts", "-transcribe", "-realtime", "-audio", "-image", "imagine", "codex")
+# Model names known to take no images (a part of the id, case-insensitive), checked first, then
+# those known to take them (an id starting with one): accepts_images. Any other id is unknown.
+TEXT_ONLY_MODEL_PARTS = ("gpt-3.5", "o1-mini", "o3-mini", "grok-code", "grok-build", "codex")
+IMAGE_MODEL_PREFIXES = (
+    "claude-",
+    "gpt-4o",
+    "gpt-4.1",
+    "gpt-5",
+    "gpt-6",
+    "grok-4",
+    "gemini-",
+    "qwen3.5",
+    "qwen3-vl",
+    "llava",
+)
 # Words of a server's refusal of tools (Ollama, vLLM, llama-server without --jinja).
 _NO_TOOLS = ("support", "requires", "jinja", "enable")
 
@@ -140,6 +155,9 @@ class AmbiguousURLError(ProviderError, ValueError):
 class Capabilities:
     tool_calls: bool  # native tool calls
     json_schema: bool  # replies constrained to a JSON schema
+    # takes images: True or False when the provider says, None when unknown (the model's name
+    # decides, cutpoint.assistant.watch.takes_images)
+    images: bool | None = None
 
 
 @dataclass
@@ -184,6 +202,21 @@ class Provider(Protocol):
     def tool_result(self, call: ToolCall, content: str) -> dict[str, Any]:
         """The message that answers ``call``."""
         ...
+
+
+def accepts_images(provider: str | Provider, model: str) -> bool | None:
+    """Whether ``model`` of ``provider`` (a provider or its name) is known to take images, by
+    name only (nothing is asked): False when its id has a :data:`TEXT_ONLY_MODEL_PARTS` entry,
+    True for any model of the Anthropic API or one whose id starts with an
+    :data:`IMAGE_MODEL_PREFIXES` entry, None when unknown. Ollama's own answer
+    (:attr:`Capabilities.images`) is better where there is one."""
+    name = provider if isinstance(provider, str) else provider.name
+    low = model.strip().lower()
+    if any(part in low for part in TEXT_ONLY_MODEL_PARTS):
+        return False
+    if name == "anthropic" or low.startswith(IMAGE_MODEL_PREFIXES):
+        return True
+    return None
 
 
 def describe(provider: Provider) -> dict[str, Any]:
@@ -542,8 +575,9 @@ class OllamaProvider:
         return str(text or resp.text or resp.reason or "")[:300]
 
     def capabilities(self) -> Capabilities:
-        """From ``/api/show``: tool calls when it lists ``tools``. Any Ollama model takes a
-        JSON schema (``format``), so JSON mode always works."""
+        """From ``/api/show``: tool calls when it lists ``tools``, images when it lists
+        ``vision``. Any Ollama model takes a JSON schema (``format``), so JSON mode always
+        works."""
         if self._caps is None:
             model = self.resolve_model()
             resp = self._post("show", {"model": model}, SHOW_TIMEOUT_S)
@@ -558,7 +592,8 @@ class OllamaProvider:
             except ValueError as err:
                 raise ProviderError(f"Ollama sent an unreadable answer ({err})") from err
             caps = data.get("capabilities") if isinstance(data, dict) else None
-            self._caps = Capabilities(isinstance(caps, list) and "tools" in caps, True)
+            listed = caps if isinstance(caps, list) else []
+            self._caps = Capabilities("tools" in listed, True, "vision" in listed)
         return self._caps
 
     def chat(
@@ -573,7 +608,7 @@ class OllamaProvider:
         waiting for the whole reply."""
         payload: dict[str, Any] = {
             "model": self.resolve_model(),
-            "messages": messages,
+            "messages": [_ollama_message(m) for m in messages],
             "stream": True,
             "think": False,  # a reply in seconds, not a reasoning trace that fills num_ctx
             "options": {"num_ctx": self.context_tokens},
@@ -643,6 +678,22 @@ class OllamaProvider:
 
     def tool_result(self, call: ToolCall, content: str) -> dict[str, Any]:
         return {"role": "tool", "tool_name": call.name, "content": content}
+
+
+def _ollama_message(m: dict[str, Any]) -> dict[str, Any]:
+    """A message as ``/api/chat`` takes it: neutral text and image parts (``{"type": "image",
+    "media_type", "data" (base64)}``, as the other providers get them) become ``content`` and
+    ``images``; any other message as is."""
+    content = m.get("content")
+    if not isinstance(content, list):
+        return m
+    parts = [p for p in content if isinstance(p, dict)]
+    text = "\n".join(str(p.get("text") or "") for p in parts if p.get("type") == "text")
+    images = [str(p.get("data") or "") for p in parts if p.get("type") == "image"]
+    out = {k: v for k, v in m.items() if k != "content"} | {"content": text}
+    if images:
+        out["images"] = images
+    return out
 
 
 class _HttpProvider:
@@ -1054,14 +1105,14 @@ class AnthropicProvider(_HttpProvider):
 
     def capabilities(self) -> Capabilities:
         """The model exists and the key is accepted (``/v1/models/<model>``); every Claude
-        model has tool use."""
+        model has tool use and takes images."""
         if self._caps is None:
             self._need_key()
             url = f"{self.url}/v1/models/{quote(self.model, safe='')}"
             resp = self._send("GET", url, None, CHECK_TIMEOUT_S)
             if resp.status_code >= 400:
                 raise self._fail(resp)
-            self._caps = Capabilities(True, False)
+            self._caps = Capabilities(True, False, True)
         return self._caps
 
     def list_models(self) -> list[dict[str, str]]:

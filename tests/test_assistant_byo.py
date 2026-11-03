@@ -409,7 +409,7 @@ def test_anthropic_messages_api_with_tool_use(monkeypatch) -> None:
     )
     p = AnthropicProvider("", "", 0, KEY)
     assert p.model == "claude-sonnet-5-5" and p.url == "https://api.anthropic.com"
-    assert p.capabilities() == providers.Capabilities(True, False)
+    assert p.capabilities() == providers.Capabilities(True, False, True)
     check = wire.sent[0]
     assert check["url"] == "https://api.anthropic.com/v1/models/claude-sonnet-5-5"
     assert check["headers"] == {"anthropic-version": "2023-06-01", "x-api-key": KEY}
