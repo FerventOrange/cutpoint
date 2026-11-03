@@ -165,7 +165,7 @@ test('Apply sends the sequence and base, replaces the sequence, and is one undo 
   const m = await proposed(t, { [`POST ${A}/proposals/pr1/applied`]: entry });
   await m.click('#propApply');
   const [post] = m.posts('/proposals/pr1/applied');
-  assert.deepEqual(post.body, { segments: [], base_key: 'bk' });
+  assert.deepEqual(post.body, { segments: [], base_key: 'bk', color: { mode: 'off', strength: 1 } });
   assert.deepEqual(m.seqIds(), ['h001', 'h002']);
   assert.equal(m.$('#propPanel').hidden, true);
   assert.equal(m.$('#saveBtn').disabled, false, 'the applied change is unsaved work');
@@ -215,6 +215,98 @@ test('Revert previews the change\'s before-state; applying a stale revert previe
   assert.equal(revertCalls, 2, 'previewed again from the server');
   assert.equal(m.$('#propPanel').hidden, false);
   assert.match(m.$('#sideLive').textContent, /previewed again/);
+});
+
+// ---- color op (#529) ----
+
+const COLOR_ENTRY = (over = {}) => ({
+  id: 'e2', proposal: 'pr2', summary: 'Grade the dull footage', after: [], diff: [], applied: '2026-11-03T10:00:00',
+  color: { before: { mode: 'off', strength: 1 }, after: { mode: 'auto', strength: 0.8 } }, ...over,
+});
+const colorProposal = (over = {}) => proposal({ id: 'pr2', summary: 'Grade the dull footage', after: [], diff: [], color: { mode: 'auto', strength: 0.8 }, ...over });
+const sliders = (m) => [m.$('#optColor').value, m.$('#optColorStrength').value];
+
+test('a color op is previewed with the Color it replaces, and the sliders stay until Apply', async (t) => {
+  const m = await chatPage(t, { routes: turnRoutes([colorProposal()]) });
+  await m.send('fix the dull colors');
+  await m.tick(1000);
+  assert.equal(m.$('#propPanel').hidden, false);
+  assert.equal(m.$('#propColor').hidden, false);
+  assert.equal(m.$('#propColor').textContent, 'Color: Auto, strength 80% (now Off)');
+  assert.match(m.log().join('\n'), /Color auto, strength 80%/);
+  assert.deepEqual(sliders(m), ['0', '100']);
+
+  await m.click('#propDiscard');
+  assert.equal(m.$('#propColor').hidden, true);
+});
+
+test('a proposal without a color op shows no Color line', async (t) => {
+  const m = await proposed(t);
+  assert.equal(m.$('#propColor').hidden, true);
+});
+
+test('Apply sets the Color sliders and is one undo step; redo sets them again', async (t) => {
+  const m = await chatPage(t, {
+    routes: { ...turnRoutes([colorProposal()]), [`POST ${A}/proposals/pr2/applied`]: COLOR_ENTRY() },
+  });
+  await m.send('fix the dull colors');
+  await m.tick(1000);
+  await m.click('#propApply');
+  assert.deepEqual(m.posts('/proposals/pr2/applied')[0].body.color, { mode: 'off', strength: 1 });
+  assert.deepEqual(sliders(m), ['1', '80']);
+  assert.equal(m.$('#colorStrengthRow').hidden, false, 'Strength shows with a grade');
+  assert.equal(m.$('#undoBtn').disabled, false);
+
+  await m.click('#undoBtn');
+  assert.deepEqual(sliders(m), ['0', '100']);
+  await m.click('#redoBtn');
+  assert.deepEqual(sliders(m), ['1', '80']);
+  m.page.assertNoUnhandled();
+});
+
+test('undoing a change that did not set Color leaves a Color the user chose alone', async (t) => {
+  const entry = { id: 'e1', proposal: 'pr1', summary: 'Add', after: AFTER, diff: diff(AFTER), applied: '2026-11-03T10:00:00' };
+  const m = await proposed(t, { [`POST ${A}/proposals/pr1/applied`]: entry });
+  await m.click('#propApply');
+  m.$('#optColor').value = '2'; // the user picks Underwater by hand
+  m.$('#optColor').dispatchEvent(new m.page.window.Event('input'));
+  await m.click('#undoBtn');
+  assert.deepEqual(m.seqIds(), []);
+  assert.equal(m.$('#optColor').value, '2');
+});
+
+test('Revert of a color change previews the Color it puts back and applying sets it', async (t) => {
+  const entry = COLOR_ENTRY();
+  const rev = { id: 'revert-e2', summary: 'Revert: Grade the dull footage', after: [], diff: [], color: { mode: 'off', strength: 1 }, base_key: 'k1' };
+  const m = await chatPage(t, {
+    routes: {
+      [`GET ${A}/history`]: { applied: [entry] },
+      [`POST ${A}/history/e2/revert`]: rev,
+      [`POST ${A}/proposals/revert-e2/applied`]: COLOR_ENTRY({ id: 'e3', proposal: 'revert-e2', color: { before: entry.color.after, after: { mode: 'off', strength: 1 } } }),
+    },
+  });
+  assert.match(m.$('#historyList').textContent, /Color auto, strength 80%/);
+  m.$('#optColor').value = '1';
+  m.$('#optColor').dispatchEvent(new m.page.window.Event('input'));
+  await m.click('#historyList button[data-act=revert]');
+  assert.equal(m.$('#propColor').textContent, 'Color: Off (now Auto, strength 100%)');
+  await m.click('#propApply');
+  assert.equal(m.$('#optColor').value, '0');
+});
+
+test('look_for is a step, with the new moments it made', async (t) => {
+  const m = await chatPage(t, {
+    routes: turnRoutes([
+      { kind: 'tool', n: 0, name: 'look_for', query: 'powder spray', found: 4, new: 2, weak: 1 },
+      { kind: 'tool', n: 1, name: 'look_for', query: 'sunset', error: 'not available in Cutpoint lite' },
+      { kind: 'reply', n: 2, text: 'Done.' },
+    ]),
+  });
+  await m.send('find powder spray');
+  await m.tick(1000);
+  const log = m.log().join('\n');
+  assert.match(log, /Looked through the footage for “powder spray”: 4 found, 2 new, 1 weak/);
+  assert.match(log, /Could not look through the footage for “sunset”/);
 });
 
 // ---- view_moment (#640) ----

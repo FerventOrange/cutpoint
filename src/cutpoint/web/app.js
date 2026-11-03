@@ -2007,18 +2007,20 @@ function changed() {
 // ---------- undo ----------
 // One stack for every edit of the working sequence, by hand or applied from AI Chat (#346): a
 // snapshot of the segments and drafts before each one. Ctrl+Z undoes, Ctrl+Y or Shift+Ctrl+Z redoes.
+// An applied AI Chat change that sets Color keeps the Color it replaced too ({mode, strength}, as
+// colorChoice gives it); other edits leave the Color alone, so undoing them never changes it.
 
 const UNDO_MAX = 50;
 const UNDO_JOIN_MS = 1000; // edits of one kind this close together (a held key, a drag) are one step
-const snapshot = () => ({ segments: structuredClone(S.segments), drafts: structuredClone(S.drafts) });
+const snapshot = (withColor = false) => ({ segments: structuredClone(S.segments), drafts: structuredClone(S.drafts), ...(withColor ? { color: colorChoice() } : {}) });
 
-/** Keep the sequence as it is before an edit; ``tag`` joins a quick run of the same edit (one trim point of one clip) into one step. */
-function remember(tag = null) {
+/** Keep the sequence as it is before an edit (and the Color, with ``withColor``); ``tag`` joins a quick run of the same edit (one trim point of one clip) into one step. */
+function remember(tag = null, withColor = false) {
   const now = performance.now();
   const last = S.undoTag;
   S.undoTag = tag ? { tag, at: now } : null;
   if (tag && last?.tag === tag && now - last.at < UNDO_JOIN_MS) return;
-  S.undo.push(snapshot());
+  S.undo.push(snapshot(withColor));
   if (S.undo.length > UNDO_MAX) S.undo.shift();
   S.redo = [];
   renderUndo();
@@ -2027,10 +2029,11 @@ function remember(tag = null) {
 /** Move one snapshot from ``from`` to the sequence, keeping the current one on ``to``. */
 function restore(from, to, done) {
   if (!from.length) return;
-  to.push(snapshot());
   const s = from.pop();
+  to.push(snapshot(!!s.color));
   S.segments = s.segments;
   S.drafts = s.drafts;
+  if (s.color) chooseColor(s.color);
   S.undoTag = null;
   renderAfterSeqChange();
   renderUndo();
@@ -3236,11 +3239,19 @@ const seqShape = () => JSON.stringify(S.segments.map((s) => [s.id, s.start, s.en
 const chatTurn = (t) => ({ id: t.id, user: t.user ?? t.text ?? '', status: t.status, error: t.error, events: [...(t.events ?? [])] });
 const arrow = () => [h('span', { 'aria-hidden': 'true', text: ' → ' }), h('span', { class: 'vh', text: ' to ' })];
 
-/** "2 added, 1 trimmed" for a proposal's diff. */
-function changeCounts(diff) {
+/** "Auto, strength 80%" for a Color ({mode, strength}); Off has no strength, a strength the op left out is not named. */
+function colorText(c) {
+  const pct = c.mode !== 'off' && Number.isFinite(c.strength) ? `, strength ${Math.round(c.strength * 100)}%` : '';
+  return `${COLOR_NAMES[c.mode] ?? c.mode}${pct}`;
+}
+
+/** "2 added, 1 trimmed, color auto" for a proposal's diff and its color op. */
+function changeCounts(diff, color = null) {
   const n = {};
   for (const r of diff ?? []) for (const c of r.changes) n[c] = (n[c] ?? 0) + 1;
-  return Object.keys(CHANGE_NAMES).filter((c) => n[c]).map((c) => `${n[c]} ${CHANGE_NAMES[c]}`).join(', ') || 'no change';
+  const parts = Object.keys(CHANGE_NAMES).filter((c) => n[c]).map((c) => `${n[c]} ${CHANGE_NAMES[c]}`);
+  if (color) parts.push(`Color ${colorText(color).toLowerCase()}`);
+  return parts.join(', ') || 'no change';
 }
 
 /** The open project's chat, the turn still running (polled on) and the applied changes. */
@@ -3407,7 +3418,7 @@ function previewProposal(p) {
     S.pendingProposal = p;
     return;
   }
-  S.proposal = { id: p.id, summary: p.summary, after: p.after, diff: p.diff, base_key: p.base_key, seqKey: baseOf(p.diff) };
+  S.proposal = { id: p.id, summary: p.summary, after: p.after, diff: p.diff, color: p.color ?? null, base_key: p.base_key, seqKey: baseOf(p.diff) };
   $('#propMsg').textContent = '';
   renderProposal();
 }
@@ -3433,7 +3444,9 @@ function renderProposal() {
       ? 'The sequence changed since this preview. Apply previews the revert again on the sequence as it is now.'
       : 'The sequence changed since this was proposed. Apply makes the same edits to the sequence as it is now, if they still fit.';
     preserveFocus(() => $('#propList').replaceChildren(...p.diff.map(propRow)));
+    if (p.color) $('#propColor').textContent = `Color: ${colorText(p.color)} (now ${colorText(colorChoice())})`;
   }
+  $('#propColor').hidden = !p?.color;
   renderPropBar();
   markMoments();
   drawGhost();
@@ -3494,10 +3507,11 @@ async function applyProposal() {
   renderPropBar();
   try {
     // The server checks it against the sequence as it is now; a changed one gets the same edits again.
-    const entry = await api(aiUrl(`/proposals/${encodeURIComponent(p.id)}/applied`), { method: 'POST', body: { segments: JSON.parse(key()), base_key: p.base_key } });
+    const entry = await api(aiUrl(`/proposals/${encodeURIComponent(p.id)}/applied`), { method: 'POST', body: { segments: JSON.parse(key()), base_key: p.base_key, color: colorChoice() } });
     if (S.id !== pid || S.proposal !== p) return;
-    remember();
+    remember(null, !!entry.color);
     replaceSequence(entry.after);
+    if (entry.color) chooseColor(entry.color.after);
     S.proposal = null;
     S.history.push(entry);
     renderAfterSeqChange();
@@ -3554,6 +3568,8 @@ const TOOL_TEXT = {
   find_moments: (ev) => `Searched for “${ev.query}”: ${ev.found} found`,
   get_moment: (ev) => `Looked at ${momentName(ev.id)}`,
   get_transcript: (ev) => `Read the transcript around ${momentName(ev.id)}`,
+  look_for: (ev) => ev.error ? `Could not look through the footage for “${ev.query}”`
+    : `Looked through the footage for “${ev.query}”: ${ev.found} found${ev.new ? `, ${ev.new} new` : ''}${ev.weak ? `, ${ev.weak} weak` : ''}`,
   view_moment: (ev) => ev.error === 'limit' ? `Did not watch ${momentName(ev.id)}: the limit of moments watched per message was reached`
     : ev.error ? `Could not watch ${momentName(ev.id)}: ${ev.error}`
       : `Watched ${momentName(ev.id)} (${ev.frames} frames)`,
@@ -3626,13 +3642,13 @@ function proposalItem(ev, id) {
   return h('li', { class: `msg ai proposal${previewing ? ' previewing' : ''}`, 'data-id': id },
     h('span', { class: 'vh', text: 'Assistant proposes: ' }),
     h('p', { text: ev.summary }),
-    h('p', { class: 'msg-meta', text: `${changeCounts(ev.diff)}${state}` }),
+    h('p', { class: 'msg-meta', text: `${changeCounts(ev.diff, ev.color)}${state}` }),
     h('span', { class: 'msg-acts' },
       h('button', { type: 'button', class: 'btn small primary', 'data-act': 'review', onclick: () => reviewProposal(ev) }, applied ? 'Review again' : 'Review change')),
     sugs.length ? h('span', { class: 'msg-acts', role: 'group', 'aria-label': 'Suggestions' },
       sugs.map((s, i) => h('button', {
         type: 'button', class: `btn small outline${S.proposal?.id === s.id ? ' on' : ''}`, 'data-act': `suggest${i}`,
-        title: changeCounts(s.diff), onclick: () => reviewProposal(s),
+        title: changeCounts(s.diff, s.color), onclick: () => reviewProposal(s),
       }, s.summary))) : null);
 }
 
@@ -3685,7 +3701,7 @@ function historyRow(entry) {
   return h('li', { class: 'history-row', 'data-id': entry.id },
     h('span', { class: 'history-text' },
       h('span', { text: entry.summary || 'Change' }),
-      h('span', { class: 'msg-meta tc', text: `${when}, ${changeCounts(entry.diff)}` })),
+      h('span', { class: 'msg-meta tc', text: `${when}, ${changeCounts(entry.diff, entry.color?.after)}` })),
     h('button', { type: 'button', class: 'btn small', 'data-act': 'revert', onclick: () => revertChange(entry) }, 'Revert this change'));
 }
 
@@ -5447,6 +5463,21 @@ function setColor(value) {
   range.value = String(Math.max(0, COLOR_STOPS.indexOf(value)));
   range.setAttribute('aria-valuetext', COLOR_NAMES[color()]);
   $('#colorStrengthRow').hidden = color() === 'off';
+}
+
+/** The Color sliders as ``{mode, strength}`` (strength 0-1), as the assistant's color op and history have it. */
+function colorChoice() {
+  return { mode: color(), strength: Number($('#optColorStrength').value) / 100 };
+}
+
+/** Set the Color sliders to ``c`` ({mode, strength}; no strength leaves Strength) as if the user moved them, so the choice is saved for the project. */
+function chooseColor(c) {
+  if (Number.isFinite(c.strength)) {
+    $('#optColorStrength').value = String(Math.round(c.strength * 100));
+    $('#optColorStrength').dispatchEvent(new Event('input'));
+  }
+  $('#optColor').value = String(Math.max(0, COLOR_STOPS.indexOf(c.mode)));
+  $('#optColor').dispatchEvent(new Event('input'));
 }
 
 /** Set Color's Strength slider to ``pct`` (0-100). */
