@@ -444,6 +444,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   INFO line says so) when its selfie view looked elsewhere, and the candidates' camera paths
   are planned again, as are an upright clip's paths already saved by `360 director` (no
   `--force` needed). Helmet-mount clips are unchanged.
+- Ollama vision ratings and `360 director --vl-check` frame checks are cached per server
+  (host and port of the Ollama URL), so a local and a remote Ollama with the same model no
+  longer share results; existing ones are rated again once (#673).
+- OCR menu detection (#554): a still screen with no new menu text counts as a menu only
+  when another menu frame (box, list or text rule) lies within 15 s, or it holds still for
+  45 s. Still gameplay (respawn and spectator waits, a preparation phase) is no longer
+  flagged as a menu. On hand-labelled War Thunder footage the menu precision rose from 0.65
+  to 1.00 at the same recall (0.44), and on R6 from 0.69 to 0.93. Cached OCR results are
+  replayed once.
+- AI Chat's `find_moments` matches a word at the start of a word in labels, transcripts and
+  what the vision model saw, so "air" finds air, airs and airtime but no longer chair, and the
+  proxy's periodic credential sync tightens loosened permissions even when nothing changed (#663).
+- `edit --events` no longer fails after an in-process PANNs run with `panns_inference.__spec__
+  is None` (#669).
+- `analyze --ollama-url` and `--ollama-model` now reach the VLM layer of its events step, which
+  used the configured Ollama instead (#660).
+- `edit --events` honours `--skip`: `--skip keyframes` no longer runs HUD discovery (#659).
 - A provider URL on this machine on the port of the Cutpoint proxy (the running proxy's port,
   else `CUTPOINT_CLIPROXY_PORT`, the port saved at its last start, or 18317) is hosted: the proxy
   forwards to hosted models, so AI Chat, Vision and frames consent now apply to it, with keys
@@ -498,8 +515,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*.localhost` name is hosted and needs consent (#619).
 - Hosted vision ratings, `events` VLM descriptions and `360 director --vl-check` frame checks
   are cached per provider and host, so one model id at two servers no longer shares results.
-  Results cached from a hosted provider before this change are asked again once; Ollama caches
-  are unchanged (#621).
+  Results cached from a hosted provider before this change are asked again once (#621); for
+  Ollama see #670 and #673.
+- `events` VLM descriptions from Ollama are cached per host too (`ollama@<host>[:<port>]:<model>`,
+  as for hosted providers), so a local and a remote Ollama with the same model no longer share
+  descriptions. Descriptions cached before this change are described again once, on the next
+  `cutpoint events` run; until then `analyze` ranks without them (#670).
 - The `vision_consent_needed` WARNING (and its `--json` warning message) names the exact consent
   key, for example `vision-v2:ollama@10.0.0.5:11434`: besides allowing vision requests in the
   Models tab of `cutpoint ui`, that key can be added to `vision_assistant.consent` in
@@ -630,6 +651,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path, outside `cutpoint setup`: torchvision no longer downloads it in the middle of a run
   when it is missing. Without it the command stops with `Faster R-CNN detector weights not
   found in <models>/torch/hub/checkpoints; run: cutpoint setup --only visual` (#654).
+- `360 analyze` and `360 qa` stop at once when the Faster R-CNN detector checkpoint is
+  missing, with `run: cutpoint setup --only visual` (`not_found` with `--json`;
+  `missing_extra` in Cutpoint lite): `360 analyze --scan` before the scan, also when the views
+  are cached, otherwise before the view layer loads CLIP; `360 qa` before its CLIP load and
+  its `_qa` folder (`--paths` and `--compare` need no detector) (#662).
 - `analyze`: when the HUD OCR of the keyframes step fails (out of memory or any other error),
   one WARNING and one `step_failed` warning (`files`: the sources not read) now say what is
   skipped: "OCR failed (<reason>): menu filtering and HUD events (kill feed, banners, notices)

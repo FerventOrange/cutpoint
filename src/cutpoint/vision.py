@@ -123,6 +123,14 @@ def _endpoint(provider: Any) -> str:
     return providers.endpoint(provider)
 
 
+def _host_port(url: str) -> str:
+    """:func:`cutpoint.assistant.providers.host_port` of ``url`` (imported here: that module
+    imports this one)."""
+    from cutpoint.assistant import providers  # noqa: PLC0415
+
+    return providers.host_port(url)
+
+
 def _ollama_consent_key(url: str) -> str | None:
     """The ``vision-v2:`` key an Ollama at ``url`` needs (None: on this machine), as the Models
     tab of cutpoint ui saves it."""
@@ -276,7 +284,9 @@ class VisionRater:
                 url or (v_ast.url if v_ast.provider == "ollama" else "") or ollama_url()
             ).rstrip("/")
             self.url = raw_url if raw_url.startswith("http") else f"http://{raw_url}"
-            self.host = ""
+            # the cache key's host (rating_key), as for a hosted provider: a local and a
+            # remote Ollama with one model rate apart (#673)
+            self.host = _host_port(self.url)
             # an Ollama on another machine is hosted, as for AI Chat: frames go there only once
             # the user agreed to it for Vision (the Models tab of cutpoint ui). Activity
             # detection (local_only) too: it sends frames and the user's words
@@ -660,12 +670,12 @@ def rating_key(
 ) -> str:
     """Cache key of one rating: a hash of everything sent to the model except the frames
     (``RATING_VERSION``, model, style, both prompts, attempt options and temperatures, frame
-    width and the model's :class:`RatingProfile` if it has one; a hosted ``provider`` and its
-    ``host``, so one model id at two servers rates apart), then the frame times to the
-    millisecond (the precision of the grab's seek). The Ollama URL is not part of it: the
-    same model on another server rates the same. The model's digest is stored in the entry
-    instead of hashed (:meth:`VisionRater._lookup`), so a rating can still be found when
-    Ollama is down and the digest cannot be fetched."""
+    width and the model's :class:`RatingProfile` if it has one; the ``provider`` and its
+    ``host``, so one model id at two servers rates apart: a hosted provider's endpoint, an
+    Ollama's host[:port] of its URL, #673), then the frame times to the millisecond (the
+    precision of the grab's seek). The model's digest is stored in the entry instead of hashed
+    (:meth:`VisionRater._lookup`), so a rating can still be found when Ollama is down and the
+    digest cannot be fetched."""
     profile = rating_profile(model)
     prompts = _prompts(style, profile)
     params: dict[str, Any] = {
@@ -677,7 +687,7 @@ def rating_key(
         "temperatures": list(_TEMPERATURES),
         "width": FRAME_WIDTH,
     }
-    if provider and provider != "ollama":
+    if provider and (provider != "ollama" or host):  # Ollama without a host: the old key
         params["provider"] = provider
         if host:
             params["host"] = host

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import types
 from pathlib import Path
 
@@ -28,7 +29,7 @@ def _source(tmp_path: Path, name: str) -> Source:
 def _cache_voice(src: Source) -> None:
     path = voice.cache_path(src, voice.VoiceParams())
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"")  # needs_run checks only that the file exists
+    path.write_bytes(b"")  # needs_run checks only that the file exists at the keyed path
 
 
 @pytest.fixture
@@ -175,6 +176,24 @@ def test_needs_run_checks_the_cache_files(tmp_path: Path):
     assert voice.needs_run([a, b], params)
 
 
+def test_needs_run_reruns_a_changed_source(tmp_path: Path, monkeypatch):
+    """The cache path carries the source key (path, size, mtime): a changed source misses
+    the old grids (#661)."""
+    monkeypatch.setenv("CUTPOINT_CACHE_DIR", str(tmp_path / "cache"))
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x" * 10)
+    os.utime(video, ns=(1, 10**18))
+    params = voice.VoiceParams()
+    _cache_voice(common.load_source(video))
+    assert not voice.needs_run([common.load_source(video)], params)  # unchanged
+    os.utime(video, ns=(1, 2 * 10**18))
+    assert voice.needs_run([common.load_source(video)], params)  # mtime changed
+    _cache_voice(common.load_source(video))
+    video.write_bytes(b"y" * 20)
+    os.utime(video, ns=(1, 2 * 10**18))  # same mtime, new size
+    assert voice.needs_run([common.load_source(video)], params)
+
+
 def test_run_layer_leaves_a_given_detector_open(tmp_path: Path, monkeypatch):
     closed: list[bool] = []
 
@@ -239,3 +258,29 @@ def test_panns_checkpoint_with_code_in_it_is_refused_unexecuted(panns_ckpt):
     with pytest.raises(RuntimeError, match="cannot be loaded safely"):
         audio_events.PannsDetector(device="cpu")
     assert RAN == []
+
+
+def test_panns_stub_package_keeps_the_events_extra_check_working(tmp_path: Path, monkeypatch):
+    """#669: the ``panns_inference`` stub has a spec, so a later ``find_spec`` works."""
+    import importlib.util  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    from cutpoint.events import audio_events  # noqa: PLC0415
+
+    pkg = tmp_path / "panns_inference"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(
+        "raise RuntimeError('package __init__ ran')\n", encoding="utf-8"
+    )
+    (pkg / "models.py").write_text("class Cnn14_DecisionLevelMax: ...\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in ("panns_inference", "panns_inference.models"):
+        monkeypatch.setitem(sys.modules, name, None)  # undo restores or removes the key
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(pipeline, "EVENTS_MODULES", ("panns_inference",))
+
+    models = audio_events._import_panns_models()
+
+    assert models.Cnn14_DecisionLevelMax
+    assert importlib.util.find_spec("panns_inference") is not None
+    pipeline._require_events_extra(("audio",))

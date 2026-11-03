@@ -19,6 +19,7 @@ from cutpoint.events.killfeed import (
     detect_ocr_events,
     menu_rules,
     menu_times,
+    text_frames,
 )
 from cutpoint.events.regions import preset_from_dict
 
@@ -320,12 +321,11 @@ def test_still_gameplay_keeps_feed_kills(tmp_path: Path, monkeypatch) -> None:
     assert kills == [(e["t"], e["killer"], e["victim"]) for e in ref if e["type"] == "kill"]
     assert kills == [(24.0, "Orrin", "Pell")]
     banners = [(e["text"], e["t"]) for e in events if e["type"] == "banner"]
-    # beside the kill the banner stays; the still stretch far from it is a static screen
-    assert banners == [("Squad wiped", 24.0)]
+    # still gameplay with no other menu frame near it is no static screen (#554): both
+    # banners stay
     assert {e["text"] for e in ref if e["type"] == "banner"} == {"Squad wiped", "Hull breached"}
-    # 20-21.7 s is too short; 26.3-39.7 s (> 2 s from the kill, no menu text, over
-    # STATIC_BARE_MIN_S) is static
-    assert stats["static_frames"] == 41
+    assert banners == [("Squad wiped", 24.0), ("Hull breached", 32.0)]
+    assert stats["static_frames"] == stats["menu_frames"] == 0
 
 
 def test_box_rule_menu_keeps_feed_kills(tmp_path: Path, monkeypatch) -> None:
@@ -417,12 +417,24 @@ def test_short_still_menu_in_a_sparsely_read_region_is_static(tmp_path: Path, mo
 
 def test_long_still_menu_without_menu_text_is_static(tmp_path: Path, monkeypatch) -> None:
     def screen(t: float) -> list[tuple[str, float, float]]:
-        # a 16 s still menu showing only a banner phrase (no new menu text)
+        # a 16 s still menu showing only a banner phrase (no new menu text), after a
+        # menu grid (rule cover) at 6-12 s
+        if 6 <= t < 12:
+            return _menu()
         return [("Hull breached", 320, 220)] if 18 <= t < 34 else [("Hold", 900, 820)]
 
-    events, stats = _run(tmp_path, monkeypatch, _Engine(screen), still=lambda t: 18 <= t < 34)
-    assert stats["static_frames"] == stats["menu_frames"] == 48  # 16 s at 3 fps
-    assert not [e for e in events if e["type"] == "banner"]
+    first, second = _dirs(tmp_path, "near", "alone")
+    events, stats = _run(first, monkeypatch, _Engine(screen), still=lambda t: 18 <= t < 34)
+    assert stats["static_frames"] == 48  # 16 s at 3 fps, 6 s after the grid
+    assert stats["menu_frames"] == 48 + 18
+    assert not [e for e in events if e["type"] == "banner" and e["t"] >= 18]
+
+    # the same still stretch with no menu frame within STATIC_ANCHOR_S is no static screen
+    def alone(t: float) -> list[tuple[str, float, float]]:
+        return screen(t) if t >= 18 else [("Hold", 900, 820)]
+
+    _, stats = _run(second, monkeypatch, _Engine(alone), still=lambda t: 18 <= t < 34)
+    assert stats["static_frames"] == stats["menu_frames"] == 0
 
 
 def _still_records(times: list[float], grey: list[float]) -> list[dict[str, Any]]:
@@ -439,7 +451,10 @@ def _still_records(times: list[float], grey: list[float]) -> list[dict[str, Any]
 def test_static_rule_needs_still_runs_and_feed_times() -> None:
     times = [n / 3 for n in range(40)]  # 13 s still
     still = _still_records(times, [90.0] * 40)
-    assert set(menu_rules(still, feed_times=set())[0].values()) == {"static"}
+    # 13 s of stillness alone is no menu (#554); with 2 lines that stay it is
+    assert set(menu_rules(still, feed_times=set())[0].values()) == {"none"}
+    both = menu_rules(still, feed_times=set(), text_spans=[(0.0, 13.0), (0.0, 13.0)])[0]
+    assert set(both.values()) == {"static"}
     assert set(menu_rules(still)[0].values()) == {"none"}  # no feed times: off
     # records without a still run (made before still runs existed): never static
     old = [{k: v for k, v in f.items() if k != "still"} for f in still]
@@ -471,6 +486,46 @@ def test_static_menu_text_needs_lines_that_stay() -> None:
     assert rules([(2.0, 4.0), (2.0, 4.0)]) == {"none"}  # a 2-line notice box flashing 2 s
     assert rules([(2.0, 2.0), (3.0, 3.0)]) == {"none"}  # one-frame reads
     assert rules([(-3.0, 6.0), (-3.0, 6.0)]) == {"none"}  # read before the guard window
+
+
+def test_bare_static_screen_needs_menu_frames_near_it() -> None:
+    times = [n / 3 for n in range(40)]  # 0-13 s still, no menu text
+    records = _still_records(times, [90.0] * 40)
+    everything = {f["id"] for f in records}
+    assert killfeed.static_frames(records, set()) == set()
+    near = [13.0 + killfeed.STATIC_ANCHOR_S]  # another rule's menu frame after the part
+    assert killfeed.static_frames(records, set(), None, near) == everything
+    far = [13.0 + killfeed.STATIC_ANCHOR_S + 0.5]
+    assert killfeed.static_frames(records, set(), None, far) == set()
+    before = [-killfeed.STATIC_ANCHOR_S]
+    assert killfeed.static_frames(records, set(), None, before) == everything
+    # a very long still stretch needs none
+    n = int(killfeed.STATIC_LONG_S * 3) + 3
+    long = _still_records([k / 3 for k in range(n)], [90.0] * n)
+    assert killfeed.static_frames(long, set()) == {f["id"] for f in long}
+    assert set(menu_rules(records, feed_times=set(), text_spans=[])[0].values()) == {"none"}
+
+
+def test_still_screen_with_menu_text_is_no_evidence_for_a_bare_one() -> None:
+    # 0-6 s a still screen with 2 lines that stay, then 6.3-19.3 s another bare still screen
+    # (a preparation phase after a text screen): only the first is static
+    times = [n / 3 for n in range(58)]
+    grey = [90.0] * 19 + [200.0] * 39
+    records = _still_records(times, grey)
+    rules = menu_rules(records, feed_times=set(), text_spans=[(0.0, 6.0), (0.0, 6.0)])[0]
+    assert {rules[n] for n in range(19)} == {"static"}
+    assert {rules[n] for n in range(19, 58)} == {"none"}
+
+
+def test_static_goes_before_text_for_a_still_text_screen() -> None:
+    times = [n / 3 for n in range(49)]  # 16 s still; 5 lines read together at 1-8 s
+    records = _still_records(times, [90.0] * 49)
+    lines = [(1.0, 8.0)] * killfeed.TEXT_LINES
+    texts = text_frames(records, lines)
+    assert texts  # the text rule fires on 1-8 s...
+    rules = menu_rules(records, feed_times=set(), text_spans=lines)[0]
+    # ...and the bare still screen around it is near those frames: static, not text
+    assert {rules[i] for i in texts} == {"static"}
 
 
 def test_static_runs_end_at_gaps() -> None:

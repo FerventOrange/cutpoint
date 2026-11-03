@@ -56,6 +56,14 @@ def _folder(arg: str, project: Path | None = None) -> Path:
     raise FileNotFoundError(f"clips folder not found: {path}")
 
 
+def _require_detector() -> None:
+    """Fail before any work when the Faster R-CNN detector cannot load: torch or torchvision
+    (the events extra) or its checkpoint is missing."""
+    from cutpoint.events.visual import require_detector  # noqa: PLC0415
+
+    require_detector()
+
+
 def _segments_file(project: Path, arg: str) -> Path:
     """A ``--segments`` file: resolved like ``--from-clips``, else ``<project>/<arg>``."""
     from cutpoint.config import resolve_project_path  # noqa: PLC0415
@@ -297,6 +305,7 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
 
         preflight(EVENT_LAYERS)
     if a.scan:
+        _require_detector()  # the views of the new clips need it: fail before the scan
         with steps.step("scan"):
             _scan(project, a.scan, only=a.only, allow_empty=False, timings=timings)
         clips = _clips(project)
@@ -916,6 +925,7 @@ def cmd_qa(a: argparse.Namespace) -> None:
 
         report = run_paths_qa(qa_dir, fps=a.fps)
     else:
+        _require_detector()  # before the CLIP load and the qa folder
         report = run_qa(qa_dir, fps=a.fps, size=a.size, json_only=a.json_only)
     log_report(report)
     if jsonout.active():

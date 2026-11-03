@@ -84,6 +84,7 @@ def pano(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
     monkeypatch.setattr(pipeline, "run_events", run_events)
     monkeypatch.setattr(V, "VisualModels", Models)
+    monkeypatch.setattr(V, "require_detector", lambda: None)  # the fake models need no file
     monkeypatch.setattr(V, "text_embeddings", lambda prompts, models=None: None)
     monkeypatch.setattr(common, "free_torch", free_torch)
     monkeypatch.setattr(insta360, "imu_source", lambda src: src)

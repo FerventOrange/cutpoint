@@ -341,11 +341,15 @@ def test_rerun_asks_the_model_nothing_and_gives_the_same_ratings(posts, src, cap
     assert "Vision: 3 ratings from the cache, 0 asked the model" in caplog.text
 
 
-def test_the_ollama_url_is_not_part_of_the_key(posts, src):
+def test_the_ollama_host_is_part_of_the_key(posts, src):
+    """One model on two Ollama servers rates apart; one server under another spelling of its
+    URL shares the ratings (#673)."""
     vision.VisionRater(url="http://127.0.0.1:1", model="m").rate(src, 0, 4, "action-cam")
     posts.clear()
-    res = vision.VisionRater(url="http://127.0.0.2:2", model="m").rate(src, 0, 4, "action-cam")
+    res = vision.VisionRater(url="127.0.0.1:1/", model="m").rate(src, 0, 4, "action-cam")
     assert res == vision.VisionResult(7.0, "big jump") and posts == []
+    vision.VisionRater(url="http://127.0.0.2:2", model="m").rate(src, 0, 4, "action-cam")
+    assert posts and {url for url, _ in posts} == {"http://127.0.0.2:2/api/chat"}
 
 
 @pytest.mark.parametrize(
@@ -429,7 +433,9 @@ def test_an_unparseable_reply_is_not_cached(monkeypatch, src):
 def test_a_corrupt_cache_file_is_a_miss(posts, src, text):
     path = cache.source_dir(src) / vision.RATINGS_FILE
     if text is None:
-        key = vision.rating_key("m", "action-cam", [1.0, 2.0, 3.0])
+        key = vision.rating_key(
+            "m", "action-cam", [1.0, 2.0, 3.0], provider="ollama", host="127.0.0.1:1"
+        )
         path.write_text(json.dumps({key: {"score": "high", "label": "x"}}), "utf-8")
     else:
         path.write_bytes(text.encode("latin-1"))
@@ -553,7 +559,8 @@ def test_a_miss_when_ollama_is_down_is_no_rating(posts, src, ollama, monkeypatch
 def test_an_entry_without_a_digest_is_used_only_when_ollama_is_down(posts, src, ollama):
     """A rating cached before #413 has no digest, so no known model build: it is rated
     again when Ollama answers, and still used when Ollama is down (no digest to compare)."""
-    key = vision.rating_key("m", "action-cam", vision._frame_times(0, 4, 3))
+    times = vision._frame_times(0, 4, 3)
+    key = vision.rating_key("m", "action-cam", times, provider="ollama", host="127.0.0.1:1")
     path = cache.source_dir(src) / vision.RATINGS_FILE
     path.write_text(json.dumps({key: {"score": 3.0, "label": "old"}}), "utf-8")
     ollama["up"] = False

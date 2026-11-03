@@ -1404,12 +1404,16 @@ def _run_layers(
     llm: bool,
     prefetch: OcrPrefetch | None = None,
     transcript: str | None = None,
+    ollama_url: str | None = None,
+    ollama_model: str | None = None,
 ) -> bool:
     """Run the planned event layers on the analysis ``hl`` (not written yet) and write
     events.json, as ``cutpoint events`` would (held back with the other
     :data:`HELD_OUTPUTS` until the analysis completes); False if they stopped before it.
     ``prefetch``: the background OCR reader (:func:`_ocr_prefetch`) or None; ``transcript``:
-    the transcript.txt text, not written yet either (None: read from the project)."""
+    the transcript.txt text, not written yet either (None: read from the project);
+    ``ollama_url``, ``ollama_model``: the VLM layer's Ollama (``analyze --ollama-url``, #660;
+    None: from config.json and the environment)."""
     from cutpoint.crash import no_visual_reason  # noqa: PLC0415
     from cutpoint.events.audio_events import AudioParams  # noqa: PLC0415
     from cutpoint.events.common import pending_highlights  # noqa: PLC0415
@@ -1436,6 +1440,8 @@ def _run_layers(
                 cached_ocr=plan.game,
                 llm=llm,
                 prefetch=prefetch,
+                ollama_url=ollama_url,
+                ollama_model=ollama_model,
                 discover_hint=DISCOVER_HINT,
             )
     except Exception as err:
@@ -1915,6 +1921,8 @@ def _analyze(
                     llm=bool(vision),
                     prefetch=prefetch,
                     transcript=transcript,
+                    ollama_url=ollama_url,
+                    ollama_model=ollama_model,
                 )
                 timings["events_s"] = round(time.perf_counter() - t0, 2)
                 free_models()
