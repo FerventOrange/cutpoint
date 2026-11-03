@@ -432,6 +432,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- UI build progress no longer jumps backwards with ffmpeg 7 and newer.
 - AI Chat's `find_moments` matches a word at the start of a word in labels, transcripts and
   what the vision model saw, so "air" finds air, airs and airtime but no longer chair, and the
   proxy's periodic credential sync tightens loosened permissions even when nothing changed (#663).
