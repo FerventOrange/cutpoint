@@ -175,8 +175,7 @@ class ChildScope:
         with self._gpu:
             self._gpu.notify_all()
         for proc in running:
-            with suppress(OSError):
-                proc.kill()
+            _kill_quietly(proc)
 
     def acquire_gpu(self, retry: bool = False) -> bool:
         """Wait for a GPU encode slot (a ``retry`` goes before new clips); release it with
@@ -220,12 +219,19 @@ class ChildScope:
             self._procs.add(proc)
             if not self.cancelled:
                 return
-        with suppress(OSError):  # cancelled while it started
-            proc.kill()
+        _kill_quietly(proc)  # cancelled while it started
 
     def discard(self, proc: subprocess.Popen) -> None:
         with self._lock:
             self._procs.discard(proc)
+
+
+def _kill_quietly(proc: subprocess.Popen) -> None:
+    """Kill ``proc``; an OSError (it already exited, or access denied) is logged, not raised."""
+    try:
+        proc.kill()
+    except OSError as err:
+        logger.debug("kill of child %s failed: %s", proc.pid, err)
 
 
 _SCOPE = threading.local()
