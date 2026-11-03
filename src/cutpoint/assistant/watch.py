@@ -12,7 +12,8 @@ The tool result is text (the frame times, the moment's transcript lines and the 
 (:func:`image_message`), which every provider converts to its own shape.
 
 Frames leave this machine only with consent: a provider on this machine (``localhost`` or a
-loopback address, :func:`cutpoint.assistant.providers.is_local`) needs none; any other gets
+loopback address, except Cutpoint's proxy port,
+:func:`cutpoint.assistant.providers.is_consent_exempt`) needs none; any other gets
 frames of a project only once the user allowed that provider and host for that project
 (:func:`frames_key`, ``frames-v1:<name>@<host[:port]>``, kept per project folder in
 ``assistant.frames_consent`` of ``config.json``). The assistant's own consent

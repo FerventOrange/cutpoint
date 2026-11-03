@@ -424,6 +424,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A provider URL on this machine on the port of the Cutpoint proxy (the running proxy's port,
+  else `CUTPOINT_CLIPROXY_PORT`, the port saved at its last start, or 18317) is hosted: the proxy
+  forwards to hosted models, so AI Chat, Vision and frames consent now apply to it, with keys
+  such as `assistant-v2:openai@127.0.0.1:18317`. If you pointed an OpenAI-compatible provider
+  (or an Ollama URL) at the proxy's port, you are asked for consent once. Other `localhost` and
+  loopback ports, Ollama on 11434 too, stay local (#650).
 - CLIP loads the weights of the snapshot the Hugging Face cache's `refs/main` names under
   `models/clip`, not the first snapshot folder in name order, so a stale or partial snapshot left
   from an older revision is no longer picked. Without a usable `refs/main` it takes the newest

@@ -189,7 +189,7 @@ class Reply:
 class Provider(Protocol):
     name: str  # "ollama", "openai", "anthropic", "xai", "claude-code", "codex"
     model: str
-    local: bool  # runs on this machine: nothing leaves it
+    local: bool  # nothing leaves this machine (is_consent_exempt): no consent needed
     host: str  # the host of its URL ("" when it has none)
     context_tokens: int
 
@@ -294,7 +294,8 @@ def unambiguous(url: str) -> bool:
 def is_local(url: str) -> bool:
     """Whether ``url`` is on this machine: ``localhost`` or a loopback address
     (``127.0.0.0/8``, ``::1``). Anything else, a LAN address or a ``*.localhost`` name (a
-    resolver may send it to the network) too, counts as hosted."""
+    resolver may send it to the network) too, counts as hosted. Consent asks
+    :func:`is_consent_exempt`, which also counts Cutpoint's proxy port as hosted."""
     host = host_of(url)
     if host == "localhost":
         return True
@@ -305,6 +306,37 @@ def is_local(url: str) -> bool:
 
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def proxy_port() -> int:
+    """The port of Cutpoint's subscription proxy (:func:`cutpoint.assistant.cliproxy.port`:
+    the running daemon's, else the configured one), :data:`~cutpoint.assistant.cliproxy.DEFAULT_PORT`
+    when none is configured or it cannot be read, so a consent check never fails on it."""
+    try:
+        return cliproxy.port()
+    except Exception:  # noqa: BLE001 - a bad keys file or variable: the default port
+        return cliproxy.DEFAULT_PORT
+
+
+def is_proxy(url: str) -> bool:
+    """Whether ``url`` is Cutpoint's subscription proxy: on this machine (:func:`is_local`) and
+    on :func:`proxy_port`. The proxy forwards to hosted models, so it is no local server."""
+    if not is_local(url):
+        return False
+    try:
+        parsed = parse_url(_with_scheme(url))
+    except (LocationParseError, ValueError):
+        return False
+    scheme = (parsed.scheme or "http").lower()
+    return (parsed.port or _DEFAULT_PORTS.get(scheme)) == proxy_port()
+
+
+def is_consent_exempt(url: str) -> bool:
+    """Whether nothing sent to ``url`` leaves this machine, so it needs no consent: on this
+    machine (:func:`is_local`) and not Cutpoint's subscription proxy (:func:`is_proxy`), which
+    forwards to hosted models. Other servers on this machine (Ollama, LM Studio, a relay on
+    another port) count as local."""
+    return is_local(url) and not is_proxy(url)
 
 
 def host_port(url: str) -> str:
@@ -383,7 +415,11 @@ def missing_ui_job_key(provider: Provider) -> str | None:
     missing = missing_key(provider)
     name, host = provider.name, provider.host
     # a server on this machine may take no key; a subscription logs in instead
-    if missing is not None or provider.local or name not in keys.KEYED:
+    if (
+        missing is not None
+        or getattr(provider, "on_machine", provider.local)
+        or name not in keys.KEYED
+    ):
         return missing
     if not getattr(provider, "has_key", False) or keys.in_keyring(name, host):
         return None
@@ -514,7 +550,9 @@ class OllamaProvider:
         url = url.rstrip("/")
         self.url = url if url.startswith("http") else f"http://{url}"
         self.host = host_of(self.url)
-        self.local = is_local(self.url)  # an Ollama on another machine is hosted (consent)
+        self.on_machine = is_local(self.url)
+        # an Ollama on another machine or on the proxy's port is hosted (consent)
+        self.local = is_consent_exempt(self.url)
         self._model = model
         self.context_tokens = context_tokens
         self._caps: Capabilities | None = None
@@ -722,16 +760,17 @@ class _HttpProvider:
             )
         self.url = url
         self.host = host_of(url)
-        self.local = is_local(url)
+        self.on_machine = is_local(url)  # timeouts, context and key rules
+        self.local = is_consent_exempt(url)  # consent: the proxy's port is hosted
         self._model = model
         self.context_tokens = context_tokens or (
-            LOCAL_CONTEXT_TOKENS if self.local else HOSTED_CONTEXT_TOKENS
+            LOCAL_CONTEXT_TOKENS if self.on_machine else HOSTED_CONTEXT_TOKENS
         )
         self._key = key or None  # only ever sent in the request headers
         # False: keys.ENV_KEY is not read for this provider (the Vision role on another host)
         self.key_shared = True
         self.vision = False  # True: the Vision role (make_vision), whose key hints differ
-        self.timeout = CHAT_TIMEOUT_S if self.local else HOSTED_TIMEOUT_S
+        self.timeout = CHAT_TIMEOUT_S if self.on_machine else HOSTED_TIMEOUT_S
         self._caps: Capabilities | None = None
 
     def __repr__(self) -> str:  # never the key
@@ -755,7 +794,7 @@ class _HttpProvider:
 
     def _need_key(self) -> None:
         """A hosted server needs a key; a local one (LM Studio, llama-server) may not."""
-        if self._key is None and not self.local:
+        if self._key is None and not self.on_machine:
             hint = _key_hint(self.name, self.host, shared=self.key_shared, vision=self.vision)
             raise ProviderError(f"No API key for {self.title}: {hint}")
 
@@ -767,7 +806,7 @@ class _HttpProvider:
         timeout: float,
     ) -> requests.Response:
         """One request. A key is never sent in clear text to another machine."""
-        if self._key and not self.local and urlsplit(url).scheme.lower() != "https":
+        if self._key and not self.on_machine and urlsplit(url).scheme.lower() != "https":
             raise ProviderError(
                 f"{self.title}: use an https:// base URL to send an API key "
                 f"(it is not sent over http:// to {self.host})"
