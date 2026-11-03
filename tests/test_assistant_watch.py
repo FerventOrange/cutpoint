@@ -252,6 +252,22 @@ def test_frames_keys_are_per_provider_and_host_and_none_on_this_machine() -> Non
     assert providers.consent_key(hosted, "vision") != watch.frames_key(hosted)
 
 
+def test_frames_on_the_proxy_port_need_consent(proj_dir: Path, src: Path) -> None:
+    """#650: an OpenAI-compatible URL on the Cutpoint proxy's port reaches a hosted model."""
+    port = providers.cliproxy.DEFAULT_PORT
+    relay = OpenAIProvider(f"https://127.0.0.1:{port}/v1", "m", 0, None)
+    key = f"frames-v1:openai@127.0.0.1:{port}"
+    assert watch.frames_key(relay) == key
+    assert watch.frames_key(OpenAIProvider("http://127.0.0.1:1234/v1", "m", 0, None)) is None
+    assert not viewer(proj_dir, relay, src).allowed()
+    assert viewer(proj_dir, relay, src, given=[key]).allowed()
+    item = {"source": "/v/a.mp4", "start": 10.0, "end": 20.0}
+    grab = Grab()
+    seen = viewer(proj_dir, relay, src, grab).view("m1", "c1", item, {}, "")
+    assert seen.sheet is None and seen.event["kind"] == "frames_consent"
+    assert seen.event["key"] == key and grab.times == []
+
+
 def test_frames_consent_is_per_project(tmp_path: Path) -> None:
     a, b = tmp_path / "a", tmp_path / "b"
     key = "frames-v1:anthropic@api.anthropic.com"

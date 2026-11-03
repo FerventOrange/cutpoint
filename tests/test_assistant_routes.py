@@ -553,6 +553,39 @@ def test_settings_never_show_the_password_of_a_url(
     assert ollama["default_url"] == "http://box:11434" and got["url"] == "http://nas:11434"
 
 
+def test_an_openai_compatible_url_on_the_proxy_port_needs_consent(
+    client: TestClient, monkeypatch, proj, home: Path
+) -> None:
+    """#650: the proxy's port on this machine forwards to hosted models; another local port
+    stays local."""
+    _p, seq, _ids = proj
+    sent: list[str] = []
+
+    def record(url, **_kw):
+        sent.append(url)
+        raise AssertionError(f"a request went out to {url}")
+
+    monkeypatch.setattr(providers.requests, "get", record)
+    monkeypatch.setattr(providers.requests, "post", record)
+    port = providers.cliproxy.DEFAULT_PORT
+    set_config(
+        home, assistant={"provider": "openai", "model": "m", "url": f"https://127.0.0.1:{port}/v1"}
+    )
+    got = client.get("/api/projects/cli/assistant").json()
+    want = f"assistant-v2:openai@127.0.0.1:{port}"
+    assert got["consent"]["needed"] is True and got["consent"]["key"] == want
+    assert got["provider"]["local"] is False and "127.0.0.1" in got["provider"]["label"]
+    res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
+    assert res.status_code == 409 and "agree first" in res.json()["detail"]
+    assert sent == []
+    set_config(
+        home, assistant={"provider": "openai", "model": "m", "url": "http://127.0.0.1:1234/v1"}
+    )
+    got = client.get("/api/projects/cli/assistant").json()
+    assert got["consent"]["needed"] is False and got["consent"]["key"] is None
+    assert got["provider"]["local"] is True
+
+
 def test_a_saved_key_for_another_host_is_not_called_checked(
     client: TestClient, monkeypatch, home: Path
 ) -> None:

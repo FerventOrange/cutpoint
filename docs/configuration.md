@@ -164,12 +164,15 @@ keyring, as for the assistant; analyses started in `cutpoint ui` read it from th
 which the Vision role's key field in the Models tab sets) or a subscription (`claude-code`,
 `codex` or `antigravity`). With `ollama`, `model` and `url` are the Ollama model and URL
 (`--ollama-model`, `CUTPOINT_VISION_MODEL` and `--ollama-url` still win); an Ollama URL on
-another machine (not `localhost` or a loopback address) is hosted and needs the Vision consent
+another machine (not `localhost` or a loopback address) or on the Cutpoint proxy's port is
+hosted and needs the Vision consent
 below, else vision is skipped with a WARNING. With an API provider, choose a `model`
 that accepts images; each request sends frames and is billed to your API key. Subscription
 providers use only their official host; a `url` for them is rejected. An API provider may have a
 `url` (an OpenAI-compatible or self-hosted server); one on this machine (`localhost` or a
-loopback address) needs no Vision consent, because nothing leaves it.
+loopback address) needs no Vision consent, because nothing leaves it, except on the port of the
+[`cutpoint proxy`](commands.md#proxy) (18317 or `CUTPOINT_CLIPROXY_PORT`), which forwards to
+hosted models.
 The Models tab fetches the catalog from this configured Ollama URL, including custom servers.
 Without this section the frame rater uses Ollama. The Models tab of `cutpoint ui` writes it.
 Catalogs and frames go to a hosted provider only after you allow it there
@@ -275,14 +278,17 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   vision descriptions, transcript snippets, file names without paths, times) and your messages, never video or audio.
   This consent never covers the [Vision role](#vision_assistant), which has its own.
   Remove an entry to be asked again. A provider is local when its host is `localhost` or a
-  loopback address; any other host, a LAN address too, is hosted.
+  loopback address, except on the port of the [`cutpoint proxy`](commands.md#proxy) (18317 or
+  `CUTPOINT_CLIPROXY_PORT`), which forwards to hosted models; any other host, a LAN address too,
+  is hosted.
 - `frames_consent`: the projects whose video frames AI Chat may send to a hosted provider
   (`view_moment`, see [AI Chat](commands.md#ai-chat)): an object from a project folder to its
   `frames-v1:<provider>@<host>` entries, for example
   `{"D:\\Cutpoint\\projects\\dive": ["frames-v1:anthropic@api.anthropic.com"]}`; the allow box
   in AI Chat adds them. Each watched moment sends one image of 6 to 9 frames from its clip with
   their times, its transcript lines and detected sounds. Neither `consent` nor the Vision
-  consent covers it. A provider on this machine needs none. Remove an entry to be asked again.
+  consent covers it. A provider on this machine needs none, except on the Cutpoint proxy's
+  port. Remove an entry to be asked again.
 
 Other values are rejected.
 

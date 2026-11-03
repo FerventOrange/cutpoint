@@ -424,6 +424,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A provider URL on this machine on the port of the Cutpoint proxy (18317, or
+  `CUTPOINT_CLIPROXY_PORT` or the port saved at the proxy's last start) is hosted: the proxy
+  forwards to hosted models, so AI Chat, Vision and frames consent now apply to it, with keys
+  such as `assistant-v2:openai@127.0.0.1:18317`. If you pointed an OpenAI-compatible provider
+  (or an Ollama URL) at the proxy's port, you are asked for consent once. Other `localhost` and
+  loopback ports, Ollama on 11434 too, stay local (#650).
 - The Vision role's model list in the Models tab no longer offers models known to take no images
   (OpenAI gpt-3.5, o1-mini, o3-mini; xAI grok-3, grok-2 without vision): models known to take
   images come first, unknown ones follow, and the saved model stays, marked "may not accept

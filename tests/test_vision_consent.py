@@ -17,11 +17,12 @@ from fastapi.testclient import TestClient
 
 from conftest import set_config
 from cutpoint import activity, analyze, jsonout, ui, vision
-from cutpoint.assistant import providers
+from cutpoint.assistant import cliproxy, providers
 from cutpoint.events import pipeline
 from cutpoint.pano import vlcheck
 from test_activity import fake_clip, footage  # noqa: F401
 from test_analyze_steps import last_states, progress_lines, run  # noqa: F401
+from test_assistant_byo import no_keys as no_keys  # the autouse fixture: no real keyring
 from test_vlm_vision import REPLY, Ollama, _run_vlm, extra_ok  # noqa: F401
 
 REMOTE = "http://10.0.0.5:11434"
@@ -96,6 +97,106 @@ def test_a_subscription_keeps_its_host_only_key(name: str) -> None:
 )
 def test_is_local_takes_loopback_and_localhost_only(url: str, local: bool) -> None:
     assert providers.is_local(url) is local
+
+
+# -- the Cutpoint proxy's port is hosted (#650) ----------------------------------------------
+
+PROXY = f"https://127.0.0.1:{cliproxy.DEFAULT_PORT}/v1"
+PROXY_VISION_KEY = f"vision-v2:openai@127.0.0.1:{cliproxy.DEFAULT_PORT}"
+
+
+@pytest.mark.parametrize(
+    ("url", "exempt"),
+    [
+        (PROXY, False),
+        (f"http://localhost:{cliproxy.DEFAULT_PORT}", False),
+        (f"http://[::1]:{cliproxy.DEFAULT_PORT}/v1", False),
+        (f"127.0.0.1:{cliproxy.DEFAULT_PORT}", False),
+        ("http://127.0.0.1:11434", True),  # Ollama
+        ("http://localhost:11434", True),
+        ("http://localhost:1234/v1", True),  # LM Studio, a relay on another port
+        ("http://127.0.0.1", True),
+        (f"http://10.0.0.5:{cliproxy.DEFAULT_PORT}", False),  # not on this machine anyway
+    ],
+)
+def test_only_the_proxy_port_of_this_machine_needs_consent(url: str, exempt: bool) -> None:
+    assert providers.is_consent_exempt(url) is exempt
+    assert providers.is_proxy(url) is (providers.is_local(url) and not exempt)
+
+
+def test_the_proxy_port_is_still_on_this_machine() -> None:
+    """Timeouts, context and key rules keep reading is_local: the proxy runs here."""
+    assert providers.is_local(PROXY)
+    p = providers.OpenAIProvider(PROXY, "m", 0, None)
+    assert p.on_machine and not p.local
+    assert p.timeout == providers.CHAT_TIMEOUT_S
+    assert p.context_tokens == providers.LOCAL_CONTEXT_TOKENS
+    assert providers.missing_key(p) is None  # a server on this machine may take no key
+    assert providers.consent_key(p, "vision") == PROXY_VISION_KEY
+    assert providers.consent_key(p) == f"assistant-v2:openai@127.0.0.1:{cliproxy.DEFAULT_PORT}"
+
+
+@pytest.mark.parametrize("where", ["env", "keys"])
+def test_a_configured_proxy_port_replaces_the_default(home, monkeypatch, where: str) -> None:
+    if where == "env":
+        monkeypatch.setenv("CUTPOINT_CLIPROXY_PORT", "19000")
+    else:
+        cliproxy.keys_path().parent.mkdir(parents=True, exist_ok=True)
+        cliproxy.keys_path().write_text(json.dumps({"port": 19000}), "utf-8")
+    assert providers.proxy_port() == 19000
+    assert not providers.is_consent_exempt("https://127.0.0.1:19000/v1")
+    assert providers.is_consent_exempt(PROXY)  # the default port is just another local port
+
+
+def test_an_unreadable_proxy_port_falls_back_to_the_default(home, monkeypatch) -> None:
+    monkeypatch.setenv("CUTPOINT_CLIPROXY_PORT", "not-a-port")
+    with pytest.raises(cliproxy.ProxyError):
+        cliproxy.port()
+    assert providers.proxy_port() == cliproxy.DEFAULT_PORT
+    assert not providers.is_consent_exempt(PROXY)
+
+    def broken() -> int:
+        raise OSError("keys file unreadable")
+
+    monkeypatch.setattr(cliproxy, "port", broken)
+    assert providers.proxy_port() == cliproxy.DEFAULT_PORT
+    assert providers.is_consent_exempt("http://127.0.0.1:11434")
+
+
+def test_a_vision_provider_on_the_proxy_port_needs_consent(home, hosted) -> None:
+    set_config(home, vision_assistant={"provider": "openai", "url": PROXY})
+    rater = vision.VisionRater()
+    assert rater.via is not None and rater.consent_needed == PROXY_VISION_KEY
+    assert not rater.available() and rater.ask_json("q") is None
+    assert hosted == []
+    set_config(
+        home, vision_assistant={"provider": "openai", "url": PROXY, "consent": [PROXY_VISION_KEY]}
+    )
+    assert vision.VisionRater().consent_needed is None
+
+
+def test_an_ollama_on_the_proxy_port_needs_consent(home, wire) -> None:
+    url = f"http://127.0.0.1:{cliproxy.DEFAULT_PORT}"
+    assert vision.VisionRater(url=url, model="m").consent_needed == (
+        f"vision-v2:ollama@127.0.0.1:{cliproxy.DEFAULT_PORT}"
+    )
+    assert wire == []
+
+
+def test_the_settings_view_lists_the_proxy_port_as_hosted() -> None:
+    view = ui.settings_view(
+        {
+            "assistant": {"provider": "openai", "url": PROXY},
+            "vision_assistant": {"provider": "openai", "url": PROXY},
+        }
+    )
+    assert view["assistant"]["local"] is False and view["vision_assistant"]["local"] is False
+    assert view["vision_consent"]["needed"] is True
+    assert view["vision_consent"]["key"] == PROXY_VISION_KEY
+    other = ui.settings_view(
+        {"assistant": {"provider": "openai", "url": "http://localhost:1234/v1"}}
+    )
+    assert other["assistant"]["local"] is True
 
 
 # -- rating_key -------------------------------------------------------------------------------
