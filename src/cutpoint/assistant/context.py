@@ -382,17 +382,29 @@ class MomentTable:
         or kind, in what the vision model saw (vision label, VLM window labels, descriptions
         and named moments), their heard sounds or the names of their cues of :data:`CUE_MATCH`
         or more (:func:`_names`: ``crash`` finds crash and crash_fall); ties go to the stronger
-        cues the words name, then to the rank. None when no word matches."""
+        cues the words name, then to the rank. In the text a word matches the start of a word
+        (``air`` finds air, airs and airtime, not chair); a word in a script written without
+        spaces (Chinese, Japanese, Korean, Thai, ...) matches anywhere. None when no word
+        matches."""
         want = words(query)
         if not want:
             return []
+        # Thai, Lao, Myanmar, Khmer, Hangul Jamo, Kana, CJK, Hangul syllables, CJK compatibility
+        unspaced = re.compile(
+            "[\u0e00-\u0eff\u1000-\u109f\u1100-\u11ff\u1780-\u17ff"
+            "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]"
+        )
+        starts = {
+            w: re.compile(("" if unspaced.search(w) else r"(?<![^\W_])") + re.escape(w))
+            for w in want
+        }
         hits = []
         for i, real in enumerate(self.rank):
             c, look = self.candidates[real], self.looks[real]
             strong = [k for k, v in look.cues.items() if v >= CUE_MATCH]
             own = [str(c.get(k) or "") for k in ("label", "transcript", "kind")]
             text = " ".join([*own, look.label, look.text, *look.heard]).lower()
-            n = sum(w in text or any(_names(w, k) for k in strong) for w in want)
+            n = sum(bool(starts[w].search(text)) or any(_names(w, k) for k in strong) for w in want)
             if n:
                 power = sum(v for k, v in look.cues.items() if any(_names(w, k) for w in want))
                 hits.append((-n, -power, i, real))

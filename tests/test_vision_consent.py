@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import requests
 from fastapi.testclient import TestClient
 
 from conftest import set_config
@@ -202,13 +203,23 @@ def test_the_settings_view_lists_the_proxy_port_as_hosted() -> None:
 # -- rating_key -------------------------------------------------------------------------------
 
 
-def test_the_rating_key_tells_hosts_apart_for_a_hosted_provider_only() -> None:
-    def key(provider: str, host: str) -> str:
-        return vision.rating_key("m", "gaming", [1.0, 2.0], provider=provider, host=host)
+def _rating_key(provider: str, host: str) -> str:
+    return vision.rating_key("m", "gaming", [1.0, 2.0], provider=provider, host=host)
 
-    assert key("openai", "a.example:1") != key("openai", "b.example:1")
-    assert key("openai", "a.example:1") != key("openai", "")
-    assert key("ollama", "a.example:1") == key("ollama", "") == key("", "")
+
+def test_the_rating_key_tells_hosts_apart() -> None:
+    assert _rating_key("openai", "a.example:1") != _rating_key("openai", "b.example:1")
+    assert _rating_key("openai", "a.example:1") != _rating_key("openai", "")
+    # Ollama too (#673); without a host it keeps the old key
+    assert _rating_key("ollama", "127.0.0.1:11434") != _rating_key("ollama", "10.0.0.5:11434")
+    assert _rating_key("ollama", "10.0.0.5:11434") != _rating_key("ollama", "10.0.0.5:11435")
+    assert _rating_key("ollama", "") == _rating_key("", "")
+
+
+def test_hosted_rating_keys_are_unchanged() -> None:
+    # Pinned: a change here drops every user's cached hosted ratings (#621)
+    assert _rating_key("openai", "a.example:1") == "89335c0665@1.000,2.000"
+    assert _rating_key("openai", "") == "4b4446f1ba@1.000,2.000"
 
 
 # -- VisionRater ------------------------------------------------------------------------------
@@ -264,10 +275,19 @@ def test_with_consent_a_remote_ollama_is_used(home, monkeypatch) -> None:
     assert rater.available()
 
 
-def test_the_rating_cache_of_ollama_ignores_the_host(home) -> None:
+def test_the_rating_cache_of_ollama_keys_on_the_host(home, monkeypatch) -> None:
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
     here = vision.VisionRater(url="http://127.0.0.1:11434", model="m")
     there = vision.VisionRater(url=REMOTE, model="m")
-    assert here.host == there.host == ""
+    port = vision.VisionRater(url="http://10.0.0.5:11435", model="m")
+    assert (here.host, there.host, port.host) == (
+        "127.0.0.1:11434",
+        "10.0.0.5:11434",
+        "10.0.0.5:11435",
+    )
+    # the default URL: the same host on every run, so the same key
+    default = vision.VisionRater(model="m")
+    assert default.host == vision.VisionRater(model="m").host == "127.0.0.1:11434"
 
 
 # -- the steps that use the rater -------------------------------------------------------------
@@ -517,33 +537,40 @@ def test_events_uses_no_cached_descriptions_without_consent(
     monkeypatch,
     caplog,
 ) -> None:
-    """Descriptions cached by the local Ollama are keyed on the model only: an Ollama on
-    another machine without consent gets none of them (as analyze's ratings), with it all."""
+    """An Ollama on another machine whose consent was withdrawn gets none of the descriptions
+    it cached (as analyze's ratings) and is asked nothing; one with consent is asked, and the
+    descriptions the local Ollama cached for the same model are not used: they are keyed on
+    the host (#670)."""
     fake = Ollama()
     fake.replies = [REPLY]
     monkeypatch.setattr(vision.requests, "get", fake.get)
     monkeypatch.setattr(vision.requests, "post", fake.post)
-    first = _run_vlm(tmp_path, monkeypatch)
+    if agreed:  # cached by the local Ollama
+        first = _run_vlm(tmp_path, monkeypatch)
+    else:  # cached by the remote one, then the consent is withdrawn
+        set_config(home, vision_assistant={"provider": "ollama", "consent": [KEY]})
+        first = _run_vlm(tmp_path, monkeypatch, ollama_url=REMOTE)
     assert [e for e in first["events"] if e["kind"] == "vlm"] and first["windows"]
 
     sent: list[str] = []
 
     def record(url: str, *_a: Any, **_k: Any) -> Any:
         sent.append(url)
-        raise AssertionError(f"a request went out to {url}")
+        raise requests.ConnectionError("refused")  # the remote Ollama is down
 
     monkeypatch.setattr(vision.requests, "get", record)
     monkeypatch.setattr(vision.requests, "post", record)
     set_config(home, vision_assistant={"provider": "ollama", "consent": [KEY] if agreed else []})
     with caplog.at_level(logging.WARNING), jsonout.run("events") as res:
         data = _run_vlm(tmp_path, monkeypatch, ollama_url=REMOTE)
-    assert sent == []
     vlm_events = [e for e in data["events"] if e["kind"] == "vlm"]
     msgs = [w["message"] for w in res.warnings if w["code"] == "vision_consent_needed"]
     if agreed:
-        assert vlm_events == [e for e in first["events"] if e["kind"] == "vlm"]
-        assert data["windows"] == first["windows"] and msgs == []
+        assert sent and all(url.startswith(REMOTE) for url in sent)
+        assert vlm_events == [] and data["stats"]["vlm"]["cached"] == 0  # not the local ones
+        assert msgs == [] and [w["code"] for w in res.warnings] == ["vlm_unavailable"]
     else:
+        assert sent == []
         assert vlm_events == [] and data["windows"] == []
         assert len(msgs) == 1 and KEY in msgs[0]
         assert caplog.text.count("not on this machine") == 1
@@ -557,15 +584,17 @@ def test_action_cam_reused_windows_warn_without_consent_and_no_vlm_layer(
     monkeypatch,
     caplog,
 ) -> None:
-    """An action-cam rerun reuses earlier described windows; without consent they go, and a
-    run without the VLM layer says so once, also when its new windows have no cache."""
+    """An action-cam rerun reuses earlier described windows; once the consent is withdrawn
+    they go, and a run without the VLM layer says so once, also when its new windows have no
+    cache. The windows are described by the remote Ollama: the cache is keyed on its host."""
     monkeypatch.setattr(pipeline, "project_kind", lambda hl: pipeline.ACTION_CAM)
     monkeypatch.setattr(pipeline, "_telemetry_layer", lambda *a: {})
     fake = Ollama()
     fake.replies = [REPLY]
     monkeypatch.setattr(vision.requests, "get", fake.get)
     monkeypatch.setattr(vision.requests, "post", fake.post)
-    first = _run_vlm(tmp_path, monkeypatch)
+    set_config(home, vision_assistant={"provider": "ollama", "consent": [KEY]})
+    first = _run_vlm(tmp_path, monkeypatch, ollama_url=REMOTE)
     assert first["windows"]
     src = str(tmp_path / "game.mp4")
     later = {"id": "h002", "source": src, "start": 45.0, "end": 49.0, "score": 70}
@@ -633,15 +662,41 @@ def test_the_events_descriptions_of_a_hosted_provider_are_keyed_on_its_host(
         vlms.append(vlm)
     assert [v.model for v in vlms] == ["openai@a.example:8080:m", "openai@b.example:8080:m"]
     assert vlms[0].key() != vlms[1].key()
-    ollama = SimpleNamespace(provider_name="ollama", host="", model="m")
-    monkeypatch.setattr(pipeline, "VisionRater", lambda *_a, **_k: ollama)
-    vlm = pipeline.VlmParams()
-    with pytest.raises(Stop):
-        pipeline.run_events(tmp_path, vlm=vlm, layers=("audio",))
-    assert vlm.model == "m"  # Ollama keys unchanged
 
 
-def test_the_pano_frame_key_tells_hosts_apart_for_a_hosted_provider_only() -> None:
+def test_the_events_descriptions_of_an_ollama_are_keyed_on_its_host(
+    home, tmp_path, monkeypatch
+) -> None:
+    """As a hosted provider's (#621, providers.host_port): a local and a remote Ollama with
+    one model id describe apart, and the local default URL keeps one key (#670)."""
+
+    class Stop(Exception):
+        pass
+
+    def stop(*_a: Any, **_k: Any) -> Any:
+        raise Stop  # the key is set by now: the rest of the run is not needed
+
+    hl = {"sources": [{"path": str(tmp_path / "a.mp4")}]}
+    monkeypatch.setattr(pipeline, "load_highlights", lambda project: hl)
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(pipeline, "load_source", stop)
+
+    def model(url: str | None = None) -> str:
+        vlm = pipeline.VlmParams()
+        with pytest.raises(Stop):
+            pipeline.run_events(tmp_path, vlm=vlm, layers=("audio",), ollama_url=url)
+        return vlm.model
+
+    local, remote = model(), model(REMOTE)
+    assert local == "ollama@127.0.0.1:11434:qwen3.5:9b"  # the default URL
+    assert remote == "ollama@10.0.0.5:11434:qwen3.5:9b"
+    assert local != remote
+    assert model() == local  # stable across runs
+    assert model("http://127.0.0.1:11434/") == local  # a trailing slash is the same server
+    assert model("http://10.0.0.5:11435") != remote  # another port is another server
+
+
+def test_the_pano_frame_key_tells_hosts_apart() -> None:
     path = {"keys": [{"t": 0.0, "yaw": 0, "pitch": 0, "fov": 90}]}
 
     def key(provider: str, host: str) -> str:
@@ -650,12 +705,22 @@ def test_the_pano_frame_key_tells_hosts_apart_for_a_hosted_provider_only() -> No
     assert key("openai", "a.example:1") != key("openai", "b.example:1")
     assert key("openai", "a.example:1") != key("openai", "")
     assert key("openai", "") == vlcheck.frame_key(path, 1.0, "m", provider="openai")
-    assert key("ollama", "a.example:1") == key("ollama", "") == key("", "")
-    assert key("", "") == vlcheck.frame_key(path, 1.0, "m")  # Ollama keys unchanged
+    # hosted keys are unchanged (#621)
+    assert key("openai", "a.example:1") == "2|m|openai@a.example:1|h|1.00|0|0|90"
+    # Ollama keys on its host too (#673), in the same format
+    assert key("ollama", "127.0.0.1:11434") == "2|m|ollama@127.0.0.1:11434|h|1.00|0|0|90"
+    assert key("ollama", "127.0.0.1:11434") != key("ollama", "10.0.0.5:11434")
+    assert key("ollama", "10.0.0.5:11434") != key("ollama", "10.0.0.5:11435")
+    assert key("ollama", "") == key("", "") == vlcheck.frame_key(path, 1.0, "m")
+    with_wording = vlcheck.frame_key(path, 1.0, "m", provider="ollama", wording="ab", host="h:1")
+    assert with_wording == "2|m|ollama@h:1|wab|h|1.00|0|0|90"
 
 
-def test_the_vl_checker_keys_on_the_rater_host(home) -> None:
-    assert vlcheck.VLChecker(url=REMOTE, model="m").host == ""  # Ollama: no host
+def test_the_vl_checker_keys_on_the_rater_host(home, monkeypatch) -> None:
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    assert vlcheck.VLChecker(url=REMOTE, model="m").host == "10.0.0.5:11434"
+    assert vlcheck.VLChecker(url="http://127.0.0.1:11434", model="m").host == "127.0.0.1:11434"
+    assert vlcheck.VLChecker(model="m").host == vlcheck.VLChecker(model="m").host
 
 
 # -- the settings view ------------------------------------------------------------------------

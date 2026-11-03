@@ -35,6 +35,10 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # the test is undone too.
     monkeypatch.setenv("TORCH_HOME", "")
     monkeypatch.delenv("TORCH_HOME")
+    # A user's OLLAMA_HOST would move backends.ollama_url() (and the VLM cache key) off the
+    # default; setenv first, as for TORCH_HOME, so one a test sets is undone too.
+    monkeypatch.setenv("OLLAMA_HOST", "")
+    monkeypatch.delenv("OLLAMA_HOST")
     home = tmp_path / "home"
     monkeypatch.setenv("CUTPOINT_HOME", str(home))
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))

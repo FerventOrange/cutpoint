@@ -27,8 +27,10 @@ prompts and the person rules can change without decoding again.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import logging
 import re
+import sys
 import time
 import zipfile
 from collections.abc import Callable
@@ -245,6 +247,27 @@ def load_clip(*, download: bool = False) -> Any:
     return model
 
 
+def require_detector() -> Path:
+    """The detector checkpoint at :func:`paths.detector_weights`; a cheap check (no torch
+    import) that commands run before their long steps. torch and torchvision (the events
+    extra) are checked first, so Cutpoint lite gets the missing extra, not the weights.
+
+    Raises:
+        ModuleNotFoundError: When torch or torchvision is not installed.
+        DetectorWeightsMissing: When the checkpoint is not on disk.
+    """
+    for module in ("torch", "torchvision"):
+        if module not in sys.modules and importlib.util.find_spec(module) is None:
+            raise ModuleNotFoundError(f"No module named {module!r}", name=module)
+    ckpt = paths.detector_weights()
+    if not ckpt.is_file():
+        raise DetectorWeightsMissing(
+            f"Faster R-CNN detector weights not found in {ckpt.parent}; "
+            "run: cutpoint setup --only visual"
+        )
+    return ckpt
+
+
 def load_detector(
     det_thresh: float, min_size: int, max_size: int, *, download: bool = False
 ) -> Any:
@@ -269,12 +292,7 @@ def load_detector(
         return det.fasterrcnn_resnet50_fpn_v2(
             weights=det.FasterRCNN_ResNet50_FPN_V2_Weights.COCO_V1, **size
         )
-    ckpt = paths.detector_weights()
-    if not ckpt.is_file():
-        raise DetectorWeightsMissing(
-            f"Faster R-CNN detector weights not found in {ckpt.parent}; "
-            "run: cutpoint setup --only visual"
-        )
+    ckpt = require_detector()
     # COCO_V1 has 91 categories; the same build torchvision does before loading its weights.
     model = det.fasterrcnn_resnet50_fpn_v2(
         weights=None, weights_backbone=None, num_classes=91, **size

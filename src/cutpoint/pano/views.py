@@ -982,6 +982,7 @@ def run_layer(
     }
     if not todo:
         return stats
+    V.require_detector()  # before the CLIP load
     t0 = time.perf_counter()
     models = V.VisualModels(
         det_min_size=512, det_thresh=p.det_thresh, box_min_score=p.box_min_score, box_max=p.box_max

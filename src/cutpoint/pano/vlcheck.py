@@ -180,7 +180,8 @@ class VLChecker:
         self.rater = VisionRater(url, model)
         self.model = self.rater.model
         self.provider_name = getattr(self.rater, "provider_name", "ollama")
-        self.host = getattr(self.rater, "host", "")  # a hosted provider's (the frame cache's key)
+        # the frame cache's key: a hosted provider's endpoint, an Ollama's host[:port]
+        self.host = getattr(self.rater, "host", "")
         self.dead = False  # set when the server stops answering: no more requests
 
     def available(self) -> bool:
@@ -287,11 +288,11 @@ def frame_key(
     host: str = "",
 ) -> str:
     """Cache key of the preview frame at source time ``t``: what the view shows there
-    (``wording``: :func:`wording_id`; a hosted ``provider`` with its ``host``, so one model id
-    at two servers checks apart)."""
+    (``wording``: :func:`wording_id`; the ``provider`` with its ``host``, so one model id at
+    two servers checks apart; Ollama without a host keeps the old key)."""
     k = nearest_keys(path["keys"], [t])[0]
     vert = "v" if path.get("vertical") else "h"
-    prov = f"|{provider}" if provider and provider != "ollama" else ""
+    prov = f"|{provider}" if provider and (provider != "ollama" or host) else ""
     prov += f"@{host}" if prov and host else ""
     prov += f"|w{wording}" if wording else ""
     return (

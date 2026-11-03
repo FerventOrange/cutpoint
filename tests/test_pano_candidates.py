@@ -389,6 +389,7 @@ def _timing_run(monkeypatch, tmp_path: Path) -> list[dict | None]:
     monkeypatch.setattr(cli, "_project", lambda arg: tmp_path)
     monkeypatch.setattr(cli, "_clips", lambda project: [argparse.Namespace(lrv="a.lrv")])
     monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(cli, "_require_detector", lambda: None)
     monkeypatch.setattr(pipeline, "run_events", lambda *a, **k: None)
     monkeypatch.setattr("cutpoint.crash.dense_needs_run", lambda sources: False)
     monkeypatch.setattr(VW, "run_layer", lambda clips, force=False, handoff=None: {"computed": 1})

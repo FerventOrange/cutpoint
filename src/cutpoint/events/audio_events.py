@@ -15,6 +15,7 @@ rolling median over ``baseline_s`` plus ``rel_margin``) with a lower floor.
 from __future__ import annotations
 
 import csv
+import importlib.machinery
 import importlib.util
 import logging
 import pickle
@@ -134,6 +135,9 @@ def _import_panns_models() -> types.ModuleType:
     if "panns_inference" not in sys.modules:
         pkg = types.ModuleType("panns_inference")
         pkg.__path__ = list(spec.submodule_search_locations)
+        # a spec, so a later find_spec("panns_inference") does not raise ValueError (#669)
+        pkg.__spec__ = importlib.machinery.ModuleSpec("panns_inference", None, is_package=True)
+        pkg.__spec__.submodule_search_locations = pkg.__path__
         sys.modules["panns_inference"] = pkg
     import panns_inference.models as models  # noqa: PLC0415
 
