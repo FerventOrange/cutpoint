@@ -435,7 +435,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The 360 director keeps more friend shots on crash clips (#604): a person framed whole counts
   as framed well with `include_check_pad_deg` (new `pano.director` key, default 1.5 deg) of
   room inside the side margin, not the full `include_pad_deg` (5 deg). A fix (a wider view or a
-  yaw shift) still leaves the full 5 deg. With the full pad in the check too, people framed
+  yaw shift) still aims for the full 5 deg. With the full pad in the check too, people framed
   near the margin made bad stretches long enough to turn whole friend shots into a view
   cut-away. `legacy` paths are unchanged. Planned camera paths change, so cached candidate
   paths are planned again.
