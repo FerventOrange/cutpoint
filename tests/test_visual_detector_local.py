@@ -189,9 +189,14 @@ def test_pano_views_layer_loads_locally(no_network, stub_torch, tmp_path, monkey
     monkeypatch.setattr(visual, "text_embeddings", lambda prompts, models=None: None)
     monkeypatch.setattr(visual.VisualModels, "close", lambda self: None)
     monkeypatch.setattr("cutpoint.insta360.imu_source", lambda src: None)  # skip the clip
+    clip_loads: list[bool] = []
+    load_clip = visual.load_clip
+    monkeypatch.setattr(
+        visual, "load_clip", lambda download=False: clip_loads.append(download) or load_clip()
+    )
     with pytest.raises(visual.DetectorWeightsMissing):
         views.run_layer([clip])
-    assert stub_torch.built == []
+    assert stub_torch.built == [] and clip_loads == []  # checked before the CLIP load (#662)
     ckpt = _fake_ckpt()
     views.run_layer([clip])
     assert stub_torch.built == [
@@ -205,3 +210,141 @@ def test_pano_views_layer_loads_locally(no_network, stub_torch, tmp_path, monkey
         }
     ]
     assert stub_torch.loaded[0][0] == ckpt
+
+
+# --------------------------------------------------------------------------- 360 prechecks (#662)
+def _missing_message() -> str:
+    return (
+        f"Faster R-CNN detector weights not found in {paths.detector_weights().parent}; "
+        "run: cutpoint setup --only visual"
+    )
+
+
+def _errors(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+
+
+@pytest.fixture
+def qa_calls(tmp_path, monkeypatch):
+    """A ``preview`` folder for ``360 qa``; ``run_qa`` records its calls and runs nothing."""
+    d = tmp_path / "preview"
+    d.mkdir()
+    calls: list[Path] = []
+
+    def run_qa(qa_dir, **kw):
+        calls.append(qa_dir)
+        return {"clips": []}
+
+    monkeypatch.setattr(qa, "run_qa", run_qa)
+    monkeypatch.setattr(qa, "log_report", lambda report: None)
+    return d, calls
+
+
+def test_pano_qa_checks_the_detector_before_the_run(stub_torch, qa_calls, capsys, caplog):
+    from conftest import envelope  # noqa: PLC0415
+
+    d, calls = qa_calls
+    assert cli.main(["360", "qa", str(d), "--json-only", "--json"]) == 1
+    doc = envelope(capsys.readouterr().out)
+    assert doc["error"] == {"code": "not_found", "message": _missing_message()}
+    assert _errors(caplog) == [_missing_message()]
+    assert calls == [] and stub_torch.built == []
+    assert not (d.parent / "preview_qa").exists()
+    _fake_ckpt()
+    caplog.clear()
+    assert cli.main(["360", "qa", str(d), "--json-only"]) == 0
+    assert calls == [d] and _errors(caplog) == []
+
+
+def test_pano_qa_paths_and_compare_need_no_detector(stub_torch, qa_calls, monkeypatch):
+    from cutpoint.pano import qa_paths  # noqa: PLC0415
+
+    d, calls = qa_calls
+    monkeypatch.setattr(qa_paths, "run_paths_qa", lambda qa_dir, fps: calls.append("paths") or {})
+    assert cli.main(["360", "qa", str(d), "--paths"]) == 0
+    assert calls == ["paths"]
+
+
+@pytest.fixture
+def analyze_scan(tmp_path, monkeypatch):
+    """``360 analyze <project> --scan <folder> --views-only`` with the scan and the views
+    layer recorded (nothing runs)."""
+    from cutpoint.pano import cli as pano_cli  # noqa: PLC0415
+
+    folder = tmp_path / "x3"
+    folder.mkdir()
+    calls: list[str] = []
+
+    def scan(project, *a, **kw):
+        calls.append("scan")
+        project.mkdir()  # the real scan writes pano.json there
+        return 0
+
+    monkeypatch.setattr(pano_cli, "_scan", scan)
+    monkeypatch.setattr(pano_cli, "_clips", lambda project: [])
+    monkeypatch.setattr(
+        views, "run_layer", lambda *a, **kw: calls.append("views") or {"cached": 0, "computed": 0}
+    )
+    argv = ["360", "analyze", str(tmp_path / "trip"), "--scan", str(folder), "--views-only"]
+    return argv, calls
+
+
+def test_pano_analyze_scan_checks_the_detector_before_the_scan(
+    stub_torch, analyze_scan, capsys, caplog
+):
+    from conftest import envelope  # noqa: PLC0415
+
+    argv, calls = analyze_scan
+    assert cli.main([*argv, "--json"]) == 1
+    doc = envelope(capsys.readouterr().out)
+    assert doc["error"] == {"code": "not_found", "message": _missing_message()}
+    assert _errors(caplog) == [_missing_message()]
+    assert calls == [] and not Path(argv[2]).exists()
+    _fake_ckpt()
+    caplog.clear()
+    assert cli.main(argv) == 0
+    assert calls == ["scan", "views"] and _errors(caplog) == []
+
+
+def test_pano_precheck_names_a_missing_torch_first(monkeypatch, qa_calls, capsys):
+    """Without torch (Cutpoint lite) the precheck reports the extra, not the weights."""
+    import importlib.util  # noqa: PLC0415
+
+    from conftest import envelope  # noqa: PLC0415
+
+    d, calls = qa_calls
+    find_spec = importlib.util.find_spec
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name, *a: None if name == "torch" else find_spec(name)
+    )
+    assert cli.main(["360", "qa", str(d), "--json-only", "--json"]) == 1
+    assert envelope(capsys.readouterr().out)["error"]["code"] == "missing_extra"
+    assert calls == []
+
+
+def _view_clip(tmp_path: Path) -> X3Clip:
+    lrv = write(tmp_path / "VID_001.lrv", b"x")
+    return X3Clip("001", "2026-01-01", "5.7k", str(lrv), [], frames=10, duration=10.0)
+
+
+def test_pano_views_layer_names_a_missing_torch_first(monkeypatch, tmp_path):
+    """Cutpoint lite: the view layer reports the extra, not the weights (no --scan)."""
+    import importlib.util  # noqa: PLC0415
+
+    find_spec = importlib.util.find_spec
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name, *a: None if name == "torch" else find_spec(name)
+    )
+    monkeypatch.setattr(views, "load_views", lambda src, p=None: None)
+    with pytest.raises(ModuleNotFoundError) as err:
+        views.run_layer([_view_clip(tmp_path)])
+    assert err.value.name == "torch"
+
+
+def test_pano_cached_views_need_no_checkpoint(stub_torch, tmp_path, monkeypatch):
+    monkeypatch.setattr(views, "load_views", lambda src, p=None: object())
+    st = views.run_layer([_view_clip(tmp_path)])
+    assert (st["cached"], st["computed"]) == (1, 0)
+    assert stub_torch.built == [] and not paths.detector_weights().exists()
