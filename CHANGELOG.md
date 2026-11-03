@@ -445,6 +445,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are planned again, as are an upright clip's paths already saved by `360 director` (no
   `--force` needed; until `360 analyze` has recomputed the view layer, a WARNING says so and
   the paths are planned again on the next run). Helmet-mount clips are unchanged.
+- The 360 director no longer swings or spins the view with a handheld or pole-mounted camera
+  (an upright clip, lenses horizontal) (#547). This is the fix for the reported spinning:
+  the view followed the camera's heading, smoothed over only 1.5 s, so twisting the camera
+  back and forth or turning it around turned the picture with it. On the Aug '24 cruise
+  footage that was up to 81 deg in a 5 s moment, now 10. Such clips are now planned in a frame
+  that follows the heading only through a 30 s low-pass (new `pano.director` setting
+  `upright_hold_s`; `0` follows the camera as before). Safe-area fixes and cut-aways hold their
+  view the same way, and the geometric QA judges these clips' pans in the world, as the viewer
+  sees them. Helmet, chest and bike mount paths are unchanged.
+  The `spin` flag measures an upright clip's turning in the world too. For every clip it now
+  also fires on short moments: under 30 s its travel thresholds scale with the moment's length,
+  down to 120 deg turned one way. A 40-90 deg turn in a short moment is one pan and is
+  deliberately left unflagged. The UI's spin reason names a short moment's own length.
+  Candidate paths are planned anew on the next `360 analyze` (cache version 3).
 - Ollama vision ratings and `360 director --vl-check` frame checks are cached per server
   (host and port of the Ollama URL), so a local and a remote Ollama with the same model no
   longer share results; existing ones are rated again once (#673).

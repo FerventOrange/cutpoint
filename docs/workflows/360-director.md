@@ -80,6 +80,15 @@ in the spirit of Pano2Vid and AutoCam.
 - The moment's kind shifts the weights: laughter and speech favour the selfie, people and
   groups favour friends, beauty favours the view, speed and airtime favour forward.
 - Paths are planned 10 s beyond each side of the segment so padding stays on a planned path.
+- An upright clip (camera held by hand or on a pole, lenses horizontal) has no travel
+  direction, and its display frame turns with the camera's heading. The director plans it in a
+  frame that follows that heading only slowly: a Gaussian low-pass of `upright_hold_s` seconds
+  (default 30). Twisting the camera back and forth, or turning it around, then no longer swings
+  or spins the view. The scene's scores turn with the camera, the forward bias stays put, and
+  safe-area fixes and cut-aways hold their view in that frame too. Selfie shots still follow the
+  wearer. `0` follows the camera's heading as a mount does (the `legacy` preset uses 0). Helmet,
+  chest and bike mounts always follow it. The keys stay display yaws, so the renderer is
+  unchanged. The QA judges an upright clip's pans in the world, as the viewer sees them.
 
 Override tuning values with `pano.director` in `config.json` or `cutpoint 360 director --param
 KEY=VALUE`.
