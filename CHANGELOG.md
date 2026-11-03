@@ -32,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   camera's usual burned-in overlay does not make camera footage gameplay. A few seconds per unsure
   source, cached as `category-text-v1.json`; skipped in Cutpoint lite (the source stays
   ambiguous), and never run with an explicit `--style`.
+- `scripts/style_auto_eval.py` (#513, development harness): runs the footage category detection
+  on sources with known categories (a local labels file) and reports the confusion by
+  sure or ambiguous, the sure-wrong sources, the ambiguous share by count and minutes, the style
+  `--style auto` uses per project against the right one, the time per source, and whether the
+  "flip ready" criteria for making auto the default are met (no sure-wrong source, every label's
+  ambiguous share at most `--max-ambiguous` by count and by minutes, every project's style right;
+  each failed criterion is printed with its numbers). `--out` writes JSON and `--compare OLD.json` shows the changes against
+  an earlier run. Only reads the sources.
 - Releases attach `install.sh`, `install.ps1` and `SHA256SUMS` with the release version stamped in
   as the default, so `releases/download/X.Y.Z/install.sh` (or `releases/latest/download/`) installs that
   version from PyPI; the README and Getting started document the pinned one-liners and the checksum
