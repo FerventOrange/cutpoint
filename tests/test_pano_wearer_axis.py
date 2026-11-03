@@ -233,6 +233,7 @@ def test_run_layer_looks_at_the_upright_wearer_in_one_pass(pano, monkeypatch) ->
     """The first selfie pass of an upright clip already looks below the camera, so the
     box median cannot trigger a second (selfie-only) pass."""
     o = _orient(UPRIGHT_UP)
+    monkeypatch.setattr(V, "require_detector", lambda: None)  # the fake models need no file
     monkeypatch.setattr(G, "orientation", lambda *a: o)
     _write_orient(pano.lrv, UPRIGHT_UP)  # what G.orientation caches in a real run
     seen = []
@@ -253,6 +254,7 @@ def test_run_layer_looks_at_the_upright_wearer_in_one_pass(pano, monkeypatch) ->
 
 def test_helmet_run_layer_starts_at_the_measured_mount(pano, monkeypatch) -> None:
     o = _orient(HELMET_UP)
+    monkeypatch.setattr(V, "require_detector", lambda: None)  # the fake models need no file
     monkeypatch.setattr(G, "orientation", lambda *a: o)
     seen = []
     real = VW.compute_views
