@@ -616,6 +616,28 @@ def test_a_stuck_worker_gets_neither_its_source_nor_its_engine(ocr_run, monkeypa
     assert seen == [("a.mp4", False, False), ("b.mp4", False, False)]
 
 
+@pytest.mark.parametrize(("ocr_events", "want"), [([{"kind": "ocr", "type": "kill", "t": 1.0,
+                          "text": "a > b"}], True), ([], False)])  # fmt: skip
+def test_cached_ocr_kills_of_a_vlm_only_run_reach_the_game_prompt(
+    ocr_run, monkeypatch, ocr_events, want
+) -> None:
+    """#596: the OCR events of layer 1, cached ones too when only the VLM layer runs, decide
+    whether the prompt asks about kills."""
+    seen: list[bool] = []
+
+    def game_prompt(game, preset, combat=False):
+        seen.append(combat)
+        raise _Stop
+
+    monkeypatch.setattr(pipeline, "game_prompt", game_prompt)
+    monkeypatch.setattr(
+        pipeline, "detect_ocr_events", lambda *a, **k: ([dict(e) for e in ocr_events], {})
+    )
+    with pytest.raises(_Stop):
+        pipeline.run_events(ocr_run.project, layers=("vlm",), ocr=OcrParams(game="zonewar"))
+    assert seen == [want]
+
+
 # ----------------------------------------------------------------- the switches
 @pytest.mark.parametrize(
     ("out", "want"),
