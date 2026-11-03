@@ -14,7 +14,7 @@ const FILM_STEP = 0.25; // seconds: filmstrip stills sit on multiples of this ti
 const FILM_EXACT = 1; // seconds: a finer grid asks for exact stills; keyframe ones would repeat the same keyframe
 const FILM_WAIT = 150; // ms the view stays still before new filmstrip stills are asked for
 const FILM_FAILS = 3; // failed stills after which a source gets no filmstrip this session
-const JOB_NAMES = { analyze: 'Analysis', edit: 'One-click edit', clips: 'Clip export', extend: 'Export extension', assemble: 'Assembly' };
+const JOB_NAMES = { analyze: 'Analysis', edit: 'One-click edit', clips: 'Clip export', extend: 'Export extension', assemble: 'Assembly', resume: 'Resume' };
 const live = (status) => status === 'running' || status === 'cancelling'; // the job still holds the server
 const SIDE_KEY = 'cutpoint.sideWidth'; // localStorage: the sequence column width the user dragged to
 const SIDE_MIN = 290; // pixels; the column's CSS default is 290-380
@@ -333,7 +333,7 @@ async function loadProjects() {
   $('#newBtn').disabled = false;
   sel.replaceChildren(
     ...(S.projects.length
-      ? S.projects.map((p) => h('option', { value: p.id, text: p.name }))
+      ? S.projects.map((p) => h('option', { value: p.id, text: p.interrupted ? `${p.name} (interrupted)` : p.name }))
       : [h('option', { value: '', text: 'No projects yet', disabled: true })]),
   );
   sel.value = S.id ?? '';
@@ -421,6 +421,9 @@ function renderMoments() {
   const hl = p?.highlights;
   const list = cands();
   $('#analyzeBtn').hidden = !hl; // before analysis the empty state's own button replaces it
+  const resume = $('#resumeBtn'); // a stopped run of progress.json (#109); before analysis the empty state has its own
+  resume.hidden = !hl || !p.run?.resumable;
+  if (!resume.hidden) resume.dataset.label = resumeLabel(p.run);
   $('#revealHeadBtn').hidden = !hl || !S.canReveal; // likewise its own Show folder
   $('.moments').classList.toggle('bare', !hl);
   $('#analyzeBtn').textContent = 'Analyze again';
@@ -434,7 +437,7 @@ function renderMoments() {
   const hadFocus = empty.contains(document.activeElement) || (!!empty.dataset.refocus && document.activeElement === document.body);
   empty.classList.toggle('fresh', !!p && !hl);
   if (!p) setEmpty(empty);
-  else if (!hl) renderUnanalyzed(empty, p.sources?.length ?? 0, p.source_error ? sourceErrorText(p) : '', p.kind === '360');
+  else if (!hl) renderUnanalyzed(empty, p.sources?.length ?? 0, p.source_error ? sourceErrorText(p) : '', p.kind === '360', p.run, !p.source && !p.sources?.length);
   else if (!list.length)
     setEmpty(empty, h('p', {}, 'Analysis found no moments. Try another style, or add footage and analyze again.'));
   else setEmpty(empty);
@@ -506,7 +509,7 @@ function renderMoments() {
   if (listHadFocus && !$('#candList').contains(document.activeElement) && !$('#filterWrap').hidden) $('#filterBtn').focus();
   markMoments();
   if (hadFocus && !empty.contains(document.activeElement))
-    ([$('#analyzeBig'), $('#candList button'), $('#analyzeBtn'), $('#revealHeadBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
+    ([$('#resumeBig'), $('#analyzeBig'), $('#candList button'), $('#resumeBtn'), $('#analyzeBtn'), $('#revealHeadBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
   renderBusy();
 }
 
@@ -624,27 +627,36 @@ function keepEmptyFocus(el) {
   document.addEventListener('focusin', drop, { capture: true, signal: stop.signal });
 }
 
-/** Project open but not analyzed: source count (or why the folder cannot be read) and the one button that starts analysis; ``pano``: a 360 project (n counts its recordings). */
-function renderUnanalyzed(el, n, error, pano) {
-  const state = `${n}|${error}|${pano}`;
+/**
+ * Project open but not analyzed: source count (or why the folder cannot be read) and the one button that starts analysis; ``pano``: a 360 project (n counts its recordings).
+ * ``run``: the project's recorded run (#109); one that stopped puts Resume first. ``lone``: the project has only that record (a first
+ * command-line analysis stopped before its moments), so there is nothing to analyze but Resume.
+ */
+function renderUnanalyzed(el, n, error, pano, run = null, lone = false) {
+  const resume = !!run?.resumable;
+  const state = `${n}|${error}|${pano}|${resume && run.command}|${lone}`;
   if (el.dataset.n === state) return; // polling re-renders; keep the button (and its focus)
   el.dataset.n = state;
   setEmpty(el,
     folderArt(),
-    error
+    lone ? null : error
       ? h('p', { class: 'fresh-error', text: error })
       : h('p', { class: `fresh-count${n ? '' : ' none'}` },
         pano
           ? (n ? `360 footage: ${n} recording${n === 1 ? '' : 's'} found` : 'No 360 recordings found')
           : (n ? `${n} video${n === 1 ? '' : 's'} found in the sources` : 'No videos found in the sources')),
-    h('h3', { text: 'No moments analyzed yet' }),
+    h('h3', { text: resume ? `The ${RUN_NAMES[run.command] ?? 'analysis'} stopped before it finished` : 'No moments analyzed yet' }),
     h('p', {
-      text: pano
+      text: resume ? 'Resume continues it with the same options and keeps the work it finished.' : pano
         ? 'Analyze footage to read the 360 recordings, transcribe audio and rank the strongest moments. Clips are reframed when you export them. Vision rating is not used for 360 footage.'
         : 'Analyze footage to transcribe audio and rank the strongest moments.',
     }),
+    resume ? h('button', {
+      type: 'button', id: 'resumeBig', class: 'btn primary', 'aria-haspopup': 'dialog', 'data-label': resumeLabel(run),
+      onclick: (e) => resumeRun(e.currentTarget),
+    }, resumeLabel(run)) : null,
     h('button', {
-      type: 'button', id: 'analyzeBig', class: 'btn primary', 'aria-describedby': 'analyzeWhy analyzeNote',
+      type: 'button', id: 'analyzeBig', class: `btn ${resume ? 'outline' : 'primary'}`, 'aria-describedby': 'analyzeWhy analyzeNote', hidden: lone,
       onclick: async (e) => {
         e.currentTarget.disabled = true; // no second start while the request is in flight
         keepEmptyFocus(el);
@@ -654,11 +666,11 @@ function renderUnanalyzed(el, n, error, pano) {
     }, 'Analyze footage'),
     // the Analyze options (#483) for the first analysis; Analyze footage alone uses none
     h('button', {
-      type: 'button', id: 'analyzeOptsBtn', class: 'btn outline', 'aria-haspopup': 'dialog', hidden: pano,
+      type: 'button', id: 'analyzeOptsBtn', class: 'btn outline', 'aria-haspopup': 'dialog', hidden: pano || lone,
       onclick: () => analyzeAgain(true),
     }, 'Analysis options…'),
     h('button', {
-      type: 'button', id: 'revealBtn', class: 'btn outline', hidden: !S.canReveal,
+      type: 'button', id: 'revealBtn', class: 'btn outline', hidden: !S.canReveal || lone,
       onclick: (e) => revealFolder(e.currentTarget),
     }, icon('folder'), 'Show folder'),
     h('p', { id: 'analyzeWhy', class: 'fresh-why', 'aria-live': 'polite' }),
@@ -667,6 +679,66 @@ function renderUnanalyzed(el, n, error, pano) {
     h('p', { id: 'analyzeNote', class: 'fresh-note', text: 'This process can take a long time on large footage.' }),
   );
 }
+
+// What a recorded run (progress.json's command, #109) is called on the page
+const RUN_NAMES = {
+  analyze: 'analysis', '360 analyze': '360 analysis', edit: 'one-click edit', clips: 'clip export',
+  events: 'event detection', crashes: 'crash detection', profile: 'activity profile',
+};
+const RUN_ENDS = { interrupted: 'was stopped', low_memory: 'stopped because memory ran short', failed: 'failed' };
+// The page's words for a project another run holds (the server's BUSY_TEXT, #109)
+const BUSY_TEXT = 'Analysis is running on this project; wait for it to finish';
+/** Another run holds the open project: one of the command line, or of another server (not this page's own job). */
+const heldElsewhere = (p) => !!p?.busy && S.active?.project_id !== p.id;
+const resumeLabel = (run) => (run.command === 'clips' ? 'Resume export' : run.command === 'edit' ? 'Resume one-click edit' : 'Resume analysis');
+
+/**
+ * Resume the project's stopped run (#109): the server's ``cutpoint resume --dry-run`` says what it continues, a
+ * dialog asks, then ``cutpoint resume`` runs as a job.
+ */
+async function resumeRun(btn) {
+  if (!S.project || S.resumeCheck) return; // one check at a time
+  const id = S.id;
+  // aria-disabled, not disabled: the button keeps focus, so the dialog gives it back
+  S.resumeCheck = true;
+  btn.setAttribute('aria-disabled', 'true');
+  let info;
+  try {
+    info = await api(`/api/projects/${encodeURIComponent(id)}/resume`);
+    banner('');
+  } catch (e) {
+    fail(e);
+    return;
+  } finally {
+    S.resumeCheck = false;
+    btn.removeAttribute('aria-disabled');
+    renderBusy();
+  }
+  if (id !== S.id) return; // another project was opened meanwhile
+  if (info.status === 'done') { // it finished after all (another run, say)
+    refreshProject();
+    return;
+  }
+  const what = RUN_NAMES[info.command] ?? info.command;
+  const steps = Object.entries(info.steps ?? {}).map(([name, s]) => {
+    const state = s.total != null ? `${s.done ?? 0} of ${s.total} done` : (STEP_TEXT[s.state] ?? s.state ?? 'not started').toLowerCase();
+    return `${STEP_LABELS[name] ?? name}: ${state}`;
+  });
+  const text = [
+    `The last ${what} ${RUN_ENDS[info.status] ?? 'stopped'}.`,
+    steps.length ? `So far: ${steps.join('; ')}.` : '',
+    'Resume runs it again with the same options and keeps the work it finished.',
+    ...(info.warnings ?? []).map(sentence),
+    // the recorded command line as it is replayed: a --force or an --out elsewhere shows here
+    info.argv?.length ? `Command: cutpoint ${commandLine(info.argv)}` : '',
+  ].filter(Boolean).join(' ');
+  if (!(await confirmAction(`${resumeLabel({ command: info.command })}?`, text, 'Resume', false))) return;
+  if (btn.id === 'resumeBig') keepEmptyFocus($('#momentsEmpty')); // the empty state goes when the job starts
+  await startJob('resume');
+}
+
+/** A command line as typed: arguments with spaces or quotes in double quotes. */
+const commandLine = (argv) => argv.map((a) => (/[\s"]/.test(a) || a === '' ? `"${a.replace(/"/g, '\\"')}"` : a)).join(' ');
 
 /** Ask the server to show a project folder in the file manager: 'sources', 'clips' or 'outputs'. */
 async function revealFolder(btn, target = 'sources') {
@@ -2200,13 +2272,15 @@ function closeRename(seg, input) {
   renderExport();
 }
 
-/** Ask with the shared dialog; resolves true when the user confirms. Focus returns to the trigger. */
-function confirmAction(title, text, ok = 'Remove') {
+/** Ask with the shared dialog; resolves true when the user confirms. Focus returns to the trigger. ``danger``: the confirm button's warning look. */
+function confirmAction(title, text, ok = 'Remove', danger = true) {
   const d = $('#confirmDialog');
   const back = document.activeElement;
   $('#confirmTitle').textContent = title;
   $('#confirmText').textContent = text;
   $('#confirmOk').textContent = ok;
+  $('#confirmOk').classList.toggle('danger', danger);
+  $('#confirmOk').classList.toggle('primary', !danger);
   d.returnValue = '';
   d.showModal();
   $('#confirmCancel').focus();
@@ -2846,6 +2920,18 @@ function renderBusy() {
     b.title = off ? reason : '';
   };
   set('#analyzeBtn', !p || busy, why);
+  const resuming = S.active?.project_id === S.id && S.active?.action === 'resume';
+  const held = heldElsewhere(p);
+  const note = $('#runBusy'); // before any job is tried: a run elsewhere holds this project
+  note.hidden = !held;
+  if (note.textContent !== (held ? BUSY_TEXT : '')) note.textContent = held ? BUSY_TEXT : '';
+  for (const b of [$('#resumeBtn'), $('#resumeBig')]) {
+    if (!b) continue;
+    b.disabled = !p || busy || held;
+    b.title = resuming ? 'Resuming… progress is in Jobs.' : busy ? why : held ? BUSY_TEXT : '';
+    const label = resuming ? 'Resuming…' : b.dataset.label ?? b.textContent;
+    if (b.textContent !== label) b.textContent = label;
+  }
   const big = $('#analyzeBig');
   if (big) {
     const own = S.active?.project_id === S.id && S.active?.action === 'analyze';
@@ -2946,7 +3032,7 @@ function stepRows(j) {
  */
 function stepsJob() {
   const j = S.active ?? S.jobs[S.jobs.length - 1];
-  if (!S.id || j?.project_id !== S.id || j.action !== 'analyze' || j.status === 'completed') return null;
+  if (!S.id || j?.project_id !== S.id || (j.action !== 'analyze' && j.action !== 'resume') || j.status === 'completed') return null;
   return j.progress?.steps?.length || j.progress?.plan?.length ? j : null;
 }
 
@@ -3829,10 +3915,14 @@ async function pollJobs() {
     S.jobs = jobs;
     S.active = jobs.find((j) => live(j.status)) ?? null;
     if (fresh) S.logOpen = true;
-    if (finished.some((j) => j.status === 'failed')) S.logOpen = true;
+    // a busy project (folder_busy) is a plain state, not a failure to read up on in the log
+    if (finished.some((j) => j.status === 'failed' && j.error_code !== 'folder_busy')) S.logOpen = true;
     renderJobs();
     renderBusy();
     if (finished.some((j) => j.project_id === S.id)) refreshProject();
+    if (finished.length) loadProjects().catch(() => {}); // the list marks projects with a stopped run
+    else if (heldElsewhere(S.project) && !S.heldCheck) // until the other run lets the project go; one at a time
+      S.heldCheck = refreshProject().finally(() => { S.heldCheck = null; });
   } catch (e) {
     if (S.expired) return; // the banner says why; polling stops
     $('#jobStatus').textContent = e.message;
@@ -3841,13 +3931,17 @@ async function pollJobs() {
   S.jobTimer = setTimeout(pollJobs, S.active ? 1000 : 5000);
 }
 
+/** A clips run that kept the finished clips of a stopped export (``taken_over`` of its result, #109). */
+const takenOver = (n) => `${n} clip${n === 1 ? '' : 's'} taken over from the stopped export`;
+
 function jobLine(j) {
   const name = S.projects.find((p) => p.id === j.project_id)?.name ?? j.project_id;
   const n = JOB_NAMES[j.action] ?? j.action;
   if (j.status === 'running') return `${n} running for ${name}`;
   if (j.status === 'cancelling') return `${n} stopping for ${name}`;
-  if (j.status === 'completed') return `${n} finished for ${name}`;
+  if (j.status === 'completed') return `${n} finished for ${name}${j.taken_over ? `. ${takenOver(j.taken_over)}` : ''}`;
   if (j.status === 'cancelled') return `${n} cancelled for ${name}`;
+  if (j.error_code === 'folder_busy') return `${n} did not run for ${name}: ${j.error}`; // the server's plain text
   return `${n} failed for ${name}${j.error ? `: ${j.error}` : ''}`;
 }
 
@@ -5587,6 +5681,7 @@ function bind() {
     focusRow(0, 'select');
   });
   $('#analyzeBtn').addEventListener('click', () => analyzeAgain());
+  $('#resumeBtn').addEventListener('click', (e) => resumeRun(e.currentTarget));
   // an out-of-range Analyze option blocks Analyze: open the options so the browser can point at it
   $('#againOk').addEventListener('click', () => {
     if (!$('#analyzeDialog form').checkValidity()) $('#analyzeOpts').open = true;

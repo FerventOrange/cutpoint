@@ -39,6 +39,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `progress.json` (never over an interrupted run of another command) and holds the project run
   lock, so `cutpoint resume <project>` continues an
   interrupted `clips` (a recorded `--force` too) or `edit` export.
+- Resume in `cutpoint ui` (#109): a project whose last run stopped (interrupted, out of memory,
+  or a first analysis that failed) shows **Resume analysis** (**Resume export** for `clips`,
+  **Resume one-click edit** for `edit`). It first runs `cutpoint resume <project> --dry-run
+  --json` and shows the run, its step counts, the CLI's warnings and the command line it replays
+  (a recorded `--force` or `--out` included) in a confirm dialog, then
+  runs `cutpoint resume <project>` as a job (progress, steps and Cancel as for an analysis). A
+  resumed `clips` or `edit` run into the project becomes its latest export, and a resumed
+  analysis keeps its `--skip` for Analyze again; a resumed 360 export stitches its recordings
+  first, as the export did. A project folder that holds only the `progress.json` of a run that
+  did not finish (a first command-line analysis stopped before `highlights.json`) is now
+  listed, marked "(interrupted)", and opens to the Resume page instead of 404. A finished
+  clips, extend or resumed export job that took over finished clips says "N clips taken over
+  from the stopped export".
+- `cutpoint ui` jobs that stop with `folder_busy` (another run holds the project's run lock or
+  the clips folder's) read "Analysis is running on this project; wait for it to finish"; the
+  CLI's message, which says to delete the lock file, is left out of the job's log. The page
+  shows the same line, and holds Resume, while another run (the command line, or another
+  `cutpoint ui`) holds the open project, before a job is tried.
+- `taken_over` in the `--json` outputs of `clips` and `extend` (#109): the finished clips taken
+  over from a stopped export's `.<folder>.cutpoint-resume` instead of being encoded again (0
+  when none; not reported for the temporary clips of `assemble <project>` and
+  `edit --no-keep-clips`).
 - `--batch-size N` on `analyze`, `events` and `360 analyze` (#109): each model (Whisper,
   PANNs, the voice and visual layers, the HUD OCR engine, the 360 views, the crash layer's CLIP
   after N dense windows, an Ollama vision model after N VLM windows) is closed after N sources
@@ -352,6 +374,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `cutpoint ui` jobs (#109) run from the projects folder instead of the folder `cutpoint ui` was
+  started in (so `progress.json` records it as their working folder), with `PYTHONSAFEPATH=1`
+  (a `.py` file in that folder never shadows a module), and with `--json`, whose envelope the
+  page reads for the error code and what a resume wrote.
 - Whisper on the CPU without `--model` (#109): when the GPU is short of memory or CUDA fails and
   transcription falls back to the CPU, a run without `--model` uses the CPU default (`small`)
   instead of `medium` when `small` is downloaded already, and the WARNING says so; else it keeps

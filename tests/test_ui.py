@@ -57,11 +57,18 @@ from pano_helpers import x3clip
 PORT = 8765
 
 
+def job_args(args: list[str]) -> list[str]:
+    """The CLI args of a job as ``start_job`` built them, before the ``--json`` it always adds
+    (so the envelope's error code and outputs reach the job)."""
+    assert args[-1] == "--json", args
+    return args[:-1]
+
+
 def fake_start(captured: list[list[str]]):
     """A ``Jobs.start`` stand-in that records the CLI args of each job and reports "running"."""
 
     def start(self, project_id, action, args, *rest, **kw):
-        captured.append(args)
+        captured.append(job_args(args))
         return SimpleNamespace(view=lambda: {"status": "running"})
 
     return start
@@ -1905,8 +1912,8 @@ def test_the_analyze_skip_is_kept_for_analyze_again_and_one_click_edit(
     captured: list[list[str]] = []
     done: list[Callable[[], None] | None] = []
 
-    def start(self, project_id, action, args, on_success, same_folder, *rest):
-        captured.append(args)
+    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
+        captured.append(job_args(args))
         done.append(on_success)
         same_folder()
         return SimpleNamespace(view=lambda: {"status": "running"})
@@ -4161,7 +4168,7 @@ def test_a_clips_job_that_does_not_start_leaves_no_segments_file(
         busy = jobs.start("x", "analyze", [sys.executable, "-c", "import time; time.sleep(60)"])
     else:
 
-        def no_spawn(_args: list[str]) -> None:
+        def no_spawn(_args: list[str], **_kw: object) -> None:
             raise OSError("not found")
 
         monkeypatch.setattr(ui, "spawn", no_spawn)
@@ -6605,8 +6612,8 @@ def test_clips_job_smart_edges_hands_the_trims_to_the_smart_flags(
     assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
     captured: list[list[str]] = []
 
-    def start(self, project_id, action, args, on_success, same_folder, *rest):
-        captured.append(args)
+    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
+        captured.append(job_args(args))
         same_folder()  # the check under the jobs lock, which writes the segments file
         return SimpleNamespace(view=lambda: {"status": "running"})
 
@@ -7262,8 +7269,8 @@ def options_job(
     captured: list[list[str]] = []
     done: list[Callable[[], None] | None] = []
 
-    def start(self, project_id, action, args, on_success, same_folder, *rest):
-        captured.append(args)
+    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
+        captured.append(job_args(args))
         done.append(on_success)
         same_folder()  # the check under the jobs lock, which writes the segments file
         return SimpleNamespace(view=lambda: {"status": "running"})
@@ -7608,8 +7615,8 @@ def preset_job(
     captured: list[list[str]] = []
     done: list[Callable[[], None] | None] = []
 
-    def start(self, project_id, action, args, on_success, same_folder, *rest):
-        captured.append(args)
+    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
+        captured.append(job_args(args))
         done.append(on_success)
         same_folder()
         return SimpleNamespace(view=lambda: {"status": "running"})
@@ -8830,3 +8837,388 @@ def test_suggest_style_gives_no_answer_while_another_probe_runs(
     finally:
         ui._suggest_lock.release()
     assert res.status_code == 200 and res.json() == {"style": None, "busy": True}
+
+
+# --------------------------------------------------------------------------- resume (#109)
+def progress_record(
+    p: Path, command: str = "analyze", status: str = "interrupted", **over: object
+) -> dict[str, object]:
+    """Write a ``progress.json`` into ``p`` (made if missing) as :mod:`cutpoint.runstate` does;
+    a run on another host, so ``runstate.read`` takes its status as written."""
+    p.mkdir(parents=True, exist_ok=True)
+    rec: dict[str, object] = {
+        "version": 1,
+        "generator": "cutpoint test",
+        "command": command,
+        "argv": [command, str(p.parent / "clip.mp4"), "--out", str(p)],
+        "cwd": str(p.parent),
+        "options_key": "k",
+        "status": status,
+        "pid": 1,
+        "host": "another-host",
+        "started": None,
+        "updated": None,
+        "exit_code": 130,
+        "error": None,
+        "sources": [],
+        "steps": {"transcribe": {"state": "failed", "done": 1, "total": 3, "pct": 40}},
+        **over,
+    }
+    cache.save_json(p / "progress.json", rec)
+    return rec
+
+
+@pytest.fixture
+def scratch_appdata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """APPDATA too (conftest covers CUTPOINT_HOME and LOCALAPPDATA): the CLI children of these
+    tests never see the user's real folders."""
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+
+
+def test_a_project_with_only_progress_json_is_listed_as_interrupted_and_opens(
+    client: TestClient, scratch_appdata: None
+) -> None:
+    p = ui.projects_dir() / "stopped"
+    progress_record(p)
+    (ui.projects_dir() / "empty").mkdir()  # no record, no analysis: still not a project
+    listed = client.get("/api/projects").json()["projects"]
+    assert listed == [{"id": "stopped", "name": "stopped", "interrupted": True}]
+    res = client.get("/api/projects/stopped")
+    assert res.status_code == 200, res.text
+    got = res.json()
+    assert got["highlights"] is None and got["sources"] == []  # progress.json grants no media
+    assert got["run"] == {"command": "analyze", "status": "interrupted", "resumable": True}
+
+
+@pytest.mark.parametrize(
+    ("status", "analyzed", "resumable"),
+    [
+        ("interrupted", True, True),
+        ("low_memory", True, True),
+        ("failed", False, True),  # nothing but Resume can finish a first analysis
+        ("failed", True, False),
+        ("done", False, False),
+    ],
+)
+def test_resume_is_offered_for_a_stopped_run(
+    tmp_path: Path, status: str, analyzed: bool, resumable: bool
+) -> None:
+    p = tmp_path / "p"
+    progress_record(p, status=status)
+    assert ui.run_state(p, analyzed) == {
+        "command": "analyze",
+        "status": status,
+        "resumable": resumable,
+    }
+    assert ui.run_state(tmp_path / "none", analyzed) is None
+
+
+def test_a_running_record_of_a_dead_process_reads_interrupted(tmp_path: Path) -> None:
+    p = tmp_path / "p"
+    proc = subprocess.run(
+        [sys.executable, "-c", "import os; print(os.getpid())"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    progress_record(p, status="running", pid=int(proc.stdout), host=socket.gethostname())
+    assert ui.run_state(p, False)["status"] == "interrupted"
+
+
+def test_resume_preview_runs_the_dry_run_and_reports_its_steps(
+    client: TestClient, scratch_appdata: None
+) -> None:
+    p = ui.projects_dir() / "stopped"
+    progress_record(p, sources=[str(p.parent / "clip.mp4")])  # not there: the CLI warns
+    res = client.get("/api/projects/stopped/resume")
+    assert res.status_code == 200, res.text
+    got = res.json()
+    assert (got["command"], got["status"]) == ("analyze", "interrupted")
+    assert got["steps"] == {"transcribe": {"state": "failed", "done": 1, "total": 3}}
+    assert got["warnings"] == ["1 source(s) of the recorded run are not there now"]
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "detail"),
+    [
+        ({"code": "folder_busy", "message": "... delete the lock"}, 409, ui.BUSY_TEXT),
+        ({"code": "not_found", "message": "No progress.json"}, 404, "no run to resume"),
+        ({"code": "error", "message": "names no command"}, 409, "names no command"),
+    ],
+)
+def test_resume_preview_turns_cli_errors_into_plain_answers(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, error: dict, status: int, detail: str
+) -> None:
+    progress_record(ui.projects_dir() / "stopped")
+    seen: list[dict[str, object]] = []
+    envelope = {"ok": False, "command": "resume", "schema": 1, "project": None}
+    envelope |= {"outputs": {}, "warnings": [], "error": error}
+
+    def run(args: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+        seen.append({"args": args, **kw})
+        return subprocess.CompletedProcess(args, 1, "log line\n" + json.dumps(envelope) + "\n", "")
+
+    monkeypatch.setattr(ui.subprocess, "run", run)
+    res = client.get("/api/projects/stopped/resume")
+    assert res.status_code == status and detail in res.json()["detail"]
+    p = ui.projects_dir() / "stopped"
+    assert seen[0]["args"] == ui.cutpoint_cmd("resume", str(p), "--dry-run", "--json")
+    assert seen[0]["cwd"] == p.parent  # the projects folder, not the server's own
+
+
+def test_a_folder_busy_job_shows_the_plain_state_without_the_delete_advice() -> None:
+    message = "Another cutpoint run (process 9) is using X. If no other run is active, delete L"
+    envelope = {"ok": False, "command": "analyze", "schema": 1, "project": None, "outputs": {}}
+    envelope |= {"warnings": [], "error": {"code": "folder_busy", "message": message}}
+    script = (
+        "import sys\n"
+        "print('12:00:00 INFO starting', flush=True)\n"
+        f"print('12:00:01 ERROR ' + {message!r}, file=sys.stderr, flush=True)\n"
+        f"print({json.dumps(envelope)!r}, flush=True)\n"
+        "raise SystemExit(1)\n"
+    )
+    job = ui.Jobs().start("p", "analyze", [sys.executable, "-c", script])
+    assert job.done.wait(30)
+    view = job.view()
+    assert (view["status"], view["error"], view["error_code"]) == (
+        "failed",
+        ui.BUSY_TEXT,
+        "folder_busy",
+    )
+    assert not any("delete" in ln or '"schema"' in ln for ln in view["logs"]), view["logs"]
+    assert view["logs"][0].endswith("INFO starting")
+
+
+def test_another_failure_keeps_its_error_line_and_reports_its_code() -> None:
+    envelope = {"ok": False, "command": "clips", "schema": 1, "project": None, "outputs": {}}
+    envelope |= {"warnings": [], "error": {"code": "not_found", "message": "boom"}}
+    script = f"print('12:00:00 ERROR boom')\nprint({json.dumps(envelope)!r})\nraise SystemExit(1)"
+    job = ui.Jobs().start("p", "clips", [sys.executable, "-c", script])
+    assert job.done.wait(30)
+    assert (job.status, job.error, job.error_code) == ("failed", "boom", "not_found")
+    assert job.result is not None and job.result["error"]["code"] == "not_found"
+
+
+def test_jobs_run_in_the_folder_they_are_given(tmp_path: Path) -> None:
+    job = ui.Jobs().start(
+        "p", "analyze", [sys.executable, "-c", "import os; print(os.getcwd())"], cwd=tmp_path
+    )
+    assert job.done.wait(30) and job.status == "completed", job.error
+    assert Path(job.logs[-1]).resolve() == tmp_path.resolve()
+
+
+def test_every_project_job_runs_from_the_projects_folder_with_json(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p, seg = cli_project(tmp_path)
+    cache.save_json(
+        p / "highlights.json", {**cache.load_json(p / "highlights.json"), "style": "funny"}
+    )
+    assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
+    seen: list[dict[str, object]] = []
+
+    def start(self, project_id, action, args, *rest, **kw):
+        seen.append({"args": args, **kw})
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    for action in ("analyze", "clips"):
+        assert client.post("/api/projects/cli/jobs", json={"action": action}).status_code == 200
+    assert [s["cwd"] for s in seen] == [ui.projects_dir(), ui.projects_dir()]
+    for s in seen:  # --json last, and the CLI takes it there
+        assert s["args"][-1] == "--json"
+        cli.build_parser().parse_args(s["args"][3:])
+
+
+def resume_job(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, pid: str
+) -> tuple[object, list[dict[str, object]]]:
+    """POST a resume job of ``pid`` with ``Jobs.start`` recording what it was given."""
+    seen: list[dict[str, object]] = []
+
+    def start(self, project_id, action, args, on_success, same_folder, *rest, **kw):
+        seen.append({"action": action, "args": args, "rest": rest, **kw})
+        same_folder()
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    return client.post(f"/api/projects/{pid}/jobs", json={"action": "resume"}), seen
+
+
+def test_the_resume_job_runs_cutpoint_resume_on_the_project(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = ui.projects_dir() / "stopped"
+    progress_record(p)
+    res, seen = resume_job(client, monkeypatch, "stopped")
+    assert res.status_code == 200, res.text
+    assert seen[0]["action"] == "resume"
+    assert seen[0]["args"] == [*ui.cutpoint_cmd("resume", str(p)), "--json"]
+    assert seen[0]["cwd"] == ui.projects_dir()
+
+
+@pytest.mark.parametrize("status", ["done", "running", None])
+def test_the_resume_job_is_refused_without_a_stopped_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, status: str | None
+) -> None:
+    p, _ = cli_project(tmp_path)
+    if status:
+        progress_record(p, status=status)
+    res, seen = resume_job(client, monkeypatch, "cli")
+    assert res.status_code == 409 and seen == []
+
+
+def test_a_resumed_export_becomes_the_latest_export(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p, _ = cli_project(tmp_path)
+    out = p / "clips_ui_20260101-000000"
+    argv = ["clips", str(p), "--segments", "s.json", "--out", str(out), "--vertical", "--json"]
+    progress_record(p, command="clips", argv=argv)
+    res, seen = resume_job(client, monkeypatch, "cli")
+    assert res.status_code == 200, res.text
+    on_result = seen[0]["on_result"]
+    out.mkdir()
+    cache.save_json(out / "manifest.json", {"clips": []})
+    # a record that had finished meanwhile resumes nothing: nothing is listed
+    on_result(SimpleNamespace(result={"outputs": {"resumed": False, "clips_dir": str(out)}}))
+    assert not (p / "ui" / "exports.json").exists()
+    on_result(SimpleNamespace(result={"outputs": {"resumed": True, "clips_dir": str(out)}}))
+    items = cache.load_json(p / "ui" / "exports.json")["exports"]
+    assert [(e["dir"], e["vertical"], e["final"]) for e in items] == [(out.name, True, None)]
+    # a clips folder outside the project is never listed
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    cache.save_json(other / "manifest.json", {"clips": []})
+    on_result(SimpleNamespace(result={"outputs": {"resumed": True, "clips_dir": str(other)}}))
+    assert len(cache.load_json(p / "ui" / "exports.json")["exports"]) == 1
+
+
+def test_a_resumed_edit_lists_its_clips_and_final_and_a_resumed_analysis_keeps_its_skip(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p, _ = cli_project(tmp_path)
+    argv = ["edit", "clip.mp4", "--kind", "montage", "--out", str(p), "--skip", "crashes"]
+    progress_record(p, command="edit", argv=[*argv, "keyframes", "--json"])
+    (p / "clips").mkdir()
+    cache.save_json(p / "clips" / "manifest.json", {"clips": []})
+    (p / "final.mp4").write_bytes(b"x")
+    res, seen = resume_job(client, monkeypatch, "cli")
+    assert res.status_code == 200, res.text
+    outputs = {"resumed": True, "clips_dir": str(p / "clips"), "final": str(p / "final.mp4")}
+    seen[0]["on_result"](SimpleNamespace(result={"outputs": outputs}))
+    items = cache.load_json(p / "ui" / "exports.json")["exports"]
+    assert [(e["dir"], e["vertical"], e["final"]) for e in items] == [("clips", False, "final.mp4")]
+    assert cache.load_json(p / ui.ANALYSIS_FILE)["skip"] == ["keyframes", "crashes"]
+
+
+def test_a_project_another_process_holds_reads_busy(client: TestClient, tmp_path: Path) -> None:
+    p, _ = cli_project(tmp_path)
+    assert client.get("/api/projects/cli").json()["busy"] is False
+    lock = folders.lock_path(p / "analysis.run")
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        lock.write_text(json.dumps({"pid": child.pid, "host": socket.gethostname()}))
+        assert client.get("/api/projects/cli").json()["busy"] is True
+    finally:
+        child.kill()
+        child.wait()
+    assert client.get("/api/projects/cli").json()["busy"] is False  # its process is gone
+    lock.unlink()
+    progress_record(p, status="running")  # a run on another host still going
+    assert client.get("/api/projects/cli").json()["busy"] is True
+
+
+def test_a_clips_job_reports_the_clips_it_took_over() -> None:
+    def job(outputs: dict[str, object]) -> dict[str, object]:
+        envelope = {"ok": True, "command": "clips", "schema": 1, "project": None}
+        envelope |= {"outputs": outputs, "warnings": [], "error": None}
+        j = ui.Jobs().start(
+            "p", "clips", [sys.executable, "-c", f"print({json.dumps(envelope)!r})"]
+        )
+        assert j.done.wait(30) and j.status == "completed", j.error
+        return j.view()
+
+    assert job({"taken_over": 2})["taken_over"] == 2
+    assert "taken_over" not in job({"taken_over": 0})
+    assert "taken_over" not in job({})
+
+
+def test_jobs_never_import_a_module_from_the_projects_folder(tmp_path: Path) -> None:
+    """``python -m cutpoint`` runs there: PYTHONSAFEPATH keeps a stray json.py out of reach."""
+    (tmp_path / "json.py").write_text("raise SystemExit(7)\n", encoding="utf-8")
+    assert ui.job_env()["PYTHONSAFEPATH"] == "1"
+    job = ui.Jobs().start(
+        "p", "analyze", [sys.executable, "-c", "import json; print('real json')"], cwd=tmp_path
+    )
+    assert job.done.wait(30) and job.status == "completed", (job.error, list(job.logs))
+    assert list(job.logs) == ["real json"]
+
+
+def test_a_finished_record_alone_is_no_project(client: TestClient) -> None:
+    progress_record(ui.projects_dir() / "finished", status="done")
+    assert client.get("/api/projects").json()["projects"] == []
+    assert client.get("/api/projects/finished").status_code == 404
+
+
+def test_resume_preview_returns_the_command_line_it_replays(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    progress_record(ui.projects_dir() / "stopped")
+    argv = ["clips", "p", "--force", "--out", "D:/elsewhere"]
+    envelope = {"ok": True, "command": "clips", "schema": 1, "project": None, "warnings": []}
+    envelope |= {"error": None, "outputs": {"resume": {"argv": argv, "status_before": "x"}}}
+    out = json.dumps(envelope) + "\n"
+    monkeypatch.setattr(
+        ui.subprocess, "run", lambda args, **kw: subprocess.CompletedProcess(args, 0, out, "")
+    )
+    assert client.get("/api/projects/stopped/resume").json()["argv"] == argv
+    envelope["outputs"]["resume"]["argv"] = ["clips", 3]  # never anything but strings
+    out = json.dumps(envelope) + "\n"
+    assert client.get("/api/projects/stopped/resume").json()["argv"] == []
+
+
+def test_resuming_an_export_with_a_ui_file_in_the_way_is_refused_before_it_starts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p, _ = cli_project(tmp_path)
+    progress_record(p, command="clips")
+    (p / "ui").write_text("not a folder", encoding="utf-8")
+    res, _ = resume_job(client, monkeypatch, "cli")
+    assert res.status_code == 409 and "is not a folder" in res.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("argv", "seg", "picks"),
+    [
+        (["clips", "p", "--segments", "ui/s.json", "--out", "o"], "ui/s.json", {}),
+        (
+            ["clips", "p", "--top", "3", "--max-total", "60", "--out", "o"],
+            None,
+            {"top": 3, "ids": None, "max_total": 60.0},
+        ),
+        (["clips", "p", "--ids", "h001", "h004", "--json"], None, {"ids": ["h001", "h004"]}),
+    ],
+)
+def test_a_resumed_360_export_stitches_what_its_command_line_exports(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    argv: list[str],
+    seg: str | None,
+    picks: dict[str, object],
+) -> None:
+    p, _ = cli_project(tmp_path)
+    (p / "ui").mkdir()
+    cache.save_json(p / "ui" / "meta.json", {"name": "cli", "kind": "360"})
+    progress_record(p, command="clips", argv=argv)
+    stitched: list[tuple[object, ...]] = []
+    monkeypatch.setattr(ui, "stitch_first", lambda job, *a: stitched.append(a) and None)
+    res, seen = resume_job(client, monkeypatch, "cli")
+    assert res.status_code == 200, res.text
+    before = seen[0]["rest"][1]  # Jobs.start(..., plan, before)
+    assert before(SimpleNamespace()) is None
+    project, seg_file, chosen = stitched[0]
+    assert project == p
+    assert seg_file == (None if seg is None else p.parent / seg)
+    assert chosen == ({"top": None, "ids": None, "max_total": None} | picks if seg is None else {})

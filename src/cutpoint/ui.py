@@ -1,9 +1,9 @@
 """``cutpoint ui``: local browser workspace for the standard-video highlight workflow.
 
 A loopback-only FastAPI app that serves ``cutpoint/web`` and a small JSON
-API over the projects folder. Heavy work (analyze, clips, extend, assemble) runs as ordinary
-``python -m cutpoint ...`` child processes, one at a time, so the browser and the CLI share one
-implementation. Source videos are only ever read.
+API over the projects folder. Heavy work (analyze, clips, extend, assemble, resume) runs as
+ordinary ``python -m cutpoint ... --json`` child processes in the projects folder, one at a time,
+so the browser and the CLI share one implementation. Source videos are only ever read.
 
 Trust boundaries:
 
@@ -21,6 +21,11 @@ Trust boundaries:
   recorded source files, and only those under the source the user picked for it (or, for projects
   made on the command line, the inputs of its analysis); ``highlights.json`` alone never
   grants access to a file.
+* Resume (``GET .../resume``, the ``resume`` job) replays the command line the project's
+  ``progress.json`` recorded, from its recorded working folder (``cutpoint resume``): a
+  recorded ``--force`` or an ``--out`` outside the project too. The page shows that command
+  line in its confirm dialog first; the server never changes it, and a clips folder it wrote
+  outside the project is never listed as an export.
 * "Show folder" (``.../reveal?target=``) opens, in the file manager and without a shell, one of
   three folders the server resolves from the project: its own sources (the default), the clips
   folder of its latest export, or the project folder holding its assembled final. The request
@@ -94,7 +99,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from cutpoint import cache, folders, insta360, paths, procs, progress
+from cutpoint import cache, folders, insta360, jsonout, paths, procs, progress, runstate
 from cutpoint.assemble import AUDIO_TRANSITIONS, OUTPUT_FORMATS, default_audio_transition
 from cutpoint.assistant import cliproxy
 from cutpoint.assistant import context as ai_context
@@ -205,6 +210,10 @@ MAX_TELEMETRY_PROBES = 12  # files one style suggestion probes, so a big folder 
 MAX_INPUTS = 50  # files and folders one New project takes (analyze's positional inputs)
 MAX_EXCLUDES = 20  # analyze --exclude patterns one New project takes
 MAX_GLOB = 200  # characters of one --exclude pattern
+# What the page says when a job stops with folder_busy (#109): another run holds the project's run
+# lock or the clips folder's; never the CLI's message, which tells the user to delete the lock.
+BUSY_TEXT = "Analysis is running on this project; wait for it to finish"
+RESUME_CHECK_S = 60.0  # seconds ``cutpoint resume --dry-run`` may take (it starts the CLI)
 
 
 def bad(detail: str, status: int = 400) -> HTTPException:
@@ -212,13 +221,32 @@ def bad(detail: str, status: int = 400) -> HTTPException:
 
 
 # --------------------------------------------------------------------------- processes
-def spawn(args: list[str], *, low_priority: bool = True) -> subprocess.Popen[str]:
+def job_env() -> dict[str, str]:
+    """The environment of a child ``cutpoint`` command (``spawn``, ``resume_check``)."""
+    # CUTPOINT_PROGRESS: analyze and edit write PROGRESS step lines (``parse_progress``); the
+    # other commands and ffmpeg ignore it.
+    # Never the assistant's API key variables (ai_keys.child_env): no job uses them.
+    return {
+        **ai_keys.child_env(),
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "CUTPOINT_PROGRESS": "1",
+        # ``python -m cutpoint`` runs in the projects folder: a stray json.py there must not
+        # shadow a module (no current folder on sys.path)
+        "PYTHONSAFEPATH": "1",
+    }
+
+
+def spawn(
+    args: list[str], *, low_priority: bool = True, cwd: Path | None = None
+) -> subprocess.Popen[str]:
     """Start ``args`` (no shell) in its own process group at low priority, stdout+stderr merged.
 
     Low priority keeps the desktop and the browser responsive while a job or proxy encodes; the
     children it starts (ffmpeg, workers) inherit it. Windows: BELOW_NORMAL_PRIORITY_CLASS;
     elsewhere ``nice -n 10`` when there is one (it execs, so the pid and group stay the same).
     ``low_priority=False``: normal priority, for the short window proxy encodes the user waits on.
+    ``cwd``: the folder it runs in (jobs: the projects folder), else the server's own.
     """
     if os.name == "nt":
         flags = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -236,15 +264,8 @@ def spawn(args: list[str], *, low_priority: bool = True) -> subprocess.Popen[str
         text=True,
         encoding="utf-8",
         errors="replace",
-        # CUTPOINT_PROGRESS: analyze and edit write PROGRESS step lines (``parse_progress``); the
-        # other commands and ffmpeg ignore it.
-        # Never the assistant's API key variables (ai_keys.child_env): no job uses them.
-        env={
-            **ai_keys.child_env(),
-            "PYTHONUNBUFFERED": "1",
-            "PYTHONIOENCODING": "utf-8",
-            "CUTPOINT_PROGRESS": "1",
-        },
+        env=job_env(),
+        cwd=cwd,
         **group,
     )
     if os.name == "nt":
@@ -898,16 +919,44 @@ def parse_progress(line: str) -> dict[str, Any] | None:
     }
 
 
+def parse_result(line: str) -> dict[str, Any] | None:
+    """The ``--json`` envelope (:mod:`cutpoint.jsonout`) an output line carries, else None.
+
+    The envelope is one JSON object on stdout; jobs merge stdout into their output."""
+    text = line.strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        raw = json.loads(text)
+    except (ValueError, RecursionError):
+        return None
+    if (
+        not isinstance(raw, dict)
+        or raw.get("schema") != jsonout.SCHEMA
+        or not isinstance(raw.get("ok"), bool)
+        or not isinstance(raw.get("outputs"), dict)
+    ):
+        return None
+    return raw
+
+
 class Job:
     """One child process and what it said."""
 
     def __init__(
-        self, project_id: str, action: str, plan: list[dict[str, str]] | None = None
+        self,
+        project_id: str,
+        action: str,
+        plan: list[dict[str, str]] | None = None,
+        cwd: Path | None = None,
     ) -> None:
         self.id = secrets.token_hex(6)
         self.project_id = project_id
         self.action = action
         self.plan = plan  # the steps the command will report (``{step, label}``), if known
+        self.cwd = cwd  # the folder its commands run in (the projects folder)
+        self.result: dict[str, Any] | None = None  # its command's ``--json`` envelope
+        self.error_code: str | None = None  # the envelope's ``error.code`` of a failed job
         self.status = "running"
         self.logs: deque[str] = deque(maxlen=MAX_LOG_LINES)
         self.logged = 0  # lines ever added to ``logs`` (it drops the oldest past its size)
@@ -921,8 +970,12 @@ class Job:
         self.done = threading.Event()
 
     def add_output(self, line: str) -> None:
-        """One output line: a step update goes to the steps, any other text to the log."""
+        """One output line: a step update goes to the steps, the ``--json`` envelope to
+        ``result``, any other text to the log."""
         step = parse_progress(line)
+        if step is None and (result := parse_result(line)) is not None:
+            self.result = result
+            return
         if step is None:
             if line.strip():
                 self.logs.append(line.rstrip())
@@ -937,6 +990,10 @@ class Job:
         """A log line of the server's own, in the CLI's ``HH:MM:SS LEVEL message`` form."""
         self.logs.append(f"{datetime.now():%H:%M:%S} {level} {message}")
         self.logged += 1
+
+    def drop_lines(self, text: str) -> None:
+        """Take the log lines holding ``text`` out of the log."""
+        self.logs = deque((ln for ln in self.logs if text not in ln), maxlen=MAX_LOG_LINES)
 
     def interrupt_steps(self) -> None:
         """The job failed or was stopped: a step still running will not finish."""
@@ -961,6 +1018,12 @@ class Job:
             out["progress"]["plan"] = self.plan
         if self.error:
             out["error"] = self.error
+        if self.error_code:
+            out["error_code"] = self.error_code
+        # clips, extend or a resumed export (#109): finished clips of a stopped export it kept
+        taken = (self.result or {}).get("outputs", {}).get("taken_over")
+        if isinstance(taken, int) and not isinstance(taken, bool) and taken > 0:
+            out["taken_over"] = taken
         return out
 
 
@@ -980,21 +1043,26 @@ class Jobs:
         check: Callable[[], None] | None = None,
         plan: list[dict[str, str]] | None = None,
         before: Callable[[Job], list[str] | None] | None = None,
+        *,
+        cwd: Path | None = None,
+        on_result: Callable[[Job], None] | None = None,
     ) -> Job:
         """Start ``args`` as a job; ``check`` runs under the lock first and may refuse it.
         ``plan``: the steps it will report, shown as waiting before their first update.
         ``before``: runs in the job's thread first and returns a command to run ahead of
         ``args``, or None; that command failing (or ``before`` raising) only warns, then
-        ``args`` runs. Cancel stops both."""
+        ``args`` runs. Cancel stops both. ``cwd``: the folder the commands run in.
+        ``on_result``: runs after ``on_success``, given the job (its ``--json`` envelope in
+        ``result``)."""
         with self.lock:
             if any(j.status == "running" for j in self.jobs.values()):
                 raise bad("another job is already running", 409)
             if check:
                 check()
-            job = Job(project_id, action, plan)
+            job = Job(project_id, action, plan, cwd)
             if before is None:
                 try:
-                    job.proc = spawn(args)
+                    job.proc = self._popen(job, args)
                 except OSError as err:
                     raise bad(f"could not start job: {err}", 500) from err
             for old in [k for k, j in self.jobs.items() if j.status != "running"][
@@ -1003,16 +1071,20 @@ class Jobs:
                 del self.jobs[old]
             self.jobs[job.id] = job
         threading.Thread(
-            target=self._watch, args=(job, args, on_success, before), daemon=True
+            target=self._watch, args=(job, args, on_success, before, on_result), daemon=True
         ).start()
         return job
+
+    @staticmethod
+    def _popen(job: Job, args: list[str]) -> subprocess.Popen[str]:
+        return spawn(args) if job.cwd is None else spawn(args, cwd=job.cwd)
 
     def _spawn(self, job: Job, args: list[str]) -> bool:
         """Start ``args`` as the job's process, unless it was cancelled; False if it was."""
         with self.lock:  # a Cancel either sees this process or stops the job before it starts
             if job.cancelled:
                 return False
-            job.proc = spawn(args)
+            job.proc = self._popen(job, args)
         return True
 
     @staticmethod
@@ -1068,6 +1140,7 @@ class Jobs:
         args: list[str],
         on_success: Callable[[], None] | None,
         before: Callable[[Job], list[str] | None] | None = None,
+        on_result: Callable[[Job], None] | None = None,
     ) -> None:
         try:
             mark = 0  # the job's own error is an ERROR line of its own command
@@ -1088,6 +1161,8 @@ class Jobs:
                 job.interrupt_steps()
             if job.cancelled:
                 job.status = "cancelled"
+            elif code != 0 and self._busy(job):
+                job.status = "failed"
             elif code != 0:
                 own = list(job.logs)[-(job.logged - mark) :] if job.logged > mark else []
                 last = next(
@@ -1099,6 +1174,8 @@ class Jobs:
                 try:
                     if on_success:
                         on_success()
+                    if on_result:
+                        on_result(job)
                     job.status = "completed"
                 except HTTPException as err:  # a refused write: its message is the error
                     job.error, job.status = err.detail, "failed"
@@ -1107,6 +1184,23 @@ class Jobs:
                     job.error, job.status = str(err), "failed"
         finally:
             job.done.set()
+
+    @staticmethod
+    def _busy(job: Job) -> bool:
+        """The job's command stopped with ``folder_busy`` (another run holds the project's run
+        lock or a clips folder's): the error is :data:`BUSY_TEXT`, and the CLI's ERROR line,
+        which tells the user to delete the lock file, leaves the log."""
+        err = (job.result or {}).get("error")
+        code = err.get("code") if isinstance(err, dict) else None
+        if isinstance(code, str):
+            job.error_code = code
+        if code != jsonout.FOLDER_BUSY:
+            return False
+        if isinstance(err.get("message"), str) and err["message"]:
+            job.drop_lines(err["message"])
+        job.note("ERROR", BUSY_TEXT)
+        job.error = BUSY_TEXT
+        return True
 
     def get(self, job_id: str) -> Job:
         job = self.jobs.get(job_id)
@@ -2942,10 +3036,142 @@ def _ui_folder(p: Path, sub: str = "", made: list[Path] | None = None) -> None:
 
 
 def _is_project(d: Path) -> bool:
-    """``d`` holds UI metadata or an analysis of its own (not one a link points to)."""
-    return any(
-        (d / n).is_file() and _inside(d, n) for n in (f"{UI_DIR}/meta.json", "highlights.json")
+    """``d`` holds UI metadata or an analysis of its own (not one a link points to), or the
+    ``progress.json`` of a first analysis that stopped before writing one (#109; one of a run
+    that finished has nothing to show or resume)."""
+    if any((d / n).is_file() and _inside(d, n) for n in (f"{UI_DIR}/meta.json", "highlights.json")):
+        return True
+    rec = runstate.read(d) if _inside(d, runstate.FILE) else None
+    return rec is not None and rec.get("status") != "done"
+
+
+def run_state(p: Path, analyzed: bool) -> dict[str, Any] | None:
+    """The project's last recorded run (``progress.json``, :func:`cutpoint.runstate.read`) as
+    the page shows it: ``command``, ``status`` and whether Resume continues it (``resumable``:
+    interrupted or stopped for memory; also failed while there is no analysis, ``analyzed``
+    False, which only Resume can finish). None without a readable record."""
+    rec = runstate.read(p) if _inside(p, runstate.FILE) else None
+    command = (rec or {}).get("command")
+    if rec is None or command not in runstate.COMMANDS:
+        return None
+    status = rec.get("status")
+    resumable = status in runstate.RESUMABLE or (status == "failed" and not analyzed)
+    return {"command": command, "status": status, "resumable": resumable}
+
+
+def project_busy(p: Path, run: dict[str, Any] | None) -> bool:
+    """A run is going on the project: another process holds its run lock
+    (``.analysis.run.cutpoint-lock``, :mod:`cutpoint.runstate`; one whose process is gone does
+    not count), or ``run`` (:func:`run_state`) reads ``running``."""
+    if run is not None and run["status"] == "running":
+        return True
+    return folders.lock_held(p / runstate.LOCK_NAME)
+
+
+def resume_check(p: Path) -> dict[str, Any]:
+    """What ``cutpoint resume <p>`` would continue: the ``--json`` envelope of its ``--dry-run``,
+    run from the projects folder.
+
+    Raises:
+        HTTPException: 409 :data:`BUSY_TEXT` while the run is still going, 404 without a run to
+            resume, 409 with the CLI's message when it refuses the record, 500 or 504 when the
+            check could not run.
+    """
+    try:
+        done = subprocess.run(
+            cutpoint_cmd("resume", str(p), "--dry-run", "--json"),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=job_env(),
+            cwd=p.parent,
+            timeout=RESUME_CHECK_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as err:
+        raise bad("checking the run to resume took too long", 504) from err
+    except OSError as err:
+        raise bad(f"could not check the run to resume: {err}", 500) from err
+    result = next((r for ln in reversed(done.stdout.splitlines()) if (r := parse_result(ln))), None)
+    if result is None:
+        raise bad(f"could not check the run to resume (exit code {done.returncode})", 500)
+    err = result.get("error")
+    if isinstance(err, dict):
+        if err.get("code") == jsonout.FOLDER_BUSY:
+            raise bad(BUSY_TEXT, 409)
+        if err.get("code") == jsonout.NOT_FOUND:
+            raise bad("this project has no run to resume", 404)
+        raise bad(str(err.get("message") or "the run cannot be resumed"), 409)
+    return result
+
+
+def _values(argv: list[str], flag: str) -> list[str]:
+    """The tokens a recorded command line gives ``flag`` (after it, up to the next option)."""
+    if flag not in argv:
+        return []
+    rest = argv[argv.index(flag) + 1 :]
+    return rest[: next((i for i, t in enumerate(rest) if t.startswith("-")), len(rest))]
+
+
+def _skip_after(argv: list[str]) -> list[str]:
+    """The steps a recorded command line gives ``--skip``."""
+    steps = _values(argv, "--skip")
+    return [s for s in progress.SKIPPABLE if s in steps]
+
+
+def _recorded_picks(rec: dict[str, Any]) -> tuple[Path | None, dict[str, Any]]:
+    """What a recorded ``clips`` command line exports, as :func:`stitch_first` takes it: its
+    ``--segments`` file (relative to the record's ``cwd``), else its ``--top``, ``--ids`` and
+    ``--max-total``."""
+    argv = [str(a) for a in rec.get("argv") or []]
+    if seg := _values(argv, "--segments"):
+        return Path(str(rec.get("cwd") or ".")) / seg[0], {}
+    top, total = _values(argv, "--top"), _values(argv, "--max-total")
+    picks: dict[str, Any] = {"top": None, "ids": _values(argv, "--ids") or None, "max_total": None}
+    with contextlib.suppress(ValueError):
+        picks["top"] = int(top[0]) if top else None
+    with contextlib.suppress(ValueError):
+        picks["max_total"] = float(total[0]) if total else None
+    return None, picks
+
+
+def resumed(p: Path, rec: dict[str, Any], outputs: dict[str, Any], stamp: str) -> None:
+    """A resumed run finished: record what its own job would have (the run that stopped never
+    got there). An analysis keeps its ``--skip`` (:func:`save_analysis_skip`); a clips folder
+    of the project that ``clips`` or ``edit`` wrote (``outputs.clips_dir`` of the ``--json``
+    envelope) becomes the latest export, with ``edit``'s final video."""
+    command, argv = rec.get("command"), [str(a) for a in rec.get("argv") or []]
+    if command in ("analyze", "edit") and (skip := _skip_after(argv)):
+        _ui_folder(p)
+        save_analysis_skip(p, skip)
+    clips_dir = outputs.get("clips_dir")
+    if command not in ("clips", "edit") or not isinstance(clips_dir, str):
+        return
+    name = Path(clips_dir).name
+    if (
+        not SAFE_NAME.fullmatch(name)
+        or not _inside(p, name)
+        or (p / name).resolve() != Path(clips_dir).resolve()
+        or not (p / name / "manifest.json").is_file()
+    ):
+        return  # not a clips folder of this project (an --out elsewhere)
+    final = outputs.get("final") if command == "edit" else None
+    final_name = Path(final).name if isinstance(final, str) else None
+    if (
+        final_name is None
+        or not FINAL_FILE.fullmatch(final_name)
+        or not (p / final_name).is_file()
+        or (p / final_name).resolve() != Path(str(final)).resolve()
+    ):
+        final_name = None
+    _ui_folder(p)
+    items = [e for e in load_exports(p) if e["dir"] != name]  # replaced, as edit's
+    items.append(
+        {"dir": name, "created": stamp, "vertical": "--vertical" in argv, "final": final_name}
     )
+    cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
 
 
 def current_export(p: Path) -> dict[str, Any] | None:
@@ -4194,7 +4420,15 @@ def create_app(port: int) -> FastAPI:
             except OSError as err:  # one unreadable entry must not fail the whole list
                 logger.debug("skipping %s: %s", d.name, err)
                 continue
-            found.append({"id": d.name, "name": read_meta(d).get("name") or d.name})
+            run = run_state(d, (d / "highlights.json").is_file())
+            found.append(
+                {
+                    "id": d.name,
+                    "name": read_meta(d).get("name") or d.name,
+                    # a run that stopped and Resume continues (#109): the list marks it
+                    "interrupted": bool(run and run["resumable"]),
+                }
+            )
         return {"projects": found}
 
     @owned.post("/projects/suggest-style")
@@ -4303,6 +4537,7 @@ def create_app(port: int) -> FastAPI:
                 }
             )
         highlights = moments_view(hl)
+        last_run = run_state(p, hl is not None)
         if highlights is not None and meta.get("kind") == "360":
             # #517: flags of each moment's cached camera path and its director preview (null:
             # not a moment of a 360 clip of the project, the page plays the raw preview)
@@ -4342,6 +4577,34 @@ def create_app(port: int) -> FastAPI:
             # The picked folder could not be listed (gone, unreadable): a field, so Settings
             # (source remap), Reveal and Delete still work.
             "source_error": source_error,
+            # The last recorded run (progress.json, #109): Resume when it stopped, null without one
+            "run": last_run,
+            # a run holds the project now (this server's own job too): the page says to wait
+            "busy": project_busy(p, last_run),
+        }
+
+    @owned.get("/projects/{pid}/resume")
+    def resume_preview(pid: str):
+        """What Resume would continue (``cutpoint resume --dry-run``), for the page to confirm:
+        the command, how its last run ended, its steps' counts and the CLI's warnings."""
+        p = project_dir(pid)
+        result = resume_check(p)
+        rec = result["outputs"].get("resume")
+        rec = rec if isinstance(rec, dict) else {}
+        steps, argv = rec.get("done_before"), rec.get("argv")
+        return {
+            "command": result.get("command"),
+            # the command line Resume replays (a recorded --force or --out too), shown to confirm
+            "argv": argv
+            if isinstance(argv, list) and all(isinstance(a, str) for a in argv)
+            else [],
+            "status": rec.get("status_before"),
+            "steps": steps if isinstance(steps, dict) else {},
+            "warnings": [
+                w["message"]
+                for w in result.get("warnings") or []
+                if isinstance(w, dict) and isinstance(w.get("message"), str)
+            ],
         }
 
     @owned.put("/projects/{pid}/review")
@@ -4395,6 +4658,7 @@ def create_app(port: int) -> FastAPI:
         on_success: Callable[[], None] | None = None
         prepare: Callable[[], None] | None = None
         before: Callable[[Job], list[str] | None] | None = None  # a step ahead of ``args``
+        on_result: Callable[[Job], None] | None = None  # after on_success, with the envelope
         written: list[Path] = []  # files ``prepare`` wrote, removed if the job does not start
         plan: list[dict[str, str]] | None = None
         if action == "analyze" and meta.get("kind") == "360":
@@ -4698,8 +4962,38 @@ def create_app(port: int) -> FastAPI:
                         e["final"] = f"{stem}.{fmt}"
                 cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
 
+        elif action == "resume":
+            # cutpoint resume replays the stopped run of progress.json (#109) from its own cwd
+            rec = runstate.read(p) if _inside(p, runstate.FILE) else None
+            run = run_state(p, hl is not None)
+            if rec is None or run is None or not run["resumable"]:
+                raise bad("this project has no stopped run to resume", 409)
+            if run["command"] in ("clips", "edit"):
+                _own(p, f"{UI_DIR}/exports.json")  # refuse now, not after the run
+
+                def prepare() -> None:
+                    _ui_folder(p)  # as the edit's: a ui file refuses the job before it starts
+
+            if run["command"] == "clips" and meta.get("kind") == "360":
+                # stitch the recordings first, as the export it continues did
+                seg_file, chosen = _recorded_picks(rec)
+
+                def before(job: Job) -> list[str] | None:
+                    return stitch_first(job, p, seg_file, chosen)
+
+            if run["command"] != "clips":
+                _own(p, "highlights.json")  # the analysis rewrites it
+            if run["command"] == "360 analyze":
+                plan = [{"step": s, "label": progress.LABELS[s]} for s in progress.PANO_STEPS]
+            args = cutpoint_cmd("resume", str(p))
+
+            def on_result(job: Job) -> None:
+                outputs = (job.result or {}).get("outputs") or {}
+                if outputs.get("resumed") is True:  # not when the record had finished meanwhile
+                    resumed(p, rec, outputs, stamp)
+
         else:
-            raise bad("action must be 'analyze', 'edit', 'clips', 'extend' or 'assemble'")
+            raise bad("action must be 'analyze', 'edit', 'clips', 'extend', 'assemble' or 'resume'")
 
         def same_folder() -> None:
             # Under the jobs lock, like the settings change: a folder changed since ``p`` was
@@ -4709,8 +5003,21 @@ def create_app(port: int) -> FastAPI:
             if prepare:
                 prepare()  # only once the job may start: a refused one leaves no file behind
 
+        # --json: the envelope's error.code tells a busy project apart (Jobs._busy) and a resume
+        # names what it wrote. The jobs run in the projects folder, not where the server started.
+        args = [*args, "--json"]
         try:
-            return jobs.start(pid, action, args, on_success, same_folder, plan, before).view()
+            return jobs.start(
+                pid,
+                action,
+                args,
+                on_success,
+                same_folder,
+                plan,
+                before,
+                cwd=p.parent,
+                on_result=on_result,
+            ).view()
         except HTTPException:  # for example the command could not be started
             for f in written:
                 with contextlib.suppress(OSError):
