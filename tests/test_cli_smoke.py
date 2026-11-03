@@ -20,6 +20,7 @@ from cutpoint.assistant import cliproxy
         (["events", "--help"], "events"),
         (["edit", "--help"], "--kind"),
         (["paths", "--help"], "--json"),
+        (["detect", "--help"], "--json"),
     ],
 )
 def test_help_exits_zero(capsys, argv, word):

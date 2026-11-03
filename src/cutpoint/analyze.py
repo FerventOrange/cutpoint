@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from cutpoint import cache, features, folders, jsonout, progress, scorer
+from cutpoint import cache, category, features, folders, jsonout, progress, scorer
 from cutpoint.config import remap_source, unc_path
 from cutpoint.dsp import conv_same
 from cutpoint.errors import FFmpegError
@@ -59,7 +59,7 @@ from cutpoint.ffmpeg_utils import (
 )
 from cutpoint.progress import ANALYZE_STEPS, LABELS, SKIPPABLE
 from cutpoint.sources import READ_ERRORS_FILE, load_read_errors
-from cutpoint.styles import ACTION_CAM, LAUGHTER, PROFANITY, Style
+from cutpoint.styles import ACTION_CAM, AUTO, LAUGHTER, PROFANITY, AutoRequest, Style
 from cutpoint.transcribe import (
     Segment,
     Transcriber,
@@ -628,6 +628,29 @@ class PartSignals:
     cuts: list[float]
 
 
+def text_signals(ps: PartSignals, style: Style, name: str) -> None:
+    """Fill the style-dependent transcript signals of ``ps``: the keyword and laughter hits
+    and the ``speech`` and ``laughter`` curves (profanity gated against the loudness for
+    styles with ``profanity_alone`` False). ``name``: the source's, for the log."""
+    n, sig, words = ps.n, ps.sig, ps.words
+    kw_hits = keyword_hits(words, style.keywords)
+    laugh_hits = keyword_hits(words, LAUGHTER)
+    if not style.profanity_alone:
+        n_before = len(kw_hits)
+        n_profane = sum(1 for *_, p in kw_hits if p in PROFANE)
+        kw_hits = gate_profanity(kw_hits, laugh_hits, sig["loudness"])
+        if n_profane:
+            logger.info(
+                "%s: ignored %d of %d profanity hits with no other cue",
+                name,
+                n_before - len(kw_hits),
+                n_profane,
+            )
+    sig["speech"] = keyword_signal(n, kw_hits, style.keyword_cap)
+    sig["laughter"] = _impulse_signal(n, [(t, w) for t, w, _ in laugh_hits])
+    ps.kw_hits, ps.laugh_hits = kw_hits, laugh_hits
+
+
 @dataclass
 class SourceResult:
     """Output of :func:`analyze_source` for one source or recovered part.
@@ -787,6 +810,7 @@ def analyze_source(
     pick: bool = True,
     report: Callable[[float], None] | None = None,
     read_checked: Callable[[MediaInfo, dict[str, Any] | None], Any] | None = None,
+    text: bool = True,
 ) -> SourceResult:
     """Compute signals for one source (or a recovered part starting at ``offset``).
 
@@ -795,7 +819,9 @@ def analyze_source(
     :class:`cutpoint.ski.SkiContext`), candidates come from the ski
     feature grid instead of the generic signals. ``src`` is the original path
     (recorded everywhere); files are read through ``source_remap``. With ``pick``
-    False no candidates are picked yet (:func:`pick_candidates` does it later).
+    False no candidates are picked yet (:func:`pick_candidates` does it later); with
+    ``text`` False neither are the style's transcript signals (:func:`text_signals`, for a
+    style decided after transcription; ``pick`` must then be False too).
     ``report`` gets the share of the source's transcription done (0-1): the audio
     extract is its first :data:`EXTRACT_SHARE`, Whisper the rest. ``read_checked`` gets
     the probe and the read-error record (None: a clean read) as soon as they are known,
@@ -863,21 +889,9 @@ def analyze_source(
         times, lufs = lufs_data
         sig["loudness"] = np.interp(np.arange(n) * DT, times, loudness_signal(lufs))
     words = flat_words(segments)
-    kw_hits = keyword_hits(words, style.keywords)
-    laugh_hits = keyword_hits(words, LAUGHTER)
-    if not style.profanity_alone:
-        n_before = len(kw_hits)
-        n_profane = sum(1 for *_, p in kw_hits if p in PROFANE)
-        kw_hits = gate_profanity(kw_hits, laugh_hits, sig["loudness"])
-        if n_profane:
-            logger.info(
-                "%s: ignored %d of %d profanity hits with no other cue",
-                src.name,
-                n_before - len(kw_hits),
-                n_profane,
-            )
-    sig["speech"] = keyword_signal(n, kw_hits, style.keyword_cap)
-    sig["laughter"] = _impulse_signal(n, [(t, w) for t, w, _ in laugh_hits])
+    ps = PartSignals(n, sig, [], [], words, segments, [])
+    if text:
+        text_signals(ps, style, src.name)
     sig["continuity"] = continuity_signal(n, words)
 
     cuts: list[float] = []
@@ -895,6 +909,7 @@ def analyze_source(
                 took,
                 shared.summary(),
             )
+    ps.cuts = cuts
 
     res = SourceResult(
         source=src,
@@ -904,7 +919,7 @@ def analyze_source(
         candidates=[],
         segments=_shift_segments(segments, offset),
         read_error=read_error,
-        signals=PartSignals(n, sig, kw_hits, laugh_hits, words, segments, cuts),
+        signals=ps,
     )
     if pick:
         res.candidates = pick_candidates(res, style, max_candidates, timings, ski_ctx)
@@ -1097,6 +1112,32 @@ def _find_inputs(
     return list(dict.fromkeys(found))
 
 
+def find_sources(
+    target: Path | Sequence[Path], exclude: Sequence[str], recursive: bool
+) -> list[Path]:
+    """The sources ``analyze`` reads for ``target`` (:func:`_find_inputs`), de-duplicated by
+    the file actually read (``source_remap``; the first spelling given is the one recorded).
+
+    Raises:
+        FileNotFoundError: If no video is found.
+    """
+    found = _find_inputs(target, exclude, recursive)
+    # Projects record the original paths; files are read through config source_remap.
+    by_read: dict[Path, Path] = {}
+    for s in found:
+        by_read.setdefault(remap_source(s), s)
+    sources = list(by_read.values())
+    for orig in sources:
+        if (src := remap_source(orig)) != orig:
+            logger.info("source_remap: %s -> %s", orig, src)
+    if not sources:
+        raise FileNotFoundError(
+            f"No video files found in {target} (exclude={list(exclude)}, recursive={recursive})"
+        )
+    logger.info("%d source(s): %s", len(sources), ", ".join(s.name for s in sources))
+    return sources
+
+
 # --------------------------------------------------------------------------- analysis steps
 GAME_STYLES = ("gaming", "funny")  # keyframes: HUD OCR (with region discovery)
 ACTION_STYLES = ("action", "sport", ACTION_CAM)  # keyframes: CLIP; crash detection
@@ -1168,17 +1209,35 @@ def _cuda() -> bool:
         return False
 
 
-def plan_layers(style: Style, sources: Sequence[Path], skip: Collection[str]) -> LayerPlan:
+def layer_category(style: Style) -> str:
+    """The footage category (:data:`cutpoint.category.CATEGORIES`) whose layers an explicit
+    ``style`` runs, from today's style sets: :data:`GAME_STYLES` gameplay, the action-cam
+    kind action cam, the other :data:`ACTION_STYLES` general, any other style talk."""
+    if style.kind == ACTION_CAM:
+        return category.ACTION_CAM
+    if style.base in GAME_STYLES:
+        return category.GAMEPLAY
+    if style.base in ACTION_STYLES:
+        return category.GENERAL
+    return category.TALK
+
+
+def plan_layers(
+    style: Style, sources: Sequence[Path], skip: Collection[str], cat: str | None = None
+) -> LayerPlan:
     """Which event layers the reactions, keyframes and crashes steps run.
 
-    Reactions: the PANNs audio events (plus the voice layer for action-cam footage, whose
-    crash audio score reads it). Keyframes: HUD OCR for game styles, the CLIP visual layer
-    for action footage (only with a CUDA GPU). Crashes: action-cam footage only (telemetry,
-    or an action style). A step whose events extra or model files are missing is left out
-    with one INFO line naming the fix; nothing is downloaded.
+    ``cat``: the footage category (:mod:`cutpoint.category`; None: :func:`layer_category`
+    of ``style``). Reactions: the PANNs audio events (plus the voice layer for action-cam
+    footage, whose crash audio score reads it). Keyframes: HUD OCR for gameplay, the CLIP
+    visual layer for action-cam and general footage (only with a CUDA GPU). Crashes:
+    action-cam and general footage, or any source with telemetry. A step whose events extra
+    or model files are missing is left out with one INFO line naming the fix; nothing is
+    downloaded.
     """
-    plan = LayerPlan(game=style.base in GAME_STYLES)
-    action = style.kind == ACTION_CAM or style.base in ACTION_STYLES
+    cat = cat or layer_category(style)
+    plan = LayerPlan(game=cat == category.GAMEPLAY)
+    action = cat in (category.ACTION_CAM, category.GENERAL)
     for step in SKIPPABLE:
         if step in skip:
             plan.skipped[step] = SKIP_OPTION
@@ -1354,13 +1413,19 @@ def _ocr_options(project: Path, *, log: bool = True) -> tuple[tuple[str, ...], s
 
 
 def _ocr_prefetch(
-    style: Style, sources: Sequence[Path], skip: Collection[str], project: Path, layers: bool
+    style: Style,
+    sources: Sequence[Path],
+    skip: Collection[str],
+    project: Path,
+    layers: bool,
+    cat: str | None = None,
 ) -> contextlib.AbstractContextManager[Any]:
     """The background OCR reader of :mod:`cutpoint.events.ocr_prefetch` when the keyframes
-    step will run HUD OCR (the conditions of :func:`plan_layers`, checked without its log
-    lines, which keep their place) and ``CUTPOINT_ANALYZE_OVERLAP`` is not ``0``; else a
-    context giving None."""
-    if not layers or style.base not in GAME_STYLES or "keyframes" in skip:
+    step will run HUD OCR (the conditions of :func:`plan_layers` with the category ``cat``,
+    checked without its log lines, which keep their place) and ``CUTPOINT_ANALYZE_OVERLAP``
+    is not ``0``; else a context giving None."""
+    gameplay = (cat or layer_category(style)) == category.GAMEPLAY
+    if not layers or not gameplay or "keyframes" in skip:
         return contextlib.nullcontext()
     if any(importlib.util.find_spec(m) is None for m in EVENTS_MODULES):
         return contextlib.nullcontext()
@@ -1587,7 +1652,7 @@ def _rate_vision(
 
 def analyze(
     target: Path | Sequence[Path],
-    style: Style,
+    style: Style | AutoRequest,
     out_dir: Path,
     *,
     vision: bool | None = None,
@@ -1604,6 +1669,7 @@ def analyze(
     layers: bool = False,
     skip: Collection[str] = (),
     earlier_total_s: float | None = None,
+    detection: dict[str, Any] | None = None,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -1625,7 +1691,10 @@ def analyze(
 
     Args:
         target: Video file or folder, or a list of files and/or folders.
-        style: Style preset.
+        style: Style preset, or an :class:`~cutpoint.styles.AutoRequest` (``--style auto``):
+            the sources are probed before transcription and the style follows their
+            footage category (:mod:`cutpoint.category`); highlights.json records the style
+            used, ``settings.style_requested`` ``auto`` and the ``detection`` block.
         out_dir: Project directory.
         vision: True = rate the top candidates with Ollama (a warning if it is not
             available); False or None = no vision (opt-in, never automatic).
@@ -1647,6 +1716,9 @@ def analyze(
         earlier_total_s: ``timings.total_s`` of the analysis this run re-ranks
             (:func:`reanalyze`): kept as ``total_s``, and this run's own time is recorded as
             ``timings.rerank_s``. None: this run's time is ``total_s``.
+        detection: The ``detection`` block of the auto analysis this run re-ranks
+            (:func:`reanalyze`, with the style it chose): recorded again as it is, and its
+            category plans the layers. Nothing is detected again.
 
     Returns:
         Path of the written highlights.json.
@@ -1671,12 +1743,13 @@ def analyze(
             layers=layers,
             skip=skip,
             earlier_total_s=earlier_total_s,
+            detection=detection,
         )
 
 
 def _analyze(
     target: Path | Sequence[Path],
-    style: Style,
+    style: Style | AutoRequest,
     out_dir: Path,
     steps: progress.Run,
     *,
@@ -1694,30 +1767,32 @@ def _analyze(
     layers: bool,
     skip: Collection[str],
     earlier_total_s: float | None,
+    detection: dict[str, Any] | None,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
     steps.start("transcribe")
-    found = _find_inputs(target, exclude, recursive)
-    # Projects record the original paths; files are read through config source_remap.
-    # De-duplicate by the file actually read; the first spelling given is recorded.
-    by_read: dict[Path, Path] = {}
-    for s in found:
-        by_read.setdefault(remap_source(s), s)
-    sources = list(by_read.values())
-    for orig in sources:
-        if (src := remap_source(orig)) != orig:
-            logger.info("source_remap: %s -> %s", orig, src)
-    if not sources:
-        raise FileNotFoundError(
-            f"No video files found in {target} (exclude={list(exclude)}, recursive={recursive})"
-        )
-    logger.info("%d source(s): %s", len(sources), ", ".join(s.name for s in sources))
+    sources = find_sources(target, exclude, recursive)
+    # --style auto: probed before transcription, which needs the style's ski context, scene
+    # setting and OCR prefetch; talk is told from general once the speech coverage is known.
+    auto = style if isinstance(style, AutoRequest) else None
+    probes: list[category.SourceProbe] = []
+    cat: str | None = None  # the category whose layers run (None: the style's own)
+    if auto is not None:
+        probes, det = category.detect(sources)
+        name, fallback = category.choose_style(det, auto.emphasis, auto.fallback)
+        if det.pending:
+            logger.info("Footage looks %s so far (%s)", category.label(det.category), det.reason)
+        style = auto.style(name)
+        cat = det.category if fallback is None else None
+    elif detection is not None and not detection.get("fallback"):  # a re-run: as decided
+        stored = detection.get("category")
+        cat = stored if stored in category.CATEGORIES else None
     with (
         folders.output_dir(out_dir),  # a failed run leaves no empty project folder behind
         cache.hold_outputs(out_dir, HELD_OUTPUTS) as held,
         # HUD OCR in the background while the GPU steps run; stopped before the folder goes
-        _ocr_prefetch(style, sources, skip, out_dir, layers) as prefetch,
+        _ocr_prefetch(style, sources, skip, out_dir, layers, cat) as prefetch,
     ):
         # ---- 1. transcribe: audio, loudness, Whisper and scene cuts per source
         use_scenes = use_scenes and style.use_scenes
@@ -1754,6 +1829,7 @@ def _analyze(
         timings: dict[str, float] = {}
         if ski_ctx is not None:
             timings["telemetry_s"] = telemetry_s
+        pending = auto is not None and det.pending  # the style's text signals wait for talk
         results: list[SourceResult] = []
         transcript_lines: list[str] = []
         for i, src in enumerate(sources):
@@ -1785,9 +1861,10 @@ def _analyze(
                     timings,
                     offset=offset,
                     recover=recover,
-                    pick=ski_ctx is None,
+                    pick=ski_ctx is None and not pending,
                     report=report if steps.active else None,
                     read_checked=read_checked(src, offset),
+                    text=not pending,
                 )
                 results.append(res)
                 name = f"{src.name}@{offset:.0f}" if offset else src.name
@@ -1822,6 +1899,25 @@ def _analyze(
         transcript = "\n".join(transcript_lines)
         tr.close()  # Whisper out of memory before the next step loads a model
         free_models()
+        detection_rec = detection  # highlights.json's record of an auto run (a re-run: as given)
+        if auto is not None:  # the final decision, with the speech coverage
+            det = category.decide(
+                probes,
+                category.source_speech(
+                    sources, [(r.source, r.duration, r.segments) for r in results]
+                ),
+            )
+            if pending:  # talk or general: this style's transcript signals and candidates
+                # (otherwise the speech only adds the commentary hint: the style stays)
+                name, fallback = category.choose_style(det, auto.emphasis, auto.fallback)
+                cat = det.category if fallback is None else None
+                style = auto.style(name)
+                for r in results:
+                    if r.signals is not None:
+                        text_signals(r.signals, style, r.source.name)
+                        r.candidates = pick_candidates(r, style, max_candidates, timings)
+            category.warn(det, style.name, fallback)
+            detection_rec = det.record(auto.emphasis, style.name, fallback)
         steps.done()  # an error of the later steps never fails the transcription
         bad = [r for r in results if r.read_error]
         if bad:
@@ -1841,6 +1937,7 @@ def _analyze(
             "version": 1,
             "style": style.name,
             "style_kind": style.kind,
+            **({"detection": detection_rec} if detection_rec is not None else {}),
             "created": None,
             "settings": {
                 **(
@@ -1876,6 +1973,7 @@ def _analyze(
                 "language": language,
                 "max_candidates": max_candidates,
                 "recover": recover,
+                **({"style_requested": AUTO} if detection_rec is not None else {}),
             },
             "timings": timings,
             "suggested_top": 0,
@@ -1907,7 +2005,7 @@ def _analyze(
         # ---- 2-4. reactions, keyframes, crashes: the event layers (events.json)
         events_new = False
         if layers:
-            plan = plan_layers(style, sources, skip)
+            plan = plan_layers(style, sources, skip, cat)
             for step, reason in plan.skipped.items():
                 steps.skip(step, reason)
             if plan.layers:
@@ -2070,6 +2168,8 @@ def report_highlights(out_dir: Path, highlights: Path) -> None:
     if "suggested_top" in saved:
         jsonout.output("suggested_top", saved["suggested_top"])
     jsonout.output("style", saved.get("style"))
+    if isinstance(saved.get("detection"), dict):  # --style auto
+        jsonout.output("detection", saved["detection"])
 
 
 def reanalyze(project: Path) -> Path:
@@ -2104,6 +2204,8 @@ def reanalyze(project: Path) -> Path:
     if st.get("must_include_crash") is not None:  # an `analyze --must-include-crash`
         style = replace(style, must_include_crash=float(st["must_include_crash"]))
     total = (hl.get("timings") or {}).get("total_s")
+    # --style auto: the style it chose, and its decision kept (never detected again)
+    detection = hl.get("detection") if st.get("style_requested") == AUTO else None
     return analyze(
         [Path(p) for p in inputs],
         style,
@@ -2122,6 +2224,7 @@ def reanalyze(project: Path) -> Path:
         recover=bool(st.get("recover")),
         # the analysis time stays the first run's; this re-rank's is timings.rerank_s
         earlier_total_s=float(total) if isinstance(total, int | float) else None,
+        detection=detection if isinstance(detection, dict) else None,
     )
 
 

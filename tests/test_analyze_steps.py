@@ -24,6 +24,7 @@ from cutpoint import (
     activity,
     analyze,
     cache,
+    category,
     cli,
     config,
     crash,
@@ -69,7 +70,7 @@ def run(home, tmp_path, monkeypatch):
     state = SimpleNamespace(
         video=video, proj=proj, plan=analyze.LayerPlan(), fail=None, cancel=False,
         events_calls=[], layers_seen=[], saves=[], vision_ok=True, vision_cached=False,
-        rated=0, segments=[], transcripts=[], events=[],
+        rated=0, segments=[], transcripts=[], events=[], cats=[],
     )  # fmt: skip
 
     def fake_analyze_source(src, style, tr, use_scenes, max_cand, timings, **kw):
@@ -142,13 +143,19 @@ def run(home, tmp_path, monkeypatch):
     monkeypatch.setattr(analyze, "Transcriber", StubTranscriber)
     monkeypatch.setattr(analyze, "analyze_source", fake_analyze_source)
     monkeypatch.setattr(analyze, "VisionRater", FakeRater)
-    monkeypatch.setattr(analyze, "plan_layers", lambda style, sources, skip: state.plan)
+    monkeypatch.setattr(
+        analyze,
+        "plan_layers",
+        lambda style, sources, skip, cat: state.cats.append(cat) or state.plan,
+    )
     monkeypatch.setattr(pipeline, "run_events", fake_run_events)
     monkeypatch.setattr(analyze.cache, "save_json", save)
 
     def go(style="funny", **kw):
         kw = {"vision": False, "use_scenes": False, "layers": True} | kw
-        return analyze.analyze(video, get_style(style), proj, **kw)
+        return analyze.analyze(
+            video, get_style(style) if isinstance(style, str) else style, proj, **kw
+        )
 
     state.go = go
     return state
@@ -1357,6 +1364,20 @@ def test_plan_by_style(env, style, layers, skipped):
         assert why["crashes"] == "not action-cam footage"
 
 
+@pytest.mark.parametrize(
+    ("style", "cat", "keyframes", "crashes"),
+    [
+        ("funny", category.GENERAL, ("visual",), True),  # funny on camera footage: no HUD OCR
+        ("action", category.GAMEPLAY, ("ocr",), False),
+        ("commentary", category.TALK, None, False),
+    ],
+)
+def test_plan_follows_the_detected_category_not_the_style(env, style, cat, keyframes, crashes):
+    p = analyze.plan_layers(get_style(style), [Path("a.mp4")], (), cat)
+    assert p.layers.get("keyframes") == keyframes and ("crashes" in p.layers) == crashes
+    assert p.game == (cat == category.GAMEPLAY)
+
+
 def test_plan_ski_is_action_footage(env):
     got, _ = planned("action-cam")
     assert got["crashes"] == ("crash",) and got["keyframes"] == ("visual",)
@@ -1564,3 +1585,83 @@ def test_only_a_running_ocr_layer_reports_pct(tmp_path, monkeypatch, layers, ocr
         pipeline.run_events(tmp_path, layers=layers, cached_ocr=True, discover=False)
     assert calls == ["a.mp4", "b.mp4"]
     assert len(updates) == ocr_updates
+
+
+# ----------------------------------------------------------------- --style auto (#513)
+GAME_PROBE = {"handler": "VideoHandle", "frames": 16, "hud_static": 0.01, "static_share": 0.05,
+              "noise_floor": 0.2, "shake": 0.0}  # fmt: skip
+CAMERA_PROBE = {"make": "Apple", "frames": 16, "hud_static": 0.0, "static_share": 0.0,
+                "noise_floor": 3.0, "shake": 4.0}  # fmt: skip
+
+
+@pytest.fixture
+def probed(run, monkeypatch):
+    """``run`` with the footage probe faked: ``run.probe`` is the SourceProbe fields."""
+    run.probe, run.probes = dict(GAME_PROBE), []
+
+    def fake(src):
+        run.probes.append(src)
+        return category.SourceProbe(str(src), 60.0, False, **run.probe)
+
+    monkeypatch.setattr(category, "probe_source", fake)
+    return run
+
+
+def _hl(run) -> dict:
+    return json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+
+
+def test_style_auto_records_the_style_it_chose_and_why(probed, capsys):
+    code, doc = run_json(capsys, ["analyze", str(probed.video), "--style", "auto", "--out", "s"])
+    assert code == 0 and doc["warnings"] == []
+    hl = json.loads(Path(doc["outputs"]["highlights"]).read_text(encoding="utf-8"))
+    assert hl["style"] == doc["outputs"]["style"] == "gaming"
+    assert hl["settings"]["style_requested"] == "auto"
+    det = hl["detection"]
+    assert det == doc["outputs"]["detection"]
+    assert (det["category"], det["emphasis"], det["style"], det["fallback"]) == (
+        "gameplay", "hype", "gaming", None,
+    )  # fmt: skip
+    assert [s["path"] for s in det["sources"]] == [str(probed.video)]
+    assert probed.cats == ["gameplay"]
+
+
+def test_an_ambiguous_detection_uses_the_default_style_and_warns(probed, capsys, monkeypatch):
+    band = (category.GAMEPLAY_MIN + category.GAMEPLAY_SURE) / 2  # gameplay, not sure
+    monkeypatch.setattr(category, "gameplay_score", lambda p: (band, ["screen recorder tags"]))
+    code, doc = run_json(capsys, ["analyze", str(probed.video), "--style", "auto", "--out", "s"])
+    assert code == 0
+    det = doc["outputs"]["detection"]
+    assert det["ambiguous"] is True and det["fallback"] == "gaming" == doc["outputs"]["style"]
+    [warning] = doc["warnings"]
+    assert warning["code"] == "style_ambiguous" and warning["files"] == [str(probed.video)]
+    assert probed.cats == [None]  # the fallback style plans its own layers
+
+
+def test_talk_is_decided_after_transcription(probed, monkeypatch):
+    """General footage long enough for talk waits for the transcript: mostly speech makes it
+    commentary, and the transcript signals wait for that style."""
+    monkeypatch.setattr(category, "TALK_MIN_S", 30.0)
+    probed.probe = dict(CAMERA_PROBE)
+    words = [{"start": float(t), "end": t + 0.9, "word": "so"} for t in range(50)]
+    probed.segments = [{"start": 0.0, "end": 50.0, "text": "so", "words": words}]
+    seen = []
+    real = analyze.analyze_source
+    monkeypatch.setattr(
+        analyze, "analyze_source", lambda *a, **kw: seen.append(kw) or real(*a, **kw)
+    )
+    probed.go(analyze.AutoRequest("hype", "gaming"))
+    hl = _hl(probed)
+    assert hl["style"] == "commentary" and hl["detection"]["category"] == "talk"
+    assert [(kw["pick"], kw["text"]) for kw in seen] == [(False, False)]
+    assert probed.cats == ["talk"]
+
+
+def test_reanalyze_keeps_the_detection_and_never_probes_again(probed, monkeypatch):
+    probed.go(analyze.AutoRequest("hype", "gaming"))
+    before = _hl(probed)
+    monkeypatch.setattr(category, "probe_source", lambda src: pytest.fail("probed again"))
+    analyze.reanalyze(probed.proj)
+    after = _hl(probed)
+    assert after["style"] == "gaming" and after["detection"] == before["detection"]
+    assert after["settings"]["style_requested"] == "auto"

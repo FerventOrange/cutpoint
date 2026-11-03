@@ -32,6 +32,7 @@ from cutpoint.assemble import (
     check_transitions,
 )
 from cutpoint.boundaries import SpeechSettings
+from cutpoint.category import FUNNY, HYPE
 from cutpoint.clips import export_clips
 from cutpoint.config import (
     COLOR_MODES,
@@ -51,10 +52,12 @@ from cutpoint.events import paths as event_paths
 from cutpoint.extend import extend_clips, manifest_project
 from cutpoint.planning import Padding
 from cutpoint.progress import SKIPPABLE
-from cutpoint.styles import get_style, style_arg, style_names
+from cutpoint.styles import AUTO, AutoRequest, Style, get_style, style_arg, style_names
 from cutpoint.utils import input_name, parse_size, positive_float, positive_int, unit_float
 
 logger = logging.getLogger("cutpoint")
+
+ANALYZE_STYLE = "gaming"  # analyze's default --style (and --style auto's fallback)
 
 # Parser-time constants of modules imported only when their command runs, so that every
 # ``cutpoint`` start does not load the action-cam and proxy code (tests check they match).
@@ -179,9 +182,12 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
         )
         out = projects_dir() / name
     jsonout.set_project(out)
-    style = get_style(a.style)
-    if a.must_include_crash is not None:
-        style = replace(style, must_include_crash=a.must_include_crash)
+    if a.style == AUTO:  # detected from the footage; ambiguous: today's default, gaming
+        style: Style | AutoRequest = AutoRequest(HYPE, ANALYZE_STYLE, a.must_include_crash)
+    else:
+        style = get_style(a.style)
+        if a.must_include_crash is not None:
+            style = replace(style, must_include_crash=a.must_include_crash)
     # A failed or interrupted analyze removes the (still empty) folders it created.
     analyze(
         targets,
@@ -201,6 +207,45 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
         layers=True,
         skip=_skip(a),
     )
+
+
+def _cmd_detect(a: argparse.Namespace) -> None:
+    """``cutpoint detect``: the footage category of the inputs and the style ``--style auto``
+    would pick; talk only for sources already transcribed (by an earlier analysis)."""
+    from cutpoint import category  # noqa: PLC0415
+    from cutpoint.analyze import find_sources  # noqa: PLC0415
+    from cutpoint.sources import source_segments  # noqa: PLC0415
+
+    found = find_sources([Path(t) for t in a.inputs], a.exclude or [], a.recursive)
+    probes = [category.probe_source(s) for s in found]
+    speech = {}
+    for src, p in zip(found, probes, strict=True):
+        segments = source_segments(src)
+        if segments is not None:
+            speech[p.path] = round(category.speech_coverage(segments, p.duration), 3)
+    det = category.decide(probes, speech)
+    hype, fallback = category.choose_style(det, HYPE, ANALYZE_STYLE)
+    funny, _ = category.choose_style(det, FUNNY, KINDS["funny-moments"].style)
+    category.warn(det, hype, fallback)
+    if jsonout.active():
+        rec = det.record(HYPE, hype, fallback)
+        for key in ("category", "ambiguous", "reason", "scores", "suggest", "sources"):
+            jsonout.output(key, rec[key])
+        jsonout.output("pending", det.pending)
+        jsonout.output("styles", {"analyze": hype, "funny-moments": funny})
+        return
+    for s in det.sources:
+        print(
+            f"{Path(s.path).name}: {category.label(s.category)}"
+            f"{' (ambiguous)' if s.ambiguous else ''} - {s.reason}"
+        )
+    note = " (ambiguous: the default)" if fallback else ""
+    print(
+        f"Footage: {category.label(det.category)}{note}; analyze --style auto uses {hype}, "
+        f"edit --kind funny-moments {funny}"
+    )
+    if det.pending:
+        print("Talk is not checked: a source has no transcript yet (analyze transcribes it)")
 
 
 def _cmd_edit(a: argparse.Namespace) -> None:
@@ -1182,8 +1227,9 @@ def build_parser() -> argparse.ArgumentParser:
     ed.add_argument(
         "--style",
         type=style_arg,  # ski: an error naming action-cam
-        choices=style_names(),
-        help="analysis preset (default: funny for funny-moments, else action)",
+        choices=[AUTO, *style_names()],
+        help="analysis preset (default: funny for funny-moments, else action); auto picks "
+        "one from the footage (gameplay, action cam, talk or general; ambiguous: the default)",
     )
     ed.add_argument(
         "--out",
@@ -1227,6 +1273,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json_argument(ed)
     ed.set_defaults(func=_cmd_edit, usage_check=lambda a: _check_edit(ed, a))
 
+    dt = sub.add_parser(
+        "detect",
+        help="detect the footage category (gameplay, action cam, talk, general) and the "
+        "style --style auto picks; reads only a few frames and the container tags",
+    )
+    dt.add_argument(
+        "inputs", nargs="+", metavar="input", help="one or more video files and/or folders"
+    )
+    _add_source_filter_arguments(dt)
+    _add_json_argument(dt)
+    dt.set_defaults(func=_cmd_detect)
+
     an = sub.add_parser("analyze", help="find and rank highlight candidates")
     an.add_argument(
         "inputs", nargs="+", metavar="input", help="one or more video files and/or folders"
@@ -1235,10 +1293,12 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument(
         "--style",
         type=style_arg,
-        choices=style_names(),
-        default="gaming",
-        help="preset (default: gaming); learned presets in <CUTPOINT_HOME>/styles/*.json are "
-        "listed too (action-cam: telemetry-driven action-cam footage, formerly ski)",
+        choices=[AUTO, *style_names()],
+        default=ANALYZE_STYLE,
+        help=f"preset (default: {ANALYZE_STYLE}); learned presets in "
+        "<CUTPOINT_HOME>/styles/*.json are listed too (action-cam: telemetry-driven "
+        "action-cam footage, formerly ski); auto picks one from the footage (gameplay, "
+        f"action cam, talk or general, see cutpoint detect; ambiguous: {ANALYZE_STYLE})",
     )
     an.add_argument(
         "--out",

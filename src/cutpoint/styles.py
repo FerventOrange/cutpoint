@@ -159,6 +159,45 @@ _SKI_KEYWORDS = {
 ACTION_CAM = "action-cam"
 # Old style names, no longer accepted: reading one is an error naming the new name.
 RENAMED = {"ski": ACTION_CAM}
+# ``--style auto`` (analyze, edit): the style follows the detected footage category
+# (:mod:`cutpoint.category`). A reserved name: a learned ``auto.json`` is ignored.
+AUTO = "auto"
+# The style of each footage category per emphasis (analyze: hype; edit --kind
+# funny-moments: funny). sport is never chosen automatically.
+AUTO_STYLES: dict[str, dict[str, str]] = {
+    "gameplay": {"hype": "gaming", "funny": "funny"},
+    "action-cam": {"hype": ACTION_CAM, "funny": "funny"},
+    "talk": {"hype": "commentary", "funny": "funny"},
+    "general": {"hype": "action", "funny": "funny"},
+}
+
+
+@dataclass(frozen=True)
+class AutoRequest:
+    """``--style auto``: the style is detected (see :func:`resolve_auto`).
+
+    Attributes:
+        emphasis: ``hype`` or ``funny``.
+        fallback: Style used when the detection is ambiguous (the command's default).
+        must_include_crash: ``analyze --must-include-crash``, set on the style chosen.
+    """
+
+    emphasis: str
+    fallback: str
+    must_include_crash: float | None = None
+
+    def style(self, name: str) -> Style:
+        """The chosen style ``name``, with :attr:`must_include_crash` when given."""
+        style = get_style(name)
+        if self.must_include_crash is not None:
+            style = replace(style, must_include_crash=self.must_include_crash)
+        return style
+
+
+def resolve_auto(category: str, emphasis: str) -> str:
+    """The style name for a footage ``category`` (:data:`cutpoint.category.CATEGORIES`) and
+    ``emphasis`` (``hype`` or ``funny``)."""
+    return AUTO_STYLES[category][emphasis]
 
 
 def renamed_error(name: object) -> str | None:
@@ -384,12 +423,22 @@ for _style in STYLES.values():
     validate(_style.name, _style.weights)
 
 
+@state.register_cache
+@functools.cache
+def _warn_reserved(path: str) -> None:
+    logger.warning("%s ignored: %r is reserved for --style %s", path, AUTO, AUTO)
+
+
 def learned_styles() -> dict[str, Path]:
-    """Learned presets in ``<CUTPOINT_HOME>/styles/*.json`` (name -> file)."""
+    """Learned presets in ``<CUTPOINT_HOME>/styles/*.json`` (name -> file); an ``auto.json``
+    is left out with a warning (:data:`AUTO` is reserved)."""
     folder = paths.styles_dir()
     if not folder.is_dir():
         return {}
-    return {p.stem: p for p in sorted(folder.glob("*.json"))}
+    found = {p.stem: p for p in sorted(folder.glob("*.json"))}
+    if AUTO in found:
+        _warn_reserved(str(found.pop(AUTO)))
+    return found
 
 
 def style_names() -> list[str]:
@@ -453,10 +502,13 @@ def get_style(name: str) -> Style:
     """Return the style preset ``name`` (built-in or ``<styles>/<name>.json``).
 
     Raises:
-        ValueError: If the style is unknown or was renamed (:data:`RENAMED`).
+        ValueError: If the style is unknown, was renamed (:data:`RENAMED`) or is
+            :data:`AUTO` (resolved by the caller, see :func:`resolve_auto`).
     """
     if msg := renamed_error(name):
         raise ValueError(msg)
+    if name == AUTO:
+        raise ValueError(f"{AUTO!r} detects a style from the footage; it is not a style itself")
     if name in STYLES:
         return STYLES[name]
     learned = learned_styles()

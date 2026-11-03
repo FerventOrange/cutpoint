@@ -86,6 +86,19 @@ def test_analyze_json(video, home, capsys):
     assert doc["warnings"] == []
 
 
+@needs_ffmpeg
+def test_analyze_style_auto_json_reports_the_detection(video, home, capsys):
+    argv = [*_analyze_argv(video, "--no-vision", *NO_EVENT_STEPS), "--style", "auto"]
+    code, doc, _ = _json(capsys, argv)
+    assert code == 0 and doc["ok"] is True
+    out = doc["outputs"]
+    hl = json.loads(Path(out["highlights"]).read_text(encoding="utf-8"))
+    assert out["detection"] == hl["detection"] and out["style"] == hl["style"]
+    assert out["detection"]["style"] == hl["style"]
+    assert hl["settings"]["style_requested"] == "auto"
+    assert {w["code"] for w in doc["warnings"]} <= {"style_ambiguous"}
+
+
 # ----------------------------------------------------------------------------------- clips
 @needs_ffmpeg
 def test_clips_json(video, home, capsys, caplog):
