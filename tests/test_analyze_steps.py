@@ -529,6 +529,12 @@ def test_transcribe_says_how_many_sources_are_cached_on_a_rerun(run, capsys, cap
     assert not any("continuing" in m for m in caplog.messages if m != text)
 
 
+def test_cached_transcripts_without_a_transcriber_counts_none(tmp_path):
+    """#109: no transcriber (stubbed out by callers that fail analyze early) counts 0
+    cached transcripts, so no "continuing" line, instead of failing on ``model_name``."""
+    assert analyze._cached_transcripts([write(tmp_path / "a.mp4")], None) == 0
+
+
 # ----------------------------------------------------------------- failures
 def test_a_layer_failure_fails_its_step_warns_and_the_later_steps_run(run, capsys, caplog):
     run.plan = plan(reactions=("audio", "voice"), keyframes=("visual",), crashes=("crash",))

@@ -269,9 +269,11 @@ def _transcript(
     return data
 
 
-def _cached_transcripts(sources: Sequence[Path], tr: Transcriber) -> int:
+def _cached_transcripts(sources: Sequence[Path], tr: Transcriber | None) -> int:
     """How many of ``sources`` have their (whole-file) transcript of ``tr`` cached;
-    unreachable ones count as not cached."""
+    unreachable ones count as not cached, and none without a transcriber."""
+    if tr is None:
+        return 0
     n = 0
     for src in sources:
         with contextlib.suppress(OSError):
