@@ -15,13 +15,21 @@ A profile is a small JSON document (any sport, game or kind of video)::
      "occluder": [things at the lens], "low_info": [frames with nothing to see],
      "scene": [ordinary footage: negatives of occluder and low_info],
      "vl": {"video": "...", "gear": "...", "scenery": "...", "low_info": "..."},
+     "vlm": {"recording": "...", "video": "...", "audio": "...", "describe": "...",
+             "hype": "...", "edit": "...", "idle": "...", "rate_edit": "...",
+             "rate_high": "...", "rate_low": "...", "retry_high": "...",
+             "retry_low": "...", "tags": {"<tag>": "..."}},
      "exclude_base": [base entries this profile replaces], "<section>": {...}}
 
 Every profile inherits the shared floor ``presets/activities/base.json`` (generic
 incident captions and crash words, neutral captions of every list); ``exclude_base``
 drops floor entries the profile replaces with its own (the ski profile has snowy
 versions of all of them). ``vl`` is the wording of the 360 vision check
-(:mod:`cutpoint.pano.vlcheck`); a profile's strings replace the floor's. ``lift``
+(:mod:`cutpoint.pano.vlcheck`); ``vlm`` is the wording of the action-cam VLM window
+prompt (:mod:`cutpoint.events.vlm_windows`) and of the action-cam vision rating
+(:mod:`cutpoint.vision`), its ``tags`` the descriptions of the fixed window tags
+(:data:`cutpoint.events.vlm_windows.ACTION_CAM_TAGS`). A profile's ``vl`` and ``vlm``
+strings replace the floor's one by one. ``lift``
 is empty in the floor: activities without lifts never look for one. Extra object
 sections (e.g. a future ``game`` HUD vocabulary) are kept.
 
@@ -74,6 +82,7 @@ from cutpoint.config import remap_source
 from cutpoint.errors import FFmpegError
 from cutpoint.events.common import load_highlights
 from cutpoint.events.visual import load_visual, text_embeddings
+from cutpoint.events.vlm_windows import ACTION_CAM_TAGS
 from cutpoint.ffmpeg_utils import grab_frame_jpeg
 from cutpoint.utils import slugify
 from cutpoint.vision import VisionRater
@@ -91,6 +100,7 @@ MAX_CONTEXT_CHARS = 500
 MAX_LIST = 8  # occluder / low_info / scene captions
 MAX_EXCLUDE = 80  # exclude_base entries (the ski profile replaces every floor caption)
 MAX_VL_CHARS = 80
+MAX_VLM_CHARS = 300  # a vlm string longer than this is dropped (the floor's is used)
 MATCH_SHARE = 0.5  # library match: mean zero-shot share of the best profile ...
 MATCH_MARGIN = 0.2  # ... and its lead over the runner-up
 DESCRIBE_FRAMES = 4
@@ -100,17 +110,33 @@ PROFILE_TIMEOUT_S = 120
 
 # (prompt, JPEG frames, JSON schema of the reply or None) -> the model's JSON reply, or None.
 Ask = Callable[[str, list[bytes], dict[str, Any] | None], dict[str, Any] | None]
-# Synthesis attempts: (incident captions, words, highlight captions) asked for; the
-# retry asks for less so a reply cut off by the token limit fits.
-SYNTH_SIZES = ((10, 20, 4), (6, 10, 3))
+# Synthesis attempts: (incident captions, words, highlight captions, vlm wording) asked
+# for; the retry asks for less (no vlm wording) so a reply cut off by the token limit fits.
+SYNTH_SIZES = ((10, 20, 4, True), (6, 10, 3, False))
 # LLM-written crash words: weight caps (a single word or ``*`` prefix matches normal
 # talk more often than a phrase) and filler that says nothing about an incident.
 # Sections an LLM-written profile may have (extra sections only come from files).
-SCHEMA_KEYS = ("name", "description", "detect", "incident", "highlight", "low_info")
+SCHEMA_KEYS = ("name", "description", "detect", "incident", "highlight", "low_info", "vlm")
 # Caption sections of a profile: pairs of lists, plain lists, the vision check's wording.
 PAIR_SECTIONS = ("incident", "highlight", "group", "person", "selfie", "lift")
 LIST_SECTIONS = ("low_info", "occluder", "scene")
 VL_KEYS = ("video", "gear", "scenery", "low_info")
+# The action-cam VLM window prompt and vision rating wording (``vlm``), besides its ``tags``.
+VLM_KEYS = (
+    "recording",
+    "video",
+    "audio",
+    "describe",
+    "hype",
+    "edit",
+    "idle",
+    # the vision rating's alone (the window prompt has its own ``edit``)
+    "rate_edit",
+    "rate_high",
+    "rate_low",
+    "retry_high",  # the shorter retry prompt's lists
+    "retry_low",
+)
 # The prompt set outside a use_prompts block and for a project without activity.json:
 # the ski lists they always used.
 DEFAULT_ACTIVITY = "ski"
@@ -143,12 +169,20 @@ weight 0-1: its crash slang and reactions, e.g. "over the bars", "lost my ski"; 
 "bike", "down", "air", "rocks" or "trail"; 1.0 only when the phrase means a crash; skip \
 generic ones like "you okay" or "crashed", which every profile has),
 highlight.pos / highlight.neg (at most {h} captions each: highlight-worthy vs dull moments),
-low_info (at most 3 captions of frames with nothing to see).
+low_info (at most 3 captions of frames with nothing to see).{vlm}
 Captions are short visual descriptions (under 12 words). Where the user says what \
 matters, follow it. No other text.
 
 Examples:
 {examples}"""
+# Added to _SYNTH_PROMPT on the first attempt: the base wording of the VLM prompts, for the
+# LLM to flavour. The tag keys are fixed; only their descriptions may change.
+_SYNTH_VLM = """
+vlm (optional: the wording a vision model gets for this footage). Start from this generic \
+action-cam wording and reword it for this activity, keeping each value's role, length and \
+form (hype: a 0-10 rubric; tags: one short description per tag, the same tag keys, no new \
+ones; leave out any value that needs no change):
+{base_vlm}"""
 
 _FILES: dict[str, dict[str, Any] | None] = state.register_container(__name__, "_FILES", {})
 
@@ -176,6 +210,23 @@ def _words(v: Any) -> dict[str, float]:
     return out
 
 
+def _vlm_text(v: Any, cap: int) -> str:
+    """A ``vlm`` string on one line, or "" when it is not a string, empty or over ``cap``."""
+    v = " ".join(v.split()) if isinstance(v, str) else ""
+    return v if len(v) <= cap else ""
+
+
+def _vlm(raw: Any) -> dict[str, Any]:
+    """The valid part of a ``vlm`` section: the :data:`VLM_KEYS` strings and the
+    descriptions of the fixed :data:`ACTION_CAM_TAGS`; a missing, invalid or too long
+    value is left out, so the floor's text takes its place."""
+    raw = raw if isinstance(raw, dict) else {}
+    out: dict[str, Any] = {k: v for k in VLM_KEYS if (v := _vlm_text(raw.get(k), MAX_VLM_CHARS))}
+    tags = raw.get("tags") if isinstance(raw.get("tags"), dict) else {}
+    out["tags"] = {t: v for t in ACTION_CAM_TAGS if (v := _vlm_text(tags.get(t), MAX_PROMPT_CHARS))}
+    return out
+
+
 def validate(raw: Any) -> dict[str, Any]:
     """Normalise a profile (built-in, library file or LLM output): known fields
     typed, deduplicated and capped; extra object sections kept as they are."""
@@ -200,14 +251,15 @@ def validate(raw: Any) -> dict[str, Any]:
         for k in VL_KEYS
         if isinstance(v := sec("vl").get(k), str) and v.strip()
     }
+    prof["vlm"] = _vlm(sec("vlm"))
     prof.update({k: v for k, v in raw.items() if k not in prof and isinstance(v, dict)})
     return prof
 
 
 def merge(base: dict[str, Any], top: dict[str, Any]) -> dict[str, Any]:
-    """``top`` on ``base``: caption lists appended (deduplicated), words and ``vl``
-    strings overridden, identity (name, description, detect) from ``top``; entries in
-    ``top["exclude_base"]`` are dropped from ``base``. A section ``top`` lacks (an LLM
+    """``top`` on ``base``: caption lists appended (deduplicated), words and ``vl`` /
+    ``vlm`` strings overridden (``vlm`` tags one by one), identity (name, description,
+    detect) from ``top``; entries in ``top["exclude_base"]`` are dropped from ``base``. A section ``top`` lacks (an LLM
     profile has only :data:`SCHEMA_KEYS`) is the base's."""
     drop = set(top.get("exclude_base") or ())
 
@@ -227,6 +279,8 @@ def merge(base: dict[str, Any], top: dict[str, Any]) -> dict[str, Any]:
     for sec in LIST_SECTIONS:
         out[sec] = cat(base.get(sec) or [], top.get(sec) or [])
     out["vl"] = {**(base.get("vl") or {}), **(top.get("vl") or {})}
+    bv, tv = base.get("vlm") or {}, top.get("vlm") or {}
+    out["vlm"] = {**bv, **tv, "tags": {**(bv.get("tags") or {}), **(tv.get("tags") or {})}}
     return out
 
 
@@ -287,7 +341,10 @@ class Prompts:
     ``incident_*``: crash prompts (360 ``crash_zs``); ``occluder``, ``low_info`` and
     ``scene`` (with the group and highlight positives: :meth:`qa_negatives`): the 360 QA
     flags; ``selfie_*``: a usable selfie view (against the occluders too); ``lift_*``:
-    riding a lift (empty: no lift detection); ``vl``: the 360 vision check's wording.
+    riding a lift (empty: no lift detection); ``vl``: the 360 vision check's wording;
+    ``vlm`` and ``vlm_tags``: the wording of the action-cam VLM window prompt and vision
+    rating (:data:`VLM_KEYS`, the tag descriptions), every value the floor's where the
+    profile has none.
     """
 
     name: str
@@ -307,6 +364,8 @@ class Prompts:
     lift_pos: tuple[str, ...]
     lift_neg: tuple[str, ...]
     vl: tuple[tuple[str, str], ...]
+    vlm: tuple[tuple[str, str], ...] = ()
+    vlm_tags: tuple[tuple[str, str], ...] = ()
 
     @property
     def lift(self) -> bool:
@@ -318,8 +377,10 @@ class Prompts:
         return self.group_pos + self.highlight_pos + self.scene
 
     def key(self) -> str:
-        """Short hash of the captions (not the name): a cache-key part."""
-        return cache.params_hash({k: v for k, v in asdict(self).items() if k != "name"})
+        """Short hash of the captions (not the name or the ``vlm`` wording, which the VLM
+        and rating caches key themselves): a cache-key part."""
+        skip = ("name", "vlm", "vlm_tags")
+        return cache.params_hash({k: v for k, v in asdict(self).items() if k not in skip})
 
 
 def prompts(profile: dict[str, Any]) -> Prompts:
@@ -329,6 +390,11 @@ def prompts(profile: dict[str, Any]) -> Prompts:
         v = profile.get(sec) or ({} if k else [])
         return tuple((v.get(k) or []) if k else v)
 
+    # field by field on the floor's wording: a record's own section may lack values or
+    # hold invalid ones (written by hand or before profiles had it)
+    own, floor = _vlm(profile.get("vlm")), base()["vlm"]
+    vlm = {**floor, **own}
+    tags = {**floor["tags"], **own["tags"]}
     return Prompts(
         name=str(profile.get("name") or "custom"),
         highlight_pos=t("highlight", "pos"),
@@ -347,6 +413,8 @@ def prompts(profile: dict[str, Any]) -> Prompts:
         lift_pos=t("lift", "pos"),
         lift_neg=t("lift", "neg"),
         vl=tuple((k, str(v)) for k, v in (profile.get("vl") or {}).items() if k in VL_KEYS),
+        vlm=tuple((k, vlm[k]) for k in VLM_KEYS if k in vlm),
+        vlm_tags=tuple((t, tags[t]) for t in ACTION_CAM_TAGS if t in tags),
     )
 
 
@@ -382,13 +450,14 @@ def record_profile(rec: dict[str, Any]) -> dict[str, Any]:
     ``synthesized``) keeps its identity and ``incident`` and takes every other caption
     section from its library profile or the floor (its old ``highlight`` and ``low_info``
     lists predate the per-activity floor); any other keeps its own sections and takes the
-    missing ones from there."""
+    missing ones from there. A record with every caption section but no ``vlm`` wording
+    (written before profiles had one) takes that of its library profile, else the floor's."""
     prof = rec.get("profile") if isinstance(rec.get("profile"), dict) else {}
-    if all(k in prof for k in (*PAIR_SECTIONS, *LIST_SECTIONS, "vl")):
-        return prof
     lib = library()
     name = rec.get("name")
     ref = full(lib[name]) if name in lib else base()
+    if all(k in prof for k in (*PAIR_SECTIONS, *LIST_SECTIONS, "vl")):
+        return prof if "vlm" in prof else {**prof, "vlm": ref["vlm"]}
     source = rec.get("source")
     if source in ("flag", "library", "fallback") and name in lib:
         return ref
@@ -502,8 +571,9 @@ def describe(emb: np.ndarray, refs: list[tuple[Path, float]], ask: Ask | None) -
     return "footage of " + ", ".join(f"{vocab[i]} ({shares[i]:.2f})" for i in top), "clip"
 
 
-def _schema(n: int, w: int, h: int) -> dict[str, Any]:
-    """JSON schema of a synthesized profile (Ollama structured output)."""
+def _schema(n: int, w: int, h: int, vlm: bool = False) -> dict[str, Any]:
+    """JSON schema of a synthesized profile (Ollama structured output); ``vlm`` adds the
+    optional ``vlm`` wording (its tag keys fixed)."""
 
     def arr(k: int) -> dict[str, Any]:
         return {"type": "array", "items": {"type": "string"}, "maxItems": k}
@@ -512,7 +582,7 @@ def _schema(n: int, w: int, h: int) -> dict[str, Any]:
         return {"type": "object", "properties": props, "required": list(props)}
 
     words = {"type": "object", "additionalProperties": {"type": "number"}, "maxProperties": w}
-    return obj(
+    schema = obj(
         {
             "name": {"type": "string"},
             "description": {"type": "string"},
@@ -522,6 +592,14 @@ def _schema(n: int, w: int, h: int) -> dict[str, Any]:
             "low_info": arr(3),
         }
     )
+    if vlm:  # optional: not in "required", so a reply without it is still a profile
+        text = {"type": "string"}
+        tags = {"type": "object", "properties": dict.fromkeys(ACTION_CAM_TAGS, text)}
+        schema["properties"]["vlm"] = {
+            "type": "object",
+            "properties": {**dict.fromkeys(VLM_KEYS, text), "tags": tags},
+        }
+    return schema
 
 
 def _cap_words(words: dict[str, float], neg: list[str]) -> dict[str, float]:
@@ -546,11 +624,15 @@ def _cap_words(words: dict[str, float], neg: list[str]) -> dict[str, float]:
 def synthesize(
     description: str, context: str | None, ask: Ask, seeds: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
-    """A new profile from the LLM (validated and capped), or None after one shorter retry."""
+    """A new profile from the LLM (validated and capped), or None after one shorter retry.
+
+    Its ``vlm`` wording keeps the valid strings the LLM wrote; merged on the floor
+    (:func:`full`, :func:`merge`), every other one is the base text."""
     examples = "\n".join(
-        json.dumps({k: v for k, v in s.items() if k != "exclude_base"}) for s in seeds
+        json.dumps({k: v for k, v in s.items() if k not in ("exclude_base", "vlm")}) for s in seeds
     )
-    for n, w, h in SYNTH_SIZES:
+    base_vlm = json.dumps(base()["vlm"])
+    for n, w, h, vlm in SYNTH_SIZES:
         prompt = _SYNTH_PROMPT.format(
             description=description or "unknown",
             context=context or "nothing",
@@ -558,8 +640,9 @@ def synthesize(
             n=n,
             w=w,
             h=h,
+            vlm=_SYNTH_VLM.format(base_vlm=base_vlm) if vlm else "",
         )
-        prof = validate(ask(prompt, [], _schema(n, w, h)))
+        prof = validate(ask(prompt, [], _schema(n, w, h, vlm)))
         if prof["incident"]["pos"]:
             break
         logger.info("activity: no usable profile from the LLM (%d captions asked)", n)

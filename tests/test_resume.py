@@ -404,7 +404,7 @@ class _Ollama:
             "funny_score": 2,
             "highlight_score": 6,
             "label": "Big Moment",
-            "tags": dict.fromkeys(vw.SKI_TAGS, 2),
+            "tags": dict.fromkeys(vw.ACTION_CAM_TAGS, 2),
         }
         return _Resp({"message": {"content": json_dumps(reply)}, "prompt_eval_count": 99})
 

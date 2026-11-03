@@ -279,11 +279,11 @@ def test_vision_counts_the_candidates_without_a_cached_rating(run, caplog, monke
         def available(self):
             return run.vision_ok
 
-        def cached(self, src, start, end, base):
+        def cached(self, src, start, end, base, activity=None):
             hit = not self.cache_only or start == 10.0
             return SimpleNamespace(score=8.0, label="nice") if hit else None
 
-        def rate(self, src, start, end, base):
+        def rate(self, src, start, end, base, activity=None):
             res = self.cached(src, start, end, base)
             if res is None:
                 self.missed += 1
