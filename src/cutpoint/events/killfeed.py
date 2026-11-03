@@ -22,7 +22,7 @@ import queue
 import re
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
@@ -90,7 +90,8 @@ class OcrParams:
 # names and are dropped on menu frames
 # 13: menu frames are recorded as stats["menu_spans"] (#440)
 # 14: gaps up to MENU_FILL_S between box- or text-rule menu frames are menus too (#409)
-GENERIC_VERSION = 14
+# 15: a static screen without new menu text needs menu frames within STATIC_ANCHOR_S (#554)
+GENERIC_VERSION = 15
 
 
 # --------------------------------------------------------------------------- text utils
@@ -1483,6 +1484,15 @@ LIST_MENU_COVER = 0.25  # centre cover of a list menu (2 columns: ~0.33) when th
 # phrases cannot guard either). The test runs only when the decoded HUD area is at least
 # STATIC_MIN_AREA of the frame: a few small corner regions see too little of the screen (still
 # sky or ground would pass as a menu).
+# Stillness alone is weak evidence: a bare still part (no new menu text) also fits still
+# gameplay (a respawn or spectator wait, a preparation phase), which held still for 11-34 s on
+# hand-labelled War Thunder and R6 footage and was flagged as a menu. A bare part is a static
+# screen only when menu evidence lies within STATIC_ANCHOR_S of it: a frame of another menu
+# rule (``cover``, ``jump``, ``list``, ``text``); a still part with menu text is no evidence
+# (a preparation phase after a still text screen would follow it). Menus come in runs (lobby, hangar, matchmaking), so a hangar next to its menu screens stays, an
+# isolated still stretch in gameplay does not. A bare part that holds still for STATIC_LONG_S
+# needs none: the longest still gameplay measured was 37.7 s (an R6 preparation phase), a
+# War Thunder hangar held 55.7 s.
 STATIC_THUMB = (32, 18)
 STATIC_MAX_DIFF = 3.0
 STATIC_MIN_S = 5.0
@@ -1493,6 +1503,7 @@ STATIC_MAX_GAP_S = 1.0  # at least; 2 frame intervals at low OCR frame rates
 STATIC_MIN_AREA = 0.25
 STATIC_TEXT_LINES = 2
 STATIC_TEXT_SHARE = 0.5
+STATIC_LONG_S = 45.0
 
 # Text screens (rule "text"): lobbies, operator select, deploy maps and result screens rarely
 # hold still (animated backgrounds, cursors, countdowns end their still runs within seconds) and
@@ -1537,6 +1548,7 @@ TEXT_MIN_S = 3.0
 # ``feed_times``.
 MENU_FILL_S = 15.0
 FILL_ENDS = ("cover", "jump", "list", "text")
+STATIC_ANCHOR_S = MENU_FILL_S  # menu evidence for a bare still screen (see STATIC_THUMB)
 
 
 def _thumb_bgr(frame: np.ndarray) -> np.ndarray:
@@ -1638,15 +1650,28 @@ def static_frames(
     frames: list[dict[str, Any]],
     feed_times: set[float],
     text_spans: list[tuple[float, float]] | None = None,
+    anchor_times: Iterable[float] | None = None,
 ) -> set[Any]:
     """Ids of the frames of a static screen: a part of :func:`static_parts` with at
     least :data:`STATIC_MIN_FRAMES` frames that holds still for at least
     :data:`STATIC_MIN_S` when it shows new menu text (``text_spans``), else
-    :data:`STATIC_BARE_MIN_S`."""
+    :data:`STATIC_BARE_MIN_S` and a time of ``anchor_times`` (frames another menu rule
+    flagged) within :data:`STATIC_ANCHOR_S`. Without ``anchor_times`` a bare part has none,
+    unless it lasts :data:`STATIC_LONG_S`."""
     out: set[Any] = set()
+    bare: list[list[dict[str, Any]]] = []
+    anchors = sorted(anchor_times or [])
     for part, text in static_parts(frames, feed_times, text_spans or []):
         need = STATIC_MIN_S if text else STATIC_BARE_MIN_S
         if len(part) >= STATIC_MIN_FRAMES and part[-1]["t"] - part[0]["t"] >= need:
+            if text:
+                out.update(p["id"] for p in part)
+            else:
+                bare.append(part)
+    for part in bare:
+        i = bisect.bisect_left(anchors, part[0]["t"] - STATIC_ANCHOR_S)
+        near = i < len(anchors) and anchors[i] <= part[-1]["t"] + STATIC_ANCHOR_S
+        if near or part[-1]["t"] - part[0]["t"] >= STATIC_LONG_S:
             out.update(p["id"] for p in part)
     return out
 
@@ -1774,7 +1799,7 @@ def menu_rules(
     ``none``, and the
     source's numbers (``median`` box count, ``min_boxes``, the ``cover``, ``list`` and
     ``jump`` thresholds, inf when off, the ``static_s`` (with new menu text,
-    ``text_spans``), ``static_bare_s`` (without) and ``static_diff`` of the static
+    ``text_spans``), ``static_bare_s`` (without, near menu frames) and ``static_diff`` of the static
     rule, which runs only with ``feed_times``, and the ``text_lines`` of the text
     rule (:func:`text_frames`, with ``text_keys`` and ``max_gap``), which runs only with
     ``feed_times`` and ``text_spans``)."""
@@ -1784,7 +1809,6 @@ def menu_rules(
     if lists:
         params = replace(params, menu_jump=float("inf"))
     keep = {f["id"] for f in gameplay_frames(frames, params)}
-    static = static_frames(frames, feed_times, text_spans) if feed_times is not None else set()
     on = feed_times is not None and text_spans is not None
     texts = text_frames(frames, text_spans or [], text_keys, max_gap) if on else set()
     rules = {}
@@ -1797,12 +1821,16 @@ def menu_rules(
             and _centre_cover(f) >= LIST_MENU_COVER
         ):
             rules[f["id"]] = "list"
-        elif f["id"] in static:
-            rules[f["id"]] = "static"
         elif f["id"] in texts:
             rules[f["id"]] = "text"
         else:
             rules[f["id"]] = "none"
+    if feed_times is not None:  # the static rule goes before the text rule
+        anchor_times = [f["t"] for f in frames if rules[f["id"]] != "none"]
+        static = static_frames(frames, feed_times, text_spans, anchor_times)
+        for f in frames:
+            if f["id"] in static and rules[f["id"]] in ("none", "text"):
+                rules[f["id"]] = "static"
     if feed_times is not None:
         _fill_menu_gaps(frames, rules, feed_times)
     info = {
@@ -1814,6 +1842,8 @@ def menu_rules(
         "static_s": STATIC_MIN_S if feed_times is not None else float("inf"),
         "static_bare_s": STATIC_BARE_MIN_S if feed_times is not None else float("inf"),
         "static_diff": STATIC_MAX_DIFF,
+        "static_anchor_s": STATIC_ANCHOR_S if feed_times is not None else float("inf"),
+        "static_long_s": STATIC_LONG_S if feed_times is not None else float("inf"),
         "text_lines": TEXT_LINES if on else float("inf"),
     }
     return rules, info
@@ -1883,7 +1913,7 @@ def _log_menu_frames(
     static = (
         "off"
         if info["static_s"] == float("inf")
-        else f">= {info['static_s']:.1f}s with menu text, >= {info['static_bare_s']:.1f}s without"
+        else f">= {info['static_s']:.1f}s with menu text, >= {info['static_bare_s']:.1f}s within {info['static_anchor_s']:.0f}s of menus or >= {info['static_long_s']:.0f}s without"
     )
     for f in frames:
         rule, n = rules[f["id"]], seen.get(f["t"], 0)

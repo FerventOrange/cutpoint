@@ -435,9 +435,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ollama vision ratings and `360 director --vl-check` frame checks are cached per server
   (host and port of the Ollama URL), so a local and a remote Ollama with the same model no
   longer share results; existing ones are rated again once (#673).
+- OCR menu detection (#554): a still screen with no new menu text counts as a menu only
+  when another menu frame (box, list or text rule) lies within 15 s, or it holds still for
+  45 s. Still gameplay (respawn and spectator waits, a preparation phase) is no longer
+  flagged as a menu. On hand-labelled War Thunder footage the menu precision rose from 0.65
+  to 1.00 at the same recall (0.44), and on R6 from 0.69 to 0.93. Cached OCR results are
+  replayed once.
 - AI Chat's `find_moments` matches a word at the start of a word in labels, transcripts and
   what the vision model saw, so "air" finds air, airs and airtime but no longer chair, and the
   proxy's periodic credential sync tightens loosened permissions even when nothing changed (#663).
+- `edit --events` no longer fails after an in-process PANNs run with `panns_inference.__spec__
+  is None` (#669).
 - `analyze --ollama-url` and `--ollama-model` now reach the VLM layer of its events step, which
   used the configured Ollama instead (#660).
 - `edit --events` honours `--skip`: `--skip keyframes` no longer runs HUD discovery (#659).

@@ -217,6 +217,8 @@ def _bump(monkeypatch) -> None:
 
 
 def test_replay_equals_the_live_read(tmp_path: Path, monkeypatch) -> None:
+    # the 12 s still menu has no other menu frame near it: it counts as long enough alone
+    monkeypatch.setattr(killfeed, "STATIC_LONG_S", killfeed.STATIC_BARE_MIN_S)
     engine = _Engine()
     events, stats = _run(tmp_path, monkeypatch, engine)
     assert engine.calls > 0
