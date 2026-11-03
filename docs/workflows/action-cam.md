@@ -59,7 +59,9 @@ crash words from the project's activity profile, chosen or built without manual 
    built-in profiles as examples. It is checked and capped, then saved to
    `<CUTPOINT_HOME>\profiles\`, so the next video of that kind matches it in step 3.
 5. If no model answers, the nearest library profile or `generic` is used (`source: fallback`),
-   and the next run tries again.
+   and the next run tries again. An Ollama on another machine is not asked until the Vision
+   consent for it was given in the Models tab of `cutpoint ui` (WARNING
+   `vision_consent_needed`).
 
 `--context "..."` passes the user's own words ("enduro race in the rain, mud on the lens"). The
 LLM adds crash captions, normal-riding captions and slang on top of the chosen profile; words
