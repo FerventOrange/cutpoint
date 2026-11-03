@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import sys
 import types
@@ -86,6 +87,75 @@ LOADS = pytest.mark.parametrize(
     ],
     ids=["ClipEncoder", "VisualModels", "text_embeddings"],
 )
+
+
+def _repo() -> Path:
+    return paths.clip_dir() / ("models--" + paths.CLIP_HF_REPO.replace("/", "--"))
+
+
+def _snapshot(name: str, mtime: float, *, complete: bool = True) -> Path:
+    """A snapshot folder ``name`` (modified at ``mtime``); ``complete`` holds the checkpoint,
+    else only the config (a partial download). Returns the checkpoint path."""
+    snap = _repo() / "snapshots" / name
+    write(snap / "open_clip_config.json", "{}")
+    ckpt = snap / "open_clip_model.safetensors"
+    if complete:
+        write(ckpt, b"fake")
+    os.utime(snap, (mtime, mtime))
+    return ckpt
+
+
+def _ref_main(commit: str) -> None:
+    write(_repo() / "refs" / "main", commit + "\n")
+
+
+def test_clip_weights_follow_refs_main_over_sort_order(no_network):
+    _snapshot("aaa", 3000.0)  # sorts first and is newest
+    b = _snapshot("bbb", 1000.0)
+    _ref_main("bbb")
+    assert paths.clip_weights() == b
+
+
+@pytest.mark.parametrize("target", ["missing", "partial"])
+def test_clip_weights_bad_ref_falls_back_to_newest_complete(no_network, target):
+    _snapshot("aaa", 1000.0)
+    newest = _snapshot("ccc", 2000.0)
+    _snapshot("ddd", 3000.0, complete=False)  # newer, but without the checkpoint
+    if target == "partial":
+        _snapshot("eee", 4000.0, complete=False)
+    _ref_main("eee")
+    assert paths.clip_weights() == newest
+
+
+def test_clip_weights_without_ref_use_newest_complete(no_network):
+    _snapshot("aaa", 1000.0)
+    newest = _snapshot("bbb", 2000.0)
+    _snapshot("ccc", 3000.0, complete=False)
+    assert not (_repo() / "refs").exists()
+    assert paths.clip_weights() == newest
+
+
+def test_clip_weights_ref_is_not_a_path(no_network):
+    write(_repo() / "open_clip_model.safetensors", b"stray")  # outside every snapshot
+    newest = _snapshot("aaa", 1000.0)
+    _ref_main("..")
+    assert paths.clip_weights() == newest
+
+
+def test_clip_weights_ref_not_utf8_falls_back_to_newest_complete(no_network):
+    _snapshot("aaa", 1000.0)
+    newest = _snapshot("bbb", 2000.0)
+    write(_repo() / "refs" / "main", b"\xff\xfe")
+    assert paths.clip_weights() == newest
+
+
+def test_nothing_complete_returns_the_repo_and_raises(stub_open_clip, no_network):
+    _snapshot("aaa", 1000.0, complete=False)
+    _ref_main("aaa")
+    assert paths.clip_weights() == _repo()
+    with pytest.raises(visual.ClipWeightsMissing, match="cutpoint setup --only visual"):
+        visual.load_clip()
+    assert stub_open_clip == []
 
 
 @LOADS
