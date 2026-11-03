@@ -464,6 +464,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Relative paths are still refused.
 - The VLM log line of `cutpoint events` no longer shows `None tok` when the Vision server reports
   no token count (OpenAI-compatible servers); it leaves out the token part (#624).
+- `assemble --format fcpxml|otio` (and `edit`) write `final.fcpxml` / `final.otio` through a
+  temporary file renamed at the end, so an interrupted run no longer leaves a truncated timeline
+  (#600).
+- The PANNs audio checkpoint loads as weights only, so a tampered file cannot run code; a
+  checkpoint that holds more than weights is refused with an error that says to delete it and run
+  `cutpoint setup --only panns` (#598).
 
 ## [0.4.0] - 2026-10-29
 

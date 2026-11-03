@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import types
 from pathlib import Path
 
 import pytest
@@ -139,3 +140,54 @@ def test_run_layer_leaves_a_given_detector_open(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(voice, "compute_voice", lambda s, det, vad, params, force=False: {})
     stats = voice.run_layer([_source(tmp_path, "a")], voice.VoiceParams(), det=Det())
     assert stats == {"cached": 0, "computed": 1, "device": "cuda"} and closed == []
+
+
+# --- the checkpoint is loaded with weights_only (#598) ---
+
+RAN: list[str] = []
+
+
+def _mark(text: str) -> str:
+    RAN.append(text)
+    return text
+
+
+class _Evil:
+    def __reduce__(self):
+        return (_mark, ("executed",))
+
+
+@pytest.fixture
+def panns_ckpt(tmp_path: Path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    from cutpoint.events import audio_events, paths  # noqa: PLC0415
+
+    class Net(torch.nn.Module):
+        def __init__(self, **kwargs):
+            super().__init__()
+            self.fc = torch.nn.Linear(2, 2)
+
+    ckpt = tmp_path / "panns.pth"
+    monkeypatch.setattr(paths, "panns_ckpt", lambda: ckpt)
+    monkeypatch.setattr(
+        audio_events,
+        "_import_panns_models",
+        lambda: types.SimpleNamespace(Cnn14_DecisionLevelMax=Net),
+    )
+    RAN.clear()
+    return torch, audio_events, ckpt, Net
+
+
+def test_panns_checkpoint_with_a_plain_state_dict_loads(panns_ckpt):
+    torch, audio_events, ckpt, Net = panns_ckpt
+    torch.save({"model": Net().state_dict()}, ckpt)
+    det = audio_events.PannsDetector(device="cpu")
+    assert isinstance(det.model, Net)
+
+
+def test_panns_checkpoint_with_code_in_it_is_refused_unexecuted(panns_ckpt):
+    torch, audio_events, ckpt, Net = panns_ckpt
+    torch.save({"model": Net().state_dict(), "extra": _Evil()}, ckpt)
+    with pytest.raises(RuntimeError, match="cannot be loaded safely"):
+        audio_events.PannsDetector(device="cpu")
+    assert RAN == []
