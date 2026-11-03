@@ -499,6 +499,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint detect` and `--style auto` no longer call camera footage with a news lower third
+  sure gameplay (#701). An opaque box across most of the bottom of the picture (a lower third,
+  a news ticker) has text that stays put like a HUD's, so a re-encoded clip without camera tags
+  scored as gameplay from that text alone. The frame probe now finds such a box; neither its
+  static text nor its text in the HUD text check counts as HUD, so the clip is ambiguous and
+  gets the default style with `style_ambiguous`. Game HUDs in corners and along the edges count
+  as before. The probe cache is now `category-v2.json`, so each source's frame probe runs again
+  once.
 - Recordings whose audio tracks are copies of each other (OBS writing the same mix to several
   tracks) are analysed at the level of one track (#685). `analyze` summed every track into its
   analysis audio, so 5 identical tracks came out about 14 dB too loud and clipped, flattening

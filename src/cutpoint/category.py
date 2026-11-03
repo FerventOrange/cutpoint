@@ -39,7 +39,7 @@ from cutpoint.errors import FFmpegError
 
 logger = logging.getLogger(__name__)
 
-VERSION = 1
+VERSION = 2  # 2: the lower-third box (box, hud_box)
 CACHE_FILE = f"category-v{VERSION}.json"  # in the source's cache folder
 
 ACTION_CAM = "action-cam"
@@ -62,6 +62,13 @@ EDGE = 24.0  # luma gradient of the mean frame that counts as an edge
 FLAT = 6.0  # luma gradient below which a pair pixel is flat (noise is measured there)
 BAR_LUMA, BAR_STD = 24.0, 3.0  # a letterbox / pillarbox row or column
 MARGIN = 2  # pixels left out next to the content's edge
+# A lower-third or news-ticker box: a run of rows in the bottom of the picture that moves far
+# less than the rest (an opaque or nearly opaque box over the picture) across most of the
+# width. Its text stays put like a HUD's, so it counts as neither static HUD nor HUD text.
+BOX_FROM = 0.6  # the box lies below this share of the picture's height
+BOX_QUIET = 0.35  # a box pixel: luma std at most this share of the picture's median std
+BOX_WIDTH = 0.8  # a box row: at least this share of its pixels are box pixels
+BOX_ROWS = 0.04  # a box: a run of box rows at least this share of the picture's height
 
 # ---- the decision
 # Gameplay score, calibrated on 69 labelled recordings (#513): only a static HUD separates
@@ -131,6 +138,10 @@ class SourceProbe:
         frames: Spread frames decoded (0: no frame measures, such as with telemetry).
         hud_static: Share of the picture that never changes and has edges (a HUD, a logo).
         static_share: Share of the picture that never changes at all.
+        box: ``[top, bottom]`` of a lower-third box (:func:`lower_box`), as shares of the
+            frame's height, or None.
+        hud_box: Share of the picture that is static with edges (as ``hud_static``) inside
+            ``box``: the box's own text and edges.
         noise_floor: Luma noise sigma in flat areas of the native-resolution crops.
         shake: Median shift (px) between consecutive frames of the crops.
         hud_text: HUD text anchors the HUD text check kept (None: not checked). Cached
@@ -148,6 +159,8 @@ class SourceProbe:
     frames: int = 0
     hud_static: float | None = None
     static_share: float | None = None
+    box: list[float] | None = None
+    hud_box: float | None = None
     noise_floor: float | None = None
     shake: float | None = None
     hud_text: int | None = None
@@ -166,6 +179,14 @@ class SourceProbe:
             return cls(**{k: v for k, v in data.items() if k != "version"})
         except TypeError:
             return None
+
+    @property
+    def hud(self) -> float | None:
+        """The static HUD share that counts as HUD evidence: ``hud_static`` less the
+        lower-third box's (None without frame measures)."""
+        if self.hud_static is None:
+            return None
+        return max(0.0, self.hud_static - (self.hud_box or 0.0))
 
     @property
     def camera_marks(self) -> bool:
@@ -260,16 +281,43 @@ def _gradient(img: np.ndarray) -> np.ndarray:
     return g
 
 
-def static_measures(frames: np.ndarray) -> tuple[float, float]:
-    """``(hud_static, static_share)`` of spread frames ``(n, h, w)``: the share of the
-    picture (bars left out) that stays still and has edges, and that stays still at all."""
+def lower_box(std: np.ndarray) -> tuple[int, int] | None:
+    """Rows ``(top, bottom)`` (bottom exclusive) of a lower-third box in the per-pixel luma
+    std of the picture (bars left out): the longest run, below :data:`BOX_FROM` of its
+    height, of rows that are mostly (:data:`BOX_WIDTH`) far quieter (:data:`BOX_QUIET`)
+    than the picture's median; None when no run is :data:`BOX_ROWS` of the height."""
+    h = std.shape[0]
+    quiet = std < max(STATIC_STD, BOX_QUIET * float(np.median(std)))
+    rows = quiet.mean(axis=1) >= BOX_WIDTH
+    best, start = (0, 0), None
+    for y in range(int(h * BOX_FROM), h + 1):
+        if y < h and rows[y]:
+            start = y if start is None else start
+            continue
+        if start is not None and y - start > best[1] - best[0]:
+            best = (start, y)
+        start = None
+    return best if best[1] - best[0] >= max(1, round(BOX_ROWS * h)) else None
+
+
+def static_measures(frames: np.ndarray) -> dict[str, Any]:
+    """``hud_static``, ``static_share`` and, with a lower-third box (:func:`lower_box`),
+    ``box`` and ``hud_box`` of spread frames ``(n, h, w)``: the share of the picture (bars
+    left out) that stays still and has edges, that stays still at all, the box's rows as
+    shares of the frame's height, and the still-and-edgy share of the picture inside it."""
     mean, std = frames.mean(axis=0), frames.std(axis=0)
     rows, cols = _content_box(mean, std)
     static = std[rows, cols] < STATIC_STD
     edgy = _gradient(mean)[rows, cols] > EDGE
     if not static.size:
-        return 0.0, 0.0
-    return float((static & edgy).mean()), float(static.mean())
+        return {"hud_static": 0.0, "static_share": 0.0}
+    hud = static & edgy
+    out: dict[str, Any] = {"hud_static": float(hud.mean()), "static_share": float(static.mean())}
+    box = lower_box(std[rows, cols])
+    if box is not None:
+        out["box"] = [round((rows.start + y) / frames.shape[1], 4) for y in box]
+        out["hud_box"] = float(hud[box[0] : box[1]].sum() / hud.size)
+    return out
 
 
 def noise_sigma(img: np.ndarray) -> float | None:
@@ -311,7 +359,7 @@ def frame_measures(spread: list[np.ndarray], pairs: list[list[np.ndarray]]) -> d
     """The frame fields of :class:`SourceProbe` from decoded frames."""
     out: dict[str, Any] = {"frames": len(spread)}
     if len(spread) >= MIN_FRAMES:
-        out["hud_static"], out["static_share"] = static_measures(np.stack(spread))
+        out.update(static_measures(np.stack(spread)))
     full = [p for p in pairs if len(p) == 2]
     noise = [s for p in full for f in p if (s := noise_sigma(f)) is not None]
     if noise:
@@ -365,11 +413,11 @@ def text_anchors(frames: Sequence[Sequence[Box]]) -> list[tuple[int, Box]]:
     return [(first, rep) for first, rep, seen in groups if len(seen) >= need]
 
 
-def hud_anchors(anchors: Sequence[Mapping[str, Any]]) -> int:
+def hud_anchors(anchors: Sequence[Mapping[str, Any]], box: Sequence[float] | None = None) -> int:
     """How many of the HUD text check's ``anchors`` (``box`` as shares of the frame,
     ``text``, ``score``) are a HUD's: read (score of at least :data:`TEXT_MIN_SCORE`), not
-    a clock, date, speed or position (a camera's burned-in overlay) and not in the subtitle
-    band."""
+    a clock, date, speed or position (a camera's burned-in overlay), not in the subtitle
+    band and not in the lower-third ``box`` (:attr:`SourceProbe.box`)."""
     x_lo, x_hi, y_lo = SUBTITLE_BAND
     kept = 0
     for a in anchors:
@@ -378,6 +426,8 @@ def hud_anchors(anchors: Sequence[Mapping[str, Any]]) -> int:
         if a.get("score", 0.0) < TEXT_MIN_SCORE or not text.strip() or CLOCK_RE.search(text):
             continue
         if (y0 + y1) / 2 >= y_lo and x_lo <= (x0 + x1) / 2 <= x_hi:
+            continue
+        if box is not None and box[0] <= (y0 + y1) / 2 <= box[1]:
             continue
         kept += 1
     return kept
@@ -510,7 +560,7 @@ def _with_text(found: SourceProbe, cdir: Path, io: Path | None = None) -> Source
             return found
         logger.debug("HUD text check of %s: %.1fs", found.path, time.perf_counter() - t0)
         cache.save_json(cdir / TEXT_FILE, rec)
-    return replace(found, hud_text=hud_anchors(rec["anchors"]))
+    return replace(found, hud_text=hud_anchors(rec["anchors"], found.box))
 
 
 def probe_source(src: Path) -> SourceProbe:
@@ -633,13 +683,15 @@ def gameplay_score(p: SourceProbe) -> tuple[float, list[str]]:
     elif p.screen_marks:
         score += SCREEN_TAGS
         why.append("screen recorder tags")
-    if p.hud_static is not None:
+    if p.hud is not None:
         if p.static_share is not None and p.static_share > STILL_SHARE:
             why.append(f"still picture ({_pct(p.static_share)} static)")
         else:
-            hud = min(1.0, p.hud_static / HUD_FULL)
+            hud = min(1.0, p.hud / HUD_FULL)
             score += HUD_WEIGHT * hud
-            why.append(f"static HUD {_pct(p.hud_static)}" if hud >= 0.5 else "no static HUD")
+            why.append(f"static HUD {_pct(p.hud)}" if hud >= 0.5 else "no static HUD")
+            if p.box is not None:  # its text stays put like a HUD's: counted as neither
+                why.append("lower-third box")
     if p.hud_text is not None:  # only checked when the above is unsure (needs_text)
         if p.hud_text >= TEXT_ANCHORS:
             score += TEXT_WEIGHT
@@ -664,8 +716,8 @@ def _source(p: SourceProbe, speech: float | None) -> SourceDecision:
         why = [f"speech {_pct(speech)} of {p.duration / 60:.0f} min", *why]
         # partial HUD evidence (not a still picture) keeps a talky game stream unsure
         part_hud = (
-            p.hud_static is not None
-            and p.hud_static >= HUD_FULL / 4
+            p.hud is not None
+            and p.hud >= HUD_FULL / 4
             and not (p.static_share is not None and p.static_share > STILL_SHARE)
         )
         ambiguous = speech < TALK_SPEECH or part_hud

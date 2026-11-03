@@ -41,9 +41,59 @@ def test_static_measures_find_a_hud_not_bars_or_a_still(make, hud, still):
         frames[:, :20], frames[:, -20:] = 0.0, 0.0
     else:
         frames[:] = frames[0]
-    hud_static, static_share = category.static_measures(frames)
-    assert hud is None or (hud_static > 0.01) == hud
-    assert (static_share > category.STILL_SHARE) == still
+    m = category.static_measures(frames)
+    assert hud is None or (m["hud_static"] > 0.01) == hud
+    assert (m["static_share"] > category.STILL_SHARE) == still
+    assert still or "box" not in m  # a HUD bar a third of the width is no lower-third box
+
+
+def lower_third(frames: np.ndarray, width: int = W) -> np.ndarray:
+    """``frames`` with a news lower third: an opaque box ``width`` wide (rows 150-172) with
+    two lines of fixed text (bright bars, so edges)."""
+    frames[:, 150:172, :width] = 40.0
+    frames[:, 154:160, 10:120] = 230.0
+    frames[:, 164:169, 10:150] = 230.0
+    return frames
+
+
+def corner_hud(frames: np.ndarray) -> np.ndarray:
+    """``frames`` with a game HUD: fixed boxes in three corners."""
+    for r0, c0 in ((8, 8), (158, 8), (158, 250)):
+        frames[:, r0 : r0 + 14, c0 : c0 + 60] = 30.0
+        frames[:, r0 + 3 : r0 + 11, c0 + 3 : c0 + 57] = 230.0
+    return frames
+
+
+def test_a_lower_third_box_is_found_and_its_text_is_no_hud():
+    """The box's text stays put like a HUD's: it is measured as the box's (``hud_box``) and
+    the HUD evidence (:attr:`SourceProbe.hud`) leaves it out. Corner HUD boxes, also at
+    the bottom, and a box half the width are no lower third."""
+    m = category.static_measures(lower_third(moving_frames()))
+    assert m["box"] == [pytest.approx(150 / H, abs=0.02), pytest.approx(172 / H, abs=0.02)]
+    assert m["hud_static"] > category.HUD_FULL
+    assert m["hud_box"] == pytest.approx(m["hud_static"])
+    p = probe(**{**GAME, "handler": "", **m})
+    assert p.hud == pytest.approx(0.0)
+    assert "lower-third box" in category.gameplay_score(p)[1]
+    hud = category.static_measures(corner_hud(moving_frames()))
+    assert "box" not in hud and hud["hud_static"] > category.HUD_FULL
+    assert "box" not in category.static_measures(lower_third(moving_frames(), W // 2))
+
+
+def test_a_lower_third_and_a_channel_logo_are_not_sure_gameplay():
+    """#701: an untagged news clip (a lower third, a channel logo) was sure gameplay from
+    its static text alone. The box's text no longer counts, so it is unsure (and gets the
+    text check); the same static share without a box stays sure gameplay."""
+    det = category.decide([probe(**NEWS)])
+    assert det.ambiguous and "lower-third box" in det.reason
+    assert category.needs_text(probe(**NEWS))
+    det = category.decide([probe(**{**NEWS, "box": None, "hud_box": None})])
+    assert (det.category, det.ambiguous) == (GAMEPLAY, False)
+
+
+def test_probes_cached_before_the_box_are_measured_again():
+    assert category.CACHE_FILE == "category-v2.json"
+    assert SourceProbe.from_json({**probe(**GAME).to_json(), "version": 1}) is None
 
 
 def test_noise_and_shift_measures():
@@ -63,6 +113,7 @@ GAME = {"handler": "VideoHandle", "frames": 16, "hud_static": 0.01, "static_shar
         "noise_floor": 0.2, "shake": 0.0}  # fmt: skip
 CAMERA = {"make": "Apple", "frames": 16, "hud_static": 0.0, "static_share": 0.0,
           "noise_floor": 3.0, "shake": 4.0}  # fmt: skip
+NEWS = {**GAME, "handler": "", "hud_static": 0.0076, "box": [0.86, 0.96], "hud_box": 0.0069}
 
 
 @pytest.mark.parametrize(
@@ -240,6 +291,14 @@ def test_hud_anchors_leave_out_camera_overlays(anchor, kept):
     assert category.hud_anchors([anchor]) == int(kept)
 
 
+def test_text_in_the_lower_third_box_is_no_hud_text():
+    box = [0.86, 0.96]
+    line = {**text_box(0.03, 0.87, w=0.2, h=0.05), "text": "LIVE Whistler, BC"}
+    assert category.hud_anchors([line]) == 1
+    assert category.hud_anchors([line], box) == 0
+    assert category.hud_anchors([text_box(0.85, 0.8)], box) == 1  # above the box
+
+
 THIN_HUD = {**GAME, "hud_static": 0.0}  # screen recorder tags, a HUD too thin for GRID
 
 
@@ -346,6 +405,22 @@ def test_a_failed_text_check_keeps_the_frame_probe_and_is_not_cached(text_check,
     assert category.probe_source(text_check.src).hud_text is None
     assert category.probe_source(text_check.src).hud_text is None
     assert text_check.texts == 1  # one attempt per process (edit --style auto detects twice)
+
+
+def test_a_news_clip_stays_unsure_after_the_text_check(text_check, monkeypatch):
+    """The lower third's two lines and the channel logo are all text in place; only the
+    logo is outside the box, too little for a HUD."""
+    text_check.frame = {"frames": 16, **{k: NEWS[k] for k in ("hud_static", "static_share")}}
+    text_check.frame.update(box=NEWS["box"], hud_box=NEWS["hud_box"])
+    text_check.anchors = [
+        {**text_box(0.86, 0.03), "text": "CBC NEWS"},
+        {**text_box(0.03, 0.87, w=0.2, h=0.05), "text": "LIVE Whistler, BC"},
+        {**text_box(0.03, 0.92, w=0.3, h=0.04), "text": "Record snowfall closes the mountain"},
+    ]
+    monkeypatch.setattr(category, "_metadata", lambda data: {})  # tags stripped
+    p = category.probe_source(text_check.src)
+    assert text_check.texts == 1 and p.hud_text == 1
+    assert category.decide([p]).ambiguous
 
 
 def test_camera_overlays_never_make_camera_footage_sure_gameplay(text_check):
