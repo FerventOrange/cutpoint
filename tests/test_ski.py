@@ -50,6 +50,28 @@ def test_scenic_picks_are_five_to_seven_seconds(kind: str) -> None:
     assert picks[0].start <= 40.0 <= picks[0].end
 
 
+@pytest.mark.parametrize("kind", ["beauty", "scenic"])
+@pytest.mark.parametrize("t", [1.0, 2.0, 119.5])
+def test_scenic_pick_near_a_source_edge_keeps_its_length(kind: str, t: float) -> None:
+    n = 1200  # 120 s
+    peak = np.exp(-(((np.arange(n) * DT - t) / 1.0) ** 2))
+    zero = np.zeros(n)
+    picks = ski.pick({kind: peak}, {kind: 1.0}, zero, zero, [], n * DT, 10)
+    assert len(picks) == 1
+    assert 5.0 <= picks[0].end - picks[0].start <= 7.0
+    assert picks[0].start >= 0.0 and picks[0].end <= n * DT
+
+
+def test_scenic_pick_trimmed_by_a_stronger_pick_grows_back_to_five_seconds() -> None:
+    zero = np.zeros(N)
+    feats = {"scenic": _bump(40.0, 0.6), "speed": _bump(35.0, 1.0)}
+    picks = ski.pick(feats, {"scenic": 1.0, "speed": 1.0}, zero, zero, [], N * DT, 10)
+    scenic = next(p for p in picks if p.kind == "scenic")
+    other = next(p for p in picks if p.kind != "scenic")
+    assert scenic.end - scenic.start >= 5.0
+    assert scenic.start >= other.end or scenic.end <= other.start
+
+
 def test_scenic_pick_in_a_source_shorter_than_five_seconds_still_works() -> None:
     n = 40  # 4 s
     x = np.arange(n) * DT

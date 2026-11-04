@@ -319,6 +319,14 @@ def test_reserved_slot_with_suggested_top_and_max_total(tmp_path):
     assert [c["id"] for c in chosen][-2:] == ["v001", "v002"]
 
 
+def test_reserved_slot_goes_by_the_shown_peak_so_commentary_breaks_a_tie(tmp_path):
+    # analysis lists the one with speech first among equal shown scores (8.1 both)
+    talky = {**_pool("v001", 0.81, 2000), "transcript": "look at that"}
+    quiet = _pool("v002", 0.814, 2100)
+    chosen, _ = select_moments(_hl(tmp_path, 30, [talky, quiet]), top=8)
+    assert [c["id"] for c in chosen][-1] == "v001"
+
+
 def test_max_total_skips_a_pool_moment_that_would_not_fit(tmp_path):
     pool = [_pool("v001", 0.9, 2000, duration=9.0), _pool("v002", 0.7, 2100)]
     chosen, _ = select_moments(_hl(tmp_path, 30, pool), max_total=60)

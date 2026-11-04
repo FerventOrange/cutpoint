@@ -383,7 +383,9 @@ def _digest(cands: list[analyze.Candidate], saved: dict) -> dict[str, object]:
 
 def test_full_install_action_cam_output_is_pinned(tmp_path, monkeypatch):
     """Pinned on base 13d26aa, before #556: splitting ``social`` into registry parts changes
-    nothing on a full install (features_available, cache key, scores, signals, npz)."""
+    nothing on a full install (features_available, cache key, scores, signals, npz). #738
+    changed the scenic/beauty geometry (5-7 s), so the beauty candidate's times and signals
+    digest were re-pinned."""
     monkeypatch.setattr(extras, "edition", lambda: "full")
     reset_state()
     cands, saved = _social_ski_run(tmp_path, monkeypatch)
@@ -396,9 +398,9 @@ def test_full_install_action_cam_output_is_pinned(tmp_path, monkeypatch):
             (38.0, 44.0, 40.0),
             (91.5, 97.5, 95.0),
             (78.5, 84.5, 82.0),
-            (23.5, 26.5, 25.0),
+            (22.5, 27.5, 25.0),
         ],
-        "signals": "bd0392ee8b34bd3029102b605a055cac838333992b3bb18bc81ee392182ab8ab",
+        "signals": "c616d5845e825a19b535bf0c759a3c59f975e42127a4af176b6307651062ae1e",
         "npz_keys": [*ski.FEATURES, "friends_vlm"],
         "npz": "ee9c92a531d59a301912d09dd7645416fb29433f61857e621989ba5209f1f4d9",
     }

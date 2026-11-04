@@ -158,11 +158,11 @@ def _reserve(
     )  # lowest-ranked first
     total = sum(c["duration"] for c in chosen)
     taken: list[dict[str, Any]] = []
-    for p in sorted(pool, key=lambda c: -visual_pool.peak_of(c)):
+    for p in sorted(pool, key=lambda c: -round(10 * visual_pool.peak_of(c), 1)):
         if len(taken) == slots or not victims:
             break
         if visual_pool.peak_of(p) < visual_pool.SLOT_MIN_PEAK:
-            break  # sorted: nothing after it qualifies either
+            continue
         if any(_overlaps(p, c) for c in chosen):
             continue
         v = victims[0]

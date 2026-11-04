@@ -515,6 +515,9 @@ def pick(
         if b - a < lo_len:
             grow = (lo_len - (b - a)) / 2
             a, b = a - grow, b + grow
+        if kind in ("scenic", "beauty"):  # keep the length near a source edge: shift inside
+            shift = max(0.0, -a) - max(0.0, b - duration)
+            a, b = a + shift, b + shift
         a, b = max(0.0, a), min(duration, b)
         ia = max(0, min(int(a / DT), s0) - 5)
         ib = min(n, max(int(b / DT), s1 + 1) + 5)
@@ -534,7 +537,7 @@ def pick(
                 event=ev,
             )
         )
-    return _deoverlap(picks)
+    return _deoverlap(picks, duration)
 
 
 def _label(kind: str, ev: dict[str, Any] | None) -> str:
@@ -545,7 +548,24 @@ def _label(kind: str, ev: dict[str, Any] | None) -> str:
     return KIND_LABEL.get(kind, kind)
 
 
-def _deoverlap(picks: list[Pick]) -> list[Pick]:
+def _regrow(p: Pick, keep: list[Pick], duration: float) -> None:
+    """Extend a trimmed scenic pick back to its minimum length on a free side, inside the
+    source and off the kept picks; left as it is when it cannot reach it."""
+    need = GEOMETRY[p.kind][0] - (p.end - p.start)
+    if need <= 0:
+        return
+    lo = max([q.end for q in keep if q.end <= p.start] or [0.0])
+    hi = min([q.start for q in keep if q.start >= p.end] or [duration])
+    hi = min(hi, duration)
+    if p.peak_t < p.start + (p.end - p.start) / 2 and hi - p.end >= need:
+        p.end = round(p.end + need, 2)
+    elif p.start - lo >= need:
+        p.start = round(p.start - need, 2)
+    elif hi - p.end >= need:
+        p.end = round(p.end + need, 2)
+
+
+def _deoverlap(picks: list[Pick], duration: float = float("inf")) -> list[Pick]:
     """Trim overlaps in favour of the higher peak; drop clips that become too short."""
     keep: list[Pick] = []
     for p in sorted(picks, key=lambda p: -p.peak):
@@ -555,6 +575,8 @@ def _deoverlap(picks: list[Pick]) -> list[Pick]:
                     p.end = min(p.end, q.start)
                 else:
                     p.start = max(p.start, q.end)
+        if p.kind in ("scenic", "beauty"):
+            _regrow(p, keep, duration)
         if p.end - p.start >= 0.6 * GEOMETRY.get(p.kind, GEOMETRY["vlm"])[0]:
             keep.append(p)
     return keep
