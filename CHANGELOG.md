@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Opt-in `CUTPOINT_ANALYZE_SCENE_OVERLAP=1` (Refs #725): `analyze` detects a source's scene cuts
+  while Whisper transcribes it, for long sources where both take about as long. Off by default;
+  the results are the same either way, and `timings.sources` marks a source with
+  `"overlap": true`. If the transcription fails or is stopped, the scene detection is stopped
+  too.
 - `highlights.json` `timings.sources` (Refs #725): the seconds each source spent in probing,
   audio extract, loudness, transcription and scene cuts, the wait for the background OCR read
   and whether it was cached, to measure where a multi-file analysis spends its time. The

@@ -847,7 +847,8 @@ analysis; a re-rank of an earlier analysis (`events` on action-cam projects, `36
 `offset`): `source` (the path as in `sources[].path`), `probe_s`, `audio_extract_s`,
 `loudness_s`, `transcribe_s`, `scenes_s`, `ocr_wait_s` (seconds the analysis waited for the
 background HUD text read of that source; 0 without one) and `cached` (its audio and transcript
-were reused). The sums above are unchanged; the log also marks the start of each
+were reused) and `overlap` (`true` when its scene cuts ran alongside Whisper with
+`CUTPOINT_ANALYZE_SCENE_OVERLAP=1`; omitted otherwise). The sums above are unchanged; the log also marks the start of each
 source's scene cuts. After a re-rank, `sources`, like the step timings, describes the re-rank's
 own pass, usually all `cached`.
 `transcript.txt` has one line per pause or sentence: `[Round1.mp4 00:12:31.4-00:12:38.9] text`.
@@ -897,6 +898,22 @@ the split, its ffmpeg stops at once on Windows and with ffmpeg 7 and newer; on L
 with ffmpeg 6.x it finishes encoding the proxy first. Either way the spool and
 `proxy.tmp.mp4` stay in the cache folder until the next `analyze` that reads the source's HUD
 OCR in the background removes them.
+
+Opt-in, off by default: `CUTPOINT_ANALYZE_SCENE_OVERLAP=1` detects a source's scene cuts at the
+same time as Whisper transcribes it, instead of after it. It starts only for a source whose
+style uses scene cuts, that is not skipped, whose scene cuts are not cached and whose
+transcript is about to be made; with the transcript cached, the cuts are detected in their turn
+as usual. It helps on long sources where Whisper and scene detection take about as long (a long
+talk or screen recording): the step takes about the longer of the two, but Whisper runs slower
+meanwhile, since both compete for the machine. Where one of them is much shorter than the
+other, there is little to gain. The scene cuts, `highlights.json` (apart from `timings`) and
+the caches are the same as with it off. An error in scene detection still stops the run after
+the transcription; when the transcription fails or is stopped, the scene detection is stopped
+too (its ffmpeg killed or its detection stopped within about 0.1 s plus a frame decode, no `scenes.json` written). In
+`timings.sources`, `scenes_s` is then the time of the scene thread, mostly inside
+`transcribe_s`, and the source has `"overlap": true`. The overlap does not start for a source whose scene proxy comes from a shared decode
+(`CUTPOINT_ANALYZE_SHARED_DECODE=split`). The INFO line "detecting scene cuts" appears when
+the transcription starts. Any other value, or unset: as described above.
 
 | Step | What |
 |---|---|
