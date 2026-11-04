@@ -610,6 +610,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The web workspace no longer shows the text "null" under the empty-project hint when there is no Resume button.
 - The memory guard's `low_memory` error quotes the project path in its
   `cutpoint resume <project>` hint (a path with a space copies as one argument), and a stop for
   VRAM no longer says how much RAM `memory_guard` keeps free.
