@@ -36,14 +36,9 @@ test('markdown: -, * and 1. lists, with a paragraph before and after', () => {
 });
 
 test('markdown: a loose numbered list keeps its numbers', () => {
-  const root = markdown('1. a
-
-2. b
-
-7. c');
+  const root = markdown('1. a\n\n2. b\n\n7. c');
   assert.deepEqual([...root.children].map((e) => e.getAttribute('start')), ['1', '2', '7']);
-  assert.equal(html('1. a
-2. b'), '<ol start="1"><li>a</li><li>b</li></ol>');
+  assert.equal(html('1. a\n2. b'), '<ol start="1"><li>a</li><li>b</li></ol>');
 });
 
 test('markdown: a list item is not made of a line that only starts with a marker', () => {

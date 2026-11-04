@@ -34,6 +34,8 @@ LOCAL_TOKENS = 8192  # a small context: 40 moments, 4 turns, fewer images; more 
 REPLY_TOKENS = 1500  # kept free for a reply that holds a whole proposal
 REPLY_SHARE = 0.3  # of the context kept free for tool results and the reply, if more
 IMAGE_TOKENS = 1500  # of one image (a timeline sheet)
+FIT_CHARS_PER_TOKEN = 2.0  # fitting a turn: the densest JSON measured (2.0-2.4), never over
+MAX_RESULT_CHARS = 6000  # of one tool result
 LEFT_OUT = "(earlier result left out for space; call the tool again if needed)"
 SNIPPET_CHARS = 160  # transcript of a moment in the table
 SEEN_CHARS = 100  # what the vision model saw of a moment, in the table
@@ -143,27 +145,39 @@ class Budget:
     turns: int  # earlier chat turns repeated
     tools: int = 0  # tokens of the tool definitions the request carries
     tight: bool = False  # half the room: the retry after a cut-off reply
+    images: int = 0  # images (timeline sheets) a turn may add
 
     @property
     def chars(self) -> int:
-        """Characters the prompt may use: the context less the tool definitions and the room
-        for a reply or tool results (:data:`REPLY_TOKENS`, :data:`REPLY_SHARE`)."""
+        """Characters the prompt may use: the context less the tool definitions, the images a
+        turn may add and the room for a reply or tool results (:data:`REPLY_TOKENS`,
+        :data:`REPLY_SHARE`). In a small context also under what the turn's fit allows
+        (``FIT_CHARS_PER_TOKEN``) once one whole tool result follows the prompt, or the first
+        round would already leave every earlier result out."""
         reserve = max(REPLY_TOKENS, int(self.tokens * REPLY_SHARE))
-        free = max(self.tokens - reserve - self.tools, self.tokens // 4)
-        return int(free * CHARS_PER_TOKEN) // (2 if self.tight else 1)
+        pictures = self.images * IMAGE_TOKENS
+        free = max(self.tokens - reserve - self.tools - pictures, self.tokens // 4)
+        room = int(free * CHARS_PER_TOKEN)
+        fits = int((self.tokens - REPLY_TOKENS - pictures) * FIT_CHARS_PER_TOKEN)
+        fits -= int(self.tools * CHARS_PER_TOKEN) + MAX_RESULT_CHARS
+        floor = int(self.tokens // 4 * CHARS_PER_TOKEN)
+        return max(min(room, fits), floor) // (2 if self.tight else 1)
 
 
-def budget(context_tokens: int, tools: Any = None, *, tight: bool = False) -> Budget:
+def budget(
+    context_tokens: int, tools: Any = None, *, tight: bool = False, images: int = 0
+) -> Budget:
     """The profile for a model with ``context_tokens``: 40 moments and 4 turns at 8k or less,
     more for a larger context. ``tools``: the tool definitions sent with the request, whose size
-    is kept free. ``tight`` halves the prompt and the turns repeated."""
+    is kept free. ``tight`` halves the prompt and the turns repeated. ``images``: sheets a turn
+    may add, whose room is kept free."""
     used = int(len(json.dumps(tools)) / CHARS_PER_TOKEN) if tools else 0
     if context_tokens <= LOCAL_TOKENS:
         moments, turns = 40, 4
     else:
         scale = context_tokens / LOCAL_TOKENS
         moments, turns = min(200, int(40 * scale)), min(12, 4 + int(scale))
-    return Budget(context_tokens, moments, turns // 2 if tight else turns, used, tight)
+    return Budget(context_tokens, moments, turns // 2 if tight else turns, used, tight, images)
 
 
 def size(value: Any) -> int:

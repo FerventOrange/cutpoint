@@ -40,8 +40,8 @@ from cutpoint.assistant.providers import (
 logger = logging.getLogger(__name__)
 
 MAX_ROUNDS = 8  # model replies in one turn
-FIT_CHARS_PER_TOKEN = 2.0  # fitting a turn: the densest JSON measured (2.0-2.4), never over
-MAX_RESULT_CHARS = 6000  # of one tool result
+FIT_CHARS_PER_TOKEN = context.FIT_CHARS_PER_TOKEN
+MAX_RESULT_CHARS = context.MAX_RESULT_CHARS
 MAX_TEXT = 2000  # characters of a user message
 MAX_SUMMARY = 500
 MAX_SUGGESTIONS = 4
@@ -152,11 +152,12 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def cut_again_error(provider: Any, err: TruncatedError) -> ProviderError:
+def cut_again_error(provider: Any, err: TruncatedError, again: bool = True) -> ProviderError:
     """The failure for a reply cut off after the conversation was already made smaller: the
     provider's own message, and the context advice only where ``assistant.context_tokens``
-    is what the model is given (Ollama's ``num_ctx``)."""
-    text = f"{err} (cut off again)"
+    is what the model is given (Ollama's ``num_ctx``). ``again``: false when the reply was cut
+    off only once (in the final round)."""
+    text = f"{err} (cut off again)" if again else str(err)
     if isinstance(provider, OllamaProvider):
         text += (
             f"; the context is {provider.context_tokens} tokens: ask for less, or raise "
@@ -308,7 +309,8 @@ class Turn:
     def _messages(self, json_mode: bool, *, tight: bool = False) -> list[dict[str, Any]]:
         # the tool definitions of a tool-call request count; JSON mode lists them in the rules
         sent = None if json_mode else self._tools()
-        plan = context.budget(self.provider.context_tokens, sent, tight=tight)
+        sheets = watch.view_cap(self.provider) if self._watch else 0
+        plan = context.budget(self.provider.context_tokens, sent, tight=tight, images=sheets)
         tools = [*_JSON_TOOLS, *([watch.JSON_TOOL] if self._watch else [])] if json_mode else None
         out = context.build_messages(
             self.table, self.earlier, self.text, plan, json_tools=tools, images=bool(self._watch)
@@ -450,7 +452,7 @@ class Turn:
         if self.status != "running":
             return
         if last_cut is not None:
-            raise cut_again_error(self.provider, last_cut) from None
+            raise cut_again_error(self.provider, last_cut, again=False) from None
         if self._nudged is not None:  # the rounds ran out after the nudge: the first answer stands
             self._emit({"kind": "reply", "text": self._nudged})
             self._finish("done")

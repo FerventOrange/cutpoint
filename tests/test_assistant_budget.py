@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from cutpoint.assistant import context, providers, session
+from cutpoint.assistant import context, providers, session, watch
 from cutpoint.assistant.providers import (
     AnthropicProvider,
     OllamaProvider,
@@ -205,12 +205,20 @@ def test_the_second_cut_off_error_keeps_the_providers_message_and_advises_only_f
     assert "assistant.context_tokens" in str(ollama) and "4096 tokens" in str(ollama)
 
 
+def test_cut_again_error_says_again_only_when_asked_to() -> None:
+    err = TruncatedError("cut off at the end")
+    assert "cut off again" in str(session.cut_again_error(AnthropicProvider("", "m", 0, KEY), err))
+    once = session.cut_again_error(AnthropicProvider("", "m", 0, KEY), err, again=False)
+    assert str(once) == "cut off at the end"
+
+
 def test_a_reply_cut_off_in_the_final_round_names_the_cut_off_not_the_round_count() -> None:
     script = [call("get_moment", id="m1") for _ in range(session.MAX_ROUNDS - 1)] + [cut]
     fake = FakeProvider(script)
     turn = run(fake, "x", proj=many())
     assert turn.status == "failed"
     assert "cut off" in (turn.error or "") and "no answer after" not in (turn.error or "")
+    assert "cut off again" not in (turn.error or "")
 
 
 def test_a_second_cut_off_in_a_later_round_still_fails() -> None:
@@ -361,8 +369,43 @@ def test_budget_counts_the_tool_definitions_and_keeps_room_for_a_reply() -> None
     assert with_tools.tools == int(len(json.dumps(session.TOOLS)) / context.CHARS_PER_TOKEN)
     assert with_tools.tools > 500 and with_tools.chars < plain.chars
     reserve = max(context.REPLY_TOKENS, int(8192 * context.REPLY_SHARE))
-    assert plain.chars == int((8192 - reserve) * context.CHARS_PER_TOKEN)
+    assert reserve == 2457 and plain.chars == 7384  # the fit limit less one result, not 14337
     assert (with_tools.moments, with_tools.turns) == (40, 4)
+
+
+@pytest.mark.parametrize(
+    ("tokens", "watching"), [(12288, False), (16384, False), (24576, True), (32768, True)]
+)
+def test_a_prompt_leaves_room_for_a_result_inside_the_fit_limit(
+    tokens: int, watching: bool
+) -> None:
+    """The table, the tool definitions and the sheets of a turn leave one whole tool result
+    under the limit _fit works to, or every round would leave out every earlier result. (At
+    8192 the rules, tools and sheets alone are over it: the budget is at its floor there.)"""
+    provider = OllamaProvider("http://h:1", "m", tokens)
+    turn = session.Turn(provider, many(), "x")
+    turn._watch = watching
+    sheets = watch.view_cap(provider) if watching else 0
+    image = context.size({"type": "image"})
+    total = context.size(turn._messages(False)) + len(json.dumps(turn._tools())) + sheets * image
+    limit = (tokens - context.REPLY_TOKENS) * session.FIT_CHARS_PER_TOKEN
+    assert total + session.MAX_RESULT_CHARS <= limit
+
+
+def test_the_8192_budget_is_what_the_fit_allows_less_the_tools_and_one_result() -> None:
+    plain = context.budget(8192)
+    assert plain.chars == int((8192 - context.REPLY_TOKENS) * session.FIT_CHARS_PER_TOKEN) - 6000
+    with_sheets = context.budget(8192, session.TOOLS, images=2)
+    assert with_sheets.chars == int(8192 // 4 * context.CHARS_PER_TOKEN)  # the floor
+    assert with_sheets.chars <= plain.chars
+
+
+def test_the_budget_for_a_large_or_hosted_context_is_not_cut_by_the_fit_limit() -> None:
+    for tokens in (32768, 50000, 200000):
+        b = context.budget(tokens, session.TOOLS, images=4)
+        reserve = max(context.REPLY_TOKENS, int(tokens * context.REPLY_SHARE))
+        free = tokens - reserve - b.tools - 4 * context.IMAGE_TOKENS
+        assert b.chars == int(free * context.CHARS_PER_TOKEN)
 
 
 def test_budget_tight_halves_the_prompt_and_the_turns() -> None:
