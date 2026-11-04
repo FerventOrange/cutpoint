@@ -162,8 +162,18 @@ def _number(op: dict[str, Any], key: str, where: str) -> float | None:
     return float(v)
 
 
+def _whole(v: Any) -> Any:
+    """``v`` as an int when it is a whole number given as an int, a float (``3.0``) or a string
+    of digits (``"3"``); anything else (bool, fraction, other text) as it is."""
+    if isinstance(v, float) and math.isfinite(v) and v == int(v):
+        return int(v)
+    if isinstance(v, str) and v.isascii() and v.isdigit():
+        return int(v)
+    return v
+
+
 def _position(op: dict[str, Any], key: str, top: int, where: str) -> int | None:
-    v = op.get(key)
+    v = _whole(op.get(key))
     if v is None:
         return None
     if isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= top:
@@ -213,7 +223,7 @@ def _apply(
                 raise OpsError(f"{where}: not a moment of this project")
             if any(row["id"] == sid for row in rows):
                 raise OpsError(f"{where}: already in the sequence; use move or trim")
-            at = op.get("at")
+            at = _whole(op.get("at"))
             if at is not None and (isinstance(at, bool) or not isinstance(at, int) or at < 0):
                 raise OpsError(f"{where}: at must be a position from 1 to {len(rows) + 1}")
             at = at if at and at <= len(rows) + 1 else len(rows) + 1  # 0 or too far: append

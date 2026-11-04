@@ -961,7 +961,7 @@ def test_an_add_at_a_position_out_of_range_is_appended(at: int) -> None:
     assert empty.error is None and [r["id"] for r in empty.after] == ["c1"]
 
 
-@pytest.mark.parametrize("at", [-1, 1.5, "2", True])
+@pytest.mark.parametrize("at", [-1, 1.5, "two", "-1", "1.5", True])
 def test_an_add_at_a_negative_or_odd_position_is_still_rejected(at: Any) -> None:
     out = ops.apply_ops(SEQ, [{"op": "add", "id": "c1", "at": at}], CANDS, durations())
     assert out.error and "at must be a position" in out.error

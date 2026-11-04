@@ -3649,7 +3649,8 @@ function propRow(r) {
       : c === 'trimmed' || c === 'lengthened' || c === 'shortened' ? [c === 'trimmed' ? 'Trimmed ' : c === 'lengthened' ? 'Lengthened ' : 'Shortened ', span(r.before), ...arrow(), span(r.after)]
         : c === 'relabelled' ? ['Renamed “', r.before.label, '”', ...arrow(), '“', r.after.label, '”']
           : c === 'added' ? 'Added' : 'Removed'));
-  if (r.auto) marks.push(h('span', { class: 'prop-mark auto', title: 'Added by Cutpoint to reach the length you asked for' }, 'Auto-filled'));
+  if (r.auto === 'spread') marks.push(h('span', { class: 'prop-mark auto', title: 'Moved or added by Cutpoint to spread the clip kinds you asked to mix' }, 'Auto-spread'));
+  else if (r.auto) marks.push(h('span', { class: 'prop-mark auto', title: 'Added by Cutpoint to reach the length you asked for' }, 'Auto-filled'));
   return h('li', { class: ['prop', ...r.changes].join(' '), 'data-id': r.id },
     h('button', { type: 'button', class: 'prop-main', 'data-act': 'focus', onclick: () => focusMoment(r.id) },
       h('span', { class: 'rank tc', text: r.after ? String(r.after.pos) : '–' }),
