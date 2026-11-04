@@ -909,7 +909,7 @@ meanwhile, since both compete for the machine. Where one of them is much shorter
 other, there is little to gain. The scene cuts, `highlights.json` (apart from `timings`) and
 the caches are the same as with it off. An error in scene detection still stops the run after
 the transcription; when the transcription fails or is stopped, the scene detection is stopped
-too (its ffmpeg killed or its detection stopped, no `scenes.json` written). In
+too (its ffmpeg killed or its detection stopped within about 0.1 s plus a frame decode, no `scenes.json` written). In
 `timings.sources`, `scenes_s` is then the time of the scene thread, mostly inside
 `transcribe_s`, and the source has `"overlap": true`. The overlap does not start for a source whose scene proxy comes from a shared decode
 (`CUTPOINT_ANALYZE_SHARED_DECODE=split`). The INFO line "detecting scene cuts" appears when

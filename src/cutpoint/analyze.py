@@ -454,8 +454,8 @@ def _proxy_args(
 def _detect(proxy: Path, path: Path, cancel: threading.Event | None = None) -> list[float]:
     """Scene cuts of ``proxy`` (deleted after), saved to ``path``.
 
-    With ``cancel`` (a :class:`_SceneJob`), setting it stops the detection within a frame and
-    raises :class:`~cutpoint.ffmpeg_utils.RunCancelled`, writing nothing."""
+    With ``cancel`` (a :class:`_SceneJob`), setting it stops the detection within about 0.1 s plus a
+    frame decode and raises :class:`~cutpoint.ffmpeg_utils.RunCancelled`, writing nothing."""
     try:
         cuts = _scan(proxy, cancel)  # its video handle is closed on return
     finally:
@@ -475,15 +475,26 @@ def _scan(proxy: Path, cancel: threading.Event | None) -> list[float]:
     manager.auto_downscale = False
     manager.add_detector(AdaptiveDetector(min_scene_len=5))
 
-    def frame(*_: Any) -> None:
-        if cancel.is_set():  # type: ignore[union-attr]
-            manager.stop()
+    done = threading.Event()
 
+    def watch() -> None:
+        # PySceneDetect calls a callback only at a cut, so a stop is requested from here. It is
+        # repeated: detect_scenes clears its stop flag when it starts, so one early stop can be lost.
+        while not done.is_set():
+            if cancel.wait(0.1):  # type: ignore[union-attr]
+                manager.stop()
+                done.wait(0.1)
+
+    watcher = None
+    if cancel is not None:
+        watcher = threading.Thread(target=watch, name="scene-cancel", daemon=True)
+        watcher.start()
     try:
-        manager.detect_scenes(
-            video, show_progress=False, **({"callback": frame} if cancel is not None else {})
-        )
+        manager.detect_scenes(video, show_progress=False)
     finally:
+        done.set()
+        if watcher is not None:
+            watcher.join(1.0)
         # The OpenCV backend has no close(); a traceback keeps the handle (and the file open).
         release = getattr(getattr(video, "capture", None), "release", None)
         if release is not None:

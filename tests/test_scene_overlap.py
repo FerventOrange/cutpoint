@@ -482,10 +482,13 @@ def test_an_unset_cancel_detects_the_same_cuts_as_none(cut_clip, tmp_path):
     assert plain == with_event
 
 
-def test_a_cancel_set_during_the_scan_stops_the_detection(tmp_path, monkeypatch):
-    """F4 with a fake scenedetect: the per-frame callback sees the event and stops the manager."""
-    state = {"stopped": False, "frames": 0}
-    cancel = threading.Event()
+def scene_cancel_threads() -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name == "scene-cancel" and t.is_alive()]
+
+
+def fake_scenedetect(monkeypatch, state, *, cancel_at=None, cancel=None, error=None):
+    """A scenedetect whose detect_scenes loops over frames until stop(); it never calls a callback
+    and, like scenedetect 0.7.2, clears its stop flag when it starts."""
 
     class Manager:
         auto_downscale = True
@@ -494,16 +497,21 @@ def test_a_cancel_set_during_the_scan_stops_the_detection(tmp_path, monkeypatch)
             pass
 
         def stop(self):
+            state["stops"] += 1
             state["stopped"] = True
 
-        def detect_scenes(self, video, show_progress=False, callback=None):
-            for i in range(100):
+        def detect_scenes(self, video, show_progress=False, **kwargs):
+            assert "callback" not in kwargs
+            state["stopped"] = False
+            for i in range(300):  # bounded: 3 s at most
                 state["frames"] += 1
-                if i == 3:
+                if i == cancel_at:
                     cancel.set()
-                callback(None, i)
+                if error and i == 1:
+                    raise error
                 if state["stopped"]:
                     return
+                time.sleep(0.01)
 
         def get_scene_list(self):
             return []
@@ -512,11 +520,85 @@ def test_a_cancel_set_during_the_scan_stops_the_detection(tmp_path, monkeypatch)
         AdaptiveDetector=lambda **k: None, SceneManager=Manager, open_video=lambda p: object()
     )
     monkeypatch.setitem(sys.modules, "scenedetect", fake)
+
+
+def test_a_cancel_set_during_the_scan_stops_the_detection(tmp_path, monkeypatch):
+    """F6: the watcher thread stops the manager (repeatedly, as detect_scenes clears the flag)."""
+    state = {"stopped": False, "frames": 0, "stops": 0}
+    cancel = threading.Event()
+    fake_scenedetect(monkeypatch, state, cancel_at=3, cancel=cancel)
     proxy = write(tmp_path / "proxy.mp4")
     with pytest.raises(RunCancelled):
         analyze._detect(proxy, tmp_path / "scenes.json", cancel)
-    assert state == {"stopped": True, "frames": 4}
+    assert state["stops"] >= 1 and state["stopped"]
+    assert state["frames"] < 300  # stopped, not run to the end
     assert not proxy.exists() and not (tmp_path / "scenes.json").exists()
+
+
+def test_a_stop_lost_before_the_scan_starts_is_repeated(tmp_path, monkeypatch):
+    """A cancel set before detect_scenes clears its flag still stops it (the watcher repeats)."""
+    state = {"stopped": False, "frames": 0, "stops": 0}
+    cancel = threading.Event()
+    cancel.set()
+    fake_scenedetect(monkeypatch, state)
+    with pytest.raises(RunCancelled):
+        analyze._detect(write(tmp_path / "proxy.mp4"), tmp_path / "scenes.json", cancel)
+    assert state["frames"] < 300 and not (tmp_path / "scenes.json").exists()
+
+
+@pytest.mark.parametrize("outcome", ["returns", "cancelled", "raises"])
+def test_the_cancel_watcher_thread_is_gone_after_the_scan(tmp_path, monkeypatch, outcome):
+    state = {"stopped": False, "frames": 0, "stops": 0}
+    cancel = threading.Event()
+    error = RuntimeError("boom") if outcome == "raises" else None
+    fake_scenedetect(
+        monkeypatch, state, cancel_at=2 if outcome == "cancelled" else None, cancel=cancel,
+        error=error,
+    )  # fmt: skip
+    state["frames"] = 0
+    if outcome == "returns":
+        # no cancel: detect_scenes runs its 300 frames and returns
+        monkeypatch.setattr(time, "sleep", lambda s: None)
+    proxy = write(tmp_path / "proxy.mp4")
+    expected = {"returns": None, "cancelled": RunCancelled, "raises": RuntimeError}[outcome]
+    if expected is None:
+        analyze._scan(proxy, cancel)
+    else:
+        with pytest.raises(expected):
+            analyze._scan(proxy, cancel)
+    assert scene_cancel_threads() == []
+
+
+@needs_ffmpeg
+def test_a_cancel_stops_a_real_scan_long_before_it_would_finish(tmp_path):
+    """The real scenedetect (no per-frame callback at a cut-free clip) stops within the poll time."""
+    clip = tmp_path / "gray.mp4"
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
+         "color=c=gray:s=320x180:r=30:d=120", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+         str(clip)],
+        check=True,
+    )  # fmt: skip
+    full_dir = tmp_path / "full"
+    start = time.monotonic()
+    analyze._detect(proxy_of(clip, full_dir), full_dir / "scenes.json")
+    full_s = time.monotonic() - start
+
+    proxy = proxy_of(clip, tmp_path / "cdir")
+    path = proxy.parent / "scenes.json"
+    ev = threading.Event()
+    timer = threading.Timer(0.2, ev.set)
+    timer.start()
+    start = time.monotonic()
+    try:
+        with pytest.raises(RunCancelled):
+            analyze._detect(proxy, path, ev)
+    finally:
+        timer.cancel()
+    cancelled_s = time.monotonic() - start
+    assert cancelled_s < max(full_s * 0.6, 1.0), (cancelled_s, full_s)
+    assert not proxy.exists() and not path.exists()
+    assert scene_cancel_threads() == []
 
 
 def test_an_interrupt_inside_the_detection_removes_the_proxy(tmp_path, monkeypatch):
