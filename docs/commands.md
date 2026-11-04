@@ -277,6 +277,25 @@ shows them so the browser can point at it. Like Stats for Nerds, it shows at onc
 in the browser, and Cancel or Escape undoes it.
 The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
 
+With a project open, Settings also has "Delete this project". The dialog names the project and the
+size of what will be deleted, lists the files that stay, and has Cancel focused. Only what
+Cutpoint wrote is deleted: the result files (`highlights.json`, `transcript.txt`, `events.*`,
+`progress.json`, `activity.json`, `crashes.json`, `telemetry.json`, `mix_*`, the finals with their
+`.srt` and timelines), the `ui/` folder and the other folders Cutpoint made in the project,
+hidden temporary and resume folders, and in each clips folder the clips its `manifest.json` lists
+with their `.srt` and the manifest. Everything else stays: staged footage copies, clips you added
+by hand, `hud_presets` (you may have calibrated them), unknown files and folders, and anything that
+is or holds a source video of any project; the project folder is removed only once it is empty. A
+symlink or junction is never followed, and your source videos are never touched. The files go to
+the Recycle Bin / Trash. On Windows Cutpoint first checks that the Recycle Bin of the drive will
+keep them (a fixed drive, not set to delete at once, big enough for the largest item); in a
+container there is no trash. If the trash cannot be used, the page asks a second time before
+deleting them for good. It is refused (409) while a job, an analysis or export, a preview
+render or an AI Chat turn is running on the project. After deleting, the page shows the start
+screen. API: `GET /api/projects/<id>/delete-plan` (`name`, `size`, `files`, `kept`, `kept_count`)
+and `DELETE /api/projects/<id>` with `{"permanent": true}` for the second case; a trash that cannot
+take the files answers 409 with `"code": "no_trash"`.
+
 Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which
 opens the folder with the project's videos in the system file manager (hidden where that is not
 possible, such as Docker). After analysis, "Show folder" stays available next to "Analyze again"

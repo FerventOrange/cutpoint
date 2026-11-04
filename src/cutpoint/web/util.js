@@ -30,6 +30,18 @@ export function svg(cls, shapes, viewBox = '0 0 24 24') {
 
 export const $ = (sel, root = document) => root.querySelector(sel);
 
+/** 1536 -> "1.5 KB"; 52428800 -> "50 MB" (1024 steps, one decimal under 10). */
+export function fmtBytes(n) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let v = Math.max(0, Number(n) || 0);
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return `${i && v < 10 ? v.toFixed(1).replace(/\.0$/, '') : Math.round(v)} ${units[i]}`;
+}
+
 /** 83.5 -> "1:23.50"; 3723 -> "1:02:03.00". Tabular digits come from CSS. */
 export function fmt(t) {
   if (!Number.isFinite(t)) return '–';
