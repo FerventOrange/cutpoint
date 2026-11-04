@@ -507,6 +507,7 @@ def _cmd_stage(a: argparse.Namespace) -> None:
 
 
 def _cmd_crashes(a: argparse.Namespace) -> None:
+    from cutpoint import progress  # noqa: PLC0415
     from cutpoint.activity import ACTIVITY_FILE  # noqa: PLC0415 - action-cam modules
     from cutpoint.crash import CrashParams, detect_project  # noqa: PLC0415
 
@@ -515,17 +516,19 @@ def _cmd_crashes(a: argparse.Namespace) -> None:
     )
     project = resolve_project_path(a.project)
     jsonout.set_project(project)
-    out = detect_project(
-        project,
-        params,
-        dense=a.dense,
-        sheets=a.sheets,
-        force=a.force,
-        activity_name=a.activity,
-        context=a.context,
-        refresh_profile=a.refresh_profile,
-        batch_size=a.batch_size,
-    )
+    # steps in progress.json only; they end before the re-rank below
+    with progress.run(progress.CRASHES_STEPS, quiet=True):
+        out = detect_project(
+            project,
+            params,
+            dense=a.dense,
+            sheets=a.sheets,
+            force=a.force,
+            activity_name=a.activity,
+            context=a.context,
+            refresh_profile=a.refresh_profile,
+            batch_size=a.batch_size,
+        )
     if jsonout.active():  # recorded before reanalyze, so a failure there still reports them
         data = cache.load_json(out) or {}
         cands = data.get("crashes") or []

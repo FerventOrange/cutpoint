@@ -77,12 +77,10 @@ def no_host_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     import ctypes.util  # noqa: PLC0415
 
     from cutpoint import memguard  # noqa: PLC0415
-    from cutpoint.events import common, ocr_prefetch  # noqa: PLC0415
 
     monkeypatch.setattr(memguard, "ram_free", lambda: None)
 
-    monkeypatch.setattr(ocr_prefetch, "subprocess", _NoNvidiaSmi())
-    monkeypatch.setattr(common, "subprocess", _NoNvidiaSmi())
+    monkeypatch.setattr(memguard, "subprocess", _NoNvidiaSmi())  # every nvidia-smi query
     monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
 
 

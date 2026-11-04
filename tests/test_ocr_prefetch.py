@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import needs_ffmpeg
-from cutpoint import analyze, ffmpeg_utils, jsonout, progress
+from cutpoint import analyze, ffmpeg_utils, jsonout, memguard, progress
 from cutpoint.events import ocr_prefetch, pipeline, vlm_windows
 from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrCancelled, OcrParams
@@ -658,9 +658,9 @@ def test_cached_ocr_kills_of_a_vlm_only_run_reach_the_game_prompt(
 @pytest.mark.parametrize(
     ("out", "want"),
     [
-        ("4000, 10240\n", True),
-        ("1500, 10240\n", False),  # too little free
-        ("4000, 6144\n", False),  # too small a GPU
+        ("0, GPU-a, 4000, 10240\n", True),
+        ("0, GPU-a, 1500, 10240\n", False),  # too little free
+        ("0, GPU-a, 4000, 6144\n", False),  # too small a GPU
         ("", True),  # nothing parsable: unknown
         (None, True),  # no nvidia-smi
     ],
@@ -671,7 +671,17 @@ def test_vram_gate(monkeypatch, out, want) -> None:
             raise FileNotFoundError("nvidia-smi")
         return SimpleNamespace(stdout=out)
 
-    monkeypatch.setattr(ocr_prefetch.subprocess, "run", run)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setattr(memguard.subprocess, "run", run)
+    assert ocr_prefetch.vram_ok() is want
+
+
+@pytest.mark.parametrize(("visible", "want"), [("1", False), ("GPU-a", True), ("-1", True)])
+def test_the_vram_gate_reads_the_gpu_cuda_visible_devices_names(monkeypatch, visible, want):
+    """#721: the GPU the models use, not always nvidia-smi's first one; none visible: unknown."""
+    rows = "0, GPU-a, 4000, 10240\n1, GPU-b, 1500, 10240\n"
+    monkeypatch.setattr(memguard.subprocess, "run", lambda *a, **k: SimpleNamespace(stdout=rows))
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
     assert ocr_prefetch.vram_ok() is want
 
 

@@ -519,6 +519,50 @@ def test_crashes_passes_the_batch_size_to_the_dense_confirm(monkeypatch, tmp_pat
     assert got["batch_size"] == (int(size) if size else 0)
 
 
+def test_crashes_records_its_steps_and_dry_run_lists_them(home, monkeypatch, capsys):
+    """#721: crashes' progress.json has steps (no PROGRESS lines); a dense-window batch
+    boundary updates the counts, so resume --dry-run shows them."""
+    from cutpoint import crash  # noqa: PLC0415
+
+    project = write(home / "p" / "highlights.json", json.dumps({"sources": []})).parent
+    stop = {"at": True}
+
+    def detect_project(project_, params=None, **kw):
+        progress.start("inputs")
+        progress.start("dense")
+        progress.continuing("dense check", 0, 4)
+        progress.continuing("dense check", 2, 4)  # a --batch-size boundary
+        if stop["at"]:
+            raise KeyboardInterrupt
+        progress.start("result")
+        return project_ / crash.CRASHES_FILE
+
+    monkeypatch.setattr(crash, "detect_project", detect_project)
+    monkeypatch.setenv(progress.ENV, "1")  # even so: crashes writes no PROGRESS lines
+    argv = ["crashes", str(project), "--no-reanalyze", "--batch-size", "2"]
+    assert cli.main(argv) == 130
+    rec = _read(project)
+    assert rec["status"] == "interrupted" and list(rec["steps"]) == ["profile", "inputs", "dense"]
+    assert rec["steps"]["dense"]["state"] == "failed"
+    assert (rec["steps"]["dense"]["done"], rec["steps"]["dense"]["total"]) == (2, 4)
+    assert "PROGRESS" not in capsys.readouterr().err
+    assert cli.main(["resume", str(project), "--dry-run"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert "  profile: skipped" in out and "  inputs: done" in out
+    assert "  dense: failed, 2/4 done" in out
+    stop["at"] = False
+    assert cli.main(["resume", str(project)]) == 0
+    rec = _read(project)
+    assert rec["status"] == "done" and list(rec["steps"]) == list(progress.CRASHES_STEPS)
+    assert rec["steps"]["dense"]["state"] == "done" and rec["steps"]["dense"]["done"] == 4
+
+
+def test_the_crashes_steps_are_no_steps_of_the_other_runs():
+    """Inside analyze or events, the crash detection starts none of their steps."""
+    others = {*progress.EDIT_STEPS, *progress.PANO_STEPS, *progress.EVENTS_STEPS}
+    assert not others & set(progress.CRASHES_STEPS)
+
+
 # -- 360 analyze: the view layer per batch, the option passed on ------------------------------
 
 

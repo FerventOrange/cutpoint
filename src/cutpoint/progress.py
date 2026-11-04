@@ -51,6 +51,9 @@ PANO_STEPS = ("scan", "views", "analyze", "events")  # ``cutpoint 360 analyze``
 # ``cutpoint events``: its layers in the order they run, recorded in progress.json only (a
 # quiet run, :func:`run`: no PROGRESS lines)
 EVENTS_STEPS = ("audio", "voice", "visual", "ocr", "crash", "vlm", "write")
+# ``cutpoint crashes``: recorded in progress.json only, as the events layers; no name of the
+# other step lists, so inside ``analyze`` or ``events`` the crash detection starts none of them
+CRASHES_STEPS = ("profile", "inputs", "dense", "result")
 LABELS = {
     "transcribe": "Transcription",
     "reactions": "Reactions",
