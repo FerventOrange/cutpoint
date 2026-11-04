@@ -519,7 +519,8 @@ def test_native_a_rejected_proposal_is_not_one_made_so_the_text_after_it_is_nudg
     )
     turn = run(fake, "build a montage")
     assert turn.status == "done", turn.error
-    assert len(nudges(fake)) == 1 and [e["kind"] for e in turn.events] == ["proposal"]
+    assert len(nudges(fake)) == 1
+    assert [e["kind"] for e in turn.events] == ["rejected", "proposal"]
 
 
 def test_the_nudge_is_not_an_event_nor_in_the_saved_turn() -> None:
@@ -528,7 +529,10 @@ def test_the_nudge_is_not_an_event_nor_in_the_saved_turn() -> None:
     assert session.NUDGE not in json.dumps(turn.view())
     rec = turn.record()
     assert session.NUDGE not in json.dumps(rec)
-    assert rec["user"] == "build a montage" and rec["reply"] == "Proposed: Add the laugh"
+    assert (
+        rec["user"] == "build a montage"
+        and rec["reply"] == "Proposed: Add the laugh (changes: 1 added)"
+    )
     # a later turn repeats this one as user and reply only
     table = context.MomentTable(project().candidates, [])
     later = context.build_messages(

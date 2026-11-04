@@ -103,6 +103,7 @@ from cutpoint import cache, folders, insta360, jsonout, paths, procs, progress, 
 from cutpoint.assemble import AUDIO_TRANSITIONS, OUTPUT_FORMATS, default_audio_transition
 from cutpoint.assistant import cliproxy
 from cutpoint.assistant import context as ai_context
+from cutpoint.assistant import edges as ai_edges
 from cutpoint.assistant import keys as ai_keys
 from cutpoint.assistant import ops as ai_ops
 from cutpoint.assistant import providers as ai_providers
@@ -5286,6 +5287,27 @@ def create_app(port: int) -> FastAPI:
         moments = (moments_view(hl) or {}).get("candidates") or []
         return moments, durations, ai_ops.base_key(segments, hl)
 
+    planners: dict[Path, ai_edges.EdgePlanner] = {}  # one per project: it caches what it planned
+
+    def edge_planner(p: Path) -> ai_edges.EdgePlanner:
+        return planners.setdefault(p, ai_edges.EdgePlanner(p, remap_source))
+
+    @owned.post("/projects/{pid}/edges")
+    def planned_edges(pid: str, body: dict[str, Any]):
+        """Where the clips of the working sequence ``segments`` start and end once exported
+        (:meth:`cutpoint.assistant.edges.EdgePlanner.plan`: Smart tails and Speech-aware cuts,
+        both on unless ``smart_tail`` / ``speech_aware`` say false), as ``{id: {start, end}}``;
+        the page previews and totals the sequence with them. Writes nothing."""
+        p = project_dir(pid)
+        flags = {"smart_tail": True, "speech_aware": True, **body}
+        segments = validate_segments(body.get("segments"), sources.entries(p), media)
+        planned = edge_planner(p).plan(
+            segments,
+            smart_tail=_flag(flags, "smart_tail"),
+            speech_aware=_flag(flags, "speech_aware"),
+        )
+        return {"edges": {k: {"start": a, "end": b} for k, (a, b) in planned.items()}}
+
     def assistant_save(p: Path, name: str) -> None:
         """Check ``ui/assistant/<name>`` may be written and create its folder."""
         _own(p, f"{ai_store.FOLDER}/{name}")
@@ -5397,7 +5419,9 @@ def create_app(port: int) -> FastAPI:
                 transcript = (p / "transcript.txt").read_text(encoding="utf-8-sig")
         # the events VLM windows: what the vision model saw, which find_moments searches
         windows = ai_context.vlm_windows(_load(p, "events.json"))
-        project = ai_session.Project(moments, segments, durations, transcript, key, windows)
+        project = ai_session.Project(
+            moments, segments, durations, transcript, key, windows, edge_planner(p)
+        )
         assistant_save(p, ai_store.CHAT)
         viewer = ai_watch.Viewer(p, provider, resolve=remap_source, consent=lambda: frames_given(p))
         turn = ai_session.Turn(provider, project, text.strip(), ai_store.turns(p), viewer=viewer)
@@ -5457,7 +5481,9 @@ def create_app(port: int) -> FastAPI:
         elif key != proposal.get("base_key"):
             # look_for moments are not in highlights.json: the proposal carries them
             known = [*moments, *ai_ops.extra_moments(proposal.get("moments"))]
-            out = ai_ops.apply_ops(before, proposal.get("ops"), known, durations)
+            out = ai_ops.apply_ops(
+                before, proposal.get("ops"), known, durations, snap=edge_planner(p).phrase_end
+            )
             if out.error:
                 raise bad(f"the proposal no longer applies to this sequence: {out.error}", 409)
             after, changes, rebased = out.after, out.diff, True

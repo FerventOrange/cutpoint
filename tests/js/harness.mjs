@@ -54,6 +54,7 @@ export function bootRoutes(project = makeProject()) {
       [`GET /api/projects/${project.id}`]: project,
       [`GET /api/projects/${project.id}/assistant`]: { provider: null, consent: null, turns: [], running: [] },
       [`GET /api/projects/${project.id}/assistant/history`]: { applied: [] },
+      [`POST /api/projects/${project.id}/edges`]: { edges: {} },
     }),
     'GET /api/assistant/logins': { logins: [] },
   };

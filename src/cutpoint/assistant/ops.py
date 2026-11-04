@@ -12,7 +12,8 @@ Ops (positions count from 1):
 * ``{"op": "remove", "id"}``.
 * ``{"op": "move", "id", "to"}``.
 * ``{"op": "trim", "id", "start"?, "end"?}`` in source seconds, or ``start_delta``/``end_delta``
-  in seconds added to the current edge (negative: earlier).
+  in seconds added to the current edge (negative: earlier). An end moved later is snapped to
+  the end of the utterance it lands in (:data:`Snap`), never past the source's end.
 * ``{"op": "order", "ids"}``: every sequence id once, in the new order.
 * ``{"op": "sort", "by": "time" | "score" | "length", "desc"?}``.
 * ``{"op": "color", "mode": "off" | "auto" | "underwater", "strength"?}``: the project's Color
@@ -25,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -37,6 +39,41 @@ MAX_OPS = 100  # ops in one proposal
 LABEL_MAX = 200
 OPS = ("add", "remove", "move", "trim", "order", "sort", "color")
 SORT_KEYS = ("time", "score", "length")
+LENGTH_EPS = 0.05  # a clip's length must change by more than this to be lengthened/shortened
+# Where an end moved later to ``t`` (source path, seconds) ends instead: the end of the phrase it
+# lands in (cutpoint.assistant.edges.EdgePlanner.phrase_end); ``t`` itself when it lands in silence.
+Snap = Callable[[str, float], float]
+# Words of a summary that claim a change, and the changes of the diff that make the claim true.
+# The words are edit verbs, not adjectives or nouns ("longer", "colorful", "top-grade", "a steep
+# drop-in" and "smooth moves" claim nothing); a hyphen before or after a word is no verb either.
+CLAIMS = (
+    ("extended", r"extend(?:s|ed|ing)?|lengthen(?:s|ed|ing)?", ("lengthened",)),
+    ("shortened", r"shorten(?:s|ed|ing)?", ("shortened",)),
+    (
+        "trimmed",
+        r"trim(?:s|med|ming)?|tighten(?:s|ed|ing)?",
+        ("trimmed", "lengthened", "shortened"),
+    ),
+    ("added", r"add(?:s|ed|ing)?|insert(?:s|ed|ing)?", ("added",)),
+    (
+        "removed",
+        r"remov(?:e|es|ed|ing)|delet(?:e|es|ed|ing)|drop(?:s|ped|ping)?|cut(?:s|ting)? (?:out|down)",
+        ("removed",),
+    ),
+    (
+        "moved",
+        r"move|moved|moving|reorder(?:s|ed|ing)?|rearrang(?:e|es|ed|ing)|shuffl(?:e|es|ed|ing)",
+        ("moved",),
+    ),
+    # "sorted by time" over clips just added is true: they are in that order
+    ("sorted", r"sort(?:s|ed|ing)?|order(?:ed|ing)", ("moved", "added")),
+)
+_CLAIM_WORDS = [(n, re.compile(rf"(?<![\w-])(?:{w})(?![\w-])", re.I), c) for n, w, c in CLAIMS]
+_COLOR_WORDS = re.compile(
+    r"(?<![\w-])(?:colou?r(?:s|ed|ing)?|regrad(?:e|es|ed|ing)|colou?r[ -]grad\w+)(?![\w-])", re.I
+)
+MAX_GROW_S = 10.0  # a trim moves an edge outward by at most this much per proposal
+ADD_SLACK_S = 10.0  # an add's start and end stay this close to the moment's own window
 
 
 class OpsError(ValueError):
@@ -91,6 +128,7 @@ def apply_ops(
     durations: Mapping[str, float | None],
     *,
     name: Callable[[str], str] = str,
+    snap: Snap | None = None,
 ) -> Outcome:
     """Apply ``ops`` to a copy of the sequence ``before``.
 
@@ -100,6 +138,7 @@ def apply_ops(
         candidates: The analysis moments (``moments_view`` ids), the only ones ``add`` takes.
         durations: The project's sources and their durations (:class:`Durations`).
         name: How an id is written in error messages (the short id the model knows).
+        snap: Where a trim that moves an end later puts it (None: exactly where asked).
 
     Returns:
         ``after`` (checked and cleaned as ``validate_segments`` cleans it) and a per-row
@@ -107,7 +146,7 @@ def apply_ops(
     """
     color: dict[str, Any] = {}
     try:
-        rows = _apply(before, ops, candidates, durations, name, color)
+        rows = _apply(before, ops, candidates, durations, name, color, snap)
         after = _check(rows, durations, name)
     except OpsError as err:
         return Outcome(error=str(err))
@@ -139,12 +178,14 @@ def _apply(
     durations: Mapping[str, float | None],
     name: Callable[[str], str],
     color: dict[str, Any],
+    snap: Snap | None = None,
 ) -> list[dict[str, Any]]:
     if not isinstance(ops, list) or not ops:
         raise OpsError("ops must be a non-empty list of edits")
     if len(ops) > MAX_OPS:
         raise OpsError(f"at most {MAX_OPS} ops in one proposal")
     rows = [dict(s) for s in before]
+    origin = {s["id"]: s for s in before}
     cands = {c["id"]: c for c in candidates}
     order = {path: i for i, path in enumerate(durations)}
 
@@ -172,8 +213,18 @@ def _apply(
                 raise OpsError(f"{where}: not a moment of this project")
             if any(row["id"] == sid for row in rows):
                 raise OpsError(f"{where}: already in the sequence; use move or trim")
-            at = _position(op, "at", len(rows) + 1, where) or len(rows) + 1
+            at = op.get("at")
+            if at is not None and (isinstance(at, bool) or not isinstance(at, int) or at < 0):
+                raise OpsError(f"{where}: at must be a position from 1 to {len(rows) + 1}")
+            at = at if at and at <= len(rows) + 1 else len(rows) + 1  # 0 or too far: append
             start, end = _number(op, "start", where), _number(op, "end", where)
+            for edge, value in (("start", start), ("end", end)):
+                if value is not None and abs(value - float(cand[edge])) > ADD_SLACK_S:
+                    raise OpsError(
+                        f"{where}: {edge} {value:g} must be within {ADD_SLACK_S:g} s of the "
+                        f"moment's own {cand['start']:g}-{cand['end']:g}; add it as it is, "
+                        "then trim"
+                    )
             label = cand.get("label") if isinstance(cand.get("label"), str) else ""
             rows.insert(
                 at - 1,
@@ -189,7 +240,8 @@ def _apply(
             rows.pop(index(sid, where))
         elif kind == "move":
             i = index(sid, where)
-            to = _position(op, "to", len(rows), where)
+            to = _position(op, "to", len(rows) + 1, where)  # one past the end: last
+            to = None if to is None else min(to, len(rows))
             if to is None:
                 raise OpsError(f"{where}: needs to, a position from 1 to {len(rows)}")
             rows.insert(to - 1, rows.pop(i))
@@ -203,7 +255,19 @@ def _apply(
                     raise OpsError(f"{where}: give {edge} or {edge}_delta, not both")
                 if absolute is not None or delta is not None:
                     edges += 1
-                    row[edge] = absolute if absolute is not None else row[edge] + delta
+                    was = row[edge]
+                    row[edge] = absolute if absolute is not None else was + delta
+                    first = origin.get(row["id"])
+                    limit = durations.get(row["source"]) or math.inf
+                    if first is not None and row[edge] <= limit + 0.01:  # past the end: _check
+                        grew = row[edge] - first[edge] if edge == "end" else first[edge] - row[edge]
+                        if grew > MAX_GROW_S + 1e-6:
+                            raise OpsError(
+                                f"{where}: {edge} may move outward by at most +{MAX_GROW_S:g} s "
+                                f"per edge in a proposal (asked {grew:+g} s)"
+                            )
+                    if edge == "end" and snap is not None and row[edge] > was:
+                        row[edge] = _snapped(row, snap, durations)
             if not edges:
                 raise OpsError(f"{where}: needs start, end, start_delta or end_delta")
         elif kind == "order":
@@ -234,6 +298,18 @@ def _apply(
             # sort(reverse=...) keeps tied rows in their order: no false "moved" rows
             rows.sort(key=keys[by], reverse=desc if desc is not None else by == "score")
     return rows
+
+
+def _snapped(row: dict[str, Any], snap: Snap, durations: Mapping[str, float | None]) -> float:
+    """The end of ``row`` (just moved later) at the end of the phrase it lands in, never past
+    the source's end."""
+    end = row["end"]
+    try:
+        end = max(end, float(snap(row["source"], end)))
+    except (TypeError, ValueError, KeyError):  # an end that cannot be snapped stays as it is
+        return end
+    duration = durations.get(row["source"])
+    return min(end, duration) if duration is not None else end
 
 
 def _color_op(op: dict[str, Any], where: str) -> dict[str, Any]:
@@ -349,11 +425,51 @@ def _in_order(ids: list[str], old: dict[str, tuple[int, Any]]) -> set[str]:
     return out
 
 
+CHANGE_ORDER = ("added", "removed", "moved", "lengthened", "shortened", "trimmed", "relabelled")
+
+
+def change_counts(rows: list[dict[str, Any]], color: dict[str, Any] | None = None) -> str:
+    """``"2 added, 1 lengthened, color auto"`` for a :func:`diff` and its ``color`` op: what a
+    proposal really changes (``"no change"`` when nothing)."""
+    n: dict[str, int] = {}
+    for row in rows:
+        for c in row.get("changes", []):
+            n[c] = n.get(c, 0) + 1
+    parts = [f"{n[c]} {c}" for c in CHANGE_ORDER if n.get(c)]
+    if color:
+        parts.append(f"color {color.get('mode')}")
+    return ", ".join(parts) or "no change"
+
+
+def summary_gap(
+    summary: str, rows: list[dict[str, Any]], color: dict[str, Any] | None = None
+) -> str | None:
+    """A sentence for the model when ``summary`` claims a change (extended, shortened, trimmed,
+    added, removed, moved, color) that the :func:`diff` ``rows`` and ``color`` op do not make;
+    None when every claim holds."""
+    made = {c for row in rows for c in row.get("changes", [])}
+    false = [
+        name
+        for name, words, needs in _CLAIM_WORDS
+        if words.search(summary) and not made & set(needs)
+    ]
+    if _COLOR_WORDS.search(summary) and not color:
+        false.append("color")
+    if not false:
+        return None
+    return (
+        f"The summary says it {', '.join(false)}, but the ops really make: "
+        f"{change_counts(rows, color)}. Make the ops do what the summary says, or fix the "
+        "summary, and propose again."
+    )
+
+
 def diff(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Per row, in ``after``'s order then the removed rows: ``{id, label, changes, before,
     after}``. ``changes`` is ``["added"]``, ``["removed"]`` or any of ``moved`` (out of its old
-    order among the kept rows, counting as few rows as possible), ``trimmed`` and
-    ``relabelled``; ``before``/``after`` are ``{pos, start, end, label}`` or None."""
+    order among the kept rows, counting as few rows as possible), ``lengthened`` and
+    ``shortened`` (the clip got longer or shorter), ``trimmed`` (its edges moved, its length did
+    not) and ``relabelled``; ``before``/``after`` are ``{pos, start, end, label}`` or None."""
     old = {s["id"]: (i, s) for i, s in enumerate(before, 1)}
     new_ids = {s["id"] for s in after}
     stayed = _in_order([s["id"] for s in after if s["id"] in old], old)
@@ -371,7 +487,14 @@ def diff(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> list[dict
             if s["id"] not in stayed:
                 changes.append("moved")
             if (was[1]["start"], was[1]["end"]) != (s["start"], s["end"]):
-                changes.append("trimmed")
+                grew = (s["end"] - s["start"]) - (was[1]["end"] - was[1]["start"])
+                changes.append(
+                    "lengthened"
+                    if grew > LENGTH_EPS
+                    else "shortened"
+                    if grew < -LENGTH_EPS
+                    else "trimmed"
+                )
             if was[1].get("label", "") != s.get("label", ""):
                 changes.append("relabelled")
         rows.append(

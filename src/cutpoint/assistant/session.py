@@ -25,9 +25,11 @@ from datetime import datetime
 from typing import Any
 
 from cutpoint.assistant import context, lookfor, watch
-from cutpoint.assistant.ops import apply_ops
+from cutpoint.assistant.edges import EdgePlanner, length
+from cutpoint.assistant.ops import apply_ops, change_counts, summary_gap
 from cutpoint.assistant.providers import (
     OllamaProvider,
+    OutputCapError,
     Provider,
     ProviderError,
     Reply,
@@ -36,6 +38,7 @@ from cutpoint.assistant.providers import (
     TruncatedError,
     describe,
 )
+from cutpoint.assistant.topup import kind_groups, top_up
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,45 @@ NUDGE = (
     "otherwise give your answer again."
 )
 _MOMENT_ID = re.compile(r"\bm\d+\b")
+TOLERANCE = 0.15  # a proposal this far over or under the asked length is sent back
+MAX_LENGTH_BACKS = 3  # ... up to this many times a turn, then the closest one is offered
+SHORT_REPLY = (
+    "Your reply was too long. Reply shorter: call propose_edit now with only the ops "
+    "(a one-sentence summary), or answer in a few lines."
+)
+# A message that asks to empty the sequence: only then may a proposal remove every clip.
+# A text reply that says more work follows ("Now let me search for ...") without doing it, and a
+# message that asks for an edit: such a reply gets the one nudge to go on with the tools.
+_ANNOUNCES = re.compile(
+    r"(?:^|[.!?:\n])\s*(?:(?:now|ok|okay|next|first|so|alright)\b,?\s*)?(?:let me|let's|i'll|i will"
+    r"|i am going to|i'm going to|i need to|i should)\s+(?:now\s+)?(?:search|find|look|add|check"
+    r"|extend|build|get|propose|put|trim|lengthen|pick|select|create|make|fetch|query|use|grab)\b",
+    re.I,
+)
+_EDIT_ASK = re.compile(
+    r"\b(?:make|build|add|put|place|change|extend|lengthen|trim|shorten|remove|delete|move|reorder"
+    r"|sort|create|assemble|cut|fix|longer|shorter|arrange|include|insert|swap|replace|color|grade)\b",
+    re.I,
+)
+_REMOVES = re.compile(
+    r"\b(?:remove|delete|drop|clear|get rid|discard|take out|cut out|replace|swap|start over"
+    r"|from scratch)\b",
+    re.I,
+)
+
+
+def _wants_removal(text: str) -> bool:
+    """Whether a message asks to take clips out (so a proposal may drop half of them)."""
+    return bool(_REMOVES.search(text) or _CLEARS.search(text))
+
+
+_CLEARS = re.compile(
+    r"\b(?:start (?:over|again|fresh|from scratch)|from scratch|begin again"
+    r"|(?:clear|empty)(?: out)? (?:the |my )?(?:whole |entire )?(?:sequence|timeline)"
+    r"|(?:remove|delete|drop|clear)\s+(?:everything|all (?:of )?(?:the |my )?clips?"
+    r"(?=\s*(?:$|[.,;!]|and\b|from\b|in\b))))",
+    re.I,
+)
 
 
 def _tool(name: str, description: str, props: dict[str, Any], required: list[str]) -> dict:
@@ -146,6 +188,8 @@ class Project:
     transcript: str  # transcript.txt ("" when there is none)
     base_key: str  # ops.base_key of segments and highlights.json
     windows: list[dict[str, Any]] = field(default_factory=list)  # context.vlm_windows(events.json)
+    # exported edges of rows and phrase ends; None: the raw ranges, and trims are not snapped
+    edges: EdgePlanner | None = None
 
 
 def _now() -> str:
@@ -186,6 +230,8 @@ class Turn:
             for t in earlier or []
         ]
         self.table = context.MomentTable(project.candidates, project.segments, project.windows)
+        self.table.durations = project.durations
+        self.target = context.target_seconds(text)  # seconds the user asked for, if any
         self.status = "running"  # running | done | failed | cancelled
         self.error: str | None = None
         self.events: list[dict[str, Any]] = []
@@ -194,6 +240,12 @@ class Turn:
         self.done = threading.Event()
         self.on_finish: Callable[[Turn], None] | None = None
         self._proposals = 0
+        self._sent_back: set[str] = set()  # summary problem sent back already (once a turn)
+        self._searches: list[list[str]] = []  # real ids each search found, in order (top-up)
+        self._length_backs = 0  # proposals sent back for their length (up to MAX_LENGTH_BACKS)
+        # the valid proposals sent back only for their length ((summary, checked)): the closest
+        # to the asked length is offered when the retries do not get there
+        self._candidates: list[tuple[str, dict[str, Any]]] = []
         self._nudged: str | None = None  # the text-only reply that got the nudge (this turn's one)
         self._results: list[dict[str, Any]] = []  # tool result messages of the conversation
         self._saved = False
@@ -232,7 +284,12 @@ class Turn:
                 if e["kind"] == "reply":
                     reply = e["text"]
                 elif e["kind"] == "proposal":
-                    reply = f"Proposed: {e['summary']}"
+                    # what the ops really change, so a later turn does not take the summary's word
+                    counts = change_counts(e["diff"], e.get("color"))
+                    auto = e.get("auto")
+                    if auto:
+                        counts += f"; {len(auto['lengthened']) + len(auto['added'])} auto-filled"
+                    reply = f"Proposed: {e['summary']} (changes: {counts})"
             return {
                 "id": self.id,
                 "user": self.text,
@@ -313,7 +370,13 @@ class Turn:
         plan = context.budget(self.provider.context_tokens, sent, tight=tight, images=sheets)
         tools = [*_JSON_TOOLS, *([watch.JSON_TOOL] if self._watch else [])] if json_mode else None
         out = context.build_messages(
-            self.table, self.earlier, self.text, plan, json_tools=tools, images=bool(self._watch)
+            self.table,
+            self.earlier,
+            self.text,
+            plan,
+            json_tools=tools,
+            images=bool(self._watch),
+            target=self.target,
         )
         out[0] = {**out[0], "content": out[0]["content"] + lookfor.rules(bool(self._watch))}
         if self._watch:  # how and when to watch, after the rules
@@ -373,10 +436,13 @@ class Turn:
                 "choose another model"
             )
         json_mode = not caps.tool_calls
+        if (planner := self.project.edges) is not None:  # the lengths the model sees: as exported
+            self.table.planned = planner.plan(self.project.segments)
         self._watch = self.viewer is not None and watch.takes_images(self.provider, caps)
         messages = self._messages(json_mode)
         base = len(messages)  # the context built up front; what follows is this turn's exchange
         cut = False  # a reply was cut off once: the conversation was shrunk and asked again
+        capped = False  # a reply hit the output cap once: asked again for a shorter one
         last_cut: TruncatedError | None = None  # the latest round's cut-off, if it was one
         for rnd in range(MAX_ROUNDS):
             if self.status != "running":
@@ -390,6 +456,16 @@ class Turn:
                 self._results = []
                 messages = self._messages(True)
                 base = len(messages)
+                continue
+            except OutputCapError as err:  # the context is not the problem: ask for less output
+                if capped:
+                    raise ProviderError(
+                        f"{self.provider.model} ran past its reply limit ({err.tokens} tokens) "
+                        "twice; ask for one change at a time"
+                    ) from None
+                capped = True
+                logger.info("assistant: reply hit the output cap (%s tokens)", err.tokens)
+                messages.append({"role": "user", "content": SHORT_REPLY})
                 continue
             except TruncatedError as err:
                 if cut:
@@ -423,14 +499,18 @@ class Turn:
                 if (
                     self._nudged is None
                     and rnd < MAX_ROUNDS - 1  # a nudge in the last round would leave no answer
-                    and self._names_moments(text)
+                    and (self._names_moments(text) or self._announces_work(text))
                 ):
                     # moments chosen in text, perhaps for a change: ask once more (the nudge
                     # stays in this conversation; the page and chat.json never get it)
                     self._nudged = text
                     messages.append({"role": "user", "content": NUDGE})
                     continue
+                if self._offer_fallback():  # the earlier proposal beats an answer in text
+                    self._finish("done")
+                    return
                 self._emit({"kind": "reply", "text": text})
+                self._offer_own()  # a short sequence gets the fill to review, next to the text
                 self._finish("done")
                 return
             for call in calls:
@@ -451,11 +531,20 @@ class Turn:
             self._sheets = []
         if self.status != "running":
             return
+        if self._offer_fallback() or self._offer_own():  # the rounds ran out: better than none
+            self._finish("done")
+            return
         if last_cut is not None:
             raise cut_again_error(self.provider, last_cut, again=False) from None
         if self._nudged is not None:  # the rounds ran out after the nudge: the first answer stands
             self._emit({"kind": "reply", "text": self._nudged})
+            self._offer_own()
             self._finish("done")
+
+    def _announces_work(self, text: str) -> bool:
+        """Whether ``text`` says more work follows ("Now let me search for ...") to a message
+        that asks for an edit, instead of doing it."""
+        return bool(_ANNOUNCES.search(text) and (self.target or _EDIT_ASK.search(self.text)))
 
     def _names_moments(self, text: str) -> bool:
         """Whether ``text`` names a moment of the table (``m3``)."""
@@ -502,6 +591,7 @@ class Turn:
         if isinstance(limit, bool) or not isinstance(limit, int):
             limit = 10
         found = self.table.find(query, max(1, min(limit, context.MAX_FOUND)))
+        self._remember(found)
         self._emit(
             {"kind": "tool", "name": "find_moments", "query": query[:200], "found": len(found)}
         )
@@ -532,6 +622,7 @@ class Turn:
             return f"error: look_for is not available: {err}", False
         rows = []
         possible = []
+        group: list[str] = []
         for hit, covered in got.hits:
             cover = covered
             if cover is None:
@@ -546,6 +637,7 @@ class Turn:
                     self._unsure.discard(cover)
                 else:
                     self._unsure.add(cover)
+            group.append(cover)
             row = {**self.table.row(cover), "match": hit.match, "confidence": hit.confidence}
             if covered is None:
                 row["new" if hit.clear else "unconfirmed"] = True
@@ -561,6 +653,7 @@ class Turn:
                         }
                     )
             rows.append(row)
+        self._remember(group)
         self._emit(
             {
                 "kind": "tool",
@@ -660,6 +753,15 @@ class Turn:
         mapped, problem = _real_ops(ops, self.table)
         if mapped is None:
             return None, problem
+        return self._checked_real(mapped)
+
+    def _remember(self, ids: list[str]) -> None:
+        """Note the moments one search found, for :func:`topup.top_up`."""
+        if ids:
+            self._searches.append(list(ids))
+
+    def _checked_real(self, mapped: Any) -> tuple[dict[str, Any] | None, str]:
+        """:meth:`_checked` for ops that already have real ids."""
         # a guess of look_for goes into the sequence only once view_moment showed it; the user
         # can add it themself from the chat
         blocked = self._unsure - self._viewed
@@ -673,13 +775,35 @@ class Turn:
         p = self.project
         known = [c for c in self.found if c["id"] not in blocked]
         out = apply_ops(
-            p.segments, mapped, [*p.candidates, *known], p.durations, name=self.table.name
+            p.segments,
+            mapped,
+            [*p.candidates, *known],
+            p.durations,
+            name=self.table.name,
+            snap=p.edges.phrase_end if p.edges is not None else None,
         )
         if out.error:
             return None, out.error
         if out.color is None and not any(row["changes"] for row in out.diff):
             return None, "these ops leave the sequence as it is"
-        checked: dict[str, Any] = {"ops": mapped, "after": out.after, "diff": out.diff}
+        if p.segments and not out.after and not _CLEARS.search(self.text):
+            return None, (
+                "these ops remove every clip, but the user did not ask to clear or start over; "
+                "keep the clips that stay and change only what was asked"
+            )
+        removed = sum("removed" in row["changes"] for row in out.diff)
+        if p.segments and 2 * removed >= len(p.segments) and not _wants_removal(self.text):
+            return None, (
+                f"you removed {removed} of {len(p.segments)} clips; the user didn't ask to "
+                "remove any. Keep the clips that are there and add or change only what was asked"
+            )
+        planned = p.edges.plan(out.after or []) if p.edges is not None else None
+        checked: dict[str, Any] = {
+            "ops": mapped,
+            "after": out.after,
+            "diff": out.diff,
+            "length": round(length(out.after or [], planned), 1),  # seconds as exported
+        }
         if out.color is not None:
             checked["color"] = out.color
         used = {row["id"] for row in out.after or []}
@@ -693,9 +817,22 @@ class Turn:
             return "error: summary must be one sentence for the user", False
         main, problem = self._checked(args.get("ops"))
         if main is None:
-            return f"error: proposal rejected: {problem}. Fix the ops and propose again.", False
-        suggestions = []
+            return self._rejected(
+                problem, f"error: proposal rejected: {problem}. Fix the ops and propose again."
+            )
+        gap = summary_gap(summary, main["diff"], main.get("color"))
+        if note := self._send_back(summary, main, gap):
+            return self._rejected(note, note)
+        if gap:  # a summary that claims what the ops do not do is replaced by what they do
+            summary = self._true_summary(main)
         raw = args.get("suggestions")
+        if self.target and self._candidates:  # a sent-back one may be closer than this retry
+            was = self._closest()
+            if was is not None and self._rank(was[1]) < self._rank(main):
+                summary, main = was
+                raw = []  # its suggestions were not kept
+        summary, main = self._filled(summary, main)
+        suggestions = []
         for sug in (raw if isinstance(raw, list) else [])[:MAX_SUGGESTIONS]:
             label = sug.get("label") if isinstance(sug, dict) else None
             checked = self._checked(sug.get("ops"))[0] if isinstance(label, str) else None
@@ -706,6 +843,152 @@ class Turn:
         event = {"kind": "proposal", **self._numbered("p", summary.strip(), main)}
         self._emit({**event, "suggestions": suggestions})
         return "proposal shown to the user", True
+
+    def _rejected(self, reason: str, result: str) -> tuple[str, bool]:
+        """Tell the model ``result`` (the turn goes on) and the page ``reason`` (a muted line of
+        the chat); logged, so a run that went wrong can be read back."""
+        logger.info("assistant: proposal not accepted: %s", reason)
+        self._emit({"kind": "rejected", "text": reason[:MAX_SUMMARY]})
+        return result, False
+
+    @staticmethod
+    def _true_summary(main: dict[str, Any]) -> str:
+        """A summary made from the diff, for a proposal whose own summary says too much."""
+        counts = change_counts(main["diff"], main.get("color"))
+        return f"Changes: {counts}; {main['length']:.0f} s in all."
+
+    def _kind(self, item: Mapping[str, Any]) -> str:
+        """What a moment is, for a fill that has no search to go by: its ``kind``, else its
+        strongest cue, else its label."""
+        real = item["id"]
+        cand = self.table.candidates.get(real) or item
+        if isinstance(cand.get("kind"), str) and cand["kind"]:
+            return cand["kind"]
+        look = self.table.looks.get(real)
+        if look is not None and look.cues:
+            return next(iter(look.cues))
+        return str(cand.get("label") or "")
+
+    def _offer_own(self) -> bool:
+        """The turn ends with no proposal of the model's while the sequence is short of the
+        length asked for: offer one that code builds from the current sequence (the fill), for
+        the user to review. False when the message asks no edit, nothing is short or there is
+        nothing to fill it with."""
+        p = self.project
+        if not self.target or (
+            not _EDIT_ASK.search(self.text) and self.text.rstrip().endswith("?")
+        ):
+            return False
+        planned = p.edges.plan(p.segments) if p.edges is not None else None
+        have = length(p.segments, planned)
+        if have >= self.target * (1 - TOLERANCE):
+            return False
+        base = {"ops": [], "after": [dict(s) for s in p.segments], "diff": [], "length": have}
+        why = " (the assistant didn't propose an edit)"
+        summary, main = self._filled("", base, why)
+        if "auto" not in main:
+            return False
+        event = {"kind": "proposal", **self._numbered("p", summary.strip(), main)}
+        return self._emit({**event, "suggestions": []})
+
+    def _filled(
+        self, summary: str, main: dict[str, Any], why: str = ""
+    ) -> tuple[str, dict[str, Any]]:
+        """``(summary, proposal)`` topped up by code when it is still short of the asked length
+        (:func:`topup.top_up`): real ops marked ``auto``, their rows and the summary say so."""
+        p = self.project
+        if not self.target or main["length"] >= self.target * (1 - TOLERANCE):
+            return summary, main
+        goal = f"~{int(self.target) // 60}:{int(self.target) % 60:02d}"
+        found = top_up(
+            main,
+            target=self.target,
+            tolerance=TOLERANCE,
+            evaluate=lambda ops: self._checked_real(ops)[0],
+            before=p.segments,
+            candidates={c["id"]: c for c in [*p.candidates, *self.found]},
+            searched=self._searches
+            or kind_groups(
+                main["after"] or [], {c["id"]: c for c in [*p.candidates, *self.found]}, self._kind
+            ),
+            durations=p.durations,
+            phrase_end=p.edges.phrase_end if p.edges is not None else None,
+        )
+        base = summary.strip()[:300]
+        if found is None:
+            short = self.target - main["length"]
+            return f"{base} (Still {short:.0f} s short of {goal}: nothing to fill it with.)", main
+        done = found.checked
+        auto = set(found.lengthened) | set(found.added)
+        for row in done["diff"]:
+            if row["id"] in auto:
+                row["auto"] = True
+        parts = []
+        if found.lengthened:
+            parts.append(f"lengthened {len(set(found.lengthened))} clips")
+        if found.added:
+            parts.append(f"added {len(found.added)} from your searches")
+        head = (f"to reach {goal}" if found.reached else f"towards {goal}") + why
+        done["auto"] = {
+            "target": self.target,
+            "lengthened": found.lengthened,
+            "added": found.added,
+            "reached": found.reached,
+        }
+        note = f" Auto-filled {head}: {', '.join(parts)}; now {done['length']:.0f} s."
+        return base + note, done
+
+    def _send_back(self, summary: str, main: dict[str, Any], gap: str | None = None) -> str | None:
+        """Why a valid proposal goes back to the model, once a turn for each problem: it makes
+        less than the length the user asked for, or its summary says a change the ops do not
+        make. None: accept it."""
+        notes: list[str] = []
+        have = main["length"]
+        by_length = False
+        if self.target and self._length_backs < MAX_LENGTH_BACKS:
+            need = self.target - have
+            if abs(need) > self.target * TOLERANCE:
+                self._length_backs += 1
+                by_length = True
+                fix = (
+                    f"add about {need:.0f} s more (extend clips within their room or add moments)"
+                    if need > 0
+                    else f"cut about {-need:.0f} s (shorten or remove clips)"
+                )
+                notes.append(
+                    f"This proposal makes {have:.0f} s of the {self.target:.0f} s asked; {fix} "
+                    "and propose again."
+                )
+        # a summary alone is no reason to send a proposal back: it gets a true one instead
+        if by_length and gap and "summary" not in self._sent_back:
+            self._sent_back.add("summary")
+            notes.append(gap)
+        if by_length:  # a candidate to offer later, with a summary that says what its ops do
+            self._candidates.append((self._true_summary(main) if gap else summary, main))
+        return " ".join(notes) or None
+
+    def _rank(self, main: dict[str, Any]) -> tuple[bool, float]:
+        """Sort key of a proposal against the asked length: one over it by more than the
+        tolerance loses to any other, then the closest."""
+        target = self.target or 0.0
+        return main["length"] > target * (1 + TOLERANCE), abs(main["length"] - target)
+
+    def _closest(self) -> tuple[str, dict[str, Any]] | None:
+        """The sent-back proposal closest to the asked length, never one over it by more than
+        the tolerance."""
+        best = min(self._candidates, key=lambda c: self._rank(c[1]), default=None)
+        return best if best is not None and not self._rank(best[1])[0] else None
+
+    def _offer_fallback(self) -> bool:
+        """Show the closest proposal that was sent back, when the turn would end without one.
+        False when there is none."""
+        found = self._closest()
+        if found is None:
+            return False
+        summary, main = self._filled(*found)
+        self._candidates = []
+        event = {"kind": "proposal", **self._numbered("p", summary.strip(), main)}
+        return self._emit({**event, "suggestions": []})
 
     def _numbered(self, kind: str, summary: str, checked: dict[str, Any]) -> dict[str, Any]:
         self._proposals += 1
@@ -720,6 +1003,22 @@ class Turn:
 def _real_ops(ops: Any, table: context.MomentTable) -> tuple[list[Any] | None, str]:
     """``ops`` with their short ids replaced by the real ones; ``(None, why)`` for an unknown
     id. Anything else is left for :func:`apply_ops` to judge."""
+    if isinstance(ops, str):  # some models send the list as a JSON string
+        text = ops
+        try:
+            ops = json.loads(ops)
+        except json.JSONDecodeError as err:
+            if err.msg != "Extra data":
+                return (
+                    None,
+                    f"ops is a string that is not valid JSON: {err.msg} at position {err.pos}",
+                )
+            # a valid list followed by punctuation or a fence is the list
+            ops, end = json.JSONDecoder().raw_decode(text.lstrip())
+            if text.lstrip()[end:].strip(" \t\r\n.,;`"):
+                return None, f"ops has text after the JSON list, at position {end}"
+        except ValueError:
+            return ops, ""
     if not isinstance(ops, list):
         return ops, ""
     out: list[Any] = []

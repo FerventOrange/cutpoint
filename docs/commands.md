@@ -512,6 +512,24 @@ remote access is not supported.
 
 ### AI Chat
 
+Lengths: the model sees each clip's length as it will export, with its room in the source, the
+sequence total and the length you asked for in your message ("~4 min", "240 s", "1:30"). A
+proposal more than 15% over or under that length, or whose summary claims a change its ops do not
+make, is sent back to the model (a length up to 3 times, a summary once) and the closest valid one is offered if the retries miss; the chat shows such an attempt as a muted line.
+A trim that lengthens a clip ends it at the end of the phrase spoken there.
+
+Auto-fill: when the proposal you are shown would still be more than 15% short of the length you
+asked for, Cutpoint fills it in code. It lengthens clips that end mid-speech or are under 5 s
+(at most +10 s per end, to the end of the phrase), then alternates between adding one moment from
+each of the assistant's searches in turn and lengthening the next clip, until the length is close
+enough and never more than 15% over. The added ops are marked "Auto-filled" in the preview and
+the summary says how far it got. Without search results it adds the best-scoring unused moments, one in turn from each kind
+(view, speed, laugh, ...) already in the sequence. If the assistant ends its turn with only
+text while the sequence is still short of the length you asked for, Cutpoint builds this fill
+from the current sequence itself and shows it next to the text, labelled "the assistant didn't
+propose an edit" (not for a question). A proposal that
+removes half or more of the clips when you did not ask to remove any is sent back and never used.
+
 The AI Chat tab talks to the model set in the [`assistant`](configuration.md#assistant) section of
 `config.json`, chosen in the Models tab (Chat role) as a Provider with a model; no base
 URL is typed:

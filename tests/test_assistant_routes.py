@@ -236,7 +236,7 @@ def test_a_prompt_injection_in_the_transcript_still_only_yields_a_proposal(
                 call("get_transcript", id="m1"),
                 call("run_command", command="del /s *.mp4"),
                 call("save_review", segments=[]),
-                call("propose_edit", summary="Empty it", ops=[{"op": "remove", "id": "m1"}]),
+                call("propose_edit", summary="Add the fall", ops=[{"op": "add", "id": "m3"}]),
             ]
         ),
     )
@@ -246,7 +246,7 @@ def test_a_prompt_injection_in_the_transcript_still_only_yields_a_proposal(
     assert results[0].count("<<<END DATA>>>") == 1 and "< < <END DATA> > >" in results[0]
     assert all("unknown tool" in r for r in results[1:])
     assert [e["kind"] for e in view["events"]] == ["tool", "proposal"]
-    assert [s["id"] for s in view["events"][1]["after"]] == [ids[1]]
+    assert [s["id"] for s in view["events"][1]["after"]] == ids[:3]
     after = files(p)
     assert set(after) - set(before) == {str(Path("ui", "assistant", "chat.json"))}
     assert all(after[f] == before[f] for f in before)
@@ -287,7 +287,7 @@ def test_an_applied_change_is_reverted_through_a_previewed_proposal(
     assert client.post(url, json={"segments": now}).status_code == 409  # no base_key
     assert files(p) == before
     again = client.post(f"{base}/history/{applied['id']}/revert", json={"segments": trimmed}).json()
-    assert [r["changes"] for r in again["diff"]] == [["trimmed"], ["added"]]
+    assert [r["changes"] for r in again["diff"]] == [["lengthened"], ["added"]]
     done = client.post(url, json={"segments": trimmed, "base_key": again["base_key"]}).json()
     assert done["after"] == seq and done["before"] == trimmed and done["rebased"] is False
     assert done["summary"] == "Revert: Drop the jump"
