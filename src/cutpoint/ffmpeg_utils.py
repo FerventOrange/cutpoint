@@ -49,6 +49,11 @@ from cutpoint.utils import file_stamp
 
 logger = logging.getLogger(__name__)
 
+
+class RunCancelled(Exception):
+    """A :func:`run_progress` was stopped by its ``cancel`` event (ffmpeg was killed)."""
+
+
 PROGRESS_DRAIN_S = 5.0  # run_progress reads the rest of the progress pipe this long after exit
 # a failed child in a ChildScope waits this long for the cancel of a Ctrl+C (3 polls of the
 # controlling thread, clips.POLL_S) before its exit counts as an ffmpeg failure
@@ -314,13 +319,17 @@ READ_ERROR_RE = re.compile(
 )
 
 
-def run_progress(args: list[str], total: float, label: str) -> ProgressResult:
+def run_progress(
+    args: list[str], total: float, label: str, cancel: threading.Event | None = None
+) -> ProgressResult:
     """Run an ffmpeg command, logging progress roughly every 10% for long inputs.
 
     Args:
         args: Command starting with "ffmpeg" (output path last).
         total: Expected media duration in seconds (for percentages).
         label: Short description for log lines.
+        cancel: For a run in a background thread: once it is set, ffmpeg is killed and
+            :class:`RunCancelled` is raised.
 
     Returns:
         stderr text and the last reported output time, so callers can detect
@@ -328,6 +337,7 @@ def run_progress(args: list[str], total: float, label: str) -> ProgressResult:
 
     Raises:
         FFmpegError: If the process exits non-zero.
+        RunCancelled: When ``cancel`` was set before ffmpeg finished.
     """
     cmd = _command(args[0], ["-progress", "pipe:1", "-nostats", *args[1:]])
     t0, next_pct, out_time = time.perf_counter(), 10, 0.0
@@ -363,7 +373,12 @@ def run_progress(args: list[str], total: float, label: str) -> ProgressResult:
         )
         reader.start()
         try:
-            proc.wait()
+            if cancel is None:
+                proc.wait()
+            else:
+                while proc.poll() is None:
+                    if cancel.wait(CANCEL_POLL_S):
+                        raise RunCancelled(label)
             reader.join(PROGRESS_DRAIN_S)
         except BaseException as exc:
             procs.stop_child(proc, exc)
