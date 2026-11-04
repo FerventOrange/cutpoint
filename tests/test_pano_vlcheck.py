@@ -155,3 +155,21 @@ def test_check_preview_reports_bad_frames_and_reuses_cached_views(
     V._MEMO.clear()  # from the disk cache now; only the unanswered frame is asked again
     _, rec = V.check_preview(fake, preview, path_of([]))  # type: ignore[arg-type]
     assert (fake.calls, rec["cached"]) == (4, 2)
+
+
+def test_a_redirect_is_not_followed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#719: a 307 is an Ollama HTTP error like any other: one request, not followed, and
+    the server counts as dead."""
+    chk = V.VLChecker(url="http://127.0.0.1:1", model="m")
+    sent: list[tuple[str, bool]] = []
+
+    def moved(url: str, json: dict, timeout: Any, allow_redirects: bool = True) -> Any:
+        sent.append((url, allow_redirects))
+        resp = requests.Response()
+        resp.status_code = 307
+        resp.headers["Location"] = "http://elsewhere.example.com/api/chat"
+        return resp
+
+    monkeypatch.setattr(requests, "post", moved)
+    assert chk.ask(b"jpeg") is None and chk.dead
+    assert sent == [("http://127.0.0.1:1/api/chat", False)]

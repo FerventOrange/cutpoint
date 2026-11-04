@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Opt-in `CUTPOINT_ANALYZE_SCENE_OVERLAP=1` (Refs #725): `analyze` detects a source's scene cuts
+  while Whisper transcribes it, for long sources where both take about as long. Off by default;
+  the results are the same either way, and `timings.sources` marks a source with
+  `"overlap": true`. If the transcription fails or is stopped, the scene detection is stopped
+  too.
+- `highlights.json` `timings.sources` (Refs #725): the seconds each source spent in probing,
+  audio extract, loudness, transcription and scene cuts, the wait for the background OCR read
+  and whether it was cached, to measure where a multi-file analysis spends its time. The
+  existing `timings` keys are unchanged. The scene cuts of each source log a line before they
+  start.
+- Stopped UI exports no longer leave their hidden `.clips_ui_<stamp>.cutpoint-resume` folder
+  forever (#716): when an export or a resumed run ends, the project's resume folders of
+  earlier UI exports are removed, since Resume only continues the last run. The one that
+  `progress.json` still points to, one whose clips folder or project is locked and any folder
+  Cutpoint did not write stay.
 - Run state for later resume (#109): `analyze`, `edit`, `events`, `crashes`, `profile` and
   `360 analyze` keep `<project>/progress.json` (the command line, a key of its options, status
   `running`, `done`, `interrupted` or `failed` with the error code, process, working folder,
@@ -624,6 +639,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The CLIP model the visual layer hands to the crash dense check is checked by the memory guard
   when it moves back to the GPU (#721); short of VRAM by then, it runs on the CPU with a
   `WARNING`, as a freshly loaded one does.
+- Requests to Ollama no longer follow redirects (Refs #719): the vision rating
+  (`VisionRater._rate_frames`, `ask_json`, the availability check), the 360 VL check and the
+  Ollama unload and `/api/ps` queries of the events and memory guard code send
+  `allow_redirects=False` and treat a redirect answer as an HTTP error, so frames never go to a host
+  the user did not allow. `describe()` and `unload()` already did.
+- The web workspace no longer shows the text "null" under the empty-project hint when there is no Resume button.
 - The memory guard's `low_memory` error quotes the project path in its
   `cutpoint resume <project>` hint (a path with a space copies as one argument), and a stop for
   VRAM no longer says how much RAM `memory_guard` keeps free.

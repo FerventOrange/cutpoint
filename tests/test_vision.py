@@ -5,6 +5,7 @@ HTTP and frame grabs are stubbed; no Ollama, no ffmpeg (except the analyze test)
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import math
@@ -218,6 +219,90 @@ def test_unload_does_not_follow_a_redirect(monkeypatch, caplog):
     assert sent == [("http://127.0.0.1:1/api/generate", False)]
     assert rater.used is True
     assert "redirect (HTTP 307); not followed" in caplog.text
+
+
+def _moved(sent: list[tuple[str, bool]]):
+    """A requests stand-in answering every call with a real 307 to another host."""
+
+    def call(url, json=None, timeout=None, allow_redirects=True):
+        sent.append((url, allow_redirects))
+        resp = requests.Response()
+        resp.status_code, resp.url = 307, url
+        resp.headers["Location"] = "http://elsewhere.example.com/api/chat"
+        return resp
+
+    return call
+
+
+def test_rate_frames_does_not_follow_a_redirect(monkeypatch, caplog):
+    """#719: the frames are not forwarded to the host a 307 names; the rating fails like any
+    other Ollama HTTP error (None, a warning) and is not retried."""
+    sent: list[tuple[str, bool]] = []
+    monkeypatch.setattr(vision.requests, "post", _moved(sent))
+    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    with caplog.at_level(logging.WARNING, logger="cutpoint.vision"):
+        assert rater.rate(Path("a.mp4"), 0, 4, "action") is None
+    assert sent == [("http://127.0.0.1:1/api/chat", False)]
+    assert "redirect (HTTP 307); not followed" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("model", "endpoint"), [("llava", "chat"), ("qwen3.5:9b", "generate")], ids=["chat", "generate"]
+)
+def test_ask_json_does_not_follow_a_redirect(monkeypatch, caplog, model, endpoint):
+    sent: list[tuple[str, bool]] = []
+    monkeypatch.setattr(vision.requests, "post", _moved(sent))
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model=model)
+    with caplog.at_level(logging.WARNING, logger="cutpoint.vision"):
+        assert rater.ask_json("p") is None
+    assert sent == [(f"http://127.0.0.1:1/api/{endpoint}", False)]
+    assert "redirect (HTTP 307); not followed" in caplog.text
+
+
+def test_available_does_not_follow_a_redirect(monkeypatch, caplog):
+    sent: list[tuple[str, bool]] = []
+
+    def get(url, timeout=None, allow_redirects=True):
+        sent.append((url, allow_redirects))
+        resp = requests.Response()
+        resp.status_code = 307
+        resp.headers["Location"] = "http://elsewhere.example.com/api/tags"
+        return resp
+
+    monkeypatch.setattr(vision.requests, "get", get)
+    with caplog.at_level(logging.INFO, logger="cutpoint.vision"):
+        assert vision.VisionRater(url="http://127.0.0.1:1", model="m").available() is False
+    assert sent == [("http://127.0.0.1:1/api/tags", False)]
+    assert "redirect (HTTP 307); not followed" in caplog.text
+
+
+def test_no_direct_requests_call_follows_redirects():
+    """#719: every direct ``requests.<verb>(...)`` call in src/cutpoint passes
+    ``allow_redirects=False`` (Ollama requests never follow redirects). cliproxy's session and
+    providers.py's ``send`` alias go to hosted providers and already refuse redirects."""
+    verbs = {"get", "post", "put", "patch", "delete", "head", "request"}
+    root = Path(vision.__file__).parent
+    missing = []
+    for path in sorted(root.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "requests"
+                and node.func.attr in verbs
+            ):
+                continue
+            ok = any(
+                kw.arg == "allow_redirects"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value is False
+                for kw in node.keywords
+            )
+            if not ok:
+                missing.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert missing == []
 
 
 @pytest.mark.parametrize(("weight", "high", "low"), [(0.25, 50.0, 30.0), (0.45, 58.0, 22.0)])
@@ -591,7 +676,7 @@ def ollama(posts, monkeypatch) -> dict:
     state: dict = {"up": True, "digest": "sha256:aaa"}
     working = vision.requests.post
 
-    def get(url, timeout):
+    def get(url, timeout, **_k):
         if not state["up"]:
             raise requests.ConnectionError("refused")
         assert url.endswith("/api/tags")
@@ -753,7 +838,7 @@ def test_a_profiled_model_gets_one_sheet_of_six_frames_and_the_expected_score(mo
         grabs.append(t)
         return _jpeg(64, 36, 100)
 
-    def post(url, json, timeout):
+    def post(url, json, timeout, **_k):
         seen.append(json)
         lp = _logprobs([("7", {"7": 0.5, "8": 0.3, "6": 0.2})])
         return _Resp({"message": {"content": '{"score": 7, "label": "jump"}'}, "logprobs": lp})

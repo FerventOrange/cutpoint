@@ -247,6 +247,8 @@ class OcrPrefetch:
         self._off = ""  # the same, for the shares of every source
         self.mode = shared_mode()  # the background scene proxy (None: off)
         self._split: SplitDecode | None = None  # the worker's shared decode
+        # seconds the main thread spent in take(), per source path (timings.sources, #725)
+        self.waits: dict[str, float] = {}
 
     def __enter__(self) -> OcrPrefetch:
         return self
@@ -299,6 +301,16 @@ class OcrPrefetch:
         if job is None or job.source != src or params != self.params:
             self.close()
             return None
+        t_take = time.perf_counter()
+        try:
+            return self._take(job, src, on_progress)
+        finally:
+            key = str(src.path)
+            self.waits[key] = self.waits.get(key, 0.0) + time.perf_counter() - t_take
+
+    def _take(
+        self, job: _Job, src: Source, on_progress: Callable[[float], None] | None
+    ) -> Result | None:
         sent, t0 = 0, time.perf_counter()
         while True:
             finished = job.done.wait(POLL_S)

@@ -267,6 +267,23 @@ def test_ollama_loaded_reads_api_ps(monkeypatch):
     assert not memguard._ollama_loaded("http://127.0.0.1:11434", "llava")
 
 
+def test_ollama_loaded_does_not_follow_a_redirect(monkeypatch):
+    import requests  # noqa: PLC0415
+
+    sent = []
+
+    def moved(url, **kw):
+        sent.append((url, kw.get("allow_redirects", True)))
+        resp = requests.Response()
+        resp.status_code = 307
+        resp.headers["Location"] = "http://elsewhere.example.com/api/ps"
+        return resp
+
+    monkeypatch.setattr(requests, "get", moved)
+    assert not memguard._ollama_loaded("http://127.0.0.1:11434", "qwen3.5:9b")
+    assert sent == [("http://127.0.0.1:11434/api/ps", False)]
+
+
 @pytest.mark.parametrize("via", [False, True], ids=["ollama", "hosted"])
 def test_a_server_on_another_machine_is_not_checked(mem, via):
     mem.ram = 0.1

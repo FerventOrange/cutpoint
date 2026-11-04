@@ -135,3 +135,13 @@ test('the dialog shows the command line Resume replays, and focus returns to the
   assert.equal(page.document.activeElement?.id, 'resumeBig');
   assert.equal($('#resumeBig').getAttribute('aria-disabled'), null);
 });
+
+test('the fresh-project empty state prints no "null" for the Resume button it does not have', async (t) => {
+  const { $ } = await open(t, makeProject({ highlights: null, analysis: null, run: null }));
+  const el = $('#momentsEmpty');
+  assert.equal(el.hidden, false);
+  assert.ok($('#analyzeBig'));
+  assert.ok(!$('#resumeBig'));
+  assert.ok(!/null|undefined|false/.test(el.textContent), el.textContent);
+  assert.deepEqual([...el.childNodes].filter((n) => n.nodeType === 3), [], 'no stray text nodes');
+});
