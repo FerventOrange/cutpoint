@@ -59,7 +59,8 @@ HOSTED_TIMEOUT_S = 180.0  # a hosted model's whole reply (not streamed)
 CONNECT_TIMEOUT_S = 10.0
 SHOW_TIMEOUT_S = 5.0
 CHECK_TIMEOUT_S = 15.0  # a hosted provider's model list or model
-LOCAL_CONTEXT_TOKENS = 8192  # assistant.context_tokens unset: a model on this machine
+OLLAMA_CONTEXT_TOKENS = 50000  # assistant.context_tokens unset: Ollama (asked for num_ctx)
+ON_MACHINE_CONTEXT_TOKENS = 8192  # unset: another server on this machine (LM Studio, llama.cpp)
 HOSTED_CONTEXT_TOKENS = 32768  # assistant.context_tokens unset: a hosted model
 OPENAI_URL = "https://api.openai.com/v1"
 XAI_URL = "https://api.x.ai/v1"
@@ -150,6 +151,11 @@ class ProviderError(RuntimeError):
 
 class ToolsUnsupportedError(ProviderError):
     """The model refused a request with tools: ask again in JSON mode."""
+
+
+class TruncatedError(ProviderError):
+    """The reply stopped at the context or output limit: a tool call in it is not whole, and
+    the text may end midway. The turn asks again with less in the conversation."""
 
 
 class CancelledError(ProviderError):
@@ -706,6 +712,7 @@ class OllamaProvider:
         parts: list[str] = []
         raw_calls: list[Any] = []
         got = False
+        cut = False
         try:
             for line in resp.iter_lines():
                 if cancelled is not None and cancelled():
@@ -728,9 +735,12 @@ class OllamaProvider:
                     if isinstance(msg.get("tool_calls"), list):
                         raw_calls += msg["tool_calls"]
                 if chunk.get("done"):
+                    cut = chunk.get("done_reason") == "length"
                     break
         except requests.RequestException as err:
             raise ProviderError(f"Ollama stopped answering ({err})") from err
+        if cut:  # the context or num_predict ran out: Ollama sends what it had, as if whole
+            raise TruncatedError("Ollama's reply was cut off at the end of the context")
         if not got:
             raise ProviderError("Ollama's answer has no message")
         return "".join(parts), raw_calls
@@ -785,7 +795,7 @@ class _HttpProvider:
         self.local = is_consent_exempt(url)  # consent: the proxy's port is hosted
         self._model = model
         self.context_tokens = context_tokens or (
-            LOCAL_CONTEXT_TOKENS if self.on_machine else HOSTED_CONTEXT_TOKENS
+            ON_MACHINE_CONTEXT_TOKENS if self.on_machine else HOSTED_CONTEXT_TOKENS
         )
         self._key = key or None  # only ever sent in the request headers
         # False: keys.ENV_KEY is not read for this provider (the Vision role on another host)
@@ -1028,6 +1038,8 @@ class OpenAIProvider(_HttpProvider):
         if isinstance(content, list):  # content parts
             content = "".join(str(p.get("text") or "") for p in content if isinstance(p, dict))
         text = content if isinstance(content, str) else ""
+        if isinstance(first, dict) and first.get("finish_reason") == "length":
+            raise TruncatedError(f"{self.title}'s reply was cut off; try a simpler request")
         calls: list[ToolCall] = []
         raw_calls: list[dict[str, Any]] = []
         raw_list = msg.get("tool_calls")
@@ -1113,7 +1125,7 @@ class OpenAIProvider(_HttpProvider):
         if data.get("status") == "incomplete":  # a tool call cut off midway is not one to run
             details = data.get("incomplete_details")
             why = details.get("reason") if isinstance(details, dict) else None
-            raise ProviderError(
+            raise TruncatedError(
                 f"{self.title}'s reply was cut off ({why or 'incomplete'}); try a simpler request"
             )
         texts: list[tuple[Any, str]] = []  # (phase, text) of each message item
@@ -1255,7 +1267,7 @@ class AnthropicProvider(_HttpProvider):
         data = self._read(resp)
         stop = data.get("stop_reason")
         if stop == "max_tokens":  # a tool call cut off midway is not one to run
-            raise ProviderError(
+            raise TruncatedError(
                 f"{self.title}'s reply was cut off at {MAX_TOKENS} tokens; try a simpler request"
             )
         if stop == "refusal":
@@ -1333,7 +1345,7 @@ def _ollama(settings: AssistantSettings) -> Provider:
     return OllamaProvider(
         settings.url or ollama_url(),
         settings.model,  # "": auto (OllamaProvider.resolve_model)
-        settings.context_tokens or LOCAL_CONTEXT_TOKENS,
+        settings.context_tokens or OLLAMA_CONTEXT_TOKENS,
     )
 
 
@@ -1498,7 +1510,7 @@ class SubscriptionProvider(OpenAIProvider):
         if isinstance(first, dict):
             finish = first.get("finish_reason")
             if finish == "length":
-                raise ProviderError(f"{self.title}'s reply was cut off; try a simpler request")
+                raise TruncatedError(f"{self.title}'s reply was cut off; try a simpler request")
             if finish == "content_filter":
                 raise ProviderError(f"{self.title} declined this request (content filter)")
         reply = super()._reply(data)

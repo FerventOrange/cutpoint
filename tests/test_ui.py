@@ -7915,7 +7915,9 @@ def test_model_text_is_never_set_as_markup() -> None:
         for sink in sinks:
             assert sink not in js, (name, sink)
     chat = _chat_js()
-    assert "h('p', { text: ev.text })" in chat and "h('p', { text: ev.summary })" in chat
+    # assistant replies are built by markdown() (createElement and text nodes), never as markup
+    assert "markdown(ev.text)" in chat and "h('p', { text: ev.summary })" in chat
+    assert "h('p', { text: ev.text })" not in chat
     assert "$('#propSummary').textContent = p.summary;" in chat
     assert "else if (k === 'text') el.textContent = v;" in _web("util.js")
 

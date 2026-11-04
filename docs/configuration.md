@@ -83,7 +83,7 @@ with `_` are ignored.
   "compress_peaks": "off",
   "color": "off",
   "analysis": {"skip": []},
-  "assistant": {"provider": "ollama", "model": "", "context_tokens": 8192}
+  "assistant": {"provider": "ollama", "model": "", "context_tokens": 50000}
 }
 ```
 
@@ -279,9 +279,11 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   password (`https://name@host`), or a host that reads differently to different URL parsers is
   refused, and redirects are not followed (by Ollama either) (set the
   address the server redirects to instead).
-- `context_tokens`: the model's context size, a whole number of at least 2048. Default 8192 for a
-  model on this machine (and any Ollama), 32768 for a hosted one; more lets the model see more
-  moments and turns.
+- `context_tokens`: the model's context size, a whole number of at least 2048. Default 50000 for
+  Ollama, 8192 for another server on this machine (LM Studio, llama.cpp), 32768 for a hosted one; more lets the model see more
+  moments and turns. Ollama is asked for that much context (`num_ctx`), which takes memory: set
+  a smaller number if the model does not fit. A reply cut off at the end of the context is
+  asked again with less in the conversation once, then the chat shows an error naming the size.
 - `consent`: the hosted providers the user agreed to send project text to, as
   `assistant-v2:<provider>@<host>` (for example `assistant-v2:anthropic@api.anthropic.com`; the
   host has its port when that is not the scheme's default); the AI Chat tab adds them. An entry without the `assistant-v2:` prefix, saved by an earlier version

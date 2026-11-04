@@ -27,23 +27,31 @@ from typing import Any
 from cutpoint.assistant import context, lookfor, watch
 from cutpoint.assistant.ops import apply_ops
 from cutpoint.assistant.providers import (
+    OllamaProvider,
     Provider,
     ProviderError,
     Reply,
     ToolCall,
     ToolsUnsupportedError,
+    TruncatedError,
     describe,
 )
 
 logger = logging.getLogger(__name__)
 
 MAX_ROUNDS = 8  # model replies in one turn
-MAX_RESULT_CHARS = 6000  # of one tool result
+FIT_CHARS_PER_TOKEN = context.FIT_CHARS_PER_TOKEN
+MAX_RESULT_CHARS = context.MAX_RESULT_CHARS
 MAX_TEXT = 2000  # characters of a user message
 MAX_SUMMARY = 500
 MAX_SUGGESTIONS = 4
 MAX_KEPT = 50  # finished turns kept in memory (chat.json has them all)
 MAX_PAD_S = 60.0  # get_transcript's pad
+NUDGE = (
+    "If the user asked for a change to the sequence, call propose_edit now with the ops; "
+    "otherwise give your answer again."
+)
+_MOMENT_ID = re.compile(r"\bm\d+\b")
 
 
 def _tool(name: str, description: str, props: dict[str, Any], required: list[str]) -> dict:
@@ -144,6 +152,20 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def cut_again_error(provider: Any, err: TruncatedError, again: bool = True) -> ProviderError:
+    """The failure for a reply cut off after the conversation was already made smaller: the
+    provider's own message, and the context advice only where ``assistant.context_tokens``
+    is what the model is given (Ollama's ``num_ctx``). ``again``: false when the reply was cut
+    off only once (in the final round)."""
+    text = f"{err} (cut off again)" if again else str(err)
+    if isinstance(provider, OllamaProvider):
+        text += (
+            f"; the context is {provider.context_tokens} tokens: ask for less, or raise "
+            "assistant.context_tokens in config.json"
+        )
+    return ProviderError(text)
+
+
 class Turn:
     """One user message and the model's work on it; :meth:`view` is what the page polls."""
 
@@ -172,6 +194,8 @@ class Turn:
         self.done = threading.Event()
         self.on_finish: Callable[[Turn], None] | None = None
         self._proposals = 0
+        self._nudged: str | None = None  # the text-only reply that got the nudge (this turn's one)
+        self._results: list[dict[str, Any]] = []  # tool result messages of the conversation
         self._saved = False
         # view_moment: offered (decided in _loop), moments viewed, sheets waiting to be sent and
         # the image messages sent (taken out again if the model refuses images)
@@ -282,8 +306,11 @@ class Turn:
             self._save()
             self.done.set()
 
-    def _messages(self, json_mode: bool) -> list[dict[str, Any]]:
-        plan = context.budget(self.provider.context_tokens)
+    def _messages(self, json_mode: bool, *, tight: bool = False) -> list[dict[str, Any]]:
+        # the tool definitions of a tool-call request count; JSON mode lists them in the rules
+        sent = None if json_mode else self._tools()
+        sheets = watch.view_cap(self.provider) if self._watch else 0
+        plan = context.budget(self.provider.context_tokens, sent, tight=tight, images=sheets)
         tools = [*_JSON_TOOLS, *([watch.JSON_TOOL] if self._watch else [])] if json_mode else None
         out = context.build_messages(
             self.table, self.earlier, self.text, plan, json_tools=tools, images=bool(self._watch)
@@ -318,7 +345,7 @@ class Turn:
 
         try:
             return once()
-        except ToolsUnsupportedError:
+        except (ToolsUnsupportedError, TruncatedError):
             raise
         except ProviderError as err:
             if not self._images or not watch.rejected_image(err):
@@ -348,14 +375,34 @@ class Turn:
         json_mode = not caps.tool_calls
         self._watch = self.viewer is not None and watch.takes_images(self.provider, caps)
         messages = self._messages(json_mode)
-        for _ in range(MAX_ROUNDS):
+        base = len(messages)  # the context built up front; what follows is this turn's exchange
+        cut = False  # a reply was cut off once: the conversation was shrunk and asked again
+        last_cut: TruncatedError | None = None  # the latest round's cut-off, if it was one
+        for rnd in range(MAX_ROUNDS):
             if self.status != "running":
                 return
+            self._fit(messages, json_mode)
             try:
                 reply = self._ask(messages, json_mode)
+                last_cut = None
             except ToolsUnsupportedError:
                 json_mode = True
+                self._results = []
                 messages = self._messages(True)
+                base = len(messages)
+                continue
+            except TruncatedError as err:
+                if cut:
+                    raise cut_again_error(self.provider, err) from None
+                last_cut = err
+                cut = True
+                logger.info("assistant: reply cut off; asking again with less")
+                # old results go; with none to drop, the context is built smaller and the
+                # exchange of this turn (the user's message, the latest result) is kept as is
+                if not self._fit(messages, json_mode, tight=True):
+                    smaller = self._messages(json_mode, tight=True)
+                    messages = smaller + messages[base:]
+                    base = len(smaller)
                 continue
             if self.status != "running":
                 return
@@ -369,8 +416,20 @@ class Turn:
                 messages.append(reply.message)
                 calls, text = reply.tool_calls, reply.text.strip()
             if not calls:
+                if self._nudged is not None and not text:
+                    text = self._nudged  # the answer given again is empty: the first one stands
                 if not text:
                     raise ProviderError(f"{self.provider.model} gave an empty answer")
+                if (
+                    self._nudged is None
+                    and rnd < MAX_ROUNDS - 1  # a nudge in the last round would leave no answer
+                    and self._names_moments(text)
+                ):
+                    # moments chosen in text, perhaps for a change: ask once more (the nudge
+                    # stays in this conversation; the page and chat.json never get it)
+                    self._nudged = text
+                    messages.append({"role": "user", "content": NUDGE})
+                    continue
                 self._emit({"kind": "reply", "text": text})
                 self._finish("done")
                 return
@@ -381,13 +440,42 @@ class Turn:
                     return
                 result = result[:MAX_RESULT_CHARS]
                 if json_mode:
-                    messages.append({"role": "user", "content": f"{call.name} result:\n{result}"})
+                    sent = {"role": "user", "content": f"{call.name} result:\n{result}"}
                 else:
-                    messages.append(self.provider.tool_result(call, result))
+                    sent = self.provider.tool_result(call, result)
+                messages.append(sent)
+                self._results.append(sent)
             # sheets after every tool result of the reply (OpenAI wants the results together)
             messages += self._sheets
             self._images += self._sheets
             self._sheets = []
+        if self.status != "running":
+            return
+        if last_cut is not None:
+            raise cut_again_error(self.provider, last_cut, again=False) from None
+        if self._nudged is not None:  # the rounds ran out after the nudge: the first answer stands
+            self._emit({"kind": "reply", "text": self._nudged})
+            self._finish("done")
+
+    def _names_moments(self, text: str) -> bool:
+        """Whether ``text`` names a moment of the table (``m3``)."""
+        return any(self.table.real(m) is not None for m in _MOMENT_ID.findall(text))
+
+    def _fit(self, messages: list[dict[str, Any]], json_mode: bool, *, tight: bool = False) -> bool:
+        """Leave out the oldest tool results until the conversation, the tool definitions and
+        room for a reply fit the context (``tight``: all but the latest). The system messages,
+        the user's messages and the latest result stay. True if a result was left out."""
+        limit = (self.provider.context_tokens - context.REPLY_TOKENS) * FIT_CHARS_PER_TOKEN
+        total = context.size(messages) + (0 if json_mode else len(json.dumps(self._tools())))
+        left = False
+        for msg in self._results[:-1]:
+            if total <= limit and not tight:
+                break
+            before = context.size(msg)
+            _leave_out(msg)
+            total -= before - context.size(msg)
+            left = left or before != context.size(msg)
+        return left
 
     # -- tools -------------------------------------------------------------------------
     def _call(self, call: ToolCall) -> tuple[str, bool]:
@@ -653,6 +741,18 @@ def _real_ops(ops: Any, table: context.MomentTable) -> tuple[list[Any] | None, s
             op["ids"] = reals
         out.append(op)
     return out, ""
+
+
+def _leave_out(msg: dict[str, Any]) -> None:
+    """Replace the result in a tool result message (any provider's shape) with a note."""
+    if "output" in msg:  # OpenAI Responses
+        msg["output"] = context.LEFT_OUT
+    elif isinstance(msg.get("content"), list):  # Anthropic: tool_result blocks
+        for block in msg["content"]:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                block["content"] = context.LEFT_OUT
+    else:
+        msg["content"] = context.LEFT_OUT
 
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")

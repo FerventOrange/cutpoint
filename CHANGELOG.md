@@ -633,6 +633,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The AI Chat proposes sequences reliably with a local model such as `qwen3.5:9b`. The 8192-token
+  context filled up (the budget counted 4 characters per token where the JSON data measures
+  2.0-2.4 and prose about 4, and left out the tool definitions and the tool results of a
+  turn), so Ollama silently dropped the oldest messages, the user's request included, and cut
+  replies off. Now the default Ollama context is 50000 tokens (`assistant.context_tokens` still
+  wins; other local servers keep 8192), the budget counts 2.5 characters per token (2.0 when
+  fitting a turn), counts the tool definitions and keeps room for a whole proposal, and a turn
+  leaves out its oldest tool results when the conversation grows too large. A reply cut off at the context
+  end (Ollama `done_reason: length`, OpenAI-style `finish_reason: length`) is no longer taken
+  as the answer: the chat asks again with less once, then shows an error naming the context
+  size. The rules now say that a change request ends in `propose_edit` and that an empty
+  sequence is built with `add` ops, and a reply that only names moments gets one nudge to
+  propose (not shown in the chat). Replies show Markdown (paragraphs, lists, bold, italic,
+  code) instead of literal `**` marks, built without HTML.
 - The memory guard reads the free VRAM of the GPU the models use (#721): the first entry of
   `CUDA_VISIBLE_DEVICES` (index or GPU UUID), else GPU 0, instead of always `nvidia-smi`'s first
   GPU; with every GPU hidden (empty or `-1`) VRAM is unknown and not checked.

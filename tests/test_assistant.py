@@ -267,7 +267,7 @@ def test_auto_model_is_qwen3_5_if_pulled_else_the_vision_model(
 @pytest.mark.parametrize(
     ("section", "want"),
     [
-        (None, ("http://127.0.0.1:11434", providers.AUTO_MODEL, 8192)),
+        (None, ("http://127.0.0.1:11434", providers.AUTO_MODEL, 50000)),
         (
             {"model": "llama3.1:8b", "url": "box:11434", "context_tokens": 16384},
             ("http://box:11434", "llama3.1:8b", 16384),
