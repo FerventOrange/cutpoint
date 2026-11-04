@@ -43,6 +43,7 @@ from cutpoint import (
     ffmpeg_utils,
     folders,
     procs,
+    runstate,
     ui,
 )
 from cutpoint.assistant import keys
@@ -9250,3 +9251,129 @@ def test_a_resumed_360_export_stitches_what_its_command_line_exports(
     assert project == p
     assert seg_file == (None if seg is None else p.parent / seg)
     assert chosen == ({"top": None, "ids": None, "max_total": None} | picks if seg is None else {})
+
+
+def stopped_export(p: Path, name: str, *, marker: bool = True) -> Path:
+    """The hidden resume folder a stopped export of the clips folder ``name`` leaves."""
+    res = p / f".{name}.cutpoint-resume"
+    res.mkdir(parents=True)
+    (res / "001_a.mp4").write_bytes(b"x")
+    if marker:
+        cache.save_json(res / "resume.json", {"version": 1, "clips": {}})
+    return res
+
+
+def test_a_later_export_removes_the_resume_folders_that_can_never_be_resumed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    p = tmp_path / "proj"
+    old = stopped_export(p, "clips_ui_20260101-101010")
+    older = stopped_export(p, "clips_ui_20260101-090909-2")
+    current = stopped_export(p, "clips_ui_20260102-101010")
+    progress_record(
+        p, "clips", argv=["clips", str(p), "--out", str(p / "clips_ui_20260102-101010")]
+    )
+    with caplog.at_level("INFO", logger=ui.logger.name):
+        ui.prune_resume_folders(p)
+    assert not old.exists() and not older.exists()
+    assert current.is_dir()  # Resume still continues it
+    assert caplog.text.count("Removed") == 2
+
+
+def test_every_resume_folder_goes_once_the_last_run_is_done(tmp_path: Path) -> None:
+    p = tmp_path / "proj"
+    old = stopped_export(p, "clips_ui_20260101-101010")
+    progress_record(
+        p,
+        "clips",
+        status="done",
+        argv=["clips", str(p), "--out", str(old.parent / "clips_ui_20260101-101010")],
+    )
+    ui.prune_resume_folders(p)
+    assert not old.exists()
+
+
+def test_a_resume_folder_of_a_locked_clips_folder_or_project_stays(tmp_path: Path) -> None:
+    p = tmp_path / "proj"
+    busy = stopped_export(p, "clips_ui_20260101-101010")
+    free = stopped_export(p, "clips_ui_20260101-111111")
+    with folders.swap_lock(p / "clips_ui_20260101-101010"):
+        ui.prune_resume_folders(p)
+        assert busy.is_dir() and not free.exists()
+        free = stopped_export(p, "clips_ui_20260101-111111")
+    with folders.swap_lock(p / runstate.LOCK_NAME):
+        ui.prune_resume_folders(p)
+    assert free.is_dir()
+
+
+def test_folders_cutpoint_did_not_write_are_never_removed(tmp_path: Path) -> None:
+    p = tmp_path / "proj"
+    keep = [
+        stopped_export(p, "clips_ui_20260101-101010", marker=False),  # no resume.json
+        stopped_export(p, "my_clips"),  # not a UI export folder
+        stopped_export(p, "clips_ui_notes"),
+    ]
+    (p / ".clips_ui_20260101-121212.cutpoint-resume").write_text("a file", encoding="utf-8")
+    (p / "clips_ui_20260101-131313").mkdir()  # the clips folder itself
+    ui.prune_resume_folders(p)
+    assert all(f.is_dir() for f in keep)
+    assert (p / ".clips_ui_20260101-121212.cutpoint-resume").is_file()
+    assert (p / "clips_ui_20260101-131313").is_dir()
+
+
+def test_the_ui_prunes_when_an_export_job_ends(tmp_path: Path) -> None:
+    p = tmp_path / "proj"
+    old = stopped_export(p, "clips_ui_20260101-101010")
+    jobs = ui.Jobs()
+    job = jobs.start(
+        "proj",
+        "clips",
+        [sys.executable, "-c", "pass"],
+        on_end=lambda: ui.prune_resume_folders(p),
+    )
+    assert job.done.wait(30)
+    assert not old.exists()
+
+
+def test_a_linked_resume_folder_is_left_alone(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    p = tmp_path / "proj"
+    p.mkdir()
+    target = stopped_export(tmp_path / "elsewhere", "target")
+    link = p / ".clips_ui_20260101-101010.cutpoint-resume"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks not permitted")
+    with caplog.at_level("INFO", logger=ui.logger.name):
+        ui.prune_resume_folders(p)
+    assert link.is_symlink() and (target / "resume.json").is_file()
+    assert "WARNING" not in caplog.text
+
+
+def test_an_unreadable_progress_record_keeps_every_resume_folder(tmp_path: Path) -> None:
+    p = tmp_path / "proj"
+    keep = stopped_export(p, "clips_ui_20260101-101010")
+    (p / "progress.json").write_text("{", encoding="utf-8")
+    ui.prune_resume_folders(p)
+    assert keep.is_dir()
+
+
+def test_a_failed_job_still_ends_with_on_end_and_a_failing_on_end_changes_nothing() -> None:
+    calls: list[int] = []
+    jobs = ui.Jobs()
+    job = jobs.start(
+        "proj",
+        "clips",
+        [sys.executable, "-c", "raise SystemExit(3)"],
+        on_end=lambda: calls.append(1),
+    )
+    assert job.done.wait(30) and calls == [1]
+
+    def boom() -> None:
+        raise RuntimeError("cleanup")
+
+    job = jobs.start("proj", "clips", [sys.executable, "-c", "raise SystemExit(3)"], on_end=boom)
+    assert job.done.wait(30)
+    assert job.status == "failed" and job.error == "exit code 3"
