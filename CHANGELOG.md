@@ -65,8 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Whisper, PANNs, the voice and visual layers, the background HUD OCR engine, the 360 views) is
   closed after N sources and loaded again for the next ones, to give memory back on long runs;
   the crash CLIP of `events` and `crashes` after N dense windows, an Ollama vision model after N
-  VLM windows. Each boundary logs `<step>: N/M done, continuing`; on `analyze`, `events` and
-  `360 analyze` it also updates `progress.json`, so `cutpoint resume` replays the option. Off by default (0); the result files are the same with or without it. `events`
+  VLM windows. Each boundary logs `<step>: N/M done, continuing`. `cutpoint resume` replays the
+  option (recorded command line); on `analyze`, `events` and `360 analyze` the boundary also
+  updates the step counts in `progress.json`. Off by default (0); the result files are the same
+  with or without it. `events`
   records its layers (`audio`, `voice`, `visual`, `ocr`, `crash`, `vlm`, `write`) as steps of
   `progress.json` (no `PROGRESS` lines), so `resume --dry-run` lists them.
 - Footage category detection (#513): `cutpoint detect <inputs> [--json]` tells whether the
