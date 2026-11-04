@@ -337,7 +337,8 @@ class VisionRater:
             self.warn_consent()
             return False
         try:
-            resp = requests.get(f"{self.url}/api/tags", timeout=3)
+            resp = requests.get(f"{self.url}/api/tags", timeout=3, allow_redirects=False)
+            refuse_redirect(resp)
             resp.raise_for_status()
             data = resp.json()
             if not isinstance(data, dict):
@@ -441,7 +442,10 @@ class VisionRater:
         self.check_memory()
         self.used = True
         try:
-            resp = requests.post(f"{self.url}/api/{endpoint}", json=payload, timeout=timeout)
+            resp = requests.post(
+                f"{self.url}/api/{endpoint}", json=payload, timeout=timeout, allow_redirects=False
+            )
+            refuse_redirect(resp)
             resp.raise_for_status()
             body = resp.json()
             content = body["response"] if raw else body["message"]["content"]
@@ -507,10 +511,7 @@ class VisionRater:
             resp = requests.post(
                 f"{self.url}/api/chat", json=payload, timeout=600, allow_redirects=False
             )
-            if resp.is_redirect:  # never followed: the frames would go to another host
-                raise requests.HTTPError(
-                    f"Ollama answered with a redirect (HTTP {resp.status_code}); not followed"
-                )
+            refuse_redirect(resp)  # never followed: the frames would go to another host
             resp.raise_for_status()
             body = resp.json()
             content = body["message"]["content"]
@@ -674,7 +675,10 @@ class VisionRater:
                 self.check_memory()
                 self.used = True
                 try:
-                    resp = requests.post(f"{self.url}/api/chat", json=payload, timeout=300)
+                    resp = requests.post(
+                        f"{self.url}/api/chat", json=payload, timeout=300, allow_redirects=False
+                    )
+                    refuse_redirect(resp)
                     resp.raise_for_status()
                     body = resp.json()
                     content = body["message"]["content"]
@@ -716,16 +720,23 @@ class VisionRater:
                 timeout=10,
                 allow_redirects=False,  # never to a host the user did not allow
             )
-            if resp.is_redirect:
-                raise requests.HTTPError(
-                    f"Ollama answered with a redirect (HTTP {resp.status_code}); not followed"
-                )
+            refuse_redirect(resp)
             resp.raise_for_status()
         except requests.RequestException as err:
             logger.debug("Could not unload Ollama model %s: %s", self.model, err)
             return
         self.used = False
         logger.debug("Unloaded Ollama model %s", self.model)
+
+
+def refuse_redirect(resp: Any) -> None:
+    """Raise :class:`requests.HTTPError` when Ollama answered with a redirect: requests is
+    called with ``allow_redirects=False``, so what was sent (frames) never goes to a host the
+    user did not allow."""
+    if resp.is_redirect:
+        raise requests.HTTPError(
+            f"Ollama answered with a redirect (HTTP {resp.status_code}); not followed"
+        )
 
 
 def _frame_times(start: float, end: float, n_frames: int) -> list[float]:

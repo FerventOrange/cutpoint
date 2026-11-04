@@ -266,8 +266,12 @@ def _ollama_loaded(url: str, model: str) -> bool:
     """Ollama at ``url`` has ``model`` in memory (``/api/ps``); False when it does not answer."""
     import requests  # noqa: PLC0415
 
+    from cutpoint.vision import refuse_redirect  # noqa: PLC0415
+
     try:
-        loaded = requests.get(f"{url}/api/ps", timeout=3).json().get("models", [])
+        resp = requests.get(f"{url}/api/ps", timeout=3, allow_redirects=False)
+        refuse_redirect(resp)
+        loaded = resp.json().get("models", [])
     except (requests.RequestException, ValueError, AttributeError):
         return False
     names = {m.get("name") or m.get("model") for m in loaded if isinstance(m, dict)}
