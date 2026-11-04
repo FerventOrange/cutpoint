@@ -1,7 +1,7 @@
 [project]
 name = "cutpoint"
 version = "0.4.0"
-description = "Local, agent-driven AI video editor: finds highlights, cuts clips, builds montages, handles 360 video."
+description = "Local AI clip creator: finds the best moments in any footage, cuts clips and builds montages from an agent, the browser or the CLI."
 license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
