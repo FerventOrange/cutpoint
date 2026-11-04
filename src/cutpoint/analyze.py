@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from cutpoint import cache, category, features, folders, jsonout, progress, runstate, scorer
+from cutpoint import cache, category, features, folders, jsonout, paths, progress, runstate, scorer
 from cutpoint.config import remap_source, unc_path
 from cutpoint.dsp import conv_same
 from cutpoint.errors import FFmpegError, LowMemoryError
@@ -43,9 +43,11 @@ from cutpoint.events.scoring import rescore
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
+    STOP_GRACE_S,
     HwDecoder,
     MediaInfo,
     ProgressResult,
+    RunCancelled,
     decoder_for,
     extract_audio,
     ffprobe_json,
@@ -363,6 +365,15 @@ def _audio_mix(src: Path, cdir: Path, tracks: tuple[int, ...], streams: int) -> 
 
 
 SOURCE_STAGES = ("probe_s", "audio_extract_s", "loudness_s", "transcribe_s", "scenes_s")
+SCENE_OVERLAP_ENV = "ANALYZE_SCENE_OVERLAP"  # CUTPOINT_ANALYZE_SCENE_OVERLAP=1: opt in (#725)
+SCENE_JOIN_S = 8.0  # a cancelled scene thread gets this long to stop (a daemon, never waited on)
+SCENE_POLL_S = 0.5  # waits on the scene thread in steps this long: Ctrl+C gets through on Windows
+
+
+def scene_overlap() -> bool:
+    """True when ``CUTPOINT_ANALYZE_SCENE_OVERLAP=1``: a source's scene cuts are detected
+    while Whisper transcribes it."""
+    return (paths.env(SCENE_OVERLAP_ENV) or "").strip() == "1"
 
 
 def _source_timings(results: Sequence[SourceResult], prefetch: OcrPrefetch | None) -> list[Any]:
@@ -379,6 +390,8 @@ def _source_timings(results: Sequence[SourceResult], prefetch: OcrPrefetch | Non
             rec[name] = r.stages.get(name, 0.0)
         rec["ocr_wait_s"] = round(waits.pop(str(r.source), 0.0), 2)
         rec["cached"] = bool(r.stages.get("cached", False))
+        if r.stages.get("overlap"):  # the scene cuts ran alongside the transcription
+            rec["overlap"] = True
         out.append(rec)
     return out
 
@@ -438,20 +451,57 @@ def _proxy_args(
     return pre, post, vf, ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "32"]
 
 
-def _detect(proxy: Path, path: Path) -> list[float]:
-    """Scene cuts of ``proxy`` (deleted after), saved to ``path``."""
+def _detect(proxy: Path, path: Path, cancel: threading.Event | None = None) -> list[float]:
+    """Scene cuts of ``proxy`` (deleted after), saved to ``path``.
+
+    With ``cancel`` (a :class:`_SceneJob`), setting it stops the detection within about 0.1 s plus a
+    frame decode and raises :class:`~cutpoint.ffmpeg_utils.RunCancelled`, writing nothing."""
+    try:
+        cuts = _scan(proxy, cancel)  # its video handle is closed on return
+    finally:
+        try:
+            proxy.unlink(missing_ok=True)
+        except OSError as exc:  # never replace the original exception
+            logger.debug("could not delete %s: %s", proxy, exc)
+    cache.save_json(path, cuts)
+    return cuts
+
+
+def _scan(proxy: Path, cancel: threading.Event | None) -> list[float]:
     from scenedetect import AdaptiveDetector, SceneManager, open_video  # noqa: PLC0415
 
     video = open_video(str(proxy))
     manager = SceneManager()
     manager.auto_downscale = False
     manager.add_detector(AdaptiveDetector(min_scene_len=5))
-    manager.detect_scenes(video, show_progress=False)
-    cuts = [round(s[0].seconds, 3) for s in manager.get_scene_list()[1:]]
-    del video
-    proxy.unlink(missing_ok=True)
-    cache.save_json(path, cuts)
-    return cuts
+
+    done = threading.Event()
+
+    def watch() -> None:
+        # PySceneDetect calls a callback only at a cut, so a stop is requested from here. It is
+        # repeated: detect_scenes clears its stop flag when it starts, so one early stop can be lost.
+        while not done.is_set():
+            if cancel.wait(0.1):  # type: ignore[union-attr]
+                manager.stop()
+                done.wait(0.1)
+
+    watcher = None
+    if cancel is not None:
+        watcher = threading.Thread(target=watch, name="scene-cancel", daemon=True)
+        watcher.start()
+    try:
+        manager.detect_scenes(video, show_progress=False)
+    finally:
+        done.set()
+        if watcher is not None:
+            watcher.join(1.0)
+        # The OpenCV backend has no close(); a traceback keeps the handle (and the file open).
+        release = getattr(getattr(video, "capture", None), "release", None)
+        if release is not None:
+            release()
+    if cancel is not None and cancel.is_set():
+        raise RunCancelled(f"scene detection {proxy.parent.name}")
+    return [round(s[0].seconds, 3) for s in manager.get_scene_list()[1:]]
 
 
 def scene_cuts(
@@ -461,6 +511,7 @@ def scene_cuts(
     offset: float = 0.0,
     limit: float | None = None,
     shared: Any = None,
+    cancel: threading.Event | None = None,
 ) -> list[float]:
     """Scene-cut times (s) via PySceneDetect AdaptiveDetector on a tiny proxy.
 
@@ -477,6 +528,9 @@ def scene_cuts(
             unreadable region instead of hitting it again).
         shared: The :class:`~cutpoint.events.ocr_prefetch.SceneShare` of this source (a
             shared-decode mode): its proxy, waited for while it is made, replaces the decode.
+        cancel: For a run in a background thread (:class:`_SceneJob`): once set, ffmpeg is
+            killed or the detection stopped, the proxy removed and :class:`~cutpoint.ffmpeg_utils.RunCancelled` raised,
+            before any ``scenes.json`` is written.
     """
     path = cdir / "scenes.json"
     cached = cache.load_json(path)
@@ -484,8 +538,9 @@ def scene_cuts(
         return cached
     logger.info("%s: detecting scene cuts", src.name)
     importlib.import_module("scenedetect")  # not installed: fails before any decode
+    dopts = {"cancel": cancel} if cancel is not None else {}  # plain call when not overlapped
     if shared is not None and (made := shared.result()) is not None:
-        return _detect(made, path)
+        return _detect(made, path, **dopts)
     proxy = cdir / "proxy.mp4"
     pre, post, vf, enc = _proxy_args(duration, offset, limit)
     label = f"scene proxy {src.name}"
@@ -496,13 +551,69 @@ def scene_cuts(
         return ["ffmpeg", "-y", "-v", "error", *args, "-an", "-vf", chain, *enc, str(proxy)]
 
     hw = decoder_for(src)  # NVDEC or VAAPI when probed here; a failed GPU run decodes on the CPU
+    opts = {"cancel": cancel} if cancel is not None else {}  # plain call when not overlapped
     try:
-        run_progress(command(hw), duration, label)
-    except FFmpegError:
-        if hw is None:
-            raise
-        run_progress(command(None), duration, label)
-    return _detect(proxy, path)
+        try:
+            run_progress(command(hw), duration, label, **opts)
+        except FFmpegError:
+            if cancel is not None and cancel.wait(STOP_GRACE_S):  # Ctrl+C reached ffmpeg too
+                raise RunCancelled(label) from None
+            if hw is None:
+                raise
+            run_progress(command(None), duration, label, **opts)
+        if cancel is not None and cancel.is_set():
+            raise RunCancelled(label)
+    except RunCancelled:
+        proxy.unlink(missing_ok=True)
+        raise
+    return _detect(proxy, path, **dopts)
+
+
+class _SceneJob:
+    """:func:`scene_cuts` of one source in a thread, alongside its Whisper run (#725).
+
+    ``cancel`` stops it: ffmpeg is killed (``run_progress``) or the detection stopped, and no ``scenes.json`` is written.
+    An exception of the detection is kept and raised by :meth:`result`, in the caller's thread."""
+
+    def __init__(
+        self,
+        src: Path,
+        cdir: Path,
+        duration: float,
+        offset: float,
+        limit: float | None,
+        shared: Any,
+    ) -> None:
+        self.cancel = threading.Event()
+        self.cuts: list[float] = []
+        self.took = 0.0  # seconds the thread ran
+        self._error: BaseException | None = None
+        self._args = (src, cdir, duration, offset, limit, shared)
+        self._thread = threading.Thread(target=self._main, name="scene-overlap", daemon=True)
+        self._thread.start()
+
+    def _main(self) -> None:
+        t0 = time.perf_counter()
+        try:
+            self.cuts = scene_cuts(*self._args, cancel=self.cancel)
+        except BaseException as exc:  # noqa: BLE001 - re-raised by result()
+            self._error = exc
+        self.took = round(time.perf_counter() - t0, 2)
+
+    def result(self) -> list[float]:
+        """Wait for the cuts (or the thread's exception, raised here)."""
+        while self._thread.is_alive():
+            self._thread.join(SCENE_POLL_S)
+        if self._error is not None:
+            raise self._error
+        return self.cuts
+
+    def stop(self) -> None:
+        """Cancel and wait for the thread, for a bounded time. Idempotent."""
+        self.cancel.set()
+        self._thread.join(SCENE_JOIN_S)
+        if self._thread.is_alive():
+            logger.debug("scene thread still busy after %.0fs; left to exit", SCENE_JOIN_S)
 
 
 # --------------------------------------------------------------------------- windowing
@@ -963,10 +1074,12 @@ def analyze_source(
 
     stages: dict[str, Any] = {}
 
-    def tick(name: str, t0: float) -> None:
-        took = time.perf_counter() - t0
+    def add(name: str, took: float) -> None:
         timings[name] = round(timings.get(name, 0.0) + took, 2)
         stages[name] = round(stages.get(name, 0.0) + took, 2)
+
+    def tick(name: str, t0: float) -> None:
+        add(name, time.perf_counter() - t0)
 
     io = remap_source(src)  # read the copy, record the original
     t0 = time.perf_counter()
@@ -976,6 +1089,7 @@ def analyze_source(
     span = info.duration - offset
     read_error: dict[str, Any] | None = None
     shared = None  # read_checked's background scene proxy
+    overlap: _SceneJob | None = None  # the scene cuts, run alongside Whisper
     segments: list[Segment] = []
     lufs_data: tuple[np.ndarray, np.ndarray] | None = None
     if info.audio_streams:
@@ -1013,10 +1127,26 @@ def analyze_source(
         tick("loudness_s", t0)
 
         t0 = time.perf_counter()
-        segments = _transcript(wav, cdir, tr, transcribed if report else None)
-        tick("transcribe_s", t0)
-        if on_transcript is not None:
-            on_transcript()
+        try:
+            if (
+                use_scenes
+                and scene_overlap()
+                and shared is None
+                and cache.load_json(cdir / "scenes.json") is None
+                and cached_transcript(tr, cdir) is None
+            ):
+                tr.load()  # the memory guard runs before the scene thread takes any VRAM
+                overlap = _SceneJob(io, cdir, span, offset, span if read_error else None, shared)
+            segments = _transcript(wav, cdir, tr, transcribed if report else None)
+            tick("transcribe_s", t0)
+            if on_transcript is not None:
+                on_transcript()
+            if overlap is not None:
+                overlap.result()  # raises what the scene detection raised
+        except BaseException:  # Whisper failed or was stopped: so are the scene cuts
+            if overlap is not None:
+                overlap.stop()
+            raise
         segments, dropped = filter_hallucinations(segments)
         if dropped:
             logger.info("%s: dropped %d likely-hallucinated transcript segments", src.name, dropped)
@@ -1041,11 +1171,18 @@ def analyze_source(
     cuts: list[float] = []
     if use_scenes:
         t0 = time.perf_counter()
-        cuts = scene_cuts(io, cdir, span, offset, limit=span if read_error else None, shared=shared)
-        sig["scene"] = _impulse_signal(n, [(t, 0.7) for t in cuts], sigma_s=1.5)
-        tick("scenes_s", t0)
-        if shared is not None:  # for measuring the shared decode
+        if overlap is not None:
+            cuts = overlap.cuts
+            took = overlap.took  # the thread's own time, mostly inside the transcription
+            stages["overlap"] = True
+        else:
+            cuts = scene_cuts(
+                io, cdir, span, offset, limit=span if read_error else None, shared=shared
+            )
             took = time.perf_counter() - t0
+        sig["scene"] = _impulse_signal(n, [(t, 0.7) for t in cuts], sigma_s=1.5)
+        add("scenes_s", took)
+        if shared is not None:  # for measuring the shared decode
             logger.info(
                 "%s: shared decode (%s): scenes %.1fs, %s",
                 src.name,

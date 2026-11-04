@@ -296,6 +296,10 @@ class Transcriber:
             setup_command(cpu),
         )
 
+    def load(self) -> Any:
+        """Load the model now (the memory guard runs here), instead of at the first transcribe."""
+        return self._load()
+
     def _load(self) -> Any:
         if self._model is None:
             # the GPU short of memory (a game, OBS): Whisper runs on the CPU, without --model
