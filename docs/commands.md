@@ -197,7 +197,7 @@ Running updates come at most 2 per second. Steps run in table order. The `pct` o
 (360 views), `analyze` (Transcription and ranking) and `events` (Events and re-rank; skipped with
 `--no-events`). `scan` and `views` report `pct` and the clip as `detail`.
 
-When a step starts with part of its work cached (a rerun after an interruption, or a `--batch-size` boundary), it logs `<name>: N/M done, continuing` as an INFO line and sends the same text as the `detail`. `events` reports its layers (`audio`, `voice`, `visual`, `ocr`, `crash`, `vlm`, `write`) only in `progress.json` (no `PROGRESS` lines), so `resume --dry-run` lists them. After Ctrl+C or a failure, `progress.json` shows the step the run was in as `failed`, with `status` giving the reason; after a hard kill both stay `running` (see [Run lock and progress.json](#run-lock-and-progressjson)).
+When a step starts with part of its work cached (a rerun after an interruption, or a `--batch-size` boundary), it logs `<name>: N/M done, continuing` as an INFO line and sends the same text as the `detail`. `events` reports its layers (`audio`, `voice`, `visual`, `ocr`, `crash`, `vlm`, `write`) only in `progress.json` (no `PROGRESS` lines), so `resume --dry-run` lists them; so does `crashes` with its steps `profile` (activity profile; skipped when nothing resolves it), `inputs`, `dense` (the dense check, with its windows as `done`/`total`, updated at each `--batch-size` boundary) and `result` (contact sheets and `crashes.json`). After Ctrl+C or a failure, `progress.json` shows the step the run was in as `failed`, with `status` giving the reason; after a hard kill both stay `running` (see [Run lock and progress.json](#run-lock-and-progressjson)).
 
 On Ctrl+C the current step ends `failed` with detail `cancelled`. After a cancel or a fatal
 error, steps after the failed one are not emitted. A first-time HUD discovery shows
@@ -1090,8 +1090,8 @@ complete; a failed run there may keep the finished clips. With `export_workers` 
 
 ### Resuming an export
 
-`clips`, and `extend` into a folder it replaces (in place, or `--out` a non-empty folder with
-`--force`), export into the hidden staging folder and record each finished clip in its
+`clips` and `extend` (in place, or with `--out` a new, empty or, with `--force`, non-empty
+folder) export into the hidden staging folder and record each finished clip in its
 `resume.json`. When the run fails, is interrupted (Ctrl+C) or is killed hard, the staging
 folder is kept as the hidden `.<folder>.cutpoint-resume` next to the clips folder, with the
 finished clips only; the clips folder itself is left as it was, so `assemble` never sees a new
@@ -1290,6 +1290,11 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   stops the run before exporting.
 - `--reuse DIR` copies a clip from an earlier output instead of re-encoding when source, in/out
   points, crop, grade (`lut` or `color` parameters), format and fade are identical.
+- The clips are exported into a hidden staging folder next to the output folder and moved in
+  only when all of them were exported, also into a new or empty `--out` folder: a failed or
+  cancelled run makes no new folder and keeps its finished clips for the next run (see
+  [Resuming an export](#resuming-an-export)). An empty drive root or mount point is exported
+  into directly, as with `clips`.
 - The original folder is never overwritten unless you pass `--out <clips_dir> --force`. Then
   the clips are swapped in only when all of them were re-exported: a failed or cancelled run,
   or a clip locked by another program, leaves the original clips as they were. The same holds for
@@ -1587,7 +1592,11 @@ and VRAM together. When memory is short it frees cached models and unloads Ollam
 again and, still short, stops with `low_memory` (exit 1, `progress.json` status `low_memory`)
 and an `ERROR` naming `cutpoint resume <project>` (or, before `progress.json` is written, the
 same command again). Whisper, PANNs and the crash check's CLIP short of VRAM run on the CPU instead (a `WARNING`); Whisper without `--model` then runs the CPU default, `small`, as after a CUDA failure, when it is downloaded already (else `medium`, with a `WARNING` naming the `cutpoint setup` command for `small`); an explicit `--model` is kept. A later run without `--model` reuses that `small` transcript (an INFO line names it), never one an explicit `--model small` made. Free RAM is read on Linux and Windows only
-(elsewhere there is no check). A vision server on this machine that is not Ollama gets only the
+(elsewhere there is no check). Free VRAM is that of the GPU the models use: the first entry of
+`CUDA_VISIBLE_DEVICES` (an index or a GPU UUID), else GPU 0; when it hides every GPU (empty or
+`-1`) or names one `nvidia-smi` does not list, VRAM is unknown and not checked. An index is
+`nvidia-smi`'s numbering, which matches CUDA's with `CUDA_DEVICE_ORDER=PCI_BUS_ID`; a UUID always
+matches. A vision server on this machine that is not Ollama gets only the
 RAM check and a `WARNING`, as Cutpoint cannot unload it: llama-server, LM Studio and other
 OpenAI-compatible servers have no unload request in that API, so `--batch-size` does not free
 their memory either. A hosted Vision provider has nothing on this machine to free and gets no

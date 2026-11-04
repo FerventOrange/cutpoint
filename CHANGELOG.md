@@ -384,6 +384,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `cutpoint crashes` records its steps in `progress.json` (#721): `profile`, `inputs`, `dense`
+  (its windows as `done`/`total`, updated at each `--batch-size` boundary) and `result`, so
+  `cutpoint resume --dry-run` lists them, as for `events`; no `PROGRESS` lines, and
+  `crashes.json` is unchanged.
+- `extend` into a new or empty `--out` folder (#721) exports into the hidden staging folder, as
+  `clips` does: a failed or interrupted run makes no folder with partial clips for `assemble`
+  and keeps its finished clips in `.<folder>.cutpoint-resume`, which the next equal run takes
+  over.
 - `cutpoint ui` jobs (#109) run from the projects folder instead of the folder `cutpoint ui` was
   started in (so `progress.json` records it as their working folder), with `PYTHONSAFEPATH=1`
   (a `.py` file in that folder never shadows a module), and with `--json`, whose envelope the
@@ -610,6 +618,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The memory guard reads the free VRAM of the GPU the models use (#721): the first entry of
+  `CUDA_VISIBLE_DEVICES` (index or GPU UUID), else GPU 0, instead of always `nvidia-smi`'s first
+  GPU; with every GPU hidden (empty or `-1`) VRAM is unknown and not checked.
+- The CLIP model the visual layer hands to the crash dense check is checked by the memory guard
+  when it moves back to the GPU (#721); short of VRAM by then, it runs on the CPU with a
+  `WARNING`, as a freshly loaded one does.
 - The memory guard's `low_memory` error quotes the project path in its
   `cutpoint resume <project>` hint (a path with a space copies as one argument), and a stop for
   VRAM no longer says how much RAM `memory_guard` keeps free.
