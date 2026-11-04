@@ -471,7 +471,9 @@ class MomentTable:
         prev: tuple[Any, float] | None = None
         for i, real in enumerate(self.rank):
             c = self.candidates[real]
-            key = (c.get("pool"), round(float(c.get("score") or 0), 1))
+            s = c.get("score")
+            s = float(s) if isinstance(s, (int, float)) and not isinstance(s, bool) else 0.0
+            key = (c.get("pool"), round(s, 1))
             tier[real] = tier[self.rank[i - 1]] if key == prev else i
             prev = key
         hits = []

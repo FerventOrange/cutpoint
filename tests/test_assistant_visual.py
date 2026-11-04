@@ -127,6 +127,18 @@ def test_find_moments_commentary_does_not_beat_a_clearly_higher_score() -> None:
     assert context.MomentTable([tie_q, tie_t], []).find("view") == ["v004", "v003"]
 
 
+def test_find_moments_survives_a_score_that_is_not_a_number() -> None:
+    def cand(cid: str, score: object) -> dict:
+        return {"id": cid, "source": B, "start": 1.0, "end": 7.0, "score": score, "label": "view",
+                "kind": "view", "pool": "visual"}  # fmt: skip
+
+    good = [cand("v001", 9.0), cand("v002", 5.0)]
+    expect = context.MomentTable(good, []).find("view")
+    for bad in ("high", None, True):
+        got = context.MomentTable([*good, cand("v003", bad)], []).find("view")
+        assert [r for r in got if r != "v003"] == expect
+
+
 def test_a_cue_word_matches_parts_of_cue_names_by_prefix() -> None:
     """#634 F1: "air" names airtime and jump_air, not chairlift, so a lift ride never outranks
     a jump for "big air"."""
