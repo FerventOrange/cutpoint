@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- AI Chat spreads kinds when you ask for a mix. A message that says to break up, mix in,
+  intersperse, sprinkle, alternate or vary the pace ("an occasional funny moment and dialogue to
+  break up the skiing") makes Cutpoint reorder the final proposal in code: the funny, dialogue and
+  scenic clips go evenly between the skiing runs (each kind in its order, a scenic first clip stays
+  first) as `move` ops marked `auto`. If the message names dialogue and the proposal has none, up
+  to 3 dialogue moments are added within 15% of the length asked for. When one would not fit, it
+  replaces a skiing clip that the auto-fill added this turn (the lowest-scoring of a similar
+  length); clips you or the assistant picked are never removed, and with none to swap no dialogue
+  is added. Past the 100-op cap the spread is one `order` op. A request that is negated ("don't
+  break up the skiing") or a fade or transition between clips is not a mix request. The preview
+  marks those rows "Auto-spread" and the summary says what was spread. Without such wording nothing changes. `add` `at` and `move` `to` accept a
+  whole number written as `3.0` or `"3"`.
+
 - AI Chat builds to a length target with clean clip ends. The model now sees each clip's length
   as it will export (Smart tails and Speech-aware cuts on), the room before and after it in its
   source, the sequence total and the length you asked for ("~4 min", "240 s", "1:30"). A proposal

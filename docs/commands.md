@@ -533,6 +533,23 @@ from the current sequence itself and shows it next to the text, labelled "the as
 propose an edit" (not for a question). A proposal that
 removes half or more of the clips when you did not ask to remove any is sent back and never used.
 
+Mixing kinds: when your message asks to break up, mix in or intersperse kinds ("an occasional
+funny moment to break up the skiing", "sprinkle in", "now and then", "alternate", "vary the
+pace"; an audio mix is none), Cutpoint reorders the final proposal in code. Each row is skiing
+(fast, speed, crash, cruise, crew), scenic (view, beauty), funny (laugh) or dialogue (spoken
+words over a clip that is not skiing); the scenic, funny and dialogue clips are spread evenly
+between the skiing runs, each kind keeps its order and a scenic first clip stays first. If you also
+name dialogue (dialogue, conversation, banter, commentary, talk or chat moments) and the sequence has
+none, up to 3 dialogue moments are added (the assistant's searches first, then the best unused
+ones), within 15% of the length you asked for. When one does not fit, it replaces the
+lowest-scoring skiing clip of a similar length among those the auto-fill added this turn; clips you
+or the assistant picked are never removed, and with none to swap no dialogue is added. Negated
+wording ("don't break up the skiing", "no dialogue") and a fade or transition between clips do not
+count. These are `move`, `add` and `remove` ops marked
+`auto` (one `order` op when a sequence needs more moves than the 100-op cap allows); the preview marks the rows "Auto-spread" and the summary says how many clips of each kind
+were spread. Without such wording the order is the assistant's. `move` and `add` positions
+written as `3.0` or `"3"` count as 3.
+
 The AI Chat tab talks to the model set in the [`assistant`](configuration.md#assistant) section of
 `config.json`, chosen in the Models tab (Chat role) as a Provider with a model; no base
 URL is typed:
