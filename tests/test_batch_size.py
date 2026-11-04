@@ -65,8 +65,8 @@ def test_merge_stats_gives_the_stats_of_one_run():
 
 @pytest.mark.parametrize(
     "argv",
-    [["analyze", "a.mp4"], ["events", "p"], ["360", "analyze", "p"]],
-    ids=["analyze", "events", "360-analyze"],
+    [["analyze", "a.mp4"], ["events", "p"], ["360", "analyze", "p"], ["crashes", "p"]],
+    ids=["analyze", "events", "360-analyze", "crashes"],
 )
 def test_batch_size_is_a_whole_number_from_zero(argv, capsys):
     parser = cli.build_parser()
@@ -496,6 +496,27 @@ def test_the_visual_layer_hands_clip_over_only_in_its_last_batch(layers_run, mon
     assert cli.main(argv) == 0
     assert [h is not None for h in s.handoff] == [False, False, True]
     assert got["encoder"] is clip and got["batch_size"] == 2
+
+
+# -- crashes: the dense confirm's CLIP every N dense windows (#713) -------------------------
+
+
+@pytest.mark.parametrize("size", [None, "2"])
+def test_crashes_passes_the_batch_size_to_the_dense_confirm(monkeypatch, tmp_path, size):
+    from cutpoint import crash  # noqa: PLC0415
+
+    project = tmp_path / "p"
+    project.mkdir()
+    got: dict[str, Any] = {}
+
+    def detect_project(project_, params=None, **kw):
+        got.update(kw)
+        return project_ / crash.CRASHES_FILE
+
+    monkeypatch.setattr(crash, "detect_project", detect_project)
+    argv = ["crashes", str(project), "--no-reanalyze"]
+    assert cli.main([*argv, "--batch-size", size] if size else argv) == 0
+    assert got["batch_size"] == (int(size) if size else 0)
 
 
 # -- 360 analyze: the view layer per batch, the option passed on ------------------------------

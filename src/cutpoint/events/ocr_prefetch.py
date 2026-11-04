@@ -24,6 +24,10 @@ in the OCR read's GPU pass (:class:`~cutpoint.ffmpeg_utils.SplitDecode`, the raw
 spooled to the cache folder when the free disk allows). The scene cuts use that proxy, wait
 for it while it is made, and decode as before when it is not started yet or failed: the
 results are the same.
+
+With ``--batch-size N`` (#109) the worker drops its OCR engine after every N sources and makes
+a new one for the next read, and :meth:`OcrPrefetch.close` hands the engine over to the inline
+reads, so ``run_events`` drops it at its own batch boundaries too; the results are the same.
 """
 
 from __future__ import annotations
@@ -190,6 +194,7 @@ class _Job:
     error: BaseException | None = None
     skipped: bool = False  # declined or cancelled: read inline
     share: SceneShare | None = None  # its scene proxy, made in the background
+    index: int = 0  # its place among the analysis' sources (--batch-size)
 
 
 REPLAY = "cutpoint_prefetch_replay"  # set on a held record when it is replayed
@@ -221,13 +226,18 @@ class OcrPrefetch:
         project: The project folder (project-local presets, ``OcrParams.project``).
         sources: Every source of the analysis, in order (their games need a preset).
         params: The OCR parameters ``run_events`` will use (its ``project`` is set here).
+        batch_size: ``--batch-size`` (#109): the engine is dropped before every this many
+            sources and made again by the next read (0: one engine for all of them).
     """
 
-    def __init__(self, project: Path, sources: Sequence[Path], params: OcrParams) -> None:
+    def __init__(
+        self, project: Path, sources: Sequence[Path], params: OcrParams, batch_size: int = 0
+    ) -> None:
         params.project = project
         self.project = project
         self.sources = list(sources)
         self.params = params
+        self.batch_size = batch_size
         # the engine run_events uses too, so one is made at most
         self.make_engine: Callable[[], OcrEngine] = functools.cache(lambda: OcrEngine())
         self._jobs: dict[str, _Job] = {}
@@ -271,6 +281,7 @@ class OcrPrefetch:
             self._open = False
             return None
         sweep(job.source.cdir)  # also after a split run, when the mode is off now
+        job.index = next((k for k, p in enumerate(self.sources) if str(p) == str(src)), 0)
         if self.mode is not None and scene is not None:
             job.share = SceneShare(scene, self.mode)
         self._jobs[str(src)] = job
@@ -344,6 +355,11 @@ class OcrPrefetch:
         for job in self._jobs.values():
             if not job.done.is_set() or job.skipped:  # a finished one may still be taken
                 job.records.clear()
+        if self.batch_size and not self.stuck:
+            # --batch-size: the worker is gone, so the engine factory run_events holds is no
+            # longer the background reader's; it drops that engine at its batch boundaries
+            # (run_events tells the two apart by identity). A stuck worker keeps its own.
+            self.make_engine = functools.cache(lambda: OcrEngine())
 
     @property
     def stuck(self) -> bool:
@@ -386,6 +402,9 @@ class OcrPrefetch:
                 if not self._checked:
                     job.skipped, why = True, self._off
                     continue
+                if self.batch_size and job.index and not job.index % self.batch_size:
+                    # a batch boundary (--batch-size): the next read makes a new engine
+                    self.make_engine.cache_clear()  # type: ignore[attr-defined]
                 job.result = detect_ocr_events(
                     job.source,
                     self.params,

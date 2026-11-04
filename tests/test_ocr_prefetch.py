@@ -279,7 +279,7 @@ def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake):
     fake.seen = seen
     monkeypatch.setattr(pipeline, "link_teamkills", lambda evs, **k: seen.append(evs))
 
-    def run(pre=None, stage=None) -> list[dict]:
+    def run(pre=None, stage=None, batch_size=0) -> list[dict]:
         with progress.run(("keyframes", "ranking")) as steps:
             hook = stage(steps) if stage else None
             if hook is None:
@@ -291,6 +291,7 @@ def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake):
                     ocr=OcrParams(game="zonewar"),
                     prefetch=pre,
                     stage=hook,
+                    batch_size=batch_size,
                 )
         return seen
 
@@ -586,7 +587,8 @@ def test_an_engine_is_shared_with_the_inline_reads(ocr_run, monkeypatch) -> None
     assert ocr_run.reads == ["a.mp4", "b.mp4"]
 
 
-def test_a_stuck_worker_gets_neither_its_source_nor_its_engine(ocr_run, monkeypatch) -> None:
+@pytest.mark.parametrize("size", [0, 1])
+def test_a_stuck_worker_gets_neither_its_source_nor_its_engine(ocr_run, monkeypatch, size) -> None:
     """A source the prefetch cannot give (here: a bad range) is read inline; when the worker
     outlives close(), that read waits until the worker left the source, with an engine of
     its own."""
@@ -601,18 +603,32 @@ def test_a_stuck_worker_gets_neither_its_source_nor_its_engine(ocr_run, monkeypa
     ocr_run.read = read
     a = str(ocr_run.paths[0])
     monkeypatch.setattr(pipeline, "bad_ranges", lambda *a_: {a: [(1.0, 2.0)]})
-    pre = ocr_run.make()
+    pre = ocr_run.pre = ocr_prefetch.OcrPrefetch(
+        ocr_run.project, ocr_run.paths, OcrParams(game="zonewar"), batch_size=size
+    )
+    worker_factory = pre.make_engine
     pre.offer(ocr_run.paths[0], 60.0, True)
     assert started.wait(5)
     seen = []
+    after_close = []
+    real_close = pre.close
+
+    def close():
+        real_close()
+        if pre.stuck:  # a close() that left the worker running swaps nothing
+            after_close.append(pre.make_engine is worker_factory)
+
+    monkeypatch.setattr(pre, "close", close)
 
     def detect(src, params, engine, *, make_engine, **kw):
+        assert make_engine is not worker_factory
         seen.append((src.name, make_engine is pre.make_engine, pre.stuck))
         return [], {}
 
     monkeypatch.setattr(pipeline, "detect_ocr_events", detect)
     threading.Timer(0.3, gate.set).start()
-    ocr_run.run(pre)
+    ocr_run.run(pre, batch_size=size)
+    assert after_close == [True]
     assert seen == [("a.mp4", False, False), ("b.mp4", False, False)]
 
 
@@ -912,3 +928,78 @@ def test_a_partly_described_vlm_layer_says_how_far_it_got(
     assert (text in caplog.messages) is bool(cached)
     assert (text in details) is bool(cached)
     assert not any("continuing" in m for m in caplog.messages if m != text)
+
+
+# ----------------------------------------------------------------- --batch-size (#109, #713)
+def test_analyze_gives_the_prefetch_its_batch_size(eligible, tmp_path) -> None:
+    args = (get_style("gaming"), [tmp_path / "a.mp4"], (), tmp_path, True)
+    with analyze._ocr_prefetch(*args) as pre:
+        assert pre.batch_size == 0
+    with analyze._ocr_prefetch(*args, batch_size=3) as pre:
+        assert pre.batch_size == 3
+
+
+@pytest.mark.parametrize(("size", "made"), [(0, 1), (1, 2), (2, 1)])
+def test_the_worker_makes_its_engine_again_every_n_sources(fake, monkeypatch, size, made) -> None:
+    """The background reader drops its engine at each batch boundary; the next read makes a
+    new one. The results are those of one engine."""
+    engines: list[object] = []
+
+    class Engine:
+        def __init__(self) -> None:
+            engines.append(self)
+
+    def detect(src, params, engine, *, make_engine=None, **kw):
+        make_engine()
+        return [{"t": 1.0, "type": "kill", "src": src.name}], {"frames": 4}
+
+    monkeypatch.setattr(ocr_prefetch, "OcrEngine", Engine)
+    monkeypatch.setattr(ocr_prefetch, "detect_ocr_events", detect)
+    pre = fake.pre = ocr_prefetch.OcrPrefetch(
+        fake.project, fake.paths, OcrParams(game="zonewar"), batch_size=size
+    )
+    for p in fake.paths:
+        pre.offer(p, 60.0, True)
+    got = [pre.take(fake.source(i), fake.params(), None) for i in range(2)]
+    assert [evs[0]["src"] for evs, _ in got] == ["a.mp4", "b.mp4"]
+    assert len(engines) == made
+
+
+def test_batches_give_the_same_events_and_reads_with_the_prefetch(ocr_run, records) -> None:
+    serial = list(ocr_run.run())
+    serial_log = list(records.lines)
+    records.lines.clear()
+    ocr_run.reads.clear()
+    ocr_run.seen.clear()
+    pre = ocr_run.pre = ocr_prefetch.OcrPrefetch(
+        ocr_run.project, ocr_run.paths, OcrParams(game="zonewar"), batch_size=1
+    )
+    for p in ocr_run.paths:
+        pre.offer(p, 60.0, True)
+    assert ocr_run.run(pre, batch_size=1) == serial
+    assert ocr_run.reads == ["a.mp4", "b.mp4"]  # each read once, by the worker
+    assert [x for x in records.lines if "continuing" not in x] == serial_log
+
+
+@pytest.mark.parametrize("size", [0, 1])
+def test_inline_reads_drop_the_prefetch_engine_at_each_batch(released, size) -> None:
+    """Nothing read in the background: the inline reads use the prefetch's engine factory,
+    which close() hands over with --batch-size, so run_events makes the engine again at its
+    batch boundary; without it one engine serves both reads, as before."""
+    pre = released.pre = ocr_prefetch.OcrPrefetch(
+        released.project, released.paths, OcrParams(game="zonewar"), batch_size=size
+    )
+    pre.offer(released.paths[0], 60.0, False)
+    with pytest.raises(_Stop):
+        pipeline.run_events(
+            released.project,
+            layers=("ocr", "vlm"),
+            ocr=OcrParams(game="zonewar"),
+            prefetch=pre,
+            batch_size=size,
+        )
+    if size:  # made, dropped at the boundary (free_torch), made again, dropped before the VLM
+        assert released.log == ["made", "free_torch", "made", "free_torch", "vlm"]
+    else:
+        assert released.log == ["made", "free_torch", "vlm"]
+    assert pre.make_engine.cache_info().currsize == 0

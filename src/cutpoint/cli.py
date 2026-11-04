@@ -524,6 +524,7 @@ def _cmd_crashes(a: argparse.Namespace) -> None:
         activity_name=a.activity,
         context=a.context,
         refresh_profile=a.refresh_profile,
+        batch_size=a.batch_size,
     )
     if jsonout.active():  # recorded before reanalyze, so a failure there still reports them
         data = cache.load_json(out) or {}
@@ -1617,6 +1618,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="re-run the (cached) analysis so must-include crashes and the "
         "wipeout feature reach highlights.json (default: on)",
+    )
+    cr.add_argument(
+        "--batch-size",
+        type=_batch_size,
+        default=0,
+        metavar="N",
+        help="close the dense confirm's CLIP model after N dense windows and load it again "
+        "for the next ones, to give back memory on long runs; the results are the same "
+        "(default: 0, keep it loaded)",
     )
     _add_activity_arguments(cr)
     _add_json_argument(cr)
