@@ -1533,11 +1533,13 @@ def _ocr_prefetch(
     project: Path,
     layers: bool,
     cat: str | None = None,
+    batch_size: int = 0,
 ) -> contextlib.AbstractContextManager[Any]:
     """The background OCR reader of :mod:`cutpoint.events.ocr_prefetch` when the keyframes
     step will run HUD OCR (the conditions of :func:`plan_layers` with the category ``cat``,
     checked without its log lines, which keep their place) and ``CUTPOINT_ANALYZE_OVERLAP``
-    is not ``0``; else a context giving None."""
+    is not ``0``; else a context giving None. ``batch_size``: ``--batch-size`` (its engine
+    is made again every this many sources)."""
     gameplay = (cat or layer_category(style)) == category.GAMEPLAY
     if not layers or not gameplay or "keyframes" in skip:
         return contextlib.nullcontext()
@@ -1551,7 +1553,8 @@ def _ocr_prefetch(
     if not ocr_prefetch.enabled():
         return contextlib.nullcontext()
     tags, game = _ocr_options(project, log=False)
-    return ocr_prefetch.OcrPrefetch(project, sources, OcrParams(game=game, player_tags=tags))
+    params = OcrParams(game=game, player_tags=tags)
+    return ocr_prefetch.OcrPrefetch(project, sources, params, batch_size=batch_size)
 
 
 def _scene_plan(src: Path, duration: float) -> Any:
@@ -1921,7 +1924,7 @@ def _analyze(
         runstate.project_ready(out_dir),  # the run lock of a new project, now it exists
         cache.hold_outputs(out_dir, HELD_OUTPUTS) as held,
         # HUD OCR in the background while the GPU steps run; stopped before the folder goes
-        _ocr_prefetch(style, sources, skip, out_dir, layers, cat) as prefetch,
+        _ocr_prefetch(style, sources, skip, out_dir, layers, cat, batch_size) as prefetch,
     ):
         # ---- 1. transcribe: audio, loudness, Whisper and scene cuts per source
         use_scenes = use_scenes and style.use_scenes
