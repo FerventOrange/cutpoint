@@ -1046,6 +1046,7 @@ class Jobs:
         *,
         cwd: Path | None = None,
         on_result: Callable[[Job], None] | None = None,
+        on_end: Callable[[], None] | None = None,
     ) -> Job:
         """Start ``args`` as a job; ``check`` runs under the lock first and may refuse it.
         ``plan``: the steps it will report, shown as waiting before their first update.
@@ -1053,7 +1054,8 @@ class Jobs:
         ``args``, or None; that command failing (or ``before`` raising) only warns, then
         ``args`` runs. Cancel stops both. ``cwd``: the folder the commands run in.
         ``on_result``: runs after ``on_success``, given the job (its ``--json`` envelope in
-        ``result``)."""
+        ``result``). ``on_end``: runs when the job ended, however it did (a failure is only
+        logged)."""
         with self.lock:
             if any(j.status == "running" for j in self.jobs.values()):
                 raise bad("another job is already running", 409)
@@ -1071,7 +1073,7 @@ class Jobs:
                 del self.jobs[old]
             self.jobs[job.id] = job
         threading.Thread(
-            target=self._watch, args=(job, args, on_success, before, on_result), daemon=True
+            target=self._watch, args=(job, args, on_success, before, on_result, on_end), daemon=True
         ).start()
         return job
 
@@ -1141,6 +1143,7 @@ class Jobs:
         on_success: Callable[[], None] | None,
         before: Callable[[Job], list[str] | None] | None = None,
         on_result: Callable[[Job], None] | None = None,
+        on_end: Callable[[], None] | None = None,
     ) -> None:
         try:
             mark = 0  # the job's own error is an ERROR line of its own command
@@ -1183,6 +1186,11 @@ class Jobs:
                     logger.exception("job %s post-processing failed", job.id)
                     job.error, job.status = str(err), "failed"
         finally:
+            if on_end:
+                try:
+                    on_end()
+                except Exception:
+                    logger.exception("job %s: the cleanup after it failed", job.id)
             job.done.set()
 
     @staticmethod
@@ -3057,6 +3065,52 @@ def run_state(p: Path, analyzed: bool) -> dict[str, Any] | None:
     status = rec.get("status")
     resumable = status in runstate.RESUMABLE or (status == "failed" and not analyzed)
     return {"command": command, "status": status, "resumable": resumable}
+
+
+CLIPS_UI_RESUME = re.compile(r"\.(clips_ui_\d{8}-\d{6}(?:-\d+)?)\.cutpoint-resume")
+
+
+def prune_resume_folders(p: Path) -> None:
+    """Remove the hidden resume folders (:mod:`cutpoint.clipresume`) of stopped UI exports that
+    can never be resumed (#716). Every UI export writes a new ``clips_ui_<stamp>`` folder and
+    Resume replays only the project's last run, so once a later export has superseded a stopped
+    one its ``.clips_ui_<stamp>.cutpoint-resume`` only takes disk space.
+
+    Only a folder with Cutpoint's naming and its ``resume.json`` goes. It stays when
+    ``progress.json`` still names its clips folder in the recorded command line of a run that
+    has not finished, when a run holds the project's lock or the clips folder's, and when it
+    cannot be told apart from what Cutpoint wrote. Never raises."""
+    try:
+        if folders.lock_held(p / runstate.LOCK_NAME):
+            return
+        rec = runstate.read(p) if _inside(p, runstate.FILE) else None
+        if rec is None and os.path.lexists(p / runstate.FILE):
+            return  # a record we cannot read may point at a folder that is resumable
+        named: set[str] = set()
+        if rec is not None and rec.get("status") != "done":
+            named = {Path(a).name for a in rec.get("argv") or [] if isinstance(a, str)}
+        for f in sorted(p.iterdir()):
+            m = CLIPS_UI_RESUME.fullmatch(f.name)
+            if (
+                m is None
+                or f.is_symlink()
+                or f.is_junction()
+                or not f.is_dir()
+                or not (f / folders.RESUME_FILE).is_file()
+                or m.group(1) in named
+                or folders.lock_held(p / m.group(1))
+            ):
+                continue
+            try:
+                folders._remove_leftover(f, "the clips of a stopped export that was not resumed")
+            except OSError as err:
+                logger.warning(
+                    "Could not remove %s (%s); it is removed after a later export", f, err
+                )
+                continue
+            logger.info("Removed %s: a later export replaced the stopped one", f)
+    except OSError as err:
+        logger.warning("Could not look for old resume folders in %s: %s", p, err)
 
 
 def project_busy(p: Path, run: dict[str, Any] | None) -> bool:
@@ -5023,6 +5077,9 @@ def create_app(port: int) -> FastAPI:
                 before,
                 cwd=p.parent,
                 on_result=on_result,
+                on_end=(lambda: prune_resume_folders(p))
+                if action in ("clips", "extend", "resume")
+                else None,
             ).view()
         except HTTPException:  # for example the command could not be started
             for f in written:
