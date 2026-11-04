@@ -128,7 +128,7 @@ def highlights(proj: Path) -> dict:
 
 
 def test_the_results_are_the_same_with_the_overlap_on_and_off(world, monkeypatch):
-    """highlights.json (apart from ``timings``) and the cache files do not depend on the switch."""
+    """highlights.json (apart from ``timings`` and ``created``) and the cache files do not depend on the switch."""
     runs = {}
     for flag in ("off", "on"):
         if flag == "on":
@@ -137,6 +137,7 @@ def test_the_results_are_the_same_with_the_overlap_on_and_off(world, monkeypatch
         world.cdir.mkdir(parents=True)
         world.run()
         hl = highlights(world.proj)
+        assert isinstance(hl.pop("created"), str)  # a wall-clock stamp, not part of the result
         runs[flag] = (hl.pop("timings"), hl, cache_files(world.cdir))
     t_off, hl_off, files_off = runs["off"]
     t_on, hl_on, files_on = runs["on"]
