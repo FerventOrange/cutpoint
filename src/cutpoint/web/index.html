@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cutpoint</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23f3bd60'/%3E%3Cpath d='M6 4v8l6-4z' fill='%23222'/%3E%3C/svg%3E">
-  <!-- Settings > Theme (#445): set before the stylesheet paints, so a saved Light or Dark never flashes Blue -->
-  <script>try { const t = localStorage.getItem('cutpoint.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}</script>
+  <!-- Settings > Theme (#445): set before the stylesheet paints, so a saved Light or Blue never flashes Graphite, the
+       default. The old Dark theme is Graphite now: its stored choice is dropped. -->
+  <script>try { const t = localStorage.getItem('cutpoint.theme'); if (t === 'light' || t === 'blue') document.documentElement.dataset.theme = t; else if (t) localStorage.removeItem('cutpoint.theme'); } catch {}</script>
   <link rel="stylesheet" href="app.css">
   <script type="module" src="app.js"></script>
 </head>
@@ -21,6 +22,7 @@
     <button type="button" id="newBtn" class="btn">New project</button>
     <span class="spacer"></span>
     <span id="saveState" class="save" role="status"></span>
+    <button type="button" id="exportBtn" class="btn outline" aria-controls="panelExport">Export</button>
     <button type="button" id="saveBtn" class="btn primary" disabled>Save sequence</button>
     <button type="button" id="settingsBtn" class="btn outline icon-btn" aria-label="Settings" aria-haspopup="dialog" title="Settings"></button>
   </header>
@@ -75,6 +77,14 @@
           </div>
         </div>
         <p id="orderLive" class="vh" role="status"></p>
+      </div>
+      <!-- the kind filter: one kind or all (a view of the list; not kept) -->
+      <div id="kindSeg" class="seg" role="group" aria-label="Filter by kind" hidden>
+        <button type="button" class="seg-btn" data-kind="" aria-pressed="true">All</button>
+        <button type="button" class="seg-btn" data-kind="action" aria-pressed="false">Action</button>
+        <button type="button" class="seg-btn" data-kind="scenic" aria-pressed="false">Scenic</button>
+        <button type="button" class="seg-btn" data-kind="funny" aria-pressed="false">Funny</button>
+        <button type="button" class="seg-btn" data-kind="dialogue" aria-pressed="false">Dialogue</button>
       </div>
       <div id="momentsEmpty" class="empty"></div>
       <ol id="candList" class="cand-list"></ol>
@@ -590,12 +600,12 @@
         <legend>Appearance</legend>
         <label class="field">Theme
           <select id="setTheme" aria-describedby="setThemeHint">
-            <option value="blue">Blue</option>
+            <option value="graphite">Graphite</option>
             <option value="light">Light</option>
-            <option value="dark">Dark</option>
+            <option value="blue">Blue</option>
           </select>
         </label>
-        <p id="setThemeHint" class="hint">Blue by default. Shows at once; Save keeps it, in this browser.</p>
+        <p id="setThemeHint" class="hint">Graphite by default. Shows at once; Save keeps it, in this browser.</p>
       </fieldset>
       <fieldset class="panel" id="setDeletePanel" hidden>
         <legend>Delete project</legend>

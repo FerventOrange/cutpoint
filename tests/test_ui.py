@@ -1309,7 +1309,7 @@ def test_moment_cards_show_a_read_only_strip_of_their_place_in_the_source() -> N
     (the whole source, the moment in --gold on --deep), with no control of its own, hidden from
     screen readers (the time line states the times) and the score in its hover title.
 
-    Check in a browser (no browser in the test suite): in Blue, Light and Dark, each card's strip
+    Check in a browser (no browser in the test suite): in Graphite, Light and Blue, each tile's strip
     marks its moment in gold where the overview does; clicking it opens the moment as before."""
     css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
     js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
@@ -1340,14 +1340,15 @@ def _contrast(a: str, b: str) -> float:
     return (hi + 0.05) / (lo + 0.05)
 
 
-def test_settings_offer_blue_light_and_dark_themes_applied_before_first_paint() -> None:
-    """Contract pin (#445): Settings > Theme picks Blue (the default, the :root colours), Light or
-    Dark; themes only override the custom properties, the choice is stored per browser like Stats
-    for Nerds, and an inline script in <head> sets data-theme before the stylesheet paints.
+def test_settings_offer_graphite_light_and_blue_themes_applied_before_first_paint() -> None:
+    """Contract pin (#445): Settings > Theme picks Graphite (the default, the :root colours), Light
+    or Blue; themes only override the custom properties, the choice is stored per browser like Stats
+    for Nerds (Graphite as no key), and an inline script in <head> sets data-theme before the
+    stylesheet paints. The old Dark theme is gone: a stored "dark" is Graphite.
 
     Check in a browser (no browser in the test suite): pick Light in Settings, the whole page
-    recolours at once; Cancel or Escape goes back; Save and reload: still Light, with no blue
-    flash. Clear the key ``cutpoint.theme``: Blue, as before."""
+    recolours at once; Cancel or Escape goes back; Save and reload: still Light, with no graphite
+    flash. Clear the key ``cutpoint.theme``: Graphite. Store "dark": Graphite, and the key is gone."""
     html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
     css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
     js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
@@ -1355,20 +1356,37 @@ def test_settings_offer_blue_light_and_dark_themes_applied_before_first_paint() 
     assert settings
     select = re.search(r'<select id="setTheme"[^>]*>(.*?)</select>', settings[0], re.S)
     assert select and re.findall(r'<option value="(\w+)">(\w+)</option>', select[1]) == [
-        ("blue", "Blue"),
+        ("graphite", "Graphite"),
         ("light", "Light"),
-        ("dark", "Dark"),
+        ("blue", "Blue"),
     ]
     head = html.split("</head>")[0]
     early = re.search(r"<script>(.*?)</script>", head, re.S)
     assert early and "localStorage.getItem('cutpoint.theme')" in early[1] and "try {" in early[1]
     assert "document.documentElement.dataset.theme = t" in early[1]
+    assert "t === 'light' || t === 'blue'" in early[1] and "'dark'" not in early[1]
+    assert (
+        "localStorage.removeItem('cutpoint.theme')" in early[1]
+    )  # a stored "dark" (or unknown) is dropped
     assert head.index("<script>") < head.index('href="app.css"')  # set before the styles apply
     assert "const THEME_KEY = 'cutpoint.theme';" in js
-    assert "localStorage.removeItem(THEME_KEY)" in js  # Blue is stored as no key
+    assert "localStorage.removeItem(THEME_KEY)" in js  # Graphite is stored as no key
 
-    blue = _theme_colours(css, ":root")
-    # no saved choice: today's colours, unchanged
+    graphite = _theme_colours(css, ":root")
+    # no saved choice: Graphite
+    assert {
+        k: graphite[k] for k in ("slate", "panel", "raise", "deep", "text", "muted", "amber")
+    } == {
+        "slate": "#141517",
+        "panel": "#17181b",
+        "raise": "#2c2e33",
+        "deep": "#1d1f22",
+        "text": "#ececee",
+        "muted": "#9a9ca3",
+        "amber": "#f2b347",
+    }
+    blue = _theme_colours(css, ':root[data-theme="blue"]')
+    # Blue: the colours of before Graphite, unchanged
     keep = ("slate", "panel", "raise", "deep", "line", "track", "text", "muted")
     assert {k: blue[k] for k in keep} == {
         "slate": "#233348",
@@ -1387,7 +1405,7 @@ def test_settings_offer_blue_light_and_dark_themes_applied_before_first_paint() 
         "#ffae19",
     )
     # the colours rules used to hold themselves, now :root custom properties, are the same values
-    root = re.search(r":root \{(.*?)\n\}", css, re.S)
+    root = re.search(r':root\[data-theme="blue"\] \{(.*?)\n\}', css, re.S)
     assert root
     moved = {
         "hover": "#435b7a",
@@ -1421,11 +1439,11 @@ def test_settings_offer_blue_light_and_dark_themes_applied_before_first_paint() 
     )
     assert not re.findall(r"#[0-9a-fA-F]{3,6}\b|rgba?\(\d", rules)
 
-    for name in ("blue", "light", "dark"):
+    for name in ("graphite", "blue", "light"):
         t = (
-            blue
-            if name == "blue"
-            else {**blue, **_theme_colours(css, f':root[data-theme="{name}"]')}
+            graphite
+            if name == "graphite"
+            else {**graphite, **_theme_colours(css, f':root[data-theme="{name}"]')}
         )
         text = [
             ("text", b)
@@ -1441,6 +1459,8 @@ def test_settings_offer_blue_light_and_dark_themes_applied_before_first_paint() 
             ("danger-ink", "danger-btn-hover"),
         ]
         text += [("gold-ink", "gold-btn"), ("gold-ink", "gold-btn-hover")]
+        if name == "graphite":  # --faint is its dimmest text; the others alias it to --muted
+            text += [("faint", b) for b in ("slate", "panel", "deep")]
         for fg, bg in text:
             assert _contrast(t[fg], t[bg]) >= 4.5, (name, fg, bg)
         # focus rings, the focused-card glow and other controls: 3:1 (WCAG 1.4.11)
@@ -2693,7 +2713,7 @@ def test_rail_filmstrip_is_a_decorative_layer_under_the_markers() -> None:
     under the same limit of 3, stale queued stills dropped by a generation counter, stopped after
     3 failures for a source and skipped by data savers. Each theme sets its --film-opacity.
 
-    Check in a browser (no browser in the test suite): in Blue, Light and Dark, open a moment;
+    Check in a browser (no browser in the test suite): in Graphite, Light and Blue, open a moment;
     stills fade in from the playhead outward; the gold selection, its handles, the dashed analyzed
     range, the playhead and the hatched gaps stay readable over them. Pan: the stills move with
     the view and only new ones load; zoom in and out: no still flashes. Resize the window: the
@@ -2710,7 +2730,7 @@ def test_rail_filmstrip_is_a_decorative_layer_under_the_markers() -> None:
     themes = {
         ":root": "0.55",
         ':root[data-theme="light"]': "0.35",
-        ':root[data-theme="dark"]': "0.55",
+        ':root[data-theme="blue"]': "0.55",
     }
     for theme, opacity in themes.items():
         block = re.search(re.escape(theme) + r" \{(.*?)\n\}", css, re.S)
@@ -7225,7 +7245,7 @@ def test_the_page_sends_the_new_options_with_its_jobs() -> None:
 
 def test_focus_rings_use_the_amber_text_colour_so_light_theme_keeps_contrast() -> None:
     """Contract pin (#462): --amber is a fill (dark ink on it); focus rings and amber text use
-    --amber-text, which Light darkens. test_settings_offer_blue_light_and_dark_themes... holds
+    --amber-text, which Light darkens. test_settings_offer_graphite_light_and_blue_themes... holds
     the contrast ratios."""
     css = _web("app.css")
     rings = re.findall(r"[^{}]*:focus-visible[^{}]*\{[^}]*outline[^}]*\}", css)
@@ -7826,7 +7846,7 @@ def test_the_ai_chat_tab_has_one_labelled_input_and_one_send_button() -> None:
     no mic or attach button; replies are announced from outside the panels, so a hidden tab's
     reply is still read out.
 
-    Check in a browser (no browser in the test suite): in Blue, Light and Dark, at a 290 px
+    Check in a browser (no browser in the test suite): in Graphite, Light and Blue, at a 290 px
     column and in the narrow layout, the input stays at the bottom and nothing overflows."""
     html = _web("index.html")
     tab = re.search(r'<button\b[^>]*id="tabAssistant"[^>]*>([^<]*)</button>', html)
@@ -8161,25 +8181,32 @@ def test_render_moments_filters_with_util_and_says_which_filter_matched_nothing(
     assert "momentMatches({ ...c, label, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f)" in render  # fmt: skip
     assert "source: multi && sources.includes(S.filters.source) ? S.filters.source : ''" in render
     assert render.index("momentMatches(") < render.index("positionCompare")
-    assert "No moments match ${filtersOn(f) ? 'these filters' : 'this filter'}." in render
+    assert "No moments match ${filtersOn(f) || S.kind ? 'these filters' : 'this filter'}." in render
+    assert "(!S.kind || kindOf(c) === S.kind)" in render  # the kind filter above the grid
     assert "$('#filterBtn').focus()" in render  # the focused card filtered away with no card left
     # AI Chat's "Filter list by" says how many show, and that the quick filters still apply
-    assert "${n} shown${filtersOn(S.filters) ? '; Sort and filter is also on' : ''}" in js
+    assert (
+        "${n} shown${filtersOn(S.filters) || S.kind ? '; Sort and filter or the kind filter is also on' : ''}"
+        in js
+    )
 
 
 def test_moment_card_order_matches_the_mockup() -> None:
-    """mock1: the top row holds rank, title and must include (Add/Remove sits over it, top
-    right); then the times "a to b · n s", the file only with several sources, the strip, and
-    the transcript with the preview readiness at the bottom right."""
+    """Graphite board B: a tile holds the still (kind dot and length badge; Add/Remove sits over
+    its corner), then rank, title and must include, "kind · score", the times "a to b · n s",
+    the file only with several sources, the strip, and the transcript with the preview
+    readiness."""
     js = _web("app.js")
     css = _web("app.css")
     render = _js_function(js, "renderMoments")
     card = render[render.index("class: 'cand-main'") :]
     order = [
+        "still,",
         "class: 'cand-top'",
         "class: 'rank tc'",
         "class: 'cand-title'",
         "class: 'tag', text: 'must include'",
+        "class: 'cand-meta'",
         "class: 'cand-time tc'",
         "class: 'cand-id'",
         "multi ? h('span', { class: 'cand-src' }",
@@ -8191,7 +8218,7 @@ def test_moment_card_order_matches_the_mockup() -> None:
     ]
     at = [card.index(s) for s in order]
     assert at == sorted(at), order
-    top = card[card.index("class: 'cand-top'") : card.index("class: 'cand-time tc'")]
+    top = card[card.index("class: 'cand-top'") : card.index("class: 'cand-meta'")]
     assert "prepBadge" not in top and "'data-act': 'toggle'" not in top
     assert (
         "h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' })"
@@ -8203,7 +8230,10 @@ def test_moment_card_order_matches_the_mockup() -> None:
     )
     assert re.search(r"^\.cand > \* \{ grid-area: 1 / 1; \}", css, re.M)
     assert re.search(r"^\.cand > \.btn \{ justify-self: end;", css, re.M)
-    assert re.search(r"^\.cand-top \{[^}]*padding-right: 5em;", css, re.M)
+    assert re.search(
+        r"^\.cand-list \{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(112px", css, re.M
+    )
+    assert re.search(r"^\.cand-dot \{[^}]*background: var\(--k\);", css, re.M)
 
 
 def _filter_moments(util_js, moments: list[dict], q: str, f: dict) -> list[str]:
