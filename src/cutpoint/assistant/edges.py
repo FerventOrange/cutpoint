@@ -68,7 +68,8 @@ class EdgePlanner:
         """``{id: (start, end)}`` of ``rows`` as ``clips`` exports them with smart tails and
         speech-aware cuts on (``smart_tail`` / ``speech_aware`` False turn one off for every
         row; a row's own False does so for it). A row that cannot be planned (a source that
-        cannot be read) keeps its raw range; so do all of them if planning fails."""
+        cannot be read) keeps its raw range; so do all of them if planning fails. Only a plan
+        that worked is kept for the next ask."""
         raw = {r["id"]: (float(r["start"]), float(r["end"])) for r in rows}
         if not rows:
             return {}
@@ -76,6 +77,7 @@ class EdgePlanner:
             smart_tail,
             speech_aware,
             self._stamp(),
+            tuple(self._version(s) for s in sorted({r["source"] for r in rows})),
             tuple(
                 (r["id"], r["source"], raw[r["id"]], r.get("smart_tail"), r.get("speech_aware"))
                 for r in rows
@@ -86,17 +88,31 @@ class EdgePlanner:
                 self._plans.move_to_end(key)
                 return dict(self._plans[key])
             try:
-                planned = self._plan(rows, smart_tail, speech_aware)
+                planned, whole = self._plan(rows, smart_tail, speech_aware)
             except Exception as err:  # noqa: BLE001  the chat and preview go on with raw ranges
                 logger.warning("could not plan the exported edges (%s); using the raw ones", err)
-                planned = {}
+                return dict(raw)
             out = {**raw, **planned}
-            self._plans[key] = out
-            while len(self._plans) > MAX_CACHED:
-                self._plans.popitem(last=False)
+            if whole:  # a source that could not be read may be back at the next ask
+                self._plans[key] = out
+                while len(self._plans) > MAX_CACHED:
+                    self._plans.popitem(last=False)
             return dict(out)
 
-    def _plan(self, rows: Sequence[dict[str, Any]], smart_tail: bool, speech_aware: bool) -> Edges:
+    def _version(self, source: str) -> tuple[str, int, int]:
+        """``(resolved path, mtime_ns, size)`` of ``source``; zeros when it cannot be read."""
+        path = self.resolve(source)
+        try:
+            stamp = path.stat()
+            return (str(path), stamp.st_mtime_ns, stamp.st_size)
+        except OSError:
+            return (str(path), 0, 0)
+
+    def _plan(
+        self, rows: Sequence[dict[str, Any]], smart_tail: bool, speech_aware: bool
+    ) -> tuple[Edges, bool]:
+        """``(edges, whole)``: the planned rows (those of the sources that can be read), and
+        whether every source could be."""
         hl = cache.load_json(self.project / "highlights.json")
         hl = hl if isinstance(hl, dict) else {}
         try:
@@ -120,18 +136,28 @@ class EdgePlanner:
             for r in rows
         ]
         io_paths = {s: self.resolve(s) for s in {m["source"] for m in moments}}
+        infos = {}
+        for src, path in io_paths.items():
+            try:
+                infos[src] = probe(path)
+            except Exception as err:  # noqa: BLE001  its rows keep their raw ranges
+                logger.warning("could not read %s (%s); its clips keep their raw ranges", src, err)
+        moments = [m for m in moments if m["source"] in infos]
+        if not moments:
+            return {}, False
         plans = plan_edges(
             moments,
             self.project,
-            io_paths=io_paths,
-            infos={s: probe(p) for s, p in io_paths.items()},
+            io_paths={s: p for s, p in io_paths.items() if s in infos},
+            infos=infos,
             tail=TailSettings.from_style(style, enabled=True),
             events=events,
             event_settings=EventTailSettings(enabled=events is not None),
             speech=SpeechSettings.from_style(style, enabled=True),
             language=settings.get("language"),
         )
-        return {p.entry["id"]: (round(p.start, 3), round(p.end, 3)) for p in plans}
+        planned = {p.entry["id"]: (round(p.start, 3), round(p.end, 3)) for p in plans}
+        return planned, len(infos) == len(io_paths)
 
     # -- phrase ends -------------------------------------------------------------------
     def _phrases(self, source: str) -> list[tuple[float, float]]:
@@ -170,6 +196,8 @@ class EdgePlanner:
         end = chains[i][1] + _SPEECH.breath
         if i + 1 < len(chains):
             end = min(end, chains[i + 1][0] - 0.05)
+        if end - t > _SPEECH.max_extend:  # speech runs on: a cut here is not a phrase end
+            return t
         return max(end, t)
 
 

@@ -538,6 +538,14 @@ _CLOCK = re.compile(
 # ("extend m3 to 60 s").
 _CHANGE = re.compile(r"\b(?:by|extra|another|add|more|trim|cut|remove|plus|extend|each)\W*$", re.I)
 _CLIP_REF = re.compile(r"\bm\d+\b[^.!?;\n]*$")
+# A length for each clip ("each clip about 5 s", "clips around 8 seconds", "10 s clips") or a change
+# ("30 s more", "5 s longer") is none either.
+_PER_CLIP_BEFORE = re.compile(r"\b(?:each|every|per|clips?)\W*$", re.I)
+_PER_CLIP_AFTER = re.compile(
+    r"\s*(?:each|per clip|a clip|clips?|more|extra|longer|shorter)\b", re.I
+)
+# "4 min and 30 s": the seconds that follow minutes
+_AND_SECONDS = re.compile(rf"\s*(?:and\s+)?{_NUM}{_UNIT}", re.I)
 
 
 def _count(word: str) -> float:
@@ -555,8 +563,15 @@ def target_seconds(text: str) -> float | None:
             before = text[: m.start()]
             if _CHANGE.search(before) or _CLIP_REF.search(before):
                 continue
+            if _PER_CLIP_BEFORE.search(before) or _PER_CLIP_AFTER.match(text, m.end()):
+                continue
             n, unit = _count(m.group(1)), m.group(2).lower()
-            return n * 60 if unit.startswith("m") else n
+            if not unit.startswith("m"):
+                return n
+            more = _AND_SECONDS.match(text, m.end())
+            if more and more.group(2).lower().startswith("s"):
+                return n * 60 + _count(more.group(1))
+            return n * 60
     for m in _CLOCK.finditer(text):
         if not _CLIP_REF.search(text[: m.start()]):
             groups = [g for g in m.groups() if g is not None]

@@ -257,7 +257,7 @@ def _apply(
                     edges += 1
                     was = row[edge]
                     row[edge] = absolute if absolute is not None else was + delta
-                    first = origin.get(row["id"])
+                    first = origin.get(row["id"]) or cands.get(row["id"])  # or the moment's own
                     limit = durations.get(row["source"]) or math.inf
                     if first is not None and row[edge] <= limit + 0.01:  # past the end: _check
                         grew = row[edge] - first[edge] if edge == "end" else first[edge] - row[edge]
@@ -267,7 +267,10 @@ def _apply(
                                 f"per edge in a proposal (asked {grew:+g} s)"
                             )
                     if edge == "end" and snap is not None and row[edge] > was:
+                        asked = row[edge]
                         row[edge] = _snapped(row, snap, durations)
+                        if first is not None:  # the snap stays within the cap too
+                            row[edge] = max(asked, min(row[edge], float(first["end"]) + MAX_GROW_S))
             if not edges:
                 raise OpsError(f"{where}: needs start, end, start_delta or end_delta")
         elif kind == "order":

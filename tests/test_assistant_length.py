@@ -334,11 +334,21 @@ def test_a_trim_that_lengthens_an_end_ends_at_the_phrase_end_never_past_the_sour
         return out.after[0]["end"]
 
     assert end_of({"end_delta": 2}, snap=snap) == 55.0  # 52 -> 55
-    assert end_of({"end": 60}, snap=snap) == 63.0
+    assert end_of({"end": 56}, snap=snap) == 59.0
+    assert end_of({"end": 60}, snap=snap) == 60.0  # the snap stays within +10 s of 50
     assert end_of({"end_delta": 2}) == 52.0  # no hook: where asked
     assert end_of({"end_delta": -2}, snap=snap) == 48.0  # shorter ends stay
     assert end_of({"start_delta": -2}, snap=snap) == 50.0  # a start is not snapped
-    assert end_of({"end_delta": 2}, snap=lambda _s, t: t + 50) == 100.0  # the source ends at 100 s
+    assert end_of({"end_delta": 2}, snap=lambda _s, t: t + 50) == 60.0  # at most +10 s from 50
+    late = [{"id": "c2", "source": A, "start": 40.0, "end": 95.0, "label": "jump"}]
+    out = ops.apply_ops(
+        late,
+        [{"op": "trim", "id": "c2", "end_delta": 2}],
+        CANDS,
+        durations(),
+        snap=lambda _s, t: t + 50,
+    )
+    assert out.after[0]["end"] == 100.0  # the source ends at 100 s
 
 
 def test_a_turns_lengthening_trim_is_snapped_to_the_phrase() -> None:
@@ -779,14 +789,14 @@ def test_topup_snaps_a_lengthened_end_and_never_goes_past_the_cap_or_the_source(
     got = fill(40, snap=lambda _s, t: t + 3.0)
     assert got is not None
     ends = {r["id"]: r["end"] for r in got.checked["after"]}
-    assert ends["c3"] == 22.0  # 9 + 10 asked, snapped 3 s on, inside the source's 30 s
+    assert ends["c3"] == 19.0  # 9 + 10 asked, a snap 3 s on stays within the +10 s cap
     far = fill(500)
     assert far is not None and not far.reached  # +10 s per edge is all there is: say so
     assert {r["id"]: r["end"] for r in far.checked["after"]} == {"c2": 60.0, "c3": 19.0, "x9": 80.0}
 
 
 def test_topup_does_not_overshoot_and_uses_only_this_turns_searches() -> None:
-    assert fill(30, snap=lambda _s, t: t + 10.0) is None  # every snapped end would be over +15%
+    assert fill(30, snap=lambda _s, t: t + 10.0).checked["length"] <= 34.5  # the cap holds
     assert fill(30).checked["length"] <= 34.5
     nothing = fill(200)  # lengthening alone; c1 was never searched for
     assert nothing is not None and nothing.added == []
@@ -1003,3 +1013,111 @@ def test_no_fill_for_a_question_a_long_enough_sequence_or_no_target() -> None:
     assert kinds(run(FakeProvider([said]), "can it be 40 s long?", proj=p)) == ["reply"]
     assert kinds(run(FakeProvider([said]), "make it 8 s", proj=p)) == ["reply"]
     assert kinds(run(FakeProvider([said]), "what is in it?", proj=p)) == ["reply"]
+
+
+# -- review fixes (PR #737) ---------------------------------------------------------------------------
+
+
+def test_a_phrase_end_far_away_leaves_the_end_and_a_trim_never_passes_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chain = words(*[(10 + i * 0.5, 10.4 + i * 0.5) for i in range(240)])  # 120 s of speech
+    monkeypatch.setattr(edges.sources, "source_words", lambda _src, _lang=None: chain)
+    planner = edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
+    assert planner.phrase_end(A, 20.0) == 20.0  # the phrase ends over max_extend later
+    seq = [{"id": "c1", "source": A, "start": 10.0, "end": 20.0, "label": "x"}]
+    out = ops.apply_ops(
+        seq,
+        [{"op": "trim", "id": "c1", "end_delta": 2}],
+        CANDS,
+        durations(),
+        snap=planner.phrase_end,
+    )
+    assert out.error is None and out.after[0]["end"] == 22.0
+    far = lambda _s, t: t + 50  # noqa: E731
+    out = ops.apply_ops(
+        seq, [{"op": "trim", "id": "c1", "end_delta": 2}], CANDS, durations(), snap=far
+    )
+    assert out.after[0]["end"] == 30.0  # first end 20 + MAX_GROW_S
+
+
+@pytest.mark.parametrize(
+    ("text", "seconds"),
+    [
+        ("make each clip about 5 s", None),
+        ("I want 10s clips", None),
+        ("need clips around 8 seconds", None),
+        ("need 30 s more", None),
+        ("make it 5 min longer", None),
+        ("every clip around 6 s", None),
+        ("make it 4 min and 30 s", 270),
+        ("make it 4 min 30 s", 270),
+        ("about 2 minutes and 15 seconds", 135),
+        ("make it 90 seconds", 90),
+    ],
+)
+def test_a_length_for_each_clip_or_a_change_is_no_sequence_target(
+    text: str, seconds: float | None
+) -> None:
+    assert context.target_seconds(text) == seconds
+
+
+def test_a_length_below_the_sequence_may_remove_half_the_clips() -> None:
+    drop = [{"op": "remove", "id": "m3"}, {"op": "remove", "id": "m4"}]  # leaves the 10 s jump
+    fake = FakeProvider([propose("Take them out", *drop)])
+    turn = run(fake, "cut it to 10 s")
+    assert kinds(turn) == ["proposal"]
+    # no length asked: the guard stays
+    fake = FakeProvider([propose("Take them out", *drop)] * 2)
+    assert "proposal" not in kinds(run(fake, "make the montage better"))
+    wipe = [{"op": "remove", "id": i} for i in ("m2", "m3", "m4")]
+    fake = FakeProvider([propose("Take them out", *wipe)] * 2)
+    assert "proposal" not in kinds(run(fake, "cut it to 5 s"))  # every clip: still refused
+
+
+def test_a_proposal_far_over_the_length_is_never_shown_after_the_send_backs() -> None:
+    big = propose("Add the laugh", {"op": "add", "id": "m1", "start": 0, "end": 30})  # 54 s
+    turn = run(FakeProvider([big] * 6), "make it 20 s")
+    assert "proposal" not in kinds(turn)
+    assert [e["kind"] for e in turn.view()["events"]].count("rejected") >= 4
+
+
+def test_a_trim_after_an_add_in_the_same_proposal_keeps_the_cap() -> None:
+    both = [
+        {"op": "add", "id": "c1"},
+        {"op": "trim", "id": "c1", "end_delta": 25},
+    ]
+    out = ops.apply_ops(SEQ, both, CANDS, durations())
+    assert out.error is not None and "at most +10 s per edge" in out.error
+
+
+def test_a_failed_plan_is_not_cached_and_one_bad_source_keeps_only_its_rows_raw(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, planning
+) -> None:
+    def probe(path: Path) -> Path:
+        if path.name == Path(B).name:
+            raise OSError("unreadable")
+        return path
+
+    monkeypatch.setattr(edges, "probe", probe)
+    planner = edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
+    got = planner.plan(SEQ)
+    assert got["c2"] == (39.5, 51.5) and got["x9"] == (59.5, 71.5)  # planned
+    assert got["c3"] == (5.0, 9.0)  # the unreadable source: raw
+    assert [m["id"] for m in planning["calls"][0]["moments"]] == ["c2", "x9"]
+    planner.plan(SEQ)
+    assert len(planning["calls"]) == 2  # not cached
+    monkeypatch.setattr(edges, "probe", lambda p: p)
+    assert planner.plan(SEQ)["c3"] == (4.5, 10.5)  # the source is back
+    planner.plan(SEQ)
+    assert len(planning["calls"]) == 3  # a whole plan is
+
+
+def test_a_source_that_changed_is_planned_again(tmp_path: Path, planning) -> None:
+    src = tmp_path / Path(A).name
+    src.write_bytes(b"x")
+    planner = edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
+    planner.plan(SEQ)
+    src.write_bytes(b"xy")
+    planner.plan(SEQ)
+    assert len(planning["calls"]) == 2

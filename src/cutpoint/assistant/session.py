@@ -538,7 +538,6 @@ class Turn:
             raise cut_again_error(self.provider, last_cut, again=False) from None
         if self._nudged is not None:  # the rounds ran out after the nudge: the first answer stands
             self._emit({"kind": "reply", "text": self._nudged})
-            self._offer_own()
             self._finish("done")
 
     def _announces_work(self, text: str) -> bool:
@@ -792,12 +791,18 @@ class Turn:
                 "keep the clips that stay and change only what was asked"
             )
         removed = sum("removed" in row["changes"] for row in out.diff)
-        if p.segments and 2 * removed >= len(p.segments) and not _wants_removal(self.text):
+        planned = p.edges.plan(out.after or []) if p.edges is not None else None
+        have = length(p.segments, p.edges.plan(p.segments) if p.edges is not None else None)
+        wants_less = bool(self.target) and self.target < have * (1 - TOLERANCE)  # asks for removal
+        if (
+            p.segments
+            and 2 * removed >= len(p.segments)
+            and not (_wants_removal(self.text) or wants_less)
+        ):
             return None, (
                 f"you removed {removed} of {len(p.segments)} clips; the user didn't ask to "
                 "remove any. Keep the clips that are there and add or change only what was asked"
             )
-        planned = p.edges.plan(out.after or []) if p.edges is not None else None
         checked: dict[str, Any] = {
             "ops": mapped,
             "after": out.after,
@@ -831,6 +836,17 @@ class Turn:
             if was is not None and self._rank(was[1]) < self._rank(main):
                 summary, main = was
                 raw = []  # its suggestions were not kept
+        if self.target and self._rank(main)[0]:  # never shown over the length by more than 15%
+            was = self._closest()
+            if was is None:
+                over = main["length"] - self.target
+                note = (
+                    f"This proposal makes {main['length']:.0f} s of the {self.target:.0f} s asked; "
+                    f"cut about {over:.0f} s (shorten or remove clips) and propose again."
+                )
+                return self._rejected(note, note)
+            summary, main = was
+            raw = []
         summary, main = self._filled(summary, main)
         suggestions = []
         for sug in (raw if isinstance(raw, list) else [])[:MAX_SUGGESTIONS]:

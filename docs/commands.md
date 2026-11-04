@@ -514,8 +514,11 @@ remote access is not supported.
 
 Lengths: the model sees each clip's length as it will export, with its room in the source, the
 sequence total and the length you asked for in your message ("~4 min", "240 s", "1:30"). A
-proposal more than 15% over or under that length, or whose summary claims a change its ops do not
-make, is sent back to the model (a length up to 3 times, a summary once) and the closest valid one is offered if the retries miss; the chat shows such an attempt as a muted line.
+proposal more than 15% over or under that length is sent back to the model up to 3 times (a summary
+that claims a change its ops do not make is sent back along with it, once; otherwise Cutpoint
+rebuilds the summary from the changes). The closest valid one that is not more than 15% over is
+offered if the retries miss, and a proposal more than 15% over is never shown; the chat shows such
+an attempt as a muted line.
 A trim that lengthens a clip ends it at the end of the phrase spoken there.
 
 Auto-fill: when the proposal you are shown would still be more than 15% short of the length you

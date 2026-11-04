@@ -12,11 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AI Chat builds to a length target with clean clip ends. The model now sees each clip's length
   as it will export (Smart tails and Speech-aware cuts on), the room before and after it in its
   source, the sequence total and the length you asked for ("~4 min", "240 s", "1:30"). A proposal
-  that is more than 15% off that length, or whose summary claims a change its ops do not make
-  (extended, trimmed, added, removed, moved, color), goes back to the model once per turn. A trim
-  that lengthens a clip ends it at the end of the phrase spoken there, never past the source. A
-  proposal that removes every clip needs a message that asks to clear or start over; ops sent as
-  a JSON string are accepted (a malformed one is rejected with the parse error); a proposal that is more than 15% over or under the asked length goes back up to 3 times (each says the total, the target and the seconds still needed), then the closest earlier one that was no more than 15% over is offered; a reply that only says it will search or add more gets one nudge to go on; a trim lengthens an edge by at most 10 s per proposal, an add stays within 10 s of the moment's own window; an attempt that was not accepted shows as a muted line in the chat;
+  that is more than 15% over or under that length goes back to the model up to 3 times (each says
+  the total, the target and the seconds still needed); a summary that claims a change its ops do
+  not make goes back along with it, once, and otherwise Cutpoint rebuilds the summary from the
+  changes. Then the closest earlier proposal that was no more than 15% over is offered; one more
+  than 15% over is never shown. A trim that lengthens a clip ends it at the end of the phrase
+  spoken there, never past the source; a trim lengthens an edge by at
+  most 10 s per proposal and an add stays within 10 s of the moment's own window. A proposal that
+  removes every clip needs a message that asks to clear or start over; ops sent as a JSON string
+  are accepted (a malformed one is rejected with the parse error); a reply that only says it will
+  search or add more gets one nudge to go on; an attempt that was not accepted shows as a muted
+  line in the chat;
   `look_for` makes up to 10 new moments per call (was 3). The diff of a proposal says lengthened
   or shortened instead of trimmed, and the saved reply says what was really changed. The page
   asks `POST /api/projects/<id>/edges` for the exported range of each clip and uses it for the
