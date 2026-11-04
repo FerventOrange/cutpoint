@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `highlights.json` `timings.sources` (Refs #725): the seconds each source spent in probing,
+  audio extract, loudness, transcription and scene cuts, the wait for the background OCR read
+  and whether it was cached, to measure where a multi-file analysis spends its time. The
+  existing `timings` keys are unchanged. The scene cuts of each source log a line before they
+  start.
 - Run state for later resume (#109): `analyze`, `edit`, `events`, `crashes`, `profile` and
   `360 analyze` keep `<project>/progress.json` (the command line, a key of its options, status
   `running`, `done`, `interrupted` or `failed` with the error code, process, working folder,
