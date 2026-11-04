@@ -395,15 +395,17 @@ def test_a_turn_views_at_most_its_cap_and_a_repeat_sends_nothing_new(
         "k0",
     )
     v = viewer(proj_dir, fake, src, given=[watch.frames_key(fake)] if not fake.local else [])
+    given: list[str] = []  # the results as sent (a long turn may leave old ones out later)
+    make = fake.tool_result
+    fake.tool_result = lambda c, content: (given.append(content), make(c, content))[1]
     turn = session.Turn(fake, p, "look", viewer=v)
     turn.start()
     assert turn.done.wait(10)
     assert watch.view_cap(fake) == cap
     assert len(images_in(fake.requests[-1]["messages"])) == min(cap, 4)
-    results = [m["content"] for m in fake.requests[-1]["messages"] if m.get("role") == "tool"]
-    assert any("already viewed" in r for r in results)
+    assert any("already viewed" in r for r in given)
     if cap == 2:
-        assert any(f"at most {cap} moments" in r for r in results)
+        assert any(f"at most {cap} moments" in r for r in given)
         assert any(e.get("error") == "limit" for e in turn.events)
     rules = fake.requests[0]["messages"][0]["content"]
     assert f"at most {cap} moments" in rules and "never for every moment" in rules
@@ -489,10 +491,20 @@ def test_a_model_that_refuses_the_image_is_asked_again_without_it_and_offered_no
     def refuse(_messages):
         raise ProviderError("OpenAI-compatible x answered 400: image input is not supported")
 
-    fake = FakeProvider([call("view_moment", id="m1"), refuse, answer("From the text: m1.")])
+    # the text names a known moment, so the turn nudges once; the answer given again ends it
+    fake = FakeProvider(
+        [
+            call("view_moment", id="m1"),
+            refuse,
+            answer("From the text: m1."),
+            answer("From the text: m1, still."),
+        ]
+    )
     fake.model = "local-llama"
     turn = run(fake, viewer(proj_dir, fake, src))
-    assert turn.status == "done" and turn.events[-1]["text"] == "From the text: m1."
+    assert turn.status == "done" and turn.events[-1]["text"] == "From the text: m1, still."
+    assert len(fake.requests) == 4 and fake.requests[3]["messages"][-1]["content"] == session.NUDGE
+    assert [e["text"] for e in turn.events if e["kind"] == "reply"] == ["From the text: m1, still."]
     retry = fake.requests[2]
     assert not images_in(retry["messages"])
     assert "takes no images" in retry["messages"][-1]["content"]

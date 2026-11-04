@@ -51,7 +51,8 @@ class AssistantSettings:
     provider: str = "ollama"  # one of ASSISTANT_PROVIDERS
     model: str = ""  # "": the provider's default (Ollama: qwen3.5:9b if pulled, else vision)
     url: str = ""  # base URL; "": the provider's (Ollama: cutpoint.backends.ollama_url)
-    context_tokens: int = 0  # 0: the provider's default (8192 on this machine, 32768 hosted)
+    # 0: the provider's default (50000 Ollama, 8192 other local servers, 32768 hosted)
+    context_tokens: int = 0
     consent: tuple[str, ...] = ()  # "<role>-v2:<provider>@<host>" the user agreed to
 
 

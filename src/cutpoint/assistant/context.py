@@ -12,8 +12,11 @@ telemetry and vision-tag strengths on one 0-10 scale, :data:`CUES`) and ``heard`
 laughter and screams). A generic label (``action-moment``) gives way to what the vision model
 saw (:func:`shown_label`, also the label of the ``cutpoint ui`` moments list).
 
-Sizes are counted as characters / :data:`CHARS_PER_TOKEN`. A local model with an 8k context
-gets the top 40 moments and the last 4 turns; a larger context gets more (:func:`budget`).
+Sizes are counted as characters / :data:`CHARS_PER_TOKEN`, a figure between the two: the JSON
+data blocks measure 2.0-2.4 characters per token, prose about 4 (a turn is fitted at 2.0). A model with an 8k context or less gets the
+top 40 moments and the last 4 turns; a larger context gets more (:func:`budget`). The tool
+definitions and room for a reply with a whole proposal are kept free (:class:`Budget`), and
+:func:`size` measures a conversation so that a turn can leave out old tool results.
 """
 
 from __future__ import annotations
@@ -26,9 +29,12 @@ from typing import Any
 
 from cutpoint.config import source_path
 
-CHARS_PER_TOKEN = 4
-LOCAL_TOKENS = 8192  # the context of a local model; more is a hosted model's budget
-REPLY_SHARE = 0.3  # of the context kept free for tool results and the reply
+CHARS_PER_TOKEN = 2.5  # of JSON, data blocks and tool results (2.0-2.4); prose has about 4
+LOCAL_TOKENS = 8192  # a small context: 40 moments, 4 turns, fewer images; more scales up
+REPLY_TOKENS = 1500  # kept free for a reply that holds a whole proposal
+REPLY_SHARE = 0.3  # of the context kept free for tool results and the reply, if more
+IMAGE_TOKENS = 1500  # of one image (a timeline sheet)
+LEFT_OUT = "(earlier result left out for space; call the tool again if needed)"
 SNIPPET_CHARS = 160  # transcript of a moment in the table
 SEEN_CHARS = 100  # what the vision model saw of a moment, in the table
 SEEN_FULL_CHARS = 600  # ... in get_moment
@@ -53,7 +59,9 @@ ordered list of moments (clips) cut from their source videos; it becomes their f
 
 You can only propose changes: the user previews a proposal and applies it or not. Look moments \
 up with the tools, then call propose_edit once with every op of the change. To answer without \
-changing anything, reply in plain text.
+changing anything, reply in plain text. When the user asks to make, build, add, place or change \
+anything in the sequence, end with propose_edit. An empty sequence is built with add ops, one per \
+moment in order. Never list chosen moments in text instead.
 
 Moments have short ids (m1, m2, ...). Times are seconds in the source video. Positions count \
 from 1. Ops:
@@ -133,20 +141,43 @@ class Budget:
     tokens: int
     moments: int  # moments listed up front
     turns: int  # earlier chat turns repeated
+    tools: int = 0  # tokens of the tool definitions the request carries
+    tight: bool = False  # half the room: the retry after a cut-off reply
 
     @property
     def chars(self) -> int:
-        """Characters the prompt may use, the reply's share left out."""
-        return int(self.tokens * CHARS_PER_TOKEN * (1 - REPLY_SHARE))
+        """Characters the prompt may use: the context less the tool definitions and the room
+        for a reply or tool results (:data:`REPLY_TOKENS`, :data:`REPLY_SHARE`)."""
+        reserve = max(REPLY_TOKENS, int(self.tokens * REPLY_SHARE))
+        free = max(self.tokens - reserve - self.tools, self.tokens // 4)
+        return int(free * CHARS_PER_TOKEN) // (2 if self.tight else 1)
 
 
-def budget(context_tokens: int) -> Budget:
+def budget(context_tokens: int, tools: Any = None, *, tight: bool = False) -> Budget:
     """The profile for a model with ``context_tokens``: 40 moments and 4 turns at 8k or less,
-    more for a larger context."""
+    more for a larger context. ``tools``: the tool definitions sent with the request, whose size
+    is kept free. ``tight`` halves the prompt and the turns repeated."""
+    used = int(len(json.dumps(tools)) / CHARS_PER_TOKEN) if tools else 0
     if context_tokens <= LOCAL_TOKENS:
-        return Budget(context_tokens, 40, 4)
-    scale = context_tokens / LOCAL_TOKENS
-    return Budget(context_tokens, min(200, int(40 * scale)), min(12, 4 + int(scale)))
+        moments, turns = 40, 4
+    else:
+        scale = context_tokens / LOCAL_TOKENS
+        moments, turns = min(200, int(40 * scale)), min(12, 4 + int(scale))
+    return Budget(context_tokens, moments, turns // 2 if tight else turns, used, tight)
+
+
+def size(value: Any) -> int:
+    """Characters of the text in a message or a list of them (JSON text, content parts, tool
+    calls), an image counting as :data:`IMAGE_TOKENS`."""
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, dict):
+        if value.get("type") == "image":
+            return int(IMAGE_TOKENS * CHARS_PER_TOKEN)
+        return sum(size(v) for v in value.values())
+    if isinstance(value, list):
+        return sum(size(v) for v in value)
+    return 0
 
 
 def data_block(kind: str, body: str) -> str:

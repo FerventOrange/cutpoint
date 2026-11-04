@@ -337,7 +337,7 @@ def test_openai_base_url_gets_v1_only_when_it_has_no_path(url: str, want: str) -
 def test_a_local_openai_server_needs_no_key_and_serves_its_only_model(monkeypatch) -> None:
     wire = Wire(monkeypatch, _Resp({"data": [{"id": "qwen.gguf"}]}), oa_reply("Hello"))
     p = OpenAIProvider("http://127.0.0.1:8080", "", 0, None)
-    assert p.local and p.context_tokens == providers.LOCAL_CONTEXT_TOKENS
+    assert p.local and p.context_tokens == providers.ON_MACHINE_CONTEXT_TOKENS
     assert p.model == providers.AUTO_SERVER_MODEL
     p.capabilities()
     reply = p.chat([{"role": "user", "content": "hi"}])

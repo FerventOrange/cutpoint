@@ -166,3 +166,51 @@ export function aiModelChoices(current, listed, { typing = false, required = fal
   options.push({ value: AI_OTHER, text: 'Other model…' });
   return { options, value };
 }
+
+// Inline Markdown of a reply: `code`, **bold**, *italic* and _italic_ (not inside a word, so
+// snake_case stays). A marker without its pair is left as it is.
+const INLINE = /`([^`]+)`|\*\*(?=\S)(.+?)(?<=\S)\*\*|\*(?=[^\s*])(.+?)(?<=[^\s*])\*|(?<!\w)_(?=\S)(.+?)(?<=\S)_(?!\w)/g;
+
+function inlineNodes(text) {
+  const out = [];
+  let at = 0;
+  for (const m of text.matchAll(INLINE)) {
+    if (m.index > at) out.push(text.slice(at, m.index));
+    if (m[1] != null) out.push(h('code', { text: m[1] }));
+    else if (m[2] != null) out.push(h('strong', {}, ...inlineNodes(m[2])));
+    else out.push(h('em', {}, ...inlineNodes(m[3] ?? m[4])));
+    at = m.index + m[0].length;
+  }
+  if (at < text.length) out.push(text.slice(at));
+  return out;
+}
+
+/**
+ * A model's reply as DOM nodes: paragraphs, line breaks, `-`/`*`/`1.` lists, **bold**, *italic*
+ * and `code`. Built with createElement and text nodes only (no markup parsing, no links), so
+ * nothing in the text can run.
+ */
+export function markdown(text) {
+  const root = h('div', { class: 'md' });
+  let para = null;
+  let list = null;
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    const item = /^\s*(?:([-*])|(\d+)\.)\s+(\S.*)$/.exec(line);
+    if (!line.trim()) {
+      para = list = null;
+    } else if (item) {
+      const tag = item[1] ? 'ul' : 'ol';
+      if (!list || list.tagName.toLowerCase() !== tag) {
+        root.append((list = h(tag, item[1] ? {} : { start: item[2] })));
+      }
+      list.append(h('li', {}, ...inlineNodes(item[3].trim())));
+      para = null;
+    } else {
+      if (!para) root.append((para = h('p')));
+      else para.append(h('br'));
+      para.append(...inlineNodes(line.trim()));
+      list = null;
+    }
+  }
+  return root;
+}

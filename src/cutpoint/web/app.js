@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtLen, h, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, spanText, svg } from './util.js';
+import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtLen, h, markdown, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, spanText, svg } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -3675,7 +3675,7 @@ function turnItems(t) {
       items.push(h('li', { class: 'msg step', 'data-id': id, text: (TOOL_TEXT[ev.name] ?? (() => ev.name))(ev) }));
       if (ev.name === 'look_for' && ev.possible?.length) items.push(possibleItem(ev, id));
     } else if (ev.kind === 'show') items.push(showItem(ev, id, query));
-    else if (ev.kind === 'reply') items.push(h('li', { class: 'msg ai', 'data-id': id }, h('span', { class: 'vh', text: 'Assistant: ' }), h('p', { text: ev.text })));
+    else if (ev.kind === 'reply') items.push(h('li', { class: 'msg ai', 'data-id': id }, h('span', { class: 'vh', text: 'Assistant: ' }), markdown(ev.text)));
     else if (ev.kind === 'proposal') items.push(proposalItem(ev, id));
     else if (ev.kind === 'frames_consent') items.push(framesItem(ev, id, t));
     else if (ev.kind === 'error') items.push(h('li', { class: 'msg ai bad', 'data-id': id, text: ev.text }));

@@ -131,7 +131,7 @@ def test_the_proxy_port_is_still_on_this_machine() -> None:
     p = providers.OpenAIProvider(PROXY, "m", 0, None)
     assert p.on_machine and not p.local
     assert p.timeout == providers.CHAT_TIMEOUT_S
-    assert p.context_tokens == providers.LOCAL_CONTEXT_TOKENS
+    assert p.context_tokens == providers.ON_MACHINE_CONTEXT_TOKENS
     assert providers.missing_key(p) is None  # a server on this machine may take no key
     assert providers.consent_key(p, "vision") == PROXY_VISION_KEY
     assert providers.consent_key(p) == f"assistant-v2:openai@127.0.0.1:{cliproxy.DEFAULT_PORT}"
