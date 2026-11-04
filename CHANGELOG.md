@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Select all in the browser workspace's sequence: a "Select all clips" checkbox above the list (partly
+  ticked when only some clips are) ticks every clip for the batch actions, or clears them when all are
+  ticked. Ctrl+A (Cmd+A) in the list ticks every clip, and the count is announced.
+
 - AI Chat builds to a length target with clean clip ends. The model now sees each clip's length
   as it will export (Smart tails and Speech-aware cuts on), the room before and after it in its
   source, the sequence total and the length you asked for ("~4 min", "240 s", "1:30"). A proposal
@@ -671,6 +675,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `final.otio` next to `final.mp4`; pass `--format fcpxml` or `--format otio` for a timeline.
 
 ### Fixed
+
+- The trim view shows what a clip exports, not only the raw cut. A clip trimmed to 6.00 s that
+  exports at 16.22 s (an event tail extends its end) now reads "Clip length 6.00 s · exports as
+  16.22 s (event tail)" and shows the extra time as a shaded, dashed strip after the end marker
+  (and before the start marker when the export starts earlier) on the rail and the overview; the
+  handles still edit the raw range. The sequence asks the server for the export's ends with every
+  setting that moves them (Event tails and window, Tail min and max, the speech caps, Extend
+  start and end), not only Smart tails and Speech-aware cuts, and redraws the rail when it
+  answers. "Play sequence" starts every clip at its exported start. `POST /api/projects/<id>/edges` takes
+  those settings and returns a `reason` (`event tail`, `smart tail`, `speech-aware`, `extend`)
+  for each range that moved.
 
 - The AI Chat proposes sequences reliably with a local model such as `qwen3.5:9b`. The 8192-token
   context filled up (the budget counted 4 characters per token where the JSON data measures

@@ -116,6 +116,7 @@
             <div class="rail-film" id="railFilm" aria-hidden="true"></div>
             <div class="rail-gaps" id="railGaps" aria-hidden="true"></div>
             <div class="rail-orig" id="railOrig"></div>
+            <div class="rail-tails" id="railTail" aria-hidden="true"></div>
             <div class="rail-sel" id="railSel"></div>
             <!-- the trim an AI Chat proposal would set (#346); the Sequence tab states its times -->
             <div class="rail-ghost" id="railGhost" aria-hidden="true" hidden></div>
@@ -134,6 +135,7 @@
           <div class="overview" id="overview">
             <div class="rail-marks">
               <div class="rail-gaps" id="ovGaps" aria-hidden="true"></div>
+              <div class="rail-tails" id="ovTail" aria-hidden="true"></div>
               <div class="ov-clip" id="ovClip"></div>
               <div class="ov-view" id="ovView"></div>
             </div>
@@ -196,6 +198,10 @@
           </div>
         </section>
         <div id="seqEmpty" class="empty"></div>
+        <label id="seqSelAllRow" class="seq-selall" hidden>
+          <input type="checkbox" id="seqSelAll" class="seq-check" aria-keyshortcuts="Control+A">
+          <span>Select all clips</span>
+        </label>
         <div id="seqBatch" class="seq-batch" role="group" aria-label="Selected clips" hidden>
           <span id="seqSelCount" class="tc"></span>
           <span class="spacer"></span>

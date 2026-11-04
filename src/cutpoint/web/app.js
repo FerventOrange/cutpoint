@@ -151,11 +151,20 @@ const exportedLen = (s) => { const e = planned(s); return e.end - e.start; };
 /** Ask for the planned ranges of the working sequence, a moment after the last change. */
 function askEdges() {
   clearTimeout(exportPlan.timer);
-  const pid = S.id;
-  const body = { segments: S.segments.map(pick), smart_tail: $('#optTail').checked, speech_aware: $('#optSpeech').checked };
-  const asked = `${pid}|${JSON.stringify(body)}`;
-  if (!pid || !body.segments.length || exportPlan.asked === asked) return;
   exportPlan.timer = setTimeout(async () => {
+    // read when the timer fires: an input event comes before the change event that enables or
+    // disables the dependent fields (syncTiming)
+    const pid = S.id;
+    // every export setting that moves a clip's ends, as Export clips sends it (a field the browser
+    // rejects is left out: the route would answer 400)
+    const settings = fields('speech_max_extend', 'speech_max_lead', 'tail_min', 'tail_max', 'event_window', 'extend_start', 'extend_end');
+    for (const key of Object.keys(settings)) if (!$(OPT_FIELDS[key]).checkValidity()) delete settings[key];
+    const body = {
+      segments: S.segments.map(pick), smart_tail: $('#optTail').checked, speech_aware: $('#optSpeech').checked, ...settings,
+      ...($('#optEventTails').disabled ? {} : { event_tails: $('#optEventTails').value }),
+    };
+    const asked = `${pid}|${JSON.stringify(body)}`;
+    if (!pid || !body.segments.length || exportPlan.asked === asked) return;
     exportPlan.asked = asked;
     try {
       const r = await api(`/api/projects/${encodeURIComponent(pid)}/edges`, { method: 'POST', body });
@@ -163,8 +172,11 @@ function askEdges() {
       const from = new Map(body.segments.map((s) => [s.id, [s.start, s.end]]));
       exportPlan.pid = pid;
       exportPlan.map = {};
-      for (const [id, e] of Object.entries(r.edges ?? {})) if (from.has(id)) exportPlan.map[id] = { start: e.start, end: e.end, from: from.get(id) };
+      for (const [id, e] of Object.entries(r.edges ?? {})) if (from.has(id)) exportPlan.map[id] = { start: e.start, end: e.end, reason: e.reason, from: from.get(id) };
       renderSequence();
+      // the rail and the length text show the export too; a trim error just shown stays
+      if ($('#trimMsg').classList.contains('error')) drawRail();
+      else renderTrim();
     } catch {
       exportPlan.asked = ''; // the raw ranges stay; the next change asks again
     }
@@ -848,7 +860,7 @@ function trimSeek(which) {
 
 function setTrimMsg(text, bad = false) {
   const m = $('#trimMsg');
-  m.textContent = text;
+  if (m.textContent !== text) m.textContent = text;
   m.classList.toggle('error', bad);
 }
 
@@ -1081,8 +1093,28 @@ function renderTrim(force = false) {
   const changedFromOrig = c.cand && (c.start !== c.cand.start || c.end !== c.cand.end);
   $('#resetBtn').hidden = !changedFromOrig;
   const len = c.end - c.start;
-  setTrimMsg(`Clip length ${len.toFixed(2)} s${c.cand ? `, analyzed as ${fmt(c.cand.start)} to ${fmt(c.cand.end)}` : ''}.${
-    len > LONG_CLIP ? ' This clip is longer than 10 minutes, so exporting it takes a while.' : ''}`);
+  const out = exportedLen(c);
+  const differs = Math.abs(out - len) >= 0.005;
+  const why = planned(c).reason;
+  setTrimMsg(`Clip length ${len.toFixed(2)} s${differs ? ` · exports as ${out.toFixed(2)} s${why ? ` (${why})` : ''}` : ''}${
+    c.cand ? `, analyzed as ${fmt(c.cand.start)} to ${fmt(c.cand.end)}` : ''}.${
+    Math.max(len, out) > LONG_CLIP ? ' This clip is longer than 10 minutes, so exporting it takes a while.' : ''}`);
+}
+
+/**
+ * What the export adds to the trim, dashed outside it: from the end to the planned end and, when the
+ * planned start is earlier, from there to the start. The handles keep editing the raw range.
+ */
+function drawTails(box, c, from, len, place) {
+  const e = planned(c);
+  const strips = [];
+  if (e.end > c.end + 1e-6) strips.push([c.end, e.end]);
+  if (e.start < c.start - 1e-6) strips.push([e.start, c.start]);
+  box.replaceChildren(...strips.map(([a, b]) => {
+    const el = h('div', { class: 'rail-tail' });
+    place(el, a, b, from, len);
+    return el;
+  }));
 }
 
 /** The rail (the view, with the clip and analyzed range on it) and the overview strip of the whole source. */
@@ -1099,6 +1131,7 @@ function drawRail(c = current()) {
   const place = (el, a, b, from, len) =>
     Object.assign(el.style, { left: `${(((a - from) / len) * 100).toFixed(2)}%`, width: `${(((b - a) / len) * 100).toFixed(2)}%` });
   place($('#railSel'), c.start, c.end, lo, span);
+  drawTails($('#railTail'), c, lo, span, place);
   drawGaps(c, dur, lo, hi, place);
   drawFilm(c);
   const o = $('#railOrig');
@@ -1113,6 +1146,7 @@ function drawRail(c = current()) {
     pan.setAttribute('aria-valuetext', `${hms(lo)} to ${hms(hi)} of ${hms(dur)}`);
     place($('#ovView'), lo, hi, 0, dur);
     place($('#ovClip'), c.start, c.end, 0, dur);
+    drawTails($('#ovTail'), c, 0, dur, place);
   }
   const t = playhead(c);
   wasIn = t >= lo && t <= hi;
@@ -1488,7 +1522,9 @@ function stageVideo(seekC) {
   const c = current();
   const src = c && srcOf(c.source);
   // drop() forgets pending seeks; a moment waiting for its video keeps its start or the user's scrub
-  const want = seekC ? seekC.start : pendingSeek;
+  // Play sequence starts a clip where its export starts
+  const from = seekC && (S.seqPlay && seqNow() === seekC.id ? seqSeg(S.seqPlay.i).start : seekC.start);
+  const want = seekC ? from : pendingSeek;
   const wait = (msg) => {
     drop(msg);
     pendingSeek = want;
@@ -1507,7 +1543,7 @@ function stageVideo(seekC) {
     if (src.status !== 'ready' && !prepareRequested.has(`${S.id}:${src.path}`)) prepareSource(src);
     const rawOn = ofSource(src) && !v.paused && !v.error && inLoaded(dAt, durOf(c));
     if (v.dataset.url !== d.url && !rawOn) loadFile(src, d, dAt);
-    else if (seekC) seekTo(seekC.start);
+    else if (seekC) seekTo(from);
     return;
   }
   if (src.status === 'unknown') {
@@ -1544,7 +1580,7 @@ function stageVideo(seekC) {
     if (fits && (keep || p)) {
       if (src.status === 'needs-proxy' && !prepareRequested.has(k)) prepareSource(src); // no window request brings it
       if (!keep) loadFile(src, p, at);
-      else if (seekC) seekTo(seekC.start);
+      else if (seekC) seekTo(from);
       return;
     }
     const moment = !!S.seqPlay || (at >= c.start && at <= c.end);
@@ -1597,7 +1633,7 @@ function stageVideo(seekC) {
     && (!S.seqPlay || holdsClip(c));
   if (v.dataset.url !== p.url && !playingOn) {
     loadFile(src, p, want ?? (ofSource(src) ? playhead(c) : c.start));
-  } else if (seekC) seekTo(seekC.start);
+  } else if (seekC) seekTo(from);
 }
 
 /** Stop a video element and release its file. */
@@ -2492,12 +2528,27 @@ function renderBatch() {
   const n = S.selected.size;
   $('#seqBatch').hidden = !n;
   $('#seqSelCount').textContent = `${n} selected`;
+  const all = $('#seqSelAll');
+  $('#seqSelAllRow').hidden = !S.segments.length;
+  all.checked = n > 0 && n === S.segments.length;
+  all.indeterminate = n > 0 && n < S.segments.length;
   for (const li of $('#seqList').children) {
     const on = S.selected.has(li.dataset.id);
     li.classList.toggle('selected', on);
     const box = li.querySelector('[data-act="select"]');
     if (box) box.checked = on;
   }
+}
+
+/** Tick every clip of the sequence, or clear all ticks when every clip is already ticked. */
+function selectAll() {
+  const n = S.segments.length;
+  if (!n) return;
+  const on = S.selected.size < n;
+  S.selected.clear();
+  if (on) for (const s of S.segments) S.selected.add(s.id);
+  renderBatch();
+  $('#seqLive').textContent = on ? `All ${n} clip${n > 1 ? 's' : ''} selected` : 'Selection cleared';
 }
 
 /** Accessible names of a row's controls that carry the clip name. */
@@ -2640,10 +2691,10 @@ function renderSequence() {
 
 // ---------- play sequence ----------
 
-/** Clip ``j`` of the playing sequence, ending where its export ends. */
+/** Clip ``j`` of the playing sequence, running where its export runs. */
 const seqSeg = (j) => {
   const s = S.segments.find((x) => x.id === S.seqPlay?.order[j]);
-  return s && { ...s, end: planned(s).end };
+  return s && { ...s, start: planned(s).start, end: planned(s).end };
 };
 const seqNow = () => S.seqPlay?.order[S.seqPlay.i];
 const nowIcon = () => h('span', { class: 'seq-now', 'aria-hidden': 'true', title: 'Playing' }, icon('play'));
@@ -5719,6 +5770,7 @@ function bind() {
   $('#undoBtn').addEventListener('click', undo);
   $('#redoBtn').addEventListener('click', redo);
   $('#seqRemoveSel').addEventListener('click', removeSelected);
+  $('#seqSelAll').addEventListener('change', selectAll);
   $('#seqClearSel').addEventListener('click', () => {
     S.selected.clear();
     renderBatch();
@@ -5746,7 +5798,10 @@ function bind() {
     if (validOptions(body)) startJob('extend', body);
   });
   for (const id of ['#optExtendStart', '#optExtendEnd', '#optSpeech']) $(id).addEventListener('input', renderBusy); // Extend export's reason
-  for (const id of ['#optTail', '#optSpeech']) $(id).addEventListener('input', askEdges); // the lengths follow the export's cuts
+  // the lengths follow the export's cuts
+  for (const id of ['#optTail', '#optSpeech', '#optEventTails', '#optEventWindow', '#optTailMin', '#optTailMax', '#optSpeechExtend', '#optSpeechLead', '#optExtendStart', '#optExtendEnd']) {
+    $(id).addEventListener('input', askEdges);
+  }
   $('#optIds').addEventListener('input', syncTiming);
   $('#makeBtn').addEventListener('click', makePreset);
   $('#cancelBtn').addEventListener('click', async () => {
@@ -5792,6 +5847,13 @@ function bind() {
       e.preventDefault();
       if (k === 'y' || e.shiftKey) redo();
       else undo();
+      return;
+    }
+    // Ctrl+A inside the sequence list (and its Select all row) ticks every clip; elsewhere (and in text fields) it keeps its meaning
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && k === 'a' && e.target.closest('#seqList, #seqSelAllRow')
+      && !e.target.closest('input:not([type=range]):not([type=checkbox]):not([type=radio]),textarea,select,[contenteditable]')) {
+      e.preventDefault();
+      if (S.selected.size < S.segments.length) selectAll();
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;

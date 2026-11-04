@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -481,6 +482,8 @@ def test_the_edges_route_returns_each_rows_exported_range(
         f: f.stat().st_mtime_ns for f in p.rglob("*") if f.is_file()
     } == before  # writes nothing
     assert client.post("/api/projects/cli/edges", json={"segments": "x"}).status_code == 400
+    no_reason = client.post("/api/projects/cli/edges", json={"segments": seq}).json()["edges"]
+    assert all("reason" not in e for e in no_reason.values())  # fake plans carry no tail record
     bad = client.post("/api/projects/cli/edges", json={"segments": seq, "smart_tail": "yes"})
     assert bad.status_code == 400
     assert client.post(
@@ -489,6 +492,112 @@ def test_the_edges_route_returns_each_rows_exported_range(
         401,
         403,
     )
+
+
+@pytest.fixture
+def explained(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """``plan_edges`` replaced by plans with tail, speech and padding records: c2 gets an event
+    tail, c3 only a speech-aware move, x9 stays as it was."""
+    seen: dict[str, Any] = {"calls": []}
+
+    class Rich(Plan):
+        def __init__(self, entry, start, end, *, tail=None, speech=None, pad_rec=None) -> None:
+            super().__init__(entry, start, end)
+            self.tail = SimpleNamespace(reason=tail[0], extension=tail[1]) if tail else None
+            self.speech, self.pad_rec = speech, pad_rec
+
+    def fake_plan(moments, project, **kw):
+        seen["calls"].append({"moments": moments, **kw})
+        by = {m["id"]: m for m in moments}
+        out = []
+        if "c2" not in by:  # the route test's own ids: the first row gets the event tail
+            m = moments[0]
+            out.append(Rich(m, m["start"], m["end"] + 10.22, tail=("event payoff (jump)", 10.22)))
+        if "c2" in by:
+            m = by["c2"]
+            out.append(Rich(m, m["start"], m["end"] + 10.22, tail=("event payoff (jump)", 10.22)))
+        if "c3" in by:
+            m = by["c3"]
+            out.append(Rich(m, m["start"] - 1, m["end"], speech={"start": {"moved": -1.0}}))
+        if "x9" in by:
+            m = by["x9"]
+            out.append(Rich(m, m["start"], m["end"], tail=("min tail", 0.0)))
+        return out
+
+    monkeypatch.setattr(edges, "plan_edges", fake_plan)
+    monkeypatch.setattr(edges, "probe", lambda p: p)
+    cache.save_json(tmp_path / "highlights.json", {"style": "funny"})
+    return seen
+
+
+def test_a_moved_range_says_why_and_an_unmoved_one_does_not(tmp_path: Path, explained) -> None:
+    planner = edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
+    got, reasons = planner.explain(SEQ)
+    assert reasons == {"c2": "event tail", "c3": "speech-aware"}
+    assert got["c2"][1] == pytest.approx(SEQ[0]["end"] + 10.22)
+    assert planner.explain(SEQ)[1] == reasons and len(explained["calls"]) == 1  # cached with it
+
+
+def test_the_event_tail_smart_tail_and_extend_reasons() -> None:
+    def plan(**kw: Any) -> Any:
+        return SimpleNamespace(**{"tail": None, "speech": None, "pad_rec": None, **kw})
+
+    assert edges._reason(plan(tail=SimpleNamespace(reason="audio settled", extension=2.0))) == (
+        "smart tail"
+    )
+    assert edges._reason(plan(pad_rec={"applied": {"start": 0.0, "end": 1.5}})) == "extend"
+    both = plan(
+        tail=SimpleNamespace(reason="event payoff (x)", extension=3.0),
+        pad_rec={"applied": {"start": 1.0, "end": 0.0}},
+    )
+    assert edges._reason(both) == "event tail, extend"
+    assert edges._reason(plan()) is None
+
+
+def test_the_other_export_settings_reach_the_plan(tmp_path: Path, explained) -> None:
+    opts = edges.ExportOptions(
+        event_window=4.0, tail_min=2.0, tail_max=6.0, speech_max_extend=3.0, extend_start=1.0
+    )
+    edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name).plan(SEQ, options=opts)
+    call_ = explained["calls"][0]
+    assert (call_["tail"].tail_min, call_["tail"].tail_max) == (2.0, 6.0)
+    assert call_["speech"].max_extend == 3.0
+    assert call_["padding"].start == 1.0 and call_["padding"].end == 0.0
+
+
+def test_the_edges_route_sends_the_reason_and_takes_the_export_settings(
+    client: TestClient, proj, explained
+) -> None:
+    _p, seq, _ids = proj
+    res = client.post(
+        "/api/projects/cli/edges",
+        json={
+            "segments": seq,
+            "event_tails": "off",
+            "event_window": 4,
+            "tail_min": 2,
+            "tail_max": 6,
+            "extend_start": 1.5,
+            "extend_end": 2,
+        },
+    )
+    assert res.status_code == 200, res.text
+    call_ = explained["calls"][-1]
+    assert call_["event_settings"].enabled is False and call_["padding"].end == 2
+    assert call_["tail"].tail_min == 2 and call_["tail"].tail_max == 6
+    for body in (
+        {"event_tails": "maybe"},
+        {"tail_max": -1},
+        {"event_window": 0},
+        {"extend_end": 99},
+    ):
+        assert (
+            client.post("/api/projects/cli/edges", json={"segments": seq, **body}).status_code
+            == 400
+        )
+    shown = client.post("/api/projects/cli/edges", json={"segments": seq}).json()["edges"]
+    reasons = {k: v.get("reason") for k, v in shown.items()}
+    assert "event tail" in reasons.values()
 
 
 # -- round 2 ----------------------------------------------------------------------------------------

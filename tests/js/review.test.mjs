@@ -209,6 +209,61 @@ test('selected clips are removed together after a confirmation; declining remove
   assert.deepEqual(m.seqIds(), ['h001', 'h002', 'h003']);
 });
 
+test('Select all ticks every clip, shows the partial state, clears when all are ticked and follows removals', async (t) => {
+  const m = await review(t, { project: withSegments('h001', 'h002', 'h003') });
+  const all = () => m.$('#seqSelAll');
+  const tick = async (id) => {
+    const box = m.row(id).querySelector('[data-act=select]');
+    box.checked = true;
+    box.dispatchEvent(new m.w.Event('change'));
+    await m.page.settle();
+  };
+  const toggleAll = async () => {
+    all().checked = !all().checked;
+    all().dispatchEvent(new m.w.Event('change'));
+    await m.page.settle();
+  };
+  assert.equal(m.$('#seqSelAllRow').hidden, false);
+  assert.equal(all().checked, false);
+  assert.equal(all().indeterminate, false);
+
+  await tick('h001');
+  assert.equal(all().indeterminate, true, 'some ticked');
+  assert.equal(all().checked, false);
+  await toggleAll(); // some ticked: tick all
+  for (const id of ['h001', 'h002', 'h003']) assert.equal(m.row(id).querySelector('[data-act=select]').checked, true);
+  assert.equal(m.$('#seqBatch').hidden, false);
+  assert.equal(m.$('#seqSelCount').textContent, '3 selected');
+  assert.equal(all().checked, true);
+  assert.equal(all().indeterminate, false);
+  assert.equal(m.$('#seqLive').textContent, 'All 3 clips selected');
+
+  await toggleAll(); // all ticked: clear
+  assert.equal(m.$('#seqBatch').hidden, true);
+  assert.equal(all().checked, false);
+  assert.equal(all().indeterminate, false);
+
+  await toggleAll();
+  await m.click(m.row('h001').querySelector('[data-act=remove]'));
+  await m.answer('ok');
+  assert.deepEqual(m.seqIds(), ['h002', 'h003']);
+  assert.equal(all().checked, true, 'the rest are all ticked');
+  assert.equal(m.$('#seqSelCount').textContent, '2 selected');
+
+  await tick('h002'); // no-op, still ticked
+  await m.click('#seqRemoveSel');
+  await m.answer('ok');
+  assert.deepEqual(m.seqIds(), []);
+  assert.equal(m.$('#seqSelAllRow').hidden, true, 'hidden when the sequence is empty');
+  assert.equal(all().checked, false);
+});
+
+test('Ctrl+A inside the sequence list ticks every clip', async (t) => {
+  const m = await review(t, { project: withSegments('h001', 'h002') });
+  await m.key(m.row('h001').querySelector('[data-act=select]'), 'a', { ctrlKey: true });
+  assert.equal(m.$('#seqSelCount').textContent, '2 selected');
+});
+
 test('removing one clip asks first and leaves the moment in the list to add back', async (t) => {
   const m = await review(t, { project: withSegments('h001', 'h002') });
   await m.click(m.row('h001').querySelector('[data-act=remove]'));
@@ -354,4 +409,143 @@ test('Play sequence is unavailable with an empty sequence', async (t) => {
   assert.equal(m.$('#seqPlayBtn').disabled, true);
   await m.add('h001');
   assert.equal(m.$('#seqPlayBtn').disabled, false);
+});
+
+// ---- what the export adds to the trim ----
+
+const edgesRoute = (edges, asked = []) => ({
+  'POST /api/projects/p1/edges': (req) => {
+    asked.push(req.body);
+    return { edges };
+  },
+});
+
+test('the rail and the overview show the export tail as a dashed strip, and the length text says why', async (t) => {
+  const m = await review(t, {
+    project: withSegments('h001'), // 10 to 18, exported to 26.22
+    routes: edgesRoute({ h001: { start: 10, end: 26.22, reason: 'event tail' } }),
+  });
+  assert.equal(m.$('#railTail').children.length, 0, 'the raw range until the server answers');
+  assert.match(m.$('#trimMsg').textContent, /^Clip length 8\.00 s, analyzed as/);
+  t.mock.timers.tick(400);
+  await m.page.settle();
+  assert.equal(m.$('#trimMsg').textContent.startsWith('Clip length 8.00 s · exports as 16.22 s (event tail), analyzed as'), true);
+  const strip = m.$('#railTail').children;
+  assert.equal(strip.length, 1);
+  assert.ok(strip[0].classList.contains('rail-tail'));
+  assert.equal(m.$('#ovTail').children.length, 1);
+  const [sel, tail] = [m.$('#railSel'), strip[0]];
+  const gap = parseFloat(tail.style.left) - (parseFloat(sel.style.left) + parseFloat(sel.style.width));
+  assert.ok(Math.abs(gap) < 0.02, 'the strip starts where the marker ends');
+  assert.equal(m.$('#t-end').value, '0:18.00', 'the handles keep the raw end');
+});
+
+test('a planned start before the clip start draws a strip before it; a trim since drops the plan', async (t) => {
+  const m = await review(t, {
+    project: withSegments('h001'),
+    routes: edgesRoute({ h001: { start: 8.5, end: 18, reason: 'extend' } }),
+  });
+  t.mock.timers.tick(400);
+  await m.page.settle();
+  assert.equal(m.$('#railTail').children.length, 1);
+  assert.match(m.$('#trimMsg').textContent, /exports as 9\.50 s \(extend\)/);
+
+  const input = m.$('#t-end');
+  input.value = '0:17';
+  input.dispatchEvent(new m.w.Event('change'));
+  await m.page.settle();
+  assert.equal(m.$('#railTail').children.length, 0);
+  assert.doesNotMatch(m.$('#trimMsg').textContent, /exports as/);
+});
+
+test('every export setting that moves the ends is sent to /edges, and a change asks again', async (t) => {
+  const asked = [];
+  const m = await review(t, { project: withSegments('h001'), routes: edgesRoute({}, asked) });
+  t.mock.timers.tick(400);
+  await m.page.settle();
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].event_tails, 'auto');
+  assert.equal(asked[0].tail_min, undefined);
+  for (const [id, value] of [['#optEventWindow', '4'], ['#optTailMin', '2'], ['#optTailMax', '6'], ['#optExtendStart', '1.5'], ['#optExtendEnd', '2']]) {
+    m.$(id).value = value;
+    m.$(id).dispatchEvent(new m.w.Event('input'));
+    t.mock.timers.tick(400);
+    await m.page.settle();
+  }
+  m.$('#optEventTails').value = 'off';
+  m.$('#optEventTails').dispatchEvent(new m.w.Event('input'));
+  t.mock.timers.tick(400);
+  await m.page.settle();
+  assert.deepEqual(
+    { ...asked.at(-1), segments: undefined },
+    { segments: undefined, smart_tail: true, speech_aware: true, event_window: 4, tail_min: 2, tail_max: 6, extend_start: 1.5, extend_end: 2, event_tails: 'off' },
+  );
+  assert.equal(asked.length, 7);
+});
+
+test('Play sequence cues the next clip at its planned start', async (t) => {
+  const m = await review(t, {
+    project: withSegments('h001', 'h002'), // 10 to 18, then 100 to 108
+    routes: edgesRoute({ h001: { start: 10, end: 18 }, h002: { start: 97.5, end: 108, reason: 'speech-aware' } }),
+  });
+  t.mock.timers.tick(400);
+  await m.page.settle();
+  await m.click('#seqPlayBtn');
+  const videos = [...m.d.querySelectorAll('video')];
+  for (const v of videos) v.__media.loaded(600);
+  await m.page.settle();
+  assert.ok(videos.some((v) => v.__media.currentTime === 97.5), 'the spare player waits at the planned start');
+});
+
+test('re-ticking Smart tails sends the tail fields again, once their change event enabled them', async (t) => {
+  const asked = [];
+  const m = await review(t, { project: withSegments('h001'), routes: edgesRoute({}, asked) });
+  const fire = (id, type) => m.$(id).dispatchEvent(new m.w.Event(type, { bubbles: true }));
+  m.$('#optTailMin').value = '2';
+  fire('#optTailMin', 'input');
+  t.mock.timers.tick(400);
+  await m.page.settle();
+  for (const on of [false, true]) {
+    m.$('#optTail').checked = on;
+    fire('#optTail', 'input'); // fires before the change that enables the fields
+    fire('#optTail', 'change');
+    t.mock.timers.tick(400);
+    await m.page.settle();
+  }
+  assert.equal(m.$('#optTailMin').disabled, false);
+  assert.equal(asked.at(-1).smart_tail, true);
+  assert.equal(asked.at(-1).tail_min, 2);
+});
+
+test('the first clip of Play sequence starts at its planned start', async (t) => {
+  const m = await review(t, {
+    project: withSegments('h001'), // 10 to 18
+    routes: edgesRoute({ h001: { start: 8.5, end: 18, reason: 'speech-aware' } }),
+  });
+  t.mock.timers.tick(400);
+  await m.page.settle();
+  await m.click('#seqPlayBtn');
+  const v = m.$('#video');
+  v.__media.loaded(600);
+  await m.page.settle();
+  assert.equal(v.__media.currentTime, 8.5);
+});
+
+test('an /edges answer leaves a trim error on screen', async (t) => {
+  const m = await review(t, {
+    project: withSegments('h001'),
+    routes: edgesRoute({ h001: { start: 10, end: 20, reason: 'smart tail' } }),
+  });
+  t.mock.timers.tick(400);
+  await m.page.settle();
+  const input = m.$('#t-end');
+  input.value = '700';
+  input.dispatchEvent(new m.w.Event('change'));
+  await m.page.settle();
+  assert.match(m.$('#trimMsg').textContent, /inside the source/);
+  m.$('#optExtendEnd').value = '1';
+  m.$('#optExtendEnd').dispatchEvent(new m.w.Event('input'));
+  t.mock.timers.tick(400);
+  await m.page.settle();
+  assert.match(m.$('#trimMsg').textContent, /inside the source/);
 });
