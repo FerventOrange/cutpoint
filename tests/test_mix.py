@@ -133,6 +133,30 @@ def test_part_candidates_in_source_time_and_one_lift_per_ride() -> None:
     assert len(lifts) == 1 and 220 <= lifts[0].start < lifts[0].end <= 245
 
 
+def test_scenery_candidates_are_five_to_seven_seconds_or_the_whole_short_part() -> None:
+    def part(n: int) -> dict:
+        f = {
+            k: np.zeros(n)
+            for k in ("carve", "people", "stopped", "airtime", "voice_laughter", "voice")
+        }
+        f["beauty"] = np.full(n, 0.9)
+        f["beauty"][n // 2] = 1.0
+        return {
+            "features": f,
+            "mask": np.zeros(n),
+            "source": "a.mp4",
+            "offset": 0.0,
+            "duration": n / 10,
+            "events": [],
+        }
+
+    views = [c for c in part_candidates(part(1000)) if c.category == "scenery"]
+    assert views and all(5 <= c.end - c.start <= 7 for c in views)
+    short = [c for c in part_candidates(part(40)) if c.category == "scenery"]  # 4 s source
+    assert all(0 <= c.start < c.end <= 4 for c in short)
+    assert mix.min_length("scenery") == pytest.approx(3.75)
+
+
 def _seg(i: int, cat: str, score: float, chapter: int, **kw) -> dict:
     return {
         "id": f"m{i:03d}",

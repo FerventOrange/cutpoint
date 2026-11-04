@@ -451,7 +451,7 @@ class MomentTable:
         or kind, in what the vision model saw (vision label, VLM window labels, descriptions
         and named moments), their heard sounds or the names of their cues of :data:`CUE_MATCH`
         or more (:func:`_names`: ``crash`` finds crash and crash_fall); ties go to the stronger
-        cues the words name, then to the rank. In the text a word matches the start of a word
+        cues the words name, then to the rank, where a moment with a transcript (commentary) goes first only among equal shown scores. In the text a word matches the start of a word
         (``air`` finds air, airs and airtime, not chair); a word in a script written without
         spaces (Chinese, Japanese, Korean, Thai, ...) matches anywhere. None when no word
         matches."""
@@ -467,6 +467,15 @@ class MomentTable:
             w: re.compile(("" if unspaced.search(w) else r"(?<![^\W_])") + re.escape(w))
             for w in want
         }
+        tier: dict[str, int] = {}  # equal shown scores (one pool) share a tier
+        prev: tuple[Any, float] | None = None
+        for i, real in enumerate(self.rank):
+            c = self.candidates[real]
+            s = c.get("score")
+            s = float(s) if isinstance(s, (int, float)) and not isinstance(s, bool) else 0.0
+            key = (c.get("pool"), round(s, 1))
+            tier[real] = tier[self.rank[i - 1]] if key == prev else i
+            prev = key
         hits = []
         for i, real in enumerate(self.rank):
             c, look = self.candidates[real], self.looks[real]
@@ -476,7 +485,9 @@ class MomentTable:
             n = sum(bool(starts[w].search(text)) or any(_names(w, k) for k in strong) for w in want)
             if n:
                 power = sum(v for k, v in look.cues.items() if any(_names(w, k) for w in want))
-                hits.append((-n, -power, i, real))
+                # commentary over the moment only orders hits of equal shown score
+                talky = bool(str(c.get("transcript") or "").strip())
+                hits.append((-n, -power, tier[real], -talky, i, real))
         return [real for *_, real in sorted(hits)[:limit]]
 
 

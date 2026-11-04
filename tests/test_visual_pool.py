@@ -80,7 +80,7 @@ def test_part_windows_finds_each_kind_outside_the_mask(no_decode):
     by_kind = {w.kind: w for w in got}
     assert set(by_kind) == {"view", "crew", "cruise"}
     view, crew, cruise = by_kind["view"], by_kind["crew"], by_kind["cruise"]
-    assert view.start <= 40 <= view.end and 3.0 <= view.end - view.start <= 5.0
+    assert view.start <= 40 <= view.end and 5.0 <= view.end - view.start <= 7.0
     assert [w.kind for w in got].count("view") == 1  # the lift view is masked
     assert crew.start <= 200 <= crew.end and 4.0 <= crew.end - crew.start <= 6.0
     assert cruise.start >= 60 and cruise.end <= 80 and cruise.end - cruise.start == 8.0
@@ -105,7 +105,21 @@ def test_crew_needs_a_close_person_not_distant_skiers():
 def test_windows_are_in_source_time_for_a_recovered_part():
     p = part(offset=500.0)
     got = visual_pool.part_windows(p, grids(beauty=bump(N, 40, 0.8)), np.zeros(N), None)
-    assert len(got) == 1 and 538 <= got[0].start < 540 < got[0].end <= 542
+    assert len(got) == 1 and 537 <= got[0].start < 540 < got[0].end <= 543
+    assert 5.0 <= got[0].end - got[0].start <= 7.0
+
+
+def test_a_view_in_a_source_shorter_than_five_seconds_is_the_whole_source():
+    n = 40  # 4 s
+    p = part(n=n)
+    got = visual_pool.part_windows(p, grids(n, beauty=bump(n, 2, 0.8, 1.0)), np.zeros(n), None)
+    assert [(w.kind, w.start, w.end) for w in got] == [("view", 0.0, 4.0)]
+
+
+def test_a_flat_beauty_stretch_gives_a_view_of_at_most_seven_seconds():
+    beauty = np.where(np.abs(np.arange(N) * DT - 40) <= 15, 0.8, 0.0)  # 30 s of scenery
+    got = visual_pool.part_windows(part(), grids(beauty=beauty), np.zeros(N), None)
+    assert len(got) == 1 and 5.0 <= got[0].end - got[0].start <= 7.0
 
 
 def test_cruise_needs_speed_steadiness_and_eight_seconds():
@@ -159,6 +173,27 @@ def test_select_caps_per_kind_and_per_source_and_spaces_a_kind():
 def test_select_deoverlaps_across_kinds_by_peak():
     got = visual_pool.select([win("crew", 10, 0.7), win("view", 12, 0.8)], [])
     assert [(w.kind, w.start) for w in got] == [("view", 12)]
+
+
+def test_select_commentary_only_breaks_ties():
+    quiet, talky = win("view", 10, 0.81), win("view", 200, 0.81)
+    speech = {0: [(201.0, 203.0)]}
+    # the same score as listed (to 0.1): the window with speech goes first
+    assert visual_pool.select([quiet, talky], [], speech)[0] is talky
+    assert visual_pool.select([quiet, talky], [])[0] is quiet  # no speech data: as before
+    # 0.81 and 0.84 both list as 8.1 / 8.4: a different score is not a tie
+    higher = win("view", 400, 0.84)
+    got = visual_pool.select([quiet, talky, higher], [], speech)
+    assert [w.start for w in got] == [400, 200]  # PER_KIND 2: the quiet one is out
+    assert higher.peak == 0.84 and talky.peak == 0.81  # the score is never changed
+
+
+def test_select_a_higher_score_without_commentary_beats_a_talky_lower_one():
+    quiet, talky = win("view", 10, 0.9), win("view", 200, 0.7)
+    speech = {0: [(200.0, 204.0)]}
+    assert [w.start for w in visual_pool.select([talky, quiet], [], speech)] == [10, 200]
+    over = visual_pool.select([win("view", 10, 0.9), win("crew", 12, 0.7)], [], {0: [(12.0, 16.0)]})
+    assert [w.kind for w in over] == ["view"]  # speech over the crew shot does not lift it
 
 
 def test_select_drops_windows_overlapping_a_scored_candidate():
@@ -284,6 +319,14 @@ def test_reserved_slot_with_suggested_top_and_max_total(tmp_path):
     assert [c["id"] for c in chosen][-2:] == ["v001", "v002"]
 
 
+def test_reserved_slot_goes_by_the_shown_peak_so_commentary_breaks_a_tie(tmp_path):
+    # analysis lists the one with speech first among equal shown scores (8.1 both)
+    talky = {**_pool("v001", 0.81, 2000), "transcript": "look at that"}
+    quiet = _pool("v002", 0.814, 2100)
+    chosen, _ = select_moments(_hl(tmp_path, 30, [talky, quiet]), top=8)
+    assert [c["id"] for c in chosen][-1] == "v001"
+
+
 def test_max_total_skips_a_pool_moment_that_would_not_fit(tmp_path):
     pool = [_pool("v001", 0.9, 2000, duration=9.0), _pool("v002", 0.7, 2100)]
     chosen, _ = select_moments(_hl(tmp_path, 30, pool), max_total=60)
@@ -395,8 +438,8 @@ def test_action_analyze_appends_the_pool_after_the_scored(home, tmp_path, monkey
     _stub(monkeypatch)
     seen = {}
 
-    def fake_build(project, parts, style, scored, crashes):
-        seen["parts"], seen["scored"] = parts, list(scored)
+    def fake_build(project, parts, style, scored, crashes, speech):
+        seen["parts"], seen["scored"], seen["speech"] = parts, list(scored), speech
         src = parts[0].source
         return [Window(src, 0, 40.0, 44.0, "view", 0.81, {"peak": 0.81, "beauty": 0.81}),
                 Window(src, 0, 10.0, 18.0, "cruise", 0.7, {"peak": 0.7})]  # fmt: skip
@@ -415,6 +458,7 @@ def test_action_analyze_appends_the_pool_after_the_scored(home, tmp_path, monkey
     assert pool[0]["source"] == str(tmp_path / "a.mp4") and pool[0]["duration"] == 4.0
     assert pool[0]["source_index"] == 0 and "transcript" in pool[0]
     assert all(c["id"].startswith("h") for c in scored)
+    assert set(seen["speech"]) == {0}  # spoken spans by part index, for the tie-break
     assert len(seen["scored"]) == len(scored) and hl["suggested_top"] <= len(scored)
     assert hl["settings"]["visual_pool"] == {
         "count": 2, "kinds": {"view": 1, "crew": 0, "cruise": 1}

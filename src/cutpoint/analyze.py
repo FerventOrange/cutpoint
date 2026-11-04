@@ -1864,8 +1864,16 @@ def _visual_pool(
         for i, r in enumerate(results)
         if r.signals is not None
     ]
+    # spoken spans in source time, from the words already transcribed (a tie-break only)
+    speech = {
+        i: [(x["start"] + r.offset, x["end"] + r.offset) for x in r.signals.words]
+        for i, r in enumerate(results)
+        if r.signals is not None
+    }
     try:
-        found = visual_pool.build(project, parts, style, hl["candidates"], load_crashes(project))
+        found = visual_pool.build(
+            project, parts, style, hl["candidates"], load_crashes(project), speech
+        )
     except Exception as err:  # optional: never fails the analysis
         logger.debug("visual pool failed", exc_info=True)
         logger.warning("Visual candidates skipped: %s", err)

@@ -96,6 +96,49 @@ def test_find_moments_matches_strong_cues_by_name_strongest_first() -> None:
     assert context.MomentTable([lo, hi], []).find("speed") == ["w2", "w1"]
 
 
+def test_find_moments_commentary_only_breaks_ties() -> None:
+    def view(cid: str, beauty: float, said: str = "") -> dict:
+        return {"id": cid, "source": B, "start": 1.0, "end": 7.0, "score": 40, "label": "view",
+                "kind": "view", "pool": "visual", "transcript": said,
+                "signals": {**SKI, "beauty": beauty}}  # fmt: skip
+
+    quiet, talky = view("q", 0.9), view("t", 0.9, "look at that")
+    assert context.MomentTable([quiet, talky], []).find("beauty") == ["t", "q"]
+    # no transcript on either: the rank, as before
+    plain = view("t", 0.9)
+    assert context.MomentTable([quiet, plain], []).find("beauty") == ["q", "t"]
+    # a stronger cue without commentary still goes first
+    strong = view("s", 0.95)
+    assert context.MomentTable([talky, strong], []).find("beauty")[0] == "s"
+
+
+def test_find_moments_commentary_does_not_beat_a_clearly_higher_score() -> None:
+    def cand(cid: str, score: float, said: str = "", pool: str = "visual") -> dict:
+        c = {"id": cid, "source": B, "start": 1.0, "end": 7.0, "score": score, "label": "view",
+             "kind": "view", "transcript": said}  # fmt: skip
+        return {**c, "pool": pool} if pool else c
+
+    quiet, talky = cand("v001", 9.0), cand("v002", 5.1, "wow")
+    assert context.MomentTable([quiet, talky], []).find("view") == ["v001", "v002"]
+    funny_hi, funny_lo = cand("h001", 90, "", ""), cand("h002", 20, "ha", "")
+    assert context.MomentTable([funny_hi, funny_lo], []).find("view") == ["h001", "h002"]
+    # a real tie (same pool, same shown score): commentary goes first
+    tie_q, tie_t = cand("v003", 5.1), cand("v004", 5.12, "wow")
+    assert context.MomentTable([tie_q, tie_t], []).find("view") == ["v004", "v003"]
+
+
+def test_find_moments_survives_a_score_that_is_not_a_number() -> None:
+    def cand(cid: str, score: object) -> dict:
+        return {"id": cid, "source": B, "start": 1.0, "end": 7.0, "score": score, "label": "view",
+                "kind": "view", "pool": "visual"}  # fmt: skip
+
+    good = [cand("v001", 9.0), cand("v002", 5.0)]
+    expect = context.MomentTable(good, []).find("view")
+    for bad in ("high", None, True):
+        got = context.MomentTable([*good, cand("v003", bad)], []).find("view")
+        assert [r for r in got if r != "v003"] == expect
+
+
 def test_a_cue_word_matches_parts_of_cue_names_by_prefix() -> None:
     """#634 F1: "air" names airtime and jump_air, not chairlift, so a lift ride never outranks
     a jump for "big air"."""

@@ -430,6 +430,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Scenic view moments (the `view` kind of the visual candidates, and `scenic` and `beauty` picks
+  of action-cam analysis) are now 5-7 s, as 3 s was too short to enjoy; they were 3-5 s (views,
+  mix scenery) and 2-4 s (action-cam scenic/beauty picks). This applies to new or re-run analyses
+  only; an existing `highlights.json` is not changed. Among visual candidates with the same
+  score (as shown, to 0.1), the one with speech or commentary over it is listed first; the
+  score itself is unchanged, and in AI Chat `find_moments` uses the same tie-break, only among
+  equal shown scores. The `scenery` moments of `cutpoint mix` are 5-7 s too; a source shorter
+  than that gives a shorter view.
 - `cutpoint crashes` records its steps in `progress.json` (#721): `profile`, `inputs`, `dense`
   (its windows as `done`/`total`, updated at each `--batch-size` boundary) and `result`, so
   `cutpoint resume --dry-run` lists them, as for `events`; no `PROGRESS` lines, and

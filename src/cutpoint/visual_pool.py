@@ -16,7 +16,7 @@ based on them) only, from cached layers alone (no video decode):
 
 Kinds (each outside the lift/still mask):
 
-* ``view``: beauty peaks of at least :data:`VIEW_MIN`, 3-5 s;
+* ``view``: beauty peaks of at least :data:`VIEW_MIN`, 5-7 s;
 * ``crew``: people + group peaks of at least :data:`CREW_MIN` with a detected person, 4-6 s;
 * ``cruise``: at least :data:`CRUISE_RUN_S` of movement with a steady speed (spread below
   :data:`CRUISE_MAX_SPREAD`; with a carve grid, a steady carve too) and no airtime, crash
@@ -59,7 +59,7 @@ DT = ski.DT
 # view: beauty is 0-1 (zero-shot contrast x aesthetic x steadiness); mix keeps scenery from
 # 0.55, the pool lists a little more, so the assistant can find it.
 VIEW_MIN = 0.5
-VIEW_LEN = (3.0, 5.0)
+VIEW_LEN = (5.0, 7.0)
 # crew: 0.6 people + 0.4 group; people needs a person close to the camera, so a crowd-like
 # scene with nobody close cannot pass on the group prompt alone (CREW_PEOPLE_MIN: distant
 # skiers score about 0.45-0.5 there, real crew shots 0.8 and more).
@@ -375,11 +375,26 @@ def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
     return max(0.0, min(a1, b1) - max(a0, b0))
 
 
-def select(windows: list[Window], scored: Sequence[Mapping[str, Any]]) -> list[Window]:
+def select(
+    windows: list[Window],
+    scored: Sequence[Mapping[str, Any]],
+    speech: Mapping[int, Sequence[tuple[float, float]]] | None = None,
+) -> list[Window]:
     """The pool: ``windows`` without those overlapping a ``scored`` candidate of their
     source by :data:`SCORED_OVERLAP` of the shorter clip, then per source the best by peak,
     no two overlapping, :data:`SPACING_S` apart within a kind, :data:`PER_KIND` per kind
-    and :data:`PER_SOURCE` in all. Best peak first."""
+    and :data:`PER_SOURCE` in all. Best peak first. ``speech``: spoken ``(start, end)`` spans
+    in source time by :attr:`Window.index`; of two windows with the same score as listed
+    (``10 x peak`` to 0.1) the one with more speech over it goes first (a tie-break only, no
+    speech data: the order by peak)."""
+    speech = speech or {}
+
+    def talk(w: Window) -> float:
+        return sum(_overlap(w.start, w.end, a, b) for a, b in speech.get(w.index, ()))
+
+    def order(w: Window) -> tuple[float, float, float, int, float]:
+        return (-round(10 * w.peak, 1), -talk(w), -w.peak, w.index, w.start)
+
     by_src: dict[str, list[tuple[float, float]]] = {}
     for c in scored:
         by_src.setdefault(path_key(str(c["source"])), []).append(
@@ -387,7 +402,7 @@ def select(windows: list[Window], scored: Sequence[Mapping[str, Any]]) -> list[W
         )
     kept: list[Window] = []
     per_src: dict[str, list[Window]] = {}
-    for w in sorted(windows, key=lambda w: (-w.peak, w.index, w.start)):
+    for w in sorted(windows, key=order):
         key = path_key(str(w.source))
         if any(
             _overlap(w.start, w.end, a, b) >= SCORED_OVERLAP * min(w.end - w.start, b - a)
@@ -414,6 +429,7 @@ def build(
     style: Style,
     scored: Sequence[Mapping[str, Any]],
     crashes: Mapping[str, Any] | None,
+    speech: Mapping[int, Sequence[tuple[float, float]]] | None = None,
 ) -> list[Window]:
     """The visual pool of an analysis (:func:`select` over :func:`part_windows`).
 
@@ -423,6 +439,7 @@ def build(
         style: Analysis style (the action-cam kind reads the saved grids).
         scored: The scored candidates (dicts with ``source``, ``start``, ``end``).
         crashes: ``crashes.json`` object, or None.
+        speech: Spoken spans in source time by part index (tie-break, see :func:`select`).
     """
     from cutpoint import activity  # noqa: PLC0415
 
@@ -440,4 +457,4 @@ def build(
             found += part_windows(
                 part, grids, mask, speed, spans.get(path_key(str(Path(part.source))), [])
             )
-    return select(found, scored)
+    return select(found, scored, speech)

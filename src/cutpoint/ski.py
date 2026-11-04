@@ -55,7 +55,7 @@ The weighted sum is hard-masked on lifts and stops (``lift_mask | still_mask``);
 friends in view do not lift the mask. Peaks are
 turned into clips whose length depends on the dominant feature: jumps 3-6 s
 (1.5 s before take-off to 1.5 s after landing), crashes 4-8 s, speed/carve
-4-10 s, scenic 2-4 s, social/VLM 4-8 s. Each pick takes its whole stretch
+4-10 s, scenic 5-7 s, social/VLM 4-8 s. Each pick takes its whole stretch
 (the run around the peak above ``STRETCH`` of it), so a flat stretch gives
 one clip, not several back to back.
 """
@@ -93,14 +93,14 @@ GEOMETRY: dict[str, tuple[float, float, float, float]] = {
     "crash": (4.0, 8.0, 2.0, 4.0),  # relative to the impact
     "speed": (4.0, 10.0, 3.0, 3.0),
     "carve": (4.0, 10.0, 3.0, 3.0),
-    "scenic": (2.0, 4.0, 1.5, 1.5),
+    "scenic": (5.0, 7.0, 2.5, 2.5),
     "social": (4.0, 8.0, 3.5, 2.5),
     "vlm": (4.0, 8.0, 3.0, 3.0),
     "speech": (4.0, 8.0, 3.0, 2.5),
     "faces": (3.0, 6.0, 2.0, 2.0),
     "stopped": (3.0, 6.0, 2.5, 2.5),
     "short_clip": (2.0, 8.0, 4.0, 4.0),
-    "beauty": (2.0, 4.0, 1.5, 1.5),
+    "beauty": (5.0, 7.0, 2.5, 2.5),
     "people": (3.0, 6.0, 2.0, 2.0),
     "group": (3.0, 6.0, 2.0, 2.0),
     "voice_laughter": (4.0, 8.0, 3.5, 2.5),
@@ -515,6 +515,9 @@ def pick(
         if b - a < lo_len:
             grow = (lo_len - (b - a)) / 2
             a, b = a - grow, b + grow
+        if kind in ("scenic", "beauty"):  # keep the length near a source edge: shift inside
+            shift = max(0.0, -a) - max(0.0, b - duration)
+            a, b = a + shift, b + shift
         a, b = max(0.0, a), min(duration, b)
         ia = max(0, min(int(a / DT), s0) - 5)
         ib = min(n, max(int(b / DT), s1 + 1) + 5)
@@ -534,7 +537,7 @@ def pick(
                 event=ev,
             )
         )
-    return _deoverlap(picks)
+    return _deoverlap(picks, duration)
 
 
 def _label(kind: str, ev: dict[str, Any] | None) -> str:
@@ -545,7 +548,24 @@ def _label(kind: str, ev: dict[str, Any] | None) -> str:
     return KIND_LABEL.get(kind, kind)
 
 
-def _deoverlap(picks: list[Pick]) -> list[Pick]:
+def _regrow(p: Pick, keep: list[Pick], duration: float) -> None:
+    """Extend a trimmed scenic pick back to its minimum length on a free side, inside the
+    source and off the kept picks; left as it is when it cannot reach it."""
+    need = GEOMETRY[p.kind][0] - (p.end - p.start)
+    if need <= 0:
+        return
+    lo = max([q.end for q in keep if q.end <= p.start] or [0.0])
+    hi = min([q.start for q in keep if q.start >= p.end] or [duration])
+    hi = min(hi, duration)
+    if p.peak_t < p.start + (p.end - p.start) / 2 and hi - p.end >= need:
+        p.end = round(p.end + need, 2)
+    elif p.start - lo >= need:
+        p.start = round(p.start - need, 2)
+    elif hi - p.end >= need:
+        p.end = round(p.end + need, 2)
+
+
+def _deoverlap(picks: list[Pick], duration: float = float("inf")) -> list[Pick]:
     """Trim overlaps in favour of the higher peak; drop clips that become too short."""
     keep: list[Pick] = []
     for p in sorted(picks, key=lambda p: -p.peak):
@@ -555,6 +575,8 @@ def _deoverlap(picks: list[Pick]) -> list[Pick]:
                     p.end = min(p.end, q.start)
                 else:
                     p.start = max(p.start, q.end)
+        if p.kind in ("scenic", "beauty"):
+            _regrow(p, keep, duration)
         if p.end - p.start >= 0.6 * GEOMETRY.get(p.kind, GEOMETRY["vlm"])[0]:
             keep.append(p)
     return keep

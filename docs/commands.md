@@ -878,7 +878,7 @@ Visual candidates (`action-cam`, `action` and `sport` styles, and learned styles
 them). The scorer ranks scenery and steady riding low, so `analyze` also lists a few of them
 after the scored candidates, from the cached visual layer, action-cam grids and GPS speed
 (no extra decode): entries with `"pool": "visual"`, ids `v001`, `v002`, ... and a `kind`:
-`view` (a beauty peak of at least 0.5, 3-5 s, label "scenic view / beauty shot"), `crew`
+`view` (a beauty peak of at least 0.5, 5-7 s, label "scenic view / beauty shot"), `crew`
 (people close to the camera, 4-6 s, "group / friends shot") or `cruise` (8 s of a steady
 speed of at least 8 km/h with no jump, crash or wipeout, "casual cruising run"; only with GPS
 speed). None is on a lift, standing still or within a `crashes.json` crash; per source at most
