@@ -438,7 +438,9 @@ class ClipEncoder:
         loading it again; same device, dtype and normalisation.
 
         The model waits on the CPU (the visual layer's close then frees its VRAM)
-        and moves back to ``device`` on the first :meth:`embed`.
+        and moves back to ``device`` on the first :meth:`embed`, through
+        :func:`cutpoint.memguard.device_for` as a fresh load: on the CPU (float32) with a
+        WARNING when the GPU's memory is short by then.
         """
         enc = cls.__new__(cls)
         enc.torch, enc.device, enc.dtype = models.torch, models.device, models.dtype
@@ -450,7 +452,14 @@ class ClipEncoder:
         """``(N, 3, 768)`` L2-normalised embeddings of left / centre / right crops."""
         torch = self.torch
         if not self.on_device:
-            self.model = self.model.to(self.device)
+            # the VRAM checked when the visual layer loaded may be taken since (#721)
+            device = memguard.device_for("clip", self.device) if self.device != "cpu" else "cpu"
+            if device != self.device:
+                self.device, self.dtype = device, torch.float32
+                self.mean, self.std = self.mean.to(device), self.std.to(device)
+                self.model = self.model.to(device, self.dtype)
+            else:
+                self.model = self.model.to(self.device)
             self.on_device = True
         out = []
         for i in range(0, len(frames), batch):
@@ -1195,6 +1204,7 @@ def detect_project(
     p = params or CrashParams()
     prof = None
     if not p.resolved:
+        progress.start("profile")  # the steps of cutpoint crashes (progress.json only)
         prof = activity.resolve(
             project,
             activity=activity_name,
@@ -1211,6 +1221,7 @@ def detect_project(
     t0 = time.perf_counter()
     # The 360 lift rides of load_inputs are found with this profile's lift captions.
     prompts = activity.prompts(activity.record_profile(prof)) if prof else None
+    progress.start("inputs")
     with activity.use_prompts(prompts or activity.project_prompts(project)):
         for src, dur in sources:
             if force:
@@ -1265,7 +1276,9 @@ def detect_project(
         if src not in stores:
             stores[src] = {} if force else (cache.load_json(_dense_cache(Path(src), p)) or {})
         windows.add((src, "{:.1f}-{:.1f}".format(*dense_window(c, p))))
-    progress.continuing("dense check", sum(k in stores[s] for s, k in windows), len(windows))
+    if dense:
+        progress.start("dense")
+        progress.continuing("dense check", sum(k in stores[s] for s, k in windows), len(windows))
     seen: set[tuple[str, str]] = set()  # the dense windows of this loop so far
     try:
         for c in todo:
@@ -1304,6 +1317,7 @@ def detect_project(
     for k, c in enumerate(cands, 1):
         c["id"] = f"c{k:03d}"
     t0 = time.perf_counter()
+    progress.start("result")  # the contact sheets and crashes.json
     written = []
     out_dir = project / CHECK_DIR
     if sheets:
