@@ -83,6 +83,8 @@ def test_unload_frees_the_model_only_after_a_check(monkeypatch: pytest.MonkeyPat
     posts: list[tuple[str, dict]] = []
 
     class Resp:
+        is_redirect = False
+
         def raise_for_status(self) -> None:
             pass
 

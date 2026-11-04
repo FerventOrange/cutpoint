@@ -23,6 +23,8 @@ from cutpoint.styles import get_style
 
 
 class _Resp:
+    is_redirect = False
+
     def __init__(self, body: dict) -> None:
         self.body = body
 
@@ -39,7 +41,7 @@ def posts(monkeypatch) -> list[tuple[str, dict]]:
     retry, which answers with a score."""
     seen: list[tuple[str, dict]] = []
 
-    def post(url, json, timeout):
+    def post(url, json, timeout, **_k):
         seen.append((url, json))
         if url.endswith("/api/chat"):
             chats = sum(u.endswith("/api/chat") for u, _ in seen)
@@ -196,6 +198,28 @@ def test_unload_failure_is_not_fatal(monkeypatch, caplog):
     assert "Could not unload Ollama model m" in caplog.text
 
 
+def test_unload_does_not_follow_a_redirect(monkeypatch, caplog):
+    """An Ollama answering the unload with 307 is not followed to another host (that host
+    was never allowed): one request, no exception, the model counted as still loaded."""
+    sent: list[tuple[str, bool]] = []
+
+    def post(url, json, timeout, allow_redirects=True):
+        sent.append((url, allow_redirects))
+        resp = requests.Response()
+        resp.status_code, resp.url = 307, url
+        resp.headers["Location"] = "http://elsewhere.example.com/api/generate"
+        return resp
+
+    monkeypatch.setattr(vision.requests, "post", post)
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    rater.used = True
+    with caplog.at_level(logging.DEBUG, logger="cutpoint.vision"):
+        rater.unload()  # no exception: the run goes on
+    assert sent == [("http://127.0.0.1:1/api/generate", False)]
+    assert rater.used is True
+    assert "redirect (HTTP 307); not followed" in caplog.text
+
+
 @pytest.mark.parametrize(("weight", "high", "low"), [(0.25, 50.0, 30.0), (0.45, 58.0, 22.0)])
 def test_vision_blend_is_a_bounded_multiplier(weight, high, low):
     """#284: 5/10 is neutral, 10/10 lifts by ``weight`` (the style's vision_weight), 0/10
@@ -231,9 +255,13 @@ class _ByStartRater:
     """Rates each candidate by its start time; records nothing."""
 
     hits = asked = 0
+    cache_only = False
 
     def __init__(self, ratings: dict[float, tuple[float, str]]) -> None:
         self.ratings = ratings
+
+    def cached(self, *_a, **_k) -> None:
+        return None
 
     def rate(self, _src, start, _end, _style, activity=None):
         return vision.VisionResult(*self.ratings[start])
@@ -327,9 +355,13 @@ class _FakeRater:
     fail = False
     hits = asked = missed = 0
     consent_needed = None
+    cache_only = False
 
     def __init__(self, **_kw) -> None:
         _FakeRater.calls.append("init")
+
+    def cached(self, *_a, **_k) -> None:
+        return None
 
     def available(self) -> bool:
         _FakeRater.calls.append("available")

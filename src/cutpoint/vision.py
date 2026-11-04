@@ -186,6 +186,7 @@ class AssistantVision:
         self.provider = providers.make_vision(self.settings)
         self.model = self.provider.model
         self._ready: bool | None = None
+        self.sent = False  # True once a request went to the provider: unload() asks it
         # the vision-v2: key the provider still needs; None: on this machine (a local base URL
         # in config.json, nothing leaves it) or agreed to
         want = providers.consent_key(self.provider, "vision")
@@ -247,6 +248,7 @@ class AssistantVision:
             {"type": "image", "media_type": "image/jpeg", "data": base64.b64encode(j).decode()}
             for j in jpegs
         ]
+        self.sent = True
         try:
             return self.provider.chat([{"role": "user", "content": parts}], schema=schema).text
         except (
@@ -255,6 +257,17 @@ class AssistantVision:
         ) as err:
             logger.warning("Vision request failed: %s", keys.redact(str(err)))
             return None
+
+    def unload(self) -> None:
+        """Ask the provider to free the model's memory (:meth:`Provider.unload
+        <cutpoint.assistant.providers.Provider.unload>`), only if a request went to it: a
+        hosted API, llama-server, LM Studio and other OpenAI-compatible servers get nothing
+        (they have no unload request), so no extra call goes to them."""
+        if not self.sent:
+            return
+        self.sent = False
+        if self.provider.unload():
+            logger.debug("Unloaded vision model %s at %s", self.model, self.provider.name)
 
 
 class VisionRater:
@@ -689,13 +702,24 @@ class VisionRater:
 
     def unload(self) -> None:
         """Free the model's memory now (``keep_alive: 0``) instead of after Ollama's
-        default 5 minutes; only if this rater sent it a request. Failures are not fatal."""
+        default 5 minutes; only if this rater sent it a request. Failures are not fatal. A
+        hosted Vision role goes through :meth:`AssistantVision.unload` (#713)."""
+        if self.via:
+            self.via.unload()
+            return
         if not self.used:
             return
         try:
             resp = requests.post(
-                f"{self.url}/api/generate", json={"model": self.model, "keep_alive": 0}, timeout=10
+                f"{self.url}/api/generate",
+                json={"model": self.model, "keep_alive": 0},
+                timeout=10,
+                allow_redirects=False,  # never to a host the user did not allow
             )
+            if resp.is_redirect:
+                raise requests.HTTPError(
+                    f"Ollama answered with a redirect (HTTP {resp.status_code}); not followed"
+                )
             resp.raise_for_status()
         except requests.RequestException as err:
             logger.debug("Could not unload Ollama model %s: %s", self.model, err)
