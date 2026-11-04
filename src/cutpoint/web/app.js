@@ -311,6 +311,7 @@ function preserveFocus(fn) {
 }
 
 const setEmpty = (el, ...kids) => {
+  kids = kids.filter((k) => k != null && k !== false); // replaceChildren would print "null"
   el.replaceChildren(...kids);
   el.hidden = !kids.length;
 };
