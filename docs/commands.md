@@ -807,7 +807,7 @@ an analysed set processes only the new file.
 | `--max-candidates N` | Candidates per source before merging |
 | `--recover` | After a read error, resume analysis past the bad region |
 | `--must-include-crash CONF` | Action-cam: always clip crashes with at least this confidence, 0 to 1 (0 disables) |
-| `--batch-size N` | Close each model (Whisper and the step models) after N sources and load it again for the next ones, to give memory back on long runs; the results are the same. Default 0: keep it loaded. Also on `360 analyze` (its view layer, analysis and events) |
+| `--batch-size N` | Close each model (Whisper, the step models and the background HUD OCR engine) after N sources and load it again for the next ones, to give memory back on long runs; the results are the same. Default 0: keep it loaded. Also on `360 analyze` (its view layer, analysis and events) |
 | `--json` | Result as one [JSON envelope](#json-output) on stdout |
 
 **Vision rating.** The 0-10 rating scales a candidate's score (5 leaves it as is, 10 lifts it
@@ -1517,7 +1517,8 @@ uses new copies, and a changed `stage_dir` or `source_remap`, without a restart.
 ```text
 cutpoint crashes <project> [--dense | --no-dense] [--dense-top N] [--sheets N] [--lead S]
                  [--max-after S] [--max-clip S] [--force] [--reanalyze | --no-reanalyze]
-                 [--activity NAME] [--context TEXT] [--refresh-profile] [--json]
+                 [--batch-size N] [--activity NAME] [--context TEXT] [--refresh-profile]
+                 [--json]
 ```
 
 Action-cam module (its visual check needs the `events` extra, which Cutpoint lite leaves out).
@@ -1526,8 +1527,10 @@ project from full-rate IMU data, visual, audio and transcript evidence, and writ
 `crashes.json` plus contact sheets in `crash_check\`. Confident crashes are always exported by
 `clips`. The visual prompts and crash words come from the project's activity profile (see
 `profile`; `--activity`, `--context` and `--refresh-profile` work as on [`profile`](#profile)). See
-[action-cam workflow](workflows/action-cam.md). `--json` writes the result as one
-[JSON envelope](#json-output) on stdout.
+[action-cam workflow](workflows/action-cam.md). `--batch-size N` closes the dense confirm's
+CLIP model after N dense windows and loads it again for the next ones, to give memory back on
+long runs (as the crash layer of [`events`](#events) does); `crashes.json` is the same. Default
+0: keep it loaded. `--json` writes the result as one [JSON envelope](#json-output) on stdout.
 
 Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, the default reanalyze step is skipped and `highlights.json` is left unchanged; rerun once the footage is back.
 
