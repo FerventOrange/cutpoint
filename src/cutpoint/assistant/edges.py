@@ -18,6 +18,7 @@ import logging
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from cutpoint.clips import plan_edges
 from cutpoint.config import remap_source
 from cutpoint.events.tails import EventTailSettings, load_events
 from cutpoint.ffmpeg_utils import probe
+from cutpoint.planning import Padding
 from cutpoint.styles import get_style
 from cutpoint.tail import TailSettings
 
@@ -36,6 +38,39 @@ MAX_CACHED = 64  # planned sequences kept per project
 _SPEECH = SpeechSettings()  # the pass's built-in gaps and breath
 
 Edges = dict[str, tuple[float, float]]  # row id -> exported (start, end), source seconds
+Reasons = dict[str, str]  # row id -> why its exported range differs from the raw one
+
+
+@dataclass(frozen=True)
+class ExportOptions:
+    """The export settings besides Smart tails and Speech-aware cuts that move a clip's ends
+    (``None``: the style's or the CLI's default). ``event_tails``: True on, False off, None auto."""
+
+    event_tails: bool | None = None
+    event_window: float | None = None
+    tail_min: float | None = None
+    tail_max: float | None = None
+    speech_max_extend: float | None = None
+    speech_max_lead: float | None = None
+    extend_start: float | None = None
+    extend_end: float | None = None
+
+
+def _reason(plan: Any) -> str | None:
+    """Why ``plan`` (a :class:`cutpoint.clips.ClipPlan`) leaves the raw range, or None."""
+    tail = getattr(plan, "tail", None)
+    why = []
+    if tail is not None and str(tail.reason).startswith("event payoff"):
+        why.append("event tail")
+    elif tail is not None and tail.extension > 0.0005:
+        why.append("smart tail")
+    speech = getattr(plan, "speech", None) or {}
+    if any((speech.get(side) or {}).get("moved") for side in ("start", "end")):
+        why.append("speech-aware")
+    applied = (getattr(plan, "pad_rec", None) or {}).get("applied") or {}
+    if applied.get("start", 0) > 0.0005 or applied.get("end", 0) > 0.0005:
+        why.append("extend")
+    return ", ".join(why) or None
 
 
 class EdgePlanner:
@@ -48,7 +83,7 @@ class EdgePlanner:
         self.project = project
         self.resolve = resolve
         self._lock = threading.Lock()
-        self._plans: OrderedDict[tuple[Any, ...], Edges] = OrderedDict()
+        self._plans: OrderedDict[tuple[Any, ...], tuple[Edges, Reasons]] = OrderedDict()
         self._chains: dict[tuple[str, tuple[int, int]], list[tuple[float, float]]] = {}
 
     # -- exported edges ----------------------------------------------------------------
@@ -63,19 +98,40 @@ class EdgePlanner:
         return tuple(out)
 
     def plan(
-        self, rows: Sequence[dict[str, Any]], *, smart_tail: bool = True, speech_aware: bool = True
+        self,
+        rows: Sequence[dict[str, Any]],
+        *,
+        smart_tail: bool = True,
+        speech_aware: bool = True,
+        options: ExportOptions | None = None,
     ) -> Edges:
         """``{id: (start, end)}`` of ``rows`` as ``clips`` exports them with smart tails and
         speech-aware cuts on (``smart_tail`` / ``speech_aware`` False turn one off for every
-        row; a row's own False does so for it). A row that cannot be planned (a source that
-        cannot be read) keeps its raw range; so do all of them if planning fails. Only a plan
-        that worked is kept for the next ask."""
+        row; a row's own False does so for it; ``options``: the other export settings). A row
+        that cannot be planned (a source that cannot be read) keeps its raw range; so do all of
+        them if planning fails. Only a plan that worked is kept for the next ask."""
+        return self.explain(
+            rows, smart_tail=smart_tail, speech_aware=speech_aware, options=options
+        )[0]
+
+    def explain(
+        self,
+        rows: Sequence[dict[str, Any]],
+        *,
+        smart_tail: bool = True,
+        speech_aware: bool = True,
+        options: ExportOptions | None = None,
+    ) -> tuple[Edges, Reasons]:
+        """:meth:`plan` and, for each row whose range changed, why (``event tail``,
+        ``smart tail``, ``speech-aware``, ``extend``; several joined by ``, ``)."""
         raw = {r["id"]: (float(r["start"]), float(r["end"])) for r in rows}
         if not rows:
-            return {}
+            return {}, {}
+        opts = options or ExportOptions()
         key = (
             smart_tail,
             speech_aware,
+            opts,
             self._stamp(),
             tuple(self._version(s) for s in sorted({r["source"] for r in rows})),
             tuple(
@@ -86,18 +142,19 @@ class EdgePlanner:
         with self._lock:
             if key in self._plans:
                 self._plans.move_to_end(key)
-                return dict(self._plans[key])
+                edges, reasons = self._plans[key]
+                return dict(edges), dict(reasons)
             try:
-                planned, whole = self._plan(rows, smart_tail, speech_aware)
+                planned, reasons, whole = self._plan(rows, smart_tail, speech_aware, opts)
             except Exception as err:  # noqa: BLE001  the chat and preview go on with raw ranges
                 logger.warning("could not plan the exported edges (%s); using the raw ones", err)
-                return dict(raw)
+                return dict(raw), {}
             out = {**raw, **planned}
             if whole:  # a source that could not be read may be back at the next ask
-                self._plans[key] = out
+                self._plans[key] = (out, reasons)
                 while len(self._plans) > MAX_CACHED:
                     self._plans.popitem(last=False)
-            return dict(out)
+            return dict(out), dict(reasons)
 
     def _version(self, source: str) -> tuple[str, int, int]:
         """``(resolved path, mtime_ns, size)`` of ``source``; zeros when it cannot be read."""
@@ -109,10 +166,14 @@ class EdgePlanner:
             return (str(path), 0, 0)
 
     def _plan(
-        self, rows: Sequence[dict[str, Any]], smart_tail: bool, speech_aware: bool
-    ) -> tuple[Edges, bool]:
-        """``(edges, whole)``: the planned rows (those of the sources that can be read), and
-        whether every source could be."""
+        self,
+        rows: Sequence[dict[str, Any]],
+        smart_tail: bool,
+        speech_aware: bool,
+        opts: ExportOptions,
+    ) -> tuple[Edges, Reasons, bool]:
+        """``(edges, reasons, whole)``: the planned rows (those of the sources that can be
+        read), why each moved, and whether every source could be read."""
         hl = cache.load_json(self.project / "highlights.json")
         hl = hl if isinstance(hl, dict) else {}
         try:
@@ -120,7 +181,7 @@ class EdgePlanner:
         except ValueError:
             style = get_style("gaming")
         settings = hl.get("settings") if isinstance(hl.get("settings"), dict) else {}
-        events = load_events(self.project)
+        events = load_events(self.project) if opts.event_tails is not False else None
         off = {"smart_tail": False} if not smart_tail else {}
         off |= {"speech_aware": False} if not speech_aware else {}
         moments = [
@@ -144,20 +205,39 @@ class EdgePlanner:
                 logger.warning("could not read %s (%s); its clips keep their raw ranges", src, err)
         moments = [m for m in moments if m["source"] in infos]
         if not moments:
-            return {}, False
+            return {}, {}, False
+        padding = Padding.from_args(None, opts.extend_start, opts.extend_end)
         plans = plan_edges(
             moments,
             self.project,
             io_paths={s: p for s, p in io_paths.items() if s in infos},
             infos=infos,
-            tail=TailSettings.from_style(style, enabled=True),
+            tail=TailSettings.from_style(
+                style, enabled=True, tail_min=opts.tail_min, tail_max=opts.tail_max
+            ),
             events=events,
-            event_settings=EventTailSettings(enabled=events is not None),
-            speech=SpeechSettings.from_style(style, enabled=True),
+            event_settings=EventTailSettings(
+                enabled=events is not None,
+                **({"window": opts.event_window} if opts.event_window else {}),
+            ),
+            speech=SpeechSettings.from_style(
+                style,
+                enabled=True,
+                max_extend=opts.speech_max_extend,
+                max_lead=opts.speech_max_lead,
+            ),
+            padding=padding if padding.active else None,
             language=settings.get("language"),
         )
         planned = {p.entry["id"]: (round(p.start, 3), round(p.end, 3)) for p in plans}
-        return planned, len(infos) == len(io_paths)
+        reasons = {
+            p.entry["id"]: why
+            for p in plans
+            if (why := _reason(p))
+            and (round(p.start, 3), round(p.end, 3))
+            != (float(p.entry["start"]), float(p.entry["end"]))
+        }
+        return planned, reasons, len(infos) == len(io_paths)
 
     # -- phrase ends -------------------------------------------------------------------
     def _phrases(self, source: str) -> list[tuple[float, float]]:

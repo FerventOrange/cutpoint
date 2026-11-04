@@ -424,7 +424,8 @@ does not send keeps what the analysis used, which the project view reports as `a
 (with `must_include_crash_default`, the style's value, `null` for styles other than action-cam).
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
-remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
+remove, multi-select with batch remove (a "Select all clips" checkbox above the list ticks every clip, or clears
+them all when every clip is ticked; Ctrl+A (Cmd+A) in the list ticks every clip), up/down buttons and drag reorder. Thumbnails are cached as
 JPEGs in `<project>/ui/frames/` (at most 1500 per project, least recently used evicted). Drag the
 splitter to resize the side column (arrow keys, Shift, Home/End; double-click resets); the width is
 remembered per browser. A second splitter between the Moments column and the preview works the same
@@ -500,7 +501,11 @@ rail widens to show it. The gold start and end edges on the rail are handles: dr
 the rail's edge pans a zoomed view), or Tab to one and move it with the arrow keys (0.1 s;
 Shift+arrow 1 s), PageUp and PageDown (5 s), Home and End (as far as it can go). A handle keeps
 the clip at least 0.1 s long and inside the source, and the preview seeks to it. Space still
-plays and pauses while a handle has focus. Clips longer than 10 minutes get a note under the trim fields.
+plays and pauses while a handle has focus. The handles edit the raw range. When the export cuts a clip
+elsewhere (an event tail, a smart tail, a speech-aware move or Extend), the rail and the overview show
+the difference as a shaded, dashed strip beyond the markers, and the note under the trim fields reads,
+for example, "Clip length 6.00 s · exports as 16.22 s (event tail)". Clips longer than 10 minutes get a
+note under the trim fields.
 "Play sequence" in the Sequence header previews the cut without exporting: it plays each clip
 from its current start to its end, in sequence order, from the sources (or their proxies), with
 hard cuts. The clock shows the clip number and the time in the sequence, the playing row is

@@ -530,6 +530,10 @@ body.tips-off .flag-tip { display: none; }
 }
 /* over shown stills, a theme may shade the gaps darker (Light: the stills drown its light shade) */
 .rail-marks:has(> .rail-film > img.ok) > .rail-gaps > span { background-color: var(--film-gap-shade, var(--gap-shade)); }
+/* what the export adds to the trim (event, smart and speech-aware tails, Extend): shaded and dashed outside the marker */
+.rail-tails { position: absolute; inset: 0; pointer-events: none; }
+.rail-tail { position: absolute; top: 0; bottom: 0; background: var(--gold-fill); border: 1px dashed var(--gold); opacity: 0.6; }
+.overview .rail-tail { top: 7px; bottom: 7px; min-width: 2px; background: none; opacity: 1; }
 .rail-orig { position: absolute; top: 4px; bottom: 4px; border: 1px dashed var(--muted); border-radius: var(--radius-xs); pointer-events: none; }
 .rail input[type=range] {
   position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
@@ -645,6 +649,8 @@ body.tips-off .flag-tip { display: none; }
   display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2);
   background: var(--deep); border: 1px solid var(--card-line); border-radius: var(--radius-md);
 }
+.seq-selall { display: flex; align-items: center; gap: var(--space-2); padding-inline: var(--space-2); font-size: 13px; cursor: pointer; }
+.seq-selall[hidden] { display: none; }
 .seq-list { display: grid; gap: var(--space-2); }
 .removed { display: grid; gap: var(--space-2); }
 .removed > p { font-size: 13px; }
@@ -842,7 +848,7 @@ body.tips-off .flag-tip { display: none; }
 .chat-form textarea:disabled { opacity: 0.6; }
 .chat-form .btn { flex: none; min-height: var(--control-h-lg); }
 /* a proposal previewed in the Sequence tab, in place of the sequence: each change in words, with its mark */
-#panelSequence.previewing :is(#seqList, #seqBatch, #seqEmpty, #removedPanel) { display: none; }
+#panelSequence.previewing :is(#seqList, #seqBatch, #seqSelAllRow, #seqEmpty, #removedPanel) { display: none; }
 .proposal { display: grid; gap: var(--space-2); padding: var(--space-3); background: var(--deep); border: 1px solid var(--amber-text); border-radius: var(--radius-md); }
 .proposal h3 { font-size: 14px; }
 #propSummary { overflow-wrap: anywhere; }
