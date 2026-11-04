@@ -540,9 +540,16 @@ _CHANGE = re.compile(r"\b(?:by|extra|another|add|more|trim|cut|remove|plus|exten
 _CLIP_REF = re.compile(r"\bm\d+\b[^.!?;\n]*$")
 # A length for each clip ("each clip about 5 s", "clips around 8 seconds", "10 s clips") or a change
 # ("30 s more", "5 s longer") is none either.
-_PER_CLIP_BEFORE = re.compile(r"\b(?:each|every|per)(?:\s+clip)?\W*$", re.I)
+_SEQ_WORD = rf"(?:it|whole|total|overall|{_VIDEO})"
+_PER_CLIP_BEFORE = re.compile(
+    rf"\b(?:each|every|per)\b(?:(?!{_SEQ_WORD}|{_NUM}{_UNIT})[^.!?;\n])*$", re.I
+)
+# The text before a length cue ("make the clips about 5 s long": the cue "about" ends it)
+_CUE_END = re.compile(rf"{_LEN_CUE}\s*(?:be\s+|a\s+|an\s+)?~?\s*$", re.I)
 # Right after "clips": seconds are per clip, minutes the whole video ("clips around 2 minutes").
-_CLIPS_BEFORE = re.compile(r"\bclips?\s*$", re.I)
+_CLIPS_BEFORE = re.compile(
+    r"\bclips?\s*(?:(?:should|must|needs? to|have to)\s+be\s+|are\s+|of\s+|be\s+)?$", re.I
+)
 _PER_CLIP_AFTER = re.compile(
     r"\s*(?:each|per clip|a clip|clips?|more(?!\s+or\s+less)|extra|longer|shorter)\b", re.I
 )
@@ -566,9 +573,12 @@ def target_seconds(text: str) -> float | None:
             if _CHANGE.search(before) or _CLIP_REF.search(before):
                 continue
             n, unit = _count(m.group(1)), m.group(2).lower()
-            if _PER_CLIP_BEFORE.search(before) or _PER_CLIP_AFTER.match(text, m.end()):
+            stems = (before, _CUE_END.sub("", before))
+            if any(_PER_CLIP_BEFORE.search(s) for s in stems):
                 continue
-            if not unit.startswith("m") and _CLIPS_BEFORE.search(before):
+            if _PER_CLIP_AFTER.match(text, m.end()):
+                continue
+            if not unit.startswith("m") and any(_CLIPS_BEFORE.search(s) for s in stems):
                 continue
             if not unit.startswith("m"):
                 return n
