@@ -5364,17 +5364,40 @@ def create_app(port: int) -> FastAPI:
     def planned_edges(pid: str, body: dict[str, Any]):
         """Where the clips of the working sequence ``segments`` start and end once exported
         (:meth:`cutpoint.assistant.edges.EdgePlanner.plan`: Smart tails and Speech-aware cuts,
-        both on unless ``smart_tail`` / ``speech_aware`` say false), as ``{id: {start, end}}``;
-        the page previews and totals the sequence with them. Writes nothing."""
+        both on unless ``smart_tail`` / ``speech_aware`` say false) and the other export settings
+        the page sends as Export clips does (``event_tails``, ``event_window``, ``tail_min``,
+        ``tail_max``, ``speech_max_extend``, ``speech_max_lead``, ``extend_start``,
+        ``extend_end``), as ``{id: {start, end, reason}}`` (``reason`` only for a range that moved:
+        ``event tail``, ``smart tail``, ``speech-aware`` or ``extend``); the page previews and
+        totals the sequence with them. Writes nothing."""
         p = project_dir(pid)
         flags = {"smart_tail": True, "speech_aware": True, **body}
         segments = validate_segments(body.get("segments"), sources.entries(p), media)
-        planned = edge_planner(p).plan(
+        event_tails = body.get("event_tails", "auto")
+        if not isinstance(event_tails, str) or event_tails not in EVENT_TAILS:
+            raise bad("event_tails must be 'auto', 'on' or 'off'")
+        options = ai_edges.ExportOptions(
+            event_tails={"auto": None, "on": True, "off": False}[event_tails],
+            event_window=_seconds(body, "event_window", MAX_TIMING_S, positive=True),
+            tail_min=_seconds(body, "tail_min", MAX_TIMING_S),
+            tail_max=_seconds(body, "tail_max", MAX_TIMING_S),
+            speech_max_extend=_seconds(body, "speech_max_extend", MAX_TIMING_S),
+            speech_max_lead=_seconds(body, "speech_max_lead", MAX_TIMING_S),
+            extend_start=_seconds(body, "extend_start", MAX_EXTEND_S),
+            extend_end=_seconds(body, "extend_end", MAX_EXTEND_S),
+        )
+        planned, reasons = edge_planner(p).explain(
             segments,
             smart_tail=_flag(flags, "smart_tail"),
             speech_aware=_flag(flags, "speech_aware"),
+            options=options,
         )
-        return {"edges": {k: {"start": a, "end": b} for k, (a, b) in planned.items()}}
+        return {
+            "edges": {
+                k: {"start": a, "end": b, **({"reason": reasons[k]} if k in reasons else {})}
+                for k, (a, b) in planned.items()
+            }
+        }
 
     def assistant_save(p: Path, name: str) -> None:
         """Check ``ui/assistant/<name>`` may be written and create its folder."""

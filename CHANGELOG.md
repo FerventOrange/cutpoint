@@ -21,6 +21,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for good. API: `GET /api/projects/<id>/delete-plan` and
   `DELETE /api/projects/<id>` (`{"permanent": true}`; 409 with `code` `no_trash`). New core
   dependency: `send2trash` (BSD-3-Clause).
+
+- Select all in the browser workspace's sequence: a "Select all clips" checkbox above the list (partly
+  ticked when only some clips are) ticks every clip for the batch actions, or clears them when all are
+  ticked. Ctrl+A (Cmd+A) in the list ticks every clip, and the count is announced.
+
+- AI Chat spreads kinds when you ask for a mix. A message that says to break up, mix in,
+  intersperse, sprinkle, alternate or vary the pace ("an occasional funny moment and dialogue to
+  break up the skiing") makes Cutpoint reorder the final proposal in code: the funny, dialogue and
+  scenic clips go evenly between the skiing runs (each kind in its order, a scenic first clip stays
+  first) as `move` ops marked `auto`. If the message names dialogue and the proposal has none, up
+  to 3 dialogue moments are added within 15% of the length asked for. When one would not fit, it
+  replaces a skiing clip that the auto-fill added this turn (the lowest-scoring of a similar
+  length); clips you or the assistant picked are never removed, and with none to swap no dialogue
+  is added. Past the 100-op cap the spread is one `order` op. A request that is negated ("don't
+  break up the skiing") or a fade or transition between clips is not a mix request. The preview
+  marks those rows "Auto-spread" and the summary says what was spread. Without such wording nothing changes. `add` `at` and `move` `to` accept a
+  whole number written as `3.0` or `"3"`.
+
 - AI Chat builds to a length target with clean clip ends. The model now sees each clip's length
   as it will export (Smart tails and Speech-aware cuts on), the room before and after it in its
   source, the sequence total and the length you asked for ("~4 min", "240 s", "1:30"). A proposal
@@ -683,6 +701,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `final.otio` next to `final.mp4`; pass `--format fcpxml` or `--format otio` for a timeline.
 
 ### Fixed
+
+- The trim view shows what a clip exports, not only the raw cut. A clip trimmed to 6.00 s that
+  exports at 16.22 s (an event tail extends its end) now reads "Clip length 6.00 s · exports as
+  16.22 s (event tail)" and shows the extra time as a shaded, dashed strip after the end marker
+  (and before the start marker when the export starts earlier) on the rail and the overview; the
+  handles still edit the raw range. The sequence asks the server for the export's ends with every
+  setting that moves them (Event tails and window, Tail min and max, the speech caps, Extend
+  start and end), not only Smart tails and Speech-aware cuts, and redraws the rail when it
+  answers. "Play sequence" starts every clip at its exported start. `POST /api/projects/<id>/edges` takes
+  those settings and returns a `reason` (`event tail`, `smart tail`, `speech-aware`, `extend`)
+  for each range that moved.
 
 - The AI Chat proposes sequences reliably with a local model such as `qwen3.5:9b`. The 8192-token
   context filled up (the budget counted 4 characters per token where the JSON data measures

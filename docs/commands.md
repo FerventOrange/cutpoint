@@ -443,7 +443,8 @@ does not send keeps what the analysis used, which the project view reports as `a
 (with `must_include_crash_default`, the style's value, `null` for styles other than action-cam).
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
-remove, multi-select with batch remove, up/down buttons and drag reorder. Thumbnails are cached as
+remove, multi-select with batch remove (a "Select all clips" checkbox above the list ticks every clip, or clears
+them all when every clip is ticked; Ctrl+A (Cmd+A) in the list ticks every clip), up/down buttons and drag reorder. Thumbnails are cached as
 JPEGs in `<project>/ui/frames/` (at most 1500 per project, least recently used evicted). Drag the
 splitter to resize the side column (arrow keys, Shift, Home/End; double-click resets); the width is
 remembered per browser. A second splitter between the Moments column and the preview works the same
@@ -519,7 +520,11 @@ rail widens to show it. The gold start and end edges on the rail are handles: dr
 the rail's edge pans a zoomed view), or Tab to one and move it with the arrow keys (0.1 s;
 Shift+arrow 1 s), PageUp and PageDown (5 s), Home and End (as far as it can go). A handle keeps
 the clip at least 0.1 s long and inside the source, and the preview seeks to it. Space still
-plays and pauses while a handle has focus. Clips longer than 10 minutes get a note under the trim fields.
+plays and pauses while a handle has focus. The handles edit the raw range. When the export cuts a clip
+elsewhere (an event tail, a smart tail, a speech-aware move or Extend), the rail and the overview show
+the difference as a shaded, dashed strip beyond the markers, and the note under the trim fields reads,
+for example, "Clip length 6.00 s · exports as 16.22 s (event tail)". Clips longer than 10 minutes get a
+note under the trim fields.
 "Play sequence" in the Sequence header previews the cut without exporting: it plays each clip
 from its current start to its end, in sequence order, from the sources (or their proxies), with
 hard cuts. The clock shows the clip number and the time in the sequence, the playing row is
@@ -551,6 +556,23 @@ text while the sequence is still short of the length you asked for, Cutpoint bui
 from the current sequence itself and shows it next to the text, labelled "the assistant didn't
 propose an edit" (not for a question). A proposal that
 removes half or more of the clips when you did not ask to remove any is sent back and never used.
+
+Mixing kinds: when your message asks to break up, mix in or intersperse kinds ("an occasional
+funny moment to break up the skiing", "sprinkle in", "now and then", "alternate", "vary the
+pace"; an audio mix is none), Cutpoint reorders the final proposal in code. Each row is skiing
+(fast, speed, crash, cruise, crew), scenic (view, beauty), funny (laugh) or dialogue (spoken
+words over a clip that is not skiing); the scenic, funny and dialogue clips are spread evenly
+between the skiing runs, each kind keeps its order and a scenic first clip stays first. If you also
+name dialogue (dialogue, conversation, banter, commentary, talk or chat moments) and the sequence has
+none, up to 3 dialogue moments are added (the assistant's searches first, then the best unused
+ones), within 15% of the length you asked for. When one does not fit, it replaces the
+lowest-scoring skiing clip of a similar length among those the auto-fill added this turn; clips you
+or the assistant picked are never removed, and with none to swap no dialogue is added. Negated
+wording ("don't break up the skiing", "no dialogue") and a fade or transition between clips do not
+count. These are `move`, `add` and `remove` ops marked
+`auto` (one `order` op when a sequence needs more moves than the 100-op cap allows); the preview marks the rows "Auto-spread" and the summary says how many clips of each kind
+were spread. Without such wording the order is the assistant's. `move` and `add` positions
+written as `3.0` or `"3"` count as 3.
 
 The AI Chat tab talks to the model set in the [`assistant`](configuration.md#assistant) section of
 `config.json`, chosen in the Models tab (Chat role) as a Provider with a model; no base

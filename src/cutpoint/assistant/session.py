@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from cutpoint.assistant import context, lookfor, watch
+from cutpoint.assistant import context, lookfor, pacing, watch
 from cutpoint.assistant.edges import EdgePlanner, length
 from cutpoint.assistant.ops import apply_ops, change_counts, summary_gap
 from cutpoint.assistant.providers import (
@@ -232,6 +232,9 @@ class Turn:
         self.table = context.MomentTable(project.candidates, project.segments, project.windows)
         self.table.durations = project.durations
         self.target = context.target_seconds(text)  # seconds the user asked for, if any
+        self.mix = pacing.asks_for_mix(text)  # asks to break up / mix in kinds: code spreads them
+        self.dialogue = pacing.names_dialogue(text)
+        self._kinds: dict[str, str] = {}  # id -> pacing kind (memo of :meth:`_pace_kind`)
         self.status = "running"  # running | done | failed | cancelled
         self.error: str | None = None
         self.events: list[dict[str, Any]] = []
@@ -289,6 +292,9 @@ class Turn:
                     auto = e.get("auto")
                     if auto:
                         counts += f"; {len(auto['lengthened']) + len(auto['added'])} auto-filled"
+                    if pace := e.get("pace"):
+                        n = len({*pace["moved"], *pace["added"], *pace["replaced"]})
+                        counts += f"; {n} auto-spread"
                     reply = f"Proposed: {e['summary']} (changes: {counts})"
             return {
                 "id": self.id,
@@ -843,7 +849,7 @@ class Turn:
                 f"cut about {over:.0f} s (shorten or remove clips) and propose again."
             )
             return self._rejected(note, note)
-        summary, main = self._filled(summary, main)
+        summary, main = self._paced(*self._filled(summary, main))
         suggestions = []
         for sug in (raw if isinstance(raw, list) else [])[:MAX_SUGGESTIONS]:
             label = sug.get("label") if isinstance(sug, dict) else None
@@ -900,6 +906,7 @@ class Turn:
         summary, main = self._filled("", base, why)
         if "auto" not in main:
             return False
+        summary, main = self._paced(summary, main)
         event = {"kind": "proposal", **self._numbered("p", summary.strip(), main)}
         return self._emit({**event, "suggestions": []})
 
@@ -950,6 +957,86 @@ class Turn:
         note = f" Auto-filled {head}: {', '.join(parts)}; now {done['length']:.0f} s."
         return base + note, done
 
+    def _pace_kind(self, item: Mapping[str, Any]) -> str:
+        """The pacing kind (:func:`pacing.moment_kind`) of a moment or sequence row."""
+        real = item["id"]
+        if real not in self._kinds:
+            cand = self.table.candidates.get(real)
+            look = self.table.looks.get(real)
+
+            def spoken() -> bool:
+                said = (cand or {}).get("transcript")
+                if not isinstance(said, str) or len(said.split()) < pacing.SPOKEN_WORDS:
+                    row = cand or item
+                    lines = context.transcript_lines(
+                        self.project.transcript, row["source"], row["start"], row["end"]
+                    )
+                    said = " ".join(line.partition("] ")[2] for line in lines)
+                return len(said.split()) >= pacing.SPOKEN_WORDS
+
+            label = str(item.get("label") or "")
+            self._kinds[real] = pacing.moment_kind(
+                label, cand, look.cues if look is not None else {}, spoken
+            )
+        return self._kinds[real]
+
+    def _paced(self, summary: str, main: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        """``(summary, proposal)`` with the kinds spread between the skiing runs
+        (:func:`pacing.pace`) when the message asks to break up or mix kinds: real ops marked
+        ``auto``, their rows and the summary say so. Unchanged for any other message."""
+        if not self.mix:
+            return summary, main
+        p = self.project
+        pool = {c["id"]: c for c in [*p.candidates, *self.found]}
+        found = pacing.pace(
+            main,
+            kind_of=self._pace_kind,
+            evaluate=lambda ops: self._checked_real(ops)[0],
+            candidates=pool,
+            searched=self._searches,
+            dialogue=self.dialogue,
+            upper=self.target * (1 + TOLERANCE) if self.target else None,
+            removable=(main.get("auto") or {}).get("added", []),
+        )
+        if found is None:
+            return summary, main
+        done = found.checked
+        if "auto" in main:  # the fill's record stays with the proposal
+            done["auto"] = main["auto"]
+        marked = {r["id"]: r["auto"] for r in main["diff"] if r.get("auto")}
+        for row in done["diff"]:
+            if row["id"] in marked:
+                row["auto"] = marked[row["id"]]
+            elif row["id"] in (*found.added, *found.replaced) or (
+                row["id"] in found.moved and "moved" in row["changes"]
+            ):
+                row["auto"] = "spread"  # a row the model left in place and code moved or swapped
+        done["pace"] = {
+            "moved": found.moved,
+            "added": found.added,
+            "replaced": found.replaced,
+            "spread": found.spread,
+        }
+        parts = []
+        if found.spread:
+            names = [f"{n} {k}" for k, n in found.spread.items()]
+            listed = ", ".join(names[:-1]) + (" and " if len(names) > 1 else "") + names[-1]
+            parts.append(f"Spread {listed} clips between the skiing runs.")
+        if found.added:
+            n, r = len(found.added), len(found.replaced)
+            more = f", replacing {r} skiing clip{'s' * (r != 1)}" if r else ""
+            parts.append(f"Added {n} dialogue moment{'s' * (n != 1)} you asked for{more}.")
+        text = summary.strip()
+        if "auto" not in main:  # the fill capped it already; else leave room for the note
+            text = text[:300]
+        if found.added:  # the length changed: say the new one
+            now = f"now {done['length']:.0f} s."
+            text, n = re.subn(r"now \d+ s\.$", now, text)
+            if not n:
+                parts.append(now.capitalize())
+        note = " ".join(parts)
+        return f"{text[: MAX_SUMMARY - len(note) - 1]} {note}".strip(), done
+
     def _send_back(self, summary: str, main: dict[str, Any], gap: str | None = None) -> str | None:
         """Why a valid proposal goes back to the model, once a turn for each problem: it makes
         less than the length the user asked for, or its summary says a change the ops do not
@@ -997,7 +1084,7 @@ class Turn:
         found = self._closest()
         if found is None:
             return False
-        summary, main = self._filled(*found)
+        summary, main = self._paced(*self._filled(*found))
         self._candidates = []
         event = {"kind": "proposal", **self._numbered("p", summary.strip(), main)}
         return self._emit({**event, "suggestions": []})
