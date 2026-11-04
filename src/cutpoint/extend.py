@@ -376,14 +376,16 @@ def _extend_locked(
             f"{out_dir} {'is the input folder' if in_place else 'is not empty'};"
             " use --force to overwrite"
         )
-    # Into a non-empty folder (in place or --out with --force), the clips are exported into a
-    # hidden staging folder and swapped in only when all succeeded, so a failed or cancelled
-    # run leaves the folder as it was; staged_dir refuses a drive root, a mount point or a
-    # bind mount before any export. A run that fails before writing anything leaves no
-    # empty folder behind.
-    staged = in_place or non_empty
-    staging = folders.staged_dir(out_dir, resume=True) if staged else None
-    with staging or folders.output_dir(out_dir) as work:
+    # As clips does: the clips are exported into a hidden staging folder and swapped in only
+    # when all succeeded, so a failed or cancelled run leaves the folder as it was (a new one
+    # is not made) and keeps its finished clips for the next run (cutpoint.clipresume).
+    # staged_dir refuses a drive root, a mount point or a bind mount before any export; only
+    # an empty one is exported into directly. A run that fails leaves no empty folders behind.
+    with (
+        folders.output_dir(out_dir.parent),
+        folders.staged_dir(out_dir, direct_if_empty=True, resume=True) as work,
+    ):
+        staged = work != out_dir  # not exported into directly
         by_file = {e["file"]: e for e in manifest.get("clips", [])}
         fmt_d = manifest.get("format") or {}
         fmt = OutputFormat(int(fmt_d["width"]), int(fmt_d["height"]), int(fmt_d["fps"]))
