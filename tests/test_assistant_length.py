@@ -1126,6 +1126,14 @@ def test_a_phrase_end_far_away_leaves_the_end_and_a_trim_never_passes_the_cap(
         ("each clip about 5 s, about 2 min total", 120),
         ("each clip about 5 s, make it about 2 min", 120),
         ("every clip about 4 s; around 90 s overall", 90),
+        ("tighten each clip and make it about 3 minutes", 180),
+        ("shorten every clip so the video is about 2 min", 120),
+        ("trim each clip, the whole thing under 2 minutes", 120),
+        ("tighten every clip, total around 3 min", 180),
+        ("cut each clip down and keep it under 90 seconds", 90),
+        ("make each clip snappier and get it to 2 min", 120),
+        ("tighten each clip and make the video about 3 min", 180),
+        ("tighten every clip and aim for a 2 minute montage", 120),
     ],
 )
 def test_a_length_for_each_clip_or_a_change_is_no_sequence_target(

@@ -540,7 +540,8 @@ _CHANGE = re.compile(r"\b(?:by|extra|another|add|more|trim|cut|remove|plus|exten
 _CLIP_REF = re.compile(r"\bm\d+\b[^.!?;\n]*$")
 # A length for each clip ("each clip about 5 s", "clips around 8 seconds", "10 s clips") or a change
 # ("30 s more", "5 s longer") is none either.
-_SEQ_WORD = rf"(?:it|whole|total|overall|{_VIDEO})"
+_SEQ_WORD = rf"\b(?:it|whole|total|overall|{_VIDEO})\b"
+_SEQ = re.compile(_SEQ_WORD, re.I)
 _PER_CLIP_BEFORE = re.compile(
     rf"\b(?:each|every|per)\b(?:(?!{_SEQ_WORD}|{_NUM}{_UNIT})[^.!?;\n])*$", re.I
 )
@@ -574,7 +575,9 @@ def target_seconds(text: str) -> float | None:
                 continue
             n, unit = _count(m.group(1)), m.group(2).lower()
             stems = (before, _CUE_END.sub("", before))
-            if any(_PER_CLIP_BEFORE.search(s) for s in stems):
+            if _PER_CLIP_BEFORE.search(text[: m.start(1)]) and not _SEQ.search(
+                text[m.end(2) : m.end()]
+            ):
                 continue
             if _PER_CLIP_AFTER.match(text, m.end()):
                 continue

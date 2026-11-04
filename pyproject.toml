@@ -143,6 +143,7 @@ select = [
     "PTH",  # flake8-use-pathlib
     "BLE",  # blind except: broad catches must be marked deliberate with noqa
     "PLC0415",  # import outside top level: heavy optional deps are imported lazily, marked with noqa
+    "PLE2510",  # literal backspace byte in source (stray control character)
 ]
 ignore = [
     "E501",          # long lines are handled by the formatter; stragglers are strings/comments
