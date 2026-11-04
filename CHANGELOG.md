@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Stopped UI exports no longer leave their hidden `.clips_ui_<stamp>.cutpoint-resume` folder
+  forever (#716): when an export or a resumed run ends, the project's resume folders of
+  earlier UI exports are removed, since Resume only continues the last run. The one that
+  `progress.json` still points to, one whose clips folder or project is locked and any folder
+  Cutpoint did not write stay.
 - Run state for later resume (#109): `analyze`, `edit`, `events`, `crashes`, `profile` and
   `360 analyze` keep `<project>/progress.json` (the command line, a key of its options, status
   `running`, `done`, `interrupted` or `failed` with the error code, process, working folder,
