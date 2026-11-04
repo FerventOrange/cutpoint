@@ -540,7 +540,9 @@ _CHANGE = re.compile(r"\b(?:by|extra|another|add|more|trim|cut|remove|plus|exten
 _CLIP_REF = re.compile(r"\bm\d+\b[^.!?;\n]*$")
 # A length for each clip ("each clip about 5 s", "clips around 8 seconds", "10 s clips") or a change
 # ("30 s more", "5 s longer") is none either.
-_PER_CLIP_BEFORE = re.compile(r"\b(?:each|every|per|clips?)\s*$", re.I)
+_PER_CLIP_BEFORE = re.compile(r"\b(?:each|every|per)(?:\s+clip)?\W*$", re.I)
+# Right after "clips": seconds are per clip, minutes the whole video ("clips around 2 minutes").
+_CLIPS_BEFORE = re.compile(r"\bclips?\s*$", re.I)
 _PER_CLIP_AFTER = re.compile(
     r"\s*(?:each|per clip|a clip|clips?|more(?!\s+or\s+less)|extra|longer|shorter)\b", re.I
 )
@@ -563,9 +565,11 @@ def target_seconds(text: str) -> float | None:
             before = text[: m.start()]
             if _CHANGE.search(before) or _CLIP_REF.search(before):
                 continue
+            n, unit = _count(m.group(1)), m.group(2).lower()
             if _PER_CLIP_BEFORE.search(before) or _PER_CLIP_AFTER.match(text, m.end()):
                 continue
-            n, unit = _count(m.group(1)), m.group(2).lower()
+            if not unit.startswith("m") and _CLIPS_BEFORE.search(before):
+                continue
             if not unit.startswith("m"):
                 return n
             more = _AND_SECONDS.match(text, m.end())
