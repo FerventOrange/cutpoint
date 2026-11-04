@@ -241,12 +241,13 @@ let current = null; // the open page; boot() closes it before installing globals
  *   storage  localStorage entries, e.g. { 'cutpoint.theme': 'dark' }
  *   settle   wait for the boot chain to finish (default true)
  *   allowUnhandled  do not fail close() when a request matched no route (default false)
+ *   setup    called with the window after the stubs and before app.js loads, e.g. to replace IntersectionObserver
  *   entry    the module to import (default 'app.js'; 'api.js' tests the client alone); its exports are ``page.mod``
  * Returns { window, document, routes, requests, unhandled, settle, assertNoUnhandled, close }.
  * close() throws if a request had no route, so a forgotten mock cannot pass silently.
  * app.js keeps module state, so each boot loads a fresh copy of the web directory; call close().
  */
-export async function boot({ routes = {}, project = makeProject(), hash = '', token = TOKEN, storage = {}, settle = true, entry = 'app.js', allowUnhandled = false } = {}) {
+export async function boot({ routes = {}, project = makeProject(), hash = '', token = TOKEN, storage = {}, settle = true, entry = 'app.js', allowUnhandled = false, setup = null } = {}) {
   const html = readFileSync(join(WEB_DIR, 'index.html'), 'utf8');
   const dom = new JSDOM(html, { url: `${ORIGIN}/${hash}`, pretendToBeVisual: true, contentType: 'text/html' });
   const { window } = dom;
@@ -257,6 +258,7 @@ export async function boot({ routes = {}, project = makeProject(), hash = '', to
   const Noop = class { observe() {} unobserve() {} disconnect() {} takeRecords() { return []; } };
   window.ResizeObserver ??= Noop;
   window.IntersectionObserver ??= Noop;
+  setup?.(window);
   window.matchMedia ??= (q) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
   window.CSS ??= { supports: () => false, escape: (s) => String(s).replace(/[^\w-]/g, '\\$&') };
   window.HTMLElement.prototype.scrollIntoView ??= function () {};

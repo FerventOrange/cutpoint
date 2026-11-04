@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtBytes, fmtLen, h, markdown, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, spanText, svg } from './util.js';
+import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtBytes, fmtLen, h, KINDS, kindOf, markdown, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, scoreText, spanText, svg, themeFromStored } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -27,8 +27,7 @@ const SPLIT_STEP = 16; // pixels per arrow key on a column splitter; Shift moves
 const VOL_KEY = 'cutpoint.volume'; // localStorage: {volume: 0-1, muted} for every preview video
 const NERD_KEY = 'cutpoint.nerdStats'; // localStorage: "1" while Stats for Nerds is on (off by default)
 const ADV_KEY = 'cutpoint.advancedExport'; // localStorage: "1" while Show advanced export options is on (off by default)
-const THEME_KEY = 'cutpoint.theme'; // localStorage: "light" or "dark"; absent for Blue, the default. index.html reads it too
-const THEMES = ['blue', 'light', 'dark'];
+const THEME_KEY = 'cutpoint.theme'; // localStorage: "light" or "blue"; absent for Graphite, the default (a stored "dark" is dropped). index.html reads it too
 const TAB_KEY = 'cutpoint.sideTab'; // localStorage: the sequence column's tab; absent for Sequence, the default
 const ORDER_KEY = 'cutpoint.momentOrder'; // localStorage: "position" for video order; absent for Score, the default
 const ORDER_NAMES = { score: 'score', position: 'position in video' }; // the moments list's orders (#469)
@@ -82,6 +81,7 @@ const S = {
   filter: '',
   order: 'score', // the moments list's order: 'score' (rank #1 first) or 'position' (initMomentOrder)
   filters: { ...NO_FILTERS }, // the moments list's quick filters (initMomentFilters); util.js momentMatches applies them
+  kind: '', // the kind filter above the grid (initKindFilter): '' for all, else a key of util.js KINDS; not kept
   jobs: [],
   active: null, // the running job, if any
   tracked: new Map(), // job id -> last seen status
@@ -92,7 +92,7 @@ const S = {
   nerdStatsWas: false, // nerdStats when Settings opened, restored by Cancel or Escape
   advExport: false, // Settings > Show advanced export options: the Export tab's .adv controls
   advExportWas: false, // advExport when Settings opened, restored by Cancel or Escape
-  themeWas: 'blue', // Settings > Theme when Settings opened, restored by Cancel or Escape
+  themeWas: 'graphite', // Settings > Theme when Settings opened, restored by Cancel or Escape
   renaming: null, // sequence id whose label is being edited
   renameDraft: '',
   renameErr: '',
@@ -428,6 +428,7 @@ function resetWorkspace(segments) {
   S.pendingProposal = null;
   S.shown = null;
   S.filters.source = ''; // a path of the project left
+  S.kind = '';
 }
 
 /** Leave the open project (its folder is no longer listed): back to the empty workspace. */
@@ -477,6 +478,8 @@ function renderMoments() {
   $('.moments').classList.toggle('bare', !hl);
   $('#analyzeBtn').textContent = 'Analyze again';
   $('#filterWrap').hidden = !list.length;
+  $('#kindSeg').hidden = !list.length;
+  for (const b of $('#kindSeg').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.kind === S.kind));
   $('#momentsCount').textContent = hl ? `${list.length} found, ${hl.style ?? p.style} style` : '';
   const stats = hl ? p.analysis : null; // null when the length or the time is unknown
   $('#analyzeStats').hidden = !stats;
@@ -507,13 +510,15 @@ function renderMoments() {
       const seg = segOf(c);
       // the filter finds a moment by the label it shows, its analysis label and vision label
       const label = filterLabel(c);
-      return momentMatches({ ...c, label, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f);
+      return momentMatches({ ...c, label, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f)
+        && (!S.kind || kindOf(c) === S.kind);
     });
   if (S.order === 'position') items.sort((a, b) => positionCompare(a.c, b.c)); // the badge keeps the score rank
   const listHadFocus = $('#candList').contains(document.activeElement);
-  // A card: rank, title and Add/Remove on top (the button sits over the main button's top row: no
-  // nested buttons), the times, the file with several sources, the strip, then the transcript with
-  // the preview readiness at the bottom right.
+  // A tile: the still with the kind dot and length (Add/Remove sits over its corner: no nested
+  // buttons), then rank and title, kind and score, the times, the file with several sources, the
+  // strip, and the transcript with the preview readiness.
+  if (lazySeen) for (const b of $('#candList').querySelectorAll('.cand-thumb.loading')) { lazySeen.unobserve(b); lazyAsks.delete(b); } // tiles about to be replaced
   preserveFocus(() => {
     $('#candList').replaceChildren(
       ...items.map(({ c, rank }) => {
@@ -522,13 +527,18 @@ function renderMoments() {
         const badge = prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] });
         const tip = c.pano?.flags?.length ? `tip-${c.id}` : null;
         const title = c.display_label || c.label || c.cli_id || c.id;
-        return h('li', { class: `cand${picked ? ' picked' : ''}`, 'data-id': c.id, 'aria-current': c.id === S.focus ? 'true' : null },
+        const kind = kindOf(c);
+        const still = thumb(c, 'cand-thumb', true);
+        still.append(h('span', { class: 'cand-dot', 'aria-hidden': 'true' }), h('span', { class: 'cand-len tc', 'aria-hidden': 'true', text: `${(c.end - c.start).toFixed(1)} s` }));
+        return h('li', { class: `cand${picked ? ' picked' : ''}`, 'data-id': c.id, 'data-kind': kind, 'aria-current': c.id === S.focus ? 'true' : null },
           h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', 'aria-describedby': tip, onclick: () => focusMoment(c.id) },
+            still,
             h('span', { class: 'cand-top' },
               h('span', { class: 'rank tc', text: `#${rank}` }),
-              h('span', { class: 'cand-title', text: title }),
+              h('span', { class: 'cand-title', title, text: title }),
               c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null,
               poolBadge(c)),
+            h('span', { class: 'cand-meta' }, KINDS[kind], h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', score ' }), scoreText(c.score, c.pool === 'visual')),
             h('span', { class: 'cand-time tc' },
               // the CLI id (h001) as text, for Candidate ids and clips --ids (#487)
               c.cli_id ? [h('span', { class: 'cand-id' }, h('span', { class: 'vh', text: 'Candidate ' }), c.cli_id), ' '] : null,
@@ -553,7 +563,7 @@ function renderMoments() {
     );
   });
   if (list.length && !items.length)
-    $('#candList').replaceChildren(h('li', { class: 'empty', text: `No moments match ${filtersOn(f) ? 'these filters' : 'this filter'}.` }));
+    $('#candList').replaceChildren(h('li', { class: 'empty', text: `No moments match ${filtersOn(f) || S.kind ? 'these filters' : 'this filter'}.` }));
   // the focused card left the list (Add with Not in sequence, say) and no card is left to take focus
   if (listHadFocus && !$('#candList').contains(document.activeElement) && !$('#filterWrap').hidden) $('#filterBtn').focus();
   markMoments();
@@ -2250,10 +2260,29 @@ function thumbUrl(s) {
   return `${path}/frame?${query}&at=${at}&w=${THUMB_W}`;
 }
 
-function thumb(s) {
+// One observer for every lazy still; each box maps to the function that asks for its still.
+const lazyAsks = new WeakMap();
+const lazySeen = typeof IntersectionObserver === 'function'
+  ? new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      lazySeen.unobserve(e.target);
+      lazyAsks.get(e.target)?.();
+      lazyAsks.delete(e.target);
+    }
+  })
+  : null;
+
+/**
+ * A still of ``s`` in a box of class ``cls``. ``lazy`` (the Moments grid, which can hold hundreds):
+ * a still not seen before is asked for once its box scrolls into view. The URL is the sequence
+ * row's, so a moment and its row share one cached still: the server cuts it once, the first time
+ * the tile scrolls into view, and serves it from its cache after that.
+ */
+function thumb(s, cls = 'seq-thumb', lazy = false) {
   const url = thumbUrl(s);
   const state = url ? thumbs.get(url) : 'failed';
-  const box = h('span', { class: `seq-thumb${state === 'failed' ? ' failed' : state ? '' : ' loading'}` }, icon('film'));
+  const box = h('span', { class: `${cls}${state === 'failed' ? ' failed' : state ? '' : ' loading'}` }, icon('film'));
   if (state !== 'failed') {
     const done = (ok) => {
       thumbs.set(url, ok ? 'ok' : 'failed');
@@ -2273,8 +2302,16 @@ function thumb(s) {
     if (state === 'ok') img.src = url; // seen before: the browser cache serves it
     else {
       img.dataset.src = url;
-      thumbQueue.push(img);
-      queueMicrotask(pumpThumbs); // after the render has put the row into the page
+      const ask = () => {
+        thumbQueue.push(img);
+        pumpThumbs();
+      };
+      if (lazy && lazySeen) {
+        lazyAsks.set(box, () => {
+          if (img.isConnected) ask();
+        });
+        lazySeen.observe(box);
+      } else queueMicrotask(ask); // after the render has put the row into the page
     }
     box.append(img);
   }
@@ -2559,15 +2596,27 @@ const ROW_LABELS = {
   down: (name) => `Move ${name} down`,
 };
 
-const seqDur = (s, range) => h('span', { class: 'seq-dur tc', text: `${exportedLen(s).toFixed(1)} s` },
-  h('span', { class: 'vh', text: `, ${range}` }), prepBadge(srcOf(s.source), s));
+const seqDur = (s, range) => {
+  // a tail (or a speech-aware end) runs the export past the cut: say so under the exported length
+  const tail = planned(s).end - s.end > 0.05;
+  return h('span', { class: 'seq-dur tc', text: `${exportedLen(s).toFixed(1)} s` },
+    h('span', { class: 'vh', text: `, ${range}` }),
+    tail ? h('span', { class: 'seq-tail', text: `cut ${(s.end - s.start).toFixed(1)} s + tail` }) : null,
+    prepBadge(srcOf(s.source), s));
+};
+
+/** The kind line under a row's title: the kind of its ranked moment; none for a clip that is not one. */
+const seqKind = (s) => {
+  const kind = kindOf(cands().find((c) => c.id === s.id));
+  return kind ? h('span', { class: 'seq-kind', text: KINDS[kind] }) : null;
+};
 
 /** A row's title button (``head``: its rank and thumbnail) and rename pencil, when not renaming. */
 function seqMain(s, head, name = s.label || s.id, range = `${fmt(s.start)} to ${fmt(s.end)}`) {
   const main = h('button', { type: 'button', class: 'seq-main', 'data-act': 'focus', title: range, onclick: () => focusMoment(s.id) },
     ...head,
     h('span', { class: 'seq-text' },
-      h('span', { class: 'seq-title', text: name, title: name, ondblclick: () => startRename(s.id) }), seqDur(s, range)));
+      h('span', { class: 'seq-title', text: name, title: name, ondblclick: () => startRename(s.id) }), seqKind(s), seqDur(s, range)));
   const pencil = h('button', {
     type: 'button', class: 'seq-icon seq-edit', 'data-act': 'rename', 'aria-label': `Rename ${name}`,
     title: 'Rename', onclick: () => startRename(s.id),
@@ -2616,7 +2665,8 @@ function seqRow(s, i, n) {
     ({ main, pencil } = seqMain(s, head, name, range));
   }
   const li = h('li', {
-    class: `seq${S.selected.has(s.id) ? ' selected' : ''}${seqNow() === s.id ? ' playing' : ''}`, 'data-id': s.id, 'aria-current': s.id === S.focus ? 'true' : null,
+    class: `seq${S.selected.has(s.id) ? ' selected' : ''}${seqNow() === s.id ? ' playing' : ''}`, 'data-id': s.id,
+    'data-kind': kindOf(cands().find((c) => c.id === s.id)), 'aria-current': s.id === S.focus ? 'true' : null,
     ondragstart: (e) => {
       dragId = s.id;
       li.classList.add('dragging');
@@ -3813,7 +3863,7 @@ function showItem(ev, id, query) {
           $('#filter').value = query;
           renderMoments();
           const n = $('#candList').querySelectorAll('.cand').length;
-          $('#chatLive').textContent = `Moments filtered by ${query}: ${n} shown${filtersOn(S.filters) ? '; Sort and filter is also on' : ''}`;
+          $('#chatLive').textContent = `Moments filtered by ${query}: ${n} shown${filtersOn(S.filters) || S.kind ? '; Sort and filter or the kind filter is also on' : ''}`;
         },
       }, `Filter list by “${query}”`) : null));
 }
@@ -5132,23 +5182,34 @@ function initAdvExport() {
   $('#setAdvExport').addEventListener('change', (e) => setAdvExport(e.target.checked));
 }
 
-/** The theme in use: index.html set data-theme on <html> before first paint; none is Blue. */
+/** The theme in use: index.html set data-theme on <html> before first paint; none is Graphite. */
 function theme() {
-  return document.documentElement.dataset.theme ?? 'blue';
+  return document.documentElement.dataset.theme ?? 'graphite';
 }
 
-/** Switch the theme (#445): recolour the page at once and store it in this browser; Blue is stored as no key. */
+/** Switch the theme (#445): recolour the page at once and store it in this browser; Graphite is stored as no key. */
 function setTheme(name) {
-  if (!THEMES.includes(name)) name = 'blue';
-  if (name === 'blue') delete document.documentElement.dataset.theme;
+  name = themeFromStored(name);
+  if (name === 'graphite') delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = name;
   try {
-    if (name === 'blue') localStorage.removeItem(THEME_KEY);
+    if (name === 'graphite') localStorage.removeItem(THEME_KEY);
     else localStorage.setItem(THEME_KEY, name);
   } catch {
     // storage blocked or full: the theme still applies until reload
   }
   $('#setTheme').value = name;
+}
+
+/** Boot: the stored choice, if index.html's inline script did not apply it (it also drops a stored "dark": Graphite replaced that theme). */
+function initTheme() {
+  let stored = null;
+  try {
+    stored = localStorage.getItem(THEME_KEY);
+  } catch {
+    // storage blocked: Graphite
+  }
+  setTheme(stored);
 }
 
 function bindSettings() {
@@ -5433,8 +5494,23 @@ function initSideTabs() {
   });
   return (name, focus = false) => {
     const tab = tabs.find((t) => t.dataset.tab === name);
-    if (tab && tab.getAttribute('aria-selected') !== 'true') select(tab, focus);
+    if (tab) select(tab, focus); // selecting the selected tab only moves focus
   };
+}
+
+/**
+ * The kind filter above the Moments grid: All or one of util.js KINDS, buttons that press in turn
+ * (aria-pressed). A view of the list only: it is not stored and a project switch clears it.
+ */
+function initKindFilter() {
+  $('#kindSeg').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || b.dataset.kind === S.kind) return;
+    S.kind = b.dataset.kind;
+    renderMoments(); // also presses the button
+    const n = $('#candList').querySelectorAll('.cand').length;
+    $('#orderLive').textContent = `${n} of ${cands().length} moments shown`;
+  });
 }
 
 /**
@@ -5794,12 +5870,14 @@ function startColor() {
 function bind() {
   initSplitters();
   const toggleMute = initVolume();
+  initTheme();
   bindSettings();
   bindModelsTab();
   initNerdStats();
   showTab = initSideTabs();
   initMomentOrder();
   initMomentFilters();
+  initKindFilter();
   bindAssistant();
   S.savedOpts = initExportOptions();
   initAdvExport();
@@ -5825,6 +5903,11 @@ function bind() {
   $('#projectSelect').addEventListener('change', (e) => e.target.value && openProject(e.target.value));
   $('#newBtn').addEventListener('click', () => openDialog(S.styles));
   $('#saveBtn').addEventListener('click', () => saveReview().catch(fail));
+  // the header's Export: the Export tab, by the tab's own path (focus moves to it); the page scrolls to it when the column is below the preview
+  $('#exportBtn').addEventListener('click', () => {
+    showTab('export', true);
+    $('#side').scrollIntoView({ block: 'start' });
+  });
   $('#filter').addEventListener('input', (e) => {
     S.filter = e.target.value;
     renderMoments();

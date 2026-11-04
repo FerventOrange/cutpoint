@@ -266,10 +266,14 @@ and read the configuration again. A custom Vision Ollama URL uses that server's 
 "Stats for Nerds" (off by default) shows the open moment's score, rank, analyzed times, signals
 and keywords over the top-left corner of the preview. It shows as soon as you tick it; Save keeps
 it, in the browser (local storage), not in `config.json`, and Cancel or Escape undoes it.
-Theme picks the colours: Blue (the default, today's colours), Light or Dark (both keep text,
-controls and focus outlines at WCAG AA contrast). Dark has lighter panels; Light uses the same
-yellow for buttons and fills as the other themes, with darker amber for text, focus rings, the selected tab, checkboxes and sliders. It recolours the UI at once and, like Stats for
-Nerds, Save keeps it in the browser and Cancel or Escape undoes it.
+Theme picks the colours: Graphite (the default: neutral greys with amber for what is chosen),
+Light or Blue (the colours of before Graphite). Graphite and Light keep text, controls and focus
+outlines at WCAG AA contrast; Light uses the same yellow for buttons and fills as the other
+themes, with darker amber for text, focus rings, the selected tab, checkboxes and sliders. It
+recolours the UI at once and, like Stats for Nerds, Save keeps it in the browser and Cancel or
+Escape undoes it. The Dark theme of earlier versions is gone: a browser that saved Dark shows
+Graphite. The UI uses Inter and JetBrains Mono when the machine has them, else the system fonts;
+nothing is downloaded.
 "Show advanced export options" (off by default) shows the Export tab's advanced controls (marked
 "advanced" below). Hidden, they keep their values and are still sent with each job, and
 "Advanced options in use: ..." under the options names any that are; a hidden value out of range
@@ -315,9 +319,19 @@ the project has several sources. They combine with the search text. A dot on the
 while a filter or a sort other than Score is on, and when nothing passes the list reads "No
 moments match these filters." Escape closes the menu. The sort and filters are remembered per
 browser (local storage); the source file only while the project stays open.
-Each card shows the rank and title with Add or Remove on the right, the candidate id, the times
-and length, the file name when the project has several sources, a strip of the moment's place in its source, the
-transcript, and the preview readiness (Ready, Encoding, Queued) at the bottom right.
+The moments are tiles, two across in the default column width. A kind filter above them (All,
+Action, Scenic, Funny, Dialogue) shows one kind; it is a view of the list and is not kept. The
+kind is worked out in the page for display, as AI Chat names it: the words of the moment's labels
+(not a generic `action-moment`) and its `kind` decide first (Scenic for a `view` or a word such as
+scenic or beauty, Funny for laugh or funny, Action for `crew`, `cruise` or a word such as ski, fast
+or crash, Dialogue for talk or banter), then the strongest signal of the moment that rates 5 or
+more out of 10 (crash, speed, airtime, wipeout or carve: Action; beauty or scenic: Scenic; laughter:
+Funny; the page does not have the cues of the events VLM windows), then a transcript of four words
+or more (Dialogue), else Action. Each tile shows the moment's still (the one its
+sequence row uses; the server cuts it once, the first time the tile scrolls into view, and caches
+it) with a kind dot, a length badge and Add or Remove over its corner; under
+it the rank and title, "kind · score", the candidate id, the times, the file name when the project has several sources, a strip of the moment's place in its source, the
+transcript, and the preview readiness (Ready, Encoding, Queued).
 A moment with only a generic label (`action-moment`, `loud-moment`) is titled with what the
 vision model saw: its vision rating label, else the label of its `events` VLM window (the search
 finds both). `highlights.json`, the label a moment takes into the sequence and clip file names
@@ -337,6 +351,9 @@ job will report as `step` and `label`). A Cutpoint version that sends no steps s
 the log in Jobs only, as before.
 
 The sequence column has three tabs: Sequence, AI Chat (see [AI Chat](#ai-chat) below) and Export.
+The header's Export button, next to Save sequence, opens the Export tab. A sequence row shows its
+kind as a colour bar and a name, and its exported length at the right, with "cut N s + tail"
+under it when a tail runs the export past the cut.
 The Export tab holds one "Export &
 Assembly Options" panel; each option has a hover description, and the choices are remembered per
 browser:

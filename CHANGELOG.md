@@ -460,6 +460,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `cutpoint ui` has a new look, the Graphite theme, and it is the default. Settings > Theme now
+  offers Graphite, Light and Blue (Blue is the colours of before). A browser that saved Dark gets
+  Graphite, as Dark is gone; Light stays as saved. Only a Blue chosen before this release was kept
+  as "no saved choice", so it shows Graphite once: pick Blue again to keep it. Layout changes: the
+  Moments list is a grid of tiles (the still, a kind dot and the length, the label, "kind · score")
+  under a kind filter (All, Action, Scenic, Funny, Dialogue; the kind is worked out in the page from
+  the moment's labels, signals, transcript and visual-pool kind by the rule AI Chat uses, and is not saved); "Export" is a button in the
+  header next to Save sequence and opens the Export tab, which stays; sequence rows show a colour
+  bar and name for the kind, and the exported length with "cut N s + tail" under it when a tail
+  runs the export past the cut. Each moment's still is cut once by the
+  server, the first time its tile scrolls into view, and cached like the sequence rows' stills.
+  Selecting, adding, sorting, filtering and exporting moments work as before. The fonts are Inter
+  and JetBrains Mono when installed, else the system fonts (nothing is downloaded).
+
 - Scenic view moments (the `view` kind of the visual candidates, and `scenic` and `beauty` picks
   of action-cam analysis) are now 5-7 s, as 3 s was too short to enjoy; they were 3-5 s (views,
   mix scenery) and 2-4 s (action-cam scenic/beauty picks). This applies to new or re-run analyses

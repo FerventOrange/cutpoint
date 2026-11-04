@@ -116,6 +116,70 @@ export function momentMatches(m, q, f) {
   return !f.source || m.source === f.source;
 }
 
+/** The kinds a moment is shown as (the Moments grid's dot and filter, the sequence row's bar). */
+export const KINDS = Object.freeze({ action: 'Action', scenic: 'Scenic', funny: 'Funny', dialogue: 'Dialogue' });
+
+// The word sets of cutpoint.assistant.pacing (moment_kind), so the page and AI Chat name a moment's
+// kind alike; tests/test_web_kind.py fails when they drift apart.
+const GENERIC = /^(?:[\w-]+-moment|vlm)?$/;
+const SCENIC_WORDS = ['view', 'views', 'scenic', 'scenery', 'beauty', 'beautiful', 'vista', 'vistas', 'landscape', 'panorama', 'panoramic'];
+const FUNNY_WORDS = ['laugh', 'laughs', 'laughing', 'laughter', 'funny', 'joke', 'jokes', 'hilarious', 'giggle', 'giggles', 'comedy'];
+const ACTION_WORDS = ['ski', 'skis', 'skiing', 'skier', 'skiers', 'fast', 'speed', 'speeding', 'crash', 'crashes', 'wipeout', 'cruise', 'cruising', 'crew', 'jump', 'jumps', 'airtime', 'air', 'carve', 'carving', 'run', 'runs', 'descent', 'powder', 'ride', 'riding', 'groomer', 'trees'];
+// The strongest signal cue of a generic label decides next (pacing.moment_kind). The cues of the
+// events VLM windows (funny, action-cam tags) are not in the payload, so a moment only they name
+// falls through to its transcript here; that gap is accepted.
+const CUE_STRONG = 5;
+const SIGNAL_CUES = ['airtime', 'crash', 'wipeout', 'speed', 'carve', 'stopped', 'beauty', 'scenic', 'people', 'group', 'faces', 'social', 'voice_laughter', 'laughter', 'loudness'];
+const CUE_KIND = { airtime: 'action', crash: 'action', wipeout: 'action', speed: 'action', carve: 'action', beauty: 'scenic', scenic: 'scenic', voice_laughter: 'funny', laughter: 'funny' };
+const roundEven = (x) => { // Python's round(): halves go to the even number
+  const f = Math.floor(x);
+  const d = x - f;
+  return d < 0.5 ? f : d > 0.5 ? f + 1 : f + (f % 2 !== 0 ? 1 : 0);
+};
+const TALK_WORDS = ['talk', 'talking', 'speech', 'dialogue', 'dialog', 'conversation', 'banter', 'chat', 'commentary', 'voice', 'speaking'];
+
+/**
+ * The kind a moment is shown as, for display only; highlights.json holds no such field. It follows
+ * pacing.moment_kind (what AI Chat calls the moment) in the same order: the words of its labels
+ * (not a generic "x-moment") and ``kind`` decide first (``view`` or a scenic word: scenic; a funny
+ * word: funny; ``crew``, ``cruise`` or an action word: action; a talk word: dialogue), then the
+ * strongest signal cue of 5 or more on a 0-10 scale (airtime, crash, wipeout, speed, carve: action;
+ * beauty, scenic: scenic; voice_laughter, laughter: funny), then a transcript of four words or more
+ * (dialogue), else action. The cues pacing also reads from the events VLM windows are not in the
+ * payload. Null for no moment.
+ */
+export function kindOf(c) {
+  if (!c) return null;
+  const kind = typeof c.kind === 'string' ? c.kind : '';
+  const named = [c.display_label, c.label, c.vision_label].filter((x) => x && !GENERIC.test(String(x)));
+  const tokens = new Set(`${named.join(' ')} ${kind}`.toLowerCase().split(/[^a-z]+/));
+  const has = (words) => words.some((w) => tokens.has(w));
+  if (kind === 'view' || has(SCENIC_WORDS)) return 'scenic';
+  if (has(FUNNY_WORDS)) return 'funny';
+  if (kind === 'crew' || kind === 'cruise' || has(ACTION_WORDS)) return 'action';
+  if (has(TALK_WORDS)) return 'dialogue';
+  const sig = c.signals && typeof c.signals === 'object' ? c.signals : {};
+  const cues = SIGNAL_CUES.filter((k) => typeof sig[k] === 'number' && Number.isFinite(sig[k]))
+    .map((k) => [k, Math.min(10, roundEven(sig[k] * 10))])
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1]); // stable: equal strengths keep SIGNAL_CUES order
+  const strong = cues.find(([k, v]) => v >= CUE_STRONG && k in CUE_KIND);
+  if (strong) return CUE_KIND[strong[0]];
+  return String(c.transcript ?? '').trim().split(/\s+/).filter(Boolean).length >= 4 ? 'dialogue' : 'action';
+}
+
+/** A moment's score as the grid shows it: one decimal for the visual pool's 0-10 scale (``visual``), else whole numbers (0-100). */
+export const scoreText = (score, visual = false) => (visual ? Number(score).toFixed(1) : String(Math.round(score)));
+
+/** The Settings > Theme choices; Graphite is the default. */
+export const THEMES = Object.freeze(['graphite', 'light', 'blue']);
+
+/**
+ * The theme a stored ``cutpoint.theme`` value means. Graphite is stored as no key. "dark", the
+ * theme Graphite replaced, and anything unknown are Graphite. index.html's inline script does the same.
+ */
+export const themeFromStored = (v) => (v === 'light' || v === 'blue' ? v : 'graphite');
+
 // Why a clip got no grade, in plain words: ``color.skip`` in clips/manifest.json (cutpoint.color's
 // skip reasons). A count follows a reason shared by several ("already looked good: 2").
 const COLOR_SKIPS = {
