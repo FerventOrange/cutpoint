@@ -213,6 +213,14 @@ class Provider(Protocol):
         """The message that answers ``call``."""
         ...
 
+    def unload(self) -> bool:
+        """Ask the server to free the model's memory now (between ``--batch-size`` batches and
+        after a run, #713); True if it did. Only Ollama has a way to ask (``keep_alive: 0``);
+        the others send nothing and return False: a hosted API has nothing on this machine to
+        free, and llama-server, LM Studio or another OpenAI-compatible server has no unload
+        request in that API (the memory guard warns about one on this machine)."""
+        ...
+
 
 def accepts_images(provider: str | Provider, model: str) -> bool | None:
     """Whether ``model`` of ``provider`` (a provider or its name) is known to take images, by
@@ -730,6 +738,19 @@ class OllamaProvider:
     def tool_result(self, call: ToolCall, content: str) -> dict[str, Any]:
         return {"role": "tool", "tool_name": call.name, "content": content}
 
+    def unload(self) -> bool:
+        """``keep_alive: 0`` for the model (as :meth:`cutpoint.vision.VisionRater.unload`);
+        nothing is sent while auto has not resolved one (no request asked for it)."""
+        if not self._model:
+            return False
+        payload = {"model": self._model, "keep_alive": 0}
+        try:
+            resp = self._post("generate", payload, CONNECT_TIMEOUT_S)
+        except ProviderError:
+            return False
+        resp.close()
+        return resp.status_code < 400
+
 
 def _ollama_message(m: dict[str, Any]) -> dict[str, Any]:
     """A message as ``/api/chat`` takes it: neutral text and image parts (``{"type": "image",
@@ -791,6 +812,10 @@ class _HttpProvider:
 
     def _headers(self) -> dict[str, str]:
         raise NotImplementedError
+
+    def unload(self) -> bool:
+        """Nothing to ask (:meth:`Provider.unload`): no request is sent."""
+        return False
 
     def _need_key(self) -> None:
         """A hosted server needs a key; a local one (LM Studio, llama-server) may not."""

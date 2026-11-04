@@ -1740,38 +1740,73 @@ def _rate_vision(
     n_top: int,
     style: Style,
     activity: Prompts | None = None,
+    batch_size: int = 0,
 ) -> tuple[bool, int]:
     """Rate the first ``n_top`` candidates with Ollama and apply the rating to their
     analysis score (``score_pre_events`` once events rescored them) with
     :func:`vision_blend` and the style's ``vision_weight``; the model's label replaces a candidate's from
     ``VISION_LABEL_MIN``. ``activity`` words the action-cam prompt (the project's activity
-    prompt set). Returns ``(any rated, failures)``."""
+    prompt set). ``batch_size``: ``--batch-size`` (#713), the model is unloaded after the
+    candidates of every this many sources (:func:`_vision_batches`); the ratings are the same.
+    Returns ``(any rated, failures)``."""
     used, n_failed = False, 0
     top = cands[:n_top]
-    try:
-        for i, c in enumerate(top):
-            progress.update(progress.fraction(i, len(top)))
-            res = rater.rate(
+    if not rater.cache_only:  # a resumed run: the ratings made before are cached
+        n_cached = sum(
+            rater.cached(
                 remap_source(Path(c["source"])), c["start"], c["end"], style.base, activity=activity
             )
-            if res is None:
-                n_failed += 1
-                continue
-            used = True
-            c["signals"]["vision"] = res.score
-            if res.label:
-                c["vision_label"] = res.label
-            if label := vision_label(res.score, res.label):
-                c["label"] = label
-            key = "score_pre_events" if "score_pre_events" in c else "score"
-            c[key] = vision_blend(c[key], res.score, style.vision_weight)
-            logger.info(
-                "vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c["start"], c["end"]
-            )
+            is not None
+            for c in top
+        )
+        progress.continuing("vision", n_cached, len(top))
+    done = 0
+    try:
+        for k, part in enumerate(_vision_batches(top, batch_size)):
+            if k:  # a batch boundary: memory back until the next request loads the model
+                rater.unload()
+                progress.continuing("vision", done, len(top))
+            for c in part:
+                progress.update(progress.fraction(done, len(top)))
+                done += 1
+                res = rater.rate(
+                    remap_source(Path(c["source"])),
+                    c["start"],
+                    c["end"],
+                    style.base,
+                    activity=activity,
+                )
+                if res is None:
+                    n_failed += 1
+                    continue
+                used = True
+                c["signals"]["vision"] = res.score
+                if res.label:
+                    c["vision_label"] = res.label
+                if label := vision_label(res.score, res.label):
+                    c["label"] = label
+                key = "score_pre_events" if "score_pre_events" in c else "score"
+                c[key] = vision_blend(c[key], res.score, style.vision_weight)
+                logger.info(
+                    "vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c["start"], c["end"]
+                )
     finally:  # free the VRAM now, not after Ollama's default 5 min keep_alive
         rater.unload()
     logger.info("Vision: %d ratings from the cache, %d asked the model", rater.hits, rater.asked)
     return used, n_failed
+
+
+def _vision_batches(top: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
+    """The candidates to rate in batches for ``--batch-size`` ``size``: those of ``size``
+    sources each (sources in the order of their best candidate, each one's candidates in rank
+    order). One batch, in rank order, for ``size`` 0 or ``size`` sources or fewer."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for c in top:
+        groups.setdefault(c["source"], []).append(c)
+    if size <= 0 or len(groups) <= size:
+        return [top]
+    parts = list(groups.values())
+    return [[c for g in parts[i : i + size] for c in g] for i in range(0, len(parts), size)]
 
 
 def analyze(
@@ -2248,7 +2283,9 @@ def _analyze(
                     logger.info(
                         "Vision: rating top %d of %d candidates", min(n_top, len(cands)), len(cands)
                     )
-                    used, n_failed = _rate_vision(cands, rater, n_top, style, wording)
+                    used, n_failed = _rate_vision(
+                        cands, rater, n_top, style, wording, batch_size=batch_size
+                    )
                     if ev:  # the blended analysis scores plus the event boosts again
                         rescore(hl, ev, out_dir)
                     timings["vision_s"] = round(time.perf_counter() - t0, 2)

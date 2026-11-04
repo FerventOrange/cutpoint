@@ -807,13 +807,14 @@ an analysed set processes only the new file.
 | `--max-candidates N` | Candidates per source before merging |
 | `--recover` | After a read error, resume analysis past the bad region |
 | `--must-include-crash CONF` | Action-cam: always clip crashes with at least this confidence, 0 to 1 (0 disables) |
-| `--batch-size N` | Close each model (Whisper, the step models and the background HUD OCR engine) after N sources and load it again for the next ones, to give memory back on long runs; the results are the same. Default 0: keep it loaded. Also on `360 analyze` (its view layer, analysis and events) |
+| `--batch-size N` | Close each model (Whisper, the step models, the background HUD OCR engine and the `--vision` rating's Ollama model, which then rates the candidates of N sources at a time) after N sources and load it again for the next ones, to give memory back on long runs; the results are the same. Default 0: keep it loaded. Also on `360 analyze` (its view layer, analysis and events) |
 | `--json` | Result as one [JSON envelope](#json-output) on stdout |
 
 **Vision rating.** The 0-10 rating scales a candidate's score (5 leaves it as is, 10 lifts it
 and 0 lowers it by a share set per style, about 20-45%, capped at 100); candidates not rated keep
 theirs, and the model's label names the clip only from a rating of 7. A local model is unloaded
-from GPU memory right after rating. Ollama ratings are cached per source
+from GPU memory right after rating (with `--batch-size N` also after the candidates of every N
+sources). Ollama ratings are cached per source
 (`vision-ratings.json`), so a rerun asks only about candidates not rated and repeats the same
 scores. The cache also records the model's digest: a model pulled again under the same tag is
 rated again, and with Ollama down the cached ratings for the tag are used.
@@ -1587,7 +1588,10 @@ again and, still short, stops with `low_memory` (exit 1, `progress.json` status 
 and an `ERROR` naming `cutpoint resume <project>` (or, before `progress.json` is written, the
 same command again). Whisper, PANNs and the crash check's CLIP short of VRAM run on the CPU instead (a `WARNING`); Whisper without `--model` then runs the CPU default, `small`, as after a CUDA failure, when it is downloaded already (else `medium`, with a `WARNING` naming the `cutpoint setup` command for `small`); an explicit `--model` is kept. A later run without `--model` reuses that `small` transcript (an INFO line names it), never one an explicit `--model small` made. Free RAM is read on Linux and Windows only
 (elsewhere there is no check). A vision server on this machine that is not Ollama gets only the
-RAM check and a `WARNING`, as Cutpoint cannot unload it.
+RAM check and a `WARNING`, as Cutpoint cannot unload it: llama-server, LM Studio and other
+OpenAI-compatible servers have no unload request in that API, so `--batch-size` does not free
+their memory either. A hosted Vision provider has nothing on this machine to free and gets no
+extra request.
 
 ### Run lock and progress.json
 
