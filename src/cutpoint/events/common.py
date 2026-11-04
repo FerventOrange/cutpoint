@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
-import subprocess
 import sys
 import threading
 import time
@@ -275,28 +274,12 @@ def unload_ollama(url: str | None = None) -> list[str]:
 
 
 def gpu_memory_used_mib() -> int | None:
-    """Current total GPU memory use in MiB via nvidia-smi (None if unavailable)."""
-    return _gpu_memory_mib("used")
+    """Current GPU memory use in MiB of the GPU the models use via nvidia-smi
+    (:func:`cutpoint.memguard.gpu_mib`; None if unavailable)."""
+    from cutpoint import memguard  # noqa: PLC0415
 
-
-def gpu_memory_free_mib() -> int | None:
-    """Free memory of the first GPU in MiB via nvidia-smi (None if unavailable)."""
-    return _gpu_memory_mib("free")
-
-
-def _gpu_memory_mib(field: str) -> int | None:
-    """``memory.<field>`` of the first GPU in MiB via nvidia-smi (None if unavailable)."""
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", f"--query-gpu=memory.{field}", "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=True,
-        ).stdout
-        return int(out.strip().splitlines()[0])
-    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
-        return None
+    got = memguard.gpu_mib("used")
+    return got[0] if got is not None else None
 
 
 class VramMonitor:

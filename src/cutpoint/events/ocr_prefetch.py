@@ -14,7 +14,7 @@ It runs only when nothing it needs comes later: a clean read (no ``read_errors``
 ranges; a source after one is not offered either), Whisper on CUDA (the overlap pays only
 against GPU steps), a HUD preset for every game (discovery stays serial) and, when
 nvidia-smi answers, at least :data:`MIN_FREE_MIB` of free and :data:`MIN_TOTAL_MIB` of total
-VRAM. ``CUTPOINT_ANALYZE_OVERLAP=0`` turns it off. Whatever it does not read, or a result
+VRAM on the GPU the models use (``CUDA_VISIBLE_DEVICES``, :func:`cutpoint.memguard.gpu_mib`). ``CUTPOINT_ANALYZE_OVERLAP=0`` turns it off. Whatever it does not read, or a result
 whose inputs differ from the ones ``run_events`` uses, is read inline as before, after the
 worker is stopped: one OCR engine and one decode at most.
 
@@ -38,7 +38,6 @@ import logging
 import math
 import queue
 import shutil
-import subprocess
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -46,7 +45,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from cutpoint import paths
+from cutpoint import memguard, paths
 from cutpoint.events.common import Source, load_source
 from cutpoint.events.killfeed import (
     DecodeHook,
@@ -166,19 +165,13 @@ class SceneShare:
 
 
 def vram_ok() -> bool:
-    """Whether the first GPU has :data:`MIN_FREE_MIB` free and :data:`MIN_TOTAL_MIB` in all;
-    True when nvidia-smi is missing or does not answer (the overlap never needs it)."""
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.free,memory.total", "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=True,
-        ).stdout
-        free, total = (int(v) for v in out.strip().splitlines()[0].split(","))
-    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+    """Whether the GPU the models use (:func:`cutpoint.memguard.visible_gpu`) has
+    :data:`MIN_FREE_MIB` free and :data:`MIN_TOTAL_MIB` in all; True when nvidia-smi is
+    missing, does not answer or does not know (the overlap never needs it)."""
+    got = memguard.gpu_mib("free", "total")
+    if got is None:
         return True
+    free, total = got
     return free >= MIN_FREE_MIB and total >= MIN_TOTAL_MIB
 
 

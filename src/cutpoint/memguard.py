@@ -17,8 +17,10 @@ still short, it raises :class:`~cutpoint.errors.LowMemoryError` (``--json`` ``er
 
 Free RAM: ``MemAvailable`` of ``/proc/meminfo`` (Linux), ``GlobalMemoryStatusEx`` (Windows);
 elsewhere (macOS) it is unknown and the guard is off. Free VRAM: torch's
-``cuda.mem_get_info`` when torch already uses CUDA, else ``nvidia-smi``; unknown: no VRAM
-check. A vision server Cutpoint cannot unload (a custom server on this machine, Q6) gets the
+``cuda.mem_get_info`` when torch already uses CUDA, else ``nvidia-smi`` of the GPU the models
+use (:func:`visible_gpu`: the first entry of ``CUDA_VISIBLE_DEVICES``, an index or GPU UUID, is
+torch's ``cuda:0``; GPU 0 when it is unset); unknown: no VRAM check, also when
+``CUDA_VISIBLE_DEVICES`` hides every GPU (empty, ``-1``) or names one nvidia-smi does not list. A vision server Cutpoint cannot unload (a custom server on this machine, Q6) gets the
 RAM headroom check alone and a WARNING; one on another machine uses no memory here.
 """
 
@@ -26,6 +28,8 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import os
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -120,18 +124,71 @@ def ram_free() -> int | None:
     return None
 
 
+def visible_gpu() -> str | None:
+    """The GPU torch's ``cuda:0`` is: the first entry of ``CUDA_VISIBLE_DEVICES`` (an index
+    or a GPU UUID), ``"0"`` when it is unset; None when it hides every GPU (empty, ``-1``)."""
+    env = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if env is None:
+        return "0"
+    first = env.split(",")[0].strip()
+    return None if not first or first.startswith("-") else first
+
+
+def _smi_rows(fields: str) -> list[list[str]]:
+    """``index, uuid, <fields>`` of every GPU nvidia-smi lists ([] if unavailable)."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", f"--query-gpu=index,uuid,{fields}", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [[f.strip() for f in line.split(",")] for line in out.splitlines() if line.strip()]
+
+
+def gpu_mib(*fields: str) -> tuple[int, ...] | None:
+    """nvidia-smi's ``memory.<field>`` values in MiB (``"free"``, ``"total"``, ...) of
+    :func:`visible_gpu`: the row of that index, or of the UUID it starts (as CUDA, a unique
+    prefix names a GPU); None if unknown (also for a prefix of several UUIDs)."""
+    sel = visible_gpu()
+    if sel is None:
+        return None
+    rows = [
+        r for r in _smi_rows(",".join(f"memory.{f}" for f in fields)) if len(r) == 2 + len(fields)
+    ]
+    if sel.isdigit():
+        found = [r for r in rows if r[0] == str(int(sel))]
+    else:
+        found = [r for r in rows if r[1].lower().startswith(sel.lower())]
+    if len(found) != 1:
+        return None
+    try:
+        return tuple(int(v) for v in found[0][2:])
+    except ValueError:  # [N/A]
+        return None
+
+
+def gpu_free_mib() -> int | None:
+    """Free memory in MiB of :func:`visible_gpu` via nvidia-smi (:func:`gpu_mib`); None if
+    unknown."""
+    got = gpu_mib("free")
+    return got[0] if got is not None else None
+
+
 def vram_free() -> int | None:
     """Free memory of the GPU in bytes: torch's ``cuda.mem_get_info`` when torch already uses
-    CUDA (no new CUDA context for the check), else nvidia-smi's first GPU; None: unknown."""
+    CUDA (no new CUDA context for the check), else nvidia-smi's of :func:`visible_gpu`;
+    None: unknown."""
     torch = sys.modules.get("torch")
     try:
         if torch is not None and torch.cuda.is_initialized():
             return int(torch.cuda.mem_get_info()[0])
     except Exception:
         logger.debug("torch.cuda.mem_get_info failed", exc_info=True)
-    from cutpoint.events.common import gpu_memory_free_mib  # noqa: PLC0415
-
-    mib = gpu_memory_free_mib()
+    mib = gpu_free_mib()
     return mib * 2**20 if mib is not None else None
 
 

@@ -61,16 +61,81 @@ def test_an_unknown_platform_turns_the_guard_off(home, monkeypatch, platform):
 
 def test_vram_from_nvidia_smi_without_torch_cuda(monkeypatch):
     monkeypatch.delitem(sys.modules, "torch", raising=False)
-    monkeypatch.setattr(common, "gpu_memory_free_mib", lambda: 3072)
+    monkeypatch.setattr(memguard, "gpu_free_mib", lambda: 3072)
     assert memguard.vram_free() == 3 * GB
-    monkeypatch.setattr(common, "gpu_memory_free_mib", lambda: None)
+    monkeypatch.setattr(memguard, "gpu_free_mib", lambda: None)
     assert memguard.vram_free() is None
+
+
+_SMI = "0, GPU-aaaa-1111, 1024\n1, GPU-bbbb-2222, 6144\n2, GPU-cccc-3333, [N/A]\n"
+
+
+@pytest.mark.parametrize(
+    ("visible", "mib"),
+    [
+        (None, 1024),  # unset: GPU 0
+        ("1", 6144),  # cuda:0 is the first entry
+        ("1,0", 6144),
+        (" 01 ", 6144),
+        ("GPU-bbbb-2222,0", 6144),  # a UUID
+        ("gpu-BBBB", 6144),  # a unique prefix, as CUDA takes it
+        ("2", None),  # nvidia-smi has no number for it
+        ("7", None),  # not listed: unknown
+        ("GPU-dddd", None),
+        ("GPU-", None),  # a prefix of several UUIDs: not unique
+        ("", None),  # no GPU visible
+        ("-1", None),
+        ("-1,0", None),
+    ],
+)
+def test_nvidia_smi_reads_the_gpu_cuda_visible_devices_names(monkeypatch, visible, mib):
+    """#721: the GPU the models use (cuda:0), not always nvidia-smi's first one."""
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return SimpleNamespace(stdout=_SMI)
+
+    monkeypatch.setattr(memguard.subprocess, "run", run)
+    if visible is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+    assert memguard.gpu_free_mib() == mib
+    hidden = visible is not None and memguard.visible_gpu() is None
+    assert calls == ([] if hidden else [calls[0]])  # no GPU visible: nvidia-smi is not asked
+
+
+def test_the_vram_monitor_reads_the_used_memory_of_the_visible_gpu(monkeypatch):
+    """#721 F3: gpu_memory_used_mib follows CUDA_VISIBLE_DEVICES too."""
+    rows = "0, GPU-aaaa, 100\n1, GPU-bbbb, 2500\n"
+    calls = []
+
+    def run(argv, **kw):
+        calls.append(argv)
+        return SimpleNamespace(stdout=rows)
+
+    monkeypatch.setattr(memguard.subprocess, "run", run)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    assert common.gpu_memory_used_mib() == 2500
+    assert "--query-gpu=index,uuid,memory.used" in calls[0]
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    assert common.gpu_memory_used_mib() == 100
+
+
+def test_nvidia_smi_missing_is_unknown(monkeypatch):
+    def run(argv, **kw):
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(memguard.subprocess, "run", run)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    assert memguard.gpu_free_mib() is None
 
 
 def test_vram_from_torch_once_it_uses_cuda(monkeypatch):
     cuda = SimpleNamespace(is_initialized=lambda: True, mem_get_info=lambda: (2 * GB, 8 * GB))
     monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
-    monkeypatch.setattr(common, "gpu_memory_free_mib", lambda: pytest.fail("nvidia-smi asked"))
+    monkeypatch.setattr(memguard, "gpu_free_mib", lambda: pytest.fail("nvidia-smi asked"))
     assert memguard.vram_free() == 2 * GB
 
 
