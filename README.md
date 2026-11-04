@@ -76,7 +76,8 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex
 ```
 
-- Lite mode (no torch, no Ollama) is `CUTPOINT_LITE=1` or `--lite`.
+- For lite mode (no torch, no Ollama), end the Linux and macOS command with `| sh -s -- --lite`,
+  or run `$env:CUTPOINT_LITE = 1` before `irm` on Windows.
 - To upgrade, run the installer again. Do not use `uv tool upgrade`: it drops the torch build.
 - Pinned releases, checksums, sources, prompts and installing from a clone are in
   [Getting started](https://github.com/FerventOrange/cutpoint/blob/main/docs/getting-started.md#install).
