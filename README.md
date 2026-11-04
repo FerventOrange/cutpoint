@@ -4,10 +4,11 @@
 
 # Cutpoint
 
-Cutpoint is an AI video editor that your coding agent drives. Tell the agent to edit a video and
-it finds the best moments, cuts them into clips and assembles the result. All analysis runs on
-your own computer, so your agent does not spend API credits on video, and your original files
-are never changed. Hosted models are optional and off by default.
+Cutpoint finds the best moments in long recordings (gameplay, action-cam, sport, talk or 360
+video), cuts them into clips and assembles a finished video. Drive it from your coding agent,
+from the browser workspace or from the command line. All analysis runs on your own computer, so
+no API credits are spent on video, and your original files are never changed. Hosted models are
+optional and off by default.
 
 [Are you an AI agent? Start here](https://github.com/FerventOrange/cutpoint/blob/main/AGENTS.md)
 
