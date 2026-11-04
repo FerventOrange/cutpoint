@@ -99,6 +99,8 @@ def test_run_events_fails_before_side_effects(home, monkeypatch, tmp_path, no_un
 
 # --------------------------------------------------------------------------- unload_ollama
 class _Resp:
+    is_redirect = False
+
     def __init__(self, data):
         self._data = data
 
@@ -128,6 +130,35 @@ def test_unload_ollama_all_unloads_fail_returns_without_waiting(monkeypatch):
     monkeypatch.setattr(common.requests, "post", post)
     assert common.unload_ollama("http://127.0.0.1:11434") == []
     assert len(gets) == 1
+
+
+def _moved(sent):
+    def call(url, **k):
+        sent.append((url, k.get("allow_redirects", True)))
+        resp = common.requests.Response()
+        resp.status_code = 307
+        resp.headers["Location"] = "http://elsewhere.example.com/"
+        return resp
+
+    return call
+
+
+def test_unload_ollama_does_not_follow_a_redirect(monkeypatch):
+    """#719: a 307 on the listing is Ollama not answering: no request goes further."""
+    sent = []
+    monkeypatch.setattr(common.requests, "get", _moved(sent))
+    monkeypatch.setattr(common.requests, "post", _moved(sent))
+    assert common.unload_ollama("http://127.0.0.1:11434") == []
+    assert sent == [("http://127.0.0.1:11434/api/ps", False)]
+
+
+def test_unload_ollama_counts_a_redirected_unload_as_failed(monkeypatch):
+    _no_sleep(monkeypatch)
+    posts = []
+    monkeypatch.setattr(common.requests, "get", lambda url, **k: _Resp({"models": [{"name": "m"}]}))
+    monkeypatch.setattr(common.requests, "post", _moved(posts))
+    assert common.unload_ollama("http://127.0.0.1:11434") == []
+    assert posts == [("http://127.0.0.1:11434/api/generate", False)]
 
 
 # --------------------------------------------------------------------------- 360 analyze

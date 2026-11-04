@@ -181,13 +181,15 @@ def test_profile_ask_sends_the_short_read_timeout_to_ollama(home, monkeypatch):
     timeouts: list[float] = []
 
     class _Resp:
+        is_redirect = False
+
         def raise_for_status(self) -> None:
             pass
 
         def json(self) -> dict:
             return {"message": {"content": '{"name": "x"}'}}
 
-    def post(url, json, timeout):
+    def post(url, json, timeout, **_k):
         timeouts.append(timeout)
         return _Resp()
 

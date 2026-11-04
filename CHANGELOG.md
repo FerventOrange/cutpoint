@@ -610,6 +610,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Requests to Ollama no longer follow redirects (Refs #719): the vision rating
+  (`VisionRater._rate_frames`, `ask_json`, the availability check), the 360 VL check and the
+  Ollama unload and `/api/ps` queries of the events and memory guard code send
+  `allow_redirects=False` and treat a redirect answer as an HTTP error, so frames never go to a host
+  the user did not allow. `describe()` and `unload()` already did.
 - The web workspace no longer shows the text "null" under the empty-project hint when there is no Resume button.
 - The memory guard's `low_memory` error quotes the project path in its
   `cutpoint resume <project>` hint (a path with a space copies as one argument), and a stop for
