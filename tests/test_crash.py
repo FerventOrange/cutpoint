@@ -141,6 +141,48 @@ def test_clip_encoder_from_visual_shares_the_model_parks_it_and_double_close_is_
     assert enc.model is None
 
 
+class _FakeTensor:
+    def __init__(self, at: str) -> None:
+        self.at = at
+
+    def to(self, device):
+        return _FakeTensor(device)
+
+
+@pytest.mark.parametrize(("vram", "device"), [(8.0, "cuda"), (0.2, "cpu")])
+def test_the_parked_clip_goes_back_to_the_gpu_only_when_its_vram_is_free(
+    mem, monkeypatch, caplog, vram, device
+):
+    """#721: the move of the handed-over CLIP to the GPU is checked as a fresh load
+    (memguard.device_for): short of VRAM by then, it runs on the CPU in float32."""
+    monkeypatch.setattr("cutpoint.events.common.free_torch", lambda: None)
+    mem.vram = vram
+    models = _FakeModels()
+    models.device, models.dtype = "cuda", "f16"
+    models.torch = SimpleNamespace(float32="f32")
+    models.mean, models.std = _FakeTensor("cuda"), _FakeTensor("cuda")
+    moves = []
+    models.clip.to = lambda *a: moves.append(a) or models.clip
+    enc = crash.ClipEncoder.from_visual(models)
+    with caplog.at_level("WARNING"):
+        enc.embed(np.zeros((0, 8, 8, 3), np.uint8))
+    assert enc.device == device and enc.mean.at == enc.std.at == device
+    if device == "cuda":
+        assert moves == [("cpu",), ("cuda",)] and enc.dtype == "f16"
+        assert "running on the CPU" not in caplog.text
+    else:
+        assert moves == [("cpu",), ("cpu", "f32")] and enc.dtype == "f32"
+        assert "CLIP: 0.2 GB VRAM free, 1.0 GB needed; running on the CPU" in caplog.text
+
+
+def test_a_parked_clip_on_the_cpu_is_not_checked_again(monkeypatch):
+    monkeypatch.setattr(crash.memguard, "device_for", lambda *a, **k: pytest.fail("checked"))
+    models = _FakeModels()  # device cpu
+    enc = crash.ClipEncoder.from_visual(models)
+    enc.embed(np.zeros((0, 8, 8, 3), np.uint8))
+    assert enc.device == "cpu" and enc.on_device
+
+
 @pytest.mark.parametrize(
     ("tel", "expected"),
     [
@@ -280,6 +322,7 @@ def dense_run(tmp_path, monkeypatch):
     monkeypatch.setattr(crash, "ClipEncoder", Enc)
     params = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())
     state.store = crash._dense_cache(src, params)
+    state.params = params
     state.go = lambda **kw: crash.detect_project(project, params=params, sheets=0, **kw)
     state.windows = [round(max(0.0, t - params.dense_pre_s), 1) for t in starts]
     return state
@@ -364,6 +407,43 @@ def test_batch_size_interrupted_dense_check_resumes_to_the_same_crashes(dense_ru
     dense_run.go(batch_size=2)
     assert dense_run.decoded == w[stop:]
     assert dense_run.store.read_bytes() == full and _crashes(dense_run.project) == crashes
+
+
+def test_dense_batch_boundaries_update_the_crashes_step_counts(dense_run, monkeypatch):
+    """#721: inside cutpoint crashes' quiet run, the steps run in order and each dense batch
+    boundary updates the dense counts; crashes.json is the same as without the run."""
+    from cutpoint import progress  # noqa: PLC0415
+
+    dense_run.go(batch_size=2)
+    crashes = _crashes(dense_run.project)
+    dense_run.store.unlink()
+    seen = []
+    obs = lambda step, state, pct, done, total: seen.append((step, state, done, total))  # noqa: E731
+    monkeypatch.setattr(progress.Run, "observers", [obs])
+    with progress.run(progress.CRASHES_STEPS, quiet=True):
+        dense_run.go(batch_size=2)
+    assert _crashes(dense_run.project) == crashes
+    assert [s for s in seen if s[1] != "running"] == [
+        ("profile", "skipped", None, None),  # the params bring their own words
+        ("inputs", "done", None, None),
+        ("dense", "done", None, None),
+        ("result", "done", None, None),
+    ]
+    counts = [(d, t) for step, _, d, t in seen if step == "dense" and d is not None]
+    assert counts == [(0, 4), (2, 4)]
+
+
+def test_no_dense_check_records_no_counts(dense_run, monkeypatch):
+    """#721 F1: with --no-dense no dense counts land on another step."""
+    from cutpoint import progress  # noqa: PLC0415
+
+    seen = []
+    obs = lambda step, state, pct, done, total: seen.append((step, state, done, total))  # noqa: E731
+    monkeypatch.setattr(progress.Run, "observers", [obs])
+    with progress.run(progress.CRASHES_STEPS, quiet=True):
+        crash.detect_project(dense_run.project, params=dense_run.params, sheets=0, dense=False)
+    assert all(d is None and t is None for _, _, d, t in seen)
+    assert ("dense", "skipped", None, None) in seen and dense_run.loads == 0
 
 
 # -- IMU parse shared with telemetry ----------------------------------------------------------

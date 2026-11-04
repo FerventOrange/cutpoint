@@ -191,6 +191,50 @@ def test_interrupted_extend_in_place_resumes(home, monkeypatch):
     assert not _resume_dir(project).exists()
 
 
+@pytest.mark.parametrize("out", ["new", "empty", "nested"])
+def test_interrupted_extend_into_a_new_or_empty_out_folder_resumes(home, monkeypatch, out):
+    """#721: as clips, extend into a new or empty --out keeps its finished clips in the hidden
+    resume folder next to it, shows nothing partial and the next equal run takes them over."""
+    project = _project(home)
+    _Encoder(monkeypatch)
+    assert _clips(project) == 0
+    rel = {"new": "clips_x", "empty": "clips_x", "nested": "more/clips_x"}[out]
+    out_dir = project / rel
+    if out == "empty":
+        out_dir.mkdir()
+    argv = ["extend", str(project / "clips"), "--seconds", "1", "--no-speech-aware"]
+    argv += ["--out", str(out_dir)]
+    first = _Encoder(monkeypatch, stop_at="003_c.mp4", during=True)
+    assert cli.main(argv) == 130
+    assert first.encoded == NAMES[:2]
+    kept = out_dir.parent / ".clips_x.cutpoint-resume"
+    done = json.loads((kept / "resume.json").read_text(encoding="utf-8"))["clips"]
+    assert sorted(done) == NAMES[:2]
+    # nothing for assemble to see: no folder, or the empty one as it was
+    assert (list(out_dir.iterdir()) == []) if out == "empty" else not out_dir.exists()
+    assert not (out_dir.parent / ".clips_x.cutpoint-tmp").exists()
+
+    again = _Encoder(monkeypatch)
+    assert cli.main(argv) == 0
+    assert again.encoded == NAMES[2:]
+    assert [p.name for p in clip_files(out_dir)] == NAMES
+    assert not kept.exists()
+    names = {p.name for p in out_dir.iterdir()}
+    assert "resume.json" not in names and not any(n.startswith(".") for n in names)
+
+
+def test_extend_failing_before_any_clip_leaves_no_new_folder(home, monkeypatch):
+    """#721: a new --out folder (and a parent it made) is not left behind empty."""
+    project = _project(home)
+    _Encoder(monkeypatch)
+    assert _clips(project) == 0
+    out_dir = project / "more" / "clips_x"
+    argv = ["extend", str(project / "clips"), "--seconds", "1", "--no-speech-aware"]
+    _Encoder(monkeypatch, stop_at="001_a.mp4")
+    assert cli.main([*argv, "--out", str(out_dir)]) == 130
+    assert not (project / "more").exists()
+
+
 # -- review cycle 1 ---------------------------------------------------------------------------
 
 
