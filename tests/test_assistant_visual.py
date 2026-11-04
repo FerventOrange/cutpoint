@@ -96,6 +96,22 @@ def test_find_moments_matches_strong_cues_by_name_strongest_first() -> None:
     assert context.MomentTable([lo, hi], []).find("speed") == ["w2", "w1"]
 
 
+def test_find_moments_commentary_only_breaks_ties() -> None:
+    def view(cid: str, beauty: float, said: str = "") -> dict:
+        return {"id": cid, "source": B, "start": 1.0, "end": 7.0, "score": 40, "label": "view",
+                "kind": "view", "pool": "visual", "transcript": said,
+                "signals": {**SKI, "beauty": beauty}}  # fmt: skip
+
+    quiet, talky = view("q", 0.9), view("t", 0.9, "look at that")
+    assert context.MomentTable([quiet, talky], []).find("beauty") == ["t", "q"]
+    # no transcript on either: the rank, as before
+    plain = view("t", 0.9)
+    assert context.MomentTable([quiet, plain], []).find("beauty") == ["q", "t"]
+    # a stronger cue without commentary still goes first
+    strong = view("s", 0.95)
+    assert context.MomentTable([talky, strong], []).find("beauty")[0] == "s"
+
+
 def test_a_cue_word_matches_parts_of_cue_names_by_prefix() -> None:
     """#634 F1: "air" names airtime and jump_air, not chairlift, so a lift ride never outranks
     a jump for "big air"."""

@@ -55,7 +55,7 @@ The weighted sum is hard-masked on lifts and stops (``lift_mask | still_mask``);
 friends in view do not lift the mask. Peaks are
 turned into clips whose length depends on the dominant feature: jumps 3-6 s
 (1.5 s before take-off to 1.5 s after landing), crashes 4-8 s, speed/carve
-4-10 s, scenic 2-4 s, social/VLM 4-8 s. Each pick takes its whole stretch
+4-10 s, scenic 5-7 s, social/VLM 4-8 s. Each pick takes its whole stretch
 (the run around the peak above ``STRETCH`` of it), so a flat stretch gives
 one clip, not several back to back.
 """
@@ -93,14 +93,14 @@ GEOMETRY: dict[str, tuple[float, float, float, float]] = {
     "crash": (4.0, 8.0, 2.0, 4.0),  # relative to the impact
     "speed": (4.0, 10.0, 3.0, 3.0),
     "carve": (4.0, 10.0, 3.0, 3.0),
-    "scenic": (2.0, 4.0, 1.5, 1.5),
+    "scenic": (5.0, 7.0, 2.5, 2.5),
     "social": (4.0, 8.0, 3.5, 2.5),
     "vlm": (4.0, 8.0, 3.0, 3.0),
     "speech": (4.0, 8.0, 3.0, 2.5),
     "faces": (3.0, 6.0, 2.0, 2.0),
     "stopped": (3.0, 6.0, 2.5, 2.5),
     "short_clip": (2.0, 8.0, 4.0, 4.0),
-    "beauty": (2.0, 4.0, 1.5, 1.5),
+    "beauty": (5.0, 7.0, 2.5, 2.5),
     "people": (3.0, 6.0, 2.0, 2.0),
     "group": (3.0, 6.0, 2.0, 2.0),
     "voice_laughter": (4.0, 8.0, 3.5, 2.5),

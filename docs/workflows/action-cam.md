@@ -126,7 +126,7 @@ cutpoint assemble projects/trip/clips_mix --loudnorm
 per-category quotas (`--quotas run=.35,...`, `--target` seconds). The arc order opens with a
 lift or scenery shot, follows the day, and ends on the best crash, run or jump. `mix_report.json`
 holds content checks: at least four categories, none over 40% of the length, no near-duplicates,
-a scenic opener, and 180-300 s total. `--exclude-file` lists source spans to leave out.
+a scenic opener, and 180-300 s total. Views and lift shots are 5-7 s long. `--exclude-file` lists source spans to leave out.
 
 ## Learning from your own edit
 

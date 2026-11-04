@@ -451,7 +451,7 @@ class MomentTable:
         or kind, in what the vision model saw (vision label, VLM window labels, descriptions
         and named moments), their heard sounds or the names of their cues of :data:`CUE_MATCH`
         or more (:func:`_names`: ``crash`` finds crash and crash_fall); ties go to the stronger
-        cues the words name, then to the rank. In the text a word matches the start of a word
+        cues the words name, then to the moment with a transcript (commentary), then to the rank. In the text a word matches the start of a word
         (``air`` finds air, airs and airtime, not chair); a word in a script written without
         spaces (Chinese, Japanese, Korean, Thai, ...) matches anywhere. None when no word
         matches."""
@@ -476,7 +476,8 @@ class MomentTable:
             n = sum(bool(starts[w].search(text)) or any(_names(w, k) for k in strong) for w in want)
             if n:
                 power = sum(v for k, v in look.cues.items() if any(_names(w, k) for w in want))
-                hits.append((-n, -power, i, real))
+                # commentary over the moment only orders otherwise equal hits
+                hits.append((-n, -power, -bool(str(c.get("transcript") or "").strip()), i, real))
         return [real for *_, real in sorted(hits)[:limit]]
 
 

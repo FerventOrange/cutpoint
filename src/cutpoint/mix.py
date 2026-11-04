@@ -14,7 +14,7 @@ one signal that happens to be strong (laughs, group shots):
     lift     telemetry lift mask, or (360) :func:`cutpoint.pano.views.lift_scores`
              above 0.5 for >= 20 s; the best beauty / people moment of each ride;
              5-7 s; kind ``beauty`` or ``social``
-    scenery  beauty >= 0.55, off lifts; 3-5 s; kind ``beauty``
+    scenery  beauty >= 0.55, off lifts; 5-7 s; kind ``beauty``
     social   voice_laughter .5, people .3, voice .2 with someone audible; 5-9 s; kind ``laughter``
 
 Without GPS (Insta360 X3) speed is 0, so ``run`` uses the IMU turn rhythm
@@ -83,7 +83,7 @@ LENGTHS = {
     "run": (6.0, 9.0),
     "jump": (3.0, 6.0),
     "lift": (5.0, 7.0),
-    "scenery": (3.0, 5.0),
+    "scenery": (5.0, 7.0),
     "social": (5.0, 9.0),
 }
 MIN_MIX_PIECE_S = 2.5  # shortest clip left after cutting out excluded spans
