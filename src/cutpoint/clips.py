@@ -535,7 +535,7 @@ class RenderResult:
     srt: str | None = None
 
 
-def plan_clips(
+def plan_edges(
     ordered: list[dict[str, Any]],
     project: Path,
     *,
@@ -546,37 +546,13 @@ def plan_clips(
     event_settings: EventTailSettings,
     speech: boundaries.SpeechSettings,
     padding: Padding | None = None,
-    crop: str | None = None,
-    project_cfg: dict[str, Any] | None = None,
-    pano: PanoExporter | None = None,
     language: str | None = None,
 ) -> list[ClipPlan]:
-    """Plan the clips of ``ordered`` moments: names, tails, padding, speech, crops.
+    """The in/out points of the clips of ``ordered`` moments as they export: tails, padding
+    and the speech-aware pass of :func:`plan_clips`, without the crops (``crop`` is None).
 
-    Reads cached analysis data (transcripts, audio, read errors) and, for an
-    ``auto`` crop, a few source frames; writes no clips.
-
-    Args:
-        ordered: Moments in output order.
-        project: Project folder (events for the speech maps).
-        io_paths: ``{recorded source: file to read}``.
-        infos: ``{recorded source: probe}``.
-        tail: Smart-tail settings of the run (a moment's ``tail`` /
-            ``smart_tail`` override them).
-        events: The project's events.json by source, or None (no event tails).
-        event_settings: Event-tail settings.
-        speech: Speech-aware boundary settings.
-        padding: Padding for every clip (a moment's ``extend*`` override it).
-        crop: ``--crop`` spec for every source (None: segment / project.json).
-        project_cfg: The project's project.json.
-        pano: 360 exporter; the moments it handles are not cropped.
-        language: Transcript language the analysis forced (None: the detected one).
-
-    Returns:
-        One :class:`ClipPlan` per moment, in order.
-
-    Raises:
-        ValueError: If a moment is outside its source or a crop does not fit.
+    Reads cached analysis data (transcripts, audio, read errors); writes nothing. Arguments
+    as in :func:`plan_clips`.
     """
     words_cache: dict[Path, list[dict[str, Any]] | None] = {}
     plans: list[ClipPlan] = []
@@ -638,9 +614,68 @@ def plan_clips(
         words_cache=words_cache,
         language=language,
     )
-    detected: dict[Path, Crop | None] = {}
     for plan in plans:
         plan.speech = speech_recs.get(plan.name)
+    return plans
+
+
+def plan_clips(
+    ordered: list[dict[str, Any]],
+    project: Path,
+    *,
+    io_paths: dict[str, Path],
+    infos: dict[str, MediaInfo],
+    tail: TailSettings,
+    events: dict[str, list[dict[str, Any]]] | None,
+    event_settings: EventTailSettings,
+    speech: boundaries.SpeechSettings,
+    padding: Padding | None = None,
+    crop: str | None = None,
+    project_cfg: dict[str, Any] | None = None,
+    pano: PanoExporter | None = None,
+    language: str | None = None,
+) -> list[ClipPlan]:
+    """Plan the clips of ``ordered`` moments: names, tails, padding, speech, crops.
+
+    Reads cached analysis data (transcripts, audio, read errors) and, for an
+    ``auto`` crop, a few source frames; writes no clips.
+
+    Args:
+        ordered: Moments in output order.
+        project: Project folder (events for the speech maps).
+        io_paths: ``{recorded source: file to read}``.
+        infos: ``{recorded source: probe}``.
+        tail: Smart-tail settings of the run (a moment's ``tail`` /
+            ``smart_tail`` override them).
+        events: The project's events.json by source, or None (no event tails).
+        event_settings: Event-tail settings.
+        speech: Speech-aware boundary settings.
+        padding: Padding for every clip (a moment's ``extend*`` override it).
+        crop: ``--crop`` spec for every source (None: segment / project.json).
+        project_cfg: The project's project.json.
+        pano: 360 exporter; the moments it handles are not cropped.
+        language: Transcript language the analysis forced (None: the detected one).
+
+    Returns:
+        One :class:`ClipPlan` per moment, in order.
+
+    Raises:
+        ValueError: If a moment is outside its source or a crop does not fit.
+    """
+    plans = plan_edges(
+        ordered,
+        project,
+        io_paths=io_paths,
+        infos=infos,
+        tail=tail,
+        events=events,
+        event_settings=event_settings,
+        speech=speech,
+        padding=padding,
+        language=language,
+    )
+    detected: dict[Path, Crop | None] = {}
+    for plan in plans:
         if pano is not None and pano.handles(plan.entry["source"]):
             plan.pano, plan.crop_source = True, "360"
         else:

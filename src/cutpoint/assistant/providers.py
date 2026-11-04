@@ -60,6 +60,13 @@ CONNECT_TIMEOUT_S = 10.0
 SHOW_TIMEOUT_S = 5.0
 CHECK_TIMEOUT_S = 15.0  # a hosted provider's model list or model
 OLLAMA_CONTEXT_TOKENS = 50000  # assistant.context_tokens unset: Ollama (asked for num_ctx)
+# Sampling of AI Chat on Ollama (the Vision role keeps the model's own): qwen3.5's recommended
+# values for non-thinking use, and room for a reply with a whole proposal (#738)
+CHAT_TEMPERATURE = 1.0
+CHAT_PRESENCE_PENALTY = 1.5  # fewer runaway lists in a text reply
+CHAT_TOP_K = 20
+CHAT_TOP_P = 0.95
+CHAT_NUM_PREDICT = 16384
 ON_MACHINE_CONTEXT_TOKENS = 8192  # unset: another server on this machine (LM Studio, llama.cpp)
 HOSTED_CONTEXT_TOKENS = 32768  # assistant.context_tokens unset: a hosted model
 OPENAI_URL = "https://api.openai.com/v1"
@@ -156,6 +163,15 @@ class ToolsUnsupportedError(ProviderError):
 class TruncatedError(ProviderError):
     """The reply stopped at the context or output limit: a tool call in it is not whole, and
     the text may end midway. The turn asks again with less in the conversation."""
+
+
+class OutputCapError(TruncatedError):
+    """The reply stopped at the output cap (``num_predict``), with room left in the context:
+    less context would not help. The turn asks again for a shorter reply."""
+
+    def __init__(self, message: str, tokens: int = 0) -> None:
+        super().__init__(message)
+        self.tokens = tokens
 
 
 class CancelledError(ProviderError):
@@ -569,6 +585,7 @@ class OllamaProvider:
         self.local = is_consent_exempt(self.url)
         self._model = model
         self.context_tokens = context_tokens
+        self.vision = False  # the Vision role's provider (make_vision): no chat sampling
         self._caps: Capabilities | None = None
 
     @property
@@ -661,6 +678,20 @@ class OllamaProvider:
             self._caps = Capabilities("tools" in listed, True, "vision" in listed)
         return self._caps
 
+    def options(self) -> dict[str, Any]:
+        """``options`` of a chat request: ``num_ctx``, and for AI Chat the sampling constants
+        (``CHAT_*``); the Vision role sends only ``num_ctx``."""
+        out: dict[str, Any] = {"num_ctx": self.context_tokens}
+        if not self.vision:
+            out |= {
+                "temperature": CHAT_TEMPERATURE,
+                "presence_penalty": CHAT_PRESENCE_PENALTY,
+                "top_k": CHAT_TOP_K,
+                "top_p": CHAT_TOP_P,
+                "num_predict": CHAT_NUM_PREDICT,
+            }
+        return out
+
     def chat(
         self,
         messages: list[dict[str, Any]],
@@ -676,7 +707,7 @@ class OllamaProvider:
             "messages": [_ollama_message(m) for m in messages],
             "stream": True,
             "think": False,  # a reply in seconds, not a reasoning trace that fills num_ctx
-            "options": {"num_ctx": self.context_tokens},
+            "options": self.options(),
         }
         if tools:
             payload["tools"] = tools
@@ -689,7 +720,7 @@ class OllamaProvider:
                 if tools and "does not support tools" in why:
                     raise ToolsUnsupportedError(why)
                 raise ProviderError(f"Ollama answered {resp.status_code}: {why}")
-            text, raw_calls = self._read_stream(resp, cancelled)
+            text, raw_calls = self._read_stream(resp, cancelled, self.options().get("num_predict"))
         finally:
             resp.close()
         calls = []
@@ -703,9 +734,11 @@ class OllamaProvider:
             message["tool_calls"] = raw_calls
         return Reply(text, calls, message)
 
-    @staticmethod
     def _read_stream(
-        resp: requests.Response, cancelled: Callable[[], bool] | None
+        self,
+        resp: requests.Response,
+        cancelled: Callable[[], bool] | None,
+        num_predict: int | None = None,
     ) -> tuple[str, list[Any]]:
         """``(text, raw tool calls)`` of a streamed reply: one JSON object per line, each with
         a piece of ``message``, the last with ``done``."""
@@ -713,6 +746,7 @@ class OllamaProvider:
         raw_calls: list[Any] = []
         got = False
         cut = False
+        evaluated = prompt = 0
         try:
             for line in resp.iter_lines():
                 if cancelled is not None and cancelled():
@@ -736,10 +770,22 @@ class OllamaProvider:
                         raw_calls += msg["tool_calls"]
                 if chunk.get("done"):
                     cut = chunk.get("done_reason") == "length"
+                    evaluated = int(chunk.get("eval_count") or 0)
+                    prompt = int(chunk.get("prompt_eval_count") or 0)
                     break
         except requests.RequestException as err:
             raise ProviderError(f"Ollama stopped answering ({err})") from err
         if cut:  # the context or num_predict ran out: Ollama sends what it had, as if whole
+            # num_predict: the reply used up its cap while the prompt and reply were well inside
+            # the context, so less context would not help
+            if (
+                num_predict
+                and evaluated >= num_predict
+                and prompt + evaluated < self.context_tokens
+            ):
+                raise OutputCapError(
+                    f"Ollama's reply was cut off at its limit of {num_predict} tokens", evaluated
+                )
             raise TruncatedError("Ollama's reply was cut off at the end of the context")
         if not got:
             raise ProviderError("Ollama's answer has no message")
@@ -1644,7 +1690,10 @@ def make_vision(settings: AssistantSettings, chat: AssistantSettings | None = No
     """
     cls = _PRESET_CLASSES.get(settings.provider)
     if cls is None:  # Ollama or a subscription: no API key
-        return make(settings)
+        provider = make(settings)
+        if isinstance(provider, OllamaProvider):
+            provider.vision = True
+        return provider
     chat = chat or assistant_settings()
     shared = vision_key_shared(settings.provider, settings.url, chat.provider, chat.url)
     host = key_host(settings.provider, settings.url)

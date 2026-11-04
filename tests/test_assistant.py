@@ -91,7 +91,7 @@ def run(provider: FakeProvider, text: str = "tidy up", **kw: Any) -> session.Tur
         ({"op": "move", "id": "x9", "to": 1}, (["x9", "c2", "c3"], {"x9": ["moved"]})),
         (
             {"op": "trim", "id": "c2", "start_delta": -2, "end": 51.5},
-            (["c2", "c3", "x9"], {"c2": ["trimmed"]}),
+            (["c2", "c3", "x9"], {"c2": ["lengthened"]}),
         ),
         ({"op": "sort", "by": "score"}, (["c3", "c2", "x9"], {"c3": ["moved"]})),
         ({"op": "sort", "by": "time"}, (["c2", "x9", "c3"], {"x9": ["moved"]})),
@@ -105,7 +105,7 @@ def run(provider: FakeProvider, text: str = "tidy up", **kw: Any) -> session.Tur
         ({"op": "add", "id": "x9"}, "not a moment of this project"),
         ({"op": "remove", "id": "c1"}, "c1 is not in the sequence"),
         ({"op": "order", "ids": ["c2", "c3"]}, "missing x9"),
-        ({"op": "move", "id": "c2", "to": 4}, "position from 1 to 3"),
+        ({"op": "move", "id": "c2", "to": 5}, "position from 1 to 4"),
     ],
 )
 def test_apply_ops_follows_the_review_rules(op: dict, want: tuple | str) -> None:
@@ -188,7 +188,15 @@ def test_ollama_streams_native_chat_with_tools_format_and_num_ctx(monkeypatch) -
     url, body = sent[-1]
     assert url == "http://h:1/api/chat"
     assert body["model"] == "qwen3.5:9b" and body["messages"] == msgs
-    assert body["stream"] is True and body["options"] == {"num_ctx": 8192}  # no temperature
+    assert body["stream"] is True
+    assert body["options"] == {  # AI Chat's sampling (providers.CHAT_*)
+        "num_ctx": 8192,
+        "temperature": 1.0,
+        "presence_penalty": 1.5,
+        "top_k": 20,
+        "top_p": 0.95,
+        "num_predict": 16384,
+    }
     assert body["tools"][0]["type"] == "function" and "format" not in body
     assert p.tool_result(reply.tool_calls[0], "r") == {
         "role": "tool",
@@ -319,13 +327,14 @@ def test_a_turn_looks_moments_up_retries_a_rejected_proposal_and_ends_with_it() 
     rejected = fake.requests[2]["messages"][-1]["content"]
     assert "proposal rejected" in rejected and "m2: end 999s is past" in rejected
     kinds = [e["kind"] for e in turn.view()["events"]]
-    assert kinds == ["tool", "proposal"]
-    prop = turn.view()["events"][1]
+    assert kinds == ["tool", "rejected", "proposal"]  # the rejected attempt is on the page too
+    assert "m2: end 999s is past" in turn.view()["events"][1]["text"]
+    prop = turn.view()["events"][2]
     assert [s["id"] for s in prop["after"]] == ["c1", "c2", "c3"]  # real ids; m4 was x9
     assert prop["ops"][0]["id"] == "c1" and prop["base_key"] == "key0"
     assert [s["summary"] for s in prop["suggestions"]] == ["Sort by score"]
-    assert turn.view(after=1)["events"] == [prop]
-    assert turn.record()["reply"] == "Proposed: Open on the laugh"
+    assert turn.view(after=2)["events"] == [prop]
+    assert turn.record()["reply"] == "Proposed: Open on the laugh (changes: 1 added, 1 removed)"
 
 
 def test_a_turn_stops_after_eight_rounds() -> None:

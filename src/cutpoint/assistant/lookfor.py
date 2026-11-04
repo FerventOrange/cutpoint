@@ -62,7 +62,7 @@ MIN_LEN_S, MAX_LEN_S = 3.0, 8.0
 DROP = 0.02  # a window runs while frames are within this of the peak
 SPACING_S = 20.0  # between two windows of a source
 PER_SOURCE = 5
-MAX_NEW = 3  # new moments per call
+MAX_NEW = 10  # new moments per call (as many as the most hits a call returns, MAX_LIMIT)
 MAX_UNSURE = 4  # weak windows and unconfirmed (uncovered, not new) ones per call
 COVERED = 0.5  # of the shorter span
 

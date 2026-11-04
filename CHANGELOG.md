@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- AI Chat builds to a length target with clean clip ends. The model now sees each clip's length
+  as it will export (Smart tails and Speech-aware cuts on), the room before and after it in its
+  source, the sequence total and the length you asked for ("~4 min", "240 s", "1:30"). A proposal
+  that is more than 15% over or under that length goes back to the model up to 3 times (each says
+  the total, the target and the seconds still needed); a summary that claims a change its ops do
+  not make goes back along with it, once, and otherwise Cutpoint rebuilds the summary from the
+  changes. Then the closest earlier proposal that was no more than 15% over is offered; one more
+  than 15% over is never shown. A trim that lengthens a clip ends it at the end of the phrase
+  spoken there, never past the source; a trim lengthens an edge by at
+  most 10 s per proposal and an add stays within 10 s of the moment's own window. A proposal that
+  removes every clip needs a message that asks to clear or start over; ops sent as a JSON string
+  are accepted (a malformed one is rejected with the parse error); a reply that only says it will
+  search or add more gets one nudge to go on; an attempt that was not accepted shows as a muted
+  line in the chat;
+  `look_for` makes up to 10 new moments per call (was 3). The diff of a proposal says lengthened
+  or shortened instead of trimmed, and the saved reply says what was really changed. The page
+  asks `POST /api/projects/<id>/edges` for the exported range of each clip and uses it for the
+  lengths, totals and Play sequence.
+- When a proposal is still more than 15% short of a length you asked for, Cutpoint fills it in
+  code before you see it: it lengthens clip ends (at most +10 s each, to the end of the phrase),
+  then adds moments the assistant's searches found. Those ops are marked `auto`, the preview marks
+  the rows "Auto-filled" and the summary says how far it got. A summary that claims what the ops do
+  not do is replaced by one made from the changes instead of losing the proposal; `add` with a
+  position out of range appends. A proposal that removes half the clips or more unasked is sent
+  back; the fill takes one moment from each search in turn and alternates with lengthening. With no search it adds the best-scoring
+  unused moments of the kinds already in the sequence. A turn that ends in text only, with the
+  sequence still short of the asked length, gets a labelled fill to review next to the text.
+- Ollama AI Chat requests send temperature 1.0, presence_penalty 1.5, top_k 20, top_p 0.95 and
+  num_predict 16384 (the Vision role is unchanged). A reply that stops at that output cap with room
+  left in the context is asked again for a shorter one, not with less context.
+
 - Opt-in `CUTPOINT_ANALYZE_SCENE_OVERLAP=1` (Refs #725): `analyze` detects a source's scene cuts
   while Whisper transcribes it, for long sources where both take about as long. Off by default;
   the results are the same either way, and `timings.sources` marks a source with

@@ -284,6 +284,8 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   moments and turns. Ollama is asked for that much context (`num_ctx`), which takes memory: set
   a smaller number if the model does not fit. A reply cut off at the end of the context is
   asked again with less in the conversation once, then the chat shows an error naming the size.
+  AI Chat on Ollama also sends temperature 1.0, presence_penalty 1.5, top_k 20, top_p 0.95 and
+  num_predict 16384 (fixed; the Vision role keeps the model's own).
 - `consent`: the hosted providers the user agreed to send project text to, as
   `assistant-v2:<provider>@<host>` (for example `assistant-v2:anthropic@api.anthropic.com`; the
   host has its port when that is not the scheme's default); the AI Chat tab adds them. An entry without the `assistant-v2:` prefix, saved by an earlier version

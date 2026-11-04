@@ -2,7 +2,7 @@
 // proposal is previewed until Apply (which the server may refuse) or Discard.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boot, reply } from './harness.mjs';
+import { boot, makeProject, reply } from './harness.mjs';
 
 const A = '/api/projects/p1/assistant';
 const seg = (n, start, label) => ({ id: `h00${n}`, source: '/videos/a.mp4', start, end: start + 8, label });
@@ -455,4 +455,59 @@ test('Allow for this project allows without sending again', async (t) => {
   assert.equal(m.posts('/turns').length, 0);
   assert.equal(m.$('#chatLive').textContent, 'Video frames allowed for this project.');
   assert.equal(m.$('#chatLog button[data-act=frames-ask]').textContent, 'Ask again');
+});
+
+test('a rejected attempt is a muted step; lengthened and shortened clips are counted and named', async (t) => {
+  const rows = [
+    { id: 'h001', label: 'A', changes: ['lengthened'], before: { pos: 1, start: 10, end: 18, label: 'A' }, after: { pos: 1, start: 10, end: 24, label: 'A' } },
+    { id: 'h002', label: 'B', changes: ['shortened'], before: { pos: 2, start: 100, end: 108, label: 'B' }, after: { pos: 2, start: 100, end: 104, label: 'B' } },
+  ];
+  const m = await chatPage(t, {
+    routes: turnRoutes([
+      { kind: 'rejected', n: 0, text: 'This proposal makes 96 s of the 240 s asked' },
+      proposal({ n: 1, diff: rows, after: AFTER }),
+    ]),
+  });
+  await m.send('make it 4 min');
+  await m.tick(1000);
+  assert.match(m.log().join('\n'), /Not accepted, asked again: This proposal makes 96 s of the 240 s asked/);
+  assert.ok(m.$('#chatLog li.msg.step.rejected'));
+  assert.match(m.$('#propList').textContent, /Lengthened/);
+  assert.match(m.$('#propList').textContent, /Shortened/);
+  assert.match(m.log().join('\n'), /1 lengthened, 1 shortened/);
+});
+
+test('the sequence asks the server for its exported edges and totals and lists them', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const segs = [seg(1, 10, 'Big laugh'), seg(2, 100, 'Fall')];
+  const asked = [];
+  const page = await boot({
+    project: makeProject({ review: { segments: segs } }),
+    routes: {
+      'POST /api/projects/p1/edges': (req) => {
+        asked.push(req.body);
+        return { edges: { h001: { start: 10, end: 20.5 }, h002: { start: 99, end: 108 } } };
+      },
+    },
+  });
+  t.after(() => page.close());
+  assert.match(page.document.querySelector('#seqTotal').textContent, /2 clips/);
+  t.mock.timers.tick(400);
+  await page.settle();
+  assert.equal(asked.length, 1);
+  assert.deepEqual(asked[0].segments.map((x) => x.id), ['h001', 'h002']);
+  assert.equal(asked[0].smart_tail, true);
+  assert.equal(asked[0].speech_aware, true);
+  const lens = [...page.document.querySelectorAll('#seqList .seq-dur')].map((e) => e.firstChild.textContent);
+  assert.deepEqual(lens, ['10.5 s', '9.0 s'], 'lengths as the export cuts them, not the raw 8 s');
+});
+
+test('rows the code filled in to reach the asked length are marked Auto-filled', async (t) => {
+  const rows = diff(AFTER).map((r, i) => ({ ...r, auto: i === 1 }));
+  const m = await chatPage(t, { routes: turnRoutes([proposal({ n: 0, diff: rows, summary: 'Add two. Auto-filled to reach ~4:00: added 1 from your searches; now 236 s.' })]) });
+  await m.send('make it 4 min');
+  await m.tick(1000);
+  const marks = [...m.d.querySelectorAll('#propList .prop-mark.auto')].map((e) => e.textContent);
+  assert.deepEqual(marks, ['Auto-filled']);
+  assert.match(m.$('#propSummary').textContent, /Auto-filled to reach ~4:00/);
 });

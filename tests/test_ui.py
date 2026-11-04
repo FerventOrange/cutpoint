@@ -7886,7 +7886,7 @@ def test_the_consent_texts_name_what_each_role_sends() -> None:
     table = context.MomentTable([cand], [])
     # kind, seen, cues, heard (#634): what analysis saw, as labels, scores and signals
     disclosed = {"id", "file", "start", "end", "analyzed", "score", "seq", "label", "said"}
-    disclosed |= {"kind", "seen", "cues", "heard"}
+    disclosed |= {"kind", "seen", "cues", "heard", "len"}  # len: end - start (as exported)
     assert set(table.row("h1")) <= disclosed
     assert set(table.row("h1", full=True)) <= disclosed | {"signals"}
     msgs = context.build_messages(table, [], "hi", context.budget(8192))

@@ -134,6 +134,42 @@ let wasIn = true; // the playhead was on the rail at the last frame or view chan
 
 const pick = (s) => ({ id: s.id, source: s.source, start: s.start, end: s.end, label: s.label });
 const key = () => JSON.stringify(S.segments.map(pick));
+
+// Export clips cuts a clip where a sentence or reaction ends (Smart tails, Speech-aware cuts), not at
+// the trim handle. The server plans that for the sequence (POST /edges); lengths, totals and
+// "Play sequence" use it, so they are those of the export. Until it answers, and for a row trimmed
+// since, the row's own range counts.
+const EDGES_DELAY_MS = 300;
+const exportPlan = { pid: null, map: {}, asked: '', timer: 0 };
+/** The range a row is exported at: ``{start, end}``. */
+function planned(s) {
+  const e = exportPlan.pid === S.id ? exportPlan.map[s.id] : null;
+  return e && e.from[0] === s.start && e.from[1] === s.end ? e : s;
+}
+const exportedLen = (s) => { const e = planned(s); return e.end - e.start; };
+
+/** Ask for the planned ranges of the working sequence, a moment after the last change. */
+function askEdges() {
+  clearTimeout(exportPlan.timer);
+  const pid = S.id;
+  const body = { segments: S.segments.map(pick), smart_tail: $('#optTail').checked, speech_aware: $('#optSpeech').checked };
+  const asked = `${pid}|${JSON.stringify(body)}`;
+  if (!pid || !body.segments.length || exportPlan.asked === asked) return;
+  exportPlan.timer = setTimeout(async () => {
+    exportPlan.asked = asked;
+    try {
+      const r = await api(`/api/projects/${encodeURIComponent(pid)}/edges`, { method: 'POST', body });
+      if (exportPlan.asked !== asked || S.id !== pid) return; // a newer question is out, or another project opened
+      const from = new Map(body.segments.map((s) => [s.id, [s.start, s.end]]));
+      exportPlan.pid = pid;
+      exportPlan.map = {};
+      for (const [id, e] of Object.entries(r.edges ?? {})) if (from.has(id)) exportPlan.map[id] = { start: e.start, end: e.end, from: from.get(id) };
+      renderSequence();
+    } catch {
+      exportPlan.asked = ''; // the raw ranges stay; the next change asks again
+    }
+  }, EDGES_DELAY_MS);
+}
 const dirty = () => key() !== S.savedKey;
 const cands = () => S.project?.highlights?.candidates ?? [];
 const srcOf = (path) => S.project?.sources?.find((s) => s.path === path);
@@ -2472,7 +2508,7 @@ const ROW_LABELS = {
   down: (name) => `Move ${name} down`,
 };
 
-const seqDur = (s, range) => h('span', { class: 'seq-dur tc', text: `${(s.end - s.start).toFixed(1)} s` },
+const seqDur = (s, range) => h('span', { class: 'seq-dur tc', text: `${exportedLen(s).toFixed(1)} s` },
   h('span', { class: 'vh', text: `, ${range}` }), prepBadge(srcOf(s.source), s));
 
 /** A row's title button (``head``: its rank and thumbnail) and rename pencil, when not renaming. */
@@ -2585,7 +2621,7 @@ function seqRow(s, i, n) {
 
 function renderSequence() {
   const segs = S.segments;
-  const total = segs.reduce((n, s) => n + (s.end - s.start), 0);
+  const total = segs.reduce((n, s) => n + exportedLen(s), 0);
   $('#seqTotal').textContent = segs.length ? `${segs.length} clip${segs.length > 1 ? 's' : ''}, ${fmtLen(total)}` : '';
   if (!S.project) setEmpty($('#seqEmpty'));
   else if (!segs.length) setEmpty($('#seqEmpty'), h('p', {}, 'Nothing in the sequence yet. Add moments from the list, then trim and reorder them here. Clips are exported in this order.'));
@@ -2599,11 +2635,16 @@ function renderSequence() {
   renderRemoved();
   renderSeqPlay();
   renderProposal();
+  askEdges();
 }
 
 // ---------- play sequence ----------
 
-const seqSeg = (j) => S.segments.find((s) => s.id === S.seqPlay?.order[j]);
+/** Clip ``j`` of the playing sequence, ending where its export ends. */
+const seqSeg = (j) => {
+  const s = S.segments.find((x) => x.id === S.seqPlay?.order[j]);
+  return s && { ...s, end: planned(s).end };
+};
 const seqNow = () => S.seqPlay?.order[S.seqPlay.i];
 const nowIcon = () => h('span', { class: 'seq-now', 'aria-hidden': 'true', title: 'Playing' }, icon('play'));
 
@@ -3309,7 +3350,7 @@ const PROVIDER_NAMES = { ollama: 'Ollama', openai: 'OpenAI-compatible', anthropi
 const CONSENT_SENDS = "this project's analysis results (moment labels, scores and detection signals, vision descriptions, transcript snippets, file names (not full paths) and times) and your messages; never video frames unless you allow them for a project, and never audio";
 // What view_moment sends a hosted model once allowed (watch.py): one image per watched moment
 const FRAMES_SENDS = (host) => `To answer questions about what can be seen, the assistant can watch a few moments. Each one sends ${host} one image of 6 to 9 frames from the moment's clip, with its times, transcript and detected sounds. Nothing was sent. You allow it once for this project and host; Cutpoint saves it in config.json.`;
-const CHANGE_NAMES = { added: 'added', removed: 'removed', moved: 'moved', trimmed: 'trimmed', relabelled: 'renamed' };
+const CHANGE_NAMES = { added: 'added', removed: 'removed', moved: 'moved', lengthened: 'lengthened', shortened: 'shortened', trimmed: 'trimmed', relabelled: 'renamed' };
 const SMALL_MODEL_NOTE = 'A small local model can miss moments or misread a request. Check each change in the preview before you apply it.';
 const aiUrl = (path = '') => `/api/projects/${encodeURIComponent(S.id)}/assistant${path}`;
 // a moment's name as the Moments list shows it (shownName; #634)
@@ -3554,9 +3595,10 @@ function propRow(r) {
   const span = (s) => `${fmt(s.start)}–${fmt(s.end)}`;
   const marks = r.changes.map((c) => h('span', { class: `prop-mark ${c}` },
     c === 'moved' ? ['Moved ', String(r.before.pos), ...arrow(), String(r.after.pos)]
-      : c === 'trimmed' ? ['Trimmed ', span(r.before), ...arrow(), span(r.after)]
+      : c === 'trimmed' || c === 'lengthened' || c === 'shortened' ? [c === 'trimmed' ? 'Trimmed ' : c === 'lengthened' ? 'Lengthened ' : 'Shortened ', span(r.before), ...arrow(), span(r.after)]
         : c === 'relabelled' ? ['Renamed “', r.before.label, '”', ...arrow(), '“', r.after.label, '”']
           : c === 'added' ? 'Added' : 'Removed'));
+  if (r.auto) marks.push(h('span', { class: 'prop-mark auto', title: 'Added by Cutpoint to reach the length you asked for' }, 'Auto-filled'));
   return h('li', { class: ['prop', ...r.changes].join(' '), 'data-id': r.id },
     h('button', { type: 'button', class: 'prop-main', 'data-act': 'focus', onclick: () => focusMoment(r.id) },
       h('span', { class: 'rank tc', text: r.after ? String(r.after.pos) : '–' }),
@@ -3575,7 +3617,7 @@ function markMoments() {
     li.classList.toggle('ai-shown', !!id && !!S.shown?.has(id));
     li.classList.toggle('ai-added', ch.includes('added'));
     li.classList.toggle('ai-removed', ch.includes('removed'));
-    li.classList.toggle('ai-changed', ch.some((c) => c === 'moved' || c === 'trimmed' || c === 'relabelled'));
+    li.classList.toggle('ai-changed', ch.some((c) => ['moved', 'trimmed', 'lengthened', 'shortened', 'relabelled'].includes(c)));
   }
 }
 
@@ -3677,6 +3719,7 @@ function turnItems(t) {
     } else if (ev.kind === 'show') items.push(showItem(ev, id, query));
     else if (ev.kind === 'reply') items.push(h('li', { class: 'msg ai', 'data-id': id }, h('span', { class: 'vh', text: 'Assistant: ' }), markdown(ev.text)));
     else if (ev.kind === 'proposal') items.push(proposalItem(ev, id));
+    else if (ev.kind === 'rejected') items.push(h('li', { class: 'msg step rejected', 'data-id': id, text: `Not accepted, asked again: ${ev.text}` }));
     else if (ev.kind === 'frames_consent') items.push(framesItem(ev, id, t));
     else if (ev.kind === 'error') items.push(h('li', { class: 'msg ai bad', 'data-id': id, text: ev.text }));
   }
@@ -5703,6 +5746,7 @@ function bind() {
     if (validOptions(body)) startJob('extend', body);
   });
   for (const id of ['#optExtendStart', '#optExtendEnd', '#optSpeech']) $(id).addEventListener('input', renderBusy); // Extend export's reason
+  for (const id of ['#optTail', '#optSpeech']) $(id).addEventListener('input', askEdges); // the lengths follow the export's cuts
   $('#optIds').addEventListener('input', syncTiming);
   $('#makeBtn').addEventListener('click', makePreset);
   $('#cancelBtn').addEventListener('click', async () => {
