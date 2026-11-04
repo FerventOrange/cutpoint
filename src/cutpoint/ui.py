@@ -99,7 +99,17 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from cutpoint import cache, folders, insta360, jsonout, paths, procs, progress, runstate
+from cutpoint import (
+    cache,
+    folders,
+    insta360,
+    jsonout,
+    paths,
+    procs,
+    progress,
+    projectdelete,
+    runstate,
+)
 from cutpoint.assemble import AUDIO_TRANSITIONS, OUTPUT_FORMATS, default_audio_transition
 from cutpoint.assistant import cliproxy
 from cutpoint.assistant import context as ai_context
@@ -129,7 +139,7 @@ from cutpoint.config import (
 )
 from cutpoint.edit import KINDS
 from cutpoint.encode import BT709_TAGS, TV_RANGE, preview_filter, still_filter
-from cutpoint.errors import EncoderUnavailableError, FFmpegError
+from cutpoint.errors import EncoderUnavailableError, FFmpegError, FolderBusyError
 from cutpoint.ffmpeg_utils import (
     ChildScope,
     VideoEncoder,
@@ -172,6 +182,7 @@ LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 MAX_SEGMENTS = ai_ops.MAX_SEGMENTS
 MAX_LOG_LINES = 300
 MAX_JOBS = 50
+MAX_KEPT_NAMES = 100  # names of kept files the delete plan lists
 MAX_EXTEND_S = 30.0
 MAX_TIMING_S = 60.0  # speech caps, tail lengths and the event window the page may send
 MAX_TOTAL_S = 36000.0  # clips --max-total
@@ -2132,6 +2143,33 @@ class Media:
             stale = [f for f in folder.glob("*.jpg") if f.name.split("-")[0] not in keys]
             self._drop_frames([*stale, *folder.glob("*.part")])
 
+    def encoding_for(self, project: Path) -> bool:
+        """A whole proxy or a window proxy of ``project`` is queued or encoding now."""
+        with self.lock:
+            return any(
+                q == project and st == "preparing" for (q, _), st in self.proxies.items()
+            ) or any(
+                w is not None and w.project == project
+                for w in (self.window_running, *self.windows_queue)
+            )
+
+    def forget(self, project: Path) -> None:
+        """Drop what is remembered of ``project`` (it was deleted): a project made later under
+        the same name starts clean."""
+        with self.lock:
+            for table in (
+                self.proxies,
+                self.progress,
+                self.windows,
+                self.retired,
+                self.window_failures,
+            ):
+                for k in [k for k in table if k[0] == project]:
+                    del table[k]
+            self.proxies_pruned.discard(project)
+            self.frames_pruned.discard(project)
+            self.tone_maps_pruned -= {t for t in self.tone_maps_pruned if t[0] == project}
+
     def shutdown(self) -> None:
         with self.lock:  # as in ``_encode``: no proxy ffmpeg starts after this
             self.closing = True
@@ -2659,11 +2697,14 @@ def _loopback_url(value: str, port: int, *, origin: bool) -> bool:
 
 
 def project_dir(pid: str) -> Path:
-    """The project folder ``pid`` (a direct child of the projects folder), else 404."""
+    """The project folder ``pid`` (a direct child of the projects folder), else 404; 409 while
+    it is being deleted."""
     root = projects_dir()
     if not pid or pid.startswith(".") or any(c in pid for c in "/\\\0") or pid != pid.strip():
         raise bad("unknown project", 404)
     p = root / pid
+    if p in DELETING:
+        raise bad("this project is being deleted", 409)
     try:
         ok = p.is_dir() and p.resolve().parent == root.resolve()
     except OSError:
@@ -2671,6 +2712,33 @@ def project_dir(pid: str) -> Path:
     if not ok or not _is_project(p):
         raise bad("unknown project", 404)
     return p
+
+
+DELETING: set[Path] = set()  # projects being deleted now (under ``Jobs.lock``): see project_dir
+
+
+def protected_sources() -> dict[str, str]:
+    """``{normcased real path: project name}`` of every source video or folder that a project
+    under the projects folder reads (its picked inputs and the sources of its analysis): deleting
+    a project never removes one."""
+    found: dict[str, str] = {}
+    try:
+        projects = sorted(d for d in projects_dir().iterdir() if d.is_dir())
+    except OSError:
+        return found
+    for d in projects:
+        meta, hl = read_meta(d), _highlights(d) or {}
+        raw = [
+            *picked_inputs(meta),
+            *((hl.get("settings") or {}).get("inputs") or []),
+            *(s.get("path") for s in hl.get("sources") or [] if isinstance(s, dict)),
+        ]
+        for path in raw:
+            if isinstance(path, str) and path:
+                with contextlib.suppress(OSError, ValueError):
+                    key = projectdelete.source_key(path)
+                    found.setdefault(key, str(meta.get("name") or d.name))
+    return found
 
 
 def read_meta(p: Path) -> dict[str, Any]:
@@ -5518,6 +5586,85 @@ def create_app(port: int) -> FastAPI:
     @owned.get("/projects/{pid}/assistant/history")
     def get_history(pid: str):
         return {"applied": ai_store.history(project_dir(pid))}
+
+    # -- delete a project (Settings) ---------------------------------------------------
+    def delete_blocker(pid: str, p: Path) -> str | None:
+        """Why ``p`` cannot be deleted now (a job, a run, an encode or a chat turn on it)."""
+        if any(j.status == "running" and j.project_id == pid for j in list(jobs.jobs.values())):
+            return "A job is running on this project; wait for it to finish or cancel it"
+        if project_busy(p, run_state(p, True)) or projectdelete.locked(p):
+            return "A Cutpoint run holds this project; wait for it to finish"
+        with previews.lock:
+            if any(v is not None and v.project == p for v in (previews.running, *previews.queue)):
+                return "A 360 preview is rendering for this project; wait for it to finish"
+        if media.encoding_for(p) or any(t.status == "running" for t in turns.of(str(p))):
+            return "The project is still preparing videos or answering in AI Chat; wait a moment"
+        return None
+
+    @owned.get("/projects/{pid}/delete-plan")
+    def delete_plan(pid: str):
+        """What deleting the project removes (``size`` bytes in ``files`` files; ``deleted``, the
+        finals and timelines among them) and the names of what stays (``kept``); each list holds
+        at most :data:`MAX_KEPT_NAMES` names of its ``*_count``."""
+        p = project_dir(pid)
+        plan = projectdelete.make_plan(p, protected_sources())
+        return {
+            "name": read_meta(p).get("name") or pid,
+            "size": plan.size,
+            "files": plan.files,
+            "deleted": plan.deleted[:MAX_KEPT_NAMES],
+            "deleted_count": len(plan.deleted),
+            "kept": plan.kept[:MAX_KEPT_NAMES],
+            "kept_count": len(plan.kept),
+        }
+
+    @owned.delete("/projects/{pid}")
+    def delete_project(pid: str, body: dict[str, Any] | None = None):
+        """Delete the project's own files (:mod:`cutpoint.projectdelete`) to the Recycle Bin /
+        Trash, or for good with ``permanent``. 409 with ``code`` ``no_trash`` when the trash
+        cannot be trusted with them, for the page to ask before it sends ``permanent``."""
+        permanent = _flag(body or {}, "permanent")
+        project_dir(pid)
+        protected = protected_sources()  # before the lock: a slow path must not hold it
+        with jobs.lock:  # no job starts on the project while it is deleted
+            p = project_dir(pid)  # again: a delete that ran first may have removed it
+            DELETING.add(p)  # every other route on the project answers 409 meanwhile
+            try:
+                if why := delete_blocker(pid, p):
+                    raise bad(why, 409)
+                plan = projectdelete.make_plan(p, protected)
+                try:
+                    with folders.swap_lock(p / runstate.LOCK_NAME, p):
+                        projectdelete.remove_items(plan, permanent=permanent)
+                except FolderBusyError as err:
+                    raise bad(BUSY_TEXT, 409) from err
+                except projectdelete.NoTrash as err:
+                    logger.warning("could not move %s to the trash: %s", p, err)
+                    return JSONResponse(
+                        {
+                            "detail": f"The Recycle Bin / Trash cannot be used: {err}.",
+                            "code": "no_trash",
+                        },
+                        status_code=409,
+                    )
+                except PermissionError as err:
+                    logger.warning("deleting %s failed: %s", p, err)
+                    f = err.filename
+                    name = (
+                        Path(f[0] if isinstance(f, (list, tuple)) and f else str(f)).name
+                        if f
+                        else "a file"
+                    )
+                    raise bad(f"A file is in use ({name}); close it and try again.", 409) from err
+                except OSError as err:
+                    logger.warning("deleting %s failed: %s", p, err)
+                    raise bad(f"could not delete the project: {err.strerror or err}", 500) from err
+                projectdelete.remove_folder(p)
+            finally:
+                DELETING.discard(p)
+        media.forget(p)
+        turns.clear(str(p))
+        return {"deleted": pid, "kept": len(plan.kept)}
 
     @owned.post("/projects/{pid}/assistant/history/{hid}/revert")
     def revert_change(pid: str, hid: str, body: dict[str, Any]):

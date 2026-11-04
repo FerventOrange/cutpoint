@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Settings in `cutpoint ui` has a "Delete this project" button for the open project. A dialog
+  names the project and the size of what will be deleted, lists the files that stay and has
+  Cancel focused. The files Cutpoint made (results, `ui/` data, finals, and the clips each clips
+  folder's `manifest.json` lists with their `.srt`) go to the Recycle Bin or Trash; your videos,
+  staged copies, clips you added by hand and any other file stay, and the project folder goes
+  only when nothing is left in it. Links out of the project are never followed, and a source
+  video of any project, or a folder holding one, stays. It is refused while a job or a run holds
+  the project. Where the trash cannot be trusted (a network or removable drive, a Recycle Bin set
+  to delete at once or too small for a file, a container) the page asks again before it deletes
+  for good. API: `GET /api/projects/<id>/delete-plan` and
+  `DELETE /api/projects/<id>` (`{"permanent": true}`; 409 with `code` `no_trash`). New core
+  dependency: `send2trash` (BSD-3-Clause).
 - AI Chat builds to a length target with clean clip ends. The model now sees each clip's length
   as it will export (Smart tails and Speech-aware cuts on), the room before and after it in its
   source, the sequence total and the length you asked for ("~4 min", "240 s", "1:30"). A proposal

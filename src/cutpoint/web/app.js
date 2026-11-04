@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtLen, h, markdown, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, spanText, svg } from './util.js';
+import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtBytes, fmtLen, h, markdown, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, spanText, svg } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -4042,6 +4042,7 @@ async function openSettings() {
   $('#setAdvExport').checked = S.advExport;
   S.advExportWas = S.advExport;
   S.themeWas = $('#setTheme').value = theme();
+  $('#setDeletePanel').hidden = !S.id; // only the open project can be deleted
   d.showModal();
   input.focus();
 }
@@ -4081,6 +4082,73 @@ async function saveSettings() {
     await loadProjects();
     const next = S.projects.find((p) => p.id === was) ?? S.projects[0];
     if (next) await openProject(next.id);
+  } catch (e) {
+    fail(e);
+  }
+}
+
+const LIST_SHOWN = 8; // names listed in the delete dialog
+
+/** Delete the open project (Settings): confirm with its size and what stays, move it to the Recycle Bin / Trash, or, when there is none, ask again before deleting for good. */
+async function deleteProject() {
+  const id = S.id;
+  if (!id) return;
+  const url = `/api/projects/${encodeURIComponent(id)}`;
+  const err = $('#settingsError');
+  err.textContent = '';
+  let plan;
+  try {
+    plan = await api(`${url}/delete-plan`);
+  } catch (e) {
+    err.textContent = e.message;
+    return;
+  }
+  const kept = plan.kept ?? [];
+  const gone = plan.deleted ?? [];
+  const list = (names, count) => [
+    ...names.slice(0, LIST_SHOWN).map((n) => `  ${n}`),
+    ...(count > Math.min(names.length, LIST_SHOWN) ? [`  and ${count - Math.min(names.length, LIST_SHOWN)} more`] : []),
+  ];
+  const lines = [
+    `Moves the ${plan.files} file${plan.files === 1 ? '' : 's'} Cutpoint made for this project, including the final videos and exported clips, to the Recycle Bin or Trash. Your source videos are not touched.`,
+  ];
+  if (plan.deleted_count) lines.push('Final videos and timelines that go:', ...list(gone, plan.deleted_count));
+  if (plan.kept_count) lines.push('These stay in the project folder:', ...list(kept, plan.kept_count));
+  if (!(await confirmAction(`Delete project ${plan.name} (${fmtBytes(plan.size)})?`, lines.join('\n'), 'Delete project'))) return;
+  const btn = $('#setDelete');
+  const label = btn.textContent;
+  btn.disabled = true; // one request at a time
+  btn.setAttribute('aria-busy', 'true');
+  btn.textContent = 'Deleting…';
+  let permanent = false;
+  let out;
+  try {
+    for (;;) {
+      try {
+        out = await api(url, { method: 'DELETE', body: { permanent } });
+        break;
+      } catch (e) {
+        if (e.code !== 'no_trash' || permanent) {
+          err.textContent = e.message;
+          return;
+        }
+        const text = `${e.message}\nDelete the files permanently instead? They cannot be restored.`;
+        if (!(await confirmAction('Delete permanently?', text, 'Delete permanently'))) return;
+        permanent = true;
+      }
+    }
+  } finally {
+    btn.disabled = false;
+    btn.removeAttribute('aria-busy');
+    btn.textContent = label;
+  }
+  $('#settingsCancel').click(); // closes the dialog and undoes any change not saved
+  const stayed = out?.kept ?? 0;
+  const done = `Deleted project ${plan.name}.${stayed ? ` ${stayed} file${stayed === 1 ? '' : 's'} stayed in its folder.` : ''}`;
+  try {
+    closeProject();
+    banner(done);
+    await loadProjects();
   } catch (e) {
     fail(e);
   }
@@ -5038,6 +5106,7 @@ function bindSettings() {
   gear.addEventListener('click', openSettings);
   d.addEventListener('close', () => gear.focus());
   $('#setTheme').addEventListener('change', (e) => setTheme(e.target.value));
+  $('#setDelete').addEventListener('click', deleteProject);
   const undo = () => {
     setNerdStats(S.nerdStatsWas);
     // a field revealed for an out-of-range value (showAdvExport(true)) stays unless the box changed

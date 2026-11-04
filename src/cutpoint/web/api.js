@@ -9,9 +9,10 @@ const TOKEN_DETAIL = 'missing or wrong session token';
 const EXPIRED = 'The Cutpoint server restarted or this link expired. Open the new link printed in the terminal.';
 
 class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code = null) {
     super(message);
     this.status = status;
+    this.code = code; // the server's machine-readable `code` of the error, when it sends one
   }
 }
 
@@ -41,15 +42,17 @@ export function whenExpired(fn) {
   onExpired = fn;
 }
 
-async function detail(r) {
+/** The readable message of an error response and its `code` (null when the server sent none). */
+async function failure(r) {
   try {
     const j = await r.json();
     const d = j.detail ?? j.error ?? j;
-    if (typeof d === 'string') return d;
-    if (Array.isArray(d)) return d.map((e) => e.msg ?? JSON.stringify(e)).join('; ');
-    return JSON.stringify(d);
+    const code = typeof j.code === 'string' ? j.code : null;
+    if (typeof d === 'string') return { message: d, code };
+    if (Array.isArray(d)) return { message: d.map((e) => e.msg ?? JSON.stringify(e)).join('; '), code };
+    return { message: JSON.stringify(d), code };
   } catch {
-    return `${r.status} ${r.statusText}`.trim();
+    return { message: `${r.status} ${r.statusText}`.trim(), code: null };
   }
 }
 
@@ -70,14 +73,17 @@ export async function api(path, { method = 'GET', body } = {}) {
     throw new ApiError(0, "Can't reach the cutpoint server. Is `cutpoint ui` still running?");
   }
   if (r.status === 403) {
-    if ((await detail(r)) !== TOKEN_DETAIL) throw new ApiError(403, BAD_TOKEN);
+    if ((await failure(r)).message !== TOKEN_DETAIL) throw new ApiError(403, BAD_TOKEN);
     if (!expired) {
       expired = new ApiError(403, EXPIRED);
       onExpired(expired);
     }
     throw expired;
   }
-  if (!r.ok) throw new ApiError(r.status, await detail(r));
+  if (!r.ok) {
+    const { message, code } = await failure(r);
+    throw new ApiError(r.status, message, code);
+  }
   return r.status === 204 ? null : r.json();
 }
 
