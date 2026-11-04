@@ -1054,6 +1054,13 @@ def test_a_phrase_end_far_away_leaves_the_end_and_a_trim_never_passes_the_cap(
         ("make it 4 min 30 s", 270),
         ("about 2 minutes and 15 seconds", 135),
         ("make it 90 seconds", 90),
+        ("pick 8 clips, ~3 min", 180),
+        ("use the best clips, around 2 minutes", 120),
+        ("remove the boring clips, under 2 minutes", 120),
+        ("use fewer clips, about 1 min", 60),
+        ("add 2 more clips, about 4 min", 240),
+        ("8 clips, 3 minutes long", 180),
+        ("make it about 4 minutes more or less", 240),
     ],
 )
 def test_a_length_for_each_clip_or_a_change_is_no_sequence_target(

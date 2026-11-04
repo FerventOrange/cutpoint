@@ -540,9 +540,9 @@ _CHANGE = re.compile(r"\b(?:by|extra|another|add|more|trim|cut|remove|plus|exten
 _CLIP_REF = re.compile(r"\bm\d+\b[^.!?;\n]*$")
 # A length for each clip ("each clip about 5 s", "clips around 8 seconds", "10 s clips") or a change
 # ("30 s more", "5 s longer") is none either.
-_PER_CLIP_BEFORE = re.compile(r"\b(?:each|every|per|clips?)\W*$", re.I)
+_PER_CLIP_BEFORE = re.compile(r"\b(?:each|every|per|clips?)\s*$", re.I)
 _PER_CLIP_AFTER = re.compile(
-    r"\s*(?:each|per clip|a clip|clips?|more|extra|longer|shorter)\b", re.I
+    r"\s*(?:each|per clip|a clip|clips?|more(?!\s+or\s+less)|extra|longer|shorter)\b", re.I
 )
 # "4 min and 30 s": the seconds that follow minutes
 _AND_SECONDS = re.compile(rf"\s*(?:and\s+)?{_NUM}{_UNIT}", re.I)

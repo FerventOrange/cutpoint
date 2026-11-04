@@ -837,16 +837,12 @@ class Turn:
                 summary, main = was
                 raw = []  # its suggestions were not kept
         if self.target and self._rank(main)[0]:  # never shown over the length by more than 15%
-            was = self._closest()
-            if was is None:
-                over = main["length"] - self.target
-                note = (
-                    f"This proposal makes {main['length']:.0f} s of the {self.target:.0f} s asked; "
-                    f"cut about {over:.0f} s (shorten or remove clips) and propose again."
-                )
-                return self._rejected(note, note)
-            summary, main = was
-            raw = []
+            over = main["length"] - self.target
+            note = (
+                f"This proposal makes {main['length']:.0f} s of the {self.target:.0f} s asked; "
+                f"cut about {over:.0f} s (shorten or remove clips) and propose again."
+            )
+            return self._rejected(note, note)
         summary, main = self._filled(summary, main)
         suggestions = []
         for sug in (raw if isinstance(raw, list) else [])[:MAX_SUGGESTIONS]:
