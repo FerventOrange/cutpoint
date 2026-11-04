@@ -1250,6 +1250,7 @@ class FakePrefetch:
         self.probe = lambda: None
         self.mode = None  # CUTPOINT_ANALYZE_SHARED_DECODE off
         self.scenes: list[object] = []
+        self.waits: dict[str, float] = {}
 
     def __enter__(self):
         return self
@@ -1722,3 +1723,67 @@ def test_reanalyze_keeps_the_detection_and_never_probes_again(probed, monkeypatc
     after = _hl(probed)
     assert after["style"] == "gaming" and after["detection"] == before["detection"]
     assert after["settings"]["style_requested"] == "auto"
+
+
+# ----------------------------------------------------------------- per-source timings (#725)
+@pytest.mark.parametrize("cached", [True, False])
+def test_analyze_source_times_each_stage_and_flags_a_cached_source(tmp_path, monkeypatch, cached):
+    src = write(tmp_path / "a.mp4")
+    info = MediaInfo(src, 100.0, 100.0, 640, 360, Fraction(30), "yuv420p", "h264", 1, "aac",
+                     16000, 1)  # fmt: skip
+    cdir = tmp_path / "cache"
+    if cached:
+        write(cdir / "audio16k.wav")
+        write(cdir / "transcript-m.json", "[]")
+    monkeypatch.setattr(analyze, "probe", lambda path: info)
+    monkeypatch.setattr(analyze.cache, "source_dir", lambda s, off=0.0: cdir)
+    monkeypatch.setattr(analyze, "extract_audio", lambda *a, **k: write(a[1]))
+    monkeypatch.setattr(analyze, "check_read", lambda *a: None)
+    monkeypatch.setattr(analyze, "_loudness", lambda wav, cdir: (np.zeros(1), np.zeros(1)))
+    monkeypatch.setattr(analyze, "scene_cuts", lambda *a, **k: [])
+
+    class Tr:
+        model_name = "m"
+        language = None
+
+        def transcribe(self, wav, on_progress=None):
+            return []
+
+    timings: dict = {}
+    res = analyze.analyze_source(src, get_style("funny"), Tr(), True, None, timings)
+    assert set(res.stages) == {*analyze.SOURCE_STAGES, "cached"}
+    assert res.stages["cached"] is cached
+    assert all(res.stages[k] >= 0 for k in analyze.SOURCE_STAGES)
+    assert {"audio_extract_s", "loudness_s", "transcribe_s", "scenes_s"} <= set(timings)
+
+
+def test_source_timings_lists_each_part_with_the_ocr_wait_on_the_first(tmp_path):
+    a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    info = MediaInfo(a, 60.0, 60.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None)
+
+    def result(path, offset=0.0, cached=False):
+        stages = {"probe_s": 0.1, "scenes_s": 2.0, "cached": cached}
+        return analyze.SourceResult(path, info, offset, 60.0, [], [], None, stages=stages)
+
+    pre = SimpleNamespace(waits={str(a): 1.234})
+    got = analyze._source_timings([result(a), result(a, 30.0), result(b, cached=True)], pre)
+    assert [(g["source"], g.get("offset"), g["ocr_wait_s"], g["cached"]) for g in got] == [
+        (str(a), None, 1.23, False),
+        (str(a), 30.0, 0.0, False),
+        (str(b), None, 0.0, True),
+    ]
+    assert all(g[k] >= 0 for g in got for k in (*analyze.SOURCE_STAGES, "ocr_wait_s"))
+    assert got[0]["scenes_s"] == 2.0 and got[0]["loudness_s"] == 0.0
+    assert analyze._source_timings([result(a)], None)[0]["ocr_wait_s"] == 0.0
+
+
+def test_highlights_json_has_the_per_source_timings(prefetched):
+    run = prefetched
+    run.plan = plan(keyframes=("ocr",))
+    run.pre.waits = {str(run.video): 0.5}  # keyed as the real OcrPrefetch.take() keys it
+    run.go()
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    (rec,) = hl["timings"]["sources"]
+    assert rec["source"] == hl["sources"][0]["path"]
+    assert rec["cached"] is False and rec["ocr_wait_s"] == 0.5
+    assert {"total_s", "events_s"} <= set(hl["timings"])  # the sums stay

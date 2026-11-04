@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `highlights.json` `timings.sources` (Refs #725): the seconds each source spent in probing,
+  audio extract, loudness, transcription and scene cuts, the wait for the background OCR read
+  and whether it was cached, to measure where a multi-file analysis spends its time. The
+  existing `timings` keys are unchanged. The scene cuts of each source log a line before they
+  start.
 - Stopped UI exports no longer leave their hidden `.clips_ui_<stamp>.cutpoint-resume` folder
   forever (#716): when an export or a resumed run ends, the project's resume folders of
   earlier UI exports are removed, since Resume only continues the last run. The one that

@@ -362,6 +362,27 @@ def _audio_mix(src: Path, cdir: Path, tracks: tuple[int, ...], streams: int) -> 
         cache.save_json(cdir / MIX_FILE, {"tracks": want})
 
 
+SOURCE_STAGES = ("probe_s", "audio_extract_s", "loudness_s", "transcribe_s", "scenes_s")
+
+
+def _source_timings(results: Sequence[SourceResult], prefetch: OcrPrefetch | None) -> list[Any]:
+    """``timings.sources`` (#725): the seconds each source (or recovered part) spent in each
+    stage; ``ocr_wait_s`` is the time the main thread waited for the background OCR read
+    (0 without one), counted on the first part of a source."""
+    waits = dict(prefetch.waits) if prefetch is not None else {}
+    out: list[Any] = []
+    for r in results:
+        rec: dict[str, Any] = {"source": str(r.source)}
+        if r.offset:
+            rec["offset"] = r.offset
+        for name in SOURCE_STAGES:
+            rec[name] = r.stages.get(name, 0.0)
+        rec["ocr_wait_s"] = round(waits.pop(str(r.source), 0.0), 2)
+        rec["cached"] = bool(r.stages.get("cached", False))
+        out.append(rec)
+    return out
+
+
 def _cached_transcripts(sources: Sequence[Path], tr: Transcriber | None) -> int:
     """How many of ``sources`` have their (whole-file) transcript of ``tr`` cached;
     unreachable ones count as not cached, and none without a transcriber."""
@@ -461,6 +482,7 @@ def scene_cuts(
     cached = cache.load_json(path)
     if cached is not None:
         return cached
+    logger.info("%s: detecting scene cuts", src.name)
     importlib.import_module("scenedetect")  # not installed: fails before any decode
     if shared is not None and (made := shared.result()) is not None:
         return _detect(made, path)
@@ -780,6 +802,7 @@ class SourceResult:
     segments: list[Segment]
     read_error: dict[str, Any] | None
     signals: PartSignals | None = None
+    stages: dict[str, Any] = field(default_factory=dict)  # seconds per stage, timings.sources
 
 
 def _shortfall_limit(expected: float) -> float:
@@ -938,11 +961,17 @@ def analyze_source(
     scene cuts.
     """
 
+    stages: dict[str, Any] = {}
+
     def tick(name: str, t0: float) -> None:
-        timings[name] = round(timings.get(name, 0.0) + time.perf_counter() - t0, 2)
+        took = time.perf_counter() - t0
+        timings[name] = round(timings.get(name, 0.0) + took, 2)
+        stages[name] = round(stages.get(name, 0.0) + took, 2)
 
     io = remap_source(src)  # read the copy, record the original
+    t0 = time.perf_counter()
     info = probe(io)
+    stages["probe_s"] = round(time.perf_counter() - t0, 2)
     cdir = cache.source_dir(src, offset)
     span = info.duration - offset
     read_error: dict[str, Any] | None = None
@@ -967,6 +996,7 @@ def analyze_source(
                 report(EXTRACT_SHARE + (1 - EXTRACT_SHARE) * at(frac))
 
         tracks = _analysis_tracks(src, io, info, cdir)
+        made = not wav.exists() or cached_transcript(tr, cdir) is None
         if not wav.exists():
             with _watch_extract(wav, span, extracted if report else None):
                 res = extract_audio(io, wav, info, start=offset, tracks=tracks)
@@ -990,7 +1020,9 @@ def analyze_source(
         segments, dropped = filter_hallucinations(segments)
         if dropped:
             logger.info("%s: dropped %d likely-hallucinated transcript segments", src.name, dropped)
+        stages["cached"] = not made
     else:
+        stages["cached"] = False
         logger.warning("%s has no audio; using scene/vision signals only", src.name)
         if read_checked is not None:
             shared = read_checked(info, None)
@@ -1032,6 +1064,7 @@ def analyze_source(
         segments=_shift_segments(segments, offset),
         read_error=read_error,
         signals=ps,
+        stages=stages,
     )
     if pick:
         res.candidates = pick_candidates(res, style, max_candidates, timings, ski_ctx)
@@ -2319,6 +2352,7 @@ def _analyze(
             # visual pool moments: after the scored ones, outside suggested_top
             hl["candidates"] += _visual_pool(out_dir, results, style, hl)
         hl["created"] = datetime.now().isoformat(timespec="seconds")
+        hl["timings"]["sources"] = _source_timings(results, prefetch)
         took = round(time.perf_counter() - t_start, 2)
         if earlier_total_s is None:
             timings["total_s"] = took

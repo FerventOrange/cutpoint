@@ -1003,3 +1003,14 @@ def test_inline_reads_drop_the_prefetch_engine_at_each_batch(released, size) -> 
     else:
         assert released.log == ["made", "free_torch", "vlm"]
     assert pre.make_engine.cache_info().currsize == 0
+
+
+def test_take_records_the_seconds_the_main_thread_waited_per_source(fake) -> None:
+    fake.gate = threading.Event()
+    pre = fake.make()
+    pre.offer(fake.paths[0], 60.0, True)
+    threading.Timer(0.3, fake.gate.set).start()
+    assert pre.take(fake.source(0), fake.params(), None) is not None
+    assert pre.waits.keys() == {str(fake.paths[0])} and pre.waits[str(fake.paths[0])] >= 0.25
+    assert pre.take(fake.source(1), fake.params(), None) is None  # not offered: read inline
+    assert str(fake.paths[1]) not in pre.waits

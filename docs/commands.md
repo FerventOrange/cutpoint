@@ -843,6 +843,13 @@ Whisper heard with confidence below 0.5 as `[index, confidence]`, the index coun
 only from a rating of 7). `timings` holds the seconds each step took and `total_s`, the whole
 analysis; a re-rank of an earlier analysis (`events` on action-cam projects, `360 analyze`,
 `crashes --reanalyze`) keeps that `total_s` and records its own time as `rerank_s`.
+`timings.sources` breaks the same run down per source (one entry per recovered part, with its
+`offset`): `source` (the path as in `sources[].path`), `probe_s`, `audio_extract_s`,
+`loudness_s`, `transcribe_s`, `scenes_s`, `ocr_wait_s` (seconds the analysis waited for the
+background HUD text read of that source; 0 without one) and `cached` (its audio and transcript
+were reused). The sums above are unchanged; the log also marks the start of each
+source's scene cuts. After a re-rank, `sources`, like the step timings, describes the re-rank's
+own pass, usually all `cached`.
 `transcript.txt` has one line per pause or sentence: `[Round1.mp4 00:12:31.4-00:12:38.9] text`.
 
 Visual candidates (`action-cam`, `action` and `sport` styles, and learned styles based on
