@@ -112,6 +112,7 @@ def run(home, tmp_path, monkeypatch):
     class FakeRater:
         hits = asked = missed = 0
         consent_needed = None
+        cache_only = False
 
         def __init__(self, **_):
             pass

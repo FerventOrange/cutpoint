@@ -17,13 +17,16 @@ from typing import Any
 
 import numpy as np
 import pytest
+import requests
 
 import cutpoint.analyze
 from conftest import envelope, write
-from cutpoint import cache, cli, memguard, progress, runstate
+from cutpoint import cache, cli, config, memguard, progress, runstate, vision
+from cutpoint.assistant import providers
 from cutpoint.events import common, pipeline
 from cutpoint.events.common import AudioPart, Source
 from cutpoint.ffmpeg_utils import MediaInfo
+from cutpoint.vision import VisionResult
 
 
 def _read(project: Path) -> dict:
@@ -706,3 +709,183 @@ def test_a_layer_short_of_memory_stops_analyze_with_low_memory(analyze_run, monk
     rec = _read(r.project)
     assert rec["status"] == "low_memory" and rec["steps"]["reactions"]["state"] == "failed"
     assert not (r.project / "highlights.json").exists()
+
+
+# -- #713: analyze --vision in batches, the providers' unload hook ----------------------------
+
+
+class _Rater:
+    """A reachable vision model whose ratings are cached across runs (as the real cache is,
+    per source); records rate and unload calls, KeyboardInterrupt on rate call ``stop``."""
+
+    calls: list[str] = []  # noqa: RUF012 - reset by the fixture
+    store: dict[tuple[str, float], float] = {}  # noqa: RUF012
+    stop: int | None = None
+    consent_needed = None
+    cache_only = False
+    hits = asked = missed = 0
+
+    def __init__(self, **_kw: Any) -> None:
+        pass
+
+    def available(self) -> bool:
+        return True
+
+    def cached(self, src, start, _end, _style, activity=None):
+        hit = self.store.get((Path(src).name, start))
+        return None if hit is None else VisionResult(hit, "moment")
+
+    def rate(self, src, start, end, style, activity=None):
+        if (hit := self.cached(src, start, end, style)) is not None:
+            return hit
+        type(self).calls.append(f"rate {Path(src).stem}")
+        if sum(c.startswith("rate") for c in self.calls) == self.stop:
+            raise KeyboardInterrupt
+        score = 2.0 + 1.5 * len(Path(src).stem) + start / 10
+        type(self).store[(Path(src).name, start)] = score
+        return VisionResult(score, "moment")
+
+    def unload(self) -> None:
+        type(self).calls.append("unload")
+
+
+@pytest.fixture
+def vision_run(analyze_run, monkeypatch):
+    """``analyze_run`` with ``--vision`` and the cached fake rater: one candidate per source,
+    all five rated."""
+    _Rater.calls, _Rater.store, _Rater.stop = [], {}, None
+    monkeypatch.setattr(cutpoint.analyze, "VisionRater", _Rater)
+    analyze_run.argv = [a if a != "--no-vision" else "--vision" for a in analyze_run.argv]
+    return analyze_run
+
+
+def test_vision_batches_group_n_sources_and_keep_rank_order_in_one_batch():
+    cands = [{"source": s, "start": float(i)} for i, s in enumerate("abacbd")]
+    starts = [[c["start"] for c in part] for part in cutpoint.analyze._vision_batches(cands, 2)]
+    assert starts == [[0.0, 2.0, 1.0, 4.0], [3.0, 5.0]]  # a and b, then c and d
+    for size in (0, 4, 9):  # off, or every source in one batch: rank order as before
+        assert cutpoint.analyze._vision_batches(cands, size) == [cands]
+    assert cutpoint.analyze._vision_batches([], 2) == [[]]
+
+
+def test_analyze_vision_unloads_every_n_sources_with_the_same_outputs(vision_run, caplog):
+    r = vision_run
+    assert cli.main(r.argv) == 0
+    reference = r.outputs()
+    assert _Rater.calls.count("unload") == 1 and reference[0]["settings"]["vision_used"]
+    for size, unloads in (("0", 1), ("2", 3), ("5", 1)):
+        r.fresh()
+        _Rater.calls, _Rater.store = [], {}
+        caplog.clear()
+        with caplog.at_level("INFO"):
+            assert cli.main([*r.argv, "--batch-size", size]) == 0
+        assert r.outputs() == reference
+        assert _Rater.calls.count("unload") == unloads and _Rater.calls[-1] == "unload"
+        boundaries = [m for m in caplog.messages if m.startswith("vision: ")]
+        assert boundaries == (
+            ["vision: 2/5 done, continuing", "vision: 4/5 done, continuing"] if size == "2" else []
+        )
+        step = _read(r.project)["steps"]["vision"]
+        assert (step["state"], step["done"], step["total"]) == ("done", 5, 5)
+
+
+def test_analyze_vision_interrupted_in_a_batch_resumes_to_the_same_outputs(vision_run, caplog):
+    """Stopped on the third rating (the second batch's first): resume rates only the rest,
+    says how many were cached and writes what an uninterrupted run does."""
+    r = vision_run
+    assert cli.main(r.argv) == 0
+    reference = r.outputs()
+    (r.project / "highlights.json").unlink()
+    _Rater.calls, _Rater.store, _Rater.stop = [], {}, 3
+    assert cli.main([*r.argv, "--batch-size", "2"]) == 130
+    rec = _read(r.project)
+    assert rec["status"] == "interrupted" and rec["steps"]["vision"]["state"] == "failed"
+    assert rec["steps"]["vision"]["done"] == 2
+    _Rater.calls, _Rater.stop = [], None
+    with caplog.at_level("INFO"):
+        assert cli.main(["resume", "p"]) == 0
+    assert sum(c.startswith("rate") for c in _Rater.calls) == 3  # two ratings were cached
+    assert "vision: 2/5 done, continuing" in caplog.messages
+    assert r.outputs() == reference
+    assert _read(r.project)["status"] == "done"
+
+
+class _Provider:
+    """A Vision role provider on this machine: replies with a rating, counts unload calls."""
+
+    name, model, host, url, local = "openai", "m", "127.0.0.1", "http://127.0.0.1:8080/v1", True
+
+    def __init__(self, freed: bool) -> None:
+        self.freed, self.unloads, self.chats = freed, 0, 0
+
+    def chat(self, messages, *, schema=None, **_kw):
+        self.chats += 1
+        return SimpleNamespace(text='{"score": 7, "label": "x"}')
+
+    def unload(self) -> bool:
+        self.unloads += 1
+        return self.freed
+
+
+@pytest.mark.parametrize("freed", [True, False])
+def test_a_vision_role_unloads_through_its_provider_only_after_a_request(monkeypatch, freed):
+    """VisionRater.unload of a Vision role other than Ollama asks the provider's unload hook,
+    only once a request went to it since the last one, and never Ollama's /api/generate."""
+    p = _Provider(freed)
+    monkeypatch.setattr(providers, "make_vision", lambda _s: p)
+    settings = config.AssistantSettings("openai", url=p.url, model="m")
+    cfg = SimpleNamespace(vision_assistant=settings)
+    monkeypatch.setattr(vision, "get_config", lambda: cfg)
+    monkeypatch.setattr(vision.requests, "post", lambda *a, **k: pytest.fail("Ollama asked"))
+    monkeypatch.setattr(memguard, "check_vision", lambda _r: None)
+    rater = vision.VisionRater()
+    assert rater.via is not None
+    rater.unload()
+    assert p.unloads == 0  # nothing was sent: nothing to ask
+    rater.via._ready = True
+    assert rater.describe("p", [b"jpg"], {"type": "object"}) is not None
+    rater.unload()
+    rater.unload()
+    assert (p.chats, p.unloads) == (1, 1)
+
+
+def test_http_providers_send_nothing_to_unload(monkeypatch):
+    """Hosted APIs (nothing on this machine) and OpenAI-compatible servers (llama-server, LM
+    Studio: no unload request in that API) get no extra request."""
+
+    def sent(*_a, **_k):
+        pytest.fail("a request was sent")
+
+    monkeypatch.setattr(requests, "request", sent)
+    monkeypatch.setattr(requests, "post", sent)
+    monkeypatch.setattr(requests.Session, "request", sent)
+    for p in (
+        providers.OpenAIProvider("http://127.0.0.1:8080", "m", 0, None),
+        providers.OpenAIProvider("", "gpt-6-luna", 0, "sk-test"),
+        providers.AnthropicProvider("", "claude-sonnet-5-5", 0, "sk-test"),
+        providers.XAIProvider("", "grok-4.7", 0, "xai-test"),
+    ):
+        assert p.unload() is False
+
+
+@pytest.mark.parametrize(("status", "want"), [(200, True), (404, False), (302, False)])
+def test_the_ollama_provider_unloads_with_keep_alive_0(monkeypatch, status, want):
+    sent: list[tuple[str, dict, bool]] = []
+
+    def post(url, json=None, timeout=None, allow_redirects=True, **_k):
+        sent.append((url, json, allow_redirects))
+        return SimpleNamespace(status_code=status, headers={}, close=lambda: None)
+
+    monkeypatch.setattr(providers.requests, "post", post)
+    assert providers.OllamaProvider("127.0.0.1:11434", "", 0).unload() is False  # auto: unset
+    assert sent == []
+    assert providers.OllamaProvider("127.0.0.1:11434", "qwen3.5:9b", 0).unload() is want
+    assert sent == [
+        ("http://127.0.0.1:11434/api/generate", {"model": "qwen3.5:9b", "keep_alive": 0}, False)
+    ]
+
+    def down(*_a, **_k):
+        raise requests.ConnectionError("down")
+
+    monkeypatch.setattr(providers.requests, "post", down)
+    assert providers.OllamaProvider("127.0.0.1:11434", "m", 0).unload() is False

@@ -69,6 +69,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   option. Off by default (0); the result files are the same with or without it. `events`
   records its layers (`audio`, `voice`, `visual`, `ocr`, `crash`, `vlm`, `write`) as steps of
   `progress.json` (no `PROGRESS` lines), so `resume --dry-run` lists them.
+- `analyze --vision` honours `--batch-size N` (#713): the candidates are rated N sources at a
+  time and Ollama's vision model is unloaded between two batches; each boundary logs
+  `vision: N/M done, continuing` and records the counts in `progress.json`, and a resumed run
+  says how many ratings were cached. Without `--batch-size` the rating order and the result
+  files are unchanged; with it the result files are the same. Vision providers got an unload
+  hook: a hosted provider is sent no extra request (nothing on this machine to free), and
+  llama-server, LM Studio and other OpenAI-compatible servers keep the memory guard's
+  `WARNING`, as their API has no unload request.
 - Footage category detection (#513): `cutpoint detect <inputs> [--json]` tells whether the
   footage is gameplay, action cam, talk or general, from the container tags, the camera
   telemetry and 32 small grey frames per source (a static HUD marks gameplay; cached as
