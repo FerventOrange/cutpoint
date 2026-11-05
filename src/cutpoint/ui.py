@@ -13,6 +13,8 @@ Trust boundaries:
   carry it as ``?t=`` because ``<video>`` cannot send headers.
 * Source stills (``.../sources/<id>/frame?at=<seconds>``) are media URLs too; they are cached in
   the project's ``ui/frames`` folder under a name built from the source's content key.
+* The audio envelope of a source (``.../sources/<id>/envelope``, a JSON call) is cached in ``ui/envelope``
+  under the same content key; the source is always one of the project's, by id.
 * Director previews of 360 moments (``.../sources/<id>/director/<name>``) are media URLs too:
   renders in the project's ``ui/pano`` folder, made from a clip's ``.lrv`` in ``pano.json`` along
   the camera path ``pano.candidates.preview_path`` gives (``POST .../director/<candidate>`` asks
@@ -110,6 +112,7 @@ from cutpoint import (
     projectdelete,
     runstate,
 )
+from cutpoint import envelope as audio_envelope
 from cutpoint.assemble import AUDIO_TRANSITIONS, OUTPUT_FORMATS, default_audio_transition
 from cutpoint.assistant import cliproxy
 from cutpoint.assistant import context as ai_context
@@ -214,6 +217,13 @@ FRAME_TIMEOUT_S = 30.0
 FRAME_MAX_AT = 1e7  # seconds (~115 days): cap when the length is unknown
 FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
 FRAME_CACHE_MAX = 1500  # stills kept per project; the least recently used go first
+ENVELOPE_VERSION = 1  # part of a cached envelope's name: bump it when the envelope changes
+ENVELOPE_TIMEOUT_S = 1800.0  # a decode running longer is killed (a multi-hour source on a NAS)
+ENVELOPE_STALE_S = (
+    10.0  # a queued decode nobody asked for in this long (2 x the page's 5 s) is dropped
+)
+EVENT_KINDS = ("audio", "ocr", "telemetry")  # events.json kinds the rail marks (not the VLM blobs)
+EVENTS_MAX = 5000  # events sent per project
 SOURCES_CACHE_MAX = 32  # projects whose source lists are kept; the least recently used go first
 SOURCES_CACHE_S = 60.0  # rebuild a kept source list at least this often (what stats miss)
 _suggest_lock = threading.Lock()  # one style suggestion probes at a time; another gets no answer
@@ -250,8 +260,8 @@ def job_env() -> dict[str, str]:
 
 
 def spawn(
-    args: list[str], *, low_priority: bool = True, cwd: Path | None = None
-) -> subprocess.Popen[str]:
+    args: list[str], *, low_priority: bool = True, cwd: Path | None = None, binary: bool = False
+) -> subprocess.Popen[Any]:
     """Start ``args`` (no shell) in its own process group at low priority, stdout+stderr merged.
 
     Low priority keeps the desktop and the browser responsive while a job or proxy encodes; the
@@ -259,6 +269,7 @@ def spawn(
     elsewhere ``nice -n 10`` when there is one (it execs, so the pid and group stay the same).
     ``low_priority=False``: normal priority, for the short window proxy encodes the user waits on.
     ``cwd``: the folder it runs in (jobs: the projects folder), else the server's own.
+    ``binary``: stdout is raw bytes and stderr is dropped, not merged into it.
     """
     if os.name == "nt":
         flags = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -268,14 +279,16 @@ def spawn(
     else:
         group = {"start_new_session": True}
         args = procs.nice_prefix(args) if low_priority else args
+    text: dict[str, Any] = (
+        {"stderr": subprocess.DEVNULL}
+        if binary
+        else {"stderr": subprocess.STDOUT, "text": True, "encoding": "utf-8", "errors": "replace"}
+    )
     proc = subprocess.Popen(
         args,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+        **text,
         env=job_env(),
         cwd=cwd,
         **group,
@@ -1411,7 +1424,7 @@ class Media:
         self.proxies: dict[tuple[Path, str], str] = {}
         # (project, key) -> share of its whole proxy encoded, 0-1
         self.progress: dict[tuple[Path, str], float] = {}
-        self.procs: set[subprocess.Popen[str]] = set()
+        self.procs: set[subprocess.Popen[Any]] = set()
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cutpoint-proxy")
         # (project, key) -> {(lo, hi) centiseconds: file} of ready windows, least recently used first
         self.windows: dict[tuple[Path, str], dict[tuple[int, int], Path]] = {}
@@ -1434,6 +1447,13 @@ class Media:
         self.frame_locks: dict[str, tuple[threading.Lock, int]] = {}
         self.frame_slots = threading.BoundedSemaphore(FRAME_SLOTS)
         self.frames_pruned: set[Path] = set()  # projects whose stale stills went this run
+        # one envelope decodes at a time, on its own worker; content keys queued or decoding, and
+        # the failure of a finished decode, until the next request reports it
+        self.envelope_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cutpoint-wave")
+        self.envelopes_running: set[str] = set()
+        self.envelope_asked: dict[str, float] = {}  # content key -> monotonic time of the last ask
+        self.envelope_errors: dict[str, str] = {}
+        self.envelopes_pruned: set[Path] = set()  # projects whose stale envelopes went this run
         # key -> still_filter of its stills (#412, #441): also for a source the browser plays
         # as is
         self.still_color: dict[str, str] = {}
@@ -2143,6 +2163,120 @@ class Media:
             stale = [f for f in folder.glob("*.jpg") if f.name.split("-")[0] not in keys]
             self._drop_frames([*stale, *folder.glob("*.part")])
 
+    def envelope(self, project: Path, path: str) -> dict[str, Any] | None:
+        """The audio envelope of ``path``: ``{"step": seconds per value, "peaks": [0-1, ...]}``,
+        ``peaks`` empty for a source without audio. None if the source cannot be read.
+        ``{"pending": True}`` while its decode runs: the first call queues it, later ones
+        (the page asks again) find it cached.
+
+        Cached as ``ui/envelope/<content key>-<version>.json``; decoded one source at a time on
+        its own worker, once even when requested concurrently (see :mod:`cutpoint.envelope`), at
+        low priority and streamed, so a long source costs no memory. A cached source answers at
+        once, whatever decodes.
+
+        Raises:
+            FFmpegError: If the decode of an earlier call failed or ran longer than
+                ``ENVELOPE_TIMEOUT_S`` (reported once), or the server is shutting down.
+        """
+        real = remap_source(path)
+        content, res = self._lookup(real)
+        if res is None or content is None:
+            return None
+        if res[2] == 0:
+            return {"step": audio_envelope.BASE_S, "peaks": []}
+        out = _own(project, f"{UI_DIR}/envelope/{content}-{ENVELOPE_VERSION}.json")
+        hit = cache.load_json(out)
+        if isinstance(hit, dict) and isinstance(hit.get("peaks"), list):
+            return hit
+        with self.lock:
+            if content in self.envelope_errors:
+                raise FFmpegError(self.envelope_errors.pop(content))
+            if self.closing:
+                raise FFmpegError("the server is shutting down")
+            self.envelope_asked[content] = time.monotonic()
+            if content not in self.envelopes_running:
+                self.envelopes_running.add(content)
+                self.envelope_pool.submit(
+                    self._decode_envelope, project, real, content, res[2], out
+                )
+        return {"pending": True}
+
+    def _decode_envelope(self, project: Path, real: Path, content: str, tracks: int, out: Path):
+        """Decode one source's envelope into ``out`` (on the envelope worker); a failure is kept
+        in ``envelope_errors`` for the next ``envelope`` call. A job nobody asked for in the last
+        ``ENVELOPE_STALE_S`` (the page moved on to another source) is dropped unrun."""
+        try:
+            with self.lock:
+                asked = self.envelope_asked.get(content, 0.0)
+            if time.monotonic() - asked > ENVELOPE_STALE_S:
+                return
+            hit = cache.load_json(out)
+            if not (isinstance(hit, dict) and isinstance(hit.get("peaks"), list)):
+                self._write_envelope(project, real, tracks, out)
+        except Exception as err:
+            logger.exception("envelope decode of %s failed", real.name)
+            with self.lock:
+                self.envelope_errors[content] = str(getattr(err, "detail", "") or err)
+        finally:
+            with self.lock:
+                self.envelopes_running.discard(content)
+                self.envelope_asked.pop(content, None)
+
+    def _write_envelope(self, project: Path, real: Path, tracks: int, out: Path) -> None:
+        _ui_folder(project, "envelope")
+        with self.lock:  # as in ``_encode``: shutdown sees the process, or none starts
+            if self.closing:
+                raise FFmpegError("the server is shutting down")
+            proc = spawn(audio_envelope.ffmpeg_args(str(real), tracks), binary=True)
+            self.procs.add(proc)
+        timed_out = threading.Event()
+
+        def expire() -> None:
+            timed_out.set()
+            procs.kill_tree(proc, 0.0)
+
+        timer = threading.Timer(ENVELOPE_TIMEOUT_S, expire)
+        timer.daemon = True
+        timer.start()
+        try:
+            assert proc.stdout is not None
+            peaks = audio_envelope.read_peaks(proc.stdout)
+            proc.wait()
+        finally:
+            timer.cancel()
+            if proc.poll() is None:
+                procs.kill_tree(proc, 0.0)
+                proc.wait()
+            if proc.stdout is not None:
+                proc.stdout.close()
+            with self.lock:
+                self.procs.discard(proc)
+        if timed_out.is_set():
+            raise FFmpegError(f"decoding the audio took longer than {ENVELOPE_TIMEOUT_S:.0f} s")
+        if proc.returncode != 0:
+            raise FFmpegError(f"ffmpeg could not decode the audio (exit {proc.returncode})")
+        step, values = audio_envelope.shrink(peaks)
+        cache.save_bytes(
+            out, json.dumps({"step": step, "peaks": values}, separators=(",", ":")).encode()
+        )
+
+    def prune_envelopes(self, project: Path, paths: list[str]) -> None:
+        """Once per run and project: delete the envelopes of sources that changed or left."""
+        folder = project / UI_DIR / "envelope"
+        if project in self.envelopes_pruned:
+            return
+        self.envelopes_pruned.add(project)
+        if not folder.is_dir() or not _inside(project, f"{UI_DIR}/envelope"):
+            return
+        keep = {
+            f"{key}-{ENVELOPE_VERSION}.json"
+            for key in {self.key(remap_source(path)) for path in paths} - {None}
+        }
+        for f in folder.glob("*.json"):
+            if f.name not in keep:
+                with contextlib.suppress(OSError):
+                    f.unlink()
+
     def encoding_for(self, project: Path) -> bool:
         """A whole proxy or a window proxy of ``project`` is queued or encoding now."""
         with self.lock:
@@ -2168,6 +2302,7 @@ class Media:
                     del table[k]
             self.proxies_pruned.discard(project)
             self.frames_pruned.discard(project)
+            self.envelopes_pruned.discard(project)
             self.tone_maps_pruned -= {t for t in self.tone_maps_pruned if t[0] == project}
 
     def shutdown(self) -> None:
@@ -2177,6 +2312,7 @@ class Media:
             self.windows_queue.clear()
             self.window_wake.notify_all()  # the window lane ends
         self.pool.shutdown(wait=False, cancel_futures=True)
+        self.envelope_pool.shutdown(wait=False, cancel_futures=True)
         for proc in running:
             # a bare ffmpeg: no soft stop of its own to wait for
             procs.kill_tree(proc, procs.SOFT_STOP_S)
@@ -3085,6 +3221,51 @@ def _highlights(p: Path) -> dict[str, Any] | None:
     """The project's ``highlights.json``; None when missing, outside or not an object."""
     hl = _load(p, "highlights.json")
     return hl if isinstance(hl, dict) else None
+
+
+def _events_sig(p: Path) -> str | None:
+    """``<mtime_ns>-<size>`` of the project's ``events.json``, which changes when a run rewrites
+    it; None when there is none."""
+    try:
+        st = (p / "events.json").stat()
+    except OSError:
+        return None
+    return f"{st.st_mtime_ns}-{st.st_size}"
+
+
+def _rail_events(p: Path) -> list[dict[str, Any]]:
+    """The time-located events of ``events.json`` the trim rail marks, cut to ``{source, start,
+    end, kind, type, label, confidence}``: sounds (``audio``), on-screen text (``ocr``) and
+    camera telemetry such as crashes. No model descriptions and no coverage spans. At most
+    ``EVENTS_MAX`` (the most confident), by start. [] when the file is missing or unreadable."""
+    doc = _load(p, "events.json")
+    raw = doc.get("events") if isinstance(doc, dict) else None
+    out = []
+    for e in raw if isinstance(raw, list) else []:
+        if not isinstance(e, dict) or not isinstance(e.get("source"), str):
+            continue
+        if e.get("kind") not in EVENT_KINDS or str(e.get("type", "")).startswith("coverage"):
+            continue
+        start, end, conf = e.get("start"), e.get("end"), e.get("confidence")
+        if not all(isinstance(x, (int, float)) and math.isfinite(x) for x in (start, end)):
+            continue
+        label = e.get("type") if e["kind"] == "telemetry" else e.get("label")
+        out.append(
+            {
+                "source": e["source"],
+                "start": start,
+                "end": max(start, end),
+                "kind": e["kind"],
+                "type": str(e.get("type", ""))[:40],
+                "label": str(label or e.get("type") or e["kind"])[:60],
+                "confidence": round(conf, 3)
+                if isinstance(conf, (int, float)) and math.isfinite(conf)
+                else None,
+            }
+        )
+    if len(out) > EVENTS_MAX:
+        out = sorted(out, key=lambda e: -(e["confidence"] or 0.0))[:EVENTS_MAX]
+    return sorted(out, key=lambda e: (e["source"], e["start"]))
 
 
 def _own(p: Path, name: str) -> Path:
@@ -4678,6 +4859,7 @@ def create_app(port: int) -> FastAPI:
             "highlights": highlights,
             # the Moments header's "Analyzed X of video in Y"
             "analysis": analysis_stats(hl, analysis_took(p, meta, hl)),
+            "events_sig": _events_sig(p),
             "review": review if isinstance(review, dict) else None,
             "clips": {**manifest, "dir": exp["dir"]}
             if isinstance(manifest, dict) and exp
@@ -5240,6 +5422,30 @@ def create_app(port: int) -> FastAPI:
         return FileResponse(
             file, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"}
         )
+
+    @owned.get("/projects/{pid}/sources/{sid}/envelope")
+    def source_envelope(pid: str, sid: str):
+        """The audio envelope of a source for the trim rail (``step`` seconds per value in
+        ``peaks``, 0-1; empty without audio)."""
+        if media.closing:
+            raise bad("the server is stopping", 503)
+        p, entry = find_source(pid, sid)
+        media.prune_envelopes(p, [s["path"] for s in sources.entries(p)])
+        try:
+            data = media.envelope(p, entry["path"])
+        except (FFmpegError, OSError) as err:
+            logger.warning("envelope of %s failed: %s", entry["name"], err)
+            raise bad("could not read the audio of this source", 500) from err
+        if data is None:
+            raise bad("source cannot be read", 404)
+        if data.get("pending"):  # decoding: the page asks again in a few seconds
+            return JSONResponse(data, status_code=202)
+        return data
+
+    @owned.get("/projects/{pid}/events")
+    def project_events(pid: str):
+        """The detected events the trim rail marks (see :func:`_rail_events`)."""
+        return {"events": _rail_events(project_dir(pid))}
 
     @owned.post("/projects/{pid}/sources/{sid}/prepare")
     def prepare_source(pid: str, sid: str, body: dict[str, Any] | None = None):

@@ -65,6 +65,10 @@
   --k-funny-tint: #4a2b19;
   --k-dialogue: #b590f5;
   --k-dialogue-tint: #352a4f;
+  /* detected events under the rail (sound, on-screen text, camera); Light darkens them for its pale ground */
+  --ev-sound: var(--k-dialogue);
+  --ev-text: var(--k-action);
+  --ev-cam: var(--k-funny);
   --font: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
   --ease: 0.2s ease;
@@ -186,6 +190,9 @@
   --log-bg: #f6f8fb;
   --tick: rgba(71, 86, 105, 0.25);
   --film-opacity: 0.35; /* lower than Blue: the selection tint and gaps stay readable */
+  --ev-sound: #7a45d0; /* 5.2:1 on --slate; the Graphite and Blue shades are 3:1 or more on theirs */
+  --ev-text: #2f5fc4;
+  --ev-cam: #b4530f;
   --film-gap-shade: rgba(23, 33, 46, 0.32); /* the rail's gaps while stills show */
   --hatch: rgba(71, 86, 105, 0.2);
   --gap-shade: rgba(23, 33, 46, 0.12);
@@ -596,6 +603,9 @@ body.tips-off .flag-tip { display: none; }
 .rail-film { position: absolute; inset: 0; opacity: var(--film-opacity); }
 .rail-film > img { position: absolute; top: 0; height: 100%; object-fit: cover; opacity: 0; transition: opacity var(--ease); }
 .rail-film > img.ok { opacity: 1; }
+/* the audio level over the stills, under the gaps and markers: decorative, one path of vertical bars */
+.rail-wave { position: absolute; inset: 0; width: 100%; height: 100%; }
+.rail-wave > path { fill: none; stroke: var(--text); stroke-width: 0.7; opacity: 0.4; }
 /* the parts of the source no ready file plays yet, hatched and dimmed under the markers (static) */
 .rail-gaps > span {
   position: absolute; top: 0; bottom: 0; background-color: var(--gap-shade);
@@ -659,6 +669,10 @@ body.tips-off .flag-tip { display: none; }
 .rail-event[data-kind="scenic"] { --k: var(--k-scenic); }
 .rail-event[data-kind="funny"] { --k: var(--k-funny); }
 .rail-event[data-kind="dialogue"] { --k: var(--k-dialogue); }
+/* detected events: sound, on-screen text, camera; the bar is 3:1 on the stage ground in every theme */
+.rail-event[data-ev="audio"] { --k: var(--ev-sound); }
+.rail-event[data-ev="ocr"] { --k: var(--ev-text); }
+.rail-event[data-ev="telemetry"] { --k: var(--ev-cam); }
 .rail-ends { display: flex; justify-content: space-between; gap: var(--space-2); color: var(--muted); font-size: 12.5px; margin-top: var(--space-1); }
 /* zoom buttons and the overview strip: the whole source, the rail's view as a box, the clip in gold */
 .rail-nav { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin-top: var(--space-1); }

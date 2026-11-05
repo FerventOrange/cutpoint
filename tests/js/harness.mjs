@@ -54,6 +54,8 @@ export function bootRoutes(project = makeProject()) {
       [`GET /api/projects/${project.id}`]: project,
       [`GET /api/projects/${project.id}/assistant`]: { provider: null, consent: null, turns: [], running: [] },
       [`GET /api/projects/${project.id}/assistant/history`]: { applied: [] },
+      [`GET /api/projects/${project.id}/events`]: { events: [] },
+      ...Object.fromEntries((project.sources ?? []).map((src) => [`GET /api/projects/${project.id}/sources/${src.id}/envelope`, { step: 0.05, peaks: [] }])),
       [`POST /api/projects/${project.id}/edges`]: { edges: {} },
     }),
     'GET /api/assistant/logins': { logins: [] },

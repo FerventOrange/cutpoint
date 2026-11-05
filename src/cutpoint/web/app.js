@@ -438,6 +438,8 @@ function resetWorkspace(segments) {
 function closeProject() {
   S.id = null;
   S.project = null;
+  railEvents.id = null;
+  envelopes.clear();
   resetWorkspace([]);
   clearTimeout(S.prepTimer);
   drop('');
@@ -462,6 +464,8 @@ function adopt(p, switched) {
   if (!current()) S.focus = S.segments[0]?.id ?? cands()[0]?.id ?? null;
   clearTimeout(S.prepTimer);
   if (switched) startColor();
+  if (switched) envelopes.clear();
+  loadRailEvents(p);
   if (switched) syncTiming(); // Crop and Output size are off for 360 projects
   renderAll(switched);
   if (switched) loadAssistant();
@@ -1155,6 +1159,7 @@ function drawRail(c = current()) {
   drawTails($('#railTail'), c, lo, span, place);
   drawGaps(c, dur, lo, hi, place);
   drawFilm(c);
+  drawWave(c);
   const o = $('#railOrig');
   o.hidden = !c.cand;
   if (c.cand) place(o, c.cand.start, c.cand.end, lo, span);
@@ -1220,27 +1225,136 @@ function drawRuler(lo, hi) {
   el.replaceChildren(...ticks);
 }
 
-/** Markers under the rail for the other moments of this source that start in the view (at most EVENTS_MAX, EVENT_GAP apart), coloured by kind. */
+/** The detected events (``GET .../events``) of the open project by source path; ``sig`` is the project's ``events_sig``: it tells when ``events.json`` changed. */
+const railEvents = { id: null, sig: '', by: new Map() };
+const EVENT_NAMES = { audio: 'Sound', ocr: 'On-screen text', telemetry: 'Camera' };
+
+/** Fetch the open project's events once (again when its events.json changed); the markers fall back to the other moments until they arrive or when there are none. */
+async function loadRailEvents(p) {
+  const sig = String(p.events_sig ?? '');
+  if (railEvents.id === p.id && railEvents.sig === sig) return;
+  Object.assign(railEvents, { id: p.id, sig, by: new Map() });
+  try {
+    const { events } = await api(`/api/projects/${encodeURIComponent(p.id)}/events`);
+    if (railEvents.id !== p.id || railEvents.sig !== sig) return;
+    const by = new Map();
+    for (const e of Array.isArray(events) ? events : []) by.set(e.source, [...(by.get(e.source) ?? []), e]);
+    railEvents.by = by;
+    redrawEvents();
+  } catch {
+    // decorative: the markers stay the other moments
+  }
+}
+
+function redrawEvents() {
+  const c = current();
+  if (c && S.view) drawEvents(c, S.view.lo, S.view.hi);
+}
+
+/**
+ * Markers under the rail, at most EVENTS_MAX, EVENT_GAP apart: the detected events of this source in the view, the most confident first
+ * (a title gives kind, time and confidence), else, for a source with none, the other moments that start in the view, coloured by kind.
+ */
 function drawEvents(c, lo, hi) {
   const el = $('#railEvents');
   const span = hi - lo;
   const width = $('#rail').clientWidth || 600;
-  const near = cands().filter((x) => x.id !== c.id && x.source === c.source && x.start >= lo && x.start <= hi)
-    .sort((a, b) => a.start - b.start);
-  let last = -Infinity;
+  const found = railEvents.by.get(c.source) ?? [];
   const marks = [];
-  for (const x of near) {
-    const at = ((x.start - lo) / span) * 100;
-    if (marks.length >= EVENTS_MAX || ((at - last) / 100) * width < EVENT_GAP) continue;
-    last = at;
-    marks.push({ at: at.toFixed(2), name: shownName(x, x.label) || x.id, kind: kindOf(x), x });
+  const room = (at) => marks.every((m) => (Math.abs(at - m.at) / 100) * width >= EVENT_GAP);
+  if (found.length) {
+    const seen = found.filter((e) => e.end >= lo && e.start <= hi)
+      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0) || a.start - b.start);
+    for (const e of seen) {
+      const at = ((Math.max(e.start, lo) - lo) / span) * 100;
+      if (marks.length >= EVENTS_MAX || !room(at)) continue;
+      const sure = e.confidence == null ? '' : `, confidence ${e.confidence}`;
+      const kind = EVENT_NAMES[e.kind] ?? e.kind;
+      marks.push({ at, name: e.label, ev: e.kind, title: `${kind}: ${e.label}, ${fmt(e.start)}${sure}`, said: `${kind}: ${e.label} at ${fmt(e.start)}` });
+    }
+  } else {
+    const near = cands().filter((x) => x.id !== c.id && x.source === c.source && x.start >= lo && x.start <= hi)
+      .sort((a, b) => a.start - b.start);
+    let last = -Infinity;
+    for (const x of near) {
+      const at = ((x.start - lo) / span) * 100;
+      if (marks.length >= EVENTS_MAX || ((at - last) / 100) * width < EVENT_GAP) continue;
+      last = at;
+      const name = shownName(x, x.label) || x.id;
+      marks.push({ at, name, kind: kindOf(x), title: `${name}, ${fmt(x.start)} to ${fmt(x.end)}` });
+    }
   }
-  const sig = marks.map((m) => `${m.at}${m.name}`).join('|');
+  marks.sort((a, b) => a.at - b.at);
+  const sig = marks.map((m) => `${m.at.toFixed(2)}${m.name}${m.ev ?? ''}`).join('|');
   if (el.dataset.sig === sig) return;
   el.dataset.sig = sig;
+  // the markers are aria-hidden: the events they show are read from this visually hidden line
+  $('#railEventsText').textContent = marks.filter((m) => m.said).map((m) => m.said).join('; ');
   el.replaceChildren(...marks.map((m) => h('span', {
-    class: 'rail-event', 'data-kind': m.kind, style: `left: ${m.at}%`, title: `${m.name}, ${fmt(m.x.start)} to ${fmt(m.x.end)}`, text: m.name,
+    class: 'rail-event', ...(m.ev ? { 'data-ev': m.ev } : { 'data-kind': m.kind }), style: `left: ${m.at.toFixed(2)}%`, title: m.title, text: m.name,
   })));
+}
+
+// The audio envelope behind the rail's markers (``GET .../envelope``: ``step`` seconds per value in ``peaks``, 0-1): fetched once
+// per source, drawn as one SVG path of vertical bars for the view. Purely decorative, like the filmstrip.
+const WAVE_COL = 3; // pixels: the least width of a bar
+const WAVE_RETRY_MS = 5000; // between asks for an envelope the server is still decoding
+const envelopes = new Map(); // `${project id}|${source path}` -> {step, peaks} | a Symbol (loading) | 'none'
+
+/** The envelope of ``c``'s source if it is loaded, else null (and ask for it once). */
+function envelopeOf(c) {
+  const src = srcOf(c.source);
+  if (!src?.url || filmOff()) return null;
+  const key = `${S.id}|${c.source}`;
+  const have = envelopes.get(key);
+  if (have) return typeof have === 'object' ? have : null;
+  const token = Symbol('loading'); // one per request chain: a chain of an earlier visit stops when this one replaces it
+  envelopes.set(key, token);
+  fetchEnvelope(key, token, c.source, `${src.url.split('?')[0]}/envelope`);
+  return null;
+}
+
+/** Ask for an envelope; while the server is still decoding it (``pending``) ask again after WAVE_RETRY_MS, until it is answered or the project changes. */
+function fetchEnvelope(key, token, source, url) {
+  api(url).then((d) => {
+    if (envelopes.get(key) !== token) return; // another project was opened meanwhile
+    if (d?.pending) {
+      setTimeout(() => envelopes.get(key) === token && fetchEnvelope(key, token, source, url), WAVE_RETRY_MS);
+      return;
+    }
+    envelopes.set(key, Array.isArray(d?.peaks) && d.peaks.length && d.step > 0 ? d : 'none');
+    if (current()?.source === source) drawWave();
+  }, () => envelopes.get(key) === token && envelopes.set(key, 'none'));
+}
+
+/** Draw the envelope of the current source over the view: a bar per at least WAVE_COL pixels, the loudest value in it, tall by its square root. */
+function drawWave(c = current()) {
+  const svg = $('#railWave');
+  const env = c && S.view ? envelopeOf(c) : null;
+  const width = $('#rail').clientWidth || 600;
+  const sig = env ? `${c.source}|${S.view.lo}|${S.view.hi}|${width}|${env.peaks.length}` : '';
+  if (svg.dataset.sig === sig) return;
+  svg.dataset.sig = sig;
+  const path = svg.firstElementChild;
+  if (!env) {
+    path.removeAttribute('d');
+    return;
+  }
+  const { lo, hi } = S.view;
+  const cols = Math.max(1, Math.min(Math.floor(width / WAVE_COL), Math.ceil((hi - lo) / env.step)));
+  const w = (hi - lo) / cols;
+  const bars = [];
+  for (let j = 0; j < cols; j += 1) {
+    const from = Math.floor(Math.max(0, lo + j * w) / env.step);
+    const to = Math.max(from, Math.ceil((lo + (j + 1) * w) / env.step) - 1);
+    let top = 0;
+    for (let i = from; i <= Math.min(to, env.peaks.length - 1); i += 1) top = Math.max(top, env.peaks[i]);
+    const half = Math.sqrt(top) * 46;
+    if (half > 0.5) bars.push(`M${j + 0.5} ${(50 - half).toFixed(1)}V${(50 + half).toFixed(1)}`);
+  }
+  svg.setAttribute('viewBox', `0 0 ${cols} 100`);
+  if (bars.length) path.setAttribute('d', bars.join(''));
+  else path.removeAttribute('d');
 }
 
 const handles = { start: $('#startHandle'), end: $('#endHandle') };
@@ -1426,10 +1540,10 @@ function loadFilm() {
 }
 new ResizeObserver(() => {
   drawFilm();
-  if (S.view) { // the ruler and the moment labels depend on the width too
+  if (S.view) { // the ruler, the waveform and the event labels depend on the width too
     drawRuler(S.view.lo, S.view.hi);
-    const c = current();
-    if (c) drawEvents(c, S.view.lo, S.view.hi);
+    drawWave();
+    redrawEvents();
   }
 }).observe($('#rail')); // a wider rail holds more stills
 
