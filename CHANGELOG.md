@@ -7,11 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The center stage of `cutpoint ui` is simpler. The Clip Start and Clip End fields, the -0.5 and
+  +0.5 and "Use playhead" buttons, the Transcript box and the Zoom out, Zoom in and Fit clip
+  buttons are gone. Trim with the filmstrip handles or the `I` and `O` keys (`[` and `]` too); one
+  line under the video shows the cut in, out and length, any tail the export adds and the exported
+  length, with a "Reset to moment" button. Press a pressed zoom level (10 s, 30 s, 2 min) again to
+  fit the clip, or use Ctrl+wheel. The overview strip sits under the ruler, and Previous and Next
+  buttons open the clips before and after in the sequence.
+
 ### Added
 
 - The side column in `cutpoint ui` has three tabs (Sequence, AI Chat, Models); the Export button opens
   the Export panel there, with Back. The sequence has a footer with the total length and an optional
   target length, saved with the project, that only guides the progress bar.
+- AI Chat in `cutpoint ui` shows a compact summary of what the assistant did, and each proposed
+  change is a card with Apply, Preview and Discard. Apply no longer needs the Sequence tab preview first.
 - The trim rail in `cutpoint ui` draws the source's audio level over the filmstrip and marks the
   real events under it: sounds (laughter, cheering...), on-screen text such as kill feeds and
   camera crashes from `events.json`, each with a short label and a tooltip (kind, time,
@@ -22,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The browser workspace's center stage is rebuilt around the trim. The rail is taller and dims
   everything outside the in and out points; `I` and `O` set the in and out points at the playhead; zoom levels of 10 s, 30 s and 2 min sit
-  beside Zoom out, Zoom in and Fit clip; a time ruler runs under the filmstrip, and the other moments
+  above the rail; a time ruler runs under the filmstrip, and the other moments
   of the same source in view are marked there. Under the trim controls a Storyboard shows the
   sequence as one block per clip, as wide as its exported length and coloured by kind: click to
   trim a clip, drag or Alt+Left and Alt+Right to reorder, double-click or Shift+Enter to play

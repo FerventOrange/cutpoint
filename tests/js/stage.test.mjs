@@ -69,10 +69,35 @@ test('I and O set the trim in and out at the playhead; Shift+I and a text field 
   await m.key(m.d.body, 'O');
   assert.equal(m.range('h001'), '0:12.50 to 0:16.00');
   await m.key(m.d.body, 'I', { shiftKey: true });
-  await m.key(m.$('#t-start'), 'i');
+  await m.key(m.$('#filter'), 'i');
   assert.equal(m.range('h001'), '0:12.50 to 0:16.00');
   await m.click('#undoBtn');
   assert.equal(m.range('h001'), '0:12.50 to 0:18.00', 'an O is one undo step');
+});
+
+test('O at the very end of a source lands on its last time instead of rounding past it', async (t) => {
+  const p = withSegments('h001'); // 10 to 18
+  p.sources[0].duration = 600.126;
+  for (const s of p.highlights.sources ?? []) s.duration = 600.126;
+  const m = await stage(t, { project: p });
+  await playheadAt(m, 600.126);
+  await m.key(m.d.body, 'o');
+  assert.doesNotMatch(m.$('#trimMsg').textContent, /inside the source/);
+  assert.equal(m.$('#endHandle').getAttribute('aria-valuenow'), '600.12');
+});
+
+test('the page shortcuts do nothing while the filter popover is open, also with focus on its button', async (t) => {
+  const m = await stage(t, { project: withSegments('h001') }); // 10 to 18
+  await playheadAt(m, 12.5);
+  await m.click('#filterBtn');
+  m.$('#filterBtn').focus();
+  for (const key of ['i', 'o', '[', ']', 'm']) await m.key(m.$('#filterBtn'), key);
+  assert.equal(m.range('h001'), '0:10.00 to 0:18.00');
+  assert.equal(m.$('#video').muted, false);
+  await m.key(m.$('#filterBtn'), 'Escape');
+  assert.ok(m.$('#filterPop').hidden);
+  await m.key(m.$('#filterBtn'), 'i');
+  assert.equal(m.range('h001'), '0:12.50 to 0:18.00', 'closed, the keys work again');
 });
 
 test('the zoom levels set the width of the view and show the pressed one', async (t) => {
@@ -87,7 +112,7 @@ test('the zoom levels set the width of the view and show the pressed one', async
     assert.ok(Math.abs(win() - want) < 0.05, `${label}: ${win()}`);
     assert.deepEqual(pressed(), [label]);
   }
-  await m.click('#zoomFit');
+  await m.click(presets().find((b) => b.textContent === '2 min')); // pressed again: back to the fit view
   assert.deepEqual(pressed(), []);
 });
 
@@ -109,10 +134,8 @@ test('the storyboard has one block per clip, sized by length, and follows a trim
   assert.deepEqual(m.blocks().map((b) => b.dataset.id), ['h001', 'h002']);
   const grow = (id) => parseFloat(m.cell(id).style.flexGrow);
   assert.equal(grow('h001'), 8);
-  m.$('#t-end').value = '0:14';
-  m.$('#t-end').dispatchEvent(new m.w.Event('change'));
-  await m.page.settle();
-  assert.equal(grow('h001'), 4);
+  await m.key(m.$('#endHandle'), 'PageDown');
+  assert.equal(grow('h001'), 3);
   await m.click('#undoBtn');
   assert.equal(grow('h001'), 8);
 });
@@ -126,7 +149,6 @@ test('clicking a block opens that clip for trimming', async (t) => {
   const m = await stage(t, { project: withSegments('h001', 'h002') });
   await m.click(m.block('h002'));
   assert.equal(m.block('h002').getAttribute('aria-current'), 'true');
-  assert.equal(m.$('#t-start').value, '1:40.00');
   assert.equal(m.$('#startHandle').getAttribute('aria-valuetext'), 'Clip start, 1:40.00');
 });
 
@@ -217,4 +239,158 @@ test('the Sequence mode is unavailable with an empty sequence', async (t) => {
   assert.equal(m.$('#stageMode [data-mode=sequence]').disabled, true);
   await m.click(m.$('#candList li[data-id=h001] [data-act=toggle]'));
   assert.equal(m.$('#stageMode [data-mode=sequence]').disabled, false);
+});
+
+// ---- title row ----
+
+test('the title row names a sequence clip by its place and a moment outside the sequence by its name', async (t) => {
+  const m = await stage(t, { project: withSegments('h001', 'h002') });
+  assert.equal(m.$('#stageTitle').textContent, 'Clip 1 · Big laugh');
+  await m.click(m.block('h002'));
+  assert.equal(m.$('#stageTitle').textContent, 'Clip 2 · Fall');
+  assert.equal(m.$('#toggleBtn').textContent, 'Remove from sequence');
+  await m.click(m.$('#candList li[data-id=h003] [data-act=focus]'));
+  assert.equal(m.$('#stageTitle').textContent, 'Intro joke');
+  assert.equal(m.$('#toggleBtn').textContent, 'Add to sequence');
+});
+
+test('previous and next clip buttons step through the sequence, are disabled at the ends and hidden off it', async (t) => {
+  const m = await stage(t, { project: withSegments('h001', 'h002', 'h003') });
+  const [prev, next] = [m.$('#prevClip'), m.$('#nextClip')];
+  const title = () => m.$('#stageTitle').textContent;
+  assert.equal(m.$('#clipNav').hidden, false);
+  assert.equal(prev.disabled, true, 'nothing before the first clip');
+  assert.equal(prev.getAttribute('aria-label'), 'Previous clip');
+  assert.equal(next.getAttribute('aria-label'), 'Next clip, Clip 2');
+  assert.equal(next.textContent, 'Clip 2 ›');
+  await m.click(next);
+  assert.equal(title(), 'Clip 2 · Fall');
+  assert.equal(prev.getAttribute('aria-label'), 'Previous clip, Clip 1');
+  assert.equal(next.getAttribute('aria-label'), 'Next clip, Clip 3');
+  await m.click(next);
+  assert.equal(title(), 'Clip 3 · Intro joke');
+  assert.equal(next.disabled, true, 'nothing after the last clip');
+  assert.equal(next.getAttribute('aria-label'), 'Next clip');
+  await m.click(prev);
+  assert.equal(title(), 'Clip 2 · Fall');
+  await m.click(m.$('#candList li[data-id=h001] [data-act=toggle]')); // h001 leaves the sequence
+  await m.click(m.$('#candList li[data-id=h001] [data-act=focus]'));
+  assert.equal(m.$('#clipNav').hidden, true, 'a moment outside the sequence has no neighbours');
+});
+
+// ---- clock, cut line ----
+
+test('the clock and the IN badge count from the clip, not from the source', async (t) => {
+  const m = await stage(t, { project: withSegments('h001') }); // 10 to 18
+  await playheadAt(m, 12.5);
+  assert.equal(m.$('#clock').textContent, '0:02.5 / 0:08.0');
+  assert.equal(m.$('#inBadge').textContent, 'IN +2.5 s');
+  await playheadAt(m, 9);
+  assert.equal(m.$('#inBadge').textContent, 'IN -1.0 s', 'before the in point');
+});
+
+test('the cut line shows the trim, its length and what the export makes of it', async (t) => {
+  const m = await stage(t, { project: withSegments('h001') });
+  const text = (id) => m.$(id).textContent;
+  assert.equal(text('#cutRange'), '0:10.0 → 0:18.0');
+  assert.equal(text('#cutLen'), '| 8.00 s');
+  assert.equal(text('#cutOut'), '8.00 s');
+  assert.equal(m.$('#cutTail').hidden, true, 'no tail until the export plans one');
+  await m.key(m.$('#endHandle'), 'ArrowLeft', { shiftKey: true });
+  assert.equal(text('#cutRange'), '0:10.0 → 0:17.0');
+  assert.equal(text('#cutLen'), '| 7.00 s');
+});
+
+test('the cut line shows the planned tail as a pill, with its reason, and the length it exports as', async (t) => {
+  const m = await stage(t, {
+    project: withSegments('h001'),
+    routes: { 'POST /api/projects/p1/edges': () => ({ edges: { h001: { start: 10, end: 20.5, reason: 'event tail' } } }) },
+  });
+  assert.equal(m.$('#cutTail').hidden, true);
+  t.mock.timers.tick(400);
+  await m.page.settle();
+  assert.equal(m.$('#cutTail').hidden, false);
+  assert.equal(m.$('#cutTail').textContent, '+2.50 s event tail');
+  assert.equal(m.$('#cutLen').textContent, '| 8.00 s', 'the length stays the trim');
+  assert.equal(m.$('#cutOut').textContent, '10.50 s');
+});
+
+// ---- Reset to moment ----
+
+test('Reset to moment is off while the trim is the analyzed one, restores it otherwise and is one undo step', async (t) => {
+  const m = await stage(t, { project: withSegments('h001') });
+  const reset = m.$('#resetBtn');
+  assert.equal(reset.disabled, true);
+  await m.key(m.$('#startHandle'), 'ArrowRight', { shiftKey: true });
+  await m.key(m.$('#endHandle'), 'ArrowLeft', { shiftKey: true });
+  assert.equal(m.range('h001'), '0:11.00 to 0:17.00');
+  assert.equal(reset.disabled, false);
+  await m.click(reset);
+  assert.equal(m.range('h001'), '0:10.00 to 0:18.00');
+  assert.equal(reset.disabled, true);
+  assert.equal(m.$('#cutRange').textContent, '0:10.0 → 0:18.0');
+  await m.click('#undoBtn');
+  assert.equal(m.range('h001'), '0:11.00 to 0:17.00', 'undo brings the trim back');
+});
+
+// ---- I and O refused ----
+
+test('I and O that would make the clip invalid are refused with a visible message and change nothing', async (t) => {
+  const m = await stage(t, { project: withSegments('h001') }); // 10 to 18
+  const msg = m.$('#trimMsg');
+  assert.equal(msg.classList.contains('vh'), true, 'the message is for screen readers while all is well');
+  await playheadAt(m, 9);
+  await m.key(m.d.body, 'o'); // an out before the in
+  assert.equal(m.range('h001'), '0:10.00 to 0:18.00');
+  assert.match(msg.textContent, /at least .* s long/);
+  assert.equal(msg.classList.contains('error'), true);
+  assert.equal(msg.classList.contains('vh'), false, 'and it shows on screen');
+  await playheadAt(m, 590);
+  await m.key(m.d.body, 'i'); // an in after the out
+  assert.equal(m.range('h001'), '0:10.00 to 0:18.00');
+  assert.match(msg.textContent, /at least .* s long/);
+});
+
+// ---- storyboard follows playback ----
+
+test('the storyboard ruler runs from 0:00 to the sequence length and its playhead follows the clip playhead', async (t) => {
+  const m = await stage(t, { project: withSegments('h001', 'h002') }); // 8 s + 8 s
+  const labels = [...m.d.querySelectorAll('#sbRuler span')].map((s) => s.textContent);
+  assert.equal(m.$('#sbRuler').hidden, false);
+  assert.equal(labels[0], '0:00');
+  assert.equal(labels.at(-1), '0:16', 'the total at the right end');
+  assert.equal(m.$('#sbHead').hidden, false);
+  // jsdom has no layout: give every block 400 px so the head has a place to be
+  const proto = m.w.HTMLElement.prototype;
+  Object.defineProperty(proto, 'offsetWidth', { configurable: true, get: () => 400 });
+  Object.defineProperty(proto, 'clientWidth', { configurable: true, get: () => 800 });
+  await playheadAt(m, 10);
+  const at0 = m.$('#sbHead').style.left;
+  await playheadAt(m, 14);
+  assert.notEqual(m.$('#sbHead').style.left, at0, 'the head moves with the playhead');
+  await m.click(m.$('#candList li[data-id=h003] [data-act=focus]'));
+  assert.equal(m.$('#sbHead').hidden, true, 'no head for a clip outside the sequence');
+});
+
+test('a trim that shortens the sequence changes the end label of the storyboard ruler', async (t) => {
+  const m = await stage(t, { project: withSegments('h001', 'h002') });
+  await m.key(m.$('#endHandle'), 'PageDown'); // 8 s to 3 s
+  const labels = [...m.d.querySelectorAll('#sbRuler span')].map((s) => s.textContent);
+  assert.equal(labels.at(-1), '0:11');
+});
+
+// ---- zoom ----
+
+test('pressing the pressed zoom level again fits the clip', async (t) => {
+  const m = await stage(t, { project: withSegments('h001') });
+  const lo = () => m.$('#winLo').textContent;
+  const hi = () => m.$('#winHi').textContent;
+  const fit = [lo(), hi()];
+  const ten = m.$('#zoomPresets [data-span="10"]');
+  await m.click(ten);
+  assert.equal(ten.getAttribute('aria-pressed'), 'true');
+  assert.notDeepEqual([lo(), hi()], fit, 'the level changed the view');
+  await m.click(ten);
+  assert.equal(ten.getAttribute('aria-pressed'), 'false');
+  assert.deepEqual([lo(), hi()], fit, 'back to the fit view');
 });

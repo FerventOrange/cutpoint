@@ -1466,8 +1466,7 @@ def test_settings_offer_graphite_light_and_blue_themes_applied_before_first_pain
             else {**graphite, **_theme_colours(css, f':root[data-theme="{name}"]')}
         )
         text = [
-            ("text", b)
-            for b in ("slate", "panel", "raise", "deep", "picked", "bar", "hover", "log-bg")
+            ("text", b) for b in ("slate", "panel", "raise", "deep", "picked", "hover", "log-bg")
         ]
         text += [
             (f, b) for f in ("muted", "amber-text", "bad", "ok") for b in ("slate", "panel", "deep")
@@ -1478,14 +1477,13 @@ def test_settings_offer_graphite_light_and_blue_themes_applied_before_first_pain
             ("danger-ink", "danger-btn"),
             ("danger-ink", "danger-btn-hover"),
         ]
-        text += [("gold-ink", "gold-btn"), ("gold-ink", "gold-btn-hover")]
         if name == "graphite":  # --faint is its dimmest text; the others alias it to --muted
             text += [("faint", b) for b in ("slate", "panel", "deep")]
         for fg, bg in text:
             assert _contrast(t[fg], t[bg]) >= 4.5, (name, fg, bg)
         # focus rings, the focused-card glow and other controls: 3:1 (WCAG 1.4.11)
         # --amber-text: focus rings and amber text; --amber is the fill, with --amber-ink on it
-        ui_parts = [("amber-text", b) for b in ("slate", "panel", "raise", "deep", "bar")]
+        ui_parts = [("amber-text", b) for b in ("slate", "panel", "raise", "deep")]
         ui_parts += [
             ("glow", "deep"),
             ("danger", "deep"),
@@ -1508,11 +1506,11 @@ def test_settings_offer_graphite_light_and_blue_themes_applied_before_first_pain
 
 def test_the_trim_markers_are_keyboard_and_pointer_slider_handles() -> None:
     """Contract pin (#352): Clip start and Clip end on the rail are focusable sliders with a 24 px
-    hit area, moved by keys and pointer drags through setRange (the path of the time fields and
-    "Use playhead"), and Space is not taken from the global play/pause handler.
+    hit area, moved by keys and pointer drags through setRange (the path of the I and O keys), and Space is
+    not taken from the global play/pause handler.
 
     Check in a browser (no browser in the test suite): Tab to a handle, arrows move it 0.1 s,
-    Shift+arrows 1 s, PageUp/PageDown 5 s; the time field and aria-valuetext follow; start stops
+    Shift+arrows 1 s, PageUp/PageDown 5 s; the cut line and aria-valuetext follow; start stops
     MIN_CLIP before end; Space plays and pauses; a drag on a zoomed rail pans at the edge."""
     html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
     css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
@@ -1553,8 +1551,8 @@ def test_the_trim_markers_are_keyboard_and_pointer_slider_handles() -> None:
     assert handle and "width: 24px;" in handle[1] and "top: 0; bottom: 0;" in handle[1]
     assert "touch-action: none;" in handle[1]
     assert re.search(r"^\.rail-handle:focus-visible \{[^}]*outline: 2px solid", css, re.M)
-    # the rail is 64 px tall: the handle's hit area is at least 24 x 24
-    assert re.search(r"^\.rail \{[^}]*height: 64px;", css, re.M)
+    # the rail is 104 px tall: the handle's hit area is at least 24 x 24
+    assert re.search(r"^\.rail \{[^}]*height: 104px;", css, re.M)
 
 
 def test_the_page_files_are_revalidated_on_each_load(client: TestClient) -> None:
@@ -7384,6 +7382,9 @@ def test_focus_rings_use_the_amber_text_colour_so_light_theme_keeps_contrast() -
             if ".cand-toggle" in rule:  # over a still: --amber on a black halo (3:1 on any still)
                 assert colour == "--amber", rule
                 continue
+            if ".sb-block" in rule:  # inside the current block's amber: the block's text colour
+                assert colour == "--scrim-ink", rule
+                continue
             assert colour == "--amber-text", rule
     assert re.search(r":focus-visible \{ outline: 2px solid var\(--amber-text\)", css)
     light = re.search(r':root\[data-theme="light"\][^{]*\{(.*?)\}', css, re.S)
@@ -7986,9 +7987,9 @@ def test_the_ai_chat_tab_has_one_labelled_input_and_one_send_button() -> None:
     panel = re.search(r'<div id="panelAssistant".*?\n      </div>\n', html, re.S)[0]
     assert re.search(r'<h2 id="chatTitle"[^>]*>AI Assistant</h2>', panel)
     assert re.search(r'<button type="button" id="chatClear"[^>]*>Clear chat</button>', panel)
-    buttons = re.findall(r"<button\b[^>]*>[^<]*</button>", panel)
+    buttons = re.findall(r"<button\b[^>]*>(?:[^<]|<svg.*?</svg>)*</button>", panel, re.S)
     assert [b for b in buttons if 'type="submit"' in b] == [
-        '<button type="submit" id="chatSend" class="btn primary" disabled>Send</button>'
+        '<button type="submit" id="chatSend" class="btn primary" aria-label="Send" disabled><svg class="chat-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>'
     ]
     # Clear chat, the hosted-provider consent (#346) and Send; no mic, no attach
     assert [re.search(r'id="(\w+)"', b)[1] for b in buttons] == [
@@ -9586,7 +9587,11 @@ def test_the_center_stage_has_a_mode_switch_a_storyboard_and_zoom_levels() -> No
     levels = re.search(r'<div id="zoomPresets"[^>]*>(.*?)</div>', html, re.S)[1]
     assert re.findall(r'data-span="(\d+)" aria-pressed="false"', levels) == ["10", "30", "120"]
     assert html.index('id="trimMsg"') < html.index('id="storyboard"') < html.index('id="side"')
-    assert 'id="startField"' in html and 'id="endField"' in html
+    assert (
+        'id="startField"' not in html and 'id="endField"' not in html
+    )  # the cut line replaced them
+    for hook in ("cutRange", "cutLen", "cutTail", "cutOut", "resetBtn", "prevClip", "nextClip"):
+        assert f'id="{hook}"' in html, hook
     block = _js_function(js, "sbBlock")
     assert "moveSeg(s.id, to)" in block and "moveSeg(dragId, i)" in block
     assert "seqStart(s.id)" in block
