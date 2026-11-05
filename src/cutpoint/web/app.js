@@ -478,7 +478,7 @@ function pickProject(id) {
 }
 
 function pickAnalyzeAgain() {
-  if ($('#analyzeAgainItem').getAttribute('aria-disabled') === 'true') return; // a job runs: the menu stays open
+  if ($('#analyzeAgainItem').getAttribute('aria-disabled') === 'true') return; // a job runs or another run holds the project: the menu stays open
   closeProjectMenu(true); // focus is on the name first, so the dialog returns it there
   analyzeAgain();
 }
@@ -2597,7 +2597,9 @@ const dragOrderNow = () => S.segments.map((s) => s.id).join();
 /**
  * A press on a row arms it (``draggable``) and the drag starts a moment later; a render in between would replace the row and
  * the drag would never begin. So an armed press holds renders like a drag does, until the pointer is released or cancelled
- * (a document-level listener: the release may land outside the row, and the list must not stay frozen without it).
+ * (a document-level listener: the release may land outside the row; a window blur ends it too, for a release that never
+ * comes). The hold ends at once, so a render that follows the release (a double click's rename) runs unheld; only the
+ * render that waited is deferred a task, as a drag that started holds renders itself (Edge sends dragstart before the cancel).
  */
 let pressArmed = false;
 function armPress() {
@@ -2607,9 +2609,9 @@ function armPress() {
   const release = () => {
     document.removeEventListener('pointerup', release, true);
     document.removeEventListener('pointercancel', release, true);
-    // a drag starts right after the cancel: leave the render to its end
-    setTimeout(() => {
-      pressArmed = false;
+    window.removeEventListener('blur', release);
+    pressArmed = false;
+    setTimeout(() => { // a render that waited; one that ran meanwhile has cleared it
       if (!dragId && dragDirty) {
         dragDirty = false;
         renderSequence();
@@ -2618,6 +2620,7 @@ function armPress() {
   };
   document.addEventListener('pointerup', release, true);
   document.addEventListener('pointercancel', release, true);
+  window.addEventListener('blur', release);
 }
 const seqDragStart = (id, kind, e, el) => {
   dragId = id;
@@ -3189,7 +3192,7 @@ function seqRow(s, i, n) {
     // the whole row drags; a press on the checkbox or the row's buttons does not arm it, nor does renaming
     onpointerdown: (e) => {
       li.draggable = S.renaming !== s.id && !e.target.closest('input, .seq-ctl');
-      if (li.draggable) armPress();
+      if (li.draggable && e.button === 0) armPress(); // the primary button only: another one may never send its release
     },
     onpointerup: () => { if (!dragId) li.draggable = false; },
     onpointercancel: () => { if (!dragId) li.draggable = false; },
@@ -3328,6 +3331,7 @@ function renderSequence() {
     dragDirty = false; // this render is the one the drag waited for
     endDrag();
   }
+  dragDirty = false; // this render runs: nothing waits
   const segs = S.segments;
   renderSeqFoot();
   if (!S.project) setEmpty($('#seqEmpty'));
@@ -4178,9 +4182,9 @@ function renderBusy() {
     const own = S.active?.project_id === S.id && S.active?.action === 'analyze';
     const steps = own && !!stepsJob(); // an older CLI sends no steps: the Jobs log is all there is
     const reason = own ? (steps ? 'Analyzing… each step is listed below.' : 'Analyzing… progress is in Jobs.') : busy ? why
-      : p?.source_error ? sourceErrorText(p) : 'Add videos to the source folder first.';
-    set('#analyzeBig', !p || busy || !p.sources?.length, reason);
-    set('#analyzeOptsBtn', !p || busy || !p.sources?.length, reason);
+      : held ? BUSY_TEXT : p?.source_error ? sourceErrorText(p) : 'Add videos to the source folder first.';
+    set('#analyzeBig', !p || busy || held || !p.sources?.length, reason);
+    set('#analyzeOptsBtn', !p || busy || held || !p.sources?.length, reason);
     const label = own ? 'Analyzing…' : 'Analyze footage';
     if (big.textContent !== label) big.textContent = label;
     const out = $('#analyzeWhy');

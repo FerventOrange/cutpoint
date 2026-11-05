@@ -297,6 +297,15 @@ test('while another run holds the project Analyze again is aria-disabled with th
   assert.equal(page.document.activeElement, $('#projectMenu [aria-checked=true]'));
 });
 
+test('the big Analyze button and its options are disabled, with the reason, while another run holds the project', async (t) => {
+  const { $ } = await openRoutes(t, makeProject({ highlights: null, analysis: null, busy: true }), { 'GET /api/jobs': { jobs: [] } });
+  const why = 'Analysis is running on this project; wait for it to finish';
+  for (const id of ['#analyzeBig', '#analyzeOptsBtn']) {
+    assert.equal($(id).disabled, true, id);
+    assert.equal($(id).title, why, id);
+  }
+});
+
 test('Show folder asks for the sources folder, closes the menu and refocuses the name', async (t) => {
   const { page, $ } = await openRoutes(t, makeProject(), { 'GET /api/session': SESSION, 'POST /api/projects/p1/reveal': { ok: true } });
   $('#projectBtn').click();
