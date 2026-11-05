@@ -351,6 +351,32 @@ test('dragging a trim handle moves the point with the pointer and ends as one un
 
 // ---- Play sequence ----
 
+test('ticking clips swaps Play sequence for the selection actions, but Stop stays while it plays', async (t) => {
+  const m = await review(t, { project: withSegments('h002', 'h001') });
+  const playBtn = m.$('#seqPlayBtn');
+  const tick = async (id) => {
+    const box = m.row(id).querySelector('[data-act=select]');
+    box.checked = true;
+    box.dispatchEvent(new m.w.Event('change'));
+    await m.page.settle();
+  };
+  playBtn.focus();
+  await tick('h001');
+  assert.equal(playBtn.hidden, true, 'the selection actions take its place');
+  assert.equal(m.d.activeElement, m.$('#seqClearSel'), 'the focused button hides: the focus moves to Clear');
+  assert.equal(m.$('#seqBatch').hidden, false);
+  await m.click('#seqClearSel');
+  assert.equal(playBtn.hidden, false);
+  await m.click(playBtn);
+  await tick('h001');
+  assert.equal(playBtn.textContent, 'Stop');
+  assert.equal(playBtn.hidden, false, 'Stop is never hidden by a selection');
+  playBtn.focus();
+  await m.click(playBtn);
+  assert.equal(playBtn.hidden, true);
+  assert.equal(m.d.activeElement, m.$('#seqClearSel'));
+});
+
 test('Play sequence runs the clips in order and stops after the last', async (t) => {
   const m = await review(t, { project: withSegments('h002', 'h001') }); // 100-108 then 10-18
   const live = () => m.$('#seqLive').textContent;

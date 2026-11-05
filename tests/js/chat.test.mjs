@@ -492,7 +492,7 @@ test('the sequence asks the server for its exported edges and totals and lists t
     },
   });
   t.after(() => page.close());
-  assert.match(page.document.querySelector('#seqTotal').textContent, /2 clips/);
+  assert.match(page.document.querySelector('#seqTotal').textContent, /^\d+:\d\d$/); // the footer: the total alone, no target set
   t.mock.timers.tick(400);
   await page.settle();
   assert.equal(asked.length, 1);

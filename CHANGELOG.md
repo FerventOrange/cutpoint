@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   across the cut" (3 s each side, always a hard cut), "Roll the cut" (drag or keys: the first clip's
   out and the next clip's in move together, so the length stays), the Export tab's Video transition
   (it applies to the whole video), and a Cuts strip with Previous and Next cut.
+- The side column in `cutpoint ui` has three tabs (Sequence, AI Chat, Models); the Export button opens
+  the Export panel there, with Back. The sequence has a footer with the total length and an optional
+  target length, saved with the project, that only guides the progress bar.
 - AI Chat in `cutpoint ui` shows a compact summary of what the assistant did, and each proposed
   change is a card with Apply, Preview and Discard. Apply no longer needs the Sequence tab preview first.
 - The trim rail in `cutpoint ui` draws the source's audio level over the filmstrip and marks the

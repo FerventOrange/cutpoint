@@ -6,6 +6,13 @@ import { importPure } from './harness.mjs';
 // top-level await, not a before() hook: older Node 22 releases start tests before an async hook finishes
 const u = await importPure('util.js');
 
+test('parseTime reads seconds and m:ss, and refuses anything else', () => {
+  assert.equal(u.parseTime('1:23.5'), 83.5);
+  assert.equal(u.parseTime('1:02:03'), 3723);
+  assert.ok(Number.isNaN(u.parseTime('1:2:3:4')));
+  assert.equal(u.parseTime(u.fmt(83.5)), 83.5);
+});
+
 test('video order sorts files naturally (clip2 before clip10) and moments by start inside a file', () => {
   const m = (source, start) => ({ source, start });
   // same-named files in two folders sort by full path, so each source's moments stay together
