@@ -466,6 +466,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Moments tiles in `cutpoint ui` are smaller. The length shows once, on the still, and the
+  transcript line is gone from the tile: hover a tile for its full title and transcript (the search
+  still finds the transcript). The preview status after the score is an icon only (a spinner while
+  encoding, a check when ready, a clock when queued) with the word on hover and for screen readers.
+  Add is a dark + on amber and Remove a white - on red, over the still's corner.
+
 - `cutpoint ui` has a new look, the Graphite theme, and it is the default. Settings > Theme now
   offers Graphite, Light and Blue (Blue is the colours of before). A browser that saved Dark gets
   Graphite, as Dark is gone; Light stays as saved. Only a Blue chosen before this release was kept

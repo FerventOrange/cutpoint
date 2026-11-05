@@ -42,7 +42,7 @@ test('off by default: the list is compact, the box is unticked and the parts sta
   // what stays: title, kind and score, the length
   assert.ok(tile(page, 'h001').querySelector('.cand-title').textContent);
   assert.match(tile(page, 'h001').querySelector('.cand-meta').textContent, /score/);
-  assert.match(tile(page, 'h001').querySelector('.cand-time').textContent, /8\.0 s$/);
+  assert.doesNotMatch(tile(page, 'h001').querySelector('.cand-time').textContent, /8\.0 s/); // the length shows once, on the still
   assert.equal(tile(page, 'h001').querySelector('.cand-len').textContent, '8.0 s');
   page.assertNoUnhandled();
 });
