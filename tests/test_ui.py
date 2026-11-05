@@ -1304,6 +1304,26 @@ def test_stats_for_nerds_is_an_off_by_default_overlay_on_the_preview() -> None:
     assert "nerdStats: false," in js  # off unless the browser stored "1"
 
 
+def test_verbose_moment_labels_hide_the_tile_file_id_and_times_by_default() -> None:
+    """Contract pin: Settings > Verbose moment labels (off unless the browser stored "1") is a
+    class on the list; the file, id and start-end time stay in the markup, so the filter and the
+    tile's reading order are unchanged, and CSS hides them."""
+    html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
+    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
+    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
+    assert re.search(
+        r'<label class="check"><input type="checkbox" id="setVerboseMoments"[^>]*> Verbose moment labels</label>',
+        html,
+    )
+    assert (
+        '<ol id="candList" class="cand-list moments-compact"></ol>' in html
+    )  # compact before first paint
+    assert ".moments-compact :is(.cand-id, .cand-range, .cand-src) { display: none; }" in css
+    assert "const VERBOSE_KEY = 'cutpoint.verboseMoments';" in js
+    assert "verboseMoments: false," in js
+    assert "class: 'cand-range'" in _js_function(js, "renderMoments")
+
+
 def test_moment_cards_show_a_read_only_strip_of_their_place_in_the_source() -> None:
     """Contract pin: the score bar on the moment cards became a strip like the preview's overview
     (the whole source, the moment in --gold on --deep), with no control of its own, hidden from
@@ -1664,7 +1684,9 @@ def test_moment_cards_show_the_cli_id_as_text_and_filter_by_it() -> None:
         ".cand-id {" in _web("app.css")
         and "white-space: nowrap" in _web("app.css").split(".cand-id {")[1].split("}")[0]
     )
-    assert "by the ids on the moment cards" in _web("index.html")
+    assert "by the ids on the moment cards (shown with Settings > Verbose moment labels)" in _web(
+        "index.html"
+    )
 
 
 def test_media_supports_range_and_only_serves_project_sources(
@@ -8220,8 +8242,9 @@ def test_moment_card_order_matches_the_mockup() -> None:
     assert at == sorted(at), order
     top = card[card.index("class: 'cand-top'") : card.index("class: 'cand-meta'")]
     assert "prepBadge" not in top and "'data-act': 'toggle'" not in top
-    assert (
-        "h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' })"
+    assert "h('span', { 'aria-hidden': 'true', text: ' · ' })),\n" in card
+    assert (  # the read comma stays when the range is hidden: "score 72, 8.0 s"
+        "h('span', { class: 'vh', text: ', ' }),\n              `${(c.end - c.start).toFixed(1)} s`"
         in card
     )
     assert (

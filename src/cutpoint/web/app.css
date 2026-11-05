@@ -498,6 +498,8 @@ select { max-width: 100%; }
 .cand-meta { padding-inline: var(--space-1); color: var(--muted); font-size: 11px; }
 .cand-time, .cand-src { padding-inline: var(--space-1); color: var(--faint); font: 10.5px/1.4 var(--mono); }
 .cand-src { overflow-wrap: anywhere; }
+/* Verbose moment labels off (the default): the tile keeps its length, not the id, the times or the file */
+.moments-compact :is(.cand-id, .cand-range, .cand-src) { display: none; }
 .cand-id { color: var(--text); white-space: nowrap; margin-right: 0.3em; }
 .cand-strip, .cand-foot, .cand-flags { margin-inline: var(--space-1); }
 .tag { font-size: 11px; color: var(--amber-ink); background: var(--amber); border-radius: var(--radius-xs); padding: 0 var(--space-1); }

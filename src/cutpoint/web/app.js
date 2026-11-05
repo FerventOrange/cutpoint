@@ -28,6 +28,7 @@ const VOL_KEY = 'cutpoint.volume'; // localStorage: {volume: 0-1, muted} for eve
 const NERD_KEY = 'cutpoint.nerdStats'; // localStorage: "1" while Stats for Nerds is on (off by default)
 const ADV_KEY = 'cutpoint.advancedExport'; // localStorage: "1" while Show advanced export options is on (off by default)
 const THEME_KEY = 'cutpoint.theme'; // localStorage: "light" or "blue"; absent for Graphite, the default (a stored "dark" is dropped). index.html reads it too
+const VERBOSE_KEY = 'cutpoint.verboseMoments'; // localStorage: "1" while Verbose moment labels is on (off by default)
 const TAB_KEY = 'cutpoint.sideTab'; // localStorage: the sequence column's tab; absent for Sequence, the default
 const ORDER_KEY = 'cutpoint.momentOrder'; // localStorage: "position" for video order; absent for Score, the default
 const ORDER_NAMES = { score: 'score', position: 'position in video' }; // the moments list's orders (#469)
@@ -92,6 +93,8 @@ const S = {
   nerdStatsWas: false, // nerdStats when Settings opened, restored by Cancel or Escape
   advExport: false, // Settings > Show advanced export options: the Export tab's .adv controls
   advExportWas: false, // advExport when Settings opened, restored by Cancel or Escape
+  verboseMoments: false, // Settings > Verbose moment labels: each tile's file, id and start-end
+  verboseMomentsWas: false, // verboseMoments when Settings opened, restored by Cancel or Escape
   themeWas: 'graphite', // Settings > Theme when Settings opened, restored by Cancel or Escape
   renaming: null, // sequence id whose label is being edited
   renameDraft: '',
@@ -542,8 +545,11 @@ function renderMoments() {
             h('span', { class: 'cand-time tc' },
               // the CLI id (h001) as text, for Candidate ids and clips --ids (#487)
               c.cli_id ? [h('span', { class: 'cand-id' }, h('span', { class: 'vh', text: 'Candidate ' }), c.cli_id), ' '] : null,
-              `${fmt(c.start)} to ${fmt(c.end)}`,
-              h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' }),
+              // the start-end range with its separator: hidden with the id and the file unless Verbose moment labels is on
+              h('span', { class: 'cand-range' },
+                `${fmt(c.start)} to ${fmt(c.end)}`,
+                h('span', { 'aria-hidden': 'true', text: ' · ' })),
+              h('span', { class: 'vh', text: ', ' }),
               `${(c.end - c.start).toFixed(1)} s`),
             multi ? h('span', { class: 'cand-src' }, h('span', { class: 'vh', text: 'in ' }), baseName(c.source)) : null,
             flagBadges(c.pano),
@@ -4300,6 +4306,8 @@ async function openSettings() {
   S.nerdStatsWas = S.nerdStats; // Cancel or Escape goes back to this
   $('#setAdvExport').checked = S.advExport;
   S.advExportWas = S.advExport;
+  $('#setVerboseMoments').checked = S.verboseMoments;
+  S.verboseMomentsWas = S.verboseMoments;
   S.themeWas = $('#setTheme').value = theme();
   $('#setDeletePanel').hidden = !S.id; // only the open project can be deleted
   d.showModal();
@@ -5339,6 +5347,30 @@ function initAdvExport() {
   $('#setAdvExport').addEventListener('change', (e) => setAdvExport(e.target.checked));
 }
 
+/** Turn Verbose moment labels on or off: store it in this browser, show or hide the tiles' file, id and times and tick the box to match. */
+function setVerboseMoments(on) {
+  S.verboseMoments = on;
+  try {
+    if (on) localStorage.setItem(VERBOSE_KEY, '1');
+    else localStorage.removeItem(VERBOSE_KEY);
+  } catch {
+    // storage blocked or full: the setting still applies until reload
+  }
+  $('#setVerboseMoments').checked = on;
+  $('#candList').classList.toggle('moments-compact', !on); // CSS hides the parts; the filter still searches them
+}
+
+/** Verbose moment labels (off by default) is a view choice, so like Stats for Nerds it lives in this browser's storage, previews on change, and Cancel or Escape puts it back. */
+function initVerboseMoments() {
+  try {
+    S.verboseMoments = localStorage.getItem(VERBOSE_KEY) === '1';
+  } catch {
+    // storage blocked: start from the default (off)
+  }
+  setVerboseMoments(S.verboseMoments);
+  $('#setVerboseMoments').addEventListener('change', (e) => setVerboseMoments(e.target.checked));
+}
+
 /** The theme in use: index.html set data-theme on <html> before first paint; none is Graphite. */
 function theme() {
   return document.documentElement.dataset.theme ?? 'graphite';
@@ -5381,6 +5413,7 @@ function bindSettings() {
     setNerdStats(S.nerdStatsWas);
     // a field revealed for an out-of-range value (showAdvExport(true)) stays unless the box changed
     if ($('#setAdvExport').checked !== S.advExportWas) setAdvExport(S.advExportWas);
+    setVerboseMoments(S.verboseMomentsWas);
     setTheme(S.themeWas);
   };
   $('#settingsCancel').addEventListener('click', () => {
@@ -6038,6 +6071,7 @@ function bind() {
   bindAssistant();
   S.savedOpts = initExportOptions();
   initAdvExport();
+  initVerboseMoments();
   showPlaying(false);
   trimInputs.start = trimField('start', 'Clip Start');
   trimInputs.end = trimField('end', 'Clip End');
