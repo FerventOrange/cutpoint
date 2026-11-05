@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Settings in `cutpoint ui` has a "Verbose moment labels" switch under Appearance, off by default.
+  Off, a tile in the Moments tab hides its source video name, its `h001` id and its start to end
+  time; the score, kind, label and length stay, and the search still finds a moment by the hidden
+  name and id. Like Stats for Nerds it shows at once, Save keeps it in the browser, and Cancel or
+  Escape undoes it.
+
 - Settings in `cutpoint ui` has a "Delete this project" button for the open project. A dialog
   names the project and the size of what will be deleted, lists the files that stay and has
   Cancel focused. The files Cutpoint made (results, `ui/` data, finals, and the clips each clips
