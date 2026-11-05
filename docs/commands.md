@@ -279,6 +279,10 @@ nothing is downloaded.
 "Advanced options in use: ..." under the options names any that are; a hidden value out of range
 shows them so the browser can point at it. Like Stats for Nerds, it shows at once, Save keeps it
 in the browser, and Cancel or Escape undoes it.
+"Verbose moment labels" (off by default) shows each tile's source video name, id (`h001`) and start
+to end time in the Moments tab; off, the tile keeps its score, kind, label and length, and the
+search still finds a moment by the hidden name and id. It works like Stats for Nerds: at once, Save
+keeps it in the browser, Cancel or Escape undoes it.
 The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
 
 With a project open, Settings also has "Delete this project". The dialog names the project and the
@@ -386,7 +390,7 @@ export from the ranked moments instead:
 |---|---|
 | Top moments (advanced) | `--top` |
 | Max video length: the cap on all clips together | `--max-total` |
-| Candidate ids (advanced; replaces Top moments): the ids on the moment cards, such as `h001` | `--ids` |
+| Candidate ids (advanced; replaces Top moments): the ids on the moment cards (shown with Settings > Verbose moment labels), such as `h001` | `--ids` |
 | Order: Style, Story, Best first or Chronological | `--order` |
 
 **Cut Timing.**
