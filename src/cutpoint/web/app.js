@@ -435,8 +435,7 @@ function renderProjectMenu() {
       ...(S.canReveal ? [h('button', { type: 'button', role: 'menuitem', class: 'proj-item', id: 'revealItem', tabindex: '-1', onclick: pickReveal },
         h('span', { text: 'Show folder' }))] : []),
       ...(busy ? [h('div', { class: 'vh', id: 'projBusy', role: 'none', text: 'Another job is running.' })] : []), // the title no longer describes the item
-      // a click on the facts must not take focus out of the menu
-      h('div', { class: 'proj-stats', id: 'projStats', role: 'none', onmousedown: (e) => e.preventDefault() }, ...facts.map((f) => h('span', { text: f })))] : []),
+      h('div', { class: 'proj-stats', id: 'projStats', role: 'none' }, ...facts.map((f) => h('span', { text: f })))] : []),
   );
   if (had) {
     const back = had.dataset.id ? pop.querySelector(`[data-id="${CSS.escape(had.dataset.id)}"]`) : had.id && pop.querySelector(`#${CSS.escape(had.id)}`);
@@ -504,6 +503,8 @@ function initProjectMenu() {
     e.preventDefault();
     if (pop.hidden) show(e.key === 'ArrowUp');
   });
+  // a press on the facts or a divider must not take focus out of the menu (the keys would stop working)
+  pop.addEventListener('mousedown', (e) => !e.target.closest('.proj-item') && e.preventDefault());
   pop.addEventListener('keydown', (e) => {
     const all = items();
     const at = all.indexOf(document.activeElement);

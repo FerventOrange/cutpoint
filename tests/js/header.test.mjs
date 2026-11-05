@@ -327,9 +327,15 @@ test('the stats are described by Analyze again, and a press on them does not tak
   $('#projectBtn').click();
   assert.equal($('#projStats').textContent, '3 found, funny styleAnalyzed 10 min of video in 30 s');
   assert.equal($('#analyzeAgainItem').getAttribute('aria-describedby'), 'projStats');
-  const e = new page.window.MouseEvent('mousedown', { bubbles: true, cancelable: true });
-  $('#projStats').dispatchEvent(e);
-  assert.equal(e.defaultPrevented, true);
+  const press = (el) => {
+    const e = new page.window.MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    el.dispatchEvent(e);
+    return e.defaultPrevented;
+  };
+  assert.equal(press($('#projStats')), true);
+  assert.equal(press($('#projStats span')), true);
+  assert.equal(press($('#projectMenu .proj-sep')), true, 'a divider too');
+  assert.equal(press($('#analyzeAgainItem')), false, 'items take the press as usual');
 });
 
 test('the zero-moment text points at the project menu', async (t) => {

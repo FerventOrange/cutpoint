@@ -7,20 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- The Moments head of `cutpoint ui` reads "Moments" with the number of moments beside it. "Analyze
-  again" and "Show folder" moved into the project menu (the project's name in the header), where a
-  line also gives the count, the style and "Analyzed X of video in Y". "Resume analysis", and
-  "Analyze footage" for a project not analyzed yet, stay where they were.
-- The center stage of `cutpoint ui` is simpler. The Clip Start and Clip End fields, the -0.5 and
-  +0.5 and "Use playhead" buttons, the Transcript box and the Zoom out, Zoom in and Fit clip
-  buttons are gone. Trim with the filmstrip handles or the `I` and `O` keys (`[` and `]` too); one
-  line under the video shows the cut in, out and length, any tail the export adds and the exported
-  length, with a "Reset to moment" button. Press a pressed zoom level (10 s, 30 s, 2 min) again to
-  fit the clip, or use Ctrl+wheel. The overview strip sits under the ruler, and Previous and Next
-  buttons open the clips before and after in the sequence.
-
 ### Added
 
 - The side column in `cutpoint ui` has three tabs (Sequence, AI Chat, Models); the Export button opens
@@ -502,6 +488,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Moments head of `cutpoint ui` reads "Moments" with the number of moments beside it. "Analyze
+  again" and "Show folder" moved into the project menu (the project's name in the header), where a
+  line also gives the count, the style and "Analyzed X of video in Y". "Resume analysis", and
+  "Analyze footage" for a project not analyzed yet, stay where they were.
 - The Storyboard total in `cutpoint ui` shows the sequence's target length when one is set, in the
   footer's words ("26 clips · 3:28 of ~4:00"); it is a guide and cuts nothing. The Moments column
   starts 300 px wide and the side column 360 px (they were 340 and 380); a width you dragged to
