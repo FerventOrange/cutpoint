@@ -493,6 +493,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Moments head of `cutpoint ui` reads "Moments" with the number of moments beside it. "Analyze
+  again" and "Show folder" moved into the project menu (the project's name in the header), where a
+  line also gives the count, the style and "Analyzed X of video in Y". "Resume analysis", and
+  "Analyze footage" for a project not analyzed yet, stay where they were.
 - The Storyboard total in `cutpoint ui` shows the sequence's target length when one is set, in the
   footer's words ("26 clips · 3:28 of ~4:00"); it is a guide and cuts nothing. The Moments column
   starts 300 px wide and the side column 360 px (they were 340 and 380); a width you dragged to

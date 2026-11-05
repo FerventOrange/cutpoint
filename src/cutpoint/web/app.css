@@ -301,6 +301,10 @@ select { max-width: 100%; }
 .proj-item .icon { flex: none; width: 16px; height: 16px; visibility: hidden; }
 .proj-item[aria-checked="true"] .icon { visibility: visible; }
 .proj-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-item[aria-disabled="true"] { color: var(--muted); cursor: default; }
+.proj-item[aria-disabled="true"]:hover, .proj-item[aria-disabled="true"]:focus { background: none; }
+/* the open project's facts under its actions: text only, no role */
+.proj-stats { display: grid; gap: var(--space-1); padding: var(--space-1) var(--space-2); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .proj-sep { height: 1px; margin: var(--space-1) 0; background: var(--divider); }
 .save { color: var(--muted); }
 .save.unsaved { color: var(--amber-text); }
@@ -394,37 +398,23 @@ select { max-width: 100%; }
 #seqPlayBtn { display: flex; flex-direction: column; align-items: center; justify-content: center; white-space: nowrap; flex: none; }
 #seqPlayBtn[hidden] { display: none; }
 #seqPlayBtn::after { content: "Play sequence" / ""; height: 0; overflow: hidden; visibility: hidden; }
-/* moments header band: count centred; "Analyze again" and "Show folder" on the right, or below it when there is no room; the title is visually hidden */
-.moments { container: moments / inline-size; }
+/* moments header band: "Moments" with the plain total beside it, "Resume analysis" on the right (Analyze again, Show folder and the
+   stats are in the project menu); the button wraps below the title when there is no room. The band is as tall as the header bands (--band-h) */
 .moments .col-head {
   position: relative; /* keeps the hidden title inside the band, so focusing it doesn't scroll */
-  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; column-gap: var(--space-2); row-gap: var(--space-2);
+  display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--space-2); row-gap: var(--space-2);
   margin: -12px -16px 0; padding: var(--space-2) var(--space-4); min-height: var(--band-h); background: var(--slate); border-bottom: 1px solid var(--divider);
 }
-/* the title stays for screen readers and as a focus target, but isn't shown */
-.moments .col-head h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-#momentsCount { grid-area: 1 / 2; text-align: center; font-size: 13px; }
-#momentsCount:empty, .moments .col-head .spacer { display: none; }
-.moments-acts { grid-column: 3; grid-row: 1; justify-self: end; display: flex; flex-wrap: wrap; justify-content: end; gap: var(--space-2); }
+.mom-title { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; }
+.moments .col-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+#momentsCount { font-size: 12px; }
+#momentsCount:empty { display: none; }
+.moments-acts { margin-inline-start: auto; display: flex; flex-wrap: wrap; justify-content: end; gap: var(--space-2); }
 .moments-acts .btn { white-space: nowrap; }
-#revealHeadBtn { display: flex; align-items: center; gap: var(--space-2); }
-/* "Analyzed X of video in Y" (#459): its own row under the buttons, aligned with them */
-#analyzeStats { flex-basis: 100%; margin: 0; font-size: 12px; text-align: end; }
-/* with no project or before analysis the band would be empty: drop it */
+/* with no project or before analysis the band would be empty: drop it; the title stays for screen readers and as a focus target */
 .moments.bare > .col-head { margin: 0; padding: 0; min-height: 0; background: none; border: 0; }
+.moments.bare .col-head h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .moments.bare .moments-acts { display: none; }
-@container moments (width < 440px) { /* room for one button on both sides of the longest count */
-  .moments .col-head { grid-template-columns: minmax(0, 1fr); justify-items: center; }
-  #momentsCount { grid-area: auto; }
-  .moments-acts { grid-column: 1; grid-row: auto; justify-self: center; justify-content: center; }
-  #analyzeStats { text-align: center; }
-}
-@container moments (width < 760px) { /* the same with both buttons or the "Analyzed" line */
-  .moments .col-head:has(#revealHeadBtn:not([hidden]), #analyzeStats:not([hidden])) { grid-template-columns: minmax(0, 1fr); justify-items: center; }
-  .moments .col-head:has(#revealHeadBtn:not([hidden]), #analyzeStats:not([hidden])) #momentsCount { grid-area: auto; }
-  .moments .col-head:has(#revealHeadBtn:not([hidden]), #analyzeStats:not([hidden])) .moments-acts { grid-column: 1; grid-row: auto; justify-self: center; justify-content: center; }
-  .moments .col-head:has(#revealHeadBtn:not([hidden]), #analyzeStats:not([hidden])) #analyzeStats { text-align: center; }
-}
 .stage:focus { outline: none; }
 .empty { color: var(--muted); display: grid; gap: var(--space-2); justify-items: start; max-width: 52ch; padding: var(--space-1) 0 var(--space-2); }
 .empty .btn { justify-self: start; }

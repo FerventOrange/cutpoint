@@ -4871,7 +4871,7 @@ def create_app(port: int) -> FastAPI:
             "kind": "360" if meta.get("kind") == "360" else "video",
             "source": meta.get("source"),
             "highlights": highlights,
-            # the Moments header's "Analyzed X of video in Y"
+            # the project menu's "Analyzed X of video in Y"
             "analysis": analysis_stats(hl, analysis_took(p, meta, hl)),
             "events_sig": _events_sig(p),
             "review": review if isinstance(review, dict) else None,
