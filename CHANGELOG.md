@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The browser workspace's center stage is rebuilt around the trim. The rail is taller and dims
+  everything outside the in and out points; `I` and `O` set the in and out points at the playhead; zoom levels of 10 s, 30 s and 2 min sit
+  beside Zoom out, Zoom in and Fit clip; a time ruler runs under the filmstrip, and the other moments
+  of the same source in view are marked there. Under the trim controls a Storyboard shows the
+  sequence as one block per clip, as wide as its exported length and coloured by kind: click to
+  trim a clip, drag or Alt+Left and Alt+Right to reorder, double-click or Shift+Enter to play
+  the sequence from it. A Clip and Sequence switch above the video chooses between the selected
+  clip and "Play sequence". No server change; the filmstrip still uses the cached preview stills.
+
+- Settings in `cutpoint ui` has a "Verbose moment labels" switch under Appearance, off by default.
+  Off, a tile in the Moments tab hides its source video name, its `h001` id and its start to end
+  time; the score, kind, label and length stay, and the search still finds a moment by the hidden
+  name and id. Like Stats for Nerds it shows at once, Save keeps it in the browser, and Cancel or
+  Escape undoes it.
+
 - Settings in `cutpoint ui` has a "Delete this project" button for the open project. A dialog
   names the project and the size of what will be deleted, lists the files that stay and has
   Cancel focused. The files Cutpoint made (results, `ui/` data, finals, and the clips each clips

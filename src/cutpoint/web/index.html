@@ -90,7 +90,7 @@
         <button type="button" class="seg-btn" data-kind="dialogue" aria-pressed="false">Dialogue</button>
       </div>
       <div id="momentsEmpty" class="empty"></div>
-      <ol id="candList" class="cand-list"></ol>
+      <ol id="candList" class="cand-list moments-compact"></ol>
     </section>
 
     <div id="momSplit" class="splitter" role="separator" tabindex="0" aria-orientation="vertical"
@@ -103,6 +103,11 @@
         <div class="screen-bar">
           <span id="stageMeta" class="muted"></span>
           <span id="stagePrep" class="stage-prep tc" title="The browser-playable preview of the whole source; moments play from short previews meanwhile" hidden></span>
+          <!-- what the stage plays: the selected clip (with its trim) or the whole sequence -->
+          <div id="stageMode" class="seg stage-mode" role="group" aria-label="Stage mode">
+            <button type="button" class="seg-btn" data-mode="clip" aria-pressed="true">Clip</button>
+            <button type="button" class="seg-btn" data-mode="sequence" aria-pressed="false" disabled>Sequence</button>
+          </div>
           <button type="button" id="toggleBtn" class="btn" hidden></button>
         </div>
         <!-- 360 moments (#517): director view or raw preview, the render's state and the camera path's flags -->
@@ -128,9 +133,9 @@
           <div class="rail-marks">
             <div class="rail-film" id="railFilm" aria-hidden="true"></div>
             <div class="rail-gaps" id="railGaps" aria-hidden="true"></div>
-            <div class="rail-orig" id="railOrig"></div>
-            <div class="rail-tails" id="railTail" aria-hidden="true"></div>
             <div class="rail-sel" id="railSel"></div>
+            <div class="rail-tails" id="railTail" aria-hidden="true"></div>
+            <div class="rail-orig" id="railOrig"></div>
             <!-- the trim an AI Chat proposal would set (#346); the Sequence tab states its times -->
             <div class="rail-ghost" id="railGhost" aria-hidden="true" hidden></div>
           </div>
@@ -138,8 +143,16 @@
           <div id="startHandle" class="rail-handle start" role="slider" tabindex="0" aria-label="Clip start" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></div>
           <div id="endHandle" class="rail-handle end" role="slider" tabindex="0" aria-label="Clip end" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></div>
         </div>
+        <div class="rail-ruler tc" id="railRuler" aria-hidden="true"></div>
+        <!-- the other moments of this source that start in the view -->
+        <div class="rail-events" id="railEvents" aria-hidden="true"></div>
         <div class="rail-ends tc"><span id="winLo"></span><span id="winHi"></span></div>
         <div class="rail-nav">
+          <div id="zoomPresets" class="seg rail-presets" role="group" aria-label="Zoom level">
+            <button type="button" class="seg-btn" data-span="10" aria-pressed="false">10 s</button>
+            <button type="button" class="seg-btn" data-span="30" aria-pressed="false">30 s</button>
+            <button type="button" class="seg-btn" data-span="120" aria-pressed="false">2 min</button>
+          </div>
           <div class="rail-zoom" role="group" aria-label="Rail zoom">
             <button type="button" id="zoomOut" class="btn small">Zoom out</button>
             <button type="button" id="zoomIn" class="btn small">Zoom in</button>
@@ -166,6 +179,16 @@
           </section>
         </div>
         <p id="trimMsg" class="trim-msg" role="status"></p>
+        <!-- the sequence as blocks, widths in proportion to the exported lengths; never replaces the trim controls above -->
+        <section id="storyboard" class="storyboard" aria-labelledby="sbTitle" hidden>
+          <div class="sb-head">
+            <h3 id="sbTitle">Storyboard</h3>
+            <span id="sbTotal" class="tc muted"></span>
+            <span class="spacer"></span>
+            <span class="muted sb-hint">Click to trim, drag or Alt+Left/Right to reorder, double-click or Shift+Enter to play from there</span>
+          </div>
+          <div id="sbList" class="sb-list" role="group" aria-label="Clips in sequence order"></div>
+        </section>
       </div>
     </section>
 
@@ -279,9 +302,9 @@
               <label for="optMaxTotal" title="Caps the video's length: the clips' total in seconds, keeping the best-scoring moments that fit (--max-total). Blank: no cap.">Max video length</label>
               <input type="number" id="optMaxTotal" min="0.1" max="36000" step="any" inputmode="decimal" placeholder="None" aria-describedby="dMaxTotal">
               <span id="dMaxTotal" class="vh">Caps the video's length: the clips' total in seconds, keeping the best-scoring moments that fit (--max-total). Blank: no cap.</span>
-              <label for="optIds" class="adv" title="Exports exactly these candidates of highlights.json, by the ids on the moment cards such as h001 h004, instead of the top moments (--ids).">Candidate ids</label>
+              <label for="optIds" class="adv" title="Exports exactly these candidates of highlights.json, by the ids on the moment cards (shown with Settings > Verbose moment labels) such as h001 h004, instead of the top moments (--ids).">Candidate ids</label>
               <input type="text" id="optIds" class="adv" placeholder="h001 h004" autocomplete="off" spellcheck="false" aria-describedby="dIds">
-              <span id="dIds" class="vh">Exports exactly these candidates of highlights.json, by the ids on the moment cards such as h001 h004, instead of the top moments (--ids).</span>
+              <span id="dIds" class="vh">Exports exactly these candidates of highlights.json, by the ids on the moment cards (shown with Settings > Verbose moment labels) such as h001 h004, instead of the top moments (--ids).</span>
               <label for="optOrder" title="The clips' playback order (--order): Style uses the style's order; Story puts the second-best first and the best last.">Order</label>
               <select id="optOrder" aria-describedby="dOrder"><option value="">Style</option><option value="story">Story</option><option value="score">Best first</option><option value="chronological">Chronological</option></select>
               <span id="dOrder" class="vh">The clips' playback order (--order): Style uses the style's order; Story puts the second-best first and the best last.</span>
@@ -609,6 +632,8 @@
           </select>
         </label>
         <p id="setThemeHint" class="hint">Graphite by default. Shows at once; Save keeps it, in this browser.</p>
+        <label class="check"><input type="checkbox" id="setVerboseMoments" aria-describedby="setVerboseMomentsHint"> Verbose moment labels</label>
+        <p id="setVerboseMomentsHint" class="hint">Shows each moment's source video, id and start–end time in the Moments tab. Off by default. Shows at once; Save keeps it, in this browser.</p>
       </fieldset>
       <fieldset class="panel" id="setDeletePanel" hidden>
         <legend>Delete project</legend>

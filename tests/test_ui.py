@@ -1304,6 +1304,26 @@ def test_stats_for_nerds_is_an_off_by_default_overlay_on_the_preview() -> None:
     assert "nerdStats: false," in js  # off unless the browser stored "1"
 
 
+def test_verbose_moment_labels_hide_the_tile_file_id_and_times_by_default() -> None:
+    """Contract pin: Settings > Verbose moment labels (off unless the browser stored "1") is a
+    class on the list; the file, id and start-end time stay in the markup, so the filter and the
+    tile's reading order are unchanged, and CSS hides them."""
+    html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
+    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
+    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
+    assert re.search(
+        r'<label class="check"><input type="checkbox" id="setVerboseMoments"[^>]*> Verbose moment labels</label>',
+        html,
+    )
+    assert (
+        '<ol id="candList" class="cand-list moments-compact"></ol>' in html
+    )  # compact before first paint
+    assert ".moments-compact :is(.cand-id, .cand-range, .cand-src) { display: none; }" in css
+    assert "const VERBOSE_KEY = 'cutpoint.verboseMoments';" in js
+    assert "verboseMoments: false," in js
+    assert "class: 'cand-range'" in _js_function(js, "renderMoments")
+
+
 def test_moment_cards_show_a_read_only_strip_of_their_place_in_the_source() -> None:
     """Contract pin: the score bar on the moment cards became a strip like the preview's overview
     (the whole source, the moment in --gold on --deep), with no control of its own, hidden from
@@ -1533,8 +1553,8 @@ def test_the_trim_markers_are_keyboard_and_pointer_slider_handles() -> None:
     assert handle and "width: 24px;" in handle[1] and "top: 0; bottom: 0;" in handle[1]
     assert "touch-action: none;" in handle[1]
     assert re.search(r"^\.rail-handle:focus-visible \{[^}]*outline: 2px solid", css, re.M)
-    # the rail is 46 px tall: the handle's hit area is at least 24 x 24
-    assert re.search(r"^\.rail \{[^}]*height: 46px;", css, re.M)
+    # the rail is 64 px tall: the handle's hit area is at least 24 x 24
+    assert re.search(r"^\.rail \{[^}]*height: 64px;", css, re.M)
 
 
 def test_the_page_files_are_revalidated_on_each_load(client: TestClient) -> None:
@@ -1664,7 +1684,9 @@ def test_moment_cards_show_the_cli_id_as_text_and_filter_by_it() -> None:
         ".cand-id {" in _web("app.css")
         and "white-space: nowrap" in _web("app.css").split(".cand-id {")[1].split("}")[0]
     )
-    assert "by the ids on the moment cards" in _web("index.html")
+    assert "by the ids on the moment cards (shown with Settings > Verbose moment labels)" in _web(
+        "index.html"
+    )
 
 
 def test_media_supports_range_and_only_serves_project_sources(
@@ -2757,7 +2779,7 @@ def test_rail_filmstrip_is_a_decorative_layer_under_the_markers() -> None:
     )
     assert gaps  # Light shades the rail's gaps darker while stills show
     assert "prefers-reduced-data: reduce" in js and "navigator.connection?.saveData" in js
-    assert "new ResizeObserver(() => drawFilm()).observe($('#rail'))" in js
+    assert "new ResizeObserver(() => {\n  drawFilm();" in js and "}).observe($('#rail'))" in js
     pump = re.search(r"^function pumpThumbs\(\) \{(.*?)^\}", js, re.M | re.S)
     assert pump and pump[1].index("filmQueue.shift()") < pump[1].index("thumbQueue.shift()")
     assert "next.gen !== filmGen" in pump[1]
@@ -8021,7 +8043,7 @@ def test_one_undo_stack_holds_manual_and_ai_edits_with_ctrl_z() -> None:
         assert "remember();" in _js_function(js, name), name
     assert "remember(`trim:${c.id}:${which}`)" in _js_function(js, "setRange")
     assert "remember(null, !!entry.color);" in _js_function(js, "applyProposal")
-    keys = js[js.index("// Ctrl+Z / Ctrl+Y") : js.index("if (e.key === '[' || e.key === ']')")]
+    keys = js[js.index("// Ctrl+Z / Ctrl+Y") : js.index("if (e.key === '[' || e.key === ']' ||")]
     assert "(k === 'z' || k === 'y')" in keys and "textarea" in keys
     assert "if (k === 'y' || e.shiftKey) redo();" in keys and "else undo();" in keys
     for bid, shortcut in (("undoBtn", "Control+Z"), ("redoBtn", "Control+Y Control+Shift+Z")):
@@ -8220,8 +8242,9 @@ def test_moment_card_order_matches_the_mockup() -> None:
     assert at == sorted(at), order
     top = card[card.index("class: 'cand-top'") : card.index("class: 'cand-meta'")]
     assert "prepBadge" not in top and "'data-act': 'toggle'" not in top
-    assert (
-        "h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' })"
+    assert "h('span', { 'aria-hidden': 'true', text: ' · ' })),\n" in card
+    assert (  # the read comma stays when the range is hidden: "score 72, 8.0 s"
+        "h('span', { class: 'vh', text: ', ' }),\n              `${(c.end - c.start).toFixed(1)} s`"
         in card
     )
     assert (
@@ -9409,3 +9432,25 @@ def test_a_failed_job_still_ends_with_on_end_and_a_failing_on_end_changes_nothin
     job = jobs.start("proj", "clips", [sys.executable, "-c", "raise SystemExit(3)"], on_end=boom)
     assert job.done.wait(30)
     assert job.status == "failed" and job.error == "exit code 3"
+
+
+def test_the_center_stage_has_a_mode_switch_a_storyboard_and_zoom_levels() -> None:
+    """Contract pin (overhaul PR 2): the stage mode is a group of aria-pressed buttons (Clip and
+    Sequence; the Cut mode is a later change), the zoom levels are aria-pressed buttons, and the
+    storyboard sits after the trim message so it never replaces the trim controls; its blocks
+    reorder through moveSeg and play through seqStart. I and O are trim keys."""
+    html = _web("index.html")
+    js = _web("app.js")
+    mode = re.search(r'<div id="stageMode"[^>]*role="group"[^>]*>(.*?)</div>', html, re.S)[1]
+    assert re.findall(r'data-mode="(\w+)" aria-pressed="(\w+)"', mode) == [
+        ("clip", "true"),
+        ("sequence", "false"),
+    ]
+    levels = re.search(r'<div id="zoomPresets"[^>]*>(.*?)</div>', html, re.S)[1]
+    assert re.findall(r'data-span="(\d+)" aria-pressed="false"', levels) == ["10", "30", "120"]
+    assert html.index('id="trimMsg"') < html.index('id="storyboard"') < html.index('id="side"')
+    assert 'id="startField"' in html and 'id="endField"' in html
+    block = _js_function(js, "sbBlock")
+    assert "moveSeg(s.id, to)" in block and "moveSeg(dragId, i)" in block
+    assert "seqStart(s.id)" in block
+    assert "k === 'i' || k === 'o'" in js
