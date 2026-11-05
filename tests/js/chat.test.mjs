@@ -13,9 +13,10 @@ const diff = (after, before = {}) => after.map((s, i) => ({
 const proposal = (over = {}) => ({ kind: 'proposal', n: 1, id: 'pr1', summary: 'Add the two best moments', after: AFTER, diff: diff(AFTER), base_key: 'bk', suggestions: [], ...over });
 const provider = { name: 'ollama', label: 'Ollama · qwen', local: true };
 
-async function chatPage(t, { assistant = {}, routes = {} } = {}) {
+async function chatPage(t, { assistant = {}, routes = {}, project } = {}) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const page = await boot({
+    project,
     routes: {
       [`GET ${A}`]: { provider, consent: null, turns: [], running: [], ...assistant },
       ...routes,
@@ -519,4 +520,280 @@ test('rows the code moved or added to spread the kinds are marked Auto-spread', 
   await m.tick(1000);
   const marks = [...m.d.querySelectorAll('#propList .prop-mark.auto')].map((e) => e.textContent);
   assert.deepEqual(marks, ['Auto-spread', 'Auto-filled']);
+});
+
+// ---- the restyled panel: grouped tool summary and proposal cards ----
+
+const summary = (m) => [...m.d.querySelectorAll('#chatLog .tools .tool-lines > li')].map((li) => li.textContent.trim());
+
+test('tool steps are grouped into counted lines; a failed tool keeps its own named line; attempts retried are counted', async (t) => {
+  const tool = (n, name, extra) => ({ kind: 'tool', n, name, ...extra });
+  const m = await chatPage(t, {
+    routes: turnRoutes([
+      tool(0, 'find_moments', { query: 'a', found: 10 }),
+      tool(1, 'find_moments', { query: 'b', found: 10 }),
+      tool(2, 'find_moments', { query: 'c', found: 10 }),
+      tool(3, 'view_moment', { id: 'h001', frames: 6 }),
+      tool(4, 'view_moment', { id: 'h002', frames: 6 }),
+      tool(5, 'view_moment', { id: 'h003', frames: 6 }),
+      tool(6, 'view_moment', { id: 'h001', frames: 6 }),
+      tool(7, 'look_for', { query: 'sunset', error: 'not available in Cutpoint lite' }),
+      { kind: 'rejected', n: 8, text: 'too short' },
+      { kind: 'rejected', n: 9, text: 'too long' },
+      { kind: 'reply', n: 10, text: 'Done.' },
+    ]),
+  });
+  await m.send('go');
+  await m.tick(1000);
+  assert.deepEqual(summary(m), [
+    'Searched 3 times · 30 moments found',
+    'Watched 4 moments',
+    'Could not look through the footage for “sunset”',
+    '2 attempts retried',
+  ]);
+  assert.ok(m.$('#chatLog .tool-lines li.bad'), 'the failed tool is marked');
+  assert.ok(m.$('#chatLog li.tools.rejected'));
+  const full = [...m.d.querySelectorAll('#chatLog .tool-details li')].map((li) => li.textContent);
+  assert.equal(full.length, 10, 'the folded details keep one line per step');
+  assert.ok(full.includes('Searched for “b”: 10 found'));
+  assert.ok(full.includes('Not accepted, asked again: too long'));
+  assert.ok(full.some((l) => /Watched Big laugh \(6 frames\)/.test(l)));
+});
+
+test('a single search reads "once"; look_for possible matches keep their Add buttons and open details survive the redraw', async (t) => {
+  const possible = [
+    { id: 'lf1', source: '/videos/a.mp4', start: 50, end: 55, label: 'powder spray', confidence: 'strong' },
+    { id: 'lf2', source: '/videos/a.mp4', start: 70, end: 75, label: 'powder spray', confidence: 'weak' },
+  ];
+  const m = await chatPage(t, {
+    routes: turnRoutes([
+      { kind: 'tool', n: 0, name: 'find_moments', query: 'x', found: 1 },
+      { kind: 'tool', n: 1, name: 'look_for', query: 'powder spray', found: 2, possible },
+      { kind: 'reply', n: 2, text: 'Two possible windows.' },
+    ]),
+  });
+  await m.send('find powder spray');
+  await m.tick(1000);
+  assert.equal(summary(m)[0], 'Searched once · 1 moment found');
+  assert.equal(m.d.querySelectorAll('#chatLog .possible button[data-act="add-possible"]').length, 2);
+
+  const details = m.$('#chatLog details.tool-details');
+  assert.equal(details.open, false);
+  details.open = true;
+  details.dispatchEvent(new m.page.window.Event('toggle'));
+  m.$('#chatLog .possible button').click(); // redraws the chat
+  await m.page.settle();
+  assert.equal(m.$('#chatLog details.tool-details').open, true, 'still open after the redraw');
+  assert.deepEqual(m.seqIds(), ['lf1']);
+  assert.equal(m.d.querySelectorAll('#chatLog .possible button[data-act="add-possible"]:not(:disabled)').length, 1);
+});
+
+const mixedDiff = diff(AFTER).map((r, i) => (i ? { ...r, auto: 'spread' } : r));
+const cardPage = (t, { routes = {}, events = [proposal()], assistant = {}, history = [] } = {}) => chatPage(t, {
+  assistant: { turns: [{ id: 't0', user: 'earlier', status: 'done', events, next: events.length }], ...assistant },
+  routes: { [`GET ${A}/history`]: { applied: history }, ...routes },
+});
+const card = (m, id = 'pr1') => m.$(`#chatLog [data-pid="${id}"]`);
+const acts = (m, id) => [...card(m, id).querySelectorAll('.prop-acts button')].map((b) => b.dataset.act);
+const ENTRY = { id: 'e1', proposal: 'pr1', summary: 'Add', after: AFTER, diff: diff(AFTER), applied: '2026-11-01T10:00:00' };
+
+test('the proposal card shows a chip per change (dashed only for auto rows) and a strip of the sequence after it', async (t) => {
+  const m = await cardPage(t, { events: [proposal({ diff: mixedDiff })] });
+  const chips = [...card(m).querySelectorAll('.chip')];
+  assert.deepEqual(chips.map((c) => c.textContent), ['2 added', '1 auto-spread']);
+  assert.deepEqual(chips.map((c) => c.classList.contains('auto')), [false, true]);
+  assert.equal(card(m).querySelectorAll('.prop-strip .prop-block').length, 2);
+  assert.match(card(m).querySelector('.prop-strip').getAttribute('aria-label'), /2 clips/);
+  assert.deepEqual(acts(m), ['apply', 'review', 'discard']);
+  m.page.close();
+  t.mock.timers.reset();
+
+  const plain = await cardPage(t, { events: [proposal()] });
+  assert.equal(card(plain).querySelectorAll('.chip.auto').length, 0);
+});
+
+test('card Apply on a proposal that is not previewed previews it and applies it; the card then has no Apply or Discard', async (t) => {
+  const m = await cardPage(t, { routes: { [`POST ${A}/proposals/pr1/applied`]: ENTRY } });
+  assert.equal(m.$('#propPanel').hidden, true, 'loaded from the saved chat: nothing previewed');
+  await m.click('#chatLog [data-pid="pr1"] [data-act="apply"]');
+  assert.equal(m.posts('/proposals/pr1/applied').length, 1);
+  assert.deepEqual(m.seqIds(), ['h001', 'h002']);
+  assert.deepEqual(acts(m), ['review']);
+  assert.equal(card(m).querySelector('[data-act="review"]').textContent, 'Review again');
+  assert.match(card(m).textContent, /Applied/);
+});
+
+test('card Apply on the previewed proposal applies it', async (t) => {
+  const m = await proposed(t, { [`POST ${A}/proposals/pr1/applied`]: ENTRY });
+  assert.equal(m.$('#propPanel').hidden, false);
+  await m.click('#chatLog [data-pid="pr1"] [data-act="apply"]');
+  assert.equal(m.posts('/proposals/pr1/applied').length, 1);
+  assert.deepEqual(m.seqIds(), ['h001', 'h002']);
+  assert.equal(m.$('#propPanel').hidden, true);
+});
+
+test('Apply failures from the card show in the chat tab', async (t) => {
+  const cases = [
+    [409, 'sequence moved on', /Can't apply: sequence moved on/],
+    [404, 'unknown', /no longer has this proposal/],
+  ];
+  for (const [status, detail, expected] of cases) {
+    const m = await cardPage(t, { routes: { [`POST ${A}/proposals/pr1/applied`]: reply(status, { detail }) } });
+    m.$('#tabAssistant').click();
+    await m.click('#chatLog [data-pid="pr1"] [data-act="apply"]');
+    assert.equal(m.$('#panelAssistant').hidden, false);
+    assert.match(m.$('#chatError').textContent, expected);
+    assert.deepEqual(m.seqIds(), []);
+    assert.ok(card(m).querySelector('[data-act="apply"]'), 'can be retried');
+    m.page.close();
+    t.mock.timers.reset();
+  }
+});
+
+test('card Discard drops the previewed proposal; on another it only marks the card, and a new preview undoes that', async (t) => {
+  const m = await proposed(t);
+  await m.click('#chatLog [data-pid="pr1"] [data-act="discard"]');
+  assert.equal(m.$('#propPanel').hidden, true);
+  assert.deepEqual(acts(m), ['review'], 'a discarded card is dismissed whether or not it was previewed');
+  m.page.close();
+  t.mock.timers.reset();
+
+  const o = await cardPage(t, { events: [proposal(), proposal({ n: 2, id: 'pr2', summary: 'Other' })] });
+  await o.click('#chatLog [data-pid="pr2"] [data-act="review"]'); // previews pr2
+  assert.equal(o.$('#propSummary').textContent, 'Other');
+  await o.click('#chatLog [data-pid="pr1"] [data-act="discard"]');
+  assert.equal(o.$('#propSummary').textContent, 'Other', 'the previewed one is untouched');
+  assert.equal(o.$('#propPanel').hidden, false);
+  assert.deepEqual(acts(o, 'pr1'), ['review'], 'dismissed card: Preview stays, no Apply or Discard');
+  assert.match(card(o, 'pr1').textContent, /Discarded/);
+  assert.equal(o.posts('/proposals/pr1/applied').length, 0);
+
+  await o.click('#chatLog [data-pid="pr1"] [data-act="review"]'); // a new preview un-dismisses
+  assert.deepEqual(acts(o, 'pr1'), ['apply', 'review', 'discard']);
+  assert.doesNotMatch(card(o, 'pr1').textContent, /Discarded/);
+});
+
+test('a discarded card comes back when the chat is loaded again (project load)', async (t) => {
+  const consent = { needed: true, key: 'k', host: 'h' };
+  const m = await cardPage(t, {
+    assistant: { provider: { name: 'anthropic', label: 'Anthropic', local: false }, consent },
+    routes: { 'POST /api/assistant/consent': reply(409, { detail: 'changed' }) },
+  });
+  m.$('#chatLog [data-pid="pr1"] [data-act="discard"]').click();
+  await m.page.settle();
+  assert.deepEqual(acts(m), ['review']);
+  await m.click('#chatConsentOk'); // 409: the assistant is loaded again, as on opening a project
+  assert.deepEqual(acts(m), ['apply', 'review', 'discard']);
+});
+
+test('an applied proposal has no Apply or Discard and keeps Review again', async (t) => {
+  const m = await cardPage(t, { history: [ENTRY] });
+  assert.deepEqual(acts(m), ['review']);
+  assert.equal(card(m).querySelector('[data-act="review"]').textContent, 'Review again');
+});
+
+test('card buttons are disabled while an Apply is in flight', async (t) => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const m = await cardPage(t, { routes: { [`POST ${A}/proposals/pr1/applied`]: async () => { await gate; return ENTRY; } } });
+  m.$('#chatLog [data-pid="pr1"] [data-act="apply"]').click();
+  await m.page.settle();
+  const btn = (a) => card(m).querySelector(`[data-act="${a}"]`);
+  assert.equal(btn('apply').disabled, true);
+  assert.equal(btn('apply').textContent, 'Applying…');
+  assert.equal(btn('discard').disabled, true);
+  btn('discard').click();
+  await m.page.settle();
+  assert.equal(m.$('#propPanel').hidden, false, 'Discard does nothing while applying');
+  release();
+  await m.page.settle();
+  assert.deepEqual(m.seqIds(), ['h001', 'h002']);
+});
+
+test('card Apply on a stale base previews it again instead of applying (F1)', async (t) => {
+  const m = await cardPage(t, {
+    events: [proposal(), proposal({ n: 2, id: 'pr2', summary: 'Other' })],
+    routes: { [`POST ${A}/proposals/pr1/applied`]: ENTRY },
+  });
+  m.$('#tabAssistant').click();
+  await m.click('#chatLog [data-pid="pr1"] [data-act="apply"]');
+  assert.deepEqual(m.seqIds(), ['h001', 'h002']);
+  await m.click('#chatLog [data-pid="pr2"] [data-act="apply"]');
+  assert.equal(m.posts('/proposals/pr2/applied').length, 0, 'nothing is sent');
+  assert.equal(m.$('#propPanel').hidden, false);
+  assert.equal(m.$('#propSummary').textContent, 'Other');
+});
+
+test('a refused card Apply on a proposal that was not previewed leaves the cards right, and the focus on Apply (F2, F9)', async (t) => {
+  const m = await cardPage(t, {
+    events: [proposal(), proposal({ n: 2, id: 'pr2', summary: 'Other' })],
+    routes: { [`POST ${A}/proposals/pr1/applied`]: reply(409, { detail: 'nope' }) },
+  });
+  await m.click('#chatLog [data-pid="pr2"] [data-act="review"]');
+  m.$('#tabAssistant').click();
+  await m.page.settle();
+  m.$('#chatLog [data-pid="pr1"] [data-act="apply"]').focus(); // as a real click does
+  m.$('#chatLog [data-pid="pr1"] [data-act="apply"]').click();
+  await m.page.settle();
+  assert.equal(card(m, 'pr1').classList.contains('previewing'), true);
+  assert.equal(card(m, 'pr2').classList.contains('previewing'), false);
+  assert.match(m.$('#chatError').textContent, /Can't apply: nope/);
+  assert.equal(m.d.activeElement, card(m, 'pr1').querySelector('[data-act="apply"]'));
+});
+
+test('Discard clears the failure alert (F3)', async (t) => {
+  const m = await cardPage(t, { routes: { [`POST ${A}/proposals/pr1/applied`]: reply(409, { detail: 'nope' }) } });
+  m.$('#tabAssistant').click();
+  await m.click('#chatLog [data-pid="pr1"] [data-act="apply"]');
+  assert.match(m.$('#chatError').textContent, /nope/);
+  await m.click('#chatLog [data-pid="pr1"] [data-act="discard"]');
+  assert.equal(m.$('#chatError').textContent, '');
+});
+
+test('a tool group that grows across polls keeps one stable item (F5)', async (t) => {
+  let call = 0;
+  const batches = [
+    [{ kind: 'tool', n: 0, name: 'find_moments', query: 'a', found: 2 }],
+    [{ kind: 'tool', n: 1, name: 'get_moment', id: 'h001' }],
+  ];
+  const m = await chatPage(t, { routes: {
+    [`POST ${A}/turns`]: { id: 't1', status: 'running', provider },
+    [`GET ${A}/turns/t1`]: () => ({ status: 'running', events: batches[call++] ?? [], next: call }),
+  } });
+  await m.send('go');
+  await m.tick(1000);
+  const ids = () => [...m.d.querySelectorAll('#chatLog > li.tools')].map((li) => li.dataset.id);
+  const first = ids();
+  const lines = () => m.d.querySelectorAll('#chatLog .tool-lines > li').length;
+  assert.equal(lines(), 1);
+  await m.tick(1000);
+  assert.deepEqual(ids(), first);
+  assert.equal(lines(), 2);
+});
+
+test('the status dot is not green when the provider cannot be used (F6)', async (t) => {
+  const prov = { name: 'anthropic', label: 'Anthropic', local: false };
+  const m = await chatPage(t, { assistant: { provider: prov, consent: { needed: false, missing_key: 'Add the key' } } });
+  assert.equal(m.$('#chatDot').dataset.state, 'bad');
+  m.page.close();
+  t.mock.timers.reset();
+  const o = await chatPage(t, { assistant: { provider: prov, consent: { needed: true, key: 'k', host: 'h' } } });
+  assert.equal(o.$('#chatDot').dataset.state, 'wait');
+});
+
+test('card Apply of a color-only proposal on a non-empty sequence posts directly (F15)', async (t) => {
+  const rows = AFTER.map((s, i) => ({
+    id: s.id, label: s.label, changes: [], before: { pos: i + 1, start: s.start, end: s.end, label: s.label }, after: { pos: i + 1, start: s.start, end: s.end, label: s.label },
+  }));
+  const events = [proposal({ diff: rows, color: { mode: 'auto', strength: 0.8 } })];
+  const m = await chatPage(t, {
+    project: makeProject({ review: { segments: AFTER } }),
+    assistant: { turns: [{ id: 't0', user: 'grade it', status: 'done', events, next: 1 }] },
+    routes: {
+      [`GET ${A}/history`]: { applied: [] },
+      [`POST ${A}/proposals/pr1/applied`]: { id: 'e1', proposal: 'pr1', summary: 'Grade', after: AFTER, diff: rows, applied: '2026-11-01T10:00:00', color: { before: { mode: 'off', strength: 1 }, after: { mode: 'auto', strength: 0.8 } } },
+    },
+  });
+  await m.click('#chatLog [data-pid="pr1"] [data-act="apply"]');
+  assert.equal(m.posts('/proposals/pr1/applied').length, 1);
 });
