@@ -1,17 +1,10 @@
-// Pure helpers behind the moments list, the trim fields and the model picker.
+// Pure helpers behind the moments list and the model picker.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { importPure } from './harness.mjs';
 
 // top-level await, not a before() hook: older Node 22 releases start tests before an async hook finishes
 const u = await importPure('util.js');
-
-test('timecodes: typed times parse in every accepted form and reject the rest; fmt is their inverse', () => {
-  assert.equal(u.parseTime('1:23.5'), 83.5);
-  assert.equal(u.parseTime('1:02:03'), 3723);
-  assert.ok(Number.isNaN(u.parseTime('1:2:3:4')));
-  assert.equal(u.parseTime(u.fmt(83.5)), 83.5);
-});
 
 test('video order sorts files naturally (clip2 before clip10) and moments by start inside a file', () => {
   const m = (source, start) => ({ source, start });

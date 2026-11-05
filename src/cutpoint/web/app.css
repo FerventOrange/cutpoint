@@ -24,13 +24,9 @@
   --card-edge: #34363b; /* the edge of a chat card: a step above --card-line, as on the mock */
   --divider: #26282c; /* bands, columns and the header's rules */
   --picked: #1f2024; /* ticked sequence rows */
-  --bar: #2c2e33; /* preview transport bar; text and --amber focus rings stay readable on it */
-  --gold: #e0b450; /* trim rail selection and accent button border */
+  --gold: #e0b450; /* trim rail selection */
   --gold-fill: rgba(224, 180, 80, 0.3);
   --gold-edge: #fff1c9; /* the selection's bright start edge */
-  --gold-btn: #6e561f; /* --gold-ink on it is 5.5:1 */
-  --gold-btn-hover: #7a5f22; /* 4.8:1 */
-  --gold-ink: #ffe2a0;
   --hover: #383b41; /* button and chevron hover */
   --amber-hover: #f6c56b;
   --danger-ink: #ffffff;
@@ -57,6 +53,11 @@
   --scrim-ink: #edf2f8;
   --thumb-scrim: rgba(0, 0, 0, 0.55);
   --thumb-scrim-ink: #f2b347;
+  --scrim-muted: #c4c9d2; /* 6:1 or more over the scrim on a white frame */
+  --scrim-deep: rgb(20 23 28 / 0.9); /* groups on the scrim */
+  --scrim-raise: #3a3f48;
+  --scrim-hover: #4a505b;
+  --scrim-line: #8d94a0;
   /* a moment's kind (Action, Scenic, Funny, Dialogue): a bar or dot, and the tint under its thumbnail; the same in every theme */
   --k-action: #5b8def;
   --k-action-tint: #1f3157;
@@ -90,7 +91,6 @@
   --control-h-lg: 40px; /* primary action rows, chat input */
   --control-h-xl: 44px; /* the big call to action of an empty project */
   --band-h: calc(var(--control-h) + 2 * var(--space-2) + 1px); /* header bands: top bar, Moments band, tab bar (padding and bottom border) */
-  --radius-bubble: 14px; /* the transcript bubble, on purpose rounder than the cards */
   color-scheme: dark;
 }
 /* Settings > Theme (#445). Graphite is :root above, the default; index.html sets data-theme before
@@ -119,13 +119,9 @@
   --card-line: #2f425b;
   --card-edge: var(--line);
   --picked: #22385a; /* ticked sequence rows */
-  --bar: #435b7a; /* preview transport bar; text and --amber focus rings stay readable on it */
-  --gold: #e0b450; /* trim rail selection and accent button border */
+  --gold: #e0b450; /* trim rail selection */
   --gold-fill: rgba(224, 180, 80, 0.3);
   --gold-edge: #fff1c9; /* the selection's bright start edge */
-  --gold-btn: #6e561f; /* --gold-ink on it is 5.5:1 */
-  --gold-btn-hover: #7a5f22; /* 4.8:1 */
-  --gold-ink: #ffe2a0;
   --hover: #435b7a; /* button and chevron hover */
   --amber-hover: #f7cb80;
   --danger-ink: #ffffff;
@@ -176,13 +172,9 @@
   --card-line: #b9c4d2;
   --card-edge: var(--line);
   --picked: #d3e1f4;
-  --bar: #d3dbe6;
   --gold: #946b0c;
   --gold-fill: rgba(196, 140, 20, 0.25);
   --gold-edge: #5e4100; /* a dark edge reads on the light rail */
-  --gold-btn: #f5e2b3;
-  --gold-btn-hover: #efd697;
-  --gold-ink: #533800;
   --hover: #d0d9e4;
   --amber-hover: #f7cb80;
   --danger-btn-hover: #ab2424;
@@ -584,53 +576,95 @@ body.tips-off .flag-tip { display: none; }
 .pano-flags ul { display: grid; gap: var(--space-0); margin-top: var(--space-0); }
 .pano-flags .flag { margin-right: var(--space-1); }
 
-/* preview: meta and add/remove on one row at the top (the title is visually hidden); video, transport bar,
-   rail and the trim row all full width. The column is a flex column and the video panel takes the height
-   the other rows leave, so the whole preview fits the window; a very short window scrolls the column. */
+/* preview: the title row, the video with its controls over it, the cut line, the filmstrip and the
+   storyboard, all full width. The column is a flex column and the video takes the height the other
+   rows leave, so the whole preview fits the window; a very short window scrolls the column. */
 .stage { background: var(--center); container: stage / inline-size; display: flex; flex-direction: column; padding-bottom: var(--space-3); }
 .stage > .empty { flex: none; }
 #stageBody { flex: 1 0 auto; display: flex; flex-direction: column; }
-.screen-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin-bottom: var(--space-2); }
-#stageMeta { flex: 1 1 14em; min-width: 0; overflow-wrap: anywhere; font-size: 13.5px; }
-/* min-width stops the label swap from jumping */
-.screen-bar .btn { margin-left: auto; min-width: 13.5em; }
+.stage-head { display: flex; align-items: center; flex-wrap: nowrap; gap: var(--space-1) 10px; margin-bottom: var(--space-3); font-size: 13px; }
+.stage-dot { --k: var(--line); flex: none; width: 8px; height: 8px; border-radius: var(--radius-pill); background: var(--k); }
+.stage-dot[data-kind="action"] { --k: var(--k-action); }
+.stage-dot[data-kind="scenic"] { --k: var(--k-scenic); }
+.stage-dot[data-kind="funny"] { --k: var(--k-funny); }
+.stage-dot[data-kind="dialogue"] { --k: var(--k-dialogue); }
+#stageTitle, #stageMeta { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* no width of its own: the buttons stay on the title's line and the source name gives way first */
+#stageMeta { flex: 1 1 0; min-width: 6em; }
+.clip-nav { flex: none; display: flex; gap: var(--space-1); }
+.stage-head .btn { white-space: nowrap; }
+#toggleBtn { flex: none; min-width: 11.5em; } /* stops the label swap from jumping */
 /* "Full preview 42%": room for the widest text, so the percent ticking up moves nothing */
 .stage-prep { flex: none; min-width: 9.5em; color: var(--muted); font-size: 12.5px; }
-/* the panel takes the free height of the column, up to 16:9 of its width and at least 180px;
-   the video keeps its aspect ratio, letterboxed on the panel */
+/* the panel takes the free height of the column, at least 180px; the video keeps its aspect ratio,
+   letterboxed on the panel. --bar-h: the height of the controls over it */
 .screen {
-  position: relative; background: var(--deep); flex: 1 1 auto; min-height: min(180px, 100cqi * 9 / 16); max-height: calc(100cqi * 9 / 16);
-  width: 100%; border: 1px solid var(--card-line); border-bottom: 0; border-radius: var(--radius-sm) var(--radius-sm) 0 0; overflow: hidden;
+  --bar-h: 68px; position: relative; background: var(--deep); flex: 1 1 auto; min-height: min(180px, 100cqi * 9 / 16);
+  width: 100%; border: 1px solid var(--card-line); border-radius: var(--radius-md); overflow: hidden;
 }
 .screen video { position: absolute; inset: 0; width: 100%; height: 100%; max-height: 100%; object-fit: contain; display: block; cursor: pointer; }
 .screen video:not(.active) { opacity: 0; pointer-events: none; } /* the spare player preloads the next clip of "Play sequence" */
-.screen-msg { position: absolute; inset: 0; display: grid; place-items: center; padding: var(--space-4); text-align: center; color: var(--muted); pointer-events: none; }
+.screen-msg { position: absolute; inset: 0; display: grid; place-items: center; padding: var(--space-4) var(--space-4) var(--bar-h); text-align: center; color: var(--muted); pointer-events: none; }
 .screen-msg:empty { display: none; }
-/* one bar: clock (and Retry) left, play centred, sound right */
+/* the playhead against the clip's in point; the corner goes to Stats for Nerds while they show */
+.in-badge { position: absolute; top: var(--space-3); left: var(--space-3); padding: var(--space-0) var(--space-2); border-radius: var(--radius-sm); background: var(--scrim); color: var(--scrim-ink); font: 500 11px var(--mono); pointer-events: none; }
+.screen:has(> .nerd-stats:not([hidden])) > .in-badge { left: auto; right: var(--space-3); }
+/* the controls over the video. Any video can be under them, so the controls sit on the full scrim
+   (the gradient only fades in above them) and the bar uses the scrim's dark tokens in every theme.
+   Clicks between the controls reach the video and play or pause it. */
 .transport {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: var(--space-2);
-  margin-bottom: var(--space-2); padding: 0 var(--space-2); background: var(--bar); border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  --text: var(--scrim-ink); --muted: var(--scrim-muted); --deep: var(--scrim-deep); --raise: var(--scrim-raise); --hover: var(--scrim-hover);
+  --line: var(--scrim-line); --amber-text: var(--amber); color-scheme: dark;
+  position: absolute; inset: auto 0 0; display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1) var(--space-3);
+  padding: var(--space-5) 14px 10px; color: var(--text); pointer-events: none;
+  background: linear-gradient(0deg, var(--scrim) 0 72%, transparent);
 }
-.transport-start { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1) var(--space-2); min-width: 0; }
-.transport-end { display: flex; justify-content: flex-end; min-width: 0; }
-.transport .btn.icon-btn { background: none; border-color: transparent; min-height: var(--control-h); width: var(--control-h); }
+.transport > :not(.spacer) { pointer-events: auto; }
+#retryBtn { white-space: nowrap; }
+.transport .btn.icon-btn { background: none; border-color: transparent; min-height: var(--control-h-sm); width: var(--control-h-sm); }
 .transport .icon-btn:hover:not(:disabled) { background: var(--raise); }
-.transport .play .icon { width: 24px; height: 24px; }
-#clock { font-size: 12.5px; overflow-wrap: anywhere; }
+.transport .btn.play { flex: none; width: var(--control-h); min-height: var(--control-h); border: 0; border-radius: var(--radius-pill); background: var(--amber); color: var(--amber-ink); }
+.transport .btn.play:hover:not(:disabled) { background: var(--amber-hover); }
+.transport .play .icon { width: 20px; height: 20px; }
+#clock { font: 500 12px var(--mono); white-space: nowrap; }
 /* mute toggle and volume slider; the slider keeps the amber of the other controls */
-.vol { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.vol { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
 .vol .icon-btn { min-width: 0; flex: none; }
-.vol input[type=range] { width: 7em; min-width: 3em; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber-text); }
+.vol input[type=range] { width: 5em; min-width: 3em; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber-text); }
+.transport .stage-mode { gap: var(--space-0); padding: var(--space-0); border-radius: 6px; }
+.transport .stage-mode .seg-btn, .cut-line .seg-btn { min-height: 24px; }
+/* no room on one line: the switch and the sound take a second one, and so do the title's neighbours */
+@container stage (width < 520px) {
+  .stage-head { flex-wrap: wrap; }
+  #stageTitle { flex: 1 1 calc(100% - 18px); } /* the line, less the dot and its gap */
+  .screen { --bar-h: 100px; }
+  .transport { padding-top: var(--space-3); background: linear-gradient(0deg, var(--scrim) 0 88%, transparent); }
+}
+/* the preview's progress text needs the room the title has: the title takes its own line while it shows */
+@container stage (width < 680px) {
+  .stage-head:has(#stagePrep:not([hidden])) { flex-wrap: wrap; }
+  .stage-head:has(#stagePrep:not([hidden])) #stageTitle { flex: 1 1 calc(100% - 18px); }
+}
 
-/* the cut rail: the moment in its surrounding footage, on a filmstrip of keyframe stills over the ticks (#261) */
+/* the line under the player: the trim, what the export makes of it, Reset and the zoom levels */
+.cut-line { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1) 10px; margin-top: var(--space-3); font-size: 13px; }
+.cut-num { font: 500 13px var(--mono); color: var(--text); white-space: nowrap; }
+.cut-tail { padding: 0 var(--space-2); border: 1px dashed var(--amber-text); border-radius: var(--radius-pill); color: var(--amber-text); font-size: 11px; white-space: nowrap; }
+.rail-presets { gap: var(--space-0); padding: var(--space-0); border-radius: 6px; }
+/* a refused trim or a very long clip; otherwise only screen readers get this line (.vh) */
+.trim-msg { margin-top: var(--space-1); color: var(--muted); font-size: 12.5px; }
+.trim-msg.error { color: var(--bad); }
+
+/* the cut rail: the moment in its surrounding footage. Stills on top (over ticks where a still is
+   missing, #261), the audio level in its own band below them; the seek slider spans both */
 .rail {
-  position: relative; height: 64px; background: var(--deep); border: 1px solid var(--line);
-  border-radius: var(--radius-sm); width: 100%;
-  background-image: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), var(--tick) calc(10% - 1px) 10%);
+  position: relative; height: 104px; border-radius: var(--radius-sm); width: 100%; margin-top: var(--space-3);
+  background:
+    repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), var(--tick) calc(10% - 1px) 10%) top / 100% 74px no-repeat,
+    linear-gradient(var(--deep), var(--deep)) top / 100% 74px no-repeat;
 }
 .rail-sel {
-  position: absolute; top: 0; bottom: 0; background: var(--gold-fill);
-  border: 1px solid var(--gold); border-left: 3px solid var(--gold-edge);
+  position: absolute; top: 0; bottom: 0; border: 2px solid var(--gold); border-radius: var(--radius-sm);
   box-shadow: 0 0 0 100vmax var(--rail-shade); /* dims the rest of the view; .rail-marks clips it */
 }
 /* the markers can reach past the view: clipped here, not on .rail, so the #seek focus outline shows */
@@ -638,12 +672,12 @@ body.tips-off .flag-tip { display: none; }
 .rail-sel.cut-l { border-left-width: 0; }
 .rail-sel.cut-r { border-right-width: 0; }
 /* the filmstrip: stills fade in over the ticks; a missing one leaves its ticks showing */
-.rail-film { position: absolute; inset: 0; opacity: var(--film-opacity); }
-.rail-film > img { position: absolute; top: 0; height: 100%; object-fit: cover; opacity: 0; transition: opacity var(--ease); }
+.rail-film { position: absolute; inset: 0 0 auto; height: 74px; opacity: var(--film-opacity); }
+.rail-film > img { position: absolute; top: 0; height: 100%; padding-right: var(--space-0); object-fit: cover; opacity: 0; transition: opacity var(--ease); }
 .rail-film > img.ok { opacity: 1; }
-/* the audio level over the stills, under the gaps and markers: decorative, one path of vertical bars */
-.rail-wave { position: absolute; inset: 0; width: 100%; height: 100%; }
-.rail-wave > path { fill: none; stroke: var(--text); stroke-width: 0.7; opacity: 0.4; }
+/* the audio level under the stills, below the gaps and markers: decorative, one path of vertical bars */
+.rail-wave { position: absolute; inset: auto 0 0; width: 100%; height: 26px; }
+.rail-wave > path { fill: none; stroke: var(--text); stroke-width: 0.7; opacity: 0.55; }
 /* the parts of the source no ready file plays yet, hatched and dimmed under the markers (static) */
 .rail-gaps > span {
   position: absolute; top: 0; bottom: 0; background-color: var(--gap-shade);
@@ -653,8 +687,11 @@ body.tips-off .flag-tip { display: none; }
 .rail-marks:has(> .rail-film > img.ok) > .rail-gaps > span { background-color: var(--film-gap-shade, var(--gap-shade)); }
 /* what the export adds to the trim (event, smart and speech-aware tails, Extend): shaded and dashed outside the marker */
 .rail-tails { position: absolute; inset: 0; pointer-events: none; }
-.rail-tail { position: absolute; top: 0; bottom: 0; background: var(--gold-fill); border: 1px dashed var(--gold); opacity: 0.6; }
-.overview .rail-tail { top: 7px; bottom: 7px; min-width: 2px; background: none; opacity: 1; }
+.rail-tail {
+  position: absolute; top: 0; bottom: 0; border: 1px dashed var(--amber-text); border-radius: var(--radius-sm);
+  background: repeating-linear-gradient(135deg, var(--gold-fill) 0 6px, transparent 6px 12px);
+}
+.overview .rail-tail { top: 1px; bottom: 1px; min-width: 2px; background: none; border-radius: 0; }
 .rail-orig { position: absolute; top: 4px; bottom: 4px; border: 1px dashed var(--muted); border-radius: var(--radius-xs); pointer-events: none; }
 .rail input[type=range] {
   position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
@@ -662,8 +699,8 @@ body.tips-off .flag-tip { display: none; }
 }
 .rail input[type=range]::-webkit-slider-runnable-track { background: transparent; height: 100%; }
 .rail input[type=range]::-moz-range-track { background: transparent; height: 100%; }
-.rail input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 4px; height: 62px; background: var(--text); border: 0; border-radius: 1px; box-shadow: 0 0 0 1px var(--deep); }
-.rail input[type=range]::-moz-range-thumb { width: 4px; height: 62px; background: var(--text); border: 0; border-radius: 1px; box-shadow: 0 0 0 1px var(--deep); }
+.rail input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 2px; height: 104px; background: var(--text); border: 0; box-shadow: 0 0 0 1px var(--deep); }
+.rail input[type=range]::-moz-range-thumb { width: 2px; height: 104px; background: var(--text); border: 0; border-radius: 0; box-shadow: 0 0 0 1px var(--deep); }
 .rail input.off-view::-webkit-slider-thumb { opacity: 0; }
 .rail input.off-view::-moz-range-thumb { opacity: 0; }
 /* the trim handles (#352): a 24 px hit area (WCAG 2.5.8) mostly outside the clip, start to the left
@@ -675,13 +712,13 @@ body.tips-off .flag-tip { display: none; }
 }
 .rail-handle.end { margin-left: -10px; }
 .rail-handle::before {
-  content: ""; position: absolute; top: 50%; left: 11px; width: 6px; height: 36px; margin-top: -18px;
-  background: var(--gold-edge); border-radius: var(--radius-xs); box-shadow: 0 0 0 1px var(--deep);
+  content: ""; position: absolute; top: 50%; left: var(--space-2); width: 12px; height: 60px; margin-top: -30px;
+  background: var(--amber-text); border-radius: var(--radius-sm); box-shadow: 0 0 0 1px var(--deep);
 }
-.rail-handle.end::before { left: 7px; }
-.rail-handle:hover::before, .rail-handle.dragging::before { background: var(--amber-text); }
+.rail-handle.end::before { left: var(--space-1); }
+.rail-handle:hover::before, .rail-handle.dragging::before { background: var(--gold-edge); }
 .rail-handle:focus-visible { outline: 2px solid var(--amber-text); outline-offset: 0; }
-.rail-handle:focus-visible::before { background: var(--amber-text); }
+.rail-handle:focus-visible::before { background: var(--gold-edge); }
 .rail-handle.off-view::before { opacity: 0.45; } /* its point is off the view: parked at the edge */
 /* ghost handles (#346): the trim an AI Chat proposal would set, dashed, under the real handles */
 .rail-ghost { position: absolute; top: 2px; bottom: 2px; border: 2px dashed var(--amber-text); border-top: 0; border-bottom: 0; }
@@ -694,14 +731,15 @@ body.tips-off .flag-tip { display: none; }
 .rail-ghost::before { left: -4px; }
 .rail-ghost::after { right: -4px; }
 .rail-ghost.cut-l::before, .rail-ghost.cut-r::after { display: none; }
-/* the time ruler and the other moments under the rail */
-.rail-ruler { position: relative; height: 16px; margin-top: var(--space-1); overflow: hidden; color: var(--muted); font-size: 11.5px; }
-.rail-tick { position: absolute; top: 0; padding-left: var(--space-1); border-left: 1px solid var(--muted); white-space: nowrap; line-height: 16px; }
-.rail-events { position: relative; height: 16px; overflow: hidden; font-size: 11.5px; color: var(--text); }
-.rail-events:empty { display: none; }
+/* the markers' band under the rail, then the time ruler with the view's two ends at its corners */
+.rail-events { position: relative; height: 18px; margin-top: var(--space-1); overflow: hidden; font-size: 11px; color: var(--text); }
+.rail-scale { position: relative; height: 14px; margin-top: var(--space-1); color: var(--muted); font: 400 11px/14px var(--mono); }
+.rail-ruler { position: absolute; inset: 0; overflow: hidden; }
+.rail-tick { position: absolute; top: 0; white-space: nowrap; }
+.rail-ends { position: absolute; inset: 0; display: flex; justify-content: space-between; gap: var(--space-2); }
 .rail-event {
   --k: var(--muted); position: absolute; top: 0; max-width: 11em; padding-left: var(--space-1); border-left: 2px solid var(--k);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 16px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 18px;
 }
 .rail-event[data-kind="action"] { --k: var(--k-action); }
 .rail-event[data-kind="scenic"] { --k: var(--k-scenic); }
@@ -711,19 +749,17 @@ body.tips-off .flag-tip { display: none; }
 .rail-event[data-ev="audio"] { --k: var(--ev-sound); }
 .rail-event[data-ev="ocr"] { --k: var(--ev-text); }
 .rail-event[data-ev="telemetry"] { --k: var(--ev-cam); }
-.rail-ends { display: flex; justify-content: space-between; gap: var(--space-2); color: var(--muted); font-size: 12.5px; margin-top: var(--space-1); }
-/* zoom buttons and the overview strip: the whole source, the rail's view as a box, the clip in gold */
-.rail-nav { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin-top: var(--space-1); }
-.rail-zoom { display: flex; gap: var(--space-1); }
 .rail-presets, .stage-mode { flex: none; flex-wrap: nowrap; }
 .rail-presets .seg-btn:disabled, .stage-mode .seg-btn:disabled { opacity: 0.5; cursor: default; color: var(--muted); filter: none; }
-.overview { position: relative; flex: 1 1 12em; height: var(--control-h-sm); background: var(--deep); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+/* the overview strip: the whole source, the rail's view as a box, the clip in gold. Thin to look at;
+   its slider reaches 7 px past it on both sides, so it is 24 px to hit (WCAG 2.5.8) */
+.overview { position: relative; height: 10px; margin-top: var(--space-1); background: var(--deep); border: 1px solid var(--line); border-radius: var(--radius-xs); }
 .overview.off { opacity: 0.5; }
 .overview .rail-marks { border-radius: var(--radius-xs); } /* clips the view box's min-width at the strip's ends */
-.ov-clip { position: absolute; top: 7px; bottom: 7px; min-width: 2px; background: var(--gold); }
-.ov-view { position: absolute; top: 0; bottom: 0; min-width: 4px; border: 2px solid var(--text); border-radius: var(--radius-xs); pointer-events: none; }
+.ov-clip { position: absolute; top: 2px; bottom: 2px; min-width: 2px; background: var(--gold); }
+.ov-view { position: absolute; top: 0; bottom: 0; min-width: 4px; border: 1px solid var(--text); pointer-events: none; }
 .overview input[type=range] {
-  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0;
+  position: absolute; top: -8px; left: 0; width: 100%; height: 24px; margin: 0; padding: 0; border: 0;
   min-height: 0; background: transparent; -webkit-appearance: none; appearance: none; cursor: grab;
 }
 .overview input[type=range]::-webkit-slider-runnable-track { background: transparent; height: 100%; }
@@ -732,64 +768,33 @@ body.tips-off .flag-tip { display: none; }
 .overview input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 1px; height: 22px; background: transparent; border: 0; }
 .overview input[type=range]::-moz-range-thumb { width: 1px; height: 22px; background: transparent; border: 0; }
 
-/* Clip Start | Transcript | Clip End. The trim group spans the row as a subgrid with the
-   transcript laid over its middle column, so reading order stays Start, End, Transcript. */
-.trim-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr); gap: var(--space-3) var(--space-4); margin-top: var(--space-2); }
-.trim { grid-column: 1 / -1; grid-row: 1; display: grid; grid-template-columns: subgrid; row-gap: var(--space-3); }
-#startField { grid-column: 1; }
-#endField { grid-column: -2; }
-.trim-field { display: grid; gap: var(--space-1); align-content: start; min-width: 0; }
-.trim-field > label { color: var(--muted); text-align: center; }
-.trim-field > input { width: 100%; text-align: center; font-size: 15px; }
-.stepper { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-1); width: 100%; }
-.stepper .btn { white-space: nowrap; }
-.btn.accent { background: var(--gold-btn); border-color: var(--gold); color: var(--gold-ink); white-space: normal; }
-.btn.accent:hover:not(:disabled) { background: var(--gold-btn-hover); }
-.trim-msg { margin: var(--space-2) 0; color: var(--muted); min-height: 1.45em; text-align: center; }
-.trim-msg.error { color: var(--bad); }
-#resetBtn { display: block; margin: 0 auto; }
-.transcript { grid-column: 2; grid-row: 1; display: grid; gap: var(--space-1); align-content: start; min-width: 0; }
-.transcript h3 { font-size: 14.5px; text-align: center; }
-#transcript {
-  font-size: 15px; line-height: 1.6; min-height: 4.5em; padding: var(--space-2) var(--space-3); overflow-wrap: anywhere;
-  background: var(--deep); border: 1px solid var(--line); border-radius: var(--radius-bubble);
-}
-/* a word Whisper was unsure of: dotted underline (not colour alone) and a faint tint */
-#transcript .unsure {
-  text-decoration: underline dotted var(--gold); text-underline-offset: 3px;
-  background: var(--gold-fill); border-radius: var(--radius-xs); cursor: help;
-  padding: 0 var(--space-0); box-decoration-break: clone; /* so a marked "I" is still easy to spot */
-}
-#transcript .unsure .vh { user-select: none; } /* copying the transcript leaves out "(unsure)" */
-/* Stats for Nerds (#353): top-left of the video panel, which ends above the transport bar, so it never
-   covers the player controls; clicks pass through to the video; it wraps inside the panel when narrow */
+/* Stats for Nerds (#353): top-left of the video panel, ending above the controls over the video, so it
+   never covers them; clicks pass through to the video; it wraps inside the panel when narrow */
 .nerd-stats {
-  position: absolute; top: var(--space-2); left: var(--space-2); max-width: calc(100% - 2 * var(--space-2)); max-height: calc(100% - 2 * var(--space-2)); overflow: hidden;
+  position: absolute; top: var(--space-2); left: var(--space-2); max-width: calc(100% - 2 * var(--space-2)); max-height: calc(100% - var(--space-2) - var(--bar-h)); overflow: hidden;
   margin: 0; padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); background: var(--scrim); color: var(--scrim-ink);
   font: 11.5px/1.45 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
   white-space: pre-line; overflow-wrap: anywhere; pointer-events: none;
 }
-/* narrower: Start and End side by side above the transcript, then all stacked */
-@container stage (width < 760px) {
-  .trim-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  #endField { grid-column: 2; }
-  .transcript { grid-column: 1 / -1; grid-row: 2; }
-}
 @container stage (width < 440px) {
-  .trim-row { grid-template-columns: minmax(0, 1fr); }
-  #endField { grid-column: 1; }
-  .vol input[type=range] { width: 4.5em; }
+  .vol input[type=range] { width: 3em; }
 }
 
-/* the storyboard: the sequence as blocks, width by exported length, colour by kind */
-.storyboard { margin-top: var(--space-2); display: grid; gap: var(--space-1); }
-.sb-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-1) var(--space-3); }
-.sb-head h3 { font-size: 14.5px; }
-.sb-hint { font-size: 12px; flex: 1 1 18em; text-align: right; }
-.sb-list { display: flex; gap: 4px; height: 52px; padding: 4px; min-width: 0; overflow-x: auto; } /* a very long sequence scrolls here, not the page */
+/* the storyboard: the sequence's ruler, its clips as blocks (width by exported length, colour by kind)
+   with the playhead across them, and the heading on a line below */
+.storyboard { margin-top: var(--space-3); display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-1); }
+.sb-ruler { position: relative; height: 14px; overflow: hidden; color: var(--muted); font: 400 11px/14px var(--mono); }
+.sb-ruler > span { position: absolute; top: 0; }
+.sb-ruler > .end { right: 0; }
+.sb-track { position: relative; }
+.sb-playhead { position: absolute; top: calc(-1 * var(--space-1)); bottom: calc(-1 * var(--space-1)); width: 2px; margin-left: -1px; background: var(--scrim-ink); box-shadow: 0 0 0 1px var(--scrim); pointer-events: none; }
+.sb-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin-top: var(--space-0); }
+#sbTotal { font-size: 12px; }
+.sb-hint { font-size: 11px; }
+.sb-list { display: flex; gap: var(--space-0); height: 44px; min-width: 0; overflow-x: auto; } /* a very long sequence scrolls here, not the page */
 .sb-cell { flex: 1 1 0; min-width: 3px; display: flex; }
 .sb-cell.dragging { opacity: 0.5; }
-.sb-cell.drop { box-shadow: -3px 0 0 var(--amber-text); }
+.sb-cell.drop > .sb-block { box-shadow: inset 3px 0 0 var(--amber); } /* inside: .sb-list clips what is outside it */
 .sb-block {
   --k: var(--muted); --kt: var(--scrim); flex: 1 1 auto; min-width: 0; padding: 0 var(--space-1); display: flex; align-items: center;
   border: 0; border-top: 3px solid var(--k); border-radius: var(--radius-xs); background: var(--kt); color: var(--scrim-ink);
@@ -802,7 +807,7 @@ body.tips-off .flag-tip { display: none; }
 .sb-block:hover { filter: brightness(1.25); }
 .sb-block[aria-current="true"] { box-shadow: inset 0 0 0 2px var(--amber); }
 .sb-block.playing .sb-n { font-weight: 700; text-decoration: underline; }
-.sb-block:focus-visible { outline-offset: 1px; }
+.sb-block:focus-visible { outline: 2px solid var(--scrim-ink); outline-offset: -4px; } /* inside: .sb-list clips what is outside it; clear of the current block's amber */
 
 /* sequence: one compact card per clip */
 .seq-batch {
@@ -1169,7 +1174,12 @@ fieldset.models-section .hint, fieldset.models-section p { overflow-wrap: anywhe
   .top { position: relative; }
   .proj-menu { position: static; }
   .proj-pop { left: var(--space-2); right: var(--space-2); width: auto; max-width: none; }
-  .screen { flex: none; aspect-ratio: 16 / 9; min-height: 0; max-height: none; }
+  .screen { flex: none; aspect-ratio: 16 / 9; min-height: 0; }
+  /* the two-line bar would cover most of a 16:9 picture: the panel grows by the bar, the video stays above it */
+  @container stage (width < 520px) {
+    .screen { aspect-ratio: auto; height: calc(100cqi * 9 / 16 + var(--bar-h)); }
+    .screen video { height: calc(100% - var(--bar-h)); }
+  }
 }
 
 /* reduced motion: static stand-ins that still read as busy, not a frozen ring or a stalled 40% bar */

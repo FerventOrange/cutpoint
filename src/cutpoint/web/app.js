@@ -1,12 +1,12 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtBytes, fmtLen, h, KINDS, kindOf, markdown, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, scoreText, spanText, svg, themeFromStored } from './util.js';
+import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtBytes, fmtLen, h, KINDS, kindOf, markdown, momentMatches, naturalCompare, NO_FILTERS, positionCompare, round2, rowInPlace, scoreText, spanText, svg, themeFromStored } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
 const MIN_VIEW = 2; // seconds: the rail's deepest zoom
-const LONG_CLIP = 600; // seconds: longer clips get a note under the trim fields
+const LONG_CLIP = 600; // seconds: longer clips get a note under the cut line
 const LABEL_MAX = 200; // characters; ui.py validate_segments rejects longer labels
 const THUMB_W = 160; // pixels requested for sequence thumbnails
 const FILM_TILE = 78; // pixels: the rail's filmstrip holds about one keyframe still per this width (#261)
@@ -308,8 +308,16 @@ const hms = (t) => {
   return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 };
 
+/** "7:13.6": a time to the tenth, rounded before it is split, so 59.96 is "1:00.0" and not "0:60.0". */
+function tenths(t) {
+  const n = Math.round(Math.abs(t) * 10);
+  const h = Math.floor(n / 36000);
+  const m = Math.floor(n / 600) % 60;
+  const sec = ((n % 600) / 10).toFixed(1).padStart(4, '0');
+  return `${t < 0 && n ? '-' : ''}${h ? `${h}:${String(m).padStart(2, '0')}` : m}:${sec}`;
+}
+
 function validate(s, e, dur) {
-  if (!Number.isFinite(s) || !Number.isFinite(e)) return 'Enter a time like 83.5 or 1:23.5.';
   if (s < 0 || (dur && e > dur + 1e-6))
     return `Keep both times inside the source, 0:00.00 to ${fmt(dur)}.`;
   if (e - s < MIN_CLIP - 1e-6) return `A clip must be at least ${MIN_CLIP} s long.`;
@@ -928,58 +936,30 @@ function showMoment(id, keepVideo = false) {
 
 // ---------- rendering: stage ----------
 
-function trimField(which, label) {
-  const input = h('input', {
-    id: `t-${which}`, class: 'tc', inputMode: 'decimal', autocomplete: 'off', spellcheck: false,
-    onchange: () => {
-      const ok = setRange(which, parseTime(input.value));
-      if (ok) seekTo(trimSeek(which));
-    },
-  });
-  const nudge = (d) => () => {
-    const c = current();
-    if (c && setRange(which, c[which] + d)) seekTo(trimSeek(which));
-  };
-  const key = which === 'start' ? '[' : ']';
-  const alt = which === 'start' ? 'I' : 'O';
-  $(`#${which}Field`).append(
-    h('label', { for: input.id, text: label }),
-    input,
-    h('div', { class: 'stepper' },
-      h('button', { type: 'button', class: 'btn small', 'aria-label': `-0.5 s, ${label} earlier by half a second`, onclick: nudge(-0.5), text: '-0.5 s' }),
-      h('button', {
-        type: 'button', class: 'btn small accent', 'aria-label': `Use playhead as ${label}`, title: `Use playhead as ${label} "${key}" or "${alt}"`,
-        'aria-keyshortcuts': `${key} ${alt}`, onclick: () => setRange(which, playhead()), text: 'Use playhead',
-      }),
-      h('button', { type: 'button', class: 'btn small', 'aria-label': `+0.5 s, ${label} later by half a second`, onclick: nudge(0.5), text: '+0.5 s' })),
-  );
-  return input;
-}
-
-const trimInputs = {};
-
-/** Where a typed or nudged trim seeks: its point; during "Play sequence" a new end gets 2 s of pre-roll, so the cut is seen. */
+/** Where a moved trim point seeks: its point; during "Play sequence" a new end gets 2 s of pre-roll, so the cut is seen. */
 function trimSeek(which) {
   const c = current();
   return S.seqPlay && which === 'end' ? Math.max(c.start, c.end - 2) : c[which];
 }
 
-function setTrimMsg(text, bad = false) {
+/** ``shown``: on screen too; else only screen readers get it, as the cut line says the same. */
+function setTrimMsg(text, bad = false, shown = bad) {
   const m = $('#trimMsg');
   if (m.textContent !== text) m.textContent = text;
   m.classList.toggle('error', bad);
+  m.classList.toggle('vh', !shown);
 }
 
 /** ``widen``: a point that left the rail widens it to show both; the trim handles keep the zoom and pan instead. */
 function setRange(which, t, widen = true) {
   const c = current();
   if (!c) return false;
-  t = round2(t);
+  t = Math.max(0, Math.min(round2(t), handleRange('end', c).max)); // the source's end can round up past itself
   const s = which === 'start' ? t : c.start;
   const e = which === 'end' ? t : c.end;
   const err = validate(s, e, durOf(c));
   if (err) {
-    renderTrim(true);
+    renderTrim();
     setTrimMsg(err, true);
     return false;
   }
@@ -997,16 +977,16 @@ function setRange(which, t, widen = true) {
     const pad = 0.05 * (Math.max(w.hi, e) - Math.min(w.lo, s));
     S.view = { id: c.id, ...clampView(s < w.lo ? s - pad : w.lo, e > w.hi ? e + pad : w.hi, durOf(c)) };
   }
-  renderTrim(true);
+  renderTrim();
   return true;
 }
 
 function renderStage(seekToStart, keepVideo = false) {
-  if (trimDrag && dragStale(trimDrag)) dropDrag(); // the reused handle loses its amber drag state at once
+  if (trimDrag && dragStale(trimDrag)) dropDrag(); // the reused handle loses its drag state at once
   const c = current();
   $('#stageBody').hidden = !c;
   $('#toggleBtn').hidden = !c;
-  $('#stageMeta').textContent = c ? `${shownName(c.cand, c.seg ? c.label : null) || c.label} from ${baseName(c.source)}` : '';
+  renderClipHead(c);
   renderFullPrep(c);
   renderNerdStats(c);
   renderPanoNote(c);
@@ -1023,11 +1003,49 @@ function renderStage(seekToStart, keepVideo = false) {
     return;
   }
   if (seekToStart) S.view = null; // a new moment starts on its fit view
-  const inSeq = !!c.seg;
-  $('#toggleBtn').textContent = inSeq ? 'Remove from sequence' : 'Add to sequence';
-  renderTranscript(c.cand);
   ensureVideo(seekToStart && !keepVideo ? c : null);
-  renderTrim(!!seekToStart);
+  renderTrim();
+}
+
+/**
+ * The stage's title row: kind, the clip's place in the sequence (else the moment's name), score and
+ * source, and the buttons that step through the sequence. A step button that just reached the end
+ * hands focus to its partner instead of dropping it.
+ */
+function renderClipHead(c = current()) {
+  if (!c) return;
+  const i = c.seg ? S.segments.indexOf(c.seg) : -1;
+  const name = shownName(c.cand, c.seg ? c.label : null) || c.label;
+  const kind = kindOf(c.cand);
+  $('#stageDot').dataset.kind = kind ?? '';
+  $('#stageTitle').textContent = i >= 0 ? `Clip ${i + 1} · ${name}` : name;
+  $('#stageTitle').title = name;
+  const meta = $('#stageMeta');
+  meta.textContent = [KINDS[kind], c.cand && `score ${scoreText(c.cand.score, c.cand.pool === 'visual')}`, srcOf(c.source)?.name ?? baseName(c.source)].filter(Boolean).join(' · ');
+  meta.title = c.source;
+  $('#toggleBtn').textContent = c.seg ? 'Remove from sequence' : 'Add to sequence';
+  const nav = $('#clipNav');
+  const prev = $('#prevClip');
+  const next = $('#nextClip');
+  const had = nav.contains(document.activeElement) ? document.activeElement : null; // read first: disabling drops focus
+  nav.hidden = i < 0;
+  prev.disabled = i <= 0;
+  next.disabled = i < 0 || i >= S.segments.length - 1;
+  prev.textContent = prev.disabled ? '‹ Previous' : `‹ Clip ${i}`;
+  next.textContent = next.disabled ? 'Next ›' : `Clip ${i + 2} ›`;
+  prev.setAttribute('aria-label', prev.disabled ? 'Previous clip' : `Previous clip, Clip ${i}`);
+  next.setAttribute('aria-label', next.disabled ? 'Next clip' : `Next clip, Clip ${i + 2}`);
+  if (had && (had.disabled || nav.hidden)) {
+    const other = had === prev ? next : prev;
+    (nav.hidden || other.disabled ? $('#toggleBtn') : other).focus();
+  }
+}
+
+/** Open the clip ``d`` places on in the sequence from the open one. */
+function stepClip(d) {
+  const c = current();
+  const to = c?.seg && S.segments[S.segments.indexOf(c.seg) + d];
+  if (to) focusMoment(to.id);
 }
 
 /**
@@ -1169,42 +1187,36 @@ function renderFullPrep(c) {
   el.hidden = !text;
 }
 
-// Words Whisper was unsure of (analyze lists them as [index in transcript.split(' '), p]) get a
-// dotted underline and their confidence; without the list the transcript stays plain text.
-function renderTranscript(cand) {
-  const el = $('#transcript');
-  const text = cand?.transcript;
-  const unsure = new Map(Array.isArray(cand?.transcript_unsure) ? cand.transcript_unsure : []);
-  if (!text || !unsure.size) {
-    el.textContent = text || 'No speech was transcribed for this moment.';
-    return;
-  }
-  el.replaceChildren(...text.split(' ').flatMap((word, i) => {
-    const sep = i ? ' ' : '';
-    const p = unsure.get(i);
-    if (typeof p !== 'number') return [sep + word];
-    const pct = p < 0.005 ? '<1%' : `${Math.round(p * 100)}%`;
-    return [sep, h('span', { class: 'unsure', title: `Whisper confidence ${pct}` }, word, h('span', { class: 'vh' }, ' (unsure)'))];
-  }));
-}
-
-function renderTrim(force = false) {
+function renderTrim() {
   const c = current();
   if (!c) return;
   drawRail(c);
-  for (const which of ['start', 'end']) {
-    const input = trimInputs[which];
-    if (force || document.activeElement !== input) input.value = fmt(c[which]);
-  }
-  const changedFromOrig = c.cand && (c.start !== c.cand.start || c.end !== c.cand.end);
-  $('#resetBtn').hidden = !changedFromOrig;
   const len = c.end - c.start;
   const out = exportedLen(c);
   const differs = Math.abs(out - len) >= 0.005;
   const why = planned(c).reason;
+  const long = Math.max(len, out) > LONG_CLIP;
   setTrimMsg(`Clip length ${len.toFixed(2)} s${differs ? ` · exports as ${out.toFixed(2)} s${why ? ` (${why})` : ''}` : ''}${
     c.cand ? `, analyzed as ${fmt(c.cand.start)} to ${fmt(c.cand.end)}` : ''}.${
-    Math.max(len, out) > LONG_CLIP ? ' This clip is longer than 10 minutes, so exporting it takes a while.' : ''}`);
+    long ? ' This clip is longer than 10 minutes, so exporting it takes a while.' : ''}`, false, long);
+}
+
+/** The line under the player: the trim, what the export adds to it, and Reset. */
+function drawCut(c) {
+  const len = c.end - c.start;
+  const out = exportedLen(c);
+  $('#cutRange').textContent = `${tenths(c.start)} → ${tenths(c.end)}`;
+  $('#cutLen').textContent = `| ${len.toFixed(2)} s`;
+  $('#cutOut').textContent = `${out.toFixed(2)} s`;
+  const added = round2(out) - round2(len); // of the rounded lengths, so the numbers on the line add up
+  const tail = $('#cutTail');
+  tail.hidden = added < 0.005;
+  tail.textContent = tail.hidden ? '' : `+${added.toFixed(2)} s ${planned(c).reason ?? 'tail'}`;
+  const reset = $('#resetBtn');
+  const had = document.activeElement === reset; // read first: disabling a focused button drops its focus
+  reset.disabled = !c.cand || (c.start === c.cand.start && c.end === c.cand.end);
+  reset.title = c.cand ? `Back to the analyzed ${fmt(c.cand.start)} to ${fmt(c.cand.end)}` : '';
+  if (reset.disabled && had) $('#startHandle').focus();
 }
 
 /**
@@ -1265,26 +1277,20 @@ function drawRail(c = current()) {
   drawGhost(c);
   drawRuler(lo, hi);
   drawEvents(c, lo, hi);
+  drawCut(c);
   const hadPreset = document.activeElement; // read first: disabling a focused button drops its focus
   for (const b of $('#zoomPresets').children) {
     const want = Number(b.dataset.span);
     b.disabled = !!dur && want > dur + 1e-6; // a source shorter than the level cannot show it
     b.setAttribute('aria-pressed', String(!b.disabled && Math.abs(span - want) < 0.05));
-    if (b.disabled && hadPreset === b) $('#zoomFit').focus();
+    if (b.disabled && hadPreset === b) seek.focus();
   }
-  const zIn = $('#zoomIn');
-  const zOut = $('#zoomOut');
-  const had = document.activeElement; // read first: disabling a focused button drops its focus
-  zIn.disabled = span <= MIN_VIEW + 1e-6;
-  zOut.disabled = !!dur && span >= dur - 1e-6;
-  // a button that just reached its limit hands focus to its partner instead of dropping it
-  if (zIn.disabled && had === zIn) zOut.focus();
-  if (zOut.disabled && had === zOut) zIn.focus();
   updatePlayhead();
 }
 
 const RULER_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
 const RULER_GAP = 64; // pixels: the least room between two ruler labels
+const RULER_ENDS = [72, 112]; // pixels: kept clear at the left and right for the view's end labels, in the ruler's row
 const EVENT_GAP = 80; // pixels: the least room between two moment labels under the rail
 const EVENTS_MAX = 8;
 
@@ -1300,8 +1306,8 @@ function drawRuler(lo, hi) {
   const ticks = [];
   for (let t = Math.ceil(lo / step) * step; t <= hi; t += step) {
     const at = ((t - lo) / span) * 100;
-    if (at > 100 - (36 / width) * 100) continue; // a label near the right edge would be cut off
-    ticks.push(h('span', { class: 'rail-tick', style: `left: ${at.toFixed(2)}%`, text: hms(t).replace(/^0:/, '') }));
+    if ((at / 100) * width < RULER_ENDS[0] || (1 - at / 100) * width < RULER_ENDS[1]) continue;
+    ticks.push(h('span', { class: 'rail-tick', style: `left: ${at.toFixed(2)}%`, text: hms(t).replace(/^0:0?/, '') }));
   }
   el.replaceChildren(...ticks);
 }
@@ -1482,7 +1488,7 @@ function drawGhost(c = current()) {
   el.classList.toggle('cut-r', to.end > w.hi);
 }
 
-/** Move a trim point, clamped to its handle's range, through the same path as the time fields and "Use playhead". */
+/** Move a trim point, clamped to its handle's range, through the same path as the I and O keys. */
 function moveHandle(which, t, widen = true) {
   const c = current();
   if (!c) return false;
@@ -1808,7 +1814,7 @@ function stageVideo(seekC) {
     pendingSeek = want;
   };
   if (!src) {
-    wait('This source file is not part of the project, so it cannot be previewed. You can still trim by timecode.');
+    wait('This source file is not part of the project, so it cannot be previewed. You can still trim it on the rail.');
     return;
   }
   askDirector(c);
@@ -1885,7 +1891,7 @@ function stageVideo(seekC) {
       // the window asked for once more failed too: stop waiting, say so, offer Retry (``retryBtn``)
       kept.failed = true;
       cancelResume(); // playback stopped for good: Play, not Pause
-      screenMsg(`This part of the source could not be prepared for preview${failed.reason ? ` (${failed.reason})` : ''}. Retry it, or trim by timecode.`);
+      screenMsg(`This part of the source could not be prepared for preview${failed.reason ? ` (${failed.reason})` : ''}. Retry it, or trim on the rail.`);
       return true;
     }
     if (kept) kept.failed = false;
@@ -1900,7 +1906,7 @@ function stageVideo(seekC) {
     return;
   }
   if (src.status === 'failed') {
-    wait('The browser-playable preview could not be built for this source. Retry it, or trim by timecode.');
+    wait('The browser-playable preview could not be built for this source. Retry it, or trim on the rail.');
     return true;
   }
   forgetPrepared(src); // ready: a later change to the file prepares again
@@ -2055,7 +2061,10 @@ function updatePlayhead(playing = false) {
   seek.value = t;
   seek.classList.toggle('off-view', !!S.view && (t < S.view.lo || t > S.view.hi)); // no thumb parked at an edge
   if (!playing) seek.setAttribute('aria-valuetext', fmt(t));
-  $('#clock').textContent = S.seqPlay ? seqClock(t) : c ? `${fmt(t)} in source` : '';
+  $('#clock').textContent = S.seqPlay ? seqClock(t) : c ? `${tenths(t - planned(c).start)} / ${tenths(exportedLen(c))}` : '';
+  const off = c ? Math.round((t - c.start) * 10) / 10 : 0;
+  $('#inBadge').textContent = c ? `IN ${off < 0 ? '-' : '+'}${Math.abs(off).toFixed(1)} s` : '';
+  drawSbHead(c, t);
 }
 
 let tickId = 0;
@@ -2231,16 +2240,14 @@ seek.addEventListener('keydown', (e) => {
   const span = S.view.hi - S.view.lo;
   seekTo(playhead() + Math.sign(d) * Math.max(0.05, Math.abs(d) * span));
 });
-$('#zoomOut').addEventListener('click', () => zoomBy(2));
-$('#zoomIn').addEventListener('click', () => zoomBy(0.5));
 $('#zoomPresets').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-span]');
-  if (b && S.view) zoomBy(Number(b.dataset.span) / (S.view.hi - S.view.lo));
-});
-$('#zoomFit').addEventListener('click', () => {
   const c = current();
-  const f = c && fitView(c);
-  if (f) setView(f.lo, f.hi);
+  if (!b || !c || !S.view) return;
+  if (b.getAttribute('aria-pressed') === 'true') { // pressed again: back to the clip's fit view
+    const f = fitView(c);
+    setView(f.lo, f.hi);
+  } else zoomBy(Number(b.dataset.span) / (S.view.hi - S.view.lo));
 });
 const pan = $('#pan');
 const panTo = (mid) => S.view && setView(mid - (S.view.hi - S.view.lo) / 2, mid + (S.view.hi - S.view.lo) / 2);
@@ -3025,17 +3032,57 @@ function renderSequence() {
 function renderStoryboard() {
   const segs = S.segments;
   $('#storyboard').hidden = !segs.length;
-  const total = segs.reduce((n, s) => n + exportedLen(s), 0);
-  $('#sbTotal').textContent = segs.length ? `${segs.length} clip${segs.length > 1 ? 's' : ''}, ${fmtLen(total)}` : '';
+  const total = sbLength();
+  $('#sbTotal').textContent = segs.length ? `${segs.length} clip${segs.length > 1 ? 's' : ''} · ${fmtLen(total)}` : '';
   const stop = segs.some((s) => s.id === S.focus) ? S.focus : segs[0]?.id; // the block that holds the tab stop
   const had = $('#sbList').contains(document.activeElement) ? document.activeElement.dataset.id : null;
   $('#sbList').replaceChildren(...segs.map((s, i) => sbBlock(s, i, segs.length, stop)));
   if (had) $(`#sbList .sb-block[data-id="${CSS.escape(had)}"]`)?.focus();
   markPlaying();
+  drawSbRuler();
+  drawSbHead();
+  renderClipHead(); // a clip's place in the sequence may have changed
 }
 
 /** The storyboard's buttons, in order. */
 const sbBlocks = () => [...$('#sbList').querySelectorAll('.sb-block')];
+const sbLength = () => S.segments.reduce((n, s) => n + exportedLen(s), 0);
+const SB_RULER_GAP = 120; // pixels: the least room between two labels of the storyboard's ruler
+const SB_RULER_END = 44; // pixels: a label this close to the total at the right end is left out
+
+/** The sequence's own time above the blocks, from 0:00 to its total; off while the blocks scroll, when it could not line up with them. */
+function drawSbRuler() {
+  const el = $('#sbRuler');
+  const list = $('#sbList');
+  const total = sbLength();
+  const width = list.clientWidth || 600;
+  el.hidden = !total || list.scrollWidth > width + 1;
+  if (el.hidden) return;
+  const step = RULER_STEPS.find((x) => (x / total) * width >= SB_RULER_GAP) ?? RULER_STEPS.at(-1);
+  const ticks = [];
+  for (let t = 0; ((total - t) / total) * width >= SB_RULER_END; t += step) {
+    ticks.push(h('span', { style: `left: ${((t / total) * 100).toFixed(2)}%`, text: fmtLen(t) }));
+  }
+  el.replaceChildren(...ticks, h('span', { class: 'end', text: fmtLen(total) }));
+}
+
+/** The storyboard's playhead: in the open clip's block, as far along as the playhead is in its export; hidden for a clip outside the sequence or scrolled away. */
+function drawSbHead(c = current(), t = playhead(c)) {
+  const el = $('#sbHead');
+  const cell = c?.seg && sbBlocks().find((b) => b.dataset.id === c.id)?.parentElement;
+  el.hidden = !cell;
+  if (!cell) return;
+  const e = planned(c);
+  const list = $('#sbList');
+  const x = cell.offsetLeft - list.scrollLeft + Math.max(0, Math.min(1, (t - e.start) / (e.end - e.start))) * cell.offsetWidth;
+  el.style.left = `${x.toFixed(1)}px`;
+  el.hidden = x < 0 || x > list.clientWidth;
+}
+new ResizeObserver(() => {
+  drawSbRuler();
+  drawSbHead();
+}).observe($('#sbList'));
+$('#sbList').addEventListener('scroll', () => drawSbHead());
 
 function sbBlock(s, i, n, stop) {
   const cand = cands().find((c) => c.id === s.id);
@@ -3109,10 +3156,10 @@ function renderSeqPlay() {
   else b.removeAttribute('aria-keyshortcuts');
   b.title = S.seqPlay ? 'Stop (Escape)' : 'Play the clips in sequence order';
   // the stage mode follows the playback: Sequence while it plays, else Clip
+  const mode = S.seqPlay ? 'sequence' : 'clip';
   for (const m of $('#stageMode').children) {
-    const seq = m.dataset.mode === 'sequence';
-    m.setAttribute('aria-pressed', String(seq === !!S.seqPlay));
-    if (seq) m.disabled = !S.seqPlay && !S.segments.length;
+    m.setAttribute('aria-pressed', String(m.dataset.mode === mode));
+    if (m.dataset.mode === 'sequence') m.disabled = !S.seqPlay && !S.segments.length;
   }
 }
 
@@ -5895,8 +5942,8 @@ function initSplitters() {
 }
 
 /**
- * Mute and volume for every preview video (the stage and the final video), at the right end of the
- * transport bar. The setting is remembered per browser; without storage it lasts the session. The
+ * Mute and volume for every preview video (the stage and the final video), in the player's bar
+ * on the stage. The setting is remembered per browser; without storage it lasts the session. The
  * final video's own controls change it too, so each video's volumechange feeds back into the shared
  * setting.
  */
@@ -6411,23 +6458,20 @@ function bind() {
   initAdvExport();
   initVerboseMoments();
   showPlaying(false);
-  trimInputs.start = trimField('start', 'Clip Start');
-  trimInputs.end = trimField('end', 'Clip End');
-  $('#trimMsg').after(
-    h('button', { type: 'button', class: 'btn small', id: 'resetBtn', hidden: true, onclick: () => {
-      const c = current();
-      if (!c?.cand) return;
-      remember();
-      if (c.seg) {
-        c.seg.start = c.cand.start;
-        c.seg.end = c.cand.end;
-        changed();
-      } else S.drafts[c.id] = { at: S.drafts[c.id]?.at }; // keep where a removed moment goes back
-      setTrimMsg('');
-      renderTrim(true);
-      seekTo(c.cand.start);
-    }, text: 'Reset to analyzed times' }),
-  );
+  $('#resetBtn').addEventListener('click', () => {
+    const c = current();
+    if (!c?.cand) return;
+    remember();
+    if (c.seg) {
+      c.seg.start = c.cand.start;
+      c.seg.end = c.cand.end;
+      changed();
+    } else S.drafts[c.id] = { at: S.drafts[c.id]?.at }; // keep where a removed moment goes back
+    renderTrim();
+    seekTo(c.cand.start);
+  });
+  $('#prevClip').addEventListener('click', () => stepClip(-1));
+  $('#nextClip').addEventListener('click', () => stepClip(1));
 
   initProjectMenu();
   $('#saveBtn').addEventListener('click', () => saveReview().catch(fail));
@@ -6545,6 +6589,7 @@ function bind() {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     // text fields, the column splitters (their own arrow keys) and any dialog or popover keep their keys
     if (e.target.closest('input:not([type=range]),textarea,select,[role=menu],[role=separator],dialog,[popover]')) return;
+    if (!$('#filterPop').hidden && e.target.closest('#filterWrap')) return; // a plain div, and its button stays outside it
     if (e.key === '[' || e.key === ']' || (!e.shiftKey && (k === 'i' || k === 'o'))) {
       e.preventDefault(); // [ ] and I O: the trim point at the playhead
       setRange(e.key === '[' || k === 'i' ? 'start' : 'end', playhead());
