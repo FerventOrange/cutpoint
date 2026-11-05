@@ -11,6 +11,10 @@ transcript (see :func:`has_reaction`). Re-running is idempotent because the boos
 computed from ``score_pre_events``. Candidate ids are kept; the list is
 re-sorted by the new score and ``suggested_top`` is recomputed.
 
+In styles with an open list (``gaming``), events that can score and that no candidate covers
+nominate candidates of their own first (:func:`nominate`, marked ``signals.events.nominated``), so a game with little talk still gets
+moments from what happens on screen; they are rescored like the others.
+
 This module collects the evidence; the points are combined by the scorer's bonus stage
 (:func:`cutpoint.scorer.rescore_events`, the ``bonus`` features of :mod:`cutpoint.features`).
 """
@@ -18,13 +22,19 @@ This module collects the evidence; the points are combined by the scorer's bonus
 from __future__ import annotations
 
 import logging
+import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from cutpoint import cache, scorer, sources
-from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match
-from cutpoint.events.menu_spans import drop_menu_time
+from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match, resolve
+from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
+from cutpoint.events.tails import OCR_HOLD_S
 from cutpoint.styles import get_style
+
+if TYPE_CHECKING:
+    from cutpoint.analyze import GridPart
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +45,9 @@ EVIDENCE_KEYS = ("player_kills", "teamkills", "banners", "self_kills")
 REACTION_WINDOW_S = 6.0  # a reaction starts at most this long after the event
 REACTION_PAUSE_S = 1.5  # speech is a reaction only after this much silence up to the event
 REACTION_SOUNDS = ("Laughter", "Scream")
+NOMINEE_FLOOR = 0.6  # a nominee's analysis score is at least this share of its source's best
+LAUGH_SOUNDS = ("Laughter",)  # audio events that score laughter points
+SCREAM_SOUNDS = ("Scream", "Cheering")  # audio events that score scream points
 
 
 def has_reaction(
@@ -89,9 +102,9 @@ def event_boost(
         if e["end"] < a or e["start"] > b:
             continue
         if e["kind"] == "audio":
-            if e["label"] == "Laughter":
+            if e["label"] in LAUGH_SOUNDS:
                 laugh = max(laugh, e["confidence"] or 0)
-            elif e["label"] in ("Scream", "Cheering"):
+            elif e["label"] in SCREAM_SOUNDS:
                 scream = max(scream, e["confidence"] or 0)
         elif e["kind"] == "ocr":
             t = first_match(types, e)
@@ -149,6 +162,175 @@ def style_and_base(name: str | None) -> tuple[str, ...]:
     return (name,) if base == name else (name, base)
 
 
+@dataclass(frozen=True)
+class Seed:
+    """An event that can score, as the start of a candidate (see :func:`seeds`).
+
+    Attributes:
+        name: The event type's name, or the sound's (``laughter``, ``cheering``).
+        start: Event start (source seconds); ``end``: its end.
+        hold: How long it counts as lasting for the clip: a sound its length, an on-screen
+            event at most :data:`~cutpoint.events.tails.OCR_HOLD_S`.
+        tail_s: The event type's reaction kept after it (None: the style's ``post_roll``).
+    """
+
+    name: str
+    start: float
+    end: float
+    hold: float
+    tail_s: float | None = None
+
+
+def seeds(
+    events: list[dict[str, Any]],
+    types: tuple[EventType, ...],
+    style: tuple[str, ...],
+    menu: list[list[float]] | None = None,
+) -> list[Seed]:
+    """The events of one source that can score in a project of ``style`` (its name and base):
+    those of an event type with a ``score`` that applies, and the laughter, scream and
+    cheering sounds :func:`event_boost` counts. Events starting in a ``menu`` span are left out."""
+    out = []
+    for e in events:
+        if any(a <= e["start"] < b for a, b in menu or ()):
+            continue
+        length = max(0.0, e["end"] - e["start"])
+        if e["kind"] == "audio":
+            if (e["label"] in LAUGH_SOUNDS or e["label"] in SCREAM_SOUNDS) and e["confidence"]:
+                out.append(Seed(e["label"].lower(), e["start"], e["end"], length))
+        elif e["kind"] == "ocr":
+            t = first_match(types, e)
+            if t and t.score and t.applies(*style):
+                out.append(Seed(t.name, e["start"], e["end"], min(length, OCR_HOLD_S), t.tail_s))
+    return out
+
+
+def is_nominated(c: dict[str, Any]) -> bool:
+    """Whether the candidate ``c`` was nominated by events (see :func:`nominate`)."""
+    return bool(((c.get("signals") or {}).get("events") or {}).get("nominated"))
+
+
+def nominate(
+    hl: dict[str, Any], ev: dict[str, Any], project: Path, parts: list[GridPart] | None = None
+) -> int:
+    """Nominate candidates for the events of ``ev`` that can score (:func:`seeds`) and that no
+    candidate of ``hl`` covers: none with the event inside ``[start, end]``. An event just
+    after a clip counts for that clip too (:func:`event_boost`, ``LOOKAHEAD_S``), but gets a
+    window of its own after it. Returns how many nominated candidates ``hl`` has now.
+
+    Open-list styles only (``Style.open_list``): any other style gets none. A nominee is
+    scored from the grids of its part (``parts``; None:
+    from the caches of the analysis, see :func:`cutpoint.analyze.cached_grid_parts`, so a
+    source whose caches are gone gets none), as a picked window there would be, and is then
+    rescored with the events like the rest. Its analysis score is at least
+    :data:`NOMINEE_FLOOR` of the best other candidate's of its source (an event is evidence
+    enough that a quiet window is a moment); the grid score it had stays as ``grid_score``,
+    for ties. The geometry is :func:`cutpoint.analyze.nominate_candidates`'s. Menu time is
+    dropped: the events in it, and the windows mostly in it
+    (:func:`~cutpoint.events.menu_spans.drop_menu_time`). A part gets at most as many
+    candidates in all as its cap (``max_candidates``, else the style's, see
+    :func:`cutpoint.analyze.candidate_cap`), the nominees with the best score and boost.
+
+    Re-running gives the same nominees from the same events and candidates: those of an
+    earlier run are replaced, and kept (id, vision rating) when their window is the same.
+    A new one has no id (:func:`number_candidates`).
+    """
+    from cutpoint import analyze  # noqa: PLC0415 - imports this module
+
+    try:
+        style = get_style(hl.get("style") or "")
+    except ValueError:
+        return 0
+    if not style.open_list:
+        return 0
+    names = style_and_base(hl.get("style"))
+    cands = hl.get("candidates", [])
+    old = [c for c in cands if is_nominated(c)]
+    kept = [c for c in cands if not is_nominated(c)]
+    own = kept
+    types, menu = resolve(project, ev), source_menu_spans(ev)
+    by_src: dict[str, list[dict[str, Any]]] = {}
+    for e in ev.get("events", []):
+        by_src.setdefault(e["source"], []).append(e)
+    todo: dict[str, list[Seed]] = {}
+    for src, evs in by_src.items():
+        mine = [c for c in own if c["source"] == src]
+        left = [
+            s
+            for s in seeds(evs, types.get(src, DEFAULT_EVENT_TYPES), names, menu.get(src))
+            if not any(s.end >= c["start"] and s.start <= c["end"] for c in mine)
+        ]
+        if left:
+            todo[src] = left
+    new: list[dict[str, Any]] = []
+    done: set[str] = set()
+    if todo:
+        explicit = (hl.get("settings") or {}).get("max_candidates")
+        for part in analyze.cached_grid_parts(hl, style) if parts is None else parts:
+            src = str(part.source)
+            lo, hi = part.offset, part.offset + part.duration
+            here = [s for s in todo.get(src, []) if lo <= s.start < hi]
+            if not here:
+                continue
+            done.add(src)
+            taken = [(c["start"], c["end"]) for c in kept if c["source"] == src]  # pool too
+            recs = []
+            for c in analyze.nominate_candidates(part, style, here, taken):
+                rec = analyze._candidate_record(c, part.index, style)
+                rec["signals"]["events"] = {"nominated": c.nominated}
+                recs.append(rec)
+            menu_hl = {"style": hl.get("style"), "settings": hl.get("settings"), "candidates": recs}
+            drop_menu_time(menu_hl, ev)
+            recs = menu_hl["candidates"]
+            # An event is evidence of a moment where nothing is said: its window scores at least
+            # a share of the best picked one's, whatever the length of the list, so the boost
+            # decides, not the grids.
+            base = [c.get("score_pre_events", c["score"]) for c in own if c["source"] == src]
+            floor = NOMINEE_FLOOR * max(base) if base else 0.0
+            for r in recs:
+                r["grid_score"] = r["score"]
+                r["score"] = max(r["score"], floor)
+            room = analyze.candidate_cap(style, explicit) - sum(
+                c["source"] == src and lo <= c["start"] < hi for c in own
+            )
+            cap = max(0, room)
+            if len(recs) > cap:
+                src_types = types.get(src, DEFAULT_EVENT_TYPES)
+                worth = {
+                    id(r): r["score"] + event_boost(r, by_src[src], src_types, style=names)[0]
+                    for r in recs
+                }
+                recs = sorted(recs, key=lambda r: (-worth[id(r)], -r["grid_score"]))[:cap]
+            new += recs
+        logger.info(
+            "Nominated %d candidate(s) for %d event(s) no candidate covers",
+            len(new),
+            sum(len(v) for v in todo.values()),
+        )
+    new += [c for c in old if c["source"] in todo and c["source"] not in done]  # no grids now
+    same = {(c["source"], round(c["start"], 2), round(c["end"], 2)): c for c in old}
+    new = [same.get((r["source"], round(r["start"], 2), round(r["end"], 2)), r) for r in new]
+    cands[:] = [*kept, *new]  # in place: callers hold the list
+    return len(new)
+
+
+def number_candidates(hl: dict[str, Any]) -> None:
+    """Give the candidates of the analysis ``hl`` that have no ``id`` (nominees) the next ``h``
+    ids, after the highest id there is or ever was (``settings.last_candidate_id``, so an id of
+    a nominee that went away is not given to another window). The ids that exist stay."""
+    cands = hl.get("candidates", [])
+    if all("id" in c for c in cands):
+        return
+    settings = hl.setdefault("settings", {})
+    ids = [int(str(c["id"])[1:]) for c in cands if re.fullmatch(r"h\d+", str(c.get("id", "")))]
+    last = max([settings.get("last_candidate_id") or 0, *ids])
+    for i, c in enumerate(cands):
+        if "id" not in c:
+            last += 1
+            cands[i] = {"id": f"h{last:03d}", **c}
+    settings["last_candidate_id"] = last
+
+
 def rescore_highlights(project: Path) -> int:
     """Rescore ``<project>/highlights.json`` from ``events.json``, after the candidates in
     menu time are dropped or trimmed (:func:`~cutpoint.events.menu_spans.drop_menu_time`).
@@ -170,6 +352,7 @@ def rescore_highlights(project: Path) -> int:
         cache.save_json(backup, hl)  # one-time copy of the untouched analysis
     drop_menu_time(hl, ev)
     changed = rescore(hl, ev, project)
+    number_candidates(hl)
     cache.save_json(project / "highlights.json", hl)
     logger.info(
         "Rescored %d of %d candidates from events.json", changed, len(hl.get("candidates", []))
@@ -177,10 +360,13 @@ def rescore_highlights(project: Path) -> int:
     return changed
 
 
-def rescore(hl: dict[str, Any], ev: dict[str, Any], project: Path) -> int:
+def rescore(
+    hl: dict[str, Any], ev: dict[str, Any], project: Path, parts: list[GridPart] | None = None
+) -> int:
     """:func:`rescore_highlights` in memory: rescore the analysis ``hl`` of ``project``
     from the events ``ev`` (an events.json object); returns the candidates changed.
 
     The scorer's bonus stage (:func:`cutpoint.scorer.rescore_events`), with the evidence of
-    this module."""
-    return scorer.rescore_events(hl, ev, project)
+    this module. ``parts``: the grids of the analysed sources for :func:`nominate` (None:
+    from their caches)."""
+    return scorer.rescore_events(hl, ev, project, parts)
