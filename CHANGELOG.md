@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The side column in `cutpoint ui` has three tabs (Sequence, AI Chat, Models); the Export button opens
+  the Export panel there, with Back. The sequence has a footer with the total length and an optional
+  target length, saved with the project, that only guides the progress bar.
 - The trim rail in `cutpoint ui` draws the source's audio level over the filmstrip and marks the
   real events under it: sounds (laughter, cheering...), on-screen text such as kill feeds and
   camera crashes from `events.json`, each with a short label and a tooltip (kind, time,

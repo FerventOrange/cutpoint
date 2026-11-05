@@ -277,7 +277,7 @@ recolours the UI at once and, like Stats for Nerds, Save keeps it in the browser
 Escape undoes it. The Dark theme of earlier versions is gone: a browser that saved Dark shows
 Graphite. The UI uses Inter and JetBrains Mono when the machine has them, else the system fonts;
 nothing is downloaded.
-"Show advanced export options" (off by default) shows the Export tab's advanced controls (marked
+"Show advanced export options" (off by default) shows the Export panel's advanced controls (marked
 "advanced" below). Hidden, they keep their values and are still sent with each job, and
 "Advanced options in use: ..." under the options names any that are; a hidden value out of range
 shows them so the browser can point at it. Like Stats for Nerds, it shows at once, Save keeps it
@@ -310,7 +310,7 @@ take the files answers 409 with `"code": "no_trash"`.
 Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which
 opens the folder with the project's videos in the system file manager (hidden where that is not
 possible, such as Docker). After analysis, "Show folder" stays available next to "Analyze again"
-in the column header. "Analyze again" asks for confirmation first. The Export tab has one "Show Exports
+in the column header. "Analyze again" asks for confirmation first. The Export panel has one "Show Exports
 Folder" button: it opens the latest export's `clips_ui_*` folder, or the project folder (final
 videos and `.srt`, and a `.fcpxml` or `.otio` timeline only when assembled with `--format
 fcpxml|otio`, the Output format) once that export is assembled. A timeline assembled without a
@@ -360,11 +360,13 @@ the steps by starting its jobs with `CUTPOINT_PROGRESS=1`; `GET /api/jobs` retur
 job will report as `step` and `label`). A Cutpoint version that sends no steps shows
 the log in Jobs only, as before.
 
-The sequence column has three tabs: Sequence, AI Chat (see [AI Chat](#ai-chat) below) and Export.
-The header's Export button, next to Save sequence, opens the Export tab. A sequence row shows its
+The side column has three tabs: Sequence, AI Chat (see [AI Chat](#ai-chat) below) and Models.
+The header's Export button, next to Save sequence, opens the Export panel in the side column, with
+no tab selected; Back (or Escape) returns to the previous tab, and running jobs keep running. A
+sequence row shows its
 kind as a colour bar and a name, and its exported length at the right, with "cut N s + tail"
 under it when a tail runs the export past the cut.
-The Export tab holds one "Export &
+The Export panel holds one "Export &
 Assembly Options" panel; each option has a hover description, and the choices are remembered per
 browser:
 
@@ -386,7 +388,7 @@ browser:
 The padding field is gone from the UI; `clips --extend` and [`extend`](#extend) still work. A saved
 "Smart edges" choice from an earlier version carries over to both Speech-aware cuts and Smart tails.
 
-The Export tab has more controls above and below that panel. A blank Cut Timing field keeps the
+The Export panel has more controls above and below that panel. A blank Cut Timing field keeps the
 CLI default.
 
 **Clips to Export.** By default the export is the Sequence, as hand-picked. Automatic picks
@@ -470,8 +472,8 @@ does not send keeps what the analysis used, which the project view reports as `a
 (with `must_include_crash_default`, the style's value, `null` for styles other than action-cam).
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
-remove, multi-select with batch remove (a "Select all clips" checkbox above the list ticks every clip, or clears
-them all when every clip is ticked; Ctrl+A (Cmd+A) in the list ticks every clip), up/down buttons and drag reorder. Thumbnails are cached as
+remove, multi-select with batch remove (a "Select all" checkbox above the list ticks every clip, or clears
+them all when every clip is ticked; Ctrl+A (Cmd+A) in the list ticks every clip), up/down buttons and drag reorder (the row actions show on hover or keyboard focus, and the whole row drags). A footer shows the total length; click the total to set a target length (such as `4:00` or seconds; empty removes it). The target only guides the progress bar, is saved with the project (in `ui/review.json`, so it follows the project and goes with it when deleted, whatever the browser or port) and cuts nothing. Thumbnails are cached as
 JPEGs in `<project>/ui/frames/` (at most 1500 per project, least recently used evicted). Drag the
 splitter to resize the side column (arrow keys, Shift, Home/End; double-click resets); the width is
 remembered per browser. A second splitter between the Moments column and the preview works the same

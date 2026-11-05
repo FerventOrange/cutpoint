@@ -3268,6 +3268,20 @@ def _rail_events(p: Path) -> list[dict[str, Any]]:
     return sorted(out, key=lambda e: (e["source"], e["start"]))
 
 
+TARGET_MAX_S = 36000  # the sequence's target length: up to 10 hours
+
+
+def _valid_target(v: Any) -> bool:
+    """Whether ``v`` is a usable target length (a number above 0, at most TARGET_MAX_S)."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= TARGET_MAX_S
+
+
+def _target_of(review: Any) -> float | None:
+    """The target length saved in a ``review.json`` document, else None."""
+    v = review.get("target") if isinstance(review, dict) else None
+    return float(v) if _valid_target(v) else None
+
+
 def _own(p: Path, name: str) -> Path:
     """``p / name`` to write, else 409 when a symlink or junction takes it outside the project."""
     if not _inside(p, name):
@@ -4912,6 +4926,8 @@ def create_app(port: int) -> FastAPI:
             ],
         }
 
+    review_lock = threading.Lock()  # review.json is read and rewritten by two routes
+
     @owned.put("/projects/{pid}/review")
     def put_review(pid: str, body: dict[str, Any]):
         p = project_dir(pid)
@@ -4919,8 +4935,48 @@ def create_app(port: int) -> FastAPI:
         review = {"segments": segments, "updated": datetime.now().isoformat(timespec="seconds")}
         file = _own(p, f"{UI_DIR}/review.json")
         _ui_folder(p)  # a command-line project has no ui folder yet
-        cache.save_json(file, review)
+        with review_lock:
+            # the sequence's target length is saved by its own route: Save keeps it
+            # a short lock must not drop the target; missing or still locked: load_json reads None
+            with contextlib.suppress(OSError):
+                cache.retry_locked(file.read_bytes, file, "read")
+            kept = _target_of(cache.load_json(file))
+            if kept is not None:
+                review["target"] = kept
+            cache.save_json(file, review)
         return review
+
+    @owned.put("/projects/{pid}/target")
+    def put_target(pid: str, body: dict[str, Any]):
+        """The sequence's target length in ``seconds`` (null clears it), kept in ``review.json``
+        beside the segments; only a guide for the page's progress bar."""
+        p = project_dir(pid)
+        if "seconds" not in body:
+            raise bad("seconds is required (a number, or null to clear)")
+        secs = body["seconds"]
+        if secs is not None and not _valid_target(secs):
+            raise bad(f"seconds must be a number above 0 and at most {TARGET_MAX_S}, or null")
+        file = _own(p, f"{UI_DIR}/review.json")
+        with review_lock:
+            try:
+                review = cache.read_json(file)
+            except FileNotFoundError:
+                review = {}
+            except (ValueError, OSError):
+                review = None
+            if not isinstance(review, dict):  # never write over a sequence we could not read
+                raise bad("ui/review.json could not be read; the target was not saved", 409)
+            review = dict(review)
+            if secs is None:
+                if "target" not in review:
+                    return {"target": None}
+                review.pop("target")
+            else:
+                review["target"] = float(secs)
+            review.setdefault("segments", [])
+            _ui_folder(p)  # a command-line project has no ui folder yet
+            cache.save_json(file, review)
+        return {"target": review.get("target")}
 
     @owned.post("/projects/{pid}/reveal")
     def reveal_folder(pid: str, target: str = "sources"):
