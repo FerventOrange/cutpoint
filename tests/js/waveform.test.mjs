@@ -91,9 +91,9 @@ test('closing a project and opening it again within 5 s leaves one retry chain, 
   dlg.removeAttribute('open');
   dlg.dispatchEvent(new m.page.window.Event('close'));
   await m.page.settle();
-  assert.equal(m.$('#projectSelect').value, '', 'closed');
-  m.$('#projectSelect').value = 'p1';
-  m.$('#projectSelect').dispatchEvent(new m.page.window.Event('change', { bubbles: true }));
+  assert.equal(m.$('#projectName').textContent, 'Choose project', 'closed');
+  m.$('#projectBtn').click();
+  m.$('#projectMenu [data-id=p1]').click();
   await m.page.settle();
   await m.zoom(120);
   assert.equal(m.calls(ENVELOPE), 2, 'the reopened project asks again at once');
@@ -149,7 +149,10 @@ test('an events response for an older events_sig arriving late does not overwrit
   let asked = 0;
   const m = await open(t, {
     // the first read (boot) has sig 'a', every later one sig 'b'
+    'GET /api/projects': { projects: [{ id: 'p1', name: 'Project One' }, { id: 'p2', name: 'Project Two' }] },
     'GET /api/projects/p1': () => ({ ...makeProject(), events_sig: ++projects === 1 ? 'a' : 'b' }),
+    // the menu's other entry reads the same project again (same id), now with sig 'b'
+    'GET /api/projects/p2': () => ({ ...makeProject(), events_sig: 'b' }),
     [`GET ${EVENTS}`]: async () => {
       if (++asked === 1) {
         await gate; // the answer for sig 'a' is slow
@@ -160,10 +163,11 @@ test('an events response for an older events_sig arriving late does not overwrit
   });
   await m.zoom(120);
   assert.equal(asked, 1);
-  const sel = m.$('#projectSelect');
-  sel.dispatchEvent(new m.page.window.Event('change', { bubbles: true })); // the project is read again: sig 'b'
+  m.$('#projectBtn').click();
+  m.$('#projectMenu [data-id=p2]').click(); // the project is read again: sig 'b'
   await m.page.settle();
   assert.equal(asked, 2);
+  await m.zoom(120); // opening a project resets the view
   assert.deepEqual(m.marks().map((e) => e.textContent), ['Fresh']);
   release();
   await m.page.settle();
