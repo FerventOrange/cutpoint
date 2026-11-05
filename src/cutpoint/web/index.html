@@ -15,11 +15,14 @@
   <a class="skip" href="#stage">Skip to preview</a>
   <header class="top">
     <h1 class="brand">cutpoint</h1>
-    <label class="proj-pick">
-      <span class="vh">Project</span>
-      <select id="projectSelect"></select>
-    </label>
-    <button type="button" id="newBtn" class="btn">New project</button>
+    <span class="brand-sep" aria-hidden="true">/</span>
+    <!-- The project menu (a menu button): the open project's name is the trigger; the list, a divider and New project... drop below it -->
+    <div class="proj-menu" id="projectMenuWrap">
+      <button type="button" id="projectBtn" class="proj-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="projectMenu">
+        <span id="projectName" class="proj-name">Choose project</span>
+      </button>
+      <div id="projectMenu" class="proj-pop" role="menu" aria-label="Projects" hidden></div>
+    </div>
     <span class="spacer"></span>
     <span id="saveState" class="save" role="status"></span>
     <button type="button" id="exportBtn" class="btn outline" aria-controls="panelExport">Export</button>
