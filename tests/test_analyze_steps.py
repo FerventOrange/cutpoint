@@ -280,11 +280,11 @@ def test_vision_counts_the_candidates_without_a_cached_rating(run, caplog, monke
         def available(self):
             return run.vision_ok
 
-        def cached(self, src, start, end, base, activity=None):
+        def cached(self, src, start, end, base, activity=None, transcript=None):
             hit = not self.cache_only or start == 10.0
             return SimpleNamespace(score=8.0, label="nice") if hit else None
 
-        def rate(self, src, start, end, base, activity=None):
+        def rate(self, src, start, end, base, activity=None, transcript=None):
             res = self.cached(src, start, end, base)
             if res is None:
                 self.missed += 1
@@ -1787,3 +1787,112 @@ def test_highlights_json_has_the_per_source_timings(prefetched):
     assert rec["source"] == hl["sources"][0]["path"]
     assert rec["cached"] is False and rec["ocr_wait_s"] == 0.5
     assert {"total_s", "events_s"} <= set(hl["timings"])  # the sums stay
+
+
+# ----------------------------------------------------------------- vision with speech
+def _speech_run(run, monkeypatch, transcript, rating=8.0):
+    """``run`` with a recording rater: every ``cached``/``rate`` call keeps its ``transcript``
+    keyword; the one candidate (score 50) has ``transcript`` and the rater rates ``rating``."""
+    calls: list[tuple[str, object]] = []
+
+    def one(src, style, tr, use_scenes, max_cand, timings, **kw):
+        info = MediaInfo(
+            src, 60.0, 60.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
+        )
+        cand = analyze.Candidate(
+            src, 10.0, 20.0, 15.0, 1.0, {"loudness": 1.0}, score=50.0, transcript=transcript
+        )
+        return analyze.SourceResult(src, info, 0.0, 60.0, [cand], [], None)
+
+    class Rater:
+        cache_only = False
+        hits = asked = missed = 0
+        consent_needed = None
+
+        def __init__(self, **_):
+            pass
+
+        def available(self):
+            return run.vision_ok
+
+        def cached(self, src, start, end, base, activity=None, transcript=None):
+            calls.append(("cached", transcript))
+            return SimpleNamespace(score=rating, label="nice")
+
+        def rate(self, src, start, end, base, activity=None, transcript=None):
+            calls.append(("rate", transcript))
+            return SimpleNamespace(score=rating, label="nice")
+
+        def unload(self):
+            pass
+
+    monkeypatch.setattr(analyze, "analyze_source", one)
+    monkeypatch.setattr(analyze, "VisionRater", Rater)
+    return calls
+
+
+def _only_candidate(run):
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    (cand,) = hl["candidates"]
+    return cand
+
+
+def test_the_candidates_speech_goes_to_rate_and_to_both_cached_lookups(run, monkeypatch):
+    said = "No way, that was close"
+    calls = _speech_run(run, monkeypatch, said)
+    run.go(vision=True, vision_top=1)  # online: the resume lookup, then the rating
+    assert calls == [("cached", said), ("rate", said)]
+    assert _only_candidate(run)["transcript"] == said
+
+    calls.clear()
+    run.vision_ok = False  # offline: the lookup before the step, and the one of the step
+    run.go(vision=True, vision_top=1)
+    assert [n for n, _ in calls].count("cached") >= 1  # the offline lookup has speech too
+    assert [t for _, t in calls] == [said] * len(calls)
+
+
+def test_a_rating_with_speech_is_blended_on_the_scale_without_speech(run, monkeypatch):
+    weight = get_style("funny").vision_weight
+    assert weight > 0
+    _speech_run(run, monkeypatch, "Wow, look at that", rating=5.9)
+    run.go(vision=True, vision_top=1)
+    cand = _only_candidate(run)
+    assert cand["score"] == analyze.vision_blend(50.0, 5.9 - 1.9, weight)
+    assert cand["signals"]["vision"] == 5.9  # the raw rating
+
+    _speech_run(run, monkeypatch, "", rating=4.0)
+    run.go(vision=True, vision_top=1)
+    assert _only_candidate(run)["score"] == cand["score"]
+
+
+@pytest.mark.parametrize(
+    ("style", "said", "rating", "want"),
+    [
+        ("funny", "Wow", 1.0, 0.0),  # below the lift: clamped, not negative
+        ("funny", "Wow", 8.0, 6.1),
+        ("funny", "   \n ", 8.0, 8.0),  # no words: no lift
+        ("funny", "<<>>", 8.0, 8.0),  # only brackets: no lift
+        ("funny", None, 8.0, 8.0),
+        ("action-cam", "Wow", 8.0, 8.0),  # action-cam keeps its full rating
+    ],
+)
+def test_the_speech_lift_is_taken_off_only_when_there_are_words(style, said, rating, want):
+    weight = get_style(style).vision_weight
+    cand = {
+        "source": "a.mp4", "start": 1.0, "end": 5.0, "score": 50.0, "label": "x",
+        "signals": {}, "transcript": said,
+    }  # fmt: skip
+
+    class Rater:
+        cache_only = True
+        hits = asked = missed = 0
+
+        def rate(self, *a, **k):
+            return SimpleNamespace(score=rating, label="nice")
+
+        def unload(self):
+            pass
+
+    assert analyze._rate_vision([cand], Rater(), 1, get_style(style))[0] is True
+    assert cand["score"] == analyze.vision_blend(50.0, want, weight)
+    assert cand["signals"]["vision"] == rating

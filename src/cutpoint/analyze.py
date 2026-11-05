@@ -73,7 +73,7 @@ from cutpoint.transcribe import (
     transcript_name,
 )
 from cutpoint.utils import clock, find_videos, matches_glob, slugify
-from cutpoint.vision import VisionRater
+from cutpoint.vision import SPEECH_PROMPT_LIFT, VisionRater, speech_excerpt
 
 if TYPE_CHECKING:
     from cutpoint.activity import Prompts
@@ -1932,7 +1932,12 @@ def _rate_vision(
     if not rater.cache_only:  # a resumed run: the ratings made before are cached
         n_cached = sum(
             rater.cached(
-                remap_source(Path(c["source"])), c["start"], c["end"], style.base, activity=activity
+                remap_source(Path(c["source"])),
+                c["start"],
+                c["end"],
+                style.base,
+                activity=activity,
+                transcript=c.get("transcript"),
             )
             is not None
             for c in top
@@ -1953,6 +1958,7 @@ def _rate_vision(
                     c["end"],
                     style.base,
                     activity=activity,
+                    transcript=c.get("transcript"),
                 )
                 if res is None:
                     n_failed += 1
@@ -1964,7 +1970,10 @@ def _rate_vision(
                 if label := vision_label(res.score, res.label):
                     c["label"] = label
                 key = "score_pre_events" if "score_pre_events" in c else "score"
-                c[key] = vision_blend(c[key], res.score, style.vision_weight)
+                rating = res.score
+                if speech_excerpt(c.get("transcript"), style.base):
+                    rating = max(0.0, rating - SPEECH_PROMPT_LIFT)  # same scale as no speech
+                c[key] = vision_blend(c[key], rating, style.vision_weight)
                 logger.info(
                     "vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c["start"], c["end"]
                 )
@@ -2442,6 +2451,7 @@ def _analyze(
                         c["end"],
                         style.base,
                         activity=wording,
+                        transcript=c.get("transcript"),
                     )
                     is not None
                     for c in cands[:n_top]

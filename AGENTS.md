@@ -104,7 +104,8 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
 - Options: `--style`, `--top`, `--max-total`, `--vertical`, `--force` and `--events` override
   the kind. `--no-keep-clips` exports the clips into a temporary folder that is removed after
   the join (not with `--kind clips`). `--format fcpxml|otio` writes that timeline instead of
-  the final video (clips kept). `--vision` adds the optional frame rating (Ollama by default;
+  the final video (clips kept). `--vision` adds the optional frame rating, which also reads what was said in each moment
+  except for `action-cam` (Ollama by default;
   the Vision role in the `cutpoint ui` Models tab can route it to a hosted provider). It is off
   for every style unless `"vision": true` in the user's `config.json` turns it on; `--no-vision`
   then skips it. An `--ollama-url` on another machine, or a hosted Vision provider in the

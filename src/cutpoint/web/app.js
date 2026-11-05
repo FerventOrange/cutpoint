@@ -5532,12 +5532,12 @@ const CHAT_HINTS = {
 
 const VISION_HINTS = {
   ollama: 'Runs with Ollama (local) vision models (e.g. qwen3.5:9b, the default) to rate video frames on this machine.',
-  anthropic: "Anthropic API (api.anthropic.com): rates video frames via your Anthropic API key. Requests go to Anthropic's hosted service; each request sends frames and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
+  anthropic: "Anthropic API (api.anthropic.com): rates video frames via your Anthropic API key. Requests go to Anthropic's hosted service; each request sends frames and the words said in the moment, and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
   'claude-code': "Claude Code subscription: rates video frames via your Claude subscription login (no API key). Requests go to Anthropic's hosted service. Use at your own risk.",
-  openai: "OpenAI API (api.openai.com): rates video frames via your OpenAI API key. Requests go to OpenAI's hosted service; each request sends frames and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
+  openai: "OpenAI API (api.openai.com): rates video frames via your OpenAI API key. Requests go to OpenAI's hosted service; each request sends frames and the words said in the moment, and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
   codex: "Codex subscription: rates video frames via your ChatGPT subscription login (no API key). Requests go to OpenAI's hosted service. Use at your own risk.",
   antigravity: "Antigravity subscription: rates video frames via your Google/Antigravity subscription login (no API key). Requests go to Google's hosted service. Use at your own risk.",
-  xai: "xAI API (api.x.ai): rates video frames via your xAI API key. Requests go to xAI's hosted service; each request sends frames and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
+  xai: "xAI API (api.x.ai): rates video frames via your xAI API key. Requests go to xAI's hosted service; each request sends frames and the words said in the moment, and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
 };
 
 const AI_MODEL_HINTS = {

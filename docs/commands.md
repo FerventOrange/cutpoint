@@ -259,7 +259,7 @@ one Save models saves both roles. "Rate frames with vision model"
 (off by default; saved as [`vision`](configuration.md#vision) in `config.json`) is there too:
 every analysis the UI starts, a first one or "Analyze again", uses it (passed as `--vision` or
 `--no-vision`; 360 analyses never rate frames), and it is the default of `analyze` and `edit` on
-the command line. A hosted Vision provider gets frames only after "Allow vision requests" in
+the command line. A hosted Vision provider gets frames and the speech in each moment only after "Allow vision requests" in
 the tab; saving never grants it. The UI has no per-run vision checkbox. "Analyze again" keeps
 the Ollama model, URL and vision-top the last analysis recorded.
 
@@ -947,7 +947,7 @@ an analysed set processes only the new file.
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
-| `--vision` / `--no-vision` | Rate top candidates with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. See **Vision rating** below |
+| `--vision` / `--no-vision` | Rate top candidates with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), on their frames and, except for `action-cam`, the speech in them, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. See **Vision rating** below |
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
 | `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a [`vision_assistant`](configuration.md#vision_assistant) of any provider other than `ollama` in `config.json`, the frames (here and for `360 director --vl-check`) go to that provider instead: an API (`anthropic`, `openai`, `xai`, with your API key) or a subscription (`claude-code`, `codex`, `antigravity`), once you agreed to it in the Models tab ("Allow vision requests"), and these two options are not used. An Ollama URL that is not this machine (`localhost` or a loopback address, except on the Cutpoint proxy's port) needs that Vision consent too; without it vision is skipped with a WARNING (`vision_consent_needed`) |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
@@ -968,6 +968,13 @@ sources). Ollama ratings are cached per source
 (`vision-ratings.json`), so a rerun asks only about candidates not rated and repeats the same
 scores. The cache also records the model's digest: a model pulled again under the same tag is
 rated again, and with Ollama down the cached ratings for the tag are used.
+
+With the generic styles (all but `action-cam`), a candidate with speech is rated on its frames
+together with what was said in it (its `transcript`, up to 600 characters), on local and hosted
+models alike, so speech that fits what is on screen can raise the rating. A window with no speech
+is rated on its frames alone, as before. A rating with speech has 1.9 taken off before it counts,
+so talk does not beat silent gameplay just for being talk. `action-cam` is unchanged. A rating
+with speech has its own cache key: those windows are rated again once, then cached.
 
 Signals combined: loudness (EBU R128 against the clip's own baseline), speech keywords from the
 transcript, laughter, scene-cut density and speech continuity. Likely Whisper hallucinations
