@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- AI Chat in `cutpoint ui` shows a compact summary of what the assistant did, and each proposed
+  change is a card with Apply, Preview and Discard. Apply no longer needs the Sequence tab preview first.
 - The trim rail in `cutpoint ui` draws the source's audio level over the filmstrip and marks the
   real events under it: sounds (laughter, cheering...), on-screen text such as kill feeds and
   camera crashes from `events.json`, each with a short label and a tooltip (kind, time,

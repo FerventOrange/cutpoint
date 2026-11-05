@@ -21,6 +21,7 @@
   --danger: #ff6b6b;
   --danger-btn: #c42f2f; /* white text stays above 4.5:1 */
   --card-line: #26282c;
+  --card-edge: #34363b; /* the edge of a chat card: a step above --card-line, as on the mock */
   --divider: #26282c; /* bands, columns and the header's rules */
   --picked: #1f2024; /* ticked sequence rows */
   --gold: #e0b450; /* trim rail selection */
@@ -116,6 +117,7 @@
   --danger: #ff6b6b;
   --danger-btn: #c42f2f; /* white text stays above 4.5:1 */
   --card-line: #2f425b;
+  --card-edge: var(--line);
   --picked: #22385a; /* ticked sequence rows */
   --gold: #e0b450; /* trim rail selection */
   --gold-fill: rgba(224, 180, 80, 0.3);
@@ -168,6 +170,7 @@
   --danger: #c0282d;
   --danger-btn: #c42f2f;
   --card-line: #b9c4d2;
+  --card-edge: var(--line);
   --picked: #d3e1f4;
   --gold: #946b0c;
   --gold-fill: rgba(196, 140, 20, 0.25);
@@ -978,9 +981,16 @@ body.tips-off .flag-tip { display: none; }
 
 /* AI Chat (#346): the panel fills the column, the conversation above the input */
 #panelAssistant { flex: 1 0 auto; }
-.chat-head { display: flex; align-items: flex-start; gap: var(--space-2); }
-.chat-who { flex: 1 1 auto; min-width: 0; display: grid; gap: var(--space-0); }
-#chatProvider { font-size: 13px; overflow-wrap: anywhere; }
+.chat-head { display: flex; align-items: center; gap: var(--space-2); }
+/* the provider as one status line: a dot and its label, 12 px muted */
+.chat-who { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.chat-dot[data-state="bad"] + #chatProvider { white-space: normal; overflow-wrap: anywhere; }
+#chatProvider { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#chatClear { flex: none; white-space: nowrap; }
+.chat-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.chat-dot[data-state="ok"] { background: var(--ok); }
+.chat-dot[data-state="bad"] { background: var(--bad); }
+.chat-dot[data-state=""] { visibility: hidden; }
 .chat-consent {
   display: grid; gap: var(--space-2); justify-items: start; padding: var(--space-3);
   border: 1px solid var(--amber-text); border-radius: var(--radius-md); background: var(--deep);
@@ -999,11 +1009,21 @@ body.tips-off .flag-tip { display: none; }
 .msg .md ul { list-style: disc; }
 .msg .md ol { list-style: decimal; }
 .msg .md code { font: 0.92em ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace; background: var(--raise); padding: 0 3px; border-radius: var(--radius-sm); }
-.msg.user { justify-self: end; background: var(--raise); border-color: var(--line); }
-.msg.step { background: none; border: 0; padding: 0 var(--space-1); color: var(--muted); font-size: 12.5px; }
+/* the user's message: a filled bubble, right-aligned, no outline; the assistant's text is plain */
+.msg.user { justify-self: end; max-width: 85%; padding: 10px 12px; border: 0; border-radius: 12px 12px 4px 12px; background: var(--raise); }
+.msg.plain { background: none; border: 0; padding: 0 var(--space-1); max-width: 100%; }
+/* a stretch of tool steps: a few short lines, the steps in words folded away */
+.msg.step.tools { gap: var(--space-0); }
+.tool-lines { display: grid; gap: var(--space-0); }
+.tool-lines li { display: flex; align-items: center; gap: 6px; }
+.tool-lines li.bad { color: var(--bad); }
+.chat-ic { flex: none; width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tool-details { font-size: 12px; }
+.tool-details summary { cursor: pointer; width: max-content; }
+.tool-details ul { display: grid; gap: var(--space-0); margin-top: var(--space-0); padding-left: var(--space-3); overflow-wrap: anywhere; }
+.msg.step { background: none; border: 0; padding: 0 var(--space-1); color: var(--muted); font-size: 12px; }
 .msg.bad { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }
 .msg.pending { flex-direction: row; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
-.msg.previewing { border-color: var(--amber-text); }
 /* view_moment without frame consent (#640): an allow box in the turn, like the consent box */
 .msg.frames-consent { border-color: var(--amber-text); }
 .msg.frames-consent .msg-title { font-weight: 650; }
@@ -1011,6 +1031,21 @@ body.tips-off .flag-tip { display: none; }
 .msg-acts { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .msg-acts .btn { white-space: normal; text-align: left; }
 .msg-acts .btn[aria-pressed="true"], .msg-acts .btn.on { border-color: var(--amber-text); }
+/* a proposal card */
+.msg.prop-card { justify-self: stretch; max-width: 100%; gap: var(--space-2); padding: 12px; border-radius: 10px; background: var(--deep); border: 1px solid var(--card-edge); }
+.msg.prop-card.previewing { border-color: var(--amber-text); }
+.prop-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--amber-text); }
+.chips { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.chip { font-size: 11px; padding: 0 8px; border-radius: var(--radius-pill); background: var(--raise); border: 1px solid var(--line); color: var(--text); } /* the --line border keeps the chip visible on a light card */
+.chip.auto { background: none; border: 1px dashed var(--line); color: var(--muted); }
+.prop-strip { display: flex; gap: 2px; height: 10px; }
+.prop-block { flex: 1 1 0; min-width: 2px; border-radius: var(--radius-xs); background: var(--k, var(--muted)); box-shadow: inset 0 0 0 1px var(--line); } /* the --line outline keeps each block visible on a light card */
+.prop-block[data-kind="action"] { --k: var(--k-action); }
+.prop-block[data-kind="scenic"] { --k: var(--k-scenic); }
+.prop-block[data-kind="funny"] { --k: var(--k-funny); }
+.prop-block[data-kind="dialogue"] { --k: var(--k-dialogue); }
+.prop-acts { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.prop-acts .btn { min-height: 34px; }
 .chat-history summary { cursor: pointer; font-weight: 650; font-size: 13px; }
 .history-list { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
 .history-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); }
@@ -1018,15 +1053,23 @@ body.tips-off .flag-tip { display: none; }
 /* the input stays in view at the bottom of the column while the conversation scrolls; it covers the
    column's 24 px bottom padding too, so no message shows through below it */
 .chat-form {
-  position: sticky; bottom: calc(-1 * var(--space-5)); z-index: 2; display: flex; align-items: flex-end; gap: var(--space-2);
+  position: sticky; bottom: calc(-1 * var(--space-5)); z-index: 2;
   padding: var(--space-2) 0 var(--space-4); margin-bottom: calc(-1 * var(--space-5)); background: var(--panel);
 }
-.chat-form textarea {
-  flex: 1 1 auto; min-width: 0; min-height: var(--control-h-lg); resize: vertical; font: inherit; color: var(--text);
-  background: var(--deep); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: var(--space-2);
+/* one bordered box holds the text and the icon-only Send */
+.chat-box {
+  display: flex; align-items: flex-end; gap: var(--space-2); padding: var(--space-1); background: var(--deep);
+  border: 1px solid var(--line); border-radius: 10px;
 }
+.chat-box:focus-within { outline: 2px solid var(--amber-text); outline-offset: 2px; }
+.chat-form textarea {
+  flex: 1 1 auto; min-width: 0; min-height: 34px; resize: none; font: inherit; color: var(--text);
+  background: none; border: 0; outline: 0; padding: var(--space-1) var(--space-2);
+}
+.chat-form textarea::placeholder { color: var(--muted); opacity: 1; } /* 4.5:1 on --deep in every theme */
 .chat-form textarea:disabled { opacity: 0.6; }
-.chat-form .btn { flex: none; min-height: var(--control-h-lg); }
+.chat-form .btn { flex: none; display: grid; place-items: center; width: 34px; height: 34px; min-height: 0; padding: 0; }
+.chat-form .chat-ic { width: 18px; height: 18px; stroke-width: 2.4; }
 /* a proposal previewed in the Sequence tab, in place of the sequence: each change in words, with its mark */
 #panelSequence.previewing :is(#seqList, #seqBatch, #seqSelAllRow, #seqEmpty, #removedPanel) { display: none; }
 .proposal { display: grid; gap: var(--space-2); padding: var(--space-3); background: var(--deep); border: 1px solid var(--amber-text); border-radius: var(--radius-md); }

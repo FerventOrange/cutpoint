@@ -7880,9 +7880,9 @@ def test_the_ai_chat_tab_has_one_labelled_input_and_one_send_button() -> None:
     panel = re.search(r'<div id="panelAssistant".*?\n      </div>\n', html, re.S)[0]
     assert re.search(r'<h2 id="chatTitle"[^>]*>AI Assistant</h2>', panel)
     assert re.search(r'<button type="button" id="chatClear"[^>]*>Clear chat</button>', panel)
-    buttons = re.findall(r"<button\b[^>]*>[^<]*</button>", panel)
+    buttons = re.findall(r"<button\b[^>]*>(?:[^<]|<svg.*?</svg>)*</button>", panel, re.S)
     assert [b for b in buttons if 'type="submit"' in b] == [
-        '<button type="submit" id="chatSend" class="btn primary" disabled>Send</button>'
+        '<button type="submit" id="chatSend" class="btn primary" aria-label="Send" disabled><svg class="chat-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>'
     ]
     # Clear chat, the hosted-provider consent (#346) and Send; no mic, no attach
     assert [re.search(r'id="(\w+)"', b)[1] for b in buttons] == [

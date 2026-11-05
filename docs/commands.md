@@ -771,7 +771,13 @@ setup --only visual`) and a cached visual layer (`analyze` writes it for the `ac
 - Moments the model points to can be highlighted in the Moments list ("Highlight in list") or
   the list filtered by the model's search words (offered only when the list's search, which also
   matches vision labels, finds one of them).
-- A proposed change opens in the Sequence tab as a preview of the new sequence: each row is
+- The chat shows what the assistant did as one compact summary line (for example "Searched 3 times
+  · 30 moments found") with a Details toggle, and a proposed change as a card: its summary, one chip
+  per change, a strip of the sequence after it, and the buttons Apply, Preview and Discard. Apply works
+  straight from the card, without opening the preview first; if the sequence changed since the
+  proposal was made, it opens the preview again instead. Discard on a card that is not the previewed
+  one only marks that card Discarded. Preview opens the change in the Sequence tab (below).
+- A new proposal is previewed in the Sequence tab as soon as it arrives; Preview shows it again: each row is
   marked Added, Moved (old to new position), Trimmed (old to new times) or Renamed, removed clips are
   listed as Removed, the moments are marked in the Moments list, and the trim rail shows the new
   start and end as dashed edges. Apply replaces the working sequence (Save keeps it, Undo takes
