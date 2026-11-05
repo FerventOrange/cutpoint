@@ -220,7 +220,7 @@ test('the storyboard keeps exactly one tab stop: the clicked block, or the first
 test('the stage mode switch: Clip by default, Sequence plays the sequence and Clip stops it', async (t) => {
   const m = await stage(t, { project: withSegments('h001', 'h002') });
   const [clip, seq] = [m.$('#stageMode [data-mode=clip]'), m.$('#stageMode [data-mode=sequence]')];
-  assert.equal(m.d.querySelectorAll('#stageMode button').length, 2, 'no Cut mode yet');
+  assert.equal(m.d.querySelectorAll('#stageMode button').length, 3, 'Clip, Cut and Sequence');
   assert.equal(clip.getAttribute('aria-pressed'), 'true');
   assert.equal(seq.getAttribute('aria-pressed'), 'false');
   await m.click(seq);

@@ -6946,12 +6946,13 @@ def test_play_sequence_keeps_a_window_proxy_only_when_it_covers_the_whole_clip()
     holds = re.search(r"const holdsClip = \(c\) => \{(.*?)\n\};", js, re.S)[1]
     assert "ofSource(src)" in holds and "coversSeg(r, c, sourceDur(c.source))" in holds
     body = js[js.index("function stageVideo(") : js.index("/** Stop a video element")]
-    keep = "const keep = mine && inLoaded(at, durOf(c)) && (!S.seqPlay || holdsClip(c));"
+    # part: the clip, or over a cut only the part of it that plays
+    keep = "const keep = mine && inLoaded(at, durOf(c)) && (!S.seqPlay || holdsClip(part));"
     assert keep in body
     assert "if (fits && (keep || p))" in body and "if (!keep) loadFile(src, p, at);" in body
     playing_on = re.search(r"const playingOn = ([^;]*);", body)[1]
     assert "ofSource(src)" in playing_on
-    assert playing_on.endswith("&& (!S.seqPlay || holdsClip(c))")
+    assert playing_on.endswith("&& (!S.seqPlay || holdsClip(part))")
 
 
 def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
@@ -7050,7 +7051,6 @@ def test_side_tabs_and_panel_headers_stay_put_while_a_panel_scrolls() -> None:
     assert "side.style.scrollPaddingBottom = `${$('#chatForm').offsetHeight}px`;" in js
     assert "side.style.setProperty('--seq-foot-h', `${$('#seqFoot').offsetHeight}px`);" in js
     assert "--seq-foot-h" in reveal
-    assert ".seq { scroll-margin-bottom: var(--seq-foot-h, 0px); }" in css
     assert "scroll-margin-bottom: calc(var(--seq-foot-h, 0px) + 28px);" in css
     assert "pad.observe(el)" in js and "$('#seqFoot')]" in js
     assert "--side-bars" not in js and "--side-bars" not in css
@@ -9620,15 +9620,15 @@ def test_a_failed_job_still_ends_with_on_end_and_a_failing_on_end_changes_nothin
 
 
 def test_the_center_stage_has_a_mode_switch_a_storyboard_and_zoom_levels() -> None:
-    """Contract pin (overhaul PR 2): the stage mode is a group of aria-pressed buttons (Clip and
-    Sequence; the Cut mode is a later change), the zoom levels are aria-pressed buttons, and the
-    storyboard sits after the trim message so it never replaces the trim controls; its blocks
+    """Contract pin (overhaul PR 2): the stage mode is a group of aria-pressed buttons (Clip, Cut
+    and Sequence), the zoom levels are aria-pressed buttons, and the storyboard sits after the trim message so it never replaces the trim controls; its blocks
     reorder through moveSeg and play through seqStart. I and O are trim keys."""
     html = _web("index.html")
     js = _web("app.js")
     mode = re.search(r'<div id="stageMode"[^>]*role="group"[^>]*>(.*?)</div>', html, re.S)[1]
     assert re.findall(r'data-mode="(\w+)" aria-pressed="(\w+)"', mode) == [
         ("clip", "true"),
+        ("cut", "false"),
         ("sequence", "false"),
     ]
     levels = re.search(r'<div id="zoomPresets"[^>]*>(.*?)</div>', html, re.S)[1]

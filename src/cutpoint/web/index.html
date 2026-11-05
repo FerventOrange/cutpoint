@@ -128,13 +128,67 @@
             <button type="button" id="retryBtn" class="btn small" hidden>Retry preview</button>
             <span class="spacer"></span>
             <div class="transport-end"></div>
-            <!-- what the stage plays: the selected clip (with its trim) or the whole sequence -->
+            <!-- what the stage shows: the selected clip (with its trim), the cut after it or the whole sequence. Cut mode moves the switch to the title row -->
             <div id="stageMode" class="seg stage-mode" role="group" aria-label="Stage mode">
               <button type="button" class="seg-btn" data-mode="clip" aria-pressed="true">Clip</button>
+              <button type="button" class="seg-btn" data-mode="cut" aria-pressed="false" aria-disabled="true" title="Cut mode needs a sequence of at least two clips.">Cut</button>
               <button type="button" class="seg-btn" data-mode="sequence" aria-pressed="false" disabled>Sequence</button>
             </div>
           </div>
         </div>
+        <!-- Cut mode: the join of two neighbouring sequence clips, in place of the player while it does not play -->
+        <section id="cutView" class="cut-view" aria-label="Cut between two clips" hidden>
+          <div class="cut-frames">
+            <figure class="cut-frame">
+              <img id="cutOutFrame" alt="" draggable="false">
+              <figcaption id="cutOutName" class="cut-tag"></figcaption>
+              <span id="cutOutTime" class="cut-tag cut-time tc"></span>
+            </figure>
+            <figure class="cut-frame">
+              <img id="cutInFrame" alt="" draggable="false">
+              <figcaption id="cutInName" class="cut-tag"></figcaption>
+              <span id="cutInTime" class="cut-tag cut-time tc"></span>
+            </figure>
+          </div>
+          <div class="cut-bar">
+            <button type="button" id="cutPlayBtn" class="btn primary"></button>
+            <span class="muted">plays 3 s before and after</span>
+            <span class="spacer"></span>
+            <div class="cut-trans">
+              <span id="cutTransLabel" class="muted">Transition</span>
+              <!-- Export's Video transition (#optTransition), not a setting of this cut -->
+              <div id="cutTransition" class="seg stage-mode" role="group" aria-labelledby="cutTransLabel" aria-describedby="cutTransNote">
+                <button type="button" class="seg-btn" data-value="cut" aria-pressed="true">Cut</button>
+                <button type="button" class="seg-btn" data-value="fade" aria-pressed="false">Fade</button>
+              </div>
+              <span id="cutTransNote" class="muted"></span>
+            </div>
+          </div>
+          <div class="cut-roll">
+            <p class="cut-roll-head"><b id="cutRollTitle">Roll the cut</b> <span id="cutRollHint" class="muted"></span></p>
+            <div id="cutTrack" class="cut-track">
+              <div id="cutSideA" class="cut-side a" aria-hidden="true">
+                <svg class="cut-wave" viewBox="0 0 1 100" preserveAspectRatio="none"><path></path></svg>
+                <span class="cut-side-name"></span>
+              </div>
+              <div id="cutSideB" class="cut-side b" aria-hidden="true">
+                <svg class="cut-wave" viewBox="0 0 1 100" preserveAspectRatio="none"><path></path></svg>
+                <span class="cut-side-name"></span>
+              </div>
+              <div id="cutJoin" class="cut-join" role="slider" tabindex="0" aria-label="Roll the cut" aria-orientation="horizontal" aria-describedby="cutRollHint" title="Drag, or use the arrow keys" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></div>
+            </div>
+            <div class="cut-ruler tc" aria-hidden="true"><span>−3 s</span><span>−1.5 s</span><span>cut</span><span>+1.5 s</span><span>+3 s</span></div>
+            <p id="cutRollMsg" class="cut-roll-msg" role="status"></p>
+          </div>
+          <div class="cut-nav">
+            <span class="muted">Cuts</span>
+            <div id="cutStrip" class="cut-strip" role="group" aria-label="Cuts in sequence order" title="Arrow keys move between the cuts, Enter opens one"></div>
+            <div class="clip-nav" role="group" aria-label="Sequence cuts">
+              <button type="button" id="prevCut" class="btn small">‹ Previous cut</button>
+              <button type="button" id="nextCut" class="btn small">Next cut ›</button>
+            </div>
+          </div>
+        </section>
         <div class="cut-line">
           <span class="muted">Cut</span>
           <span id="cutRange" class="cut-num tc"></span>
