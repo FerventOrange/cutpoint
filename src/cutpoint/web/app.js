@@ -404,7 +404,7 @@ function renderProjectMenu() {
       type: 'button', role: 'menuitemradio', class: 'proj-item', tabindex: '-1', 'aria-checked': String(p.id === S.id), 'data-id': p.id,
       onclick: () => pickProject(p.id),
     }, icon('check'), h('span', { text: p.interrupted ? `${p.name} (interrupted)` : p.name }))),
-    S.projects.length ? h('div', { class: 'proj-sep', role: 'separator' }) : null,
+    ...(S.projects.length ? [h('div', { class: 'proj-sep', role: 'separator' })] : []),
     h('button', { type: 'button', role: 'menuitem', class: 'proj-item', id: 'newProjectItem', tabindex: '-1', onclick: pickNewProject },
       h('span', { text: 'New project…' })),
   );

@@ -165,3 +165,24 @@ test('a project list the server refuses shows Projects unavailable and disables 
   assert.equal(page.document.querySelector('#projectName').textContent, 'Projects unavailable');
   assert.equal(page.document.querySelector('#projectBtn').disabled, true);
 });
+
+test('with no projects the menu holds only New project… (no divider, no "null")', async (t) => {
+  const { $ } = await open(t, { project: null, two: false });
+  $('#projectBtn').click();
+  assert.deepEqual([...$('#projectMenu').children], [$('#newProjectItem')]);
+  assert.equal($('#projectMenu').textContent, 'New project…');
+});
+
+test('the page shortcuts (M, I, O, [ and ]) do nothing inside the menu', async (t) => {
+  const { page, $, key } = await open(t);
+  const muted = () => $('.vol button').getAttribute('aria-pressed');
+  const range = () => [$('#t-start').value, $('#t-end').value];
+  const [was, wasRange] = [muted(), range()];
+  $('#projectBtn').click();
+  for (const k of ['m', 'i', 'o', '[', ']']) key(page.document.activeElement, k);
+  assert.equal(muted(), was);
+  assert.deepEqual(range(), wasRange);
+  // the same keys on the page do act (so the check above can fail)
+  key(page.document.body, 'm');
+  assert.notEqual(muted(), was);
+});
