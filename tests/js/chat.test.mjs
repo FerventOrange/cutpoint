@@ -781,6 +781,23 @@ test('the status dot is not green when the provider cannot be used (F6)', async 
   assert.equal(o.$('#chatDot').dataset.state, 'wait');
 });
 
+test('Apply clears an earlier failure alert', async (t) => {
+  let calls = 0;
+  const m = await cardPage(t, {
+    events: [proposal(), proposal({ n: 2, id: 'pr2', summary: 'Other' })],
+    routes: { [`POST ${A}/proposals/pr1/applied`]: () => (calls++ ? ENTRY : reply(409, { detail: 'nope' })) },
+  });
+  m.$('#tabAssistant').click();
+  await m.click('#chatLog [data-pid="pr1"] [data-act="apply"]');
+  assert.match(m.$('#chatError').textContent, /nope/);
+  await m.click('#propApply'); // the retry from the Sequence tab's button works
+  assert.equal(m.$('#chatError').textContent, '');
+  m.$('#chatError').textContent = 'an earlier failure';
+  await m.click('#chatLog [data-pid="pr2"] [data-act="apply"]'); // stale now: previewed, not sent
+  assert.equal(m.posts('/proposals/pr2/applied').length, 0);
+  assert.equal(m.$('#chatError').textContent, '');
+});
+
 test('card Apply of a color-only proposal on a non-empty sequence posts directly (F15)', async (t) => {
   const rows = AFTER.map((s, i) => ({
     id: s.id, label: s.label, changes: [], before: { pos: i + 1, start: s.start, end: s.end, label: s.label }, after: { pos: i + 1, start: s.start, end: s.end, label: s.label },
