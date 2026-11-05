@@ -954,7 +954,7 @@ an analysed set processes only the new file.
 | `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
 | `--skip STEP ...` | Leave out `reactions`, `keyframes` and/or `crashes` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
 | `--no-scenes` | Skip scene detection |
-| `--max-candidates N` | Candidates per source before merging |
+| `--max-candidates N` | Candidates per source before merging. Default: enough to cover about 3 times the style's target length, at least 30. `gaming` has an open list instead: see [Candidates](#candidates) |
 | `--recover` | After a read error, resume analysis past the bad region |
 | `--must-include-crash CONF` | Action-cam: always clip crashes with at least this confidence, 0 to 1 (0 disables) |
 | `--batch-size N` | Close each model (Whisper, the step models, the background HUD OCR engine and the `--vision` rating's Ollama model, which then rates the candidates of N sources at a time) after N sources and load it again for the next ones, to give memory back on long runs; the results are the same. Default 0: keep it loaded. Also on `360 analyze` (its view layer, analysis and events) |
@@ -1099,6 +1099,26 @@ local LLM to the profile library. `analyze` never writes `visual_check\`; only
 `score_pre_events`, and `highlights.pre-events.json` is written only when the analysis was not
 ranked with events yet.
 
+### Candidates
+
+Candidates come from the audio and transcript grids: per source, the strongest peaks, at most
+the default count above (or `--max-candidates`), each at least a quarter of the strongest peak.
+`gaming` has an open list: it has no fixed cap, so a long video can have more moments than the
+usual count, but beyond that count a moment must reach 0.5 of the strongest peak. The default
+sequence stays about 90 s. `--max-candidates` sets the cap for every style, as before.
+
+In styles with an open list (`gaming`), detected events can also create candidates of their own
+("nominated" moments), so a moment no longer has to be found by the grids first. Other styles
+create none and behave as before. When events are scored (`analyze` with its event
+steps, or `events`), each event that can score and that no candidate covers gets a window
+(a few seconds before it, and after it as its type's tail or the style's post-roll); events
+close together make one candidate. A nominated candidate has `signals.events.nominated` (the
+event names) and keeps the score its window had from the grids as `grid_score`; its `score` is at
+least 0.6 of the best other candidate's of that source, so the events decide its rank. Ids of
+nominees continue after the highest id ever given (`settings.last_candidate_id`). Menu time is
+left out. Run again, the
+same events give the same nominees. A source whose caches are gone gets none.
+
 If ffmpeg hits read errors (a damaged file, a failing drive), `analyze` warns loudly, records
 `read_errors` on that source in `highlights.json`, and stops analysing that source at the
 failure time. `--recover` then probes past the bad region and continues from the first
@@ -1181,7 +1201,8 @@ cutpoint events <project> [--layers audio voice visual crash ocr vlm] [--no-vlm]
 Optional; needs the `events` extra and `cutpoint setup`. [`analyze`](#analysis-steps) already runs the `audio`, `ocr`, `voice`, `visual` and `crash` layers it can; use `events` for the `vlm` layer, to force layers (`--force`) or to rerun them with other options. It works in
 layers, one GPU model at a time, and writes `events.json` and `events.txt`, then re-ranks
 `highlights.json` (the original is kept as `highlights.pre-events.json`). The re-rank drops or
-trims candidates in HUD menu time, as `analyze` does ([game streams](workflows/game-streams.md)).
+trims candidates in HUD menu time, as `analyze` does ([game streams](workflows/game-streams.md)), and,
+in `gaming`, nominates candidates for events no candidate covers (see [Candidates](#candidates)).
 
 Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, `events.json` is rewritten without that source's events; the action-cam re-rank is skipped and other styles re-rank with the events found; rerun once the footage is back (caches make it quick).
 

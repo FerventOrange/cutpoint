@@ -39,7 +39,7 @@ from cutpoint.dsp import conv_same
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events import paths as event_paths
 from cutpoint.events.menu_spans import drop_menu_time
-from cutpoint.events.scoring import rescore
+from cutpoint.events.scoring import Seed, rescore
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
@@ -61,7 +61,7 @@ from cutpoint.ffmpeg_utils import (
     wav_duration,
 )
 from cutpoint.progress import ANALYZE_STEPS, LABELS, SKIPPABLE
-from cutpoint.sources import READ_ERRORS_FILE, load_read_errors
+from cutpoint.sources import READ_ERRORS_FILE, load_read_errors, source_segments
 from cutpoint.styles import ACTION_CAM, AUTO, LAUGHTER, PROFANITY, AutoRequest, Style
 from cutpoint.transcribe import (
     Segment,
@@ -88,6 +88,8 @@ PROFANITY_CUE_S = 3.0  # a profane word counts only if another cue is this close
 PROFANITY_CUE_MIN = 0.8  # minimum weight of a keyword that counts as a cue
 VISION_TOP_MIN, VISION_TOP_MAX = 10, 60  # auto --vision-top: 1 per 2 min, clamped
 VISION_LABEL_MIN = 7.0  # --vision: from this rating, the model's label names the clip
+PICK_FLOOR = 0.25  # a peak below this share of the strongest one is not a candidate ...
+LONG_LIST_FLOOR = 0.5  # ... and, past the usual count (:func:`usual_count`), not below this share
 SNIPPET_CHARS = 240  # a candidate's transcript snippet
 UNSURE_P = 0.5  # transcript words Whisper heard with less confidence are listed as unsure
 SHORTFALL_S, SHORTFALL_FRAC, SHORTFALL_FLOOR_S = 2.0, 0.01, 0.5  # truncation thresholds
@@ -143,6 +145,7 @@ class Candidate:
     kind: str = ""  # action-cam: dominant feature of the clip (airtime, crash, speed, ...)
     must_include: bool = False  # action-cam: confident crash (cutpoint clips always exports it)
     event: dict[str, Any] | None = None  # action-cam: the crash behind a must-include clip
+    nominated: list[str] = field(default_factory=list)  # event types that seeded it (nominate)
 
 
 # --------------------------------------------------------------------------- signals
@@ -624,14 +627,19 @@ def _pick_windows(
     style: Style,
     duration: float,
     max_candidates: int,
+    usual: int | None = None,
 ) -> list[Candidate]:
+    """Windows around the highest peaks of ``combined``, strongest first, at most
+    ``max_candidates``. A peak must reach :data:`PICK_FLOOR` of the strongest one, and once
+    ``usual`` windows are picked (None: never) :data:`LONG_LIST_FLOOR`."""
     score = combined.copy()
     gmax = float(score.max()) if score.size else 0.0
     out: list[Candidate] = []
     while len(out) < max_candidates:
         i = int(score.argmax())
         peak = float(score[i])
-        if peak <= 0.05 or peak < 0.25 * gmax:
+        floor = LONG_LIST_FLOOR if usual is not None and len(out) >= usual else PICK_FLOOR
+        if peak <= 0.05 or peak < floor * gmax:
             break
         # Region around the peak that stays above 60% of it.
         lo, hi = i, i
@@ -650,6 +658,8 @@ def _pick_windows(
         start, end = max(0.0, start), min(duration, end)
         a, b = int(start / DT), max(int(start / DT) + 1, int(end / DT))
         score[a:b] = 0.0
+        if usual is not None:  # an open list has no cap to stop at
+            score[i] = 0.0  # the peak itself, also when the window ends at it (the last sample)
         out.append(
             Candidate(
                 source=src,
@@ -669,6 +679,7 @@ def _absorb_into(prev: Candidate, c: Candidate) -> None:
     if c.peak > prev.peak:
         prev.peak, prev.peak_t = c.peak, c.peak_t
     prev.signals = {k: max(v, c.signals.get(k, 0)) for k, v in prev.signals.items()}
+    prev.nominated = list(dict.fromkeys([*prev.nominated, *c.nominated]))
 
 
 def _merge(cands: list[Candidate], style: Style) -> list[Candidate]:
@@ -888,6 +899,46 @@ def text_signals(ps: PartSignals, style: Style, name: str) -> None:
     sig["speech"] = keyword_signal(n, kw_hits, style.keyword_cap)
     sig["laughter"] = _impulse_signal(n, [(t, w) for t, w, _ in laugh_hits])
     ps.kw_hits, ps.laugh_hits = kw_hits, laugh_hits
+
+
+def part_signals(
+    span: float,
+    lufs_data: tuple[np.ndarray, np.ndarray] | None,
+    segments: list[Segment],
+    cuts: list[float] | None,
+    style: Style,
+    name: str,
+    text: bool = True,
+) -> PartSignals:
+    """The signal grids of a part ``span`` seconds long: loudness from ``lufs_data`` (the cached
+    times and momentary loudness; None without audio), the transcript ``segments``' signals
+    (``text`` False leaves them for :func:`text_signals`) and, with ``cuts`` (None: no scene
+    detection), the scene curve; ``cuts`` are also kept, for snapping. ``name``: the source's, for the log."""
+    n = max(1, int(span / DT) + 1)
+    sig = {k: np.zeros(n) for k in ("loudness", "speech", "laughter", "scene", "continuity")}
+    if lufs_data is not None:
+        times, lufs = lufs_data
+        sig["loudness"] = np.interp(np.arange(n) * DT, times, loudness_signal(lufs))
+    words = flat_words(segments)
+    ps = PartSignals(n, sig, [], [], words, segments, list(cuts or []))
+    if text:
+        text_signals(ps, style, name)
+    sig["continuity"] = continuity_signal(n, words)
+    if cuts is not None:
+        sig["scene"] = _impulse_signal(n, [(t, 0.7) for t in cuts], sigma_s=1.5)
+    return ps
+
+
+@dataclass
+class GridPart:
+    """The grids of one analysed part, for :func:`nominate_candidates`: a :class:`SourceResult`
+    of this run, or what the caches of an earlier one give (:func:`cached_grid_parts`)."""
+
+    source: Path
+    index: int  # of the source in highlights.json's ``sources``
+    offset: float
+    duration: float
+    signals: PartSignals
 
 
 @dataclass
@@ -1157,17 +1208,6 @@ def analyze_source(
         if read_checked is not None:
             shared = read_checked(info, None)
 
-    n = max(1, int(span / DT) + 1)
-    sig = {k: np.zeros(n) for k in ("loudness", "speech", "laughter", "scene", "continuity")}
-    if lufs_data is not None:
-        times, lufs = lufs_data
-        sig["loudness"] = np.interp(np.arange(n) * DT, times, loudness_signal(lufs))
-    words = flat_words(segments)
-    ps = PartSignals(n, sig, [], [], words, segments, [])
-    if text:
-        text_signals(ps, style, src.name)
-    sig["continuity"] = continuity_signal(n, words)
-
     cuts: list[float] = []
     if use_scenes:
         t0 = time.perf_counter()
@@ -1180,7 +1220,6 @@ def analyze_source(
                 io, cdir, span, offset, limit=span if read_error else None, shared=shared
             )
             took = time.perf_counter() - t0
-        sig["scene"] = _impulse_signal(n, [(t, 0.7) for t in cuts], sigma_s=1.5)
         add("scenes_s", took)
         if shared is not None:  # for measuring the shared decode
             logger.info(
@@ -1190,7 +1229,9 @@ def analyze_source(
                 took,
                 shared.summary(),
             )
-    ps.cuts = cuts
+    ps = part_signals(
+        span, lufs_data, segments, cuts if use_scenes else None, style, src.name, text
+    )
 
     res = SourceResult(
         source=src,
@@ -1211,7 +1252,7 @@ def analyze_source(
         src.name,
         where,
         span,
-        len(words),
+        len(ps.words),
         len(cuts),
         f", {len(res.candidates)} candidates" if pick else "",
     )
@@ -1230,23 +1271,55 @@ def pick_candidates(
     ps = res.signals
     if ps is None:
         raise ValueError(f"{src}: no signals to pick candidates from")
-    n, sig, kw_hits, laugh_hits = ps.n, ps.sig, ps.kw_hits, ps.laugh_hits
-    words, segments = ps.words, ps.segments
+    n, sig = ps.n, ps.sig
+    segments = ps.segments
     if ski_ctx is not None:
         cands = _ski_candidates(
             src, n, span, sig, offset, style, ski_ctx, max_candidates, segments, timings
         )
     else:
-        if max_candidates is None:  # enough to cover ~3x the target duration
-            max_candidates = max(
-                30, int(3 * style.target_total / ((style.min_len + style.max_len) / 2))
-            )
+        usual = usual_count(style) if style.open_list and max_candidates is None else None
         # Picked on the raw weighted sum: the cut-offs do not depend on what is available.
         combined = scorer.combined(sig, style)
-        cands = _merge(_pick_windows(src, combined, sig, style, span, max_candidates), style)
+        raw = _pick_windows(
+            src, combined, sig, style, span, candidate_cap(style, max_candidates), usual
+        )
+        # The first ``usual`` picks are finished as they always were; the picks past them only
+        # fill what those leave free, so a longer list never changes the top of a shorter one.
+        head, tail = (raw[:usual], raw[usual:]) if usual is not None else (raw, [])
+        cands = _merge(head, style)
         for c in cands:
             _snap(c, ps.cuts, segments, span, style)
         cands = _resolve_overlaps(cands, style)
+        taken = [(c.start, c.end) for c in cands]
+        tail = [c for c in tail if not any(a <= c.peak_t <= b for a, b in taken)]
+        cands += _place_free(tail, taken, ps, span, style)
+    return describe_candidates(cands, style, ps, offset)
+
+
+def usual_count(style: Style) -> int:
+    """The candidates a part gets by default: enough to cover ~3x the target duration, at least
+    30. A style with an open list (``Style.open_list``) goes past it, above
+    :data:`LONG_LIST_FLOOR`; up to it the floor is :data:`PICK_FLOOR`."""
+    return max(30, int(3 * style.target_total / ((style.min_len + style.max_len) / 2)))
+
+
+def candidate_cap(style: Style, explicit: int | None = None) -> int:
+    """Most candidates picked from a part (before merging): ``explicit`` (``--max-candidates``,
+    with the :data:`PICK_FLOOR` throughout) if given, else :func:`usual_count`, or for an open
+    list as many as qualify (:func:`_pick_windows`: :data:`PICK_FLOOR` up to
+    :func:`usual_count`, then :data:`LONG_LIST_FLOOR`)."""
+    if explicit is not None:
+        return explicit
+    return sys.maxsize if style.open_list else usual_count(style)
+
+
+def describe_candidates(
+    cands: list[Candidate], style: Style, ps: PartSignals, offset: float
+) -> list[Candidate]:
+    """Score ``cands`` from their peak and fill their keywords, label hint and transcript
+    snippet from the part's transcript; then move them to absolute source time (``offset``)."""
+    words, kw_hits, laugh_hits = ps.words, ps.kw_hits, ps.laugh_hits
     avail = scorer.available_for(style)
     for c in cands:
         c.score = scorer.score(c.peak, style, avail, c.must_include)
@@ -1264,6 +1337,130 @@ def pick_candidates(
             c.start, c.end = round(c.start + offset, 3), round(c.end + offset, 3)
             c.peak_t += offset
     return cands
+
+
+def _free_around(t: float, taken: list[tuple[float, float]], span: float) -> tuple[float, float]:
+    """The stretch of ``[0, span]`` around ``t`` that no ``taken`` window covers."""
+    if any(a < t < b for a, b in taken):
+        return t, t
+    lo = max([0.0, *(b for a, b in taken if b <= t)])
+    hi = min([span, *(a for a, b in taken if a >= t)])
+    return lo, hi
+
+
+def _fit_free(c: Candidate, taken: list[tuple[float, float]], span: float, style: Style) -> bool:
+    """Keep ``c`` out of the ``taken`` windows (existing candidates), at least ``min_len``
+    long: moved within the free stretch around its event; False if that is too short."""
+    lo, hi = _free_around(c.peak_t, taken, span)
+    c.start, c.end = max(c.start, lo), min(c.end, hi)
+    if c.end - c.start < style.min_len:
+        c.end = min(hi, c.start + style.min_len)
+        c.start = max(lo, c.end - style.min_len)
+    return c.end - c.start >= style.min_len - 1e-6
+
+
+def _place_free(
+    cands: list[Candidate],
+    taken: list[tuple[float, float]],
+    ps: PartSignals,
+    span: float,
+    style: Style,
+) -> list[Candidate]:
+    """Finish ``cands`` (part-relative windows) like the picked ones, in what the ``taken``
+    windows leave free: fitted, merged, snapped, overlaps resolved and fitted again; none
+    ends up over a taken window or another."""
+    stretches: dict[tuple[float, float], list[Candidate]] = {}
+    for c in cands:
+        if _fit_free(c, taken, span, style):
+            stretches.setdefault(_free_around(c.peak_t, taken, span), []).append(c)
+    cands = [m for group in stretches.values() for m in _merge(group, style)]
+    for c in cands:
+        _snap(c, ps.cuts, ps.segments, span, style)
+    cands = [c for c in _resolve_overlaps(cands, style) if _fit_free(c, taken, span, style)]
+    out: list[Candidate] = []
+    for c in sorted(cands, key=lambda c: c.start):  # the fits can bring two together again
+        if out and c.start < out[-1].end:
+            c.start = out[-1].end
+            if c.end - c.start < style.min_len:
+                continue
+        out.append(c)
+    return out
+
+
+def nominate_candidates(
+    part: GridPart, style: Style, seeds: list[Seed], taken: list[tuple[float, float]]
+) -> list[Candidate]:
+    """Candidates for the events ``seeds`` (absolute source time) of one analysed part that no
+    existing candidate covers, in absolute source time and scored from the part's grids.
+
+    A window runs from ``pre_roll`` before an event to its tail (the event type's ``tail_s``,
+    else ``post_roll``) after it, at least ``min_len`` long. Windows close to each other merge
+    (:func:`_merge`: a burst of kills is one candidate) and are snapped like the picked ones.
+    All stay out of ``taken`` (the windows of the existing candidates, absolute time), and
+    ``style.max_len`` holds as it does for the picked ones.
+    """
+    ps, off, span = part.signals, part.offset, part.duration
+    taken = [(a - off, b - off) for a, b in taken]
+    cands = []
+    for s in sorted(seeds, key=lambda s: s.start):
+        t = s.start - off
+        if not 0.0 <= t <= span:
+            continue
+        end = t + s.hold + (style.post_roll if s.tail_s is None else s.tail_s)
+        start, end = max(0.0, t - style.pre_roll), min(span, end)
+        if end - start > style.max_len:
+            end = start + style.max_len
+        if end - start < style.min_len:
+            end = start + style.min_len
+        cands.append(
+            Candidate(
+                part.source,
+                start,
+                end,
+                t,
+                0.0,
+                dict.fromkeys(ps.sig, 0.0),
+                label_hint=slugify(s.name, 30),
+                nominated=[s.name],
+            )
+        )
+    out = _place_free(cands, taken, ps, span, style)
+    combined = scorer.combined(ps.sig, style)
+    for c in out:
+        a = int(c.start / DT)
+        b = max(a + 1, int(c.end / DT))
+        c.peak = float(combined[a:b].max())
+        c.signals = {k: round(float(v[a:b].max()), 3) for k, v in ps.sig.items()}
+    return describe_candidates(out, style, ps, off)
+
+
+def cached_grid_parts(hl: dict[str, Any], style: Style) -> list[GridPart]:
+    """The grids of the analysis ``hl`` as its caches give them (what :func:`analyze_source`
+    built: the loudness, the transcript of the analysis's model and language, the scene cuts).
+    A source with a recovered part, or whose caches are gone or offline, has none."""
+    settings = hl.get("settings") or {}
+    entries = hl.get("sources", [])
+    recovered = {e["path"] for e in entries if e.get("offset") or e.get("read_errors")}
+    out: list[GridPart] = []
+    for i, e in enumerate(entries):
+        if e["path"] in recovered:
+            continue
+        src = Path(e["path"])
+        try:
+            cdir = cache.source_dir(src)
+        except OSError:
+            continue
+        loud = cache.load_json(cdir / "loudness.json")
+        segments = source_segments(src, settings.get("language"), settings.get("whisper_model"))
+        found = cache.load_json(cdir / "scenes.json")
+        if loud is None and segments is None and found is None:  # nothing cached to build from
+            continue
+        span = float(e.get("analyzed_s") or e["duration"])
+        cuts = (found or []) if settings.get("scenes", True) else None
+        lufs = (np.asarray(loud["t"]) - 0.2, np.asarray(loud["m"])) if loud else None
+        ps = part_signals(span, lufs, segments or [], cuts, style, src.name)
+        out.append(GridPart(src, i, 0.0, span, ps))
+    return out
 
 
 def _transcript_snippet(
@@ -2396,9 +2593,14 @@ def _analyze(
         ev = None
         if style.kind != ACTION_CAM:  # action-cam: the events are features of its scorer
             ev = cache.load_json(out_dir / "events.json")
+        grids = [
+            GridPart(r.source, i, r.offset, r.duration, r.signals)
+            for i, r in enumerate(results)
+            if r.signals is not None
+        ]
         if ev:
             drop_menu_time(hl, ev)
-            changed = rescore(hl, ev, out_dir)
+            changed = rescore(hl, ev, out_dir, grids)
             logger.info(
                 "Rescored %d of %d candidates from events.json", changed, len(hl["candidates"])
             )
@@ -2465,7 +2667,7 @@ def _analyze(
                         cands, rater, n_top, style, wording, batch_size=batch_size
                     )
                     if ev:  # the blended analysis scores plus the event boosts again
-                        rescore(hl, ev, out_dir)
+                        rescore(hl, ev, out_dir, grids)
                     timings["vision_s"] = round(time.perf_counter() - t0, 2)
                     hl["settings"]["vision_used"] = used
                     hl["settings"]["vision"] = {
@@ -2482,7 +2684,9 @@ def _analyze(
                 steps.skip("vision", "Ollama or its vision model is not reachable")
 
         cands = hl["candidates"]
-        cands.sort(key=lambda c: (not c.get("must_include"), -c["score"]))  # must-include first
+        cands.sort(
+            key=lambda c: (not c.get("must_include"), *scorer.rank_key(c))
+        )  # must-include first
         total, suggested = 0.0, 0
         for c in cands:
             if total >= style.target_total and not c.get("must_include"):
@@ -2491,6 +2695,7 @@ def _analyze(
             suggested += 1
         hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]
         hl["suggested_top"] = suggested
+        hl["settings"]["last_candidate_id"] = len(cands)
         from cutpoint import visual_pool  # noqa: PLC0415
 
         if visual_pool.is_pool_style(style):

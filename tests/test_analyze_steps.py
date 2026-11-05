@@ -727,6 +727,105 @@ def test_vision_blends_into_the_analysis_score_then_the_events_apply_again(run, 
     assert cand["score"] == pytest.approx(cand["score_pre_events"] + boost, abs=0.15)
 
 
+def test_the_grids_of_the_run_reach_both_rescores_and_the_nominees_keep_their_ratings(
+    run, monkeypatch
+):
+    """The signal grids of this run feed the events' nominees at the ranking and again after
+    the vision step; a nominee is rated, keeps the rating through the second rescore, gets a
+    fresh id, and of two nominees that tie on the floored score the one the grids like more
+    ranks first."""
+    sig = {k: np.zeros(6001) for k in ("loudness", "speech", "laughter", "scene", "continuity")}
+    sig["loudness"] += 0.3 * np.exp(-(((np.arange(6001) * 0.1 - 100.0) / 1.0) ** 2))
+    signals = analyze.PartSignals(6001, sig, [], [], [], [], [])
+
+    def source(src, style, tr, use_scenes, max_cand, timings, **kw):
+        info = MediaInfo(
+            src, 600.0, 600.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
+        )
+        cand = analyze.Candidate(src, 10.0, 20.0, 15.0, 1.0, {"loudness": 1.0}, score=50.0)
+        return analyze.SourceResult(src, info, 0.0, 600.0, [cand], [], None, signals)
+
+    monkeypatch.setattr(analyze, "analyze_source", source)
+    monkeypatch.setattr(pipeline, "run_events", lambda *a, **k: None)
+    seen = []
+    real = analyze.rescore
+
+    def rescore(hl, ev, project, parts=None):
+        seen.append(parts)
+        return real(hl, ev, project, parts)
+
+    monkeypatch.setattr(analyze, "rescore", rescore)
+    run.go("gaming")  # no events.json yet: the rescore does not run
+    kills = [
+        {"source": str(run.video), "start": t, "end": t + 3, "kind": "ocr", "type": "kill",
+         "label": "Ash > Bob", "player": True, "player_kill": True, "player_death": False,
+         "teamkill": False}
+        for t in (300.0, 100.0)
+    ]  # fmt: skip
+    write(run.proj / "events.json", json.dumps({"created": "t", "events": kills}))
+    seen.clear()
+    run.go("gaming", vision=True)
+    assert len(seen) == 2  # the ranking and after the vision step
+    for parts in seen:
+        assert [(g.source, g.index, g.offset, g.duration) for g in parts] == [
+            (run.video, 0, 0.0, 600.0)
+        ]
+        assert parts[0].signals is signals
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    cands = hl["candidates"]
+    assert [c["id"] for c in cands] == ["h001", "h002", "h003"]
+    assert hl["settings"]["last_candidate_id"] == 3
+    noms = [c for c in cands if scoring.is_nominated(c)]
+    assert len(noms) == 2
+    assert all(c["signals"]["vision"] == 8.0 for c in noms)  # rated, and kept by the rescore
+    # the same boost and floor; the kill on the loudness bump ranks above the one that is not
+    assert noms[0]["score"] == noms[1]["score"]
+    assert noms[0]["grid_score"] > noms[1]["grid_score"]
+    assert noms[0]["start"] < 100.0 < noms[0]["end"]
+
+
+def test_a_style_without_an_open_list_gets_no_nominee_and_the_same_suggested_top_on_both_paths(
+    run, monkeypatch
+):
+    """Kills nothing covers nominate no window under a style that does not go past its usual
+    list, and the suggestion is the one of a run without events, on the analyze path and when
+    ``cutpoint events`` rescores the file afterwards."""
+
+    sig = {k: np.zeros(6001) for k in ("loudness", "speech", "laughter", "scene", "continuity")}
+    signals = analyze.PartSignals(6001, sig, [], [], [], [], [])  # grids: a nominee could be scored
+
+    def source(src, style, tr, use_scenes, max_cand, timings, **kw):
+        info = MediaInfo(
+            src, 600.0, 600.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
+        )
+        cands = [
+            analyze.Candidate(src, t, t + 30.0, t + 15.0, 1.0, {"loudness": 1.0}, score=s)
+            for t, s in ((10.0, 60.0), (200.0, 50.0), (400.0, 40.0))
+        ]
+        return analyze.SourceResult(src, info, 0.0, 600.0, cands, [], None, signals)
+
+    def saved() -> dict:
+        return json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+
+    monkeypatch.setattr(analyze, "analyze_source", source)
+    monkeypatch.setattr(pipeline, "run_events", lambda *a, **k: None)
+    run.go("action")  # no events.json yet
+    plain = saved()
+    assert len(plain["candidates"]) == 3 and plain["suggested_top"] == 2
+    kills = [
+        {"source": str(run.video), "start": t, "end": t + 3, "kind": "ocr", "type": "kill",
+         "label": "Ash > Bob", "player": True, "player_kill": True, "player_death": False,
+         "teamkill": False}
+        for t in (120.0, 330.0)
+    ]  # fmt: skip
+    write(run.proj / "events.json", json.dumps({"created": "t", "events": kills}))
+    run.go("action")
+    for hl in (saved(), (scoring.rescore_highlights(run.proj), saved())[1]):
+        assert [c["id"] for c in hl["candidates"]] == ["h001", "h002", "h003"]
+        assert not any(scoring.is_nominated(c) for c in hl["candidates"])
+        assert hl["suggested_top"] == plain["suggested_top"]
+
+
 @pytest.mark.parametrize(("layers", "prepared"), [(True, 2), (False, 1)])
 def test_ski_features_are_prepared_again_after_the_layers(run, monkeypatch, layers, prepared):
     """F5b: ski candidates come from the feature grid; it is built again once this run's
@@ -1045,9 +1144,9 @@ def test_result_files_are_written_at_the_end_and_read_from_memory_meanwhile(run,
     seen = []
     real = analyze.rescore
 
-    def rescore(hl, ev, project):
+    def rescore(hl, ev, project, parts=None):
         seen.append((ev["events"], (project / "events.json").exists()))
-        return real(hl, ev, project)
+        return real(hl, ev, project, parts)
 
     monkeypatch.setattr(analyze, "rescore", rescore)
     run.go("action")
