@@ -70,10 +70,11 @@ test('the menu lists the projects with the current one marked, a divider and New
   assert.equal(pop.hidden, false);
   assert.equal($('#projectBtn').getAttribute('aria-expanded'), 'true');
   const kids = [...pop.children];
-  assert.deepEqual(kids.map((k) => k.getAttribute('role')), ['menuitemradio', 'menuitemradio', 'separator', 'menuitem']);
+  assert.deepEqual(kids.map((k) => k.getAttribute('role')), ['menuitemradio', 'menuitemradio', 'separator', 'menuitem', 'separator', 'menuitem', 'none']);
   assert.deepEqual(kids.slice(0, 2).map((k) => k.getAttribute('aria-checked')), ['true', 'false']);
   assert.equal(kids[1].textContent, 'Second trip (interrupted)');
   assert.equal(kids[3].textContent, 'New project…');
+  assert.equal(kids[5].textContent, 'Analyze again', 'the open project action; Show folder is absent where the server cannot open folders');
   assert.equal(page.document.activeElement, kids[0], 'focus starts on the current project');
 });
 
@@ -89,13 +90,15 @@ test('arrow keys, Home and End move focus without acting; Escape closes and refo
   key(active(), 'ArrowDown');
   assert.equal(active(), items[2], 'New project…');
   key(active(), 'ArrowDown');
+  assert.equal(active(), items[3], 'Analyze again');
+  key(active(), 'ArrowDown');
   assert.equal(active(), items[0], 'wraps');
   key(active(), 'ArrowUp');
-  assert.equal(active(), items[2]);
+  assert.equal(active(), items[3]);
   key(active(), 'Home');
   assert.equal(active(), items[0]);
   key(active(), 'End');
-  assert.equal(active(), items[2]);
+  assert.equal(active(), items[3]);
   assert.equal(page.document.title, 'cutpoint / Project One', 'nothing fired');
   assert.equal(requests.length, before, 'no request while moving');
   assert.equal($('#newDialog').open, false);
@@ -109,7 +112,7 @@ test('ArrowDown on the trigger opens the menu; ArrowUp opens it on the last item
   const { page, $, key } = await open(t);
   key($('#projectBtn'), 'ArrowUp');
   assert.equal($('#projectMenu').hidden, false);
-  assert.equal(page.document.activeElement, $('#newProjectItem'));
+  assert.equal(page.document.activeElement, $('#analyzeAgainItem'));
 });
 
 test('a click outside closes the menu', async (t) => {
@@ -185,4 +188,157 @@ test('the page shortcuts (M, I, O, [ and ]) do nothing inside the menu', async (
   // the same keys on the page do act (so the check above can fail)
   key(page.document.body, 'm');
   assert.notEqual(muted(), was);
+});
+
+// ---------- the Moments head and the project menu's Analyze again / Show folder / stats ----------
+
+const SESSION = { styles: ['funny'], can_reveal: true, can_pick: false };
+const RUNNING = { id: 'j1', project_id: 'p1', action: 'analyze', status: 'running', logs: [], progress: { total: null, steps: [] }, started: '' };
+
+async function openRoutes(t, project, routes) {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const page = await boot({ project, routes });
+  t.after(() => page.close());
+  const $ = (sel) => page.document.querySelector(sel);
+  return { page, $ };
+}
+
+test('the head is "Moments" with the plain total beside it; the buttons and stats left it', async (t) => {
+  const { $ } = await openRoutes(t, makeProject(), {});
+  assert.equal($('#momentsTitle').textContent, 'Moments');
+  assert.equal($('#momentsCount').textContent, '3');
+  assert.equal($('#analyzeBtn'), null);
+  assert.equal($('#revealHeadBtn'), null);
+  assert.equal($('#analyzeStats'), null);
+  assert.equal($('.moments .col-head').textContent.replace(/\s+/g, ' ').trim(), 'Moments 3 Resume analysis');
+});
+
+test('the count stays the total while a filter narrows the list', async (t) => {
+  const { page, $ } = await openRoutes(t, makeProject(), {});
+  const f = $('#filter');
+  f.value = 'Fall';
+  f.dispatchEvent(new page.window.Event('input', { bubbles: true }));
+  await page.settle();
+  assert.equal($('#candList').querySelectorAll('li.cand').length, 1);
+  assert.equal($('#momentsCount').textContent, '3');
+});
+
+test('the menu shows the stats as text without a role, and Show folder where the server can open folders', async (t) => {
+  const { $ } = await openRoutes(t, makeProject(), { 'GET /api/session': SESSION });
+  $('#projectBtn').click();
+  const kids = [...$('#projectMenu').children];
+  assert.deepEqual(kids.map((k) => k.getAttribute('role')), ['menuitemradio', 'separator', 'menuitem', 'separator', 'menuitem', 'menuitem', 'none']);
+  assert.deepEqual(kids.slice(4, 6).map((k) => k.textContent), ['Analyze again', 'Show folder']);
+  const stats = $('.proj-stats');
+  assert.equal(stats.querySelector('button, a, input'), null);
+  assert.deepEqual([...stats.children].map((c) => c.textContent), ['3 found, funny style', 'Analyzed 10 min of video in 30 s']);
+});
+
+test('before analysis the menu has no project actions; the empty state keeps the big Analyze button', async (t) => {
+  const { $ } = await openRoutes(t, makeProject({ highlights: null, analysis: null }), { 'GET /api/session': SESSION });
+  $('#projectBtn').click();
+  assert.equal($('#analyzeAgainItem'), null);
+  assert.equal($('#revealItem'), null);
+  assert.equal($('.proj-stats'), null);
+  assert.equal($('#momentsCount').textContent, '');
+  assert.equal($('#analyzeBig').hidden, false);
+  assert.equal($('#revealBtn').hidden, false);
+});
+
+test('without a length or time the stats keep only the found line', async (t) => {
+  const { $ } = await openRoutes(t, makeProject({ analysis: null }), {});
+  $('#projectBtn').click();
+  assert.deepEqual([...$('.proj-stats').children].map((c) => c.textContent), ['3 found, funny style']);
+});
+
+test('Analyze again from the menu closes it, asks first, and returns focus to the name', async (t) => {
+  const { page, $ } = await openRoutes(t, makeProject(), {});
+  const posts = () => page.requests.filter((r) => r.method === 'POST' && r.path === '/api/projects/p1/jobs');
+  $('#projectBtn').click();
+  $('#analyzeAgainItem').click();
+  assert.equal($('#projectMenu').hidden, true);
+  assert.equal($('#analyzeDialog').open, true);
+  assert.equal($('#analyzeTitle').textContent, 'Analyze again?');
+  assert.equal(posts().length, 0, 'nothing runs before the confirmation');
+  const d = $('#analyzeDialog');
+  d.returnValue = '';
+  d.removeAttribute('open');
+  d.dispatchEvent(new page.window.Event('close'));
+  assert.equal(page.document.activeElement, $('#projectBtn'));
+  assert.equal(posts().length, 0, 'cancelled');
+});
+
+test('while a job runs Analyze again is aria-disabled (still focusable) and does nothing', async (t) => {
+  const { page, $ } = await openRoutes(t, makeProject(), { 'GET /api/jobs': { jobs: [RUNNING] } });
+  $('#projectBtn').click();
+  const item = $('#analyzeAgainItem');
+  assert.equal(item.getAttribute('aria-disabled'), 'true');
+  assert.equal(item.title, 'Another job is running.');
+  assert.equal(item.disabled, false);
+  item.click();
+  assert.equal($('#analyzeDialog').open, false);
+  assert.equal($('#projectMenu').hidden, false, 'the menu stays open');
+  assert.equal(page.document.activeElement, $('#projectMenu [aria-checked=true]'));
+});
+
+test('Show folder asks for the sources folder, closes the menu and refocuses the name', async (t) => {
+  const { page, $ } = await openRoutes(t, makeProject(), { 'GET /api/session': SESSION, 'POST /api/projects/p1/reveal': { ok: true } });
+  $('#projectBtn').click();
+  $('#revealItem').click();
+  await page.settle();
+  const post = page.requests.find((r) => r.method === 'POST' && r.path === '/api/projects/p1/reveal');
+  assert.ok(post, 'asked the server');
+  assert.equal(post.query, '?target=sources');
+  assert.equal($('#projectMenu').hidden, true);
+  assert.equal(page.document.activeElement, $('#projectBtn'));
+  assert.equal($('#projectBtn').disabled, false);
+});
+
+test('an open menu keeps focus on Analyze again when a job starts and ends, and a tick that changes nothing does not rebuild it', async (t) => {
+  const jobs = { jobs: [] };
+  const { page, $ } = await openRoutes(t, makeProject(), { 'GET /api/jobs': () => jobs });
+  $('#projectBtn').click();
+  const item = $('#analyzeAgainItem');
+  item.focus();
+  t.mock.timers.tick(5000); // a poll that finds the same (no job)
+  await page.settle();
+  assert.equal($('#analyzeAgainItem'), item, 'not rebuilt');
+  jobs.jobs = [RUNNING];
+  t.mock.timers.tick(5000);
+  await page.settle();
+  assert.equal($('#analyzeAgainItem').getAttribute('aria-disabled'), 'true');
+  assert.equal(page.document.activeElement, $('#analyzeAgainItem'));
+  assert.equal($('#analyzeAgainItem').getAttribute('aria-describedby'), 'projBusy projStats');
+  assert.equal($('#projBusy').textContent, 'Another job is running.');
+  const busy = $('#analyzeAgainItem');
+  t.mock.timers.tick(1000); // still running: same menu
+  await page.settle();
+  assert.equal($('#analyzeAgainItem'), busy, 'not rebuilt');
+  jobs.jobs = [{ ...RUNNING, status: 'completed' }];
+  t.mock.timers.tick(1000);
+  await page.settle();
+  assert.equal($('#analyzeAgainItem').getAttribute('aria-disabled'), null);
+  assert.equal(page.document.activeElement, $('#analyzeAgainItem'));
+  assert.equal($('#analyzeAgainItem').getAttribute('aria-describedby'), 'projStats');
+});
+
+test('the stats are described by Analyze again, and a press on them does not take focus', async (t) => {
+  const { page, $ } = await openRoutes(t, makeProject(), {});
+  $('#projectBtn').click();
+  assert.equal($('#projStats').textContent, '3 found, funny styleAnalyzed 10 min of video in 30 s');
+  assert.equal($('#analyzeAgainItem').getAttribute('aria-describedby'), 'projStats');
+  const press = (el) => {
+    const e = new page.window.MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    el.dispatchEvent(e);
+    return e.defaultPrevented;
+  };
+  assert.equal(press($('#projStats')), true);
+  assert.equal(press($('#projStats span')), true);
+  assert.equal(press($('#projectMenu .proj-sep')), true, 'a divider too');
+  assert.equal(press($('#analyzeAgainItem')), false, 'items take the press as usual');
+});
+
+test('the zero-moment text points at the project menu', async (t) => {
+  const { $ } = await openRoutes(t, makeProject({ highlights: { style: 'funny', candidates: [] } }), {});
+  assert.match($('#momentsEmpty').textContent, /choose Analyze again in the project menu/);
 });

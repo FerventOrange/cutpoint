@@ -406,7 +406,10 @@ async function loadProjects() {
 
 /**
  * The header's "cutpoint / <project>": the trigger's name, the menu's list (the open project marked,
- * a divider, New project...) and the tab title. Called whenever the list or the open project changes.
+ * a divider, New project...), then for an analyzed project Analyze again (waits while a job runs),
+ * Show folder (where the server can open folders) and a line of facts (count, style, analysis time),
+ * and the tab title. Called whenever the list or the open project changes, and by ``renderBusy``
+ * when a job starts or ends; it rebuilds the menu only when what it shows changed.
  */
 function renderProjectMenu() {
   const name = S.projects.find((p) => p.id === S.id)?.name ?? S.project?.name;
@@ -418,7 +421,13 @@ function renderProjectMenu() {
   document.title = shown ? `cutpoint / ${name}` : 'cutpoint';
   const pop = $('#projectMenu');
   const had = pop.contains(document.activeElement) ? document.activeElement : null; // an open menu keeps its focus
-  const hadKey = had?.dataset.id ?? had?.id;
+  // the open project's actions and facts; Analyze again waits while a job runs (aria-disabled keeps it focusable)
+  const hl = S.id && S.project?.id === S.id ? S.project.highlights : null;
+  const busy = !!S.active;
+  const facts = hl ? projectFacts(S.project) : [];
+  const sig = JSON.stringify([label, S.id, S.projects.map((p) => [p.id, p.name, !!p.interrupted]), !!hl, busy, S.canReveal, facts]);
+  if (pop.dataset.sig === sig) return; // nothing to change: leave the menu (and a click under way) alone
+  pop.dataset.sig = sig;
   pop.replaceChildren(
     ...S.projects.map((p) => h('button', {
       type: 'button', role: 'menuitemradio', class: 'proj-item', tabindex: '-1', 'aria-checked': String(p.id === S.id), 'data-id': p.id,
@@ -427,8 +436,31 @@ function renderProjectMenu() {
     ...(S.projects.length ? [h('div', { class: 'proj-sep', role: 'separator' })] : []),
     h('button', { type: 'button', role: 'menuitem', class: 'proj-item', id: 'newProjectItem', tabindex: '-1', onclick: pickNewProject },
       h('span', { text: 'New project…' })),
+    ...(hl ? [h('div', { class: 'proj-sep', role: 'separator' }),
+      h('button', {
+        type: 'button', role: 'menuitem', class: 'proj-item', id: 'analyzeAgainItem', tabindex: '-1', 'aria-haspopup': 'dialog',
+        'aria-disabled': busy ? 'true' : null, 'aria-describedby': busy ? 'projBusy projStats' : 'projStats', title: busy ? 'Another job is running.' : null,
+        onclick: pickAnalyzeAgain,
+      }, h('span', { text: 'Analyze again' })),
+      ...(S.canReveal ? [h('button', { type: 'button', role: 'menuitem', class: 'proj-item', id: 'revealItem', tabindex: '-1', onclick: pickReveal },
+        h('span', { text: 'Show folder' }))] : []),
+      ...(busy ? [h('div', { class: 'vh', id: 'projBusy', role: 'none', text: 'Another job is running.' })] : []), // the title no longer describes the item
+      h('div', { class: 'proj-stats', id: 'projStats', role: 'none' }, ...facts.map((f) => h('span', { text: f })))] : []),
   );
-  if (hadKey) (pop.querySelector(`[data-id="${CSS.escape(hadKey)}"]`) ?? $('#newProjectItem')).focus();
+  if (had) {
+    const back = had.dataset.id ? pop.querySelector(`[data-id="${CSS.escape(had.dataset.id)}"]`) : had.id && pop.querySelector(`#${CSS.escape(had.id)}`);
+    (back ?? $('#newProjectItem')).focus();
+  }
+}
+
+/** The lines under the project menu's actions: the moment count and style, and the analysis' length and time when known. */
+function projectFacts(p) {
+  const hl = p.highlights;
+  const stats = p.analysis; // null when the length or the time is unknown
+  return [
+    `${cands().length} found, ${hl.style ?? p.style} style`,
+    ...(stats ? [`Analyzed ${spanText(stats.video_s)} of video in ${spanText(stats.took_s)}`] : []),
+  ];
 }
 
 /** Close the project menu; ``refocus`` returns focus to the trigger. */
@@ -441,6 +473,17 @@ function closeProjectMenu(refocus = false) {
 function pickProject(id) {
   closeProjectMenu(true);
   if (id !== S.id) openProject(id);
+}
+
+function pickAnalyzeAgain() {
+  if ($('#analyzeAgainItem').getAttribute('aria-disabled') === 'true') return; // a job runs: the menu stays open
+  closeProjectMenu(true); // focus is on the name first, so the dialog returns it there
+  analyzeAgain();
+}
+
+function pickReveal() {
+  closeProjectMenu(true);
+  revealFolder($('#projectBtn'));
 }
 
 function pickNewProject() {
@@ -470,6 +513,8 @@ function initProjectMenu() {
     e.preventDefault();
     if (pop.hidden) show(e.key === 'ArrowUp');
   });
+  // a press on the facts or a divider must not take focus out of the menu (the keys would stop working)
+  pop.addEventListener('mousedown', (e) => !e.target.closest('.proj-item') && e.preventDefault());
   pop.addEventListener('keydown', (e) => {
     const all = items();
     const at = all.indexOf(document.activeElement);
@@ -571,20 +616,14 @@ function renderMoments() {
   const p = S.project;
   const hl = p?.highlights;
   const list = cands();
-  $('#analyzeBtn').hidden = !hl; // before analysis the empty state's own button replaces it
   const resume = $('#resumeBtn'); // a stopped run of progress.json (#109); before analysis the empty state has its own
   resume.hidden = !hl || !p.run?.resumable;
   if (!resume.hidden) resume.dataset.label = resumeLabel(p.run);
-  $('#revealHeadBtn').hidden = !hl || !S.canReveal; // likewise its own Show folder
   $('.moments').classList.toggle('bare', !hl);
-  $('#analyzeBtn').textContent = 'Analyze again';
   $('#filterWrap').hidden = !list.length;
   $('#kindSeg').hidden = !list.length;
   for (const b of $('#kindSeg').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.kind === S.kind));
-  $('#momentsCount').textContent = hl ? `${list.length} found, ${hl.style ?? p.style} style` : '';
-  const stats = hl ? p.analysis : null; // null when the length or the time is unknown
-  $('#analyzeStats').hidden = !stats;
-  $('#analyzeStats').textContent = stats ? `Analyzed ${spanText(stats.video_s)} of video in ${spanText(stats.took_s)}` : '';
+  $('#momentsCount').textContent = hl ? String(list.length) : ''; // the project's total, whatever the filter shows
   const empty = $('#momentsEmpty');
   // the big button had focus (disabling it while analysis runs moves focus to body): keep it in this column
   const hadFocus = empty.contains(document.activeElement) || (!!empty.dataset.refocus && document.activeElement === document.body);
@@ -592,7 +631,7 @@ function renderMoments() {
   if (!p) setEmpty(empty);
   else if (!hl) renderUnanalyzed(empty, p.sources?.length ?? 0, p.source_error ? sourceErrorText(p) : '', p.kind === '360', p.run, !p.source && !p.sources?.length);
   else if (!list.length)
-    setEmpty(empty, h('p', {}, 'Analysis found no moments. Try another style, or add footage and analyze again.'));
+    setEmpty(empty, h('p', {}, 'Analysis found no moments. Try another style, or add footage, then choose Analyze again in the project menu.'));
   else setEmpty(empty);
   if (!p || hl) {
     delete empty.dataset.n;
@@ -671,7 +710,7 @@ function renderMoments() {
   if (listHadFocus && !$('#candList').contains(document.activeElement) && !$('#filterWrap').hidden) $('#filterBtn').focus();
   markMoments();
   if (hadFocus && !empty.contains(document.activeElement))
-    ([$('#resumeBig'), $('#analyzeBig'), $('#candList button'), $('#resumeBtn'), $('#analyzeBtn'), $('#revealHeadBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
+    ([$('#resumeBig'), $('#analyzeBig'), $('#candList button'), $('#resumeBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
   renderBusy();
 }
 
@@ -4087,7 +4126,7 @@ function renderBusy() {
     b.disabled = off;
     b.title = off ? reason : '';
   };
-  set('#analyzeBtn', !p || busy, why);
+  renderProjectMenu(); // Analyze again follows the running job
   const resuming = S.active?.project_id === S.id && S.active?.action === 'resume';
   const held = heldElsewhere(p);
   const note = $('#runBusy'); // before any job is tried: a run elsewhere holds this project
@@ -7196,14 +7235,11 @@ function bind() {
     renderBatch();
     focusRow(0, 'select');
   });
-  $('#analyzeBtn').addEventListener('click', () => analyzeAgain());
   $('#resumeBtn').addEventListener('click', (e) => resumeRun(e.currentTarget));
   // an out-of-range Analyze option blocks Analyze: open the options so the browser can point at it
   $('#againOk').addEventListener('click', () => {
     if (!$('#analyzeDialog form').checkValidity()) $('#analyzeOpts').open = true;
   });
-  $('#revealHeadBtn').prepend(icon('folder'));
-  $('#revealHeadBtn').addEventListener('click', (e) => revealFolder(e.currentTarget));
   $('#revealExportBtn').prepend(icon('folder'));
   $('#revealExportBtn').addEventListener('click', (e) => revealFolder(e.currentTarget, e.currentTarget.dataset.target));
   $('#clipsBtn').addEventListener('click', () => {
