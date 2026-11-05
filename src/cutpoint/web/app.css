@@ -164,6 +164,7 @@
   --amber: #f3bd60; /* the fill of the other themes; 1.7:1 on white, so never text */
   --amber-ink: #2a1d06;
   --amber-text: #8a5300; /* text and focus rings on light backgrounds: 4.5:1 or more */
+  --cut-edge: var(--muted);
   --bad: #b02a1f;
   --ok: #1b6e37;
   --glow: #9c4f00;
@@ -627,8 +628,7 @@ body.tips-off .flag-tip { display: none; }
 .vol { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
 .vol .icon-btn { min-width: 0; flex: none; }
 .vol input[type=range] { width: 5em; min-width: 3em; min-height: 0; padding: 0; border: 0; background: none; accent-color: var(--amber-text); }
-.transport .stage-mode { gap: var(--space-0); padding: var(--space-0); border-radius: 6px; }
-.transport .stage-mode .seg-btn, .cut-line .seg-btn { min-height: 24px; }
+.cut-line .seg-btn { min-height: 24px; }
 /* no room on one line: the switch and the sound take a second one, and so do the title's neighbours */
 @container stage (width < 520px) {
   .stage-head { flex-wrap: wrap; }
@@ -746,7 +746,7 @@ body.tips-off .flag-tip { display: none; }
 .rail-event[data-ev="ocr"] { --k: var(--ev-text); }
 .rail-event[data-ev="telemetry"] { --k: var(--ev-cam); }
 .rail-presets, .stage-mode { flex: none; flex-wrap: nowrap; }
-.rail-presets .seg-btn:disabled, .stage-mode .seg-btn:disabled { opacity: 0.5; cursor: default; color: var(--muted); filter: none; }
+.rail-presets .seg-btn:disabled, .stage-mode .seg-btn:disabled, .stage-mode .seg-btn[aria-disabled="true"] { opacity: 0.5; cursor: default; color: var(--muted); filter: none; }
 /* the overview strip: the whole source, the rail's view as a box, the clip in gold. Thin to look at;
    its slider reaches 7 px past it on both sides, so it is 24 px to hit (WCAG 2.5.8) */
 .overview { position: relative; height: 10px; margin-top: var(--space-1); background: var(--deep); border: 1px solid var(--line); border-radius: var(--radius-xs); }
@@ -805,6 +805,69 @@ body.tips-off .flag-tip { display: none; }
 .sb-block.playing .sb-n { font-weight: 700; text-decoration: underline; }
 .sb-block:focus-visible { outline: 2px solid var(--scrim-ink); outline-offset: -4px; } /* inside: .sb-list clips what is outside it; clear of the current block's amber */
 
+/* Cut mode: the join of two neighbouring clips in place of the player, the trim rows and the storyboard.
+   The player comes back over the two frames while "Play across the cut" runs. */
+#stageBody.cut-mode > :is(.screen, .cut-line, .rail, .rail-events, .rail-scale, .overview, .trim-msg, .storyboard, .pano-note),
+#stageBody.cut-mode :is(#stageDot, #clipNav, #toggleBtn) { display: none; }
+#stageBody.cut-playing > .screen { display: block; margin-bottom: var(--space-3); }
+#stageBody.cut-playing .cut-frames { display: none; }
+#stageBody.cut-playing .cut-view { flex: none; }
+.cut-view { flex: 1 1 auto; display: flex; flex-direction: column; gap: var(--space-3); min-height: 0; font-size: 13px; overflow-anchor: none; } /* else the player opening above it stays out of view */
+.cut-frames { flex: 1 1 auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); min-height: min(180px, 100cqi * 9 / 32); }
+/* any video can be under the tags: they use the scrim's dark tokens in every theme */
+.cut-frame { position: relative; margin: 0; min-height: 0; overflow: hidden; background: var(--deep); border: 1px solid var(--card-line); border-radius: var(--radius-md); }
+.cut-frame > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+.cut-frame.failed > img { display: none; }
+.cut-frame > img { transition: opacity 0.15s; }
+.cut-frame.loading > img { opacity: 0.45; } /* the picture only; the times are outside the frame */
+.cut-tag { position: absolute; top: var(--space-2); left: var(--space-2); max-width: calc(100% - 2 * var(--space-2)); padding: var(--space-0) var(--space-2); border-radius: var(--radius-sm); background: var(--scrim); color: var(--scrim-ink); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cut-time { top: auto; left: auto; right: var(--space-2); bottom: var(--space-2); font: 500 11px/18px var(--mono); }
+.cut-bar, .cut-trans { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
+.cut-bar { flex: none; }
+#cutPlayBtn { display: inline-flex; align-items: center; gap: var(--space-1); font-weight: 600; white-space: nowrap; }
+#cutPlayBtn .icon { width: 16px; height: 16px; }
+.stage-mode { gap: var(--space-0); padding: var(--space-0); border-radius: 6px; }
+.stage-mode .seg-btn { min-height: 24px; }
+/* the roll: both clips' audio around the cut, each side ending at the join (--join: its place on the track) */
+.cut-roll { flex: none; display: grid; gap: var(--space-1); padding: var(--space-3); background: var(--panel); border: 1px solid var(--card-line); border-radius: var(--radius-md); }
+.cut-roll-head { font-size: 12px; }
+.cut-track { --join: 50%; position: relative; height: 56px; margin-block: var(--space-2) var(--space-1); }
+.cut-side { --k: var(--muted); --kt: var(--scrim); position: absolute; inset: 0; background: var(--kt); box-shadow: inset 0 3px 0 var(--k); color: var(--scrim-ink); border-radius: 6px; }
+.cut-side[data-kind="action"] { --k: var(--k-action); --kt: var(--k-action-tint); }
+.cut-side[data-kind="scenic"] { --k: var(--k-scenic); --kt: var(--k-scenic-tint); }
+.cut-side[data-kind="funny"] { --k: var(--k-funny); --kt: var(--k-funny-tint); }
+.cut-side[data-kind="dialogue"] { --k: var(--k-dialogue); --kt: var(--k-dialogue-tint); }
+.cut-side.a { clip-path: inset(0 calc(100% - var(--join)) 0 0); }
+.cut-side.b { clip-path: inset(0 0 0 var(--join)); }
+.cut-wave { position: absolute; inset: 18px 0 var(--space-1); width: 100%; height: calc(100% - 22px); }
+.cut-wave > path { fill: none; stroke: var(--scrim-ink); stroke-width: 0.7; opacity: 0.55; }
+.cut-side-name { position: absolute; top: 5px; font-size: 11px; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cut-side.a > .cut-side-name { left: var(--space-2); max-width: calc(var(--join) - 28px); }
+.cut-side.b > .cut-side-name { left: calc(var(--join) + 20px); max-width: calc(100% - var(--join) - 28px); }
+/* a 24 px hit area (WCAG 2.5.8) around the bar; amber with a dark edge, as it lies on tints and on the card */
+.cut-join { position: absolute; top: -6px; bottom: -6px; left: var(--join); width: 24px; margin-left: -12px; cursor: ew-resize; touch-action: none; border-radius: var(--radius-sm); }
+.cut-join::before { content: ""; position: absolute; inset: 0 5px; background: var(--amber); border-radius: var(--radius-sm); box-shadow: 0 0 0 1px var(--amber-ink); }
+.cut-join:hover::before, .cut-join.dragging::before { background: var(--amber-hover); }
+.cut-join:focus-visible { outline: 2px solid var(--amber-text); outline-offset: 2px; box-shadow: 0 0 0 2px black; } /* over tints and the card alike */
+.cut-ruler { display: flex; justify-content: space-between; color: var(--muted); font: 400 11px/14px var(--mono); }
+.cut-roll-msg { color: var(--amber-text); font-size: 12px; }
+.cut-roll-msg:empty { display: none; }
+/* the cuts: a block per clip, the current two lit, the cut itself the amber edge between them */
+.cut-nav { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) 10px; }
+.cut-strip { position: relative; flex: 1 1 200px; min-width: 0; display: flex; gap: var(--space-0); height: 28px; padding: 3px; overflow-x: auto; scrollbar-width: none; } /* a very long sequence scrolls here, not the page */
+.cut-block {
+  --k: var(--muted); --kt: var(--scrim); flex: 1 1 0; min-width: 6px; padding: 0; cursor: pointer;
+  border: 0; border-top: 3px solid var(--k); border-radius: var(--radius-xs); background: var(--kt);
+  outline: 1px solid var(--cut-edge, transparent); outline-offset: -1px; /* Light: the kind colours are under 3:1 on its ground */
+}
+.cut-block[data-kind="action"] { --k: var(--k-action); --kt: var(--k-action-tint); }
+.cut-block[data-kind="scenic"] { --k: var(--k-scenic); --kt: var(--k-scenic-tint); }
+.cut-block[data-kind="funny"] { --k: var(--k-funny); --kt: var(--k-funny-tint); }
+.cut-block[data-kind="dialogue"] { --k: var(--k-dialogue); --kt: var(--k-dialogue-tint); }
+.cut-block:hover { filter: brightness(1.25); }
+.cut-block.on { background: var(--k); }
+.cut-block.at { box-shadow: inset -3px 0 0 var(--amber), inset 0 0 0 1px var(--amber-ink); }
+.cut-block:focus-visible { position: relative; z-index: 1; outline: 2px solid var(--amber-text); outline-offset: 1px; box-shadow: 0 0 0 1px black; }
 /* sequence: one compact card per clip */
 .seq-batch { display: flex; align-items: center; gap: var(--space-2); flex: none; min-width: 0; }
 .seq-batch[hidden] { display: none; }
@@ -1181,6 +1244,8 @@ fieldset.models-section .hint, fieldset.models-section p { overflow-wrap: anywhe
   #workspace { display: flex; flex-direction: column; }
   .col { overflow: visible; }
   .stage { order: 1; }
+  #stageBody.cut-mode .cut-frames { flex: none; }
+  .cut-frame { aspect-ratio: 16 / 9; }
   .moments { order: 2; border-right: 0; border-top: 1px solid var(--divider); }
   .side { order: 3; border-left: 0; border-top: 1px solid var(--divider); }
   .splitter { display: none; }
