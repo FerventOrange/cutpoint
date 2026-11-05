@@ -5608,7 +5608,7 @@ function renderVisionRoleHints() {
   const p = S.visionAi?.providers?.find((x) => x.name === choice);
   // a base URL no preset has (config.json): the preset's text would name the wrong host
   let hint = S.visionAi?.custom && choice === S.visionAi.provider
-    ? `The provider and base URL set in config.json (${S.visionAi.url}). ${S.visionAi.local ? 'It runs on this machine; no frames leave it.' : 'Frames go to that host. Use at your own risk.'}`
+    ? `The provider and base URL set in config.json (${S.visionAi.url}). ${S.visionAi.local ? 'It runs on this machine; no frames leave it.' : 'Frames and the words said in the moment go to that host. Use at your own risk.'}`
     : VISION_HINTS[choice] ?? '';
   if (p?.subscription && !S.logins?.find((l) => l.provider === p.name)?.logged_in) {
     hint += ' Not logged in yet.';
