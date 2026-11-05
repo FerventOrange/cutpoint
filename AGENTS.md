@@ -207,7 +207,7 @@ Variants:
 
 | File | Written by | Content |
 |---|---|---|
-| `highlights.json` | `analyze` (written once, at the end), `events` | Ranked candidates (`h001`...) and settings; action, sport and action-cam projects also list visual candidates last (`v001`..., `"pool": "visual"`, `kind` `view`, `crew` or `cruise`, `score` 0-10) |
+| `highlights.json` | `analyze` (written once, at the end), `events` | Ranked candidates (`h001`...) and settings (`settings.last_candidate_id`: the highest id given); in `gaming`, events can add candidates of their own: `signals.events.nominated` names the events, `grid_score` is the score before the events; `gaming` has no fixed cap on candidates; action, sport and action-cam projects also list visual candidates last (`v001`..., `"pool": "visual"`, `kind` `view`, `crew` or `cruise`, `score` 0-10) |
 | `transcript.txt` | `analyze` | Time-stamped transcript |
 | `events.json`, `events.txt` | `analyze`, `events` | Detected sounds, HUD events, model descriptions |
 | `clips/manifest.json` | `clips`, `extend` | Per clip: source, start, end, score, label, tail, crop, lut or color, srt |

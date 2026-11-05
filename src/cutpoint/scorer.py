@@ -31,6 +31,7 @@ import numpy as np
 from cutpoint import features
 
 if TYPE_CHECKING:
+    from cutpoint.analyze import GridPart
     from cutpoint.styles import Style
 
 VLM_WEIGHT = 0.35  # share of the gap to the VLM window score that a candidate gains
@@ -73,6 +74,13 @@ def score(
     return features.to_score(peak, style.weights, avail)
 
 
+def rank_key(c: dict[str, Any]) -> tuple[float, float]:
+    """Sort key of a candidate record, best first: its score, then (for the many nominees that
+    tie on the score their window is floored to) the grid score it had before the floor. Only
+    a nominee's own ``grid_score`` counts, so records that tie keep their order."""
+    return -c["score"], -c.get("grid_score", c["score"])
+
+
 def with_bonus(base: float, boost: float, vlm: float | None) -> float:
     """The bonus stage of one candidate: its analysis score ``base`` plus the event ``boost``
     points, raised toward the VLM window score ``vlm`` (0-100; None without a window) by
@@ -85,19 +93,26 @@ def with_bonus(base: float, boost: float, vlm: float | None) -> float:
     return round(min(100.0, score), 1)
 
 
-def rescore_events(hl: dict[str, Any], ev: dict[str, Any], project: Path) -> int:
+def rescore_events(
+    hl: dict[str, Any], ev: dict[str, Any], project: Path, parts: list[GridPart] | None = None
+) -> int:
     """The bonus stage of a whole analysis: rescore ``hl`` (a highlights.json object) of
     ``project`` from the events ``ev`` (an events.json object); returns the candidates changed.
 
     Each candidate keeps its analysis score as ``score_pre_events`` (so re-running is
     idempotent) and records the evidence in ``signals.events``. The candidates are re-sorted
-    and ``suggested_top`` is recomputed. Visual pool moments (:mod:`cutpoint.visual_pool`)
-    are left as they are, last, in their order, and outside ``suggested_top``.
+    and ``suggested_top`` is recomputed. In styles with an open list (``gaming``), events that
+    can score and that no candidate covers nominate candidates first
+    (:func:`cutpoint.events.scoring.nominate`, scored from the grids ``parts`` or, without,
+    from their caches); a nominee is rescored like the others. Visual pool moments
+    (:mod:`cutpoint.visual_pool`) are left as they are, last, in their order, and outside
+    ``suggested_top``.
     """
     from cutpoint.events import scoring  # noqa: PLC0415 - the evidence; imports this module
     from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, resolve  # noqa: PLC0415
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports ski, which imports this
 
+    scoring.nominate(hl, ev, project, parts)
     by_src: dict[str, list[dict[str, Any]]] = {}
     for e in ev.get("events", []):
         by_src.setdefault(e["source"], []).append(e)
@@ -111,6 +126,7 @@ def rescore_events(hl: dict[str, Any], ev: dict[str, Any], project: Path) -> int
     pool = [c for c in hl.get("candidates", []) if is_pool(c)]
     for c in cands:
         base = c.get("score_pre_events", c["score"])
+        nominated = c["signals"]["events"]["nominated"] if scoring.is_nominated(c) else None
         src = c["source"]
         src_types = types.get(src, DEFAULT_EVENT_TYPES)
         if src not in segments:
@@ -131,11 +147,15 @@ def rescore_events(hl: dict[str, Any], ev: dict[str, Any], project: Path) -> int
             }
         score = with_bonus(base, boost, vlm)
         c["score_pre_events"] = base
-        c.setdefault("signals", {})["events"] = {"boost": round(boost, 1), **evidence}
+        c.setdefault("signals", {})["events"] = {
+            "boost": round(boost, 1),
+            **evidence,
+            **({"nominated": nominated} if nominated else {}),
+        }
         if score != c["score"]:
             changed += 1
         c["score"] = score
-    cands.sort(key=lambda c: -c["score"])
+    cands.sort(key=rank_key)
     hl["candidates"][:] = cands + pool  # in place, as the sort was
     target = (hl.get("settings") or {}).get("target_total")
     if target:
