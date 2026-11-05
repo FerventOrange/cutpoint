@@ -970,10 +970,11 @@ scores. The cache also records the model's digest: a model pulled again under th
 rated again, and with Ollama down the cached ratings for the tag are used.
 
 With the generic styles (all but `action-cam`), a candidate with speech is rated on its frames
-together with what was said in it (its `transcript`, up to 600 characters), on local and hosted
+together with what was said in it (the first 240 characters of its `transcript`), on local and hosted
 models alike, so speech that fits what is on screen can raise the rating. A window with no speech
-is rated on its frames alone, as before. A rating with speech has 1.9 taken off before it counts,
-so talk does not beat silent gameplay just for being talk. `action-cam` is unchanged. A rating
+is rated on its frames alone, as before. For the score, a rating with speech has 1.9 taken off
+before it counts, so talk does not beat silent gameplay just for being talk. The clip label's
+rating threshold reads the raw rating. `action-cam` is unchanged. A rating
 with speech has its own cache key: those windows are rated again once, then cached.
 
 Signals combined: loudness (EBU R128 against the clip's own baseline), speech keywords from the
