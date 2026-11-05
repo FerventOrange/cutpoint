@@ -711,9 +711,9 @@ function renderMoments() {
   // the focused card left the list (Add with Not in sequence, say) and no card is left to take focus
   if (listHadFocus && !$('#candList').contains(document.activeElement) && !$('#filterWrap').hidden) $('#filterBtn').focus();
   markMoments();
+  renderBusy(); // first: the buttons are as disabled as they will be when focus looks for one
   if (hadFocus && !empty.contains(document.activeElement))
     ([$('#resumeBig'), $('#analyzeBig'), $('#candList button'), $('#resumeBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
-  renderBusy();
 }
 
 /**

@@ -306,6 +306,33 @@ test('the big Analyze button and its options are disabled, with the reason, whil
   }
 });
 
+test('an Analyze that fails with folder_busy leaves focus on a button that works, not on the disabled one or the page', async (t) => {
+  const idle = makeProject({ highlights: null, analysis: null });
+  let project = idle;
+  const busy = 'Analysis is running on this project; wait for it to finish';
+  const failed = { id: 'j1', project_id: 'p1', action: 'analyze', status: 'failed', error: busy, error_code: 'folder_busy', logs: [], progress: { total: null, steps: [] }, started: '' };
+  let jobs = [];
+  const { page, $ } = await openRoutes(t, idle, { 'GET /api/projects/p1': () => project, 'GET /api/jobs': () => ({ jobs }) });
+  $('#analyzeBig').focus();
+  $('#momentsEmpty').dataset.refocus = '1'; // what the button's click sets (keepEmptyFocus; its AbortSignal is not jsdom's)
+  jobs = [{ ...failed, status: 'running', error: null, error_code: null }]; // the page's own Analyze starts
+  t.mock.timers.tick(5000);
+  await page.settle();
+  const away = page.document.body.appendChild(page.document.createElement('button')); // a browser drops focus from a button that became disabled; jsdom does not
+  away.focus();
+  away.remove();
+  assert.equal(page.document.activeElement, page.document.body);
+  project = { ...idle, busy: true }; // it finds the command line holding the project and fails
+  jobs = [failed];
+  t.mock.timers.tick(1000);
+  await page.settle();
+  assert.equal($('#analyzeBig').disabled, true);
+  const now = page.document.activeElement;
+  assert.notEqual(now, page.document.body, 'focus did not fall to the page');
+  assert.notEqual(now, $('#analyzeBig'), 'nor on the disabled button');
+  assert.ok(!now.disabled);
+});
+
 test('Show folder asks for the sources folder, closes the menu and refocuses the name', async (t) => {
   const { page, $ } = await openRoutes(t, makeProject(), { 'GET /api/session': SESSION, 'POST /api/projects/p1/reveal': { ok: true } });
   $('#projectBtn').click();

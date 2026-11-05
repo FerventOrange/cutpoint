@@ -153,6 +153,20 @@ test('a double click on the name opens the rename with focus and the name select
   assert.equal(m.d.activeElement, input);
 });
 
+test('a render that runs after the release clears the one that waited: the release timer does not draw again', async (t) => {
+  const m = await drag(t);
+  const title = m.row('h001').querySelector('.seq-title');
+  title.dispatchEvent(new m.w.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+  m.$('#seqList li[data-id=h002] button[data-act=rename]').click(); // waits
+  title.dispatchEvent(new m.w.MouseEvent('pointerup', { bubbles: true, button: 0 }));
+  m.$('#seqList li[data-id=h003] button[data-act=rename]').click(); // runs at once, and shows both renames' state
+  const input = m.$('#seqList input[data-act=rename]');
+  assert.equal(m.d.activeElement, input);
+  m.t.mock.timers.tick(1);
+  assert.equal(m.$('#seqList input[data-act=rename]'), input, 'not drawn again');
+  assert.equal(m.d.activeElement, input);
+});
+
 test('only the primary button arms the hold, and a window blur ends it when the release never came', async (t) => {
   const m = await drag(t);
   const title = (id) => m.row(id).querySelector('.seq-title');
@@ -175,9 +189,16 @@ test('a press on the checkbox does not hold renders, and a render that changes t
   m.$('#seqList li[data-id=h002] button[data-act=rename]').click();
   assert.ok(m.$('#seqList input[data-act=rename]'), 'not armed: no wait');
   m.row('h001').querySelector('.seq-title').dispatchEvent(new m.w.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+  m.$('#seqList li[data-id=h003] button[data-act=rename]').click(); // a render with the same order waits
+  assert.equal(m.$('#seqList li[data-id=h003] input[data-act=rename]'), null, 'held');
+  const list = m.$('#seqList');
+  const draws = [];
+  const draw = list.replaceChildren.bind(list);
+  list.replaceChildren = (...a) => { draws.push(1); return draw(...a); };
   m.$('#seqList li[data-id=h002] [data-act=down]').click();
   await m.page.settle();
   assert.deepEqual(m.seqIds(), ['h001', 'h003', 'h002'], 'the changed order is shown while pressed');
+  assert.equal(draws.length, 1, 'the waiting render does not run a second time after this one');
 });
 
 test('a render that changes the order during a drag ends it: nothing stale is dropped', async (t) => {
