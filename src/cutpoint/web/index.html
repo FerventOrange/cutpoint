@@ -25,7 +25,7 @@
     </div>
     <span class="spacer"></span>
     <span id="saveState" class="save" role="status"></span>
-    <button type="button" id="exportBtn" class="btn outline" aria-controls="panelExport">Export</button>
+    <button type="button" id="exportBtn" class="btn outline" aria-expanded="false" aria-controls="panelExport">Export</button>
     <button type="button" id="saveBtn" class="btn primary" disabled>Save sequence</button>
     <button type="button" id="settingsBtn" class="btn outline icon-btn" aria-label="Settings" aria-haspopup="dialog" title="Settings"></button>
   </header>
@@ -203,28 +203,42 @@
     <div id="sideSplit" class="splitter" role="separator" tabindex="0" aria-orientation="vertical"
          aria-controls="side" aria-label="Resize sequence column" title="Drag to resize, double-click to reset"></div>
 
-    <section class="col side" id="side" aria-label="Sequence, AI chat, export and models">
-      <!-- Tabs (#462, AI Chat #346): one button and panel each; app.js handles any number -->
-      <div class="side-tabs" role="tablist" aria-label="Sequence column">
-        <button type="button" role="tab" id="tabSequence" class="side-tab" data-tab="sequence" aria-selected="true" aria-controls="panelSequence">Sequence</button>
-        <button type="button" role="tab" id="tabAssistant" class="side-tab" data-tab="assistant" aria-selected="false" aria-controls="panelAssistant" tabindex="-1">AI Chat</button>
-        <button type="button" role="tab" id="tabExport" class="side-tab" data-tab="export" aria-selected="false" aria-controls="panelExport" tabindex="-1">Export</button>
-        <button type="button" role="tab" id="tabModels" class="side-tab" data-tab="models" aria-selected="false" aria-controls="panelModels" tabindex="-1">Models</button>
+    <section class="col side" id="side" aria-label="Sequence, AI chat and models">
+      <!-- Tabs (#462, AI Chat #346): one button and panel each; app.js handles any number. The header's Export shows panelExport here with no tab selected -->
+      <div class="side-bar">
+        <div class="side-tabs" role="tablist" aria-label="Sequence column">
+          <button type="button" role="tab" id="tabSequence" class="side-tab" data-tab="sequence" aria-selected="true" aria-controls="panelSequence">Sequence</button>
+          <button type="button" role="tab" id="tabAssistant" class="side-tab" data-tab="assistant" aria-selected="false" aria-controls="panelAssistant" tabindex="-1">AI Chat</button>
+          <button type="button" role="tab" id="tabModels" class="side-tab" data-tab="models" aria-selected="false" aria-controls="panelModels" tabindex="-1">Models</button>
+        </div>
       </div>
       <!-- outside the panels, so a hidden tab's news is still announced -->
       <p id="chatLive" class="vh" role="status"></p>
       <p id="sideLive" class="vh" role="status"></p>
 
       <div id="panelSequence" class="side-panel" role="tabpanel" aria-labelledby="tabSequence">
-        <div class="col-head">
-          <h2 id="seqTitle" tabindex="-1">Sequence</h2>
-          <span id="seqTotal" class="tc muted"></span>
-          <span class="spacer"></span>
-          <!-- Undo and Redo side by side, Play sequence under them at the pair's width -->
-          <div class="seq-head-acts">
-            <button type="button" id="undoBtn" class="btn small" aria-keyshortcuts="Control+Z" title="Undo (Ctrl+Z)" disabled>Undo</button>
-            <button type="button" id="redoBtn" class="btn small" aria-keyshortcuts="Control+Y Control+Shift+Z" title="Redo (Ctrl+Y)" disabled>Redo</button>
+        <div class="col-head seq-head">
+          <div class="seq-line">
+            <h2 id="seqTitle" tabindex="-1">Sequence</h2>
+            <span class="spacer"></span>
+            <div class="seq-undo" role="group" aria-label="History">
+              <button type="button" id="undoBtn" class="btn small" aria-keyshortcuts="Control+Z" title="Undo (Ctrl+Z)" disabled>Undo</button>
+              <button type="button" id="redoBtn" class="btn small" aria-keyshortcuts="Control+Y Control+Shift+Z" title="Redo (Ctrl+Y)" disabled>Redo</button>
+            </div>
+          </div>
+          <!-- Select all at the left; Play sequence, or the selection's count, Remove and Clear, in the same place at the right -->
+          <div class="seq-bar">
+            <label id="seqSelAllRow" class="seq-selall" hidden>
+              <input type="checkbox" id="seqSelAll" class="seq-check" aria-keyshortcuts="Control+A">
+              <span>Select all</span>
+            </label>
+            <span class="spacer"></span>
             <button type="button" id="seqPlayBtn" class="btn small" disabled>Play sequence</button>
+            <div id="seqBatch" class="seq-batch" role="group" aria-label="Selected clips" hidden>
+              <span id="seqSelCount" class="tc"></span>
+              <button type="button" id="seqRemoveSel" class="btn small danger">Remove</button>
+              <button type="button" id="seqClearSel" class="btn small">Clear</button>
+            </div>
           </div>
         </div>
         <!-- An AI Chat proposal (#346), previewed in place of the sequence until Apply or Discard -->
@@ -242,17 +256,21 @@
           </div>
         </section>
         <div id="seqEmpty" class="empty"></div>
-        <label id="seqSelAllRow" class="seq-selall" hidden>
-          <input type="checkbox" id="seqSelAll" class="seq-check" aria-keyshortcuts="Control+A">
-          <span>Select all clips</span>
-        </label>
-        <div id="seqBatch" class="seq-batch" role="group" aria-label="Selected clips" hidden>
-          <span id="seqSelCount" class="tc"></span>
-          <span class="spacer"></span>
-          <button type="button" id="seqRemoveSel" class="btn small danger">Remove selected</button>
-          <button type="button" id="seqClearSel" class="btn small">Clear</button>
-        </div>
         <ol id="seqList" class="seq-list"></ol>
+        <!-- the total of the exported lengths; with a target length set, against that target -->
+        <div id="seqFoot" class="seq-foot" hidden>
+          <button type="button" id="seqTotal" class="seq-total tc" aria-expanded="false" aria-controls="seqTargetForm"></button>
+          <span id="seqTarget" class="seq-target"></span>
+          <div id="seqBar" class="seq-meter" hidden><div id="seqBarFill"></div></div>
+          <!-- a guide for the bar, saved with the project in ui/review.json; never exported and it cuts nothing -->
+          <form id="seqTargetForm" class="seq-target-form" hidden>
+            <label for="seqTargetInput" class="vh">Target length, as 4:00 or seconds. Empty removes it.</label>
+            <input type="text" id="seqTargetInput" autocomplete="off" spellcheck="false" placeholder="4:00" aria-describedby="seqTargetErr">
+            <button type="submit" class="btn small">Set</button>
+            <button type="button" id="seqTargetCancel" class="btn small">Cancel</button>
+            <span id="seqTargetErr" class="seq-target-err" role="alert"></span>
+          </form>
+        </div>
         <section id="removedPanel" class="removed" aria-labelledby="removedTitle" hidden>
           <h3 id="removedTitle">Removed clips</h3>
           <p class="muted">Not ranked moments. Listed until the page reloads.</p>
@@ -291,7 +309,12 @@
         </form>
       </div>
 
-      <div id="panelExport" class="side-panel" role="tabpanel" aria-labelledby="tabExport" hidden>
+      <div id="panelExport" class="side-panel" role="region" aria-labelledby="exportTitle" hidden>
+        <div class="export-head">
+          <h2 id="exportTitle" tabindex="-1">Export</h2>
+          <button type="button" id="exportBack" class="btn small" aria-describedby="dExportBack">Back</button>
+          <span id="dExportBack" class="vh">Returns to the previous tab. Escape does too. Running jobs keep running.</span>
+        </div>
         <!-- Each option's description: a title on hover, and the same words for screen readers (aria-describedby).
              .adv: shown only with Settings > Show advanced export options; hidden, they keep their values and still send them -->
         <fieldset class="panel opts" id="exportPanel">
@@ -628,7 +651,7 @@
       <fieldset class="panel">
         <legend>Export</legend>
         <label class="check"><input type="checkbox" id="setAdvExport" aria-describedby="setAdvExportHint"> Show advanced export options</label>
-        <p id="setAdvExportHint" class="hint">Shows Top moments, Candidate ids, the Cut Timing fields other than Event tails, Fade length, Assembly audio fade, Captions model, Output size, Clip audio fade, the latest export's status and Extend export in the Export tab. Off by default; hidden options keep their values and are still used. Shows at once; Save keeps it, in this browser.</p>
+        <p id="setAdvExportHint" class="hint">Shows Top moments, Candidate ids, the Cut Timing fields other than Event tails, Fade length, Assembly audio fade, Captions model, Output size, Clip audio fade, the latest export's status and Extend export in the Export panel. Off by default; hidden options keep their values and are still used. Shows at once; Save keeps it, in this browser.</p>
       </fieldset>
       <fieldset class="panel">
         <legend>Appearance</legend>

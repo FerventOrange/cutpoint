@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The side column in `cutpoint ui` has three tabs (Sequence, AI Chat, Models); the Export button opens
+  the Export panel there, with Back. The sequence has a footer with the total length and an optional
+  target length, saved with the project, that only guides the progress bar.
 - AI Chat in `cutpoint ui` shows a compact summary of what the assistant did, and each proposed
   change is a card with Apply, Preview and Discard. Apply no longer needs the Sequence tab preview first.
 - The trim rail in `cutpoint ui` draws the source's audio level over the filmstrip and marks the

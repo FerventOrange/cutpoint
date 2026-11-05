@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtBytes, fmtLen, h, KINDS, kindOf, markdown, momentMatches, naturalCompare, NO_FILTERS, positionCompare, round2, rowInPlace, scoreText, spanText, svg, themeFromStored } from './util.js';
+import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtBytes, fmtLen, h, KINDS, kindOf, markdown, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, scoreText, spanText, svg, themeFromStored } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -45,7 +45,7 @@ const OPT_DEFAULTS = {
   picks: 'sequence', order: '', event_tails: 'auto', kind: 'highlights', crop_mode: '', caption_model: '',
   format: 'mp4',
 };
-// The Export tab's number and text fields, by the option they send; blank sends nothing (the CLI's default)
+// The Export panel's number and text fields, by the option they send; blank sends nothing (the CLI's default)
 const OPT_FIELDS = {
   top: '#optTop', max_total: '#optMaxTotal', ids: '#optIds', speech_max_extend: '#optSpeechExtend',
   speech_max_lead: '#optSpeechLead', tail_min: '#optTailMin', tail_max: '#optTailMax',
@@ -54,7 +54,7 @@ const OPT_FIELDS = {
   final_audio_fade: '#optFinalAudioFade', // sent as Assemble's audio_fade (assembleOptions)
 };
 const TEXT_FIELDS = new Set(['crop', 'size']); // OPT_FIELDS sent as typed, not as numbers
-// The Export tab's selects that keep their choice, by their storage key; '' (Default) sends nothing
+// The Export panel's selects that keep their choice, by their storage key; '' (Default) sends nothing
 const OPT_SELECTS = { order: '#optOrder', crop_mode: '#optCrop', caption_model: '#optCaptionModel', format: '#optFormat' };
 const PEAK_STOPS = ['off', 'light', 'strong']; // the Compress Audio Peaks slider's stops, left to right
 const PEAK_NAMES = { off: 'None', light: 'Light', strong: 'Max' };
@@ -91,7 +91,8 @@ const S = {
   selected: new Set(), // sequence ids ticked for batch actions
   nerdStats: false, // Settings > Stats for Nerds: the scoring overlay on the preview
   nerdStatsWas: false, // nerdStats when Settings opened, restored by Cancel or Escape
-  advExport: false, // Settings > Show advanced export options: the Export tab's .adv controls
+  target: null, // the sequence's target length in seconds (seqTarget), or null
+  advExport: false, // Settings > Show advanced export options: the Export panel's .adv controls
   advExportWas: false, // advExport when Settings opened, restored by Cancel or Escape
   verboseMoments: false, // Settings > Verbose moment labels: each tile's file, id and start-end
   verboseMomentsWas: false, // verboseMoments when Settings opened, restored by Cancel or Escape
@@ -545,6 +546,7 @@ function adopt(p, switched) {
   if (!current()) S.focus = S.segments[0]?.id ?? cands()[0]?.id ?? null;
   clearTimeout(S.prepTimer);
   if (switched) startColor();
+  if (switched) startTarget();
   if (switched) envelopes.clear();
   loadRailEvents(p);
   if (switched) syncTiming(); // Crop and Output size are off for 360 projects
@@ -2174,8 +2176,8 @@ function showPlaying(playing) {
   b.replaceChildren(icon(playing ? 'pause' : 'play'));
 }
 
-// One preview sounds at a time: the stage (a moment or "Play sequence") and the Export tab's final
-// video, which plays on while its tab is hidden, pause each other.
+// One preview sounds at a time: the stage (a moment or "Play sequence") and the Export panel's final
+// video pause each other.
 const finalVideo = $('#finalVideo');
 finalVideo.addEventListener('play', () => {
   if (S.seqPlay) seqStop();
@@ -2500,7 +2502,6 @@ const ICONS = {
   muted: [['path', { d: 'M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z' }]],
   play: [['path', { d: 'M8 5v14l11-7z' }]],
   pause: [['path', { d: 'M6 19h4V5H6v14zm8-14v14h4V5h-4z' }]],
-  grip: [[9, 5], [15, 5], [9, 12], [15, 12], [9, 19], [15, 19]].map(([cx, cy]) => ['circle', { cx, cy, r: 1.9 }]),
   check: [['path', { d: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z' }]],
   hourglass: [['path', { d: 'M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6zm10 14.5V20H8v-3.5l4-4 4 4zm-4-5-4-4V4h8v3.5l-4 4z' }]],
   funnel: [['path', { d: 'M4.25 5.61C6.27 8.2 10 13 10 13v6c0 .55.45 1 1 1h2c.55 0 1-.45 1-1v-6s3.72-4.8 5.74-7.39A1 1 0 0 0 18.95 4H5.04c-.83 0-1.3.95-.79 1.61z' }]],
@@ -2845,6 +2846,9 @@ function renderBatch() {
   for (const id of S.selected) if (!ids.has(id)) S.selected.delete(id);
   const n = S.selected.size;
   $('#seqBatch').hidden = !n;
+  const hidePlay = !!n && !S.seqPlay;
+  if (hidePlay && document.activeElement === $('#seqPlayBtn')) $('#seqClearSel').focus(); // a hidden button must not keep the focus
+  $('#seqPlayBtn').hidden = hidePlay; // Play sequence, or the selection's actions, in the same place; Stop stays
   $('#seqSelCount').textContent = `${n} selected`;
   const all = $('#seqSelAll');
   $('#seqSelAllRow').hidden = !S.segments.length;
@@ -2883,7 +2887,8 @@ const seqDur = (s, range) => {
   return h('span', { class: 'seq-dur tc', text: `${exportedLen(s).toFixed(1)} s` },
     h('span', { class: 'vh', text: `, ${range}` }),
     tail ? h('span', { class: 'seq-tail', text: `cut ${(s.end - s.start).toFixed(1)} s + tail` }) : null,
-    prepBadge(srcOf(s.source), s));
+    // a clip that is ready says nothing; one that is not gets the icon-only badge of the Moments tiles
+    prepState(srcOf(s.source), s) === 'ready' ? null : prepBadge(srcOf(s.source), s, true));
 };
 
 /** The kind line under a row's title: the kind of its ranked moment; none for a clip that is not one. */
@@ -2948,6 +2953,10 @@ function seqRow(s, i, n) {
   const li = h('li', {
     class: `seq${S.selected.has(s.id) ? ' selected' : ''}${seqNow() === s.id ? ' playing' : ''}`, 'data-id': s.id,
     'data-kind': kindOf(cands().find((c) => c.id === s.id)), 'aria-current': s.id === S.focus ? 'true' : null,
+    // the whole row drags; a press on the checkbox or the row's buttons does not arm it, nor does renaming
+    onpointerdown: (e) => { li.draggable = S.renaming !== s.id && !e.target.closest('input, .seq-ctl'); },
+    onpointerup: () => { if (!dragId) li.draggable = false; },
+    onpointercancel: () => { if (!dragId) li.draggable = false; },
     ondragstart: (e) => {
       dragId = s.id;
       li.classList.add('dragging');
@@ -2989,22 +2998,97 @@ function seqRow(s, i, n) {
           }, icon('trash'))),
         h('span', { class: 'seq-move' },
           h('button', { type: 'button', class: 'seq-chev', 'data-act': 'up', disabled: i === 0, 'aria-label': ROW_LABELS.up(name), onclick: () => moveSeg(s.id, i - 1) }, icon('up')),
-          h('button', { type: 'button', class: 'seq-chev', 'data-act': 'down', disabled: i === n - 1, 'aria-label': ROW_LABELS.down(name), onclick: () => moveSeg(s.id, i + 1) }, icon('down')))),
-      // The handle arms dragging for the whole row; keyboard users reorder with the chevrons.
-      h('span', {
-        class: 'seq-handle', 'aria-hidden': 'true', title: 'Drag to reorder',
-        onpointerdown: () => { li.draggable = true; },
-        onpointerup: () => { if (!dragId) li.draggable = false; },
-        onpointercancel: () => { if (!dragId) li.draggable = false; },
-      }, icon('grip'))),
+          h('button', { type: 'button', class: 'seq-chev', 'data-act': 'down', disabled: i === n - 1, 'aria-label': ROW_LABELS.down(name), onclick: () => moveSeg(s.id, i + 1) }, icon('down'))))),
   );
   return li;
 }
 
-function renderSequence() {
+/**
+ * The line under the list: the sequence's exported length in mono and, when a target length is
+ * set, "of ~4:00" with a thin bar of how much of it the sequence fills (full and capped at
+ * the bar's end when over). Without a target: the total alone.
+ */
+function renderSeqFoot() {
   const segs = S.segments;
   const total = segs.reduce((n, s) => n + exportedLen(s), 0);
-  $('#seqTotal').textContent = segs.length ? `${segs.length} clip${segs.length > 1 ? 's' : ''}, ${fmtLen(total)}` : '';
+  const target = seqTarget();
+  const has = target != null;
+  const editing = !$('#seqTargetForm').hidden;
+  $('#seqFoot').hidden = !segs.length;
+  const btn = $('#seqTotal');
+  btn.textContent = fmtLen(total);
+  const over = has && Math.round(total) > Math.round(target);
+  btn.setAttribute('aria-label', has
+    ? `${fmtLen(total)} of about ${fmtLen(target)}${over ? `, ${fmtLen(total - target)} over` : ''}. Change the target length`
+    : `${fmtLen(total)}. Set a target length`);
+  btn.title = has ? 'Change the target length: a guide for the bar, it cuts nothing' : 'Set a target length: a guide, it cuts nothing';
+  $('#seqTarget').textContent = has ? `of ~${fmtLen(target)}${over ? `, ${fmtLen(total - target)} over` : ''}` : '';
+  $('#seqTarget').hidden = editing;
+  $('#seqBar').hidden = !has || editing;
+  $('#seqBarFill').style.width = `${has ? Math.min(100, (total / target) * 100) : 0}%`; // over the target: a full bar, never wider
+}
+
+/** The sequence's target length in seconds (a guide for the footer's bar, saved with the project in ui/review.json), or null. */
+const seqTarget = () => S.target;
+
+/** The project's saved target (``review.target``); the editor closes. Called when a project opens. */
+function startTarget() {
+  const v = S.project?.review?.target;
+  S.target = Number.isFinite(v) && v > 0 ? v : null;
+  $('#seqTargetForm').hidden = true;
+  $('#seqTotal').setAttribute('aria-expanded', 'false');
+  renderSeqFoot();
+}
+
+/** Open (``on``) or close the footer's target field; focus goes to the field, or back to the total. */
+function editSeqTarget(on) {
+  $('#seqTargetForm').hidden = !on;
+  $('#seqTotal').setAttribute('aria-expanded', String(on));
+  $('#seqTargetErr').textContent = '';
+  $('#seqTargetInput').removeAttribute('aria-invalid');
+  renderSeqFoot();
+  if (on) {
+    const input = $('#seqTargetInput');
+    input.value = S.target == null ? '' : fmtLen(S.target);
+    input.focus();
+    input.select();
+  } else {
+    $('#seqTotal').focus();
+  }
+}
+
+/** Set the target from the field: M:SS or seconds; empty clears it; anything else is refused with a message. */
+async function commitSeqTarget() {
+  const text = $('#seqTargetInput').value.trim();
+  const secs = text ? parseTime(text) : null;
+  if (text && !(secs > 0 && secs <= 36000)) {
+    $('#seqTargetErr').textContent = 'Enter a length such as 4:00 or 240 seconds, up to 10 hours.';
+    $('#seqTargetInput').setAttribute('aria-invalid', 'true');
+    $('#seqTargetInput').focus();
+    return;
+  }
+  $('#seqTargetInput').removeAttribute('aria-invalid');
+  // saved with the project (ui/review.json) by its own request: not part of the sequence, so it never marks it unsaved
+  const id = S.id;
+  try {
+    await api(`/api/projects/${encodeURIComponent(id)}/target`, { method: 'PUT', body: { seconds: secs } });
+  } catch (e) {
+    // not saved: the old target stays and the field stays open with the reason
+    if (S.id !== id) return;
+    $('#seqTargetErr').textContent = `Could not save the target length: ${e.message || e}`;
+    $('#seqTargetInput').focus();
+    return;
+  }
+  if (S.id !== id) return; // another project opened meanwhile
+  S.target = secs;
+  if ($('#seqTargetForm').hidden) renderSeqFoot(); // Cancel came first: the form is already closed
+  else editSeqTarget(false);
+  $('#seqLive').textContent = secs == null ? 'Target length removed' : `Target length ${fmtLen(secs)}`;
+}
+
+function renderSequence() {
+  const segs = S.segments;
+  renderSeqFoot();
   if (!S.project) setEmpty($('#seqEmpty'));
   else if (!segs.length) setEmpty($('#seqEmpty'), h('p', {}, 'Nothing in the sequence yet. Add moments from the list, then trim and reorder them here. Clips are exported in this order.'));
   else setEmpty($('#seqEmpty'));
@@ -3151,6 +3235,9 @@ const nowIcon = () => h('span', { class: 'seq-now', 'aria-hidden': 'true', title
 function renderSeqPlay() {
   const b = $('#seqPlayBtn');
   b.disabled = !S.seqPlay && !S.segments.length;
+  const hide = !!S.selected.size && !S.seqPlay;
+  if (hide && document.activeElement === b) $('#seqClearSel').focus();
+  b.hidden = hide;
   b.textContent = S.seqPlay ? 'Stop' : 'Play sequence';
   if (S.seqPlay) b.setAttribute('aria-keyshortcuts', 'Escape');
   else b.removeAttribute('aria-keyshortcuts');
@@ -3185,7 +3272,8 @@ function revealRow(li) {
   const cs = getComputedStyle(col);
   const box = col.getBoundingClientRect();
   const top = box.top + (parseFloat(cs.scrollPaddingTop) || 0); // below the sticky tabs and header
-  const bottom = box.bottom - (parseFloat(cs.scrollPaddingBottom) || 0); // above the sticky chat input
+  // above the sticky chat input and the Sequence footer
+  const bottom = box.bottom - (parseFloat(cs.scrollPaddingBottom) || 0) - (parseFloat(cs.getPropertyValue('--seq-foot-h')) || 0);
   if (r.top < top) col.scrollTop -= top - r.top;
   else if (r.bottom > bottom) col.scrollTop += Math.min(r.bottom - bottom, r.top - top);
 }
@@ -5685,7 +5773,7 @@ function initNerdStats() {
   $('#setNerdStats').addEventListener('change', (e) => setNerdStats(e.target.checked));
 }
 
-/** Show or hide the Export tab's advanced controls (.adv) and say which hidden ones are in use. */
+/** Show or hide the Export panel's advanced controls (.adv) and say which hidden ones are in use. */
 function showAdvExport(on) {
   $('#panelExport').classList.toggle('show-adv', on);
   renderAdvInUse();
@@ -6006,20 +6094,33 @@ function initVolume() {
 }
 
 /**
- * The sequence column's tabs (Sequence, AI Chat, Export; more can be added as a button and a panel):
+ * The sequence column's tabs (Sequence, AI Chat, Models; more can be added as a button and a panel):
  * click, or arrow keys and Home/End on the focused tab, which select as they move (automatic
- * activation). The choice is remembered per browser; without storage it lasts the session. Returns
- * showTab(name, focus).
+ * activation). The choice is remembered per browser; without storage it lasts the session. The
+ * header's Export shows the Export panel in this column with no tab selected, under its own heading
+ * and a Back button; Back, Escape, a second click on Export or any tab returns to the tab it came
+ * from, and the preview and running jobs are not touched. Returns showTab(name, focus) for the tabs
+ * (Export has no tab name: only the header's button opens it).
  */
 function initSideTabs() {
   const tabs = [...document.querySelectorAll('#side [role=tab]')];
-  let currentTab = null;
+  const exportBtn = $('#exportBtn');
+  const exportPanel = $('#panelExport');
+  let currentTab = null; // the selected tab; while Export is open, the one Back returns to
+  let exportOpen = false;
+  const closeExport = () => {
+    exportOpen = false;
+    exportPanel.hidden = true;
+    for (const vid of exportPanel.querySelectorAll('video')) vid.pause(); // the final video: not heard unseen
+    exportBtn.setAttribute('aria-expanded', 'false');
+  };
   const select = (tab, focus = false) => {
-    if (tab === currentTab) {
+    if (tab === currentTab && !exportOpen) {
       if (focus) tab.focus();
       return;
     }
     const prev = currentTab;
+    if (exportOpen) closeExport();
     currentTab = tab;
     for (const t of tabs) {
       const on = t === tab;
@@ -6027,7 +6128,6 @@ function initSideTabs() {
       t.tabIndex = on ? 0 : -1;
       const panel = $(`#${t.getAttribute('aria-controls')}`);
       panel.hidden = !on;
-      if (!on) for (const vid of panel.querySelectorAll('video')) vid.pause(); // the Export tab's final video: not heard unseen
     }
     if (tab.dataset.tab === 'models' && prev?.dataset.tab !== 'models') openModelsTab();
     if (focus) tab.focus();
@@ -6038,27 +6138,61 @@ function initSideTabs() {
       // storage blocked or full: the tab still shows until reload
     }
   };
+  // Export is not a tab and is not remembered: the tab it hides stays the stored choice and keeps the tab stop
+  const openExport = () => {
+    if (!exportOpen) {
+      exportOpen = true;
+      for (const t of tabs) {
+        t.setAttribute('aria-selected', 'false');
+        $(`#${t.getAttribute('aria-controls')}`).hidden = true;
+      }
+      exportPanel.hidden = false;
+      exportBtn.setAttribute('aria-expanded', 'true');
+    }
+    $('#exportTitle').focus();
+  };
+  const backFromExport = () => {
+    if (exportOpen) select(currentTab);
+    exportBtn.focus();
+  };
   let saved = null;
   try {
     saved = localStorage.getItem(TAB_KEY);
   } catch {
     // storage blocked: start on the first tab
   }
-  const initial = tabs.find((t) => t.dataset.tab === saved) ?? tabs[0];
+  const initial = tabs.find((t) => t.dataset.tab === saved) ?? tabs[0]; // a stored tab that is gone (the old Export tab) starts the first
   select(initial);
   for (const t of tabs) t.addEventListener('click', () => select(t));
+  exportBtn.addEventListener('click', () => {
+    if (exportOpen) {
+      backFromExport();
+    } else {
+      openExport();
+      $('#side').scrollIntoView({ block: 'start' }); // when the column is below the preview, the page scrolls to it
+    }
+  });
+  $('#exportBack').addEventListener('click', backFromExport);
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !exportOpen || e.defaultPrevented || document.querySelector('dialog[open]') || popOpen()) return;
+    // from the panel or the button, or with nothing focused; Escape in another column keeps its own meaning
+    if (!exportPanel.contains(e.target) && e.target !== exportBtn && e.target !== document.body) return;
+    e.preventDefault(); // the page's own Escape (stop Play sequence) waits
+    backFromExport();
+  });
   // rows brought into view (focus, revealRow) land between the sticky tab bar and panel header and
   // the sticky chat input; their heights follow the column's width and the selected tab (a hidden
-  // panel's measure 0). --side-bars: where the Selected clips bar sticks, under the header
-  const bars = [$('#side .side-tabs'), $('#panelSequence .col-head'), $('#panelAssistant .chat-head')].filter(Boolean);
+  // panel's measure 0)
+  const bars = [$('#side .side-bar'), $('#panelSequence .col-head'), $('#panelAssistant .chat-head')].filter(Boolean);
   const pad = new ResizeObserver(() => {
     const side = $('#side');
     const px = `${bars.reduce((n, el) => n + el.offsetHeight, 0)}px`;
     side.style.scrollPaddingTop = px;
-    side.style.setProperty('--side-bars', px);
     side.style.scrollPaddingBottom = `${$('#chatForm').offsetHeight}px`;
+    // the Sequence footer is not in the padding: focusing inside it would scroll the column; the rows keep clear of it by scroll-margin
+    side.style.setProperty('--seq-foot-h', `${$('#seqFoot').offsetHeight}px`);
   });
-  for (const el of [...bars, $('#chatForm')]) pad.observe(el);
+  for (const el of [...bars, $('#chatForm'), $('#seqFoot')]) pad.observe(el);
   $('#side [role=tablist]').addEventListener('keydown', (e) => {
     const i = tabs.indexOf(document.activeElement);
     if (i < 0) return;
@@ -6319,7 +6453,7 @@ function initExportOptions() {
 }
 
 /**
- * Enable the Export tab's fields that apply: the automatic-pick fields with Automatic picks, Top
+ * Enable the Export panel's fields that apply: the automatic-pick fields with Automatic picks, Top
  * moments without candidate ids (the CLI takes one or the other), the speech caps with Speech-aware
  * cuts, the tail lengths with Smart tails. The sequence's moments keep their exact ends with Smart
  * tails off, which turns event tails off too, so Event tails is not sent then. The fields the CLI
@@ -6475,11 +6609,6 @@ function bind() {
 
   initProjectMenu();
   $('#saveBtn').addEventListener('click', () => saveReview().catch(fail));
-  // the header's Export: the Export tab, by the tab's own path (focus moves to it); the page scrolls to it when the column is below the preview
-  $('#exportBtn').addEventListener('click', () => {
-    showTab('export', true);
-    $('#side').scrollIntoView({ block: 'start' });
-  });
   $('#filter').addEventListener('input', (e) => {
     S.filter = e.target.value;
     renderMoments();
@@ -6490,6 +6619,22 @@ function bind() {
     if (!c) return;
     (c.seg ? removeSeg : addSeg)(c.id);
     $('#seqLive').textContent = `${shownName(c.cand, c.seg ? c.label : null) || c.label} ${c.seg ? 'removed from' : 'added to'} the sequence`;
+  });
+  $('#seqTotal').addEventListener('click', () => editSeqTarget($('#seqTargetForm').hidden));
+  $('#seqTargetForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    commitSeqTarget();
+  });
+  $('#seqTargetCancel').addEventListener('click', () => editSeqTarget(false));
+  $('#seqTargetForm').addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault(); // the field only; the page's own Escape (stop Play sequence) waits
+    e.stopPropagation();
+    editSeqTarget(false);
+  });
+  $('#seqTargetInput').addEventListener('input', () => {
+    $('#seqTargetErr').textContent = '';
+    $('#seqTargetInput').removeAttribute('aria-invalid');
   });
   $('#seqPlayBtn').addEventListener('click', () => (S.seqPlay ? seqStop() : seqStart()));
   $('#stageMode').addEventListener('click', (e) => {

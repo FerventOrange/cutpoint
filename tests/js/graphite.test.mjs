@@ -2,12 +2,16 @@
 // (kind, score, kind filter), the header Export button and the sequence row's kind and tail line.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boot, importPure, makeProject } from './harness.mjs';
+import { boot, bootRoutes, importPure, makeProject, reply } from './harness.mjs';
 
 const u = await importPure('util.js');
 
 async function open(t, { project = makeProject(), storage = {}, routes = {}, setup } = {}) {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+  } catch {
+    // a second page in one test: the timers are already mocked
+  }
   const page = await boot({ project, storage, routes, setup });
   t.after(() => page.close());
   return page;
@@ -170,7 +174,7 @@ test('the kind filter shows one kind, All brings the rest back, and the pressed 
 
 // ---- header Export ----
 
-test('the header Export button opens the Export tab by the tab path, and the tab stays', async (t) => {
+test('the header Export button shows the Export panel in the side column with no tab selected; Back, Escape and a second click return', async (t) => {
   const page = await open(t);
   const d = page.document;
   const btn = d.querySelector('.top #exportBtn');
@@ -180,12 +184,28 @@ test('the header Export button opens the Export tab by the tab path, and the tab
   btn.click();
   await page.settle();
   assert.equal(d.querySelector('#panelExport').hidden, false);
-  assert.equal(d.querySelector('#tabExport').getAttribute('aria-selected'), 'true');
+  assert.equal(btn.getAttribute('aria-expanded'), 'true');
+  assert.equal(d.querySelector('#tabExport'), null, 'Export is no tab');
+  assert.deepEqual([...d.querySelectorAll('#side [role=tab]')].map((x) => x.getAttribute('aria-selected')), ['false', 'false', 'false']);
   assert.equal(d.querySelector('#panelSequence').hidden, true);
-  d.querySelector('#tabSequence').click();
+  d.querySelector('#exportBack').click(); // Back returns to the tab it came from
   assert.equal(d.querySelector('#panelExport').hidden, true);
-  d.querySelector('#tabExport').click();
+  assert.equal(d.querySelector('#panelSequence').hidden, false);
+  assert.equal(btn.getAttribute('aria-expanded'), 'false');
+  btn.click();
+  btn.click(); // a second click returns too
+  assert.equal(d.querySelector('#panelExport').hidden, true);
+  btn.click();
+  const esc = (el) => el.dispatchEvent(new page.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  esc(d.querySelector('#candList')); // Escape in another column keeps its own meaning
   assert.equal(d.querySelector('#panelExport').hidden, false);
+  esc(d.querySelector('#exportBack'));
+  assert.equal(d.querySelector('#panelExport').hidden, true);
+  assert.equal(d.querySelector('#tabSequence').getAttribute('aria-selected'), 'true');
+  d.querySelector('#tabAssistant').click(); // from another tab, Back returns there
+  btn.click();
+  d.querySelector('#exportBack').click();
+  assert.equal(d.querySelector('#panelAssistant').hidden, false);
 });
 
 // ---- sequence rows ----
@@ -212,4 +232,236 @@ test('a sequence row has its kind and name, and "cut N s + tail" only when the e
   await page.settle();
   assert.equal(row().querySelector('.seq-dur').firstChild.textContent, '16.2 s');
   assert.equal(row().querySelector('.seq-tail').textContent, 'cut 8.0 s + tail');
+});
+
+const OPTS = 'cutpoint.exportOptions';
+
+const putTarget = { 'PUT /api/projects/p1/target': (req) => ({ target: req.body.seconds }) };
+
+test('the footer total is a button: it opens a target field; set, over the target and clear', async (t) => {
+  const page = await open(t, { project: withSegment(), routes: putTarget });
+  const d = page.document;
+  const total = d.querySelector('#seqTotal');
+  const input = d.querySelector('#seqTargetInput');
+  const submit = () => d.querySelector('#seqTargetForm').dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true }));
+  assert.equal(total.tagName, 'BUTTON');
+  assert.equal(total.textContent, '0:08');
+  assert.equal(d.querySelector('#seqTarget').textContent, '', 'no target: the total alone');
+  assert.equal(d.querySelector('#seqBar').hidden, true, 'no target, no bar');
+  assert.match(total.title, /Set a target length/);
+  total.click();
+  assert.equal(d.querySelector('#seqTargetForm').hidden, false);
+  assert.equal(total.getAttribute('aria-expanded'), 'true');
+  assert.equal(d.activeElement, input, 'the field takes the focus');
+  input.value = '0:16';
+  submit();
+  await page.settle();
+  assert.equal(d.querySelector('#seqTargetForm').hidden, true);
+  assert.equal(d.activeElement, total, 'focus returns to the total');
+  assert.equal(d.querySelector('#seqTarget').textContent, 'of ~0:16');
+  assert.equal(d.querySelector('#seqBar').hidden, false);
+  assert.equal(d.querySelector('#seqBarFill').style.width, '50%');
+  input.value = '4'; // seconds: shorter than the sequence
+  total.click();
+  input.value = '4';
+  submit();
+  await page.settle();
+  assert.equal(d.querySelector('#seqBarFill').style.width, '100%', 'over the target: a full bar, never wider');
+  assert.match(d.querySelector('#seqTarget').textContent, /^of ~0:04, 0:04 over$/);
+  total.click();
+  input.value = '';
+  submit();
+  await page.settle();
+  assert.equal(d.querySelector('#seqTarget').textContent, '');
+  assert.equal(d.querySelector('#seqBar').hidden, true, 'clearing removes the target');
+});
+
+test('a bad target is refused with a message and changes nothing; Escape closes the field', async (t) => {
+  const page = await open(t, { project: withSegment() });
+  const d = page.document;
+  const input = d.querySelector('#seqTargetInput');
+  const submit = () => d.querySelector('#seqTargetForm').dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true }));
+  for (const bad of ['soon', '-5', '0', '1:2:3:4', '99999']) {
+    if (d.querySelector('#seqTargetForm').hidden) d.querySelector('#seqTotal').click();
+    input.value = bad;
+    submit();
+    assert.match(d.querySelector('#seqTargetErr').textContent, /Enter a length/, bad);
+    assert.equal(input.getAttribute('aria-invalid'), 'true');
+    assert.equal(d.querySelector('#seqTargetForm').hidden, false, 'the field stays open');
+    assert.equal(d.querySelector('#seqBar').hidden, true);
+    assert.equal(page.window.localStorage.getItem(OPTS), null, 'nothing stored');
+  }
+  input.dispatchEvent(new page.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.equal(d.querySelector('#seqTargetForm').hidden, true);
+  assert.equal(d.activeElement, d.querySelector('#seqTotal'));
+});
+
+test('the target is saved with the project, is not exported, does not mark the sequence unsaved and is not kept in the browser', async (t) => {
+  const posted = [];
+  const puts = [];
+  const routes = {
+    'POST /api/projects/p1/jobs': (req) => { posted.push(req.body); return { id: 'j1', status: 'running' }; },
+    'PUT /api/projects/p1/target': (req) => { puts.push(req.body); return { target: req.body.seconds }; },
+  };
+  const page = await open(t, { project: withSegment(), routes });
+  const d = page.document;
+  d.querySelector('#seqTotal').click();
+  d.querySelector('#seqTargetInput').value = '4:00';
+  d.querySelector('#seqTargetForm').dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true }));
+  await page.settle();
+  assert.deepEqual(puts, [{ seconds: 240 }]);
+  assert.equal(d.querySelector('#seqTarget').textContent, 'of ~4:00');
+  assert.equal(page.window.localStorage.getItem(OPTS), null, 'nothing about it in this browser');
+  assert.equal(d.querySelector('#saveBtn').disabled, true, 'the sequence is not dirty');
+  assert.equal(d.querySelector('#optMaxTotal').value, '', 'Max video length is not touched');
+  d.querySelector('#clipsBtn').click();
+  await page.settle();
+  for (const body of posted) assert.ok(!JSON.stringify(body).includes('240') && !('target' in body) && !('max_total' in body));
+  page.close();
+
+  const saved = withSegment();
+  saved.review.target = 240;
+  const again = await open(t, { project: saved });
+  assert.equal(again.document.querySelector('#seqTarget').textContent, 'of ~4:00', 'read from the project, whatever the browser');
+  const other = await open(t, { project: withSegment() });
+  assert.equal(other.document.querySelector('#seqTarget').textContent, '', 'a project without one has none');
+  const junk = withSegment();
+  junk.review.target = 'x';
+  const bad = await open(t, { project: junk });
+  assert.equal(bad.document.querySelector('#seqBar').hidden, true);
+});
+
+test('a failed save of the target keeps the old value and says so', async (t) => {
+  const routes = { 'PUT /api/projects/p1/target': reply(400, { detail: 'disk full' }) };
+  const project = withSegment();
+  project.review.target = 240;
+  const page = await open(t, { project, routes });
+  const d = page.document;
+  d.querySelector('#seqTotal').click();
+  d.querySelector('#seqTargetInput').value = '0:16';
+  d.querySelector('#seqTargetForm').dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true }));
+  await page.settle();
+  assert.equal(d.querySelector('#seqTarget').hidden, true, 'the field is still open');
+  assert.equal(d.querySelector('#seqTargetForm').hidden, false);
+  assert.match(d.querySelector('#seqTargetErr').textContent, /Could not save the target length: disk full/);
+  d.querySelector('#seqTargetCancel').click();
+  assert.equal(d.querySelector('#seqTarget').textContent, 'of ~4:00', 'the old target stays');
+  assert.equal(d.querySelector('#seqTargetErr').textContent, '');
+});
+
+for (const fails of [false, true]) {
+  test(`a target save answered after another project opened ${fails ? 'with an error ' : ''}leaves that project alone`, async (t) => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const p2 = makeProject({ id: 'p2', name: 'Second trip', review: { segments: [], target: 600 } });
+    const routes = {
+      ...bootRoutes(p2),
+      'GET /api/projects': { projects: [{ id: 'p1', name: 'Project One' }, { id: 'p2', name: 'Second trip' }] },
+      'PUT /api/projects/p1/target': async (req) => {
+        await gate;
+        return fails ? reply(500, { detail: 'disk full' }) : { target: req.body.seconds };
+      },
+    };
+    const page = await open(t, { project: withSegment(), routes });
+    const d = page.document;
+    d.querySelector('#seqTotal').click();
+    d.querySelector('#seqTargetInput').value = '0:16';
+    d.querySelector('#seqTargetForm').dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true }));
+    await page.settle(); // the PUT is in flight
+    d.querySelector('#projectBtn').click();
+    d.querySelector('#projectMenu [data-id=p2]').click();
+    await page.settle();
+    assert.equal(d.querySelector('#seqTarget').textContent, 'of ~10:00', 'p2 is open with its own target');
+    release();
+    await page.settle();
+    assert.equal(d.querySelector('#seqTarget').textContent, 'of ~10:00', "p2's target stays");
+    assert.equal(d.querySelector('#seqTargetErr').textContent, '');
+    assert.equal(d.querySelector('#seqTargetForm').hidden, true, 'the form stays closed');
+  });
+}
+
+test('Cancel while the target is being saved does not steal the focus when the save lands', async (t) => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const routes = { 'PUT /api/projects/p1/target': async (req) => { await gate; return { target: req.body.seconds }; } };
+  const page = await open(t, { project: withSegment(), routes });
+  const d = page.document;
+  d.querySelector('#seqTotal').click();
+  d.querySelector('#seqTargetInput').value = '0:16';
+  d.querySelector('#seqTargetForm').dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true }));
+  await page.settle();
+  d.querySelector('#seqTargetCancel').click();
+  d.querySelector('#projectBtn').focus();
+  release();
+  await page.settle();
+  assert.equal(d.activeElement, d.querySelector('#projectBtn'), 'the focus stays where the user moved it');
+  assert.equal(d.querySelector('#seqTargetForm').hidden, true);
+  assert.equal(d.querySelector('#seqTarget').textContent, 'of ~0:16', 'the saved target shows');
+});
+
+test('Escape on Set or Cancel closes the target field and does not reach the page', async (t) => {
+  const page = await open(t, { project: withSegment() });
+  const d = page.document;
+  let reached = false;
+  d.addEventListener('keydown', () => { reached = true; });
+  d.querySelector('#seqTotal').click();
+  d.querySelector('#seqTargetInput').value = 'soon';
+  d.querySelector('#seqTargetForm').dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true }));
+  assert.equal(d.querySelector('#seqTargetInput').getAttribute('aria-invalid'), 'true');
+  d.querySelector('#seqTargetCancel').dispatchEvent(new page.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  assert.equal(d.querySelector('#seqTargetForm').hidden, true);
+  assert.equal(reached, false);
+  d.querySelector('#seqTotal').click();
+  assert.equal(d.querySelector('#seqTargetInput').hasAttribute('aria-invalid'), false, 'no stale invalid mark');
+});
+
+test('a row drags as a whole except from its checkbox and buttons, and shows no status when its clip is ready', async (t) => {
+  const page = await open(t, { project: withSegment() });
+  const d = page.document;
+  const row = d.querySelector('#seqList li[data-id="h001"]');
+  const press = (el) => el.dispatchEvent(new page.window.Event('pointerdown', { bubbles: true }));
+  assert.equal(row.querySelector('.seq-handle'), null, 'no drag handle');
+  press(row.querySelector('.seq-title'));
+  assert.equal(row.draggable, true);
+  row.dispatchEvent(new page.window.Event('pointerup', { bubbles: true }));
+  assert.equal(row.draggable, false);
+  press(row.querySelector('[data-act=select]'));
+  assert.equal(row.draggable, false, 'the checkbox does not start a drag');
+  press(row.querySelector('[data-act=remove]'));
+  assert.equal(row.draggable, false, 'nor do the row buttons');
+  assert.equal(row.querySelector('.prep'), null, 'no "Ready" text or badge unless a clip is not ready');
+});
+
+test('a stored Export tab from before Export left the tabs starts on Sequence and is forgotten', async (t) => {
+  const page = await open(t, { storage: { 'cutpoint.sideTab': 'export' } });
+  const d = page.document;
+  assert.equal(d.querySelector('#tabSequence').getAttribute('aria-selected'), 'true');
+  assert.equal(d.querySelector('#panelExport').hidden, true);
+  assert.equal(page.window.localStorage.getItem('cutpoint.sideTab'), null);
+});
+
+test('revealRow keeps the playing row above the chat input and the Sequence footer (--seq-foot-h)', async (t) => {
+  const page = await open(t, { project: withSegment() });
+  const d = page.document;
+  const side = d.querySelector('#side');
+  const rect = (top, bottom) => ({ top, bottom, left: 0, right: 0, width: 0, height: bottom - top });
+  const row = d.querySelector('#seqList').firstElementChild;
+  const win = page.window;
+  const real = win.getComputedStyle.bind(win);
+  win.getComputedStyle = (el, ...a) => {
+    if (el !== side) return real(el, ...a);
+    return { overflowY: 'auto', scrollPaddingTop: '10px', scrollPaddingBottom: '50px', getPropertyValue: (n) => (n === '--seq-foot-h' ? '100px' : '') };
+  };
+  side.getBoundingClientRect = () => rect(0, 500); // usable bottom: 500 - 50 - 100 = 350
+  side.scrollTop = 0;
+  const reveal = (bottom) => {
+    row.getBoundingClientRect = () => rect(bottom - 40, bottom);
+    side.scrollTop = 0;
+    d.querySelector('#seqPlayBtn').click();
+    page.window.document.querySelector('#seqPlayBtn').click(); // Stop
+  };
+  reveal(400); // under the footer's 350 line
+  assert.equal(side.scrollTop, 50);
+  reveal(340); // clear of it
+  assert.equal(side.scrollTop, 0);
 });

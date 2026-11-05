@@ -267,8 +267,8 @@ test('the stage and the Export tab\'s final video never sound together; leaving 
 
   fin.__media.paused = false;
   fin.__media.calls.length = 0;
-  p.d.querySelector('#tabSequence').click(); // leave the Export tab for another
-  p.d.querySelector('#tabExport').click();
+  p.d.querySelector('#tabSequence').click(); // leave the Export panel for a tab
+  p.d.querySelector('#exportBtn').click();
   p.d.querySelector('#tabSequence').click();
   await p.wait();
   assert.ok(fin.__media.calls.includes('pause'));

@@ -1498,8 +1498,8 @@ def test_settings_offer_graphite_light_and_blue_themes_applied_before_first_pain
         for fg, bg in ui_parts:
             assert _contrast(t[fg], t[bg]) >= 3, (name, fg, bg)
     assert re.search(r':root\[data-theme="light"\] \{[^}]*color-scheme: light;', css)
-    # the selected tab's underline and the range accents use that token, not the --amber fill
-    assert re.search(r'\.side-tab\[aria-selected="true"\][^{]*\{[^}]*var\(--amber-text\)', css)
+    # the selected tab is raised on the segmented well (tokens, not hex); the range accents use --amber-text
+    assert re.search(r'\.side-tab\[aria-selected="true"\][^{]*\{[^}]*var\(--raise\)', css)
     for rule in re.findall(r"[^{}]*input\[type=range\][^{}]*\{[^}]*accent-color[^}]*\}", css):
         assert "accent-color: var(--amber-text)" in rule, rule
 
@@ -1619,6 +1619,98 @@ def test_review_is_validated_and_saved_atomically(client: TestClient, tmp_path: 
         assert put(broken).status_code == 400
     assert put(ok, ok).status_code == 400  # duplicate id
     assert client.get(f"/api/projects/{pid}").json()["review"]["segments"] == saved
+
+
+def test_the_target_length_is_saved_with_the_project_and_survives_save(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The sequence's target length lives in ui/review.json: validated, cleared by null and kept
+    by a Save of the sequence."""
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    src = str((folder / "a.mp4").resolve())
+    p = ui.project_dir(pid)
+    cache.save_json(p / "highlights.json", {"sources": [{"path": src, "duration": 10.0}]})
+    url = f"/api/projects/{pid}/target"
+
+    def put(seconds):
+        return client.put(url, json={"seconds": seconds})
+
+    def stored():
+        return (client.get(f"/api/projects/{pid}").json()["review"] or {}).get("target")
+
+    assert put(240).json() == {"target": 240.0}
+    assert stored() == 240.0
+    seg = {"id": "h001", "source": src, "start": 1, "end": 4.5, "label": "good"}
+    assert client.put(f"/api/projects/{pid}/review", json={"segments": [seg]}).status_code == 200
+    assert stored() == 240.0  # Save keeps it
+    review = client.get(f"/api/projects/{pid}").json()["review"]
+    assert [s["id"] for s in review["segments"]] == ["h001"]
+    assert put(36000).status_code == 200
+    assert put(0.5).status_code == 200
+    for bad in (0, -1, 36000.5, 10**400, "240", True, [], {}):
+        assert put(bad).status_code == 400, bad
+        assert stored() == 0.5
+    for raw in ("NaN", "Infinity", "-Infinity"):  # not JSON, but Python's parser takes them
+        res = client.put(
+            url, content=f'{{"seconds": {raw}}}', headers={"content-type": "application/json"}
+        )
+        assert res.status_code in (400, 422), raw
+        assert stored() == 0.5
+    assert client.put(url, json={}).status_code == 400
+    assert put(None).json() == {"target": None}
+    assert stored() is None
+    assert client.get(f"/api/projects/{pid}").json()["review"]["segments"][0]["id"] == "h001"
+
+
+def test_save_keeps_the_target_when_review_json_is_locked_for_a_moment(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A short lock on review.json (first read raises PermissionError) must not drop the target."""
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    src = str((folder / "a.mp4").resolve())
+    p = ui.project_dir(pid)
+    cache.save_json(p / "highlights.json", {"sources": [{"path": src, "duration": 10.0}]})
+    assert client.put(f"/api/projects/{pid}/target", json={"seconds": 240}).status_code == 200
+    file = p / "ui" / "review.json"
+    real = Path.read_bytes
+    calls: list[int] = []
+
+    def flaky(self: Path) -> bytes:
+        if self == file and not calls:
+            calls.append(1)
+            raise PermissionError("locked")
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", flaky)
+    seg = {"id": "h001", "source": src, "start": 1, "end": 4.5, "label": "good"}
+    assert client.put(f"/api/projects/{pid}/review", json={"segments": [seg]}).status_code == 200
+    assert calls == [1]
+    assert json.loads(file.read_text(encoding="utf-8"))["target"] == 240.0
+
+
+def test_the_target_is_not_saved_over_a_review_file_that_cannot_be_read(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrupt, non-object or unreadable review.json gives 409 and is never rewritten."""
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    file = ui.project_dir(pid) / "ui" / "review.json"
+    file.parent.mkdir(exist_ok=True)
+    url = f"/api/projects/{pid}/target"
+    for raw in (b'{"segments": [{"id": "h00', b"[1, 2]", b"\xff\xfe\x00bad"):
+        file.write_bytes(raw)
+        for seconds in (60, None):
+            assert client.put(url, json={"seconds": seconds}).status_code == 409, raw
+        assert file.read_bytes() == raw
+
+    good = b'{"segments": []}'
+    file.write_bytes(good)
+
+    def locked(path, hint=""):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(ui.cache, "read_json", locked)
+    assert client.put(url, json={"seconds": 60}).status_code == 409
+    assert file.read_bytes() == good
 
 
 def test_moment_ids_survive_reanalysis_without_relinking_saved_trims(
@@ -3773,6 +3865,7 @@ def test_project_routes_name_a_rejected_config_file_and_settings_still_work(
         ("POST", "/api/projects", {"json": {"name": "x", "source": str(tmp_path / "footage")}}),
         ("GET", f"/api/projects/{pid}", {}),
         ("PUT", f"/api/projects/{pid}/review", {"json": {}}),
+        ("PUT", f"/api/projects/{pid}/target", {"json": {"seconds": 60}}),
         ("POST", f"/api/projects/{pid}/reveal", {}),
         ("POST", f"/api/projects/{pid}/jobs", {"json": {"action": "analyze"}}),
         ("POST", f"/api/projects/{pid}/sources/s0/prepare", {}),
@@ -6829,12 +6922,14 @@ def test_stage_and_final_video_never_sound_together() -> None:
 
 
 def test_a_hidden_side_tab_pauses_its_videos() -> None:
-    """Contract pin: leaving the Export tab pauses its final video, which would otherwise play
+    """Contract pin: closing the Export panel pauses its final video, which would otherwise play
     on unseen (a hidden element keeps playing)."""
     js = _web("app.js")
     body = js[js.index("function initSideTabs(") : js.index("function initMomentOrder(")]
-    assert "panel.hidden = !on;" in body
-    assert "if (!on) for (const vid of panel.querySelectorAll('video')) vid.pause();" in body
+    close = body[body.index("const closeExport = () => {") :]
+    close = close[: close.index("\n  };")]
+    assert "exportPanel.hidden = true;" in close
+    assert "for (const vid of exportPanel.querySelectorAll('video')) vid.pause();" in close
     html = _web("index.html")
     export = html[html.index('id="panelExport"') :]
     assert '<video id="finalVideo"' in export  # the video this pauses lives in a tab panel
@@ -6860,20 +6955,20 @@ def test_play_sequence_keeps_a_window_proxy_only_when_it_covers_the_whole_clip()
 
 
 def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
-    """Contract pin (#462, #346): the column has a Sequence, an AI Chat, an Export and a Models
-    tab, each controlling a labelled tabpanel; only the selected tab is in the tab order (roving
-    tabindex)."""
+    """Contract pin (#462, #346): the column has a Sequence, an AI Chat and a Models tab, each
+    controlling a labelled tabpanel; only the selected tab is in the tab order (roving tabindex).
+    Export is no tab: the header's Export button controls the Export panel, a region with its own
+    heading, shown in this column with no tab selected."""
     html = _web("index.html")
     (tablist,) = re.findall(r'<div[^>]*role="tablist"[^>]*>(.*?)</div>', html, re.S)
     tabs = re.findall(r"<button\b[^>]*>", tablist)
-    assert len(tabs) == 4 and all('role="tab"' in t for t in tabs)
+    assert len(tabs) == 3 and all('role="tab"' in t for t in tabs)
     panels = dict(
         re.findall(r'<div id="(\w+)"[^>]*role="tabpanel"[^>]*aria-labelledby="(\w+)"', html)
     )
     assert panels == {
         "panelSequence": "tabSequence",
         "panelAssistant": "tabAssistant",
-        "panelExport": "tabExport",
         "panelModels": "tabModels",
     }
     for tab in tabs:
@@ -6885,70 +6980,87 @@ def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
     assert "tabindex" not in tabs[0]
     for later in ("panelAssistant", "panelExport", "panelModels"):
         assert " hidden" in re.search(rf'<div id="{later}"[^>]*>', html)[0]  # Sequence first
+    assert "tabExport" not in html
+    export = re.search(r'<div id="panelExport"[^>]*>', html)[0]
+    assert 'role="region"' in export and 'aria-labelledby="exportTitle"' in export
+    assert re.search(r'<button type="button" id="exportBtn"[^>]*aria-expanded="false"', html)
+    assert 'aria-controls="panelExport"' in re.search(r'<button[^>]*id="exportBtn"[^>]*>', html)[0]
+    assert 'id="exportBack"' in html and 'id="exportTitle"' in html
+    assert 'id="side" aria-label="Sequence, AI chat and models"' in html
     js = _web("app.js")
     assert "[role=tab]" in js and "aria-selected" in js and "ArrowRight" in js
 
 
 def test_side_tabs_share_the_column_width_evenly_at_any_width() -> None:
-    """Contract pin: the tab band spans the whole column (bleeding over its padding) and its tabs
-    are equal grid columns with no gap or side padding, so at any width the splitter sets they
-    fill it evenly; a label too long for its tab ends in an ellipsis (its text, the tab's name for
-    screen readers, stays whole). Before, the tabs were as wide as their labels, at the left.
+    """Contract pin: the tabs are a segmented control (board F): a rounded well with 12 px margin
+    and 3 px padding whose three tabs are equal grid columns, so at any width the splitter sets
+    they fill it evenly; a label too long for its tab ends in an ellipsis (its text, the tab's
+    name for screen readers, stays whole). The selected tab is raised and 600 weight.
 
     Check in a browser (no browser in the test suite): at the narrowest, default and widest
-    column, the three tabs are equally wide within 1 px and together as wide as the band."""
+    column, the three tabs are equally wide within 1 px and together as wide as the well."""
     css = _web("app.css")
     band = re.search(r"^\.side-tabs \{([^}]*)\}", css, re.M)[1]
-    assert "display: grid;" in band and "grid-auto-flow: column;" in band
-    assert "grid-auto-columns: minmax(0, 1fr);" in band  # equal, for any number of tabs
-    assert "margin: -12px -16px 0;" in band  # the .col padding: edge to edge
-    assert "gap" not in band and "padding" not in band
+    assert "display: grid;" in band and "grid-template-columns: repeat(3, minmax(0, 1fr));" in band
+    assert "margin: var(--space-3);" in band and "padding: 3px;" in band
+    assert "border-radius: 8px;" in band and "background: var(--deep);" in band
     tab = re.search(r"^\.side-tab \{([^}]*)\}", css, re.M)[1]
     for decl in ("min-width: 0;", "overflow: hidden;", "white-space: nowrap;",
-                 "text-overflow: ellipsis;"):  # fmt: skip
+                 "text-overflow: ellipsis;", "height: 30px;", "border-radius: 6px;"):  # fmt: skip
         assert decl in tab
     assert "flex" not in tab
+    selected = re.search(r'^\.side-tab\[aria-selected="true"\] \{([^}]*)\}', css, re.M)[1]
+    assert "background: var(--raise);" in selected and "font-weight: 600;" in selected
     html = _web("index.html")
     (tablist,) = re.findall(r'<div[^>]*role="tablist"[^>]*>(.*?)</div>', html, re.S)
     names = re.findall(r'<button\b[^>]*role="tab"[^>]*>([^<]+)</button>', tablist)
-    assert names == ["Sequence", "AI Chat", "Export", "Models"]  # the visible text is the name
+    assert names == ["Sequence", "AI Chat", "Models"]  # the visible text is the name
     assert "aria-label" not in tablist.replace('aria-label="Sequence column"', "")
 
 
 def test_side_tabs_and_panel_headers_stay_put_while_a_panel_scrolls() -> None:
     """Contract pin: the tab bar (at the column's -12 px padding) and the Sequence and AI Chat
-    headers under it are sticky, and the Selected clips bar sticks under them (--side-bars); below
-    960 px, where the page scrolls, they are static. revealRow keeps rows clear of them through the
-    scroll padding app.js sets. Before, the tab bar and headers scrolled away with a long panel.
+    headers under it are sticky (the Sequence header holds the selection actions, so no separate
+    bar sticks); below 960 px, where the page scrolls, they are static. revealRow keeps rows clear
+    of them through the scroll padding app.js sets. Before, the tab bar and headers scrolled away
+    with a long panel.
 
     Check in a browser (no browser in the test suite): at 1600x800, with each panel scrolled to
-    the bottom, the tab bar's and header's tops do not move, the header's top equals the tab
-    bar's bottom, the batch bar's top equals the header's bottom, and a focused row lands below
-    them."""
+    the bottom, the tab bar's and header's tops do not move and the header's top equals the tab
+    bar's bottom, and a focused row lands below them."""
     css = _web("app.css")
-    band = re.search(r"^\.side-tabs \{([^}]*)\}", css, re.M)[1]
+    band = re.search(r"^\.side-bar \{([^}]*)\}", css, re.M)[1]
     assert "position: sticky; top: -12px;" in band
+    assert "--side-bar-h: 60px;" in css  # 12 px margin, the 36 px control, 12 px margin
     heads = re.search(
         r"^#panelSequence > \.col-head, #panelAssistant > \.chat-head \{([^}]*)\}", css, re.M
     )[1]
-    assert "position: sticky; top: calc(var(--band-h) - 12px);" in heads
-    batch = re.search(r"^\.seq-batch \{([^}]*)\}", css, re.M)[1]
-    assert "top: calc(var(--side-bars, 12px) - 12px);" in batch
+    assert "position: sticky; top: calc(var(--side-bar-h) - 12px);" in heads
     narrow = css[css.index("@media (max-width: 960px)") :]
     narrow = narrow[: narrow.index("\n}\n")]
-    assert (
-        ".side-tabs, #panelSequence > .col-head, #panelAssistant > .chat-head { position: static; }"
-        in narrow
-    )
-    assert ".seq-batch { top: 0; }" in narrow
+    assert ".side-bar, .seq-foot, #panelAssistant > .chat-head" in narrow
+    assert "#panelSequence > .col-head { top: 0; }" in narrow  # the selection actions stay in reach
+    assert "#panelSequence > .col-head," not in narrow.split("{")[0]
     js = _web("app.js")
     reveal = js[js.index("function revealRow(") :]
     reveal = reveal[: reveal.index("\n}\n")]
     assert "scrollPaddingTop" in reveal and "scrollPaddingBottom" in reveal
-    assert (
-        "side.style.scrollPaddingTop = px;" in js
-        and "side.style.setProperty('--side-bars', px);" in js
+    assert "side.style.scrollPaddingTop = px;" in js
+    # the footer is no scroll-padding (focusing in it must not scroll the column); rows clear it by margin
+    assert "side.style.scrollPaddingBottom = `${$('#chatForm').offsetHeight}px`;" in js
+    assert "side.style.setProperty('--seq-foot-h', `${$('#seqFoot').offsetHeight}px`);" in js
+    assert "--seq-foot-h" in reveal
+    assert ".seq { scroll-margin-bottom: var(--seq-foot-h, 0px); }" in css
+    assert "scroll-margin-bottom: calc(var(--seq-foot-h, 0px) + 28px);" in css
+    assert "pad.observe(el)" in js and "$('#seqFoot')]" in js
+    assert "--side-bars" not in js and "--side-bars" not in css
+    # a ticked or current row keeps 4.5:1 for its rank and kind text: the rank is --muted there
+    assert re.search(
+        r"\.seq\.selected \.rank, \.seq\[aria-current\] \.rank \{ color: var\(--muted\); \}", css
     )
+    assert "12%, var(--picked))" in css and "12%, var(--raise))" not in css
+    # the "+ tail" note is --amber-text (4.07:1 on the ticked tint in Light): --muted when ticked
+    assert re.search(r"\.seq\.selected \.seq-tail \{ color: var\(--muted\); \}", css)
 
 
 @pytest.mark.parametrize(
@@ -8056,17 +8168,27 @@ def test_one_undo_stack_holds_manual_and_ai_edits_with_ctrl_z() -> None:
         )
 
 
-def test_play_sequence_sits_under_undo_redo_at_a_fixed_width() -> None:
-    """Contract pin: Undo, Redo and Play sequence share one group in that order; Play spans both
-    columns, and a hidden ::after with its longer label keeps "Stop" from shrinking or moving it."""
+def test_play_sequence_shares_the_select_all_row_with_the_selection_actions() -> None:
+    """Contract pin: Undo and Redo sit on the title line; Select all is at the left of the next
+    row, whose right end holds Play sequence, or, with clips ticked, the count, Remove and Clear
+    (renderBatch swaps them), so the list does not jump. A hidden ::after with Play's longer label
+    keeps "Stop" from shrinking or moving it."""
     html = _web("index.html")
     css = _web("app.css")
     js = _web("app.js")
-    group = re.search(r'<div class="seq-head-acts">(.*?)</div>', html, re.S)[1]
-    assert re.findall(r'id="(\w+)"', group) == ["undoBtn", "redoBtn", "seqPlayBtn"]
-    assert ".seq-head-acts { display: grid; grid-template-columns: 1fr 1fr;" in css
+    line = re.search(r'<div class="seq-line">(.*?)\n          </div>\n          <!--', html, re.S)[
+        1
+    ]
+    assert re.findall(r'id="(\w+)"', line) == ["seqTitle", "undoBtn", "redoBtn"]
+    bar = re.search(r'<div class="seq-bar">(.*?)\n          </div>\n        </div>', html, re.S)[1]
+    assert re.findall(r'id="(\w+)"', bar) == [
+        "seqSelAllRow", "seqSelAll", "seqPlayBtn", "seqBatch", "seqSelCount", "seqRemoveSel",
+        "seqClearSel",
+    ]  # fmt: skip
+    assert "$('#seqPlayBtn').hidden = hidePlay;" in _js_function(js, "renderBatch")
+    assert "const hidePlay = !!n && !S.seqPlay;" in _js_function(js, "renderBatch")
     play = re.search(r"#seqPlayBtn \{([^}]*)\}", css)[1]
-    assert "grid-column: 1 / -1;" in play and "white-space: nowrap;" in play
+    assert "white-space: nowrap;" in play
     reserve = re.search(r"#seqPlayBtn::after \{([^}]*)\}", css)[1]
     # the reserved label is the button's longer one, hidden from sight and the accessible name
     assert 'content: "Play sequence" / "";' in reserve and "visibility: hidden;" in reserve

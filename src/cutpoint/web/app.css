@@ -90,7 +90,7 @@
   --control-h: 36px;
   --control-h-lg: 40px; /* primary action rows, chat input */
   --control-h-xl: 44px; /* the big call to action of an empty project */
-  --band-h: calc(var(--control-h) + 2 * var(--space-2) + 1px); /* header bands: top bar, Moments band, tab bar (padding and bottom border) */
+  --band-h: calc(var(--control-h) + 2 * var(--space-2) + 1px); /* header bands: top bar, Moments band (padding and bottom border) */
   color-scheme: dark;
 }
 /* Settings > Theme (#445). Graphite is :root above, the default; index.html sets data-theme before
@@ -349,31 +349,31 @@ select { max-width: 100%; }
 .side { border-left: 1px solid var(--divider); display: flex; flex-direction: column; gap: var(--space-3); }
 .side > * { flex: none; }
 .side .col-head { margin-bottom: 0; }
-/* the column's tabs (Sequence | AI Chat | Export): a band across the top like the moments header; the
-   selected tab is underlined in amber, the others muted. The tabs share the column's full width
-   evenly at any width the splitter sets (equal grid columns, however many tabs); a label that does
-   not fit ends in an ellipsis, and its full text stays the tab's name for screen readers. It stays at
-   the top while a long panel scrolls under it (top: the column's padding), the panel's header right
-   under it; app.js sets the column's scroll-padding-top to both heights. */
+/* the column's tabs (Sequence | AI Chat | Models): a segmented control in a rounded well, the selected
+   one raised and bold (board F). The header's Export is no tab: it shows the Export panel here with none
+   selected. The bar stays at the top while a long panel scrolls under it (top: the column's padding), the
+   panel's header right under it; app.js sets the column's scroll-padding-top to both heights.
+   --side-bar-h is the bar's height: 12 px margin, the 36 px control, 12 px margin */
+.side { --side-bar-h: 60px; }
+.side-bar { margin: -12px -16px 0; background: var(--panel); position: sticky; top: -12px; z-index: 3; }
 .side-tabs {
-  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); margin: -12px -16px 0;
-  background: var(--slate); border-bottom: 1px solid var(--divider);
-  position: sticky; top: -12px; z-index: 2;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-1); margin: var(--space-3); padding: 3px;
+  border-radius: 8px; background: var(--deep);
 }
 .side-tab {
-  font: inherit; font-weight: 650; color: var(--muted); background: none; cursor: pointer;
-  border: 0; border-bottom: 3px solid transparent; padding: var(--space-2) var(--space-1) var(--space-1); min-height: calc(var(--band-h) - 1px);
+  font: inherit; font-size: 13px; color: var(--muted); background: transparent; cursor: pointer;
+  border: 0; border-radius: 6px; height: 30px; padding: 0 var(--space-1);
   min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }
 .side-tab:hover { color: var(--text); }
-.side-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--amber-text); }
+.side-tab[aria-selected="true"] { color: var(--text); background: var(--raise); font-weight: 600; box-shadow: inset 0 0 0 1px var(--amber-text); }
 .side-tab:focus-visible { outline-offset: -2px; }
 .side-panel { display: flex; flex-direction: column; gap: var(--space-3); }
 .side-panel > * { flex: none; }
-/* the Sequence and AI Chat headers stick under the tab bar (its --band-h less the column's 12 px padding),
+/* the Sequence and AI Chat headers stick under the tab bar (its --side-bar-h less the column's 12 px padding),
    across the column's padding so no row shows beside them */
 #panelSequence > .col-head, #panelAssistant > .chat-head {
-  position: sticky; top: calc(var(--band-h) - 12px); z-index: 2;
+  position: sticky; top: calc(var(--side-bar-h) - 12px); z-index: 2;
   margin-inline: -16px; padding-inline: var(--space-4); background: var(--panel);
 }
 .models-save { display: grid; justify-items: start; gap: var(--space-2); }
@@ -382,11 +382,16 @@ select { max-width: 100%; }
 /* the title stays for screen readers and as a focus target; the tab shows it */
 .side .col-head { position: relative; }
 .side .col-head h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-/* Sequence header: the total lines up with Undo and Redo; Play sequence spans the pair below them.
+/* Sequence header: a title line with Undo and Redo, then the Select all row, whose right end holds Play
+   sequence or, with clips ticked, their count, Remove and Clear: one height, so the list never jumps.
    The hidden ::after keeps the longer label's width, so "Stop" never shrinks or moves the button */
-#panelSequence .col-head { align-items: baseline; }
-.seq-head-acts { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); flex: none; }
-#seqPlayBtn { grid-column: 1 / -1; display: flex; flex-direction: column; align-items: center; justify-content: center; white-space: nowrap; }
+.side .seq-head h2 { position: static; width: auto; height: auto; overflow: visible; clip-path: none; margin: 0; font-size: 13px; font-weight: 600; }
+.seq-head { display: grid; gap: var(--space-1); }
+.seq-line, .seq-bar { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.seq-bar { min-height: 30px; flex-wrap: wrap; }
+.seq-undo { display: flex; gap: var(--space-1); flex: none; }
+#seqPlayBtn { display: flex; flex-direction: column; align-items: center; justify-content: center; white-space: nowrap; flex: none; }
+#seqPlayBtn[hidden] { display: none; }
 #seqPlayBtn::after { content: "Play sequence" / ""; height: 0; overflow: hidden; visibility: hidden; }
 /* moments header band: count centred; "Analyze again" and "Show folder" on the right, or below it when there is no room; the title is visually hidden */
 .moments { container: moments / inline-size; }
@@ -810,36 +815,39 @@ body.tips-off .flag-tip { display: none; }
 .sb-block:focus-visible { outline: 2px solid var(--scrim-ink); outline-offset: -4px; } /* inside: .sb-list clips what is outside it; clear of the current block's amber */
 
 /* sequence: one compact card per clip */
-.seq-batch {
-  /* stays in view while ticking rows far down the list, under the sticky tabs and header (app.js sets
-     --side-bars to their height; less the column's 12 px padding) */
-  position: sticky; top: calc(var(--side-bars, 12px) - 12px); z-index: 2;
-  display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2);
-  background: var(--panel); border: 0; border-bottom: 1px solid var(--divider); border-radius: 0;
-}
-#seqSelCount { font: 500 12px var(--mono); color: var(--amber-text); }
-.seq-selall { display: flex; align-items: center; gap: var(--space-2); padding-inline: var(--space-2); font-size: 13px; color: var(--muted); cursor: pointer; }
+.seq-batch { display: flex; align-items: center; gap: var(--space-2); flex: none; min-width: 0; }
+.seq-batch[hidden] { display: none; }
+#seqSelCount { font: 500 12px var(--mono); color: var(--amber-text); white-space: nowrap; }
+.seq-selall { display: flex; align-items: center; gap: var(--space-2); font-size: 13px; color: var(--muted); cursor: pointer; white-space: nowrap; }
 .seq-selall[hidden] { display: none; }
 .seq-list { display: grid; gap: var(--space-0); }
 .removed { display: grid; gap: var(--space-2); }
 .removed > p { font-size: 13px; }
-.seq { --k: var(--line); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-2); }
+.seq { --k: var(--line); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--space-2); padding-left: var(--space-1); }
 .seq-check { margin: 0; cursor: pointer; }
+.seq { scroll-margin-bottom: var(--seq-foot-h, 0px); }
+/* the sticky footer is not in the column's scroll-padding (focusing inside it would scroll the column); a focused row part is centred in its row, so half a row more keeps the whole row clear; the margin does not inherit */
+.seq :is(input, button, [tabindex]) { scroll-margin-bottom: calc(var(--seq-foot-h, 0px) + 28px); }
 .seq-card {
-  display: flex; align-items: center; gap: var(--space-1); min-width: 0; min-height: 52px; max-height: 64px;
+  display: flex; align-items: center; gap: var(--space-1); min-width: 0; min-height: 44px; max-height: 64px;
   padding: var(--space-1); background: transparent; border: 1px solid transparent; border-radius: var(--radius-md);
   cursor: pointer; transition: border-color var(--ease), box-shadow var(--ease), background-color var(--ease), opacity var(--ease);
 }
 .seq-card:hover { background: var(--deep); }
-.seq.selected .seq-card { background: var(--picked); }
-.seq[aria-current] .seq-card { box-shadow: inset 3px 0 0 var(--glow); }
-.seq[aria-current]:not(.selected) .seq-card { background: var(--deep); }
+.seq[aria-current] .seq-card:hover { background: var(--raise); }
+/* ticked: tinted with amber; the current clip: raised, with a 2 px amber edge (board F) */
+.seq.selected .seq-card { background: color-mix(in srgb, var(--amber-text) 12%, var(--picked)); }
+.seq[aria-current] .seq-card { box-shadow: inset 2px 0 0 var(--glow); background: var(--raise); }
+.seq[aria-current].selected .seq-card { background: color-mix(in srgb, var(--amber-text) 12%, var(--picked)); }
+.seq.selected .rank, .seq[aria-current] .rank { color: var(--muted); } /* --faint is under 4.5:1 on the tint and the raised row */
+.seq.selected .seq-tail { color: var(--muted); } /* --amber-text is 4.07:1 on the ticked tint in Light */
 .seq.dragging .seq-card { opacity: 0.55; }
 .seq.playing .seq-card { border-left: 3px solid var(--amber-text); }
 /* the playing clip: a play icon over its thumbnail, not colour alone */
 .seq-now { position: absolute; inset: 0; display: grid; place-items: center; background: var(--thumb-scrim); color: var(--thumb-scrim-ink); }
 .seq-thumb .seq-now .icon { visibility: visible; width: 20px; height: 20px; }
 .seq.drop .seq-card { box-shadow: 0 -3px 0 var(--amber-text); }
+.seq[draggable=true] :is(.seq-card, .seq-main) { cursor: grabbing; }
 .seq-main {
   font: inherit; color: inherit; text-align: left; background: none; border: 0; cursor: pointer;
   display: flex; align-items: center; gap: var(--space-2); padding: var(--space-0) var(--space-0) var(--space-0) var(--space-1); min-width: 0; flex: 0 1 auto; border-radius: var(--radius-sm);
@@ -868,7 +876,7 @@ body.tips-off .flag-tip { display: none; }
 .seq-main { flex: 1 1 0; }
 .seq-main::before { content: ""; order: 1; flex: none; width: 3px; height: 28px; border-radius: var(--radius-xs); background: var(--k); }
 .seq-main .rank { order: 0; color: var(--faint); font: 400 11px var(--mono); }
-.seq-main .seq-thumb { order: 2; }
+.seq-main .seq-thumb { order: 2; width: 48px; } /* the small thumbnail: the title keeps the room */
 .seq-main .seq-text { order: 3; flex: 1 1 auto; }
 .seq-text { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-0) var(--space-2); min-width: 0; }
 .seq-title { grid-column: 1; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -895,19 +903,38 @@ body.tips-off .flag-tip { display: none; }
 .seq-del { color: var(--danger); }
 .seq-del .icon { width: 17px; height: 17px; }
 .seq-del:hover { background: var(--danger-tint); border-color: var(--danger-tint-line); }
-/* rename and remove sit stacked next to the chevrons so the title gets the rest of the row */
-.seq-ctl { display: flex; gap: var(--space-0); flex: none; margin-left: auto; }
+/* rename and remove sit stacked next to the chevrons; they take no room until the row is hovered or has focus, so
+   the title shows in full. On a touch screen (no hover) they stay */
+.seq-ctl { display: flex; gap: var(--space-0); flex: none; margin-left: auto; width: 0; overflow: hidden; opacity: 0; }
+.seq:hover .seq-ctl, .seq:focus-within .seq-ctl { width: auto; overflow: visible; opacity: 1; }
+@media (hover: none) { .seq-ctl { width: auto; overflow: visible; opacity: 1; } }
 .seq-acts, .seq-move { display: grid; gap: var(--space-0); flex: none; align-content: center; }
 .seq-chev { width: 24px; height: 22px; background: var(--raise); border-color: var(--line); }
 .seq-chev:hover:not(:disabled) { background: var(--hover); border-color: var(--muted); }
 .seq-chev:disabled { opacity: 0.4; cursor: not-allowed; }
-.seq-handle {
-  flex: none; display: grid; place-items: center; width: 18px; align-self: stretch;
-  color: var(--muted); cursor: grab; touch-action: none; border-radius: var(--radius-sm); transition: color var(--ease);
+/* the line under the list: the total in mono and, with a target length, "of ~4:00" and a thin bar */
+.seq-foot {
+  display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4) var(--space-3); margin: 0 -16px;
+  border-top: 1px solid var(--divider); background: var(--panel); position: sticky; bottom: -24px; z-index: 1; /* the column's 24 px bottom padding */
 }
-.seq-handle:hover { color: var(--text); }
-.seq.dragging .seq-handle, .seq-handle:active { cursor: grabbing; }
-.seq-handle .icon { width: 16px; height: 16px; }
+.seq-foot[hidden] { display: none; }
+#seqTotal { font: 500 13px var(--mono); color: var(--text); background: none; border: 0; border-bottom: 1px dotted var(--muted); border-radius: 0; padding: 0; cursor: pointer; }
+#seqTotal:hover { border-bottom-color: var(--text); }
+.seq-target-form { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); min-width: 0; }
+.seq-target-form[hidden] { display: none; }
+.seq-target-form input { width: 7em; min-height: var(--control-h-sm); }
+.seq-target-err { flex-basis: 100%; color: var(--bad); font-size: 12px; }
+.seq-target-err:empty { display: none; }
+.seq-target { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.seq-target:empty { display: none; }
+.seq-meter { flex: 1; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+.seq-meter[hidden] { display: none; }
+.seq-meter > div { height: 100%; background: var(--amber); }
+/* the Export panel in the side column: Back and its heading */
+#exportBtn[aria-expanded="true"] { background: var(--raise); border-color: var(--amber-text); }
+.export-head { display: flex; align-items: center; gap: var(--space-2); }
+.export-head h2 { margin: 0; font-size: 13px; font-weight: 600; }
+#exportBack { order: -1; } /* the heading comes first in the DOM; Back shows at the left */
 .confirm { width: min(420px, 94vw); }
 .seq-pop {
   inset: auto; margin: 0; padding: var(--space-3); display: none; gap: var(--space-2);
@@ -1071,7 +1098,7 @@ body.tips-off .flag-tip { display: none; }
 .chat-form .btn { flex: none; display: grid; place-items: center; width: 34px; height: 34px; min-height: 0; padding: 0; }
 .chat-form .chat-ic { width: 18px; height: 18px; stroke-width: 2.4; }
 /* a proposal previewed in the Sequence tab, in place of the sequence: each change in words, with its mark */
-#panelSequence.previewing :is(#seqList, #seqBatch, #seqSelAllRow, #seqEmpty, #removedPanel) { display: none; }
+#panelSequence.previewing :is(#seqList, #seqBatch, #seqSelAllRow, #seqEmpty, #seqFoot, #removedPanel) { display: none; }
 .proposal { display: grid; gap: var(--space-2); padding: var(--space-3); background: var(--deep); border: 1px solid var(--amber-text); border-radius: var(--radius-md); }
 .proposal h3 { font-size: 14px; }
 #propSummary { overflow-wrap: anywhere; }
@@ -1168,8 +1195,8 @@ fieldset.models-section .hint, fieldset.models-section p { overflow-wrap: anywhe
   .side { order: 3; border-left: 0; border-top: 1px solid var(--divider); }
   .splitter { display: none; }
   .jobs { position: sticky; bottom: 0; }
-  .chat-form, .prop-bar, .side-tabs, #panelSequence > .col-head, #panelAssistant > .chat-head { position: static; } /* the page scrolls here; the sticky Jobs bar holds the bottom */
-  .seq-batch { top: 0; } /* sticks to the window top: the bars above are static here */
+  .chat-form, .prop-bar, .side-bar, .seq-foot, #panelAssistant > .chat-head { position: static; } /* the page scrolls here; the sticky Jobs bar holds the bottom */
+  #panelSequence > .col-head { top: 0; } /* the Sequence header (with the selection actions) sticks to the window top: the bars above are static */
   .top { flex-wrap: wrap; }
   .top { position: relative; }
   .proj-menu { position: static; }
