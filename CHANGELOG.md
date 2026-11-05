@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Cut mode in the center stage of `cutpoint ui`, beside Clip and Sequence, for a sequence of at
+  least two clips: the last frame of a clip and the first frame of the next side by side, "Play
+  across the cut" (3 s each side, always a hard cut), "Roll the cut" (drag or keys: the first clip's
+  out and the next clip's in move together, so the length stays), the Export tab's Video transition
+  (it applies to the whole video), and a Cuts strip with Previous and Next cut.
 - AI Chat in `cutpoint ui` shows a compact summary of what the assistant did, and each proposed
   change is a card with Apply, Preview and Discard. Apply no longer needs the Sequence tab preview first.
 - The trim rail in `cutpoint ui` draws the source's audio level over the filmstrip and marks the
