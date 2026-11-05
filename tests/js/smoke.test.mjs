@@ -12,7 +12,7 @@ test('app.js boots against a mocked project and renders its moments', async (t) 
   assert.deepEqual(cards.map((c) => c.dataset.id), ['h001', 'h002', 'h003']);
   assert.match(cards[0].textContent, /Big laugh/);
   assert.match(page.document.querySelector('#momentsCount').textContent, /3 found, funny style/);
-  assert.equal(page.document.querySelector('#projectSelect').value, 'p1');
+  assert.equal(page.document.querySelector('#projectName').textContent, 'Project One');
   page.assertNoUnhandled();
 });
 
@@ -40,7 +40,8 @@ test('the New project dialog shows the telemetry hint only for the action-cam st
   const doc = page.document;
   const hint = doc.querySelector('#newStyleHint');
   const style = doc.querySelector('#newStyle');
-  doc.querySelector('#newBtn').click();
+  doc.querySelector('#projectBtn').click();
+  doc.querySelector('#newProjectItem').click();
   assert.deepEqual([...style.options].map((o) => o.value), ['funny', 'action-cam']);
   assert.equal(hint.hidden, true);
   style.value = 'action-cam';
@@ -69,7 +70,8 @@ test('sources with telemetry preselect action-cam unless the user already chose 
     source.dispatchEvent(new page.window.Event('change'));
     await new Promise((r) => setImmediate(r));
   };
-  doc.querySelector('#newBtn').click();
+  doc.querySelector('#projectBtn').click();
+  doc.querySelector('#newProjectItem').click();
   await typeSource('/v/gopro.mp4');
   assert.deepEqual(asked, [{ sources: ['/v/gopro.mp4'], recursive: false, exclude: [] }]);
   assert.match(doc.querySelector('#newStyleStatus').textContent, /action-cam/);
@@ -77,7 +79,8 @@ test('sources with telemetry preselect action-cam unless the user already chose 
   assert.equal(style.value, 'action-cam');
   assert.equal(doc.querySelector('#newStyleHint').hidden, false);
 
-  doc.querySelector('#newBtn').click(); // reopening starts over
+  doc.querySelector('#projectBtn').click();
+  doc.querySelector('#newProjectItem').click(); // reopening starts over
   assert.equal(style.value, 'funny');
   style.value = 'funny';
   style.dispatchEvent(new page.window.Event('change')); // the user's choice
@@ -104,7 +107,8 @@ test('the preselect is undone when the sources change to footage without telemet
     el.dispatchEvent(new page.window.Event('change'));
     await new Promise((r) => setImmediate(r));
   };
-  doc.querySelector('#newBtn').click();
+  doc.querySelector('#projectBtn').click();
+  doc.querySelector('#newProjectItem').click();
   await fire(doc.querySelector('#newSource'), '/v/gopro.mp4');
   assert.equal(style.value, 'action-cam');
   await fire(doc.querySelector('#newSource'), '/v/plain.mp4');
@@ -133,7 +137,8 @@ test('a late reply for earlier sources does not change the style', async (t) => 
   t.after(() => page.close());
   const doc = page.document;
   const source = doc.querySelector('#newSource');
-  doc.querySelector('#newBtn').click();
+  doc.querySelector('#projectBtn').click();
+  doc.querySelector('#newProjectItem').click();
   source.value = '/v/gopro.mp4';
   source.dispatchEvent(new page.window.Event('change'));
   source.value = '/v/plain.mp4';
@@ -165,7 +170,8 @@ test('a busy reply is not "no telemetry": the preselect stays and the request is
     source.dispatchEvent(new page.window.Event('change'));
     await new Promise((r) => setImmediate(r));
   };
-  doc.querySelector('#newBtn').click();
+  doc.querySelector('#projectBtn').click();
+  doc.querySelector('#newProjectItem').click();
   await change('/v/gopro.mp4');
   assert.equal(style.value, 'action-cam');
   await change('/v/gopro2.mp4'); // busy: no undo

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The browser workspace's center stage is rebuilt around the trim. The rail is taller and dims
+  everything outside the in and out points; `I` and `O` set the in and out points at the playhead; zoom levels of 10 s, 30 s and 2 min sit
+  beside Zoom out, Zoom in and Fit clip; a time ruler runs under the filmstrip, and the other moments
+  of the same source in view are marked there. Under the trim controls a Storyboard shows the
+  sequence as one block per clip, as wide as its exported length and coloured by kind: click to
+  trim a clip, drag or Alt+Left and Alt+Right to reorder, double-click or Shift+Enter to play
+  the sequence from it. A Clip and Sequence switch above the video chooses between the selected
+  clip and "Play sequence". No server change; the filmstrip still uses the cached preview stills.
+
 - Settings in `cutpoint ui` has a "Verbose moment labels" switch under Appearance, off by default.
   Off, a tile in the Moments tab hides its source video name, its `h001` id and its start to end
   time; the score, kind, label and length stay, and the search still finds a moment by the hidden
@@ -471,6 +480,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still finds the transcript). The preview status after the score is an icon only (a spinner while
   encoding, a check when ready, a clock when queued) with the word on hover and for screen readers.
   Add is a dark + on amber and Remove a white - on red, over the still's corner.
+
+- The header of `cutpoint ui` reads "cutpoint / <project name>". The project name opens a menu
+  with the projects (the open one marked) and, after a divider, "New project…"; it replaces the
+  project list box and the New project button. Names show up to 30 characters before an
+  ellipsis (the full name is its tooltip), and the tab title is "cutpoint / <project name>".
 
 - `cutpoint ui` has a new look, the Graphite theme, and it is the default. Settings > Theme now
   offers Graphite, Light and Blue (Blue is the colours of before). A browser that saved Dark gets

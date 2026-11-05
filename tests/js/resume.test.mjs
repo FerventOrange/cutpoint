@@ -35,7 +35,7 @@ async function open(t, project, routes = {}) {
 
 test('a project with only progress.json is listed as interrupted and offers Resume, not Analyze', async (t) => {
   const { $ } = await open(t, lone());
-  assert.equal($('#projectSelect option[value=p1]').textContent, 'Project One (interrupted)');
+  assert.equal($('#projectMenu [data-id=p1]').textContent, 'Project One (interrupted)');
   assert.equal($('#resumeBig').textContent, 'Resume analysis');
   assert.ok(!$('#resumeBig').disabled);
   assert.equal($('#analyzeBig').hidden, true, 'nothing to analyze without a source');
@@ -83,7 +83,7 @@ test('an analyzed project with a stopped export shows Resume export in the Momen
 test('a finished or missing run shows no Resume', async (t) => {
   const { $ } = await open(t, makeProject({ run: { command: 'analyze', status: 'done', resumable: false } }));
   assert.equal($('#resumeBtn').hidden, true);
-  assert.equal($('#projectSelect option[value=p1]').textContent, 'Project One');
+  assert.equal($('#projectMenu [data-id=p1]').textContent, 'Project One');
 });
 
 test('a job stopped by folder_busy reads as a plain state', async (t) => {
