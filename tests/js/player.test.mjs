@@ -22,7 +22,7 @@ const win = (lo, hi) => ({ lo, hi, url: `/api/projects/p1/sources/s1/window/${lo
 async function player(t, src = {}, extra = {}) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const state = { src };
-  const project = () => proxyProject(state.src);
+  const project = () => ({ ...proxyProject(state.src), ...extra.project });
   const prepares = [];
   const page = await boot({
     project: project(),
@@ -167,6 +167,26 @@ test('pausing during that wait cancels the resume: the next window loads but doe
   p.loadWindow(65);
   await p.wait();
   assert.equal(p.v.dataset.url, win(55, 120).url);
+  assert.ok(!p.v.__media.calls.includes('play'));
+  assert.ok(p.v.__media.paused);
+});
+
+test('entering Cut mode during that wait cancels the resume: the next window does not start the hidden player', async (t) => {
+  const segment = (id, start) => ({ id, source: '/videos/a.mp4', start, end: start + 8, label: id });
+  const p = await player(t, { windows: [win(0, 60)] }, { project: { review: { segments: [segment('h001', 10), segment('h002', 100)] } } });
+  p.loadWindow(60);
+  await p.wait();
+  await p.play();
+  await p.playTo(59.99);
+  assert.equal(p.playLabel(), 'Pause', 'waiting to play on');
+  p.d.querySelector('#stageMode [data-mode=cut]').click();
+  await p.wait();
+  assert.equal(p.playLabel(), 'Play');
+
+  await p.list({ status: 'preparing', windows: [win(0, 60), win(55, 120)] });
+  p.v.__media.calls.length = 0;
+  p.loadWindow(65);
+  await p.wait();
   assert.ok(!p.v.__media.calls.includes('play'));
   assert.ok(p.v.__media.paused);
 });

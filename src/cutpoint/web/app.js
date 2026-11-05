@@ -63,6 +63,9 @@ const COLOR_NAMES = { off: 'Off', auto: 'Auto', underwater: 'Underwater' };
 const LINKED_AUDIO = { cut: 'cut', fade: 'crossfade' }; // Link Transitions: the audio transition of each video one
 const FRAME = 0.04; // seconds: "Play sequence" moves on this close to a clip's end
 const GAP = 0.05; // seconds: a clip starting this close to the previous one's end plays on without a cut
+const CUT_PLAY = 3; // seconds: "Play across the cut" plays this much of each clip; the roll track shows as much on each side
+const CUT_STILL_W = 640; // pixels requested for Cut mode's two frames (the most the server cuts)
+const CUT_NEEDS = 'Cut mode needs a sequence of at least two clips.';
 // The camera path flags of a 360 moment (#517, cutpoint.pano.candidates.FLAGS) as short badge words
 const PANO_FLAGS = { sky: 'Sky', whip: 'Whip pans', spin: 'Spinning', cuts: 'Many cuts', wearer: 'Wearer', off_target: 'Off target', qa_fail: 'QA fail' };
 
@@ -105,7 +108,11 @@ const S = {
   stepSince: {}, // "job/step" -> ms the UI first saw the step running (elapsed time under reduced motion)
   stepTimer: null, // ticks that elapsed time once a second
   view: null, // {id, lo, hi}: the part of the source the trim rail shows, separate from the trim
-  seqPlay: null, // {order: [ids], i, wait}: "Play sequence" runs; order is fixed at its start, wait: the clip's video is not ready
+  // {order: [ids], i, wait, across}: "Play sequence" runs; order is fixed at its start, wait: the clip's video is not ready.
+  // across: {back}: it plays over one cut instead ("Play across the cut"); back: the clip selected before it
+  seqPlay: null,
+  cutMode: false, // the stage shows the cut after the selected clip (setCut); "Play sequence" ends it
+  cutAt: 0, // the cut last shown: its first clip's index, where Cut mode stays when that clip leaves the sequence
   undo: [], // {segments, drafts} before each edit, manual or applied from AI Chat, newest last (at most UNDO_MAX)
   redo: [],
   undoTag: null, // {tag, at}: the last edit's kind, so a held key or a drag is one undo step
@@ -179,9 +186,12 @@ function askEdges() {
       exportPlan.map = {};
       for (const [id, e] of Object.entries(r.edges ?? {})) if (from.has(id)) exportPlan.map[id] = { start: e.start, end: e.end, reason: e.reason, from: from.get(id) };
       renderSequence();
-      // the rail and the length text show the export too; a trim error just shown stays
-      if ($('#trimMsg').classList.contains('error')) drawRail();
+      // the rail and the length text show the export too; a trim error or Cut mode's reason just shown stays
+      const m = $('#trimMsg');
+      const cutNote = m.textContent === CUT_NEEDS && !m.classList.contains('vh');
+      if (m.classList.contains('error')) drawRail();
       else renderTrim();
+      if (cutNote) setTrimMsg(CUT_NEEDS, false, true);
     } catch {
       exportPlan.asked = ''; // the raw ranges stay; the next change asks again
     }
@@ -498,7 +508,8 @@ async function refreshProject() {
 
 /** Forget the per-project edit state; ``segments`` become the saved sequence. */
 function resetWorkspace(segments) {
-  seqStop('');
+  seqStop('', false);
+  if (S.cutMode) setCut(false);
   S.drafts = {};
   S.focus = null;
   S.selected.clear();
@@ -916,9 +927,9 @@ async function revealFolder(btn, target = 'sources') {
 
 /** Show moment ``id`` on the stage; during "Play sequence" a clip of it jumps there, any other moment stops it. */
 function focusMoment(id) {
-  const j = S.seqPlay?.order.indexOf(id) ?? -1;
+  const j = S.seqPlay?.across ? -1 : S.seqPlay?.order.indexOf(id) ?? -1;
   if (j >= 0 && seqSeg(j)) return seqGo(j);
-  seqStop();
+  seqStop(undefined, false);
   showMoment(id);
 }
 
@@ -985,6 +996,11 @@ function setRange(which, t, widen = true) {
 
 function renderStage(seekToStart, keepVideo = false) {
   if (trimDrag && dragStale(trimDrag)) dropDrag(); // the reused handle loses its drag state at once
+  if (S.cutMode && cutIndex() < 0) { // too few clips left, or a moment outside the sequence opened
+    $('#sideLive').textContent = S.segments.length < 2 ? `${CUT_NEEDS} Back to Clip mode.` : 'Back to Clip mode.';
+    if ($('#cutView').contains(document.activeElement)) $('#stageMode [data-mode=clip]').focus(); // hidden next: it would fall to the body
+    setCut(false);
+  }
   const c = current();
   $('#stageBody').hidden = !c;
   $('#toggleBtn').hidden = !c;
@@ -1016,6 +1032,8 @@ function renderStage(seekToStart, keepVideo = false) {
  */
 function renderClipHead(c = current()) {
   if (!c) return;
+  if (S.cutMode && cutIndex() >= 0) return renderCutHead();
+  $('#stageTitle').removeAttribute('aria-label'); // Cut mode's
   const i = c.seg ? S.segments.indexOf(c.seg) : -1;
   const name = shownName(c.cand, c.seg ? c.label : null) || c.label;
   const kind = kindOf(c.cand);
@@ -1192,6 +1210,7 @@ function renderFullPrep(c) {
 function renderTrim() {
   const c = current();
   if (!c) return;
+  if (S.cutMode) return renderCut();
   drawRail(c);
   const len = c.end - c.start;
   const out = exportedLen(c);
@@ -1240,6 +1259,7 @@ function drawTails(box, c, from, len, place) {
 /** The rail (the view, with the clip and analyzed range on it) and the overview strip of the whole source. */
 function drawRail(c = current()) {
   if (!c) return;
+  if (S.cutMode) return renderCut(); // the rail is hidden: no stills are asked for it
   const dur = durOf(c);
   S.view = { id: c.id, ...(S.view?.id === c.id ? clampView(S.view.lo, S.view.hi, dur) : fitView(c)) };
   const { lo, hi } = S.view;
@@ -1412,16 +1432,20 @@ function fetchEnvelope(key, token, source, url) {
       return;
     }
     envelopes.set(key, Array.isArray(d?.peaks) && d.peaks.length && d.step > 0 ? d : 'none');
-    if (current()?.source === source) drawWave();
+    if (S.cutMode) renderCut();
+    else if (current()?.source === source) drawWave();
   }, () => envelopes.get(key) === token && envelopes.set(key, 'none'));
 }
 
-/** Draw the envelope of the current source over the view: a bar per at least WAVE_COL pixels, the loudest value in it, tall by its square root. */
+/** Draw the envelope of the current source over the view. */
 function drawWave(c = current()) {
-  const svg = $('#railWave');
   const env = c && S.view ? envelopeOf(c) : null;
-  const width = $('#rail').clientWidth || 600;
-  const sig = env ? `${c.source}|${S.view.lo}|${S.view.hi}|${width}|${env.peaks.length}` : '';
+  paintWave($('#railWave'), env, c?.source, S.view?.lo, S.view?.hi, $('#rail').clientWidth || 600);
+}
+
+/** Draw ``env`` of ``source`` over [lo, hi] in ``svg``: a bar per at least WAVE_COL pixels, the loudest value in it, tall by its square root. */
+function paintWave(svg, env, source, lo, hi, width) {
+  const sig = env ? `${source}|${lo}|${hi}|${width}|${env.peaks.length}` : '';
   if (svg.dataset.sig === sig) return;
   svg.dataset.sig = sig;
   const path = svg.firstElementChild;
@@ -1429,11 +1453,11 @@ function drawWave(c = current()) {
     path.removeAttribute('d');
     return;
   }
-  const { lo, hi } = S.view;
   const cols = Math.max(1, Math.min(Math.floor(width / WAVE_COL), Math.ceil((hi - lo) / env.step)));
   const w = (hi - lo) / cols;
   const bars = [];
   for (let j = 0; j < cols; j += 1) {
+    if (lo + (j + 1) * w <= 0) continue; // Cut mode's track can reach before the source
     const from = Math.floor(Math.max(0, lo + j * w) / env.step);
     const to = Math.max(from, Math.ceil((lo + (j + 1) * w) / env.step) - 1);
     let top = 0;
@@ -1811,6 +1835,8 @@ function stageVideo(seekC) {
   // Play sequence starts a clip where its export starts
   const from = seekC && (S.seqPlay && seqNow() === seekC.id ? seqSeg(S.seqPlay.i).start : seekC.start);
   const want = seekC ? from : pendingSeek;
+  // over a cut, only its part of the clip has to be playable: it can lie in a tail, past the trim
+  const part = (S.seqPlay?.across && seqNow() === c?.id && seqSeg(S.seqPlay.i)) || c;
   const wait = (msg) => {
     drop(msg);
     pendingSeek = want;
@@ -1860,9 +1886,9 @@ function stageVideo(seekC) {
     const at = want ?? (mine ? playhead(c) : c.start);
     const p = playable(src, at);
     // "Play sequence" plays a clip only from a file covering all of it: a window ending inside it would cut it short
-    const fits = !S.seqPlay || readyFor(src, c);
+    const fits = !S.seqPlay || readyFor(src, part);
     // and keeps the loaded file only when it covers all of the clip too (``fileFor`` picks the same)
-    const keep = mine && inLoaded(at, durOf(c)) && (!S.seqPlay || holdsClip(c));
+    const keep = mine && inLoaded(at, durOf(c)) && (!S.seqPlay || holdsClip(part));
     if (fits && (keep || p)) {
       if (src.status === 'needs-proxy' && !prepareRequested.has(k)) prepareSource(src); // no window request brings it
       if (!keep) loadFile(src, p, at);
@@ -1873,7 +1899,7 @@ function stageVideo(seekC) {
     // the same wait again (a refresh, not a moment click): its own range, e.g. [at, at] at a
     // window's end or a scrub, also while no file is loaded yet
     const again = !seekC && !S.seqPlay && waitFor?.source === src.path && Math.abs(at - waitFor.t) <= FRAME;
-    const [lo, hi] = again ? [waitFor.lo, waitFor.hi] : moment ? [c.start, c.end] : [at, at];
+    const [lo, hi] = again ? [waitFor.lo, waitFor.hi] : moment ? [part.start, part.end] : [at, at];
     const kept = again ? waitFor : null;
     const wasRetried = !!kept?.retried;
     if (kept && !kept.retried && lastPart === `${k}@${round2(Math.max(0, lo))}-${round2(Math.max(0, hi))}`
@@ -1916,7 +1942,7 @@ function stageVideo(seekC) {
   // A window proxy of this source playing on switches to the whole proxy at the next pause or
   // seek; during "Play sequence" only while it covers all of the clip.
   const playingOn = v.dataset.hi && ofSource(src) && !v.paused && !v.error && inLoaded(want ?? playhead(c), durOf(c))
-    && (!S.seqPlay || holdsClip(c));
+    && (!S.seqPlay || holdsClip(part));
   if (v.dataset.url !== p.url && !playingOn) {
     loadFile(src, p, want ?? (ofSource(src) ? playhead(c) : c.start));
   } else if (seekC) seekTo(from);
@@ -2103,6 +2129,7 @@ function seqCheck() {
 }
 
 function togglePlay() {
+  if (S.cutMode && !S.seqPlay) return cutPlay(); // no player shows: Space plays over the cut
   const c = current();
   if (!c || !v.src) return;
   if (!v.paused) return v.pause();
@@ -2426,6 +2453,9 @@ function moveSeg(id, to) {
 }
 
 function renderAfterSeqChange() {
+  $('#cutRollMsg').textContent = ''; // about the clips as they were
+  // the selected clip left the sequence: Cut mode stays where it was, on the cut that took its place
+  if (S.cutMode && !S.segments.some((s) => s.id === S.focus)) S.focus = S.segments[Math.min(S.cutAt, S.segments.length - 1)]?.id ?? S.focus;
   renderMoments();
   renderSequence();
   renderSave();
@@ -2468,6 +2498,7 @@ function remember(tag = null, withColor = false) {
 function restore(from, to, done) {
   if (!from.length) return;
   const s = from.pop();
+  const wasCut = S.cutMode;
   to.push(snapshot(!!s.color));
   S.segments = s.segments;
   S.drafts = s.drafts;
@@ -2475,7 +2506,8 @@ function restore(from, to, done) {
   S.undoTag = null;
   renderAfterSeqChange();
   renderUndo();
-  $('#sideLive').textContent = done;
+  // renderStage said why Cut mode ended
+  $('#sideLive').textContent = wasCut && !S.cutMode ? `${done}. ${$('#sideLive').textContent}` : done;
 }
 const undo = () => restore(S.undo, S.redo, 'Undone');
 const redo = () => restore(S.redo, S.undo, 'Redone');
@@ -2502,6 +2534,7 @@ const ICONS = {
   muted: [['path', { d: 'M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z' }]],
   play: [['path', { d: 'M8 5v14l11-7z' }]],
   pause: [['path', { d: 'M6 19h4V5H6v14zm8-14v14h4V5h-4z' }]],
+  stop: [['path', { d: 'M6 6h12v12H6z' }]],
   check: [['path', { d: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z' }]],
   hourglass: [['path', { d: 'M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6zm10 14.5V20H8v-3.5l4-4 4 4zm-4-5-4-4V4h8v3.5l-4 4z' }]],
   funnel: [['path', { d: 'M4.25 5.61C6.27 8.2 10 13 10 13v6c0 .55.45 1 1 1h2c.55 0 1-.45 1-1v-6s3.72-4.8 5.74-7.39A1 1 0 0 0 18.95 4H5.04c-.83 0-1.3.95-.79 1.61z' }]],
@@ -3102,6 +3135,10 @@ function renderSequence() {
   else setEmpty($('#seqEmpty'));
   if (S.renaming && !segs.some((s) => s.id === S.renaming)) S.renaming = null;
   if (S.seqPlay && S.seqPlay.i >= 0 && !seqSeg(S.seqPlay.i)) seqStop('The playing clip left the sequence. Sequence stopped.');
+  if (S.seqPlay?.across) {
+    const k = S.segments.findIndex((s) => s.id === S.seqPlay.order[0]);
+    if (k < 0 || S.segments[k + 1]?.id !== S.seqPlay.order[1]) seqStop('These clips are no longer neighbours. Stopped.');
+  }
   preserveFocus(() => {
     $('#seqList').replaceChildren(...segs.map((s, i) => seqRow(s, i, segs.length)));
   });
@@ -3233,12 +3270,367 @@ function sbBlock(s, i, n, stop) {
   return cell;
 }
 
+// ---------- cut mode ----------
+
+const round3 = (t) => Math.round(t * 1000) / 1000; // ui.py keeps times to the millisecond
+let cutStillTimer = 0;
+// a roll under the pointer: {id, pid, a, b, x0, x, end0, out, into, moved, kept, raf}; a, b: the
+// clips' ids; end0, out, into: clip 1's trim end and the shown out and in when it started
+let cutDrag = null;
+
+/** The index of the current cut's first clip: the selected clip, or the one before it when that is the last clip; -1 when there is no cut. While a cut plays, that cut. */
+function cutIndex() {
+  const id = S.seqPlay?.across ? S.seqPlay.order[0] : S.focus;
+  const i = S.segments.findIndex((s) => s.id === id);
+  return S.segments.length < 2 || i < 0 ? -1 : Math.min(i, S.segments.length - 2);
+}
+
+const cutName = (s) => shownName(cands().find((c) => c.id === s.id), s.label) || s.id;
+
+/** Enter or leave Cut mode: only the stage's layout, the caller renders. The mode switch sits in the title row, as the player's bar is hidden. */
+function setCut(on) {
+  if (cutDrag && !on) dropCutDrag();
+  S.cutMode = on;
+  $('#cutRollMsg').textContent = '';
+  $('#stageBody').classList.toggle('cut-mode', on);
+  $('#cutView').hidden = !on;
+  const had = document.activeElement;
+  (on ? $('.stage-head') : $('.transport')).append($('#stageMode'));
+  if (had?.closest?.('#stageMode')) had.focus(); // moving an element drops its focus
+  renderSeqPlay();
+}
+
+function enterCut() {
+  if (S.cutMode) return;
+  if (S.segments.length < 2) return setTrimMsg(CUT_NEEDS, false, true); // on screen: a title is out of a touch user's reach
+  seqStop('');
+  cancelResume(); // a resume at a window's end would start the hidden player again
+  v.pause();
+  setCut(true);
+  if (S.segments.some((s) => s.id === S.focus)) renderStage(false);
+  else showMoment(S.segments[0].id); // a moment outside the sequence has no cut
+}
+
+/** Back to the selected clip, at its start. */
+function leaveCut() {
+  seqStop('');
+  setCut(false);
+  renderStage(true);
+}
+
+function renderCutHead() {
+  const k = cutIndex();
+  const [a, b] = [S.segments[k], S.segments[k + 1]];
+  $('#stageTitle').textContent = `Cut ${k + 1} → ${k + 2}`;
+  $('#stageTitle').title = '';
+  $('#stageTitle').setAttribute('aria-label', `Cut ${k + 1} to ${k + 2}`);
+  const meta = $('#stageMeta');
+  meta.textContent = `${cutName(a)} into ${cutName(b)}`;
+  meta.title = meta.textContent;
+}
+
+/** The whole Cut view; every value is read from the sequence and the export plan. */
+function renderCut() {
+  const k = cutIndex();
+  if (!S.cutMode || k < 0) return;
+  if (k !== S.cutAt) $('#cutRollMsg').textContent = ''; // about the cut before
+  S.cutAt = k;
+  if (cutDrag && (S.id !== cutDrag.pid || S.segments[k].id !== cutDrag.a || S.segments[k + 1].id !== cutDrag.b)) dropCutDrag();
+  renderCutHead();
+  const [a, b] = [S.segments[k], S.segments[k + 1]];
+  const out = planned(a).end;
+  const into = planned(b).start;
+  $('#cutOutName').textContent = `${k + 1} · last frame`;
+  $('#cutInName').textContent = `${k + 2} · first frame`;
+  $('#cutOutTime').textContent = `out ${tenths(out)}${out - a.end > 0.05 ? ' with tail' : ''}`;
+  $('#cutInTime').textContent = `in ${tenths(into)}`;
+  $('#cutOutFrame').alt = `Last frame of clip ${k + 1}: ${cutName(a)}`;
+  $('#cutInFrame').alt = `First frame of clip ${k + 2}: ${cutName(b)}`;
+  clearTimeout(cutStillTimer);
+  cutStillTimer = setTimeout(() => { // a roll asks once it rests: each still is cut from the source
+    cutStill($('#cutOutFrame'), a, Math.max(planned(a).start, planned(a).end - FRAME));
+    cutStill($('#cutInFrame'), b, planned(b).start);
+  }, FILM_WAIT);
+  renderCutTransition();
+  drawCutRoll();
+  $('#cutRollHint').textContent = `Drag the join: clip ${k + 1}'s out and clip ${k + 2}'s in move together and the length stays ${fmtLen(sbLength())}.`;
+  renderCutStrip(k);
+  const nav = [$('#prevCut'), $('#nextCut')];
+  const had = nav.find((x) => x === document.activeElement); // read first: disabling drops focus
+  nav[0].disabled = k <= 0;
+  nav[1].disabled = k >= S.segments.length - 2;
+  if (had?.disabled) (nav.find((x) => !x.disabled) ?? $('#cutJoin')).focus();
+}
+
+/** Show the still of ``s`` at ``t`` in ``img``; the last one stays, dimmed, until it has loaded. */
+function cutStill(img, s, t) {
+  const src = srcOf(s.source);
+  const [path, query] = src?.url?.split('?') ?? []; // query carries the session token, as for <video>
+  const url = path ? `${path}/frame?${query}&at=${round2(t)}&w=${CUT_STILL_W}` : '';
+  if (img.dataset.url === url) return;
+  img.dataset.url = url;
+  const frame = img.closest('.cut-frame');
+  frame.classList.toggle('failed', !url);
+  frame.classList.toggle('loading', !!url); // the times are new at once, the 640 px still takes a while: dim the old picture
+  if (url) {
+    // only the latest src clears it: a listener of an earlier src that fires late finds another url
+    const done = () => { if (img.dataset.url === url) frame.classList.remove('loading'); };
+    img.addEventListener('load', done, { once: true });
+    img.addEventListener('error', done, { once: true });
+    img.src = url;
+  } else img.removeAttribute('src');
+}
+
+/** The transition control shows the Export panel's Video transition; the choice is one for the whole video. */
+function renderCutTransition() {
+  const on = $('#optTransition').value;
+  for (const b of $('#cutTransition').children) b.setAttribute('aria-pressed', String(b.dataset.value === on));
+  const note = `Applies to the whole video${on === 'fade' ? '. Play across the cut shows a hard cut' : ''}`;
+  if ($('#cutTransNote').textContent !== note) $('#cutTransNote').textContent = note;
+}
+
+/** How far a roll can go from where it is, and why not further: the limits of a trim (validate, handleRange) on clip 1's end and clip 2's start. */
+function rollRange(k) {
+  const [a, b] = [S.segments[k], S.segments[k + 1]];
+  const shortA = a.start + MIN_CLIP - a.end;
+  const srcEnd = handleRange('end', a).max - a.end; // Infinity while the source length is unknown
+  const shortB = b.end - MIN_CLIP - b.start;
+  return {
+    min: Math.min(0, Math.max(shortA, -b.start)),
+    max: Math.max(0, Math.min(srcEnd, shortB)),
+    whyMin: shortA > -b.start ? `Clip ${k + 1} is at its shortest, ${MIN_CLIP} s.` : `Clip ${k + 2} is at the start of its source.`,
+    whyMax: srcEnd < shortB ? `Clip ${k + 1} is at the end of its source.` : `Clip ${k + 2} is at its shortest, ${MIN_CLIP} s.`,
+  };
+}
+
+/** The join and the waveforms: each clip's audio around the cut, held still under a drag while the join moves over them. */
+function drawCutRoll() {
+  const k = cutIndex();
+  if (!S.cutMode || k < 0) return;
+  const [a, b] = [S.segments[k], S.segments[k + 1]];
+  const d = cutDrag;
+  const out = d ? d.out : planned(a).end;
+  const into = d ? d.into : planned(b).start;
+  const track = $('#cutTrack');
+  const width = track.clientWidth || 600;
+  const off = d ? (a.end - d.end0) / (2 * CUT_PLAY) : 0;
+  track.style.setProperty('--join', `${(50 + off * 100).toFixed(2)}%`);
+  [[$('#cutSideA'), a, out, k + 1], [$('#cutSideB'), b, into, k + 2]].forEach(([el, s, t, n]) => {
+    el.dataset.kind = kindOf(cands().find((c) => c.id === s.id)) ?? '';
+    el.querySelector('.cut-side-name').textContent = `${n} · ${cutName(s)}`;
+    paintWave(el.querySelector('.cut-wave'), envelopeOf(s), s.source, t - CUT_PLAY, t + CUT_PLAY, width);
+  });
+  const r = rollRange(k);
+  const join = $('#cutJoin');
+  join.setAttribute('aria-valuemin', round3(a.end + r.min));
+  join.setAttribute('aria-valuemax', round3(a.end + r.max));
+  join.setAttribute('aria-valuenow', a.end);
+  join.setAttribute('aria-valuetext', `Clip ${k + 1} out ${fmt(planned(a).end)}, clip ${k + 2} in ${fmt(planned(b).start)}`);
+}
+new ResizeObserver(() => drawCutRoll()).observe($('#cutTrack'));
+
+/** Move what the export plans for ``s`` along with its point ``which``, so tails and totals hold until the server's new plan comes in. */
+function shiftPlan(s, which, t) {
+  if (planned(s) === s) return;
+  const e = exportPlan.map[s.id];
+  e[which] = round3(e[which] + t - s[which]);
+  e.from = which === 'start' ? [t, s.end] : [s.start, t];
+}
+
+/** The note for a roll that ran into a third clip of the same source: allowed, but the video then shows that footage twice. */
+function rollRepeat(k) {
+  return [k, k + 1].map((i) => {
+    const s = S.segments[i];
+    const hits = S.segments.flatMap((o, n) => (n !== k && n !== k + 1 && o.source === s.source && s.start < o.end && o.start < s.end ? [n + 1] : []));
+    if (!hits.length) return '';
+    return `Clip ${i + 1} repeats part of ${hits.length > 1 ? `clips ${hits.slice(0, -1).join(', ')} and ${hits.at(-1)}` : `clip ${hits[0]}`}.`;
+  }).filter(Boolean).join(' ');
+}
+
+/**
+ * Roll cut ``k`` by ``by`` seconds: clip 1's end and clip 2's start move the same amount, inside
+ * both clips' limits, so the two lengths still add up. ``tag`` goes to remember (false: this
+ * edit's step is already kept, a drag). True when something moved.
+ */
+function rollCut(k, by, tag) {
+  const [a, b] = [S.segments[k], S.segments[k + 1]];
+  const r = rollRange(k);
+  const d = Math.max(r.min, Math.min(r.max, by));
+  const say = (text) => {
+    if ($('#cutRollMsg').textContent !== text) $('#cutRollMsg').textContent = text;
+  };
+  const limit = d === by ? '' : by < 0 ? r.whyMin : r.whyMax;
+  const note = () => say([limit, rollRepeat(k)].filter(Boolean).join(' '));
+  const out = round3(a.end + d);
+  const into = round3(b.start + d);
+  if (out === a.end && into === b.start) {
+    note();
+    return false;
+  }
+  const err = validate(a.start, out, durOf(a)) || validate(into, b.end, durOf(b));
+  if (err) {
+    say(err);
+    return false;
+  }
+  if (tag !== false) remember(tag);
+  shiftPlan(a, 'end', out);
+  shiftPlan(b, 'start', into);
+  a.end = out;
+  b.start = into;
+  changed();
+  renderCut();
+  note();
+  return true;
+}
+
+function dropCutDrag() {
+  const d = cutDrag;
+  cancelAnimationFrame(d.raf);
+  cutDrag = null;
+  $('#cutJoin').classList.remove('dragging');
+}
+
+/** One drag step: the join follows the pointer, up to the track's ends; the first move keeps the undo step. */
+function cutDragFrame() {
+  const d = cutDrag;
+  d.raf = 0;
+  const k = cutIndex();
+  const a = S.segments[k];
+  if (!a || a.id !== d.a || S.segments[k + 1].id !== d.b || S.id !== d.pid) return dropCutDrag();
+  const moved = ((d.x - d.x0) / ($('#cutTrack').clientWidth || 600)) * 2 * CUT_PLAY;
+  const by = round3(d.end0 + round2(Math.max(-CUT_PLAY, Math.min(CUT_PLAY, moved))) - a.end);
+  if (rollCut(k, by, d.kept ? false : null)) d.kept = true;
+}
+
+function stepCut(d) {
+  const k = cutIndex() + d;
+  if (k >= 0 && k <= S.segments.length - 2) focusMoment(S.segments[k].id);
+}
+
+/** Play the last seconds of clip 1 and the first of clip 2 through "Play sequence": the spare player holds clip 2, so the step is a swap. */
+function cutPlay() {
+  const k = cutIndex();
+  if (k >= 0) seqStart(S.segments[k].id, [S.segments[k].id, S.segments[k + 1].id], { back: S.focus });
+}
+
+/** The play button and the player's place: over the frames while a cut plays. */
+function renderCutPlay() {
+  const on = !!S.seqPlay?.across;
+  const opens = on && !$('#stageBody').classList.contains('cut-playing');
+  $('#stageBody').classList.toggle('cut-playing', on);
+  if (opens) $('.screen').scrollIntoView({ block: 'nearest' }); // on a scrolled narrow page it opens above the view
+  const b = $('#cutPlayBtn');
+  b.replaceChildren(icon(on ? 'stop' : 'play'), on ? 'Stop' : 'Play across the cut');
+  b.title = on ? 'Stop (Escape)' : 'Play across the cut (Space)';
+  b.setAttribute('aria-keyshortcuts', on ? 'Escape' : 'Space');
+}
+
+/** One block per clip, in sequence order, sized by exported length; each is the cut after its clip, the last clip's belongs to the cut before it. */
+function renderCutStrip(k) {
+  const el = $('#cutStrip');
+  const n = S.segments.length;
+  const had = el.contains(document.activeElement) ? document.activeElement.dataset.cut : null;
+  el.replaceChildren(...S.segments.map((s, i) => {
+    const props = {
+      class: `cut-block${i === k || i === k + 1 ? ' on' : ''}${i === k ? ' at' : ''}`, 'data-kind': kindOf(cands().find((c) => c.id === s.id)),
+      style: `flex-grow: ${Math.max(exportedLen(s), 0.1).toFixed(2)}`,
+    };
+    if (i === n - 1) return h('span', { ...props, 'aria-hidden': 'true', onclick: () => focusMoment(S.segments[n - 2].id) });
+    const next = S.segments[i + 1];
+    return h('button', {
+      ...props, type: 'button', 'data-cut': i, tabindex: i === k ? 0 : -1, 'aria-current': i === k ? 'true' : null,
+      'aria-label': `Cut ${i + 1} of ${n - 1}: ${cutName(s)} into ${cutName(next)}`, title: `Cut ${i + 1} → ${i + 2}`,
+      onclick: () => focusMoment(s.id),
+      onkeydown: (e) => {
+        if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+        const step = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+        const to = step != null ? i + step : e.key === 'Home' ? 0 : e.key === 'End' ? n - 2 : null;
+        if (to == null) return;
+        e.preventDefault();
+        const blocks = [...el.querySelectorAll('button')];
+        const go = blocks[Math.max(0, Math.min(n - 2, to))];
+        for (const x of blocks) x.tabIndex = x === go ? 0 : -1;
+        go.focus();
+      },
+    });
+  }));
+  if (had != null) el.querySelector(`[data-cut="${had}"]`)?.focus();
+  const cur = el.children[k]; // a very long sequence scrolls here, not the page
+  if (el.scrollWidth > el.clientWidth && (cur.offsetLeft < el.scrollLeft || cur.offsetLeft > el.scrollLeft + el.clientWidth)) el.scrollLeft = cur.offsetLeft - el.clientWidth / 2;
+}
+
+function bindCut() {
+  $('#cutPlayBtn').addEventListener('click', () => (S.seqPlay?.across ? seqStop() : cutPlay()));
+  $('#prevCut').addEventListener('click', () => stepCut(-1));
+  $('#nextCut').addEventListener('click', () => stepCut(1));
+  for (const img of [$('#cutOutFrame'), $('#cutInFrame')]) {
+    img.addEventListener('load', () => img.closest('.cut-frame').classList.remove('failed'));
+    img.addEventListener('error', () => img.closest('.cut-frame').classList.add('failed'));
+  }
+  const video = $('#optTransition');
+  video.addEventListener('change', renderCutTransition);
+  $('#cutTransition').addEventListener('click', (e) => {
+    const value = e.target.closest('button[data-value]')?.dataset.value;
+    if (!value || value === video.value) return;
+    video.value = value;
+    video.dispatchEvent(new Event('change')); // as if chosen in the Export panel: stored, audio linked
+    $('#sideLive').textContent = `Transition of the whole video set to ${value === 'fade' ? 'Fade' : 'Cut'}`;
+  });
+  const join = $('#cutJoin');
+  join.addEventListener('keydown', (e) => {
+    const k = cutIndex();
+    if (k < 0 || e.ctrlKey || e.metaKey || e.altKey) return;
+    const step = HANDLE_STEPS[e.key];
+    const r = rollRange(k);
+    let by;
+    if (step != null) by = e.shiftKey && e.key.startsWith('Arrow') ? step * 10 : step;
+    else if (e.key === 'Home') by = r.min;
+    else if (e.key === 'End') by = r.max;
+    else return;
+    e.preventDefault();
+    if (S.seqPlay?.across) seqStop();
+    rollCut(k, by, `roll:${S.segments[k].id}:${S.segments[k + 1].id}`);
+  });
+  join.addEventListener('pointerdown', (e) => {
+    const k = cutIndex();
+    if (k < 0 || cutDrag || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    e.preventDefault(); // no text selection or touch scrolling
+    join.focus();
+    join.setPointerCapture(e.pointerId);
+    if (S.seqPlay?.across) seqStop();
+    const [a, b] = [S.segments[k], S.segments[k + 1]];
+    cutDrag = { id: e.pointerId, pid: S.id, a: a.id, b: b.id, x0: e.clientX, x: e.clientX, end0: a.end, out: planned(a).end, into: planned(b).start, moved: false, kept: false, raf: 0 };
+    join.classList.add('dragging');
+  });
+  join.addEventListener('pointermove', (e) => {
+    const d = cutDrag;
+    if (!d || e.pointerId !== d.id) return;
+    d.x = e.clientX;
+    d.moved ||= Math.abs(e.clientX - d.x0) >= 3; // a plain click moves nothing
+    if (d.moved && !d.raf) d.raf = requestAnimationFrame(cutDragFrame);
+  });
+  join.addEventListener('pointerup', (e) => {
+    if (cutDrag && e.pointerId === cutDrag.id) cutDrag.x = e.clientX;
+  });
+  join.addEventListener('lostpointercapture', (e) => { // after pointerup or pointercancel
+    const d = cutDrag;
+    if (!d || e.pointerId !== d.id) return;
+    cancelAnimationFrame(d.raf);
+    if (d.moved) cutDragFrame();
+    if (cutDrag) dropCutDrag();
+    renderCut(); // the waveforms centre on the new cut
+  });
+}
+
 // ---------- play sequence ----------
 
-/** Clip ``j`` of the playing sequence, running where its export runs. */
+/** Clip ``j`` of the playing sequence, running where its export runs; over a cut only the last CUT_PLAY s of the first clip and the first of the second, tails included. */
 const seqSeg = (j) => {
   const s = S.segments.find((x) => x.id === S.seqPlay?.order[j]);
-  return s && { ...s, start: planned(s).start, end: planned(s).end };
+  if (!s) return s;
+  const { start, end } = planned(s);
+  if (!S.seqPlay.across) return { ...s, start, end };
+  return j ? { ...s, start, end: Math.min(end, start + CUT_PLAY) } : { ...s, start: Math.max(start, end - CUT_PLAY), end };
 };
 const seqNow = () => S.seqPlay?.order[S.seqPlay.i];
 const nowIcon = () => h('span', { class: 'seq-now', 'aria-hidden': 'true', title: 'Playing' }, icon('play'));
@@ -3253,12 +3645,17 @@ function renderSeqPlay() {
   if (S.seqPlay) b.setAttribute('aria-keyshortcuts', 'Escape');
   else b.removeAttribute('aria-keyshortcuts');
   b.title = S.seqPlay ? 'Stop (Escape)' : 'Play the clips in sequence order';
-  // the stage mode follows the playback: Sequence while it plays, else Clip
-  const mode = S.seqPlay ? 'sequence' : 'clip';
+  // the stage mode follows the playback: Sequence while it plays, else Clip; Cut until it is left
+  const mode = S.cutMode ? 'cut' : S.seqPlay ? 'sequence' : 'clip';
   for (const m of $('#stageMode').children) {
     m.setAttribute('aria-pressed', String(m.dataset.mode === mode));
     if (m.dataset.mode === 'sequence') m.disabled = !S.seqPlay && !S.segments.length;
+    if (m.dataset.mode === 'cut') { // stays focusable and pressable: a press says why (enterCut)
+      m.setAttribute('aria-disabled', String(S.segments.length < 2));
+      m.title = S.segments.length < 2 ? CUT_NEEDS : '';
+    }
   }
+  renderCutPlay();
 }
 
 /** Mark the playing row (class and icon) without rebuilding the list, and keep it in view. */
@@ -3301,32 +3698,40 @@ function seqClock(t) {
     if (j < sp.i) done += s.end - s.start;
     else if (j === sp.i && !sp.wait) done += Math.min(Math.max(t - s.start, 0), s.end - s.start);
   });
-  return `Clip ${sp.i + 1} of ${sp.order.length} · ${fmtLen(done)} / ${fmtLen(total)}`;
+  const k = cutIndex() + 1;
+  return `${sp.across ? `Cut ${k} → ${k + 1}` : `Clip ${sp.i + 1} of ${sp.order.length}`} · ${fmtLen(done)} / ${fmtLen(total)}`;
 }
 
-/** Play the sequence from its first clip, or from clip ``from`` (an id). */
-function seqStart(from) {
+/** Play the sequence from its first clip, or from clip ``from`` (an id); with ``across`` ({back}) only ``order``, the two clips of a cut, over the cut. */
+function seqStart(from, order = S.segments.map((s) => s.id), across = null) {
   if (!S.segments.length) return;
+  if (!across) {
+    if (S.seqPlay?.across) seqStop('', false);
+    if (S.cutMode) setCut(false);
+  }
   for (const el of els) {
     if (!el.paused) continue;
     el.play().catch(() => {}); // inside the click: lets later play() calls start it (Safari)
     el.pause();
   }
-  S.seqPlay = { order: S.segments.map((s) => s.id), i: -1, wait: false };
+  S.seqPlay = { order, i: -1, wait: false, across };
   banner('');
   renderSeqPlay();
   seqGo(Math.max(0, S.seqPlay.order.indexOf(from)));
   if (S.seqPlay) seqPrepare(); // seqGo may have stopped it: nothing could be previewed
 }
 
-function seqStop(msg = 'Sequence stopped') {
+/** ``back``: over a cut, the clip selected before it is selected again, so the cut stays the current one. */
+function seqStop(msg = S.seqPlay?.across ? 'Stopped playing across the cut' : 'Sequence stopped', back = true) {
   if (!S.seqPlay) return;
+  const { across } = S.seqPlay;
   S.seqPlay = null;
   cued = null;
   clearTimeout(S.seqTimer);
   v.pause();
   unload(spare()); // the visible player stays the stage player
   for (const el of els) el.preload = 'metadata'; // the stage preview buffers on demand again
+  if (across && back && S.focus !== across.back && S.segments.some((s) => s.id === across.back)) showMoment(across.back);
   markPlaying();
   renderSeqPlay();
   updatePlayhead();
@@ -3438,7 +3843,7 @@ function seqGo(j) {
     skipped.push(seg.label || seg.id);
   }
   if (skipped.length) banner(`Skipped ${skipped.map((n) => `"${n}"`).join(', ')}: the preview could not be built.`);
-  if (j >= sp.order.length) return seqStop(sp.i < 0 ? 'Nothing in the sequence can be previewed.' : 'Sequence finished');
+  if (j >= sp.order.length) return seqStop(sp.i < 0 ? 'Nothing in the sequence can be previewed.' : sp.across ? 'Finished playing across the cut' : 'Sequence finished');
   const cur = seqSeg(sp.i);
   const seg = seqSeg(j);
   const src = srcOf(seg.source);
@@ -6615,6 +7020,7 @@ function bind() {
     renderTrim();
     seekTo(c.cand.start);
   });
+  bindCut();
   $('#prevClip').addEventListener('click', () => stepClip(-1));
   $('#nextClip').addEventListener('click', () => stepClip(1));
 
@@ -6650,7 +7056,9 @@ function bind() {
   $('#seqPlayBtn').addEventListener('click', () => (S.seqPlay ? seqStop() : seqStart()));
   $('#stageMode').addEventListener('click', (e) => {
     const mode = e.target.closest('button[data-mode]')?.dataset.mode;
-    if (mode === 'sequence' && !S.seqPlay) seqStart();
+    if (mode === 'cut') enterCut();
+    else if (mode === 'sequence' && (!S.seqPlay || S.seqPlay.across)) seqStart();
+    else if (mode === 'clip' && S.cutMode) leaveCut();
     else if (mode === 'clip' && S.seqPlay) seqStop('Playing the selected clip. Sequence stopped.');
   });
   $('#undoBtn').addEventListener('click', undo);
@@ -6747,8 +7155,8 @@ function bind() {
     if (e.target.closest('input:not([type=range]),textarea,select,[role=menu],[role=separator],dialog,[popover]')) return;
     if (!$('#filterPop').hidden && e.target.closest('#filterWrap')) return; // a plain div, and its button stays outside it
     if (e.key === '[' || e.key === ']' || (!e.shiftKey && (k === 'i' || k === 'o'))) {
-      e.preventDefault(); // [ ] and I O: the trim point at the playhead
-      setRange(e.key === '[' || k === 'i' ? 'start' : 'end', playhead());
+      e.preventDefault(); // [ ] and I O: the trim point at the playhead; Cut mode shows none
+      if (!S.cutMode) setRange(e.key === '[' || k === 'i' ? 'start' : 'end', playhead());
     } else if (e.key === ' ' && (!e.target.closest('button,a,summary') || e.target.closest('.vol'))) {
       e.preventDefault();
       togglePlay();
