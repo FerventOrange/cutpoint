@@ -276,6 +276,27 @@ test('the footer total is a button: it opens a target field; set, over the targe
   assert.equal(d.querySelector('#seqBar').hidden, true, 'clearing removes the target');
 });
 
+test('the storyboard total carries the target in the footer words and follows it; it cuts nothing', async (t) => {
+  const page = await open(t, { project: withSegment(), routes: putTarget });
+  const d = page.document;
+  const sb = d.querySelector('#sbTotal');
+  const submit = () => d.querySelector('#seqTargetForm').dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true }));
+  const setTarget = async (v) => {
+    d.querySelector('#seqTotal').click();
+    d.querySelector('#seqTargetInput').value = v;
+    submit();
+    await page.settle();
+  };
+  assert.equal(sb.textContent, '1 clip · 0:08', 'no target: plain');
+  await setTarget('0:16');
+  assert.equal(sb.textContent, '1 clip · 0:08 of ~0:16');
+  await setTarget('4');
+  assert.equal(sb.textContent, '1 clip · 0:08 of ~0:04, 0:04 over');
+  assert.equal(d.querySelectorAll('#seqList li').length, 1, 'the sequence is untouched');
+  await setTarget('');
+  assert.equal(sb.textContent, '1 clip · 0:08');
+});
+
 test('a bad target is refused with a message and changes nothing; Escape closes the field', async (t) => {
   const page = await open(t, { project: withSegment() });
   const d = page.document;
