@@ -8168,23 +8168,42 @@ def test_one_undo_stack_holds_manual_and_ai_edits_with_ctrl_z() -> None:
         )
 
 
-def test_play_sequence_shares_the_select_all_row_with_the_selection_actions() -> None:
-    """Contract pin: Undo and Redo sit on the title line; Select all is at the left of the next
-    row, whose right end holds Play sequence, or, with clips ticked, the count, Remove and Clear
-    (renderBatch swaps them), so the list does not jump. A hidden ::after with Play's longer label
-    keeps "Stop" from shrinking or moving it."""
+def test_sequence_header_is_one_row_with_icon_history_buttons() -> None:
+    """Contract pin: one row, no title line. Select all is at the left; Undo and Redo (28 px icon
+    buttons with a name, a tooltip and their shortcuts) and then Play sequence, or, with clips ticked,
+    the count, Remove and Clear (renderBatch swaps them), at the right, so the list never jumps. The
+    heading stays for screen readers only. A hidden ::after with Play's longer label keeps "Stop" from
+    shrinking or moving it; the row never wraps, and as it narrows words give way (still read aloud)."""
     html = _web("index.html")
     css = _web("app.css")
     js = _web("app.js")
-    line = re.search(r'<div class="seq-line">(.*?)\n          </div>\n          <!--', html, re.S)[
-        1
-    ]
-    assert re.findall(r'id="(\w+)"', line) == ["seqTitle", "undoBtn", "redoBtn"]
-    bar = re.search(r'<div class="seq-bar">(.*?)\n          </div>\n        </div>', html, re.S)[1]
-    assert re.findall(r'id="(\w+)"', bar) == [
-        "seqSelAllRow", "seqSelAll", "seqPlayBtn", "seqBatch", "seqSelCount", "seqRemoveSel",
-        "seqClearSel",
+    assert 'class="seq-line"' not in html
+    head = re.search(r'<div class="col-head seq-head">(.*?)</div>\s*<!-- An AI Chat', html, re.S)[1]
+    assert re.findall(r'id="(\w+)"', head) == [
+        "seqTitle", "seqSelAllRow", "seqSelAll", "undoBtn", "redoBtn", "seqPlayBtn", "seqBatch",
+        "seqSelCount", "seqRemoveSel", "seqClearSel",
     ]  # fmt: skip
+    assert html.count('class="seq-bar"') == 1
+    for bid, name in (("undoBtn", "Undo"), ("redoBtn", "Redo")):
+        tag = re.search(rf'<button type="button" id="{bid}"[^>]*>', html)[0]
+        assert (
+            f'aria-label="{name}"' in tag and f'title="{name} (Ctrl+' in tag and "seq-hist" in tag
+        )
+    assert (
+        "$('#undoBtn').append(icon('undo'));" in js and "$('#redoBtn').append(icon('redo'));" in js
+    )
+    assert "  undo: [[" in js and "  redo: [[" in js
+    assert (
+        "width: var(--control-h-sm)" in re.search(r"\.seq-hist \{([^}]*)\}", css)[1]
+    )  # 28 px, as Play
+    bar = re.search(r"\.seq-bar \{([^}]*)\}", css)[1]
+    assert "flex-wrap: nowrap;" in bar  # never wraps, in any state
+    assert "container: seqbar / inline-size;" in re.search(r"\.seq-head \{([^}]*)\}", css)[1]
+    assert "@container seqbar (width < " in css
+    # the heading is for screen readers; focus falls back to a visible control
+    assert ".side .col-head h2 { position: absolute;" in css and ".side .seq-head h2" not in css
+    assert "seqTitle').focus" not in js and "$('#seqTitle'))" not in js
+    assert "const seqHome = () =>" in js and "$('#tabSequence')" in js
     assert "$('#seqPlayBtn').hidden = hidePlay;" in _js_function(js, "renderBatch")
     assert "const hidePlay = !!n && !S.seqPlay;" in _js_function(js, "renderBatch")
     play = re.search(r"#seqPlayBtn \{([^}]*)\}", css)[1]
@@ -8194,6 +8213,29 @@ def test_play_sequence_shares_the_select_all_row_with_the_selection_actions() ->
     assert 'content: "Play sequence" / "";' in reserve and "visibility: hidden;" in reserve
     label = "b.textContent = S.seqPlay ? 'Stop' : 'Play sequence';"
     assert label in _js_function(js, "renderSeqPlay")
+    # a previewed AI Chat proposal still hides the selection controls
+    assert "#panelSequence.previewing :is(#seqList, #seqBatch, #seqSelAllRow," in css
+
+
+def test_dragging_a_clip_is_forgotten_and_scrolls_the_list() -> None:
+    """Contract pin (#749): both lists share one drag state that every ending clears, a drop must
+    carry our own data type, the marker shows the landing side, and a held clip scrolls the column
+    above the sticky footer. Behaviour is in tests/js/drag.test.mjs."""
+    js = _web("app.js")
+    css = _web("app.css")
+    end = _js_function(js, "endDrag")
+    assert "dragId = null;" in end and "cancelAnimationFrame(dragRaf)" in end
+    # a render waits for a live drag (the held row must survive for its dragend); endDrag runs it
+    assert "dragDirty = true;" in _js_function(js, "renderSequence")
+    assert "if (dirty) renderSequence();" in end
+    assert (
+        "ondragenter: (e) => dragHover(e, " in js
+        and "addEventListener('dragenter', dragScroll)" in js
+    )
+    assert "const ownDrag = (e) =>" in js and "DRAG_TYPE" in js
+    assert "--seq-foot-h" in _js_function(js, "dragArea")  # the bottom zone sits above the footer
+    assert "document.addEventListener('dragover', dragScroll);" in js
+    assert ".seq.drop.after .seq-card" in css and ".sb-cell.drop.after > .sb-block" in css
 
 
 # --- Moments list order (#469) ---
@@ -9598,7 +9640,7 @@ def test_the_center_stage_has_a_mode_switch_a_storyboard_and_zoom_levels() -> No
     for hook in ("cutRange", "cutLen", "cutTail", "cutOut", "resetBtn", "prevClip", "nextClip"):
         assert f'id="{hook}"' in html, hook
     block = _js_function(js, "sbBlock")
-    assert "moveSeg(s.id, to)" in block and "moveSeg(dragId, i)" in block
+    assert "moveSeg(s.id, to)" in block and "dragDrop(e, i)" in block
     assert "seqStart(s.id)" in block
     assert "k === 'i' || k === 'o'" in js
 

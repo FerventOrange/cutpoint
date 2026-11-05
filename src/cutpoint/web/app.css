@@ -379,20 +379,41 @@ select { max-width: 100%; }
 .models-save { display: grid; justify-items: start; gap: var(--space-2); }
 .models-save p { margin: 0; overflow-wrap: anywhere; }
 .models-save p:empty, fieldset.models-section p:empty { display: none; }
-/* the title stays for screen readers and as a focus target; the tab shows it */
+/* the title stays for screen readers only; the tab shows it */
 .side .col-head { position: relative; }
 .side .col-head h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-/* Sequence header: a title line with Undo and Redo, then the Select all row, whose right end holds Play
-   sequence or, with clips ticked, their count, Remove and Clear: one height, so the list never jumps.
+/* Sequence header: one row, so the list never jumps. Select all at the left; at the right Undo and Redo (icon
+   buttons, 28 px like the others) and Play sequence or, with clips ticked, their count, Remove and Clear in
+   its place. The heading above is for screen readers (the rule above hides it). The row never wraps: as it
+   narrows the words "Select all" and, with clips ticked, "selected" (and, with a sequence playing, the
+   count itself) give way, still read aloud; the narrowest column (290 px, with a scrollbar) keeps every button.
    The hidden ::after keeps the longer label's width, so "Stop" never shrinks or moves the button */
-.side .seq-head h2 { position: static; width: auto; height: auto; overflow: visible; clip-path: none; margin: 0; font-size: 13px; font-weight: 600; }
-.seq-head { display: grid; gap: var(--space-1); }
-.seq-line, .seq-bar { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
-.seq-bar { min-height: 30px; flex-wrap: wrap; }
-.seq-undo { display: flex; gap: var(--space-1); flex: none; }
+.seq-head { display: block; container: seqbar / inline-size; }
+.seq-bar { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--space-2); min-width: 0; min-height: var(--control-h-sm); }
+.seq-undo { display: flex; gap: var(--space-1); flex: none; margin-left: auto; }
+.btn.seq-hist { display: grid; place-items: center; width: var(--control-h-sm); padding: 0; flex: none; }
+.btn.seq-hist .icon { width: 18px; height: 18px; fill: currentColor; }
 #seqPlayBtn { display: flex; flex-direction: column; align-items: center; justify-content: center; white-space: nowrap; flex: none; }
 #seqPlayBtn[hidden] { display: none; }
 #seqPlayBtn::after { content: "Play sequence" / ""; height: 0; overflow: hidden; visibility: hidden; }
+.seq-head:has(#seqBatch:not([hidden])) #seqPlayBtn::after { content: none; } /* Stop beside the selection's actions: no room to reserve */
+@container seqbar (width < 270px) { .seq-selall > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } }
+@container seqbar (width < 360px) {
+  .seq-head:has(#seqBatch:not([hidden])) .seq-selall > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+@container seqbar (width < 300px) {
+  .seq-head:has(#seqBatch:not([hidden])) .seq-sel-word { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+@container seqbar (width < 400px) { /* Stop beside the selection's actions */
+  .seq-head:has(#seqBatch:not([hidden])):has(#seqPlayBtn:not([hidden])) .seq-sel-word { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+@container seqbar (width < 300px) {
+  .seq-head:has(#seqBatch:not([hidden])):has(#seqPlayBtn:not([hidden])) :is(.seq-bar, .seq-batch) { gap: var(--space-1); }
+  .seq-head:has(#seqBatch:not([hidden])):has(#seqPlayBtn:not([hidden])) #seqSelCount { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+@container seqbar (width < 260px) {
+  .seq-head:has(#seqBatch:not([hidden])):has(#seqPlayBtn:not([hidden])) :is(.seq-batch .btn, #seqPlayBtn) { padding-inline: 6px; }
+}
 /* moments header band: count centred; "Analyze again" and "Show folder" on the right, or below it when there is no room; the title is visually hidden */
 .moments { container: moments / inline-size; }
 .moments .col-head {
@@ -800,6 +821,7 @@ body.tips-off .flag-tip { display: none; }
 .sb-cell { flex: 1 1 0; min-width: 3px; display: flex; }
 .sb-cell.dragging { opacity: 0.5; }
 .sb-cell.drop > .sb-block { box-shadow: inset 3px 0 0 var(--amber); } /* inside: .sb-list clips what is outside it */
+.sb-cell.drop.after > .sb-block { box-shadow: inset -3px 0 0 var(--amber); } /* a block moved right lands after this one */
 .sb-block {
   --k: var(--muted); --kt: var(--scrim); flex: 1 1 auto; min-width: 0; padding: 0 var(--space-1); display: flex; align-items: center;
   border: 0; border-top: 3px solid var(--k); border-radius: var(--radius-xs); background: var(--kt); color: var(--scrim-ink);
@@ -846,7 +868,8 @@ body.tips-off .flag-tip { display: none; }
 /* the playing clip: a play icon over its thumbnail, not colour alone */
 .seq-now { position: absolute; inset: 0; display: grid; place-items: center; background: var(--thumb-scrim); color: var(--thumb-scrim-ink); }
 .seq-thumb .seq-now .icon { visibility: visible; width: 20px; height: 20px; }
-.seq.drop .seq-card { box-shadow: 0 -3px 0 var(--amber-text); }
+.seq.drop .seq-card { box-shadow: 0 -3px 0 var(--amber-text); } /* the clip lands before this one */
+.seq.drop.after .seq-card { box-shadow: 0 3px 0 var(--amber-text); } /* a clip moved down lands after it */
 .seq[draggable=true] :is(.seq-card, .seq-main) { cursor: grabbing; }
 .seq-main {
   font: inherit; color: inherit; text-align: left; background: none; border: 0; cursor: pointer;

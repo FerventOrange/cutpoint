@@ -218,21 +218,18 @@
 
       <div id="panelSequence" class="side-panel" role="tabpanel" aria-labelledby="tabSequence">
         <div class="col-head seq-head">
-          <div class="seq-line">
-            <h2 id="seqTitle" tabindex="-1">Sequence</h2>
-            <span class="spacer"></span>
-            <div class="seq-undo" role="group" aria-label="History">
-              <button type="button" id="undoBtn" class="btn small" aria-keyshortcuts="Control+Z" title="Undo (Ctrl+Z)" disabled>Undo</button>
-              <button type="button" id="redoBtn" class="btn small" aria-keyshortcuts="Control+Y Control+Shift+Z" title="Redo (Ctrl+Y)" disabled>Redo</button>
-            </div>
-          </div>
-          <!-- Select all at the left; Play sequence, or the selection's count, Remove and Clear, in the same place at the right -->
+          <!-- the heading is for screen readers (the tab above names the panel) -->
+          <h2 id="seqTitle">Sequence</h2>
+          <!-- One row: Select all at the left; Undo and Redo, then Play sequence, or the selection's count, Remove and Clear in the same place, at the right -->
           <div class="seq-bar">
             <label id="seqSelAllRow" class="seq-selall" hidden>
               <input type="checkbox" id="seqSelAll" class="seq-check" aria-keyshortcuts="Control+A">
               <span>Select all</span>
             </label>
-            <span class="spacer"></span>
+            <div class="seq-undo" role="group" aria-label="History">
+              <button type="button" id="undoBtn" class="btn small seq-hist" aria-label="Undo" aria-keyshortcuts="Control+Z" title="Undo (Ctrl+Z)" disabled></button>
+              <button type="button" id="redoBtn" class="btn small seq-hist" aria-label="Redo" aria-keyshortcuts="Control+Y Control+Shift+Z" title="Redo (Ctrl+Y)" disabled></button>
+            </div>
             <button type="button" id="seqPlayBtn" class="btn small" disabled>Play sequence</button>
             <div id="seqBatch" class="seq-batch" role="group" aria-label="Selected clips" hidden>
               <span id="seqSelCount" class="tc"></span>

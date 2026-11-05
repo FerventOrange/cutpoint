@@ -180,9 +180,10 @@ test('plain arrows move between the blocks without reordering', async (t) => {
 
 test('dropping a block on another reorders the sequence', async (t) => {
   const m = await stage(t, { project: withSegments('h001', 'h002', 'h003') });
+  let dt = null;
   const drag = (el, type) => {
     const e = new m.w.Event(type, { bubbles: true, cancelable: true });
-    e.dataTransfer = { setData() {}, effectAllowed: '' };
+    e.dataTransfer = type === 'dragstart' ? (dt = { types: [], effectAllowed: '', setData(k) { this.types.push(k); } }) : { types: dt.types };
     el.dispatchEvent(e);
   };
   drag(m.cell('h003'), 'dragstart');
