@@ -591,49 +591,48 @@ function renderMoments() {
   if (S.order === 'position') items.sort((a, b) => positionCompare(a.c, b.c)); // the badge keeps the score rank
   const listHadFocus = $('#candList').contains(document.activeElement);
   // A tile: the still with the kind dot and length (Add/Remove sits over its corner: no nested
-  // buttons), then rank and title, kind and score, the times, the file with several sources, the
-  // strip, and the transcript with the preview readiness.
+  // buttons), then rank and title, kind and score with the preview readiness as an icon, the id and
+  // times, the file with several sources, and the strip. The transcript is the tile's tooltip.
   if (lazySeen) for (const b of $('#candList').querySelectorAll('.cand-thumb.loading')) { lazySeen.unobserve(b); lazyAsks.delete(b); } // tiles about to be replaced
   preserveFocus(() => {
     $('#candList').replaceChildren(
       ...items.map(({ c, rank }) => {
         const seg = segOf(c);
         const picked = !!seg;
-        const badge = prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] });
+        const badge = prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }, true);
         const tip = c.pano?.flags?.length ? `tip-${c.id}` : null;
         const title = c.display_label || c.label || c.cli_id || c.id;
         const kind = kindOf(c);
         const still = thumb(c, 'cand-thumb', true);
-        still.append(h('span', { class: 'cand-dot', 'aria-hidden': 'true' }), h('span', { class: 'cand-len tc', 'aria-hidden': 'true', text: `${(c.end - c.start).toFixed(1)} s` }));
+        // the length shows once, on the still; it is also the screen reader's only length
+        still.append(h('span', { class: 'cand-dot', 'aria-hidden': 'true' }), h('span', { class: 'cand-len tc', text: `${(c.end - c.start).toFixed(1)} s` }));
         return h('li', { class: `cand${picked ? ' picked' : ''}`, 'data-id': c.id, 'data-kind': kind, 'aria-current': c.id === S.focus ? 'true' : null },
-          h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', 'aria-describedby': tip, onclick: () => focusMoment(c.id) },
+          // the hover tooltip: the full title and the transcript (the tile shows neither in full)
+          h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', 'aria-describedby': tip, title: c.transcript ? `${title}\n${c.transcript}` : title, onclick: () => focusMoment(c.id) },
             still,
             h('span', { class: 'cand-top' },
               h('span', { class: 'rank tc', text: `#${rank}` }),
-              h('span', { class: 'cand-title', title, text: title }),
+              h('span', { class: 'cand-title', text: title }),
               c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null,
               poolBadge(c)),
-            h('span', { class: 'cand-meta' }, KINDS[kind], h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', score ' }), scoreText(c.score, c.pool === 'visual')),
+            h('span', { class: 'cand-meta' }, KINDS[kind], h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', score ' }), scoreText(c.score, c.pool === 'visual'), badge),
             h('span', { class: 'cand-time tc' },
               // the CLI id (h001) as text, for Candidate ids and clips --ids (#487)
               c.cli_id ? [h('span', { class: 'cand-id' }, h('span', { class: 'vh', text: 'Candidate ' }), c.cli_id), ' '] : null,
-              // the start-end range with its separator: hidden with the id and the file unless Verbose moment labels is on
-              h('span', { class: 'cand-range' },
-                `${fmt(c.start)} to ${fmt(c.end)}`,
-                h('span', { 'aria-hidden': 'true', text: ' · ' })),
-              h('span', { class: 'vh', text: ', ' }),
-              `${(c.end - c.start).toFixed(1)} s`),
+              // the start-end range: hidden with the id and the file unless Verbose moment labels is on
+              h('span', { class: 'cand-range' }, `${fmt(c.start)} to ${fmt(c.end)}`)),
             multi ? h('span', { class: 'cand-src' }, h('span', { class: 'vh', text: 'in ' }), baseName(c.source)) : null,
             flagBadges(c.pano),
             sourceStrip(c),
-            c.transcript || badge
-              ? h('span', { class: 'cand-foot' }, c.transcript ? h('span', { class: 'cand-text', text: c.transcript }) : null, badge)
-              : null),
+            // read after the rest: aria-describedby (camera path tiles) overrides the title, which holds the transcript
+            c.transcript ? h('span', { class: 'vh', text: `, ${c.transcript}` }) : null),
+          // an icon button over the still's top right corner: a dark + on amber, a white - on red
           h('button', {
-            type: 'button', class: 'btn small', 'data-act': 'toggle',
+            type: 'button', class: 'cand-toggle', 'data-act': 'toggle',
             'aria-label': `${picked ? 'Remove' : 'Add'} ${title} ${picked ? 'from' : 'to'} sequence`,
+            title: `${picked ? 'Remove from' : 'Add to'} sequence`,
             onclick: () => (picked ? removeSeg(c.id) : addSeg(c.id)),
-          }, picked ? 'Remove' : 'Add'),
+          }, icon(picked ? 'minus' : 'plus')),
           // the reasons of the camera path badges (#517): shown on hover and keyboard focus, read as the card's description
           tip ? h('span', { class: 'flag-tip', role: 'tooltip', id: tip, text: `Camera path looks poor: ${c.pano.reasons.map((r) => r.text).join('; ')}.` }) : null,
         );
@@ -691,12 +690,21 @@ function prepState(src, seg) {
 
 const PREP = { ready: ['check', 'Ready'], encoding: ['hourglass', 'Encoding'], queued: ['clock', 'Queued'] };
 
-/** The readiness of a row's preview as a small icon and word (never colour alone); null when there is nothing to say. */
-function prepBadge(src, seg) {
+/**
+ * The readiness of a row's preview as a small icon and word (never colour alone); null when there is
+ * nothing to say. ``iconOnly`` (a Moments tile): the icon alone (a spinner ring while encoding), the
+ * word as its hover title and as screen reader text.
+ */
+function prepBadge(src, seg, iconOnly = false) {
   const state = prepState(src, seg);
   if (!state) return null;
   const [name, word] = PREP[state];
-  return h('span', { class: 'prep', 'data-state': state, title: `Preview ${word.toLowerCase()}` },
+  const title = `Preview ${word.toLowerCase()}`;
+  if (iconOnly)
+    return h('span', { class: 'prep icon-only', 'data-state': state, title },
+      state === 'encoding' ? [h('span', { class: 'prep-spin', 'aria-hidden': 'true' }), icon(name)] : icon(name),
+      h('span', { class: 'vh', text: `, ${title.toLowerCase()}` }));
+  return h('span', { class: 'prep', 'data-state': state, title },
     icon(name), h('span', { class: 'vh', text: 'Preview ' }), word);
 }
 
@@ -2374,6 +2382,8 @@ const ICONS = {
   check: [['path', { d: 'M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z' }]],
   hourglass: [['path', { d: 'M6 2v6h.01L6 8.01 10 12l-4 4 .01.01H6V22h12v-5.99h-.01L18 16l-4-4 4-3.99-.01-.01H18V2H6zm10 14.5V20H8v-3.5l4-4 4 4zm-4-5-4-4V4h8v3.5l-4 4z' }]],
   funnel: [['path', { d: 'M4.25 5.61C6.27 8.2 10 13 10 13v6c0 .55.45 1 1 1h2c.55 0 1-.45 1-1v-6s3.72-4.8 5.74-7.39A1 1 0 0 0 18.95 4H5.04c-.83 0-1.3.95-.79 1.61z' }]],
+  plus: [['path', { d: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z' }]],
+  minus: [['path', { d: 'M19 13H5v-2h14v2z' }]],
   clock: [['path', { d: 'M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z' }]],
 };
 const icon = (name) => svg(`icon icon-${name}`, ICONS[name]);

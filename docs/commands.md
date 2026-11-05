@@ -336,9 +336,12 @@ more out of 10 (crash, speed, airtime, wipeout or carve: Action; beauty or sceni
 Funny; the page does not have the cues of the events VLM windows), then a transcript of four words
 or more (Dialogue), else Action. Each tile shows the moment's still (the one its
 sequence row uses; the server cuts it once, the first time the tile scrolls into view, and caches
-it) with a kind dot, a length badge and Add or Remove over its corner; under
-it the rank and title, "kind · score", the candidate id, the times, the file name when the project has several sources, a strip of the moment's place in its source, the
-transcript, and the preview readiness (Ready, Encoding, Queued).
+it) with a kind dot, the length and an Add button over its corner (a dark + on amber; a white − on
+red once the moment is in the sequence); under it the rank and title, "kind · score" followed by
+the preview readiness as an icon (a spinner while encoding, a check when ready, a clock when
+queued; hover it for the word), the candidate id, the times, the file name when the project has
+several sources, and a strip of the moment's place in its source. The tile has no transcript text:
+hover it for the full title and the transcript, which the search still finds.
 A moment with only a generic label (`action-moment`, `loud-moment`) is titled with what the
 vision model saw: its vision rating label, else the label of its `events` VLM window (the search
 finds both). `highlights.json`, the label a moment takes into the sequence and clip file names

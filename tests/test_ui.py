@@ -1318,7 +1318,7 @@ def test_verbose_moment_labels_hide_the_tile_file_id_and_times_by_default() -> N
     assert (
         '<ol id="candList" class="cand-list moments-compact"></ol>' in html
     )  # compact before first paint
-    assert ".moments-compact :is(.cand-id, .cand-range, .cand-src) { display: none; }" in css
+    assert ".moments-compact :is(.cand-time, .cand-src) { display: none; }" in css
     assert "const VERBOSE_KEY = 'cutpoint.verboseMoments';" in js
     assert "verboseMoments: false," in js
     assert "class: 'cand-range'" in _js_function(js, "renderMoments")
@@ -1334,7 +1334,7 @@ def test_moment_cards_show_a_read_only_strip_of_their_place_in_the_source() -> N
     css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
     js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
     strip = re.search(r"^function sourceStrip\(c\) \{(.*?)^\}", js, re.M | re.S)
-    assert strip and "sourceStrip(c)," in js
+    assert strip and "sourceStrip(c)" in js
     assert "'aria-hidden': 'true'" in strip[1]
     assert "title: `Score ${c.score.toFixed(3)}`" in strip[1]
     assert "input" not in strip[1] and "tabindex" not in strip[1]
@@ -7274,6 +7274,9 @@ def test_focus_rings_use_the_amber_text_colour_so_light_theme_keeps_contrast() -
     assert rings
     for rule in rings:
         for colour in re.findall(r"outline(?:-color)?:[^;]*var\((--[\w-]+)\)", rule):
+            if ".cand-toggle" in rule:  # over a still: --amber on a black halo (3:1 on any still)
+                assert colour == "--amber", rule
+                continue
             assert colour == "--amber-text", rule
     assert re.search(r":focus-visible \{ outline: 2px solid var\(--amber-text\)", css)
     light = re.search(r':root\[data-theme="light"\][^{]*\{(.*?)\}', css, re.S)
@@ -8214,47 +8217,64 @@ def test_render_moments_filters_with_util_and_says_which_filter_matched_nothing(
 
 
 def test_moment_card_order_matches_the_mockup() -> None:
-    """Graphite board B: a tile holds the still (kind dot and length badge; Add/Remove sits over
-    its corner), then rank, title and must include, "kind · score", the times "a to b · n s",
-    the file only with several sources, the strip, and the transcript with the preview
-    readiness."""
+    """Graphite board B, compact: a tile holds the still (kind dot and the one length badge), then
+    rank, title and must include, "kind · score" with the preview readiness as an icon, the id and
+    times, the file only with several sources and the strip; Add/Remove is an icon button over the
+    still's corner. The transcript is the tooltip, not tile text."""
     js = _web("app.js")
     css = _web("app.css")
     render = _js_function(js, "renderMoments")
     card = render[render.index("class: 'cand-main'") :]
     order = [
+        "title: c.transcript",
         "still,",
         "class: 'cand-top'",
         "class: 'rank tc'",
         "class: 'cand-title'",
         "class: 'tag', text: 'must include'",
         "class: 'cand-meta'",
+        "scoreText(c.score, c.pool === 'visual'), badge)",
         "class: 'cand-time tc'",
         "class: 'cand-id'",
         "multi ? h('span', { class: 'cand-src' }",
         "sourceStrip(c),",
-        "class: 'cand-foot'",
-        "class: 'cand-text'",
-        "badge)",
+        "class: 'vh', text: `, ${c.transcript}`",
         "'data-act': 'toggle'",
     ]
     at = [card.index(s) for s in order]
     assert at == sorted(at), order
     top = card[card.index("class: 'cand-top'") : card.index("class: 'cand-meta'")]
     assert "prepBadge" not in top and "'data-act': 'toggle'" not in top
-    assert "h('span', { 'aria-hidden': 'true', text: ' · ' })),\n" in card
-    assert (  # the read comma stays when the range is hidden: "score 72, 8.0 s"
-        "h('span', { class: 'vh', text: ', ' }),\n              `${(c.end - c.start).toFixed(1)} s`"
-        in card
+    assert "cand-foot" not in card and "cand-text" not in card  # the transcript is the tooltip
+    assert "prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }, true)" in render
+    assert render.count(".toFixed(1)} s`") == 1  # the length shows once: on the still
+    assert (
+        "h('span', { class: 'cand-len tc', text: `${(c.end - c.start).toFixed(1)} s` })" in render
     )
+    assert "icon(picked ? 'minus' : 'plus')" in card and "class: 'cand-toggle'" in card
+    assert "plus: [['path'" in js and "minus: [['path'" in js
     assert (
         "'data-act': 'focus'" in render
         and "'aria-current': c.id === S.focus ? 'true' : null" in render
     )
     assert re.search(r"^\.cand > \* \{ grid-area: 1 / 1; \}", css, re.M)
-    assert re.search(r"^\.cand > \.btn \{ justify-self: end;", css, re.M)
     assert re.search(
-        r"^\.cand-list \{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(112px", css, re.M
+        r"^\.cand > \.cand-toggle, \.cand > \.btn \{ justify-self: end;", css, re.M
+    )  # Add back keeps its place
+    assert re.search(r"^\.cand-toggle \{[^}]*width: 24px; height: 24px;", css, re.M)
+    assert re.search(
+        r"^\.cand-toggle \{[^}]*background: var\(--amber\); color: var\(--amber-ink\)", css, re.M
+    )
+    assert re.search(
+        r"^\.cand\.picked > \.cand-toggle \{ background: var\(--danger-btn\); color: var\(--danger-ink\)",
+        css,
+        re.M,
+    )
+    assert re.search(r"^\.cand-thumb \{[^}]*aspect-ratio: 2 / 1", css, re.M)
+    assert re.search(
+        r"^\.cand-list \{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(min\(112px, 100%\)",
+        css,
+        re.M,
     )
     assert re.search(r"^\.cand-dot \{[^}]*background: var\(--k\);", css, re.M)
 

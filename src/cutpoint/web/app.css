@@ -492,7 +492,7 @@ select { max-width: 100%; }
 .filter-set .field select { width: 100%; }
 .filter-pop > .btn { justify-self: start; }
 /* the Moments grid: tiles of two across in the default column, more in a wide one (narrow page) */
-.cand-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: var(--space-3) var(--space-2); }
+.cand-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(112px, 100%), 1fr)); gap: var(--space-3) var(--space-2); }
 .cand-list > .empty { grid-column: 1 / -1; }
 .removed .cand-list { grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
 /* a tile: the main button fills it (thumbnail, title, kind and score, times); Add/Remove sits over the
@@ -507,7 +507,18 @@ select { max-width: 100%; }
 .cand[data-kind="funny"], .seq[data-kind="funny"] { --k: var(--k-funny); --kt: var(--k-funny-tint); }
 .cand[data-kind="dialogue"], .seq[data-kind="dialogue"] { --k: var(--k-dialogue); --kt: var(--k-dialogue-tint); }
 .cand > * { grid-area: 1 / 1; }
-.cand > .btn { justify-self: end; align-self: start; margin: var(--space-2) var(--space-2) 0 0; z-index: 1; }
+.cand > .cand-toggle, .cand > .btn { justify-self: end; align-self: start; margin: var(--space-2) var(--space-2) 0 0; z-index: 1; }
+/* Add: a dark + on --amber (--amber-ink, well above 4.5:1). Remove: a white - on --danger-btn (white 5.5:1 in
+   Graphite, Light and Blue). A 24 px target (WCAG 2.5.8); the focus ring is --amber on a black halo, 3:1 or more over any still. */
+.cand-toggle {
+  display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--radius-sm); cursor: pointer;
+  background: var(--amber); color: var(--amber-ink); box-shadow: 0 0 0 1px var(--thumb-scrim);
+}
+.cand-toggle:hover { background: var(--amber-hover); }
+.cand.picked > .cand-toggle { background: var(--danger-btn); color: var(--danger-ink); }
+.cand.picked > .cand-toggle:hover { background: var(--danger-btn-hover); }
+.cand-toggle:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; box-shadow: 0 0 0 2px black; }
+.cand-toggle .icon { width: 18px; height: 18px; }
 .cand:hover { border-color: var(--line); }
 .cand.picked { border-color: var(--amber-text); }
 .cand[aria-current] { background: var(--deep); border-color: var(--amber-text); box-shadow: 0 0 0 1px var(--amber-text); }
@@ -526,10 +537,10 @@ select { max-width: 100%; }
 .cand-meta { padding-inline: var(--space-1); color: var(--muted); font-size: 11px; }
 .cand-time, .cand-src { padding-inline: var(--space-1); color: var(--faint); font: 10.5px/1.4 var(--mono); }
 .cand-src { overflow-wrap: anywhere; }
-/* Verbose moment labels off (the default): the tile keeps its length, not the id, the times or the file */
-.moments-compact :is(.cand-id, .cand-range, .cand-src) { display: none; }
+/* Verbose moment labels off (the default): the tile keeps its length (on the still), not the id, the times or the file */
+.moments-compact :is(.cand-time, .cand-src) { display: none; }
 .cand-id { color: var(--text); white-space: nowrap; margin-right: 0.3em; }
-.cand-strip, .cand-foot, .cand-flags { margin-inline: var(--space-1); }
+.cand-strip, .cand-flags { margin-inline: var(--space-1); }
 .tag { font-size: 11px; color: var(--amber-ink); background: var(--amber); border-radius: var(--radius-xs); padding: 0 var(--space-1); }
 .cand-top .tag { flex: none; white-space: nowrap; }
 /* a visual-pool moment (#635): an outline, so it does not read as the amber must include */
@@ -537,19 +548,15 @@ select { max-width: 100%; }
 /* a moment's place in its source, read-only (the preview's overview in small): --gold on --deep, 3:1 or more in every theme */
 .cand-strip { position: relative; display: block; height: 8px; margin: var(--space-0) 0; background: var(--deep); border: 1px solid var(--line); border-radius: var(--radius-xs); overflow: hidden; }
 .cand-strip-clip { position: absolute; top: 1px; bottom: 1px; min-width: 4px; background: var(--gold); }
-/* the transcript, and the preview readiness at the bottom right */
-.cand-foot { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-1) var(--space-2); min-width: 0; }
-.cand-foot .prep { justify-content: flex-end; }
-.cand-text {
-  flex: 1 1 100%; min-width: 0; color: var(--muted); font-size: 11.5px; display: -webkit-box; -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical; overflow: hidden;
-}
-/* preview readiness of a moment whose source plays from a proxy: icon and word, a static icon (no
-   spinner). One width for every state and a line height under the title's, so a change moves nothing. */
+/* preview readiness of a moment whose source plays from a proxy: icon and word (a static icon, no
+   spinner); a tile shows the icon only, after the score, with the word as its hover title */
 .prep { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: var(--space-1); min-width: 6.4em; font-size: 11.5px; line-height: 16px; font-weight: 500; color: var(--muted); }
 .prep .icon { width: 12px; height: 12px; flex: none; }
 .prep[data-state=ready] { color: var(--ok); }
 .prep[data-state=encoding] { color: var(--amber-text); }
+.prep.icon-only { margin-left: var(--space-1); min-width: 0; vertical-align: -2px; }
+.prep-spin { flex: none; width: 10px; height: 10px; border: 2px solid color-mix(in srgb, currentColor 30%, transparent); border-top-color: currentColor; border-radius: 50%; animation: spin 0.9s linear infinite; }
+.prep.icon-only .icon-hourglass { display: none; } /* the static stand-in for reduced motion */
 .seq-dur .prep { margin-left: var(--space-2); min-width: 0; vertical-align: -2px; }
 /* 360 camera path flags (#517): word badges, never colour alone; the card's reasons show on hover and
    keyboard focus (Escape hides them: body.tips-off) and are its description */
@@ -833,7 +840,7 @@ body.tips-off .flag-tip { display: none; }
   background-size: 200% 100%; animation: shimmer 1.2s linear infinite;
 }
 @keyframes shimmer { from { background-position: 150% 0; } to { background-position: -50% 0; } }
-.cand-thumb { width: 100%; background: var(--kt); } /* a tile: the kind tint shows until its still does, and stays when none comes */
+.cand-thumb { width: 100%; aspect-ratio: 2 / 1; background: var(--kt); } /* a tile: the kind tint shows until its still does, and stays when none comes */
 /* a row (board C): number, the kind's colour bar, thumbnail, title with its kind under it, and the exported
    length at the right with "cut N s + tail" under it when a tail runs the export past the cut */
 .seq-main { flex: 1 1 0; }
@@ -1111,6 +1118,8 @@ fieldset.models-section .hint, fieldset.models-section p { overflow-wrap: anywhe
 /* reduced motion: static stand-ins that still read as busy, not a frozen ring or a stalled 40% bar */
 @media (prefers-reduced-motion: reduce) {
   .indeterminate::after { animation: none; width: 100%; background: repeating-linear-gradient(90deg, var(--amber) 0 6px, transparent 6px 10px); }
+  .prep-spin { display: none; }
+  .prep.icon-only .icon-hourglass { display: inline; }
   .spin { animation: none; width: auto; height: auto; border: 0; border-radius: 0; color: var(--amber-text); align-self: baseline; }
   .spin::before { content: "\25B6\FE0E"; } /* ▶, text style (not emoji) */
   .seq-thumb.loading::after { animation: none; background: var(--panel); }
