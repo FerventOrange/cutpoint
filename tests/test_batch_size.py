@@ -796,11 +796,11 @@ class _Rater:
     def available(self) -> bool:
         return True
 
-    def cached(self, src, start, _end, _style, activity=None):
+    def cached(self, src, start, _end, _style, activity=None, transcript=None):
         hit = self.store.get((Path(src).name, start))
         return None if hit is None else VisionResult(hit, "moment")
 
-    def rate(self, src, start, end, style, activity=None):
+    def rate(self, src, start, end, style, activity=None, transcript=None):
         if (hit := self.cached(src, start, end, style)) is not None:
             return hit
         type(self).calls.append(f"rate {Path(src).stem}")

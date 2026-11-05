@@ -149,6 +149,14 @@ def test_rating_cache_key_distinguishes_provider() -> None:
     assert k_codex != k_ollama
 
 
+def test_the_provider_gets_the_speech_with_the_frames(fake) -> None:
+    rater = vision.VisionRater()
+    assert rater.rate(Path("a.mp4"), 0, 4, "gaming", transcript="I'm laughing so hard")
+    (msg,) = fake.sent[0]
+    assert "<transcript>\nI'm laughing so hard\n</transcript>" in msg["content"][0]["text"]
+    assert len(msg["content"]) == 4  # the prompt and the 3 frames; the speech is in the prompt
+
+
 def test_offline_refresh_skips_vision_instead_of_raising(home, monkeypatch) -> None:
     set_config(
         home,
