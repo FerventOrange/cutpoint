@@ -85,7 +85,9 @@ test('the transcript is the tile tooltip, not tile text, and the search still fi
   const li = tile(page, 'h002');
   assert.equal(li.querySelector('.cand-main').title, 'Fall\nline 2');
   assert.equal(li.querySelector('.cand-text'), null);
-  assert.doesNotMatch(li.textContent.replace(li.querySelector('.cand-main > .vh:last-child').textContent, ''), /line 2/); // only as screen reader text
+  assert.doesNotMatch(li.textContent, /line 2/);
+  // the title is the accessible description here, so no screen reader text repeats the transcript
+  assert.equal([...li.querySelectorAll('.vh')].filter((e) => e.textContent.includes('line 2')).length, 0, 'unflagged tiles keep the transcript in the title only');
   const filter = d.querySelector('#filter');
   filter.value = 'line 2';
   filter.dispatchEvent(new page.window.Event('input', { bubbles: true }));
