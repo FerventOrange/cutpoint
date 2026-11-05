@@ -117,6 +117,7 @@ const S = {
   sending: false,
   applying: false,
   pendingProposal: null, // a proposal that came in while Apply waited: previewed once Apply is done
+  dismissed: new Set(), // ids of proposals discarded from their chat card
   shown: null, // Set of the moment ids the assistant showed (show_moments), highlighted in the list
   history: [], // the applied assistant changes (GET history), oldest first
 };
@@ -3837,11 +3838,16 @@ function colorText(c) {
 
 /** "2 added, 1 trimmed, color auto" for a proposal's diff and its color op. */
 function changeCounts(diff, color = null) {
+  return changeParts(diff, color).join(', ') || 'no change';
+}
+
+/** The parts of changeCounts, one per change: ["2 added", "1 trimmed", "Color auto"]. */
+function changeParts(diff, color = null) {
   const n = {};
   for (const r of diff ?? []) for (const c of r.changes) n[c] = (n[c] ?? 0) + 1;
   const parts = Object.keys(CHANGE_NAMES).filter((c) => n[c]).map((c) => `${n[c]} ${CHANGE_NAMES[c]}`);
   if (color) parts.push(`Color ${colorText(color).toLowerCase()}`);
-  return parts.join(', ') || 'no change';
+  return parts;
 }
 
 /** The open project's chat, the turn still running (polled on) and the applied changes. */
@@ -3851,6 +3857,7 @@ async function loadAssistant() {
   S.turn = null;
   const chat = S.chat = pid ? { pid, provider: null, consent: null, frames: null, turns: [], error: '', loaded: false } : null;
   S.history = [];
+  S.dismissed.clear();
   chatError('');
   renderChat();
   if (!chat) return;
@@ -4008,6 +4015,7 @@ function previewProposal(p) {
     S.pendingProposal = p;
     return;
   }
+  S.dismissed.delete(p.id);
   S.proposal = { id: p.id, summary: p.summary, after: p.after, diff: p.diff, color: p.color ?? null, base_key: p.base_key, seqKey: baseOf(p.diff) };
   $('#propMsg').textContent = '';
   renderProposal();
@@ -4046,6 +4054,23 @@ function renderPropBar() {
   $('#propApply').disabled = !S.proposal || S.applying;
   $('#propApply').textContent = S.applying ? 'Applying…' : 'Apply';
   $('#propDiscard').disabled = !S.proposal || S.applying;
+  for (const b of $('#chatLog').querySelectorAll('button[data-act="apply"]')) {
+    b.disabled = !!S.applying;
+    b.textContent = S.applying && S.proposal?.id === b.closest('[data-pid]')?.dataset.pid ? 'Applying…' : 'Apply';
+  }
+  for (const b of $('#chatLog').querySelectorAll('button[data-act="discard"]')) b.disabled = !!S.applying;
+}
+
+/** Say why Apply failed where the user is: the Sequence tab's line, and the chat's alert when the chat tab is the one in view. */
+function applyMsg(text) {
+  $('#propMsg').textContent = text;
+  if (text && !$('#panelAssistant').hidden) chatError(text);
+}
+
+/** After a card's Apply or Discard the buttons are gone: focus goes to the card's Review button, else the box, in the tab in view. */
+function focusAfterChange(pid) {
+  if (!$('#panelSequence').hidden) return $('#seqTitle').focus();
+  ($(`#chatLog [data-pid="${CSS.escape(pid)}"] [data-act="review"]`) ?? $('#chatInput')).focus();
 }
 
 /** One row of the previewed sequence, with its change in words: Added, Removed, Moved 3 → 1, Trimmed 0:10.00–0:18.00 → .... */
@@ -4096,6 +4121,7 @@ async function applyProposal() {
   const pid = S.id;
   S.applying = true;
   $('#propMsg').textContent = '';
+  chatError('');
   renderPropBar();
   try {
     // The server checks it against the sequence as it is now; a changed one gets the same edits again.
@@ -4109,36 +4135,60 @@ async function applyProposal() {
     renderAfterSeqChange();
     renderChat();
     $('#sideLive').textContent = `${entry.rebased ? 'Applied to the sequence as it is now' : 'Applied'}: ${p.summary}. Ctrl+Z undoes it.`;
-    $('#seqTitle').focus(); // the preview and its buttons are gone
+    focusAfterChange(p.id); // the preview and its buttons are gone
   } catch (e) {
     if (S.proposal !== p) return;
     if (isRevert(p) && e.status === 409 && e.message.includes('preview it again')) {
       S.applying = false; // revertChange previews the new one at once
       const err = await revertChange({ id: p.id.slice(REVERT.length) });
       if (!err) S.pendingProposal = null; // the revert just previewed again stays in view
-      if (err && S.proposal === p) $('#propMsg').textContent = `Can't apply: ${err}. Discard it.`;
+      if (err && S.proposal === p) applyMsg(`Can't apply: ${err}. Discard it.`);
       else if (!err) $('#sideLive').textContent = 'The sequence changed since that preview: the revert is previewed again on it. Check it, then Apply.';
       return;
     }
-    $('#propMsg').textContent = e.status === 409 ? `Can't apply: ${e.message}. Discard it, or ask the assistant again.`
+    applyMsg(e.status === 409 ? `Can't apply: ${e.message}. Discard it, or ask the assistant again.`
       : e.status === 404 ? 'The assistant no longer has this proposal (the chat was cleared or the server restarted). Discard it and ask again.'
-        : e.message;
+        : e.message);
   } finally {
     S.applying = false;
     const next = S.pendingProposal;
     S.pendingProposal = null;
     if (next && S.id === pid) previewProposal(next);
     else renderPropBar();
+    renderChat(); // the cards show which proposal is previewed and whether Apply is busy
   }
 }
 
 function discardProposal() {
   if (!S.proposal || S.applying) return;
+  const id = S.proposal.id;
   S.proposal = null;
+  chatError('');
   renderProposal();
   renderChat();
   $('#sideLive').textContent = 'Proposed change discarded';
-  $('#seqTitle').focus();
+  focusAfterChange(id);
+}
+
+/** A card's Apply: preview the proposal if it is not the previewed one, then the usual apply (its checks and messages). */
+async function applyFromCard(ev) {
+  if (S.applying) return;
+  chatError('');
+  if (seqShape() !== baseOf(ev.diff)) return reviewProposal(ev); // the sequence moved on since this was proposed: look at it again before applying
+  if (S.proposal?.id !== ev.id) previewProposal(ev);
+  await applyProposal();
+  if (document.activeElement === document.body) $(`#chatLog [data-pid="${CSS.escape(ev.id)}"] [data-act="apply"]`)?.focus(); // a refused Apply: its button is back
+}
+
+/** A card's Discard: the previewed proposal is discarded as in the Sequence tab; any other is only marked dismissed on its card. */
+function discardFromCard(ev) {
+  if (S.applying) return;
+  chatError('');
+  S.dismissed.add(ev.id);
+  if (S.proposal?.id === ev.id) return discardProposal();
+  renderChat();
+  $('#chatLive').textContent = 'Proposed change discarded';
+  focusAfterChange(ev.id);
 }
 
 /** History > Revert this change: a proposal back to the change's "before", previewed like any other.
@@ -4167,25 +4217,89 @@ const TOOL_TEXT = {
       : `Watched ${momentName(ev.id)} (${ev.frames} frames)`,
 };
 
+/** 13 px stroke icons of the tool summary (decorative: the line says it in words). */
+const STEP_ICONS = {
+  search: [['circle', { cx: 11, cy: 11, r: 7 }], ['path', { d: 'm20 20-3.5-3.5' }]],
+  scan: [['path', { d: 'M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3' }], ['circle', { cx: 12, cy: 12, r: 3 }]],
+  eye: [['path', { d: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z' }], ['circle', { cx: 12, cy: 12, r: 3 }]],
+  clip: [['rect', { x: 3, y: 5, width: 18, height: 14, rx: 2 }], ['path', { d: 'm10 9.5 4 2.5-4 2.5z' }]],
+  text: [['path', { d: 'M6 3h9l4 4v14H6zM9 12h7M9 16h7' }]],
+  retry: [['path', { d: 'M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7' }]],
+  alert: [['path', { d: 'M12 3 2 20h20zM12 10v4M12 17.5v.01' }]],
+};
+/** One tool summary line from a tally ({n, found}): "Searched 3 times · 30 moments found". */
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const times = (n) => (n === 1 ? 'once' : `${n} times`);
+const STEP_SUMMARY = {
+  find_moments: { icon: 'search', text: (l) => `Searched ${times(l.n)} · ${plural(l.found, 'moment')} found` },
+  look_for: { icon: 'scan', text: (l) => `Looked through the footage ${times(l.n)} · ${l.found} found` },
+  view_moment: { icon: 'eye', text: (l) => `Watched ${plural(l.n, 'moment')}` },
+  get_moment: { icon: 'clip', text: (l) => `Looked at ${plural(l.n, 'moment')}` },
+  get_transcript: { icon: 'text', text: (l) => `Read ${plural(l.n, 'transcript')}` },
+  rejected: { icon: 'retry', text: (l) => `${plural(l.n, 'attempt')} retried` },
+};
+const openSteps = new Set(); // ids of the tool details the user opened: they stay open when the chat is drawn again
+
+/** The tool steps of one stretch of a turn as a few lines (a failed one stays on its own line, by name) and, folded away, every step in words. */
+function stepsItem(steps, id) {
+  const lines = [];
+  const tally = new Map();
+  for (const ev of steps) {
+    if (ev.kind === 'tool' && ev.error) {
+      lines.push({ icon: 'alert', text: stepText(ev), bad: true });
+      continue;
+    }
+    const key = ev.kind === 'rejected' ? 'rejected' : ev.name;
+    let l = tally.get(key);
+    if (!l) lines.push(l = { key, n: 0, found: 0 }), tally.set(key, l);
+    l.n++;
+    l.found += Number(ev.found) || 0;
+  }
+  for (const l of lines) {
+    if (!l.key) continue;
+    const def = STEP_SUMMARY[l.key];
+    l.icon = def?.icon ?? 'clip';
+    l.text = def ? def.text(l) : `Used ${l.key}${l.n > 1 ? ` ${times(l.n)}` : ''}`;
+  }
+  return h('li', { class: `msg step tools${steps.some((e) => e.kind === 'rejected') ? ' rejected' : ''}`, 'data-id': id },
+    h('ul', { class: 'tool-lines' }, lines.map((l) => h('li', { class: l.bad ? 'bad' : null }, svg('chat-ic', STEP_ICONS[l.icon]), h('span', { text: l.text })))),
+    h('details', { class: 'tool-details', open: openSteps.has(id), ontoggle: (e) => (e.target.open ? openSteps.add(id) : openSteps.delete(id)) },
+      h('summary', { 'data-act': 'steps', text: 'Details' }),
+      h('ul', {}, steps.map((ev) => h('li', { text: stepText(ev) })))));
+}
+
+const stepText = (ev) => (ev.kind === 'rejected' ? `Not accepted, asked again: ${ev.text}` : (TOOL_TEXT[ev.name] ?? (() => ev.name))(ev));
+
 /** Chat bubbles of turn ``t``: the user's message, then the model's steps, its answer and its proposals. */
 function turnItems(t) {
   const items = [h('li', { class: 'msg user', 'data-id': `${t.id}-u` }, h('span', { class: 'vh', text: 'You: ' }), h('p', { text: t.user }))];
   let query = '';
+  let steps = []; // consecutive tool steps (and rejected attempts), shown as one summary
+  const flush = () => {
+    if (steps.length) items.push(stepsItem(steps, `${t.id}-s${steps[0].n}`));
+    steps = [];
+  };
   for (const ev of t.events) {
     const id = `${t.id}-${ev.n}`;
-    if (ev.kind === 'tool') {
+    if (ev.kind === 'tool' || ev.kind === 'rejected') {
       if (ev.name === 'find_moments') query = ev.query;
-      items.push(h('li', { class: 'msg step', 'data-id': id, text: (TOOL_TEXT[ev.name] ?? (() => ev.name))(ev) }));
-      if (ev.name === 'look_for' && ev.possible?.length) items.push(possibleItem(ev, id));
-    } else if (ev.kind === 'show') items.push(showItem(ev, id, query));
-    else if (ev.kind === 'reply') items.push(h('li', { class: 'msg ai', 'data-id': id }, h('span', { class: 'vh', text: 'Assistant: ' }), markdown(ev.text)));
+      steps.push(ev);
+      if (ev.name === 'look_for' && ev.possible?.length) {
+        flush();
+        items.push(possibleItem(ev, id));
+      }
+      continue;
+    }
+    flush();
+    if (ev.kind === 'show') items.push(showItem(ev, id, query));
+    else if (ev.kind === 'reply') items.push(h('li', { class: 'msg ai plain', 'data-id': id }, h('span', { class: 'vh', text: 'Assistant: ' }), markdown(ev.text)));
     else if (ev.kind === 'proposal') items.push(proposalItem(ev, id));
-    else if (ev.kind === 'rejected') items.push(h('li', { class: 'msg step rejected', 'data-id': id, text: `Not accepted, asked again: ${ev.text}` }));
     else if (ev.kind === 'frames_consent') items.push(framesItem(ev, id, t));
     else if (ev.kind === 'error') items.push(h('li', { class: 'msg ai bad', 'data-id': id, text: ev.text }));
   }
+  flush();
   if (t.status === 'running')
-    items.push(h('li', { class: 'msg ai pending', 'data-id': `${t.id}-run` },
+    items.push(h('li', { class: 'msg ai plain pending', 'data-id': `${t.id}-run` },
       h('span', { class: 'spin', 'aria-hidden': 'true' }), h('span', { text: 'Thinking…' }),
       h('button', { type: 'button', class: 'btn small', 'data-act': 'cancel', onclick: cancelTurn, text: 'Cancel' })));
   else if (t.status === 'cancelled') items.push(h('li', { class: 'msg step', 'data-id': `${t.id}-x`, text: 'Cancelled.' }));
@@ -4202,7 +4316,7 @@ function showItem(ev, id, query) {
   });
   const on = !!S.shown && S.shown.size === ev.ids.length && ev.ids.every((x) => S.shown.has(x));
   const n = ev.ids.length;
-  return h('li', { class: 'msg ai', 'data-id': id },
+  return h('li', { class: 'msg ai plain', 'data-id': id },
     h('span', { class: 'vh', text: 'Assistant: ' }),
     h('p', { text: ev.note || `${n} moment${n > 1 ? 's' : ''} found` }),
     h('p', { class: 'msg-meta', text: ev.ids.map(momentName).join(', ') }),
@@ -4256,23 +4370,48 @@ function addPossible(w) {
   $('#sideLive').textContent = `Added to the sequence: ${w.label}. Ctrl+Z undoes it.`;
 }
 
-/** A proposal: its summary and changes, Review change (the preview in the Sequence tab) and up to three suggestions, previewed the same way. */
+/** A proposal as a card: its summary, one chip per change, a strip of the sequence after it, then Apply, Preview and Discard (Apply and Discard are gone once applied or discarded) and up to three suggestions, previewed the same way. */
 function proposalItem(ev, id) {
   const applied = S.history.some((e) => e.proposal === ev.id);
   const previewing = S.proposal?.id === ev.id;
-  const state = applied ? ', applied' : previewing ? ', previewed in the Sequence tab' : '';
+  const dismissed = !applied && !previewing && S.dismissed.has(ev.id);
   const sugs = (ev.suggestions ?? []).slice(0, MAX_SUGGESTIONS);
-  return h('li', { class: `msg ai proposal${previewing ? ' previewing' : ''}`, 'data-id': id },
-    h('span', { class: 'vh', text: 'Assistant proposes: ' }),
+  const note = applied ? 'Applied' : previewing ? 'Previewed in the Sequence tab' : dismissed ? 'Discarded' : '';
+  return h('li', { class: `msg ai proposal prop-card${previewing ? ' previewing' : ''}`, 'data-id': id, 'data-pid': ev.id },
+    h('span', { class: 'prop-label', text: 'Proposal' }),
     h('p', { text: ev.summary }),
-    h('p', { class: 'msg-meta', text: `${changeCounts(ev.diff, ev.color)}${state}` }),
-    h('span', { class: 'msg-acts' },
-      h('button', { type: 'button', class: 'btn small primary', 'data-act': 'review', onclick: () => reviewProposal(ev) }, applied ? 'Review again' : 'Review change')),
+    proposalChips(ev),
+    proposalStrip(ev),
+    note ? h('p', { class: 'msg-meta', text: note }) : null,
+    h('span', { class: 'prop-acts' },
+      applied || dismissed ? null : h('button', { type: 'button', class: 'btn primary', 'data-act': 'apply', disabled: !!S.applying, onclick: () => applyFromCard(ev) }, S.applying && previewing ? 'Applying…' : 'Apply'),
+      h('button', { type: 'button', class: 'btn', 'data-act': 'review', onclick: () => reviewProposal(ev) }, applied ? 'Review again' : 'Preview'),
+      applied || dismissed ? null : h('button', { type: 'button', class: 'btn', 'data-act': 'discard', disabled: !!S.applying, onclick: () => discardFromCard(ev) }, 'Discard')),
     sugs.length ? h('span', { class: 'msg-acts', role: 'group', 'aria-label': 'Suggestions' },
       sugs.map((s, i) => h('button', {
         type: 'button', class: `btn small outline${S.proposal?.id === s.id ? ' on' : ''}`, 'data-act': `suggest${i}`,
         title: changeCounts(s.diff, s.color), onclick: () => reviewProposal(s),
       }, s.summary))) : null);
+}
+
+/** One chip per change count (the words of changeCounts, the screen reader hears them as a list); a dashed chip for each automatic fact the diff carries. */
+function proposalChips(ev) {
+  const parts = changeParts(ev.diff, ev.color);
+  const spread = (ev.diff ?? []).filter((r) => r.auto === 'spread').length;
+  const filled = (ev.diff ?? []).filter((r) => r.auto && r.auto !== 'spread').length;
+  const kids = (parts.length ? parts : ['no change']).flatMap((x, i) => [i ? h('span', { class: 'vh', text: ', ' }) : null, h('span', { class: 'chip', text: x })]);
+  if (spread) kids.push(h('span', { class: 'vh', text: ', ' }), h('span', { class: 'chip auto', title: 'Moved or added by Cutpoint to spread the clip kinds you asked to mix', text: `${spread} auto-spread` }));
+  if (filled) kids.push(h('span', { class: 'vh', text: ', ' }), h('span', { class: 'chip auto', title: 'Added by Cutpoint to reach the length you asked for', text: `${filled} auto-filled` }));
+  return h('span', { class: 'chips' }, kids);
+}
+
+/** The sequence after the change as a thin strip: a block per clip, as wide as the clip is long, in its kind's colour. */
+function proposalStrip(ev) {
+  const segs = (ev.after ?? []).filter((x) => x.end > x.start);
+  if (!segs.length) return null;
+  const total = segs.reduce((n, x) => n + x.end - x.start, 0);
+  return h('span', { class: 'prop-strip', role: 'img', 'aria-label': `The sequence after the change: ${plural(segs.length, 'clip')}, ${fmtLen(total)}` },
+    segs.map((x) => h('span', { class: 'prop-block', 'data-kind': kindOf(cands().find((c) => c.id === x.id)), style: `flex-grow: ${x.end - x.start}` })));
 }
 
 /** view_moment without frame consent: allow video frames of this project to go to the host (and ask again). */
@@ -4343,6 +4482,8 @@ function renderChat() {
   $('#chatProvider').textContent = !c ? ''
     : prov ? prov.label // "Anthropic · claude-sonnet-5-5 · api.anthropic.com"
       : c.error ? `Unavailable: ${c.error}` : 'Connecting…';
+  $('#chatDot').dataset.state = !c ? '' : prov ? (c.consent?.missing_key ? 'bad' : c.consent?.needed ? 'wait' : 'ok') : c.error ? 'bad' : 'wait';
+  $('#chatProvider').title = $('#chatProvider').textContent;
   const note = $('#chatNote');
   note.hidden = !prov?.local;
   note.textContent = prov?.local ? SMALL_MODEL_NOTE : '';
@@ -4363,11 +4504,12 @@ function renderChat() {
   const col = log.closest('.col');
   const atEnd = !col || col.scrollHeight - col.scrollTop - col.clientHeight < 24;
   const count = log.children.length;
+  const height = log.scrollHeight;
   preserveFocus(() => log.replaceChildren(...(items.length ? items : [h('li', { class: 'msg step' },
     !S.project ? 'Open a project to chat about its moments.'
       : !S.project.highlights ? 'Analyze the footage first; the assistant works with its moments.'
-        : 'Ask for moments to find, add, remove, reorder or trim. Each change is previewed in the Sequence tab before you apply it.')])));
-  if (items.length && items.length !== count && atEnd && !$('#panelAssistant').hidden) revealRow(log.lastElementChild);
+        : 'Ask for moments to find, add, remove, reorder or trim. Each change is proposed first: apply it from its card, or preview it in the Sequence tab.')])));
+  if (items.length && (items.length !== count || log.scrollHeight !== height) && atEnd && !$('#panelAssistant').hidden) revealRow(log.lastElementChild);
   const shown = S.history.slice(-MAX_HISTORY_SHOWN).reverse();
   $('#chatHistory').hidden = !shown.length;
   $('#chatHistory summary').textContent = `Applied changes (${S.history.length})`;

@@ -258,10 +258,8 @@
       <!-- AI Chat (#346): the assistant only proposes; a proposal is previewed in the Sequence tab -->
       <div id="panelAssistant" class="side-panel chat" role="tabpanel" aria-labelledby="tabAssistant" hidden>
         <div class="chat-head">
-          <div class="chat-who">
-            <h2 id="chatTitle" tabindex="-1">AI Assistant</h2>
-            <p id="chatProvider" class="muted"></p>
-          </div>
+          <h2 id="chatTitle" class="vh" tabindex="-1">AI Assistant</h2>
+          <p class="chat-who"><span id="chatDot" class="chat-dot" aria-hidden="true"></span><span id="chatProvider"></span></p>
           <button type="button" id="chatClear" class="btn small" aria-haspopup="dialog" disabled>Clear chat</button>
         </div>
         <p id="chatNote" class="hint" hidden></p>
@@ -279,9 +277,11 @@
         </details>
         <form id="chatForm" class="chat-form" novalidate>
           <label for="chatInput" class="vh">Message to the AI assistant</label>
-          <textarea id="chatInput" rows="2" maxlength="2000" autocomplete="off" aria-describedby="dChatInput" placeholder="Ask AI to find moments, edit, or generate sequences…" disabled></textarea>
-          <span id="dChatInput" class="vh">Enter sends, Shift+Enter starts a new line. Changes are only proposed: you preview them in the Sequence tab and apply them or not.</span>
-          <button type="submit" id="chatSend" class="btn primary" disabled>Send</button>
+          <span id="dChatInput" class="vh">Enter sends, Shift+Enter starts a new line. Changes are only proposed: apply one from its card, or preview it in the Sequence tab.</span>
+          <div class="chat-box">
+            <textarea id="chatInput" rows="2" maxlength="2000" autocomplete="off" aria-describedby="dChatInput" placeholder="Ask AI to find moments, edit, or generate sequences…" disabled></textarea>
+            <button type="submit" id="chatSend" class="btn primary" aria-label="Send" disabled><svg class="chat-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+          </div>
         </form>
       </div>
 
