@@ -528,16 +528,18 @@ can be a little early; zoomed in to under 1 s per still, exact stills instead. T
 few at a time once the view stops moving, nearest the playhead first, and are cached with the
 thumbnails; a still that fails leaves the rail's ticks showing, and after 3 failures a source
 gets no filmstrip until the page reloads. With the browser's data saver on
-(`prefers-reduced-data` or Save-Data), the rail keeps its ticks only. "Zoom out", "Zoom in" and
-"Fit clip" change the view, the overview strip next to them shows the view in the whole source
+(`prefers-reduced-data` or Save-Data), the rail keeps its ticks only. The zoom levels "10 s", "30 s" and "2 min" set the width of the view around the playhead
+(the pressed one shows the current width; a level longer than the source is off), and "Zoom out", "Zoom in" and
+"Fit clip" change it too. A time ruler runs under the rail, and the other moments of the same
+source that start in the view are marked below it with their names, coloured by kind. The overview strip next to them shows the view in the whole source
 and pans it (drag or arrow keys), and the wheel over the rail pans it (Ctrl+wheel zooms). The
 rail follows the playhead during playback. On the rail, the arrow keys move the playhead by 0.5%
-of the view (at least 0.05 s), and PageUp and PageDown by a tenth of the view. "Use playhead" (`[` and `]`) sets Clip Start or Clip End anywhere in the source, and the
+of the view (at least 0.05 s), and PageUp and PageDown by a tenth of the view. "Use playhead" (`[` and `]`, or `I` and `O` for in and out) sets Clip Start or Clip End anywhere in the source, and the
 rail widens to show it. The gold start and end edges on the rail are handles: drag them (a drag held at
 the rail's edge pans a zoomed view), or Tab to one and move it with the arrow keys (0.1 s;
 Shift+arrow 1 s), PageUp and PageDown (5 s), Home and End (as far as it can go). A handle keeps
 the clip at least 0.1 s long and inside the source, and the preview seeks to it. Space still
-plays and pauses while a handle has focus. The handles edit the raw range. When the export cuts a clip
+plays and pauses while a handle has focus. Outside the clip the rail is dimmed, and each handle is a slider that reads its time aloud. The handles edit the raw range. When the export cuts a clip
 elsewhere (an event tail, a smart tail, a speech-aware move or Extend), the rail and the overview show
 the difference as a shaded, dashed strip beyond the markers, and the note under the trim fields reads,
 for example, "Clip length 6.00 s · exports as 16.22 s (event tail)". Clips longer than 10 minutes get a
@@ -548,6 +550,13 @@ hard cuts. The clock shows the clip number and the time in the sequence, the pla
 marked, and trims made meanwhile apply at once. Clicking a row jumps to that clip, Space pauses
 and resumes, and Escape or "Stop" ends it; removing the playing clip also stops it. A clip whose
 proxy is still being built is waited for, and one whose preview cannot be built is skipped.
+The "Clip" and "Sequence" buttons above the video switch what the stage plays: Clip is the
+selected clip with its trim, Sequence is "Play sequence" (the same, so Escape and Stop end it,
+and the switch follows the playing state). Under the trim controls, the Storyboard shows the
+sequence as one block per clip, as wide as the clip's exported length and coloured by kind. Click a
+block to open that clip for trimming, drag it onto another or press Alt+Left or Alt+Right to
+reorder (undoable, like the Sequence list), and double-click it or press Shift+Enter to play the
+sequence from that clip. Arrow keys move between the blocks. It does not replace the trim controls.
 Original footage and export quality are unchanged. The server binds only to `127.0.0.1`;
 remote access is not supported.
 

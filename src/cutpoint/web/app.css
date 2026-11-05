@@ -45,6 +45,7 @@
   --film-opacity: 0.55; /* the rail's filmstrip, under the selection, handles and playhead */
   --hatch: rgba(154, 156, 163, 0.16); /* rail gaps and thumbnail shimmer */
   --gap-shade: rgba(0, 0, 0, 0.45);
+  --rail-shade: rgba(8, 9, 10, 0.55); /* dims the rail outside the trim */
   --glow-shadow: rgba(242, 179, 71, 0.3);
   --danger-tint: rgba(224, 62, 62, 0.16);
   --danger-tint-line: rgba(224, 62, 62, 0.5);
@@ -132,6 +133,7 @@
   --film-opacity: 0.55; /* the rail's filmstrip, under the selection, handles and playhead */
   --hatch: rgba(179, 194, 210, 0.16); /* rail gaps and thumbnail shimmer */
   --gap-shade: rgba(10, 18, 28, 0.45);
+  --rail-shade: rgba(6, 12, 20, 0.55);
   --glow-shadow: rgba(255, 174, 25, 0.35);
   --danger-tint: rgba(224, 62, 62, 0.16);
   --danger-tint-line: rgba(224, 62, 62, 0.5);
@@ -187,6 +189,7 @@
   --film-gap-shade: rgba(23, 33, 46, 0.32); /* the rail's gaps while stills show */
   --hatch: rgba(71, 86, 105, 0.2);
   --gap-shade: rgba(23, 33, 46, 0.12);
+  --rail-shade: rgba(23, 33, 46, 0.5); /* dims the rail outside the trim */
   --glow-shadow: rgba(156, 79, 0, 0.3);
   --danger-tint: rgba(192, 40, 45, 0.1);
   --danger-tint-line: rgba(192, 40, 45, 0.45);
@@ -574,13 +577,14 @@ body.tips-off .flag-tip { display: none; }
 
 /* the cut rail: the moment in its surrounding footage, on a filmstrip of keyframe stills over the ticks (#261) */
 .rail {
-  position: relative; height: 46px; background: var(--deep); border: 1px solid var(--line);
+  position: relative; height: 64px; background: var(--deep); border: 1px solid var(--line);
   border-radius: var(--radius-sm); width: 100%;
   background-image: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), var(--tick) calc(10% - 1px) 10%);
 }
 .rail-sel {
   position: absolute; top: 0; bottom: 0; background: var(--gold-fill);
   border: 1px solid var(--gold); border-left: 3px solid var(--gold-edge);
+  box-shadow: 0 0 0 100vmax var(--rail-shade); /* dims the rest of the view; .rail-marks clips it */
 }
 /* the markers can reach past the view: clipped here, not on .rail, so the #seek focus outline shows */
 .rail-marks { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; pointer-events: none; }
@@ -608,8 +612,8 @@ body.tips-off .flag-tip { display: none; }
 }
 .rail input[type=range]::-webkit-slider-runnable-track { background: transparent; height: 100%; }
 .rail input[type=range]::-moz-range-track { background: transparent; height: 100%; }
-.rail input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 4px; height: 44px; background: var(--text); border: 0; border-radius: 1px; box-shadow: 0 0 0 1px var(--deep); }
-.rail input[type=range]::-moz-range-thumb { width: 4px; height: 44px; background: var(--text); border: 0; border-radius: 1px; box-shadow: 0 0 0 1px var(--deep); }
+.rail input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 4px; height: 62px; background: var(--text); border: 0; border-radius: 1px; box-shadow: 0 0 0 1px var(--deep); }
+.rail input[type=range]::-moz-range-thumb { width: 4px; height: 62px; background: var(--text); border: 0; border-radius: 1px; box-shadow: 0 0 0 1px var(--deep); }
 .rail input.off-view::-webkit-slider-thumb { opacity: 0; }
 .rail input.off-view::-moz-range-thumb { opacity: 0; }
 /* the trim handles (#352): a 24 px hit area (WCAG 2.5.8) mostly outside the clip, start to the left
@@ -621,7 +625,7 @@ body.tips-off .flag-tip { display: none; }
 }
 .rail-handle.end { margin-left: -10px; }
 .rail-handle::before {
-  content: ""; position: absolute; top: 50%; left: 11px; width: 6px; height: 22px; margin-top: -11px;
+  content: ""; position: absolute; top: 50%; left: 11px; width: 6px; height: 36px; margin-top: -18px;
   background: var(--gold-edge); border-radius: var(--radius-xs); box-shadow: 0 0 0 1px var(--deep);
 }
 .rail-handle.end::before { left: 7px; }
@@ -634,16 +638,31 @@ body.tips-off .flag-tip { display: none; }
 .rail-ghost.cut-l { border-left-color: transparent; }
 .rail-ghost.cut-r { border-right-color: transparent; }
 .rail-ghost::before, .rail-ghost::after {
-  content: ""; position: absolute; top: 50%; width: 6px; height: 22px; margin-top: -11px;
+  content: ""; position: absolute; top: 50%; width: 6px; height: 36px; margin-top: -18px;
   border: 1px dashed var(--amber-text); border-radius: var(--radius-xs); background: var(--deep);
 }
 .rail-ghost::before { left: -4px; }
 .rail-ghost::after { right: -4px; }
 .rail-ghost.cut-l::before, .rail-ghost.cut-r::after { display: none; }
+/* the time ruler and the other moments under the rail */
+.rail-ruler { position: relative; height: 16px; margin-top: var(--space-1); overflow: hidden; color: var(--muted); font-size: 11.5px; }
+.rail-tick { position: absolute; top: 0; padding-left: var(--space-1); border-left: 1px solid var(--muted); white-space: nowrap; line-height: 16px; }
+.rail-events { position: relative; height: 16px; overflow: hidden; font-size: 11.5px; color: var(--text); }
+.rail-events:empty { display: none; }
+.rail-event {
+  --k: var(--muted); position: absolute; top: 0; max-width: 11em; padding-left: var(--space-1); border-left: 2px solid var(--k);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 16px;
+}
+.rail-event[data-kind="action"] { --k: var(--k-action); }
+.rail-event[data-kind="scenic"] { --k: var(--k-scenic); }
+.rail-event[data-kind="funny"] { --k: var(--k-funny); }
+.rail-event[data-kind="dialogue"] { --k: var(--k-dialogue); }
 .rail-ends { display: flex; justify-content: space-between; gap: var(--space-2); color: var(--muted); font-size: 12.5px; margin-top: var(--space-1); }
 /* zoom buttons and the overview strip: the whole source, the rail's view as a box, the clip in gold */
 .rail-nav { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin-top: var(--space-1); }
 .rail-zoom { display: flex; gap: var(--space-1); }
+.rail-presets, .stage-mode { flex: none; flex-wrap: nowrap; }
+.rail-presets .seg-btn:disabled, .stage-mode .seg-btn:disabled { opacity: 0.5; cursor: default; color: var(--muted); filter: none; }
 .overview { position: relative; flex: 1 1 12em; height: var(--control-h-sm); background: var(--deep); border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .overview.off { opacity: 0.5; }
 .overview .rail-marks { border-radius: var(--radius-xs); } /* clips the view box's min-width at the strip's ends */
@@ -707,6 +726,29 @@ body.tips-off .flag-tip { display: none; }
   #endField { grid-column: 1; }
   .vol input[type=range] { width: 4.5em; }
 }
+
+/* the storyboard: the sequence as blocks, width by exported length, colour by kind */
+.storyboard { margin-top: var(--space-2); display: grid; gap: var(--space-1); }
+.sb-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-1) var(--space-3); }
+.sb-head h3 { font-size: 14.5px; }
+.sb-hint { font-size: 12px; flex: 1 1 18em; text-align: right; }
+.sb-list { display: flex; gap: 4px; height: 52px; padding: 4px; min-width: 0; overflow-x: auto; } /* a very long sequence scrolls here, not the page */
+.sb-cell { flex: 1 1 0; min-width: 3px; display: flex; }
+.sb-cell.dragging { opacity: 0.5; }
+.sb-cell.drop { box-shadow: -3px 0 0 var(--amber-text); }
+.sb-block {
+  --k: var(--muted); --kt: var(--scrim); flex: 1 1 auto; min-width: 0; padding: 0 var(--space-1); display: flex; align-items: center;
+  border: 0; border-top: 3px solid var(--k); border-radius: var(--radius-xs); background: var(--kt); color: var(--scrim-ink);
+  font: inherit; font-size: 11.5px; cursor: pointer; overflow: hidden;
+}
+.sb-block[data-kind="action"] { --k: var(--k-action); --kt: var(--k-action-tint); }
+.sb-block[data-kind="scenic"] { --k: var(--k-scenic); --kt: var(--k-scenic-tint); }
+.sb-block[data-kind="funny"] { --k: var(--k-funny); --kt: var(--k-funny-tint); }
+.sb-block[data-kind="dialogue"] { --k: var(--k-dialogue); --kt: var(--k-dialogue-tint); }
+.sb-block:hover { filter: brightness(1.25); }
+.sb-block[aria-current="true"] { box-shadow: inset 0 0 0 2px var(--amber); }
+.sb-block.playing .sb-n { font-weight: 700; text-decoration: underline; }
+.sb-block:focus-visible { outline-offset: 1px; }
 
 /* sequence: one compact card per clip */
 .seq-batch {
