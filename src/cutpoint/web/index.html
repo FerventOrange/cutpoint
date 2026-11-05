@@ -35,14 +35,12 @@
   <main id="workspace">
     <section class="col moments" id="moments" aria-labelledby="momentsTitle">
       <div class="col-head">
-        <h2 id="momentsTitle" tabindex="-1">Moments</h2>
-        <span id="momentsCount" class="muted"></span>
-        <span class="spacer"></span>
+        <div class="mom-title">
+          <h2 id="momentsTitle" tabindex="-1">Moments</h2>
+          <span id="momentsCount" class="muted"></span>
+        </div>
         <div class="moments-acts">
           <button type="button" id="resumeBtn" class="btn primary" aria-haspopup="dialog" hidden>Resume analysis</button>
-          <button type="button" id="analyzeBtn" class="btn" aria-haspopup="dialog" hidden>Analyze again</button>
-          <button type="button" id="revealHeadBtn" class="btn outline" hidden>Show folder</button>
-          <p id="analyzeStats" class="muted" hidden></p>
         </div>
       </div>
       <div id="analyzeSteps" class="steps" hidden></div>

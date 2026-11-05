@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Moments head of `cutpoint ui` reads "Moments" with the number of moments beside it. "Analyze
+  again" and "Show folder" moved into the project menu (the project's name in the header), where a
+  line also gives the count, the style and "Analyzed X of video in Y". "Resume analysis", and
+  "Analyze footage" for a project not analyzed yet, stay where they were.
 - The center stage of `cutpoint ui` is simpler. The Clip Start and Clip End fields, the -0.5 and
   +0.5 and "Use playhead" buttons, the Transcript box and the Zoom out, Zoom in and Fit clip
   buttons are gone. Trim with the filmstrip handles or the `I` and `O` keys (`[` and `]` too); one

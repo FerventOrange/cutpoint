@@ -309,8 +309,10 @@ take the files answers 409 with `"code": "no_trash"`.
 
 Before a project is analyzed, the Moments column offers "Analyze footage" and "Show folder", which
 opens the folder with the project's videos in the system file manager (hidden where that is not
-possible, such as Docker). After analysis, "Show folder" stays available next to "Analyze again"
-in the column header. "Analyze again" asks for confirmation first. The Export panel has one "Show Exports
+possible, such as Docker). After analysis, "Analyze again" and "Show folder" are in the project
+menu (the project's name in the header), above a line with the moment count, the style and how
+long the analysis took; the Moments head shows "Moments" and the total count. "Analyze again"
+waits while another job runs and asks for confirmation first. The Export panel has one "Show Exports
 Folder" button: it opens the latest export's `clips_ui_*` folder, or the project folder (final
 videos and `.srt`, and a `.fcpxml` or `.otio` timeline only when assembled with `--format
 fcpxml|otio`, the Output format) once that export is assembled. A timeline assembled without a

@@ -11,7 +11,7 @@ test('app.js boots against a mocked project and renders its moments', async (t) 
   assert.equal(cards.length, 3);
   assert.deepEqual(cards.map((c) => c.dataset.id), ['h001', 'h002', 'h003']);
   assert.match(cards[0].textContent, /Big laugh/);
-  assert.match(page.document.querySelector('#momentsCount').textContent, /3 found, funny style/);
+  assert.equal(page.document.querySelector('#momentsCount').textContent, '3');
   assert.equal(page.document.querySelector('#projectName').textContent, 'Project One');
   page.assertNoUnhandled();
 });
