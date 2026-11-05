@@ -224,6 +224,9 @@ the action-cam commands or the other `360` commands; for standard footage, Highl
 `action-cam` style, which the dialog preselects when an input has GoPro or Insta360 telemetry (a
 stream-list probe of the first 12 files `analyze` would find) unless you chose another style.
 
+The header reads "cutpoint / <project name>": the name opens the project menu, which lists the projects
+(the open one marked) and ends, after a divider, with "New project…". The browser tab shows the same title.
+
 New Project's Source field takes the full paths of one or more videos and folders, one per line,
 that you type or paste; it always accepts them. A leading `~` is the home folder of the computer
 running `cutpoint ui` (`~/Videos`), here and in the Settings projects folder. They are the project's `analyze` inputs, as on the
@@ -333,9 +336,12 @@ more out of 10 (crash, speed, airtime, wipeout or carve: Action; beauty or sceni
 Funny; the page does not have the cues of the events VLM windows), then a transcript of four words
 or more (Dialogue), else Action. Each tile shows the moment's still (the one its
 sequence row uses; the server cuts it once, the first time the tile scrolls into view, and caches
-it) with a kind dot, a length badge and Add or Remove over its corner; under
-it the rank and title, "kind · score", the candidate id, the times, the file name when the project has several sources, a strip of the moment's place in its source, the
-transcript, and the preview readiness (Ready, Encoding, Queued).
+it) with a kind dot, the length and an Add button over its corner (a dark + on amber; a white − on
+red once the moment is in the sequence); under it the rank and title, "kind · score" followed by
+the preview readiness as an icon (a spinner while encoding, a check when ready, a clock when
+queued; hover it for the word), the candidate id, the times, the file name when the project has
+several sources, and a strip of the moment's place in its source. The tile has no transcript text:
+hover it for the full title and the transcript, which the search still finds.
 A moment with only a generic label (`action-moment`, `loud-moment`) is titled with what the
 vision model saw: its vision rating label, else the label of its `events` VLM window (the search
 finds both). `highlights.json`, the label a moment takes into the sequence and clip file names

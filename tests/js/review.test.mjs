@@ -62,7 +62,7 @@ test('Add puts a moment last in the sequence, Remove takes it out and Add back r
   assert.deepEqual(m.seqIds(), ['h001', 'h003']);
   await m.add('h002');
   assert.deepEqual(m.seqIds(), ['h001', 'h003', 'h002']);
-  assert.match(m.card('h002').querySelector('[data-act=toggle]').textContent, /Remove/);
+  assert.match(m.card('h002').querySelector('[data-act=toggle]').getAttribute('aria-label'), /^Remove /);
 
   await m.click(m.card('h001').querySelector('[data-act=toggle]')); // Remove the first
   assert.deepEqual(m.seqIds(), ['h003', 'h002']);

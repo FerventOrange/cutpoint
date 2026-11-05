@@ -185,7 +185,7 @@ the stopped run. It first shows a dialog with what `cutpoint resume --dry-run` r
 status, the steps done so far, any warnings and the command it will replay (check it before
 confirming: a recorded `--force` is replayed too). Confirm to replay the run with the same options,
 keeping the work it finished. A project with only a `progress.json` (a first command-line
-analysis that stopped) is listed as "(interrupted)" in the project list. While another run holds
+analysis that stopped) is listed as "(interrupted)" in the project menu. While another run holds
 the project, the page says "Analysis is running on this project; wait for it to finish" and
 checks again every 5 seconds. Export always writes a fresh clips folder; **Resume export** is
 how a cancelled export continues, and the page then shows "N clips taken over from the stopped
