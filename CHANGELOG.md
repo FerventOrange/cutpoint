@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Kill feeds without a preset are read from text rows too. The kill verb is learned from repeated
+  `name verb name` rows in the footage (it needs enough repeated rows from different names, so a
+  short clip may learn nothing, and a non-kill word that repeats between many names can still be learned; a preset's `kill_words` turns learning off), and a clock-stamped
+  log's wrapped rows are joined. Player tags tolerate OCR variants (spaces, punctuation,
+  look-alike letters, a clan tag read with the name). Partial step for any-game feed reading.
 - Cut mode in the center stage of `cutpoint ui`, beside Clip and Sequence, for a sequence of at
   least two clips: the last frame of a clip and the first frame of the next side by side, "Play
   across the cut" (3 s each side, always a hard cut), "Roll the cut" (drag or keys: the first clip's
@@ -493,6 +498,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The default kill words are generic only: game-specific words were removed, and a preset's
+  `kill_words` can list them. Cached OCR interpretation is redone once.
 - The Moments head of `cutpoint ui` reads "Moments" with the number of moments beside it. "Analyze
   again" and "Show folder" moved into the project menu (the project's name in the header), where a
   line also gives the count, the style and "Analyzed X of video in Y". "Resume analysis", and
