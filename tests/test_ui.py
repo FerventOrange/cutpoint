@@ -1553,8 +1553,8 @@ def test_the_trim_markers_are_keyboard_and_pointer_slider_handles() -> None:
     assert handle and "width: 24px;" in handle[1] and "top: 0; bottom: 0;" in handle[1]
     assert "touch-action: none;" in handle[1]
     assert re.search(r"^\.rail-handle:focus-visible \{[^}]*outline: 2px solid", css, re.M)
-    # the rail is 46 px tall: the handle's hit area is at least 24 x 24
-    assert re.search(r"^\.rail \{[^}]*height: 46px;", css, re.M)
+    # the rail is 64 px tall: the handle's hit area is at least 24 x 24
+    assert re.search(r"^\.rail \{[^}]*height: 64px;", css, re.M)
 
 
 def test_the_page_files_are_revalidated_on_each_load(client: TestClient) -> None:
@@ -2779,7 +2779,7 @@ def test_rail_filmstrip_is_a_decorative_layer_under_the_markers() -> None:
     )
     assert gaps  # Light shades the rail's gaps darker while stills show
     assert "prefers-reduced-data: reduce" in js and "navigator.connection?.saveData" in js
-    assert "new ResizeObserver(() => drawFilm()).observe($('#rail'))" in js
+    assert "new ResizeObserver(() => {\n  drawFilm();" in js and "}).observe($('#rail'))" in js
     pump = re.search(r"^function pumpThumbs\(\) \{(.*?)^\}", js, re.M | re.S)
     assert pump and pump[1].index("filmQueue.shift()") < pump[1].index("thumbQueue.shift()")
     assert "next.gen !== filmGen" in pump[1]
@@ -8043,7 +8043,7 @@ def test_one_undo_stack_holds_manual_and_ai_edits_with_ctrl_z() -> None:
         assert "remember();" in _js_function(js, name), name
     assert "remember(`trim:${c.id}:${which}`)" in _js_function(js, "setRange")
     assert "remember(null, !!entry.color);" in _js_function(js, "applyProposal")
-    keys = js[js.index("// Ctrl+Z / Ctrl+Y") : js.index("if (e.key === '[' || e.key === ']')")]
+    keys = js[js.index("// Ctrl+Z / Ctrl+Y") : js.index("if (e.key === '[' || e.key === ']' ||")]
     assert "(k === 'z' || k === 'y')" in keys and "textarea" in keys
     assert "if (k === 'y' || e.shiftKey) redo();" in keys and "else undo();" in keys
     for bid, shortcut in (("undoBtn", "Control+Z"), ("redoBtn", "Control+Y Control+Shift+Z")):
@@ -9432,3 +9432,25 @@ def test_a_failed_job_still_ends_with_on_end_and_a_failing_on_end_changes_nothin
     job = jobs.start("proj", "clips", [sys.executable, "-c", "raise SystemExit(3)"], on_end=boom)
     assert job.done.wait(30)
     assert job.status == "failed" and job.error == "exit code 3"
+
+
+def test_the_center_stage_has_a_mode_switch_a_storyboard_and_zoom_levels() -> None:
+    """Contract pin (overhaul PR 2): the stage mode is a group of aria-pressed buttons (Clip and
+    Sequence; the Cut mode is a later change), the zoom levels are aria-pressed buttons, and the
+    storyboard sits after the trim message so it never replaces the trim controls; its blocks
+    reorder through moveSeg and play through seqStart. I and O are trim keys."""
+    html = _web("index.html")
+    js = _web("app.js")
+    mode = re.search(r'<div id="stageMode"[^>]*role="group"[^>]*>(.*?)</div>', html, re.S)[1]
+    assert re.findall(r'data-mode="(\w+)" aria-pressed="(\w+)"', mode) == [
+        ("clip", "true"),
+        ("sequence", "false"),
+    ]
+    levels = re.search(r'<div id="zoomPresets"[^>]*>(.*?)</div>', html, re.S)[1]
+    assert re.findall(r'data-span="(\d+)" aria-pressed="false"', levels) == ["10", "30", "120"]
+    assert html.index('id="trimMsg"') < html.index('id="storyboard"') < html.index('id="side"')
+    assert 'id="startField"' in html and 'id="endField"' in html
+    block = _js_function(js, "sbBlock")
+    assert "moveSeg(s.id, to)" in block and "moveSeg(dragId, i)" in block
+    assert "seqStart(s.id)" in block
+    assert "k === 'i' || k === 'o'" in js

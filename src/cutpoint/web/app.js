@@ -830,10 +830,14 @@ function focusMoment(id) {
 /** ``keepVideo``: the player is already at the moment (a sequence step), so it is not sought. */
 function showMoment(id, keepVideo = false) {
   S.focus = id;
-  for (const li of [...$('#candList').children, ...$('#seqList').children, ...$('#removedList').children]) {
+  for (const li of [...$('#candList').children, ...$('#seqList').children, ...$('#removedList').children, ...sbBlocks()]) {
     if (li.dataset.id === id) li.setAttribute('aria-current', 'true');
     else li.removeAttribute('aria-current');
   }
+  // the storyboard's tab stop follows the selection; a moment outside the sequence leaves it on the first block
+  const blocks = sbBlocks();
+  const stop = blocks.find((b) => b.dataset.id === id) ?? blocks[0];
+  for (const b of blocks) b.tabIndex = b === stop ? 0 : -1;
   renderStage(true, keepVideo);
 }
 
@@ -852,14 +856,15 @@ function trimField(which, label) {
     if (c && setRange(which, c[which] + d)) seekTo(trimSeek(which));
   };
   const key = which === 'start' ? '[' : ']';
+  const alt = which === 'start' ? 'I' : 'O';
   $(`#${which}Field`).append(
     h('label', { for: input.id, text: label }),
     input,
     h('div', { class: 'stepper' },
       h('button', { type: 'button', class: 'btn small', 'aria-label': `-0.5 s, ${label} earlier by half a second`, onclick: nudge(-0.5), text: '-0.5 s' }),
       h('button', {
-        type: 'button', class: 'btn small accent', 'aria-label': `Use playhead as ${label}`, title: `Use playhead as ${label} "${key}"`,
-        'aria-keyshortcuts': key, onclick: () => setRange(which, playhead()), text: 'Use playhead',
+        type: 'button', class: 'btn small accent', 'aria-label': `Use playhead as ${label}`, title: `Use playhead as ${label} "${key}" or "${alt}"`,
+        'aria-keyshortcuts': `${key} ${alt}`, onclick: () => setRange(which, playhead()), text: 'Use playhead',
       }),
       h('button', { type: 'button', class: 'btn small', 'aria-label': `+0.5 s, ${label} later by half a second`, onclick: nudge(0.5), text: '+0.5 s' })),
   );
@@ -1172,6 +1177,15 @@ function drawRail(c = current()) {
   sel.classList.toggle('cut-r', c.end > hi);
   drawHandles(c, lo, hi);
   drawGhost(c);
+  drawRuler(lo, hi);
+  drawEvents(c, lo, hi);
+  const hadPreset = document.activeElement; // read first: disabling a focused button drops its focus
+  for (const b of $('#zoomPresets').children) {
+    const want = Number(b.dataset.span);
+    b.disabled = !!dur && want > dur + 1e-6; // a source shorter than the level cannot show it
+    b.setAttribute('aria-pressed', String(!b.disabled && Math.abs(span - want) < 0.05));
+    if (b.disabled && hadPreset === b) $('#zoomFit').focus();
+  }
   const zIn = $('#zoomIn');
   const zOut = $('#zoomOut');
   const had = document.activeElement; // read first: disabling a focused button drops its focus
@@ -1181,6 +1195,52 @@ function drawRail(c = current()) {
   if (zIn.disabled && had === zIn) zOut.focus();
   if (zOut.disabled && had === zOut) zIn.focus();
   updatePlayhead();
+}
+
+const RULER_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+const RULER_GAP = 64; // pixels: the least room between two ruler labels
+const EVENT_GAP = 80; // pixels: the least room between two moment labels under the rail
+const EVENTS_MAX = 8;
+
+/** Time ruler under the rail: a tick and a label at multiples of a round step that leaves RULER_GAP pixels. */
+function drawRuler(lo, hi) {
+  const el = $('#railRuler');
+  const span = hi - lo;
+  const width = $('#rail').clientWidth || 600;
+  const step = RULER_STEPS.find((x) => (x / span) * width >= RULER_GAP) ?? RULER_STEPS.at(-1);
+  const sig = `${lo}|${hi}|${width}`;
+  if (el.dataset.sig === sig) return;
+  el.dataset.sig = sig;
+  const ticks = [];
+  for (let t = Math.ceil(lo / step) * step; t <= hi; t += step) {
+    const at = ((t - lo) / span) * 100;
+    if (at > 100 - (36 / width) * 100) continue; // a label near the right edge would be cut off
+    ticks.push(h('span', { class: 'rail-tick', style: `left: ${at.toFixed(2)}%`, text: hms(t).replace(/^0:/, '') }));
+  }
+  el.replaceChildren(...ticks);
+}
+
+/** Markers under the rail for the other moments of this source that start in the view (at most EVENTS_MAX, EVENT_GAP apart), coloured by kind. */
+function drawEvents(c, lo, hi) {
+  const el = $('#railEvents');
+  const span = hi - lo;
+  const width = $('#rail').clientWidth || 600;
+  const near = cands().filter((x) => x.id !== c.id && x.source === c.source && x.start >= lo && x.start <= hi)
+    .sort((a, b) => a.start - b.start);
+  let last = -Infinity;
+  const marks = [];
+  for (const x of near) {
+    const at = ((x.start - lo) / span) * 100;
+    if (marks.length >= EVENTS_MAX || ((at - last) / 100) * width < EVENT_GAP) continue;
+    last = at;
+    marks.push({ at: at.toFixed(2), name: shownName(x, x.label) || x.id, kind: kindOf(x), x });
+  }
+  const sig = marks.map((m) => `${m.at}${m.name}`).join('|');
+  if (el.dataset.sig === sig) return;
+  el.dataset.sig = sig;
+  el.replaceChildren(...marks.map((m) => h('span', {
+    class: 'rail-event', 'data-kind': m.kind, style: `left: ${m.at}%`, title: `${m.name}, ${fmt(m.x.start)} to ${fmt(m.x.end)}`, text: m.name,
+  })));
 }
 
 const handles = { start: $('#startHandle'), end: $('#endHandle') };
@@ -1364,7 +1424,14 @@ function loadFilm() {
   for (const [, img] of waiting) filmQueue.push({ img, gen: filmGen });
   pumpThumbs();
 }
-new ResizeObserver(() => drawFilm()).observe($('#rail')); // a wider rail holds more stills
+new ResizeObserver(() => {
+  drawFilm();
+  if (S.view) { // the ruler and the moment labels depend on the width too
+    drawRuler(S.view.lo, S.view.hi);
+    const c = current();
+    if (c) drawEvents(c, S.view.lo, S.view.hi);
+  }
+}).observe($('#rail')); // a wider rail holds more stills
 
 /** The [from, to] parts of ``src`` up to ``end`` no ready file plays yet: none unless its proxy builds. */
 function sourceGaps(src, end) {
@@ -1971,6 +2038,10 @@ seek.addEventListener('keydown', (e) => {
 });
 $('#zoomOut').addEventListener('click', () => zoomBy(2));
 $('#zoomIn').addEventListener('click', () => zoomBy(0.5));
+$('#zoomPresets').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-span]');
+  if (b && S.view) zoomBy(Number(b.dataset.span) / (S.view.hi - S.view.lo));
+});
 $('#zoomFit').addEventListener('click', () => {
   const c = current();
   const f = c && fitView(c);
@@ -2741,8 +2812,86 @@ function renderSequence() {
   renderBatch();
   renderRemoved();
   renderSeqPlay();
+  renderStoryboard();
   renderProposal();
   askEdges();
+}
+
+// ---------- storyboard ----------
+
+/**
+ * The sequence as one block per clip under the trim controls: width in proportion to the exported
+ * length, colour by kind. Click selects the clip for trimming, drag (or Alt+Left/Right) reorders
+ * through moveSeg, double-click (or Shift+Enter) plays the sequence from that clip. Arrow keys
+ * move between the blocks (one tab stop).
+ */
+function renderStoryboard() {
+  const segs = S.segments;
+  $('#storyboard').hidden = !segs.length;
+  const total = segs.reduce((n, s) => n + exportedLen(s), 0);
+  $('#sbTotal').textContent = segs.length ? `${segs.length} clip${segs.length > 1 ? 's' : ''}, ${fmtLen(total)}` : '';
+  const stop = segs.some((s) => s.id === S.focus) ? S.focus : segs[0]?.id; // the block that holds the tab stop
+  const had = $('#sbList').contains(document.activeElement) ? document.activeElement.dataset.id : null;
+  $('#sbList').replaceChildren(...segs.map((s, i) => sbBlock(s, i, segs.length, stop)));
+  if (had) $(`#sbList .sb-block[data-id="${CSS.escape(had)}"]`)?.focus();
+  markPlaying();
+}
+
+/** The storyboard's buttons, in order. */
+const sbBlocks = () => [...$('#sbList').querySelectorAll('.sb-block')];
+
+function sbBlock(s, i, n, stop) {
+  const cand = cands().find((c) => c.id === s.id);
+  const name = shownName(cand, s.label) || s.id;
+  const len = exportedLen(s);
+  const kind = kindOf(cand);
+  const cells = () => [...$('#sbList').children];
+  const b = h('button', {
+    type: 'button', class: `sb-block${seqNow() === s.id ? ' playing' : ''}`, 'data-id': s.id, 'data-kind': kind,
+    tabindex: s.id === stop ? 0 : -1, title: `${i + 1}. ${name}, ${len.toFixed(1)} s`, 'aria-current': s.id === S.focus ? 'true' : null,
+    'aria-label': `Clip ${i + 1} of ${n}: ${name}, ${len.toFixed(1)} s`,
+    onclick: () => focusMoment(s.id),
+    ondblclick: () => seqStart(s.id),
+    onkeydown: (e) => {
+      if (e.ctrlKey || e.metaKey) return;
+      if (e.key === 'Enter' && e.shiftKey) {
+        e.preventDefault();
+        return seqStart(s.id);
+      }
+      const step = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+      const to = step != null ? i + step : e.key === 'Home' ? 0 : e.key === 'End' ? n - 1 : null;
+      if (to == null || e.shiftKey) return;
+      e.preventDefault();
+      if (e.altKey) return moveSeg(s.id, to); // re-rendered: the block keeps focus (see renderStoryboard)
+      const next = sbBlocks()[Math.max(0, Math.min(n - 1, to))];
+      for (const el of sbBlocks()) el.tabIndex = el === next ? 0 : -1;
+      next.focus();
+    },
+  }, h('span', { class: 'sb-n tc', 'aria-hidden': 'true', text: String(i + 1) }));
+  // the cell is what drags (a draggable <button> does not drag in Firefox)
+  const cell = h('div', {
+    class: 'sb-cell', style: `flex-grow: ${Math.max(len, 0.1).toFixed(2)}`, draggable: true,
+    ondragstart: (e) => {
+      dragId = s.id;
+      cell.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', s.id);
+    },
+    ondragend: () => {
+      dragId = null;
+      for (const el of cells()) el.classList.remove('dragging', 'drop');
+    },
+    ondragover: (e) => {
+      if (!dragId) return;
+      e.preventDefault();
+      for (const el of cells()) el.classList.toggle('drop', el === cell && s.id !== dragId);
+    },
+    ondrop: (e) => {
+      e.preventDefault();
+      if (dragId) moveSeg(dragId, i);
+    },
+  }, b);
+  return cell;
 }
 
 // ---------- play sequence ----------
@@ -2762,6 +2911,12 @@ function renderSeqPlay() {
   if (S.seqPlay) b.setAttribute('aria-keyshortcuts', 'Escape');
   else b.removeAttribute('aria-keyshortcuts');
   b.title = S.seqPlay ? 'Stop (Escape)' : 'Play the clips in sequence order';
+  // the stage mode follows the playback: Sequence while it plays, else Clip
+  for (const m of $('#stageMode').children) {
+    const seq = m.dataset.mode === 'sequence';
+    m.setAttribute('aria-pressed', String(seq === !!S.seqPlay));
+    if (seq) m.disabled = !S.seqPlay && !S.segments.length;
+  }
 }
 
 /** Mark the playing row (class and icon) without rebuilding the list, and keep it in view. */
@@ -2775,6 +2930,7 @@ function markPlaying() {
     if (!on) icn?.remove();
     if (on) revealRow(li);
   }
+  for (const b of sbBlocks()) b.classList.toggle('playing', !!now && b.dataset.id === now);
 }
 
 /** Scroll ``li`` into view inside its column only: when the page scrolls as a whole (narrow windows), it stays put, so the video stays on screen. */
@@ -2805,7 +2961,8 @@ function seqClock(t) {
   return `Clip ${sp.i + 1} of ${sp.order.length} · ${fmtLen(done)} / ${fmtLen(total)}`;
 }
 
-function seqStart() {
+/** Play the sequence from its first clip, or from clip ``from`` (an id). */
+function seqStart(from) {
   if (!S.segments.length) return;
   for (const el of els) {
     if (!el.paused) continue;
@@ -2815,7 +2972,7 @@ function seqStart() {
   S.seqPlay = { order: S.segments.map((s) => s.id), i: -1, wait: false };
   banner('');
   renderSeqPlay();
-  seqGo(0);
+  seqGo(Math.max(0, S.seqPlay.order.indexOf(from)));
   if (S.seqPlay) seqPrepare(); // seqGo may have stopped it: nothing could be previewed
 }
 
@@ -5954,6 +6111,11 @@ function bind() {
     $('#seqLive').textContent = `${shownName(c.cand, c.seg ? c.label : null) || c.label} ${c.seg ? 'removed from' : 'added to'} the sequence`;
   });
   $('#seqPlayBtn').addEventListener('click', () => (S.seqPlay ? seqStop() : seqStart()));
+  $('#stageMode').addEventListener('click', (e) => {
+    const mode = e.target.closest('button[data-mode]')?.dataset.mode;
+    if (mode === 'sequence' && !S.seqPlay) seqStart();
+    else if (mode === 'clip' && S.seqPlay) seqStop('Playing the selected clip. Sequence stopped.');
+  });
   $('#undoBtn').addEventListener('click', undo);
   $('#redoBtn').addEventListener('click', redo);
   $('#seqRemoveSel').addEventListener('click', removeSelected);
@@ -6046,9 +6208,9 @@ function bind() {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     // text fields, the column splitters (their own arrow keys) and any dialog or popover keep their keys
     if (e.target.closest('input:not([type=range]),textarea,select,[role=separator],dialog,[popover]')) return;
-    if (e.key === '[' || e.key === ']') {
-      e.preventDefault();
-      setRange(e.key === '[' ? 'start' : 'end', playhead());
+    if (e.key === '[' || e.key === ']' || (!e.shiftKey && (k === 'i' || k === 'o'))) {
+      e.preventDefault(); // [ ] and I O: the trim point at the playhead
+      setRange(e.key === '[' || k === 'i' ? 'start' : 'end', playhead());
     } else if (e.key === ' ' && (!e.target.closest('button,a,summary') || e.target.closest('.vol'))) {
       e.preventDefault();
       togglePlay();
