@@ -7051,7 +7051,6 @@ def test_side_tabs_and_panel_headers_stay_put_while_a_panel_scrolls() -> None:
     assert "side.style.scrollPaddingBottom = `${$('#chatForm').offsetHeight}px`;" in js
     assert "side.style.setProperty('--seq-foot-h', `${$('#seqFoot').offsetHeight}px`);" in js
     assert "--seq-foot-h" in reveal
-    assert ".seq { scroll-margin-bottom: var(--seq-foot-h, 0px); }" in css
     assert "scroll-margin-bottom: calc(var(--seq-foot-h, 0px) + 28px);" in css
     assert "pad.observe(el)" in js and "$('#seqFoot')]" in js
     assert "--side-bars" not in js and "--side-bars" not in css

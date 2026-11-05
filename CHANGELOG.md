@@ -7,16 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- The center stage of `cutpoint ui` is simpler. The Clip Start and Clip End fields, the -0.5 and
-  +0.5 and "Use playhead" buttons, the Transcript box and the Zoom out, Zoom in and Fit clip
-  buttons are gone. Trim with the filmstrip handles or the `I` and `O` keys (`[` and `]` too); one
-  line under the video shows the cut in, out and length, any tail the export adds and the exported
-  length, with a "Reset to moment" button. Press a pressed zoom level (10 s, 30 s, 2 min) again to
-  fit the clip, or use Ctrl+wheel. The overview strip sits under the ruler, and Previous and Next
-  buttons open the clips before and after in the sequence.
-
 ### Added
 
 - Cut mode in the center stage of `cutpoint ui`, beside Clip and Sequence, for a sequence of at
@@ -29,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   target length, saved with the project, that only guides the progress bar.
 - AI Chat in `cutpoint ui` shows a compact summary of what the assistant did, and each proposed
   change is a card with Apply, Preview and Discard. Apply no longer needs the Sequence tab preview first.
-- The trim rail in `cutpoint ui` draws the source's audio level over the filmstrip and marks the
+- The trim rail in `cutpoint ui` draws the source's audio level under the filmstrip and marks the
   real events under it: sounds (laughter, cheering...), on-screen text such as kill feeds and
   camera crashes from `events.json`, each with a short label and a tooltip (kind, time,
   confidence). A project without events keeps the markers of its other moments. New calls
@@ -43,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the same source in view are marked there. Under the trim controls a Storyboard shows the
   sequence as one block per clip, as wide as its exported length and coloured by kind: click to
   trim a clip, drag or Alt+Left and Alt+Right to reorder, double-click or Shift+Enter to play
-  the sequence from it. A Clip and Sequence switch above the video chooses between the selected
+  the sequence from it. A Clip and Sequence switch in the bar over the video chooses between the selected
   clip and "Play sequence". No server change; the filmstrip still uses the cached preview stills.
 
 - Settings in `cutpoint ui` has a "Verbose moment labels" switch under Appearance, off by default.
@@ -503,6 +493,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Storyboard total in `cutpoint ui` shows the sequence's target length when one is set, in the
+  footer's words ("26 clips · 3:28 of ~4:00"); it is a guide and cuts nothing. The Moments column
+  starts 300 px wide and the side column 360 px (they were 340 and 380); a width you dragged to
+  is kept.
+- The center stage of `cutpoint ui` is simpler. The Clip Start and Clip End fields, the -0.5 and
+  +0.5 and "Use playhead" buttons, the Transcript box and the Zoom out, Zoom in and Fit clip
+  buttons are gone. Trim with the filmstrip handles or the `I` and `O` keys (`[` and `]` too); one
+  line under the video shows the cut in, out and length, any tail the export adds and the exported
+  length, with a "Reset to moment" button. Press a pressed zoom level (10 s, 30 s, 2 min) again to
+  fit the clip, or use Ctrl+wheel. The overview strip sits under the ruler, and two buttons
+  that name the clip before and after ("‹ Clip 1", "Clip 3 ›") open them in the sequence.
 - The Moments tiles in `cutpoint ui` are smaller. The length shows once, on the still, and the
   transcript line is gone from the tile: hover a tile for its full title and transcript (the search
   still finds the transcript). The preview status after the score is an icon only (a spinner while
