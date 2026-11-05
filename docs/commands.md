@@ -475,7 +475,7 @@ does not send keeps what the analysis used, which the project view reports as `a
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove (a "Select all" checkbox above the list ticks every clip, or clears
-them all when every clip is ticked; Ctrl+A (Cmd+A) in the list ticks every clip), up/down buttons and drag reorder (the row actions show on hover or keyboard focus, and the whole row drags). A footer shows the total length; click the total to set a target length (such as `4:00` or seconds; empty removes it). The target only guides the progress bar, is saved with the project (in `ui/review.json`, so it follows the project and goes with it when deleted, whatever the browser or port) and cuts nothing. Thumbnails are cached as
+them all when every clip is ticked; Ctrl+A (Cmd+A) in the list ticks every clip), up/down buttons and drag reorder (the row actions show on hover or keyboard focus, and the whole row drags). A footer shows the total length; click the total to set a target length (such as `4:00` or seconds; empty removes it). The target only guides the progress bar (and is shown after the Storyboard's total, as "26 clips · 3:28 of ~4:00"), is saved with the project (in `ui/review.json`, so it follows the project and goes with it when deleted, whatever the browser or port) and cuts nothing. Thumbnails are cached as
 JPEGs in `<project>/ui/frames/` (at most 1500 per project, least recently used evicted). Drag the
 splitter to resize the side column (arrow keys, Shift, Home/End; double-click resets); the width is
 remembered per browser. A second splitter between the Moments column and the preview works the same
@@ -544,7 +544,7 @@ thumbnails; a still that fails leaves the rail's ticks showing, and after 3 fail
 gets no filmstrip until the page reloads. With the browser's data saver on
 (`prefers-reduced-data` or Save-Data), the rail keeps its ticks only. The zoom levels "10 s", "30 s" and "2 min" set the width of the view around the playhead
 (the pressed one shows the current width; a level longer than the source is off); pressing the pressed
-level again fits the view to the clip, and Ctrl+wheel over the rail zooms. The source's audio level is drawn over the filmstrip (`GET
+level again fits the view to the clip, and Ctrl+wheel over the rail zooms. The source's audio level is drawn in a band under the filmstrip (`GET
 /api/projects/<id>/sources/<sid>/envelope`: the peak per bucket of 0.05 s, merged to at most 6000
 values for a long source, 0 to 1, `peaks` empty without audio; all audio tracks mixed; decoded once with ffmpeg at low
 priority, one source at a time, and cached in `<project>/ui/envelope/`, keyed on the source's path,
@@ -560,14 +560,14 @@ and pans it (drag, or the arrow keys by a tenth of the view, PageUp and PageDown
 Home and End to the ends), and the wheel over the rail pans it. The
 rail follows the playhead during playback. On the rail, the arrow keys move the playhead by 0.5%
 of the view (at least 0.05 s), and PageUp and PageDown by a tenth of the view. `I` and `O` (or `[` and `]`) set the clip's in and out points at the playhead, anywhere in the source,
-and the rail widens to show it; they work whenever no text field, menu or dialog has the focus. The gold start and end edges on the rail are handles: drag them (a drag held at
+and the rail widens to show it; they work whenever no form field (sliders excepted), menu, dialog or column splitter has the focus. The gold start and end edges on the rail are handles: drag them (a drag held at
 the rail's edge pans a zoomed view), or Tab to one and move it with the arrow keys (0.1 s;
 Shift+arrow 1 s), PageUp and PageDown (5 s), Home and End (as far as it can go). A handle keeps
 the clip at least 0.1 s long and inside the source, and the preview seeks to it. Space still
 plays and pauses while a handle has focus. Outside the clip the rail is dimmed, and each handle is a slider that reads its time aloud. The handles edit the raw range. When the export cuts a clip
 elsewhere (an event tail, a smart tail, a speech-aware move or Extend), the rail and the overview show
 the difference as a shaded, dashed strip beyond the markers, and the line under the video adds it, for
-example "Cut 0:10.0 → 0:16.0 | 6.00 s +10.22 s event tail, exports as 16.22 s". That line shows the cut in, the cut out, the
+example "Cut 0:10.0 → 0:16.0 | 6.00 s +10.22 s event tail exports as 16.22 s". That line shows the cut in, the cut out, the
 length, any tail the export adds and the exported length; there are no start and end fields, so the handles and
 `I` and `O` are the way to trim. "Reset to moment" on the line puts the in and out back to the analyzed times
 (it is off when they already match). A trim the clip cannot take (shorter than 0.1 s, or outside the
@@ -579,14 +579,14 @@ hard cuts. The clock shows the clip number and the time in the sequence, the pla
 marked, and trims made meanwhile apply at once. Clicking a row jumps to that clip, Space pauses
 and resumes, and Escape or "Stop" ends it; removing the playing clip also stops it. A clip whose
 proxy is still being built is waited for, and one whose preview cannot be built is skipped.
-The "Clip" and "Sequence" buttons above the video switch what the stage plays: Clip is the
+The "Clip" and "Sequence" buttons in the bar over the video switch what the stage plays: Clip is the
 selected clip with its trim, Sequence is "Play sequence" (the same, so Escape and Stop end it,
 and the switch follows the playing state). Under the rail, the Storyboard shows the
 sequence as one block per clip, as wide as the clip's exported length and coloured by kind. Click a
 block to open that clip for trimming, drag it onto another or press Alt+Left or Alt+Right to
 reorder (undoable, like the Sequence list), and double-click it or press Shift+Enter to play the
 sequence from that clip. Arrow keys move between the blocks. The stage title shows the open clip's number in the sequence, and for a clip in the sequence
-"Previous" and "Next" buttons beside it open the clip before or after it.
+two buttons beside it, named for the clip before and the clip after ("‹ Clip 1", "Clip 3 ›"; "Previous" and "Next" while there is none), open them.
 Original footage and export quality are unchanged. The server binds only to `127.0.0.1`;
 remote access is not supported.
 

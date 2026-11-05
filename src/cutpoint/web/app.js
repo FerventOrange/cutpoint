@@ -17,10 +17,10 @@ const FILM_FAILS = 3; // failed stills after which a source gets no filmstrip th
 const JOB_NAMES = { analyze: 'Analysis', edit: 'One-click edit', clips: 'Clip export', extend: 'Export extension', assemble: 'Assembly', resume: 'Resume' };
 const live = (status) => status === 'running' || status === 'cancelling'; // the job still holds the server
 const SIDE_KEY = 'cutpoint.sideWidth'; // localStorage: the sequence column width the user dragged to
-const SIDE_MIN = 290; // pixels; the column's CSS default is 290-380
+const SIDE_MIN = 290; // pixels; the column's CSS default is 290-360
 const SIDE_MAX = 640;
 const MOM_KEY = 'cutpoint.momentsWidth'; // localStorage: the moments column width the user dragged to
-const MOM_MIN = 260; // pixels; the column's CSS default is 260-340
+const MOM_MIN = 260; // pixels; the column's CSS default is 260-300
 const MOM_MAX = 640;
 const STAGE_MIN = 360; // pixels the preview keeps when either column widens (app.css: the stage track)
 const SPLIT_STEP = 16; // pixels per arrow key on a column splitter; Shift moves four steps
@@ -3060,10 +3060,18 @@ function renderSeqFoot() {
     ? `${fmtLen(total)} of about ${fmtLen(target)}${over ? `, ${fmtLen(total - target)} over` : ''}. Change the target length`
     : `${fmtLen(total)}. Set a target length`);
   btn.title = has ? 'Change the target length: a guide for the bar, it cuts nothing' : 'Set a target length: a guide, it cuts nothing';
-  $('#seqTarget').textContent = has ? `of ~${fmtLen(target)}${over ? `, ${fmtLen(total - target)} over` : ''}` : '';
+  $('#seqTarget').textContent = seqTargetText(total);
   $('#seqTarget').hidden = editing;
   $('#seqBar').hidden = !has || editing;
   $('#seqBarFill').style.width = `${has ? Math.min(100, (total / target) * 100) : 0}%`; // over the target: a full bar, never wider
+  if (segs.length) $('#sbTotal').textContent = sbTotalText(total); // the target may have changed alone
+}
+
+/** "of ~4:00" (", 0:12 over" when ``total`` passes it) for the footer and the storyboard's total; empty without a target. */
+function seqTargetText(total) {
+  const target = seqTarget();
+  if (target == null) return '';
+  return `of ~${fmtLen(target)}${Math.round(total) > Math.round(target) ? `, ${fmtLen(total - target)} over` : ''}`;
 }
 
 /** The sequence's target length in seconds (a guide for the footer's bar, saved with the project in ui/review.json), or null. */
@@ -3155,7 +3163,7 @@ function renderStoryboard() {
   const segs = S.segments;
   $('#storyboard').hidden = !segs.length;
   const total = sbLength();
-  $('#sbTotal').textContent = segs.length ? `${segs.length} clip${segs.length > 1 ? 's' : ''} · ${fmtLen(total)}` : '';
+  $('#sbTotal').textContent = segs.length ? sbTotalText(total) : '';
   const stop = segs.some((s) => s.id === S.focus) ? S.focus : segs[0]?.id; // the block that holds the tab stop
   const had = $('#sbList').contains(document.activeElement) ? document.activeElement.dataset.id : null;
   $('#sbList').replaceChildren(...segs.map((s, i) => sbBlock(s, i, segs.length, stop)));
@@ -3166,11 +3174,14 @@ function renderStoryboard() {
   renderClipHead(); // a clip's place in the sequence may have changed
 }
 
+/** "26 clips · 3:28", and "of ~4:00" after it when a target is set (the same words as the footer). */
+const sbTotalText = (total) => `${S.segments.length} clip${S.segments.length > 1 ? 's' : ''} · ${fmtLen(total)}${seqTarget() == null ? '' : ` ${seqTargetText(total)}`}`;
+
 /** The storyboard's buttons, in order. */
 const sbBlocks = () => [...$('#sbList').querySelectorAll('.sb-block')];
 const sbLength = () => S.segments.reduce((n, s) => n + exportedLen(s), 0);
 const SB_RULER_GAP = 120; // pixels: the least room between two labels of the storyboard's ruler
-const SB_RULER_END = 44; // pixels: a label this close to the total at the right end is left out
+const SB_RULER_END = 84; // pixels: a label this close to the total at the right end is left out
 
 /** The sequence's own time above the blocks, from 0:00 to its total; off while the blocks scroll, when it could not line up with them. */
 function drawSbRuler() {
