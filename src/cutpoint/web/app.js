@@ -367,32 +367,103 @@ const setEmpty = (el, ...kids) => {
 // ---------- projects ----------
 
 async function loadProjects() {
-  const sel = $('#projectSelect');
   try {
     S.projects = (await api('/api/projects')).projects;
   } catch (e) {
     // e.g. an invalid config.json (409): creating a project would fail the same way until a load
     // succeeds. Settings stays usable to fix it.
     S.projects = [];
-    sel.replaceChildren(h('option', { value: '', text: 'Projects unavailable', disabled: true }));
-    sel.value = '';
-    $('#newBtn').disabled = true;
+    S.projectsFailed = true;
+    renderProjectMenu();
     throw e;
   }
-  $('#newBtn').disabled = false;
-  sel.replaceChildren(
-    ...(S.projects.length
-      ? S.projects.map((p) => h('option', { value: p.id, text: p.interrupted ? `${p.name} (interrupted)` : p.name }))
-      : [h('option', { value: '', text: 'No projects yet', disabled: true })]),
+  S.projectsFailed = false;
+  renderProjectMenu();
+}
+
+/**
+ * The header's "cutpoint / <project>": the trigger's name, the menu's list (the open project marked,
+ * a divider, New project...) and the tab title. Called whenever the list or the open project changes.
+ */
+function renderProjectMenu() {
+  const name = S.projects.find((p) => p.id === S.id)?.name ?? S.project?.name;
+  const shown = S.id && name;
+  const label = S.projectsFailed ? 'Projects unavailable' : shown ? name : S.projects.length ? 'Choose project' : 'No projects yet';
+  $('#projectName').textContent = label;
+  $('#projectBtn').title = label;
+  $('#projectBtn').disabled = S.projectsFailed || S.sessionFailed === true;
+  document.title = shown ? `cutpoint / ${name}` : 'cutpoint';
+  const pop = $('#projectMenu');
+  const had = pop.contains(document.activeElement) ? document.activeElement : null; // an open menu keeps its focus
+  const hadKey = had?.dataset.id ?? had?.id;
+  pop.replaceChildren(
+    ...S.projects.map((p) => h('button', {
+      type: 'button', role: 'menuitemradio', class: 'proj-item', tabindex: '-1', 'aria-checked': String(p.id === S.id), 'data-id': p.id,
+      onclick: () => pickProject(p.id),
+    }, icon('check'), h('span', { text: p.interrupted ? `${p.name} (interrupted)` : p.name }))),
+    S.projects.length ? h('div', { class: 'proj-sep', role: 'separator' }) : null,
+    h('button', { type: 'button', role: 'menuitem', class: 'proj-item', id: 'newProjectItem', tabindex: '-1', onclick: pickNewProject },
+      h('span', { text: 'New project…' })),
   );
-  sel.value = S.id ?? '';
+  if (hadKey) (pop.querySelector(`[data-id="${CSS.escape(hadKey)}"]`) ?? $('#newProjectItem')).focus();
+}
+
+/** Close the project menu; ``refocus`` returns focus to the trigger. */
+function closeProjectMenu(refocus = false) {
+  $('#projectMenu').hidden = true;
+  $('#projectBtn').setAttribute('aria-expanded', 'false');
+  if (refocus) $('#projectBtn').focus();
+}
+
+function pickProject(id) {
+  closeProjectMenu(true);
+  if (id !== S.id) openProject(id);
+}
+
+function pickNewProject() {
+  closeProjectMenu(true);
+  openDialog(S.styles);
+}
+
+/**
+ * The project menu (a menu button): a click, or the arrow keys on the name, open it with focus on the
+ * open project; the arrow keys, Home and End only move focus (nothing happens until Enter, Space or a
+ * click on an item); Escape and choosing an item close it and return focus to the name; Tab and a
+ * click outside only close it.
+ */
+function initProjectMenu() {
+  const btn = $('#projectBtn');
+  const pop = $('#projectMenu');
+  const wrap = $('#projectMenuWrap');
+  const items = () => [...pop.querySelectorAll('.proj-item')];
+  const show = (last = false) => {
+    pop.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    (last ? items().at(-1) : pop.querySelector('[aria-checked=true]') ?? items()[0]).focus();
+  };
+  btn.addEventListener('click', () => (pop.hidden ? show() : closeProjectMenu()));
+  btn.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    if (pop.hidden) show(e.key === 'ArrowUp');
+  });
+  pop.addEventListener('keydown', (e) => {
+    const all = items();
+    const at = all.indexOf(document.activeElement);
+    const to = { ArrowDown: (at + 1) % all.length, ArrowUp: (at - 1 + all.length) % all.length, Home: 0, End: all.length - 1 }[e.key];
+    if (to != null) {
+      e.preventDefault();
+      all[to].focus();
+    } else if (e.key === 'Escape') {
+      e.preventDefault(); // the page's own Escape (stop Play sequence) waits
+      closeProjectMenu(true);
+    } else if (e.key === 'Tab') closeProjectMenu();
+  });
+  document.addEventListener('pointerdown', (e) => !pop.hidden && !wrap.contains(e.target) && closeProjectMenu());
 }
 
 async function openProject(id) {
-  if (id !== S.id && dirty() && !confirm('Discard the unsaved changes to this sequence?')) {
-    $('#projectSelect').value = S.id ?? '';
-    return;
-  }
+  if (id !== S.id && dirty() && !confirm('Discard the unsaved changes to this sequence?')) return;
   try {
     adopt(await api(`/api/projects/${encodeURIComponent(id)}`), id !== S.id);
     banner('');
@@ -439,6 +510,7 @@ function closeProject() {
   clearTimeout(S.prepTimer);
   drop('');
   history.replaceState(null, '', location.pathname + location.search);
+  renderProjectMenu();
   renderAll(true);
   loadAssistant();
 }
@@ -449,7 +521,7 @@ function adopt(p, switched) {
     S.id = p.id;
     delete $('#momentsEmpty').dataset.refocus;
     resetWorkspace(structuredClone(p.review?.segments ?? []));
-    $('#projectSelect').value = p.id;
+    renderProjectMenu();
     history.replaceState(null, '', `#${encodeURIComponent(p.id)}`);
   } else if (!dirty()) {
     // Polling must never clobber unsaved edits; saved ones follow the server.
@@ -5900,8 +5972,7 @@ function bind() {
     }, text: 'Reset to analyzed times' }),
   );
 
-  $('#projectSelect').addEventListener('change', (e) => e.target.value && openProject(e.target.value));
-  $('#newBtn').addEventListener('click', () => openDialog(S.styles));
+  initProjectMenu();
   $('#saveBtn').addEventListener('click', () => saveReview().catch(fail));
   // the header's Export: the Export tab, by the tab's own path (focus moves to it); the page scrolls to it when the column is below the preview
   $('#exportBtn').addEventListener('click', () => {
@@ -6011,7 +6082,7 @@ function bind() {
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     // text fields, the column splitters (their own arrow keys) and any dialog or popover keep their keys
-    if (e.target.closest('input:not([type=range]),textarea,select,[role=separator],dialog,[popover]')) return;
+    if (e.target.closest('input:not([type=range]),textarea,select,[role=menu],[role=separator],dialog,[popover]')) return;
     if (e.key === '[' || e.key === ']') {
       e.preventDefault();
       setRange(e.key === '[' ? 'start' : 'end', playhead());
@@ -6048,8 +6119,8 @@ async function main() {
     }, S.canPick);
   } catch (e) {
     fail(e);
-    $('#newBtn').disabled = true;
-    $('#projectSelect').disabled = true;
+    S.sessionFailed = true;
+    renderProjectMenu();
     $('#settingsBtn').disabled = true;
     setEmpty($('#stageEmpty'), h('p', {}, e.message));
     return;

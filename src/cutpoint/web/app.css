@@ -267,7 +267,35 @@ select { max-width: 100%; }
   background: var(--top-bg); border-bottom: 1px solid var(--divider);
 }
 .brand { font-size: 17px; font-weight: 750; letter-spacing: -0.01em; color: var(--amber-text); }
-.proj-pick select { min-width: 12em; max-width: 30vw; }
+.brand-sep { color: var(--muted); margin-inline: calc(-1 * var(--space-1)); }
+/* project menu: the name is the trigger (up to 30 characters, then an ellipsis; it shrinks further in a narrow window), the list drops below it */
+.proj-menu { position: relative; min-width: 0; }
+.proj-btn {
+  display: flex; align-items: center; gap: var(--space-1); max-width: 100%; min-height: var(--control-h);
+  font: inherit; font-size: 17px; font-weight: 650; color: var(--text); background: transparent;
+  border: 1px solid transparent; border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); cursor: pointer;
+}
+.proj-btn:hover:not(:disabled), .proj-btn[aria-expanded="true"] { background: var(--hover); }
+.proj-btn:disabled { color: var(--muted); cursor: default; }
+.proj-btn::after { content: ""; flex: none; width: 0.4em; height: 0.4em; margin-left: var(--space-1); border: solid currentColor; border-width: 0 2px 2px 0; transform: translateY(-25%) rotate(45deg); }
+.proj-btn[aria-expanded="true"]::after { transform: translateY(25%) rotate(-135deg); }
+.proj-name { min-width: 0; max-width: 30ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-pop {
+  position: absolute; z-index: 6; top: calc(100% + var(--space-1)); left: 0; width: max-content; min-width: 14em; max-width: min(28em, 90vw); max-height: 60vh; overflow: auto;
+  display: grid; padding: var(--space-1); background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: 0 8px 24px var(--shadow);
+}
+.proj-pop[hidden] { display: none; }
+.proj-item {
+  display: flex; align-items: center; gap: var(--space-2); min-height: var(--control-h-sm); text-align: left;
+  font: inherit; color: var(--text); background: none; border: 0; border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); cursor: pointer;
+}
+.proj-item:hover, .proj-item:focus { background: var(--hover); }
+.proj-item:focus-visible { outline-offset: -2px; }
+.proj-item .icon { flex: none; width: 16px; height: 16px; visibility: hidden; }
+.proj-item[aria-checked="true"] .icon { visibility: visible; }
+.proj-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-sep { height: 1px; margin: var(--space-1) 0; background: var(--divider); }
 .save { color: var(--muted); }
 .save.unsaved { color: var(--amber-text); }
 /* gear: square, icon only */
@@ -1030,7 +1058,9 @@ fieldset.models-section .hint, fieldset.models-section p { overflow-wrap: anywhe
   .chat-form, .prop-bar, .side-tabs, #panelSequence > .col-head, #panelAssistant > .chat-head { position: static; } /* the page scrolls here; the sticky Jobs bar holds the bottom */
   .seq-batch { top: 0; } /* sticks to the window top: the bars above are static here */
   .top { flex-wrap: wrap; }
-  .proj-pick select { max-width: 60vw; }
+  .top { position: relative; }
+  .proj-menu { position: static; }
+  .proj-pop { left: var(--space-2); right: var(--space-2); width: auto; max-width: none; }
   .screen { flex: none; aspect-ratio: 16 / 9; min-height: 0; max-height: none; }
 }
 

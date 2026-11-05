@@ -224,6 +224,9 @@ the action-cam commands or the other `360` commands; for standard footage, Highl
 `action-cam` style, which the dialog preselects when an input has GoPro or Insta360 telemetry (a
 stream-list probe of the first 12 files `analyze` would find) unless you chose another style.
 
+The header reads "cutpoint / <project name>": the name opens the project menu, which lists the projects
+(the open one marked) and ends, after a divider, with "New project…". The browser tab shows the same title.
+
 New Project's Source field takes the full paths of one or more videos and folders, one per line,
 that you type or paste; it always accepts them. A leading `~` is the home folder of the computer
 running `cutpoint ui` (`~/Videos`), here and in the Settings projects folder. They are the project's `analyze` inputs, as on the

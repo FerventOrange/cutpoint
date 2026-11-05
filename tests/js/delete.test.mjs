@@ -74,7 +74,7 @@ test('the confirm names the project and its size, lists what stays and focuses C
   assert.equal(page.document.activeElement, $('#confirmCancel'), 'Cancel is focused');
   await answer('cancel');
   assert.deepEqual(deletes, []);
-  assert.equal($('#projectSelect').value, 'p1', 'the project stays open');
+  assert.equal($('#projectName').textContent, 'Project One', 'the project stays open');
 });
 
 test('a long list of kept files is cut and says how many more', async (t) => {
@@ -107,9 +107,9 @@ test('Delete sends the trash request, closes the project and returns to the star
   assert.equal($('#setDelete').textContent, 'Delete this project…');
   assert.equal($('#banner').textContent, 'Deleted project Project One. 2 files stayed in its folder.');
   assert.ok(!$('#settingsDialog').hasAttribute('open'), 'Settings is closed');
-  assert.equal($('#projectSelect').value, '', 'no project is open');
+  assert.equal($('#projectName').textContent, 'No projects yet', 'no project is open');
   assert.equal(page.window.location.hash, '');
-  assert.match($('#projectSelect').textContent, /No projects yet/);
+  assert.equal(page.document.title, 'cutpoint');
 });
 
 test('without a trash the page asks again, and only then deletes for good', async (t) => {
@@ -143,7 +143,7 @@ test('declining the permanent delete leaves the project open', async (t) => {
   await answer('ok');
   await answer('cancel');
   assert.deepEqual(deletes, [{ permanent: false }]);
-  assert.equal($('#projectSelect').value, 'p1');
+  assert.equal($('#projectName').textContent, 'Project One');
 });
 
 test('a refusal (a job is running) shows in Settings and keeps the project', async (t) => {
@@ -154,7 +154,7 @@ test('a refusal (a job is running) shows in Settings and keeps the project', asy
   await answer('ok');
   assert.match($('#settingsError').textContent, /A job is running/);
   assert.ok($('#settingsDialog').hasAttribute('open'));
-  assert.equal($('#projectSelect').value, 'p1');
+  assert.equal($('#projectName').textContent, 'Project One');
   assert.ok(!$('#confirmDialog').hasAttribute('open'), 'only no_trash asks again');
 });
 
