@@ -6993,8 +6993,8 @@ def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
 
 
 def test_side_tabs_share_the_column_width_evenly_at_any_width() -> None:
-    """Contract pin: the tabs are a segmented control (board F): a rounded well with 12 px margin
-    and 3 px padding whose three tabs are equal grid columns, so at any width the splitter sets
+    """Contract pin: the tabs are a segmented control (board F): a rounded well with 8 px (top,
+    bottom) and 12 px (sides) margin and 3 px padding whose three tabs are equal grid columns, so at any width the splitter sets
     they fill it evenly; a label too long for its tab ends in an ellipsis (its text, the tab's
     name for screen readers, stays whole). The selected tab is raised and 600 weight.
 
@@ -7003,7 +7003,7 @@ def test_side_tabs_share_the_column_width_evenly_at_any_width() -> None:
     css = _web("app.css")
     band = re.search(r"^\.side-tabs \{([^}]*)\}", css, re.M)[1]
     assert "display: grid;" in band and "grid-template-columns: repeat(3, minmax(0, 1fr));" in band
-    assert "margin: var(--space-3);" in band and "padding: 3px;" in band
+    assert "margin: var(--space-2) var(--space-3);" in band and "padding: 3px;" in band
     assert "border-radius: 8px;" in band and "background: var(--deep);" in band
     tab = re.search(r"^\.side-tab \{([^}]*)\}", css, re.M)[1]
     for decl in ("min-width: 0;", "overflow: hidden;", "white-space: nowrap;",
@@ -7032,7 +7032,8 @@ def test_side_tabs_and_panel_headers_stay_put_while_a_panel_scrolls() -> None:
     css = _web("app.css")
     band = re.search(r"^\.side-bar \{([^}]*)\}", css, re.M)[1]
     assert "position: sticky; top: -12px;" in band
-    assert "--side-bar-h: 60px;" in css  # 12 px margin, the 36 px control, 12 px margin
+    # as tall as the header bands: 8 px margin, the 36 px control, 8 px margin, the 1 px rule
+    assert "--side-bar-h: var(--band-h);" in css
     heads = re.search(
         r"^#panelSequence > \.col-head, #panelAssistant > \.chat-head \{([^}]*)\}", css, re.M
     )[1]

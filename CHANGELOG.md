@@ -779,6 +779,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Small fixes in `cutpoint ui`: at 960 px and below the Jobs bar is no longer covered by the tiles'
+  dots and buttons; a drag of a Sequence row no longer fails to start when the list is redrawn
+  between the press and the drag (as after a trim edit); stepping through clips or playing the
+  sequence with the Export panel open no longer scrolls the side column; Analyze again is disabled,
+  with the reason, while another run holds the project; and the side column's tab bar is as tall as
+  the header bands, so the rules line up.
 - Dragging a clip in the Sequence list or the storyboard of `cutpoint ui` no longer gets stuck or
   points at the wrong place. A drag that ends unseen (the list is redrawn, the pointer leaves the
   window, something else is dropped) is forgotten, so the next hover does not drop a clip. The drop

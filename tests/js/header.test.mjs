@@ -281,6 +281,22 @@ test('while a job runs Analyze again is aria-disabled (still focusable) and does
   assert.equal(page.document.activeElement, $('#projectMenu [aria-checked=true]'));
 });
 
+test('while another run holds the project Analyze again is aria-disabled with the reason, as Resume is disabled', async (t) => {
+  const { page, $ } = await openRoutes(t, makeProject({ busy: true }), { 'GET /api/jobs': { jobs: [] } });
+  $('#projectBtn').click();
+  const item = $('#analyzeAgainItem');
+  const why = 'Analysis is running on this project; wait for it to finish';
+  assert.equal(item.getAttribute('aria-disabled'), 'true');
+  assert.equal(item.title, why);
+  assert.equal(item.getAttribute('aria-describedby'), 'projBusy projStats');
+  assert.equal($('#projBusy').textContent, why);
+  assert.equal(item.disabled, false, 'still focusable');
+  item.click();
+  assert.equal($('#analyzeDialog').open, false);
+  assert.equal($('#projectMenu').hidden, false, 'the menu stays open');
+  assert.equal(page.document.activeElement, $('#projectMenu [aria-checked=true]'));
+});
+
 test('Show folder asks for the sources folder, closes the menu and refocuses the name', async (t) => {
   const { page, $ } = await openRoutes(t, makeProject(), { 'GET /api/session': SESSION, 'POST /api/projects/p1/reveal': { ok: true } });
   $('#projectBtn').click();

@@ -609,13 +609,13 @@ test('the transition is Export\'s one and says it applies to the whole video; no
   assert.equal(m.$('#optTransition').value, 'cut');
   await m.click(buttons[1]);
   assert.equal(m.$('#optTransition').value, 'fade');
-  assert.equal(m.$('#optFadeDur').disabled, false, 'as if chosen in the Export tab');
+  assert.equal(m.$('#optFadeDur').disabled, false, 'as if chosen in the Export panel');
   assert.equal(buttons[1].getAttribute('aria-pressed'), 'true');
   assert.match(m.$('#cutTransNote').textContent, /hard cut/);
 
   m.$('#optTransition').value = 'cut';
   m.$('#optTransition').dispatchEvent(new m.w.Event('change', { bubbles: true }));
   await m.page.settle();
-  assert.equal(buttons[0].getAttribute('aria-pressed'), 'true', 'the Export tab moves it too');
+  assert.equal(buttons[0].getAttribute('aria-pressed'), 'true', 'the Export panel moves it too');
   assert.equal(m.$('#saveState').textContent, 'Sequence saved', 'not an edit of the sequence');
 });

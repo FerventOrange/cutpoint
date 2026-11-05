@@ -421,11 +421,13 @@ function renderProjectMenu() {
   document.title = shown ? `cutpoint / ${name}` : 'cutpoint';
   const pop = $('#projectMenu');
   const had = pop.contains(document.activeElement) ? document.activeElement : null; // an open menu keeps its focus
-  // the open project's actions and facts; Analyze again waits while a job runs (aria-disabled keeps it focusable)
+  // the open project's actions and facts; Analyze again waits while a job runs or another run holds the project (aria-disabled keeps it focusable)
   const hl = S.id && S.project?.id === S.id ? S.project.highlights : null;
-  const busy = !!S.active;
+  const held = !!hl && heldElsewhere(S.project); // another run (the command line, another server) holds the project
+  const busy = !!S.active || held;
+  const why = S.active ? 'Another job is running.' : BUSY_TEXT;
   const facts = hl ? projectFacts(S.project) : [];
-  const sig = JSON.stringify([label, S.id, S.projects.map((p) => [p.id, p.name, !!p.interrupted]), !!hl, busy, S.canReveal, facts]);
+  const sig = JSON.stringify([label, S.id, S.projects.map((p) => [p.id, p.name, !!p.interrupted]), !!hl, busy, why, S.canReveal, facts]);
   if (pop.dataset.sig === sig) return; // nothing to change: leave the menu (and a click under way) alone
   pop.dataset.sig = sig;
   pop.replaceChildren(
@@ -439,12 +441,12 @@ function renderProjectMenu() {
     ...(hl ? [h('div', { class: 'proj-sep', role: 'separator' }),
       h('button', {
         type: 'button', role: 'menuitem', class: 'proj-item', id: 'analyzeAgainItem', tabindex: '-1', 'aria-haspopup': 'dialog',
-        'aria-disabled': busy ? 'true' : null, 'aria-describedby': busy ? 'projBusy projStats' : 'projStats', title: busy ? 'Another job is running.' : null,
+        'aria-disabled': busy ? 'true' : null, 'aria-describedby': busy ? 'projBusy projStats' : 'projStats', title: busy ? why : null,
         onclick: pickAnalyzeAgain,
       }, h('span', { text: 'Analyze again' })),
       ...(S.canReveal ? [h('button', { type: 'button', role: 'menuitem', class: 'proj-item', id: 'revealItem', tabindex: '-1', onclick: pickReveal },
         h('span', { text: 'Show folder' }))] : []),
-      ...(busy ? [h('div', { class: 'vh', id: 'projBusy', role: 'none', text: 'Another job is running.' })] : []), // the title no longer describes the item
+      ...(busy ? [h('div', { class: 'vh', id: 'projBusy', role: 'none', text: why })] : []), // the title no longer describes the item
       h('div', { class: 'proj-stats', id: 'projStats', role: 'none' }, ...facts.map((f) => h('span', { text: f })))] : []),
   );
   if (had) {
@@ -2583,6 +2585,7 @@ function endDrag() {
   dragIn = null;
   dragPush = null;
   dragDirty = false;
+  pressArmed = false; // a drag's end ends its press (not every browser sends the pointer's cancel)
   if (dragRaf) cancelAnimationFrame(dragRaf);
   dragRaf = 0;
   for (const el of document.querySelectorAll('.seq.dragging, .seq.drop, .sb-cell.dragging, .sb-cell.drop')) el.classList.remove('dragging', 'drop', 'after');
@@ -2590,6 +2593,32 @@ function endDrag() {
 }
 
 const dragOrderNow = () => S.segments.map((s) => s.id).join();
+
+/**
+ * A press on a row arms it (``draggable``) and the drag starts a moment later; a render in between would replace the row and
+ * the drag would never begin. So an armed press holds renders like a drag does, until the pointer is released or cancelled
+ * (a document-level listener: the release may land outside the row, and the list must not stay frozen without it).
+ */
+let pressArmed = false;
+function armPress() {
+  if (pressArmed) return;
+  pressArmed = true;
+  dragOrder = dragOrderNow();
+  const release = () => {
+    document.removeEventListener('pointerup', release, true);
+    document.removeEventListener('pointercancel', release, true);
+    // a drag starts right after the cancel: leave the render to its end
+    setTimeout(() => {
+      pressArmed = false;
+      if (!dragId && dragDirty) {
+        dragDirty = false;
+        renderSequence();
+      }
+    }, 0);
+  };
+  document.addEventListener('pointerup', release, true);
+  document.addEventListener('pointercancel', release, true);
+}
 const seqDragStart = (id, kind, e, el) => {
   dragId = id;
   dragIn = kind;
@@ -3158,7 +3187,10 @@ function seqRow(s, i, n) {
     class: `seq${S.selected.has(s.id) ? ' selected' : ''}${seqNow() === s.id ? ' playing' : ''}`, 'data-id': s.id,
     'data-kind': kindOf(cands().find((c) => c.id === s.id)), 'aria-current': s.id === S.focus ? 'true' : null,
     // the whole row drags; a press on the checkbox or the row's buttons does not arm it, nor does renaming
-    onpointerdown: (e) => { li.draggable = S.renaming !== s.id && !e.target.closest('input, .seq-ctl'); },
+    onpointerdown: (e) => {
+      li.draggable = S.renaming !== s.id && !e.target.closest('input, .seq-ctl');
+      if (li.draggable) armPress();
+    },
     onpointerup: () => { if (!dragId) li.draggable = false; },
     onpointercancel: () => { if (!dragId) li.draggable = false; },
     ondragstart: (e) => seqDragStart(s.id, 'seq', e, li),
@@ -3288,11 +3320,12 @@ async function commitSeqTarget() {
 function renderSequence() {
   // A held clip's row must survive, or its dragend never comes (the background polls and the edges reply render too):
   // wait for the drag's end. If the order changed underneath, the drag is over: render now.
-  if (dragId) {
+  if (dragId || pressArmed) {
     if (dragOrderNow() === dragOrder) {
       dragDirty = true;
       return;
     }
+    dragDirty = false; // this render is the one the drag waited for
     endDrag();
   }
   const segs = S.segments;
@@ -3525,13 +3558,8 @@ function cutStill(img, s, t) {
   const frame = img.closest('.cut-frame');
   frame.classList.toggle('failed', !url);
   frame.classList.toggle('loading', !!url); // the times are new at once, the 640 px still takes a while: dim the old picture
-  if (url) {
-    // only the latest src clears it: a listener of an earlier src that fires late finds another url
-    const done = () => { if (img.dataset.url === url) frame.classList.remove('loading'); };
-    img.addEventListener('load', done, { once: true });
-    img.addEventListener('error', done, { once: true });
-    img.src = url;
-  } else img.removeAttribute('src');
+  if (url) img.src = url; // bindCut's load and error listeners clear "loading"
+  else img.removeAttribute('src');
 }
 
 /** The transition control shows the Export panel's Video transition; the choice is one for the whole video. */
@@ -3717,8 +3745,13 @@ function bindCut() {
   $('#prevCut').addEventListener('click', () => stepCut(-1));
   $('#nextCut').addEventListener('click', () => stepCut(1));
   for (const img of [$('#cutOutFrame'), $('#cutInFrame')]) {
-    img.addEventListener('load', () => img.closest('.cut-frame').classList.remove('failed'));
-    img.addEventListener('error', () => img.closest('.cut-frame').classList.add('failed'));
+    // a src replaced before it loaded fires neither event, so these are always for the latest url (cutStill sets "loading")
+    img.addEventListener('load', () => img.closest('.cut-frame').classList.remove('failed', 'loading'));
+    img.addEventListener('error', () => {
+      const frame = img.closest('.cut-frame');
+      frame.classList.add('failed');
+      frame.classList.remove('loading');
+    });
   }
   const video = $('#optTransition');
   video.addEventListener('change', renderCutTransition);
@@ -3830,6 +3863,7 @@ function revealRow(li) {
   const col = li.closest('.col');
   if (!col || getComputedStyle(col).overflowY === 'visible') return;
   const r = li.getBoundingClientRect();
+  if (!r.height) return; // hidden (the Export panel covers the list): it measures as 0, not as a row to scroll to
   const cs = getComputedStyle(col);
   const box = col.getBoundingClientRect();
   const top = box.top + (parseFloat(cs.scrollPaddingTop) || 0); // below the sticky tabs and header

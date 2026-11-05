@@ -104,6 +104,51 @@ test('a background render during a drag waits for its end: the held row survives
   assert.equal(m.d.querySelectorAll('.dragging, .drop').length, 0);
 });
 
+test('a render between the press and dragstart waits for the pointer, so the armed row survives to start its drag', async (t) => {
+  const m = await drag(t);
+  const held = m.row('h001');
+  const press = (el, type = 'pointerdown') => el.dispatchEvent(new m.w.Event(type, { bubbles: true }));
+  press(held.querySelector('.seq-title'));
+  assert.equal(held.draggable, true);
+  m.$('#seqList li[data-id=h002] button[data-act=rename]').click(); // a render with the same order (the edges reply)
+  await m.page.settle();
+  assert.equal(m.row('h001'), held, 'the armed row was not replaced');
+  assert.equal(m.$('#seqList input[data-act=rename]'), null, 'the render waits');
+  m.fire(held, 'dragstart'); // the drag starts on the row that was pressed
+  press(m.d, 'pointercancel'); // the browser cancels the pointer as the drag starts
+  m.t.mock.timers.tick(1);
+  assert.equal(m.row('h001'), held, 'still held by the drag');
+  m.fire(held, 'dragend');
+  await m.page.settle();
+  assert.ok(m.$('#seqList input[data-act=rename]'), 'the render ran once the drag ended');
+});
+
+for (const end of ['pointerup', 'pointercancel']) {
+  test(`a press that ends without a drag (${end} anywhere) lets the waiting render run`, async (t) => {
+    const m = await drag(t);
+    const held = m.row('h001');
+    held.querySelector('.seq-title').dispatchEvent(new m.w.Event('pointerdown', { bubbles: true }));
+    m.$('#seqList li[data-id=h002] button[data-act=rename]').click();
+    assert.equal(m.$('#seqList input[data-act=rename]'), null, 'waits while pressed');
+    m.d.body.dispatchEvent(new m.w.Event(end, { bubbles: true })); // released outside the row
+    m.t.mock.timers.tick(1);
+    await m.page.settle();
+    assert.ok(m.$('#seqList input[data-act=rename]'), 'the render ran');
+    assert.notEqual(m.row('h001'), held);
+  });
+}
+
+test('a press on the checkbox does not hold renders, and a render that changes the order runs at once', async (t) => {
+  const m = await drag(t);
+  m.row('h001').querySelector('[data-act=select]').dispatchEvent(new m.w.Event('pointerdown', { bubbles: true }));
+  m.$('#seqList li[data-id=h002] button[data-act=rename]').click();
+  assert.ok(m.$('#seqList input[data-act=rename]'), 'not armed: no wait');
+  m.row('h001').querySelector('.seq-title').dispatchEvent(new m.w.Event('pointerdown', { bubbles: true }));
+  m.$('#seqList li[data-id=h002] [data-act=down]').click();
+  await m.page.settle();
+  assert.deepEqual(m.seqIds(), ['h001', 'h003', 'h002'], 'the changed order is shown while pressed');
+});
+
 test('a render that changes the order during a drag ends it: nothing stale is dropped', async (t) => {
   const m = await drag(t);
   m.fire(m.row('h001'), 'dragstart');

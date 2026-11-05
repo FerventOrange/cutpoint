@@ -485,4 +485,10 @@ test('revealRow keeps the playing row above the chat input and the Sequence foot
   assert.equal(side.scrollTop, 50);
   reveal(340); // clear of it
   assert.equal(side.scrollTop, 0);
+  // hidden (the Export panel covers the list): it measures as nothing, and the column stays where it is
+  row.getBoundingClientRect = () => rect(0, 0);
+  side.scrollTop = 200;
+  d.querySelector('#seqPlayBtn').click();
+  page.window.document.querySelector('#seqPlayBtn').click(); // Stop
+  assert.equal(side.scrollTop, 200);
 });
