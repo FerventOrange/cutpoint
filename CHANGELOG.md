@@ -503,7 +503,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `--vision` rates a moment's frames together with what was said in it, for the generic styles, on
   local and hosted models, so speech that relates to what is on screen can raise the rating. Windows
-  with no speech rate as before, a rating with speech has 1.9 taken off the score so talk does not
+  with no speech rate as before, a rating with speech has 1.9 taken off before it scales the score so talk does not
   beat silent gameplay, and `action-cam` is unchanged. Ratings for windows with speech are made
   again once (new cache key). The existing Vision consent already covers transcript excerpts.
 - The Moments head of `cutpoint ui` reads "Moments" with the number of moments beside it. "Analyze
