@@ -2556,10 +2556,140 @@ function renderUndo() {
   $('#undoBtn').disabled = !S.undo.length;
   $('#redoBtn').disabled = !S.redo.length;
   if (had?.disabled && (had.id === 'undoBtn' || had.id === 'redoBtn'))
-    ([$('#undoBtn'), $('#redoBtn')].find((b) => !b.disabled) ?? $('#seqTitle')).focus();
+    ([$('#undoBtn'), $('#redoBtn')].find((b) => !b.disabled) ?? seqHome()).focus();
 }
 
+/** Where focus goes when the control that had it is gone: Select all, or the Sequence tab (the heading is visually hidden, so it cannot show where focus is). */
+const seqHome = () => ($('#seqSelAllRow').hidden ? $('#tabSequence') : $('#seqSelAll'));
+
+// ---- dragging a clip (the Sequence list and the storyboard share this state) ----
 let dragId = null;
+let dragIn = null; // 'seq' or 'sb': the list the drag started in
+const DRAG_TYPE = 'application/x-cutpoint-clip'; // what a drag of ours carries; a file or text dragged in does not
+const DRAG_EDGE = 48; // px from the visible edge of the list where a held drag starts to scroll it
+const DRAG_MAX = 10; // px per frame at the edge itself
+let dragPush = null; // {el, horiz, v}: how the list scrolls now; v is signed px per frame
+let dragRaf = 0;
+let dragDirty = false; // a render was asked for during the drag and waits for its end
+let dragOrder = ''; // the sequence's order when the drag began
+
+/** A drag of one of our clips (``dragId`` set and our type on it), not a stale id or something dragged in. */
+const ownDrag = (e) => !!dragId && Array.from(e.dataTransfer?.types ?? []).includes(DRAG_TYPE);
+
+/** Forget the drag: the id, the scrolling and every marker; a render that waited for it runs now. Safe to call at any time. */
+function endDrag() {
+  const dirty = dragDirty;
+  dragId = null;
+  dragIn = null;
+  dragPush = null;
+  dragDirty = false;
+  if (dragRaf) cancelAnimationFrame(dragRaf);
+  dragRaf = 0;
+  for (const el of document.querySelectorAll('.seq.dragging, .seq.drop, .sb-cell.dragging, .sb-cell.drop')) el.classList.remove('dragging', 'drop', 'after');
+  if (dirty) renderSequence();
+}
+
+const dragOrderNow = () => S.segments.map((s) => s.id).join();
+const seqDragStart = (id, kind, e, el) => {
+  dragId = id;
+  dragIn = kind;
+  dragOrder = dragOrderNow();
+  el.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData(DRAG_TYPE, id);
+  e.dataTransfer.setData('text/plain', id);
+};
+
+/** Mark child ``i`` of ``els`` (a list's rows or blocks) as the drop place, on the side where the clip lands: a clip moved down lands after the target, one moved up before it. Markers of the other list go too. */
+function markDrop(els, i) {
+  const over = S.segments[i]?.id !== dragId;
+  const after = S.segments.findIndex((x) => x.id === dragId) < i;
+  for (const x of document.querySelectorAll('.seq.drop, .sb-cell.drop')) x.classList.remove('drop', 'after');
+  const el = [...els][i];
+  if (el && over) el.classList.add('drop', ...(after ? ['after'] : []));
+}
+
+/** A drag over (or entering) child ``i`` of ``els``: accept it if it is ours. Edge fires only dragenter when the element under the pointer changes, so both events come here. */
+function dragHover(e, els, i) {
+  if (!ownDrag(e)) return;
+  e.preventDefault();
+  markDrop(els, i);
+}
+
+/** A drop on child ``i``: move the held clip there, if it is ours. */
+function dragDrop(e, i) {
+  e.preventDefault();
+  const id = ownDrag(e) ? dragId : null;
+  endDrag();
+  if (id) moveSeg(id, i);
+}
+
+/** The gap between a list's children belongs to the list: route its drag events to the child nearest the pointer. */
+function gapDrag(list, kind, horiz) {
+  const near = (e) => {
+    if (e.target !== list || dragIn !== kind) return -1;
+    const at = horiz ? e.clientX : e.clientY;
+    let best = -1;
+    let dist = Infinity;
+    [...list.children].forEach((k, i) => {
+      const r = k.getBoundingClientRect();
+      const d = Math.abs(at - (horiz ? r.left + r.right : r.top + r.bottom) / 2);
+      if (d < dist) [best, dist] = [i, d];
+    });
+    return best;
+  };
+  const hover = (e) => { const i = near(e); if (i >= 0) dragHover(e, list.children, i); };
+  list.addEventListener('dragover', hover);
+  list.addEventListener('dragenter', hover);
+  list.addEventListener('drop', (e) => { const i = near(e); if (i >= 0) dragDrop(e, i); });
+}
+
+/** The list a held drag scrolls and the visible band of it: the column below its sticky bars and above the footer, or the page when that scrolls as a whole; the storyboard sideways. */
+function dragArea() {
+  if (dragIn === 'sb') {
+    const el = $('#sbList');
+    const r = el.getBoundingClientRect();
+    return el.scrollWidth > el.clientWidth ? { el, horiz: true, lo: r.left, hi: r.right, a: r.top - 24, b: r.bottom + 24 } : null;
+  }
+  const col = $('#seqList').closest('.col');
+  const cs = col && getComputedStyle(col);
+  if (!col || cs.overflowY === 'visible') {
+    const jobs = $('.jobs');
+    return { el: null, lo: $('#panelSequence .col-head').offsetHeight, hi: innerHeight - (jobs?.offsetHeight || 0), a: 0, b: innerWidth };
+  }
+  const box = col.getBoundingClientRect();
+  return {
+    el: col, lo: box.top + (parseFloat(cs.scrollPaddingTop) || 0), a: box.left, b: box.right,
+    hi: box.bottom - (parseFloat(cs.scrollPaddingBottom) || 0) - (parseFloat(cs.getPropertyValue('--seq-foot-h')) || 0), // above the sticky footer
+  };
+}
+
+/** While a clip is held near the top or bottom of the list (left or right of the storyboard) scroll it, faster the nearer the edge. The browser's own scroll no longer reaches: the sticky bars and footer sit on the column's edges. */
+function dragScroll(e) {
+  if (!dragId) return;
+  const area = dragArea();
+  const p = area?.horiz ? e.clientX : e.clientY;
+  const cross = area?.horiz ? e.clientY : e.clientX;
+  const edge = area ? Math.min(DRAG_EDGE, (area.hi - area.lo) / 3) : 0;
+  let v = 0;
+  if (area && cross >= area.a && cross <= area.b) {
+    const f = (d) => 1 + (DRAG_MAX - 1) * Math.min(1, d / edge) ** 2;
+    if (p < area.lo + edge) v = -f(area.lo + edge - p);
+    else if (p > area.hi - edge) v = f(p - (area.hi - edge));
+  }
+  dragPush = v ? { el: area.el, horiz: area.horiz, v } : null;
+  if (dragPush && !dragRaf) dragRaf = requestAnimationFrame(dragStep);
+}
+
+function dragStep() {
+  dragRaf = 0;
+  if (!dragPush) return;
+  const { el, horiz, v } = dragPush;
+  if (!el) scrollBy(0, v);
+  else if (horiz) el.scrollLeft += v;
+  else el.scrollTop += v;
+  dragRaf = requestAnimationFrame(dragStep);
+}
 
 const ICONS = {
   edit: [['path', { d: 'M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z' }]],
@@ -2571,6 +2701,8 @@ const ICONS = {
   gear: [['path', { d: 'M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87a.47.47 0 0 0 .12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.47.47 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z' }]],
   volume: [['path', { d: 'M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z' }]],
   muted: [['path', { d: 'M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z' }]],
+  undo: [['path', { d: 'M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z' }]],
+  redo: [['path', { d: 'M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z' }]],
   play: [['path', { d: 'M8 5v14l11-7z' }]],
   pause: [['path', { d: 'M6 19h4V5H6v14zm8-14v14h4V5h-4z' }]],
   stop: [['path', { d: 'M6 6h12v12H6z' }]],
@@ -2822,7 +2954,7 @@ function analyzeAgain(fresh = false) {
 function focusRow(i, act) {
   const rows = $('#seqList').children;
   const li = rows[Math.min(i, rows.length - 1)];
-  (li?.querySelector(`[data-act="${act}"]:not(:disabled)`) ?? li?.querySelector('button') ?? $('#seqTitle')).focus();
+  (li?.querySelector(`[data-act="${act}"]:not(:disabled)`) ?? li?.querySelector('button') ?? seqHome()).focus();
 }
 
 /** Place the open popover over ``card``: aligned to its top, flipped upward near the viewport bottom. */
@@ -2921,7 +3053,7 @@ function renderBatch() {
   const hidePlay = !!n && !S.seqPlay;
   if (hidePlay && document.activeElement === $('#seqPlayBtn')) $('#seqClearSel').focus(); // a hidden button must not keep the focus
   $('#seqPlayBtn').hidden = hidePlay; // Play sequence, or the selection's actions, in the same place; Stop stays
-  $('#seqSelCount').textContent = `${n} selected`;
+  $('#seqSelCount').replaceChildren(String(n), h('span', { class: 'seq-sel-word', text: ' selected' }));
   const all = $('#seqSelAll');
   $('#seqSelAllRow').hidden = !S.segments.length;
   all.checked = n > 0 && n === S.segments.length;
@@ -3029,27 +3161,14 @@ function seqRow(s, i, n) {
     onpointerdown: (e) => { li.draggable = S.renaming !== s.id && !e.target.closest('input, .seq-ctl'); },
     onpointerup: () => { if (!dragId) li.draggable = false; },
     onpointercancel: () => { if (!dragId) li.draggable = false; },
-    ondragstart: (e) => {
-      dragId = s.id;
-      li.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', s.id);
-    },
+    ondragstart: (e) => seqDragStart(s.id, 'seq', e, li),
     ondragend: () => {
-      dragId = null;
+      endDrag();
       li.draggable = false;
-      li.classList.remove('dragging');
-      for (const el of $('#seqList').children) el.classList.remove('drop');
     },
-    ondragover: (e) => {
-      if (!dragId) return;
-      e.preventDefault();
-      for (const el of $('#seqList').children) el.classList.toggle('drop', el.dataset.id === s.id && s.id !== dragId);
-    },
-    ondrop: (e) => {
-      e.preventDefault();
-      if (dragId) moveSeg(dragId, i);
-    },
+    ondragenter: (e) => dragHover(e, $('#seqList').children, i),
+    ondragover: (e) => dragHover(e, $('#seqList').children, i),
+    ondrop: (e) => dragDrop(e, i),
   },
     h('input', {
       type: 'checkbox', class: 'seq-check', 'data-act': 'select', checked: S.selected.has(s.id), 'aria-label': ROW_LABELS.select(name),
@@ -3167,6 +3286,15 @@ async function commitSeqTarget() {
 }
 
 function renderSequence() {
+  // A held clip's row must survive, or its dragend never comes (the background polls and the edges reply render too):
+  // wait for the drag's end. If the order changed underneath, the drag is over: render now.
+  if (dragId) {
+    if (dragOrderNow() === dragOrder) {
+      dragDirty = true;
+      return;
+    }
+    endDrag();
+  }
   const segs = S.segments;
   renderSeqFoot();
   if (!S.project) setEmpty($('#seqEmpty'));
@@ -3286,25 +3414,11 @@ function sbBlock(s, i, n, stop) {
   // the cell is what drags (a draggable <button> does not drag in Firefox)
   const cell = h('div', {
     class: 'sb-cell', style: `flex-grow: ${Math.max(len, 0.1).toFixed(2)}`, draggable: true,
-    ondragstart: (e) => {
-      dragId = s.id;
-      cell.classList.add('dragging');
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', s.id);
-    },
-    ondragend: () => {
-      dragId = null;
-      for (const el of cells()) el.classList.remove('dragging', 'drop');
-    },
-    ondragover: (e) => {
-      if (!dragId) return;
-      e.preventDefault();
-      for (const el of cells()) el.classList.toggle('drop', el === cell && s.id !== dragId);
-    },
-    ondrop: (e) => {
-      e.preventDefault();
-      if (dragId) moveSeg(dragId, i);
-    },
+    ondragstart: (e) => seqDragStart(s.id, 'sb', e, cell),
+    ondragend: () => endDrag(),
+    ondragenter: (e) => dragHover(e, cells(), i),
+    ondragover: (e) => dragHover(e, cells(), i),
+    ondrop: (e) => dragDrop(e, i),
   }, b);
   return cell;
 }
@@ -4659,7 +4773,7 @@ function applyMsg(text) {
 
 /** After a card's Apply or Discard the buttons are gone: focus goes to the card's Review button, else the box, in the tab in view. */
 function focusAfterChange(pid) {
-  if (!$('#panelSequence').hidden) return $('#seqTitle').focus();
+  if (!$('#panelSequence').hidden) return seqHome().focus();
   ($(`#chatLog [data-pid="${CSS.escape(pid)}"] [data-act="review"]`) ?? $('#chatInput')).focus();
 }
 
@@ -7100,8 +7214,20 @@ function bind() {
     else if (mode === 'clip' && S.cutMode) leaveCut();
     else if (mode === 'clip' && S.seqPlay) seqStop('Playing the selected clip. Sequence stopped.');
   });
+  $('#undoBtn').append(icon('undo'));
+  $('#redoBtn').append(icon('redo'));
   $('#undoBtn').addEventListener('click', undo);
   $('#redoBtn').addEventListener('click', redo);
+  // a held clip scrolls the list near its edges; the drag ends wherever it is dropped or leaves the window
+  document.addEventListener('dragover', dragScroll);
+  document.addEventListener('dragenter', dragScroll); // Edge: only dragenter fires when the element under the pointer changes
+  gapDrag($('#seqList'), 'seq', false);
+  gapDrag($('#sbList'), 'sb', true);
+  addEventListener('drop', endDrag);
+  addEventListener('dragend', endDrag);
+  addEventListener('dragleave', (e) => {
+    if (!e.relatedTarget && (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= innerWidth || e.clientY >= innerHeight)) endDrag();
+  });
   $('#seqRemoveSel').addEventListener('click', removeSelected);
   $('#seqSelAll').addEventListener('change', selectAll);
   $('#seqClearSel').addEventListener('click', () => {
