@@ -3272,7 +3272,8 @@ function revealRow(li) {
   const cs = getComputedStyle(col);
   const box = col.getBoundingClientRect();
   const top = box.top + (parseFloat(cs.scrollPaddingTop) || 0); // below the sticky tabs and header
-  const bottom = box.bottom - (parseFloat(cs.scrollPaddingBottom) || 0); // above the sticky chat input
+  // above the sticky chat input and the Sequence footer
+  const bottom = box.bottom - (parseFloat(cs.scrollPaddingBottom) || 0) - (parseFloat(cs.getPropertyValue('--seq-foot-h')) || 0);
   if (r.top < top) col.scrollTop -= top - r.top;
   else if (r.bottom > bottom) col.scrollTop += Math.min(r.bottom - bottom, r.top - top);
 }
@@ -6187,7 +6188,9 @@ function initSideTabs() {
     const side = $('#side');
     const px = `${bars.reduce((n, el) => n + el.offsetHeight, 0)}px`;
     side.style.scrollPaddingTop = px;
-    side.style.scrollPaddingBottom = `${$('#chatForm').offsetHeight + $('#seqFoot').offsetHeight}px`;
+    side.style.scrollPaddingBottom = `${$('#chatForm').offsetHeight}px`;
+    // the Sequence footer is not in the padding: focusing inside it would scroll the column; the rows keep clear of it by scroll-margin
+    side.style.setProperty('--seq-foot-h', `${$('#seqFoot').offsetHeight}px`);
   });
   for (const el of [...bars, $('#chatForm'), $('#seqFoot')]) pad.observe(el);
   $('#side [role=tablist]').addEventListener('keydown', (e) => {

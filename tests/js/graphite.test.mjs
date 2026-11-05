@@ -439,3 +439,29 @@ test('a stored Export tab from before Export left the tabs starts on Sequence an
   assert.equal(d.querySelector('#panelExport').hidden, true);
   assert.equal(page.window.localStorage.getItem('cutpoint.sideTab'), null);
 });
+
+test('revealRow keeps the playing row above the chat input and the Sequence footer (--seq-foot-h)', async (t) => {
+  const page = await open(t, { project: withSegment() });
+  const d = page.document;
+  const side = d.querySelector('#side');
+  const rect = (top, bottom) => ({ top, bottom, left: 0, right: 0, width: 0, height: bottom - top });
+  const row = d.querySelector('#seqList').firstElementChild;
+  const win = page.window;
+  const real = win.getComputedStyle.bind(win);
+  win.getComputedStyle = (el, ...a) => {
+    if (el !== side) return real(el, ...a);
+    return { overflowY: 'auto', scrollPaddingTop: '10px', scrollPaddingBottom: '50px', getPropertyValue: (n) => (n === '--seq-foot-h' ? '100px' : '') };
+  };
+  side.getBoundingClientRect = () => rect(0, 500); // usable bottom: 500 - 50 - 100 = 350
+  side.scrollTop = 0;
+  const reveal = (bottom) => {
+    row.getBoundingClientRect = () => rect(bottom - 40, bottom);
+    side.scrollTop = 0;
+    d.querySelector('#seqPlayBtn').click();
+    page.window.document.querySelector('#seqPlayBtn').click(); // Stop
+  };
+  reveal(400); // under the footer's 350 line
+  assert.equal(side.scrollTop, 50);
+  reveal(340); // clear of it
+  assert.equal(side.scrollTop, 0);
+});

@@ -7046,7 +7046,12 @@ def test_side_tabs_and_panel_headers_stay_put_while_a_panel_scrolls() -> None:
     reveal = reveal[: reveal.index("\n}\n")]
     assert "scrollPaddingTop" in reveal and "scrollPaddingBottom" in reveal
     assert "side.style.scrollPaddingTop = px;" in js
-    assert "$('#chatForm').offsetHeight + $('#seqFoot').offsetHeight" in js  # rows clear the footer
+    # the footer is no scroll-padding (focusing in it must not scroll the column); rows clear it by margin
+    assert "side.style.scrollPaddingBottom = `${$('#chatForm').offsetHeight}px`;" in js
+    assert "side.style.setProperty('--seq-foot-h', `${$('#seqFoot').offsetHeight}px`);" in js
+    assert "--seq-foot-h" in reveal
+    assert ".seq { scroll-margin-bottom: var(--seq-foot-h, 0px); }" in css
+    assert "scroll-margin-bottom: calc(var(--seq-foot-h, 0px) + 28px);" in css
     assert "pad.observe(el)" in js and "$('#seqFoot')]" in js
     assert "--side-bars" not in js and "--side-bars" not in css
     # a ticked or current row keeps 4.5:1 for its rank and kind text: the rank is --muted there
