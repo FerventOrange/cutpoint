@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The trim rail in `cutpoint ui` draws the source's audio level over the filmstrip and marks the
+  real events under it: sounds (laughter, cheering...), on-screen text such as kill feeds and
+  camera crashes from `events.json`, each with a short label and a tooltip (kind, time,
+  confidence). A project without events keeps the markers of its other moments. New calls
+  `GET /api/projects/<id>/sources/<sid>/envelope` (the audio peaks of all audio tracks mixed,
+  decoded once with ffmpeg on a worker of its own and cached in `ui/envelope/`; it answers 202
+  while the decode runs and the page asks again) and `GET /api/projects/<id>/events`.
+
 - The browser workspace's center stage is rebuilt around the trim. The rail is taller and dims
   everything outside the in and out points; `I` and `O` set the in and out points at the playhead; zoom levels of 10 s, 30 s and 2 min sit
   beside Zoom out, Zoom in and Fit clip; a time ruler runs under the filmstrip, and the other moments

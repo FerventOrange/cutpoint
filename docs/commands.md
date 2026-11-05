@@ -540,8 +540,18 @@ thumbnails; a still that fails leaves the rail's ticks showing, and after 3 fail
 gets no filmstrip until the page reloads. With the browser's data saver on
 (`prefers-reduced-data` or Save-Data), the rail keeps its ticks only. The zoom levels "10 s", "30 s" and "2 min" set the width of the view around the playhead
 (the pressed one shows the current width; a level longer than the source is off), and "Zoom out", "Zoom in" and
-"Fit clip" change it too. A time ruler runs under the rail, and the other moments of the same
-source that start in the view are marked below it with their names, coloured by kind. The overview strip next to them shows the view in the whole source
+"Fit clip" change it too. The source's audio level is drawn over the filmstrip (`GET
+/api/projects/<id>/sources/<sid>/envelope`: the peak per bucket of 0.05 s, merged to at most 6000
+values for a long source, 0 to 1, `peaks` empty without audio; all audio tracks mixed; decoded once with ffmpeg at low
+priority, one source at a time, and cached in `<project>/ui/envelope/`, keyed on the source's path,
+size and modification time; the call answers `202` with `{"pending": true}` while the decode runs,
+and the page asks again every 5 s). A time ruler runs under the rail. Below it, the events `analyze` and `events`
+found (`GET /api/projects/<id>/events`, from `events.json`: sounds such as laughter, on-screen
+text such as kill feeds, and camera crashes, with their time and confidence; the model's
+descriptions are left out) are marked in the view with a short label, at least 80 px apart, the
+most confident first; hover one for its kind, time and confidence. A source with no events (also
+in a project that has an `events.json`) marks the other moments of the same source that start in the
+view instead, with their names, coloured by kind. The overview strip next to them shows the view in the whole source
 and pans it (drag or arrow keys), and the wheel over the rail pans it (Ctrl+wheel zooms). The
 rail follows the playhead during playback. On the rail, the arrow keys move the playhead by 0.5%
 of the view (at least 0.05 s), and PageUp and PageDown by a tenth of the view. "Use playhead" (`[` and `]`, or `I` and `O` for in and out) sets Clip Start or Clip End anywhere in the source, and the

@@ -132,6 +132,7 @@
         <div class="rail" id="rail">
           <div class="rail-marks">
             <div class="rail-film" id="railFilm" aria-hidden="true"></div>
+            <svg class="rail-wave" id="railWave" aria-hidden="true" viewBox="0 0 1 100" preserveAspectRatio="none"><path></path></svg>
             <div class="rail-gaps" id="railGaps" aria-hidden="true"></div>
             <div class="rail-sel" id="railSel"></div>
             <div class="rail-tails" id="railTail" aria-hidden="true"></div>
@@ -144,8 +145,9 @@
           <div id="endHandle" class="rail-handle end" role="slider" tabindex="0" aria-label="Clip end" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></div>
         </div>
         <div class="rail-ruler tc" id="railRuler" aria-hidden="true"></div>
-        <!-- the other moments of this source that start in the view -->
+        <!-- the detected events of this source in the view (else its other moments that start there) -->
         <div class="rail-events" id="railEvents" aria-hidden="true"></div>
+        <p class="vh" id="railEventsText"></p>
         <div class="rail-ends tc"><span id="winLo"></span><span id="winHi"></span></div>
         <div class="rail-nav">
           <div id="zoomPresets" class="seg rail-presets" role="group" aria-label="Zoom level">

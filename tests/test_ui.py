@@ -9474,3 +9474,422 @@ def test_the_center_stage_has_a_mode_switch_a_storyboard_and_zoom_levels() -> No
     assert "moveSeg(s.id, to)" in block and "moveSeg(dragId, i)" in block
     assert "seqStart(s.id)" in block
     assert "k === 'i' || k === 'o'" in js
+
+
+# ---- the trim rail's audio envelope and events ----
+
+
+@pytest.fixture
+def audio_sources(client: TestClient, tmp_path: Path) -> tuple[str, dict[str, str], Path]:
+    """A project with a 3 s clip (a 440 Hz tone for 2 s, then silence) and a 1 s clip without
+    audio: (project id, source id by name, the envelope cache folder)."""
+    loud, mute = tmp_path / "tone.mp4", tmp_path / "mute.mp4"
+    ffmpeg(
+        *("-f", "lavfi", "-i", "testsrc=d=3:s=160x120:r=25"),
+        *("-f", "lavfi", "-i", "sine=f=440:d=2", "-af", "apad=whole_dur=3", "-t", "3"),
+        *("-c:v", "mpeg4", "-c:a", "aac", str(loud)),
+    )  # fmt: skip
+    ffmpeg("-f", "lavfi", "-i", "testsrc=d=1:s=160x120:r=25", "-c:v", "mpeg4", str(mute))
+    pid, _ = make_project(
+        client, tmp_path, {"tone.mp4": loud.read_bytes(), "mute.mp4": mute.read_bytes()}
+    )
+    ids = {s["name"]: s["id"] for s in client.get(f"/api/projects/{pid}").json()["sources"]}
+    return pid, ids, ui.project_dir(pid) / ui.UI_DIR / "envelope"
+
+
+def get_envelope(client: TestClient, url: str, **kw: object):
+    """GET ``url`` until the decode it queued is done (202 while it runs)."""
+    deadline = time.monotonic() + 60
+    while (res := client.get(url, **kw)).status_code == 202 and time.monotonic() < deadline:
+        assert res.json() == {"pending": True}
+        time.sleep(0.05)
+    return res
+
+
+@needs_ffmpeg
+def test_envelope_is_the_peak_level_per_bucket_and_cached(
+    client: TestClient,
+    audio_sources: tuple[str, dict[str, str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid, ids, folder = audio_sources
+    calls: list[list[str]] = []
+    real_spawn = ui.spawn
+    monkeypatch.setattr(
+        ui, "spawn", lambda args, **kw: (calls.append(args), real_spawn(args, **kw))[1]
+    )
+    url = f"/api/projects/{pid}/sources/{ids['tone.mp4']}/envelope"
+
+    assert client.get(url).status_code == 202  # queued: the page asks again
+    first = get_envelope(client, url)
+    assert first.status_code == 200, first.text
+    data = first.json()
+    peaks = data["peaks"]
+    assert data["step"] == pytest.approx(0.05)
+    assert 58 <= len(peaks) <= 62  # 3 s at 0.05 s
+    assert all(0.0 <= v <= 1.0 for v in peaks)
+    assert min(peaks[5:35]) > 0.1  # the tone (AAC's priming makes the very first values soft)
+    assert max(peaks[-8:]) < 0.02  # the silence after it
+    assert [f.suffix for f in folder.iterdir()] == [".json"]  # nothing else left behind
+
+    assert client.get(url).json() == data
+    assert len(calls) == 1  # the second request came from the cache
+
+
+@needs_ffmpeg
+def test_envelope_of_a_source_without_audio_is_empty(
+    client: TestClient, audio_sources: tuple[str, dict[str, str], Path]
+) -> None:
+    pid, ids, folder = audio_sources
+    res = client.get(f"/api/projects/{pid}/sources/{ids['mute.mp4']}/envelope")
+    assert res.status_code == 200
+    assert res.json()["peaks"] == []
+    assert not folder.exists()
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize(
+    ("pid", "sid", "token", "status"),
+    [
+        ("ok", "0" * 12, True, 404),  # not one of the project's sources
+        ("ok", "../../x", True, 404),
+        ("nope", "ok", True, 404),
+        ("ok", "ok", False, 403),
+    ],
+)
+def test_envelope_accepts_only_a_source_of_the_project(
+    client: TestClient,
+    audio_sources: tuple[str, dict[str, str], Path],
+    pid: str,
+    sid: str,
+    token: bool,
+    status: int,
+) -> None:
+    real_pid, ids, folder = audio_sources
+    pid = real_pid if pid == "ok" else pid
+    sid = ids["tone.mp4"] if sid == "ok" else sid
+    res = client.get(
+        f"/api/projects/{pid}/sources/{sid}/envelope",
+        headers=None if token else {"X-Cutpoint-Token": ""},
+    )
+    assert res.status_code == status, res.text
+    assert not folder.exists()
+
+
+@needs_ffmpeg
+def test_envelope_failure_is_a_500_and_leaves_no_cache_file(
+    client: TestClient,
+    audio_sources: tuple[str, dict[str, str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid, ids, folder = audio_sources
+    monkeypatch.setattr(
+        ui,
+        "spawn",
+        lambda args, **kw: subprocess.Popen(
+            [sys.executable, "-c", "raise SystemExit(1)"], stdout=subprocess.PIPE
+        ),
+    )
+    url = f"/api/projects/{pid}/sources/{ids['tone.mp4']}/envelope"
+    res = get_envelope(client, url)
+    assert res.status_code == 500
+    assert not folder.exists() or not list(folder.iterdir())
+    assert get_envelope(client, url).status_code == 500  # asked again: decoded again, fails again
+
+
+@needs_ffmpeg
+def test_an_envelope_decode_over_the_time_limit_is_killed_and_reported(
+    client: TestClient,
+    audio_sources: tuple[str, dict[str, str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pid, ids, folder = audio_sources
+    started: list[subprocess.Popen] = []
+    real_spawn = ui.spawn
+
+    def silent(args: list[str], **kw: object) -> subprocess.Popen:
+        # through the real spawn: its own process group, as kill_tree expects
+        proc = real_spawn([sys.executable, "-c", "import time; time.sleep(600)"], binary=True)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(ui, "ENVELOPE_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(ui, "spawn", silent)
+    media = client.app.state.media
+    url = f"/api/projects/{pid}/sources/{ids['tone.mp4']}/envelope"
+    try:
+        res = get_envelope(client, url)  # 202 while it runs, then the stored error
+        assert res.status_code == 500, res.text
+        # the page gets the generic 500; the reason is in the server log
+        assert any("took longer than" in r.getMessage() for r in caplog.records)
+        assert len(started) == 1
+        deadline = time.monotonic() + 30
+        while (media.procs or started[0].poll() is None) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not media.procs
+        assert started[0].poll() is not None  # no process left behind
+        assert not folder.exists() or not list(folder.iterdir())
+    finally:
+        for proc in started:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+
+
+@needs_ffmpeg
+def test_shutdown_stops_an_envelope_decode_in_flight(
+    client: TestClient,
+    audio_sources: tuple[str, dict[str, str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid, ids, _folder = audio_sources
+    started: list[subprocess.Popen] = []
+    real_spawn = ui.spawn
+
+    def silent(args: list[str], **kw: object) -> subprocess.Popen:
+        # through the real spawn: its own process group, as kill_tree expects
+        proc = real_spawn([sys.executable, "-c", "import time; time.sleep(600)"], binary=True)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(ui, "spawn", silent)
+    media = client.app.state.media
+    url = f"/api/projects/{pid}/sources/{ids['tone.mp4']}/envelope"
+    try:
+        assert client.get(url).status_code == 202
+        deadline = time.monotonic() + 30
+        while not (started and media.procs) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert started
+        media.shutdown()
+        deadline = time.monotonic() + 30
+        while (media.procs or started[0].poll() is None) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not media.procs
+        assert started[0].poll() is not None  # the decode's ffmpeg went with the server
+    finally:
+        for proc in started:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+
+
+@needs_ffmpeg
+def test_an_envelope_decode_failing_in_any_way_is_stored_not_requeued(
+    client: TestClient,
+    audio_sources: tuple[str, dict[str, str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pid, ids, _folder = audio_sources
+    spawned: list[list[str]] = []
+
+    def refuse(project: Path, name: str) -> Path:
+        raise HTTPException(409, "the folder is not ours")
+
+    monkeypatch.setattr(ui, "_ui_folder", refuse)
+    monkeypatch.setattr(ui, "spawn", lambda args, **kw: spawned.append(args))
+    media = client.app.state.media
+    url = f"/api/projects/{pid}/sources/{ids['tone.mp4']}/envelope"
+    res = get_envelope(client, url)  # 202 while it runs, then the stored error
+    assert res.status_code == 500, res.text
+    assert any("envelope decode" in r.getMessage() for r in caplog.records)
+    assert not spawned  # refused before any ffmpeg
+    deadline = time.monotonic() + 30
+    while media.envelopes_running and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not media.envelopes_running
+    assert not media.envelope_errors  # reported once, not kept
+
+
+@needs_ffmpeg
+def test_an_envelope_nobody_asks_for_any_more_is_dropped_from_the_queue(
+    client: TestClient,
+    audio_sources: tuple[str, dict[str, str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pid, _ids, folder = audio_sources
+    first, second = tmp_path / "first.mp4", tmp_path / "second.mp4"
+    shutil.copyfile(tmp_path / "tone.mp4", first)
+    shutil.copyfile(tmp_path / "tone.mp4", second)
+    started, release = threading.Event(), threading.Event()
+    spawned: list[list[str]] = []
+    real_spawn, real_folder = ui.spawn, ui._ui_folder
+
+    def stuck(project: Path, name: str) -> Path:
+        started.set()
+        release.wait(30)
+        return real_folder(project, name)
+
+    monkeypatch.setattr(ui, "ENVELOPE_STALE_S", 0.3)
+    monkeypatch.setattr(ui, "_ui_folder", stuck)
+    monkeypatch.setattr(
+        ui, "spawn", lambda args, **kw: (spawned.append(args), real_spawn(args, **kw))[1]
+    )
+    media = client.app.state.media
+    project = ui.project_dir(pid)
+    try:
+        assert media.envelope(project, str(first)) == {"pending": True}
+        assert started.wait(30)  # the first holds the worker
+        assert media.envelope(project, str(second)) == {"pending": True}  # queued behind it
+        time.sleep(0.6)  # the page moved on: nobody asks for the second again
+    finally:
+        release.set()
+    deadline = time.monotonic() + 60
+    while media.envelopes_running and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not media.envelopes_running
+    assert len(spawned) == 1  # only the first was decoded
+    assert len(list(folder.glob("*.json"))) == 1
+    assert not media.envelope_asked
+
+
+@needs_ffmpeg
+def test_a_cached_envelope_answers_while_another_source_decodes(
+    client: TestClient,
+    audio_sources: tuple[str, dict[str, str], Path],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pid, ids, folder = audio_sources
+    url = f"/api/projects/{pid}/sources/{ids['tone.mp4']}/envelope"
+    assert get_envelope(client, url).status_code == 200  # cached
+    other = tmp_path / "other.mp4"
+    shutil.copyfile(tmp_path / "tone.mp4", other)
+    started, release = threading.Event(), threading.Event()
+    real_folder = ui._ui_folder
+
+    def stuck(project: Path, name: str) -> Path:
+        # before the decode takes the lock (it starts ffmpeg under it): other calls still run
+        started.set()
+        release.wait(30)
+        return real_folder(project, name)
+
+    monkeypatch.setattr(ui, "_ui_folder", stuck)
+    media = client.app.state.media
+    try:
+        assert media.envelope(ui.project_dir(pid), str(other)) == {"pending": True}
+        assert started.wait(30)  # the decode holds the slot
+        assert media.envelope(ui.project_dir(pid), str(other)) == {"pending": True}  # not twice
+        t0 = time.monotonic()
+        assert client.get(url).status_code == 200  # the cached source answers at once
+        assert time.monotonic() - t0 < 5
+    finally:
+        release.set()
+    for _ in range(600):
+        if len(list(folder.glob("*.json"))) == 2:
+            break
+        time.sleep(0.05)
+    assert len(list(folder.glob("*.json"))) == 2
+
+
+def test_envelope_ffmpeg_mixes_every_audio_track() -> None:
+    from cutpoint import envelope as audio_envelope  # noqa: PLC0415
+
+    one = audio_envelope.ffmpeg_args("a.mp4")
+    assert "-filter_complex" not in one
+    two = audio_envelope.ffmpeg_args("a.mp4", 2)
+    assert two[two.index("-filter_complex") + 1].startswith("[0:a:0][0:a:1]amix=inputs=2")
+    assert two[two.index("-map") + 1] == "[a]"
+
+
+def test_prune_envelopes_keeps_only_the_current_version_of_current_sources(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, footage = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    media = ui.Media()
+    key = media.key(footage / "a.mp4")
+    assert key is not None
+    folder = p / ui.UI_DIR / "envelope"
+    folder.mkdir(parents=True)
+    names = [
+        f"{key}-{ui.ENVELOPE_VERSION}.json",
+        f"{key}-0.json",
+        f"{'f' * 16}-{ui.ENVELOPE_VERSION}.json",
+    ]
+    for n in names:
+        (folder / n).write_text("{}", encoding="utf-8")
+    media.prune_envelopes(p, [str(footage / "a.mp4")])
+    assert [f.name for f in folder.iterdir()] == names[:1]
+
+
+def test_prune_envelopes_drops_the_envelope_of_a_source_that_changed(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, footage = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    media = ui.Media()
+    source = footage / "a.mp4"
+    old = media.key(source)
+    folder = p / ui.UI_DIR / "envelope"
+    folder.mkdir(parents=True)
+    stale = folder / f"{old}-{ui.ENVELOPE_VERSION}.json"
+    stale.write_text("{}", encoding="utf-8")
+    st = source.stat()
+    os.utime(source, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))  # same size, new mtime
+    new = media.key(source)
+    assert new != old
+    fresh = folder / f"{new}-{ui.ENVELOPE_VERSION}.json"
+    fresh.write_text("{}", encoding="utf-8")
+    media.envelopes_pruned.discard(p)
+    media.prune_envelopes(p, [str(source)])
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_project_events_sig_follows_events_json(client: TestClient, tmp_path: Path) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    assert client.get(f"/api/projects/{pid}").json()["events_sig"] is None
+    path = ui.project_dir(pid) / "events.json"
+    path.write_text('{"events": []}', encoding="utf-8")
+    first = client.get(f"/api/projects/{pid}").json()["events_sig"]
+    assert first
+    path.write_text('{"events": [], "x": 1}', encoding="utf-8")
+    assert client.get(f"/api/projects/{pid}").json()["events_sig"] != first
+
+
+def test_events_are_the_located_events_without_model_descriptions(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    url = f"/api/projects/{pid}/events"
+    assert client.get(url).json() == {"events": []}  # no events.json
+    assert client.get("/api/projects/nope/events").status_code == 404
+
+    def one(**over: object) -> dict:
+        return {
+            "source": "/v/a.mp4", "start": 1.0, "end": 2.0, "kind": "audio", "type": "audio",
+            "label": "Laughter", "description": "x" * 500, "confidence": 0.91234, "details": {"a": 1},
+        } | over  # fmt: skip
+
+    doc = {
+        "events": [
+            one(start=9.0, end=9.5, kind="ocr", type="kill", label="A>B"),
+            one(),
+            one(
+                kind="telemetry", type="crash", label="impact 9.1 g then a stop", start=5.0, end=5.0
+            ),
+            one(kind="telemetry", type="coverage", label="riding"),  # a span, not an event
+            one(kind="vlm", type="vlm", label="a long model sentence"),
+            one(start="soon"),
+            one(source=3),
+            "junk",
+        ]
+    }
+    (ui.project_dir(pid) / "events.json").write_text(json.dumps(doc), encoding="utf-8")
+    events = client.get(url).json()["events"]
+    assert [(e["kind"], e["start"], e["label"]) for e in events] == [
+        ("audio", 1.0, "Laughter"),
+        ("telemetry", 5.0, "crash"),
+        ("ocr", 9.0, "A>B"),
+    ]
+    assert events[0] == {
+        "source": "/v/a.mp4", "start": 1.0, "end": 2.0, "kind": "audio", "type": "audio",
+        "label": "Laughter", "confidence": 0.912,
+    }  # fmt: skip
+
+    (ui.project_dir(pid) / "events.json").write_text("{not json", encoding="utf-8")
+    assert client.get(url).json() == {"events": []}
