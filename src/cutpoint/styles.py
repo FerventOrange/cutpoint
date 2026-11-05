@@ -97,6 +97,9 @@ class Style:
             value above 0, such as the 5-11 of older presets, acts the same);
             0 = soft mask: nothing is forbidden and the ``stopped`` feature
             weight decides.
+        open_list: The candidate list ends when moments stop qualifying (a stricter floor
+            past :func:`cutpoint.analyze.usual_count` candidates), not at that count. Learned
+            presets follow their base.
         must_include_crash: Action-cam only: crashes in ``crashes.json`` (``cutpoint
             crashes``) with at least this confidence (0-1) are always clipped,
             with their approach, aftermath and reaction, whatever the weights
@@ -129,6 +132,7 @@ class Style:
     learned: dict | None = None
     mask_friends: float = 7.0
     must_include_crash: float = 0.0
+    open_list: bool = False
 
     @property
     def base(self) -> str:
@@ -244,6 +248,7 @@ STYLES: dict[str, Style] = {
         merge_gap=3.0,
         keyword_cap=1.5,
         profanity_alone=False,
+        open_list=True,
         keywords={
             **_HYPE,
             **_SWEARS,

@@ -433,3 +433,24 @@ def test_ski_on_lite_picks_the_same_moments_and_keeps_the_crash_score(
             assert li.score == f.score == 72.0
         else:
             assert li.score > f.score
+
+
+def test_gaming_floors_a_nominated_kill_burst_below_the_best_plain_moment(no_transcript, tmp_path):
+    # Nothing covers the kills, so a window is nominated for them. Its analysis score is 0.6 of
+    # the best picked moment's (33 of 55) and the event boost comes on top: a lone kill ranks
+    # below every plain moment, a burst of three lands between the weaker one (50) and the
+    # best (55). Events alone never put a nominee above the best moment of the source.
+    n = 6000
+    ps = analyze.PartSignals(n, {k: np.zeros(n) for k in SIGNALS}, [], [], [], [], [])
+    parts = [analyze.GridPart(Path("a.mp4"), 0, 0.0, n * DT, ps)]
+
+    def ranked(times):
+        plain = {**cand("plain", 10.0, 55.0), "source_index": 0}
+        hl = {"style": "gaming", "settings": {}, "candidates": [plain, cand("mid", 300.0, 50.0)]}
+        scorer.rescore_events(
+            hl, {"events": [kill(t) for t in times], "windows": []}, tmp_path, parts
+        )
+        return ["nominee" if scoring.is_nominated(c) else c["id"] for c in hl["candidates"]]
+
+    assert ranked([100.0]) == ["plain", "mid", "nominee"]
+    assert ranked([100.0, 101.5, 103.0]) == ["plain", "nominee", "mid"]

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- In `gaming`, detected events can create candidates of their own ("nominated" moments), so a
+  moment no longer has to be found by the audio and transcript grids first. They have
+  `signals.events.nominated` and `grid_score` in `highlights.json`, and
+  `settings.last_candidate_id` keeps ids unique. Other styles create none and behave as before.
+- `gaming` has an open candidate list: no fixed cap on long videos, but beyond the usual count a
+  moment must reach 0.5 of the strongest peak. The default sequence stays about 90 s. Other styles
+  keep their cap.
+
 - Cut mode in the center stage of `cutpoint ui`, beside Clip and Sequence, for a sequence of at
   least two clips: the last frame of a clip and the first frame of the next side by side, "Play
   across the cut" (3 s each side, always a hard cut), "Roll the cut" (drag or keys: the first clip's
