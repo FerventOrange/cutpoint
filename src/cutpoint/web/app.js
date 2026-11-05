@@ -692,7 +692,7 @@ function renderMoments() {
             flagBadges(c.pano),
             sourceStrip(c),
             // read after the rest: aria-describedby (camera path tiles) overrides the title, which holds the transcript
-            c.transcript ? h('span', { class: 'vh', text: `, ${c.transcript}` }) : null),
+            tip && c.transcript ? h('span', { class: 'vh', text: `, ${c.transcript}` }) : null),
           // an icon button over the still's top right corner: a dark + on amber, a white - on red
           h('button', {
             type: 'button', class: 'cand-toggle', 'data-act': 'toggle',
