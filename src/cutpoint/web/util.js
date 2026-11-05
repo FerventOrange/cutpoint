@@ -68,13 +68,6 @@ export function spanText(t) {
   return m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`;
 }
 
-/** "83.5", "1:23.5", "1:02:03" -> seconds, or NaN. */
-export function parseTime(text) {
-  const parts = String(text).trim().split(':');
-  if (parts.length > 3 || parts.some((p) => !/^\d+(\.\d*)?$/.test(p))) return NaN;
-  return parts.reduce((acc, p) => acc * 60 + Number(p), 0);
-}
-
 export const baseName = (p) => String(p).split(/[\\/]/).pop();
 export const round2 = (t) => Math.round(t * 100) / 100;
 

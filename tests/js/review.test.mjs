@@ -298,30 +298,27 @@ test('trim handles: arrows nudge 0.1 s, Shift 1 s, End/Home stop at the limits, 
   assert.equal(range(), '0:00.00 to 10:00.00');
 });
 
-test('trim times typed in the fields are applied, or refused with the reason and the old time kept', async (t) => {
+test('a trim at the playhead is applied, or refused on screen with the reason and the old time kept', async (t) => {
   const m = await review(t, { project: withSegments('h001') }); // 10 to 18 of a 600 s source
   const range = () => m.row('h001').querySelector('.seq-main').title;
-  const type = async (which, text) => {
-    const input = m.$(`#t-${which}`);
-    input.value = text;
-    input.dispatchEvent(new m.w.Event('change'));
+  const trimAt = async (at, key) => {
+    const v = m.$('#video');
+    v.__media.loaded(600);
+    v.__media.tick(at);
+    v.dispatchEvent(new m.w.Event('seeked'));
     await m.page.settle();
+    await m.key(m.d.body, key);
   };
-  await type('start', '0:12.5');
+  await trimAt(12.5, 'i');
   assert.equal(range(), '0:12.50 to 0:18.00');
   assert.equal(m.$('#trimMsg').textContent.startsWith('Clip length 5.50 s'), true);
+  assert.ok(m.$('#trimMsg').classList.contains('vh'), 'the cut line shows the length');
 
-  const refused = [
-    ['end', '12.55', /at least 0\.1 s/],
-    ['end', '700', /inside the source/],
-    ['start', 'abc', /Enter a time like/],
-  ];
-  for (const [which, text, why] of refused) {
-    await type(which, text);
-    assert.match(m.$('#trimMsg').textContent, why);
-    assert.equal(range(), '0:12.50 to 0:18.00');
-    assert.equal(m.$(`#t-${which}`).value, which === 'start' ? '0:12.50' : '0:18.00', 'the field shows the kept time again');
-  }
+  await trimAt(12.55, 'o');
+  assert.match(m.$('#trimMsg').textContent, /at least 0\.1 s/);
+  assert.ok(!m.$('#trimMsg').classList.contains('vh'), 'the reason is on screen');
+  assert.equal(range(), '0:12.50 to 0:18.00');
+  assert.equal(m.$('#endHandle').getAttribute('aria-valuenow'), '18', 'the handle keeps the old time');
 });
 
 test('dragging a trim handle moves the point with the pointer and ends as one undo step', async (t) => {
@@ -437,7 +434,7 @@ test('the rail and the overview show the export tail as a dashed strip, and the 
   const [sel, tail] = [m.$('#railSel'), strip[0]];
   const gap = parseFloat(tail.style.left) - (parseFloat(sel.style.left) + parseFloat(sel.style.width));
   assert.ok(Math.abs(gap) < 0.02, 'the strip starts where the marker ends');
-  assert.equal(m.$('#t-end').value, '0:18.00', 'the handles keep the raw end');
+  assert.equal(m.$('#endHandle').getAttribute('aria-valuenow'), '18', 'the handles keep the raw end');
 });
 
 test('a planned start before the clip start draws a strip before it; a trim since drops the plan', async (t) => {
@@ -450,10 +447,7 @@ test('a planned start before the clip start draws a strip before it; a trim sinc
   assert.equal(m.$('#railTail').children.length, 1);
   assert.match(m.$('#trimMsg').textContent, /exports as 9\.50 s \(extend\)/);
 
-  const input = m.$('#t-end');
-  input.value = '0:17';
-  input.dispatchEvent(new m.w.Event('change'));
-  await m.page.settle();
+  await m.key(m.$('#endHandle'), 'ArrowLeft', { shiftKey: true });
   assert.equal(m.$('#railTail').children.length, 0);
   assert.doesNotMatch(m.$('#trimMsg').textContent, /exports as/);
 });
@@ -538,14 +532,11 @@ test('an /edges answer leaves a trim error on screen', async (t) => {
   });
   t.mock.timers.tick(400);
   await m.page.settle();
-  const input = m.$('#t-end');
-  input.value = '700';
-  input.dispatchEvent(new m.w.Event('change'));
-  await m.page.settle();
-  assert.match(m.$('#trimMsg').textContent, /inside the source/);
+  await m.key(m.d.body, 'o'); // the playhead is at the clip start: refused
+  assert.match(m.$('#trimMsg').textContent, /at least 0\.1 s/);
   m.$('#optExtendEnd').value = '1';
   m.$('#optExtendEnd').dispatchEvent(new m.w.Event('input'));
   t.mock.timers.tick(400);
   await m.page.settle();
-  assert.match(m.$('#trimMsg').textContent, /inside the source/);
+  assert.match(m.$('#trimMsg').textContent, /at least 0\.1 s/);
 });

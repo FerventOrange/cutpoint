@@ -176,7 +176,7 @@ test('with no projects the menu holds only New project… (no divider, no "null"
 test('the page shortcuts (M, I, O, [ and ]) do nothing inside the menu', async (t) => {
   const { page, $, key } = await open(t);
   const muted = () => $('.vol button').getAttribute('aria-pressed');
-  const range = () => [$('#t-start').value, $('#t-end').value];
+  const range = () => [$('#startHandle').getAttribute('aria-valuenow'), $('#endHandle').getAttribute('aria-valuenow')];
   const [was, wasRange] = [muted(), range()];
   $('#projectBtn').click();
   for (const k of ['m', 'i', 'o', '[', ']']) key(page.document.activeElement, k);

@@ -59,10 +59,10 @@ test('the preview title uses display_label; a renamed sequence row keeps its own
   const focus = async (id) => {
     d.querySelector(`#candList li.cand[data-id="${id}"] .cand-main`).click();
     await page.settle();
-    return d.querySelector('#stageMeta').textContent;
+    return d.querySelector('#stageTitle').textContent;
   };
-  assert.equal(await focus('h001'), 'smooth skiing run from a.mp4');
-  assert.equal(await focus('h003'), 'my pick from a.mp4');
+  assert.equal(await focus('h001'), 'smooth skiing run');
+  assert.equal(await focus('h003'), 'Clip 1 · my pick');
   page.assertNoUnhandled();
 });
 
