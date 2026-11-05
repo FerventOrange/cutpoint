@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cut mode in the center stage of `cutpoint ui`, beside Clip and Sequence, for a sequence of at
   least two clips: the last frame of a clip and the first frame of the next side by side, "Play
   across the cut" (3 s each side, always a hard cut), "Roll the cut" (drag or keys: the first clip's
-  out and the next clip's in move together, so the length stays), the Export tab's Video transition
+  out and the next clip's in move together, so the length stays), the Export panel's Video transition
   (it applies to the whole video), and a Cuts strip with Previous and Next cut.
 - The side column in `cutpoint ui` has three tabs (Sequence, AI Chat, Models); the Export button opens
   the Export panel there, with Back. The sequence has a footer with the total length and an optional
