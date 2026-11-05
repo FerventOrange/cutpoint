@@ -104,6 +104,103 @@ test('a background render during a drag waits for its end: the held row survives
   assert.equal(m.d.querySelectorAll('.dragging, .drop').length, 0);
 });
 
+test('a render between the press and dragstart waits for the pointer, so the armed row survives to start its drag', async (t) => {
+  const m = await drag(t);
+  const held = m.row('h001');
+  const press = (el, type = 'pointerdown') => el.dispatchEvent(new m.w.MouseEvent(type, { bubbles: true, button: 0 }));
+  press(held.querySelector('.seq-title'));
+  assert.equal(held.draggable, true);
+  m.$('#seqList li[data-id=h002] button[data-act=rename]').click(); // a render with the same order (the edges reply)
+  await m.page.settle();
+  assert.equal(m.row('h001'), held, 'the armed row was not replaced');
+  assert.equal(m.$('#seqList input[data-act=rename]'), null, 'the render waits');
+  m.fire(held, 'dragstart'); // the drag starts on the row that was pressed
+  press(m.d, 'pointercancel'); // the browser cancels the pointer as the drag starts
+  m.t.mock.timers.tick(1);
+  assert.equal(m.row('h001'), held, 'still held by the drag');
+  m.fire(held, 'dragend');
+  await m.page.settle();
+  assert.ok(m.$('#seqList input[data-act=rename]'), 'the render ran once the drag ended');
+});
+
+for (const end of ['pointerup', 'pointercancel']) {
+  test(`a press that ends without a drag (${end} anywhere) lets the waiting render run`, async (t) => {
+    const m = await drag(t);
+    const held = m.row('h001');
+    held.querySelector('.seq-title').dispatchEvent(new m.w.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+    m.$('#seqList li[data-id=h002] button[data-act=rename]').click();
+    assert.equal(m.$('#seqList input[data-act=rename]'), null, 'waits while pressed');
+    m.d.body.dispatchEvent(new m.w.Event(end, { bubbles: true })); // released outside the row
+    m.t.mock.timers.tick(1);
+    await m.page.settle();
+    assert.ok(m.$('#seqList input[data-act=rename]'), 'the render ran');
+    assert.notEqual(m.row('h001'), held);
+  });
+}
+
+test('a double click on the name opens the rename with focus and the name selected: the release ends the hold at once', async (t) => {
+  const m = await drag(t);
+  const title = m.row('h001').querySelector('.seq-title');
+  const mouse = (type, init = {}) => title.dispatchEvent(new m.w.MouseEvent(type, { bubbles: true, button: 0, ...init }));
+  mouse('pointerdown');
+  mouse('pointerup');
+  mouse('dblclick'); // the same task: no timer has run
+  const input = m.$('#seqList input[data-act=rename]');
+  assert.ok(input, 'the rename opened');
+  assert.equal(m.d.activeElement, input, 'and has focus');
+  m.t.mock.timers.tick(1); // the timer of the release finds nothing waiting
+  assert.equal(m.$('#seqList input[data-act=rename]'), input, 'not rendered again');
+  assert.equal(m.d.activeElement, input);
+});
+
+test('a render that runs after the release clears the one that waited: the release timer does not draw again', async (t) => {
+  const m = await drag(t);
+  const title = m.row('h001').querySelector('.seq-title');
+  title.dispatchEvent(new m.w.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+  m.$('#seqList li[data-id=h002] button[data-act=rename]').click(); // waits
+  title.dispatchEvent(new m.w.MouseEvent('pointerup', { bubbles: true, button: 0 }));
+  m.$('#seqList li[data-id=h003] button[data-act=rename]').click(); // runs at once, and shows both renames' state
+  const input = m.$('#seqList input[data-act=rename]');
+  assert.equal(m.d.activeElement, input);
+  m.t.mock.timers.tick(1);
+  assert.equal(m.$('#seqList input[data-act=rename]'), input, 'not drawn again');
+  assert.equal(m.d.activeElement, input);
+});
+
+test('only the primary button arms the hold, and a window blur ends it when the release never came', async (t) => {
+  const m = await drag(t);
+  const title = (id) => m.row(id).querySelector('.seq-title');
+  title('h001').dispatchEvent(new m.w.MouseEvent('pointerdown', { bubbles: true, button: 2 }));
+  m.$('#seqList li[data-id=h002] button[data-act=rename]').click();
+  assert.ok(m.$('#seqList input[data-act=rename]'), 'a right press does not hold renders');
+  m.$('#seqList input[data-act=rename]').dispatchEvent(new m.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  title('h001').dispatchEvent(new m.w.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+  m.$('#seqList li[data-id=h002] button[data-act=rename]').click();
+  assert.equal(m.$('#seqList input[data-act=rename]'), null, 'held');
+  m.w.dispatchEvent(new m.w.Event('blur')); // Alt+Tab with the button down
+  m.t.mock.timers.tick(1);
+  await m.page.settle();
+  assert.ok(m.$('#seqList input[data-act=rename]'), 'the render ran');
+});
+
+test('a press on the checkbox does not hold renders, and a render that changes the order runs at once', async (t) => {
+  const m = await drag(t);
+  m.row('h001').querySelector('[data-act=select]').dispatchEvent(new m.w.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+  m.$('#seqList li[data-id=h002] button[data-act=rename]').click();
+  assert.ok(m.$('#seqList input[data-act=rename]'), 'not armed: no wait');
+  m.row('h001').querySelector('.seq-title').dispatchEvent(new m.w.MouseEvent('pointerdown', { bubbles: true, button: 0 }));
+  m.$('#seqList li[data-id=h003] button[data-act=rename]').click(); // a render with the same order waits
+  assert.equal(m.$('#seqList li[data-id=h003] input[data-act=rename]'), null, 'held');
+  const list = m.$('#seqList');
+  const draws = [];
+  const draw = list.replaceChildren.bind(list);
+  list.replaceChildren = (...a) => { draws.push(1); return draw(...a); };
+  m.$('#seqList li[data-id=h002] [data-act=down]').click();
+  await m.page.settle();
+  assert.deepEqual(m.seqIds(), ['h001', 'h003', 'h002'], 'the changed order is shown while pressed');
+  assert.equal(draws.length, 1, 'the waiting render does not run a second time after this one');
+});
+
 test('a render that changes the order during a drag ends it: nothing stale is dropped', async (t) => {
   const m = await drag(t);
   m.fire(m.row('h001'), 'dragstart');
