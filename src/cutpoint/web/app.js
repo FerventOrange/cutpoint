@@ -3362,19 +3362,26 @@ function renderCut() {
   if (had?.disabled) (nav.find((x) => !x.disabled) ?? $('#cutJoin')).focus();
 }
 
-/** Show the still of ``s`` at ``t`` in ``img``; the last one stays until it has loaded. */
+/** Show the still of ``s`` at ``t`` in ``img``; the last one stays, dimmed, until it has loaded. */
 function cutStill(img, s, t) {
   const src = srcOf(s.source);
   const [path, query] = src?.url?.split('?') ?? []; // query carries the session token, as for <video>
   const url = path ? `${path}/frame?${query}&at=${round2(t)}&w=${CUT_STILL_W}` : '';
   if (img.dataset.url === url) return;
   img.dataset.url = url;
-  img.closest('.cut-frame').classList.toggle('failed', !url);
-  if (url) img.src = url;
-  else img.removeAttribute('src');
+  const frame = img.closest('.cut-frame');
+  frame.classList.toggle('failed', !url);
+  frame.classList.toggle('loading', !!url); // the times are new at once, the 640 px still takes a while: dim the old picture
+  if (url) {
+    // only the latest src clears it: a listener of an earlier src that fires late finds another url
+    const done = () => { if (img.dataset.url === url) frame.classList.remove('loading'); };
+    img.addEventListener('load', done, { once: true });
+    img.addEventListener('error', done, { once: true });
+    img.src = url;
+  } else img.removeAttribute('src');
 }
 
-/** The transition control shows Export's Video transition; the choice is one for the whole video. */
+/** The transition control shows the Export panel's Video transition; the choice is one for the whole video. */
 function renderCutTransition() {
   const on = $('#optTransition').value;
   for (const b of $('#cutTransition').children) b.setAttribute('aria-pressed', String(b.dataset.value === on));
@@ -3566,7 +3573,7 @@ function bindCut() {
     const value = e.target.closest('button[data-value]')?.dataset.value;
     if (!value || value === video.value) return;
     video.value = value;
-    video.dispatchEvent(new Event('change')); // as if chosen in the Export tab: stored, audio linked
+    video.dispatchEvent(new Event('change')); // as if chosen in the Export panel: stored, audio linked
     $('#sideLive').textContent = `Transition of the whole video set to ${value === 'fade' ? 'Fade' : 'Cut'}`;
   });
   const join = $('#cutJoin');

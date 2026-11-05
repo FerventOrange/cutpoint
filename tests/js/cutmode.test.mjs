@@ -240,6 +240,29 @@ test('the frames are the last frame of clip 1 and the first of clip 2, asked onc
   assert.match(m.$('#cutOutFrame').alt, /Last frame of clip 1: Big laugh/);
 });
 
+test('a still that is loading dims the old picture; a roll dims it again until the new one loads or fails', async (t) => {
+  const m = await inCut(t, { project: withSegments('h001', 'h002') });
+  t.mock.timers.tick(1000);
+  await m.page.settle();
+  const img = m.$('#cutOutFrame');
+  const frame = img.closest('.cut-frame');
+  const ev = (type) => img.dispatchEvent(new m.w.Event(type));
+  assert.ok(frame.classList.contains('loading'), 'loading until the still arrives');
+  ev('load');
+  assert.ok(!frame.classList.contains('loading'));
+  const url1 = img.dataset.url;
+  await m.key(m.$('#cutJoin'), 'ArrowLeft'); // roll: the time changes, so does the src
+  await m.plan();
+  t.mock.timers.tick(1000);
+  await m.page.settle();
+  assert.notEqual(img.dataset.url, url1);
+  assert.ok(frame.classList.contains('loading'), 'a new src dims again');
+  ev('load'); // fires for the latest src
+  assert.ok(!frame.classList.contains('loading'));
+  ev('error');
+  assert.ok(!frame.classList.contains('loading'));
+});
+
 // ---- play across the cut ----
 
 test('Play across the cut plays the last 3 s of clip 1, then the first 3 s of clip 2 from the spare player', async (t) => {

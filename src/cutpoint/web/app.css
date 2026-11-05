@@ -828,6 +828,8 @@ body.tips-off .flag-tip { display: none; }
 .cut-frame { position: relative; margin: 0; min-height: 0; overflow: hidden; background: var(--deep); border: 1px solid var(--card-line); border-radius: var(--radius-md); }
 .cut-frame > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .cut-frame.failed > img { display: none; }
+.cut-frame > img { transition: opacity 0.15s; }
+.cut-frame.loading > img { opacity: 0.45; } /* the picture only; the times are outside the frame */
 .cut-tag { position: absolute; top: var(--space-2); left: var(--space-2); max-width: calc(100% - 2 * var(--space-2)); padding: var(--space-0) var(--space-2); border-radius: var(--radius-sm); background: var(--scrim); color: var(--scrim-ink); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cut-time { top: auto; left: auto; right: var(--space-2); bottom: var(--space-2); font: 500 11px/18px var(--mono); }
 .cut-bar, .cut-trans { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); }
