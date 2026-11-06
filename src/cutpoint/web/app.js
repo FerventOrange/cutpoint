@@ -64,6 +64,10 @@ const LINKED_AUDIO = { cut: 'cut', fade: 'crossfade' }; // Link Transitions: the
 const FRAME = 0.04; // seconds: "Play sequence" moves on this close to a clip's end
 const GAP = 0.05; // seconds: a clip starting this close to the previous one's end plays on without a cut
 const CUT_PLAY = 3; // seconds: "Play across the cut" plays this much of each clip; the roll track shows as much on each side
+const FADE_DUR = 0.25; // seconds: Fade length left blank (assemble --fade-dur's default)
+const FADE_ROOM = 0.45; // a Fade takes at most this share of the shortest clip it joins (assemble.crossfade_duration)
+const JOIN_NAMES = { cut: 'Cut', fade: 'Fade' };
+const JOIN_NEXT = { default: 'cut', cut: 'fade', fade: null }; // a join's button steps Default, Cut, Fade; null: Default
 const CUT_STILL_W = 640; // pixels requested for Cut mode's two frames (the most the server cuts)
 const CUT_NEEDS = 'Cut mode needs a sequence of at least two clips.';
 // The camera path flags of a 360 moment (#517, cutpoint.pano.candidates.FLAGS) as short badge words
@@ -79,7 +83,7 @@ const S = {
   id: null,
   project: null,
   segments: [], // working sequence (may hold unsaved edits)
-  savedKey: '[]',
+  savedKey: '{"segments":[],"joins":[]}',
   drafts: {}, // trims of moments not (yet) in the sequence; whole segments for removed non-moments; ``at``: index a removed clip had
   focus: null,
   filter: '',
@@ -113,7 +117,10 @@ const S = {
   seqPlay: null,
   cutMode: false, // the stage shows the cut after the selected clip (setCut); "Play sequence" ends it
   cutAt: 0, // the cut last shown: its first clip's index, where Cut mode stays when that clip leaves the sequence
-  undo: [], // {segments, drafts} before each edit, manual or applied from AI Chat, newest last (at most UNDO_MAX)
+  // the joins with a transition of their own, [{a, b, transition}]: clip a's end into clip b's start. A choice
+  // stays while its clips are apart (a reorder, a removal) and counts again once b follows a; no entry is Default
+  joins: [],
+  undo: [], // {segments, drafts, joins} before each edit, manual or applied from AI Chat, newest last (at most UNDO_MAX)
   redo: [],
   undoTag: null, // {tag, at}: the last edit's kind, so a held key or a drag is one undo step
   // AI Chat (#346): the change previewed in the Sequence tab, the moments list and the rail until Apply
@@ -141,11 +148,19 @@ let pendingSeek = null;
 let cued = null; // {id, start, vt}: the clip the spare player holds, at video time vt
 let seekWant = null; // {t, fast}: the latest scrub target while a seek is in flight
 let wasIn = true; // the playhead was on the rail at the last frame or view change (tick follows it off the edge)
+let blend = null; // {old, end, lap}: a Fade playing across a cut: the outgoing player, its out point in video time and the fade's seconds
+let previewVolume = () => 1; // the shared volume of the preview videos (initVolume)
 
 // ---------- state helpers ----------
 
 const pick = (s) => ({ id: s.id, source: s.source, start: s.start, end: s.end, label: s.label });
 const key = () => JSON.stringify(S.segments.map(pick));
+const joinKey = (j) => `${j.a}\n${j.b}`;
+/** What Save sends, as a string: the sequence and the joins, in a fixed order, so that undoing a choice is no change. */
+const reviewKey = () => JSON.stringify({
+  segments: S.segments.map(pick),
+  joins: S.joins.map(({ a, b, transition }) => ({ a, b, transition })).sort((x, y) => (joinKey(x) < joinKey(y) ? -1 : 1)),
+});
 
 // Export clips cuts a clip where a sentence or reaction ends (Smart tails, Speech-aware cuts), not at
 // the trim handle. The server plans that for the sequence (POST /edges); lengths, totals and
@@ -197,7 +212,7 @@ function askEdges() {
     }
   }, EDGES_DELAY_MS);
 }
-const dirty = () => key() !== S.savedKey;
+const dirty = () => reviewKey() !== S.savedKey;
 const cands = () => S.project?.highlights?.candidates ?? [];
 const srcOf = (path) => S.project?.sources?.find((s) => s.path === path);
 const sourceDur = (path) =>
@@ -553,8 +568,8 @@ async function refreshProject() {
   }
 }
 
-/** Forget the per-project edit state; ``segments`` become the saved sequence. */
-function resetWorkspace(segments) {
+/** Forget the per-project edit state; ``segments`` and ``joins`` become the saved sequence. */
+function resetWorkspace(segments, joins = []) {
   seqStop('', false);
   if (S.cutMode) setCut(false);
   S.drafts = {};
@@ -562,7 +577,8 @@ function resetWorkspace(segments) {
   S.selected.clear();
   S.renaming = null;
   S.segments = segments;
-  S.savedKey = key();
+  S.joins = joins;
+  S.savedKey = reviewKey();
   S.undo = [];
   S.redo = [];
   S.undoTag = null;
@@ -593,13 +609,14 @@ function adopt(p, switched) {
   if (switched) {
     S.id = p.id;
     delete $('#momentsEmpty').dataset.refocus;
-    resetWorkspace(structuredClone(p.review?.segments ?? []));
+    resetWorkspace(structuredClone(p.review?.segments ?? []), structuredClone(p.review?.joins ?? []));
     renderProjectMenu();
     history.replaceState(null, '', `#${encodeURIComponent(p.id)}`);
   } else if (!dirty()) {
     // Polling must never clobber unsaved edits; saved ones follow the server.
     S.segments = structuredClone(p.review?.segments ?? []);
-    S.savedKey = key();
+    S.joins = structuredClone(p.review?.joins ?? []);
+    S.savedKey = reviewKey();
   }
   if (!current()) S.focus = S.segments[0]?.id ?? cands()[0]?.id ?? null;
   clearTimeout(S.prepTimer);
@@ -2165,7 +2182,9 @@ function seqCheck() {
     seqStop('The playing clip left the sequence. Sequence stopped.');
     return false;
   }
-  if (playhead() >= seg.end - FRAME) seqGo(sp.i + 1);
+  stepBlend();
+  const lap = sp.i === 0 && spareReady() ? seqLap() : 0; // the Fade of a cut starts this early; a spare player not ready yet leaves a cut
+  if (playhead() >= seg.end - (lap || FRAME)) seqGo(sp.i + 1, lap);
   return !v.paused && !S.seqPlay?.wait;
 }
 
@@ -2255,6 +2274,7 @@ finalVideo.addEventListener('play', () => {
   }
 });
 onStage('play', () => {
+  if (blend && blend.old.currentTime < blend.end) blend.old.play().catch(() => {});
   finalVideo.pause();
   resumeAt = null;
   showPlaying(true);
@@ -2262,6 +2282,7 @@ onStage('play', () => {
   loop();
 });
 onStage('pause', () => {
+  blend?.old.pause();
   showPlaying(!!resumeAt); // waiting at a window's end to play on
   updatePlayhead();
   const c = current();
@@ -2515,13 +2536,13 @@ function changed() {
 
 // ---------- undo ----------
 // One stack for every edit of the working sequence, by hand or applied from AI Chat (#346): a
-// snapshot of the segments and drafts before each one. Ctrl+Z undoes, Ctrl+Y or Shift+Ctrl+Z redoes.
+// snapshot of the segments, drafts and joins before each one. Ctrl+Z undoes, Ctrl+Y or Shift+Ctrl+Z redoes.
 // An applied AI Chat change that sets Color keeps the Color it replaced too ({mode, strength}, as
 // colorChoice gives it); other edits leave the Color alone, so undoing them never changes it.
 
 const UNDO_MAX = 50;
 const UNDO_JOIN_MS = 1000; // edits of one kind this close together (a held key, a drag) are one step
-const snapshot = (withColor = false) => ({ segments: structuredClone(S.segments), drafts: structuredClone(S.drafts), ...(withColor ? { color: colorChoice() } : {}) });
+const snapshot = (withColor = false) => ({ segments: structuredClone(S.segments), drafts: structuredClone(S.drafts), joins: structuredClone(S.joins), ...(withColor ? { color: colorChoice() } : {}) });
 
 /** Keep the sequence as it is before an edit (and the Color, with ``withColor``); ``tag`` joins a quick run of the same edit (one trim point of one clip) into one step. */
 function remember(tag = null, withColor = false) {
@@ -2543,6 +2564,7 @@ function restore(from, to, done) {
   to.push(snapshot(!!s.color));
   S.segments = s.segments;
   S.drafts = s.drafts;
+  S.joins = s.joins;
   if (s.color) chooseColor(s.color);
   S.undoTag = null;
   renderAfterSeqChange();
@@ -3566,12 +3588,34 @@ function cutStill(img, s, t) {
   else img.removeAttribute('src');
 }
 
-/** The transition control shows the Export panel's Video transition; the choice is one for the whole video. */
+/** The transition control shows the Export panel's Video transition: the default of every join with no choice of its own. */
 function renderCutTransition() {
   const on = $('#optTransition').value;
   for (const b of $('#cutTransition').children) b.setAttribute('aria-pressed', String(b.dataset.value === on));
-  const note = `Applies to the whole video${on === 'fade' ? '. Play across the cut shows a hard cut' : ''}`;
-  if ($('#cutTransNote').textContent !== note) $('#cutTransNote').textContent = note;
+}
+
+/** The choice of clip ``a`` into clip ``b``, or undefined for Default. */
+const joinOf = (a, b) => S.joins.find((j) => j.a === a.id && j.b === b.id)?.transition;
+/** What clip ``a`` into clip ``b`` plays and exports: its own choice, or the transition of the whole video. */
+const joinTransition = (a, b) => joinOf(a, b) ?? $('#optTransition').value;
+/** The Fade length as Assemble uses it: the field, or its default when blank or out of range. */
+const fadeLen = () => ($('#optFadeDur').value.trim() && $('#optFadeDur').checkValidity() ? Number($('#optFadeDur').value) : FADE_DUR);
+/** Seconds clip ``a`` and clip ``b`` overlap: 0 for a Cut. All Fades share one length, as in assemble: at most a share of the shortest clip they join. */
+function joinLap(a, b) {
+  if (joinTransition(a, b) !== 'fade') return 0;
+  const fading = S.segments.slice(1).flatMap((y, i) => (joinTransition(S.segments[i], y) === 'fade' ? [exportedLen(S.segments[i]), exportedLen(y)] : []));
+  return Math.min(fadeLen(), FADE_ROOM * Math.min(...fading));
+}
+
+/** Set the join of clip ``a`` into clip ``b`` (index ``i``) to ``transition``, or to Default with null: one undo step, saved with the sequence. */
+function setJoin(a, b, i, transition) {
+  if (S.seqPlay?.across) seqStop();
+  remember();
+  S.joins = S.joins.filter((j) => j.a !== a.id || j.b !== b.id);
+  if (transition) S.joins.push({ a: a.id, b: b.id, transition });
+  changed();
+  renderCut();
+  $('#sideLive').textContent = `Transition of cut ${i + 1} set to ${transition ? JOIN_NAMES[transition] : `Default (${JOIN_NAMES[joinTransition(a, b)]})`}`;
 }
 
 /** How far a roll can go from where it is, and why not further: the limits of a trim (validate, handleRange) on clip 1's end and clip 2's start. */
@@ -3695,7 +3739,9 @@ function stepCut(d) {
 /** Play the last seconds of clip 1 and the first of clip 2 through "Play sequence": the spare player holds clip 2, so the step is a swap. */
 function cutPlay() {
   const k = cutIndex();
-  if (k >= 0) seqStart(S.segments[k].id, [S.segments[k].id, S.segments[k + 1].id], { back: S.focus });
+  if (k < 0) return;
+  $('#cutRollMsg').textContent = ''; // it may say the last play could not show the Fade
+  seqStart(S.segments[k].id, [S.segments[k].id, S.segments[k + 1].id], { back: S.focus });
 }
 
 /** The play button and the player's place: over the frames while a cut plays. */
@@ -3710,37 +3756,54 @@ function renderCutPlay() {
   b.setAttribute('aria-keyshortcuts', on ? 'Escape' : 'Space');
 }
 
-/** One block per clip, in sequence order, sized by exported length; each is the cut after its clip, the last clip's belongs to the cut before it. */
+/** The button of the join of clip ``a`` into clip ``b`` (cut ``i`` of ``n - 1``): the letter of what it plays, solid when it is the join's own choice, dashed for Default. */
+function joinButton(a, b, i, n, k, onkeydown) {
+  const own = joinOf(a, b);
+  const on = JOIN_NAMES[joinTransition(a, b)];
+  const next = JOIN_NEXT[own ?? 'default'];
+  const name = next ? JOIN_NAMES[next] : 'Default';
+  return h('button', {
+    type: 'button', class: 'cut-mark', 'data-join': i, 'data-own': own ? 'true' : 'false', tabindex: i === k ? 0 : -1,
+    'aria-label': `Transition of cut ${i + 1} of ${n - 1}: ${own ? `${on}, set for this cut` : `Default, ${on}`}. Press for ${name}`,
+    title: `Cut ${i + 1} → ${i + 2}: ${own ? on : `Default (${on})`}. Click for ${name}`,
+    onclick: () => setJoin(a, b, i, next), onkeydown,
+  }, on[0]);
+}
+
+/** One block per clip, in sequence order, sized by exported length; each is the cut after its clip, the last clip's belongs to the cut before it. Between two blocks, the button of their join. Blocks and join buttons are a tab stop each. */
 function renderCutStrip(k) {
   const el = $('#cutStrip');
   const n = S.segments.length;
-  const had = el.contains(document.activeElement) ? document.activeElement.dataset.cut : null;
-  el.replaceChildren(...S.segments.map((s, i) => {
+  const focused = el.contains(document.activeElement) ? document.activeElement : null;
+  const had = focused && (focused.dataset.cut != null ? `[data-cut="${focused.dataset.cut}"]` : `[data-join="${focused.dataset.join}"]`);
+  /** Arrow keys, Home and End from item ``i`` of the ``sel`` items: they move the focus, a click or Enter acts. */
+  const moves = (i, sel) => (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+    const step = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+    const to = step != null ? i + step : e.key === 'Home' ? 0 : e.key === 'End' ? n - 2 : null;
+    if (to == null) return;
+    e.preventDefault();
+    const items = [...el.querySelectorAll(sel)];
+    const go = items[Math.max(0, Math.min(n - 2, to))];
+    for (const x of items) x.tabIndex = x === go ? 0 : -1;
+    go.focus();
+  };
+  el.replaceChildren(...S.segments.flatMap((s, i) => {
     const props = {
       class: `cut-block${i === k || i === k + 1 ? ' on' : ''}${i === k ? ' at' : ''}`, 'data-kind': kindOf(cands().find((c) => c.id === s.id)),
       style: `flex-grow: ${Math.max(exportedLen(s), 0.1).toFixed(2)}`,
     };
-    if (i === n - 1) return h('span', { ...props, 'aria-hidden': 'true', onclick: () => focusMoment(S.segments[n - 2].id) });
+    if (i === n - 1) return [h('span', { ...props, 'aria-hidden': 'true', onclick: () => focusMoment(S.segments[n - 2].id) })];
     const next = S.segments[i + 1];
-    return h('button', {
+    return [h('button', {
       ...props, type: 'button', 'data-cut': i, tabindex: i === k ? 0 : -1, 'aria-current': i === k ? 'true' : null,
       'aria-label': `Cut ${i + 1} of ${n - 1}: ${cutName(s)} into ${cutName(next)}`, title: `Cut ${i + 1} → ${i + 2}`,
       onclick: () => focusMoment(s.id),
-      onkeydown: (e) => {
-        if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
-        const step = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
-        const to = step != null ? i + step : e.key === 'Home' ? 0 : e.key === 'End' ? n - 2 : null;
-        if (to == null) return;
-        e.preventDefault();
-        const blocks = [...el.querySelectorAll('button')];
-        const go = blocks[Math.max(0, Math.min(n - 2, to))];
-        for (const x of blocks) x.tabIndex = x === go ? 0 : -1;
-        go.focus();
-      },
-    });
+      onkeydown: moves(i, '[data-cut]'),
+    }), joinButton(s, next, i, n, k, moves(i, '[data-join]'))];
   }));
-  if (had != null) el.querySelector(`[data-cut="${had}"]`)?.focus();
-  const cur = el.children[k]; // a very long sequence scrolls here, not the page
+  if (had) el.querySelector(had)?.focus();
+  const cur = el.querySelector(`[data-cut="${k}"]`); // a very long sequence scrolls here, not the page
   if (el.scrollWidth > el.clientWidth && (cur.offsetLeft < el.scrollLeft || cur.offsetLeft > el.scrollLeft + el.clientWidth)) el.scrollLeft = cur.offsetLeft - el.clientWidth / 2;
 }
 
@@ -3758,13 +3821,13 @@ function bindCut() {
     });
   }
   const video = $('#optTransition');
-  video.addEventListener('change', renderCutTransition);
+  video.addEventListener('change', renderCut); // the control and the joins on Default
   $('#cutTransition').addEventListener('click', (e) => {
     const value = e.target.closest('button[data-value]')?.dataset.value;
     if (!value || value === video.value) return;
     video.value = value;
     video.dispatchEvent(new Event('change')); // as if chosen in the Export panel: stored, audio linked
-    $('#sideLive').textContent = `Transition of the whole video set to ${value === 'fade' ? 'Fade' : 'Cut'}`;
+    $('#sideLive').textContent = `Default transition set to ${JOIN_NAMES[value]}`;
   });
   const join = $('#cutJoin');
   join.addEventListener('keydown', (e) => {
@@ -3814,14 +3877,21 @@ function bindCut() {
 
 // ---------- play sequence ----------
 
-/** Clip ``j`` of the playing sequence, running where its export runs; over a cut only the last CUT_PLAY s of the first clip and the first of the second, tails included. */
+/** Clip ``j`` of the playing sequence, running where its export runs; over a cut only the last CUT_PLAY s of the first clip and the first of the second (a longer Fade: its length and a second), tails included. */
 const seqSeg = (j) => {
   const s = S.segments.find((x) => x.id === S.seqPlay?.order[j]);
   if (!s) return s;
   const { start, end } = planned(s);
   if (!S.seqPlay.across) return { ...s, start, end };
-  return j ? { ...s, start, end: Math.min(end, start + CUT_PLAY) } : { ...s, start: Math.max(start, end - CUT_PLAY), end };
+  const span = Math.max(CUT_PLAY, seqLap() + 1);
+  return j ? { ...s, start, end: Math.min(end, start + span) } : { ...s, start: Math.max(start, end - span), end };
 };
+/** Seconds the two clips of the playing cut overlap, read live; 0 for a Cut or any other play. */
+function seqLap() {
+  if (!S.seqPlay?.across) return 0;
+  const [a, b] = S.seqPlay.order.map((id) => S.segments.find((s) => s.id === id));
+  return a && b ? joinLap(a, b) : 0;
+}
 const seqNow = () => S.seqPlay?.order[S.seqPlay.i];
 const nowIcon = () => h('span', { class: 'seq-now', 'aria-hidden': 'true', title: 'Playing' }, icon('play'));
 
@@ -3890,7 +3960,8 @@ function seqClock(t) {
     else if (j === sp.i && !sp.wait) done += Math.min(Math.max(t - s.start, 0), s.end - s.start);
   });
   const k = cutIndex() + 1;
-  return `${sp.across ? `Cut ${k} → ${k + 1}` : `Clip ${sp.i + 1} of ${sp.order.length}`} · ${fmtLen(done)} / ${fmtLen(total)}`;
+  const lap = seqLap(); // counted in both clips
+  return `${sp.across ? `Cut ${k} → ${k + 1}` : `Clip ${sp.i + 1} of ${sp.order.length}`} · ${fmtLen(done - (sp.i > 0 ? lap : 0))} / ${fmtLen(total - lap)}`;
 }
 
 /** Play the sequence from its first clip, or from clip ``from`` (an id); with ``across`` ({back}) only ``order``, the two clips of a cut, over the cut. */
@@ -3917,6 +3988,7 @@ function seqStop(msg = S.seqPlay?.across ? 'Stopped playing across the cut' : 'S
   if (!S.seqPlay) return;
   const { across } = S.seqPlay;
   S.seqPlay = null;
+  endBlend();
   cued = null;
   clearTimeout(S.seqTimer);
   v.pause();
@@ -3999,7 +4071,7 @@ function cueNext() {
   const seg = seqSeg(j);
   const src = srcOf(seg?.source);
   const p = readyFor(src, seg) && fileFor(src, seg); // the whole source, or a window covering the clip
-  if (!p || (cur && seg.source === cur.source && Math.abs(seg.start - cur.end) <= GAP && v.dataset.url === p.url)) {
+  if (!p || (cur && !seqLap() && seg.source === cur.source && Math.abs(seg.start - cur.end) <= GAP && v.dataset.url === p.url)) {
     cued = null; // not playable yet, or it plays on in the visible player
     return;
   }
@@ -4021,9 +4093,10 @@ function cueNext() {
  * Play clip ``j`` of the sequence. Clips that left it are passed over and clips whose preview
  * could not be built are skipped with a note; after the last one the sequence stops. The next
  * clip waits in the spare player, so a step is a swap; otherwise the stage loads it (and waits
- * for its proxy).
+ * for its proxy). ``lap``: the seconds of the Fade starting here (startBlend), the old clip
+ * playing on under it.
  */
-function seqGo(j) {
+function seqGo(j, lap = 0) {
   const sp = S.seqPlay;
   const skipped = [];
   for (; j < sp.order.length; j += 1) {
@@ -4042,7 +4115,8 @@ function seqGo(j) {
   sp.i = j;
   sp.wait = false;
   const url = readyFor(src, seg) && fileFor(src, seg).url; // the whole source, or a window covering the clip
-  if (cur && seg.source === cur.source && Math.abs(playhead(cur) - seg.start) <= FRAME + GAP && v.dataset.url === url && !v.paused) {
+  if (cur && !lap && seqLap()) $('#cutRollMsg').textContent = `Clip ${j + 1} was not ready in time, so this play shows a cut in place of the Fade. Play it again to see the Fade.`;
+  if (!lap && cur && seg.source === cur.source && Math.abs(playhead(cur) - seg.start) <= FRAME + GAP && v.dataset.url === url && !v.paused) {
     showMoment(seg.id, true); // contiguous: plays on without a cut
   } else if (cued?.id === seg.id && o.dataset.url === url && !o.error) {
     const old = v;
@@ -4054,7 +4128,8 @@ function seqGo(j) {
     o.classList.add('active');
     old.classList.remove('active');
     v.play().catch(() => {});
-    old.pause();
+    if (lap) startBlend(old, cur.end, lap);
+    else old.pause();
     showMoment(seg.id, true);
   } else {
     showMoment(seg.id); // loads the source (or a window proxy covering the clip), or waits for one
@@ -4066,6 +4141,53 @@ function seqGo(j) {
   $('#seqLive').textContent = `Playing clip ${j + 1} of ${sp.order.length}: ${seg.label || seg.id}`;
   cueNext();
   updatePlayhead();
+}
+
+/** The spare player holds the second clip of the playing cut, at its start, with data to play on. */
+function spareReady() {
+  const o = spare();
+  return cued?.id === S.seqPlay.order[1] && !o.error && !o.seeking && o.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA;
+}
+
+/** Start a Fade of ``lap`` seconds: ``old``, the outgoing player, plays on to ``end`` (source time) under the visible player, which just took over. */
+function startBlend(old, end, lap) {
+  blend = { old, end: end - (Number(old.dataset.offset) || 0), lap };
+  mixBlend(0);
+}
+
+/**
+ * Show the share ``p`` (0-1) of a Fade. Only the player on top changes its opacity, so the two
+ * add up to a whole picture; volumes follow ``p`` under the shared volume. With reduced motion
+ * the picture changes once, half way, and the sound still ramps.
+ */
+function mixBlend(p) {
+  const mix = reduceMotion.matches ? Math.round(p) : p;
+  const [under, top] = els;
+  under.style.opacity = '1';
+  top.style.opacity = String(top === v ? mix : 1 - mix);
+  v.volume = previewVolume() * p;
+  blend.old.volume = previewVolume() * (1 - p);
+}
+
+/** One frame of a Fade, on the clock of the incoming clip, so a stall holds the mix. The outgoing clip holds its last frame past its out point. */
+function stepBlend() {
+  if (!blend) return;
+  const p = (playhead() - seqSeg(S.seqPlay.i).start) / blend.lap;
+  if (p >= 1) return endBlend();
+  if (blend.old.currentTime >= blend.end) blend.old.pause();
+  mixBlend(Math.max(p, 0));
+}
+
+/** End a Fade, at its end or when the play stops: the visible player alone, at the shared volume. */
+function endBlend() {
+  if (!blend) return;
+  const { old } = blend;
+  blend = null;
+  old.pause();
+  for (const el of els) {
+    el.style.opacity = '';
+    el.volume = previewVolume();
+  }
 }
 
 /** Removed clips that are no ranked moment: listed until reload, so they can be added back. */
@@ -4107,11 +4229,11 @@ function renderSave() {
 
 async function saveReview() {
   if (!dirty()) return;
-  const sent = key();
+  const sent = reviewKey();
   S.saving = true;
   renderSave();
   try {
-    await api(`/api/projects/${encodeURIComponent(S.id)}/review`, { method: 'PUT', body: { segments: JSON.parse(sent) } });
+    await api(`/api/projects/${encodeURIComponent(S.id)}/review`, { method: 'PUT', body: JSON.parse(sent) });
     S.savedKey = sent;
     banner('');
   } finally {
@@ -4132,6 +4254,7 @@ function exportMatches() {
 }
 
 function renderExport() {
+  syncJoinFields();
   const p = S.project;
   const clips = p?.clips;
   const st = $('#exportState');
@@ -4415,7 +4538,7 @@ function renderOutputs() {
 async function startJob(action, extra = {}) {
   if (!S.project) return;
   try {
-    if (action === 'clips') await saveReview(); // clips use the saved sequence
+    if (action === 'clips' || action === 'assemble') await saveReview(); // clips use the saved sequence, assemble its joins
     const job = await api(`/api/projects/${encodeURIComponent(S.id)}/jobs`, { method: 'POST', body: { action, ...extra } });
     S.tracked.set(job.id, 'running'); // so a job that ends between two polls still refreshes the project
     banner('');
@@ -6694,7 +6817,9 @@ function initVolume() {
     const volume = Number(range.value) / 100;
     set({ volume, muted: vol.muted && volume === 0 });
   });
-  for (const el of vids) el.addEventListener('volumechange', () => set({ volume: el.volume, muted: el.muted }));
+  // a Fade ramps the stage players itself: those volumes are not the setting
+  for (const el of vids) el.addEventListener('volumechange', () => (blend && el !== vids.at(-1) ? null : set({ volume: el.volume, muted: el.muted })));
+  previewVolume = () => vol.volume;
   $('.transport-end').append(h('div', { class: 'vol', role: 'group', 'aria-label': 'Preview sound' }, btn, range));
   apply();
   return toggleMute;
@@ -7059,24 +7184,37 @@ function initExportOptions() {
   return saved;
 }
 
+/** Turn a field of the Export panel and its label on or off. */
+function able(id, on) {
+  const el = $(id);
+  el.disabled = !on;
+  document.querySelector(`label[for=${el.id}]`)?.classList.toggle('off', !on);
+}
+
+/**
+ * The Export fields that follow the joins of the sequence, on Default or by their own choice:
+ * Fade length while one fades; Assembly audio fade unless every edge has an audio crossfade, so
+ * under the Crossfade audio transition while one is a Cut (its edges and the video's two ends use it).
+ */
+function syncJoinFields() {
+  const joins = S.segments.slice(1).map((b, i) => joinTransition(S.segments[i], b));
+  able('#optFadeDur', $('#optTransition').value === 'fade' || joins.includes('fade'));
+  able('#optFinalAudioFade', $('#optFormat').value === 'mp4' && ($('#optAudioTransition').value !== 'crossfade' || joins.includes('cut')));
+}
+
 /**
  * Enable the Export panel's fields that apply: the automatic-pick fields with Automatic picks, Top
  * moments without candidate ids (the CLI takes one or the other), the speech caps with Speech-aware
  * cuts, the tail lengths with Smart tails. The sequence's moments keep their exact ends with Smart
  * tails off, which turns event tails off too, so Event tails is not sent then. The fields the CLI
- * would not use are off too: Output size with Vertical 9:16, Fade length under a video Cut,
- * Assembly audio fade with the Crossfade audio transition, Captions model without captions. A
+ * would not use are off too: Output size with Vertical 9:16, Fade length without a Fade to use it,
+ * Assembly audio fade with the Crossfade audio transition and no Cut join, Captions model without captions. A
  * timeline Output format (fcpxml, otio) joins and encodes nothing, so Normalize loudness, Burn in
  * captions, Captions model and Assembly audio fade are off with it, and say why. The crop box
  * shows with Crop Custom.
  */
 function syncTiming() {
   const auto = picks() === 'auto';
-  const able = (id, on) => {
-    const el = $(id);
-    el.disabled = !on;
-    document.querySelector(`label[for=${el.id}]`)?.classList.toggle('off', !on);
-  };
   $('#autoOpts').hidden = !auto;
   able('#optTop', auto && !$('#optIds').value.trim());
   for (const id of ['#optMaxTotal', '#optIds', '#optOrder']) able(id, auto);
@@ -7096,14 +7234,13 @@ function syncTiming() {
   $('#optCropBox').disabled = !custom || pano;
   document.querySelector('label[for=optCropBox]').hidden = !custom;
   able('#optSize', !$('#optVertical').checked && !pano);
-  able('#optFadeDur', $('#optTransition').value === 'fade');
+  syncJoinFields();
   const video = $('#optFormat').value === 'mp4';
   for (const id of ['#optLoudnorm', '#optCaptions']) {
     const el = $(id);
     el.disabled = !video;
     el.closest('label').classList.toggle('off', !video);
   }
-  able('#optFinalAudioFade', video && $('#optAudioTransition').value !== 'crossfade');
   able('#optCaptionModel', video && $('#optCaptions').checked);
   for (const id of ['#optLoudnorm', '#optCaptions', '#optCaptionModel', '#optFinalAudioFade']) timelineNote($(id), !video);
   renderAdvInUse();

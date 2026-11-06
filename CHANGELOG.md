@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Per-cut transitions: `assemble --joins FILE` sets single joins to `cut` or `fade` from a JSON
+  file (`{"joins": [{"from": "001_a.mp4", "to": "002_b.mp4", "transition": "fade"}]}`), and
+  `--transition` stays the default of the others. It works on a clips folder and on
+  `assemble <project>`, not on `edit`. A Fade join crossfades its audio even under a global cut.
+  `--json` has the warnings `join_unmatched` and `join_no_room` and a `joins` output. In Cut mode of
+  `cutpoint ui`, the Cuts strip sets each cut to Cut, Fade or Default (the Export panel's Video
+  transition), kept per clip pair; "Play across the cut" follows the cut's transition.
 - In `gaming`, detected events can create candidates of their own ("nominated" moments), so a
   moment no longer has to be found by the audio and transcript grids first. They have
   `signals.events.nominated` and `grid_score` in `highlights.json`, and
@@ -19,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Cut mode in the center stage of `cutpoint ui`, beside Clip and Sequence, for a sequence of at
   least two clips: the last frame of a clip and the first frame of the next side by side, "Play
-  across the cut" (3 s each side, always a hard cut), "Roll the cut" (drag or keys: the first clip's
+  across the cut" (3 s each side), "Roll the cut" (drag or keys: the first clip's
   out and the next clip's in move together, so the length stays), the Export panel's Video transition
   (it applies to the whole video), and a Cuts strip with Previous and Next cut.
 - The side column in `cutpoint ui` has three tabs (Sequence, AI Chat, Models); the Export button opens

@@ -87,6 +87,8 @@ So do these combinations:
 | `resume_args_changed` | `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze`, `clips` | The run replaced the `progress.json` of an interrupted or `low_memory` run with a different command or options; `files` names `<project>/progress.json` |
 | `kept_clips` | `clips`, `extend` (so `edit`) | `.mp4` files the old manifest does not list stayed in the folder (the message names clips renamed during review); `assemble` includes them |
 | `kept_sources` | `clips`, `extend` | A file the run reads, or the clips were cut from, was not replaced |
+| `join_unmatched` | `assemble` with `--joins` | A pair in the joins file is not two clips next to each other in this order; `files` names the two clips. That join uses `--transition` |
+| `join_no_room` | `assemble` with `--joins` | A Fade join has no room for one frame next to a clip (more than 45% of the shorter clip); `files` names the two clips. It becomes a cut |
 | `temporary_clips` | `assemble <project>`, `edit --no-keep-clips` | The clips were exported into a temporary folder and removed after the join; `outputs` lists no clips. Export them with `clips` to keep them |
 | `temporary_clips_left` | `assemble <project>`, `edit --no-keep-clips` | A temporary clips folder could not be removed (a file in it is open in another program); `files` names it. Delete it, or the next such run in the project removes it |
 | `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
@@ -131,7 +133,7 @@ So do these combinations:
 | `detect` | `category` (`gameplay`, `action-cam`, `talk` or `general`), `ambiguous`, `reason`, `scores` (share of the footage per category), `suggest` (`commentary` for talky gameplay, else `null`), `sources` (each `path`, `duration`, `category`, `ambiguous`, `reason`, `gameplay` (score 0-1, `null` with telemetry) and `speech` (share of the source covered by words, `null` before transcription)), `pending` (talk not checked yet: a long source has no transcript), `styles` (`analyze` and `funny-moments`: the style each would use) |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds`, `taken_over` (finished clips taken over from a stopped export's `.<folder>.cutpoint-resume`, not encoded again; 0 when none, missing for temporary clips) |
 | `extend` | As `clips` (`taken_over` included), and `seconds` (`{"start", "end"}`) |
-| `assemble` | `format` (`mp4`, `fcpxml` or `otio`); the file written: `final` (the video, `mp4`), or `fcpxml` or `otio` (the timeline); `srt` (`null` if none was written), `duration` (of the video or the timeline), `clip_count`. From a project with `--format fcpxml\|otio`, also the outputs of `clips` for the kept clips; with `mp4`, no clip paths (warning `temporary_clips`) |
+| `assemble` | `format` (`mp4`, `fcpxml` or `otio`); the file written: `final` (the video, `mp4`), or `fcpxml` or `otio` (the timeline); `srt` (`null` if none was written), `duration` (of the video or the timeline), `clip_count`, and `joins` with `--joins` (one `{from, to, transition}` per pair in the file that matched, with the transition used: `cut` or `fade`). From a project with `--format fcpxml\|otio`, also the outputs of `clips` for the kept clips; with `mp4`, no clip paths (warning `temporary_clips`) |
 | `edit` | `kind`, the outputs of `analyze` (`visual_candidates` only for action-cam, action and sport), `clips` (none with `--no-keep-clips`) and `assemble`, and `copy` and `copy_srt` (the `<name>-final` files: the video, or the timeline with `--format fcpxml\|otio`; `copy_srt` is `null` if none was written). One envelope holds the warnings of all steps |
 | `capabilities` | The report's own keys (as printed by `capabilities` without `--json`, including `edition`, `torch` and `insta360_sdk`) |
 | `mix` | `segments`, `report`, `sheet`, `moments` (each `id`, `source`, `start`, `end`, `duration`, `category`), `count`, `total_seconds`, `target_seconds`, `categories` (per category `n` and `seconds`), `content_qa_pass` |
@@ -380,8 +382,8 @@ browser:
 | Smart tails | `--smart-tail` | on |
 | Normalize loudness | `--loudnorm`; off with a timeline Output format | on |
 | Output format | What Assemble writes (`assemble --format`): Video (mp4), Final Cut (fcpxml) or OpenTimelineIO (otio). A timeline uses the current export's clips in their reviewed order and is written in about a second, with no audio processing or burned-in captions: Normalize loudness, Burn in captions, Captions model and Assembly audio fade are off with it (the server refuses the first two) | Video (mp4) |
-| Link Transitions | On: the audio transition follows the video (Cut gives Cut, Fade gives Crossfade) and the audio select is disabled | on |
-| Video transition | Cut or Fade (`--transition`) | Cut |
+| Link Transitions | On: the audio transition follows the video (Cut gives Cut, Fade gives Crossfade) and the audio select is disabled. A join set to Fade in Cut mode still crossfades its audio under a Cut video transition | on |
+| Video transition | Cut or Fade (`--transition`); the default of every cut. In Cut mode the Cuts strip sets single cuts to Cut, Fade or Default (follows this control), passed as `--joins` | Cut |
 | Audio transition | Cut or Crossfade (`--audio-transition`); Crossfade is unavailable under a video Cut | follows the video |
 | Compress Audio Peaks | None, Light or Max (`off`, `light`, `strong`) | Light |
 | Color | Off, Auto or Underwater (`--color`), in Export clips and One-Click Edit; Extend export keeps each clip's grade | `color` in `config.json`, else Off; Off for gaming projects |
@@ -422,8 +424,8 @@ export from the ranked moments instead:
 | Crop (off for 360 projects): Default, Auto, None or Custom (a Crop box `W:H:X:Y` in source pixels) | `clips --crop` (Default: no flag) |
 | Output size (advanced; off with Vertical 9:16 and for 360 projects): `WxH` in even pixels, such as `1280x720` | `clips --size` |
 | Clip audio fade (advanced; 0-10 s, 0 = off) | `clips --audio-fade` |
-| Fade length (advanced; with the Fade video transition) | `assemble --fade-dur` |
-| Assembly audio fade (advanced; off with the Crossfade audio transition): for clips exported without a fade | `assemble --audio-fade` |
+| Fade length (advanced; with the Fade video transition, or a join set to Fade in Cut mode) | `assemble --fade-dur` |
+| Assembly audio fade (advanced; off with the Crossfade audio transition, except at joins that come out as cuts in a mixed video): for clips exported without a fade | `assemble --audio-fade` |
 | Captions model (advanced; with Burn in captions): Default, `large-v3`, `medium` or `small` | `assemble --model` |
 
 The "Latest export ..." facts under the options are advanced too; warnings and guidance there
@@ -599,9 +601,12 @@ The `I`, `O`, `[` and `]` keys do nothing here.
 
 "Play across the cut" (Space) plays the last 3 s of clip 1, then the first 3 s of clip 2, each as
 it exports, tails included; a shorter clip plays whole. The player takes the place of the two frames
-while it runs, and Escape or "Stop" ends it. It is always a hard cut, also with Fade set. The
-Transition buttons are the Export panel's Video transition: they apply to the whole video, not to
-this cut.
+while it runs, and Escape or "Stop" ends it. It follows this cut's transition: a Fade is previewed
+as a crossfade, a Cut as a hard cut. The Export panel's Video transition applies to the whole video
+and is the default of every cut; each cut's own choice (Cut, Fade or Default) is set in the Cuts
+strip and kept per clip pair, so it stays when the clips are reordered and returns when the pair is
+next to each other again. Default follows the Export panel's Video transition. At export the UI
+passes the choices to `assemble --joins`.
 
 "Roll the cut" moves clip 1's out and clip 2's in by the same amount, so the sequence keeps its
 length, also for clips from different places. Drag the join (up to 3 s each way; the waveforms show
@@ -1526,8 +1531,8 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
 
 ```text
 cutpoint assemble <clips_dir> [--out final.mp4] [--format mp4|fcpxml|otio] [--transition cut|fade]
-                  [--fade-dur 0.25] [--audio-transition cut|crossfade] [--audio-fade S] [--loudnorm]
-                  [--compress-peaks off|light|strong] [--captions] [--model MODEL] [--json]
+                  [--fade-dur 0.25] [--audio-transition cut|crossfade] [--audio-fade S] [--joins FILE]
+                  [--loudnorm] [--compress-peaks off|light|strong] [--captions] [--model MODEL] [--json]
 cutpoint assemble <project> [--top N | --ids h001 h004 ... | --segments FILE] [--max-total S]
                   [the options above] [the export options of clips]
 ```
@@ -1566,6 +1571,21 @@ into a clip renamed during review are read from its manifest entry, matched by s
   audio in the middle of the video dissolve; the `.fcpxml` then has no audio crossfade and
   leaves the audio cut point to the editor (probably the start of the dissolve), while the
   `.otio` matches `final.mp4` exactly.
+- `--joins FILE` sets single joins from a JSON file; `--transition` stays the default of every
+  other join. It works on a clips folder and on `assemble <project>`, not on `edit`.
+
+  ```json
+  {"joins": [{"from": "001_a.mp4", "to": "002_b.mp4", "transition": "cut"}]}
+  ```
+
+  `from` and `to` are the file names of two clips next to each other, in filename order;
+  `transition` is `cut` or `fade`. A pair that does not match gets a WARNING (`join_unmatched`)
+  and uses `--transition`; a Fade with no room for a frame becomes a cut (`join_no_room`).
+  The audio follows each join's video: a Cut join is an audio cut, a Fade join uses
+  `--audio-transition`, which is a crossfade by default, also under `--transition cut`. So a
+  Fade join crossfades its audio even under a global cut. For hard audio on the fades, use
+  `--transition fade --audio-transition cut` and mark the other joins as cuts in the file.
+  There is one fade length (`--fade-dur`) for all fades.
 - `--loudnorm` measures the joined audio (EBU R128) and applies one linear gain toward
   -14 LUFS, so the levels between and inside clips stay as they are, followed by a true-peak
   limiter; it then measures the result and redoes the pass with a lower ceiling if the true

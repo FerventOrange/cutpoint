@@ -876,7 +876,7 @@ body.tips-off .flag-tip { display: none; }
 .cut-roll-msg:empty { display: none; }
 /* the cuts: a block per clip, the current two lit, the cut itself the amber edge between them */
 .cut-nav { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) 10px; }
-.cut-strip { position: relative; flex: 1 1 200px; min-width: 0; display: flex; gap: var(--space-0); height: 28px; padding: 3px; overflow-x: auto; scrollbar-width: none; } /* a very long sequence scrolls here, not the page */
+.cut-strip { position: relative; flex: 1 1 200px; min-width: 0; display: flex; gap: var(--space-0); height: 30px; padding: 3px; overflow-x: auto; scrollbar-width: none; } /* a very long sequence scrolls here, not the page */
 .cut-block {
   --k: var(--muted); --kt: var(--scrim); flex: 1 1 0; min-width: 6px; padding: 0; cursor: pointer;
   border: 0; border-top: 3px solid var(--k); border-radius: var(--radius-xs); background: var(--kt);
@@ -890,6 +890,12 @@ body.tips-off .flag-tip { display: none; }
 .cut-block.on { background: var(--k); }
 .cut-block.at { box-shadow: inset -3px 0 0 var(--amber), inset 0 0 0 1px var(--amber-ink); }
 .cut-block:focus-visible { position: relative; z-index: 1; outline: 2px solid var(--amber-text); outline-offset: 1px; box-shadow: 0 0 0 1px black; }
+/* a join's transition between two blocks, its letter what plays: solid for the join's own choice, dashed on Default; 24 px, the least hit area (WCAG 2.5.8) */
+.cut-mark { flex: none; width: 24px; height: 24px; min-height: 0; padding: 0; border: 1px solid var(--amber-ink); border-radius: var(--radius-xs); background: var(--amber); color: var(--amber-ink); font: 650 11px/1 var(--mono); cursor: pointer; }
+.cut-mark[data-own="false"] { border: 1px dashed var(--muted); background: transparent; color: var(--muted); font-weight: 400; }
+.cut-mark:hover { filter: brightness(1.1); }
+.cut-mark[data-own="false"]:hover { color: var(--text); border-color: var(--text); }
+.cut-mark:focus-visible { position: relative; z-index: 1; outline-offset: 1px; }
 /* sequence: one compact card per clip */
 .seq-batch { display: flex; align-items: center; gap: var(--space-2); flex: none; min-width: 0; }
 .seq-batch[hidden] { display: none; }
