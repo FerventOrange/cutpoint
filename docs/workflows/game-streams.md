@@ -171,18 +171,27 @@ words, so `Kip wrecked Alder` is not read unless a preset's `kill_words` lists t
 
 A clock-stamped log
 (`2:20 Name destroyed` over a wrapped line) is joined into one row first; only the kill words read
-such a log, and a `:` or `;` before `assist` or a word that reads as a kill makes the row chat.
+such a log.
+
+On any feed, a `:` or `;` (also full width) before `assist`, `crashed` or a word that reads as a kill
+makes the row chat, so `Marlin: killed that corner` gives no event. This holds with a preset's own
+`kill_words`. A clock that starts the row (`2:20`, `[2:20]`, `(2:20)`, `#2:20`) and a clan tag's own
+colon (`[A:B] Kip destroyed Alder`) do not count; a colon elsewhere does, also in `Kip 2:20 destroyed
+Alder`.
 
 Player tags (`--player`) tolerate OCR variants: spaces and punctuation are ignored, look-alike
 letters (`0`/`O`, `1`/`I`, `5`/`S`) are one, and a clan tag or weapon read with the name still
 matches. A tag shorter than 5 letters and digits must match a whole word of the name.
 
 Limits: a `name verb name` row with any other verb stays unread unless a preset's `kill_words` lists
-it. Clock-stamped chat without a colon can still be read as a kill by the log join: with a later
-clock-stamped row such as `12:31 Alder left` below them, `12:30 Kip he got destroyed` and `that was so
-bad` join into one row with a kill word. The two rows alone are no log and give no kill. A log kill
-seen only inside a menu span is not kept, even if it is real. Cached OCR interpretation is redone once
-after the update.
+it. A feed that writes a colon before its kill word (`Kip: killed Alder`) reads as chat and gives no
+kill. Chat without a colon still reads as a kill, as `bro just killed that corner` does, and a row
+whose colon OCR lost on one frame can still read as a kill. Clock-stamped chat without a colon can
+also be read as a kill by the log join: with a later clock-stamped row such as `12:31 Alder left`
+below them, `12:30 Kip he got destroyed` and `that was so bad` join into one row with a kill word.
+The two rows alone are no log and give no kill.
+A log kill seen only inside a menu span is not kept, even if it is real. Cached OCR interpretation is
+redone once after the update.
 
 ## Limits
 

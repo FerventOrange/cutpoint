@@ -157,6 +157,90 @@ def test_a_clock_stamped_chat_with_a_colon_after_the_name_gives_no_kill(chat: li
     assert [e for e in evs if e["type"] in ("kill", "assist")] == []
 
 
+def _types(parser: FeedParser, *texts: str) -> list[str]:
+    img, rows = _crop()
+    return [e["type"] for e in parser.parse(img, rows(*texts))]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "Marlin: killed that corner",
+        "Marlin : killed that corner",
+        "Marlin:killed that corner",
+        "Marlin: killed2 that corner",
+        "MARLIN: KILLED THAT CORNER",
+        "Marlin: Destroyed that corner",
+        "Marlin\uff1a killed that corner",
+        "Marlin (mod): killed that corner",
+        "Marlin [mod]: killed that corner",
+        "<Marlin>: killed that corner",
+        "Marlin-: killed that corner",
+        "Marlin.: killed that corner",
+        "[mod]: they killed that corner",
+        "-Kip-: they killed that corner",
+        "Kip 2:20 destroyed Alder",  # documented: a clock after the name is chat outside logs
+        "Marlin: assist Alder",
+        "Marlin: has crashed",
+        "Marlin: crashed",
+    ],
+)
+def test_a_colon_after_the_name_makes_a_chat_row_with_no_event_at_all(row: str) -> None:
+    """Outside a log too, for kill, assist and crash. A row with a notice feed gives no notice
+    either: the rejected row is used, so no other form reads it."""
+    assert _types(FeedParser({"row_notices": True}, (), 1.0), row) == []
+    assert _types(FeedParser({}, (), 1.0), row) == []
+
+
+def test_a_handle_joined_to_a_clock_shaped_number_is_chat_but_a_lone_log_row_is_not() -> None:
+    parser = FeedParser({"row_notices": True}, (), 1.0)
+    assert _types(parser, "Marlin39:25 killed that corner") == []
+    assert _types(parser, "Marlin39:25 destroyed Alder") == []
+    img, rows = _crop()
+    evs = parser.parse(img, rows("2:20 Kip destroyed Alder"))
+    assert [(e["type"], e["text"].removeprefix("2:20 ")) for e in evs] == [("kill", "Kip > Alder")]
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        "[2:20] Kip destroyed Alder",
+        "(2:20) Kip destroyed Alder",
+        "#2:20 Kip destroyed Alder",
+        "2\uff1a20 Kip destroyed Alder",
+        "2;20 Kip destroyed Alder",
+        "2: 20 Kip destroyed Alder",
+        "120:30 Kip destroyed Alder",
+        "[A:B] Kip destroyed Alder",
+        "2:20 [A:B] Kip destroyed Alder",
+    ],
+)
+def test_a_real_row_with_a_clock_or_a_clan_tag_keeps_its_kill(row: str) -> None:
+    img, rows = _crop()
+    evs = FeedParser({"row_notices": True}, (), 1.0).parse(img, rows(row))
+    assert [e["type"] for e in evs] == ["kill"]
+    assert evs[0]["victim"] == "Alder"
+
+
+def test_a_preset_with_its_own_kill_words_has_the_same_chat_rule() -> None:
+    """Documented limit: a chat row with a colon is lost on any feed, a normal row is not."""
+    own = {"kill_words": {"wrecked": "kill", "helped": "assist", "bailed": "crash"}}
+    parser = FeedParser(own | {"row_notices": True}, (), 1.0)
+    for row in ("Marlin: wrecked that corner", "Marlin: helped Alder", "Marlin: bailed"):
+        assert _types(parser, row) == []
+    assert _types(parser, "Kip wrecked Alder") == ["kill"]
+
+
+def test_normal_kill_and_crash_rows_still_give_events() -> None:
+    parser = FeedParser({"row_notices": True}, (), 1.0)
+    img, rows = _crop()
+    evs = parser.parse(img, rows("Kip destroyed Alder", "Marlin has crashed"))
+    assert [(e["type"], e["text"]) for e in evs] == [
+        ("kill", "Kip > Alder"),
+        ("crash", "Marlin has crashed"),
+    ]
+
+
 def test_a_log_kill_still_reads_with_its_group_on_the_next_row() -> None:
     img, rows = _crop()
     parser = FeedParser({"row_notices": True}, (), 1.0)

@@ -807,6 +807,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Viewer chat in a feed region no longer reads as kills: a `:` or `;` (also full width) before a kill
+  word, `assist` or `crashed` makes a row chat on every feed, not only in a clock-stamped log, so
+  `Marlin: killed that corner` gives no event. This also holds with a preset's own `kill_words`. Chat
+  without a colon and a row whose colon OCR lost on one frame are read as before. Cached OCR
+  interpretation is redone once.
 - Small fixes in `cutpoint ui`: at 960 px and below the Jobs bar is no longer covered by the tiles'
   dots and buttons; a drag of a Sequence row no longer fails to start when the list is redrawn
   between the press and the drag (as after a trim edit); stepping through clips or playing the
