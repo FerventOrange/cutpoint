@@ -6,6 +6,7 @@ import json
 import logging
 import shutil
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,29 @@ def test_final_cues_follow_cuts_and_crossfade_overlap(tmp_path, fade):
     assert cues[2][0] == pytest.approx(second + 2.0)
     assert cues[0][1] <= cues[1][0]  # never overlapping, also inside a crossfade
     assert assemble.clip_offsets(infos, fade) == [0.0, second]
+
+
+def test_final_cues_with_a_join_list_follow_each_join(tmp_path):
+    """A fade into clip 2 and a cut into clip 3 (#768); clip 2's audio runs 0.3 s on past its
+    video, but with a dissolve in the video every clip starts after its video (offsets)."""
+    files = [tmp_path / f"00{n}_{c}.mp4" for n, c in enumerate("abc", 1)]
+    infos = [
+        replace(_info(files[0], 4.1), vduration=4.0),
+        replace(_info(files[1], 3.3), vduration=3.0),
+        _info(files[2], 3.0),
+    ]
+    entries = {
+        f"00{n}_{c}.mp4": {"source": f"{c}.mp4", "start": 10.0, "end": 10.0 + v}
+        for n, c, v in ((1, "a", 4.0), (2, "b", 3.0), (3, "c", 3.0))
+    }
+    by_source = {c + ".mp4": _words((10.2, 10.6, c)) for c in "abc"}
+    fade = [0.5, 0.0]
+    cues, missing, _ = srt.final_cues(files, infos, entries, fade, by_source.get)
+    assert missing == []
+    assert assemble.clip_offsets(infos, fade) == pytest.approx([0.0, 3.5, 6.5])
+    assert [(c[2], round(c[0], 3)) for c in cues] == [("a", 0.2), ("b", 3.7), ("c", 6.7)]
+    # every join a cut: the container durations (audio runs on) place the clips
+    assert assemble.clip_offsets(infos, [0.0, 0.0]) == pytest.approx([0.0, 4.1, 7.4])
 
 
 def test_missing_transcript_writes_no_srt_and_says_so_once(tmp_path, monkeypatch, caplog):

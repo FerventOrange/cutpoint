@@ -15,6 +15,13 @@ Audio transitions (``audio_transition``) follow the video by default: ``cut`` wi
 the edge fades as on cuts. A cut cannot take an audio crossfade: the clips have no audio past
 their ends to overlap without moving the later clips' audio off their video.
 
+Joins (``joins``, :func:`read_joins`): a list of clip pairs that sets single joins to ``cut`` or
+``fade``; ``transition`` stays the default of the others. The audio follows each join's video: a
+Cut join is an audio cut, a Fade join takes ``audio_transition`` (a crossfade under
+``transition="cut"``, which has no audio transition of its own to give). There is one fade length.
+Joins that all come out the same take the plain cut or fade join. Mixed joins follow the video,
+as crossfades do (:func:`clip_offsets`).
+
 Peak compression (``compress_peaks``, see :data:`cutpoint.encode.PEAK_PRESETS`) works the
 same way: clips exported with it (manifest ``compress_peaks``) are left alone, the others
 are measured and get the compressor and leveling gain in the join, before the edge fade.
@@ -50,6 +57,7 @@ from cutpoint import cache, folders, jsonout, paths
 from cutpoint.encode import (
     A_FMT,
     AUDIO_OUT,
+    AUDIO_SHORT_S,
     BT709_TAGS,
     PEAK_PRESETS,
     PEAK_TAG,
@@ -76,7 +84,7 @@ from cutpoint.ffmpeg_utils import (
     probe,
     run,
 )
-from cutpoint.timeline import TIMELINE_FORMATS, write_timeline
+from cutpoint.timeline import TIMELINE_FORMATS, per_join, write_timeline
 from cutpoint.transcribe import Segment, Transcriber, flat_words
 from cutpoint.utils import clip_files
 
@@ -339,29 +347,32 @@ def cut_audio_ends(infos: list[MediaInfo]) -> list[float]:
     return [cut_duration(i) for i in infos[:-1]] + [infos[-1].vduration]
 
 
-def clip_offsets(infos: list[MediaInfo], fade: float = 0.0) -> list[float]:
+def clip_offsets(infos: list[MediaInfo], fade: float | list[float] = 0.0) -> list[float]:
     """Where each clip starts in the joined video: back to back, each crossfade
-    (``fade`` s, 0 for cuts) overlapping it with the previous clip.
+    (``fade`` s, 0 for cuts, or a list with one such value per join) overlapping it with the
+    previous clip.
 
     Cuts (concat demuxer or filter) start a clip where the previous file ends: its
     container ``duration``, longer than its video when the audio runs on. Crossfades
-    follow the video (``vduration``)."""
+    follow the video (``vduration``), and so does every join of a video that has one."""
+    joins = per_join(fade, len(infos))
+    video = any(f > 0 for f in joins)
     offsets, t = [], 0.0
-    for info in infos:
+    for info, f in zip(infos, [*joins, 0.0], strict=False):
         offsets.append(t)
-        t += info.vduration - fade if fade > 0 else cut_duration(info)
+        t += info.vduration - f if video else cut_duration(info)
     return offsets
 
 
-def crossfade_duration(infos: list[MediaInfo], fade: float) -> float:
-    """The crossfade :func:`crossfade` uses for ``fade``: rounded to whole output frames (the
-    first clip's rate, as :func:`_normalize_inputs`), at least one frame and at most 45% of
-    the shortest clip. xfade works in whole frames, so acrossfade and :func:`clip_offsets`
+def crossfade_duration(infos: list[MediaInfo], fade: float, fps: Fraction | None = None) -> float:
+    """The crossfade :func:`crossfade` uses for ``fade``: rounded to whole output frames (``fps``,
+    default the first clip's rate, as :func:`_normalize_inputs`), at least one frame and at most
+    45% of the shortest clip. xfade works in whole frames, so acrossfade and :func:`clip_offsets`
     (final.srt) get the same rounded value; xfade shorter than a frame cuts the video short.
     Returns 0 when one frame is more than 45% of the shortest clip: no room to fade.
     """
     room = 0.45 * min(i.vduration for i in infos)
-    fps = infos[0].fps
+    fps = infos[0].fps if fps is None else fps
     if fps <= 0:
         return min(fade, room)
     most = math.floor(room * fps + 1e-9)
@@ -391,13 +402,17 @@ def crossfade(
     files: list[Path],
     infos: list[MediaInfo],
     out: Path,
-    fade: float,
+    fade: float | list[float],
     peaks: list[str] | None = None,
     audio: str = "crossfade",
     fades: list[float] | None = None,
-) -> float:
+) -> float | list[float]:
     """Join clips with xfade over ``fade`` s, as returned by :func:`crossfade_duration` (> 0),
     with the ``peaks`` filters (:func:`peak_filters`). Returns ``fade``.
+
+    ``fade`` can also be a list with one value per join (:func:`join_fade`), 0 for a Cut join:
+    its video and audio join back to back, and ``fades`` are the clips' edge fades on every
+    edge that is no audio crossfade.
 
     ``audio="crossfade"`` joins the audio with acrossfade over the same ``fade``.
     ``audio="cut"`` joins it with hard cuts at :func:`audio_cut_point` into each fade instead:
@@ -420,9 +435,23 @@ def crossfade(
     return fade
 
 
+def _open_edges(info: MediaInfo, fade: float, fade_in: bool, fade_out: bool) -> str:
+    """The edge fade of a clip padded to its video, as :func:`~cutpoint.encode.audio_fade_filter`
+    gives it, on the chosen sides only: the sides that are no audio crossfade."""
+    dur = info.vduration
+    if info.audio_duration is not None and info.audio_duration < dur - AUDIO_SHORT_S:
+        dur = info.audio_duration
+    f = min(fade, dur / 4)
+    if f <= 0.005:
+        return ""
+    return (f",afade=t=in:st=0:d={f:.3f}:curve=qsin" if fade_in else "") + (
+        f",afade=t=out:st={max(0.0, dur - f):.3f}:d={f:.3f}:curve=qsin" if fade_out else ""
+    )
+
+
 def _crossfade_chains(
     infos: list[MediaInfo],
-    fade: float,
+    fade: float | list[float],
     peaks: list[str] | None,
     audio: str,
     fades: list[float] | None,
@@ -446,36 +475,48 @@ def _crossfade_chains(
             for i, info in enumerate(infos)
         ]
     last = len(infos) - 1
+    joins = per_join(fade, len(infos))
+    before, after = [0.0, *joins], [*joins, 0.0]  # each clip's crossfades, 0 for a cut or none
     if audio == "cut":
-        cut = audio_cut_point(fade, fps)
         for i, info in enumerate(infos):
-            start = cut if i > 0 else 0.0
-            end = info.vduration - fade + cut if i < last else info.vduration
+            start = audio_cut_point(before[i], fps) if before[i] > 0 else 0.0
+            end = info.vduration
+            if after[i] > 0:
+                end = info.vduration - after[i] + audio_cut_point(after[i], fps)
             edge = min(CUT_FADE, (end - start) / 2)
             chains.append(
                 f"[a{i}]apad,atrim=start={start:.6f}:end={end:.6f},asetpts=PTS-STARTPTS"
-                + (f",afade=t=in:d={edge:.6f}" if i > 0 else "")
-                + (f",afade=t=out:st={end - start - edge:.6f}:d={edge:.6f}" if i < last else "")
+                + (f",afade=t=in:d={edge:.6f}" if before[i] > 0 else "")
+                + (f",afade=t=out:st={end - start - edge:.6f}:d={edge:.6f}" if after[i] > 0 else "")
                 + f"[at{i}]"
             )
         pairs = "".join(f"[at{i}]" for i in range(len(infos)))
         chains.append(f"{pairs}concat=n={len(infos)}:v=0:a=1[a]")
     else:
         for i, info in enumerate(infos):
-            chains.append(f"[a{i}]apad,atrim=end={info.vduration:.6f},asetpts=PTS-STARTPTS[at{i}]")
+            edges = ""
+            if isinstance(fade, list) and fades:
+                edges = _open_edges(info, fades[i], before[i] == 0, after[i] == 0)
+            chains.append(
+                f"[a{i}]apad,atrim=end={info.vduration:.6f},asetpts=PTS-STARTPTS{edges}[at{i}]"
+            )
     half_frame = 0.5 / float(fps) if fps > 0 else 0.0
     vprev, aprev = "v0", "at0"
     offsets = clip_offsets(infos, fade)
     for i in range(1, len(infos)):
         offset = max(offsets[i] - half_frame, 0.0)
         vout, aout = ("v", "a") if i == last else (f"vx{i}", f"ax{i}")
+        join = joins[i - 1]
         if video:
-            chains.append(
-                f"[{vprev}][v{i}]xfade=transition=fade:duration={fade:.6f}:offset={offset:.6f}"
-                f"[{vout}]"
+            how = (
+                f"xfade=transition=fade:duration={join:.6f}:offset={offset:.6f}"
+                if join > 0
+                else "concat=n=2:v=1:a=0"
             )
+            chains.append(f"[{vprev}][v{i}]{how}[{vout}]")
         if audio != "cut":
-            chains.append(f"[{aprev}][at{i}]acrossfade=d={fade:.6f}[{aout}]")
+            how = f"acrossfade=d={join:.6f}" if join > 0 else "concat=n=2:v=0:a=1"
+            chains.append(f"[{aprev}][at{i}]{how}[{aout}]")
         vprev, aprev = vout, aout
     return chains
 
@@ -605,30 +646,36 @@ def run_frames(run: Run, frames: list[int], fade_frames: int) -> int:
     return inside - (run.j - run.i) * fade_frames
 
 
-def fade_copy_plan(packets: list[VideoPackets], fade_frames: int) -> list[Body | Run] | None:
-    """The pieces of a crossfade join of clips with ``packets`` over ``fade_frames``, in order.
+def fade_copy_plan(
+    packets: list[VideoPackets], fade_frames: int | list[int]
+) -> list[Body | Run] | None:
+    """The pieces of a crossfade join of clips with ``packets`` over ``fade_frames``, in order;
+    a list gives each join its own (0: a cut, at most one other value).
 
-    Each clip but the first is copied from its first keyframe at or after the fade in, each
-    but the last up to its last keyframe at or before the fade out; the fades between are
-    re-encoded (:class:`Run`). A clip with no frames left to copy stays in the run. Returns
-    None when more than :data:`COPY_MAX_SHARE` of the output would be re-encoded.
+    Each clip is copied from its first keyframe at or after the fade in, up to its last keyframe
+    at or before the fade out; the fades between are re-encoded (:class:`Run`). A side with no
+    fade (the first clip's start, the last clip's end, a cut) is copied to its edge. A clip with
+    no frames left to copy between two fades stays in the run. Returns None when more than
+    :data:`COPY_MAX_SHARE` of the output would be re-encoded.
     """
     frames = [p.frames for p in packets]
     last = len(packets) - 1
+    joins = per_join(fade_frames, len(packets))
     pieces: list[Body | Run] = []
     opened: tuple[int, int] | None = None  # (clip, frame) the current run starts at
     for k, p in enumerate(packets):
-        head = 0 if k == 0 else next((f for f in p.keys if f >= fade_frames), p.frames)
-        tail = p.frames if k == last else max(f for f in p.keys if f <= p.frames - fade_frames)
-        if k > 0 and head >= tail and k < last:
+        fade_in, fade_out = joins[k - 1] if k > 0 else 0, joins[k] if k < last else 0
+        head = next((f for f in p.keys if f >= fade_in), p.frames) if fade_in else 0
+        tail = max(f for f in p.keys if f <= p.frames - fade_out) if fade_out else p.frames
+        if fade_in and fade_out and head >= tail:
             continue  # nothing to copy: the run goes on through this clip
         if opened is not None:
             pieces.append(Run(opened[0], opened[1], k, min(head, p.frames)))
         if head < tail:
             pieces.append(Body(k, head, tail))
-        opened = (k, tail) if k < last else None
-    total = sum(frames) - last * fade_frames
-    encoded = sum(run_frames(r, frames, fade_frames) for r in pieces if isinstance(r, Run))
+        opened = (k, tail) if fade_out else None
+    total = sum(frames) - sum(joins)
+    encoded = sum(run_frames(r, frames, joins[r.i]) for r in pieces if isinstance(r, Run))
     return None if encoded > COPY_MAX_SHARE * total else pieces
 
 
@@ -638,11 +685,12 @@ def _encode_run(
     infos: list[MediaInfo],
     packets: list[VideoPackets],
     run_: Run,
-    fade: float,
+    fade: float | list[float],
     out: Path,
 ) -> None:
     """Encode ``run_`` into ``out`` with ``enc``: :func:`crossfade`'s video graph over its
-    clips, the first read from its keyframe ``s`` on, the last cut at frame ``e``.
+    clips, the first read from its keyframe ``s`` on, the last cut at frame ``e``. A run holds
+    no Cut join, so all its fades (``fade``, as in :func:`crossfade`) are the same.
 
     The movie time scale is the clips' too: in the default 1000 Hz, a window that is no whole
     number of milliseconds (44 frames at 60 fps) gets a rounded duration, and the concat
@@ -650,6 +698,7 @@ def _encode_run(
     fps = infos[0].fps
     half = 0.5 / float(fps)
     offsets = clip_offsets(infos, fade)
+    join = per_join(fade, len(infos))[run_.i]
     t0 = offsets[run_.i] + run_.s / float(fps)
     args, chains = ["ffmpeg", "-y", "-v", "error"], []
     for n, k in enumerate(range(run_.i, run_.j + 1)):
@@ -664,14 +713,14 @@ def _encode_run(
         offset = max(offsets[run_.i + n] - t0 - half, 0.0)
         vout = "v" if n == last else f"vx{n}"
         chains.append(
-            f"[{vprev}][v{n}]xfade=transition=fade:duration={fade:.6f}:offset={offset:.6f}[{vout}]"
+            f"[{vprev}][v{n}]xfade=transition=fade:duration={join:.6f}:offset={offset:.6f}[{vout}]"
         )
         vprev = vout
     graph = ";".join(chains)
     if enc.upload:
         graph += f";[v]{enc.upload}[vgpu]"
     frames = [q.frames for q in packets]
-    fade_frames = round(fade * float(fps))
+    fade_frames = round(join * float(fps))
     args += [
         "-filter_complex",
         graph,
@@ -703,7 +752,7 @@ def _extract_body(file: Path, body: Body, p: VideoPackets, fps: Fraction, out: P
     timescale = p.time_base.denominator
     half = 0.5 / float(fps)
     cuts = [p.key_times[p.keys.index(f)] - half for f in (body.start, body.end) if 0 < f < p.frames]
-    assert cuts  # every body ends at a fade or starts after one
+    cuts = cuts or [p.duration + 1]  # a whole clip between two Cut joins: one piece
     # Relative pattern run in out's folder: a % in the project path is no template field.
     run([
         "ffmpeg", "-y", "-v", "error", "-i", str(file.resolve()), "-map", "0:v:0", "-c", "copy",
@@ -772,12 +821,13 @@ def crossfade_copy(
     files: list[Path],
     infos: list[MediaInfo],
     out: Path,
-    fade: float,
+    fade: float | list[float],
     peaks: list[str] | None = None,
     audio: str = "crossfade",
     fades: list[float] | None = None,
 ) -> bool:
-    """:func:`crossfade` (same arguments) re-encoding only the video around the fades.
+    """:func:`crossfade` (same arguments) re-encoding only the video around the fades; Cut
+    joins (``fade`` a list) are stream-copied on both sides.
 
     The clips' video between the fades is stream-copied from keyframe to keyframe
     (:func:`fade_copy_plan`; ``cutpoint clips`` forces keyframes near both ends of every clip,
@@ -797,7 +847,7 @@ def crossfade_copy(
     if (why := _why_no_copy(infos)) is not None:
         return _no_copy(why)
     fps = infos[0].fps
-    fade_frames = round(fade * float(fps))
+    fade_frames = [round(f * float(fps)) for f in per_join(fade, len(infos))]
     work = out.with_name(f".{out.stem.lstrip('.')}.fadecopy")  # out may be hidden already
     listing = work / "pieces.txt"
     try:
@@ -821,7 +871,7 @@ def crossfade_copy(
                         f"the copied video of {files[item.clip].name} does not check out"
                     )
             else:
-                want = run_frames(item, frames, fade_frames)
+                want = run_frames(item, frames, fade_frames[item.i])
 
                 def encode(
                     enc: VideoEncoder, item: Run = item, piece: Path = piece
@@ -848,7 +898,7 @@ def crossfade_copy(
         graph = ";".join(_crossfade_chains(infos, fade, peaks, audio, fades, video=False, base=1))
         run([*args, "-filter_complex", graph, "-map", "0:v:0", "-map", "[a]", "-c:v", "copy",
              *AUDIO_OUT, "-movflags", "+faststart", str(out)])  # fmt: skip
-        total = sum(frames) - (len(files) - 1) * fade_frames
+        total = sum(frames) - sum(fade_frames)
         if not _piece_ok(out, fps, total, ref, timed=False):  # its audio may run on
             out.unlink(missing_ok=True)
             return _no_copy("the joined video does not check out")
@@ -1184,18 +1234,22 @@ def _join(
     audio_fade: float,
     peaks: list[str] | None = None,
     audio_transition: str | None = None,
-) -> float:
+    joins: list[str] | None = None,
+) -> float | list[float]:
     """Join ``files`` into ``out`` with cuts or crossfades (see :func:`assemble`); ``peaks``
-    are the per-clip :func:`peak_filters`.
+    are the per-clip :func:`peak_filters`, ``joins`` each join's transition
+    (:func:`join_kinds`), which replace ``transition``.
+
+    Mixed joins take :func:`crossfade_copy`, else :func:`crossfade`, as all fades do.
 
     Returns:
-        The crossfade duration used (0 for cuts), for :func:`clip_offsets`.
+        The crossfade duration used (0 for cuts), or one per join for mixed joins, for
+        :func:`clip_offsets`.
     """
     audio = audio_transition or default_audio_transition(transition)
-    if transition == "fade" and len(files) > 1:
-        fade_dur = join_fade(infos, transition, fade_dur)
-        if fade_dur == 0:
-            transition = "cut"
+    if len(files) > 1 and (transition == "fade" or joins is not None):
+        fade_dur = join_fade(infos, transition, fade_dur, joins)
+        transition = "fade" if fade_dur else "cut"
     if len(files) == 1 or transition == "cut":
         fades = _edge_fades(clips_dir, files, audio_fade)
         uniform = len({i.concat_key() for i in infos}) == 1 and infos[0].audio_streams == 1
@@ -1206,18 +1260,57 @@ def _join(
             concat_reencode(files, infos, out, fades, peaks)
         return 0.0
     if transition == "fade":
-        fades = _edge_fades(clips_dir, files, audio_fade) if audio == "cut" else None
+        mixed = isinstance(fade_dur, list)
+        fades = _edge_fades(clips_dir, files, audio_fade) if audio == "cut" or mixed else None
         used = fade_dur
         if not crossfade_copy(files, infos, out, fade_dur, peaks, audio, fades):
             used = crossfade(files, infos, out, fade_dur, peaks, audio, fades)
-        logger.info("Crossfade duration %.3fs%s", used, ", audio cut" if audio == "cut" else "")
+        logger.info(
+            "Crossfade duration %.3fs%s%s",
+            max(used) if mixed else used,
+            f" on {sum(f > 0 for f in used)} of {len(used)} joins" if mixed else "",
+            ", audio cut" if audio == "cut" else "",
+        )
         return used
     raise ValueError(f"Unknown transition {transition!r}")
 
 
-def join_fade(infos: list[MediaInfo], transition: str, fade_dur: float) -> float:
+def _per_join_fade(infos: list[MediaInfo], kinds: list[str], fade_dur: float) -> list[float]:
+    """The crossfade of each join of ``infos`` by its transition in ``kinds``, 0 for a cut.
+
+    A Fade join with no room for one frame next to either clip (as :func:`crossfade_duration`)
+    becomes a cut (one WARNING each, ``--json`` ``join_no_room``). The others share one length:
+    :func:`crossfade_duration` over the clips they join."""
+    fps = infos[0].fps
+    fading = []
+    for (a, b), kind in zip(pairwise(infos), kinds, strict=True):
+        room = fps <= 0 or 0.45 * min(a.vduration, b.vduration) * fps + 1e-9 >= 1
+        if kind == "fade" and not room:
+            message = (
+                f"One frame is more than 45% of {a.path.name} or {b.path.name}: no room for a "
+                "crossfade; cutting between them"
+            )
+            logger.warning("%s", message)
+            jsonout.warn("join_no_room", message, [a.path.name, b.path.name])
+        fading.append(kind == "fade" and room)
+    clips = [i for n, i in enumerate(infos) if any(fading[max(n - 1, 0) : n + 1])]
+    used = crossfade_duration(clips, fade_dur, fps) if clips else 0.0
+    return [used if f else 0.0 for f in fading]
+
+
+def join_fade(
+    infos: list[MediaInfo], transition: str, fade_dur: float, kinds: list[str] | None = None
+) -> float | list[float]:
     """The crossfade a join of ``infos`` uses (:func:`crossfade_duration`), 0 for cuts or one
-    clip. A fade without room for one frame joins with cuts (one WARNING)."""
+    clip. A fade without room for one frame joins with cuts (one WARNING).
+
+    ``kinds`` (:func:`join_kinds`) replaces ``transition`` with each join's own and a fade
+    without room becomes a cut at that join only (:func:`_per_join_fade`). The result is then
+    a list with one value per join, or the one value when all joins came out the same, so
+    such a join is the plain one."""
+    if kinds is not None and len(infos) > 1:
+        each = _per_join_fade(infos, kinds, fade_dur)
+        return each[0] if len(set(each)) == 1 else each
     if transition != "fade" or len(infos) < 2:
         return 0.0
     used = crossfade_duration(infos, fade_dur)
@@ -1229,7 +1322,80 @@ def join_fade(infos: list[MediaInfo], transition: str, fade_dur: float) -> float
     return used
 
 
+def read_joins(path: Path) -> list[dict[str, str]]:
+    """The entries of the joins file ``path`` (``assemble --joins``):
+    ``{"joins": [{"from": "001_a.mp4", "to": "002_b.mp4", "transition": "cut"|"fade"}]}``.
+
+    Raises:
+        FileNotFoundError: If ``path`` does not exist.
+        jsonout.ArgumentError: If it is no such JSON, or a transition is neither.
+    """
+    try:
+        data = cache.read_json(path)
+    except ValueError as err:
+        raise jsonout.ArgumentError(f"--joins: {err}") from None
+    entries = data.get("joins") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        raise jsonout.ArgumentError(f'--joins: {path} needs an object with a "joins" list')
+    joins = []
+    for n, entry in enumerate(entries, 1):
+        pair = [entry.get(k) if isinstance(entry, dict) else None for k in ("from", "to")]
+        if not all(isinstance(name, str) for name in pair):
+            raise jsonout.ArgumentError(f'--joins: join {n} needs "from" and "to" clip names')
+        if (kind := entry.get("transition")) not in JOIN_TRANSITIONS:
+            raise jsonout.ArgumentError(
+                f"--joins: join {n} has transition {kind!r}, expected one of "
+                f"{', '.join(JOIN_TRANSITIONS)}"
+            )
+        joins.append({"from": pair[0], "to": pair[1], "transition": kind})
+    return joins
+
+
+def join_kinds(
+    files: list[Path], transition: str, joins: list[dict[str, str]] | None
+) -> list[str] | None:
+    """The transition of each join of ``files``: ``transition``, or the one of the ``joins``
+    entry (:func:`read_joins`) naming the two clips, in this order and next to each other. An
+    entry that names no such pair gets one WARNING (``--json`` ``join_unmatched``). None
+    without ``joins``."""
+    if joins is None:
+        return None
+    kinds = [transition] * (len(files) - 1)
+    places = {(a.name, b.name): n for n, (a, b) in enumerate(pairwise(files))}
+    for join in joins:
+        pair = join["from"], join["to"]
+        if pair in places:
+            kinds[places[pair]] = join["transition"]
+        else:
+            message = (
+                f"Join {pair[0]} to {pair[1]}: these clips are not next to each other in this "
+                f"order, so it is ignored and the joins there use the default ({transition})"
+            )
+            logger.warning("%s", message)
+            jsonout.warn("join_unmatched", message, pair)
+    return kinds
+
+
+def _report_joins(
+    files: list[Path], joins: list[dict[str, str]] | None, fade: float | list[float]
+) -> None:
+    """``--json`` output ``joins``: each pair of ``joins`` found in ``files``, with the
+    transition it got (``fade``: as :func:`join_fade` returned it)."""
+    if joins is None:
+        return
+    asked = {(j["from"], j["to"]) for j in joins}
+    jsonout.output(
+        "joins",
+        [
+            {"from": a.name, "to": b.name, "transition": "fade" if f > 0 else "cut"}
+            for (a, b), f in zip(pairwise(files), per_join(fade, len(files)), strict=True)
+            if (a.name, b.name) in asked
+        ],
+    )
+
+
 AUDIO_TRANSITIONS = ("cut", "crossfade")
+JOIN_TRANSITIONS = ("cut", "fade")  # what a join of ``assemble --joins`` can be
 OUTPUT_FORMATS = ("mp4", *TIMELINE_FORMATS)  # assemble --format: the final video or a timeline
 
 
@@ -1264,6 +1430,7 @@ def assemble(
     compress_peaks: str = "off",
     audio_transition: str | None = None,
     output_format: str = "mp4",
+    joins: list[dict[str, str]] | None = None,
 ) -> Path:
     """Assemble ``clips_dir`` into ``out``, or write its timeline instead.
 
@@ -1283,6 +1450,10 @@ def assemble(
 
     ``audio_transition``: ``cut`` or ``crossfade`` (:data:`AUDIO_TRANSITIONS`); None follows
     ``transition`` (:func:`default_audio_transition`). ``crossfade`` needs ``transition="fade"``.
+
+    ``joins``: entries of :func:`read_joins` for single joins; the others keep ``transition``.
+    A Fade join uses ``audio_transition``, always a crossfade under ``transition="cut"``, and a
+    Cut join an audio cut. ``audio_fade`` then applies to every edge without an audio crossfade.
 
     ``compress_peaks``: ``off``, ``light`` or ``strong`` (:data:`~cutpoint.encode.PEAK_PRESETS`)
     compresses loud peaks and levels the clips that do not have it baked in; the final audio
@@ -1304,6 +1475,9 @@ def assemble(
         raise ValueError(why)
     if output_format not in OUTPUT_FORMATS:
         raise ValueError(f"unknown output format {output_format!r}")
+    audio = audio_transition or default_audio_transition(transition)
+    if joins is not None and transition == "cut":
+        audio = "crossfade"  # what a Fade join uses; the Cut joins cut the audio whatever this is
     # one run at a time: another would remove a run's staging folder
     with folders.swap_lock(clips_dir):
         folders.recover_swap(clips_dir)  # leftovers of a hard-killed clips / extend, before listing
@@ -1317,8 +1491,9 @@ def assemble(
             caption_model,
             audio_fade,
             compress_peaks,
-            audio_transition or default_audio_transition(transition),
+            audio,
             output_format,
+            joins,
         )
 
 
@@ -1334,6 +1509,7 @@ def _assemble(
     compress_peaks: str,
     audio_transition: str,
     output_format: str,
+    joins: list[dict[str, str]] | None = None,
 ) -> Path:
     """:func:`assemble`, with ``clips_dir`` locked."""
     if out is None:  # clips -> final.mp4, clips_vertical -> final_vertical.mp4
@@ -1346,8 +1522,9 @@ def _assemble(
         raise FileNotFoundError(f"No .mp4 clips in {clips_dir}")
     if output_format != "mp4":
         return _write_timeline(
-            clips_dir, files, out, output_format, transition, fade_dur, audio_transition
+            clips_dir, files, out, output_format, transition, fade_dur, audio_transition, joins
         )
+    kinds = join_kinds(files, transition, joins)
     # A run that fails before writing anything leaves no empty output folder behind.
     with folders.output_dir(out.parent):
         infos = [probe(f) for f in files]
@@ -1377,6 +1554,7 @@ def _assemble(
                     audio_fade,
                     peaks,
                     audio_transition,
+                    kinds,
                 )
                 if limit:
                     lufs, tp = normalize_with_ceiling(
@@ -1397,6 +1575,7 @@ def _assemble(
     from cutpoint.srt import write_final_srt  # noqa: PLC0415 - it imports this module
 
     srt_path = write_final_srt(clips_dir, files, infos, used_fade, out)
+    _report_joins(files, joins, used_fade)
     jsonout.output("format", "mp4")
     jsonout.output("final", out)
     jsonout.output("srt", srt_path)
@@ -1413,16 +1592,17 @@ def _write_timeline(
     transition: str,
     fade_dur: float,
     audio_transition: str,
+    joins: list[dict[str, str]] | None = None,
 ) -> Path:
     """The ``kind`` timeline (``fcpxml`` or ``otio``) of :func:`assemble`, and ``<out>.srt``:
     the clips are only probed, nothing is joined or encoded."""
     infos = [probe(f) for f in files]
-    fade = join_fade(infos, transition, fade_dur)
+    fade = join_fade(infos, transition, fade_dur, join_kinds(files, transition, joins))
     logger.info(
         "Writing the %s timeline of %d clips (%s): %s",
         kind,
         len(files),
-        "fade" if fade else "cut",
+        "mixed joins" if isinstance(fade, list) else "fade" if fade else "cut",
         ", ".join(f.name for f in files),
     )
     with folders.output_dir(out.parent):
@@ -1433,6 +1613,7 @@ def _write_timeline(
     from cutpoint.srt import write_final_srt  # noqa: PLC0415 - it imports this module
 
     srt_path = write_final_srt(clips_dir, files, infos, fade, out)
+    _report_joins(files, joins, fade)
     jsonout.output("format", kind)
     jsonout.output(kind, path)
     jsonout.output("srt", srt_path)
@@ -1567,6 +1748,7 @@ def assemble_project(
     audio_fade: float = 0.25,
     compress_peaks: str = "off",
     audio_transition: str | None = None,
+    joins: list[dict[str, str]] | None = None,
 ) -> Path:
     """Export the moments of ``project`` and assemble them (``cutpoint assemble <project>``).
 
@@ -1608,6 +1790,7 @@ def assemble_project(
         "audio_fade": audio_fade,
         "audio_transition": audio_transition,
         "output_format": output_format,
+        "joins": joins,
     }
     if output_format != "mp4":  # baked into the kept clips; the timeline uses them as they are
         clips_dir = export_clips(project, force=force, **dict(export or {}), **shape)

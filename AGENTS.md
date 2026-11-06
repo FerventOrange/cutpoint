@@ -26,6 +26,7 @@ everything into a project folder.
 | Automatic color correction per clip: `--color auto\|underwater` and `--color-strength` on `clips` and `edit` (not with `--lut`) | |
 | Output format on `assemble` and `edit`: `--format mp4` (default: the final video, no timelines) or `--format fcpxml\|otio` (only that timeline, referencing the kept clips, no encode) | |
 | Final video without keeping clips: `assemble <project>` (with `--top`, `--ids`, `--segments`, `--max-total` and the `clips` export options) and `edit --no-keep-clips` | |
+| Single joins on `assemble`: `--joins FILE` (`{"joins": [{"from": "001_a.mp4", "to": "002_b.mp4", "transition": "cut"\|"fade"}]}`), `--transition` for the others; not on `edit` | |
 | Action-cam and 360 modules: `crashes`, `mix`, `360 ...` (see the workflow pages) | |
 | Commands the user runs, not you: `ui` (browser workspace), `proxy`, `login`, `logout` (subscription logins for the hosted models of `ui`). They have no `--json` | |
 

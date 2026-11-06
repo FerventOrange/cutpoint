@@ -154,12 +154,12 @@
             <span class="spacer"></span>
             <div class="cut-trans">
               <span id="cutTransLabel" class="muted">Transition</span>
-              <!-- Export's Video transition (#optTransition), not a setting of this cut -->
+              <!-- Export's Video transition (#optTransition): the default of the joins; each join's own choice is in the Cuts strip -->
               <div id="cutTransition" class="seg stage-mode" role="group" aria-labelledby="cutTransLabel" aria-describedby="cutTransNote">
                 <button type="button" class="seg-btn" data-value="cut" aria-pressed="true">Cut</button>
                 <button type="button" class="seg-btn" data-value="fade" aria-pressed="false">Fade</button>
               </div>
-              <span id="cutTransNote" class="muted"></span>
+              <span id="cutTransNote" class="muted">Default for every join with no choice of its own</span>
             </div>
           </div>
           <div class="cut-roll">
@@ -180,7 +180,7 @@
           </div>
           <div class="cut-nav">
             <span class="muted">Cuts</span>
-            <div id="cutStrip" class="cut-strip" role="group" aria-label="Cuts in sequence order" title="Arrow keys move between the cuts, Enter opens one"></div>
+            <div id="cutStrip" class="cut-strip" role="group" aria-label="Cuts in sequence order" title="Arrow keys move between the cuts, Enter opens one. The letter after a clip is its join's transition, dashed on Default: press it to change it"></div>
             <div class="clip-nav" role="group" aria-label="Sequence cuts">
               <button type="button" id="prevCut" class="btn small">‹ Previous cut</button>
               <button type="button" id="nextCut" class="btn small">Next cut ›</button>
@@ -413,12 +413,12 @@
             <label for="optAudioTransition" title="How the sound changes from one clip to the next: a hard cut or a short crossfade, which needs the Fade video transition.">Audio transition</label>
             <select id="optAudioTransition" aria-describedby="dAudioTransition"><option value="cut">Cut</option><option value="crossfade">Crossfade</option></select>
             <span id="dAudioTransition" class="vh">How the sound changes from one clip to the next: a hard cut or a short crossfade, which needs the Fade video transition.</span>
-            <label for="optFadeDur" class="adv" title="Seconds each Fade between two clips lasts, in Assemble (assemble --fade-dur). Needs the Fade video transition. Blank: 0.25.">Fade length (s)</label>
+            <label for="optFadeDur" class="adv" title="Seconds each Fade between two clips lasts, in Assemble (assemble --fade-dur). Needs the Fade video transition, or a join set to Fade in Cut mode. Blank: 0.25.">Fade length (s)</label>
             <input type="number" id="optFadeDur" class="adv" min="0.01" max="10" step="any" inputmode="decimal" placeholder="0.25" aria-describedby="dFadeDur">
-            <span id="dFadeDur" class="vh">Seconds each Fade between two clips lasts, in Assemble (assemble --fade-dur). Needs the Fade video transition. Blank: 0.25.</span>
-            <label for="optFinalAudioFade" class="adv" title="Seconds of audio fade in and out Assemble adds to clips exported without one, such as with Clip audio fade 0 (assemble --audio-fade; 0 = off). Not used with the Crossfade audio transition. Blank: 0.25.">Assembly audio fade (s)</label>
+            <span id="dFadeDur" class="vh">Seconds each Fade between two clips lasts, in Assemble (assemble --fade-dur). Needs the Fade video transition, or a join set to Fade in Cut mode. Blank: 0.25.</span>
+            <label for="optFinalAudioFade" class="adv" title="Seconds of audio fade in and out Assemble adds to clips exported without one, such as with Clip audio fade 0 (assemble --audio-fade; 0 = off). With the Crossfade audio transition, used only for joins set to Cut in Cut mode and the video's two ends. Blank: 0.25.">Assembly audio fade (s)</label>
             <input type="number" id="optFinalAudioFade" class="adv" min="0" max="10" step="any" inputmode="decimal" placeholder="0.25" aria-describedby="dFinalAudioFade">
-            <span id="dFinalAudioFade" class="vh">Seconds of audio fade in and out Assemble adds to clips exported without one, such as with Clip audio fade 0 (assemble --audio-fade; 0 = off). Not used with the Crossfade audio transition. Blank: 0.25.</span>
+            <span id="dFinalAudioFade" class="vh">Seconds of audio fade in and out Assemble adds to clips exported without one, such as with Clip audio fade 0 (assemble --audio-fade; 0 = off). With the Crossfade audio transition, used only for joins set to Cut in Cut mode and the video's two ends. Blank: 0.25.</span>
             <label for="optCaptionModel" class="adv" title="The Whisper model that transcribes Burn in captions (assemble --model). Default: medium with an NVIDIA GPU, small on the CPU; large-v3 is the most accurate and the slowest.">Captions model</label>
             <select id="optCaptionModel" class="adv" aria-describedby="dCaptionModel"><option value="">Default</option><option value="large-v3">large-v3</option><option value="medium">medium</option><option value="small">small</option></select>
             <span id="dCaptionModel" class="vh">The Whisper model that transcribes Burn in captions (assemble --model). Default: medium with an NVIDIA GPU, small on the CPU; large-v3 is the most accurate and the slowest.</span>

@@ -214,3 +214,53 @@ def test_timeline_write_is_atomic_when_it_fails_midway(tmp_path, monkeypatch, fm
     monkeypatch.undo()
     assert out.read_text(encoding="utf-8") == "OLD"
     assert [p.name for p in tmp_path.iterdir()] == [out.name]
+
+
+# ---------------------------------------------------------------- mixed joins (#768)
+MIXED = [FADE, 0.0]  # a dissolve into clip 2, a hard cut into clip 3
+
+
+def test_fcpxml_mixed_joins_dissolve_only_where_asked(tmp_path):
+    clips = _clips()
+    starts = [round(o * 30) for o in clip_offsets(clips, MIXED)]
+    assert starts == [0, 120 - XF, 120 - XF + 150]  # every clip lasts its video
+    root = ET.parse(write_fcpxml(clips, tmp_path / "a.fcpxml", "a", MIXED)).getroot()
+    spine = root.find(".//spine")
+    assert spine is not None
+    assert [e.tag for e in spine] == ["asset-clip", "transition", "asset-clip", "asset-clip"]
+    tr = spine.find("transition")
+    assert tr is not None
+    assert (tr.get("offset"), tr.get("duration")) == (f"{starts[1]}/30s", f"{XF}/30s")
+    assert tr.find("filter-audio") is not None
+    assert [c.get("offset") for c in spine.findall("asset-clip")] == [
+        f"{s}/30s" if s else "0s" for s in starts
+    ]
+    assert [c.get("duration") for c in spine.findall("asset-clip")] == [
+        f"{120 - XF}/30s", "150/30s", "180/30s",
+    ]  # fmt: skip
+    assert root.find(".//sequence").get("duration") == f"{120 + 150 + 180 - XF}/30s"
+    cut = write_fcpxml(clips, tmp_path / "b.fcpxml", "b", MIXED, audio_cut=True)
+    tr = ET.parse(cut).getroot().find(".//transition")
+    assert tr is not None and tr.find("filter-audio") is None
+
+
+@pytest.mark.parametrize("audio_cut", [False, True])
+def test_otio_mixed_joins_dissolve_only_where_asked(tmp_path, audio_cut):
+    clips = _clips()
+    tl = _read_otio(write_otio(clips, tmp_path / "a.otio", "a", MIXED, audio_cut=audio_cut))
+    v1, a1 = tl.tracks
+    video = _layout(v1)
+    assert [(k, d) for k, _, d in video if k == "Transition"] == [("Transition", XF)]
+    assert [(s, d) for k, s, d in video if k == "Clip"] == [(0, 105), (105, 150), (255, 180)]
+    assert v1.duration().value == a1.duration().value == 435
+    audio = _layout(a1)
+    if audio_cut:
+        assert not any(k == "Transition" for k, _, _ in audio)
+        # the cut into the dissolve only at the dissolving join; the hard cut keeps its frame
+        assert [(s, d) for k, s, d in audio if k == "Clip"] == [
+            (0, 112),
+            (105 + 7, 143),
+            (255, 180),
+        ]
+    else:
+        assert sum(1 for k, _, _ in audio if k == "Transition") == 1

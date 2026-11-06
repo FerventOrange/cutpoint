@@ -18,7 +18,8 @@ async function stage(t, { project = makeProject(), routes = {} } = {}) {
     clipBtn: () => d.querySelector('#stageMode [data-mode=clip]'),
     seqIds: () => [...d.querySelectorAll('#seqList > li')].map((li) => li.dataset.id),
     range: (id) => d.querySelector(`#seqList li[data-id=${id}] .seq-main`).title,
-    strip: () => [...d.querySelectorAll('#cutStrip button')],
+    strip: () => [...d.querySelectorAll('#cutStrip button[data-cut]')],
+    joins: () => [...d.querySelectorAll('#cutStrip button[data-join]')],
     active: () => [...d.querySelectorAll('.screen video')].find((e) => e.classList.contains('active')),
     live: () => d.querySelector('#seqLive').textContent,
     async click(el) { (typeof el === 'string' ? m.$(el) : el).click(); await page.settle(); },
@@ -601,21 +602,256 @@ test('I and O do not trim in Cut mode, where no trim row shows', async (t) => {
 
 // ---- the transition ----
 
-test('the transition is Export\'s one and says it applies to the whole video; no Dip', async (t) => {
+test('the transition control is Export\'s one and the default of every join; no Dip', async (t) => {
   const m = await inCut(t, { project: withSegments('h001', 'h002') });
   const buttons = [...m.d.querySelectorAll('#cutTransition button')];
   assert.deepEqual(buttons.map((b) => b.textContent), ['Cut', 'Fade']);
-  assert.match(m.$('#cutTransNote').textContent, /^Applies to the whole video/);
+  assert.match(m.$('#cutTransNote').textContent, /^Default for every join/);
   assert.equal(m.$('#optTransition').value, 'cut');
   await m.click(buttons[1]);
   assert.equal(m.$('#optTransition').value, 'fade');
   assert.equal(m.$('#optFadeDur').disabled, false, 'as if chosen in the Export panel');
   assert.equal(buttons[1].getAttribute('aria-pressed'), 'true');
-  assert.match(m.$('#cutTransNote').textContent, /hard cut/);
+  assert.doesNotMatch(m.$('#cutTransNote').textContent, /hard cut/, 'Play across shows the Fade now');
 
   m.$('#optTransition').value = 'cut';
   m.$('#optTransition').dispatchEvent(new m.w.Event('change', { bubbles: true }));
   await m.page.settle();
   assert.equal(buttons[0].getAttribute('aria-pressed'), 'true', 'the Export panel moves it too');
   assert.equal(m.$('#saveState').textContent, 'Sequence saved', 'not an edit of the sequence');
+});
+
+// ---- the transition of each join ----
+
+const PUT_REVIEW = 'PUT /api/projects/p1/review';
+/** A Cut mode page that records what Save sends. */
+const saving = async (t, ids = ['h001', 'h002', 'h003'], extra = {}) => {
+  const sent = [];
+  const m = await inCut(t, { project: extra.project ?? withSegments(...ids), routes: { [PUT_REVIEW]: (req) => { sent.push(req.body); return {}; } } });
+  m.sent = sent;
+  m.save = async () => { await m.click('#saveBtn'); return sent.at(-1); };
+  return m;
+};
+const letters = (m) => m.joins().map((b) => b.textContent);
+const pair = (a, b, transition) => ({ a, b, transition });
+
+test('a button sits between every two blocks, with the letter of what the join plays, and steps Default, Cut, Fade, Default', async (t) => {
+  const m = await saving(t);
+  assert.equal(m.joins().length, 2);
+  assert.deepEqual(m.joins().map((b) => b.dataset.own), ['false', 'false']);
+  assert.deepEqual(letters(m), ['C', 'C'], 'Default shows the Export panel\'s transition');
+  assert.match(m.joins()[0].getAttribute('aria-label'), /^Transition of cut 1 of 2: Default, Cut\. Press for Cut$/);
+  await m.click(m.joins()[0]);
+  assert.equal(m.joins()[0].dataset.own, 'true');
+  assert.match(m.joins()[0].getAttribute('aria-label'), /Cut, set for this cut\. Press for Fade$/);
+  assert.equal(m.$('#sideLive').textContent, 'Transition of cut 1 set to Cut');
+  await m.click(m.joins()[0]);
+  assert.deepEqual(letters(m), ['F', 'C']);
+  assert.equal(m.$('#sideLive').textContent, 'Transition of cut 1 set to Fade');
+  assert.equal(m.$('#saveState').textContent, 'Unsaved changes');
+  assert.deepEqual((await m.save()).joins, [pair('h001', 'h002', 'fade')]);
+  assert.equal(m.$('#saveState').textContent, 'Sequence saved');
+});
+
+test('Default removes the entry, so a join back on Default is no unsaved change', async (t) => {
+  const m = await saving(t);
+  await m.click(m.joins()[1]); // Cut
+  await m.click(m.joins()[1]); // Fade
+  await m.click(m.joins()[1]); // Default
+  assert.equal(m.joins()[1].dataset.own, 'false');
+  assert.equal(m.$('#sideLive').textContent, 'Transition of cut 2 set to Default (Cut)');
+  assert.equal(m.$('#saveState').textContent, 'Sequence saved', 'nothing differs from what is saved');
+  await m.click(m.joins()[1]);
+  await m.click(m.joins()[1]);
+  assert.deepEqual((await m.save()).joins, [pair('h002', 'h003', 'fade')]);
+  await m.click(m.joins()[1]); // Default again
+  assert.deepEqual((await m.save()).joins, [], 'the entry is gone, not stored as "default"');
+});
+
+test('a join on Default follows the Export panel\'s transition, and its own choice does not', async (t) => {
+  const m = await saving(t);
+  await m.click(m.joins()[0]); // its own Cut
+  await m.click('#cutTransition button[data-value=fade]');
+  assert.deepEqual(letters(m), ['C', 'F']);
+  assert.match(m.$('#sideLive').textContent, /^Default transition set to Fade$/);
+  assert.equal(m.$('#saveState').textContent, 'Unsaved changes', 'the choice is an edit');
+  assert.deepEqual((await m.save()).joins, [pair('h001', 'h002', 'cut')], 'the Default one is not stored');
+});
+
+test('a choice is of its ordered pair: it rests while the clips are apart and counts again beside each other, but not the other way round', async (t) => {
+  const m = await saving(t);
+  await m.click(m.joins()[0]);
+  await m.click(m.joins()[0]); // h001 -> h002: Fade
+  await m.click(m.$('#seqList li[data-id=h003] [data-act=up]')); // h001, h003, h002
+  assert.deepEqual(m.seqIds(), ['h001', 'h003', 'h002']);
+  assert.deepEqual(letters(m), ['C', 'C'], 'the pair is apart: the global transition');
+  assert.deepEqual(m.joins().map((b) => b.dataset.own), ['false', 'false'], 'h003 -> h002 is not h001 -> h002');
+  await m.click(m.$('#seqList li[data-id=h003] [data-act=down]')); // h001, h002, h003
+  assert.deepEqual(m.seqIds(), ['h001', 'h002', 'h003']);
+  assert.deepEqual(letters(m), ['F', 'C'], 'adjacent again: the choice returns');
+  // the other way round: h002 -> h001 is another join
+  await m.click(m.$('#seqList li[data-id=h002] [data-act=up]'));
+  assert.deepEqual(m.seqIds(), ['h002', 'h001', 'h003']);
+  assert.deepEqual(letters(m), ['C', 'C']);
+  assert.equal(m.joins()[0].dataset.own, 'false');
+  await m.click(m.$('#seqList li[data-id=h001] [data-act=up]'));
+  assert.deepEqual(letters(m), ['F', 'C']);
+  assert.deepEqual((await m.save()).joins, [pair('h001', 'h002', 'fade')], 'the resting choice is saved with the sequence');
+});
+
+test('a saved join comes back with the project, and the page keeps it after a reload of the same review', async (t) => {
+  const p = withSegments('h001', 'h002', 'h003');
+  p.review.joins = [pair('h002', 'h003', 'fade'), pair('h001', 'h009', 'cut')];
+  const m = await saving(t, undefined, { project: p });
+  assert.deepEqual(letters(m), ['C', 'F']);
+  assert.equal(m.$('#saveState').textContent, 'Sequence saved');
+  await m.click(m.joins()[0]);
+  assert.deepEqual((await m.save()).joins, [pair('h001', 'h002', 'cut'), pair('h001', 'h009', 'cut'), pair('h002', 'h003', 'fade')], 'the join of a clip not here is kept, in a fixed order');
+});
+
+test('Undo and Redo bring back the joins with the sequence', async (t) => {
+  const m = await saving(t);
+  await m.click(m.joins()[0]); // Cut
+  await m.click(m.joins()[0]); // Fade
+  assert.deepEqual(letters(m), ['F', 'C']);
+  await m.click('#undoBtn');
+  assert.deepEqual(letters(m), ['C', 'C']);
+  assert.equal(m.joins()[0].dataset.own, 'true', 'back to its Cut');
+  await m.click('#undoBtn');
+  assert.equal(m.joins()[0].dataset.own, 'false');
+  assert.equal(m.$('#saveState').textContent, 'Sequence saved');
+  await m.click('#redoBtn');
+  await m.click('#redoBtn');
+  assert.deepEqual(letters(m), ['F', 'C']);
+  // an edit that touches no join still undoes the join it follows
+  await m.click(m.$('#candList li[data-id=h003] [data-act=toggle]'));
+  await m.click('#undoBtn');
+  assert.deepEqual(m.seqIds(), ['h001', 'h002', 'h003']);
+  assert.deepEqual(letters(m), ['F', 'C']);
+});
+
+/** Play across the cut of ``m``: both players loaded, the first at its start. */
+const playAcross = async (m) => {
+  await m.click('#cutPlayBtn');
+  const videos = [...m.d.querySelectorAll('.screen video')];
+  for (const v of videos) v.__media.loaded(600);
+  await m.page.settle();
+  return videos;
+};
+const advance = async (m, el, to) => {
+  el.__media.tick(to);
+  m.t.mock.timers.tick(16);
+  await m.page.settle();
+};
+
+test('Play across a join set to Fade overlaps the clips under a Cut default', async (t) => {
+  const m = await saving(t, ['h001', 'h002']);
+  m.t = t;
+  await m.click(m.joins()[0]);
+  await m.click(m.joins()[0]); // its own Fade, the default is Cut
+  await playAcross(m);
+  const first = m.active();
+  await advance(m, first, 17.5); // before the last 0.25 s: no step yet
+  assert.match(m.live(), /Playing clip 1 of 2/);
+  await advance(m, first, 17.8); // inside the Fade's length: the next clip starts under it
+  assert.match(m.live(), /Playing clip 2 of 2/);
+  assert.notEqual(m.active(), first);
+  assert.equal(first.__media.paused, false, 'the outgoing clip plays on under the Fade');
+  const second = m.active();
+  assert.deepEqual([first.__media.volume, second.__media.volume], [1, 0], 'the Fade starts on the outgoing clip\'s sound');
+  await advance(m, second, second.__media.currentTime + 0.125); // half way
+  assert.ok(Math.abs(first.__media.volume - 0.5) < 0.01 && Math.abs(second.__media.volume - 0.5) < 0.01, 'the sound ramps');
+  await m.click('#cutPlayBtn'); // Stop
+  assert.equal(first.__media.paused, true);
+  assert.equal(first.style.opacity, '');
+});
+
+test('Play across a join set to Cut stays a hard cut under a Fade default', async (t) => {
+  const n = await saving(t, ['h001', 'h002']);
+  n.t = t;
+  await n.click('#cutTransition button[data-value=fade]');
+  await n.click(n.joins()[0]); // its own Cut
+  await playAcross(n);
+  const one = n.active();
+  await advance(n, one, 17.8);
+  assert.match(n.live(), /Playing clip 1 of 2/, 'a Cut waits for the end of the clip');
+  await advance(n, one, 17.97);
+  assert.match(n.live(), /Playing clip 2 of 2/);
+  assert.equal(one.__media.paused, true, 'no overlap');
+});
+
+test('Assemble sends Fade length under a Cut default only while a join of the sequence is set to Fade', async (t) => {
+  const jobs = [];
+  const p = withSegments('h001', 'h002');
+  p.clips = { dir: 'clips', clips: [{ file: '001_a.mp4' }, { file: '002_b.mp4' }] };
+  const m = await inCut(t, { project: p, routes: {
+    [PUT_REVIEW]: {},
+    'POST /api/projects/p1/jobs': (req) => { jobs.push(req.body); return { id: `j${jobs.length}`, status: 'running' }; },
+  } });
+  const fadeLen = m.$('#optFadeDur');
+  fadeLen.value = '0.5';
+  fadeLen.dispatchEvent(new m.w.Event('change', { bubbles: true }));
+  assert.equal(fadeLen.disabled, true, 'nothing fades: the CLI would refuse the length');
+  await m.click(m.joins()[0]);
+  await m.click(m.joins()[0]); // Fade
+  assert.equal(fadeLen.disabled, false);
+  await m.click('#assembleBtn');
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].transition, 'cut');
+  assert.equal(jobs[0].fade_dur, 0.5);
+  await m.click(m.joins()[0]); // Default
+  assert.equal(fadeLen.disabled, true);
+  await m.click('#assembleBtn');
+  assert.equal(jobs.at(-1).transition, 'cut');
+  assert.equal(jobs.at(-1).fade_dur, undefined);
+});
+
+test('Assemble saves the sequence with its joins first, so the server exports the same ones', async (t) => {
+  const order = [];
+  const p = withSegments('h001', 'h002');
+  p.clips = { dir: 'clips', clips: [{ file: '001_a.mp4' }, { file: '002_b.mp4' }] };
+  const m = await inCut(t, { project: p, routes: {
+    [PUT_REVIEW]: (req) => { order.push(['save', req.body.joins]); return {}; },
+    'POST /api/projects/p1/jobs': () => { order.push('job'); return { id: 'j1', status: 'running' }; },
+  } });
+  await m.click(m.joins()[0]); // Cut
+  await m.click('#assembleBtn');
+  assert.deepEqual(order, [['save', [pair('h001', 'h002', 'cut')]], 'job']);
+});
+
+test('Assembly audio fade follows the joins: on under a Cut default, off while every edge crossfades, on with a Cut join, off after Undo', async (t) => {
+  const jobs = [];
+  const p = withSegments('h001', 'h002');
+  p.clips = { dir: 'clips', clips: [{ file: '001_a.mp4' }, { file: '002_b.mp4' }] };
+  const m = await inCut(t, { project: p, routes: {
+    [PUT_REVIEW]: {},
+    'POST /api/projects/p1/jobs': (req) => { jobs.push(req.body); return { id: `j${jobs.length}`, status: 'running' }; },
+  } });
+  const field = m.$('#optFinalAudioFade');
+  const steps = [
+    ['global Cut', async () => {}, false],
+    ['global Fade, Crossfade audio, every join Default', () => m.click('#cutTransition button[data-value=fade]'), true],
+    ['one join set to Cut', () => m.click(m.joins()[0]), false],
+    ['Undo', () => m.click('#undoBtn'), true],
+  ];
+  assert.equal(m.$('#optAudioTransition').value, 'cut');
+  for (const [name, act, off] of steps) {
+    await act();
+    if (name === 'global Fade, Crossfade audio, every join Default') assert.equal(m.$('#optAudioTransition').value, 'crossfade');
+    assert.equal(field.disabled, off, name);
+    if (name === 'global Cut') {
+      field.value = '0.1';
+      field.dispatchEvent(new m.w.Event('change', { bubbles: true }));
+    }
+  }
+  // the Cut join under a Fade default sends it
+  await m.click(m.joins()[0]); // Cut
+  assert.equal(field.disabled, false);
+  await m.click('#assembleBtn');
+  assert.equal(jobs.at(-1).transition, 'fade');
+  assert.equal(jobs.at(-1).audio_transition, 'crossfade');
+  assert.equal(jobs.at(-1).audio_fade, 0.1);
+  await m.click('#undoBtn');
+  await m.click('#assembleBtn');
+  assert.equal(jobs.at(-1).audio_fade, undefined);
 });
