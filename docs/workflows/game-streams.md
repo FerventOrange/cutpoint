@@ -164,26 +164,25 @@ moments the vision model describes first) and the game name used in the vision p
 
 ## Kill feed rows without a preset
 
-Without a preset (or with one that sets no `kill_words`), the kill feed is read from text rows too, not
-only from icon lines. A few generic kill words work from the first row: `destroyed`, `shot down`,
-`killed`, `eliminated`, `assist`, `crashed` and `has crashed`. Game-specific default words were removed; a preset's `kill_words` can list them.
+Without a preset (or with one that sets no `kill_words`), these generic kill words read text rows:
+`destroyed`, `shot down`, `killed`, `eliminated`, `assist`, `crashed` and `has crashed`. `wrecked`,
+`set afire`, `critically damaged`, `severely damaged` and `has been wrecked` are no longer default
+words, so `Kip wrecked Alder` is not read unless a preset's `kill_words` lists the word.
 
-After all rows are read, the kill verb of the footage is learned from repeated `name verb name` rows
-(and `name (group) name (group)` rows). A word counts when it stands between at least 3 different
-names on each side, in rows that scroll out within 20 s and come on screen at 3 or more separate
-times. Filler words such as `the` and `and` are not learned. Names must appear on both sides
-(players kill and die). A clock-stamped log
+A clock-stamped log
 (`2:20 Name destroyed` over a wrapped line) is joined into one row first; only the kill words read
-such a log.
+such a log, and a `:` or `;` before the kill word makes the row chat.
 
 Player tags (`--player`) tolerate OCR variants: spaces and punctuation are ignored, look-alike
 letters (`0`/`O`, `1`/`I`, `5`/`S`) are one, and a clan tag or weapon read with the name still
 matches. A tag shorter than 5 letters and digits must match a whole word of the name.
 
-Limits: learning needs enough repeated rows from different names, so a short clip may learn
-nothing and keep only the generic words. A word that is no kill but repeats between many names
-(for example a revive line) can still be learned and then makes false kills. A preset's `kill_words` turns learning off. Cached OCR
-interpretation is redone once after the update.
+Limits: a `name verb name` row with any other verb stays unread unless a preset's `kill_words` lists
+it. Clock-stamped chat without a colon can still be read as a kill by the log join: with a later
+clock-stamped row such as `12:31 Alder left` below them, `12:30 Kip he got destroyed` and `that was so
+bad` join into one row with a kill word. The two rows alone are no log and give no kill. A log kill
+seen only inside a menu span is not kept, even if it is real. Cached OCR interpretation is redone once
+after the update.
 
 ## Limits
 

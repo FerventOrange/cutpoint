@@ -91,10 +91,11 @@ class OcrParams:
 # 13: menu frames are recorded as stats["menu_spans"] (#440)
 # 14: gaps up to MENU_FILL_S between box- or text-rule menu frames are menus too (#409)
 # 15: a static screen without new menu text needs menu frames within STATIC_ANCHOR_S (#554)
-# 16: feeds learn their row forms from the footage (:meth:`FeedParser.learn`), a clock-stamped
-# log's wrapped rows are joined, the default kill words are generic only and player tags
-# tolerate OCR variants (:func:`is_player`)
-GENERIC_VERSION = 16
+# 16: feeds learned row forms from the footage, a clock-stamped log's wrapped rows are joined,
+# the default kill words are generic only and player tags tolerate OCR variants
+# (:func:`is_player`)
+# 17: feeds learn nothing from the footage, so no kills learned at 16 are reused
+GENERIC_VERSION = 17
 
 
 # --------------------------------------------------------------------------- text utils
@@ -315,7 +316,7 @@ _ICON_NAME_BAD = re.compile(r"[:%/]")
 # text that stays in the feed's area (a lobby line: "We're estimating your chances to win..."
 # for 49 s on R6); feed lines scroll out within seconds (R6 kill lines and notices: up to 10 s).
 ROW_NOTICE_MAX_S = 20.0
-# Kill lines tracked by their two names: icon lines and rows of a learned form
+# Kill lines tracked by their two names: icon lines and the kills of a clock-stamped log
 LINE_ENTRIES = ("icon", "text")
 # Two words that come back this often with neither ever seen with another name are a label
 # ("Target | Marked"), not two players: a replay shows a kill twice at most
@@ -669,26 +670,6 @@ class EventTracker:
         self.touched.append(ev)
         return ev
 
-    def rewind(self) -> None:
-        """Start over in time: the next sightings may be older than the last ones (a second
-        pass over the footage), so no event is still on screen."""
-        self._active = []
-
-    def fold(self, e: dict[str, Any], kills: list[dict[str, Any]]) -> bool:
-        """Fold ``e``, a line of a second pass, into the kill of ``kills`` that is that line
-        (:meth:`_same_line`) on screen within ``persist_s`` of it. Returns whether one was."""
-        for o in kills:
-            near = o["t"] - self.persist_s <= e["end"] and e["t"] - self.persist_s <= o["end"]
-            if near and self._same_line(o, e):
-                o["_times"] = sorted([*o["_times"], *e["_times"]])
-                o["sightings"] += e["sightings"]
-                o["t"], o["end"] = min(o["t"], e["t"]), max(o["end"], e["end"])
-                for k in ("player", "player_kill", "player_death"):
-                    if e.get(k):
-                        o[k] = True
-                return True
-        return False
-
     def drop_sightings(
         self, times: set[float], keep: Callable[[dict[str, Any]], bool] | None = None
     ) -> None:
@@ -916,42 +897,6 @@ class Interpreter:
         )
         self.tracker = EventTracker(PERSIST_S, FUZZY)
         self.feed = FeedParser(preset.feed if preset else {}, self.tags, scale)
-        self.feed_rows: list[tuple[float, str, list[tuple]]] = []  # for :meth:`learn_feed`
-        self.last_spare: dict[str, list[tuple]] = {}  # per feed region, for :meth:`keep_rows`
-        # (region, t) of :meth:`keep_rows`: nothing new was read there
-        self.kept_frames: set[tuple[str, float]] = set()
-
-    def keep_rows(self, t: float, region: str) -> None:
-        """Note that the rows of the last read of feed ``region`` are still on screen at ``t``
-        (no new reading): :meth:`learn_feed` sees how long they stayed, and a row kept alive
-        stays one kill."""
-        if rows := self.last_spare.get(region):
-            self.feed_rows.append((t, region, rows))
-            self.kept_frames.add((region, t))
-
-    def learn_feed(self) -> None:
-        """A second pass over the feed rows that made no event, once the whole source is read:
-        the rows of the forms :meth:`FeedParser.learn` found are kills, in place of the
-        notices they were read as."""
-        if not self.feed.learn(self.feed_rows):
-            return
-        tracker, lines = self.tracker, set()
-        tracker.rewind()
-        first = [e for e in tracker.events if e["type"] == "kill"]
-        new = len(tracker.events)
-        for t, region, rows in self.feed_rows:
-            for ev in self.feed.learned_events(rows):
-                lines.update(norm(row) for row in ev["raw"].split(" | "))
-                tracker.see(t, ev.pop("type"), ev.pop("key"), exclusive=True, region=region, **ev)
-        gone = {id(e) for e in tracker.events[new:] if tracker.fold(e, first)}
-        tracker.events = sorted(
-            (
-                e
-                for e in tracker.events
-                if id(e) not in gone and not (e["type"] == "notice" and e["_key"] in lines)
-            ),
-            key=lambda e: e["t"],
-        )
 
     def drop_labels(self) -> None:
         """Forget the icon kills that are no kills by how they behave: a line that stays
@@ -1011,7 +956,6 @@ class Interpreter:
     ) -> None:
         """Interpret OCR ``items`` of ``region`` (crop ``img``) at time ``t``: feeds,
         banners, notices and big text."""
-        self.last_spare.pop(region.name, None)
         if not items:
             return
         if region.kind == "feed":
@@ -1020,9 +964,6 @@ class Interpreter:
                 self.tracker.see(
                     t, ev.pop("type"), ev.pop("key"), exclusive=True, region=region.name, **ev
                 )
-            if self.feed.spare:
-                self.last_spare[region.name] = self.feed.spare
-                self.feed_rows.append((t, region.name, self.feed.spare))
             return
         min_h = region.min_text_h * self.scale
         rows = _rows(items, 12 * self.scale)
@@ -1053,8 +994,8 @@ class Interpreter:
 
 
 _CLAN_RE = re.compile(r"^\s*(\[[^\]]{1,8}\]|\^[^\^]{1,8}\^|=[^=]{1,8}=|-[^-]{1,8}-)\s*")
-# Generic words that work from the first row on; a feed's own words are learned from the
-# footage (:meth:`FeedParser.learn`), so no game's phrases belong here
+# Generic words that work from the first row on; no game's phrases belong here (a preset's
+# ``kill_words`` can list them)
 DEFAULT_KILL_WORDS = {
     "destroyed": "kill",
     "shot down": "kill",
@@ -1115,44 +1056,8 @@ def split_name(text: str) -> tuple[str, str | None]:
 
 
 KILL_WORD_GLUE = 7  # kill words this long may be joined to a name on one side
-# A word or row form is learned when it stands between LEARN_NAMES different names on each
-# side: a name read with one other name is no verb, a notice ("Kip has left the game") has few
-# different texts after its words. Words have LEARN_WORD letters or more ("cm" of a weapon no).
-LEARN_NAMES = 3
-LEARN_WORD = 3
-# Words of a sentence, never a row's verb ("Capture the Flag", "Kip and Alder", "Kip versus Alder")
-_ROW_FILLER = frozenset(
-    {
-        "the",
-        "and",
-        "but",
-        "for",
-        "not",
-        "with",
-        "from",
-        "versus",
-        "into",
-        "onto",
-        "over",
-        "than",
-        "then",
-        "that",
-        "this",
-        "you",
-        "your",
-        "his",
-        "her",
-        "its",
-        "has",
-        "have",
-        "had",
-        "was",
-        "were",
-        "are",
-    }
-)
-_ROW_NAME_BAD = re.compile(r"[\"!?()\[\]\uff08\uff09]")  # no award, sentence, cut group or item
-_SENTENCE_RE = re.compile(r"\w\s*[:;]")  # "Kip: nice one", "Kip picked up: [Cloak]"
+# A chat line's mark before a log row's kill word: "Kip: he got killed", "Kip (mod): he got killed"
+_SENTENCE_RE = re.compile(r"[\w)\uff09]\s*[:;]")
 _CLOCK_RE = re.compile(r"\s*\d{1,2}:\d{2}(?!\d)\s*")
 
 
@@ -1166,14 +1071,6 @@ def _is_bound(text: str, i: int) -> bool:
     if not (a.isalnum() and b.isalnum()):
         return True
     return (a.islower() and b.isupper()) or a.isdigit() != b.isdigit()
-
-
-def _row_name(text: str, min_len: int) -> str | None:
-    """The name in ``text``, one side of a feed row (:func:`split_name`, after a kill icon read
-    as "@"), or None when it does not read as one
-    (:func:`_icon_name`; no quoted award or sentence)."""
-    name = split_name(text)[0].rpartition("@")[2].strip()
-    return name if _icon_name(name, min_len) and not _ROW_NAME_BAD.search(name) else None
 
 
 def _join_log_rows(lines: list[tuple]) -> tuple[list[tuple], set[int]]:
@@ -1195,56 +1092,6 @@ def _join_log_rows(lines: list[tuple]) -> tuple[list[tuple], set[int]]:
     return out, log
 
 
-def _row_forms(line: str, min_name: int) -> Iterator[tuple[str, str, str]]:
-    """What ``line`` offers to :meth:`FeedParser.learn`: ``(word, left name, right name)`` per
-    word that stands between two names, and ``("", left name, right name)`` for two names
-    with a group each ("Kip (Tank) ... Alder (Plane)"). Groups hold no words of the row. Chat
-    and loot lines offer nothing, and a word counts only between one-word names: common words
-    of a sentence have text around them too. Reading (:meth:`FeedParser.learned_events`) still
-    takes names with spaces."""
-    if _SENTENCE_RE.search(line):
-        return
-    groups = paren_groups(line)
-    if len(groups) >= 2:
-        left = _row_name(line[: groups[0][1]], min_name)
-        right = _row_name(line[groups[0][1] : groups[-1][1]], min_name)
-        if left and right:
-            yield "", left, right
-    for run in re.finditer(r"[^\W\d_]+", line):
-        if any(a <= run.start() < b for a, b in groups):
-            continue
-        at = run.start()
-        for part in _CAMEL_RE.sub(" ", run.group()).split():
-            end = at + len(part)
-            if len(part) >= LEARN_WORD and part.lower() not in _ROW_FILLER:
-                left = _row_name(line[:at], min_name)
-                right = _row_name(line[end:], min_name)
-                if left and right and " " not in left + right:
-                    yield part.lower(), left, right
-            at = end
-
-
-def _row_comings(frames: list[tuple[float, str, list[tuple]]]) -> dict[str, list[float]]:
-    """The times each row of ``frames`` came on screen, for the rows that scroll out: a row
-    that stays longer than :data:`ROW_NOTICE_MAX_S` at one time is no feed row and left out.
-    A row gone for :data:`PERSIST_S` came again. Rows read with other case or marks are one."""
-    shown: dict[str, list[float]] = {}
-    lines: dict[str, list[str]] = {}
-    for t, _, rows in frames:
-        for line, _, _ in rows:
-            key = norm(line)
-            shown.setdefault(key, []).append(t)
-            lines.setdefault(key, [])
-            if line not in lines[key]:
-                lines[key].append(line)
-    out: dict[str, list[float]] = {}
-    for key, times in shown.items():
-        runs = _runs(times, PERSIST_S)
-        if all(run[-1] - run[0] <= ROW_NOTICE_MAX_S for run in runs):
-            out |= {line: [run[0] for run in runs] for line in lines[key]}
-    return out
-
-
 def _runs(times: list[float], gap: float) -> list[list[float]]:
     """The sorted ``times`` in runs without a step longer than ``gap``."""
     runs: list[list[float]] = []
@@ -1256,38 +1103,10 @@ def _runs(times: list[float], gap: float) -> list[list[float]]:
     return runs
 
 
-def _shares_name(left: Iterable[str], right: Iterable[str]) -> bool:
-    """Whether a name of ``left`` is similar to one of ``right``. Names too far apart in
-    length to reach :data:`FUZZY` are not compared."""
-    a = {name: len(norm(name).replace(" ", "")) for name in left}
-    b = {name: len(norm(name).replace(" ", "")) for name in right}
-    return any(
-        2 * min(n, m) >= FUZZY * (n + m) and similar(x, y) >= FUZZY
-        for x, n in a.items()
-        for y, m in b.items()
-    )
-
-
-def _different_names(names: Iterable[str], need: int) -> bool:
-    """Whether ``names`` holds ``need`` names that are no reads of one another."""
-    kept: list[str] = []
-    for name in names:
-        if not any(
-            EventTracker._nested(name, k)
-            or EventTracker._misread(name, k)
-            or similar(name, k) >= FUZZY
-            for k in kept
-        ):
-            kept.append(name)
-            if len(kept) >= need:
-                return True
-    return False
-
-
 class FeedParser:
     """Game-agnostic kill-feed parsing for "feed" regions.
 
-    Three forms are recognised (the first two from one region crop):
+    Two forms are recognised (both from one region crop):
 
     * a row containing a kill word ("A destroyed B", "A eliminated B"): actor before the
       word, target after it;
@@ -1296,10 +1115,7 @@ class FeedParser:
       Thunder) or two coloured names on one row (``"entry": "one_line"``);
       without a colour map, in a discovered icon feed (``"row_notices": true``), a
       row of two names split by an icon gap is a kill, left name first
-      (:meth:`_icon_line`);
-    * rows of a form learned from the source's feed rows, once they are all read: a word
-      between names ("A fragged B") or two names with a group each ("A (Tank) B (Plane)"),
-      whatever stands between them (:meth:`learn`).
+      (:meth:`_icon_line`).
 
     A clock-stamped log's wrapped rows are joined first; only the kill words read them, as a
     log tells much more than kills.
@@ -1314,7 +1130,6 @@ class FeedParser:
         self.words = {
             k.upper(): v for k, v in (cfg.get("kill_words") or DEFAULT_KILL_WORDS).items()
         }
-        self.own_words = bool(cfg.get("kill_words"))  # a preset's list is final: nothing learned
         self.colors: dict[str, str] = dict(cfg.get("colors") or {})
         self.entry = cfg.get("entry", "auto")
         self.tags = tags
@@ -1323,9 +1138,6 @@ class FeedParser:
         self.min_name = int(cfg.get("min_name", 3))
         self.row_notices = bool(cfg.get("row_notices", False))
         self.notice_boxes: list[list] = []  # the last parse's notice rows (crop px)
-        self.spare: list[tuple[str, float, str | None]] = []  # the last parse's rows, no kill
-        self.learned: list[str] = []  # words between names, from :meth:`learn`
-        self.group_rows = False  # :meth:`learn` found rows of two names with a group each
         self._img: np.ndarray | None = None
 
     def _team(self, img: np.ndarray, row: list[tuple]) -> str | None:
@@ -1423,9 +1235,7 @@ class FeedParser:
         weapon = trailing[: max(0, len(trailing) - len(text))].strip(" -=_>") or None
         return text, weapon
 
-    def _parse_paren(
-        self, lines: list[tuple], used: set[int], ai_targets: bool = True
-    ) -> list[dict[str, Any]]:
+    def _parse_paren(self, lines: list[tuple], used: set[int]) -> list[dict[str, Any]]:
         """Icon feeds whose names carry the vehicle in parentheses.
 
         * one row, two groups: ``Killer (Veh) <weapon> Victim (Veh)``;
@@ -1437,8 +1247,6 @@ class FeedParser:
         before the first group means the player is the actor (a player kill),
         after it the player is the victim. Team colours are recorded when the
         text hue maps to a team in the preset's ``colors``.
-
-        With ``ai_targets`` a row of one group and trailing text is a kill of an AI vehicle.
         """
         out: list[dict[str, Any]] = []
         k = 0
@@ -1470,7 +1278,7 @@ class FeedParser:
                 k += 1
                 continue
             trailing = line[groups[0][1] :].strip(" -=_>") if groups else ""
-            if ai_targets and len(groups) == 1 and len(trailing) >= 2 and not victim_next:
+            if len(groups) == 1 and len(trailing) >= 2 and not victim_next:
                 # single row, target without a vehicle group (AI vehicle such as
                 # "Churchill VII"): the target is the last colour run
                 target, weapon = self._colour_target(lines[k][3], trailing)
@@ -1544,7 +1352,6 @@ class FeedParser:
     def parse(self, img: np.ndarray, items: list[tuple[list, str, float]]) -> list[dict[str, Any]]:
         """Events (dicts with ``type`` and ``key``) for one OCR'd feed crop."""
         self._img = img
-        self.spare = []
         rows = _rows(items, self.row_tol)
         lines = [
             (
@@ -1564,6 +1371,8 @@ class FeedParser:
             if sp is None:
                 continue
             actor, target, verb = sp
+            if k in log and verb in ("kill", "assist") and _SENTENCE_RE.search(actor):
+                continue  # a log tells much more than kills: "12:30 Kip: he got killed"
             if verb in ("crash",):
                 actor, target = "", actor
             ev = self._event(actor, target, verb, team, None, conf, line)
@@ -1626,103 +1435,7 @@ class FeedParser:
                         used.add(k)
         if self.row_notices:
             out += self._row_notices(lines, used | gapped | log)
-        self.spare = [
-            (line, conf, team)
-            for k, (line, conf, team, _) in enumerate(lines)
-            if k not in used and k not in log
-        ]
         return out
-
-    def learn(self, frames: list[tuple[float, str, list[tuple]]]) -> bool:
-        """Learn this feed's row forms from the rows that made no kill (``spare`` of every
-        parse, as ``(t, region, rows)``): a word that stands between :data:`LEARN_NAMES`
-        different names on each side, or two names with a group each between as many, in
-        rows that scroll out (:func:`_row_comings`) at as many separate times. So a
-        game needs no word list, and text that only looks like a row stays out: a notice has
-        few texts after its words, a name few names around it, and a row with a name on one
-        side only offers nothing. All forms together must have a name on both sides: players
-        kill and die, an item or the title of a character ("Oren the Tall") never swaps
-        sides. A preset's ``kill_words`` are final. Returns whether anything was learned."""
-        if self.own_words or self.entry == "paren":
-            return False
-        sides: dict[str, tuple[dict[str, None], dict[str, None], list[float]]] = {}
-        for line, comings in _row_comings(frames).items():
-            for word, left, right in _row_forms(line, self.min_name):
-                a, b, times = sides.setdefault(word, ({}, {}, []))
-                a[left] = b[right] = None
-                times += comings
-        forms = {
-            word
-            for word, (a, b, times) in sides.items()
-            if _different_names(a, LEARN_NAMES)
-            and _different_names(b, LEARN_NAMES)
-            and len(_runs(times, PERSIST_S)) >= LEARN_NAMES
-        }
-        left = [name for word in forms for name in sides[word][0]]
-        right = [name for word in forms for name in sides[word][1]]
-        if not _shares_name(left, right):
-            forms = set()  # nobody on both sides: titles or items, not players who kill and die
-        self.group_rows = "" in forms
-        self.learned = sorted(forms - {""}, key=len, reverse=True)
-        if forms:
-            logger.debug("feed rows learned: %d words, group rows %s", len(forms), self.group_rows)
-        return bool(forms)
-
-    def _learned_split(self, line: str) -> tuple[str, str] | None:
-        """(actor, target) of ``line``: the text before its first learned word and after
-        its last that leaves a name there (the target may be on the next row: then ""), or
-        None. A learned word is a word of its own on both sides (:func:`_is_bound`: "Bigfragged"
-        has none), but a digit or a capital is a side, so it may be joined to a name
-        ("Ax7fragged", "fraggedKip"), and words in groups do not count."""
-        groups = paren_groups(line)
-        spans = sorted(
-            m.span()
-            for word in self.learned
-            for m in re.finditer(re.escape(word), line, re.IGNORECASE)
-            if _is_bound(line, m.start())
-            and _is_bound(line, m.end())
-            and not any(a <= m.start() < b for a, b in groups)
-        )
-        for _, end in reversed(spans):
-            rest = line[end:]
-            if not _alnum_len(rest) or _row_name(rest, self.min_name):
-                return line[: spans[0][0]], rest
-        return None
-
-    def learned_events(self, rows: list[tuple[str, float, str | None]]) -> list[dict[str, Any]]:
-        """Kills from the ``spare`` rows of one parse, by the forms :meth:`learn` found. Both
-        sides must read as names (:func:`_row_name`); a row that ends on its word goes on in
-        the next row."""
-        lines = [(line, conf, team, None) for line, conf, team in rows]
-        out: list[dict[str, Any]] = []
-        used: set[int] = set()
-        for k, (line, conf, team, _) in enumerate(lines):
-            sp = self._learned_split(line) if k not in used else None
-            if sp is None:
-                continue
-            actor, target = sp
-            raw = line
-            if not _alnum_len(target):
-                nxt = lines[k + 1][0] if k + 1 < len(lines) and k + 1 not in used else ""
-                if not _row_name(nxt, self.min_name):
-                    continue  # a row cut short: the next row is one of its own
-                target = nxt
-                raw = f"{line} | {target}"
-                used.add(k + 1)
-            ev = self._event(actor, target, "kill", team, None, conf, raw)
-            used.add(k)
-            if ev:
-                out.append(ev)
-        if self.group_rows:
-            out += self._parse_paren(lines, used, ai_targets=False)
-        kept = []
-        for ev in out:
-            a = _row_name(ev["killer"], self.min_name)
-            b = _row_name(ev["victim"], self.min_name)
-            if a and b:
-                ev |= {"killer": a, "victim": b, "text": f"{a} > {b}", "entry": "text"}
-                kept.append(ev)
-        return kept
 
     def _row_notices(self, lines: list[tuple], skip: set[int]) -> list[dict[str, Any]]:
         """Notices from feed rows that made no event and have no icon gap (not in
@@ -2683,8 +2396,6 @@ class OcrInterpretation:
                     self.det_boxes[r.name] = []  # no text rows
                 if g["g"] == "keep":  # same text still on screen
                     tracker.keep_alive(self.region_events.get(r.name, []), rec.t)
-                    if r.kind == "feed":
-                        interp.keep_rows(rec.t, r.name)
                 if g["g"] != "read":
                     continue
             stats["ocr_calls"][r.name] += 1
@@ -2735,10 +2446,7 @@ class OcrInterpretation:
     def finish(self) -> list[dict[str, Any]]:
         """The events, after the menu frames' sightings are dropped (JSON presets)."""
         tracker, stats = self.interp.tracker, self.stats
-        self.interp.learn_feed()
         self.interp.drop_labels()
-        if self.interp.feed.learned:
-            stats["feed_words"] = self.interp.feed.learned
         if self.menus:
             feeds = {r.name for r in self.regions if r.kind == "feed"}
 
@@ -2752,11 +2460,11 @@ class OcrInterpretation:
                 return t == "kill" or (e.get("region") in feeds and t != "notice")
 
             def kept(e: dict[str, Any]) -> bool:
-                """Feed events kept on menu frames: not kill lines (:data:`LINE_ENTRIES`), as
-                two words of a menu row ("Subtitles | Enabled") can read as one, unless the
-                names have two team colours and the menu frames began more than
-                :data:`STATIC_FEED_GUARD_S` before the line: gameplay can pass as a menu, and
-                a real kill goes with it, but a coloured menu row opens with its menu."""
+                """Feed events kept on menu frames: not kill lines (:data:`LINE_ENTRIES`), as a
+                menu span can hold rows that are no fresh kill, so a line read only inside one
+                is dropped even if real. Unless the names have two team colours and the menu
+                frames began more than :data:`STATIC_FEED_GUARD_S` before the line: gameplay
+                can pass as a menu, but a coloured menu row opens with its menu."""
                 if not feed_event(e):
                     return False
                 t0 = e["_times"][0]
@@ -2782,15 +2490,7 @@ class OcrInterpretation:
                 return not icon or all(abs(t0 - t) > STATIC_FEED_GUARD_S for t in opened)
 
             tracked = tracker.events
-            # a kept frame is no activity: a row frozen on a still menu must not guard it
-            kept_frames = self.interp.kept_frames
-            feed_times = {
-                t
-                for e in tracked
-                if feed_activity(e)
-                for t in e["_times"]
-                if (e.get("region"), t) not in kept_frames
-            }
+            feed_times = {t for e in tracked if feed_activity(e) for t in e["_times"]}
             # new menu text: when texts that are no preset phrase were first read, until when
             # shown; ``end`` moves only on the frames a region is read, so it is padded by one
             # read interval

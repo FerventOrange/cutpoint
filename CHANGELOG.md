@@ -9,10 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Kill feeds without a preset are read from text rows too. The kill verb is learned from repeated
-  `name verb name` rows in the footage (it needs enough repeated rows from different names, so a
-  short clip may learn nothing, and a non-kill word that repeats between many names can still be learned; a preset's `kill_words` turns learning off), and a clock-stamped
-  log's wrapped rows are joined. Player tags tolerate OCR variants (spaces, punctuation,
+- A clock-stamped log's wrapped rows are joined into one row for the kill words, and a `:` or `;`
+  before the kill word makes the row chat. Player tags tolerate OCR variants (spaces, punctuation,
   look-alike letters, a clan tag read with the name). Partial step for any-game feed reading.
 - Per-cut transitions: `assemble --joins FILE` sets single joins to `cut` or `fade` from a JSON
   file (`{"joins": [{"from": "001_a.mp4", "to": "002_b.mp4", "transition": "fade"}]}`), and
@@ -513,8 +511,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The default kill words are generic only: game-specific words were removed, and a preset's
-  `kill_words` can list them. Cached OCR interpretation is redone once.
+- The default kill words are generic only: `wrecked`, `set afire`, `critically damaged`,
+  `severely damaged` and `has been wrecked` are no longer default words, so `Kip wrecked Alder` is
+  not read without a preset, unlike before. A preset's `kill_words` can list them. Cached OCR
+  interpretation is redone once.
 - `--vision` rates a moment's frames together with what was said in it, for the generic styles, on
   local and hosted models, so speech that relates to what is on screen can raise the rating. Windows
   with no speech rate as before, a rating with speech has 1.9 taken off before it scales the score so talk does not
