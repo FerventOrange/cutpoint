@@ -171,7 +171,7 @@ words, so `Kip wrecked Alder` is not read unless a preset's `kill_words` lists t
 
 A clock-stamped log
 (`2:20 Name destroyed` over a wrapped line) is joined into one row first; only the kill words read
-such a log, and a `:` or `;` before the kill word makes the row chat.
+such a log, and a `:` or `;` before `assist` or a word that reads as a kill makes the row chat.
 
 Player tags (`--player`) tolerate OCR variants: spaces and punctuation are ignored, look-alike
 letters (`0`/`O`, `1`/`I`, `5`/`S`) are one, and a clan tag or weapon read with the name still

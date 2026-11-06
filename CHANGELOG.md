@@ -10,8 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A clock-stamped log's wrapped rows are joined into one row for the kill words, and a `:` or `;`
-  before the kill word makes the row chat. Player tags tolerate OCR variants (spaces, punctuation,
-  look-alike letters, a clan tag read with the name). Partial step for any-game feed reading.
+  before `assist` or a word that reads as a kill makes the row chat. Player tags tolerate OCR
+  variants (spaces, punctuation, look-alike letters, a clan tag read with the name). Partial step
+  for any-game feed reading.
 - Per-cut transitions: `assemble --joins FILE` sets single joins to `cut` or `fade` from a JSON
   file (`{"joins": [{"from": "001_a.mp4", "to": "002_b.mp4", "transition": "fade"}]}`), and
   `--transition` stays the default of the others. It works on a clips folder and on

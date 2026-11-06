@@ -124,7 +124,7 @@ def _chat_stream() -> list[tuple[str, int, int, float, float]]:
         a, b, c = users[i], users[(i + 1) % len(users)], users[(i + 5) % len(users)]
         word = MIDDLE_WORDS[i % len(MIDDLE_WORDS)]
         rows = [f"{a} good {b}", f"{b} {word} {c}", f"{a} chat", c, f"{a} {word} {c} {word}"]
-        rows += ["SYSTEM good TO METRIC", "Lol bro Boot Wall", "TRACTION chat", "ohnePixel"]
+        rows += ["Marble good TO Lantern", "Lol bro Maple Gate", "Harbor chat", "Quillfeather"]
         shows += [(r, 1410, 100 + 40 * k, 9.0 * i + 1.0, 9.0 * i + 4.0) for k, r in enumerate(rows)]
     return shows
 
