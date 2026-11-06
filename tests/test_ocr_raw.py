@@ -638,3 +638,18 @@ def test_only_cutpoints_own_checkout_is_guarded(tmp_path: Path) -> None:
     module = Path("cutpoint", "events", "ocr_raw.py")
     assert ocr_raw._checkout(home / ".venv" / "lib" / "site-packages" / module) is None
     assert ocr_raw._checkout(repo / "src" / module) == repo.resolve()
+
+
+def test_preset_source_is_read_and_keys_the_preset_not_the_raw_read() -> None:
+    plain = _preset()
+    a, b = preset_from_dict(plain), preset_from_dict(plain | {"source": "discovered"})
+    assert a.source == ""
+    assert b.source == "discovered"
+    assert b.key()["source"] == "discovered"
+    assert a.key() != b.key()
+    assert OcrParams().key("zonewar", a) != OcrParams().key("zonewar", b)
+
+    def raw(p: Any) -> dict[str, Any]:
+        return ocr_raw.raw_key(3.0, [r.key() for r in p.all_regions()], "bottom", 0.5, [])
+
+    assert raw(a) == raw(b)  # the raw read does not depend on how the preset was made

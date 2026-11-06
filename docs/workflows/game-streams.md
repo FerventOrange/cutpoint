@@ -184,6 +184,32 @@ bad` join into one row with a kill word. The two rows alone are no log and give 
 seen only inside a menu span is not kept, even if it is real. Cached OCR interpretation is redone once
 after the update.
 
+## Stream chat in a feed region
+
+A stream overlay can put the chat where discovery finds a "feed". A chat shows far more different
+text lines than a kill feed, so a discovered feed region is judged by the distinct lines it read per
+hour over the whole OCR pass (text boxes read with low confidence or under 3 letters and digits are
+not counted):
+
+- 6000 lines per hour or more, on at least 10 minutes of footage: the region is chat and gives no
+  events. An INFO line says so.
+- 3000 to 6000 lines per hour, on at least 10 minutes of footage: it stays a feed, with a WARNING
+  that it may be chat.
+- Under 10 minutes of decoded footage at the chat rate: it stays a feed, with a WARNING that the
+  footage is too short to tell. Under 10 minutes below the chat rate, it stays a feed with no
+  warning.
+
+A hand-made preset is never relabelled: its feed stays a feed, with a WARNING when it reads like
+chat. A preset made by discovery has `"source": "discovered"`; if you edit it by hand it keeps that
+key and is still relabelled, so remove the key to stop it.
+
+A region that mixes chat and the game's log goes wholly to chat for now, so its log events are lost.
+
+The OCR stats list each feed region under `feed_regions`: `label` (`chat` or `feed`),
+`lines_per_hour`, `lines`, `hours`, and `dropped`, the events removed from a chat region by type.
+A kept region can also have `unsure`, `too_short` or `chat_like` (hand-made preset) set to true.
+The raw text stays in the raw OCR cache. Cached OCR interpretation is redone once after the update.
+
 ## Limits
 
 - OCR samples 3 frames per second, so event times are accurate to about 0.3 s.
