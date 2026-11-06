@@ -96,7 +96,8 @@ class OcrParams:
 # (:func:`is_player`)
 # 17: feeds learn nothing from the footage, so no kills learned at 16 are reused
 # 18: a discovered feed region that reads like stream chat (:func:`chat_label`) gives no events
-GENERIC_VERSION = 18
+# 19: a chat row (:func:`_is_chat`) gives no kill, assist or crash on any feed, not only in a log
+GENERIC_VERSION = 19
 
 # Chat overlays (Twitch VODs): a discovered "feed" region that shows this many distinct text
 # lines per hour of footage is chat, not a kill feed. Measured on real footage: chat 9000-40000
@@ -1069,9 +1070,24 @@ def split_name(text: str) -> tuple[str, str | None]:
 
 
 KILL_WORD_GLUE = 7  # kill words this long may be joined to a name on one side
-# A chat line's mark before a log row's kill word: "Kip: he got killed", "Kip (mod): he got killed"
-_SENTENCE_RE = re.compile(r"[\w)\uff09]\s*[:;]")
+# A chat line's mark before a row's kill word: "Kip: he got killed", "Kip (mod): he got killed",
+# "Kip [mod]: he got killed" (OCR also reads it full width)
+_SENTENCE_RE = re.compile(r"[^\s:;\uff1a\uff1b]\s*[:;\uff1a\uff1b]")
 _CLOCK_RE = re.compile(r"\s*\d{1,2}:\d{2}(?!\d)\s*")
+# A clock that starts a row, as OCR may read it: "2:20", "[2:20]", "(2:20)", "#2:20", "2: 20", "2;20"
+_LEAD_CLOCK_RE = re.compile(
+    r"\s*[\[(\uff08#]?\s*\d{1,3}\s*[:;\uff1a\uff1b]\s*\d{2}(?!\d)\s*[\])\uff09]?\s*"
+)
+
+
+def _is_chat(actor: str) -> bool:
+    """Whether the text before a kill word reads as a chat line (:data:`_SENTENCE_RE`). What
+    a row starts with is no chat mark: the clock of a log row that stayed alone ("2:20 Kip
+    destroyed Alder") or a clan tag's own colon ("[A:B] Kip destroyed Alder"). A colon after
+    the tag is one ("[mod]: he got killed"), so the tag stays as one character."""
+    clock = _LEAD_CLOCK_RE.match(actor)
+    text = actor[clock.end() :] if clock else actor
+    return _SENTENCE_RE.search(_CLAN_RE.sub("_", text)) is not None
 
 
 def _is_bound(text: str, i: int) -> bool:
@@ -1384,8 +1400,9 @@ class FeedParser:
             if sp is None:
                 continue
             actor, target, verb = sp
-            if k in log and verb in ("kill", "assist") and _SENTENCE_RE.search(actor):
-                continue  # a log tells much more than kills: "12:30 Kip: he got killed"
+            if verb in ("kill", "assist", "crash") and _is_chat(actor):
+                used.add(k)  # no other form reads it either
+                continue
             if verb in ("crash",):
                 actor, target = "", actor
             ev = self._event(actor, target, verb, team, None, conf, line)
