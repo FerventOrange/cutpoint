@@ -91,7 +91,11 @@ class OcrParams:
 # 13: menu frames are recorded as stats["menu_spans"] (#440)
 # 14: gaps up to MENU_FILL_S between box- or text-rule menu frames are menus too (#409)
 # 15: a static screen without new menu text needs menu frames within STATIC_ANCHOR_S (#554)
-GENERIC_VERSION = 15
+# 16: feeds learned row forms from the footage, a clock-stamped log's wrapped rows are joined,
+# the default kill words are generic only and player tags tolerate OCR variants
+# (:func:`is_player`)
+# 17: feeds learn nothing from the footage, so no kills learned at 16 are reused
+GENERIC_VERSION = 17
 
 
 # --------------------------------------------------------------------------- text utils
@@ -168,12 +172,32 @@ def similar(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, norm(a).replace(" ", ""), norm(b).replace(" ", "")).ratio()
 
 
+# Letters OCR reads for one another, folded to one form when names are compared
+_LOOKALIKES = str.maketrans("0158L", "OISBI")
+TAG_MIN_FUZZY = 5  # shorter player tags must match a whole word of the name
+
+
+def _fold(text: str) -> str:
+    """Upper-case letters and digits, no spaces, look-alikes folded ("O0" and "OO" are one
+    form), for comparing two reads of a name."""
+    return norm(text).replace(" ", "").translate(_LOOKALIKES)
+
+
 def is_player(name: str, tags: tuple[str, ...], thr: float = 0.8) -> bool:
-    """Whether an OCR'd name is one of the user's tags (fuzzy, ignores _ . spaces)."""
-    n = norm(name).replace(" ", "")
+    """Whether an OCR'd name is one of the user's tags, allowing OCR variants: spaces and
+    punctuation are ignored ("Mari _gold"), look-alike letters are one (:func:`_fold`:
+    "M00nrock") and a clan tag or a weapon may be read with the name. A tag of fewer than
+    :data:`TAG_MIN_FUZZY` letters and digits must be a whole word: "Kip" is no part of
+    "Skipper"."""
+    n = _fold(name)
+    words = {_fold(w) for w in re.findall(r"[^\W_]+", _CAMEL_RE.sub(" ", name))}
     for tag in tags:
-        t = norm(tag).replace(" ", "")
-        if n and t and (t in n or similar(n, t) >= thr):
+        t = _fold(tag)
+        if not (n and t):
+            continue
+        if t == n or t in words or t == _fold(split_name(name)[0]):
+            return True
+        if len(t) >= TAG_MIN_FUZZY and (t in n or similar(n, t) >= thr):
             return True
     return False
 
@@ -292,6 +316,11 @@ _ICON_NAME_BAD = re.compile(r"[:%/]")
 # text that stays in the feed's area (a lobby line: "We're estimating your chances to win..."
 # for 49 s on R6); feed lines scroll out within seconds (R6 kill lines and notices: up to 10 s).
 ROW_NOTICE_MAX_S = 20.0
+# Kill lines tracked by their two names: icon lines and the kills of a clock-stamped log
+LINE_ENTRIES = ("icon", "text")
+# Two words that come back this often with neither ever seen with another name are a label
+# ("Target | Marked"), not two players: a replay shows a kill twice at most
+LABEL_REPEATS = 3
 # Two reads of an icon kill line's name are one name when the shorter shares a run of
 # ICON_PART of its characters with the longer (a cut read with noise at the cut)
 ICON_PART = 0.8
@@ -384,13 +413,15 @@ def icon_split(bgr: np.ndarray, text: str) -> tuple[str, str, str | None, str | 
 def _icon_name(text: str, min_len: int) -> bool:
     """Whether ``text`` reads as one name of an icon kill line: one or two words (OCR
     splits names), ``min_len`` letters and digits or more, half of them letters, no
-    ":" "%" "/" (readouts such as "FPS:106" or "3/4")."""
+    ":" "%" "/" (readouts such as "FPS:106" or "3/4") and no bracket without its other half
+    (an item cut off in a chat line; a clan tag has both)."""
     n = _alnum_len(text)
     return (
         n >= min_len
         and len(text.split()) <= 2
         and sum(ch.isalpha() for ch in text) >= 0.5 * n
         and not _ICON_NAME_BAD.search(text)
+        and text.count("[") == text.count("]")
     )
 
 
@@ -464,6 +495,12 @@ def iter_frames(
 
 
 # --------------------------------------------------------------------------- tracking
+
+
+def _two_hues(e: dict[str, Any]) -> bool:
+    """Whether a kill line's names have two team colours, which labels and menu rows do not."""
+    hues = {e.get("killer_hue"), e.get("victim_hue")}
+    return len(hues) == 2 and not hues & {None, "white"}
 
 
 class EventTracker:
@@ -555,7 +592,8 @@ class EventTracker:
         a higher confidence than the whole line ("dramatic_rail39", 0.91)."""
         read = (fields.get("killer"), fields.get("victim"))
         hues = {k: fields.get(k) for k in ("killer_hue", "victim_hue")}
-        e["_reads"].setdefault(read, {"n": 0} | hues)["n"] += 1
+        # a kill first read with no entry (a log row before its clock showed) has no reads yet
+        e.setdefault("_reads", {}).setdefault(read, {"n": 0} | hues)["n"] += 1
         reads = list(e["_reads"].items())
         pool = [r for r in reads if r[1]["n"] >= 2] or reads
         (killer, victim), best = max(
@@ -578,9 +616,13 @@ class EventTracker:
                 continue
             # " #n" keys (repeated identical feed rows) only match exactly
             dup = " #" in key or " #" in e["_key"]
-            icon = e.get("entry") == "icon" and fields.get("entry") == "icon"
+            icon = e.get("entry") in LINE_ENTRIES and fields.get("entry") in LINE_ENTRIES
             if icon:  # one line by its names (:meth:`_same_line`): the key is the killer's
-                match = e["_key"] == key if dup else self._same_line(e, fields)
+                match = (
+                    e["_key"] == key
+                    if dup
+                    else self._same_line(e, fields) or (exclusive and self._same_victim(e, fields))
+                )
             else:
                 match = (
                     e["_key"] == key
@@ -619,7 +661,7 @@ class EventTracker:
             "_times": [t],
             **fields,
         }
-        if fields.get("entry") == "icon":  # the reads of an icon kill line (_most_complete)
+        if fields.get("entry") in LINE_ENTRIES:  # the reads of a kill line (_most_complete)
             read = (fields.get("killer"), fields.get("victim"))
             hues = {k: fields.get(k) for k in ("killer_hue", "victim_hue")}
             ev["_reads"] = {read: {"n": 1} | hues}
@@ -856,6 +898,37 @@ class Interpreter:
         self.tracker = EventTracker(PERSIST_S, FUZZY)
         self.feed = FeedParser(preset.feed if preset else {}, self.tags, scale)
 
+    def drop_labels(self) -> None:
+        """Forget the icon kills that are no kills by how they behave: a line that stays
+        unbroken longer than :data:`ROW_NOTICE_MAX_S`, and two words that come back
+        :data:`LABEL_REPEATS` times with neither ever seen with another name. Lines with two
+        team colours stay (:func:`_two_hues`): two kills of one pair can follow each other."""
+        tracker = self.tracker
+        lines = [e for e in tracker.events if e["type"] == "kill" and e.get("entry") == "icon"]
+
+        def same(a: str | None, b: str | None) -> bool:
+            return tracker._nested(a, b) or tracker._misread(a, b)
+
+        def label(e: dict[str, Any]) -> bool:
+            if _two_hues(e):
+                return False
+            runs = _runs(e["_times"], STATIC_FEED_GUARD_S)
+            if max(run[-1] - run[0] for run in runs) > ROW_NOTICE_MAX_S:
+                return True
+            repeats = [o for o in lines if tracker._same_line(e, o)]
+            ids = {id(o) for o in repeats}
+            names = (e["killer"], e["victim"])
+            return len(repeats) >= LABEL_REPEATS and not any(
+                same(n, o[side])
+                for o in lines
+                if id(o) not in ids
+                for n in names
+                for side in ("killer", "victim")
+            )
+
+        gone = {id(e) for e in lines if label(e)}
+        tracker.events = [e for e in tracker.events if id(e) not in gone]
+
     def _phrases(self, t: float, region: Region, text: str, conf: float) -> bool:
         """Phrase matches, keeping only the longest of nested matches
         ("YOU HAVE BEEN DESTROYED", not also "DESTROYED"); the text after the
@@ -921,19 +994,16 @@ class Interpreter:
 
 
 _CLAN_RE = re.compile(r"^\s*(\[[^\]]{1,8}\]|\^[^\^]{1,8}\^|=[^=]{1,8}=|-[^-]{1,8}-)\s*")
+# Generic words that work from the first row on; no game's phrases belong here (a preset's
+# ``kill_words`` can list them)
 DEFAULT_KILL_WORDS = {
     "destroyed": "kill",
     "shot down": "kill",
     "killed": "kill",
     "eliminated": "kill",
-    "wrecked": "kill",
-    "set afire": "fire",
-    "critically damaged": "crit",
-    "severely damaged": "damage",
     "assist": "assist",
     "has crashed": "crash",
     "crashed": "crash",
-    "has been wrecked": "crash",
 }
 
 
@@ -986,6 +1056,9 @@ def split_name(text: str) -> tuple[str, str | None]:
 
 
 KILL_WORD_GLUE = 7  # kill words this long may be joined to a name on one side
+# A chat line's mark before a log row's kill word: "Kip: he got killed", "Kip (mod): he got killed"
+_SENTENCE_RE = re.compile(r"[\w)\uff09]\s*[:;]")
+_CLOCK_RE = re.compile(r"\s*\d{1,2}:\d{2}(?!\d)\s*")
 
 
 def _is_bound(text: str, i: int) -> bool:
@@ -1000,19 +1073,52 @@ def _is_bound(text: str, i: int) -> bool:
     return (a.islower() and b.isupper()) or a.isdigit() != b.isdigit()
 
 
+def _join_log_rows(lines: list[tuple]) -> tuple[list[tuple], set[int]]:
+    """The entries of a clock-stamped log ("2:20 Kip destroyed" over "Alder (Tank)"): with two
+    or more rows that start with a clock, each such row and the rows up to the next one are
+    one entry, without the clock. Returns the lines and the indices of the log's lines, also
+    those above its first clock (an entry cut off by the scroll)."""
+    starts = [k for k, line in enumerate(lines) if _CLOCK_RE.match(line[0])]
+    if len(starts) < 2:
+        return lines, set()
+    out = lines[: starts[0]]
+    log = set(range(starts[0]))
+    for a, b in zip(starts, [*starts[1:], len(lines)], strict=True):
+        part = lines[a:b]
+        text = " ".join(line[0] for line in part)
+        conf = min(line[1] for line in part)
+        log.add(len(out))
+        out.append((_CLOCK_RE.sub("", text, count=1), conf, part[0][2], part[0][3]))
+    return out, log
+
+
+def _runs(times: list[float], gap: float) -> list[list[float]]:
+    """The sorted ``times`` in runs without a step longer than ``gap``."""
+    runs: list[list[float]] = []
+    for t in sorted(times):
+        if runs and t - runs[-1][-1] <= gap:
+            runs[-1].append(t)
+        else:
+            runs.append([t])
+    return runs
+
+
 class FeedParser:
     """Game-agnostic kill-feed parsing for "feed" regions.
 
     Two forms are recognised (both from one region crop):
 
-    * a row containing a kill word ("A destroyed B", "A shot down B", "A set
-      afire B"): actor before the word, target after it;
+    * a row containing a kill word ("A destroyed B", "A eliminated B"): actor before the
+      word, target after it;
     * icon feeds without words, where an entry is a coloured *actor* line and
       a differently coloured *target* line (``"entry": "two_line"``, War
       Thunder) or two coloured names on one row (``"entry": "one_line"``);
       without a colour map, in a discovered icon feed (``"row_notices": true``), a
       row of two names split by an icon gap is a kill, left name first
       (:meth:`_icon_line`).
+
+    A clock-stamped log's wrapped rows are joined first; only the kill words read them, as a
+    log tells much more than kills.
 
     Team colours come from the preset (``"colors": {"red": "enemy", "blue":
     "ally", ...}``, keyed by the colour names :func:`text_hue` returns). A kill
@@ -1256,6 +1362,7 @@ class FeedParser:
             )
             for r in rows
         ]
+        lines, log = _join_log_rows(lines)
         out: list[dict[str, Any]] = []
         used: set[int] = set()
         gapped: set[int] = set()  # rows split by an icon gap that made no kill
@@ -1264,10 +1371,14 @@ class FeedParser:
             if sp is None:
                 continue
             actor, target, verb = sp
+            if k in log and verb in ("kill", "assist") and _SENTENCE_RE.search(actor):
+                continue  # a log tells much more than kills: "12:30 Kip: he got killed"
             if verb in ("crash",):
                 actor, target = "", actor
             ev = self._event(actor, target, verb, team, None, conf, line)
             if ev:
+                if k in log and verb == "kill":  # two kills of one actor stay on screen long
+                    ev["entry"] = "text"
                 out.append(ev)
                 used.add(k)
         if self.entry == "paren":
@@ -1323,7 +1434,7 @@ class FeedParser:
                         out.append(ev)
                         used.add(k)
         if self.row_notices:
-            out += self._row_notices(lines, used | gapped)
+            out += self._row_notices(lines, used | gapped | log)
         return out
 
     def _row_notices(self, lines: list[tuple], skip: set[int]) -> list[dict[str, Any]]:
@@ -2335,6 +2446,7 @@ class OcrInterpretation:
     def finish(self) -> list[dict[str, Any]]:
         """The events, after the menu frames' sightings are dropped (JSON presets)."""
         tracker, stats = self.interp.tracker, self.stats
+        self.interp.drop_labels()
         if self.menus:
             feeds = {r.name for r in self.regions if r.kind == "feed"}
 
@@ -2348,9 +2460,17 @@ class OcrInterpretation:
                 return t == "kill" or (e.get("region") in feeds and t != "notice")
 
             def kept(e: dict[str, Any]) -> bool:
-                """Feed events kept on menu frames: not icon kills (``"entry": "icon"``), as
-                two words of a menu row ("Subtitles | Enabled") can read as one."""
-                return feed_event(e) and e.get("entry") != "icon"
+                """Feed events kept on menu frames: not kill lines (:data:`LINE_ENTRIES`), as a
+                menu span can hold rows that are no fresh kill, so a line read only inside one
+                is dropped even if real. Unless the names have two team colours and the menu
+                frames began more than :data:`STATIC_FEED_GUARD_S` before the line: gameplay
+                can pass as a menu, but a coloured menu row opens with its menu."""
+                if not feed_event(e):
+                    return False
+                t0 = e["_times"][0]
+                return e.get("entry") not in LINE_ENTRIES or (
+                    _two_hues(e) and any(a + STATIC_FEED_GUARD_S < t0 <= b for a, b in menu_spans)
+                )
 
             # still screens' opening times: menu rows read as icon kills open with the
             # screen, a real kill turns up partway through a still stretch
@@ -2366,7 +2486,8 @@ class OcrInterpretation:
                 if not feed_event(e):
                     return False
                 t0 = e["_times"][0]
-                return kept(e) or all(abs(t0 - t) > STATIC_FEED_GUARD_S for t in opened)
+                icon = e.get("entry") == "icon"
+                return not icon or all(abs(t0 - t) > STATIC_FEED_GUARD_S for t in opened)
 
             tracked = tracker.events
             feed_times = {t for e in tracked if feed_activity(e) for t in e["_times"]}
@@ -2405,9 +2526,10 @@ class OcrInterpretation:
                     max_gap,
                 )
             menu = {f["t"] for f in frames if rules[f["id"]] != "none"}
+            menu_spans = merge_menu_frames(menu, self.interp.params.fps)
             tracker.drop_sightings(menu, keep=kept)
             stats["menu_frames"] = len(menu)
-            stats["menu_spans"] = merge_menu_frames(menu, self.interp.params.fps)
+            stats["menu_spans"] = menu_spans
             stats["static_frames"] = sum(r == "static" for r in rules.values())
             stats["text_frames"] = sum(r == "text" for r in rules.values())
         events = tracker.finish()

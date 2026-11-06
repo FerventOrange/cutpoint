@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A clock-stamped log's wrapped rows are joined into one row for the kill words, and a `:` or `;`
+  before `assist` or a word that reads as a kill makes the row chat. Player tags tolerate OCR
+  variants (spaces, punctuation, look-alike letters, a clan tag read with the name). Partial step
+  for any-game feed reading.
 - Per-cut transitions: `assemble --joins FILE` sets single joins to `cut` or `fade` from a JSON
   file (`{"joins": [{"from": "001_a.mp4", "to": "002_b.mp4", "transition": "fade"}]}`), and
   `--transition` stays the default of the others. It works on a clips folder and on
@@ -508,6 +512,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The default kill words are generic only: `wrecked`, `set afire`, `critically damaged`,
+  `severely damaged` and `has been wrecked` are no longer default words, so `Kip wrecked Alder` is
+  not read without a preset, unlike before. A preset's `kill_words` can list them. Cached OCR
+  interpretation is redone once.
 - `--vision` rates a moment's frames together with what was said in it, for the generic styles, on
   local and hosted models, so speech that relates to what is on screen can raise the rating. Windows
   with no speech rate as before, a rating with speech has 1.9 taken off before it scales the score so talk does not
