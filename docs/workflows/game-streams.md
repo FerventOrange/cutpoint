@@ -185,13 +185,46 @@ matches. A tag shorter than 5 letters and digits must match a whole word of the 
 
 Limits: a `name verb name` row with any other verb stays unread unless a preset's `kill_words` lists
 it. A feed that writes a colon before its kill word (`Kip: killed Alder`) reads as chat and gives no
-kill. Chat without a colon still reads as a kill, as `bro just killed that corner` does, and a row
-whose colon OCR lost on one frame can still read as a kill. Clock-stamped chat without a colon can
-also be read as a kill by the log join: with a later clock-stamped row such as `12:31 Alder left`
-below them, `12:30 Kip he got destroyed` and `that was so bad` join into one row with a kill word.
-The two rows alone are no log and give no kill.
-A log kill seen only inside a menu span is not kept, even if it is real. Cached OCR interpretation is
-redone once after the update.
+kill. On a feed not labelled chat (see
+[Stream chat in a feed region](#stream-chat-in-a-feed-region)), chat without a colon still reads as a
+kill, as `bro just killed that corner` does, and a row whose colon OCR lost on one frame can still
+read as a kill. Clock-stamped chat without a colon can also be read as
+a kill by the log join: with a later clock-stamped row such as `12:31 Alder left` below them,
+`12:30 Kip he got destroyed` and `that was so bad` join into one row with a kill word. The two rows
+alone are no log and give no kill. A log kill seen only inside a menu span is not kept, even if it is
+real.
+
+## Stream chat in a feed region
+
+A stream overlay can put the chat where discovery finds a "feed". A chat shows far more different
+text lines than a kill feed, so a discovered feed region is judged by the distinct lines it read per
+hour over the whole OCR pass (text boxes read with low confidence or under 3 letters and digits are
+not counted):
+
+- 6000 lines per hour or more, on at least 10 minutes of footage: the region is chat and gives no
+  events. An INFO line says so.
+- 3000 to 6000 lines per hour, on at least 10 minutes of footage: it stays a feed, with a WARNING
+  that it may be chat.
+- Under 10 minutes of decoded footage at the chat rate: it stays a feed, with a WARNING that the
+  footage is too short to tell. Under 10 minutes below the chat rate, it stays a feed with no
+  warning.
+
+A hand-made preset is never relabelled: its feed stays a feed, with a WARNING when it reads like
+chat. A preset made by discovery has `"source": "discovered"`; if you edit it by hand it keeps that
+key and is still relabelled, so remove the key to stop it.
+
+A region that mixes chat and the game's log goes wholly to chat for now, so its log events are lost.
+
+The OCR stats list each feed region under `feed_regions`: `label` (`chat` or `feed`),
+`lines_per_hour`, `lines`, `hours`, and `dropped`, the events removed from a chat region by type.
+A kept region can also have `unsure`, `too_short` or `chat_like` (hand-made preset) set to true.
+The raw text stays in the raw OCR cache.
+
+The label and the row rule of [Kill feed rows without a preset](#kill-feed-rows-without-a-preset) are
+separate. The label drops a whole discovered feed at the chat rate. The row rule looks at one row, on
+any feed: a `:` or `;` before the kill word makes that row chat, also on short clips, on feeds below
+the rate and on hand-made presets, where the label removes nothing. Other rows of those feeds are read
+as usual. Cached OCR interpretation is redone once after the update.
 
 ## Limits
 

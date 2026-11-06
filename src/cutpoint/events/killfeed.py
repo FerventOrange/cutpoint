@@ -95,8 +95,21 @@ class OcrParams:
 # the default kill words are generic only and player tags tolerate OCR variants
 # (:func:`is_player`)
 # 17: feeds learn nothing from the footage, so no kills learned at 16 are reused
-# 18: a chat row (:func:`_is_chat`) gives no kill, assist or crash on any feed, not only in a log
-GENERIC_VERSION = 18
+# 18: a discovered feed region that reads like stream chat (:func:`chat_label`) gives no events
+# 19: a chat row (:func:`_is_chat`) gives no kill, assist or crash on any feed, not only in a log
+GENERIC_VERSION = 19
+
+# Chat overlays (Twitch VODs): a discovered "feed" region that shows this many distinct text
+# lines per hour of footage is chat, not a kill feed. Measured on real footage: chat 9000-40000
+# lines/h, kill feeds and game logs 30-2200. Neither the share of frames with text nor colons
+# or name counts separate them.
+CHAT_LINES_PER_HOUR = 6000  # at or above: label "chat" (no events)
+CHAT_UNSURE_LINES_PER_HOUR = 3000  # from here up to CHAT_LINES_PER_HOUR: stays "feed", warned
+# A short sample says too little (a menu in the region can read as many lines in minutes):
+# at least 10 minutes of footage.
+CHAT_MIN_FOOTAGE_S = 600.0
+CHAT_MIN_CONF = 0.6  # text boxes read less surely are not counted
+CHAT_MIN_CHARS = 3  # nor those with fewer letters and digits
 
 
 # --------------------------------------------------------------------------- text utils
@@ -2354,6 +2367,33 @@ def _records(chunk: ocr_raw.Chunk, regions: tuple[Region, ...]) -> list[FrameRec
 # --------------------------------------------------------------------------- interpretation
 
 
+def _chat_lines(items: Iterable[tuple[Any, str, float]]) -> set[str]:
+    """The distinct text lines of one read, for :func:`chat_label`: lower-case letters
+    and digits (any script) and single spaces of the sure enough, long enough text boxes."""
+    out = set()
+    for _box, text, score in items:
+        line = " ".join(re.sub(r"[^\w ]|_", "", text.casefold()).split())
+        if score >= CHAT_MIN_CONF and _alnum_len(line) >= CHAT_MIN_CHARS:
+            out.add(line)
+    return out
+
+
+def chat_label(lines: int, hours: float) -> tuple[str, float]:
+    """How a feed region reads, from the ``lines`` distinct text lines it showed in
+    ``hours`` of footage: ("chat" | "unsure" | "short" | "feed", lines per hour). A chat
+    overlay shows far more different lines than a kill feed. Footage under
+    :data:`CHAT_MIN_FOOTAGE_S` is too short to tell: "short" at the chat rate, else "feed".
+    """
+    rate = lines / hours if hours > 0 else 0.0
+    if hours * 3600 < CHAT_MIN_FOOTAGE_S:
+        return ("short" if rate >= CHAT_LINES_PER_HOUR else "feed"), rate
+    if rate >= CHAT_LINES_PER_HOUR:
+        return "chat", rate
+    if rate >= CHAT_UNSURE_LINES_PER_HOUR:
+        return "unsure", rate
+    return "feed", rate
+
+
 class OcrInterpretation:
     """The interpretation of :func:`detect_ocr_events`: :class:`FrameRec` records in,
     events out (counts go into ``stats``). A live read gives it each record as the
@@ -2390,6 +2430,10 @@ class OcrInterpretation:
         if self.menus:
             stats["static_area"] = round(area, 2)
         self.region_events: dict[str, list[dict[str, Any]]] = {}
+        # distinct text lines read per feed region (:func:`chat_label`); only a discovered
+        # preset's regions can be labelled chat, a hand-made preset's feed is the user's word
+        self.lines: dict[str, set[str]] = {r.name: set() for r in regions if r.kind == "feed"}
+        self.discovered = preset is not None and preset.source == "discovered"
         # a "row_notices" feed's notice rows count in the menu test (a menu or loading
         # screen's text there), in reference px
         self.feed_notices = bool(preset and preset.feed.get("row_notices"))
@@ -2418,6 +2462,8 @@ class OcrInterpretation:
             stats["ocr_calls"][r.name] += 1
             img = _band_image(self.shapes[r.name], g.get("rows", []), rec.bands.get(r.name))
             items = [(box, text, score) for box, text, score in g["items"]]
+            if r.name in self.lines:
+                self.lines[r.name].update(_chat_lines(items))
             n_before = len(tracker.events)
             if r.gate == "det":
                 tracker.reset_touched()
@@ -2460,9 +2506,77 @@ class OcrInterpretation:
                 self.frame_boxes[-1]["still"] = self.still_runs.add(rec.t, _grey(rec.thumb))
         return new
 
+    def _drop_chat(self) -> None:
+        """Label the feed regions (:func:`chat_label`) from the lines the whole pass read,
+        and forget the events of the ones that are chat. The raw text stays in the raw OCR
+        cache. ``stats["feed_regions"]``: per feed region its ``label``, ``lines_per_hour``,
+        ``lines``, ``hours`` and the ``dropped`` event counts by type."""
+        tracker, stats = self.interp.tracker, self.stats
+        hours = stats["frames"] / self.interp.params.fps / 3600
+        report: dict[str, dict[str, Any]] = {}
+        chat: set[str] = set()
+        for name, lines in self.lines.items():
+            label, rate = chat_label(len(lines), hours)
+            info: dict[str, Any] = {
+                "label": label,
+                "lines_per_hour": round(rate),
+                "lines": len(lines),
+                "hours": round(hours, 3),
+            }
+            if label == "chat" and not self.discovered:
+                logger.warning(
+                    "%s: region %r reads like chat (%.0f lines/h) but the preset was not "
+                    "discovered; kept as a feed",
+                    self.src_name,
+                    name,
+                    rate,
+                )
+                info["label"] = "feed"
+                info["chat_like"] = True
+            elif label == "chat":
+                chat.add(name)
+                logger.info(
+                    "%s: region %r reads like stream chat (%.0f lines/h): no feed events",
+                    self.src_name,
+                    name,
+                    rate,
+                )
+            elif label == "short":
+                info["label"] = "feed"
+                info["too_short"] = True
+                logger.warning(
+                    "%s: region %r reads %.0f lines/h, like chat, but the footage is too "
+                    "short to tell; kept as a feed",
+                    self.src_name,
+                    name,
+                    rate,
+                )
+            elif label == "unsure":
+                info["label"] = "feed"
+                info["unsure"] = True
+                logger.warning(
+                    "%s: region %r may be stream chat (%.0f lines/h); kept as a feed",
+                    self.src_name,
+                    name,
+                    rate,
+                )
+            report[name] = info | {"dropped": {}}
+        if chat:
+            kept = []
+            for e in tracker.events:
+                if e.get("region") in chat:
+                    dropped = report[e["region"]]["dropped"]
+                    dropped[e["type"]] = dropped.get(e["type"], 0) + 1
+                else:
+                    kept.append(e)
+            tracker.events = kept
+        if report:
+            stats["feed_regions"] = report
+
     def finish(self) -> list[dict[str, Any]]:
         """The events, after the menu frames' sightings are dropped (JSON presets)."""
         tracker, stats = self.interp.tracker, self.stats
+        self._drop_chat()
         self.interp.drop_labels()
         if self.menus:
             feeds = {r.name for r in self.regions if r.kind == "feed"}

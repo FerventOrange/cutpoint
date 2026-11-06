@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A discovered feed region that shows stream chat gives no events. It is judged by the distinct
+  text lines it read per hour over the full OCR pass: 6000 per hour or more on at least 10 minutes of
+  footage is chat; 3000 to 6000 per hour on at least 10 minutes of footage stays a feed with a
+  warning. Under 10 minutes of footage at the chat rate stays a feed with a warning; below the chat
+  rate it gets no warning. A hand-made preset is never relabelled, only warned about. A
+  region that mixes chat and the game's log goes wholly to chat for now. The OCR stats have
+  `feed_regions` (per region: `label`, `lines_per_hour`, `lines`, `hours`, `dropped`). Cached OCR
+  interpretation is redone once after the update.
 - A clock-stamped log's wrapped rows are joined into one row for the kill words, and a `:` or `;`
   before `assist` or a word that reads as a kill makes the row chat. Player tags tolerate OCR
   variants (spaces, punctuation, look-alike letters, a clan tag read with the name). Partial step

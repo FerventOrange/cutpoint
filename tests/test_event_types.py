@@ -451,7 +451,7 @@ REGION_FIELDS = {
 }  # fmt: skip
 
 
-PLAIN_KEY_SHA1 = "ecc99457ca1b78b48396a46fb407b8863155f3bc"  # the preset's key without ``interp`` (its own version)
+PLAIN_KEY_SHA1 = "64e32e4aaff59b628bf5686a669a1ab016728c07"  # the preset's key without ``interp`` (its own version)
 
 
 def test_ocr_key(home, tmp_path, monkeypatch):
@@ -462,7 +462,7 @@ def test_ocr_key(home, tmp_path, monkeypatch):
     assert set(key) == KEY_FIELDS | {"preset"}
     assert (key["v"], key["game"], key["fps"], key["tags"]) == (4, "verbfeed", 3.0, [])
     preset = key["preset"]
-    assert set(preset) == {"phrases", "feed", "bigtext", "preset_tags", "interp"}
+    assert set(preset) == {"phrases", "feed", "bigtext", "preset_tags", "source", "interp"}
     assert preset["interp"] == GENERIC_VERSION
     assert preset["phrases"] == ["VERB DONE", *GENERIC_BANNERS]
     assert preset["feed"] == {"kill_words": {"toppled": "kill"}}
