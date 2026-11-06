@@ -646,3 +646,116 @@ def test_an_other_format_from_an_earlier_run_is_warned_about(tmp_path, caplog):
     caplog.clear()
     assemble._warn_earlier(tmp_path / "final.fcpxml", "fcpxml")  # its own format: no warning
     assert "earlier run" not in caplog.text
+
+
+# ---------------------------------------------------------------- per-join transitions (#768)
+def _named(*names: str, duration: float = 4.0, **over) -> list[MediaInfo]:
+    return [media_info(Path(n), duration, **over) for n in names]
+
+
+def test_clip_offsets_with_a_join_list_follow_the_video_where_any_join_fades():
+    infos = [_info(2.3, 2.0), _info(2.3, 2.0), _info(2.0, 2.0)]
+    # a dissolve then a cut: the cut starts the clip where the video ends, not the container
+    assert assemble.clip_offsets(infos, [0.5, 0.0]) == pytest.approx([0.0, 1.5, 3.5])
+    assert assemble.clip_offsets(infos, [0.0, 0.5]) == pytest.approx([0.0, 2.0, 3.5])
+    # every join a cut: the audio runs on into the next clip's start, as for a plain cut
+    assert assemble.clip_offsets(infos, [0.0, 0.0]) == pytest.approx([0.0, 2.3, 4.6])
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ("{not json", "is not valid JSON"),
+        ('{"joins": "cut"}', 'needs an object with a "joins" list'),
+        ('[{"from": "a.mp4"}]', 'needs an object with a "joins" list'),
+        ('{"joins": [{"from": "001_a.mp4", "transition": "cut"}]}', 'join 1 needs "from" and "to"'),
+        ('{"joins": [{"from": 1, "to": "b.mp4", "transition": "cut"}]}', 'join 1 needs "from"'),
+        (
+            '{"joins": [{"from": "a.mp4", "to": "b.mp4", "transition": "cut"},'
+            ' {"from": "b.mp4", "to": "c.mp4", "transition": "wipe"}]}',
+            "join 2 has transition 'wipe'",
+        ),
+    ],
+)
+def test_read_joins_refuses_what_is_no_joins_file(tmp_path, content, message):
+    file = tmp_path / "joins.json"
+    file.write_text(content, encoding="utf-8")
+    with pytest.raises(jsonout.ArgumentError, match="--joins") as err:
+        assemble.read_joins(file)
+    assert message in str(err.value)
+
+
+def test_read_joins_reads_the_pairs_and_a_missing_file_is_not_found(tmp_path):
+    file = tmp_path / "joins.json"
+    entry = {"from": "001_a.mp4", "to": "002_b.mp4", "transition": "fade"}
+    file.write_text(json.dumps({"joins": [entry]}), encoding="utf-8")
+    assert assemble.read_joins(file) == [entry]
+    with pytest.raises(FileNotFoundError):
+        assemble.read_joins(tmp_path / "none.json")
+
+
+def test_a_bad_joins_file_is_bad_args_in_the_json_envelope(home, tmp_path, capsys):
+    from conftest import envelope  # noqa: PLC0415
+    from cutpoint import cli  # noqa: PLC0415
+
+    file = tmp_path / "joins.json"
+    file.write_text('{"joins": [{"from": "a.mp4", "to": "b.mp4", "transition": "wipe"}]}')
+    code = cli.main(["assemble", str(tmp_path / "clips"), "--joins", str(file), "--json"])
+    doc = envelope(capsys.readouterr().out)
+    assert code == 1 and doc["ok"] is False and doc["error"]["code"] == "bad_args"
+
+
+def test_join_kinds_takes_adjacent_pairs_in_order_and_warns_once_per_unmatched(caplog):
+    files = [Path(n) for n in ("001_a.mp4", "002_b.mp4", "003_c.mp4")]
+    joins = [
+        {"from": "002_b.mp4", "to": "003_c.mp4", "transition": "fade"},
+        {"from": "002_b.mp4", "to": "001_a.mp4", "transition": "fade"},  # the other way round
+        {"from": "001_a.mp4", "to": "003_c.mp4", "transition": "fade"},  # not next to each other
+    ]
+    with jsonout.run("assemble") as res:
+        assert assemble.join_kinds(files, "cut", joins) == ["cut", "fade"]
+    assert [w["code"] for w in res.warnings] == ["join_unmatched"] * 2
+    assert res.warnings[1]["files"] == ["001_a.mp4", "003_c.mp4"]
+    assert caplog.text.count("not next to each other") == 2
+    assert assemble.join_kinds(files, "cut", None) is None  # no joins: no per-join logic
+
+
+def test_a_join_without_room_becomes_a_cut_alone_and_is_reported():
+    a, b, c = _named("a.mp4", "b.mp4", "c.mp4", duration=4.0)
+    c = replace(c, duration=0.05, vduration=0.05)  # 45% of it is under one frame
+    with jsonout.run("assemble") as res:
+        got = assemble.join_fade([a, b, c], "cut", 0.2, ["fade", "fade"])
+    assert got == pytest.approx([0.2, 0.0])
+    assert [(w["code"], w["files"]) for w in res.warnings] == [("join_no_room", ["b.mp4", "c.mp4"])]
+    # nothing left to fade: the plain cut, not a list of zeros
+    with jsonout.run("assemble"):
+        assert assemble.join_fade([a, c], "cut", 0.2, ["fade"]) == 0.0
+
+
+def test_the_fade_length_ignores_clips_that_are_only_on_cut_joins():
+    a, b, c = _named("a.mp4", "b.mp4", "c.mp4", duration=10.0)
+    c = replace(c, duration=0.5, vduration=0.5)  # would cap a fade at 0.2 s
+    assert assemble.join_fade([a, b, c], "cut", 1.0, ["fade", "cut"]) == pytest.approx([1.0, 0.0])
+    assert assemble.join_fade([a, b, c], "cut", 1.0, ["fade", "fade"]) == pytest.approx(0.2)
+    # joins that all fade take the plain value, as for --transition fade
+    assert assemble.join_fade([a, b], "cut", 1.0, ["fade"]) == pytest.approx(1.0)
+
+
+def test_the_json_joins_output_lists_the_asked_pairs_with_what_they_got():
+    files = [Path(n) for n in ("001_a.mp4", "002_b.mp4", "003_c.mp4")]
+    asked = [
+        {"from": "001_a.mp4", "to": "002_b.mp4", "transition": "fade"},
+        {"from": "002_b.mp4", "to": "003_c.mp4", "transition": "fade"},  # came out a cut
+    ]
+    with jsonout.run("assemble") as res:
+        assemble._report_joins(files, asked, [0.2, 0.0])
+    assert res.outputs["joins"] == [
+        {"from": "001_a.mp4", "to": "002_b.mp4", "transition": "fade"},
+        {"from": "002_b.mp4", "to": "003_c.mp4", "transition": "cut"},
+    ]
+    with jsonout.run("assemble") as res:
+        assemble._report_joins(files, [asked[0]], [0.2, 0.2])  # unasked joins are not listed
+        assert [j["to"] for j in res.outputs["joins"]] == ["002_b.mp4"]
+    with jsonout.run("assemble") as res:
+        assemble._report_joins(files, None, 0.0)
+    assert "joins" not in res.outputs

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import shutil
 import subprocess
@@ -14,7 +15,7 @@ import pytest
 
 from assemble_helpers import SHORT, export_clips
 from conftest import media_info, needs_ffmpeg
-from cutpoint import assemble, encode, sources
+from cutpoint import assemble, encode, jsonout, sources
 from cutpoint.assemble import Body, Run, VideoPackets
 from cutpoint.ffmpeg_utils import VideoEncoder, probe
 
@@ -491,3 +492,147 @@ def test_packet_listing_has_no_ffprobe_timeout(monkeypatch, tmp_path):
     monkeypatch.setattr(assemble, "ffprobe_json", lambda *a, **k: calls.append(k) or {})
     assert assemble._video_packets(tmp_path / "a.mp4", Fraction(30)) is None
     assert calls[0]["timeout"] is None
+
+
+# ---------------------------------------------------------------- per-join fades (#768)
+def _joined_frames(plan: list[Body | Run], frames: list[int], joins: list[int]) -> int:
+    return sum(
+        i.end - i.start if isinstance(i, Body) else assemble.run_frames(i, frames, joins[i.i])
+        for i in plan
+    )
+
+
+KEYS = (0, 15, 30, 270)
+
+
+def test_the_plan_copies_up_to_a_fade_and_from_a_fade_but_to_the_edge_of_a_cut():
+    clips = [_packets(300, KEYS) for _ in range(3)]
+    fade_cut = assemble.fade_copy_plan(clips, [30, 0])
+    assert fade_cut == [Body(0, 0, 270), Run(0, 270, 1, 30), Body(1, 30, 300), Body(2, 0, 300)]
+    assert _joined_frames(fade_cut, [300] * 3, [30, 0]) == 900 - 30
+    cut_fade = assemble.fade_copy_plan(clips, [0, 30])
+    assert cut_fade == [Body(0, 0, 300), Body(1, 0, 270), Run(1, 270, 2, 30), Body(2, 30, 300)]
+    assert _joined_frames(cut_fade, [300] * 3, [0, 30]) == 900 - 30
+
+
+def test_a_clip_with_no_keyframe_inside_its_fade_stays_in_the_run_next_to_a_cut():
+    # clip 1 has no keyframe at 30 or after: all of it is the fade's run, and it ends in a cut
+    clips = [_packets(300, KEYS), _packets(300, (0,)), _packets(300, KEYS)]
+    plan = assemble.fade_copy_plan(clips, [30, 0])
+    assert plan == [Body(0, 0, 270), Run(0, 270, 1, 300), Body(2, 0, 300)]
+    # no keyframe before the fade out of the first clip: its run starts at the clip's start
+    plan = assemble.fade_copy_plan([_packets(300, (0,)), *clips[:1]], [30])
+    assert plan is not None and plan[0] == Run(0, 0, 1, 30)
+
+
+def test_a_run_goes_through_a_clip_between_two_fades_and_stops_at_a_cut():
+    clips = [_packets(300, KEYS), _packets(60, (0,)), _packets(300, KEYS), _packets(300, KEYS)]
+    plan = assemble.fade_copy_plan(clips, [30, 30, 0])
+    assert plan == [Body(0, 0, 270), Run(0, 270, 2, 30), Body(2, 30, 300), Body(3, 0, 300)]
+    assert _joined_frames(plan, [300, 60, 300, 300], [30, 30, 0]) == 960 - 60
+
+
+def test_a_whole_clip_between_two_cuts_is_one_body():
+    clips = [_packets(300, KEYS) for _ in range(4)]
+    plan = assemble.fade_copy_plan(clips, [30, 0, 0])
+    assert plan is not None and Body(2, 0, 300) in plan
+
+
+# ------------------------------------------------------------------ ffmpeg tests: mixed joins
+FOUR = [(0.5, 4.5), (5.0, 8.5), (9.0, 12.0), (12.5, 15.5)]  # 120, 105, 90 and 90 frames
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize(
+    ("transition", "joins"),
+    [
+        ("cut", [("001_m.mp4", "002_m.mp4", "fade")]),
+        ("fade", [("002_m.mp4", "003_m.mp4", "cut"), ("003_m.mp4", "004_m.mp4", "cut")]),
+    ],
+    ids=["one-fade-among-cuts", "two-cuts-among-fades"],
+)
+def test_mixed_joins_copy_to_the_frames_and_audio_of_the_re_encode(
+    tmp_path, monkeypatch, caplog, transition, joins
+):
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
+    clips = export_clips(tmp_path, "30", FOUR)
+    entries = [{"from": a, "to": b, "transition": t} for a, b, t in joins]
+    kw = {"transition": transition, "fade_dur": 0.25, "joins": entries}
+    monkeypatch.setenv("CUTPOINT_FADE_COPY", "0")
+    with jsonout.run("assemble"):
+        old = _assemble_to(clips, tmp_path / "old", **kw)
+    monkeypatch.delenv("CUTPOINT_FADE_COPY")
+    caplog.clear()
+    caplog.set_level(logging.INFO)
+    with jsonout.run("assemble") as res:
+        new = _assemble_to(clips, tmp_path / "new", **kw)
+    assert "stream-copied the rest" in caplog.text
+    assert "on 1 of 3 joins" in caplog.text
+    # one 0.25 s (8 frame) overlap, whatever the other joins do; the old and new joins agree
+    assert _frames_and_audio(new) == _frames_and_audio(old)
+    assert _frames_and_audio(new)[0] == str(120 + 105 + 90 + 90 - 8)
+    # clip 3 sits between two cuts and clip 4 ends the video: both copied bit for bit
+    joined = _frame_hashes(new)
+    assert joined[-180:] == _frame_hashes(clips / "003_m.mp4") + _frame_hashes(clips / "004_m.mp4")
+    assert not list(new.parent.glob(".*fadecopy*"))
+    assert [(j["from"], j["to"]) for j in res.outputs["joins"]] == [(a, b) for a, b, _ in joins]
+    assert {j["transition"] for j in res.outputs["joins"]} == {joins[0][2]}
+
+
+@needs_ffmpeg
+def test_mixed_joins_without_fast_path_keep_the_frame_count(tmp_path, monkeypatch):
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    monkeypatch.setenv("CUTPOINT_FADE_COPY", "0")
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
+    clips = export_clips(tmp_path, "30", FOUR)
+    joins = [{"from": "003_m.mp4", "to": "004_m.mp4", "transition": "fade"}]
+    final = _assemble_to(clips, tmp_path / "out", transition="cut", fade_dur=0.25, joins=joins)
+    assert _frames_and_audio(final)[0] == str(120 + 105 + 90 + 90 - 8)
+
+
+@needs_ffmpeg
+def test_mixed_joins_with_audio_cut_copy_to_the_frames_and_audio_of_the_re_encode(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
+    clips = export_clips(tmp_path, "30", FOUR)
+    joins = [
+        {"from": "002_m.mp4", "to": "003_m.mp4", "transition": "cut"},
+        {"from": "003_m.mp4", "to": "004_m.mp4", "transition": "cut"},
+    ]
+    kw = {"transition": "fade", "fade_dur": 0.25, "audio_transition": "cut", "joins": joins}
+    monkeypatch.setenv("CUTPOINT_FADE_COPY", "0")
+    old = _assemble_to(clips, tmp_path / "old", **kw)
+    monkeypatch.delenv("CUTPOINT_FADE_COPY")
+    caplog.set_level(logging.INFO)
+    new = _assemble_to(clips, tmp_path / "new", **kw)
+    assert "stream-copied the rest" in caplog.text
+    assert "audio cut" in caplog.text
+    assert _frames_and_audio(new) == _frames_and_audio(old)
+    assert _frames_and_audio(new)[0] == str(120 + 105 + 90 + 90 - 8)
+
+
+@needs_ffmpeg
+def test_assemble_joins_file_through_the_cli_on_real_clips(tmp_path, home, monkeypatch, capsys):
+    from conftest import envelope  # noqa: PLC0415
+    from cutpoint import cli  # noqa: PLC0415
+
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
+    clips = export_clips(tmp_path, "30", FOUR)
+    file = tmp_path / "joins.json"
+    entries = [
+        {"from": "001_m.mp4", "to": "002_m.mp4", "transition": "fade"},
+        {"from": "004_m.mp4", "to": "001_m.mp4", "transition": "fade"},  # not adjacent
+    ]
+    file.write_text(json.dumps({"joins": entries}), encoding="utf-8")
+    out = tmp_path / "cli" / "final.mp4"
+    argv = ["assemble", str(clips), "--out", str(out), "--joins", str(file), "--fade-dur", "0.25"]
+    assert cli.main([*argv, "--json"]) == 0
+    doc = envelope(capsys.readouterr().out)
+    assert doc["ok"] is True
+    assert doc["outputs"]["joins"] == [{**entries[0], "transition": "fade"}]
+    assert [w["code"] for w in doc["warnings"]] == ["join_unmatched"]
+    assert _frames_and_audio(out)[0] == str(120 + 105 + 90 + 90 - 8)

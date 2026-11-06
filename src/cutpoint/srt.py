@@ -183,10 +183,11 @@ def final_cues(
     files: list[Path],
     infos: list[MediaInfo],
     entries: dict[str, dict[str, Any]],
-    fade: float,
+    fade: float | list[float],
     words: Callable[[str], list[dict[str, Any]] | None],
 ) -> tuple[list[Cue], list[str], list[str]]:
-    """Cues of the joined video of ``files`` (crossfade ``fade``, 0 for cuts).
+    """Cues of the joined video of ``files`` (crossfade ``fade``, 0 for cuts, or a list with
+    one such value per join).
 
     ``entries`` maps file names to their manifest entries. A clip without one (renamed
     during review) uses its sibling ``<clip>.srt``, if any. Each clip's cues are clipped
@@ -240,12 +241,12 @@ def write_final_srt(
     clips_dir: Path,
     files: list[Path],
     infos: list[MediaInfo],
-    fade: float,
+    fade: float | list[float],
     video: Path,
     language: str | None = None,
 ) -> Path | None:
     """Write ``<video>.srt`` for the video :func:`cutpoint.assemble.assemble` joined from
-    ``files`` (crossfade ``fade``, 0 for cuts), using ``clips_dir``'s manifest.json and
+    ``files`` (crossfade ``fade``, as in :func:`final_cues`), using ``clips_dir``'s manifest.json and
     the transcripts of ``language`` (as in :func:`words_lookup`; None: the language the
     analysis of the clips' project used, see :func:`clips_language`).
 

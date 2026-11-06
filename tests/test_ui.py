@@ -10063,3 +10063,201 @@ def test_events_are_the_located_events_without_model_descriptions(
 
     (ui.project_dir(pid) / "events.json").write_text("{not json", encoding="utf-8")
     assert client.get(url).json() == {"events": []}
+
+
+# ---------------------------------------------------------------- per-join transitions (#768)
+def test_review_joins_are_validated_saved_kept_and_cleared(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    src = str((folder / "a.mp4").resolve())
+    cache.save_json(
+        ui.project_dir(pid) / "highlights.json", {"sources": [{"path": src, "duration": 10.0}]}
+    )
+    seg = {"id": "h001", "source": src, "start": 1, "end": 4.5, "label": "good"}
+    url = f"/api/projects/{pid}/review"
+    pair = {"a": "h001", "b": "h002", "transition": "fade"}
+
+    def saved() -> dict:
+        return client.get(f"/api/projects/{pid}").json()["review"]
+
+    assert client.put(url, json={"segments": [seg], "joins": [pair]}).status_code == 200
+    assert saved()["joins"] == [pair]  # ids need not be in the sequence: the pair keeps its choice
+    for broken in (
+        "fade",  # not a list
+        ["fade"],  # not an object
+        [{**pair, "transition": "wipe"}],
+        [{**pair, "transition": "default"}],  # Default removes the entry: it is never stored
+        [{**pair, "a": ""}],
+        [{**pair, "b": 5}],
+        [{**pair, "a": "x" * 65}],
+        [pair, {**pair, "transition": "cut"}],  # the same pair twice
+    ):
+        res = client.put(url, json={"segments": [seg], "joins": broken})
+        assert res.status_code == 400, broken
+        assert saved()["joins"] == [pair]  # a refused save leaves the review
+    # a page that sends no joins (the AI Chat's Apply) keeps them; Save of the sequence too
+    assert client.put(url, json={"segments": []}).status_code == 200
+    assert saved()["joins"] == [pair]
+    # a target change keeps them
+    assert client.put(f"/api/projects/{pid}/target", json={"seconds": 60}).status_code == 200
+    assert saved()["joins"] == [pair] and saved()["target"] == 60.0
+    # [] clears them
+    assert client.put(url, json={"segments": [], "joins": []}).status_code == 200
+    assert "joins" not in saved()
+    assert saved()["target"] == 60.0
+
+
+def _clip_folder(folder: Path, names: list[str], ids: list[str]) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for n, (name, cid) in enumerate(zip(names, ids, strict=True)):
+        (folder / name).write_bytes(b"x" * (n + 1))
+        entries.append({"file": name, "id": cid, "size": n + 1})
+    cache.save_json(folder / "manifest.json", {"clips": entries})
+
+
+def test_export_joins_keeps_only_adjacent_pairs_in_the_clip_order(tmp_path: Path) -> None:
+    folder = tmp_path / "clips"
+    _clip_folder(folder, ["001_a.mp4", "002_b.mp4", "003_c.mp4"], ["h1", "h2", "h3"])
+    joins = [
+        {"a": "h1", "b": "h2", "transition": "fade"},
+        {"a": "h1", "b": "h3", "transition": "fade"},  # a reorder separated them
+        {"a": "h3", "b": "h2", "transition": "fade"},  # the other way round
+        {"a": "h2", "b": "gone", "transition": "cut"},  # a clip no longer there
+    ]
+    assert ui.export_joins(folder, joins) == [
+        {"from": "001_a.mp4", "to": "002_b.mp4", "transition": "fade"}
+    ]
+    assert ui.export_joins(folder, []) == []
+
+
+def test_export_joins_follows_a_clip_renamed_during_review(tmp_path: Path) -> None:
+    folder = tmp_path / "clips"
+    _clip_folder(folder, ["001_a.mp4", "002_b.mp4", "003_c.mp4"], ["h1", "h2", "h3"])
+    (folder / "002_b.mp4").rename(folder / "001b_b.mp4")  # moved up, as the page's reorder does
+    joins = [{"a": "h2", "b": "h3", "transition": "fade"}]
+    assert ui.export_joins(folder, joins) == [
+        {"from": "001b_b.mp4", "to": "003_c.mp4", "transition": "fade"}
+    ]
+
+
+def _joins_project(client: TestClient, tmp_path: Path) -> tuple[Path, dict[str, object]]:
+    """A command-line project with two exported clips, ``h1`` and ``h2``."""
+    p, seg = cli_project(tmp_path)
+    assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
+    _clip_folder(p / "clips_ui_1", ["001_a.mp4", "002_b.mp4"], ["h1", "h2"])
+    cache.save_json(p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1"}]})
+    return p, seg
+
+
+def _assemble_with(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, seg: dict, joins: list, body: dict
+):
+    """Save ``joins`` and start an assemble job; its ``same_folder`` check runs, as the jobs
+    lock does before the job starts. Returns the response and the captured CLI args."""
+    res = client.put("/api/projects/cli/review", json={"segments": [seg], "joins": joins})
+    assert res.status_code == 200, res.text
+    captured: list[list[str]] = []
+
+    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
+        captured.append(job_args(args))
+        same_folder()
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    return client.post("/api/projects/cli/jobs", json={"action": "assemble", **body}), captured
+
+
+def test_assemble_job_hands_the_joins_over_in_a_file_and_only_when_there_are_any(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p, seg = _joins_project(client, tmp_path)
+    fade = [{"a": "h1", "b": "h2", "transition": "fade"}]
+    res, captured = _assemble_with(client, monkeypatch, seg, fade, {"transition": "cut"})
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])  # the CLI parses --joins
+    (written,) = (p / "ui").glob("joins-*.json")
+    assert Path(_after(args, "--joins")) == written
+    assert json.loads(written.read_text(encoding="utf-8")) == {
+        "joins": [{"from": "001_a.mp4", "to": "002_b.mp4", "transition": "fade"}]
+    }
+    assert cli.read_joins(written)  # the CLI's own reader takes the file
+
+
+def test_assemble_job_has_no_joins_flag_without_joins_for_these_clips(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p, seg = _joins_project(client, tmp_path)
+    res, captured = _assemble_with(client, monkeypatch, seg, [], {})
+    assert res.status_code == 200, res.text
+    assert "--joins" not in captured[0]
+    # a pair that is not these clips' neighbours in this order counts as none
+    elsewhere = [{"a": "h2", "b": "h1", "transition": "fade"}]
+    res, captured = _assemble_with(client, monkeypatch, seg, elsewhere, {})
+    assert res.status_code == 200, res.text
+    assert "--joins" not in captured[0] and not list((p / "ui").glob("joins-*.json"))
+
+
+def test_assemble_job_refuses_a_joins_file_that_a_link_takes_outside_the_project(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p, seg = _joins_project(client, tmp_path)
+    outside = tmp_path / "outside.json"
+    try:
+        (p / "ui" / "joins-final_ui_1.json").symlink_to(outside)
+    except OSError:
+        pytest.skip("no symlinks here")
+    fade = [{"a": "h1", "b": "h2", "transition": "fade"}]
+    res, captured = _assemble_with(client, monkeypatch, seg, fade, {})
+    assert res.status_code == 409, res.text
+    assert not captured and not outside.exists()
+
+
+def test_fade_length_is_accepted_under_a_global_cut_only_when_a_join_fades(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _, seg = _joins_project(client, tmp_path)
+    body = {"transition": "cut", "fade_dur": 0.5}
+    fade = [{"a": "h1", "b": "h2", "transition": "fade"}]
+    res, captured = _assemble_with(client, monkeypatch, seg, fade, body)
+    assert res.status_code == 200, res.text
+    assert _after(_cli_args(captured[0]), "--fade-dur") == "0.5"
+    cut = [{"a": "h1", "b": "h2", "transition": "cut"}]
+    res, captured = _assemble_with(client, monkeypatch, seg, cut, body)
+    assert res.status_code == 400
+    assert "fade_dur needs the fade video transition" in res.json()["detail"]
+    assert not captured
+
+
+def test_a_fade_pair_that_is_not_a_neighbour_in_the_export_still_allows_fade_length(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The page offers Fade length from the sequence's order. A Fade pair there (h2 then h1) that
+    is no neighbour pair in the exported clips (h1 then h2) used to block Assemble with a 400."""
+    _, seg = _joins_project(client, tmp_path)
+    elsewhere = [{"a": "h2", "b": "h1", "transition": "fade"}]
+    res, captured = _assemble_with(
+        client, monkeypatch, seg, elsewhere, {"transition": "cut", "fade_dur": 0.5}
+    )
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    assert "--joins" not in args
+    assert _after(args, "--fade-dur") == "0.5"
+    # the reverse: a Fade join that is exported, but no fade_dur sent
+    fade = [{"a": "h1", "b": "h2", "transition": "fade"}]
+    res, captured = _assemble_with(client, monkeypatch, seg, fade, {"transition": "cut"})
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    assert "--joins" in args and "--fade-dur" not in args
+
+
+def test_assembly_audio_fade_is_never_refused_for_the_joins_of_the_export(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _, seg = _joins_project(client, tmp_path)
+    fade = [{"a": "h1", "b": "h2", "transition": "fade"}]  # no Cut join in the export
+    body = {"transition": "fade", "audio_transition": "crossfade", "audio_fade": 0.1}
+    res, captured = _assemble_with(client, monkeypatch, seg, fade, body)
+    assert res.status_code == 200, res.text
+    assert _after(_cli_args(captured[0]), "--audio-fade") == "0.1"

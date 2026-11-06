@@ -30,6 +30,7 @@ from cutpoint.assemble import (
     assemble,
     assemble_project,
     check_transitions,
+    read_joins,
 )
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.category import FUNNY, HYPE
@@ -788,6 +789,7 @@ def _cmd_assemble(a: argparse.Namespace) -> None:
         "compress_peaks": _compress_peaks(a),
         "audio_transition": a.audio_transition,
         "output_format": a.output_format,
+        "joins": read_joins(resolve_project_path(a.joins, bare_names=False)) if a.joins else None,
     }
     project = _assemble_project(a, given)
     if project is None:
@@ -1727,7 +1729,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--fade-dur",
         type=positive_float,
         default=0.25,
-        help="crossfade length in seconds with --transition fade (default 0.25)",
+        help="crossfade length in seconds with --transition fade or fade joins (default 0.25)",
+    )
+    asm.add_argument(
+        "--joins",
+        metavar="FILE",
+        help='JSON file setting single joins: {"joins": [{"from": "001_a.mp4", "to": "002_b.mp4", '
+        '"transition": "cut"|"fade"}]}, adjacent clip names in filename order; every other join '
+        "uses --transition, and so does a pair that does not match (a WARNING). The audio "
+        "follows: a cut join is an audio cut, a fade join uses --audio-transition (a crossfade "
+        "with --transition cut)",
     )
     asm.add_argument(
         "--loudnorm", action="store_true", help="normalise to -14 LUFS, true peak below -1.5 dBTP"

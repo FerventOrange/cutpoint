@@ -93,6 +93,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -113,7 +114,12 @@ from cutpoint import (
     runstate,
 )
 from cutpoint import envelope as audio_envelope
-from cutpoint.assemble import AUDIO_TRANSITIONS, OUTPUT_FORMATS, default_audio_transition
+from cutpoint.assemble import (
+    AUDIO_TRANSITIONS,
+    JOIN_TRANSITIONS,
+    OUTPUT_FORMATS,
+    default_audio_transition,
+)
 from cutpoint.assistant import cliproxy
 from cutpoint.assistant import context as ai_context
 from cutpoint.assistant import edges as ai_edges
@@ -3194,6 +3200,56 @@ def validate_segments(
     return out
 
 
+def validate_joins(raw: Any) -> list[dict[str, str]]:
+    """The cleaned ``joins`` of a review: a clip pair by segment id (``a`` then ``b``) and its
+    ``transition``. The ids need not be in the sequence now: a pair a reorder separated keeps
+    its choice for when the two are next to each other again."""
+    if not isinstance(raw, list):
+        raise bad("joins must be a list")
+    if len(raw) > MAX_SEGMENTS:
+        raise bad(f"at most {MAX_SEGMENTS} joins")
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for i, item in enumerate(raw, 1):
+        if not isinstance(item, dict):
+            raise bad(f"join {i}: object expected")
+        a, b, kind = item.get("a"), item.get("b"), item.get("transition")
+        if not all(isinstance(s, str) and 0 < len(s) <= 64 for s in (a, b)):
+            raise bad(f"join {i}: a and b must be segment ids of 1-64 characters")
+        if (a, b) in seen:
+            raise bad(f"join {i}: the pair {a}, {b} is already set")
+        seen.add((a, b))
+        if kind not in JOIN_TRANSITIONS:
+            raise bad(f"join {i}: transition must be 'cut' or 'fade'")
+        out.append({"a": a, "b": b, "transition": kind})
+    return out
+
+
+def _joins_of(review: Any) -> list[dict[str, str]]:
+    """The joins saved in a ``review.json`` document; [] when it has none or they are invalid."""
+    try:
+        return validate_joins(review.get("joins", []) if isinstance(review, dict) else [])
+    except HTTPException:
+        return []
+
+
+def export_joins(folder: Path, joins: list[dict[str, str]]) -> list[dict[str, str]]:
+    r"""The review's ``joins`` as ``assemble --joins`` entries for the clips in ``folder``,
+    through its manifest's ``id``\ s. Only pairs next to each other in the clip order: the
+    others use the global transition, which is no mismatch to warn about."""
+    from cutpoint.planning import manifest_entries  # noqa: PLC0415
+
+    files = clip_files(folder)
+    entries = manifest_entries(folder, files)
+    chosen = {(j["a"], j["b"]): j["transition"] for j in joins}
+    out = []
+    for x, y in pairwise(files):
+        pair = (entries.get(x.name, {}).get("id"), entries.get(y.name, {}).get("id"))
+        if pair in chosen:
+            out.append({"from": x.name, "to": y.name, "transition": chosen[pair]})
+    return out
+
+
 def load_exports(p: Path) -> list[dict[str, Any]]:
     data = _load(p, f"{UI_DIR}/exports.json")
     items = data.get("exports") if isinstance(data, dict) else None
@@ -4932,6 +4988,7 @@ def create_app(port: int) -> FastAPI:
     def put_review(pid: str, body: dict[str, Any]):
         p = project_dir(pid)
         segments = validate_segments(body.get("segments"), sources.entries(p), media)
+        joins = validate_joins(body["joins"]) if "joins" in body else None
         review = {"segments": segments, "updated": datetime.now().isoformat(timespec="seconds")}
         file = _own(p, f"{UI_DIR}/review.json")
         _ui_folder(p)  # a command-line project has no ui folder yet
@@ -4940,9 +4997,14 @@ def create_app(port: int) -> FastAPI:
             # a short lock must not drop the target; missing or still locked: load_json reads None
             with contextlib.suppress(OSError):
                 cache.retry_locked(file.read_bytes, file, "read")
-            kept = _target_of(cache.load_json(file))
+            saved = cache.load_json(file)
+            kept = _target_of(saved)
             if kept is not None:
                 review["target"] = kept
+            # a page that sends no joins (the AI Chat's Apply included) keeps them too
+            joins = _joins_of(saved) if joins is None else joins
+            if joins:
+                review["joins"] = joins
             cache.save_json(file, review)
         return review
 
@@ -5266,8 +5328,14 @@ def create_app(port: int) -> FastAPI:
                 raise bad("audio_transition must be 'cut' or 'crossfade'")
             if transition == "cut" and audio_transition == "crossfade":
                 raise bad("an audio crossfade needs the fade video transition")
+            exp_dir = exp["dir"]
+            saved = _joins_of(_load(p, f"{UI_DIR}/review.json"))
+            joins = export_joins(p / exp_dir, saved)
             fade_dur = _seconds(body, "fade_dur", MAX_FADE_S, positive=True)
-            if fade_dur is not None and transition == "cut":
+            # the saved choices, not ``joins``: the page offers Fade length from the sequence's
+            # order, and a Fade pair there may not be neighbours in this export's clips
+            fading = transition == "fade" or any(j["transition"] == "fade" for j in saved)
+            if fade_dur is not None and not fading:
                 raise bad("fade_dur needs the fade video transition")
             captions = _flag(body, "captions")
             model = body.get("caption_model")
@@ -5284,7 +5352,6 @@ def create_app(port: int) -> FastAPI:
                     f"an {fmt} timeline has no audio processing or burned-in captions; "
                     "turn off Normalize loudness and Burn in captions, or choose mp4"
                 )
-            exp_dir = exp["dir"]
             stem = fresh_name(
                 p,
                 "final" + exp_dir[5:] if exp_dir.startswith("clips") else f"final_{exp_dir}",
@@ -5311,6 +5378,14 @@ def create_app(port: int) -> FastAPI:
                 args.append("--captions")
             if model is not None:
                 args += ["--model", model]
+            if joins:
+                joins_file = _own(p, f"{UI_DIR}/joins-{stem}.json")
+                args += ["--joins", str(joins_file)]
+
+                def prepare() -> None:
+                    _ui_folder(p)  # a command-line project has no ui folder yet
+                    cache.save_json(joins_file, {"joins": joins})
+                    written.append(joins_file)
 
             def on_success() -> None:
                 # a timeline export joins and encodes nothing: its timeline is the result
