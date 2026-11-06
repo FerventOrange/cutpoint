@@ -158,6 +158,7 @@ class HudPreset:
         hype: The VLM prompt's hype rubric line (empty: the generic one).
         events: Event types (raw ``events`` entries, see
             :mod:`cutpoint.events.eventtypes`).
+        source: The preset's ``source`` ("discovered" for one made by discovery).
     """
 
     game: str
@@ -171,6 +172,7 @@ class HudPreset:
     view: str = ""
     hype: str = ""
     events: tuple[dict[str, Any], ...] = ()
+    source: str = ""
 
     def all_regions(self) -> tuple[Region, ...]:
         """Preset regions plus the generic big-text region when enabled."""
@@ -185,6 +187,7 @@ class HudPreset:
             "feed": self.feed,
             "bigtext": self.bigtext,
             "preset_tags": list(self.player_tags),
+            "source": self.source,
         }
 
 
@@ -248,6 +251,7 @@ def preset_from_dict(data: dict[str, Any], path: Path | None = None) -> HudPrese
         view=str(data.get("view", "")),
         hype=str(data.get("hype", "")),
         events=events,
+        source=str(data.get("source", "")),
     )
 
 
