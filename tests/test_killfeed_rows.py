@@ -170,7 +170,7 @@ def _types(parser: FeedParser, *texts: str) -> list[str]:
         "Marlin:killed that corner",
         "Marlin: killed2 that corner",
         "MARLIN: KILLED THAT CORNER",
-        "Marlin: Destroyed that corner",
+        "Marlin: Destroyed the ramp",
         "Marlin\uff1a killed that corner",
         "Marlin (mod): killed that corner",
         "Marlin [mod]: killed that corner",
