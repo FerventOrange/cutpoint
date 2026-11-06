@@ -815,6 +815,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Export panel of `cutpoint ui` no longer says "The latest export differs from this sequence"
+  when Smart tails only extended a clip's end: it compares the end you set (`original_end` in the
+  manifest), not the end with its tail.
+- When a change in the Cuts strip of `cutpoint ui`, or to the Default transition, would make a cut
+  come out differently from the final video, the Export panel says "Assemble again to apply the
+  joins." until Assemble finishes, the change is undone, or a new export replaces the clips. It
+  shows only when the page knows the joins of the final video, so not for a One-Click Edit's final
+  or one assembled before this version.
 - Small fixes in `cutpoint ui`: at 960 px and below the Jobs bar is no longer covered by the tiles'
   dots and buttons; a drag of a Sequence row no longer fails to start when the list is redrawn
   between the press and the drag (as after a trim edit); stepping through clips or playing the
