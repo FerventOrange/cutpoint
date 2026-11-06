@@ -112,7 +112,7 @@ def test_log_entries_read_by_kill_words_only_and_make_no_notices() -> None:
 # ------------------------------------------------------------------------ viewer chat
 
 
-MIDDLE_WORDS = ["good", "bro", "chat", "steering", "license", "friends", "please"]
+MIDDLE_WORDS = ["well", "sure", "okay", "maybe", "really", "today", "still"]
 
 
 def _chat_stream() -> list[tuple[str, int, int, float, float]]:
@@ -123,8 +123,8 @@ def _chat_stream() -> list[tuple[str, int, int, float, float]]:
     for i in range(len(users)):
         a, b, c = users[i], users[(i + 1) % len(users)], users[(i + 5) % len(users)]
         word = MIDDLE_WORDS[i % len(MIDDLE_WORDS)]
-        rows = [f"{a} good {b}", f"{b} {word} {c}", f"{a} chat", c, f"{a} {word} {c} {word}"]
-        rows += ["Marble good TO Lantern", "Lol bro Maple Gate", "Harbor chat", "Quillfeather"]
+        rows = [f"{a} well {b}", f"{b} {word} {c}", f"{a} okay", c, f"{a} {word} {c} {word}"]
+        rows += ["Copper well TO Lantern", "Hey sure Maple Gate", "Harbor okay", "Quillfeather"]
         shows += [(r, 1410, 100 + 40 * k, 9.0 * i + 1.0, 9.0 * i + 4.0) for k, r in enumerate(rows)]
     return shows
 
