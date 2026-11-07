@@ -152,7 +152,9 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
    it stays in `highlights.json` under `widened_from.absorbed` but is no longer a candidate, and
    `--ids` rejects it. Read the file again. A hosted AI Chat model needs the user's chat
    consent for it (`chat_consent_needed` warning: tell the user); with `--max-total` such a
-   candidate longer than the cap is dropped, not trimmed.
+   candidate longer than the cap is dropped, not trimmed. A stretch over 90 s overlaps the candidates
+   inside it: `--top` and `--max-total` skip the overlapping one, but `--ids` does not, so do not
+   name both.
 3. **Optional, for the VLM layer or to force layers:**
    `uv run cutpoint events clip-edit` (needs the `events` extra and `cutpoint setup`; the VLM
    layer needs Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the

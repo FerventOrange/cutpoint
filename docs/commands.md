@@ -1121,9 +1121,9 @@ The transcript is sent whole to a hosted model, which is why the AI Chat consent
 The stretches feed the candidates:
 
 - A stretch no candidate overlaps (or one too long to widen them) nominates a candidate of its own that keeps the whole stretch (starting 1 s before it), not limited by the style's maximum length.
-- A candidate a stretch overlaps is widened to cover the whole stretch, but only when the result (the stretch and every candidate it overlaps) stays within 90 s. Several candidates one stretch overlaps become one, the best scoring; its id and signals stay. **The others stay in `highlights.json` under `widened_from.absorbed` but are no longer candidates, so `--ids` rejects their ids**; a moment you noted by id may be inside another candidate now. A longer stretch is a candidate of its own, over the candidates it overlaps, and those stay as they are; A re-run widens again from the original bounds.
+- A candidate a stretch overlaps is widened to cover the whole stretch, but only when the result (the stretch and every candidate it overlaps) stays within 90 s. Several candidates one stretch overlaps become one, the best scoring; its id and signals stay. **The others stay in `highlights.json` under `widened_from.absorbed` but are no longer candidates, so `--ids` rejects their ids**; a moment you noted by id may be inside another candidate now. A longer stretch is a candidate of its own, over the candidates it overlaps, and those stay as they are. A re-run widens again from the original bounds.
 - A candidate a stretch overlaps gets up to 3 points on top of its other event points, scaled by the stretch's strength.
-- A pick skips a candidate that overlaps one already picked from the same source (not with `--ids`), so a clip inside a long stretch is not picked twice.
+- A pick skips a candidate that mostly overlaps one already picked from the same source (not with `--ids`), so a clip inside a long stretch is not picked twice.
 - `--max-total` (and the `montage` kind) skips a dialogue candidate that is longer than what is left of the cap; it is not trimmed.
 
 `analyze` also writes `events.json` and `events.txt` (and `crashes.json` for action footage).
@@ -1355,10 +1355,10 @@ computer (a network folder) is not, so delete it by hand if no run is active.
 
 | Option | Meaning |
 |---|---|
-| `--top N` | Top N by score (default: the style's target length) |
+| `--top N` | Top N by score (default: the style's target length). An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
 | `--ids ...` | Explicit candidate ids |
 | `--segments FILE` | Export exactly the listed segments in the listed order |
-| `--max-total S` | Keep the best-scoring moments that fit in S seconds |
+| `--max-total S` | Keep the best-scoring moments that fit in S seconds. An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
 | `--order` | `chronological`, `score`, `story` (default, except `commentary`: `chronological`; opens with the second-best moment, ends with the best) or `arc` (the default with `--mix`) |
 | `--vertical` | Centre-crop to 9:16, 1080x1920. Default folder `clips_vertical` |
 | `--size WxH` | Output resolution (even numbers). Default: the largest source's, capped at 1080p. Ignored with `--vertical` |

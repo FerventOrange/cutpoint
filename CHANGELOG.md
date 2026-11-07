@@ -16,9 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the whole stretch, not limited by the style's maximum length. A candidate a stretch overlaps is
   widened to it, and candidates it joins become one, so a candidate id can be gone from
   `highlights.json` after an analysis. This happens only when the result stays within 90 s; a
-  longer stretch is a candidate of its own and the candidates it overlaps stay as they are. A dialogue
-  stretch adds up to 3 points to the candidates it overlaps. A `--max-total` or montage cap drops a dialogue candidate longer than the cap
-  instead of trimming it. The model is the hosted AI Chat model (with the AI Chat consent;
+  longer stretch is a candidate of its own and the candidates it overlaps stay as they are. A
+  dialogue stretch adds up to 3 points to the candidates it overlaps. A `--max-total` or montage
+  cap drops a dialogue candidate longer than the cap instead of trimming it. The model is the hosted AI Chat model (with the AI Chat consent;
   ranked by its rating), or a local Ollama or one on another machine with the AI Chat consent
   (ranked by reaction sounds). Without a usable model the step is skipped; a hosted model without
   consent gives the `chat_consent_needed` warning, and low memory a `step_failed` warning.
@@ -536,6 +536,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- An automatic pick skips a candidate that mostly overlaps one already picked from the same source;
+  `--ids` does not. The next candidate takes its place.
 - **BREAKING:** The AI Chat consent is version 3 (`assistant-v3:<provider>@<host>`; was `assistant-v2:`). Whole transcripts now go to a hosted chat model during `analyze`, so users of one are asked again, and a saved `assistant-v2:` entry no longer counts. The Vision consent is unchanged.
 - The `PROGRESS` steps of `analyze` are now 7 and of `edit` 9: `dialogue` comes after `crashes`, and `ranking`, `vision`, `clips` and `assemble` moved down one.
 - The default kill words are generic only: `wrecked`, `set afire`, `critically damaged`,
