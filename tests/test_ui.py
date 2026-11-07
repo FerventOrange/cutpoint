@@ -10261,3 +10261,117 @@ def test_assembly_audio_fade_is_never_refused_for_the_joins_of_the_export(
     res, captured = _assemble_with(client, monkeypatch, seg, fade, body)
     assert res.status_code == 200, res.text
     assert _after(_cli_args(captured[0]), "--audio-fade") == "0.1"
+
+
+def test_clip_joins_lists_every_neighbour_pair_with_the_reviews_choice_or_none(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "clips"
+    _clip_folder(folder, ["001_a.mp4", "002_b.mp4", "003_c.mp4"], ["h1", "h2", "h3"])
+    (folder / "004_d.mp4").write_bytes(b"x")  # added by hand: the manifest does not list it
+    joins = [
+        {"a": "h1", "b": "h2", "transition": "fade"},
+        {"a": "h1", "b": "h3", "transition": "cut"},
+    ]
+    assert ui.clip_joins(folder, joins) == [
+        {"from": "001_a.mp4", "to": "002_b.mp4", "a": "h1", "b": "h2", "transition": "fade"},
+        {"from": "002_b.mp4", "to": "003_c.mp4", "a": "h2", "b": "h3", "transition": None},
+        {"from": "003_c.mp4", "to": "004_d.mp4", "a": "h3", "b": None, "transition": None},
+    ]
+    assert ui.export_joins(folder, joins) == [
+        {"from": "001_a.mp4", "to": "002_b.mp4", "transition": "fade"}
+    ]
+
+
+def _assemble_to_success(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    seg: dict,
+    joins: list,
+    body: dict | None = None,
+) -> list:
+    """Save ``joins``, start an assemble job and return the ``on_success`` hook it registered."""
+    res = client.put("/api/projects/cli/review", json={"segments": [seg], "joins": joins})
+    assert res.status_code == 200, res.text
+    hooks: list = []
+
+    def start(self, project_id, action, args, on_success, *rest, **_kw):
+        hooks.append(on_success)
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    res = client.post("/api/projects/cli/jobs", json={"action": "assemble", **(body or {})})
+    assert res.status_code == 200, res.text
+    return hooks
+
+
+def test_a_finished_assemble_records_the_joins_it_used_for_the_page(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p, seg = _joins_project(client, tmp_path)
+    write(p / "clips_ui_1" / "003_by_hand.mp4")  # no manifest id: no join to compare
+    fade = [{"a": "h1", "b": "h2", "transition": "fade"}]
+    (hook,) = _assemble_to_success(client, monkeypatch, seg, fade)
+    write(p / "final_ui_1.mp4")
+    hook()
+    (export,) = cache.load_json(p / "ui" / "exports.json")["exports"]
+    assert export["final"] == "final_ui_1.mp4"
+    assert export["final_joins"] == [{"a": "h1", "b": "h2", "transition": "fade"}]
+    assert client.get("/api/projects/cli").json()["final_joins"] == export["final_joins"]
+    # a Default join is recorded as the transition it came out with: the global Cut
+    (p / "final_ui_1.mp4").unlink()  # so the next run takes the same name
+    (hook,) = _assemble_to_success(client, monkeypatch, seg, [])
+    write(p / "final_ui_1.mp4")
+    hook()
+    (export,) = cache.load_json(p / "ui" / "exports.json")["exports"]
+    assert export["final_joins"] == [{"a": "h1", "b": "h2", "transition": "cut"}]
+
+
+def test_an_assemble_under_a_global_fade_records_fade_for_its_default_joins(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p, seg = _joins_project(client, tmp_path)
+    (hook,) = _assemble_to_success(client, monkeypatch, seg, [], {"transition": "fade"})
+    write(p / "final_ui_1.mp4")
+    hook()
+    (export,) = cache.load_json(p / "ui" / "exports.json")["exports"]
+    assert export["final_joins"] == [{"a": "h1", "b": "h2", "transition": "fade"}]
+    # a join of its own wins over the global transition
+    (p / "final_ui_1.mp4").unlink()
+    cut = [{"a": "h1", "b": "h2", "transition": "cut"}]
+    (hook,) = _assemble_to_success(client, monkeypatch, seg, cut, {"transition": "fade"})
+    write(p / "final_ui_1.mp4")
+    hook()
+    (export,) = cache.load_json(p / "ui" / "exports.json")["exports"]
+    assert export["final_joins"] == [{"a": "h1", "b": "h2", "transition": "cut"}]
+
+
+def test_an_assemble_that_makes_no_final_keeps_the_joins_of_the_earlier_one(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p, seg = _joins_project(client, tmp_path)
+    before = [{"a": "h1", "b": "h2", "transition": "cut"}]
+    cache.save_json(
+        p / "ui" / "exports.json",
+        {"exports": [{"dir": "clips_ui_1", "final": "old.mp4", "final_joins": before}]},
+    )
+    fade = [{"a": "h1", "b": "h2", "transition": "fade"}]
+    (hook,) = _assemble_to_success(client, monkeypatch, seg, fade)
+    with pytest.raises(RuntimeError, match="without a final video"):
+        hook()
+    (export,) = cache.load_json(p / "ui" / "exports.json")["exports"]
+    assert export["final"] == "old.mp4" and export["final_joins"] == before
+
+
+def test_final_joins_are_null_for_an_export_record_without_them(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """exports.json files from before the page recorded the joins, and a final from ``edit``."""
+    p, _ = _joins_project(client, tmp_path)
+    assert client.get("/api/projects/cli").json()["final_joins"] is None
+    write(p / "final.mp4")
+    cache.save_json(
+        p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1", "final": "final.mp4"}]}
+    )
+    view = client.get("/api/projects/cli").json()
+    assert view["final_joins"] is None and view["final_current"] is True
