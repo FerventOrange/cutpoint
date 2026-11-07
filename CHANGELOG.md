@@ -815,6 +815,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Viewer chat in a feed region no longer reads as kills: a `:` or `;` (also full width) before a kill
+  word, `assist` or `crashed` makes a row chat on every feed, not only in a clock-stamped log, so
+  `Marlin: killed that corner` gives no event. This also holds with a preset's own `kill_words`. Chat
+  without a colon and a row whose colon OCR lost on one frame are read as before. Cached OCR
+  interpretation is redone once.
 - The Export panel of `cutpoint ui` no longer says "The latest export differs from this sequence"
   when Smart tails only extended a clip's end: it compares the end you set (`original_end` in the
   manifest), not the end with its tail.
