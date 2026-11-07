@@ -268,6 +268,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   camera's usual burned-in overlay does not make camera footage gameplay. A few seconds per unsure
   source, cached as `category-text-v1.json`; skipped in Cutpoint lite (the source stays
   ambiguous), and never run with an explicit `--style`.
+- `scripts/moment_eval.py` (development benchmark): scores how well a project's ranked moments match
+  the owner's labels (one private JSON file per video with `keep`, `skip`, `reference` ranges and a
+  `holdout` flag). Per video it reports the keeps and skips hit in the top 10 and 20, the keeps and
+  hand-edit reference ranges hit within 15% and 30% of the video length, each against a seeded
+  random-order control (mean, 95th percentile, multiple of chance; "beats noise" only above the
+  95th percentile). It also lists the labels the default edit (`select_moments` with no options, as
+  `clips`) and the highlights edit (`max_total` 180) contain; the edits have no control. Holdout
+  videos are listed apart. `--json` writes the results and `--compare A.json B.json` shows the
+  difference between two runs, warning when their seed, runs or overlap differ. Only reads.
 - `scripts/style_auto_eval.py` (#513, development harness): runs the footage category detection
   on sources with known categories (a local labels file) and reports the confusion by
   sure or ambiguous, the sure-wrong sources, the ambiguous share by count and minutes, the style
