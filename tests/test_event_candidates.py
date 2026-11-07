@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint import analyze, cache, paths, planning, scorer
+from cutpoint import analyze, cache, default_fit, paths, planning, scorer
 from cutpoint.assistant import context
 from cutpoint.events import scoring
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, Matcher
@@ -591,14 +591,9 @@ def test_a_rated_nominee_keeps_its_rating_through_the_post_vision_rescore(tmp_pa
 
 
 def test_suggested_top_follows_the_target_with_the_nominees(tmp_path):
-    hl = highlights([own("h001", 20.0, 30.0)], target_total=14)
+    hl = highlights([own("h001", 20.0, 30.0)], target_total=20)
     run_rescore(hl, events_of([feed(100.0), feed(300.0), feed(500.0)]), tmp_path, [grid()])
-    total, n = 0.0, 0
-    for c in hl["candidates"]:
-        if total >= 14:
-            break
-        total += c["end"] - c["start"]
-        n += 1
+    n = len(default_fit.fit_target(hl["candidates"], 20))
     assert hl["suggested_top"] == n >= 2
 
 
@@ -1032,7 +1027,7 @@ def test_an_open_list_ranks_the_nominee_by_score(tmp_path):
     # the nominee (floor 30 plus the boost of three kills) beats the weak pick (20) on score
     ids, top = ranked_ids("gaming", burst, tmp_path)
     assert ids == ["h001", "nominee", "h002"]
-    assert top == 3
+    assert top == 2  # the third does not fit the 20 s target
 
 
 @pytest.mark.parametrize("style", ["action", "funny", "sport"])

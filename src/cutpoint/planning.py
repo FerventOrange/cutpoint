@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from cutpoint import boundaries, cache, jsonout, sources, visual_pool
+from cutpoint import boundaries, cache, default_fit, jsonout, sources, visual_pool
 from cutpoint.config import path_key
 from cutpoint.events.tails import load_events
 from cutpoint.ffmpeg_utils import MediaInfo
@@ -42,8 +42,9 @@ def select_moments(
     Args:
         project: Project folder (analysed by ``cutpoint analyze``).
         top: Keep the ``top`` best-scoring candidates. Default: all of them
-            when ``max_total`` is given, else the analysis' ``suggested_top``
-            (or 5).
+            when ``max_total`` is given, else the best moments that fit the
+            style's ``target_total`` (:func:`~cutpoint.default_fit.fit_target`; their count is
+            the analysis' ``suggested_top``), or without a target ``suggested_top`` (or 5).
         ids: Exact candidate ids, in this order (overrides ``top``).
         max_total: Keep the best-scoring chosen moments whose summed duration
             fits in this many seconds.
@@ -100,6 +101,7 @@ def select_moments(
         chosen = [by_id[i] for i in ids]
     else:
         ranked = sorted((c for c in cands if not visual_pool.is_pool(c)), key=lambda c: -c["score"])
+        target = (data.get("settings") or {}).get("target_total")
         n = (
             top
             if top is not None
@@ -107,12 +109,14 @@ def select_moments(
         )
         if max_total and top is None:
             chosen = ranked  # the fit below skips the overlapping ones
+        elif top is None and target:
+            chosen = default_fit.fit_target(ranked, target)  # as analyze counts suggested_top
         else:
             chosen = []
             for c in ranked:  # an overlapping candidate (a clip inside a long stretch) is skipped
                 if len(chosen) == n:
                     break
-                if c.get("must_include") or not _clashes(c, chosen):
+                if c.get("must_include") or not default_fit.clashes(c, chosen):
                     chosen.append(c)
         picks = len(chosen)
         # Confident crashes (ski analyze, crashes.json) are never left out.
@@ -128,7 +132,7 @@ def select_moments(
         fitted, total = [], 0.0
         for c in sorted(chosen, key=lambda c: (not c.get("must_include"), -c["score"])):
             # Must-include crashes go first and stay even past the cap.
-            if not ids and not c.get("must_include") and _clashes(c, fitted):
+            if not ids and not c.get("must_include") and default_fit.clashes(c, fitted):
                 continue
             if c.get("must_include") or total + c["duration"] <= max_total:
                 fitted.append(c)
@@ -139,35 +143,6 @@ def select_moments(
     if not chosen:
         raise ValueError("No moments selected")
     return chosen, data.get("style", "gaming")
-
-
-def _overlaps(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    return (
-        path_key(str(a["source"])) == path_key(str(b["source"]))
-        and a["start"] < b["end"]
-        and b["start"] < a["end"]
-    )
-
-
-CLASH_SHARE = (
-    0.5  # an automatic pick skips a candidate overlapping a pick by this share of the shorter
-)
-
-
-def _clashes(c: dict[str, Any], picked: list[dict[str, Any]]) -> bool:
-    """Whether ``c`` mostly overlaps a moment of ``picked`` from the same source: by at least
-    :data:`CLASH_SHARE` of the shorter one (a candidate without a span, as in a hand-written
-    highlights.json, overlaps nothing)."""
-    keys = ("source", "start", "end")
-    if not all(k in c for k in keys):
-        return False
-    return any(
-        all(k in p for k in keys)
-        and _overlaps(c, p)
-        and min(c["end"], p["end"]) - max(c["start"], p["start"])
-        >= CLASH_SHARE * min(c["end"] - c["start"], p["end"] - p["start"])
-        for p in picked
-    )
 
 
 def _reserve(
@@ -197,7 +172,7 @@ def _reserve(
             break
         if visual_pool.peak_of(p) < visual_pool.SLOT_MIN_PEAK:
             continue
-        if any(_overlaps(p, c) for c in chosen):
+        if any(default_fit.span_overlaps(p, c) for c in chosen):
             continue
         v = victims[0]
         after = total - v["duration"] + p["duration"]
