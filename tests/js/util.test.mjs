@@ -70,3 +70,25 @@ test('colorNote says how many clips were graded and why the others were not; a L
   ];
   for (const [clips, expected] of cases) assert.equal(u.colorNote(clips), expected);
 });
+
+test('momentMatches: the Long bits filter keeps only moments the server marked long_bit', () => {
+  const bit = { label: 'x', long_bit: true };
+  assert.equal(u.momentMatches(bit, '', { ...u.NO_FILTERS, bits: true }), true);
+  assert.equal(u.momentMatches({ label: 'x' }, '', { ...u.NO_FILTERS, bits: true }), false);
+  assert.equal(u.momentMatches({ label: 'x' }, '', u.NO_FILTERS), true);
+  assert.equal(u.filtersOn({ ...u.NO_FILTERS, bits: true }), true);
+  assert.equal(u.filtersOn(u.NO_FILTERS), false);
+});
+
+test('kindOf: a moment made from a talk stretch is Dialogue whatever words its title holds', () => {
+  const made = { label: 'fast-run-again', display_label: 'Fast Run Again', dialogue_title: 'Fast Run Again', signals: { events: { nominated: ['dialogue-funny'] } } };
+  assert.equal(u.kindOf(made), 'dialogue');
+  assert.equal(u.kindOf({ label: 'dialogue-funny', signals: { events: { nominated: ['dialogue-story'] } } }), 'dialogue', 'titled or not');
+  assert.equal(u.kindOf({ label: 'fast-run-again', display_label: 'Fast Run Again' }), 'action');
+});
+
+test('kindOf: a moment a stretch only widened keeps its own type, from the label it had', () => {
+  const widened = { label: 'fast-run-again', display_label: 'Fast Run Again', dialogue_title: 'Fast Run Again', widened_from: { label: 'laughter' }, signals: { events: {} } };
+  assert.equal(u.kindOf(widened), 'funny');
+  assert.equal(u.kindOf({ ...widened, widened_from: { label: 'ski-moment' } }), 'action', 'a generic label names nothing: the transcript decides');
+});

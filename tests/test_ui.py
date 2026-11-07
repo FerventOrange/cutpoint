@@ -8398,14 +8398,16 @@ def test_moment_card_order_matches_the_mockup() -> None:
     render = _js_function(js, "renderMoments")
     card = render[render.index("class: 'cand-main'") :]
     order = [
-        "title: c.transcript",
+        "title: [title, c.bit_description, c.transcript]",
         "still,",
         "class: 'cand-top'",
         "class: 'rank tc'",
         "class: 'cand-title'",
         "class: 'tag', text: 'must include'",
+        "bitBadge(c),",
         "class: 'cand-meta'",
         "scoreText(c.score, c.pool === 'visual'), badge)",
+        "class: 'cand-what'",
         "class: 'cand-time tc'",
         "class: 'cand-id'",
         "multi ? h('span', { class: 'cand-src' }",

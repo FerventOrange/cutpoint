@@ -106,3 +106,44 @@ test('with several source files the Source file choice appears and filters the l
   await m.set('#filterSource', '/videos/b.mp4');
   assert.deepEqual(m.cards(), ['h002']);
 });
+
+function withBit() {
+  const p = makeProject();
+  p.highlights.candidates[1] = {
+    ...p.highlights.candidates[1], label: 'grandpa-wobbly-treehouse', display_label: 'Grandpa Wobbly Treehouse', dialogue_title: 'Grandpa Wobbly Treehouse', long_bit: true,
+    signals: { events: { nominated: ['dialogue-funny'] } }, end: 100 + 125, bit_description: 'Grandpa builds a treehouse that wobbles',
+  };
+  return p;
+}
+
+test('a long dialogue bit shows a "Bit" badge with its length, and its description is on the tile tooltip', async (t) => {
+  const m = await list(t, { project: withBit() });
+  const tile = m.d.querySelector('#candList li[data-id=h002]');
+  const badge = tile.querySelector('.tag.bit');
+  assert.ok(badge, 'the bit has a badge');
+  assert.match(badge.textContent, /Bit.*2:05/);
+  assert.equal(badge.querySelector('[aria-hidden]').textContent.trim(), '·');
+  assert.equal(m.d.querySelectorAll('#candList .tag.bit').length, 1, 'only the bit has one');
+  assert.equal(tile.querySelector('.cand-title').textContent, 'Grandpa Wobbly Treehouse', 'the readable title, not the slug');
+  assert.equal(tile.dataset.kind, 'dialogue');
+  assert.equal(tile.querySelector('.cand-what').textContent, 'Grandpa builds a treehouse that wobbles', 'a visible line, in the button (its name)');
+  assert.ok(tile.querySelector('.cand-main .cand-what'));
+  assert.equal(m.d.querySelectorAll('#candList .cand-what').length, 1, 'only dialogue moments have one');
+  assert.equal(tile.querySelector('.cand-main').title, ['Grandpa Wobbly Treehouse', 'Grandpa builds a treehouse that wobbles', 'line 2'].join('\n'));
+});
+
+test('"Long bits" shows only long bits, is offered only where there is one, and Clear filters undoes it', async (t) => {
+  const none = await list(t);
+  assert.equal(none.$('#filterBitsWrap').hidden, true, 'no bit, no filter');
+
+  const m = await list(t, { project: withBit() });
+  assert.equal(m.$('#filterBitsWrap').hidden, false);
+  await m.set('#filterBits', true);
+  assert.deepEqual(m.cards(), ['h002']);
+  assert.match(m.$('#filterBtn').getAttribute('aria-label'), /filters on/);
+  assert.equal(m.stored(FILTERS), null, 'the bits filter is a view of the list and is not kept');
+  m.$('#filterClear').click();
+  await m.page.settle();
+  assert.equal(m.$('#filterBits').checked, false);
+  assert.deepEqual(m.cards(), ['h001', 'h002', 'h003']);
+});

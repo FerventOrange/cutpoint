@@ -94,14 +94,14 @@ export const positionCompare = (a, b) =>
  * (in the sequence) or 'out'; ``ready``: only moments whose preview plays; ``source``: one
  * source path, '' for every file.
  */
-export const NO_FILTERS = Object.freeze({ seq: 'all', ready: false, source: '' });
+export const NO_FILTERS = Object.freeze({ seq: 'all', ready: false, source: '', bits: false });
 
 /** The row of ``n`` that takes the place of a row at index ``at`` once it left its list: the one now
  * at that index, the last one past the end, or -1 with no row left. */
 export const rowInPlace = (at, n) => (n ? Math.min(at, n - 1) : -1);
 
 /** Any quick filter of ``f`` filters (the search text is not one). */
-export const filtersOn = (f) => f.seq !== 'all' || !!f.ready || !!f.source;
+export const filtersOn = (f) => f.seq !== 'all' || !!f.ready || !!f.source || !!f.bits;
 
 /**
  * A moment shows in the list: it holds the search text ``q`` (in its label, CLI id such as h001,
@@ -113,6 +113,7 @@ export function momentMatches(m, q, f) {
   if (text && !`${m.label ?? ''} ${m.cli_id ?? ''} ${m.transcript ?? ''} ${baseName(m.source)}`.toLowerCase().includes(text)) return false;
   if ((f.seq === 'in' && !m.picked) || (f.seq === 'out' && m.picked)) return false;
   if (f.ready && !m.ready) return false;
+  if (f.bits && !m.long_bit) return false; // a long dialogue bit (the server's long_bit)
   return !f.source || m.source === f.source;
 }
 
@@ -139,7 +140,9 @@ const roundEven = (x) => { // Python's round(): halves go to the even number
 const TALK_WORDS = ['talk', 'talking', 'speech', 'dialogue', 'dialog', 'conversation', 'banter', 'chat', 'commentary', 'voice', 'speaking'];
 
 /**
- * The kind a moment is shown as, for display only; highlights.json holds no such field. It follows
+ * The kind a moment is shown as, for display only; highlights.json holds no such field. A moment made
+ * from a talk stretch is dialogue, and a widened moment is judged by ``widened_from.label``, not its
+ * title. Otherwise it follows
  * pacing.moment_kind (what AI Chat calls the moment) in the same order: the words of its labels
  * (not a generic "x-moment") and ``kind`` decide first (``view`` or a scenic word: scenic; a funny
  * word: funny; ``crew``, ``cruise`` or an action word: action; a talk word: dialogue), then the
@@ -150,8 +153,12 @@ const TALK_WORDS = ['talk', 'talking', 'speech', 'dialogue', 'dialog', 'conversa
  */
 export function kindOf(c) {
   if (!c) return null;
+  const nominated = c.signals?.events?.nominated;
+  if (Array.isArray(nominated) && nominated.some((n) => String(n).startsWith('dialogue-'))) return 'dialogue'; // made from a talk stretch, whatever its title says
   const kind = typeof c.kind === 'string' ? c.kind : '';
-  const named = [c.display_label, c.label, c.vision_label].filter((x) => x && !GENERIC.test(String(x)));
+  // a moment a stretch only widened keeps its own type: its words are the label it had, not the title's
+  const words = c.dialogue_title ? [c.widened_from?.label ?? c.label, c.vision_label] : [c.display_label, c.label, c.vision_label];
+  const named = words.filter((x) => x && !GENERIC.test(String(x)));
   const tokens = new Set(`${named.join(' ')} ${kind}`.toLowerCase().split(/[^a-z]+/));
   const has = (words) => words.some((w) => tokens.has(w));
   if (kind === 'view' || has(SCENIC_WORDS)) return 'scenic';
