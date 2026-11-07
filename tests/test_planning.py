@@ -89,7 +89,7 @@ def test_select_moments_keeps_overlapping_candidates_of_other_sources_and_explic
 def test_select_moments_never_skips_an_overlapping_must_include_crash(tmp_path):
     cands = [
         dict(_span("c1", 9, 100, 140), must_include=True),
-        dict(_span("c2", 8, 130, 160), must_include=True),
+        dict(_span("c2", 8, 110, 130), must_include=True),
     ]
     project = _project(tmp_path, cands)
     assert [c["id"] for c in select_moments(project, max_total=180)[0]] == ["c1", "c2"]
