@@ -5,13 +5,13 @@ Claude Code, Codex, Grok CLI, or a script. Analysis runs locally (ffmpeg, Whispe
 Ollama models), so the agent only issues commands and reads small JSON and text
 files. Video files are never uploaded, and local models are the default for the model features. A
 hosted provider is used only after you give consent in the Models tab or AI Chat of `cutpoint ui`.
-AI Chat then sends only analysis results as text (moment labels, scores and detection signals,
-vision descriptions, transcript snippets, file names, times), and video frames only for a project where you allowed
+AI Chat then sends analysis results as text (moment labels, scores and detection signals,
+vision descriptions, transcript snippets, file names, times), whole transcripts (the dialogue reader sends them during `analyze`), and video frames only for a project where you allowed
 them for that provider and host (`frames-v1:<provider>@<host>`, one timeline sheet of 6 to 9
 frames per moment the assistant watches). A hosted Vision role sends still frames, transcript
 excerpts, file names and times, and detected on-screen text (such as player names) and telemetry
-(for frame ratings and the `events` window descriptions), never the video file. Vision sends more
-data and carries more risk, so it has its own consent: agreeing for AI Chat never covers Vision,
+(for frame ratings and the `events` window descriptions), never the video file. The AI Chat
+assistant gets other data, so Vision has its own consent: agreeing for AI Chat never covers Vision,
 or the reverse. Both consents are versioned (`assistant-v3:<provider>@<host>` and
 `vision-v2:<provider>@<host>` in `config.json`, the host with its port when that is not the
 default, such as `192.168.1.5:8080`): a consent saved by an earlier version, under a shorter

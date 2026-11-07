@@ -183,9 +183,9 @@ Catalogs and frames go to a hosted provider only after you allow it there
 (`vision_assistant.consent`, via "Allow vision requests"); choosing or saving a model never
 grants it. Once allowed, the provider receives video frames, transcript excerpts, file names and
 times, and detected on-screen text (such as player names) and telemetry (for frame ratings and
-the `events` window descriptions), never the video file. That is more data, and more risk, than
-the assistant gets, so this consent is separate from the assistant's: agreeing to one never
-covers the other. Entries are `vision-v2:<provider>@<host>` (for example
+the `events` window descriptions), never the video file. The AI Chat assistant gets other data
+(analysis results and whole transcripts; frames only when you allow them for a project), so this
+consent is separate from the assistant's: agreeing to one never covers the other. Entries are `vision-v2:<provider>@<host>` (for example
 `vision-v2:codex@chatgpt.com`, or `vision-v2:ollama@192.168.1.5:11434`: the host has its port
 when that is not the scheme's default); an entry without the `vision-v2:` prefix, saved by an earlier
 version under a narrower description, no longer counts, and the Models tab asks again.
@@ -295,8 +295,9 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   transcripts that `cutpoint analyze` sends to a hosted chat model (or an Ollama on another machine) for
   its [dialogue reader](commands.md#dialogue-reader); without it that step is skipped with a
   `chat_consent_needed` warning.
-  The assistant gets only analysis results (moment labels, scores and detection signals,
-  vision descriptions, transcript snippets, file names without paths, times) and your messages, never video or audio.
+  The assistant gets analysis results (moment labels, scores and detection signals,
+  vision descriptions, transcript snippets, file names without paths, times) and your messages, and
+  whole transcripts (the dialogue reader sends them during `analyze`); frames only when you allow them for a project; never video or audio.
   This consent never covers the [Vision role](#vision_assistant), which has its own.
   Remove an entry to be asked again. A provider is local when its host is `localhost` or a
   loopback address, except on the port of the [`cutpoint proxy`](commands.md#proxy) (the running

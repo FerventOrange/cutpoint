@@ -146,8 +146,9 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
    given after the paths, leaves them out. For `gaming` it also runs `dialogue`: a text model reads
    the whole transcript and marks funny or heated talk (`DIALOGUE` lines in `events.txt`), each
    stretch a candidate that keeps its whole length. A candidate such a stretch overlaps is widened
-   to it and candidates it joins become one, so a candidate id from an earlier run can be gone
-   from `highlights.json`: read the file again. A hosted AI Chat model needs the user's chat
+   to it and candidates it joins become one, so a candidate id from an earlier run can be absorbed:
+   it stays in `highlights.json` under `widened_from.absorbed` but is no longer a candidate, and
+   `--ids` rejects it. Read the file again. A hosted AI Chat model needs the user's chat
    consent for it (`chat_consent_needed` warning: tell the user); with `--max-total` such a
    candidate longer than the cap is dropped, not trimmed.
 3. **Optional, for the VLM layer or to force layers:**

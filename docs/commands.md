@@ -1005,7 +1005,11 @@ Each candidate in `highlights.json` has `id`, `source`, `start`, `end`, `score` 
 Whisper heard with confidence below 0.5 as `[index, confidence]`, the index counting words in
 `transcript.split(" ")` (omitted when none is unsure or the transcript has no confidences). With
 `--vision`, a rated candidate also has the model's own label in `vision_label` (`label` takes it
-only from a rating of 7). `timings` holds the seconds each step took and `total_s`, the whole
+only from a rating of 7). A candidate the dialogue reader widened also has `widened_from` (its
+earlier `start`, `end`, `transcript` and `transcript_unsure`, and `absorbed`, the full candidates
+merged into it), and `dialogue_description` (the stretch's description) when no transcript
+snippet could be rebuilt for its new span; where the reader ran, `signals.events.dialogue` is
+the strength of the stretch that boosted it. `timings` holds the seconds each step took and `total_s`, the whole
 analysis; a re-rank of an earlier analysis (`events` on action-cam projects, `360 analyze`,
 `crashes --reanalyze`) keeps that `total_s` and records its own time as `rerank_s`.
 `timings.sources` breaks the same run down per source (one entry per recovered part, with its
@@ -1117,7 +1121,7 @@ The transcript is sent whole to a hosted model, which is why the AI Chat consent
 The stretches feed the candidates:
 
 - A stretch no candidate overlaps nominates a candidate of its own that keeps the whole stretch (starting 1 s before it), not limited by the style's maximum length.
-- A candidate a stretch overlaps is widened to cover the whole stretch. Several candidates one stretch overlaps become one, the best scoring; its id and signals stay. **The ids of the others are gone from `highlights.json`**, so a moment you noted by id may be inside another candidate now. A re-run widens again from the original bounds.
+- A candidate a stretch overlaps is widened to cover the whole stretch. Several candidates one stretch overlaps become one, the best scoring; its id and signals stay. **The others stay in `highlights.json` under `widened_from.absorbed` but are no longer candidates, so `--ids` rejects their ids**; a moment you noted by id may be inside another candidate now. A re-run widens again from the original bounds.
 - A candidate a stretch overlaps gets up to 3 points on top of its other event points, scaled by the stretch's strength.
 - `--max-total` (and the `montage` kind) skips a dialogue candidate that is longer than what is left of the cap; it is not trimmed.
 
