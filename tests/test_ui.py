@@ -8059,7 +8059,7 @@ def test_the_consent_texts_name_what_each_role_sends() -> None:
         "file names and times",
         "on-screen text",
         "telemetry",
-        "more data, and more risk, than the AI Chat assistant",
+        "The AI Chat assistant gets other data",
         "agreeing for one never covers the other",
     ):
         assert part in text, part

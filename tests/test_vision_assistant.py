@@ -72,7 +72,7 @@ def test_nothing_is_sent_before_the_user_agreed(fake, home) -> None:
     """Consent given to the chat assistant does not cover vision: no frame is sent."""
     set_config(
         home,
-        assistant={"provider": "codex", "consent": ["assistant-v2:codex@chatgpt.com"]},
+        assistant={"provider": "codex", "consent": ["assistant-v3:codex@chatgpt.com"]},
         vision_assistant={"provider": "codex", "model": "gpt-x", "consent": []},
     )
     rater = vision.VisionRater()
@@ -119,8 +119,8 @@ def test_image_parts_reach_each_wire_format() -> None:
 def test_the_assistant_s_versioned_consent_does_not_send_frames(fake, home) -> None:
     set_config(
         home,
-        assistant={"provider": "codex", "consent": ["assistant-v2:codex@chatgpt.com"]},
-        vision_assistant={"provider": "codex", "consent": ["assistant-v2:codex@chatgpt.com"]},
+        assistant={"provider": "codex", "consent": ["assistant-v3:codex@chatgpt.com"]},
+        vision_assistant={"provider": "codex", "consent": ["assistant-v3:codex@chatgpt.com"]},
     )
     rater = vision.VisionRater()
     assert not rater.available()
@@ -243,7 +243,7 @@ def test_the_assistant_consent_does_not_unlock_vision_for_an_api_provider(
     host, env, _ = API[name]
     monkeypatch.setenv(env, KEY)
     wire = Wire(monkeypatch)  # any request fails the test
-    ast = api_vision(home, name, [f"assistant-v2:{name}@{host}", f"{name}@{host}"])
+    ast = api_vision(home, name, [f"assistant-v3:{name}@{host}", f"{name}@{host}"])
     with caplog.at_level(logging.INFO, logger="cutpoint.vision"):
         assert not ast.available()
         assert ast.ask("describe", [JPEG]) is None

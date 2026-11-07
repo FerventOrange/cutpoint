@@ -171,12 +171,14 @@ def test_a_full_run_emits_every_step_in_order_and_ends_done(run, capsys):
     run.plan = plan(reactions=("audio", "voice"), keyframes=("visual",), crashes=("crash",))
     run.go("action", vision=True)
     got = progress_lines(capsys)
-    assert {g["total"] for g in got} == {6}
+    assert {g["total"] for g in got} == {7}
     started = [g["step"] for g in got if g["state"] == "running"]
-    assert list(dict.fromkeys(started)) == list(progress.ANALYZE_STEPS)
-    assert {s: g["state"] for s, g in last_states(got).items()} == dict.fromkeys(
-        progress.ANALYZE_STEPS, "done"
-    )
+    # the dialogue reader is for open-list styles (gaming) only: the action style skips it
+    ran = [s for s in progress.ANALYZE_STEPS if s != "dialogue"]
+    assert list(dict.fromkeys(started)) == ran
+    states = {s: g["state"] for s, g in last_states(got).items()}
+    assert states == dict.fromkeys(progress.ANALYZE_STEPS, "done") | {"dialogue": "skipped"}
+    assert "open-list" in last_states(got)["dialogue"]["detail"]
     assert run.layers_seen == ["audio", "voice", "visual", "crash"]
     assert run.rated == 1
 
@@ -1168,6 +1170,7 @@ def test_result_files_are_written_at_the_end_and_read_from_memory_meanwhile(run,
         "# AUDIO = PANNs sound events (confidence, duration); OCR = on-screen HUD text;",
         "# VLM WINDOW = Vision model summary of a window (hl = highlight 0-10);",
         "# VLM = moment inside a window. Times are source time.",
+        "# DIALOGUE = talk a text model marked (kind, strength, duration).",
         "",
         f"# {run.video}",
         "[a.mp4 00:00:01.0-00:00:02.5] Here we go.",

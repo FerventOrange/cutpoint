@@ -25,7 +25,7 @@ from test_assistant_routes import no_keys as no_keys
 from test_assistant_routes import proj as proj
 from test_assistant_watch import jpeg
 
-ASSISTANT = "assistant-v2:anthropic@api.anthropic.com"
+ASSISTANT = "assistant-v3:anthropic@api.anthropic.com"
 FRAMES = "frames-v1:anthropic@api.anthropic.com"
 URL = "/api/projects/cli/assistant/frames-consent"
 

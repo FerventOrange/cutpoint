@@ -370,7 +370,7 @@ test('adding a possible window keeps keyboard focus in the list: the next add bu
 // ---- view_moment (#640) ----
 
 test('the consent text says frames go out only once allowed for a project', async (t) => {
-  const consent = { needed: true, key: 'assistant-v2:anthropic@api.anthropic.com', host: 'api.anthropic.com' };
+  const consent = { needed: true, key: 'assistant-v3:anthropic@api.anthropic.com', host: 'api.anthropic.com' };
   const m = await chatPage(t, { assistant: { provider: { name: 'anthropic', label: 'Anthropic', local: false }, consent } });
   assert.match(m.$('#chatConsentText').textContent, /never video frames unless you allow them for a project, and never audio/);
 });

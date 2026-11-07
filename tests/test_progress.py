@@ -42,16 +42,17 @@ class FakeClock:
 # ----------------------------------------------------------------- pinned API
 def test_step_names_are_the_stable_api():
     assert progress.ANALYZE_STEPS == (
-        "transcribe", "reactions", "keyframes", "crashes", "ranking", "vision",
+        "transcribe", "reactions", "keyframes", "crashes", "dialogue", "ranking", "vision",
     )  # fmt: skip
     assert (*progress.ANALYZE_STEPS, "clips", "assemble") == progress.EDIT_STEPS
     assert progress.PANO_STEPS == ("scan", "views", "analyze", "events")
-    assert progress.SKIPPABLE == ("reactions", "keyframes", "crashes")
+    assert progress.SKIPPABLE == ("reactions", "keyframes", "crashes", "dialogue")
     assert progress.LABELS == {
         "transcribe": "Transcription",
         "reactions": "Reactions",
         "keyframes": "Keyframes",
         "crashes": "Crashes",
+        "dialogue": "Dialogue",
         "ranking": "Ranking",
         "vision": "Vision rating",
         "clips": "Clips",
@@ -74,7 +75,7 @@ def test_line_keys_order_and_values(capsys):
     keys = ["step", "index", "total", "label", "state", "pct", "detail"]
     assert all(list(g) == keys for g in got)
     assert got[0] == {
-        "step": "transcribe", "index": 1, "total": 6, "label": "Transcription",
+        "step": "transcribe", "index": 1, "total": 7, "label": "Transcription",
         "state": "running", "pct": None, "detail": "first",
     }  # fmt: skip
     assert [(g["step"], g["state"]) for g in got] == [
@@ -296,7 +297,7 @@ def test_every_step_of_a_finished_run_is_emitted_and_skip_reasons_kept(monkeypat
     assert final["keyframes"]["detail"] == "not run"
     assert final["ranking"]["state"] == "done"
     assert final["assemble"]["state"] == "skipped"
-    assert {g["total"] for g in final.values()} == {8}
+    assert {g["total"] for g in final.values()} == {9}
 
 
 def test_a_planned_skip_is_emitted_in_step_order(capsys):
@@ -322,4 +323,4 @@ def test_nested_run_reuses_the_active_one(monkeypatch, capsys):
             inner.start("transcribe")
         assert progress.current() is outer
     assert progress.current() is None
-    assert {g["total"] for g in lines(capsys)} == {8}
+    assert {g["total"] for g in lines(capsys)} == {9}
