@@ -331,10 +331,14 @@ Not in sequence), Ready only (the moment's preview plays now) and Source file wh
 the project has several sources. They combine with the search text. A dot on the button shows
 while a filter or a sort other than Score is on, and when nothing passes the list reads "No
 moments match these filters." Escape closes the menu. The sort and filters are remembered per
-browser (local storage); the source file only while the project stays open.
+browser (local storage); the source file only while the project stays open. A project with a
+long dialogue bit (a whole dialogue stretch over 90 s) also offers Long bits, which shows only those; they
+have a "Bit" badge with the length (m:ss), and the tile's hover text adds what happens in the bit.
 The moments are tiles, two across in the default column width. A kind filter above them (All,
 Action, Scenic, Funny, Dialogue) shows one kind; it is a view of the list and is not kept. The
-kind is worked out in the page for display, as AI Chat names it: the words of the moment's labels
+kind is worked out in the page for display, as AI Chat names it. A moment a talk stretch created
+(`signals.events.nominated` holds `dialogue-<kind>`) is always Dialogue, titled or not. For any
+other moment, the words of its labels
 (not a generic `action-moment`) and its `kind` decide first (Scenic for a `view` or a word such as
 scenic or beauty, Funny for laugh or funny, Action for `crew`, `cruise` or a word such as ski, fast
 or crash, Dialogue for talk or banter), then the strongest signal of the moment that rates 5 or
@@ -347,7 +351,10 @@ red once the moment is in the sequence); under it the rank and title, "kind · s
 the preview readiness as an icon (a spinner while encoding, a check when ready, a clock when
 queued; hover it for the word), the candidate id, the times, the file name when the project has
 several sources, and a strip of the moment's place in its source. The tile has no transcript text:
-hover it for the full title and the transcript, which the search still finds.
+hover it for the full title and the transcript, which the search still finds. A dialogue moment
+(one a talk stretch created or widened) also shows what the reader says happens in it, two lines at
+most, and in the hover text. A moment a stretch only widened keeps its own type (worked out from the label it had), but takes
+the stretch's title as its name and the title's slug as its label.
 A moment with only a generic label (`action-moment`, `loud-moment`) is titled with what the
 vision model saw: its vision rating label, else the label of its `events` VLM window (the search
 finds both). `highlights.json`, the label a moment takes into the sequence and clip file names
@@ -1108,7 +1115,7 @@ layer is not part of `analyze`; it stays in [`events`](#events) and `edit --even
 
 #### Dialogue reader
 
-The `dialogue` step runs for open-list styles (`gaming`) after the reactions and events layers, and is skipped with a reason for the others and for footage with no speech. `--skip dialogue` (or `analysis.skip`) leaves it out. A text model reads the whole transcript of each source in overlapping pieces (8 minutes each, 1 minute shared) and marks stretches of talk worth keeping: `funny`, `out_of_pocket`, `ragebait`, `back_and_forth` or `story`, from the setup to the payoff. Each becomes an event in `events.json` with `kind` `text` and `type` `dialogue` (`label` is the talk kind, `description` what happens, `details` the model's rating, backend and model) and a `DIALOGUE` line in `events.txt`. A later `events` run, or an `analyze --skip dialogue`, keeps the dialogue events an earlier run wrote.
+The `dialogue` step runs for open-list styles (`gaming`) after the reactions and events layers, and is skipped with a reason for the others and for footage with no speech. `--skip dialogue` (or `analysis.skip`) leaves it out. A text model reads the whole transcript of each source in overlapping pieces (8 minutes each, 1 minute shared) and marks stretches of talk worth keeping: `funny`, `out_of_pocket`, `ragebait`, `back_and_forth` or `story`, from the setup to the payoff. Each becomes an event in `events.json` with `kind` `text` and `type` `dialogue` (`label` is the talk kind, `title` 3 to 6 words naming who or what the bit is about ("" when the model gave none), `description` what happens, `details` the model's rating, backend and model). The candidate the stretch nominates, or the one it widens (the most confident stretch's title), gets the title as `dialogue_title` and its slug (without apostrophes, cut at a word) as `label`, so it is part of the clip file name (`dialogue-<kind>` for a nominee without a title, and a widened candidate keeps its label). In `cutpoint ui` the moment is named by the title. Each stretch also gets a `DIALOGUE` line in `events.txt`. A later `events` run, or an `analyze --skip dialogue`, keeps the dialogue events an earlier run wrote.
 
 The model is chosen once per run:
 

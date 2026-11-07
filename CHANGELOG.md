@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--skip dialogue` leaves it out (also in the Skip steps choice of `cutpoint ui`). Readings are
   cached per source. With `CUTPOINT_PROGRESS=1`, `analyze` reports 7 steps and `edit` 9, with
   `dialogue` after `crashes`.
+  Each stretch also gets a short title of 3 to 6 words that names who or what the bit is about
+  (`title` on the event, the talk kind stays its `label`). The candidate it nominates, or the
+  candidate it widens (the most confident stretch's title), keeps the title as `dialogue_title`
+  and takes its slug as the label and clip file name, in place of `dialogue-<kind>`; the slug is
+  cut at a word, without apostrophes. A stretch the model gave no title keeps the old label.
+  Readings cached before titles are read again. In `cutpoint ui` a dialogue moment is named by its
+  title and shows what the reader says happens in it (two lines on the tile, and in the hover
+  text). A moment a stretch created counts as Dialogue; one a stretch only widened keeps its own
+  type. A long bit (a whole dialogue stretch over 90 s) has a "Bit" badge with its length, and Sort
+  and filter has a Long bits filter.
 - A discovered feed region that shows stream chat gives no events. It is judged by the distinct
   text lines it read per hour over the full OCR pass: 6000 per hour or more on at least 10 minutes of
   footage is chat; 3000 to 6000 per hour on at least 10 minutes of footage stays a feed with a

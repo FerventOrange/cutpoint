@@ -41,6 +41,7 @@ from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_mat
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
 from cutpoint.styles import get_style
+from cutpoint.utils import title_slug
 
 if TYPE_CHECKING:
     from cutpoint.analyze import GridPart
@@ -298,6 +299,50 @@ def _set_span(c: dict[str, Any], start: float, end: float) -> None:
     c["duration"] = round(end - start, 3)
 
 
+def _set_title(c: dict[str, Any], kept: dict[str, Any], title: str) -> None:
+    """Give the widened candidate ``c`` the dialogue stretch's ``title`` (a readable
+    ``dialogue_title`` and, as its label, the slug of it); its earlier label is kept in
+    ``kept`` (its ``widened_from``) for :func:`restore_widened`. An empty title takes it back."""
+    if not title:
+        _put_title(c, kept)
+        return
+    c["dialogue_title"] = title
+    if slug := title_slug(title, default=""):  # a title with no Latin letters keeps the label
+        kept.setdefault("label", c.get("label"))
+        c["label"] = kept["title_label"] = slug
+
+
+def _put_title(c: dict[str, Any], was: dict[str, Any]) -> None:
+    """Take back the title :func:`_set_title` gave ``c``: its label returns unless something
+    else (the vision rating) has renamed it since."""
+    c.pop("dialogue_title", None)
+    if (
+        "title_label" in was
+        and was.get("label") is not None
+        and c.get("label") == was["title_label"]
+    ):
+        c["label"] = was["label"]
+    was.pop("title_label", None)
+
+
+def stretch_title(events: list[dict[str, Any]], source: str, start: float, end: float) -> str:
+    """The title of the dialogue stretch of ``events`` inside ``[start, end]`` of ``source``
+    that has one, the most confident (the earlier on a tie); "" for none."""
+    best, conf = "", -1.0
+    for e in sorted(events, key=lambda e: e["start"]):
+        if (
+            e.get("kind") == "text"
+            and e.get("type") == DIALOGUE_TYPE
+            and e.get("source") == source
+            and e.get("title")
+            and e["start"] >= start - 0.01
+            and e["end"] <= end + 0.01
+            and (e.get("confidence") or 0) > conf
+        ):
+            best, conf = str(e["title"]), e.get("confidence") or 0
+    return best
+
+
 def _put_text(c: dict[str, Any], was: dict[str, Any]) -> None:
     """Give ``c`` back the transcript snippet it had before it was widened (``was``)."""
     c.pop("dialogue_description", None)
@@ -320,6 +365,7 @@ def restore_widened(cands: list[dict[str, Any]]) -> int:
         if isinstance(was, dict):
             _set_span(c, was["start"], was["end"])
             _put_text(c, was)
+            _put_title(c, was)
             back += was.get("absorbed") or []
             n += 1
     cands.extend(back)
@@ -344,7 +390,9 @@ def widen_for_dialogue(
     A stretch that starts in menu time, or no candidate overlaps, is left to :func:`nominate`.
     The widened candidate's transcript is rebuilt over its new span with ``snippet(source,
     start, end)`` (``(text, unsure)``, or None without a transcript); without one it gets the
-    stretch's description in ``dialogue_description``. Returns how many candidates were widened."""
+    stretch's description in ``dialogue_description``. The widened candidate takes the title of
+    the most confident stretch that widened it (``dialogue_title``, and its slug as the label;
+    :func:`restore_widened` gives the label back). Returns how many candidates were widened."""
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports ski, which imports us
 
     widened: set[int] = set()
@@ -382,12 +430,25 @@ def widen_for_dialogue(
                 if c is best:
                     continue
                 was = c.pop("widened_from", None)  # merged earlier in this pass: as it was
+                carry = None
                 if isinstance(was, dict):
+                    if c.get("dialogue_title") and was.get("title_conf", -1) > kept.get(
+                        "title_conf", -1
+                    ):  # its stretch's title may be the most confident one
+                        carry = (c["dialogue_title"], was["title_conf"])
                     _set_span(c, was["start"], was["end"])
+                    _put_text(c, was)
+                    _put_title(c, was)
                     kept.setdefault("absorbed", []).extend(was.get("absorbed") or [])
+                    if carry:
+                        kept["title_conf"] = carry[1]
+                        _set_title(best, kept, carry[0])
                 kept.setdefault("absorbed", []).append(c)
                 cands.remove(c)
             _set_span(best, start, end)
+            if e.get("title") and (e.get("confidence") or 0) > kept.get("title_conf", -1):
+                kept["title_conf"] = e.get("confidence") or 0  # the most confident title wins
+                _set_title(best, kept, str(e["title"]))
             said = snippet(src, start, end) if snippet else None
             if said is not None:
                 best["transcript"] = said[0]
@@ -498,6 +559,11 @@ def nominate(
             for c in analyze.nominate_candidates(part, style, here, taken):
                 rec = analyze._candidate_record(c, part.index, style)
                 rec["signals"]["events"] = {"nominated": c.nominated}
+                if any(str(n).startswith("dialogue-") for n in c.nominated) and (
+                    title := stretch_title(by_src[src], src, rec["start"], rec["end"])
+                ):
+                    rec["dialogue_title"] = title
+                    rec["label"] = title_slug(title, default=rec["label"])
                 recs.append(rec)
             menu_hl = {"style": hl.get("style"), "settings": hl.get("settings"), "candidates": recs}
             drop_menu_time(menu_hl, ev)

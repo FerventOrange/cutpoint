@@ -48,3 +48,29 @@ def test_generic_label_pattern_matches_pacing():
     m = re.search(r"const GENERIC = /\^(.*)\$/;", text)
     assert m, "GENERIC not found in util.js"
     assert m.group(1) == _GENERIC.pattern
+
+
+def test_a_moment_made_from_a_talk_stretch_is_dialogue_whatever_its_title_says():
+    cand = {
+        "label": "fast-run-again",
+        "dialogue_title": "Fast Run Again",
+        "signals": {"events": {"nominated": ["dialogue-funny"]}},
+    }
+    assert pacing.moment_kind("Fast Run Again", cand, {}, lambda: False) == pacing.DIALOGUE
+    untitled = {"label": "dialogue-funny", "signals": {"events": {"nominated": ["dialogue-story"]}}}
+    assert pacing.moment_kind("dialogue-funny", untitled, {}, lambda: False) == pacing.DIALOGUE
+    assert "startsWith('dialogue-')" in UTIL_JS.read_text(encoding="utf-8")
+
+
+def test_a_moment_a_stretch_only_widened_keeps_its_own_type():
+    widened = {
+        "label": "fast-run-again",  # the title's slug: "fast" and "run" are not its type
+        "dialogue_title": "Fast Run Again",
+        "widened_from": {"label": "laughter"},
+        "signals": {"events": {}},
+    }
+    assert pacing.moment_kind("Fast Run Again", widened, {}, lambda: False) == pacing.FUNNY
+    plain = {**widened, "widened_from": {"label": "ski-moment"}}
+    assert pacing.moment_kind("Fast Run Again", plain, {}, lambda: False) == pacing.ACTION
+    text = UTIL_JS.read_text(encoding="utf-8")
+    assert "c.dialogue_title ? [c.widened_from?.label ?? c.label, c.vision_label]" in text

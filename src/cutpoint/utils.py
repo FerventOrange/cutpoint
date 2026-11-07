@@ -39,6 +39,18 @@ def slugify(text: str, max_len: int | None = 40, default: str = "moment") -> str
     return slug or default
 
 
+def title_slug(text: str, max_len: int = 30, default: str = "moment") -> str:
+    """A readable title as a slug for a label or file name: :func:`slugify` after the
+    apostrophes are dropped (``Mike's Car`` is ``mikes-car``, ``Let's Go`` is ``lets-go``), cut
+    at a word, not in the middle of one (the first word cut at ``max_len`` if it alone is
+    longer). ``default`` when nothing is left (a title with no Latin letters). :func:`slugify`
+    itself is unchanged."""
+    slug = slugify(re.sub(r"['\u2019]", "", text), None, default="")
+    if len(slug) > max_len:
+        slug = slug[: max_len + 1].rpartition("-")[0] or slug[:max_len]
+    return slug or default
+
+
 def clock(t: float) -> str:
     """Format seconds as ``HH:MM:SS.s`` (same style as transcript.txt).
 
