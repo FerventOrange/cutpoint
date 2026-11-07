@@ -3233,10 +3233,10 @@ def _joins_of(review: Any) -> list[dict[str, str]]:
         return []
 
 
-def export_joins(folder: Path, joins: list[dict[str, str]]) -> list[dict[str, str]]:
-    r"""The review's ``joins`` as ``assemble --joins`` entries for the clips in ``folder``,
-    through its manifest's ``id``\ s. Only pairs next to each other in the clip order: the
-    others use the global transition, which is no mismatch to warn about."""
+def clip_joins(folder: Path, joins: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    r"""Each join of the clips in ``folder``, in clip order: the two files (``from``, ``to``),
+    their manifest ``id``\ s (``a``, ``b``; None for a clip it does not list) and the review's
+    ``transition`` for the pair, None when ``joins`` has no choice for it."""
     from cutpoint.planning import manifest_entries  # noqa: PLC0415
 
     files = clip_files(folder)
@@ -3244,10 +3244,20 @@ def export_joins(folder: Path, joins: list[dict[str, str]]) -> list[dict[str, st
     chosen = {(j["a"], j["b"]): j["transition"] for j in joins}
     out = []
     for x, y in pairwise(files):
-        pair = (entries.get(x.name, {}).get("id"), entries.get(y.name, {}).get("id"))
-        if pair in chosen:
-            out.append({"from": x.name, "to": y.name, "transition": chosen[pair]})
+        a, b = entries.get(x.name, {}).get("id"), entries.get(y.name, {}).get("id")
+        out.append({"from": x.name, "to": y.name, "a": a, "b": b, "transition": chosen.get((a, b))})
     return out
+
+
+def export_joins(folder: Path, joins: list[dict[str, str]]) -> list[dict[str, str]]:
+    r"""The review's ``joins`` as ``assemble --joins`` entries for the clips in ``folder``,
+    through its manifest's ``id``\ s. Only pairs next to each other in the clip order: the
+    others use the global transition, which is no mismatch to warn about."""
+    return [
+        {"from": j["from"], "to": j["to"], "transition": j["transition"]}
+        for j in clip_joins(folder, joins)
+        if j["transition"]
+    ]
 
 
 def load_exports(p: Path) -> list[dict[str, Any]]:
@@ -4948,6 +4958,9 @@ def create_app(port: int) -> FastAPI:
             ),
             "preset_taken": preset_taken(p),
             "final_current": exp is None or (bool(outputs) and outputs[0] == exp.get("final")),
+            # The transition each join of that final came out with, for the page's "Assemble
+            # again" note; null when not known, as for a One-Click Edit's final.
+            "final_joins": (exp or {}).get("final_joins"),
             "sources": found,
             # The picked folder could not be listed (gone, unreadable): a field, so Settings
             # (source remap), Reveal and Delete still work.
@@ -5331,6 +5344,11 @@ def create_app(port: int) -> FastAPI:
             exp_dir = exp["dir"]
             saved = _joins_of(_load(p, f"{UI_DIR}/review.json"))
             joins = export_joins(p / exp_dir, saved)
+            final_joins = [
+                {"a": j["a"], "b": j["b"], "transition": j["transition"] or transition}
+                for j in clip_joins(p / exp_dir, saved)
+                if j["a"] and j["b"]
+            ]
             fade_dur = _seconds(body, "fade_dur", MAX_FADE_S, positive=True)
             # the saved choices, not ``joins``: the page offers Fade length from the sequence's
             # order, and a Fade pair there may not be neighbours in this export's clips
@@ -5396,6 +5414,7 @@ def create_app(port: int) -> FastAPI:
                 for e in items:
                     if e["dir"] == exp_dir:
                         e["final"] = f"{stem}.{fmt}"
+                        e["final_joins"] = final_joins
                 cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
 
         elif action == "resume":

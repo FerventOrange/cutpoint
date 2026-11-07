@@ -429,7 +429,11 @@ export from the ranked moments instead:
 | Captions model (advanced; with Burn in captions): Default, `large-v3`, `medium` or `small` | `assemble --model` |
 
 The "Latest export ..." facts under the options are advanced too; warnings and guidance there
-(such as "Exported from the 360 preview (not stitched)") always show.
+(such as "Exported from the 360 preview (not stitched)") always show. When a change in the Cuts
+strip or the Video transition, which is the Default of the other cuts, would make a cut come out
+differently from the final video, "Assemble again to apply the joins." shows until Assemble
+finishes, the change is undone, or a new export replaces the clips. It stays away for a final whose
+joins are not known (a One-Click Edit's, or one assembled by an earlier version).
 
 **Extend export** (advanced) runs [`extend`](#extend) on the latest export into a new `clips_ui_<stamp>`
 folder. The result becomes the current export. It is disabled while Extend start and Extend end
