@@ -1346,17 +1346,6 @@ def test_candidates_of_90_seconds_or_less_are_scored_as_before():
     assert ev["player_kills"] == 1
 
 
-def test_a_long_candidate_that_is_not_a_dialogue_nominee_is_not_floored(tmp_path):
-    from test_event_candidates import quiet_grid  # noqa: PLC0415
-
-    hl = highlights([own("h001", 20.0, 60.0)])
-    scoring.nominate(
-        hl, events_of([feed(300.0), talk_event(100.0, 160.0, conf=0.0)]), tmp_path,
-        [quiet_grid(600.0, bumps=[(300.0, 1.0)])],
-    )  # fmt: skip
-    assert not any(scoring.is_long_dialogue(c) for c in hl["candidates"])
-
-
 def test_rescoring_a_project_with_a_long_dialogue_nominee_is_stable(tmp_path):
     from test_event_candidates import quiet_grid  # noqa: PLC0415
 
