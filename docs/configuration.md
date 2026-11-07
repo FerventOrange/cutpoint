@@ -183,9 +183,9 @@ Catalogs and frames go to a hosted provider only after you allow it there
 (`vision_assistant.consent`, via "Allow vision requests"); choosing or saving a model never
 grants it. Once allowed, the provider receives video frames, transcript excerpts, file names and
 times, and detected on-screen text (such as player names) and telemetry (for frame ratings and
-the `events` window descriptions), never the video file. That is more data, and more risk, than
-the assistant gets, so this consent is separate from the assistant's: agreeing to one never
-covers the other. Entries are `vision-v2:<provider>@<host>` (for example
+the `events` window descriptions), never the video file. The AI Chat assistant gets other data
+(analysis results and whole transcripts; frames only when you allow them for a project), so this
+consent is separate from the assistant's: agreeing to one never covers the other. Entries are `vision-v2:<provider>@<host>` (for example
 `vision-v2:codex@chatgpt.com`, or `vision-v2:ollama@192.168.1.5:11434`: the host has its port
 when that is not the scheme's default); an entry without the `vision-v2:` prefix, saved by an earlier
 version under a narrower description, no longer counts, and the Models tab asks again.
@@ -215,7 +215,7 @@ its exports and presets; it does not change the key.
 ### analysis
 
 `{"skip": [...]}`. Analysis steps that `analyze` and `edit` leave out by default: any of
-`reactions`, `keyframes` and `crashes`. `--skip` on the command overrides it for one run.
+`reactions`, `keyframes`, `crashes` and `dialogue`. `--skip` on the command overrides it for one run.
 Default: none. Other step names are rejected.
 
 ### video_encoder
@@ -289,11 +289,15 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   AI Chat on Ollama also sends temperature 1.0, presence_penalty 1.5, top_k 20, top_p 0.95 and
   num_predict 16384 (fixed; the Vision role keeps the model's own).
 - `consent`: the hosted providers the user agreed to send project text to, as
-  `assistant-v2:<provider>@<host>` (for example `assistant-v2:anthropic@api.anthropic.com`; the
-  host has its port when that is not the scheme's default); the AI Chat tab adds them. An entry without the `assistant-v2:` prefix, saved by an earlier version
-  under a shorter description, no longer counts, and AI Chat asks again.
-  The assistant gets only analysis results (moment labels, scores and detection signals,
-  vision descriptions, transcript snippets, file names without paths, times) and your messages, never video or audio.
+  `assistant-v3:<provider>@<host>` (for example `assistant-v3:anthropic@api.anthropic.com`; the
+  host has its port when that is not the scheme's default); the AI Chat tab adds them. An entry without the `assistant-v3:` prefix (including `assistant-v2:`), saved by an earlier version
+  under a shorter description, no longer counts, and AI Chat asks again. Version 3 names the whole
+  transcripts that `cutpoint analyze` sends to a hosted chat model (or an Ollama on another machine) for
+  its [dialogue reader](commands.md#dialogue-reader); without it that step is skipped with a
+  `chat_consent_needed` warning.
+  The assistant gets analysis results (moment labels, scores and detection signals,
+  vision descriptions, transcript snippets, file names without paths, times) and your messages, and
+  whole transcripts (the dialogue reader sends them during `analyze`); frames only when you allow them for a project; never video or audio.
   This consent never covers the [Vision role](#vision_assistant), which has its own.
   Remove an entry to be asked again. A provider is local when its host is `localhost` or a
   loopback address, except on the port of the [`cutpoint proxy`](commands.md#proxy) (the running

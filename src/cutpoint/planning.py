@@ -51,6 +51,9 @@ def select_moments(
     Candidates marked ``must_include`` (confident crashes) are added to an
     automatic selection and kept even past ``max_total``.
 
+    An automatic selection (not ``ids``) skips a candidate that mostly overlaps one already picked from
+    the same source (not a ``must_include`` one) (a clip inside a long dialogue stretch); the next candidate takes its place.
+
     Visual pool moments (``pool: "visual"``, :mod:`cutpoint.visual_pool`) are left out of
     the automatic ranking. In a project of a pool style, an automatic selection reserves
     :func:`~cutpoint.visual_pool.reserved_slots` of its picks for them (by peak, only those
@@ -102,7 +105,15 @@ def select_moments(
             if top is not None
             else (len(ranked) if max_total else data.get("suggested_top") or 5)
         )
-        chosen = ranked[:n]
+        if max_total and top is None:
+            chosen = ranked  # the fit below skips the overlapping ones
+        else:
+            chosen = []
+            for c in ranked:  # an overlapping candidate (a clip inside a long stretch) is skipped
+                if len(chosen) == n:
+                    break
+                if c.get("must_include") or not _clashes(c, chosen):
+                    chosen.append(c)
         picks = len(chosen)
         # Confident crashes (ski analyze, crashes.json) are never left out.
         forced = [c for c in ranked if c.get("must_include") and c not in chosen]
@@ -117,6 +128,8 @@ def select_moments(
         fitted, total = [], 0.0
         for c in sorted(chosen, key=lambda c: (not c.get("must_include"), -c["score"])):
             # Must-include crashes go first and stay even past the cap.
+            if not ids and not c.get("must_include") and _clashes(c, fitted):
+                continue
             if c.get("must_include") or total + c["duration"] <= max_total:
                 fitted.append(c)
                 total += c["duration"]
@@ -133,6 +146,27 @@ def _overlaps(a: dict[str, Any], b: dict[str, Any]) -> bool:
         path_key(str(a["source"])) == path_key(str(b["source"]))
         and a["start"] < b["end"]
         and b["start"] < a["end"]
+    )
+
+
+CLASH_SHARE = (
+    0.5  # an automatic pick skips a candidate overlapping a pick by this share of the shorter
+)
+
+
+def _clashes(c: dict[str, Any], picked: list[dict[str, Any]]) -> bool:
+    """Whether ``c`` mostly overlaps a moment of ``picked`` from the same source: by at least
+    :data:`CLASH_SHARE` of the shorter one (a candidate without a span, as in a hand-written
+    highlights.json, overlaps nothing)."""
+    keys = ("source", "start", "end")
+    if not all(k in c for k in keys):
+        return False
+    return any(
+        all(k in p for k in keys)
+        and _overlaps(c, p)
+        and min(c["end"], p["end"]) - max(c["start"], p["start"])
+        >= CLASH_SHARE * min(c["end"] - c["start"], p["end"] - p["start"])
+        for p in picked
     )
 
 

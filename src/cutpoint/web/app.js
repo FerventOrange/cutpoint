@@ -4373,18 +4373,18 @@ const STEP_TEXT = {
   cancelled: 'Cancelled', waiting: 'Waiting', notrun: 'Not run',
 };
 const STEP_ICON = { done: '✓', skipped: '–', failed: '✕', interrupted: '!', cancelled: '■', waiting: '○', notrun: '–' }; // running: a spinner
-// The CLI's step names, in order (a stable API): analyze sends the first 6, edit all 8. Labels for
+// The CLI's step names, in order (a stable API): analyze sends the first 7, edit all 9. Labels for
 // steps not sent yet; a label the CLI sends wins.
 const STEP_LABELS = {
   transcribe: 'Transcription', reactions: 'Reactions', keyframes: 'Keyframes', crashes: 'Crashes',
-  ranking: 'Ranking', vision: 'Vision rating', clips: 'Clips', assemble: 'Assemble',
+  dialogue: 'Dialogue', ranking: 'Ranking', vision: 'Vision rating', clips: 'Clips', assemble: 'Assemble',
 };
 const STEP_NAMES = Object.keys(STEP_LABELS);
 
 /**
  * The rows to show: the steps sent, plus the ones not sent yet, from the job's ``plan`` (the
- * server's list of the command's steps) or, without one, when ``total`` is a known step count (6
- * or 8): "waiting" while the job runs, "not run" after it ended (a cancel or fatal error).
+ * server's list of the command's steps) or, without one, when ``total`` is a known step count (7
+ * or 9): "waiting" while the job runs, "not run" after it ended (a cancel or fatal error).
  * Each row gets a display ``state``: a failed or interrupted step of a cancel reads "cancelled".
  */
 function stepRows(j) {
@@ -4395,7 +4395,7 @@ function stepRows(j) {
     state: (s.state === 'failed' || s.state === 'interrupted') && cancel(s) ? 'cancelled' : s.state,
     detail: s.detail === 'cancelled' ? null : s.detail, // the state says it
   }));
-  const planned = plan ?? (total === 6 || total === 8 ? STEP_NAMES.slice(0, total).map((step) => ({ step, label: STEP_LABELS[step] })) : null);
+  const planned = plan ?? (total === 7 || total === 9 ? STEP_NAMES.slice(0, total).map((step) => ({ step, label: STEP_LABELS[step] })) : null);
   if (planned) {
     const sent = new Set(steps.map((s) => s.step));
     planned.forEach(({ step, label }, i) => {
@@ -4687,8 +4687,10 @@ const MAX_SUGGESTIONS = 3; // suggestion buttons under a proposal
 const MAX_HISTORY_SHOWN = 20; // newest applied changes listed for Revert
 const PROVIDER_NAMES = { ollama: 'Ollama', openai: 'OpenAI-compatible', anthropic: 'Anthropic' };
 // What a hosted provider gets: analysis results only (context.py sends only these; file names,
-// never paths); video frames only once allowed for a project (view_moment, #640), never audio
+// never paths); video frames only once allowed for a project (view_moment, #640), never audio.
 const CONSENT_SENDS = "this project's analysis results (moment labels, scores and detection signals, vision descriptions, transcript snippets, file names (not full paths) and times) and your messages; never video frames unless you allow them for a project, and never audio";
+// What analyze's dialogue reader (cutpoint.events.dialogue) sends a hosted chat model: whole transcripts
+const ANALYSIS_SENDS = 'the whole transcripts of the footage (everything said in it), in pieces of about 8 minutes, to find funny, heated or story-telling talk';
 // What view_moment sends a hosted model once allowed (watch.py): one image per watched moment
 const FRAMES_SENDS = (host) => `To answer questions about what can be seen, the assistant can watch a few moments. Each one sends ${host} one image of 6 to 9 frames from the moment's clip, with its times, transcript and detected sounds. Nothing was sent. You allow it once for this project and host; Cutpoint saves it in config.json.`;
 const CHANGE_NAMES = { added: 'added', removed: 'removed', moved: 'moved', lengthened: 'lengthened', shortened: 'shortened', trimmed: 'trimmed', relabelled: 'renamed' };
@@ -5376,7 +5378,7 @@ function renderChat() {
   $('#chatConsentOk').hidden = !consent;
   $('#chatConsentText').textContent = noKey ? sentence(noKey)
     : consent
-    ? `Each message sends ${CONSENT_SENDS} to ${PROVIDER_NAMES[prov?.name] ?? prov?.name ?? 'the provider'} at ${consent.host}. Nothing is sent until you agree. You agree once for this provider and host; Cutpoint saves it in config.json. Change the provider in the Models tab.`
+    ? `Each message sends ${CONSENT_SENDS} to ${PROVIDER_NAMES[prov?.name] ?? prov?.name ?? 'the provider'} at ${consent.host}. Analyzing footage with this model chosen also sends ${ANALYSIS_SENDS}. Nothing is sent until you agree. You agree once for this provider and host; Cutpoint saves it in config.json. Change the provider in the Models tab.`
     : '';
   $('#chatClear').disabled = !c?.turns.length;
   const log = $('#chatLog');
@@ -5846,7 +5848,7 @@ function renderVisionConsent() {
     box.hidden = false;
     const host = consent.host || 'the remote service';
     $('#visionConsentTitle').textContent = noKey ? (consent.missing_kind === 'login' ? 'Login needed' : 'API key needed') : `Send video frames to ${host}?`;
-    $('#visionConsentText').textContent = `Rating moments and describing event windows with this hosted vision provider sends video frames, transcript excerpts, file names and times, detected on-screen text (such as player names) and telemetry to ${host}. That is more data, and more risk, than the AI Chat assistant, which gets only analysis results; agreeing for one never covers the other. Nothing is sent until you explicitly grant permission. Permission is saved in config.json.`;
+    $('#visionConsentText').textContent = `Rating moments and describing event windows with this hosted vision provider sends video frames, transcript excerpts, file names and times, detected on-screen text (such as player names) and telemetry to ${host}. The AI Chat assistant gets other data (analysis results and whole transcripts; frames only when you allow them for a project); agreeing for one never covers the other. Nothing is sent until you explicitly grant permission. Permission is saved in config.json.`;
     if (noKey) $('#visionConsentText').textContent = sentence(noKey);
     $('#visionConsentOk').hidden = !!noKey;
     $('#visionConsentOk').disabled = false;

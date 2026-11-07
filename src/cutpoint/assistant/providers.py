@@ -395,14 +395,15 @@ def endpoint(provider: Provider) -> str:
 # Prefixes of the consent keys. Each role's consent is its own and is versioned: consent given
 # under an older, narrower wording (an unprefixed ``<name>@<host>``) no longer counts. Vision sends
 # more than the assistant (frames, transcript excerpts, file names and times, on-screen text,
-# telemetry); the assistant's wording now names the scores and detection signals it sends.
-ASSISTANT_CONSENT_PREFIX = "assistant-v2:"
+# telemetry); the assistant's wording names the scores and detection signals it sends. v3 adds
+# the whole transcripts that the dialogue reader of ``analyze`` sends to a hosted chat model.
+ASSISTANT_CONSENT_PREFIX = "assistant-v3:"
 VISION_CONSENT_PREFIX = "vision-v2:"
 
 
 def consent_key(provider: Provider, role: str = "assistant") -> str | None:
     """What the user agrees to once before project data goes to ``provider`` for ``role``
-    (``"assistant"`` or ``"vision"``): ``assistant-v2:<name>@<host>``
+    (``"assistant"`` or ``"vision"``): ``assistant-v3:<name>@<host>``
     (:data:`ASSISTANT_CONSENT_PREFIX`) for the assistant, ``vision-v2:<name>@<host>``
     (:data:`VISION_CONSENT_PREFIX`) for Vision, so neither consent unlocks the other and an
     unprefixed entry from an older version unlocks neither; ``<host>`` has the port when it is

@@ -301,13 +301,13 @@ def _progress_lines(capsys) -> list[dict]:
 
 
 @pytest.mark.parametrize("kind", ["highlights", "clips", "funny-moments"])
-def test_edit_reports_eight_steps_and_assembles_for_every_kind(
+def test_edit_reports_nine_steps_and_assembles_for_every_kind(
     pipeline, home, monkeypatch, capsys, kind
 ):
     monkeypatch.setenv("CUTPOINT_PROGRESS", "1")
     assert cli.main(["edit", str(pipeline.video), "--kind", kind]) == 0
     got = _progress_lines(capsys)
-    assert {g["total"] for g in got} == {8}
+    assert {g["total"] for g in got} == {9}
     final = {g["step"]: g["state"] for g in got}
     assert list(final) == [*progress.ANALYZE_STEPS, "clips", "assemble"]
     assert final["clips"] == final["assemble"] == "done"

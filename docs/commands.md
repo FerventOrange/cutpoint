@@ -94,12 +94,13 @@ So do these combinations:
 | `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
 | `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available; if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
 | `vision_consent_needed` | `analyze`, `events`, `360 director` (so `edit`, `360 analyze`), `profile`, `crashes` | The Vision role's provider needs the Vision consent and it was not given, so nothing was sent to it: a hosted provider (an API key or a subscription login), or an Ollama on another machine (`--ollama-url`, `vision_assistant.url`, `OLLAMA_HOST` or `ollama_url` is not `localhost` or a loopback address, or is on the Cutpoint proxy's port; `profile` and `crashes` use only that Ollama). Vision was skipped, or the activity profile fell back without the model; allow vision requests in the Models tab of `cutpoint ui` (Vision role), or add the key the message names (`vision-v2:<provider>@<host>[:port]`, such as `vision-v2:ollama@10.0.0.5:11434` or `vision-v2:openai@api.openai.com`) to the [`vision_assistant.consent`](configuration.md#vision_assistant) list in `config.json` |
+| `chat_consent_needed` | `analyze` (so `edit`) | The dialogue step found no usable text model and the AI Chat model is hosted (an API key, a subscription login, or an Ollama on another machine) without the AI Chat consent, so no transcript was sent. The step was skipped; allow it in the AI Chat tab of `cutpoint ui`, or add the key the message names (`assistant-v3:<provider>@<host>`) to [`assistant.consent`](configuration.md#assistant) in `config.json`. The Vision consent does not count. It is not given when a local Ollama answers instead |
 | `vlm_unavailable` | `events` (so `edit --events`) | The VLM layer ran but the vision model (Ollama or the hosted Vision role) is not available; windows not described yet stayed undescribed and cached descriptions were used (the message gives the count) |
 | `grade_dropped` | `clips` (so `edit`) | `--force` replaced clips whose manifest recorded a grade (`lut` or `color`) and this run grades none; give `--lut` or `--color` again to keep it |
 | `pano_mixed_sources` | `clips` (so `edit`), `assemble <project>` | The run's 360 clips are not rendered like-for-like: stitched and dual fisheye sources mixed, or an equirect rendered without the IMU levelling (FlowState, no sidecar, Studio export); `files` names the 360 clips (empty for a temporary export: `assemble <project>`, `edit --no-keep-clips`). Export with `--pano-source dfisheye` to compare their `360 qa` with the previews (see [360 video](workflows/360.md#render-sources)) |
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
 | `loudness_below_target` | `assemble` (so `edit`) | `--loudnorm` left the final more than 1 LU below -14 LUFS: the limiter took the peaks the gain pushed over the ceiling; `--compress-peaks` leaves it more room |
-| `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it. A failed HUD OCR (keyframes for `gaming` and `funny`) is a `WARNING` instead, whose message names the effect (menu filtering and HUD events skipped) and the source it failed on; `files` lists the sources it did not read. Out of memory says so, with what to try |
+| `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it. The dialogue step adds it too when there was not enough free memory for its text model (`Dialogue skipped: ...`). A failed HUD OCR (keyframes for `gaming` and `funny`) is a `WARNING` instead, whose message names the effect (menu filtering and HUD events skipped) and the source it failed on; `files` lists the sources it did not read. Out of memory says so, with what to try |
 | `style_ambiguous` | `analyze`, `detect` (so `edit`) | `--style auto` could not tell the footage category apart (the message gives the evidence), so the run used the default style: `gaming` for `analyze`, the kind's style for `edit`; `files` lists the sources that were not clear. Give `--style` to choose one |
 | `style_sources_disagree` | `analyze`, `detect` (so `edit`) | With `--style auto`, sources making up more than 10% of the footage look like another category than the project's; the whole project still gets one style. `files` names them: analyze them apart, or give `--style` |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
@@ -170,7 +171,7 @@ without cleanup (exit `1`; `-1` from `Stop-Process`).
 With `CUTPOINT_PROGRESS=1` in the environment, `analyze`, `edit` and `360 analyze` print one line per state change on stderr:
 
 ```text
-PROGRESS {"step":"reactions","index":2,"total":6,"label":"Reactions","state":"running","pct":40,"detail":null}
+PROGRESS {"step":"reactions","index":2,"total":7,"label":"Reactions","state":"running","pct":40,"detail":null}
 ```
 
 | Field | Content |
@@ -182,7 +183,7 @@ PROGRESS {"step":"reactions","index":2,"total":6,"label":"Reactions","state":"ru
 | `pct` | 0 to 100, or `null` when there is no cheap measure |
 | `detail` | Short text (a skip reason, an error) or `null` |
 
-Running updates come at most 2 per second. Steps run in table order. The `pct` of `transcribe` covers each source's audio extract (its first 10%) and then Whisper.
+The `dialogue` step is new: `analyze` now has 7 steps and `edit` 9 (it was 6 and 8), and `ranking`, `vision`, `clips` and `assemble` moved down one. `dialogue` reports `skipped` with a reason for every style but `gaming`. Running updates come at most 2 per second. Steps run in table order. The `pct` of `transcribe` covers each source's audio extract (its first 10%) and then Whisper.
 
 | `step` | `analyze` | `edit` |
 |---|---|---|
@@ -190,10 +191,11 @@ Running updates come at most 2 per second. Steps run in table order. The `pct` o
 | `reactions` | 2 | 2 |
 | `keyframes` | 3 | 3 |
 | `crashes` | 4 | 4 |
-| `ranking` | 5 | 5 |
-| `vision` | 6 | 6 |
-| `clips` | | 7 |
-| `assemble` | | 8 |
+| `dialogue` | 5 | 5 |
+| `ranking` | 6 | 6 |
+| `vision` | 7 | 7 |
+| `clips` | | 8 |
+| `assemble` | | 9 |
 
 `360 analyze` has its own 4 steps: `scan` (Read 360 clips; skipped without `--scan`), `views`
 (360 views), `analyze` (Transcription and ranking) and `events` (Events and re-rank; skipped with
@@ -353,7 +355,7 @@ keep the analysis label. A moment of the visual pool (beauty shots, friends, cru
 carries a "visual" badge with its kind, such as "visual · view".
 
 While an analysis runs, the Moments column lists its steps (Transcription, Reactions, Keyframes,
-Crashes, Ranking, Vision rating; for a 360 project those of `360 analyze`) under "Analyze footage", or under the column header for "Analyze
+Crashes, Dialogue, Ranking, Vision rating; for a 360 project those of `360 analyze`) under "Analyze footage", or under the column header for "Analyze
 again": each with its state (waiting, running with a progress bar and a percentage when the step
 reports one, done, skipped with the reason, failed with the error). A step still running when
 the job fails reads "interrupted", one stopped by Cancel reads "cancelled", and the steps that
@@ -462,7 +464,7 @@ applies:
 | Must-include crash (action-cam styles only) | `--must-include-crash` |
 | Skip scene detection | `--no-scenes` |
 | Recover after read errors | `--recover` |
-| Skip steps: Reactions, Keyframes, Crashes | `--skip reactions keyframes crashes` |
+| Skip steps: Reactions, Keyframes, Crashes, Dialogue | `--skip reactions keyframes crashes dialogue` |
 
 The dialog starts with what the project's analysis used, as `highlights.json` records it (the
 model only when it is not the default), so "Analyze again" repeats it unless you change it. It
@@ -732,7 +734,7 @@ another machine counts too), or whose URL is on this machine on the port of the 
 and host (with its port when that is not the default), to send the project's analysis results (moment labels, scores and detection signals, vision
 descriptions, transcript snippets, file names (not full paths) and times) and your messages, never video
 frames unless you allow them for a project (below), and never audio. The answer is kept in
-`config.json` (`assistant.consent`, as `assistant-v2:<provider>@<host>`); it never covers the
+`config.json` (`assistant.consent`, as `assistant-v3:<provider>@<host>`); it also covers the whole transcripts `analyze` sends to a hosted chat model for its [dialogue reader](#dialogue-reader). It never covers the
 Vision role, which asks separately. Until then nothing is sent. A hosted reply is not streamed,
 so Cancel takes effect when it arrives.
 
@@ -925,13 +927,13 @@ one of them is refused.
 | `--events` | Also run [`events`](#events) with its defaults, without the layers of the `--skip` steps, to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
 | `--vision` / `--no-vision` | As on `analyze`: rate top candidates with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off |
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model (also for the VLM layer of `--events`) |
-| `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes` and/or `crashes`. Give it after the input paths |
+| `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes`, `crashes` and/or `dialogue`. Give it after the input paths |
 | `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression), baked into the clips (so the final has it too). Default: `compress_peaks` in `config.json`, else off |
 | `--lut FILE`, `--lut-strength 0-1` | Grade the clips with a 3D LUT, as on [`clips`](#clips) (so the final has it too). Checked before the analysis |
 | `--color off\|auto\|underwater`, `--color-strength 0-1` | [Automatic color correction](#clips) of the clips, as on `clips` (so the final has it too). Not with `--lut`; checked before the analysis |
 | `--json` | One [result envelope](#json-output) on stdout for the whole run |
 
-With `CUTPOINT_PROGRESS=1`, `edit` reports 8 [steps](#progress-output): the 6 of `analyze`, then `clips` and `assemble`. `--kind clips` still assembles. With `--events`, `keyframes` is reported again after `vision`, for the VLM layer.
+With `CUTPOINT_PROGRESS=1`, `edit` reports 9 [steps](#progress-output): the 7 of `analyze`, then `clips` and `assemble`. `--kind clips` still assembles. With `--events`, `keyframes` is reported again after `vision`, for the VLM layer.
 
 Re-runs reuse the cached analysis. `edit` exits like the other commands (`130` on Ctrl+C, partial
 files removed) and logs the final video (or timeline), its subtitles and the clips folder (or
@@ -961,7 +963,7 @@ an analysed set processes only the new file.
 | `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a [`vision_assistant`](configuration.md#vision_assistant) of any provider other than `ollama` in `config.json`, the frames (here and for `360 director --vl-check`) go to that provider instead: an API (`anthropic`, `openai`, `xai`, with your API key) or a subscription (`claude-code`, `codex`, `antigravity`), once you agreed to it in the Models tab ("Allow vision requests"), and these two options are not used. An Ollama URL that is not this machine (`localhost` or a loopback address, except on the Cutpoint proxy's port) needs that Vision consent too; without it vision is skipped with a WARNING (`vision_consent_needed`) |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
 | `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
-| `--skip STEP ...` | Leave out `reactions`, `keyframes` and/or `crashes` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
+| `--skip STEP ...` | Leave out `reactions`, `keyframes`, `crashes` and/or `dialogue` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
 | `--no-scenes` | Skip scene detection |
 | `--max-candidates N` | Candidates per source before merging. Default: enough to cover about 3 times the style's target length, at least 30. `gaming` has an open list instead: see [Candidates](#candidates) |
 | `--recover` | After a read error, resume analysis past the bad region |
@@ -1007,7 +1009,11 @@ Each candidate in `highlights.json` has `id`, `source`, `start`, `end`, `score` 
 Whisper heard with confidence below 0.5 as `[index, confidence]`, the index counting words in
 `transcript.split(" ")` (omitted when none is unsure or the transcript has no confidences). With
 `--vision`, a rated candidate also has the model's own label in `vision_label` (`label` takes it
-only from a rating of 7). `timings` holds the seconds each step took and `total_s`, the whole
+only from a rating of 7). A candidate the dialogue reader widened also has `widened_from` (its
+earlier `start`, `end`, `transcript` and `transcript_unsure`, and `absorbed`, the full candidates
+merged into it), and `dialogue_description` (the stretch's description) when no transcript
+snippet could be rebuilt for its new span; where the reader ran, `signals.events.dialogue` is
+the strength of the stretch that boosted it. `timings` holds the seconds each step took and `total_s`, the whole
 analysis; a re-rank of an earlier analysis (`events` on action-cam projects, `360 analyze`,
 `crashes --reanalyze`) keeps that `total_s` and records its own time as `rerank_s`.
 `timings.sources` breaks the same run down per source (one entry per recovered part, with its
@@ -1088,6 +1094,7 @@ the transcription starts. Any other value, or unset: as described above.
 | `reactions` | PANNs sound events (laughter, screams, cheering). Also the voice layer when `crashes` will run |
 | `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game. For `action`, `action-cam` and `sport`, the CLIP visual layer, only with a CUDA GPU |
 | `crashes` | Action-cam footage only (telemetry found, or style `action-cam`, `action` or `sport`) |
+| `dialogue` | A text model reads the whole transcript and marks talk worth keeping. Open-list styles only (`gaming`). See [Dialogue reader](#dialogue-reader) |
 | `ranking` | Re-ranks the candidates with the events, after leaving out those in HUD menu time ([game streams](workflows/game-streams.md)); `highlights.json`, `events.json`, `events.txt` and the other result files are written after the last step |
 | `vision` | Ollama frame rating, only when vision is on |
 
@@ -1098,6 +1105,30 @@ OCR logs a `WARNING` instead, naming the sources left without menu filtering and
 (for out of memory: close other programs, set `CUTPOINT_ANALYZE_OVERLAP=0` or pass
 `--skip keyframes`); the sources read before it keep theirs. The VLM
 layer is not part of `analyze`; it stays in [`events`](#events) and `edit --events`.
+
+#### Dialogue reader
+
+The `dialogue` step runs for open-list styles (`gaming`) after the reactions and events layers, and is skipped with a reason for the others and for footage with no speech. `--skip dialogue` (or `analysis.skip`) leaves it out. A text model reads the whole transcript of each source in overlapping pieces (8 minutes each, 1 minute shared) and marks stretches of talk worth keeping: `funny`, `out_of_pocket`, `ragebait`, `back_and_forth` or `story`, from the setup to the payoff. Each becomes an event in `events.json` with `kind` `text` and `type` `dialogue` (`label` is the talk kind, `description` what happens, `details` the model's rating, backend and model) and a `DIALOGUE` line in `events.txt`. A later `events` run, or an `analyze --skip dialogue`, keeps the dialogue events an earlier run wrote.
+
+The model is chosen once per run:
+
+| Model | Ranked by |
+|---|---|
+| The AI Chat model, when it is a hosted API or subscription and you gave the [AI Chat consent](configuration.md#assistant) (`assistant-v3:`) | The model's own 1 to 10 rating |
+| A local Ollama (the AI Chat model when that is an Ollama, else `qwen3.5:9b`), or an Ollama on another machine you gave the AI Chat consent for | Reaction sounds (laughter, screams, cheering) per minute inside the stretch; a stretch with none still counts, at a low baseline |
+| A hosted AI Chat model without the consent, and no local model | The step is skipped with a `chat_consent_needed` warning |
+| No model | The step is skipped with an INFO line |
+| Not enough free memory for the model | The step is skipped with a `step_failed` warning |
+
+The transcript is sent whole to a hosted model, which is why the AI Chat consent changed to version 3 (see [configuration](configuration.md#assistant)). Each source's reading is cached with its transcript, model and prompt, so a re-analysis with the same ones asks nothing.
+
+The stretches feed the candidates:
+
+- A stretch no candidate overlaps (or one too long to widen them) nominates a candidate of its own that keeps the whole stretch (starting 1 s before it), not limited by the style's maximum length.
+- A candidate a stretch overlaps is widened to cover the whole stretch, but only when the result (the stretch and every candidate it overlaps) stays within 90 s. Several candidates one stretch overlaps become one, the best scoring; its id and signals stay. **The others stay in `highlights.json` under `widened_from.absorbed` but are no longer candidates, so `--ids` rejects their ids**; a moment you noted by id may be inside another candidate now. A longer stretch is a candidate of its own, over the candidates it overlaps, and those stay as they are. A re-run widens again from the original bounds.
+- A candidate a stretch overlaps gets up to 3 points on top of its other event points, scaled by the stretch's strength.
+- A pick skips a candidate that mostly overlaps one already picked from the same source (not with `--ids`), so a clip inside a long stretch is not picked twice.
+- `--max-total` (and the `montage` kind) skips a dialogue candidate that is longer than what is left of the cap; it is not trimmed.
 
 `analyze` also writes `events.json` and `events.txt` (and `crashes.json` for action footage).
 `highlights.json` is written once, atomically, at the end: a cancelled run leaves the previous
@@ -1328,10 +1359,10 @@ computer (a network folder) is not, so delete it by hand if no run is active.
 
 | Option | Meaning |
 |---|---|
-| `--top N` | Top N by score (default: the style's target length) |
+| `--top N` | Top N by score (default: the style's target length). An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
 | `--ids ...` | Explicit candidate ids |
 | `--segments FILE` | Export exactly the listed segments in the listed order |
-| `--max-total S` | Keep the best-scoring moments that fit in S seconds |
+| `--max-total S` | Keep the best-scoring moments that fit in S seconds. An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
 | `--order` | `chronological`, `score`, `story` (default, except `commentary`: `chronological`; opens with the second-best moment, ends with the best) or `arc` (the default with `--mix`) |
 | `--vertical` | Centre-crop to 9:16, 1080x1920. Default folder `clips_vertical` |
 | `--size WxH` | Output resolution (even numbers). Default: the largest source's, capped at 1080p. Ignored with `--vertical` |

@@ -50,9 +50,11 @@ Trust boundaries:
   aside). Project text (labels, transcripts, file names, never
   paths) reaches the model only inside marked data blocks. Its GET routes only read.
 * A hosted assistant provider (any whose host is not this machine) gets no project text until
-  the user agrees once for it (``POST /api/assistant/consent``, an ``assistant-v2:`` key kept in
+  the user agrees once for it (``POST /api/assistant/consent``, an ``assistant-v3:`` key kept in
   ``config.json``); nor is its model list asked for (``GET /api/assistant/models``) before that
-  and without a key. The Vision role's hosted provider has its own consent (``role: vision``, a
+  and without a key. That consent also covers the whole transcripts ``cutpoint analyze`` sends to
+  a hosted chat model for its dialogue reader (:mod:`cutpoint.events.dialogue`). The Vision role's
+  hosted provider has its own consent (``role: vision``, a
   ``vision-v2:`` key): agreeing for one role never covers the other, and an unprefixed key from an
   older version covers neither.
   Video frames (``view_moment``, :mod:`cutpoint.assistant.watch`) go to a hosted chat provider
@@ -5848,7 +5850,7 @@ def create_app(port: int) -> FastAPI:
             raise bad(
                 f"agree first to send this project's analysis results (moment labels, scores "
                 f"and signals, vision descriptions, transcript snippets, file names and times) "
-                f"to {provider.host}",
+                f"and, when analyzing, the whole transcripts of its footage to {provider.host}",
                 409,
             )
         text = body.get("text")

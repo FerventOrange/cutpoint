@@ -348,7 +348,7 @@ def test_a_hosted_provider_gets_nothing_until_the_user_agrees_once(
     p, seq, _ids = proj
     hello = Reply("Hello", [], {"role": "assistant", "content": "Hello"})
     fake = use(monkeypatch, HostedFake([hello]))
-    want = "assistant-v2:anthropic@api.anthropic.com"
+    want = "assistant-v3:anthropic@api.anthropic.com"
     got = client.get("/api/projects/cli/assistant").json()
     assert got["consent"] == {
         "needed": True,
@@ -367,7 +367,7 @@ def test_a_hosted_provider_gets_nothing_until_the_user_agrees_once(
     assert "agree first" in detail and "file names" in detail and "api.anthropic.com" in detail
     assert fake.requests == [] and not (p / "ui" / "assistant").exists()
 
-    bad = client.post("/api/assistant/consent", json={"key": "assistant-v2:anthropic@elsewhere"})
+    bad = client.post("/api/assistant/consent", json={"key": "assistant-v3:anthropic@elsewhere"})
     assert bad.status_code == 409
     for _ in range(2):  # agreeing again keeps one entry
         ok = client.post("/api/assistant/consent", json={"key": want})
@@ -404,7 +404,7 @@ def test_settings_choose_the_provider_and_show_only_where_the_key_comes_from(
     assert claude["models"] == ["claude-sonnet-5-5", "claude-opus-5-5"]
     assert claude["key_env"] == ["ANTHROPIC_API_KEY"]
 
-    want = "assistant-v2:anthropic@api.anthropic.com"
+    want = "assistant-v3:anthropic@api.anthropic.com"
     set_config(home, assistant={"consent": ["x@y", want]})
     asked: list[dict] = []
 
@@ -572,7 +572,7 @@ def test_an_openai_compatible_url_on_the_proxy_port_needs_consent(
         home, assistant={"provider": "openai", "model": "m", "url": f"https://127.0.0.1:{port}/v1"}
     )
     got = client.get("/api/projects/cli/assistant").json()
-    want = f"assistant-v2:openai@127.0.0.1:{port}"
+    want = f"assistant-v3:openai@127.0.0.1:{port}"
     assert got["consent"]["needed"] is True and got["consent"]["key"] == want
     assert got["provider"]["local"] is False and "127.0.0.1" in got["provider"]["label"]
     res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
@@ -591,7 +591,7 @@ def test_a_saved_key_for_another_host_is_not_called_checked(
 ) -> None:
     """OpenRouter lists its models without a key: passing the check proves nothing about it."""
     monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", SECRET)
-    set_config(home, assistant={"consent": ["assistant-v2:openai@openrouter.ai"]})
+    set_config(home, assistant={"consent": ["assistant-v3:openai@openrouter.ai"]})
     monkeypatch.setattr(providers.requests, "get", lambda url, **kw: _Resp({"data": []}))
     body = {"provider": "openai", "model": "m", "url": "https://openrouter.ai/api/v1"}
     out = client.put("/api/settings", json={"assistant": body}).json()
@@ -634,7 +634,7 @@ def test_the_save_check_contacts_no_unconsented_host(
     assert "AI Chat" in out["assistant_note"] and SECRET not in json.dumps(out)
     # the consent key has the port when it is not the scheme's default (a second Ollama on one host)
     key_host = f"{host}:11434" if body["provider"] == "ollama" else host
-    set_config(home, assistant={**body, "consent": [f"assistant-v2:{body['provider']}@{key_host}"]})
+    set_config(home, assistant={**body, "consent": [f"assistant-v3:{body['provider']}@{key_host}"]})
     out = client.put("/api/settings", json={"assistant": body}).json()
     assert sent and all(host in s["url"] for s in sent)  # agreed: now it is checked
     if env:
@@ -647,7 +647,7 @@ def test_a_missing_key_comes_before_the_consent_box(
 ) -> None:
     set_config(home, assistant={"provider": "anthropic"})
     got = client.get("/api/projects/cli/assistant").json()["consent"]
-    assert got["needed"] is True and got["key"] == "assistant-v2:anthropic@api.anthropic.com"
+    assert got["needed"] is True and got["key"] == "assistant-v3:anthropic@api.anthropic.com"
     assert "No API key for Anthropic" in got["missing_key"]
     assert "ANTHROPIC_API_KEY" in got["missing_key"] and "Models tab" in got["missing_key"]
     monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
@@ -835,7 +835,7 @@ def test_vision_consent_is_versioned_and_not_given_by_the_assistant_s(
     monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": True})
     set_config(
         home,
-        assistant={"provider": "codex", "consent": ["assistant-v2:codex@chatgpt.com"]},
+        assistant={"provider": "codex", "consent": ["assistant-v3:codex@chatgpt.com"]},
         vision_assistant={"provider": "codex", "consent": ["codex@chatgpt.com"]},
     )
     got = client.get("/api/settings").json()["vision_consent"]
@@ -851,7 +851,7 @@ def test_vision_consent_is_versioned_and_not_given_by_the_assistant_s(
         "codex@chatgpt.com",
         "vision-v2:codex@chatgpt.com",
     ]
-    assert cfg["assistant"]["consent"] == ["assistant-v2:codex@chatgpt.com"]
+    assert cfg["assistant"]["consent"] == ["assistant-v3:codex@chatgpt.com"]
 
 
 def test_vision_consent_does_not_unlock_the_assistant(
@@ -866,7 +866,7 @@ def test_vision_consent_does_not_unlock_the_assistant(
         vision_assistant={"provider": "codex", "consent": [vision_key]},
     )
     got = client.get("/api/projects/cli/assistant").json()["consent"]
-    assert got["needed"] is True and got["key"] == "assistant-v2:codex@chatgpt.com"
+    assert got["needed"] is True and got["key"] == "assistant-v3:codex@chatgpt.com"
     _, seq, _ = proj
     res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
     assert res.status_code == 409
@@ -877,7 +877,7 @@ def test_vision_consent_does_not_unlock_the_assistant(
 
 def test_consent_keys_differ_by_role() -> None:
     hosted = providers.SubscriptionProvider("codex")
-    assert providers.consent_key(hosted) == "assistant-v2:codex@chatgpt.com"
+    assert providers.consent_key(hosted) == "assistant-v3:codex@chatgpt.com"
     assert providers.consent_key(hosted, "vision") == "vision-v2:codex@chatgpt.com"
     assert providers.consent_key(providers.preset("ollama", 0), "vision") is None
 
@@ -886,12 +886,12 @@ def test_an_old_unprefixed_consent_no_longer_counts_for_the_assistant(
     client: TestClient, monkeypatch, home: Path, proj
 ) -> None:
     """Consent given under the older, shorter AI Chat wording (``<provider>@<host>``) does not
-    let project text go out: the AI Chat tab asks again with the ``assistant-v2:`` key."""
+    let project text go out: the AI Chat tab asks again with the ``assistant-v3:`` key."""
     p, seq, _ids = proj
     fake = use(monkeypatch, HostedFake([]))
     set_config(home, assistant={"consent": ["anthropic@api.anthropic.com"]})
     got = client.get("/api/projects/cli/assistant").json()["consent"]
-    assert got["needed"] is True and got["key"] == "assistant-v2:anthropic@api.anthropic.com"
+    assert got["needed"] is True and got["key"] == "assistant-v3:anthropic@api.anthropic.com"
     res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
     assert res.status_code == 409
     old = client.post("/api/assistant/consent", json={"key": "anthropic@api.anthropic.com"})
@@ -900,23 +900,42 @@ def test_an_old_unprefixed_consent_no_longer_counts_for_the_assistant(
     assert config.load_config_data()["assistant"]["consent"] == ["anthropic@api.anthropic.com"]
 
 
-def test_an_assistant_v2_consent_lets_the_assistant_run(
+def test_an_assistant_v3_consent_lets_the_assistant_run(
     client: TestClient, monkeypatch, home: Path, proj
 ) -> None:
     _, seq, _ = proj
     hello = Reply("Hello", [], {"role": "assistant", "content": "Hello"})
     fake = use(monkeypatch, HostedFake([hello]))
-    set_config(home, assistant={"consent": ["assistant-v2:anthropic@api.anthropic.com"]})
+    set_config(home, assistant={"consent": ["assistant-v3:anthropic@api.anthropic.com"]})
     assert client.get("/api/projects/cli/assistant").json()["consent"]["needed"] is False
     view = ask(client, "hi", seq)
     assert view["status"] == "done" and len(fake.requests) == 1
+
+
+def test_an_assistant_v2_consent_no_longer_counts(
+    client: TestClient, monkeypatch, home: Path, proj
+) -> None:
+    """v3 names the whole transcripts the dialogue reader sends: consent given under the v2
+    wording asks again with the ``assistant-v3:`` key and sends nothing."""
+    p, seq, _ids = proj
+    fake = use(monkeypatch, HostedFake([]))
+    set_config(home, assistant={"consent": ["assistant-v2:anthropic@api.anthropic.com"]})
+    got = client.get("/api/projects/cli/assistant").json()["consent"]
+    assert got["needed"] is True and got["key"] == "assistant-v3:anthropic@api.anthropic.com"
+    res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
+    assert res.status_code == 409
+    old = client.post(
+        "/api/assistant/consent", json={"key": "assistant-v2:anthropic@api.anthropic.com"}
+    )
+    assert old.status_code == 409
+    assert fake.requests == [] and not (p / "ui" / "assistant").exists()
 
 
 def test_the_assistant_s_consent_does_not_unlock_vision(
     client: TestClient, monkeypatch, home: Path
 ) -> None:
     monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": True})
-    assistant_key = "assistant-v2:codex@chatgpt.com"
+    assistant_key = "assistant-v3:codex@chatgpt.com"
     # even an assistant key in Vision's own list is not Vision's consent
     set_config(
         home,
@@ -937,7 +956,7 @@ def test_the_model_list_needs_the_role_s_own_versioned_consent(monkeypatch) -> N
     codex = providers.SubscriptionProvider("codex")
     old, a_key, v_key = (
         "codex@chatgpt.com",
-        "assistant-v2:codex@chatgpt.com",
+        "assistant-v3:codex@chatgpt.com",
         "vision-v2:codex@chatgpt.com",
     )
     for consent in ((old,), (v_key,)):
@@ -986,7 +1005,7 @@ def test_the_vision_consent_of_an_api_provider_has_its_own_key(
 ) -> None:
     host = API_HOSTS[name]
     set_config(
-        home, vision_assistant={"provider": name, "consent": [f"assistant-v2:{name}@{host}"]}
+        home, vision_assistant={"provider": name, "consent": [f"assistant-v3:{name}@{host}"]}
     )
     got = client.get("/api/settings").json()["vision_consent"]
     assert got["needed"] is True and got["key"] == f"vision-v2:{name}@{host}"
@@ -1034,7 +1053,7 @@ def test_the_vision_model_list_needs_a_key_then_the_vision_consent(
     # the chat consent does not count, for either role's list
     set_config(
         home,
-        assistant={"provider": "openai", "consent": [f"assistant-v2:openai@{host}"]},
+        assistant={"provider": "openai", "consent": [f"assistant-v3:openai@{host}"]},
         vision_assistant={"provider": "openai", "consent": []},
     )
     assert client.get(url).json()["state"] == "consent_needed"

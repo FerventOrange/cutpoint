@@ -9,6 +9,8 @@ from typing import Any
 
 from cutpoint import cache
 from cutpoint.config import source_path
+from cutpoint.events.common import load_transcript_lines
+from cutpoint.events.scoring import DIALOGUE_TYPE
 from cutpoint.utils import clock
 
 
@@ -97,6 +99,11 @@ def _event_line(name: str, e: dict[str, Any]) -> str:
         return f"{t} OCR: {e['label']}" + (f" ({detail})" if detail else "")
     if e["kind"] == "telemetry":
         return f"{t} TELEMETRY: {e['label']}"
+    if e["kind"] == "text":
+        length = e["end"] - e["start"]
+        return (
+            f"{t} DIALOGUE {e['label']} ({e['confidence']:.2f}, {length:.0f}s): {e['description']}"
+        )
     return f"{t} VLM: {e['label']} (funny {e.get('funny')}, hype {e.get('hype')})"
 
 
@@ -156,6 +163,7 @@ def write_outputs(
         "# AUDIO = PANNs sound events (confidence, duration); OCR = on-screen HUD text;",
         f"# VLM WINDOW = {model} summary of a window (hl = highlight 0-10);",
         "# VLM = moment inside a window. Times are source time.",
+        "# DIALOGUE = talk a text model marked (kind, strength, duration).",
         "",
     ]
     for src in sources:
@@ -192,3 +200,52 @@ def write_outputs(
     # events.json while `cutpoint analyze` runs (cache.hold_outputs)
     cache.save_bytes(tpath, "\n".join(lines).replace("\n", os.linesep).encode("utf-8"))
     return jpath, tpath
+
+
+def is_dialogue(e: dict[str, Any]) -> bool:
+    """Whether an events.json entry is a stretch of talk the dialogue reader marked."""
+    return e.get("kind") == "text" and e.get("type") == DIALOGUE_TYPE
+
+
+def kept_dialogue(project: Path, sources: list[str]) -> list[dict[str, Any]]:
+    """The dialogue events of the events.json already in ``project`` for ``sources``: a run
+    that does not read dialogue (``cutpoint events``, ``analyze --skip dialogue``) rewrites
+    events.json and keeps them."""
+    doc = cache.load_json(project / "events.json")
+    found = doc.get("events") if isinstance(doc, dict) else None
+    wanted = set(sources)
+    return [
+        e
+        for e in found or []
+        if isinstance(e, dict) and is_dialogue(e) and e.get("source") in wanted
+    ]
+
+
+def replace_dialogue(project: Path, new: list[dict[str, Any]], sources: list[str]) -> bool:
+    """Replace the dialogue events of ``project``'s events.json by ``new`` (events.json
+    entries) and rewrite events.json and events.txt; with no events.json yet (the event
+    layers did not run) one is written with ``sources`` and these events only. Nothing is
+    written when there were none and ``new`` has none. Returns whether it wrote.
+
+    The transcript lines of events.txt are those of the analysis in progress, if any
+    (:func:`cutpoint.events.common.pending_highlights`).
+    """
+    doc = cache.load_json(project / "events.json")
+    doc = doc if isinstance(doc, dict) else None
+    old = [e for e in (doc or {}).get("events", []) if is_dialogue(e)]
+    if not old and not new:
+        return False
+    if doc is None:
+        doc = {"settings": {"layers": []}, "sources": sources}
+    events = [e for e in doc.get("events", []) if not is_dialogue(e)] + new
+    write_outputs(
+        project,
+        list(doc.get("sources") or sources),
+        events,
+        doc.get("windows") or [],
+        load_transcript_lines(project),
+        doc.get("settings") or {},
+        doc.get("timings") or {},
+        {k: v for k, v in (doc.get("stats") or {}).items() if k != "event_counts"},
+    )
+    return True

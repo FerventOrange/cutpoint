@@ -52,7 +52,7 @@ Choosing the moments yourself:
 
 1. `cutpoint analyze <video> --style <style> --out <project>`. It also runs the reaction, keyframe
    and crash steps it can (skipped with an INFO line when the extra or models are missing;
-   `--skip reactions keyframes crashes` leaves them out) and writes `events.json`.
+   `--skip reactions keyframes crashes dialogue` leaves them out) and writes `events.json`.
 2. Read `highlights.json` (ranked `candidates` with `id`, `start`, `end`, `score`, `label`,
    `transcript`) and `transcript.txt` in the project folder.
 3. Export: `cutpoint clips <project> --top 8`, `cutpoint clips <project> --ids h001 h004` or
