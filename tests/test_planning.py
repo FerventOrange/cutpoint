@@ -86,6 +86,21 @@ def test_select_moments_keeps_overlapping_candidates_of_other_sources_and_explic
     assert [c["id"] for c in select_moments(project, ids=["long", "short"])[0]] == ["long", "short"]
 
 
+def test_select_moments_never_skips_an_overlapping_must_include_crash(tmp_path):
+    cands = [
+        dict(_span("c1", 9, 100, 140), must_include=True),
+        dict(_span("c2", 8, 130, 160), must_include=True),
+    ]
+    project = _project(tmp_path, cands)
+    assert [c["id"] for c in select_moments(project, max_total=180)[0]] == ["c1", "c2"]
+    assert [c["id"] for c in select_moments(project, top=3)[0]] == ["c1", "c2"]
+
+
+def test_select_moments_keeps_candidates_that_overlap_only_at_the_edge(tmp_path):
+    project = _project(tmp_path, [_span("a", 9, 100, 110.3), _span("b", 8, 109.8, 120)])
+    assert [c["id"] for c in select_moments(project, top=2)[0]] == ["a", "b"]
+
+
 def test_select_moments_max_total_takes_the_short_one_when_the_long_does_not_fit(tmp_path):
     project = _project(tmp_path, [_span("long", 9, 100, 400), _span("short", 8, 150, 160)])
     chosen, _ = select_moments(project, max_total=60)
