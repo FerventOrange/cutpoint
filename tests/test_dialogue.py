@@ -22,6 +22,8 @@ from cutpoint.assistant import providers
 from cutpoint.events import dialogue, report, scoring
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES
 from cutpoint.styles import get_style
+from cutpoint.ui import moments_view
+from cutpoint.utils import slugify, title_slug
 from test_analyze_steps import progress_lines, run  # noqa: F401
 from test_assistant_byo import KEY, no_keys  # noqa: F401  (autouse: no real keyring or key)
 from test_event_candidates import (  # noqa: F401  (no_transcript is autouse there)
@@ -249,6 +251,54 @@ def test_reaction_times_are_the_confident_reaction_sounds_of_the_source():
     assert dialogue.reaction_times(events) == [7.0, 10.0, 20.0, 30.0]
 
 
+@pytest.mark.parametrize(
+    ("given", "want"),
+    [
+        ("Grandpa's Wobbly Treehouse", "Grandpa's Wobbly Treehouse"),
+        ('  "Chat Argues About Pizza".  ', "Chat Argues About Pizza"),
+        ("One\ntwo\tthree  four", "One two three four"),
+        ("one two three four five six seven eight", "one two three four five six"),
+        ("Grandpa\u2019s Terrible Cooking", "Grandpa's Terrible Cooking"),
+        ("", ""),
+        ("  ...  ", ""),
+        (None, ""),
+        (5, ""),
+        (["a title"], ""),
+    ],
+)
+def test_a_title_is_one_line_of_at_most_six_words(given, want):
+    assert dialogue.clean_title(given) == want
+
+
+def test_a_title_is_cut_at_a_word_within_the_character_cap():
+    long_words = " ".join(["extraordinarily"] * 6)
+    got = dialogue.clean_title(long_words)
+    assert len(got) <= dialogue.MAX_TITLE and long_words.startswith(got)
+    assert not got.endswith("extraordinaril")  # not in the middle of a word
+    assert len(dialogue.clean_title("x" * 200)) == dialogue.MAX_TITLE
+
+
+def test_a_reply_title_is_kept_cleaned_and_a_missing_one_is_empty():
+    lines = talk_lines(10)
+    reply = {
+        "moments": [
+            {**moment(0, 2), "title": "  Grandpa's Treehouse, Again!  "},
+            moment(3, 4),  # no title
+            {**moment(5, 6), "title": 7},  # not text
+            {**moment(7, 8), "title": " ... "},
+        ]
+    }
+    got, dropped = dialogue.parse_reply(reply, lines, list(range(10)))
+    assert dropped == 0  # a missing title never drops the stretch
+    assert [s["title"] for s in got] == ["Grandpa's Treehouse, Again", "", "", ""]
+
+
+def test_the_schema_and_the_prompt_ask_for_a_title():
+    item = dialogue.SCHEMA["properties"]["moments"]["items"]
+    assert "title" in item["properties"] and "title" in item["required"]
+    assert "title" in dialogue.PROMPT and '"title"' in dialogue.JSON_ONLY
+
+
 # --------------------------------------------------------------------------- cache key
 def test_the_cache_key_follows_the_transcript_the_model_and_the_prompt(monkeypatch):
     lines = talk_lines(5)
@@ -305,6 +355,25 @@ def test_a_reading_is_taken_from_the_cache_until_the_transcript_or_model_changes
     assert not dialogue.read_source(src, lines, other).cached and len(more) == 1
     edited = [*lines[:-1], (90.0, 98.0, "something else was said")]
     assert not dialogue.read_source(src, edited, backend).cached and len(prompts) == 2
+
+
+def test_a_reading_cached_before_titles_is_read_again(tmp_path, monkeypatch):
+    src = write(tmp_path / "a.mp4")
+    lines = talk_lines(10)
+    backend, prompts = fake_backend(
+        lambda _p: {"moments": [{**moment(1, 3), "title": "Mike Burns Dinner"}]}
+    )
+    monkeypatch.setattr(dialogue, "PROMPT_VERSION", 1)  # the version before titles
+    old = dialogue._cache_path(src, lines, backend)
+    cache.save_json(old, {"version": 1, "stretches": [stretch(10.0, 40.0)]})
+    assert dialogue._cached_stretches(old) is not None
+    monkeypatch.undo()
+    assert dialogue.PROMPT_VERSION >= 2
+    first = dialogue.read_source(src, lines, backend)
+    assert len(prompts) == 1 and not first.cached  # the stretch without a title is not reused
+    assert [s["title"] for s in first.stretches] == ["Mike Burns Dinner"]
+    again = dialogue.read_source(src, lines, backend)
+    assert again.cached and again.stretches[0]["title"] == "Mike Burns Dinner"  # titles are cached
 
 
 def test_a_failed_piece_is_skipped_and_the_reading_is_not_cached(tmp_path, caplog):
@@ -560,6 +629,18 @@ def test_a_stretch_is_a_text_event_of_type_dialogue():
     assert report.is_dialogue(ev) and not report.is_dialogue({"kind": "text", "type": "other"})
 
 
+def test_a_stretch_event_carries_its_title_and_keeps_its_kind_as_the_label():
+    titled = {**stretch(0.0, 80.0), "title": "Roommate Burnt Dinner", "kind": "story"}
+    plain = {**stretch(100.0, 180.0), "title": ""}
+    old = stretch(200.0, 280.0)  # a stretch with no title at all
+    a, b, c = dialogue.to_events(SRC, [titled, plain, old], None, "local", "m")
+    assert (a["label"], a["title"]) == ("story", "Roommate Burnt Dinner")
+    assert (b["label"], b["title"]) == ("funny", "")
+    assert (c["label"], c["title"]) == ("funny", "")
+    assert 'DIALOGUE story "Roommate Burnt Dinner" (' in report._event_line("a.mp4", a)
+    assert "DIALOGUE funny (" in report._event_line("a.mp4", b)
+
+
 def test_dialogue_events_are_written_with_the_others_and_a_rerun_replaces_them(tmp_path):
     proj = tmp_path / "proj"
     proj.mkdir()
@@ -694,6 +775,193 @@ def test_a_dialogue_stretch_nominates_a_candidate_longer_than_the_style_s_max_le
     assert nom["start"] == pytest.approx(100.0 - analyze.DIALOGUE_PRE_ROLL_S)
     assert nom["end"] == pytest.approx(400.0)  # not cut, not extended to a sentence
     assert nom["duration"] == pytest.approx(nom["end"] - nom["start"], abs=0.01)
+
+
+def titled_event(start, end, title="Grandpa's Wobbly Treehouse", conf=0.8, **kw):
+    return {**talk_event(start, end, conf=conf), "title": title, **kw}
+
+
+def test_a_titled_stretch_nominates_a_candidate_with_the_title_and_its_slug_as_label(tmp_path):
+    hl = highlights([own("h001", 20.0, 60.0)])
+    assert scoring.nominate(hl, events_of([titled_event(100.0, 400.0)]), tmp_path, [grid()]) == 1
+    (nom,) = nominees(hl)
+    assert nom["dialogue_title"] == "Grandpa's Wobbly Treehouse"
+    assert nom["label"] == "grandpas-wobbly-treehouse"  # the file name part
+    assert nom["signals"]["events"]["nominated"] == ["dialogue-funny"]  # the kind, as before
+    assert scoring.is_long_dialogue(nom)  # still a whole dialogue nominee
+
+
+def test_an_untitled_stretch_keeps_the_dialogue_kind_label(tmp_path):
+    hl = highlights([own("h001", 20.0, 60.0)])
+    ev = {**talk_event(100.0, 400.0, kind="out_of_pocket"), "title": ""}
+    scoring.nominate(hl, events_of([ev]), tmp_path, [grid()])
+    (nom,) = nominees(hl)
+    assert nom["label"] == "dialogue-out-of-pocket" and "dialogue_title" not in nom
+    old = talk_event(100.0, 400.0)  # events.json of an earlier version: no title field
+    hl = highlights([own("h001", 20.0, 60.0)])
+    scoring.nominate(hl, events_of([old]), tmp_path, [grid()])
+    assert nominees(hl)[0]["label"] == "dialogue-funny"
+
+
+def test_a_widened_candidate_takes_the_title_of_the_stretch_and_gives_it_back(tmp_path):
+    hl = highlights([own("h001", 150.0, 60.0, end=160.0)])
+    before = hl["candidates"][0]["label"]
+    events = events_of([titled_event(100.0, 180.0)])
+    assert scoring.nominate(hl, events, tmp_path, [grid()]) == 0
+    (cand,) = hl["candidates"]
+    assert (cand["start"], cand["end"]) == (100.0, 180.0)
+    assert (cand["dialogue_title"], cand["label"]) == (
+        "Grandpa's Wobbly Treehouse",
+        "grandpas-wobbly-treehouse",
+    )
+    scoring.nominate(hl, events, tmp_path, [grid()])  # again: the same
+    assert (hl["candidates"][0]["label"], hl["candidates"][0]["widened_from"]["label"]) == (
+        "grandpas-wobbly-treehouse",
+        before,
+    )
+    scoring.nominate(hl, events_of([]), tmp_path, [grid()])  # the stretch is gone
+    (cand,) = hl["candidates"]
+    assert cand["label"] == before and "dialogue_title" not in cand
+    assert (cand["start"], cand["end"]) == (150.0, 160.0)
+
+
+def test_several_stretches_widening_one_candidate_give_the_most_confident_title(tmp_path):
+    hl = highlights([own("h001", 150.0, 60.0, end=170.0)])
+    events = events_of(
+        [
+            titled_event(120.0, 160.0, "Low Confidence Bit", conf=0.3),
+            titled_event(150.0, 200.0, "High Confidence Bit", conf=0.9),
+            titled_event(165.0, 190.0, "Middle Bit", conf=0.5),
+        ]
+    )
+    scoring.nominate(hl, events, tmp_path, [grid()])
+    (cand,) = hl["candidates"]
+    assert (cand["dialogue_title"], cand["label"]) == ("High Confidence Bit", "high-confidence-bit")
+
+
+def merge_hl() -> dict[str, Any]:
+    a, b = own("h001", 10.0, 60.0, end=20.0), own("h002", 40.0, 50.0, end=50.0)
+    return highlights([{**a, "label": "kill-a", "transcript": "text a"}, {**b, "label": "kill-b"}])
+
+
+def test_a_widened_candidate_merged_into_another_gets_its_label_and_text_back(tmp_path):
+    hl = merge_hl()
+    first = titled_event(5.0, 30.0, "First Bit Title", conf=0.9, description="first")
+    second = titled_event(25.0, 45.0, "Second Bit Title", conf=0.5, description="second")
+    snippet = lambda _s, a, b: (f"said {a:g}-{b:g}", None)  # noqa: E731
+    by_src = {SRC: [first, second]}
+    # one pass over the first stretch widens A; then B is merged into A by the second
+    scoring.widen_for_dialogue(hl["candidates"], {SRC: [first]}, None, snippet)
+    a = hl["candidates"][0]
+    assert (a["dialogue_title"], a["label"]) == ("First Bit Title", "first-bit-title")
+    hl2 = merge_hl()
+    scoring.widen_for_dialogue(hl2["candidates"], by_src, None, snippet)
+    scoring.restore_widened(hl2["candidates"])
+    by_id = {c["id"]: c for c in hl2["candidates"]}
+    assert sorted(by_id) == ["h001", "h002"]
+    assert by_id["h001"]["label"] == "kill-a" and "dialogue_title" not in by_id["h001"]
+    assert by_id["h001"]["transcript"] == "text a" and (
+        by_id["h001"]["start"],
+        by_id["h001"]["end"],
+    ) == (10.0, 20.0)
+    assert by_id["h002"]["label"] == "kill-b" and "dialogue_title" not in by_id["h002"]
+
+
+def test_a_candidate_widened_in_one_pass_and_merged_in_the_next_is_whole_again(tmp_path):
+    hl = merge_hl()
+    first = titled_event(5.0, 30.0, "First Bit Title", conf=0.9)
+    second = titled_event(25.0, 45.0, "Second Bit Title", conf=0.5)
+    for c in hl["candidates"]:
+        c["score"] = 70.0 if c["id"] == "h002" else 60.0  # B outscores A: A is merged into B
+    scoring.widen_for_dialogue(hl["candidates"], {SRC: [first]}, None, None)  # A widened (5-30)
+    a = next(c for c in hl["candidates"] if c["id"] == "h001")
+    assert a["dialogue_title"] == "First Bit Title"
+    scoring.widen_for_dialogue(hl["candidates"], {SRC: [second]}, None, None)
+    (b,) = hl["candidates"]
+    assert b["id"] == "h002"
+    (absorbed,) = b["widened_from"]["absorbed"]
+    assert absorbed["id"] == "h001" and absorbed["label"] == "kill-a"
+    assert "dialogue_title" not in absorbed and (absorbed["start"], absorbed["end"]) == (10.0, 20.0)
+    assert absorbed["transcript"] == "text a"
+    # its title was the more confident one, so B carries it
+    assert (b["dialogue_title"], b["label"]) == ("First Bit Title", "first-bit-title")
+    scoring.restore_widened(hl["candidates"])
+    assert sorted(c["id"] for c in hl["candidates"]) == ["h001", "h002"]
+    assert all("dialogue_title" not in c for c in hl["candidates"])
+    assert {c["id"]: c["label"] for c in hl["candidates"]} == {"h001": "kill-a", "h002": "kill-b"}
+
+
+def test_a_stretch_without_a_title_does_not_take_the_confidence_of_the_title(tmp_path):
+    hl = highlights([own("h001", 150.0, 60.0, end=170.0)])
+    events = events_of(
+        [titled_event(120.0, 160.0, "Kept Title", conf=0.3), talk_event(165.0, 190.0, conf=0.9)]
+    )
+    scoring.nominate(hl, events, tmp_path, [grid()])
+    (cand,) = hl["candidates"]
+    assert (cand["dialogue_title"], cand["widened_from"]["title_conf"]) == ("Kept Title", 0.3)
+
+
+def test_a_widening_stretch_without_a_title_leaves_the_label(tmp_path):
+    hl = highlights([own("h001", 150.0, 60.0, end=160.0)])
+    before = hl["candidates"][0]["label"]
+    scoring.nominate(hl, events_of([talk_event(100.0, 180.0)]), tmp_path, [grid()])
+    (cand,) = hl["candidates"]
+    assert cand["label"] == before and "dialogue_title" not in cand
+
+
+def test_a_renamed_widened_candidate_keeps_its_new_label_when_widening_is_undone(tmp_path):
+    hl = highlights([own("h001", 150.0, 60.0, end=160.0)])
+    scoring.nominate(hl, events_of([titled_event(100.0, 180.0)]), tmp_path, [grid()])
+    hl["candidates"][0]["label"] = "rated-by-vision"  # the vision rating renamed it
+    scoring.nominate(hl, events_of([]), tmp_path, [grid()])
+    assert hl["candidates"][0]["label"] == "rated-by-vision"
+
+
+@pytest.mark.parametrize(
+    ("title", "want"),
+    [
+        ("Mike's Expensive Car Fail", "mikes-expensive-car-fail"),
+        ("Let's Go", "lets-go"),
+        ("Don't Stop Believing", "dont-stop-believing"),
+        ("Mike\u2019s Car", "mikes-car"),
+        ("Grandpa Builds A Wobbly Treehouse Again", "grandpa-builds-a-wobbly"),  # no half word
+        ("Short", "short"),
+        ("x" * 50, "x" * 30),  # one long word is cut
+        ("", "moment"),
+        ("\u30c9\u30e9\u30de", "moment"),  # no Latin letters
+    ],
+)
+def test_a_title_slug_drops_apostrophes_and_is_cut_at_a_word(title, want):
+    assert title_slug(title) == want
+
+
+def test_a_title_slug_takes_the_default_when_nothing_is_left():
+    assert title_slug("\u30c9\u30e9\u30de", default="") == ""
+    assert title_slug("\u30c9\u30e9\u30de", default="kept") == "kept"
+
+
+def test_a_title_with_no_latin_letters_keeps_the_label_but_shows_as_the_title(tmp_path):
+    kana = "\u30c9\u30e9\u30de"
+    hl = highlights([own("h001", 20.0, 60.0)])
+    scoring.nominate(hl, events_of([titled_event(100.0, 400.0, kana)]), tmp_path, [grid()])
+    (nom,) = nominees(hl)
+    assert nom["dialogue_title"] == kana and nom["label"] == "dialogue-funny"  # not "moment"
+    hl = highlights([own("h001", 150.0, 60.0, end=160.0)])
+    before = hl["candidates"][0]["label"]
+    scoring.nominate(hl, events_of([titled_event(100.0, 180.0, kana)]), tmp_path, [grid()])
+    (cand,) = hl["candidates"]
+    assert cand["dialogue_title"] == kana and cand["label"] == before
+    scoring.nominate(hl, events_of([]), tmp_path, [grid()])
+    assert hl["candidates"][0]["label"] == before and "dialogue_title" not in hl["candidates"][0]
+
+
+def test_slugify_itself_is_unchanged():
+    assert slugify("Mike's Sister-in-Law", 8) == "mike-s-s"
+
+
+def test_a_hostile_title_gives_a_safe_clip_file_name():
+    label = title_slug(r'../C:\Mike: "Is" <Cooking>?')
+    assert label and not set(label) & set(r'/\:*?"<>|. ') and label == label.lower()
 
 
 def test_a_kill_in_the_same_run_is_still_cut_to_max_len(tmp_path):
@@ -1383,3 +1651,32 @@ def test_the_cap_ranks_nominees_with_the_per_minute_boost(tmp_path):
     scoring.nominate(hl, events, tmp_path, [quiet_grid(600.0)])
     (nom,) = nominees(hl)
     assert nom["start"] > 400.0 and nom["end"] < 560.0
+
+
+def test_the_moments_view_marks_a_long_dialogue_bit_with_its_description(tmp_path):
+    hl = highlights([own("h001", 20.0, 60.0)])
+    ev = titled_event(100.0, 400.0, description="Grandpa builds")
+    short = {**talk_event(500.0, 560.0), "description": "short one"}
+    scoring.nominate(hl, events_of([ev, short]), tmp_path, [grid()])
+    view = moments_view(hl, events_of([ev, short]))["candidates"]
+    bits = [c for c in view if c["long_bit"]]
+    assert [(c["label"], c["bit_description"]) for c in bits] == [
+        ("grandpas-wobbly-treehouse", "Grandpa builds")
+    ]
+    own_moment = next(c for c in view if c["id"] != c["cli_id"] and c["cli_id"] == "h001")
+    assert own_moment["bit_description"] == ""  # not a dialogue moment
+    assert len(view) == 3  # the own moment, the short stretch's nominee and the bit
+    descriptions = {c["label"]: c["bit_description"] for c in view}
+    assert sorted(descriptions.values()) == ["", "Grandpa builds", "short one"]  # not only bits
+    widened = highlights([own("h001", 150.0, 60.0, end=160.0)])
+    short_ev = titled_event(120.0, 180.0, description="Grandpa builds")
+    scoring.nominate(widened, events_of([short_ev]), tmp_path, [grid()])
+    (cand,) = moments_view(widened, events_of([short_ev]))["candidates"]
+    assert cand["bit_description"] == "Grandpa builds" and cand["long_bit"] is False
+    assert (
+        bits[0]["display_label"] == "Grandpa's Wobbly Treehouse"
+    )  # the readable title, not the slug
+    assert all(
+        c["display_label"] != "Grandpa's Wobbly Treehouse" for c in view if not c["long_bit"]
+    )
+    assert moments_view(hl)["candidates"][0]["bit_description"] == ""  # no events.json

@@ -197,11 +197,21 @@ def moment_kind(
     ``cruise`` are action; ``beauty``/``view``/``scenic``; ``laugh``/``funny``; ``fast``, ``speed``,
     ``crash``, ``jump``, ...; ``talk``/``voice``). Then the strongest cue of a generic label
     (``ski-moment``, ``loud-moment``) decides, then speech over it (``spoken``: dialogue), else it
-    is action.
+    is action. A moment a talk stretch nominated (``signals.events.nominated`` holds
+    ``dialogue-*``) is dialogue; one a stretch only widened keeps its own type, from the label it
+    had before it took the stretch's title.
     """
     cand = cand or {}
+    events = (cand.get("signals") or {}).get("events") or {}
+    if any(str(n).startswith("dialogue-") for n in events.get("nominated") or []):
+        return DIALOGUE  # made from a talk stretch, whatever its title says
     kind = cand.get("kind") if isinstance(cand.get("kind"), str) else ""
     named = (label, cand.get("label"), cand.get("vision_label"))  # "ski-moment" names nothing
+    if cand.get(
+        "dialogue_title"
+    ):  # a moment a stretch widened keeps its own type: not the title's words
+        was = cand.get("widened_from") or {}
+        named = (was.get("label") or cand.get("label"), cand.get("vision_label"))
     text = " ".join([*(str(x) for x in named if x and not _GENERIC.fullmatch(str(x))), kind])
     tokens = set(re.split(r"[^a-z]+", text.lower()))
     if kind == "view" or tokens & _SCENIC_WORDS:

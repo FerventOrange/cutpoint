@@ -101,9 +101,8 @@ def _event_line(name: str, e: dict[str, Any]) -> str:
         return f"{t} TELEMETRY: {e['label']}"
     if e["kind"] == "text":
         length = e["end"] - e["start"]
-        return (
-            f"{t} DIALOGUE {e['label']} ({e['confidence']:.2f}, {length:.0f}s): {e['description']}"
-        )
+        named = f'{e["label"]} "{e["title"]}"' if e.get("title") else e["label"]
+        return f"{t} DIALOGUE {named} ({e['confidence']:.2f}, {length:.0f}s): {e['description']}"
     return f"{t} VLM: {e['label']} (funny {e.get('funny')}, hype {e.get('hype')})"
 
 
