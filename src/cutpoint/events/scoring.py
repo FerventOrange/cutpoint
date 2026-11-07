@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -58,6 +58,9 @@ DIALOGUE_TYPE = "dialogue"  # ``type`` of the text events of the dialogue reader
 # the weakest evidence of the three, so at most half a kill, scaled by the reader's confidence;
 # laughter inside it counts on its own through the usual laughter points.
 DIALOGUE_POINTS = 3.0
+# A candidate a dialogue stretch overlaps widens to cover it only when the whole result (the
+# stretch and every candidate it hits) stays this long at most. A longer stretch is its own moment.
+DIALOGUE_WIDEN_MAX_S = 90.0
 
 
 def has_reaction(
@@ -204,6 +207,8 @@ class Seed:
         tail_s: The event type's reaction kept after it (None: the style's ``post_roll``).
         whole: A dialogue stretch: its candidate keeps the span as marked (``hold`` long, no
             ``max_len`` cap; see :func:`cutpoint.analyze.nominate_candidates`).
+        over: A ``whole`` stretch too long to widen the candidates it overlaps
+            (:data:`DIALOGUE_WIDEN_MAX_S`): it stays whole over them (set by :func:`nominate`).
     """
 
     name: str
@@ -212,6 +217,7 @@ class Seed:
     hold: float
     tail_s: float | None = None
     whole: bool = False
+    over: bool = False
 
 
 def seeds(
@@ -290,7 +296,10 @@ def widen_for_dialogue(
     """Widen the candidates of ``cands`` (in place) that a dialogue stretch overlaps to cover
     the whole stretch, in place of a near-duplicate nominee: the union of the candidate's span
     and the stretch's, not cut to ``max_len``. Candidates a stretch overlaps together become one,
-    the best scoring (its id and signals kept); the others are kept inside it. The earlier span
+    the best scoring (its id and signals kept); the others are kept inside it. This happens only
+    when the union of the stretch and all the candidates it overlaps is at most
+    :data:`DIALOGUE_WIDEN_MAX_S` long; otherwise the candidates stay as they are (no partial
+    widening) and :func:`nominate` makes the stretch a moment of its own. The earlier span
     is kept in ``widened_from`` (with the merged ones, ``absorbed``), so :func:`restore_widened`
     undoes it and a re-run widens from the same bounds. Visual pool candidates are left alone.
     A stretch that starts in menu time, or no candidate overlaps, is left to :func:`nominate`.
@@ -322,6 +331,8 @@ def widen_for_dialogue(
             best = max(hits, key=lambda c: c.get("score_pre_events", c["score"]))
             start = min(e["start"], *(c["start"] for c in hits))
             end = max(e["end"], *(c["end"] for c in hits))
+            if end - start > DIALOGUE_WIDEN_MAX_S:
+                continue
             if len(hits) == 1 and (start, end) == (best["start"], best["end"]):
                 continue
             kept = best.setdefault("widened_from", {"start": best["start"], "end": best["end"]})
@@ -374,13 +385,17 @@ def nominate(
     :func:`cutpoint.analyze.candidate_cap`), the nominees with the best score and boost.
 
     A dialogue stretch (:func:`seeds`) that a candidate overlaps widens that candidate to cover it
-    instead (:func:`widen_for_dialogue`), the candidate's other signals counting as before.
+    instead (:func:`widen_for_dialogue`), the candidate's other signals counting as before, when
+    the result stays within :data:`DIALOGUE_WIDEN_MAX_S`. A longer stretch that no candidate
+    contains is nominated whole with its full length, over the candidates it overlaps (a pool
+    candidate it overlaps still covers it).
 
     Re-running gives the same nominees from the same events and candidates: those of an
     earlier run are replaced, and kept (id, vision rating) when their window is the same.
     A new one has no id (:func:`number_candidates`).
     """
     from cutpoint import analyze  # noqa: PLC0415 - imports this module
+    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports ski, which imports us
 
     try:
         style = get_style(hl.get("style") or "")
@@ -414,11 +429,16 @@ def nominate(
     todo: dict[str, list[Seed]] = {}
     for src, evs in by_src.items():
         mine = [c for c in own if c["source"] == src]
-        left = [
-            s
-            for s in seeds(evs, types.get(src, DEFAULT_EVENT_TYPES), names, menu.get(src))
-            if not any(s.end >= c["start"] and s.start <= c["end"] for c in mine)
-        ]
+        left = []
+        for s in seeds(evs, types.get(src, DEFAULT_EVENT_TYPES), names, menu.get(src)):
+            hit = [c for c in mine if s.end >= c["start"] and s.start <= c["end"]]
+            if not hit:
+                left.append(s)
+            elif s.whole and not any(
+                is_pool(c) or (c["start"] <= s.start + 0.01 and c["end"] >= s.end - 0.01)
+                for c in hit
+            ):  # too long to widen what it overlaps (and not inside one): a moment of its own
+                left.append(replace(s, over=True))
         if left:
             todo[src] = left
     new: list[dict[str, Any]] = []

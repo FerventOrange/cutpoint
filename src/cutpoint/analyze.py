@@ -147,6 +147,9 @@ class Candidate:
     event: dict[str, Any] | None = None  # action-cam: the crash behind a must-include clip
     nominated: list[str] = field(default_factory=list)  # event types that seeded it (nominate)
     whole: bool = False  # a dialogue stretch: its span stays as marked (no max_len, no merging)
+    over: bool = (
+        False  # a long dialogue stretch: stays whole over the existing candidates (nominate)
+    )
 
 
 # --------------------------------------------------------------------------- signals
@@ -1378,12 +1381,14 @@ def _place_free(
     ends up over a taken window or another."""
     stretches: dict[tuple[float, float], list[Candidate]] = {}
     for c in cands:
-        if _fit_free(c, taken, span, style):
+        if c.over or _fit_free(c, taken, span, style):
             stretches.setdefault(_free_around(c.peak_t, taken, span), []).append(c)
     cands = [m for group in stretches.values() for m in _merge(group, style)]
     for c in cands:
         _snap(c, ps.cuts, ps.segments, span, style)
-    cands = [c for c in _resolve_overlaps(cands, style) if _fit_free(c, taken, span, style)]
+    cands = [
+        c for c in _resolve_overlaps(cands, style) if c.over or _fit_free(c, taken, span, style)
+    ]
     out: list[Candidate] = []
     for c in sorted(cands, key=lambda c: c.start):  # the fits can bring two together again
         if out and c.start < out[-1].end:
@@ -1407,6 +1412,7 @@ def nominate_candidates(
     ``style.max_len`` holds as it does for the picked ones. A dialogue stretch (``Seed.whole``)
     is the exception: its window is the span the dialogue reader marked, :data:`DIALOGUE_PRE_ROLL_S`
     before it, never cut to ``max_len`` or merged into another window (it can run for minutes).
+    A stretch with ``Seed.over`` also ignores ``taken``: it stays whole over the candidates it overlaps.
     """
     ps, off, span = part.signals, part.offset, part.duration
     taken = [(a - off, b - off) for a, b in taken]
@@ -1435,6 +1441,7 @@ def nominate_candidates(
                 label_hint=slugify(s.name, 30),
                 nominated=[s.name],
                 whole=s.whole,
+                over=s.over,
             )
         )
     out = _place_free(cands, taken, ps, span, style)

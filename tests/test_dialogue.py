@@ -716,12 +716,12 @@ def test_dialogue_stretches_close_together_are_not_merged(tmp_path):
 def test_a_stretch_with_a_candidate_inside_it_widens_that_candidate_and_nominates_nothing(tmp_path):
     inside = own("h001", 150.0, 60.0, end=160.0)
     hl = highlights([inside])
-    events = events_of([talk_event(100.0, 400.0, conf=1.0)])
+    events = events_of([talk_event(100.0, 180.0, conf=1.0)])
     assert scoring.nominate(hl, events, tmp_path, [grid()]) == 0
     assert nominees(hl) == []
     (cand,) = hl["candidates"]
-    assert cand["id"] == "h001" and (cand["start"], cand["end"]) == (100.0, 400.0)
-    assert cand["duration"] == 300.0 and cand["score"] == 60.0  # its own signals stay
+    assert cand["id"] == "h001" and (cand["start"], cand["end"]) == (100.0, 180.0)
+    assert cand["duration"] == 80.0 and cand["score"] == 60.0  # its own signals stay
     boost, evidence = scoring.event_boost(cand, events["events"], style=STYLE)
     assert boost == pytest.approx(scoring.DIALOGUE_POINTS) and evidence["dialogue"] == 1.0
 
@@ -811,30 +811,30 @@ def widen_hl(*cands):
 def test_a_widened_candidate_is_not_cut_to_max_len_and_keeps_its_id_and_signals(tmp_path):
     style = get_style("gaming")
     hl = widen_hl(own("h001", 150.0, 60.0, end=158.0))
-    scoring.nominate(hl, events_of([talk_event(100.0, 400.0)]), tmp_path, [grid()])
+    scoring.nominate(hl, events_of([talk_event(100.0, 180.0)]), tmp_path, [grid()])
     (cand,) = hl["candidates"]
-    assert cand["end"] - cand["start"] == 300.0 > 10 * style.max_len
+    assert cand["end"] - cand["start"] == 80.0 > style.max_len
     assert (cand["widened_from"]["start"], cand["widened_from"]["end"]) == (150.0, 158.0)
 
 
 def test_a_candidate_longer_than_the_stretch_is_the_union_of_both(tmp_path):
-    hl = widen_hl(own("h001", 90.0, 60.0, end=300.0))
-    scoring.nominate(hl, events_of([talk_event(100.0, 400.0)]), tmp_path, [grid()])
+    hl = widen_hl(own("h001", 90.0, 60.0, end=130.0))
+    scoring.nominate(hl, events_of([talk_event(100.0, 170.0)]), tmp_path, [grid()])
     (cand,) = hl["candidates"]
-    assert (cand["start"], cand["end"]) == (90.0, 400.0)
+    assert (cand["start"], cand["end"]) == (90.0, 170.0)
 
 
 def test_candidates_a_stretch_overlaps_become_the_best_scoring_one(tmp_path):
     hl = widen_hl(
-        own("h001", 120.0, 30.0, end=128.0),
-        own("h002", 200.0, 70.0, end=208.0),
-        own("h003", 380.0, 50.0, end=420.0),
+        own("h001", 110.0, 30.0, end=118.0),
+        own("h002", 130.0, 70.0, end=138.0),
+        own("h003", 160.0, 50.0, end=180.0),
         own("h004", 700.0, 90.0, end=708.0),  # nothing to do with it
     )
-    scoring.nominate(hl, events_of([talk_event(100.0, 400.0)]), tmp_path, [grid()])
+    scoring.nominate(hl, events_of([talk_event(100.0, 170.0)]), tmp_path, [grid()])
     ids = {c["id"]: c for c in hl["candidates"]}
     assert sorted(ids) == ["h002", "h004"]
-    assert (ids["h002"]["start"], ids["h002"]["end"]) == (100.0, 420.0)
+    assert (ids["h002"]["start"], ids["h002"]["end"]) == (100.0, 180.0)
     assert (ids["h004"]["start"], ids["h004"]["end"]) == (700.0, 708.0)
     assert [c["id"] for c in ids["h002"]["widened_from"]["absorbed"]] == ["h001", "h003"]
 
@@ -845,9 +845,83 @@ def test_a_stretch_that_no_candidate_overlaps_still_nominates(tmp_path):
     assert [c["id"] for c in hl["candidates"] if "widened_from" in c] == []
 
 
-def test_widening_twice_gives_the_same_candidates(tmp_path):
-    hl = widen_hl(own("h001", 120.0, 30.0, end=128.0), own("h002", 200.0, 70.0, end=208.0))
+def test_a_union_of_exactly_the_cap_still_widens(tmp_path):
+    cap = scoring.DIALOGUE_WIDEN_MAX_S
+    hl = widen_hl(own("h001", 100.0, 60.0, end=108.0))
+    assert (
+        scoring.nominate(hl, events_of([talk_event(100.0, 100.0 + cap)]), tmp_path, [grid()]) == 0
+    )
+    (cand,) = hl["candidates"]
+    assert (cand["start"], cand["end"]) == (100.0, 100.0 + cap)
+
+
+def test_a_union_over_the_cap_leaves_the_candidate_and_nominates_the_stretch_whole(tmp_path):
+    hl = widen_hl(own("h001", 150.0, 60.0, end=158.0))
+    events = events_of([talk_event(100.0, 400.0)])  # 300 s
+    assert scoring.nominate(hl, events, tmp_path, [grid()]) == 1
+    (own_,) = [c for c in hl["candidates"] if not scoring.is_nominated(c)]
+    assert (own_["start"], own_["end"]) == (150.0, 158.0) and "widened_from" not in own_
+    (nom,) = nominees(hl)
+    assert nom["end"] - nom["start"] >= 300.0  # as marked, over h001 (plus the pre-roll)
+    assert nom["start"] <= 100.0 and nom["end"] == pytest.approx(400.0)
+    assert nom["signals"]["events"]["nominated"] == ["dialogue-funny"]
+
+
+def test_partial_widening_is_not_done_when_one_of_two_candidates_would_pass_the_cap(tmp_path):
+    hl = widen_hl(own("h001", 110.0, 30.0, end=118.0), own("h002", 130.0, 70.0, end=138.0))
+    # with h001 alone the union would be 100-170 s; with h002 it is 100-260
+    events = events_of([talk_event(100.0, 260.0)])
+    scoring.nominate(hl, events, tmp_path, [grid()])
+    spans = sorted((c["id"], c["start"], c["end"]) for c in hl["candidates"] if c.get("id"))
+    assert spans == [("h001", 110.0, 118.0), ("h002", 130.0, 138.0)]
+    assert len(nominees(hl)) == 1
+
+
+def test_two_candidates_merge_only_when_the_union_is_within_the_cap(tmp_path):
+    hl = widen_hl(own("h001", 110.0, 30.0, end=118.0), own("h002", 150.0, 70.0, end=158.0))
+    scoring.nominate(hl, events_of([talk_event(100.0, 170.0)]), tmp_path, [grid()])  # 70 s
+    (cand,) = hl["candidates"]
+    assert cand["id"] == "h002" and (cand["start"], cand["end"]) == (100.0, 170.0)
+    assert [c["id"] for c in cand["widened_from"]["absorbed"]] == ["h001"]
+    hl = widen_hl(own("h001", 110.0, 30.0, end=118.0), own("h002", 150.0, 70.0, end=158.0))
+    scoring.nominate(hl, events_of([talk_event(100.0, 250.0)]), tmp_path, [grid()])  # 150 s
+    assert sorted(c["id"] for c in hl["candidates"] if c.get("id")) == ["h001", "h002"]
+    assert all("widened_from" not in c for c in hl["candidates"])
+
+
+def test_a_long_stretch_inside_a_longer_candidate_is_not_nominated_again(tmp_path):
+    hl = widen_hl(own("h001", 50.0, 60.0, end=400.0))
+    assert scoring.nominate(hl, events_of([talk_event(100.0, 300.0)]), tmp_path, [grid()]) == 0
+    (cand,) = hl["candidates"]
+    assert (cand["start"], cand["end"]) == (50.0, 400.0)
+
+
+def test_a_long_stretch_over_a_candidate_gives_the_same_result_when_run_again(tmp_path):
+    hl = widen_hl(own("h001", 150.0, 60.0, end=158.0))
     events = events_of([talk_event(100.0, 400.0)])
+    scoring.nominate(hl, events, tmp_path, [grid()])
+    once = json.loads(json.dumps(hl))
+    scoring.nominate(hl, events, tmp_path, [grid()])
+    assert json.loads(json.dumps(hl)) == once
+    scoring.nominate(hl, events_of([]), tmp_path, [grid()])  # the stretch is gone
+    assert nominees(hl) == []
+    assert [(c["start"], c["end"]) for c in hl["candidates"]] == [(150.0, 158.0)]
+
+
+def test_a_stretch_that_stops_fitting_the_cap_is_taken_back_and_nominated_on_a_rerun(tmp_path):
+    hl = widen_hl(own("h001", 150.0, 60.0, end=158.0))
+    scoring.nominate(hl, events_of([talk_event(100.0, 180.0)]), tmp_path, [grid()])
+    assert nominees(hl) == [] and hl["candidates"][0]["end"] == 180.0
+    scoring.nominate(hl, events_of([talk_event(100.0, 400.0)]), tmp_path, [grid()])
+    assert [(c["start"], c["end"]) for c in hl["candidates"] if not scoring.is_nominated(c)] == [
+        (150.0, 158.0)
+    ]
+    assert len(nominees(hl)) == 1
+
+
+def test_widening_twice_gives_the_same_candidates(tmp_path):
+    hl = widen_hl(own("h001", 120.0, 30.0, end=128.0), own("h002", 150.0, 70.0, end=158.0))
+    events = events_of([talk_event(100.0, 180.0)])
     scoring.nominate(hl, events, tmp_path, [grid()])
     once = json.loads(json.dumps(hl))
     scoring.nominate(hl, events, tmp_path, [grid()])
@@ -855,17 +929,17 @@ def test_widening_twice_gives_the_same_candidates(tmp_path):
 
 
 def test_without_the_stretch_the_candidates_return_to_their_own_spans(tmp_path):
-    hl = widen_hl(own("h001", 120.0, 30.0, end=128.0), own("h002", 200.0, 70.0, end=208.0))
-    scoring.nominate(hl, events_of([talk_event(100.0, 400.0)]), tmp_path, [grid()])
+    hl = widen_hl(own("h001", 120.0, 30.0, end=128.0), own("h002", 150.0, 70.0, end=158.0))
+    scoring.nominate(hl, events_of([talk_event(100.0, 180.0)]), tmp_path, [grid()])
     scoring.nominate(hl, events_of([]), tmp_path, [grid()])
     got = sorted((c["id"], c["start"], c["end"], c["duration"]) for c in hl["candidates"])
-    assert got == [("h001", 120.0, 128.0, 8.0), ("h002", 200.0, 208.0, 8.0)]
+    assert got == [("h001", 120.0, 128.0, 8.0), ("h002", 150.0, 158.0, 8.0)]
     assert all("widened_from" not in c for c in hl["candidates"])
 
 
 def test_a_shorter_stretch_re_widens_from_the_own_span_not_the_widened_one(tmp_path):
     hl = widen_hl(own("h001", 150.0, 60.0, end=158.0))
-    scoring.nominate(hl, events_of([talk_event(100.0, 400.0)]), tmp_path, [grid()])
+    scoring.nominate(hl, events_of([talk_event(100.0, 180.0)]), tmp_path, [grid()])
     scoring.nominate(hl, events_of([talk_event(140.0, 200.0)]), tmp_path, [grid()])
     (cand,) = hl["candidates"]
     assert (cand["start"], cand["end"]) == (140.0, 200.0)
@@ -874,7 +948,7 @@ def test_a_shorter_stretch_re_widens_from_the_own_span_not_the_widened_one(tmp_p
 def test_a_pool_candidate_is_not_widened_and_still_covers_the_stretch(tmp_path):
     pool = own("v001", 150.0, 0.0, end=158.0) | {"pool": "visual"}
     hl = widen_hl(pool)
-    assert scoring.nominate(hl, events_of([talk_event(100.0, 400.0)]), tmp_path, [grid()]) == 0
+    assert scoring.nominate(hl, events_of([talk_event(100.0, 180.0)]), tmp_path, [grid()]) == 0
     assert (pool["start"], pool["end"]) == (150.0, 158.0)
 
 
@@ -882,11 +956,11 @@ def test_rescoring_a_widened_candidate_adds_the_dialogue_boost(tmp_path):
     from cutpoint import scorer  # noqa: PLC0415
 
     hl = widen_hl(own("h001", 150.0, 40.0, end=158.0))
-    events = events_of([talk_event(100.0, 400.0, conf=1.0)], created="x")
+    events = events_of([talk_event(100.0, 180.0, conf=1.0)], created="x")
     scorer.rescore_events(hl, events, tmp_path, [grid()])
     (cand,) = hl["candidates"]
     assert cand["score"] == pytest.approx(40.0 + scoring.DIALOGUE_POINTS)
-    assert (cand["start"], cand["end"]) == (100.0, 400.0)
+    assert (cand["start"], cand["end"]) == (100.0, 180.0)
 
 
 # --------------------------------------------------------------------------- style change (F2)
@@ -1078,11 +1152,11 @@ def test_a_dialogue_model_that_does_not_fit_in_memory_skips_the_step_not_the_run
 def widened_project(tmp_path: Path, menu: list[list[float]] | None = None) -> Path:
     proj = tmp_path / "proj"
     hl = highlights(
-        [own("h001", 120.0, 30.0, end=128.0), own("h002", 200.0, 70.0, end=208.0)],
+        [own("h001", 120.0, 30.0, end=128.0), own("h002", 150.0, 70.0, end=158.0)],
         events_rescored=None,
     )
     hl["sources"] = [{"path": SRC, "duration": 600.0}]
-    ev = events_of([talk_event(100.0, 400.0)], created="x")
+    ev = events_of([talk_event(100.0, 180.0)], created="x")
     if menu:
         ev["stats"] = {"ocr": {SRC: {"menu_spans": menu}}}
     proj.mkdir()
@@ -1099,9 +1173,9 @@ def test_a_rerun_checks_the_menu_against_the_candidates_not_the_widened_span(tmp
     cache.save_json(proj / "events.json", ev)
     scoring.rescore_highlights(proj)  # again, from the saved widened candidates
     (cand,) = cache.load_json(proj / "highlights.json")["candidates"]
-    assert cand["id"] == "h002" and (cand["start"], cand["end"]) == (100.0, 400.0)
+    assert cand["id"] == "h002" and (cand["start"], cand["end"]) == (100.0, 180.0)
     # h001 was in menu time: dropped, not merged back in unchecked
-    assert (cand["widened_from"]["start"], cand["widened_from"]["end"]) == (200.0, 208.0)
+    assert (cand["widened_from"]["start"], cand["widened_from"]["end"]) == (150.0, 158.0)
     assert not cand["widened_from"].get("absorbed")
 
 
@@ -1120,13 +1194,13 @@ def test_a_widened_candidate_gets_the_transcript_of_its_new_span_and_gives_it_ba
 ):
     words = [
         {"start": float(t), "end": t + 0.5, "word": f"w{t}", "probability": 0.99}
-        for t in range(100, 400, 20)
+        for t in range(100, 180, 20)
     ]
-    segs = [{"start": 100.0, "end": 400.0, "text": "x", "words": words}]
+    segs = [{"start": 100.0, "end": 180.0, "text": "x", "words": words}]
     monkeypatch.setattr(scoring, "_segments", lambda src, language=None: segs)
     cand = own("h001", 150.0, 60.0, end=158.0) | {"transcript": "w160"}
     hl = highlights([cand])
-    scoring.nominate(hl, events_of([talk_event(100.0, 400.0)]), tmp_path, [grid()])
+    scoring.nominate(hl, events_of([talk_event(100.0, 180.0)]), tmp_path, [grid()])
     assert cand["transcript"].startswith("w100 w120") and cand["transcript"] != "w160"
     assert "dialogue_description" not in cand
     scoring.nominate(hl, events_of([]), tmp_path, [grid()])
@@ -1136,7 +1210,7 @@ def test_a_widened_candidate_gets_the_transcript_of_its_new_span_and_gives_it_ba
 def test_without_a_transcript_a_widened_candidate_carries_the_stretch_description(tmp_path):
     cand = own("h001", 150.0, 60.0, end=158.0) | {"transcript": "w160"}
     hl = highlights([cand])
-    scoring.nominate(hl, events_of([talk_event(100.0, 400.0)]), tmp_path, [grid()])
+    scoring.nominate(hl, events_of([talk_event(100.0, 180.0)]), tmp_path, [grid()])
     assert cand["transcript"] == "w160" and cand["dialogue_description"] == "a bit"
     scoring.nominate(hl, events_of([]), tmp_path, [grid()])
     assert "dialogue_description" not in cand
