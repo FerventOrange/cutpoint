@@ -490,10 +490,11 @@
           </fieldset>
         </fieldset>
         <p id="exportState" class="muted"></p>
+        <p id="joinsNote" class="hint" role="status" hidden></p>
         <p id="advInUse" class="hint" hidden></p>
         <div class="export-acts">
           <button type="button" id="clipsBtn" class="btn primary">Export clips</button>
-          <button type="button" id="assembleBtn" class="btn primary">Assemble</button>
+          <button type="button" id="assembleBtn" class="btn primary" aria-describedby="joinsNote">Assemble</button>
           <button type="button" id="extendBtn" class="btn outline adv" aria-describedby="dExtendBtn extendWhy">Extend export</button>
           <span id="dExtendBtn" class="vh">Re-exports the latest export's clips into a new folder with the Extend start and end padding and the speech settings (cutpoint extend).</span>
           <span id="extendWhy" class="vh"></span>

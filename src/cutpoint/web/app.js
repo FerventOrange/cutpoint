@@ -65,6 +65,7 @@ const FRAME = 0.04; // seconds: "Play sequence" moves on this close to a clip's 
 const GAP = 0.05; // seconds: a clip starting this close to the previous one's end plays on without a cut
 const CUT_PLAY = 3; // seconds: "Play across the cut" plays this much of each clip; the roll track shows as much on each side
 const FADE_DUR = 0.25; // seconds: Fade length left blank (assemble --fade-dur's default)
+const JOINS_NOTE = 'Assemble again to apply the joins.';
 const FADE_ROOM = 0.45; // a Fade takes at most this share of the shortest clip it joins (assemble.crossfade_duration)
 const JOIN_NAMES = { cut: 'Cut', fade: 'Fade' };
 const JOIN_NEXT = { default: 'cut', cut: 'fade', fade: null }; // a join's button steps Default, Cut, Fade; null: Default
@@ -3615,7 +3616,7 @@ function setJoin(a, b, i, transition) {
   if (transition) S.joins.push({ a: a.id, b: b.id, transition });
   changed();
   renderCut();
-  $('#sideLive').textContent = `Transition of cut ${i + 1} set to ${transition ? JOIN_NAMES[transition] : `Default (${JOIN_NAMES[joinTransition(a, b)]})`}`;
+  $('#sideLive').textContent = `Transition of cut ${i + 1} set to ${transition ? JOIN_NAMES[transition] : `Default (${JOIN_NAMES[joinTransition(a, b)]})`}${joinsLive()}`;
 }
 
 /** How far a roll can go from where it is, and why not further: the limits of a trim (validate, handleRange) on clip 1's end and clip 2's start. */
@@ -3822,12 +3823,13 @@ function bindCut() {
   }
   const video = $('#optTransition');
   video.addEventListener('change', renderCut); // the control and the joins on Default
+  video.addEventListener('change', renderJoinsNote);
   $('#cutTransition').addEventListener('click', (e) => {
     const value = e.target.closest('button[data-value]')?.dataset.value;
     if (!value || value === video.value) return;
     video.value = value;
     video.dispatchEvent(new Event('change')); // as if chosen in the Export panel: stored, audio linked
-    $('#sideLive').textContent = `Default transition set to ${JOIN_NAMES[value]}`;
+    $('#sideLive').textContent = `Default transition set to ${JOIN_NAMES[value]}${joinsLive()}`;
   });
   const join = $('#cutJoin');
   join.addEventListener('keydown', (e) => {
@@ -4248,13 +4250,26 @@ function exportMatches() {
   return clips.every((c, i) => {
     const s = S.segments[i];
     const a = c.pick?.start ?? c.start;
-    const b = c.pick?.end ?? c.end;
+    const b = c.original_end ?? c.pick?.end ?? c.end; // the sequence's end: ``pick.end`` and ``end`` include the tail
     return c.id === s.id && Math.abs(a - s.start) < 0.02 && Math.abs(b - s.end) < 0.02;
   });
 }
 
+/** A join would now come out other than in the current export's final: by its own choice or the Video transition. Never for a final whose joins are not known (``final_joins`` null). */
+const joinsOutdated = () => !!S.project?.final_current && !!S.project.final_joins?.some((f) => (S.joins.find((j) => j.a === f.a && j.b === f.b)?.transition ?? $('#optTransition').value) !== f.transition);
+/** The note for ``#sideLive`` after a change in Cut mode: an open Export panel's ``#joinsNote`` says it itself. */
+const joinsLive = () => (joinsOutdated() && $('#panelExport').hidden ? `. ${JOINS_NOTE}` : '');
+
+function renderJoinsNote() {
+  const text = joinsOutdated() ? JOINS_NOTE : '';
+  const note = $('#joinsNote');
+  note.hidden = !text;
+  if (note.textContent !== text) note.textContent = text;
+}
+
 function renderExport() {
   syncJoinFields();
+  renderJoinsNote();
   const p = S.project;
   const clips = p?.clips;
   const st = $('#exportState');
