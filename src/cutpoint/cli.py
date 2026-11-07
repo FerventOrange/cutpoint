@@ -171,8 +171,9 @@ def _add_skip_argument(p: argparse.ArgumentParser) -> None:
         choices=SKIPPABLE,
         metavar="STEP",
         help="leave out analysis steps: reactions (sound events such as laughter), keyframes "
-        "(game HUD text or, with a CUDA GPU, what the camera sees) and/or crashes (action-cam "
-        "footage), given after the input paths (e.g. analyze clip.mp4 --skip crashes); default: "
+        "(game HUD text or, with a CUDA GPU, what the camera sees), crashes (action-cam "
+        "footage) and/or dialogue (a text model reads the transcript for funny or heated talk; "
+        "gaming), given after the input paths (e.g. analyze clip.mp4 --skip crashes); default: "
         "analysis.skip in config.json, else none",
     )
 

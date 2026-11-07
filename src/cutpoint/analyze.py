@@ -146,6 +146,7 @@ class Candidate:
     must_include: bool = False  # action-cam: confident crash (cutpoint clips always exports it)
     event: dict[str, Any] | None = None  # action-cam: the crash behind a must-include clip
     nominated: list[str] = field(default_factory=list)  # event types that seeded it (nominate)
+    whole: bool = False  # a dialogue stretch: its span stays as marked (no max_len, no merging)
 
 
 # --------------------------------------------------------------------------- signals
@@ -689,6 +690,7 @@ def _merge(cands: list[Candidate], style: Style) -> list[Candidate]:
         prev = merged[-1] if merged else None
         if (
             prev
+            and not (prev.whole or c.whole)
             and c.start - prev.end <= style.merge_gap
             and max(c.end, prev.end) - prev.start <= style.max_len
         ):
@@ -781,7 +783,7 @@ def _snap(
         near = [x for x in cuts if abs(x - t) <= 1.0]
         if near:
             setattr(c, attr, min(near, key=lambda x: abs(x - t)))
-    if style.snap_sentences:
+    if style.snap_sentences and not c.whole:  # a dialogue stretch ends where the reader said
         _snap_sentences(c, segments, duration)
     words = flat_words(segments)
     for w in words:  # words are chronological, so each fix can only move outward
@@ -800,7 +802,9 @@ def _resolve_overlaps(cands: list[Candidate], style: Style) -> list[Candidate]:
         prev = out[-1] if out else None
         if prev is None or c.start >= prev.end:
             out.append(c)
-        elif max(c.end, prev.end) - prev.start <= style.max_len + min(15.0, 0.25 * style.max_len):
+        elif not (prev.whole or c.whole) and (
+            max(c.end, prev.end) - prev.start <= style.max_len + min(15.0, 0.25 * style.max_len)
+        ):
             _absorb_into(prev, c)
         elif c.end - prev.end >= style.min_len * 0.5:
             c.start = prev.end
@@ -1297,6 +1301,9 @@ def pick_candidates(
     return describe_candidates(cands, style, ps, offset)
 
 
+DIALOGUE_PRE_ROLL_S = 1.0  # a dialogue candidate starts this long before its stretch
+
+
 def usual_count(style: Style) -> int:
     """The candidates a part gets by default: enough to cover ~3x the target duration, at least
     30. A style with an open list (``Style.open_list``) goes past it, above
@@ -1397,7 +1404,9 @@ def nominate_candidates(
     else ``post_roll``) after it, at least ``min_len`` long. Windows close to each other merge
     (:func:`_merge`: a burst of kills is one candidate) and are snapped like the picked ones.
     All stay out of ``taken`` (the windows of the existing candidates, absolute time), and
-    ``style.max_len`` holds as it does for the picked ones.
+    ``style.max_len`` holds as it does for the picked ones. A dialogue stretch (``Seed.whole``)
+    is the exception: its window is the span the dialogue reader marked, :data:`DIALOGUE_PRE_ROLL_S`
+    before it, never cut to ``max_len`` or merged into another window (it can run for minutes).
     """
     ps, off, span = part.signals, part.offset, part.duration
     taken = [(a - off, b - off) for a, b in taken]
@@ -1406,10 +1415,13 @@ def nominate_candidates(
         t = s.start - off
         if not 0.0 <= t <= span:
             continue
-        end = t + s.hold + (style.post_roll if s.tail_s is None else s.tail_s)
-        start, end = max(0.0, t - style.pre_roll), min(span, end)
-        if end - start > style.max_len:
-            end = start + style.max_len
+        if s.whole:  # a dialogue stretch: as the reader marked it, whatever its length
+            start, end = max(0.0, t - DIALOGUE_PRE_ROLL_S), min(span, t + s.hold)
+        else:
+            end = t + s.hold + (style.post_roll if s.tail_s is None else s.tail_s)
+            start, end = max(0.0, t - style.pre_roll), min(span, end)
+            if end - start > style.max_len:
+                end = start + style.max_len
         if end - start < style.min_len:
             end = start + style.min_len
         cands.append(
@@ -1422,6 +1434,7 @@ def nominate_candidates(
                 dict.fromkeys(ps.sig, 0.0),
                 label_hint=slugify(s.name, 30),
                 nominated=[s.name],
+                whole=s.whole,
             )
         )
     out = _place_free(cands, taken, ps, span, style)
@@ -1639,6 +1652,7 @@ LAYER_STEP = {
     "visual": "keyframes",
     "ocr": "keyframes",
     "crash": "crashes",
+    "dialogue": "dialogue",  # the dialogue reader, run by run_events before it writes
     "write": "ranking",
 }
 
@@ -1945,6 +1959,104 @@ def _scene_plan(src: Path, duration: float) -> Any:
     return ScenePlan(io, cdir, duration, vf, tuple(enc))
 
 
+def _dialogue_backend(
+    style: Style,
+    skip: Collection[str],
+    steps: progress.Run,
+    transcripts: dict[str, list[dict[str, Any]]],
+    ollama_url: str | None,
+    ollama_model: str | None,
+) -> Any:
+    """The text model that reads the transcripts for the ``dialogue`` step
+    (:func:`cutpoint.events.dialogue.choose_backend`, made once per run), or None with the step
+    planned as skipped and the reason logged. Open-list styles only."""
+    from cutpoint.events import dialogue  # noqa: PLC0415
+
+    if "dialogue" in skip:  # planned by plan_layers
+        return None
+    if not style.open_list:
+        steps.skip("dialogue", f"for open-list styles only, not the {style.name} style")
+        return None
+    if not any(segments for segments in transcripts.values()):
+        steps.skip("dialogue", "no speech to read")
+        return None
+    choice = dialogue.choose_backend(ollama_url, ollama_model)
+    if choice.backend is None:
+        logger.info("Dialogue step skipped: %s", choice.reason)
+        steps.skip("dialogue", choice.reason)
+    return choice.backend
+
+
+def _dialogue_reader(
+    backend: Any,
+    transcripts: dict[str, list[dict[str, Any]]],
+    steps: progress.Run,
+    timings: dict[str, float],
+    ran: list[bool],
+) -> Callable[[list[dict[str, Any]]], list[dict[str, Any]]]:
+    """The dialogue step as a function of the audio events (events.json entries with source,
+    ``start``, ``label`` and ``confidence``): reads the ``transcripts`` with ``backend`` and
+    returns the dialogue events. Records ``timings["dialogue_s"]`` and appends to ``ran`` when
+    called."""
+    from cutpoint.events import dialogue  # noqa: PLC0415
+
+    def read(audio: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        ran.append(True)
+        t0 = time.perf_counter()
+        try:
+            found = dialogue.read_all(
+                transcripts, audio, backend, lambda pct, name: steps.update(pct, name)
+            )
+        except LowMemoryError:  # an optional step never aborts the analysis
+            message = f"Dialogue skipped: not enough free memory for {backend.model}"
+            logger.warning("%s", message)
+            jsonout.warn("step_failed", message)
+            found = []
+        timings["dialogue_s"] = round(time.perf_counter() - t0, 2)
+        return found
+
+    return read
+
+
+def _audio_events(layer1: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """The audio events of the layer-1 events per source, as events.json has them."""
+    return [
+        {
+            "kind": "audio",
+            "source": src,
+            "start": e["t"],
+            "label": e.get("label"),
+            "confidence": e.get("confidence"),
+        }
+        for src, evs in layer1.items()
+        for e in evs
+        if e.get("kind") == "audio"
+    ]
+
+
+def _dialogue_alone(
+    project: Path,
+    hl: dict[str, Any],
+    transcript: str,
+    steps: progress.Run,
+    reader: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+    sources: list[str],
+) -> None:
+    """The ``dialogue`` step when the event layers did not run it: its events replace the
+    earlier ones in events.json (made if there is none) and events.txt. The audio events it
+    ranks by are those events.json already has, if any. An error fails the step only."""
+    from cutpoint.events import report  # noqa: PLC0415
+    from cutpoint.events.common import pending_highlights  # noqa: PLC0415
+
+    with _StepHook(steps)("dialogue"):
+        doc = cache.load_json(project / "events.json")
+        old = doc.get("events") if isinstance(doc, dict) else None
+        audio = [e for e in old or [] if isinstance(e, dict) and e.get("kind") == "audio"]
+        found = reader(audio)
+        with pending_highlights(project, hl, transcript):
+            report.replace_dialogue(project, found, list(dict.fromkeys(sources)))
+
+
 def _run_layers(
     project: Path,
     plan: LayerPlan,
@@ -1956,6 +2068,7 @@ def _run_layers(
     ollama_url: str | None = None,
     ollama_model: str | None = None,
     batch_size: int = 0,
+    dialogue: Callable[[dict[str, list[dict[str, Any]]]], list[dict[str, Any]]] | None = None,
 ) -> bool:
     """Run the planned event layers on the analysis ``hl`` (not written yet) and write
     events.json, as ``cutpoint events`` would (held back with the other
@@ -1964,7 +2077,8 @@ def _run_layers(
     the transcript.txt text, not written yet either (None: read from the project);
     ``ollama_url``, ``ollama_model``: the VLM layer's Ollama (``analyze --ollama-url``, #660;
     None: from config.json and the environment); ``batch_size``: ``--batch-size``
-    (:func:`~cutpoint.events.pipeline.run_events`)."""
+    (:func:`~cutpoint.events.pipeline.run_events`); ``dialogue``: the dialogue reader it runs as
+    the ``dialogue`` step before it writes events.json (:func:`_dialogue_reader`)."""
     from cutpoint.crash import no_visual_reason  # noqa: PLC0415
     from cutpoint.events.audio_events import AudioParams  # noqa: PLC0415
     from cutpoint.events.common import pending_highlights  # noqa: PLC0415
@@ -1995,6 +2109,7 @@ def _run_layers(
                 ollama_model=ollama_model,
                 discover_hint=DISCOVER_HINT,
                 batch_size=batch_size,
+                dialogue=dialogue,
             )
     except Exception as err:
         if steps.current == "ranking" or isinstance(err, LowMemoryError):
@@ -2567,6 +2682,21 @@ def _analyze(
             plan = plan_layers(style, sources, skip, cat)
             for step, reason in plan.skipped.items():
                 steps.skip(step, reason)
+            # ---- 5. dialogue: a text model reads the transcripts (open-list styles only).
+            # Inside the event layers it runs before events.json is written; without them
+            # (lite, every layer skipped) after, on the events.json there is.
+            spoken: dict[str, list[dict[str, Any]]] = {}
+            for r in results:
+                spoken.setdefault(str(r.source), []).extend(r.segments)
+            for segments in spoken.values():
+                segments.sort(key=lambda s: s["start"])
+            backend = _dialogue_backend(style, skip, steps, spoken, ollama_url, ollama_model)
+            ran: list[bool] = []
+            reader = (
+                _dialogue_reader(backend, spoken, steps, timings, ran)
+                if backend is not None
+                else None
+            )
             if plan.layers:
                 hl["candidates"] = records()  # VLM windows cached by `events` follow them
                 t0 = time.perf_counter()
@@ -2581,9 +2711,14 @@ def _analyze(
                     ollama_url=ollama_url,
                     ollama_model=ollama_model,
                     batch_size=batch_size,
+                    dialogue=(lambda layer1: reader(_audio_events(layer1))) if reader else None,
                 )
                 timings["events_s"] = round(time.perf_counter() - t0, 2)
                 free_models()
+            if reader is not None and not ran:
+                _dialogue_alone(
+                    out_dir, hl, transcript, steps, reader, [str(r.source) for r in results]
+                )
 
         # ---- 5. ranking: candidates rescored with the events
         steps.start("ranking")

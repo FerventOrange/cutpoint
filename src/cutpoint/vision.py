@@ -435,6 +435,7 @@ class VisionRater:
         num_predict: int = 4096,
         *,
         timeout: float = 600,
+        num_ctx: int = 8192,
     ) -> dict | None:
         """One turn (text, optionally with JPEG frames); the reply's JSON object or None.
 
@@ -443,6 +444,7 @@ class VisionRater:
         runs out, so text-only turns to a Qwen model (name starting with ``qwen``) go
         through ``/api/generate`` in raw mode with the ChatML turn and an empty
         ``<think></think>`` block already written; other models use ``/api/chat``.
+        ``num_ctx``: the context window asked of Ollama.
         """
         if self.via:
             self.check_memory()
@@ -456,7 +458,7 @@ class VisionRater:
         if self.consent_needed:
             self.warn_consent()
             return None
-        options = {"temperature": 0.2, "num_ctx": 8192, "num_predict": num_predict}
+        options = {"temperature": 0.2, "num_ctx": num_ctx, "num_predict": num_predict}
         payload: dict = {"model": self.model, "stream": False, "format": schema or "json"}
         raw = not images and self.model.lower().startswith("qwen")
         if not raw:

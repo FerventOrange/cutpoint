@@ -53,7 +53,7 @@ class AssistantSettings:
     url: str = ""  # base URL; "": the provider's (Ollama: cutpoint.backends.ollama_url)
     # 0: the provider's default (50000 Ollama, 8192 other local servers, 32768 hosted)
     context_tokens: int = 0
-    consent: tuple[str, ...] = ()  # "<role>-v2:<provider>@<host>" the user agreed to
+    consent: tuple[str, ...] = ()  # "<role>-v<n>:<provider>@<host>" the user agreed to
 
 
 @dataclass(frozen=True)
@@ -268,7 +268,7 @@ def _assistant(path: Path, data: dict) -> AssistantSettings:
         ("provider", _is_str, "a string"),
         ("model", _is_str, "a string"),
         ("url", _is_str, "a string"),
-        ("consent", _is_str_list, "a list of assistant-v2:<provider>@<host> entries"),
+        ("consent", _is_str_list, "a list of assistant-v3:<provider>@<host> entries"),
     )
     for key, ok, what in checks:
         _check_type(path, {f"assistant.{key}": section.get(key)}, f"assistant.{key}", ok, what)

@@ -3,7 +3,7 @@
 Active only when ``CUTPOINT_PROGRESS=1``. Every state change of a step is one line on
 stderr::
 
-    PROGRESS {"step":"reactions","index":2,"total":6,"label":"Reactions","state":"running",
+    PROGRESS {"step":"reactions","index":2,"total":7,"label":"Reactions","state":"running",
     "pct":40,"detail":null}
 
 (one line, compact JSON). ``state`` is ``running``, ``done``, ``skipped`` or ``failed``;
@@ -45,7 +45,7 @@ from typing import Any, ClassVar
 logger = logging.getLogger(__name__)
 
 ENV = "CUTPOINT_PROGRESS"
-ANALYZE_STEPS = ("transcribe", "reactions", "keyframes", "crashes", "ranking", "vision")
+ANALYZE_STEPS = ("transcribe", "reactions", "keyframes", "crashes", "dialogue", "ranking", "vision")
 EDIT_STEPS = (*ANALYZE_STEPS, "clips", "assemble")
 PANO_STEPS = ("scan", "views", "analyze", "events")  # ``cutpoint 360 analyze``
 # ``cutpoint events``: its layers in the order they run, recorded in progress.json only (a
@@ -59,6 +59,7 @@ LABELS = {
     "reactions": "Reactions",
     "keyframes": "Keyframes",
     "crashes": "Crashes",
+    "dialogue": "Dialogue",
     "ranking": "Ranking",
     "vision": "Vision rating",
     "clips": "Clips",
@@ -69,7 +70,7 @@ LABELS = {
     "events": "Events and re-rank",
 }
 # Analysis steps ``analyze --skip`` and the ``analysis.skip`` setting may leave out.
-SKIPPABLE = ("reactions", "keyframes", "crashes")
+SKIPPABLE = ("reactions", "keyframes", "crashes", "dialogue")
 MIN_INTERVAL_S = 0.5  # running updates: at most two per second
 CANCELLED = "cancelled"
 

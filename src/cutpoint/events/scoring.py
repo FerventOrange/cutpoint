@@ -13,7 +13,10 @@ re-sorted by the new score and ``suggested_top`` is recomputed.
 
 In styles with an open list (``gaming``), events that can score and that no candidate covers
 nominate candidates of their own first (:func:`nominate`, marked ``signals.events.nominated``), so a game with little talk still gets
-moments from what happens on screen; they are rescored like the others.
+moments from what happens on screen; they are rescored like the others. A stretch of talk the
+dialogue reader marked (:mod:`cutpoint.events.dialogue`, a ``text`` event of type ``dialogue``)
+nominates a candidate of its own, as marked, and adds a few points to any candidate it overlaps
+(:data:`DIALOGUE_POINTS`).
 
 This module collects the evidence; the points are combined by the scorer's bonus stage
 (:func:`cutpoint.scorer.rescore_events`, the ``bonus`` features of :mod:`cutpoint.features`).
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -48,6 +52,12 @@ REACTION_SOUNDS = ("Laughter", "Scream")
 NOMINEE_FLOOR = 0.6  # a nominee's analysis score is at least this share of its source's best
 LAUGH_SOUNDS = ("Laughter",)  # audio events that score laughter points
 SCREAM_SOUNDS = ("Scream", "Cheering")  # audio events that score scream points
+DIALOGUE_TYPE = "dialogue"  # ``type`` of the text events of the dialogue reader
+# Points of a dialogue event at confidence 1. Goals and funny situations score more: a kill 6
+# (a teamkill 12, a banner 6), laughter up to 12, a scream up to 6. A stretch of talk is
+# the weakest evidence of the three, so at most half a kill, scaled by the reader's confidence;
+# laughter inside it counts on its own through the usual laughter points.
+DIALOGUE_POINTS = 3.0
 
 
 def has_reaction(
@@ -92,8 +102,9 @@ def event_boost(
     ``<name>_reaction`` (0 or 1), present only when the reaction applies.
     """
     a, b = cand["start"], cand["end"] + LOOKAHEAD_S
-    laugh = scream = 0.0
+    laugh = scream = dialogue = 0.0
     names = (style,) if isinstance(style, str) else style or ()
+    talk: bool | None = None  # whether the style has an open list (asked at the first stretch)
     scored = {t.name: t for t in types if t.score is not None and t.applies(*names)}
     reacting = {t.name: t for t in types if t.reaction is not None and t.applies(*names)}
     counts = dict.fromkeys([*EVIDENCE_KEYS, *scored], 0)
@@ -106,6 +117,12 @@ def event_boost(
                 laugh = max(laugh, e["confidence"] or 0)
             elif e["label"] in SCREAM_SOUNDS:
                 scream = max(scream, e["confidence"] or 0)
+        elif e["kind"] == "text":
+            if e.get("type") == DIALOGUE_TYPE:
+                if talk is None:  # stretches left in events.json by an earlier style do not count
+                    talk = _open_list(names)
+                if talk:
+                    dialogue = max(dialogue, e["confidence"] or 0)
         elif e["kind"] == "ocr":
             t = first_match(types, e)
             if t and t.name in scored:
@@ -117,15 +134,28 @@ def event_boost(
                 and has_reaction(e["start"], events, segments)
             ):
                 reactions[t.name] = 1
-    boost = min(12.0, 60 * laugh) + min(6.0, 40 * scream)
+    boost = min(12.0, 60 * laugh) + min(6.0, 40 * scream) + DIALOGUE_POINTS * dialogue
     for name, n in counts.items():  # defaults first, in the original order
         if name in scored:
             boost += scored[name].score * min(n, scored[name].max)
     for name, n in reactions.items():
         boost += reacting[name].reaction * n
     evidence = {"laughter": round(laugh, 3), "scream": round(scream, 3), **counts}
+    if dialogue:  # only where the dialogue reader ran
+        evidence["dialogue"] = round(dialogue, 3)
     evidence.update({f"{name}_reaction": n for name, n in reactions.items()})
     return min(MAX_BOOST, boost), evidence
+
+
+def _open_list(names: tuple[str, ...]) -> bool:
+    """Whether a project whose style has one of ``names`` (its name and base) has an open list."""
+    for name in names:
+        try:
+            if get_style(name).open_list:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def best_window(cand: dict[str, Any], windows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -172,6 +202,8 @@ class Seed:
         hold: How long it counts as lasting for the clip: a sound its length, an on-screen
             event at most :data:`~cutpoint.events.tails.OCR_HOLD_S`.
         tail_s: The event type's reaction kept after it (None: the style's ``post_roll``).
+        whole: A dialogue stretch: its candidate keeps the span as marked (``hold`` long, no
+            ``max_len`` cap; see :func:`cutpoint.analyze.nominate_candidates`).
     """
 
     name: str
@@ -179,6 +211,7 @@ class Seed:
     end: float
     hold: float
     tail_s: float | None = None
+    whole: bool = False
 
 
 def seeds(
@@ -189,7 +222,8 @@ def seeds(
 ) -> list[Seed]:
     """The events of one source that can score in a project of ``style`` (its name and base):
     those of an event type with a ``score`` that applies, and the laughter, scream and
-    cheering sounds :func:`event_boost` counts. Events starting in a ``menu`` span are left out."""
+    cheering sounds :func:`event_boost` counts, and the dialogue stretches (``whole`` seeds).
+    Events starting in a ``menu`` span are left out."""
     out = []
     for e in events:
         if any(a <= e["start"] < b for a, b in menu or ()):
@@ -202,12 +236,120 @@ def seeds(
             t = first_match(types, e)
             if t and t.score and t.applies(*style):
                 out.append(Seed(t.name, e["start"], e["end"], min(length, OCR_HOLD_S), t.tail_s))
+        elif e["kind"] == "text" and e.get("type") == DIALOGUE_TYPE:
+            # the whole stretch as the reader marked it, with no reaction kept after it
+            out.append(Seed(f"dialogue-{e['label']}", e["start"], e["end"], length, 0.0, True))
     return out
 
 
 def is_nominated(c: dict[str, Any]) -> bool:
     """Whether the candidate ``c`` was nominated by events (see :func:`nominate`)."""
     return bool(((c.get("signals") or {}).get("events") or {}).get("nominated"))
+
+
+def _set_span(c: dict[str, Any], start: float, end: float) -> None:
+    """Give the candidate ``c`` the span ``[start, end]`` (and its ``duration``)."""
+    c["start"], c["end"] = start, end
+    c["duration"] = round(end - start, 3)
+
+
+def _put_text(c: dict[str, Any], was: dict[str, Any]) -> None:
+    """Give ``c`` back the transcript snippet it had before it was widened (``was``)."""
+    c.pop("dialogue_description", None)
+    if "transcript" in was:
+        c["transcript"] = was["transcript"]
+        if was.get("transcript_unsure"):
+            c["transcript_unsure"] = was["transcript_unsure"]
+        else:
+            c.pop("transcript_unsure", None)
+
+
+def restore_widened(cands: list[dict[str, Any]]) -> int:
+    """Undo :func:`widen_for_dialogue` on ``cands`` (in place): each widened candidate gets its
+    own span back (``widened_from``) and the candidates merged into it return. Returns how many
+    were widened."""
+    back: list[dict[str, Any]] = []
+    n = 0
+    for c in cands:
+        was = c.pop("widened_from", None)
+        if isinstance(was, dict):
+            _set_span(c, was["start"], was["end"])
+            _put_text(c, was)
+            back += was.get("absorbed") or []
+            n += 1
+    cands.extend(back)
+    return n
+
+
+def widen_for_dialogue(
+    cands: list[dict[str, Any]],
+    by_src: dict[str, list[dict[str, Any]]],
+    menu: dict[str, list[list[float]]] | None = None,
+    snippet: Callable[[str, float, float], tuple[str, Any] | None] | None = None,
+) -> int:
+    """Widen the candidates of ``cands`` (in place) that a dialogue stretch overlaps to cover
+    the whole stretch, in place of a near-duplicate nominee: the union of the candidate's span
+    and the stretch's, not cut to ``max_len``. Candidates a stretch overlaps together become one,
+    the best scoring (its id and signals kept); the others are kept inside it. The earlier span
+    is kept in ``widened_from`` (with the merged ones, ``absorbed``), so :func:`restore_widened`
+    undoes it and a re-run widens from the same bounds. Visual pool candidates are left alone.
+    A stretch that starts in menu time, or no candidate overlaps, is left to :func:`nominate`.
+    The widened candidate's transcript is rebuilt over its new span with ``snippet(source,
+    start, end)`` (``(text, unsure)``, or None without a transcript); without one it gets the
+    stretch's description in ``dialogue_description``. Returns how many candidates were widened."""
+    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports ski, which imports us
+
+    widened: set[int] = set()
+    for src, evs in by_src.items():
+        stretches = sorted(
+            (e for e in evs if e.get("kind") == "text" and e.get("type") == DIALOGUE_TYPE),
+            key=lambda e: e["start"],
+        )
+        for e in stretches:
+            if any(a <= e["start"] < b for a, b in (menu or {}).get(src, ())):
+                continue
+            hits = [
+                c
+                for c in cands
+                if c["source"] == src
+                and not is_pool(c)
+                and not is_nominated(c)
+                and c["end"] >= e["start"]
+                and c["start"] <= e["end"]
+            ]
+            if not hits:
+                continue
+            best = max(hits, key=lambda c: c.get("score_pre_events", c["score"]))
+            start = min(e["start"], *(c["start"] for c in hits))
+            end = max(e["end"], *(c["end"] for c in hits))
+            if len(hits) == 1 and (start, end) == (best["start"], best["end"]):
+                continue
+            kept = best.setdefault("widened_from", {"start": best["start"], "end": best["end"]})
+            if "transcript" not in kept:  # the first widening keeps the snippet it had
+                kept["transcript"] = best.get("transcript", "")
+                kept["transcript_unsure"] = best.get("transcript_unsure")
+            for c in hits:
+                if c is best:
+                    continue
+                was = c.pop("widened_from", None)  # merged earlier in this pass: as it was
+                if isinstance(was, dict):
+                    _set_span(c, was["start"], was["end"])
+                    kept.setdefault("absorbed", []).extend(was.get("absorbed") or [])
+                kept.setdefault("absorbed", []).append(c)
+                cands.remove(c)
+            _set_span(best, start, end)
+            said = snippet(src, start, end) if snippet else None
+            if said is not None:
+                best["transcript"] = said[0]
+                if said[1]:
+                    best["transcript_unsure"] = said[1]
+                else:
+                    best.pop("transcript_unsure", None)
+                best.pop("dialogue_description", None)
+            else:
+                best["dialogue_description"] = e.get("description") or ""
+            widened.add(id(best))
+    return len(widened)
 
 
 def nominate(
@@ -231,6 +373,9 @@ def nominate(
     candidates in all as its cap (``max_candidates``, else the style's, see
     :func:`cutpoint.analyze.candidate_cap`), the nominees with the best score and boost.
 
+    A dialogue stretch (:func:`seeds`) that a candidate overlaps widens that candidate to cover it
+    instead (:func:`widen_for_dialogue`), the candidate's other signals counting as before.
+
     Re-running gives the same nominees from the same events and candidates: those of an
     earlier run are replaced, and kept (id, vision rating) when their window is the same.
     A new one has no id (:func:`number_candidates`).
@@ -245,13 +390,27 @@ def nominate(
         return 0
     names = style_and_base(hl.get("style"))
     cands = hl.get("candidates", [])
-    old = [c for c in cands if is_nominated(c)]
-    kept = [c for c in cands if not is_nominated(c)]
-    own = kept
     types, menu = resolve(project, ev), source_menu_spans(ev)
     by_src: dict[str, list[dict[str, Any]]] = {}
     for e in ev.get("events", []):
         by_src.setdefault(e["source"], []).append(e)
+    restore_widened(cands)  # from the same bounds as the first time, whatever the events now
+    language = (hl.get("settings") or {}).get("language")
+    heard: dict[str, list[dict[str, Any]]] = {}
+
+    def snippet(src: str, a: float, b: float) -> tuple[str, Any] | None:
+        """The transcript snippet of ``[a, b]`` as a candidate record has it (None: no transcript)."""
+        if src not in heard:
+            heard[src] = _segments(src, language)
+        if not heard[src]:
+            return None
+        said = [w for w in analyze.flat_words(heard[src]) if a <= w["start"] <= b]
+        return analyze._transcript_snippet(said)
+
+    widen_for_dialogue(cands, by_src, menu, snippet)
+    old = [c for c in cands if is_nominated(c)]
+    kept = [c for c in cands if not is_nominated(c)]
+    own = kept
     todo: dict[str, list[Seed]] = {}
     for src, evs in by_src.items():
         mine = [c for c in own if c["source"] == src]
@@ -347,6 +506,9 @@ def rescore_highlights(project: Path) -> int:
     ev = cache.load_json(project / "events.json")
     if not hl or not ev:
         return 0
+    # widened spans back to their own first: the menu check below sees the real candidates,
+    # and nominate widens them again
+    restore_widened(hl.get("candidates", []))
     backup = project / "highlights.pre-events.json"
     if not backup.exists() and not hl.get("settings", {}).get("events_rescored"):
         cache.save_json(backup, hl)  # one-time copy of the untouched analysis
