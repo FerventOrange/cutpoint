@@ -1162,7 +1162,7 @@ steps, or `events`), each event that can score and that no candidate covers gets
 (a few seconds before it, and after it as its type's tail or the style's post-roll); events
 close together make one candidate. A nominated candidate has `signals.events.nominated` (the
 event names) and keeps the score its window had from the grids as `grid_score`; its `score` is at
-least 0.6 of the best other candidate's of that source, so the events decide its rank. Ids of
+least 0.6 of the best other candidate's of that source, so the events decide its rank. A dialogue stretch over 90 s has exactly 0.6 of it, and its laughter and on-screen events count per minute. Ids of
 nominees continue after the highest id ever given (`settings.last_candidate_id`). Menu time is
 left out. Run again, the
 same events give the same nominees. A source whose caches are gone gets none.

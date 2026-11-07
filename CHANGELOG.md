@@ -537,6 +537,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Long dialogue stretches (over 90 s) no longer take the score of the best moment inside them.
+  Their analysis score is 0.6 of the best other candidate's of the source, and the window's own
+  score stays as `grid_score` for ties. Their laughter points scale with the laughs per minute
+  (full strength at 3 a minute), and each on-screen event type counts per minute, not in total.
+  Candidates of 90 s or less score as before. Run `events` or `analyze` again to rank an existing
+  project this way.
 - An automatic pick skips a candidate that mostly overlaps one already picked from the same source;
   `--ids` does not. The next candidate takes its place.
 - **BREAKING:** The AI Chat consent is version 3 (`assistant-v3:<provider>@<host>`; was `assistant-v2:`). Whole transcripts now go to a hosted chat model during `analyze`, so users of one are asked again, and a saved `assistant-v2:` entry no longer counts. The Vision consent is unchanged.
