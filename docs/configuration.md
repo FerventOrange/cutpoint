@@ -215,7 +215,7 @@ its exports and presets; it does not change the key.
 ### analysis
 
 `{"skip": [...]}`. Analysis steps that `analyze` and `edit` leave out by default: any of
-`reactions`, `keyframes` and `crashes`. `--skip` on the command overrides it for one run.
+`reactions`, `keyframes`, `crashes` and `dialogue`. `--skip` on the command overrides it for one run.
 Default: none. Other step names are rejected.
 
 ### video_encoder
@@ -289,9 +289,12 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   AI Chat on Ollama also sends temperature 1.0, presence_penalty 1.5, top_k 20, top_p 0.95 and
   num_predict 16384 (fixed; the Vision role keeps the model's own).
 - `consent`: the hosted providers the user agreed to send project text to, as
-  `assistant-v2:<provider>@<host>` (for example `assistant-v2:anthropic@api.anthropic.com`; the
-  host has its port when that is not the scheme's default); the AI Chat tab adds them. An entry without the `assistant-v2:` prefix, saved by an earlier version
-  under a shorter description, no longer counts, and AI Chat asks again.
+  `assistant-v3:<provider>@<host>` (for example `assistant-v3:anthropic@api.anthropic.com`; the
+  host has its port when that is not the scheme's default); the AI Chat tab adds them. An entry without the `assistant-v3:` prefix (including `assistant-v2:`), saved by an earlier version
+  under a shorter description, no longer counts, and AI Chat asks again. Version 3 names the whole
+  transcripts that `cutpoint analyze` sends to a hosted chat model (or an Ollama on another machine) for
+  its [dialogue reader](commands.md#dialogue-reader); without it that step is skipped with a
+  `chat_consent_needed` warning.
   The assistant gets only analysis results (moment labels, scores and detection signals,
   vision descriptions, transcript snippets, file names without paths, times) and your messages, never video or audio.
   This consent never covers the [Vision role](#vision_assistant), which has its own.

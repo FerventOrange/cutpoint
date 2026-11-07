@@ -12,10 +12,10 @@ frames per moment the assistant watches). A hosted Vision role sends still frame
 excerpts, file names and times, and detected on-screen text (such as player names) and telemetry
 (for frame ratings and the `events` window descriptions), never the video file. Vision sends more
 data and carries more risk, so it has its own consent: agreeing for AI Chat never covers Vision,
-or the reverse. Both consents are versioned (`assistant-v2:<provider>@<host>` and
+or the reverse. Both consents are versioned (`assistant-v3:<provider>@<host>` and
 `vision-v2:<provider>@<host>` in `config.json`, the host with its port when that is not the
 default, such as `192.168.1.5:8080`): a consent saved by an earlier version, under a shorter
-description, no longer counts, so you are asked again. An Ollama on this machine (`localhost` or
+description, no longer counts, so you are asked again (AI Chat consent is at version 3: `cutpoint analyze` now also sends whole transcripts to a hosted chat model for its dialogue reader, so users of one are asked again; Vision is unchanged). An Ollama on this machine (`localhost` or
 a loopback address, except on the port of the Cutpoint proxy, which forwards to hosted models)
 needs no consent; an Ollama on another machine is hosted and needs the same consents: until Vision is allowed for it, vision steps skip it with a WARNING.
 
