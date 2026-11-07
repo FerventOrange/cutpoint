@@ -18,6 +18,11 @@ dialogue reader marked (:mod:`cutpoint.events.dialogue`, a ``text`` event of typ
 nominates a candidate of its own, as marked, and adds a few points to any candidate it overlaps
 (:data:`DIALOGUE_POINTS`).
 
+A whole dialogue stretch longer than :data:`DIALOGUE_WIDEN_MAX_S` (:func:`is_long_dialogue`)
+has more room for events than a short moment, so its laughter and on-screen events count per
+minute (see :func:`event_boost`). It also does not take the score of the best moment inside it: its analysis score is the :data:`NOMINEE_FLOOR` share of the source's best (see
+:func:`nominate`).
+
 This module collects the evidence; the points are combined by the scorer's bonus stage
 (:func:`cutpoint.scorer.rescore_events`, the ``bonus`` features of :mod:`cutpoint.features`).
 """
@@ -49,7 +54,9 @@ EVIDENCE_KEYS = ("player_kills", "teamkills", "banners", "self_kills")
 REACTION_WINDOW_S = 6.0  # a reaction starts at most this long after the event
 REACTION_PAUSE_S = 1.5  # speech is a reaction only after this much silence up to the event
 REACTION_SOUNDS = ("Laughter", "Scream")
-NOMINEE_FLOOR = 0.6  # a nominee's analysis score is at least this share of its source's best
+# A nominee's analysis score is at least this share of its source's best. A whole dialogue
+# stretch over DIALOGUE_WIDEN_MAX_S has exactly this score, whatever its grids say.
+NOMINEE_FLOOR = 0.6
 LAUGH_SOUNDS = ("Laughter",)  # audio events that score laughter points
 SCREAM_SOUNDS = ("Scream", "Cheering")  # audio events that score scream points
 DIALOGUE_TYPE = "dialogue"  # ``type`` of the text events of the dialogue reader
@@ -60,6 +67,8 @@ DIALOGUE_TYPE = "dialogue"  # ``type`` of the text events of the dialogue reader
 DIALOGUE_POINTS = 3.0
 # A candidate a dialogue stretch overlaps widens to cover it only when the whole result (the
 # stretch and every candidate it hits) stays this long at most. A longer stretch is its own moment.
+# It is also the length above which a whole dialogue stretch is scored at the floor and its
+# laughter and on-screen events count per minute.
 DIALOGUE_WIDEN_MAX_S = 90.0
 
 
@@ -103,9 +112,19 @@ def event_boost(
     in the window is followed by a reaction (:func:`has_reaction`, with the
     source's transcript ``segments`` in source time); its evidence key is
     ``<name>_reaction`` (0 or 1), present only when the reaction applies.
+
+    A whole dialogue stretch longer than :data:`DIALOGUE_WIDEN_MAX_S` (:func:`is_long_dialogue`,
+    read from ``cand["signals"]["events"]["nominated"]``) collects events by length, so for it
+    the laughter points are scaled by the rate of laughter events per minute over
+    ``[start, end + LOOKAHEAD_S]``, from nothing up to 1 at
+    :data:`~cutpoint.events.dialogue.DENSITY_FULL` a minute, and a type's ``score`` is
+    ``score * min(max, n / minutes)`` (n events over the same minutes) instead of
+    ``score * min(max, n)``. Reaction, scream and dialogue points and the evidence counts are
+    the same for every length.
     """
     a, b = cand["start"], cand["end"] + LOOKAHEAD_S
     laugh = scream = dialogue = 0.0
+    laughs = 0  # laughter events with a confidence in the window (long candidates)
     names = (style,) if isinstance(style, str) else style or ()
     talk: bool | None = None  # whether the style has an open list (asked at the first stretch)
     scored = {t.name: t for t in types if t.score is not None and t.applies(*names)}
@@ -118,6 +137,7 @@ def event_boost(
         if e["kind"] == "audio":
             if e["label"] in LAUGH_SOUNDS:
                 laugh = max(laugh, e["confidence"] or 0)
+                laughs += bool(e["confidence"])
             elif e["label"] in SCREAM_SOUNDS:
                 scream = max(scream, e["confidence"] or 0)
         elif e["kind"] == "text":
@@ -137,10 +157,17 @@ def event_boost(
                 and has_reaction(e["start"], events, segments)
             ):
                 reactions[t.name] = 1
-    boost = min(12.0, 60 * laugh) + min(6.0, 40 * scream) + DIALOGUE_POINTS * dialogue
+    laugh_points = min(12.0, 60 * laugh)
+    minutes = (b - a) / 60
+    long = is_long_dialogue(cand)
+    if long:
+        from cutpoint.events.dialogue import DENSITY_FULL  # noqa: PLC0415 - imports this module
+
+        laugh_points *= min(1.0, laughs / minutes / DENSITY_FULL)
+    boost = laugh_points + min(6.0, 40 * scream) + DIALOGUE_POINTS * dialogue
     for name, n in counts.items():  # defaults first, in the original order
         if name in scored:
-            boost += scored[name].score * min(n, scored[name].max)
+            boost += scored[name].score * min(scored[name].max, n / minutes if long else n)
     for name, n in reactions.items():
         boost += reacting[name].reaction * n
     evidence = {"laughter": round(laugh, 3), "scream": round(scream, 3), **counts}
@@ -148,6 +175,18 @@ def event_boost(
         evidence["dialogue"] = round(dialogue, 3)
     evidence.update({f"{name}_reaction": n for name, n in reactions.items()})
     return min(MAX_BOOST, boost), evidence
+
+
+def is_long(c: dict[str, Any]) -> bool:
+    """Whether the candidate ``c`` is longer than :data:`DIALOGUE_WIDEN_MAX_S`."""
+    return c["end"] - c["start"] > DIALOGUE_WIDEN_MAX_S
+
+
+def is_long_dialogue(c: dict[str, Any]) -> bool:
+    """Whether ``c`` is a whole dialogue stretch (nominated by one) longer than
+    :data:`DIALOGUE_WIDEN_MAX_S`."""
+    nominated = ((c.get("signals") or {}).get("events") or {}).get("nominated") or []
+    return is_long(c) and any(str(n).startswith("dialogue-") for n in nominated)
 
 
 def _open_list(names: tuple[str, ...]) -> bool:
@@ -378,7 +417,9 @@ def nominate(
     rescored with the events like the rest. Its analysis score is at least
     :data:`NOMINEE_FLOOR` of the best other candidate's of its source (an event is evidence
     enough that a quiet window is a moment); the grid score it had stays as ``grid_score``,
-    for ties. The geometry is :func:`cutpoint.analyze.nominate_candidates`'s. Menu time is
+    for ties. A whole dialogue stretch over :data:`DIALOGUE_WIDEN_MAX_S` (:func:`is_long_dialogue`)
+    has exactly that floor as its analysis score, not the peak of the grids inside it: the best
+    short moment in minutes of talk would otherwise rank the whole stretch first. The geometry is :func:`cutpoint.analyze.nominate_candidates`'s. Menu time is
     dropped: the events in it, and the windows mostly in it
     (:func:`~cutpoint.events.menu_spans.drop_menu_time`). A part gets at most as many
     candidates in all as its cap (``max_candidates``, else the style's, see
@@ -468,7 +509,8 @@ def nominate(
             floor = NOMINEE_FLOOR * max(base) if base else 0.0
             for r in recs:
                 r["grid_score"] = r["score"]
-                r["score"] = max(r["score"], floor)
+                # a long stretch has the floor itself, not the best moment inside it
+                r["score"] = floor if is_long_dialogue(r) else max(r["score"], floor)
             room = analyze.candidate_cap(style, explicit) - sum(
                 c["source"] == src and lo <= c["start"] < hi for c in own
             )

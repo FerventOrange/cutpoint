@@ -17,7 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   widened to it, and candidates it joins become one, so a candidate id can be gone from
   `highlights.json` after an analysis. This happens only when the result stays within 90 s; a
   longer stretch is a candidate of its own and the candidates it overlaps stay as they are. A
-  dialogue stretch adds up to 3 points to the candidates it overlaps. A `--max-total` or montage
+  dialogue stretch adds up to 3 points to the candidates it overlaps.
+  A stretch over 90 s does not take the score of the best moment inside it: its analysis score is
+  0.6 of the best other candidate's of the source, and its laughter (full strength at 3 laughs a
+  minute) and on-screen events count per minute. A `--max-total` or montage
   cap drops a dialogue candidate longer than the cap instead of trimming it. The model is the hosted
   AI Chat model (with the AI Chat consent;
   ranked by its rating), or a local Ollama or one on another machine with the AI Chat consent

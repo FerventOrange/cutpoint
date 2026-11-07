@@ -1214,3 +1214,172 @@ def test_without_a_transcript_a_widened_candidate_carries_the_stretch_descriptio
     assert cand["transcript"] == "w160" and cand["dialogue_description"] == "a bit"
     scoring.nominate(hl, events_of([]), tmp_path, [grid()])
     assert "dialogue_description" not in cand
+
+
+# --------------------------------------------------------------------------- long stretches
+def whole(start: float, end: float) -> dict[str, Any]:
+    """A candidate as a dialogue stretch nominates it."""
+    return {
+        "start": start, "end": end, "signals": {"events": {"nominated": ["dialogue-funny"]}},
+    }  # fmt: skip
+
+
+LONG_MIN = (400.0 - 100.0 + scoring.LOOKAHEAD_S) / 60  # minutes of the stretch 100-400 s
+
+
+def long_nominee(extra: list[dict[str, Any]], tmp_path: Path, bumps=((250.0, 1.0),)):
+    """A gaming project with a picked 60-point moment, and the stretch 100-400 s as a nominee."""
+    from test_event_candidates import quiet_grid  # noqa: PLC0415
+
+    hl = highlights([own("h001", 20.0, 60.0)])
+    events = events_of([talk_event(100.0, 400.0, conf=0.0), *extra])
+    scoring.nominate(hl, events, tmp_path, [quiet_grid(600.0, bumps=bumps)])
+    (nom,) = [c for c in nominees(hl) if scoring.is_long_dialogue(c)]
+    return hl, events, nom
+
+
+def laughs(n: int, start: float = 120.0, confidence: float = 0.1) -> list[dict[str, Any]]:
+    return [sound(start + 10 * i, confidence=confidence) for i in range(n)]
+
+
+def test_a_long_dialogue_nominee_has_the_floor_not_the_peak_and_keeps_its_grid_score(tmp_path):
+    _, _, nom = long_nominee([], tmp_path)
+    assert nom["grid_score"] > scoring.NOMINEE_FLOOR * 60  # the loud moment inside it
+    assert nom["score"] == pytest.approx(scoring.NOMINEE_FLOOR * 60)
+
+
+def test_a_short_dialogue_nominee_and_a_kill_nominee_keep_the_peak_over_the_floor(tmp_path):
+    from test_event_candidates import quiet_grid  # noqa: PLC0415
+
+    hl = highlights([own("h001", 20.0, 10.0)])
+    events = events_of([talk_event(100.0, 160.0, conf=0.0), feed(300.0)])
+    scoring.nominate(hl, events, tmp_path, [quiet_grid(600.0, bumps=[(130.0, 1.0), (300.0, 1.0)])])
+    short_nominees = nominees(hl)
+    assert len(short_nominees) == 2
+    for nom in short_nominees:
+        assert not scoring.is_long_dialogue(nom)
+        assert nom["grid_score"] > scoring.NOMINEE_FLOOR * 10
+        assert nom["score"] == nom["grid_score"]  # max(peak, floor), as before
+
+
+def test_a_long_dialogue_nominee_with_no_other_candidate_scores_zero(tmp_path):
+    from test_event_candidates import quiet_grid  # noqa: PLC0415
+
+    hl = highlights([])
+    events = events_of([talk_event(100.0, 400.0, conf=0.0)])
+    scoring.nominate(hl, events, tmp_path, [quiet_grid(600.0, bumps=[(250.0, 1.0)])])
+    (nom,) = nominees(hl)
+    assert nom["score"] == 0.0 and nom["grid_score"] > 0.0
+
+
+@pytest.mark.parametrize("count", [0, 1, 6, 11, 40])
+def test_the_laughter_points_of_a_long_candidate_scale_with_laughs_per_minute(count):
+    cand = whole(100.0, 400.0)
+    per_minute = count / LONG_MIN
+    rate = min(1.0, per_minute / dialogue.DENSITY_FULL)
+    boost, ev = scoring.event_boost(cand, laughs(count, confidence=0.1), style=STYLE)
+    assert boost == pytest.approx(min(12.0, 60 * ev["laughter"]) * rate)
+
+
+def test_laughter_density_below_at_and_above_three_a_minute():
+    cand = whole(100.0, 400.0)  # 310 s with the lookahead
+    full = round(dialogue.DENSITY_FULL * LONG_MIN)  # 16 laughs: just under 3 a minute
+    below, _ = scoring.event_boost(cand, laughs(full - 6), style=STYLE)
+    at, _ = scoring.event_boost(cand, laughs(full + 1), style=STYLE)
+    above, _ = scoring.event_boost(cand, laughs(full + 10), style=STYLE)
+    assert 0 < below < at == above == pytest.approx(6.0)  # 60 * 0.1, at full strength
+    # exactly 3 a minute over a window of 5 minutes
+    five = whole(0.0, 290.0)  # 300 s with the lookahead
+    exact, _ = scoring.event_boost(five, laughs(15, start=1.0), style=STYLE)
+    assert exact == pytest.approx(6.0)
+    one_less, _ = scoring.event_boost(five, laughs(14, start=1.0), style=STYLE)
+    assert one_less == pytest.approx(6.0 * 14 / 15)
+
+
+def test_a_laugh_without_confidence_is_not_counted_for_the_density():
+    five = whole(0.0, 290.0)
+    boost, _ = scoring.event_boost(five, [*laughs(14, start=1.0), sound(200.0, confidence=0.0)])
+    assert boost == pytest.approx(6.0 * 14 / 15)
+
+
+def test_on_screen_events_of_a_long_candidate_count_per_minute():
+    five = whole(0.0, 290.0)  # 5 minutes with the lookahead
+    kills = [feed(10.0 * i + 1) for i in range(10)]  # 2 a minute
+    boost, ev = scoring.event_boost(five, kills, style=STYLE)
+    assert ev["player_kills"] == 10  # the evidence is still the count
+    assert boost == pytest.approx(6.0 * 2.0)  # a kill is 6 points: 2 a minute, not min(10, max)
+    boost, _ = scoring.event_boost(five, kills[:5], style=STYLE)
+    assert boost == pytest.approx(6.0 * 1.0)
+    # a short window: the count, as before
+    short_, _ = scoring.event_boost({"start": 0.0, "end": 80.0}, kills[:2], style=STYLE)
+    assert short_ == pytest.approx(6.0 * 2)
+
+
+def test_the_per_minute_count_is_capped_at_the_types_max():
+    five = whole(0.0, 290.0)
+    kills = [feed(2.0 * i + 1) for i in range(100)]  # 20 a minute
+    boost, _ = scoring.event_boost(five, kills, style=STYLE)
+    (kill_type,) = [t for t in DEFAULT_EVENT_TYPES if t.name == "player_kills"]
+    assert boost == pytest.approx(kill_type.score * kill_type.max)
+
+
+def test_a_long_candidate_that_is_not_a_dialogue_nominee_keeps_the_old_boost():
+    cand = {"start": 100.0, "end": 200.0}  # 100 s, e.g. a commentary moment (max_len 120)
+    kills = [feed(110.0 + 5 * i) for i in range(10)]
+    boost, _ = scoring.event_boost(cand, [sound(110.0, confidence=0.1), *kills], style=STYLE)
+    (kill_type,) = [t for t in DEFAULT_EVENT_TYPES if t.name == "player_kills"]
+    assert boost == pytest.approx(
+        6.0 + kill_type.score * kill_type.max
+    )  # laugh whole, kills by count
+    nominated = {"signals": {"events": {"nominated": ["player_kills"]}}}
+    other, _ = scoring.event_boost(
+        {**cand, **nominated}, [sound(110.0, confidence=0.1), *kills], style=STYLE
+    )
+    assert other == boost
+
+
+def test_candidates_of_90_seconds_or_less_are_scored_as_before():
+    cand = {"start": 100.0, "end": 100.0 + scoring.DIALOGUE_WIDEN_MAX_S}
+    assert not scoring.is_long(cand) and scoring.is_long({**cand, "end": cand["end"] + 0.1})
+    boost, ev = scoring.event_boost(cand, [sound(110.0, confidence=0.1), feed(120.0)], style=STYLE)
+    assert boost == pytest.approx(6.0 + 6.0)  # one laugh at full strength, one kill
+    assert ev["player_kills"] == 1
+
+
+def test_rescoring_a_project_with_a_long_dialogue_nominee_is_stable(tmp_path):
+    from test_event_candidates import quiet_grid  # noqa: PLC0415
+
+    hl = highlights([own("h001", 20.0, 60.0)])
+    ev = events_of([talk_event(100.0, 400.0, conf=0.5), *laughs(8), feed(200.0)])
+    part = quiet_grid(600.0, bumps=[(250.0, 1.0)])
+    scoring.rescore(hl, ev, tmp_path, [part])
+    scoring.number_candidates(hl)
+    (nom,) = [c for c in hl["candidates"] if scoring.is_long_dialogue(c)]
+    assert nom["score_pre_events"] == pytest.approx(scoring.NOMINEE_FLOOR * 60)
+    assert nom["signals"]["events"]["boost"] > 0
+    once = json.loads(json.dumps(hl))
+    scoring.rescore(hl, ev, tmp_path, [part])
+    scoring.number_candidates(hl)
+    assert json.loads(json.dumps(hl)) == once
+    scoring.rescore(hl, ev, tmp_path, None)  # and without grids: the nominee is kept as it was
+    assert json.loads(json.dumps(hl)) == once
+
+
+def test_the_cap_ranks_nominees_with_the_per_minute_boost(tmp_path):
+    from test_event_candidates import quiet_grid  # noqa: PLC0415
+
+    # room for one nominee. Both are floored to 36; the long stretch has 4 kills in 5 minutes
+    # (4.6 points counted per minute, 18 by count), the short one a kill (6): the short one wins
+    hl = highlights([own("h001", 20.0, 60.0)], max_candidates=2)
+    kills = [feed(110.0 + 60 * i) for i in range(4)]
+    events = events_of(
+        [
+            talk_event(100.0, 400.0, conf=0.0),
+            *kills,
+            talk_event(500.0, 540.0, conf=0.0),
+            feed(505.0),
+        ]
+    )
+    scoring.nominate(hl, events, tmp_path, [quiet_grid(600.0)])
+    (nom,) = nominees(hl)
+    assert nom["start"] > 400.0 and nom["end"] < 560.0
