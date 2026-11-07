@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `type` `dialogue`) and a `DIALOGUE` line in `events.txt`, and nominates a candidate that keeps
   the whole stretch, not limited by the style's maximum length. A candidate a stretch overlaps is
   widened to it, and candidates it joins become one, so a candidate id can be gone from
-  `highlights.json` after an analysis. A dialogue stretch adds up to 3 points to the candidates
-  it overlaps. A `--max-total` or montage cap drops a dialogue candidate longer than the cap
+  `highlights.json` after an analysis. This happens only when the result stays within 90 s; a
+  longer stretch is a candidate of its own and the candidates it overlaps stay as they are. A dialogue
+  stretch adds up to 3 points to the candidates it overlaps. A `--max-total` or montage cap drops a dialogue candidate longer than the cap
   instead of trimming it. The model is the hosted AI Chat model (with the AI Chat consent;
   ranked by its rating), or a local Ollama or one on another machine with the AI Chat consent
   (ranked by reaction sounds). Without a usable model the step is skipped; a hosted model without
