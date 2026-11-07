@@ -14,7 +14,7 @@ flowchart TD
     SRC --> EDIT
     SRC --> ANA
 
-    subgraph ANALYZE["cutpoint analyze  (steps 1-6)"]
+    subgraph ANALYZE["cutpoint analyze  (steps 1-7)"]
         direction TB
         ANA["Find inputs"]
         DET["--style auto: detect the category (tags, telemetry, 32 frames, HUD text when unsure)"]
@@ -27,9 +27,10 @@ flowchart TD
         KF["3 Keyframes: HUD OCR for game styles, CLIP for action"]
         DISC["HUD discovery, preset per game"]
         CR["4 Crashes: action-cam footage only"]
-        RK["5 Ranking: signals plus events rescore"]
-        VIS["6 Vision rating: Ollama, opt-in"]
-        ANA --> DET --> AUD --> TR --> TALK --> SC --> PL --> RE --> KF --> CR --> RK --> VIS
+        DLG["5 Dialogue: text model marks funny or heated talk, gaming only"]
+        RK["6 Ranking: signals plus events rescore"]
+        VIS["7 Vision rating: Ollama, opt-in"]
+        ANA --> DET --> AUD --> TR --> TALK --> SC --> PL --> RE --> KF --> CR --> DLG --> RK --> VIS
         DISC --> KF
     end
 
@@ -131,5 +132,5 @@ and re-runs reuse it.
 - Cylinder: per-source cache, keyed by path, size and modification time.
 - Hexagon: eligibility decision for the background OCR.
 - Solid arrow: normal flow. Dotted arrow: cache writes, optional or background paths.
-- Numbers 1-6 are the analyze progress steps: transcribe, reactions, keyframes, crashes, ranking,
-  vision.
+- Numbers 1-7 are the analyze progress steps: transcribe, reactions, keyframes, crashes, dialogue,
+  ranking, vision.

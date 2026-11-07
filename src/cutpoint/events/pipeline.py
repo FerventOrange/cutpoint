@@ -51,7 +51,7 @@ from cutpoint.events.killfeed import (
 )
 from cutpoint.events.ocr_prefetch import OcrPrefetch
 from cutpoint.events.regions import game_key_for_path, load_preset
-from cutpoint.events.report import normalize, write_outputs
+from cutpoint.events.report import kept_dialogue, normalize, write_outputs
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.events.vlm_windows import (
     VlmParams,
@@ -177,6 +177,7 @@ def run_events(
     ollama_model: str | None = None,
     discover_hint: str = EVENTS_DISCOVER_HINT,
     batch_size: int = 0,
+    dialogue: Callable[[dict[str, list[dict[str, Any]]]], list[dict[str, Any]]] | None = None,
 ) -> tuple[Path, Path]:
     """Run the event layers on every source of ``project``.
 
@@ -227,6 +228,10 @@ def run_events(
             first source boundary after at least this many VLM windows (:func:`vlm_batches`),
             the crash layer's CLIP after every this many dense windows (0: one batch). The
             results are the same.
+        dialogue: ``cutpoint analyze``'s dialogue reader: called, as the ``dialogue`` stage,
+            with the layer-1 events per source path (before they are normalized) after the
+            VLM layer; returns events.json entries (:func:`cutpoint.events.dialogue.to_events`)
+            that replace the earlier dialogue events. None: the earlier ones are kept.
 
     Returns:
         Paths of events.json and events.txt.
@@ -658,6 +663,12 @@ def run_events(
     timings["vlm_s"] = round(time.perf_counter() - t0, 1)
     stats["vram_mib"] = vram
 
+    talk: list[dict[str, Any]] = []
+    if dialogue is not None:
+        with stage("dialogue"):
+            talk = dialogue(layer1)
+    else:  # not read by this run: what an earlier one marked stays
+        talk = kept_dialogue(project, [str(s.path) for s in sources])
     with stage("write"):
         events = [
             normalize(src, e)
@@ -666,6 +677,7 @@ def run_events(
             if e.get("type") not in ("coverage", "coverage_masked")
         ]
         events += [normalize(e["source"], e) for e in windows_to_events(results)]
+        events += talk
         vlm_settings = asdict(vlm)
         if cam_prompts is not None and vlm.action_cam is not None:  # the activity, not its text
             wording = vlm.action_cam.key() or "default"

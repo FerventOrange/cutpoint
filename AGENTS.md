@@ -15,7 +15,7 @@ everything into a project folder.
 | CLI `cutpoint` with the commands below | `--context` on `edit`, clip order chosen by a local model |
 | `cutpoint edit`: analyze, clips and assemble in one command | |
 | `cutpoint resume <project>`: re-runs an interrupted or failed run from its `progress.json` | |
-| `cutpoint analyze` includes the reaction, keyframe and crash steps | |
+| `cutpoint analyze` includes the reaction, keyframe and crash steps, and for `gaming` a `dialogue` step (a text model marks funny or heated talk) | |
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for the other layers and for games |
 | Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | |
 | Footage category detection: `cutpoint detect`, and `--style auto` on `analyze` and `edit` (opt-in; unclear footage gets the default style) | |
@@ -61,8 +61,8 @@ To let Claude Code find Cutpoint on its own, the user can install the skill with
   `ffmpeg_missing`, `missing_extra`, `output_not_empty`, `folder_busy` (another run holds the folder's lock: wait or retry), `low_memory` (too little free
   memory for a model: tell the user to close other programs, then run the command the ERROR line names (`cutpoint resume <project>`, or the same command again when no progress.json was written yet)),
   `interrupted` (130) or `error`.
-  Read `warnings` such as `kept_clips`, `kept_sources` and `step_failed` and tell the user.
-  With `CUTPOINT_PROGRESS=1`, stderr also has `PROGRESS {...}` lines per step. Keys of both:
+  Read `warnings` such as `kept_clips`, `kept_sources`, `step_failed` and `chat_consent_needed` (the dialogue step was skipped: the hosted AI Chat model has no consent) and tell the user.
+  With `CUTPOINT_PROGRESS=1`, stderr also has `PROGRESS {...}` lines per step (`analyze` has 7 steps, `edit` 9). Keys of both:
   [docs/commands.md#json-output](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#json-output)
   and [#progress-output](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#progress-output).
 - Commands are re-runnable. Per-source results are cached (path, size, modification time).
@@ -142,8 +142,15 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
    Writes `highlights.json` and `transcript.txt` into the project folder
    (`<projects>/clip-edit`, see `cutpoint paths`). It also runs the reaction, keyframe and crash
    steps it can and writes `events.json` and `events.txt`; a step is skipped with an INFO line
-   when the extra or model files are missing, and `--skip reactions keyframes crashes`, given
-   after the paths, leaves them out.
+   when the extra or model files are missing, and `--skip reactions keyframes crashes dialogue`,
+   given after the paths, leaves them out. For `gaming` it also runs `dialogue`: a text model reads
+   the whole transcript and marks funny or heated talk (`DIALOGUE` lines in `events.txt`), each
+   stretch a candidate that keeps its whole length. A candidate such a stretch overlaps is widened
+   to it and candidates it joins become one, so a candidate id from an earlier run can be absorbed:
+   it stays in `highlights.json` under `widened_from.absorbed` but is no longer a candidate, and
+   `--ids` rejects it. Read the file again. A hosted AI Chat model needs the user's chat
+   consent for it (`chat_consent_needed` warning: tell the user); with `--max-total` such a
+   candidate longer than the cap is dropped, not trimmed.
 3. **Optional, for the VLM layer or to force layers:**
    `uv run cutpoint events clip-edit` (needs the `events` extra and `cutpoint setup`; the VLM
    layer needs Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the
@@ -211,7 +218,7 @@ Variants:
 |---|---|---|
 | `highlights.json` | `analyze` (written once, at the end), `events` | Ranked candidates (`h001`...) and settings (`settings.last_candidate_id`: the highest id given); in `gaming`, events can add candidates of their own: `signals.events.nominated` names the events, `grid_score` is the score before the events; `gaming` has no fixed cap on candidates; action, sport and action-cam projects also list visual candidates last (`v001`..., `"pool": "visual"`, `kind` `view`, `crew` or `cruise`, `score` 0-10) |
 | `transcript.txt` | `analyze` | Time-stamped transcript |
-| `events.json`, `events.txt` | `analyze`, `events` | Detected sounds, HUD events, model descriptions |
+| `events.json`, `events.txt` | `analyze`, `events` | Detected sounds, HUD events, model descriptions, talk stretches (`kind` `text`, `type` `dialogue`) |
 | `clips/manifest.json` | `clips`, `extend` | Per clip: source, start, end, score, label, tail, crop, lut or color, srt |
 | `clips/001_<label>.srt`, ... | `clips`, `extend` | Subtitles of each clip, from the cached transcript |
 | `final.mp4`, `final.srt` | `assemble` (`--format mp4`, the default) | Result and subtitles |

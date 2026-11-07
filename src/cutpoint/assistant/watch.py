@@ -17,7 +17,7 @@ loopback address, except Cutpoint's proxy port,
 frames of a project only once the user allowed that provider and host for that project
 (:func:`frames_key`, ``frames-v1:<name>@<host[:port]>``, kept per project folder in
 ``assistant.frames_consent`` of ``config.json``). The assistant's own consent
-(``assistant-v2:``) is still needed for the chat itself and never covers frames.
+(``assistant-v3:``) is still needed for the chat itself and never covers frames.
 
 A turn views at most :func:`view_cap` moments. The tool is offered when the model takes images
 (:func:`takes_images`): as the provider says (Ollama's ``vision``, Claude), else unless its name
@@ -138,7 +138,7 @@ def view_cap(provider: Provider) -> int:
 def frames_key(provider: Provider) -> str | None:
     """What the user allows once per project before frames go to ``provider``:
     ``frames-v1:<name>@<host[:port]>`` (:func:`cutpoint.assistant.providers.endpoint`); None
-    for a provider on this machine (nothing leaves it). Neither ``assistant-v2:`` nor
+    for a provider on this machine (nothing leaves it). Neither ``assistant-v3:`` nor
     ``vision-v2:`` consent covers it."""
     if provider.local:
         return None

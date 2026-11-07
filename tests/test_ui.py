@@ -6604,12 +6604,12 @@ def test_a_source_remap_change_rebuilds_the_list_at_once_and_other_edits_keep_it
 
 
 SAMPLE_PROGRESS = [
-    'PROGRESS {"step":"transcribe","index":1,"total":6,"label":"Transcription","state":"running","pct":0,"detail":"sample.mp4"}',
+    'PROGRESS {"step":"transcribe","index":1,"total":7,"label":"Transcription","state":"running","pct":0,"detail":"sample.mp4"}',
     "12:00:01 INFO transcribing sample.mp4",
-    'PROGRESS {"step":"transcribe","index":1,"total":6,"label":"Transcription","state":"done","pct":100,"detail":null}',
-    'PROGRESS {"step":"reactions","index":2,"total":6,"label":"Reactions","state":"skipped","pct":null,"detail":"events extra not installed"}',
-    'PROGRESS {"step":"crashes","index":4,"total":6,"label":"Crashes","state":"skipped","pct":null,"detail":"not action-cam footage"}',
-    'PROGRESS {"step":"vision","index":6,"total":6,"label":"Vision rating","state":"skipped","pct":null,"detail":"vision is off (Settings, config.json or --vision)"}',
+    'PROGRESS {"step":"transcribe","index":1,"total":7,"label":"Transcription","state":"done","pct":100,"detail":null}',
+    'PROGRESS {"step":"reactions","index":2,"total":7,"label":"Reactions","state":"skipped","pct":null,"detail":"events extra not installed"}',
+    'PROGRESS {"step":"crashes","index":4,"total":7,"label":"Crashes","state":"skipped","pct":null,"detail":"not action-cam footage"}',
+    'PROGRESS {"step":"vision","index":7,"total":7,"label":"Vision rating","state":"skipped","pct":null,"detail":"vision is off (Settings, config.json or --vision)"}',
 ]  # fmt: skip
 
 
@@ -6628,7 +6628,7 @@ def test_progress_lines_become_steps_and_stay_out_of_the_log(
     view = job.view()
     assert view["status"] == "completed"
     assert view["logs"] == ["12:00:01 INFO transcribing sample.mp4"]
-    assert view["progress"]["total"] == 6
+    assert view["progress"]["total"] == 7
     steps = view["progress"]["steps"]
     assert [(s["step"], s["state"]) for s in steps] == [
         ("transcribe", "done"),  # its latest state only
@@ -8021,7 +8021,8 @@ def test_the_consent_texts_name_what_each_role_sends() -> None:
     """The AI Chat consent names what context.py sends a hosted assistant (analysis results
     only: no audio, frames only once allowed for a project, file names but not paths); the
     Vision consent names the frames, transcript excerpts, file names and times, on-screen text
-    and telemetry, and that this is more data and more risk than the assistant."""
+    and telemetry, and that it is separate from the assistant's consent; both name the data
+    each role sends, and the assistant's names the whole transcripts analysis sends it."""
     from cutpoint.assistant import context  # noqa: PLC0415
 
     sends = re.search(r'^const CONSENT_SENDS = "(.*)";$', _web("app.js"), re.M)[1]
@@ -8059,10 +8060,15 @@ def test_the_consent_texts_name_what_each_role_sends() -> None:
         "file names and times",
         "on-screen text",
         "telemetry",
-        "more data, and more risk, than the AI Chat assistant",
+        "The AI Chat assistant gets other data",
         "agreeing for one never covers the other",
     ):
         assert part in text, part
+    # analysis (the dialogue step) sends whole transcripts to the chat model; its consent says so
+    app = _web("app.js")
+    analysis = re.search(r"^const ANALYSIS_SENDS = '(.*)';$", app, re.M)[1]
+    assert "whole transcripts" in analysis
+    assert "${ANALYSIS_SENDS}" in _js_function(app, "renderChat")
 
 
 def test_model_text_is_never_set_as_markup() -> None:

@@ -69,7 +69,7 @@ def test_the_consent_key_has_the_port_of_a_non_default_endpoint() -> None:
     there = providers.OllamaProvider("10.0.0.5:11434", "m", 0)
     other = providers.OllamaProvider("10.0.0.5:11435", "m", 0)
     assert providers.consent_key(there, "vision") == KEY
-    assert providers.consent_key(there) == "assistant-v2:ollama@10.0.0.5:11434"
+    assert providers.consent_key(there) == "assistant-v3:ollama@10.0.0.5:11434"
     assert providers.consent_key(other, "vision") != providers.consent_key(there, "vision")
     official = providers.OpenAIProvider("https://api.openai.com/v1", "m", 0, "k")
     assert providers.consent_key(official, "vision") == "vision-v2:openai@api.openai.com"
@@ -82,7 +82,7 @@ def test_a_subscription_keeps_its_host_only_key(name: str) -> None:
     sub = providers.SubscriptionProvider(name)
     host = providers.SUBSCRIPTION_HOSTS[name]
     assert providers.consent_key(sub, "vision") == f"vision-v2:{name}@{host}"
-    assert providers.consent_key(sub) == f"assistant-v2:{name}@{host}"
+    assert providers.consent_key(sub) == f"assistant-v3:{name}@{host}"
 
 
 @pytest.mark.parametrize(
@@ -134,7 +134,7 @@ def test_the_proxy_port_is_still_on_this_machine() -> None:
     assert p.context_tokens == providers.ON_MACHINE_CONTEXT_TOKENS
     assert providers.missing_key(p) is None  # a server on this machine may take no key
     assert providers.consent_key(p, "vision") == PROXY_VISION_KEY
-    assert providers.consent_key(p) == f"assistant-v2:openai@127.0.0.1:{cliproxy.DEFAULT_PORT}"
+    assert providers.consent_key(p) == f"assistant-v3:openai@127.0.0.1:{cliproxy.DEFAULT_PORT}"
 
 
 @pytest.mark.parametrize("where", ["env", "keys"])
@@ -254,7 +254,7 @@ def test_a_remote_ollama_needs_consent_and_is_not_contacted(home, wire, caplog) 
     "consent",
     [
         ["vision-v2:ollama@10.0.0.5:11435"],
-        ["assistant-v2:ollama@10.0.0.5:11434"],
+        ["assistant-v3:ollama@10.0.0.5:11434"],
         ["vision-v2:ollama@10.0.0.5"],
         ["ollama@10.0.0.5"],
     ],
@@ -441,7 +441,7 @@ def hosted(home, wire, monkeypatch) -> list[str]:
     any request, also through a session, fails the test."""
     set_config(
         home,
-        vision_assistant={"provider": "openai", "consent": ["assistant-v2:openai@api.openai.com"]},
+        vision_assistant={"provider": "openai", "consent": ["assistant-v3:openai@api.openai.com"]},
     )
 
     def record(_self: Any, _method: str, url: str, *_a: Any, **_k: Any) -> Any:
