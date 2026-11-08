@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
 import time
+import warnings
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +25,20 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "script: tests a development script in scripts/, not the product"
     )
+
+    # Windows DLL load order (#215, see transcribe._load_torch_first): once a test has loaded the
+    # transcription stack's CUDA/cuDNN DLLs (ctranslate2), the first `import torch` in that
+    # process fails. A serial run happens to import torch early (test_assistant_lookfor); under
+    # pytest-xdist each worker sees the files in another order, so import it first, in every
+    # process that runs tests (not in the xdist controller). A lite install has no torch.
+    serial_or_worker = hasattr(config, "workerinput") or not config.getoption("numprocesses", None)
+    if sys.platform == "win32" and serial_or_worker and importlib.util.find_spec("torch"):
+        try:
+            import torch  # noqa: F401, PLC0415
+        except (ImportError, OSError, RuntimeError) as err:  # as in transcribe._load_torch_first
+            warnings.warn(
+                f"importing torch up front failed: {err}", pytest.PytestWarning, stacklevel=1
+            )
 
 
 @pytest.fixture(autouse=True)

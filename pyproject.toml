@@ -63,7 +63,7 @@ all = ["cutpoint[events,gpu]"]
 
 [dependency-groups]
 # Installed by default by `uv sync` / `uv run`; not part of the published wheel.
-dev = ["pytest>=8", "ruff==0.17.1", "pre-commit>=3.7", "httpx>=0.27"]
+dev = ["pytest>=8", "pytest-xdist>=3.6", "ruff==0.17.1", "pre-commit>=3.7", "httpx>=0.27"]
 # Everything optional (events, gpu), so a clone's plain `uv sync` installs it all, torch
 # included. Skip it with `--no-group full` (or UV_NO_GROUP=full) for a lite environment.
 full = ["cutpoint[all]"]
@@ -114,7 +114,7 @@ explicit = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Only `hardware` is deselected by default; CI runs everything else (slow and ffmpeg included).
-addopts = "-m \"not hardware\" --strict-markers"
+addopts = "-m \"not hardware\" --strict-markers -n auto --dist loadfile"
 markers = [
     "slow: real subprocess or interpreter spawns, process trees, or over about 2 s",
     "ffmpeg: runs the real ffmpeg or ffprobe",
