@@ -455,6 +455,16 @@ def _ocr_frames(
                     old.unlink(missing_ok=True)
                 except OSError as err:  # a locked file: it stays, discovery goes on
                     logger.debug("Could not remove %s: %s", old, err)
+        # the records of earlier plans, files and sources are never read again (#795); a
+        # run that stopped early never gets here, so its records stay for the next one
+        if out and set(done) != {rec["id"] for rec in out}:
+            text = "".join(json.dumps(rec, ensure_ascii=False) + "\n" for rec in out)
+            try:
+                if fh is not None:
+                    fh.close()  # the append handle: the rewrite replaces the file
+                cache.save_bytes(cache_path, text.encode("utf-8"))
+            except OSError as err:  # a locked file: the old records stay, discovery goes on
+                logger.debug("Could not prune %s: %s", cache_path, err)
     return out
 
 
@@ -1681,8 +1691,8 @@ def discover_regions(
     Returns:
         The proposal: a preset dict (``game``, ``regions``, ``banner_phrases``,
         ``discovery`` stats, per-region evidence and the ids of the OCR records
-        the run used, ``frames``, since ``ocr.jsonl`` keeps records of earlier
-        runs). Extra notice regions where text shows outside every covered region
+        the run used, ``frames``, since ``ocr.jsonl`` can still hold records of an earlier,
+        incomplete run). Extra notice regions where text shows outside every covered region
         (:func:`notice_proposals`, marked ``"origin": "outside"``) are added to
         ``regions`` when ``covered`` is None (the discovered regions and the
         big-text region count as covered), else listed in ``suggested_regions``

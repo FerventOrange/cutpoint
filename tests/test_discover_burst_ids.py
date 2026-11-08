@@ -294,3 +294,52 @@ def test_a_record_under_the_old_file_name_id_is_adopted_when_its_picture_matches
     fake_ocr.clear()
     _run(tmp_path, bursts)
     assert fake_ocr == [0.0]
+
+
+def test_ocr_records_of_other_plans_are_pruned_after_a_complete_run(tmp_path, fake_ocr):
+    """#795: ocr.jsonl kept every record ever written; a complete run keeps the current ids."""
+    src = SimpleNamespace(
+        name="clip.mp4", path=tmp_path / "clip.mp4", io_path=tmp_path / "clip.mp4"
+    )
+    _run(tmp_path, [(src, 0.0), (src, 60.0)])
+    second = _run(tmp_path, [(src, 0.0)])
+    ids = [
+        json.loads(line)["id"] for line in (tmp_path / "ocr.jsonl").read_text("utf-8").splitlines()
+    ]
+    assert ids == [f["id"] for f in second]
+    # a stale record from a file that no longer exists is gone too, and the run still replays
+    with (tmp_path / "ocr.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"id": "gone.mp4@1.0", "t": 1.0, "frame": "x.jpg", "boxes": []}) + "\n")
+    fake_ocr.clear()
+    again = _run(tmp_path, [(src, 0.0)])
+    assert fake_ocr == []
+    assert "gone.mp4@1.0" not in (tmp_path / "ocr.jsonl").read_text("utf-8")
+    assert _key(again) == _key(second)
+
+
+def test_an_interrupted_run_leaves_the_ocr_cache_unpruned(tmp_path, fake_ocr):
+    """#795: only a complete run prunes ocr.jsonl; an interrupted one keeps every record."""
+    src = SimpleNamespace(
+        name="clip.mp4", path=tmp_path / "clip.mp4", io_path=tmp_path / "clip.mp4"
+    )
+    cache = tmp_path / "ocr.jsonl"
+    cache.write_text(
+        json.dumps({"id": "other.mp4@1.0", "t": 1.0, "frame": "x.jpg", "boxes": []}) + "\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def stop(done, total):
+        calls.append(done)
+        if len(calls) > 5:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        discover._ocr_frames(
+            [(src, 0.0), (src, 60.0)],
+            discover.DiscoverParams(),
+            tmp_path / "frames",
+            cache,
+            on_frame=stop,
+        )
+    assert "other.mp4@1.0" in cache.read_text("utf-8")
