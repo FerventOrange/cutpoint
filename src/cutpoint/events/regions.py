@@ -32,7 +32,8 @@ added to the phrases of JSON presets.
 Region entries take any :class:`Region` field (``min_change``, ``min_fill``,
 ...); missing ones use the defaults. Other keys are ignored: region discovery
 marks the extra notice regions it adds where text shows outside every other
-region with ``"origin": "outside"``, which changes neither the region nor its
+region with ``"origin": "outside"`` and the vision model's name for a discovered
+region as ``"label"`` (``kill_feed``, ``chat``, ...); neither changes the region or its
 cache key.
 """
 

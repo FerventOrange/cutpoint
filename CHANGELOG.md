@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- HUD region discovery finds the real kill feed with the shared vision model. After discovery
+  proposes regions, the model (Ollama `qwen3.5:9b`, or the hosted Vision model of the Models tab)
+  looks at crops of each proposal and labels it `kill_feed`, `chat`, `notice`, `banner`, `menu`,
+  `readout` or `other`; a `kill_feed` proposal becomes the feed region, even one that discovery
+  had read as a notice. It runs once per game, saves the labels in the discovered preset, and
+  runs whenever the vision model answers (an Ollama on another machine or a hosted model only
+  with the Vision consent; without it the `vision_consent_needed` warning). Without a model the
+  rules decide alone. A discovered feed now needs a score of at least 0.02 (one scoring 0.004 was
+  kept as the only feed), and a group of text whose rows change text size, such as stream chat
+  over a battle log, is split into one proposal per text size.
+
 - A dialogue reader for `gaming`: the new `dialogue` analyze step has a text model read the whole
   transcript in overlapping pieces and mark talk worth keeping (`funny`, `out_of_pocket`,
   `ragebait`, `back_and_forth`, `story`). Each stretch is an `events.json` event (`kind` `text`,

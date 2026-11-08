@@ -334,6 +334,7 @@ moments match these filters." Escape closes the menu. The sort and filters are r
 browser (local storage); the source file only while the project stays open. A project with a
 long dialogue bit (a whole dialogue stretch over 90 s) also offers Long bits, which shows only those; they
 have a "Bit" badge with the length (m:ss), and the tile's hover text adds what happens in the bit.
+Long bits is not remembered; it lasts until the page is reloaded.
 The moments are tiles, two across in the default column width. A kind filter above them (All,
 Action, Scenic, Funny, Dialogue) shows one kind; it is a view of the list and is not kept. The
 kind is worked out in the page for display, as AI Chat names it. A moment a talk stretch created
@@ -1099,7 +1100,7 @@ the transcription starts. Any other value, or unset: as described above.
 |---|---|
 | `transcribe` | Whisper transcription, scoring and scene detection |
 | `reactions` | PANNs sound events (laughter, screams, cheering). Also the voice layer when `crashes` will run |
-| `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game. For `action`, `action-cam` and `sport`, the CLIP visual layer, only with a CUDA GPU |
+| `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game; the vision model, when it answers, labels the regions it proposes. For `action`, `action-cam` and `sport`, the CLIP visual layer, only with a CUDA GPU |
 | `crashes` | Action-cam footage only (telemetry found, or style `action-cam`, `action` or `sport`) |
 | `dialogue` | A text model reads the whole transcript and marks talk worth keeping. Open-list styles only (`gaming`). See [Dialogue reader](#dialogue-reader) |
 | `ranking` | Re-ranks the candidates with the events, after leaving out those in HUD menu time ([game streams](workflows/game-streams.md)); `highlights.json`, `events.json`, `events.txt` and the other result files are written after the last step |

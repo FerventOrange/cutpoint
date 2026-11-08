@@ -72,6 +72,19 @@ dropped. With such a preset, menu and scoreboard frames produce no OCR events ou
 and icon kills read on menu frames (a settings row such as "Subtitles | Enabled") are dropped too;
 an icon kill first read as a still screen opens is not taken as feed activity, so a still menu
 is still found as one.
+A region proposed as a `feed` needs a score of at least 0.02, as a banner or notice does, and a
+group of text whose rows change text height (stream chat over a battle log) is split into one
+proposal per text size. Then the shared vision model (Ollama, or the hosted Vision model of the
+Models tab of `cutpoint ui`) looks at up to four crops of each proposal and says what it is:
+`kill_feed`, `chat`, `notice`, `banner`, `menu`, `readout` or `other`. It does not draw a box; it
+names the rectangles discovery found. A `kill_feed` proposal becomes the feed region, a `feed`
+the model calls anything but `kill_feed` or `chat` becomes a `notice`, and `chat` stays a `feed`
+region, which the chat check below drops. The labels are saved in the preset (`discovery.labels`,
+and `label` on the regions), so this runs once per game. The preset of a game with a `kill_feed` region also gets
+`"feed": {"row_notices": true}`, so icon lines in it are read as kills. It runs whenever the vision model
+answers: a local Ollama, or an Ollama on another machine or a hosted provider only with your
+Vision consent (otherwise the `vision_consent_needed` warning). Without a model an INFO line says
+so and the rules decide alone. About 3.5 s per proposal, at most 12 proposals.
 A game that already has a preset does not pick this up: discovery does not run for it and the old
 preset (no feed region, no `row_notices`) stays, so its kills stay at 0. Either move or rename the old
 preset (`<presets>/<game>.json`, or the project's `hud_presets/<game>.json`) and run `analyze` or
