@@ -310,6 +310,22 @@ test('look_for is a step, with the new moments it made', async (t) => {
   assert.match(log, /Could not look through the footage for “sunset”/);
 });
 
+test('a look_for that failed with a reason shows the reason, not the generic line', async (t) => {
+  const reason = "Visual search isn't available for this project: its analysis has no frame index";
+  const m = await chatPage(t, {
+    routes: turnRoutes([
+      { kind: 'tool', n: 0, name: 'look_for', query: 'sunset', error: 'no source of this project has cached frame embeddings (long text for the model)', reason },
+      { kind: 'reply', n: 1, text: 'Done.' },
+    ]),
+  });
+  await m.send('find a sunset');
+  await m.tick(1000);
+  const log = m.log().join('\n');
+  assert.ok(log.includes(reason), log);
+  assert.doesNotMatch(log, /Could not look through the footage/);
+  assert.doesNotMatch(log, /long text for the model/);
+});
+
 test('look_for guesses are offered as possible windows; the user adds one, which Ctrl+Z undoes', async (t) => {
   const possible = [
     { id: 'lf1', source: '/videos/a.mp4', start: 50, end: 55, label: 'powder spray', confidence: 'strong' },

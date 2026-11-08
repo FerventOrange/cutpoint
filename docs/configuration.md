@@ -80,6 +80,7 @@ with `_` are ignored.
   "export_workers": "auto",
   "memory_guard": 2,
   "vision": false,
+  "visual_index": false,
   "compress_peaks": "off",
   "color": "off",
   "analysis": {"skip": []},
@@ -157,6 +158,17 @@ every analysis the UI starts ("Analyze footage" or "Analyze again") passes its v
 moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other values are rejected.
 A rating covers a moment's frames and, except for `action-cam`, the speech in it (the Vision
 consent already covers these transcript excerpts).
+
+### visual_index
+
+`true` or `false` (default). With `true`, `analyze` and `edit` also write the CLIP frame
+embeddings (about one per second) that the AI Chat's visual search (`look_for`) reads, for
+`gaming`, `funny` and `commentary` footage too, unless `--no-visual-index` is given; `action`,
+`sport` and `action-cam` footage always has them. With `false` or no key, only
+`--visual-index` turns it on for one run. It changes no ranking, costs GPU time in the
+`keyframes` step (see [analysis time](commands.md#typical-cost)) and needs the `events` extra, its
+model files and a CUDA GPU. Sources with telemetry: the crashes step also reads them, so
+`crashes.json` can differ; the ranking does not. Other values are rejected.
 
 ### vision_assistant
 

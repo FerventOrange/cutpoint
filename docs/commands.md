@@ -796,8 +796,11 @@ frames go only through view_moment (above), once allowed for the project.
 `look_for` searches the footage itself, with every chat provider, local or hosted. It compares a
 short English description ("powder spray", "sunset over the peaks") with the cached frame
 embeddings of every source of the project (the `events` visual layer, about one frame per second,
-the same ones the visual candidates read) using local CLIP, so it also finds footage the scorer
-never proposed. It decodes nothing and downloads nothing, and no frame leaves the machine: the
+the same ones the visual candidates read; written by `analyze` for `action`, `sport` and `action-cam`
+footage, and for the other styles only with [`--visual-index`](#analyze)) using local CLIP, so it also finds footage the scorer
+never proposed. A project none of whose sources has them is not offered the tool, and a call that
+still fails shows the page "Visual search isn't available for this project: its analysis has no
+frame index (analyze --visual-index writes it)". It decodes nothing and downloads nothing, and no frame leaves the machine: the
 model gets text only, the best windows as moment rows with `match` 0-10 and `confidence`:
 `strong` from a CLIP cosine of 0.222, `weak` from 0.202 (a few at most, so a query the footage
 may answer, such as "fish" in a reef, still lists its best guesses, while one it cannot answer
@@ -862,7 +865,8 @@ consent is missing). A turn's events can include `frames_consent` (`id`, `key`, 
 model asked to watch without it, `tool` events named `view_moment` (`id`, `frames`,
 `cached`, or `error`: `limit` when the per-message limit was reached) and `look_for` (`query`,
 `found`, `new`, `weak`, `unconfirmed`, `possible` (the unconfirmed windows: `id`, `source`,
-`start`, `end`, `label`, `confidence`), or `error`: why it could not search); a `proposal` event can carry `color`
+`start`, `end`, `label`, `confidence`), or `error`: why it could not search, with `reason`, a short
+sentence for the page, when there is one); a `proposal` event can carry `color`
 (`mode`, `strength` or null) and `moments` (the `look_for` moments its ops add);
 `POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
 save or remove a keyring key for the host of the saved base URL and return only where each key
@@ -906,6 +910,7 @@ cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [-
               [--format mp4|fcpxml|otio] [--events]
               [--vision | --no-vision] [--vision-top N] [--ollama-url URL]
               [--ollama-model MODEL] [--skip STEP [STEP ...]]
+              [--visual-index | --no-visual-index]
               [--compress-peaks off|light|strong] [--lut FILE [--lut-strength 0-1]]
               [--color off|auto|underwater [--color-strength 0-1]] [--json]
 ```
@@ -936,6 +941,7 @@ one of them is refused.
 | `--vision` / `--no-vision` | As on `analyze`: rate top candidates with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off |
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model (also for the VLM layer of `--events`) |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes`, `crashes` and/or `dialogue`. Give it after the input paths |
+| `--visual-index` / `--no-visual-index` | As on `analyze`: also write the frame embeddings of the AI Chat's visual search for `gaming`, `funny` and `commentary` footage, or not. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
 | `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression), baked into the clips (so the final has it too). Default: `compress_peaks` in `config.json`, else off |
 | `--lut FILE`, `--lut-strength 0-1` | Grade the clips with a 3D LUT, as on [`clips`](#clips) (so the final has it too). Checked before the analysis |
 | `--color off\|auto\|underwater`, `--color-strength 0-1` | [Automatic color correction](#clips) of the clips, as on `clips` (so the final has it too). Not with `--lut`; checked before the analysis |
@@ -972,6 +978,7 @@ an analysed set processes only the new file.
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
 | `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
 | `--skip STEP ...` | Leave out `reactions`, `keyframes`, `crashes` and/or `dialogue` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
+| `--visual-index` / `--no-visual-index` | Also write the frame embeddings (the CLIP visual layer, in the `keyframes` step, before the HUD text for `gaming` and `funny`) that the AI Chat's [`look_for`](#ai-chat) searches, for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` footage always has them. They change no ranking. Sources with telemetry: the crashes step also reads them, so `crashes.json` can differ; the ranking does not. Like that layer for the other styles it needs the `events` extra, its model files and a CUDA GPU, and is left out with an INFO line otherwise (the HUD text of `gaming` and `funny` still runs). Cached per source like the rest: a later run with the option on computes only what is missing, and one with it off leaves what exists. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
 | `--no-scenes` | Skip scene detection |
 | `--max-candidates N` | Candidates per source before merging. Default: enough to cover about 3 times the style's target length, at least 30. `gaming` has an open list instead: see [Candidates](#candidates) |
 | `--recover` | After a read error, resume analysis past the bad region |
@@ -1100,7 +1107,7 @@ the transcription starts. Any other value, or unset: as described above.
 |---|---|
 | `transcribe` | Whisper transcription, scoring and scene detection |
 | `reactions` | PANNs sound events (laughter, screams, cheering). Also the voice layer when `crashes` will run |
-| `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game; the vision model, when it answers, labels the regions it proposes. For `action`, `action-cam` and `sport`, the CLIP visual layer, only with a CUDA GPU |
+| `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game; the vision model, when it answers, labels the regions it proposes. For `action`, `action-cam` and `sport`, the CLIP visual layer, only with a CUDA GPU; with `--visual-index` that layer runs for `gaming`, `funny` and `commentary` too (frame embeddings for the AI Chat's visual search, no effect on ranking) |
 | `crashes` | Action-cam footage only (telemetry found, or style `action-cam`, `action` or `sport`) |
 | `dialogue` | A text model reads the whole transcript and marks talk worth keeping. Open-list styles only (`gaming`). See [Dialogue reader](#dialogue-reader) |
 | `ranking` | Re-ranks the candidates with the events, after leaving out those in HUD menu time ([game streams](workflows/game-streams.md)); `highlights.json`, `events.json`, `events.txt` and the other result files are written after the last step |
@@ -1188,6 +1195,7 @@ Measured on 1080p gaming footage (RTX 3080 10 GB), rounded:
 |---|---|---|---|
 | GPU, one 7.4 min file, first run | about 8.5 min | `transcribe` 76 s, `reactions` 5 s, `keyframes` 7 min (about 4 min of it HUD discovery), `ranking` under 1 s | about 4 GB |
 | GPU, 2 x 10 min files, first run | about 17 min | `transcribe` 2.7 min, `reactions` 26 s, `keyframes` 14 min (about 7 min of it discovery) | about 3.7 GB |
+| GPU, 72 min 1080p60 gameplay, `--visual-index` | | visual index about 373 s per hour of video, about 25 MB per hour of cache | |
 | Cached re-run | about 5 s | | |
 | CPU only, one 10 min file, discovery done | about 5.7 min | `transcribe` 2 min, `reactions` 16 s, `keyframes` 3.4 min (OCR on the CPU) | |
 | CPU only, 60 s action clip | 25 s | `keyframes` skipped with "no CUDA GPU (CLIP on the CPU: about an hour per hour)" | |
