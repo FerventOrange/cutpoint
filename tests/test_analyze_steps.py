@@ -284,11 +284,11 @@ def test_vision_counts_the_candidates_without_a_cached_rating(run, caplog, monke
         def available(self):
             return run.vision_ok
 
-        def cached(self, src, start, end, base, activity=None, transcript=None):
+        def cached(self, src, start, end, base, activity=None, transcript=None, laughter=False):
             hit = not self.cache_only or start == 10.0
             return SimpleNamespace(score=8.0, label="nice") if hit else None
 
-        def rate(self, src, start, end, base, activity=None, transcript=None):
+        def rate(self, src, start, end, base, activity=None, transcript=None, laughter=False):
             res = self.cached(src, start, end, base)
             if res is None:
                 self.missed += 1
@@ -1986,11 +1986,11 @@ def _speech_run(run, monkeypatch, transcript, rating=8.0):
         def available(self):
             return run.vision_ok
 
-        def cached(self, src, start, end, base, activity=None, transcript=None):
+        def cached(self, src, start, end, base, activity=None, transcript=None, laughter=False):
             calls.append(("cached", transcript))
             return SimpleNamespace(score=rating, label="nice")
 
-        def rate(self, src, start, end, base, activity=None, transcript=None):
+        def rate(self, src, start, end, base, activity=None, transcript=None, laughter=False):
             calls.append(("rate", transcript))
             return SimpleNamespace(score=rating, label="nice")
 

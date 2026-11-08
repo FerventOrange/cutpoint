@@ -153,7 +153,8 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
    stretch is a candidate of its own and the others stay as they are), so a candidate id from an
    earlier run can be absorbed:
    it stays in `highlights.json` under `widened_from.absorbed` but is no longer a candidate, and
-   `--ids` rejects it. Read the file again. A hosted AI Chat model needs the user's chat
+   `--ids` rejects it. Read the file again. A widened candidate drops a silence of 8 s or more
+   (no speech in the transcript) before or after its original moment. A hosted AI Chat model needs the user's chat
    consent for it (`chat_consent_needed` warning: tell the user); with `--max-total` such a
    candidate longer than the cap is dropped, not trimmed. A stretch over 90 s overlaps the candidates
    inside it: `--top` and `--max-total` skip the overlapping one, but `--ids` does not, so do not

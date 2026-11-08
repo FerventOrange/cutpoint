@@ -1044,3 +1044,109 @@ def test_records_that_tie_keep_their_input_order_on_a_rescore(order):
     hl = highlights([own(k, 100.0 * i, 50.0) for i, k in enumerate(order)])
     scorer.rescore_events(hl, events_of([]), Path(), [grid()])
     assert [c["id"] for c in hl["candidates"]] == list(order)
+
+
+# --------------------------------------------------------------------------- weak heard laughs
+WEAK = scoring.LAUGH_STRONG / 2  # a laugh the detector found only by its relative rule
+
+
+def talk(*pieces: tuple[float, str]) -> list[dict[str, Any]]:
+    """One transcript segment per ``(start, text)``, each word a second long."""
+    return [
+        {
+            "start": t, "end": t + len(text.split()),
+            "words": [
+                {"word": f" {w}", "start": t + i, "end": t + i + 1.0}
+                for i, w in enumerate(text.split())
+            ],
+        }
+        for t, text in pieces
+    ]  # fmt: skip
+
+
+def test_a_strong_laugh_nominates_a_moment_as_before(tmp_path):
+    hl = highlights([own("h001", 20.0)])
+    scoring.nominate(
+        hl, events_of([sound(100.0, confidence=scoring.LAUGH_STRONG)]), tmp_path, [grid()]
+    )
+    (nom,) = nominees(hl)
+    assert nom["signals"]["events"]["nominated"] == ["laughter"] and nom["label"] == "laughter"
+
+
+def test_a_weak_laugh_alone_makes_no_moment_and_no_label(tmp_path):
+    hl = highlights([own("h001", 20.0)])
+    assert scoring.nominate(hl, events_of([sound(100.0, confidence=WEAK)]), tmp_path, [grid()]) == 0
+    assert nominees(hl) == []
+
+
+def test_a_weak_laugh_far_from_everything_stays_out_even_beside_other_events(tmp_path):
+    far = scoring.BACKUP_S + 2
+    events = [sound(100.0, confidence=WEAK), sound(100.0 + far + 1.5, confidence=WEAK)]
+    assert scoring.seeds(events, DEFAULT_EVENT_TYPES, STYLE) == []
+    assert (
+        scoring.seeds([*events, feed(104.0)], DEFAULT_EVENT_TYPES, STYLE)[0].name == "player_kills"
+    )
+
+
+@pytest.mark.parametrize("other", ["Laughter", "Scream", "Cheering"])
+def test_a_weak_laugh_with_another_sound_nearby_is_a_seed(other):
+    events = [sound(100.0, confidence=WEAK), sound(103.0, other, confidence=0.3)]
+    names = {s.name for s in scoring.seeds(events, DEFAULT_EVENT_TYPES, STYLE)}
+    assert "laughter" in names
+
+
+def test_a_weak_laugh_with_a_laughter_word_in_the_transcript_nominates(tmp_path, monkeypatch):
+    words = talk((98.0, "that is so funny"), (101.0, "[laughter] okay"))
+    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: words)
+    hl = highlights([own("h001", 20.0)])
+    scoring.nominate(hl, events_of([sound(100.0, confidence=WEAK)]), tmp_path, [grid()])
+    assert [c["label"] for c in nominees(hl)] == ["laughter"]
+
+
+def test_the_spoken_word_laughter_does_not_back_a_weak_laugh(tmp_path, monkeypatch):
+    words = talk(
+        (98.0, "he said laughter twice"),
+    )
+    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: words)
+    hl = highlights([own("h001", 20.0)])
+    scoring.nominate(hl, events_of([sound(100.0, confidence=WEAK)]), tmp_path, [grid()])
+    assert nominees(hl) == []
+
+
+def _loud_grid(at: float) -> analyze.GridPart:
+    g = grid()
+    g.signals.sig["loudness"] = bump(at, N, 1.0, 1.0)
+    return g
+
+
+def test_loud_speech_backs_a_weak_laugh_but_quiet_speech_or_loud_noise_do_not(
+    tmp_path, monkeypatch
+):
+    event = events_of([sound(100.0, confidence=WEAK)])
+    speech = talk((99.0, "oh come on now"))
+    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: speech)
+    loud, quiet = highlights([own("h001", 20.0)]), highlights([own("h001", 20.0)])
+    scoring.nominate(loud, event, tmp_path, [_loud_grid(100.5)])
+    scoring.nominate(quiet, event, tmp_path, [grid()])
+    assert len(nominees(loud)) == 1 and nominees(quiet) == []
+    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: [])  # loud, nobody talking
+    noise = highlights([own("h001", 20.0)])
+    scoring.nominate(noise, event, tmp_path, [_loud_grid(100.5)])
+    assert nominees(noise) == []
+
+
+def test_a_weak_laugh_inside_a_candidate_still_counts_for_its_boost():
+    # the backup rule is about making a moment, not about the evidence the boost reads
+    boost, evidence = scoring.event_boost(
+        own("h001", 90.0, end=110.0), [sound(100.0, confidence=WEAK)]
+    )
+    assert boost > 0 and evidence["laughter"] == round(WEAK, 3)
+
+
+@pytest.mark.parametrize(
+    ("laughter", "heard"), [(0.12, True), (0.5, True), (0.119, False), (0.0, False), (None, False)]
+)
+def test_laughter_is_heard_in_a_candidate_from_its_audio_evidence(laughter, heard):
+    events = {} if laughter is None else {"laughter": laughter}
+    assert scoring.heard_laughter({"signals": {"events": events, "laughter": 0.9}}) is heard
+    assert scoring.heard_laughter({"signals": {}}) is False

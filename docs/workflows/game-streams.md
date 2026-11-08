@@ -6,7 +6,7 @@ extra and models are installed, which re-rank the candidates and let clips run o
 after the banter; otherwise those steps are skipped with an INFO line. The optional `events`
 command adds the model descriptions (`vlm` layer) and can force layers.
 
-For `gaming`, `analyze` also runs a `dialogue` step: a text model reads the whole transcript and marks funny or heated talk, and those stretches become candidates that keep the whole stretch. A candidate such a stretch overlaps is widened to it, and candidates it joins become one, but only when the result stays within 90 s (a longer stretch is a candidate of its own), so an id seen in an earlier `highlights.json` can be gone. See [Dialogue reader](../commands.md#dialogue-reader); `--skip dialogue` leaves it out.
+For `gaming`, `analyze` also runs a `dialogue` step: a text model reads the whole transcript and marks funny or heated talk, and those stretches become candidates that keep the whole stretch. A candidate such a stretch overlaps is widened to it, and candidates it joins become one, but only when the result stays within 90 s (a longer stretch is a candidate of its own), so an id seen in an earlier `highlights.json` can be gone. A widened candidate drops a silence of 8 s or more (no speech in the transcript) before or after its original moment. See [Dialogue reader](../commands.md#dialogue-reader); `--skip dialogue` leaves it out.
 
 ```powershell
 cutpoint analyze D:\Videos\Game --style gaming --out match-night

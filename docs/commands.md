@@ -1004,7 +1004,11 @@ rating threshold reads the raw rating. `action-cam` is unchanged. A rating
 with speech has its own cache key: those windows are rated again once, then cached.
 
 Signals combined: loudness (EBU R128 against the clip's own baseline), speech keywords from the
-transcript, laughter, scene-cut density and speech continuity. Likely Whisper hallucinations
+transcript, laughter, scene-cut density and speech continuity. The `laughter` signal counts
+laughter written in the transcript: Whisper's non-speech markers (`[laughter]`, `(laughs)`,
+`*laughing*`, in brackets, parentheses or asterisks) and interjections such as `haha` and `lol`;
+the spoken word "laugh" or "laughter" does not count. Laughter heard in the audio is
+`signals.events.laughter`, a separate value. Likely Whisper hallucinations
 (a short phrase repeated, very low confidence) are dropped first. Boundaries are snapped to
 scene cuts and never cut a word. Each signal is a named feature, and a style's weights name
 these features. The `score` is a candidate's weighted peak divided by the weights of the
@@ -1111,7 +1115,7 @@ the transcription starts. Any other value, or unset: as described above.
 | `crashes` | Action-cam footage only (telemetry found, or style `action-cam`, `action` or `sport`) |
 | `dialogue` | A text model reads the whole transcript and marks talk worth keeping. Open-list styles only (`gaming`). See [Dialogue reader](#dialogue-reader) |
 | `ranking` | Re-ranks the candidates with the events, after leaving out those in HUD menu time ([game streams](workflows/game-streams.md)); `highlights.json`, `events.json`, `events.txt` and the other result files are written after the last step |
-| `vision` | Ollama frame rating, only when vision is on |
+| `vision` | Ollama frame rating, only when vision is on. The model sees frames only, so a moment with laughter heard in it (`signals.events.laughter` of 0.12 or more) gets a sentence in the prompt saying so |
 
 Nothing new is required. Without the `events` extra or the model files, a step is skipped with an
 `INFO` line and nothing is downloaded; `cutpoint setup` and the extra add them. A step that fails
@@ -1140,7 +1144,7 @@ The transcript is sent whole to a hosted model, which is why the AI Chat consent
 The stretches feed the candidates:
 
 - A stretch no candidate overlaps (or one too long to widen them) nominates a candidate of its own that keeps the whole stretch (starting 1 s before it), not limited by the style's maximum length.
-- A candidate a stretch overlaps is widened to cover the whole stretch, but only when the result (the stretch and every candidate it overlaps) stays within 90 s. Several candidates one stretch overlaps become one, the best scoring; its id and signals stay. **The others stay in `highlights.json` under `widened_from.absorbed` but are no longer candidates, so `--ids` rejects their ids**; a moment you noted by id may be inside another candidate now. A longer stretch is a candidate of its own, over the candidates it overlaps, and those stay as they are. A re-run widens again from the original bounds.
+- A candidate a stretch overlaps is widened to cover the whole stretch, but only when the result (the stretch and every candidate it overlaps) stays within 90 s. Several candidates one stretch overlaps become one, the best scoring; its id and signals stay. **The others stay in `highlights.json` under `widened_from.absorbed` but are no longer candidates, so `--ids` rejects their ids**; a moment you noted by id may be inside another candidate now. A longer stretch is a candidate of its own, over the candidates it overlaps, and those stay as they are. A widened candidate keeps only the part of the stretch that leads into its original moment: where the transcript has no speech for 8 s or more before the moment, it starts after that silence, and it ends before such a silence after the moment (the 90 s limit is checked before this). A re-run widens again from the original bounds.
 - A candidate a stretch overlaps gets up to 3 points on top of its other event points, scaled by the stretch's strength.
 - A pick skips a candidate that mostly overlaps one already picked from the same source (not with `--ids`), so a clip inside a long stretch is not picked twice.
 - `--max-total` (and the `montage` kind) skips a dialogue candidate that is longer than what is left of the cap; it is not trimmed.
@@ -1175,7 +1179,10 @@ In styles with an open list (`gaming`), detected events can also create candidat
 create none and behave as before. When events are scored (`analyze` with its event
 steps, or `events`), each event that can score and that no candidate covers gets a window
 (a few seconds before it, and after it as its type's tail or the style's post-roll); events
-close together make one candidate. A nominated candidate has `signals.events.nominated` (the
+close together make one candidate. A laughter sound heard with a confidence below 0.12 (the detector's own threshold) nominates a
+candidate, and so labels it `laughter`, only with backup within 5 s: another laughter, scream or
+cheering sound, a laughter word or marker in the transcript, or loud speech. A stronger laugh
+needs none. A nominated candidate has `signals.events.nominated` (the
 event names) and keeps the score its window had from the grids as `grid_score`; its `score` is at
 least 0.6 of the best other candidate's of that source, so the events decide its rank. A dialogue stretch over 90 s has exactly 0.6 of it, and its laughter and on-screen events count per minute. Ids of
 nominees continue after the highest id ever given (`settings.last_candidate_id`). Menu time is

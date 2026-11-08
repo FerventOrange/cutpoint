@@ -881,6 +881,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Laughter scoring is stricter about what was actually laughed. The `laughter` transcript signal
+  counts only Whisper's non-speech markers (`[laughter]`, `(laughs)`, `*laughing*`) and
+  interjections such as `haha` and `lol`; the spoken word "laugh" or "laughter" no longer counts.
+  A laugh heard in the audio with a confidence below 0.12 (the detector's own threshold) no
+  longer makes a `laughter` moment, or labels one, unless another laughter, scream or cheering
+  sound, a laughter word in the transcript, or loud speech is within 5 s. The vision rating
+  prompt now says when laughter was heard in a moment (the model sees frames only, so a funny
+  moment no longer rates low for looking ordinary); those moments are rated again, as the prompt
+  is part of the cache key. In `cutpoint ui`, Stats for Nerds shows laughter in the transcript and
+  laughter heard in the audio as two lines.
+- A candidate widened to cover a dialogue stretch keeps only the part that leads into its
+  original moment: it starts after a silence of 8 s or more (no speech in the transcript) before
+  the moment, and ends before one after it, instead of opening on dead air. Stretches longer than
+  90 s, which are moments of their own, are unchanged.
 - Gaming analysis over-flagged three things from the screen text. A kill-feed row that OCR read
   twice (an OCR variant of a name, or the two names split at another place) was two kills; reads
   that start within 6 s of each other, never in the same frame, with the same names (side by side
