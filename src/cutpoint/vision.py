@@ -27,6 +27,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# (host, provider) pairs whose "flags win" INFO line was logged: a run builds several raters
+_override_logged: set[tuple[str, str]] = set()
+
+
+def log_ollama_override(host: str, provider: str) -> None:
+    """Log once per process that ``--ollama-url/--ollama-model`` won over ``provider`` (#805)."""
+    if (host, provider) in _override_logged:
+        return
+    _override_logged.add((host, provider))
+    logger.info("--ollama-url/--ollama-model given: using the Ollama at %s, not %s", host, provider)
+
+
 FALLBACK_MODEL = "qwen3.5:9b"
 
 
@@ -353,6 +365,8 @@ class VisionRater:
             # the cache key's host (rating_key), as for a hosted provider: a local and a
             # remote Ollama with one model rate apart (#673)
             self.host = _host_port(self.url)
+            if explicit and not local_only and v_ast.provider != "ollama":
+                log_ollama_override(self.host, v_ast.provider)
             # an Ollama on another machine is hosted, as for AI Chat: frames go there only once
             # the user agreed to it for Vision (the Models tab of cutpoint ui). Activity
             # detection (local_only) too: it sends frames and the user's words

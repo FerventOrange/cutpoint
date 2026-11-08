@@ -17,7 +17,7 @@ import pytest
 import requests
 
 from conftest import set_config, warning_codes, write
-from cutpoint import analyze, cache, jsonout, planning, progress
+from cutpoint import analyze, cache, jsonout, planning, progress, vision
 from cutpoint.assistant import providers
 from cutpoint.events import dialogue, report, scoring
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES
@@ -1275,12 +1275,17 @@ def test_a_remote_ollama_as_ai_chat_with_only_vision_consent_gets_no_transcripts
     assert REMOTE_KEY in res.warnings[0]["message"]
 
 
-def test_a_remote_ollama_as_ai_chat_gives_way_to_the_local_one_without_asking_it(home, monkeypatch):
+def test_a_remote_ollama_as_ai_chat_gives_way_to_the_local_one_without_asking_it(
+    home, monkeypatch, caplog
+):
     set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL})
     net = Net(monkeypatch, ollama=True)
-    choice = dialogue.choose_backend()
+    with caplog.at_level(logging.INFO):
+        choice = dialogue.choose_backend()
     assert choice.backend is not None and choice.backend.name == "local"
     assert "127.0.0.1" in choice.backend.key and net.to(REMOTE) == []
+    assert f"Dialogue reader: the Ollama at {REMOTE}:11434 has no consent; using" in caplog.text
+    assert "hosted AI Chat model" not in caplog.text
 
 
 def test_hosted_chat_without_consent_and_a_remote_ollama_url_with_only_vision_consent(
@@ -1330,6 +1335,11 @@ def test_a_remote_ollama_with_the_assistant_consent_is_read_like_a_local_one(hom
 
 
 # --------------------------------------------------------------------------- the flags win (#805)
+@pytest.fixture(autouse=True)
+def _fresh_override_log(monkeypatch):
+    monkeypatch.setattr(vision, "_override_logged", set())
+
+
 def test_ollama_flags_win_over_a_consented_hosted_ai_chat_model(hosted_chat, monkeypatch):
     hosted_chat([f"assistant-v3:{ANTHROPIC}"])  # key and consent: it would be the backend
     net = Net(monkeypatch, ollama=True)
@@ -1344,12 +1354,39 @@ def test_ollama_flags_win_over_a_consented_hosted_ai_chat_model(hosted_chat, mon
     assert net.to("api.anthropic.com") == [] and not made and res.warnings == []
 
 
-def test_ollama_flags_win_over_an_ai_chat_ollama(home, monkeypatch):
+def test_ollama_flags_over_a_hosted_model_log_one_info_line(hosted_chat, monkeypatch, caplog):
+    hosted_chat([f"assistant-v3:{ANTHROPIC}"])
+    Net(monkeypatch, ollama=True)
+    with caplog.at_level(logging.INFO):
+        dialogue.choose_backend("http://127.0.0.1:11434", None)
+    want = "--ollama-url/--ollama-model given: using the Ollama at 127.0.0.1:11434, not anthropic"
+    assert caplog.text.count(want) == 1
+
+
+def test_ollama_flags_win_over_an_ai_chat_ollama(home, monkeypatch, caplog):
     set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL, "consent": [REMOTE_KEY]})
     net = Net(monkeypatch, ollama=True)
-    backend = dialogue.choose_backend("http://127.0.0.1:11434", None).backend
+    with caplog.at_level(logging.INFO):
+        backend = dialogue.choose_backend("http://127.0.0.1:11434", None).backend
     assert backend is not None and backend.name == "local" and "127.0.0.1" in backend.key
     assert net.to(REMOTE) == []
+    want = "--ollama-url/--ollama-model given: using the Ollama at 127.0.0.1:11434, not ollama"
+    assert caplog.text.count(want) == 1
+
+
+def test_ollama_flags_at_the_ai_chat_ollama_host_log_no_override_line(home, monkeypatch, caplog):
+    set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL, "consent": [REMOTE_KEY]})
+    Net(monkeypatch, ollama=True)
+    with caplog.at_level(logging.INFO):
+        dialogue.choose_backend(REMOTE_URL, None)
+    assert "--ollama-url/--ollama-model given" not in caplog.text
+
+
+def test_ollama_flags_with_a_bad_port_in_ollama_host_do_not_raise(home, monkeypatch):
+    set_config(home, assistant={"provider": "ollama"})
+    monkeypatch.setenv("OLLAMA_HOST", "myhost:99999")
+    Net(monkeypatch, ollama=True)
+    dialogue.choose_backend("http://127.0.0.1:11434")
 
 
 def test_a_remote_ollama_url_without_consent_is_skipped_not_handed_to_the_hosted_model(

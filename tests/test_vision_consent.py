@@ -780,6 +780,23 @@ def test_an_ollama_flag_wins_over_a_hosted_vision_role(hosted, flags) -> None:
     assert hosted == []  # nothing went to the hosted role or the Ollama
 
 
+@pytest.fixture(autouse=True)
+def _fresh_override_log(monkeypatch) -> None:
+    monkeypatch.setattr(vision, "_override_logged", set())
+
+
+def test_an_ollama_flag_over_a_hosted_role_logs_one_info_line(hosted, caplog) -> None:
+    with caplog.at_level(logging.INFO):
+        vision.VisionRater(url="http://127.0.0.1:11434")
+        vision.VisionRater(url="http://127.0.0.1:11434", model="m")  # a second rater, same run
+    want = "--ollama-url/--ollama-model given: using the Ollama at 127.0.0.1:11434, not openai"
+    assert caplog.text.count(want) == 1
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        vision.VisionRater()  # no flags: no line
+    assert "--ollama-url" not in caplog.text
+
+
 def test_a_remote_ollama_flag_without_consent_sends_nothing_anywhere(hosted, caplog) -> None:
     rater = vision.VisionRater(url=REMOTE, model="m")
     assert rater.provider_name == "ollama" and rater.consent_needed == KEY

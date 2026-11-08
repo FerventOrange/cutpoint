@@ -548,8 +548,9 @@ def choose_backend(ollama_url: str | None = None, ollama_model: str | None = Non
     to the AI Chat model.
     """
     from cutpoint.assistant import keys, providers  # noqa: PLC0415
+    from cutpoint.backends import ollama_url as ollama_url_default  # noqa: PLC0415
     from cutpoint.config import get_config  # noqa: PLC0415
-    from cutpoint.vision import VisionRater  # noqa: PLC0415
+    from cutpoint.vision import VisionRater, log_ollama_override  # noqa: PLC0415
 
     settings = get_config().assistant
     provider: Any = None
@@ -583,6 +584,13 @@ def choose_backend(ollama_url: str | None = None, ollama_model: str | None = Non
             logger.info("Dialogue reader: %s", keys.redact(str(err)))
     elif not isinstance(provider, providers.OllamaProvider) or consent_missing:
         rater = VisionRater(ollama_url, ollama_model, local_only=True)
+        if explicit:
+            try:
+                chat_host = providers.host_port(settings.url or ollama_url_default())
+            except ValueError:  # a bad port in OLLAMA_HOST / ollama_url: no line, no crash
+                chat_host = None
+            if settings.provider != "ollama" or chat_host != providers.host_port(rater.url):
+                log_ollama_override(providers.host_port(rater.url), settings.provider)
     need = ollama_consent_key(rater.url) if rater is not None else None
     if rater is not None and need and need not in settings.consent:
         # an Ollama on another machine: whole transcripts need the assistant consent for it
@@ -592,9 +600,8 @@ def choose_backend(ollama_url: str | None = None, ollama_model: str | None = Non
         rater = None
     if rater is not None and (local := _local_backend(rater)) is not None:
         if consent_missing:
-            logger.info(
-                "Dialogue reader: the hosted AI Chat model has no consent; using %s", rater.model
-            )
+            who = f"the Ollama at {remote_host}" if remote_host else "the hosted AI Chat model"
+            logger.info("Dialogue reader: %s has no consent; using %s", who, rater.model)
         return Choice(local)
     if consent_missing:
         _warn_consent(consent_missing)
