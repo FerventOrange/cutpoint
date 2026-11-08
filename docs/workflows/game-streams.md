@@ -55,7 +55,7 @@ picked from the file or folder name, or set with `--game KEY` (how the name beco
 [Configuration](../configuration.md#hud-presets)). A source whose HUD text lands in other places on
 screen than in the footage of that name's preset gets a key and a discovery of its own (the HUD
 fit check, same page). To give an older preset the fit check, run
-`cutpoint events <project> --discover-regions` (or `edit` with `--discover-regions`) on a folder
+`cutpoint events <project> --discover-regions` on a folder
 where that game is the majority; it adds only the check's reference to the preset, made from the
 sources that fit.
 

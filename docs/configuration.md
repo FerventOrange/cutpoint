@@ -452,7 +452,7 @@ gameplay frames with edge text in it and compares the two grids (cosine similari
 0.57 fits; the preset's regions play no part). Discovery stores the preset's grid in the preset
 (`discovery.fit_ref`). A preset without one (written by hand, or by an older version) decides
 nothing: its sources keep the first guess. To give an older preset the fit check, run
-`cutpoint events <project> --discover-regions` (or `edit` with `--discover-regions`) on a folder
+`cutpoint events <project> --discover-regions` on a folder
 where that game is the majority: discovery runs again and its sources are compared with each
 other as in a new discovery (the source with the most gameplay frames leads); the preset gets
 only a `discovery.fit_ref` made from the sources that fit (its regions and every other key stay

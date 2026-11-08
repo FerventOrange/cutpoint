@@ -911,10 +911,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guessed key's preset gets a key and a discovery of its own (INFO line
   `<file> does not fit the HUD preset '<key>' ...`), and a preset discovered from several sources
   is made from those that fit. A preset from an older version splits nothing until it has the grid:
-  to give an older preset the fit check, run `cutpoint events <project> --discover-regions` (or
-  `edit` with `--discover-regions`) on a folder where that game is the majority, which checks the
-  sources against each other as in a new discovery and adds only `discovery.fit_ref`, made from
-  those that fit, to the preset (regions unchanged, INFO line `Added the HUD fit check to the
+  to give an older preset the fit check, run `cutpoint events <project> --discover-regions` on a
+  folder where that game is the majority, which checks the sources against each other as in a new
+  discovery and adds only `discovery.fit_ref`, made from those that fit, to the preset (regions unchanged, INFO line `Added the HUD fit check to the
   preset '<key>' ...`). Over a preset that has the grid, `--discover-regions` checks the sources
   against it and makes the grid again from those that fit. The decisions are kept in
   `<project>/discovery/game_keys.json`; `--game` and preset `match` hints skip the check,
