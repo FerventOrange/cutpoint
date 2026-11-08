@@ -845,3 +845,15 @@ def test_run_events_with_an_ollama_model_flag_describes_with_the_ollama_not_the_
     data = _run_vlm(tmp_path, monkeypatch, ollama_model="tiny:1b")
     assert data["settings"]["vlm"]["model"] == "ollama@127.0.0.1:11434:tiny:1b"
     assert hosted == []
+
+
+def test_activity_detection_flags_to_a_remote_ollama_need_consent(
+    home, wire, monkeypatch, caplog
+) -> None:
+    """#816: --ollama-url on another machine sends nothing to the crash/profile step without
+    the Vision consent."""
+    with caplog.at_level(logging.WARNING), jsonout.run("profile") as res:
+        assert activity.default_ask(REMOTE, "m") == (None, None)
+    assert wire == []
+    assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+    assert KEY in res.warnings[0]["message"]

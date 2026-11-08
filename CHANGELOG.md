@@ -910,8 +910,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Chat model for dialogue reading and over a hosted Vision role (VLM layer of events, feed labels,
   `analyze --vision`); a flag left out takes its usual default. An Ollama on another machine needs
   the Vision consent (vision) or the AI Chat consent (dialogue); without it the step is skipped
-  with `vision_consent_needed` or `chat_consent_needed` and nothing is sent to the hosted model.
-  The crash and profile step still ignores these flags (#805).
+  with `vision_consent_needed` or `chat_consent_needed` and nothing is sent to the hosted model
+  (#805).
+- The crash and profile step of `analyze` and `edit` (and of `resume` replaying them) now uses an
+  explicit `--ollama-url` / `--ollama-model` too, with the same Vision consent rule for an Ollama on
+  another machine. A bad port in `OLLAMA_HOST` or `ollama_url` no longer fails the profile
+  detection of `crashes` and `profile`: it logs a warning and goes on without the vision model
+  (#816).
 - Feed labelling gives the first request to an Ollama 300 s (model load) instead of 60 s, and a
   failed first request no longer counts toward giving up. Hosted models are unchanged (#796).
 - AI Chat names dialogue moments by their readable title, as the moments list does, while

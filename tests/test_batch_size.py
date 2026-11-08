@@ -954,3 +954,19 @@ def test_the_ollama_provider_unloads_with_keep_alive_0(monkeypatch, status, want
 
     monkeypatch.setattr(providers.requests, "post", down)
     assert providers.OllamaProvider("127.0.0.1:11434", "m", 0).unload() is False
+
+
+def test_events_hand_the_ollama_flags_to_the_crash_layer(layers_run, monkeypatch):
+    """#816: the crash layer's profile detection gets --ollama-url/--ollama-model."""
+    from cutpoint import crash  # noqa: PLC0415
+
+    got: dict[str, Any] = {}
+    monkeypatch.setattr(crash, "detect_project", lambda project, **kw: got.update(kw))
+    monkeypatch.setattr(
+        crash.ClipEncoder,
+        "from_visual",
+        classmethod(lambda cls, m: SimpleNamespace(close=lambda: None)),
+    )
+    argv = ["events", "p", "--layers", "visual", "crash", "--no-rescore"]
+    assert cli.main(argv) == 0
+    assert (got["ollama_url"], got["ollama_model"]) == (None, None)
