@@ -16,9 +16,10 @@ import logging
 from pathlib import Path
 
 from cutpoint import cache, jsonout
+from cutpoint.events import pipeline
 from cutpoint.events.audio_events import DEFAULT_GROUPS, AudioParams
 from cutpoint.events.killfeed import OcrParams
-from cutpoint.events.pipeline import DEFAULT_LAYERS, LAYERS, SKI_LAYERS, run_events
+from cutpoint.events.pipeline import DEFAULT_LAYERS, LAYERS, SKI_LAYERS
 from cutpoint.events.vlm_windows import VlmParams
 from cutpoint.styles import ACTION_CAM, project_kind
 
@@ -215,7 +216,8 @@ def run_args(
         ski = project_kind(load_highlights(args.project)) == ACTION_CAM
         chosen = args.layers or list(SKI_LAYERS if ski else DEFAULT_LAYERS)
         layers = tuple(x for x in chosen if not (args.no_vlm and x == "vlm"))
-    jpath, tpath = run_events(
+    # looked up at call time (#727): a name bound at import would keep a test's patch
+    jpath, tpath = pipeline.run_events(
         args.project,
         layers=layers,
         only=tuple(args.only),
