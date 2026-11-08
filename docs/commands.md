@@ -637,6 +637,8 @@ remote access is not supported.
 
 ### AI Chat
 
+Dialogue moments use the same readable title as the moments list when a title is available.
+
 Lengths: the model sees each clip's length as it will export, with its room in the source, the
 sequence total and the length you asked for in your message ("~4 min", "240 s", "1:30"). A
 proposal more than 15% over or under that length is sent back to the model up to 3 times (a summary
