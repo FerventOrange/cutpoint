@@ -529,12 +529,12 @@ def split_markers(segments: list[Segment]) -> list[Segment]:
     """``segments`` without Whisper's non-speech markers (``[Music]``, ``(laughs)``, ``*sighs*``).
 
     The markers leave the text and the words, so subtitles, captions, dialogue, the transcript
-    and every speech check see speech only; a segment left with nothing is dropped. Each marker
-    is kept as ``{"start", "end", "text"}`` in the ``markers`` of its segment (a dropped
-    segment's: the nearest kept one), for :func:`flat_markers` (the laughter hits). Segments
-    without markers are returned as they are, so it is safe to run it twice."""
+    and every speech check see speech only. Each marker is kept as ``{"start", "end", "text"}``
+    in the ``markers`` of its segment; a segment left with nothing stays as a holder with empty
+    ``text`` and no ``words`` (readers of segments skip it as speech), for :func:`flat_markers`
+    (the laughter hits). Segments without markers are returned as they are, so it is safe to run
+    it twice."""
     out: list[Segment] = []
-    lost: list[dict[str, Any]] = []
     for seg in segments:
         words = seg.get("words") or []
         marks = _word_markers(words)
@@ -554,17 +554,14 @@ def split_markers(segments: list[Segment]) -> list[Segment]:
             for a, b, t in marks
         ]
         left = [w for i, w in enumerate(words) if i not in gone]
-        if not text and not left:
-            lost += found
+        held = [*seg.get("markers", []), *found]
+        if not text and not left:  # nothing spoken: an empty holder keeps the markers
+            out.append({**seg, "text": "", "words": [], "markers": held})
             continue
-        out.append(
-            {**seg, "text": text, "words": left, "markers": [*seg.get("markers", []), *found]}
-        )
-    for m in lost:  # the nearest kept segment holds the marker of a dropped one
-        if out:
-            i = min(range(len(out)), key=lambda j: abs(out[j]["start"] - m["start"]))
-            held = sorted([*out[i].get("markers", []), m], key=lambda x: x["start"])
-            out[i] = {**out[i], "markers": held}
+        kept = {**seg, "text": text, "words": left, "markers": held}
+        if left:  # the marker's time is no speech
+            kept["start"], kept["end"] = left[0]["start"], left[-1]["end"]
+        out.append(kept)
     return out
 
 

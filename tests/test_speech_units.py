@@ -27,6 +27,7 @@ from cutpoint.boundaries import (
     fit_start,
     separate,
 )
+from cutpoint.events.dialogue import lines_from_segments
 from cutpoint.extend import ExtendPlan, apply_overrides
 from cutpoint.transcribe import (
     Transcriber,
@@ -304,7 +305,7 @@ def test_split_markers_handles_every_bracket_and_a_marker_of_several_words():
     assert [m["text"] for m in flat_markers(out)] == ["(laughs)", "*sighs*.", "[light laughter]"]
 
 
-def test_split_markers_drops_a_marker_only_segment_and_gives_its_marker_to_the_nearest():
+def test_split_markers_keeps_a_marker_only_segment_as_an_empty_holder():
     far = {**_marked("[Music]"), "start": 50.0, "end": 51.0}
     far["words"] = [{"word": " [Music]", "start": 50.0, "end": 51.0}]
     near = {**_marked("hello"), "start": 48.0, "end": 49.0}
@@ -313,10 +314,51 @@ def test_split_markers_drops_a_marker_only_segment_and_gives_its_marker_to_the_n
 
     out = split_markers([first, near, far])
 
-    assert [s["text"].strip() for s in out] == ["hi there", "hello"]
-    assert flat_markers([out[0]]) == []
-    assert [m["text"] for m in flat_markers([out[1]])] == ["[Music]"]
+    assert [s["text"].strip() for s in out] == ["hi there", "hello", ""]
+    assert out[2]["words"] == [] and (out[2]["start"], out[2]["end"]) == (50.0, 51.0)
+    assert [m["text"] for m in flat_markers(out)] == ["[Music]"]
+    assert [m["text"] for m in flat_markers([out[2]])] == ["[Music]"]
     assert far["words"] and "markers" not in near  # the input is not changed
+    assert split_markers(out) == out  # safe to run twice
+
+
+def test_a_marker_only_holder_is_no_speech_and_no_line_or_subtitle():
+    holder = {**_marked("[Laughter]"), "start": 10.0, "end": 12.0}
+    (seg,) = split_markers([holder])
+    spoken = split_markers([_marked("so", "anyway")])[0]
+
+    assert analyze._in_speech(11.0, [seg]) is False
+    assert analyze.sentence_bounds([seg]) == ([], [])
+    assert analyze.sentence_bounds([spoken, seg]) == analyze.sentence_bounds([spoken])
+    assert analyze.transcript_text("clip.mp4", [seg]) == []
+    assert lines_from_segments([seg]) == []
+    assert flat_words([seg]) == []
+    (hit,) = analyze.laughter_hits(flat_words([seg]), flat_markers([seg]))
+    assert hit[2] == "laughter"
+
+
+def test_a_removed_marker_tightens_the_segment_bounds():
+    (seg,) = split_markers([_marked("[Laughter]", "so", "anyway", "[Music]")])
+
+    assert (seg["start"], seg["end"]) == (1.0, 2.5)  # the first and last word left
+    assert [m["text"] for m in flat_markers([seg])] == ["[Laughter]", "[Music]"]
+
+
+def test_split_markers_takes_a_marker_out_of_a_segment_without_words():
+    (seg,) = split_markers([{"start": 1.0, "end": 3.0, "text": "[Laughter] ok", "words": []}])
+
+    assert seg["text"] == "ok"
+    assert flat_markers([seg]) == [{"start": 1.0, "end": 3.0, "text": "[Laughter]"}]
+
+
+def test_shift_segments_moves_the_markers_with_the_words():
+    (seg,) = split_markers([_marked("so", "[Laughter]", "anyway")])
+
+    (moved,) = analyze._shift_segments([seg], 100.0)
+
+    assert flat_markers([moved]) == [{"start": 101.0, "end": 101.5, "text": "[Laughter]"}]
+    assert moved["words"][0]["start"] == 100.0
+    assert flat_markers([seg])[0]["start"] == 1.0  # the input is not changed
 
 
 @pytest.mark.parametrize(

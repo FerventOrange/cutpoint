@@ -649,7 +649,7 @@ def nominate(
             if any(e["start"] - BACKUP_S <= t <= e["end"] + BACKUP_S for t in words):
                 return True
             a, b = e["start"] - 1.0, e["end"] + 1.0
-            if not any(s["end"] >= a and s["start"] <= b for s in segs(src)):
+            if not any(s["end"] >= a and s["start"] <= b for s in segs(src) if s.get("text") != ""):
                 return False
             for p in grid_parts():
                 if str(p.source) == src and p.offset <= e["start"] < p.offset + p.duration:

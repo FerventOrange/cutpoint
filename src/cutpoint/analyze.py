@@ -762,6 +762,7 @@ def sentence_bounds(segments: list[Segment], gap: float = 0.7) -> tuple[list[flo
     """Sentence start/end times: segment edges at terminal punctuation or pauses."""
     starts: list[float] = []
     ends: list[float] = []
+    segments = [s for s in segments if s.get("text")]  # not a marker holder
     for i, seg in enumerate(segments):
         prev = segments[i - 1] if i else None
         nxt = segments[i + 1] if i + 1 < len(segments) else None
@@ -774,7 +775,7 @@ def sentence_bounds(segments: list[Segment], gap: float = 0.7) -> tuple[list[flo
 
 
 def _in_speech(t: float, segments: list[Segment]) -> bool:
-    return any(s["start"] - 0.3 <= t <= s["end"] + 0.3 for s in segments)
+    return any(s["start"] - 0.3 <= t <= s["end"] + 0.3 for s in segments if s.get("text"))
 
 
 def _gap_before(t: float, words: list[dict[str, Any]]) -> float:
@@ -882,6 +883,8 @@ def transcript_text(name: str, segments: list[Segment], pause: float = 0.6) -> l
             cur.clear()
 
     for seg in segments:
+        if not seg.get("text"):  # a marker holder
+            continue
         words = seg.get("words") or [
             {"start": seg["start"], "end": seg["end"], "word": seg["text"]}
         ]

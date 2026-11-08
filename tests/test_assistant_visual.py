@@ -207,6 +207,12 @@ def test_heard_laughter_follows_the_shared_rule_and_a_scream_any_level() -> None
     assert heard(laughter=0.05, scream=0.02) == ["scream"]
 
 
+def test_malformed_signals_do_not_break_the_heard_cue() -> None:
+    for signals in ("loud", {"events": "x"}, {"events": {"laughter": "high", "scream": None}}):
+        cand = {**CANDS[0], "signals": signals}
+        assert context.MomentTable([cand], []).row("c1").get("heard", []) == []
+
+
 def test_seen_is_cut_in_the_table_and_whole_in_get_moment() -> None:
     long = {**EVENTS["windows"][0], "summary": "x" * 500}
     t = context.MomentTable(list(CANDS), [], context.vlm_windows({"windows": [long]}))

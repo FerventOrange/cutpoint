@@ -13,6 +13,7 @@ import pytest
 from cutpoint import cache, sources
 from cutpoint.events import eventtypes, scoring
 from cutpoint.events.regions import load_preset
+from cutpoint.transcribe import flat_markers, flat_words
 
 SRC = "a.mp4"
 CAND = {"start": 0.0, "end": 100.0}
@@ -214,9 +215,36 @@ def test_source_segments_keep_a_laughter_marker_apart_from_the_speech(tmp_path, 
     ]  # fmt: skip
     video = _transcribe(tmp_path, segments)
     got = sources.source_segments(video)
-    assert got is not None and [s["text"] for s in got] == ["no way really"]
+    assert got is not None and [s["text"] for s in got] == ["no way really", ""]
     assert [m["text"] for s in got for m in s["markers"]] == ["[Laughter]", "(applause)"]
     assert [w["word"] for w in sources.source_words(video) or []] == ["no", "way", "really"]
+
+
+def test_source_segments_of_a_second_part_carry_the_offset_into_the_markers(tmp_path, home):
+    video = _transcribe(tmp_path, [])
+    cache.save_json(cache.source_dir(video) / "read_errors.json", {"resumed_at": 500.0})
+    second = [
+        {
+            "start": 1.0, "end": 4.0, "text": "ok [Laughter] go",
+            "words": [
+                {"word": "ok", "start": 1.0, "end": 1.4},
+                {"word": "[Laughter]", "start": 2.0, "end": 3.0},
+                {"word": "go", "start": 3.1, "end": 4.0},
+            ],
+        },
+        {
+            "start": 9.0, "end": 10.0, "text": "[Laughter]",
+            "words": [{"word": "[Laughter]", "start": 9.0, "end": 10.0}],
+        },
+    ]  # fmt: skip
+    cache.save_json(cache.source_dir(video, 500.0) / "transcript-small.json", second)
+
+    got = sources.source_segments(video)
+
+    assert got is not None
+    assert [(m["start"], m["end"]) for m in flat_markers(got)] == [(502.0, 503.0), (509.0, 510.0)]
+    assert [(s["start"], s["end"]) for s in got] == [(501.0, 504.0), (509.0, 510.0)]
+    assert [w["start"] for w in flat_words(got)] == [501.0, 503.1]
 
 
 def test_source_segments_and_words_round_trip(tmp_path, home):
