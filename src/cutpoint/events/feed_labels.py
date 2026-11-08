@@ -38,7 +38,12 @@ CROP_MAX_SIDE = 1280  # ...but the long side stays within this
 MAX_CALLS = 12  # proposals asked about per game
 SKIP_KINDS = ("readout", "popup", "banner")  # the rules are confident about these
 STOP_AFTER = 2  # failed calls in a row after which the rest are not asked
-ASK_TIMEOUT = 60  # seconds a call may take: a stuck Ollama costs STOP_AFTER x this at most
+ASK_TIMEOUT = 60  # seconds a call may take
+# ...but the first call to an Ollama also loads the model (#796), so it gets as long as one of
+# the VLM layer's requests (VisionRater._rate_frames) or a local AI Chat read (CHAT_TIMEOUT_S).
+# A stuck Ollama costs this plus STOP_AFTER x ASK_TIMEOUT at most: a failed cold call does not
+# count toward STOP_AFTER
+FIRST_ASK_TIMEOUT = 300
 
 SCHEMA = {
     "type": "object",
@@ -157,6 +162,7 @@ def label_proposals(
     frame_dir: Path,
     ask: Callable[[str, list[bytes], dict[str, Any]], dict[str, Any] | None],
     model: str,
+    cold: Callable[[], bool] | None = None,
 ) -> dict[str, dict[str, str]]:
     """Ask the vision model what each candidate proposal is.
 
@@ -166,6 +172,9 @@ def label_proposals(
         frame_dir: Folder of their JPEGs (``frames/``); the cache file is next to it.
         ask: ``(prompt, jpegs, schema) -> reply dict or None``.
         model: The model's cache key (provider, host and model id).
+        cold: Whether the next ``ask`` also loads the model (asked before each call; None:
+            never). A cold call that fails does not count toward :data:`STOP_AFTER` (#796):
+            a slow load and one slow call after it do not give up.
 
     Returns:
         ``{proposal name: {"label": ..., "model": ...}}`` for the proposals the model
@@ -197,10 +206,11 @@ def label_proposals(
                 jpegs.append(jpeg)
         if not jpegs:
             continue
+        loading = cold is not None and cold()
         reply = ask(_PROMPT.format(n=len(jpegs), where=where(p)), jpegs, SCHEMA)
         label = reply.get("label") if reply else None
         if label not in LABELS:
-            failed += 1
+            failed += 0 if loading else 1
             if failed >= STOP_AFTER:
                 logger.info("Feed labels: the vision model gave no usable answer; stopping")
                 break
@@ -247,6 +257,11 @@ def make_labeler(rater: Any) -> Labeler:
                     logger.info("Feed labels: no vision model answers; the rules decide")
         return state["ok"]
 
+    def cold() -> bool:
+        # an Ollama that was sent nothing yet (or was unloaded) loads the model first; a
+        # hosted Vision role ignores the timeout
+        return rater.provider_name == "ollama" and not rater.used
+
     def ask(prompt: str, jpegs: list[bytes], schema: dict[str, Any]) -> dict[str, Any] | None:
         return rater.describe(
             prompt,
@@ -255,7 +270,7 @@ def make_labeler(rater: Any) -> Labeler:
             num_ctx=16384,
             num_predict=500,
             temperature=0.0,
-            timeout=ASK_TIMEOUT,
+            timeout=FIRST_ASK_TIMEOUT if cold() else ASK_TIMEOUT,
         )
 
     def label(
@@ -265,7 +280,7 @@ def make_labeler(rater: Any) -> Labeler:
             return {}
         progress.update(detail="labelling HUD regions with the vision model")
         try:
-            labels = label_proposals(proposals, frames, frame_dir, ask, model_key(rater))
+            labels = label_proposals(proposals, frames, frame_dir, ask, model_key(rater), cold)
         except LowMemoryError as err:
             logger.warning("Feed labels skipped, the rules decide: %s", err)
             return {}

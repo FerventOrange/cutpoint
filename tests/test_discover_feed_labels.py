@@ -200,6 +200,25 @@ def test_a_label_outside_the_list_is_no_label(tmp_path: Path) -> None:
     assert out == {} and len(calls) == feed_labels.STOP_AFTER
 
 
+@pytest.mark.parametrize(("cold", "calls"), [(True, 3), (None, 2)], ids=["cold-first", "no-cold"])
+def test_a_failed_cold_call_does_not_count_toward_stopping(
+    tmp_path: Path, cold: bool | None, calls: int
+) -> None:
+    _write_frames(tmp_path / "frames")
+    asked: list[int] = []
+
+    def ask(*_a: Any) -> dict[str, Any] | None:
+        asked.append(1)
+        return None
+
+    is_cold = None if cold is None else (lambda: len(asked) == 0)  # only the first call loads
+    proposals = [_prop(f"feed{i}", "feed", 0.5, x=1500, y=100 + 100 * i) for i in range(5)]
+    out = feed_labels.label_proposals(
+        proposals, FRAMES, tmp_path / "frames", ask, "m", cold=is_cold
+    )
+    assert out == {} and len(asked) == calls
+
+
 def _rater(**kw: Any) -> SimpleNamespace:
     warned: list[bool] = []
     base = {
@@ -212,9 +231,18 @@ def _rater(**kw: Any) -> SimpleNamespace:
         "model": "m",
         "unload": lambda: None,
         "describe": lambda *a, **k: {"text_in_box": "", "label": "chat"},
+        "used": False,
         "warned": warned,
     }
-    return SimpleNamespace(**(base | kw))
+    rater = SimpleNamespace(**(base | kw))
+    inner = rater.describe
+
+    def describe(*a: Any, **k: Any) -> Any:
+        rater.used = True  # as VisionRater: set when a request goes out, before it can fail
+        return inner(*a, **k)
+
+    rater.describe = describe
+    return rater
 
 
 def test_no_consent_asks_nothing_and_warns(tmp_path: Path) -> None:
@@ -344,11 +372,48 @@ def test_labelling_asks_with_a_short_timeout_and_a_timeout_is_a_failure(tmp_path
         return None  # what VisionRater.describe gives when the request times out
 
     rater = _rater(describe=describe)
+    proposals = [_prop(f"feed{i}", "feed", 0.5, x=1500, y=100 + 100 * i) for i in range(4)]
+    assert feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames") == {}
+    # the first call to an Ollama loads the model: it may take longer, the others may not; the
+    # failed cold call is not counted, so the run stops after STOP_AFTER further failures
+    assert seen == [
+        feed_labels.FIRST_ASK_TIMEOUT,
+        feed_labels.ASK_TIMEOUT,
+        feed_labels.ASK_TIMEOUT,
+    ]
+    assert feed_labels.ASK_TIMEOUT == 60
+    assert feed_labels.FIRST_ASK_TIMEOUT > feed_labels.ASK_TIMEOUT
+
+
+def test_a_hosted_rater_is_never_given_the_model_load_timeout(tmp_path: Path) -> None:
+    _write_frames(tmp_path / "frames")
+    seen: list[Any] = []
+
+    def describe(*_a: Any, **kw: Any) -> dict[str, str]:
+        seen.append(kw.get("timeout"))
+        return {"text_in_box": "", "label": "chat"}
+
+    rater = _rater(describe=describe, provider_name="anthropic")
     proposals = [
         _prop("feed", "feed", 0.5, x=1500, y=100),
         _prop("feed2", "feed", 0.5, x=1500, y=400),
-        _prop("feed3", "feed", 0.5, x=1500, y=700),
     ]
-    assert feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames") == {}
-    assert seen == [feed_labels.ASK_TIMEOUT] * feed_labels.STOP_AFTER
-    assert feed_labels.ASK_TIMEOUT == 60
+    assert len(feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames")) == 2
+    assert seen == [feed_labels.ASK_TIMEOUT] * 2
+
+
+def test_only_the_first_ollama_call_gets_the_load_timeout(tmp_path: Path) -> None:
+    _write_frames(tmp_path / "frames")
+    seen: list[Any] = []
+
+    def describe(*_a: Any, **kw: Any) -> dict[str, str]:
+        seen.append(kw.get("timeout"))
+        return {"text_in_box": "", "label": "chat"}
+
+    proposals = [
+        _prop("feed", "feed", 0.5, x=1500, y=100),
+        _prop("feed2", "feed", 0.5, x=1500, y=400),
+    ]
+    rater = _rater(describe=describe)
+    feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames")
+    assert seen == [feed_labels.FIRST_ASK_TIMEOUT, feed_labels.ASK_TIMEOUT]
