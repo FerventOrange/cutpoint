@@ -646,10 +646,9 @@ def nominate(
             if not any(s["end"] >= a and s["start"] <= b for s in segs(src)):
                 return False
             for p in grid_parts():
-                if str(p.source) == src and p.offset <= a < p.offset + p.duration:
-                    loud = p.signals.sig["loudness"][
-                        int((a - p.offset) / analyze.DT) : int((b - p.offset) / analyze.DT) + 1
-                    ]
+                if str(p.source) == src and p.offset <= e["start"] < p.offset + p.duration:
+                    lo = max(0, int((a - p.offset) / analyze.DT))
+                    loud = p.signals.sig["loudness"][lo : int((b - p.offset) / analyze.DT) + 1]
                     return bool(loud.size and loud.max() >= LOUD_SPEECH)
             return False
 

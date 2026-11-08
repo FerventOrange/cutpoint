@@ -1135,6 +1135,27 @@ def test_loud_speech_backs_a_weak_laugh_but_quiet_speech_or_loud_noise_do_not(
     assert nominees(noise) == []
 
 
+def test_loud_speech_backs_a_weak_laugh_at_the_stream_start(tmp_path, monkeypatch):
+    speech = talk((0.0, "oh come on now"))
+    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: speech)
+    hl = highlights([own("h001", 20.0)])
+    scoring.nominate(hl, events_of([sound(0.5, confidence=WEAK)]), tmp_path, [_loud_grid(1.0)])
+    assert len(nominees(hl)) == 1
+
+
+def test_a_weak_laugh_after_a_part_boundary_reads_its_own_part_not_the_previous(
+    tmp_path, monkeypatch
+):
+    speech = talk((599.0, "oh come on now"))
+    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: speech)
+    loud_before = _loud_grid(599.5)  # loud at the end of the first part only
+    quiet_after = grid(offset=N * DT, index=1)
+    hl = highlights([own("h001", 20.0)])
+    event = events_of([sound(N * DT + 0.5, confidence=WEAK)])
+    scoring.nominate(hl, event, tmp_path, [loud_before, quiet_after])
+    assert nominees(hl) == []
+
+
 def test_a_weak_laugh_inside_a_candidate_still_counts_for_its_boost():
     # the backup rule is about making a moment, not about the evidence the boost reads
     boost, evidence = scoring.event_boost(

@@ -415,6 +415,9 @@ def test_a_marker_of_several_words_is_one_hit_at_its_first_word():
         ("i", "laugh", "every", "time"),
         ("Laughter,", "he", "says."),
         ("the", "(laughing", "stock", "of", "town"),  # no closing mark
+        ("what", "the", "f***", "are", "you", "laughing", "at", "s***"),  # censored profanity
+        ("so", "(laughs]", "anyway"),  # mismatched delimiters
+        ("so", "[laughs)", "anyway"),
     ],
 )
 def test_the_spoken_word_laugh_or_laughter_is_not_a_laughter_hit(words):

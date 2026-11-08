@@ -232,8 +232,11 @@ def keyword_hits(
 
 # Whisper's non-speech laughter markers: "[laughter]", "(laughs)", "*laughing*", "[light laughter]".
 # The brackets (or asterisks) are required: the plain spoken word is not laughter.
+_LAUGH_STEM = r"(?:laugh|giggl|chuckl|chortl|snicker|guffaw)"
 _LAUGH_MARKER = re.compile(
-    r"[\[(*][^\[\]()*]{0,30}?\b(?:laugh|giggl|chuckl|chortl|snicker|guffaw)\w*[^\[\]()*]{0,30}[\])*]",
+    rf"\[[^\[\]()*]{{0,30}}?\b{_LAUGH_STEM}\w*[^\[\]()*]{{0,30}}\]"
+    rf"|\([^\[\]()*]{{0,30}}?\b{_LAUGH_STEM}\w*[^\[\]()*]{{0,30}}\)"
+    rf"|\*{_LAUGH_STEM}\w*\*",
     re.IGNORECASE,
 )
 
