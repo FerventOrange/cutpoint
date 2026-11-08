@@ -196,6 +196,29 @@ def _transcribe(tmp_path: Path, segments: list[dict[str, Any]]) -> Path:
     return video
 
 
+def test_source_segments_keep_a_laughter_marker_apart_from_the_speech(tmp_path, home):
+    segments = [
+        {
+            "start": 1.0, "end": 4.0, "text": "no way [Laughter] really",
+            "words": [
+                {"word": "no", "start": 1.0, "end": 1.4},
+                {"word": "way", "start": 1.5, "end": 1.9},
+                {"word": "[Laughter]", "start": 2.0, "end": 3.0},
+                {"word": "really", "start": 3.1, "end": 4.0},
+            ],
+        },
+        {
+            "start": 9.0, "end": 10.0, "text": "(applause)",
+            "words": [{"word": "(applause)", "start": 9.0, "end": 10.0}],
+        },
+    ]  # fmt: skip
+    video = _transcribe(tmp_path, segments)
+    got = sources.source_segments(video)
+    assert got is not None and [s["text"] for s in got] == ["no way really"]
+    assert [m["text"] for s in got for m in s["markers"]] == ["[Laughter]", "(applause)"]
+    assert [w["word"] for w in sources.source_words(video) or []] == ["no", "way", "really"]
+
+
 def test_source_segments_and_words_round_trip(tmp_path, home):
     segments = [
         {

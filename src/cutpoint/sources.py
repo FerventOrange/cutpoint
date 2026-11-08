@@ -22,7 +22,7 @@ import numpy as np
 from cutpoint import cache
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import MediaInfo, pcm_float, read_pcm_window, wav_duration
-from cutpoint.transcribe import filter_hallucinations, flat_words, transcript_name
+from cutpoint.transcribe import filter_hallucinations, flat_words, split_markers, transcript_name
 
 logger = logging.getLogger(__name__)
 
@@ -198,8 +198,18 @@ def source_segments(
                     {**w, "start": w["start"] + p.offset, "end": w["end"] + p.offset}
                     for w in seg.get("words", [])
                 ],
+                **(
+                    {
+                        "markers": [
+                            {**m, "start": m["start"] + p.offset, "end": m["end"] + p.offset}
+                            for m in seg["markers"]
+                        ]
+                    }
+                    if seg.get("markers")
+                    else {}
+                ),
             }
-            for seg in segments
+            for seg in split_markers(segments)
         )
     return out if found else None
 

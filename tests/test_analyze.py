@@ -11,7 +11,7 @@ import pytest
 
 from conftest import StubTranscriber, media_info, remap, set_config, write
 from cutpoint import analyze, config, extras, features, reset_state
-from cutpoint.styles import get_style
+from cutpoint.styles import LAUGHTER, get_style
 
 
 @pytest.mark.parametrize(
@@ -422,6 +422,24 @@ def test_a_marker_of_several_words_is_one_hit_at_its_first_word():
 )
 def test_the_spoken_word_laugh_or_laughter_is_not_a_laughter_hit(words):
     assert analyze.laughter_hits(_said(*words)) == []
+
+
+def test_each_laughter_word_counts_once():
+    hits = analyze.laughter_hits(_said("haha", "hah", "hahaha", "hehe", "lmao", "lol"))
+    assert [(t, p) for t, _, p in hits] == [
+        (0.0, "haha"),
+        (1.0, "hah"),
+        (2.0, "haha"),
+        (3.0, "hehe"),
+        (4.0, "lmao"),
+        (5.0, "lol"),
+    ]
+    assert [w for _, w, _ in hits] == [1.0, 0.8, 1.0, 0.8, 1.0, 0.8]  # the strongest match
+
+
+def test_keyword_hits_count_every_match_unless_asked_for_one():
+    assert len(analyze.keyword_hits(_said("haha"), LAUGHTER)) == 2
+    assert len(analyze.keyword_hits(_said("haha"), LAUGHTER, once=True)) == 1
 
 
 def test_laughing_interjections_still_count_beside_the_markers():

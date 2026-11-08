@@ -41,6 +41,7 @@ from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_mat
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
 from cutpoint.styles import get_style
+from cutpoint.transcribe import flat_markers
 from cutpoint.utils import title_slug
 
 if TYPE_CHECKING:
@@ -639,7 +640,12 @@ def nominate(
         def backed(e: dict[str, Any]) -> bool:
             nonlocal words
             if words is None:
-                words = [t for t, _, _ in analyze.laughter_hits(analyze.flat_words(segs(src)))]
+                words = [
+                    t
+                    for t, _, _ in analyze.laughter_hits(
+                        analyze.flat_words(segs(src)), flat_markers(segs(src))
+                    )
+                ]
             if any(e["start"] - BACKUP_S <= t <= e["end"] + BACKUP_S for t in words):
                 return True
             a, b = e["start"] - 1.0, e["end"] + 1.0
