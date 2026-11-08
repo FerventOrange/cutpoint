@@ -334,6 +334,7 @@ moments match these filters." Escape closes the menu. The sort and filters are r
 browser (local storage); the source file only while the project stays open. A project with a
 long dialogue bit (a whole dialogue stretch over 90 s) also offers Long bits, which shows only those; they
 have a "Bit" badge with the length (m:ss), and the tile's hover text adds what happens in the bit.
+Long bits is not remembered; it lasts until the page is reloaded.
 The moments are tiles, two across in the default column width. A kind filter above them (All,
 Action, Scenic, Funny, Dialogue) shows one kind; it is a view of the list and is not kept. The
 kind is worked out in the page for display, as AI Chat names it. A moment a talk stretch created
