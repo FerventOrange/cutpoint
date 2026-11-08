@@ -70,7 +70,7 @@ def run(home, tmp_path, monkeypatch):
     state = SimpleNamespace(
         video=video, proj=proj, plan=analyze.LayerPlan(), fail=None, cancel=False,
         events_calls=[], layers_seen=[], saves=[], vision_ok=True, vision_cached=False,
-        rated=0, segments=[], transcripts=[], events=[], cats=[],
+        rated=0, segments=[], transcripts=[], events=[], cats=[], indexes=[],
     )  # fmt: skip
 
     def fake_analyze_source(src, style, tr, use_scenes, max_cand, timings, **kw):
@@ -147,7 +147,9 @@ def run(home, tmp_path, monkeypatch):
     monkeypatch.setattr(
         analyze,
         "plan_layers",
-        lambda style, sources, skip, cat: state.cats.append(cat) or state.plan,
+        lambda style, sources, skip, cat, visual_index=False: (
+            state.cats.append(cat) or state.indexes.append(visual_index) or state.plan
+        ),
     )
     monkeypatch.setattr(pipeline, "run_events", fake_run_events)
     monkeypatch.setattr(analyze.cache, "save_json", save)
@@ -563,6 +565,18 @@ def test_a_layer_failure_fails_its_step_warns_and_the_later_steps_run(run, capsy
     assert "Keyframes failed: model blew up" in res.warnings[0]["message"]
     assert "Keyframes failed" in caplog.text
     assert (run.proj / "highlights.json").is_file()
+
+
+def test_a_failed_visual_index_on_gameplay_leaves_the_hud_text_step_done(run, capsys, caplog):
+    run.plan = analyze.LayerPlan(layers={"keyframes": ("visual", "ocr")}, game=True)
+    run.fail = "visual"
+    with jsonout.run("analyze") as res:
+        run.go("gaming", visual_index=True)
+    final = last_states(progress_lines(capsys))
+    assert final["keyframes"]["state"] == "done"
+    assert run.layers_seen == ["visual", "ocr"]
+    assert [w["code"] for w in res.warnings] == ["step_failed"]
+    assert "Visual index failed: model blew up; the HUD text still runs" in caplog.text
 
 
 def test_analyze_json_reports_a_failed_step_as_a_warning_not_an_error(run, capsys):
@@ -1510,6 +1524,61 @@ def test_plan_follows_the_detected_category_not_the_style(env, style, cat, keyfr
     p = analyze.plan_layers(get_style(style), [Path("a.mp4")], (), cat)
     assert p.layers.get("keyframes") == keyframes and ("crashes" in p.layers) == crashes
     assert p.game == (cat == category.GAMEPLAY)
+
+
+@pytest.mark.parametrize(
+    ("style", "off", "on"),
+    [
+        ("gaming", ("ocr",), ("ocr", "visual")),  # the index first, the HUD text after it
+        ("funny", ("ocr",), ("ocr", "visual")),
+        ("commentary", None, ("visual",)),
+        ("action", ("visual",), ("visual",)),  # always has it: the option changes nothing
+        ("sport", ("visual",), ("visual",)),
+        ("action-cam", ("visual",), ("visual",)),
+    ],
+)
+def test_plan_visual_index_is_opt_in_for_the_styles_without_it(env, style, off, on):
+    for want, flag in ((off, False), (on, True)):
+        p = analyze.plan_layers(get_style(style), [Path("a.mp4")], (), None, flag)
+        assert p.layers.get("keyframes") == want
+    assert (
+        analyze.plan_layers(get_style(style), [Path("a.mp4")], ()).layers.get("keyframes") == off
+    )  # the default is off
+
+
+def test_plan_visual_index_follows_the_skip_option(env):
+    p = analyze.plan_layers(get_style("gaming"), [Path("a.mp4")], ("keyframes",), None, True)
+    assert "keyframes" not in p.layers and p.skipped["keyframes"] == analyze.SKIP_OPTION
+
+
+def test_plan_visual_index_without_cuda_keeps_the_hud_text(env, caplog):
+    env.cuda = False
+    caplog.set_level("INFO")
+    p = analyze.plan_layers(get_style("gaming"), [Path("a.mp4")], (), None, True)
+    assert p.layers["keyframes"] == ("ocr",) and "keyframes" not in p.skipped
+    assert "the visual index skipped" in caplog.text
+    talk = analyze.plan_layers(get_style("commentary"), [Path("a.mp4")], (), None, True)
+    assert "keyframes" not in talk.layers and talk.skipped["keyframes"].startswith("no CUDA GPU")
+
+
+def test_plan_visual_index_without_clip_files_keeps_the_hud_text(env, caplog):
+    env.missing = [("visual", ["visual"])]
+    caplog.set_level("INFO")
+    p = analyze.plan_layers(get_style("gaming"), [Path("a.mp4")], (), None, True)
+    assert p.layers["keyframes"] == ("ocr",) and "keyframes" not in p.skipped
+    assert "cutpoint setup --only visual" in caplog.text
+
+
+def test_plan_visual_index_without_the_events_extra_is_skipped_like_the_rest(env, monkeypatch):
+    monkeypatch.setattr(analyze, "EVENTS_MODULES", ("no_such_module_xyz",))
+    p = analyze.plan_layers(get_style("commentary"), [Path("a.mp4")], (), None, True)
+    assert not p.layers and p.skipped["keyframes"] == analyze.SKIP_NO_EXTRA
+
+
+def test_analyze_hands_the_option_to_the_plan(run):
+    run.go("gaming")
+    run.go("gaming", visual_index=True)
+    assert run.indexes == [False, True]
 
 
 def test_plan_ski_is_action_footage(env):

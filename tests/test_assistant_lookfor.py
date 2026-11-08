@@ -165,8 +165,71 @@ def test_missing_clip_weights_say_how_to_get_them(clip, monkeypatch) -> None:
 
 def test_no_cached_embeddings_say_so(clip, monkeypatch) -> None:
     monkeypatch.setattr(V, "load_visual", lambda *_a, **_k: None)
-    with pytest.raises(lookfor.LookForError, match="no source of this project has cached frame"):
+    with pytest.raises(lookfor.LookForError, match="no source of this project has cached") as e:
         search()
+    assert "--visual-index" in str(e.value)
+    assert e.value.reason == lookfor.NO_INDEX  # what the page shows
+    assert "no frame index" in lookfor.NO_INDEX
+
+
+def test_indexed_looks_only_for_the_cache_file(tmp_path, monkeypatch) -> None:
+    here, gone = tmp_path / "a.npz", tmp_path / "missing.npz"
+    here.write_bytes(b"")
+    paths = {"a.mp4": here, "b.mp4": gone}
+    monkeypatch.setattr(V, "cache_path", lambda src, params: paths[Path(src).name])
+    assert lookfor.indexed(["b.mp4"]) is False
+    assert lookfor.indexed(["b.mp4", "a.mp4"]) is True
+    assert lookfor.indexed([]) is False
+
+    def offline(src: Path, params: Any) -> Path:
+        raise OSError("offline")
+
+    monkeypatch.setattr(V, "cache_path", offline)
+    assert lookfor.indexed(["a.mp4"]) is False  # no key without the file's size and mtime
+
+
+def test_look_for_is_offered_only_with_cached_frame_embeddings() -> None:
+    for indexed in (True, False):
+        proj = project()
+        proj.frame_index = indexed
+        provider = FakeProvider([Reply("Done.")])
+        turn = run(provider, proj=proj)
+        sent = provider.requests[0]
+        names = [t["function"]["name"] for t in sent["tools"]]
+        assert ("look_for" in names) is indexed
+        assert ("look_for" in sent["messages"][0]["content"]) is indexed  # the rules too
+        assert turn.status == "done"
+
+
+def test_without_frames_the_json_mode_neither_lists_nor_allows_look_for() -> None:
+    proj = project()
+    proj.frame_index = False
+    provider = FakeProvider(
+        [Reply('{"tool": "reply", "text": "ok"}')], caps=Capabilities(False, True, False)
+    )
+    run(provider, proj=proj)
+    req = provider.requests[0]
+    assert "look_for" not in req["schema"]["properties"]["tool"]["enum"]
+    assert "look_for" not in req["messages"][0]["content"]
+    assert "find_moments" in req["messages"][0]["content"]
+
+
+def test_a_look_for_call_without_frames_is_an_unknown_tool() -> None:
+    proj = project()
+    proj.frame_index = False
+    provider = FakeProvider([call("look_for", query="sunset"), Reply("ok")])
+    turn = run(provider, proj=proj)
+    results = [m for m in provider.requests[1]["messages"] if m.get("role") == "tool"]
+    assert "unknown tool 'look_for'" in results[0]["content"]
+    assert not [e for e in turn.events if e.get("name") == "look_for"]
+
+
+def test_the_event_of_a_failed_search_carries_the_short_reason(clip, monkeypatch) -> None:
+    monkeypatch.setattr(V, "load_visual", lambda *_a, **_k: None)
+    provider = FakeProvider([call("look_for", query="sunset"), Reply("ok")])
+    turn = run(provider)
+    ev = next(e for e in turn.events if e.get("name") == "look_for")
+    assert ev["error"].startswith("no source of this project") and ev["reason"] == lookfor.NO_INDEX
 
 
 def test_an_unreadable_cache_is_skipped_not_fatal(clip, monkeypatch) -> None:
@@ -603,6 +666,7 @@ def test_a_look_for_moment_is_added_persisted_and_rebased(
     src = seq[0]["source"]
     path = Path(src).as_posix()
     monkeypatch.setattr(lookfor, "unavailable", lambda: None)
+    monkeypatch.setattr(lookfor, "indexed", lambda _sources: True)
     monkeypatch.setattr(V, "load_visual", lambda s, params=None: frames(100, range(70, 75)))
     monkeypatch.setattr(V, "text_embeddings", lambda *_a, **_k: TEXT[None])
     use(
@@ -632,3 +696,29 @@ def test_a_look_for_moment_is_added_persisted_and_rebased(
     # the saved sequence of a review accepts it
     entries = client.app.state.sources.entries(p)
     assert ui.validate_segments(plain["after"], entries, client.app.state.media) == plain["after"]
+
+
+def test_the_frame_index_is_one_cache_file_whatever_the_option(tmp_path, monkeypatch) -> None:
+    """``--visual-index`` changes no cache key: a run with it off leaves the file, a run with it
+    on reads it (no model is built) and look_for sees it."""
+    video = tmp_path / "a.mp4"
+    video.write_bytes(b"x")
+    path = V.cache_path(video, V.VisualParams())
+    assert V.cache_path(video, V.VisualParams(hwaccel=False, batch=4)) == path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    assert lookfor.indexed([str(video)]) is False
+    np.savez_compressed(
+        path,
+        t=np.arange(2, dtype=np.float32),
+        emb=np.zeros((2, 3, 768), np.float16),
+        det=np.zeros((0, 7), np.float32),
+        box_emb=np.zeros((0, 768), np.float16),
+        box_idx=np.zeros(0, np.int64),
+    )
+
+    def built(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("a cached source builds no model")
+
+    monkeypatch.setattr(V, "VisualModels", built)
+    assert V.run_layer([video], V.VisualParams()) == {"cached": 1, "computed": 0}
+    assert lookfor.indexed([str(video)]) is True

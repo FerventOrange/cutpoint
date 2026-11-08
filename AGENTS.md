@@ -19,6 +19,7 @@ everything into a project folder.
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for the other layers and for games |
 | Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | |
 | Footage category detection: `cutpoint detect`, and `--style auto` on `analyze` and `edit` (opt-in; unclear footage gets the default style) | |
+| Frame index for the AI Chat's visual search: `--visual-index` on `analyze` and `edit` (off by default; `"visual_index": true` in `config.json`) also writes the CLIP frame embeddings for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` always have them | |
 | VLM layer of `cutpoint events` through the shared vision model: Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the Models tab of `cutpoint ui` | |
 | `--json` result envelope on stdout: `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `events`, `resume`, `360 ...` | |
 | Agent skill: `cutpoint skill install` (Claude Code), `cutpoint skill print` | |
@@ -113,8 +114,9 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
   Models tab, needs the user's Vision consent (Models tab); without it vision is skipped with a
   `vision_consent_needed` warning: tell the user.
   `--vision-top`, `--ollama-url`, `--ollama-model` and `--skip` work as on
-  `analyze`; `--compress-peaks`, `--lut`, `--lut-strength`, `--color` and `--color-strength` as
-  on `clips`.
+  `analyze`; `--visual-index` and `--no-visual-index` as on `analyze` (the frame embeddings for
+  the visual search of `cutpoint ui`, off by default; they change no ranking);
+  `--compress-peaks`, `--lut`, `--lut-strength`, `--color` and `--color-strength` as on `clips`.
 - Outputs: the project `<projects>/clip` (`--out NAME` to change it) with the clips,
   `final.mp4` and `clip-final.mp4` plus `.srt` subtitles. The last log lines name the final
   video, its subtitles and the clips folder (`none (temporary, removed)` with

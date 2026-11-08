@@ -8,6 +8,7 @@
     "player_tags": "Your in-game name(s) for the optional game-HUD OCR in `cutpoint events` (who killed whom). Fuzzy match, ignores _ . - and spaces. `cutpoint events --player NAME` overrides it per run. Default: none.",
     "ollama_url": "Ollama base URL for `analyze --vision`, the VLM layer of `cutpoint events`, `360 director --vl-check`, the AI Chat and activity profiles. Env OLLAMA_HOST overrides it. Default: http://127.0.0.1:11434.",
     "vision": "true or false (default). true: `cutpoint analyze` and `cutpoint edit` rate the top candidates with the vision model unless --no-vision is given (slower; uses several GB of GPU memory). false: only --vision turns it on for one run. The UI's Models tab writes it, and every analysis the UI starts passes it as --vision or --no-vision.",
+    "visual_index": "true or false (default). true: `cutpoint analyze` and `cutpoint edit` also write the CLIP frame embeddings that the AI Chat's visual search reads for gaming, funny and commentary footage (action, sport and action-cam always have them), unless --no-visual-index is given. Changes no ranking; costs GPU time and needs the events extra. See docs/configuration.md#visual_index.",
     "vision_assistant": "Frame-rating role, independent of assistant: provider = ollama (default), claude-code, codex or antigravity; model, url and consent as in docs/configuration.md#vision_assistant. Hosted catalogs and frames require role-specific consent (consent = vision-v2:<provider>@<host> entries; unprefixed entries from older versions no longer count). Activity detection always uses Ollama.",
     "compress_peaks": "off (default), light or strong: peak compression and clip leveling of `cutpoint clips`, `assemble` and `edit` when --compress-peaks is not given (see docs/commands.md#peak-compression).",
     "color": "off (default), auto or underwater: automatic color correction of `cutpoint clips` and `edit` when --color is not given (see docs/commands.md#clips). Never applied to gaming footage (only --color grades it) nor together with --lut.",
@@ -34,6 +35,7 @@
   "export_workers": "auto",
   "memory_guard": 2,
   "vision": false,
+  "visual_index": false,
   "vision_assistant": {
     "provider": "ollama",
     "model": "",

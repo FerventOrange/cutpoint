@@ -79,6 +79,67 @@ def test_analyze_vision_flag_wins_else_config(home, tmp_path, monkeypatch, cfg, 
     assert seen == [vision]
 
 
+# -- visual_index ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("data", "want"),
+    [({}, False), ({"visual_index": None}, False), ({"visual_index": True}, True)],
+)
+def test_visual_index_default_is_off_unless_true(home, data, want):
+    set_config(home, **data)
+    assert config.visual_index_default() is want
+
+
+@pytest.mark.parametrize("value", ["true", 1, [True]])
+def test_visual_index_must_be_a_boolean(home, value):
+    set_config(home, visual_index=value)
+    with pytest.raises(ValueError, match=r"visual_index must be true or false"):
+        config.get_config()
+
+
+@pytest.mark.parametrize(
+    ("cfg", "argv", "want"),
+    [
+        (None, [], False),
+        (False, ["--visual-index"], True),
+        (True, [], True),
+        (True, ["--no-visual-index"], False),
+    ],
+)
+def test_analyze_visual_index_flag_wins_else_config(home, tmp_path, monkeypatch, cfg, argv, want):
+    import cutpoint.analyze  # noqa: PLC0415
+
+    if cfg is not None:
+        set_config(home, visual_index=cfg)
+    video = write(tmp_path / "a.mp4")
+    seen: list = []
+    monkeypatch.setattr(
+        cutpoint.analyze, "analyze", lambda *a, **kw: seen.append(kw["visual_index"])
+    )
+    assert cli.main(["analyze", str(video), "--out", "p", *argv]) == 0
+    assert seen == [want]
+
+
+@pytest.mark.parametrize(
+    ("cfg", "argv", "want"),
+    [
+        (None, [], False),
+        (True, [], True),
+        (True, ["--no-visual-index"], False),
+        (None, ["--visual-index"], True),
+    ],
+)
+def test_edit_visual_index_flag_wins_else_config(home, tmp_path, monkeypatch, cfg, argv, want):
+    if cfg is not None:
+        set_config(home, visual_index=cfg)
+    video = write(tmp_path / "a.mp4")
+    seen: list = []
+    monkeypatch.setattr(cli, "run_edit", lambda *a, **kw: seen.append(kw["visual_index"]))
+    assert cli.main(["edit", str(video), "--out", "p", *argv]) == 0
+    assert seen == [want]
+
+
 # -- pano_config ----------------------------------------------------------------------
 
 

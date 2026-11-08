@@ -21,7 +21,9 @@ unconfirmed and the rules tell the model to confirm them with view_moment or to 
 uncertain. The model gets text only: ``match`` 0-10, ``confidence`` and the moment's row.
 
 Without the ``events`` extra (Cutpoint lite) or without the CLIP weights the tool answers with
-the install or setup command instead (:class:`LookForError`).
+the install or setup command instead (:class:`LookForError`). A project none of whose sources has
+cached embeddings (:func:`indexed`) is not offered the tool at all; if it is called anyway, the
+page shows :class:`LookForError`'s short ``reason``.
 """
 
 from __future__ import annotations
@@ -112,8 +114,19 @@ def rules(images: bool) -> str:
     return RULES + (WEAK_IMAGES if images else WEAK_TEXT)
 
 
+NO_INDEX = (
+    "Visual search isn't available for this project: its analysis has no frame index "
+    "(analyze --visual-index writes it)"
+)
+
+
 class LookForError(Exception):
-    """The search cannot run; the message says what to do and goes to the model."""
+    """The search cannot run; the message says what to do and goes to the model. ``reason`` is a
+    short plain sentence for the user's page (None: the page says only that it failed)."""
+
+    def __init__(self, message: str, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 def match_of(cos: float) -> int:
@@ -155,6 +168,18 @@ class Found:
     searched: int
     total: int
     best: int
+
+
+def indexed(sources: Sequence[str]) -> bool:
+    """Whether any of ``sources`` has cached frame embeddings (the file only is looked for:
+    nothing is read), so :data:`NAME` has something to search."""
+    for source in sources:
+        try:
+            if V.cache_path(Path(source), V.VisualParams()).exists():
+                return True
+        except OSError:  # offline footage: its cache key needs the file's size and mtime
+            continue
+    return False
 
 
 def unavailable() -> str | None:
@@ -259,8 +284,10 @@ class Finder:
         if not frames:
             raise LookForError(
                 "no source of this project has cached frame embeddings (analyze writes them "
-                "with its visual step for action, sport and action-cam footage), so there is "
-                "nothing to look through; use find_moments instead"
+                "with its visual step for action, sport and action-cam footage, and for other "
+                "styles with --visual-index), so there is nothing to look through; use "
+                "find_moments instead",
+                NO_INDEX,
             )
         try:
             text = V.text_embeddings((query,), save=False)[0]
