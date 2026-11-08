@@ -13,6 +13,7 @@ import pytest
 from cutpoint import cache, sources
 from cutpoint.events import eventtypes, scoring
 from cutpoint.events.regions import load_preset
+from cutpoint.transcribe import flat_markers, flat_words
 
 SRC = "a.mp4"
 CAND = {"start": 0.0, "end": 100.0}
@@ -63,6 +64,35 @@ def seg(start: float, end: float) -> dict[str, Any]:
 )
 def test_has_reaction(events, segments, expected):
     assert scoring.has_reaction(10.0, events, segments) is expected
+
+
+def holder(start: float, end: float, text: str = "[Music]") -> dict[str, Any]:
+    """A segment that held only a non-speech marker (``split_markers``)."""
+    return {
+        "start": start,
+        "end": end,
+        "text": "",
+        "words": [],
+        "markers": [{"start": start, "end": end, "text": text}],
+    }
+
+
+def test_marker_holder_after_death_is_no_reaction():
+    assert scoring.has_reaction(10.0, [], [holder(12, 14)]) is False
+    boost, ev = scoring.event_boost(CAND, [death()], style="funny", segments=[holder(12, 14)])
+    assert boost == 0.0 and ev["player_deaths_reaction"] == 0
+
+
+def test_marker_holder_over_event_does_not_block_reaction():
+    assert scoring.has_reaction(10.0, [], [holder(8, 11), seg(12, 13)]) is True
+
+
+def test_laughter_marker_after_death_is_a_reaction():
+    segments = [holder(12, 13, "[laughter]")]
+    assert scoring.has_reaction(10.0, [], segments) is True
+    assert scoring.has_reaction(10.0, [], [holder(17, 18, "[laughter]")]) is False  # too late
+    boost, ev = scoring.event_boost(CAND, [death()], style="funny", segments=segments)
+    assert boost == 8.0 and ev["player_deaths_reaction"] == 1
 
 
 def test_continuous_banter_is_no_reaction():
@@ -194,6 +224,56 @@ def _transcribe(tmp_path: Path, segments: list[dict[str, Any]]) -> Path:
     video.write_bytes(b"x")
     cache.save_json(cache.source_dir(video) / "transcript-small.json", segments)
     return video
+
+
+def test_source_segments_keep_a_laughter_marker_apart_from_the_speech(tmp_path, home):
+    segments = [
+        {
+            "start": 1.0, "end": 4.0, "text": "no way [Laughter] really",
+            "words": [
+                {"word": "no", "start": 1.0, "end": 1.4},
+                {"word": "way", "start": 1.5, "end": 1.9},
+                {"word": "[Laughter]", "start": 2.0, "end": 3.0},
+                {"word": "really", "start": 3.1, "end": 4.0},
+            ],
+        },
+        {
+            "start": 9.0, "end": 10.0, "text": "(applause)",
+            "words": [{"word": "(applause)", "start": 9.0, "end": 10.0}],
+        },
+    ]  # fmt: skip
+    video = _transcribe(tmp_path, segments)
+    got = sources.source_segments(video)
+    assert got is not None and [s["text"] for s in got] == ["no way really", ""]
+    assert [m["text"] for s in got for m in s["markers"]] == ["[Laughter]", "(applause)"]
+    assert [w["word"] for w in sources.source_words(video) or []] == ["no", "way", "really"]
+
+
+def test_source_segments_of_a_second_part_carry_the_offset_into_the_markers(tmp_path, home):
+    video = _transcribe(tmp_path, [])
+    cache.save_json(cache.source_dir(video) / "read_errors.json", {"resumed_at": 500.0})
+    second = [
+        {
+            "start": 1.0, "end": 4.0, "text": "ok [Laughter] go",
+            "words": [
+                {"word": "ok", "start": 1.0, "end": 1.4},
+                {"word": "[Laughter]", "start": 2.0, "end": 3.0},
+                {"word": "go", "start": 3.1, "end": 4.0},
+            ],
+        },
+        {
+            "start": 9.0, "end": 10.0, "text": "[Laughter]",
+            "words": [{"word": "[Laughter]", "start": 9.0, "end": 10.0}],
+        },
+    ]  # fmt: skip
+    cache.save_json(cache.source_dir(video, 500.0) / "transcript-small.json", second)
+
+    got = sources.source_segments(video)
+
+    assert got is not None
+    assert [(m["start"], m["end"]) for m in flat_markers(got)] == [(502.0, 503.0), (509.0, 510.0)]
+    assert [(s["start"], s["end"]) for s in got] == [(501.0, 504.0), (509.0, 510.0)]
+    assert [w["start"] for w in flat_words(got)] == [501.0, 503.1]
 
 
 def test_source_segments_and_words_round_trip(tmp_path, home):

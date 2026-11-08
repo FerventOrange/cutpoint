@@ -41,6 +41,7 @@ from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_mat
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
 from cutpoint.styles import get_style
+from cutpoint.transcribe import flat_markers
 from cutpoint.utils import title_slug
 
 if TYPE_CHECKING:
@@ -89,8 +90,9 @@ def has_reaction(
     """Whether a reaction follows an event at ``t`` (seconds, source time).
 
     A reaction is a Laughter or Scream audio event starting in
-    ``(t, t + REACTION_WINDOW_S]`` (speech or not), or a transcript segment
-    starting in that window while none overlaps ``[t - REACTION_PAUSE_S, t]``:
+    ``(t, t + REACTION_WINDOW_S]`` (speech or not), a laughing marker of the transcript
+    (``[laughter]``) there, or a transcript segment with text starting in that window while
+    none (a marker holder is no speech) overlaps ``[t - REACTION_PAUSE_S, t]``:
     a pause, then speech, so ongoing banter does not count. Without
     ``segments`` only the sounds count.
     """
@@ -100,9 +102,23 @@ def has_reaction(
             return True
     if not segments:
         return False
+    if any(t < m["start"] <= end for m in _laugh_markers(segments)):
+        return True
+    segments = [s for s in segments if s.get("text")]  # not a marker holder
     if any(s["end"] >= t - REACTION_PAUSE_S and s["start"] <= t for s in segments):
         return False
     return any(t < s["start"] <= end for s in segments)
+
+
+def _laugh_markers(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The laughing markers (``[laughter]``) of ``segments``, as :func:`analyze.laughter_hits`
+    takes them."""
+    from cutpoint import analyze  # noqa: PLC0415 - analyze imports this module
+
+    return [
+        {"start": t, "end": t, "text": phrase}
+        for t, _, phrase in analyze.laughter_hits([], flat_markers(segments))
+    ]
 
 
 def event_boost(
@@ -639,11 +655,16 @@ def nominate(
         def backed(e: dict[str, Any]) -> bool:
             nonlocal words
             if words is None:
-                words = [t for t, _, _ in analyze.laughter_hits(analyze.flat_words(segs(src)))]
+                words = [
+                    t
+                    for t, _, _ in analyze.laughter_hits(
+                        analyze.flat_words(segs(src)), flat_markers(segs(src))
+                    )
+                ]
             if any(e["start"] - BACKUP_S <= t <= e["end"] + BACKUP_S for t in words):
                 return True
             a, b = e["start"] - 1.0, e["end"] + 1.0
-            if not any(s["end"] >= a and s["start"] <= b for s in segs(src)):
+            if not any(s["end"] >= a and s["start"] <= b for s in segs(src) if s.get("text") != ""):
                 return False
             for p in grid_parts():
                 if str(p.source) == src and p.offset <= e["start"] < p.offset + p.duration:

@@ -257,6 +257,37 @@ def load_model(name: str, device: str, compute_type: str) -> Any:
     return WhisperModel(name, device=device, compute_type=compute_type)
 
 
+# What Whisper writes for a sound that is not speech: "[Laughter]", "(laughs)", "*sighs*".
+_MARKER_CORE = r"(?:\[[^\[\]]{1,40}\]|\([^()]{1,40}\)|\*[^*\s][^*]{0,38}\*)[.,!?]*"
+_MARKER = re.compile(_MARKER_CORE)
+_MARKER_TEXT = re.compile(rf"(?:(?<=\s)|^){_MARKER_CORE}(?=\s|$)")
+# The tokens that open and close such a marker, which Whisper's default list suppresses.
+_MARKER_SYMBOLS = ("[", "]", "(", ")", "*")
+
+
+def suppressed(model: Any) -> list[int]:
+    """The tokens Whisper may not write: faster-whisper's default list (``suppress_tokens=[-1]``:
+    speaker tags, music notes, symbols) without the single tokens of ``[ ] ( ) *``, so a
+    non-speech marker such as ``[laughter]`` can be written (:func:`split_markers` takes it out
+    of the text). The default list when the model has no tokenizer to build this from."""
+    try:
+        from faster_whisper.tokenizer import Tokenizer  # noqa: PLC0415
+
+        tok = Tokenizer(
+            model.hf_tokenizer, model.model.is_multilingual, task="transcribe", language="en"
+        )
+        keep = set()
+        for sym in _MARKER_SYMBOLS:
+            for text in (sym, " " + sym):
+                ids = tok.encode(text)
+                if len(ids) == 1:
+                    keep.add(ids[0])
+        return [t for t in tok.non_speech_tokens if t not in keep]
+    except Exception as err:  # noqa: BLE001 - a model without a tokenizer: the default list
+        logger.debug("whisper markers stay suppressed: %s", err)
+        return [-1]
+
+
 class Transcriber:
     """Lazily-loaded WhisperModel that falls back to CPU int8 on CUDA failure."""
 
@@ -268,6 +299,7 @@ class Transcriber:
         self.default_name = self.model_name  # before any CPU fallback
         self.language = language
         self._model: Any = None
+        self._suppress: list[int] | None = None  # tokens left out of the text (:func:`suppressed`)
         self._warned_kept = False
 
     def _cpu_model(self, name: str) -> str:
@@ -364,6 +396,8 @@ class Transcriber:
 
     def _run(self, wav: Path, on_progress: Callable[[float], None] | None = None) -> list[Segment]:
         model = self._load()
+        if self._suppress is None:
+            self._suppress = suppressed(model)
         segments, info = model.transcribe(
             load_wav(wav),
             language=self.language,
@@ -371,6 +405,7 @@ class Transcriber:
             vad_filter=True,
             condition_on_previous_text=False,
             beam_size=5,
+            suppress_tokens=list(self._suppress),  # a copy: faster-whisper extends the list
         )
         result: list[Segment] = []
         total = float(getattr(info, "duration", 0) or 0)
@@ -413,6 +448,7 @@ class Transcriber:
     def close(self) -> None:
         """Release the model (frees VRAM before e.g. the vision model loads)."""
         self._model = None
+        self._suppress = None
         gc.collect()
 
 
@@ -468,6 +504,65 @@ def transcript_name(model: str, language: str | None = None) -> str:
 def flat_words(segments: list[Segment]) -> list[dict[str, Any]]:
     """Flatten segments into one chronological word list."""
     return [w for s in segments for w in s.get("words", [])]
+
+
+def flat_markers(segments: list[Segment]) -> list[dict[str, Any]]:
+    """The non-speech markers (:func:`split_markers`) of ``segments``, in time order."""
+    return sorted((m for s in segments for m in s.get("markers", [])), key=lambda m: m["start"])
+
+
+def _word_markers(words: list[dict[str, Any]]) -> list[tuple[int, int, str]]:
+    """``(first, last, text)`` of each marker made of whole ``words`` (``[light laughter]``)."""
+    text, at = "", []  # the words joined by spaces, and the word each character belongs to
+    for i, w in enumerate(words):
+        piece = str(w.get("word", "")).strip()
+        at += [i] * (len(piece) + 1)
+        text += piece + " "
+    found = []
+    for m in _MARKER.finditer(text):
+        if (m.start() == 0 or text[m.start() - 1] == " ") and text[m.end()] == " ":
+            found.append((at[m.start()], at[m.end() - 1], m.group(0)))
+    return found
+
+
+def split_markers(segments: list[Segment]) -> list[Segment]:
+    """``segments`` without Whisper's non-speech markers (``[Music]``, ``(laughs)``, ``*sighs*``).
+
+    The markers leave the text and the words, so subtitles, captions, dialogue, the transcript
+    and every speech check see speech only. Each marker is kept as ``{"start", "end", "text"}``
+    in the ``markers`` of its segment; a segment left with nothing stays as a holder with empty
+    ``text`` and no ``words`` (readers of segments skip it as speech), for :func:`flat_markers`
+    (the laughter hits). Segments without markers are returned as they are, so it is safe to run
+    it twice."""
+    out: list[Segment] = []
+    for seg in segments:
+        words = seg.get("words") or []
+        marks = _word_markers(words)
+        text = " ".join(_MARKER_TEXT.sub(" ", seg.get("text", "")).split())
+        if not words and text != seg.get("text", "").strip():  # a segment without word times
+            marks = [(-1, -1, m.group(0)) for m in _MARKER_TEXT.finditer(seg.get("text", ""))]
+        if not marks:
+            out.append(seg)
+            continue
+        gone = {i for a, b, _ in marks for i in range(a, b + 1)}
+        found = [
+            {
+                "start": words[a]["start"] if a >= 0 else seg["start"],
+                "end": words[b]["end"] if b >= 0 else seg["end"],
+                "text": t,
+            }
+            for a, b, t in marks
+        ]
+        left = [w for i, w in enumerate(words) if i not in gone]
+        held = [*seg.get("markers", []), *found]
+        if not text and not left:  # nothing spoken: an empty holder keeps the markers
+            out.append({**seg, "text": "", "words": [], "markers": held})
+            continue
+        kept = {**seg, "text": text, "words": left, "markers": held}
+        if left:  # the marker's time is no speech
+            kept["start"], kept["end"] = left[0]["start"], left[-1]["end"]
+        out.append(kept)
+    return out
 
 
 # Thresholds for dropping likely hallucinations (see filter_hallucinations).

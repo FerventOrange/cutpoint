@@ -883,6 +883,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - AI Chat names dialogue moments by their readable title, as the moments list does, while
   sequence labels keep their renamed text (#806).
+- Windows: a lock written right after its run started is no longer read as stale (clock slack
+  in the process-id reuse check).
+- Whisper can write non-speech markers now (`[Laughter]`, `(laughs)`, `*sighs*`). Cutpoint had
+  left faster-whisper's default list of suppressed tokens on, which blocks `[`, `(` and `*`, so none
+  of 155 cached transcripts held a `[laughter]` marker and the marker rule of the `laughter`
+  signal had nothing to read. New transcriptions keep those tokens; the rest of the default list
+  (speaker tags, music notes) stays suppressed. A marker is taken out of the segment text and
+  the words before anything else reads them, so subtitles, captions, `transcript.txt`, dialogue
+  stretches, the AI Chat and the speech checks never show or count it; only the laughter hits
+  read it (`markers` of the segment). Existing transcripts are not made again (the cache name
+  does not change); they have no markers. Measured with Whisper medium on three 12.5 min
+  excerpts of gameplay: no laughter marker came out, the one non-speech marker kind was
+  `*singing*` (9 times in a stretch of music, 6 of them dropped as a repeated phrase), run time
+  within the difference between two runs of the same settings.
+- A laughter word is counted once: `haha` matched both `haha*` and `hah*` and counted twice (1.8
+  instead of 1.0). The strongest pattern counts.
+- The AI Chat's `heard` laughter follows the same rule as the analysis: the audio laughter
+  evidence (`signals.events.laughter`) must be 0.12 or more; before, any value above 0 counted.
+  Screams are unchanged.
 - Laughter scoring is stricter about what was actually laughed. The `laughter` transcript signal
   counts only Whisper's non-speech markers (`[laughter]`, `(laughs)`, `*laughing*`) and
   interjections such as `haha` and `lol`; the spoken word "laugh" or "laughter" no longer counts.
