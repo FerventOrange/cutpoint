@@ -1017,3 +1017,18 @@ def test_rate_and_cached_build_the_same_key_for_the_same_speech(posts, src):
         )
         is not None
     )
+
+
+def test_describe_waits_600_s_by_default_and_for_the_given_timeout(monkeypatch):
+    waited: list[float] = []
+
+    def post(url, json, timeout, **_k):
+        waited.append(timeout)
+        raise requests.Timeout("too slow")
+
+    monkeypatch.setattr(vision.requests, "post", post)
+    monkeypatch.setattr(vision.memguard, "check_vision", lambda _r: None)
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    assert rater.describe("q", [b"x"], {}) is None
+    assert rater.describe("q", [b"x"], {}, timeout=60) is None  # a timeout is a failure: None
+    assert waited == [600, 60]

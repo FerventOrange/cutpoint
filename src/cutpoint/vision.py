@@ -500,6 +500,7 @@ class VisionRater:
         num_ctx: int = 16384,
         num_predict: int = 700,
         temperature: float = 0.2,
+        timeout: float = 600,
     ) -> dict[str, Any] | None:
         """Describe a moment: ``prompt`` with the JPEG ``images`` in order, the reply
         constrained to the JSON ``schema``; the reply's JSON object, or None (logged) when the
@@ -508,6 +509,8 @@ class VisionRater:
         Ollama gets one ``/api/chat`` turn with ``format: schema`` and no thinking; a hosted
         Vision role goes through :meth:`AssistantVision.ask` and its consent check. The prompt
         tokens Ollama counted are left in ``last_prompt_tokens`` (None when not known).
+        ``timeout``: seconds Ollama may take to answer (a request that runs out fails like any
+        other); a hosted Vision role has its own limits and ignores it.
         """
         self.last_prompt_tokens = None
         if self.via:
@@ -545,7 +548,7 @@ class VisionRater:
         self.used = True
         try:
             resp = requests.post(
-                f"{self.url}/api/chat", json=payload, timeout=600, allow_redirects=False
+                f"{self.url}/api/chat", json=payload, timeout=timeout, allow_redirects=False
             )
             refuse_redirect(resp)  # never followed: the frames would go to another host
             resp.raise_for_status()

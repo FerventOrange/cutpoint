@@ -24,7 +24,7 @@ import numpy as np
 
 from cutpoint import cache, progress
 from cutpoint.errors import LowMemoryError
-from cutpoint.events.discover import REF_H, REF_W, boxes_in
+from cutpoint.events.discover import REF_H, REF_W, boxes_in, read_image
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ CROP_MAX_SIDE = 1280  # ...but the long side stays within this
 MAX_CALLS = 12  # proposals asked about per game
 SKIP_KINDS = ("readout", "popup", "banner")  # the rules are confident about these
 STOP_AFTER = 2  # failed calls in a row after which the rest are not asked
+ASK_TIMEOUT = 60  # seconds a call may take: a stuck Ollama costs STOP_AFTER x this at most
 
 SCHEMA = {
     "type": "object",
@@ -142,6 +143,7 @@ def _key(model: str, p: dict[str, Any], frames: list[dict[str, Any]]) -> str:
         {
             "v": LABEL_VERSION,
             "model": model,
+            "prompt": cache.params_hash({"p": _PROMPT, "s": SCHEMA}, 8),
             "box": [p["x"], p["y"], p["w"], p["h"]],
             "frames": [f["id"] for f in frames],
         },
@@ -169,7 +171,6 @@ def label_proposals(
         ``{proposal name: {"label": ..., "model": ...}}`` for the proposals the model
         labelled.
     """
-    import cv2  # noqa: PLC0415
 
     path = frame_dir.parent / "feed_labels.json"
     stored = cache.load_json(path)
@@ -189,7 +190,7 @@ def label_proposals(
         jpegs = []
         for f in picked:
             if f["frame"] not in images:
-                images[f["frame"]] = cv2.imread(str(frame_dir / f["frame"]))
+                images[f["frame"]] = read_image(frame_dir / f["frame"])
             img = images[f["frame"]]
             jpeg = crop_jpeg(img, p) if img is not None else None
             if jpeg:
@@ -248,7 +249,13 @@ def make_labeler(rater: Any) -> Labeler:
 
     def ask(prompt: str, jpegs: list[bytes], schema: dict[str, Any]) -> dict[str, Any] | None:
         return rater.describe(
-            prompt, jpegs, schema, num_ctx=16384, num_predict=500, temperature=0.0
+            prompt,
+            jpegs,
+            schema,
+            num_ctx=16384,
+            num_predict=500,
+            temperature=0.0,
+            timeout=ASK_TIMEOUT,
         )
 
     def label(

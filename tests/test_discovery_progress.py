@@ -113,13 +113,20 @@ def test_ocr_frames_report_cached_short_and_new_bursts(tmp_path, monkeypatch):
 
     from cutpoint.events import killfeed  # noqa: PLC0415
 
-    src = SimpleNamespace(name="rec.mp4", io_path=tmp_path / "rec.mp4")
+    src = SimpleNamespace(name="rec.mp4", path=tmp_path / "rec.mp4", io_path=tmp_path / "rec.mp4")
     params = discover.DiscoverParams()
     bursts = [(src, 0.0), (src, 60.0), (src, 120.0)]
     cached = [k * params.burst_step_s for k in range(4)] + [60.0]
     cache_path = tmp_path / "ocr.jsonl"
+    (tmp_path / "frames").mkdir()
+    for t in cached:  # a cached record counts only with its picture
+        (tmp_path / "frames" / f"c{t:.0f}.jpg").write_bytes(b"x")
     cache_path.write_text(
-        "".join(json.dumps({"id": f"rec.mp4@{t:.1f}", "t": t, "boxes": []}) + "\n" for t in cached),
+        "".join(
+            json.dumps({"id": f"rec.mp4@{t:.1f}", "t": t, "frame": f"c{t:.0f}.jpg", "boxes": []})
+            + "\n"
+            for t in cached
+        ),
         encoding="utf-8",
     )
 

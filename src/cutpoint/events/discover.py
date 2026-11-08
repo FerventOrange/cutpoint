@@ -59,6 +59,7 @@ and edited.
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import logging
 import re
@@ -296,6 +297,37 @@ def boxes_in(
     ]
 
 
+_LEGACY_FRAME = re.compile(r"b\d+_\d+\.jpg")
+
+
+def write_jpeg(path: Path, img: np.ndarray, quality: int) -> bool:
+    """Write ``img`` as a JPEG; through bytes, as ``cv2.imwrite`` fails silently on a
+    non-ASCII path on Windows. False when it could not be encoded."""
+    import cv2  # noqa: PLC0415
+
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if ok:
+        path.write_bytes(buf.tobytes())
+    return bool(ok)
+
+
+def read_image(path: Path) -> np.ndarray | None:
+    """The picture at ``path``, or None; read through bytes (see :func:`write_jpeg`)."""
+    import cv2  # noqa: PLC0415
+
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+
+
+def _frame_name(source: str, t: float) -> str:
+    """The JPEG name of a burst frame: from its source and time, so that no other burst
+    plan writes a frame over a cached record's picture."""
+    return hashlib.sha1(f"{source}@{t:.2f}".encode()).hexdigest()[:16] + ".jpg"
+
+
 def _ocr_frames(
     bursts: list[tuple[Source, float]],
     params: DiscoverParams,
@@ -305,7 +337,6 @@ def _ocr_frames(
 ) -> list[dict[str, Any]]:
     """OCR every burst frame (cached in ``cache_path`` as JSON lines); ``on_frame`` is
     called with (frames done, frames planned) after each frame and each burst."""
-    import cv2  # noqa: PLC0415
 
     from cutpoint.events.killfeed import OcrEngine  # noqa: PLC0415
 
@@ -328,11 +359,21 @@ def _ocr_frames(
             ids.append(fid)
         plan_ids.append(ids)
 
+    # records whose JPEG is named by burst and frame number (older caches): a later plan's
+    # frame may have replaced it, which shows as two records naming one file
+    shared = Counter(
+        rec.get("frame") for rec in done.values() if _LEGACY_FRAME.fullmatch(str(rec.get("frame")))
+    )
+
     def cached(fid: str, t: float, bi: int, k: int) -> dict[str, Any] | None:
         """The cached record of this frame: same id and time (an older cache can hold
-        another burst's frame under a shared id), in this run's burst."""
+        another burst's frame under a shared id), in this run's burst, and its JPEG still
+        there and its own."""
         rec = done.get(fid)
         if rec is None or rec.get("t") != round(t + k * params.burst_step_s, 2):
+            return None
+        name = rec.get("frame")
+        if not isinstance(name, str) or not (frame_dir / name).is_file() or shared[name] > 1:
             return None
         return rec | {"burst": bi, "k": k}
 
@@ -376,8 +417,8 @@ def _ocr_frames(
                             "score": round(score, 3),
                         }
                     )
-                fname = f"b{bi:03d}_{k}.jpg"
-                cv2.imwrite(str(frame_dir / fname), img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                fname = _frame_name(str(src.path), t + k * params.burst_step_s)
+                write_jpeg(frame_dir / fname, img, 80)
                 rec = {
                     "id": fid,
                     "source": src.name,
@@ -396,6 +437,14 @@ def _ocr_frames(
             report((bi + 1) * params.burst_frames, total)  # a short burst counts as done
             if (bi + 1) % 10 == 0:
                 logger.info("  discovery OCR: %d/%d bursts", bi + 1, len(bursts))
+        # JPEGs of frames this run does not use (another burst plan, older names) go
+        keep = {rec["frame"] for rec in out}
+        for old in frame_dir.glob("*.jpg"):
+            if old.name not in keep:
+                try:
+                    old.unlink(missing_ok=True)
+                except OSError as err:  # a locked file: it stays, discovery goes on
+                    logger.debug("Could not remove %s: %s", old, err)
     return out
 
 
@@ -1544,7 +1593,7 @@ def write_overlay(
 
     acc, n = None, 0
     for f in frames[:: max(1, len(frames) // 40)]:
-        img = cv2.imread(str(frame_dir / f["frame"]))
+        img = read_image(frame_dir / f["frame"])
         if img is None:
             continue
         img = cv2.resize(img, (REF_W, REF_H)).astype(np.float32)
@@ -1586,7 +1635,7 @@ def write_overlay(
             2,
         )
     path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(path), base, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    write_jpeg(path, base, 85)
 
 
 def discover_regions(
@@ -1653,6 +1702,10 @@ def discover_regions(
     labels = labeler(proposals, game_frames, out_dir / "frames") if labeler else {}
     if labels:
         regions, extra_regions = apply_labels(proposals, labels, regions, extra_regions)
+    extra_labelled = [
+        e | ({"label": labels[e["name"]]["label"]} if e["name"] in labels else {})
+        for e in extra_regions
+    ]
     info = probe(sources[0].io_path) if sources else None
     write_overlay(
         game_frames,
@@ -1673,7 +1726,7 @@ def discover_regions(
             asdict(r) | ({"label": labels[r.name]["label"]} if r.name in labels else {})
             for r in regions
         ]
-        + (extra_regions if covered is None else []),
+        + (extra_labelled if covered is None else []),
         "banner_phrases": [],
         # an icon feed's other rows ("Kip has left the game") are notices
         **({"feed": {"row_notices": True}} if icon else {}),
@@ -1688,7 +1741,7 @@ def discover_regions(
         },
     }
     if covered is not None:
-        preset["suggested_regions"] = extra_regions
+        preset["suggested_regions"] = extra_labelled
     out_dir.mkdir(parents=True, exist_ok=True)
     cache.save_json(out_dir / "proposal.json", preset)
     logger.info(

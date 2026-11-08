@@ -46,7 +46,9 @@ def _run(tmp_path: Path, bursts) -> list[dict]:
 
 
 def test_overlapping_bursts_get_unique_ids_and_replay_the_same(tmp_path, fake_ocr):
-    src = SimpleNamespace(name="short.mp4", io_path=tmp_path / "short.mp4")
+    src = SimpleNamespace(
+        name="short.mp4", path=tmp_path / "short.mp4", io_path=tmp_path / "short.mp4"
+    )
     # 0.04 s apart (shared ids at 0.1 s), 1.5 s apart (3 of 4 times shared) and one
     # start twice (the plan's clamp on a short source)
     bursts = [(src, 0.0), (src, 0.04), (src, 1.5), (src, 14.57), (src, 14.57)]
@@ -65,7 +67,9 @@ def test_overlapping_bursts_get_unique_ids_and_replay_the_same(tmp_path, fake_oc
 def test_old_cache_is_reused_except_for_a_shared_id(tmp_path, fake_ocr):
     """A cache written with shared ids (the last burst's frame under the id): the frames
     no other burst shares come from the cache, a frame stored for another time is OCR'd."""
-    src = SimpleNamespace(name="short.mp4", io_path=tmp_path / "short.mp4")
+    src = SimpleNamespace(
+        name="short.mp4", path=tmp_path / "short.mp4", io_path=tmp_path / "short.mp4"
+    )
     bursts = [(src, 0.0), (src, 0.04), (src, 60.0)]
     first = _run(tmp_path, bursts)
     old = []
@@ -93,7 +97,9 @@ def test_a_run_interrupted_mid_burst_resumes_with_only_the_unfinished_bursts(
 ):
     """Ctrl+C during the OCR: frames already OCR'd are not OCR'd again; only unfinished
     bursts are decoded again. The resumed run gives the same records as an uninterrupted one."""
-    src = SimpleNamespace(name="long.mp4", io_path=tmp_path / "long.mp4")
+    src = SimpleNamespace(
+        name="long.mp4", path=tmp_path / "long.mp4", io_path=tmp_path / "long.mp4"
+    )
     bursts = [(src, 0.0), (src, 60.0), (src, 120.0)]
     reference = _run(tmp_path / "reference", bursts)
     frames = discover.DiscoverParams().burst_frames
@@ -128,3 +134,107 @@ def test_a_run_interrupted_mid_burst_resumes_with_only_the_unfinished_bursts(
     # frame k=0 of the second burst was saved before the interrupt
     assert resumed_calls["n"] == 2 * frames - 1
     assert _key(resumed) == _key(reference)
+
+
+def test_a_new_burst_plan_does_not_overwrite_the_pictures_of_cached_frames(tmp_path, fake_ocr):
+    """The picture of a cached record stays its own when a later plan has other bursts (the
+    names came from the burst number, which another plan gives to other frames)."""
+    src = SimpleNamespace(
+        name="long.mp4", path=tmp_path / "long.mp4", io_path=tmp_path / "long.mp4"
+    )
+    first = _run(tmp_path, [(src, 0.0), (src, 60.0)])
+    pics = {f["id"]: (tmp_path / "frames" / f["frame"]).read_bytes() for f in first}
+    assert len({f["frame"] for f in first}) == len(first)
+
+    second = _run(tmp_path, [(src, 30.0), (src, 0.0), (src, 90.0)])  # burst 0 is another time
+    fake_ocr.clear()
+    kept = [f for f in second if f["id"] in pics]
+    assert {f["id"] for f in kept} == {f["id"] for f in first if f["t"] < 6}
+    for f in kept:  # the cached frames of 0.0 s still show their own picture
+        assert (tmp_path / "frames" / f["frame"]).read_bytes() == pics[f["id"]]
+    assert len({f["frame"] for f in second}) == len(second)
+
+
+def test_pictures_of_frames_no_plan_uses_are_removed_and_their_records_redone(tmp_path, fake_ocr):
+    src = SimpleNamespace(
+        name="long.mp4", path=tmp_path / "long.mp4", io_path=tmp_path / "long.mp4"
+    )
+    first = _run(tmp_path, [(src, 0.0), (src, 60.0)])
+    second = _run(tmp_path, [(src, 0.0)])
+    pics = {p.name for p in (tmp_path / "frames").glob("*.jpg")}
+    assert pics == {f["frame"] for f in second}  # bounded: the 60 s burst's pictures went
+    fake_ocr.clear()
+    again = _run(tmp_path, [(src, 0.0), (src, 60.0)])
+    assert fake_ocr == [60.0]  # records whose picture is gone are OCR'd again
+    assert _key(again) == _key(first)
+
+
+def test_a_legacy_picture_name_two_records_share_is_not_trusted(tmp_path, fake_ocr):
+    """Older caches named a picture b<burst>_<k>.jpg: two records naming one file means a
+    later plan replaced the first's picture, so neither is reused."""
+    src = SimpleNamespace(
+        name="long.mp4", path=tmp_path / "long.mp4", io_path=tmp_path / "long.mp4"
+    )
+    bursts = [(src, 0.0), (src, 60.0)]
+    first = _run(tmp_path, bursts)
+    legacy = []
+    for f in first:
+        name = f"b{f['burst']:03d}_{f['k']}.jpg"
+        (tmp_path / "frames" / f["frame"]).rename(tmp_path / "frames" / name)
+        # burst 1's records claim burst 0's files (as after another plan wrote over them)
+        legacy.append(f | {"frame": f"b000_{f['k']}.jpg"})
+    (tmp_path / "ocr.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in legacy), encoding="utf-8"
+    )
+    fake_ocr.clear()
+    again = _run(tmp_path, bursts)
+    assert fake_ocr == [0.0, 60.0]
+    assert len({f["frame"] for f in again}) == len(again)
+
+
+def test_a_legacy_cache_with_unique_picture_names_is_reused(tmp_path, fake_ocr):
+    src = SimpleNamespace(name="long.mp4", path=tmp_path / "long.mp4", io_path=tmp_path / "x.mp4")
+    bursts = [(src, 0.0), (src, 60.0)]
+    first = _run(tmp_path, bursts)
+    legacy = []
+    for f in first:
+        name = f"b{f['burst']:03d}_{f['k']}.jpg"
+        (tmp_path / "frames" / f["frame"]).rename(tmp_path / "frames" / name)
+        legacy.append(f | {"frame": name})
+    (tmp_path / "ocr.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in legacy), encoding="utf-8"
+    )
+    fake_ocr.clear()
+    again = _run(tmp_path, bursts)
+    assert fake_ocr == []
+    assert {p.name for p in (tmp_path / "frames").glob("*.jpg")} == {f["frame"] for f in again}
+
+
+def test_same_named_sources_in_other_folders_get_their_own_pictures(tmp_path, fake_ocr):
+    a = SimpleNamespace(name="clip.mp4", path=tmp_path / "a" / "clip.mp4", io_path=tmp_path / "a")
+    b = SimpleNamespace(name="clip.mp4", path=tmp_path / "b" / "clip.mp4", io_path=tmp_path / "b")
+    frames = _run(tmp_path, [(a, 0.0), (b, 0.0)])
+    assert len({f["frame"] for f in frames}) == len(frames)
+
+
+def test_pictures_round_trip_in_a_non_ascii_folder(tmp_path):
+    folder = tmp_path / "prøjekt ünï"
+    folder.mkdir()
+    img = np.full((20, 30, 3), 90, np.uint8)
+    assert discover.write_jpeg(folder / "f.jpg", img, 80)
+    back = discover.read_image(folder / "f.jpg")
+    assert back is not None
+    assert back.shape == img.shape
+    assert discover.read_image(folder / "missing.jpg") is None
+
+
+def test_a_picture_that_cannot_be_removed_does_not_stop_discovery(tmp_path, fake_ocr, monkeypatch):
+    src = SimpleNamespace(name="long.mp4", path=tmp_path / "long.mp4", io_path=tmp_path / "x.mp4")
+    _run(tmp_path, [(src, 0.0), (src, 60.0)])
+
+    def locked(self, missing_ok=False):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(Path, "unlink", locked)
+    second = _run(tmp_path, [(src, 0.0)])
+    assert len(second) == discover.DiscoverParams().burst_frames
