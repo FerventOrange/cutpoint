@@ -914,7 +914,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#805).
 - The crash and profile step of `analyze` and `edit` (and of `resume` replaying them) now uses an
   explicit `--ollama-url` / `--ollama-model` too, with the same Vision consent rule for an Ollama on
-  another machine. A bad port in `OLLAMA_HOST` or `ollama_url` no longer fails the profile
+  another machine; as before, that step asks the model only with `--vision`. A bad port in `OLLAMA_HOST` or `ollama_url` no longer fails the profile
   detection of `crashes` and `profile`: it logs a warning and goes on without the vision model
   (#816).
 - Feed labelling gives the first request to an Ollama 300 s (model load) instead of 60 s, and a
