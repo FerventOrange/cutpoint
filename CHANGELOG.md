@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui`: while the first analysis runs the empty state is compact (no illustration, options or
+  Analyzing button, no count of videos found) and has a yellow Pause analysis button, pinned to
+  the top of the column, that stops the run; Resume continues it.
+- `cutpoint ui`: One-Click Edit in the Export panel is marked Experimental.
 - `--visual-index` / `--no-visual-index` on `analyze` and `edit`, and `"visual_index": true` in
   `config.json` (off by default): also write the CLIP frame embeddings that the AI Chat's
   `look_for` searches, for `gaming`, `funny` and `commentary` footage; `action`, `sport` and

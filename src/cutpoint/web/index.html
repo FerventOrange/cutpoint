@@ -504,7 +504,8 @@
 
         <!-- One-click presets: cutpoint edit --kind in the project's own style, with Vertical and Compress Audio Peaks above (#462) -->
         <fieldset class="panel opts presets" id="presetPanel">
-          <legend>One-Click Edit</legend>
+          <legend>One-Click Edit <span class="tag pool" id="presetExp">Experimental</span></legend>
+          <p id="presetNote" class="hint">Picks and joins moments without your review. Use the sequence for a finished edit.</p>
           <div class="opt-grid">
             <label for="optKind" title="What cutpoint edit makes from the analysis, in one run: the best moments as clips, then the final video (--kind). Highlights: up to 3 minutes, chronological, with fades. Montage: up to 60 seconds, best first, with fades. Clips: the 10 best, hard cuts. Funny moments: 8, chronological, with burned-in captions. Uses Vertical 9:16 and Compress Audio Peaks.">Preset</label>
             <select id="optKind" aria-describedby="dKind">
