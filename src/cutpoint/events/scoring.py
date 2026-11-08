@@ -90,8 +90,9 @@ def has_reaction(
     """Whether a reaction follows an event at ``t`` (seconds, source time).
 
     A reaction is a Laughter or Scream audio event starting in
-    ``(t, t + REACTION_WINDOW_S]`` (speech or not), or a transcript segment
-    starting in that window while none overlaps ``[t - REACTION_PAUSE_S, t]``:
+    ``(t, t + REACTION_WINDOW_S]`` (speech or not), a laughing marker of the transcript
+    (``[laughter]``) there, or a transcript segment with text starting in that window while
+    none (a marker holder is no speech) overlaps ``[t - REACTION_PAUSE_S, t]``:
     a pause, then speech, so ongoing banter does not count. Without
     ``segments`` only the sounds count.
     """
@@ -101,9 +102,23 @@ def has_reaction(
             return True
     if not segments:
         return False
+    if any(t < m["start"] <= end for m in _laugh_markers(segments)):
+        return True
+    segments = [s for s in segments if s.get("text")]  # not a marker holder
     if any(s["end"] >= t - REACTION_PAUSE_S and s["start"] <= t for s in segments):
         return False
     return any(t < s["start"] <= end for s in segments)
+
+
+def _laugh_markers(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The laughing markers (``[laughter]``) of ``segments``, as :func:`analyze.laughter_hits`
+    takes them."""
+    from cutpoint import analyze  # noqa: PLC0415 - analyze imports this module
+
+    return [
+        {"start": t, "end": t, "text": phrase}
+        for t, _, phrase in analyze.laughter_hits([], flat_markers(segments))
+    ]
 
 
 def event_boost(

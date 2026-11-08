@@ -66,6 +66,35 @@ def test_has_reaction(events, segments, expected):
     assert scoring.has_reaction(10.0, events, segments) is expected
 
 
+def holder(start: float, end: float, text: str = "[Music]") -> dict[str, Any]:
+    """A segment that held only a non-speech marker (``split_markers``)."""
+    return {
+        "start": start,
+        "end": end,
+        "text": "",
+        "words": [],
+        "markers": [{"start": start, "end": end, "text": text}],
+    }
+
+
+def test_marker_holder_after_death_is_no_reaction():
+    assert scoring.has_reaction(10.0, [], [holder(12, 14)]) is False
+    boost, ev = scoring.event_boost(CAND, [death()], style="funny", segments=[holder(12, 14)])
+    assert boost == 0.0 and ev["player_deaths_reaction"] == 0
+
+
+def test_marker_holder_over_event_does_not_block_reaction():
+    assert scoring.has_reaction(10.0, [], [holder(8, 11), seg(12, 13)]) is True
+
+
+def test_laughter_marker_after_death_is_a_reaction():
+    segments = [holder(12, 13, "[laughter]")]
+    assert scoring.has_reaction(10.0, [], segments) is True
+    assert scoring.has_reaction(10.0, [], [holder(17, 18, "[laughter]")]) is False  # too late
+    boost, ev = scoring.event_boost(CAND, [death()], style="funny", segments=segments)
+    assert boost == 8.0 and ev["player_deaths_reaction"] == 1
+
+
 def test_continuous_banter_is_no_reaction():
     segments = [seg(s, s + 1.8) for s in range(0, 30, 2)]
     assert scoring.has_reaction(10.0, [], segments) is False

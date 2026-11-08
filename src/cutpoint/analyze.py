@@ -2063,7 +2063,7 @@ def _dialogue_backend(
     if not style.open_list:
         steps.skip("dialogue", f"for open-list styles only, not the {style.name} style")
         return None
-    if not any(segments for segments in transcripts.values()):
+    if not any(s.get("text") for segs in transcripts.values() for s in segs):
         steps.skip("dialogue", "no speech to read")
         return None
     choice = dialogue.choose_backend(ollama_url, ollama_model)
