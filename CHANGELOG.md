@@ -1349,6 +1349,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default model ahead of time (medium with CUDA, small without; `--whisper-model NAME` for
   another name or repo id); it needs no extra, so it works in Cutpoint lite, and the default
   `cutpoint setup` includes it (#651).
+- For styles with a candidate cap, a source that ends loud no longer has its final moment picked
+  again and again up to the cap, which pushed out lower peaks (#771). On a synthetic 600 s `action`
+  source the analysis now gives 11 candidates instead of 4; on real footage few picks change.
 
 ## [0.4.0] - 2026-10-29
 
