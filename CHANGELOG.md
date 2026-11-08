@@ -881,6 +881,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AI Chat names dialogue moments by their readable title, as the moments list does, while
+  sequence labels keep their renamed text (#806).
 - Laughter scoring is stricter about what was actually laughed. The `laughter` transcript signal
   counts only Whisper's non-speech markers (`[laughter]`, `(laughs)`, `*laughing*`) and
   interjections such as `haha` and `lol`; the spoken word "laugh" or "laughter" no longer counts.
