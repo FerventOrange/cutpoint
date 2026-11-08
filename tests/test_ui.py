@@ -8055,14 +8055,17 @@ def test_the_consent_texts_name_what_each_role_sends() -> None:
     assert "D:/Videos" not in "".join(m["content"] for m in msgs)
     vision = _js_function(_web("app.js"), "renderVisionConsent")
     text = re.search(r"\$\('#visionConsentText'\)\.textContent = `(.*?)`;", vision)[1]
+    text += re.search(r"\$\('#visionConsentMore'\)\.textContent = '(.*?)';", vision)[
+        1
+    ]  # behind "More"
     for part in (
         "video frames",
         "transcript excerpts",
         "file names and times",
         "on-screen text",
         "telemetry",
-        "The AI Chat assistant gets other data",
-        "agreeing for one never covers the other",
+        "The AI Chat gets other data",
+        "allowing one never covers the other",
     ):
         assert part in text, part
     # analysis (the dialogue step) sends whole transcripts to the chat model; its consent says so
@@ -10417,3 +10420,41 @@ def test_the_page_pauses_the_first_analysis_and_labels_one_click_edit() -> None:
         in html
     )
     assert 'aria-describedby="dMake presetWhy"' in html
+
+
+def test_font_sizes_come_from_the_type_scale_tokens() -> None:
+    """Contract pin (#810): app.css has five font-size tokens on :root, and no rule sets a literal
+    px font size; the header gaps use one --gap token."""
+    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
+    root = css[: css.index("\n}")]
+    sizes = dict(re.findall(r"--fs-(\w+): ([\d.]+)px;", root))
+    assert sizes == {
+        "caption": "11.5",
+        "small": "12.5",
+        "body": "13.5",
+        "title": "15",
+        "heading": "20",
+    }
+    assert not re.findall(r"font-size: ?[\d.]+px|\bfont: (?:\d+ )?[\d.]+px", css)
+    assert re.search(r"^\.top \{[^}]*gap: var\(--gap\);", css, re.M)
+    for sel in (r"\.stage-head", r"\.cut-line", r"\.cut-nav", r"\.jobs-head"):
+        assert re.search(rf"^{sel} \{{[^}}]*gap: [^;]*var\(--gap\);", css, re.M), sel
+
+
+def test_empty_preview_is_centred_and_the_running_panel_is_top_aligned() -> None:
+    """Contract pin (#810): both empty previews (no project, not analyzed) share .stage-empty,
+    centred both ways with its button centred under the text; while the first analysis runs the
+    Moments panel is top-aligned (margin: 0 auto) so Pause is the first thing in the column."""
+    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
+    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
+    box = re.search(r"^\.stage > \.empty\.stage-empty \{([^}]*)\}", css, re.M)
+    assert box and "justify-items: center;" in box[1] and "text-align: center;" in box[1]
+    assert "align-self: center;" in box[1] and "margin: auto;" in box[1]
+    assert re.search(
+        r"^\.stage > \.empty\.stage-empty \.btn \{[^}]*justify-self: center;", css, re.M
+    )
+    assert "classList.toggle('stage-empty', !c && !S.project?.highlights)" in js
+    running = re.search(
+        r"^\.moments:has\(> \.empty\.fresh\.running\) > \.empty\.fresh \{([^}]*)\}", css, re.M
+    )
+    assert running and "margin: 0 auto;" in running[1]

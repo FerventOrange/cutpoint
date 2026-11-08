@@ -1124,8 +1124,19 @@ function renderStage(seekToStart, keepVideo = false) {
       h('p', { class: 'muted' }, 'Create one from a video file or a folder of footage on this computer. Source files are never changed.'),
       h('button', { type: 'button', class: 'btn primary', onclick: () => openDialog(S.styles), text: 'New project' }));
   else if (!c)
-    setEmpty($('#stageEmpty'), h('p', {}, S.project.highlights ? 'Pick a moment to preview it.' : 'Analyze the footage to rank its best moments, then preview and trim them here.'));
+    setEmpty($('#stageEmpty'), ...(S.project.highlights ? [h('p', {}, 'Pick a moment to preview it.')] : [
+      svg('icon stage-empty-art', ICONS.film),
+      h('h3', { text: 'No moments yet' }),
+      // a stopped run waits for Resume in the Moments column: no start-over button here
+      S.project.run?.resumable
+        ? h('p', {}, 'Resume the analysis in the Moments column to find its best moments.')
+        : h('p', {}, 'Analyze the footage to find its best moments. Preview and trim them here.'),
+      // the same action as the Analyze footage button of the Moments column
+      S.project.run?.resumable ? null : h('button', { type: 'button', id: 'stageAnalyze', class: 'btn primary', onclick: () => $('#analyzeBig')?.click(), text: 'Analyze footage' }),
+    ]));
   else setEmpty($('#stageEmpty'));
+  $('#stageEmpty').classList.toggle('stage-empty', !c && !S.project?.highlights); // no project, or not analyzed: one centred layout
+  syncStageAnalyze();
   if (!c) {
     v.pause();
     return;
@@ -4350,6 +4361,16 @@ function renderExport() {
   renderBusy();
 }
 
+/** The preview's Analyze footage button follows the Moments column's: gone while an analysis runs or with no videos. */
+function syncStageAnalyze() {
+  const b = $('#stageAnalyze');
+  if (!b) return;
+  const big = $('#analyzeBig');
+  b.hidden = !big || big.hidden || !!$('#resumeBig') || !S.project?.sources?.length;
+  b.disabled = !!big?.disabled;
+  b.title = big?.title ?? '';
+}
+
 function renderBusy() {
   const p = S.project;
   const busy = !!S.active;
@@ -4378,7 +4399,7 @@ function renderBusy() {
     const own = S.active?.project_id === S.id
       && (S.active.action === 'analyze' || (S.active.action === 'resume' && /analyze$/.test(p?.run?.command ?? '')));
     const steps = own && !!stepsJob(); // an older CLI sends no steps: the Jobs log is all there is
-    const reason = own ? (steps ? 'Analyzing… each step is listed below.' : 'Analyzing… progress is in Jobs.') : busy ? why
+    const reason = own ? (steps ? 'Analyzing…' : 'Analyzing… progress is in Jobs.') : busy ? why
       : held ? BUSY_TEXT : p?.source_error ? sourceErrorText(p) : 'Add videos to the source folder first.';
     set('#analyzeBig', !p || busy || held || !p.sources?.length, reason);
     set('#analyzeOptsBtn', !p || busy || held || !p.sources?.length, reason);
@@ -4388,7 +4409,7 @@ function renderBusy() {
     const empty = $('#momentsEmpty');
     const pause = $('#pauseBtn');
     const hiding = [big, $('#analyzeOptsBtn'), $('#resumeBig')];
-    const lost = hiding.includes(document.activeElement) || (!!empty.dataset.refocus && document.activeElement === document.body);
+    const lost = [...hiding, $('#stageAnalyze')].includes(document.activeElement) || (!!empty.dataset.refocus && document.activeElement === document.body);
     empty.classList.toggle('running', own);
     for (const b of hiding) if (b) b.hidden = own || b.dataset.gone === '1';
     if (!own && pause.getAttribute('aria-disabled')) {
@@ -4403,6 +4424,7 @@ function renderBusy() {
     out.classList.toggle('progress', own);
     if (out.textContent !== big.title) out.textContent = big.title; // live region: announce changes only
   }
+  syncStageAnalyze();
   if (picks() === 'auto') set('#clipsBtn', !p || busy || !p.highlights?.candidates?.length, busy ? why : 'Analyze the footage first.');
   else set('#clipsBtn', !p || busy || !S.segments.length, busy ? why : 'Add moments to the sequence first.');
   // Without Speech-aware cuts and padding, extend has nothing to do (the CLI refuses it)
@@ -5461,7 +5483,7 @@ function renderChat() {
   const atEnd = !col || col.scrollHeight - col.scrollTop - col.clientHeight < 24;
   const count = log.children.length;
   const height = log.scrollHeight;
-  preserveFocus(() => log.replaceChildren(...(items.length ? items : [h('li', { class: 'msg step' },
+  preserveFocus(() => log.replaceChildren(...(items.length ? items : [h('li', { class: 'msg step chat-empty' },
     !S.project ? 'Open a project to chat about its moments.'
       : !S.project.highlights ? 'Analyze the footage first; the assistant works with its moments.'
         : 'Ask for moments to find, add, remove, reorder or trim. Each change is proposed first: apply it from its card, or preview it in the Sequence tab.')])));
@@ -5734,35 +5756,35 @@ const PROVIDER_TITLES = {
 const VISION_PROVIDERS = ['ollama', 'anthropic', 'openai', 'xai', 'claude-code', 'codex', 'antigravity'];
 
 const CHAT_HINTS = {
-  ollama: 'Runs with Ollama (local), at OLLAMA_HOST or the Ollama URL in config.json. On this machine nothing leaves it; an Ollama on another machine counts as hosted.',
-  anthropic: "Anthropic API (api.anthropic.com): uses your Anthropic API key. Requests go to Anthropic's hosted service. It asks once before it gets project data. Use at your own risk.",
-  'claude-code': "Claude Code subscription: uses your Claude subscription login (log in under Connected accounts below, no API key). Requests go to Anthropic's hosted service. It asks once before it gets project data. Use at your own risk.",
-  openai: "OpenAI API (api.openai.com): uses your OpenAI API key. Requests go to OpenAI's hosted service. It asks once before it gets project data. Use at your own risk.",
-  codex: "Codex subscription: uses your ChatGPT subscription login (log in under Connected accounts below, no API key). Requests go to OpenAI's hosted service. It asks once before it gets project data. Use at your own risk.",
-  antigravity: "Antigravity subscription: uses your Google/Antigravity subscription login (log in under Connected accounts below, no API key). Requests go to Google's hosted service. It asks once before it gets project data. Use at your own risk.",
-  xai: "xAI API (api.x.ai): uses your xAI API key. Requests go to xAI's hosted service. It asks once before it gets project data. Use at your own risk.",
-  custom: 'The provider and base URL set in config.json, which no preset has. It keeps working, and its model can be changed here; choose a preset and save to use that instead.',
+  ollama: 'Runs with Ollama on this machine; nothing leaves it. An Ollama on another machine counts as hosted.',
+  anthropic: 'Anthropic API (api.anthropic.com): your API key. Project data goes to Anthropic; it asks once first. Use at your own risk.',
+  'claude-code': 'Claude Code subscription: your Claude login (see Connected accounts). Project data goes to Anthropic; it asks once first. Use at your own risk.',
+  openai: 'OpenAI API (api.openai.com): your API key. Project data goes to OpenAI; it asks once first. Use at your own risk.',
+  codex: 'Codex subscription: your ChatGPT login (see Connected accounts). Project data goes to OpenAI; it asks once first. Use at your own risk.',
+  antigravity: 'Antigravity subscription: your Google login (see Connected accounts). Project data goes to Google; it asks once first. Use at your own risk.',
+  xai: 'xAI API (api.x.ai): your API key. Project data goes to xAI; it asks once first. Use at your own risk.',
+  custom: 'Set in config.json; no preset has it. Its model can be changed here; choose a preset and save to use that instead.',
 };
 
 const VISION_HINTS = {
-  ollama: 'Runs with Ollama (local) vision models (e.g. qwen3.5:9b, the default) to rate video frames on this machine.',
-  anthropic: "Anthropic API (api.anthropic.com): rates video frames via your Anthropic API key. Requests go to Anthropic's hosted service; each request sends frames and the words said in the moment, and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
-  'claude-code': "Claude Code subscription: rates video frames via your Claude subscription login (no API key). Requests go to Anthropic's hosted service. Use at your own risk.",
-  openai: "OpenAI API (api.openai.com): rates video frames via your OpenAI API key. Requests go to OpenAI's hosted service; each request sends frames and the words said in the moment, and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
-  codex: "Codex subscription: rates video frames via your ChatGPT subscription login (no API key). Requests go to OpenAI's hosted service. Use at your own risk.",
-  antigravity: "Antigravity subscription: rates video frames via your Google/Antigravity subscription login (no API key). Requests go to Google's hosted service. Use at your own risk.",
-  xai: "xAI API (api.x.ai): rates video frames via your xAI API key. Requests go to xAI's hosted service; each request sends frames and the words said in the moment, and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
+  ollama: 'Rates video frames on this machine with an Ollama vision model (default qwen3.5:9b).',
+  anthropic: 'Anthropic API (api.anthropic.com): rates video frames; billed to your API key. Frames and the words said in each moment go to Anthropic. Pick a model that accepts images. Use at your own risk.',
+  'claude-code': 'Claude Code subscription: rates video frames with your Claude login. Frames and the words said in each moment go to Anthropic. Use at your own risk.',
+  openai: 'OpenAI API (api.openai.com): rates video frames; billed to your API key. Frames and the words said in each moment go to OpenAI. Pick a model that accepts images. Use at your own risk.',
+  codex: 'Codex subscription: rates video frames with your ChatGPT login. Frames and the words said in each moment go to OpenAI. Use at your own risk.',
+  antigravity: 'Antigravity subscription: rates video frames with your Google login. Frames and the words said in each moment go to Google. Use at your own risk.',
+  xai: 'xAI API (api.x.ai): rates video frames; billed to your API key. Frames and the words said in each moment go to xAI. Pick a model that accepts images. Use at your own risk.',
 };
 
 const AI_MODEL_HINTS = {
-  ollama: 'The name of a model Ollama has pulled. Default: the first Ollama has of qwen3.5:9b, the vision model and qwen3-vl:8b, else qwen3.5:9b.',
-  anthropic: 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger, slower and costs more.',
-  'claude-code': 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger, slower and costs more.',
-  openai: 'Needed: the name of an OpenAI model your key can use (e.g. gpt-4o, gpt-4o-mini).',
-  codex: 'ChatGPT subscription (Codex) backend models from your account catalog.',
-  antigravity: 'Models from your Antigravity subscription account catalog.',
-  xai: 'Needed: the name of an xAI model your key can use.',
-  custom: "The model of the custom provider, saved in config.json. Default: the server's model, when it serves only one.",
+  ollama: 'A model Ollama has pulled. Default: the first of qwen3.5:9b, the vision model and qwen3-vl:8b it has, else qwen3.5:9b.',
+  anthropic: 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger but slower and costs more.',
+  'claude-code': 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger but slower and costs more.',
+  openai: 'Needed: an OpenAI model your key can use (e.g. gpt-4o).',
+  codex: 'Models from your ChatGPT account.',
+  antigravity: 'Models from your Antigravity account.',
+  xai: 'Needed: an xAI model your key can use.',
+  custom: "The custom provider's model. Default: the server's model, when it serves only one.",
 };
 
 const AI_TYPE_ID = 'Choose Other model… to enter an id.';
@@ -5856,8 +5878,9 @@ function renderChatRoleFields(model) {
     : `API key${host ? ` for ${host}` : ''}: ${KEY_WHERE[where] ?? 'not set'}`;
   $('#chatRoleKeySave').disabled = $('#chatRoleKeyClear').disabled = unsaved;
   $('#chatRoleKeyHint').textContent = unsaved
-    ? "A key belongs to the base URL's host: the provider's own variable counts only for its official API host, and a key goes only over https:// unless the server is on this machine."
-    : `${aiKeyOrder(p.key_env || [])} Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown.`;
+    ? "A key belongs to the base URL's host; the provider's own variable counts only for its official API host."
+    : `${aiKeyOrder(p.key_env || [])} Sent only to ${host || 'the base URL'}; never saved in config.json or shown.`;
+  $('#chatRoleKeyMore').textContent = 'A key goes only over https:// unless the server is on this machine.';
 }
 
 function renderVisionRoleFields(model) {
@@ -5887,7 +5910,8 @@ function renderVisionRoleKey(p) {
   keyStatus.title = where === 'env' ? 'Analyses started from cutpoint ui use the key saved in the Models tab, not this environment variable.' : '';
   // jobs started here get no key variables (keys.child_env): only the keyring reaches them
   const env = (p.key_env || []).join(' or ');
-  $('#visionRoleKeyHint').textContent = `Analyses started here read it from the system keyring${env ? `; ${env} counts only for cutpoint commands run in a terminal` : ''}. Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown. A key for the same host serves both roles.`;
+  $('#visionRoleKeyHint').textContent = `Analyses started here read it from the system keyring${env ? `; ${env} counts only in a terminal` : ''}. Sent only to ${host || 'the base URL'}; never saved in config.json or shown.`;
+  $('#visionRoleKeyMore').textContent = 'A key goes only over https:// unless the server is on this machine. A key for the same host serves both roles.';
 }
 
 function renderVisionConsent() {
@@ -5904,14 +5928,14 @@ function renderVisionConsent() {
 
   if (unsaved) {
     if (sel.value !== 'ollama') {
-      status.textContent = 'Save models first to review and grant permission for this provider.';
+      status.textContent = 'Save models first to review and allow this provider.';
     }
     return;
   }
 
   if (!consent || consent.key === null) {
     if (sel.value === 'ollama') {
-      status.textContent = 'Local model: frame ratings run on this machine; no frame data leaves it.';
+      status.textContent = 'Local model: no frame data leaves this machine.';
     }
     return;
   }
@@ -5922,8 +5946,10 @@ function renderVisionConsent() {
     box.hidden = false;
     const host = consent.host || 'the remote service';
     $('#visionConsentTitle').textContent = noKey ? (consent.missing_kind === 'login' ? 'Login needed' : 'API key needed') : `Send video frames to ${host}?`;
-    $('#visionConsentText').textContent = `Rating moments and describing event windows with this hosted vision provider sends video frames, transcript excerpts, file names and times, detected on-screen text (such as player names) and telemetry to ${host}. The AI Chat assistant gets other data (analysis results and whole transcripts; frames only when you allow them for a project); agreeing for one never covers the other. Nothing is sent until you explicitly grant permission. Permission is saved in config.json.`;
+    $('#visionConsentText').textContent = `Rating moments sends video frames, transcript excerpts, file names and times, on-screen text and telemetry to ${host}. Nothing is sent until you allow it.`;
+    $('#visionConsentMore').textContent = 'Describing event windows sends the same. The AI Chat gets other data (analysis results and whole transcripts; frames only when you allow them for a project); allowing one never covers the other. Permission is saved in config.json.';
     if (noKey) $('#visionConsentText').textContent = sentence(noKey);
+    $('#visionConsentMore').parentElement.hidden = !!noKey;
     $('#visionConsentOk').hidden = !!noKey;
     $('#visionConsentOk').disabled = false;
   } else {
@@ -6379,7 +6405,7 @@ function fillVisionRoleSettings(v, enabled, defaultLocalModel, consent) {
   const box = $('#visionRoleEnabled');
   box.checked = enabled === true;
   box.dataset.saved = String(box.checked);
-  $('#visionRoleEnabledHint').textContent = `Off by default. Rates moments using video frames.${defaultLocalModel ? ` Default local model: ${defaultLocalModel}.` : ''}${S.project?.kind === '360' ? ' Vision rating is not used for 360 footage.' : ''}`;
+  $('#visionRoleEnabledHint').textContent = `Rates moments using video frames. Off by default.${defaultLocalModel ? ` Local model: ${defaultLocalModel}.` : ''}${S.project?.kind === '360' ? ' Vision rating is not used for 360 footage.' : ''}`;
 
   S.visionAi = v ?? {
     provider: 'ollama',

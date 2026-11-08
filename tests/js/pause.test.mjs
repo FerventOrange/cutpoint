@@ -153,3 +153,42 @@ test('Pause analysis cancels the job and the panel then offers Resume', async (t
   assert.equal($('#pauseBtn').hidden, true);
   assert.notEqual(page.document.activeElement, page.document.body);
 });
+
+test('the empty preview has a title, one line and an Analyze footage button that starts the analysis and hides while it runs (#810)', async (t) => {
+  const jobs = { jobs: [] };
+  const { page, $ } = await open(t, FRESH(), { 'GET /api/jobs': () => jobs });
+  const stage = $('#stageEmpty');
+  assert.equal(stage.querySelector('h3').textContent, 'No moments yet');
+  assert.equal(stage.querySelector('p').textContent, 'Analyze the footage to find its best moments. Preview and trim them here.');
+  assert.equal(stage.querySelector('svg').getAttribute('aria-hidden'), 'true');
+  const btn = $('#stageAnalyze');
+  assert.equal(btn.textContent, 'Analyze footage');
+  assert.equal(btn.hidden, false);
+  let clicks = 0;
+  // the stage button clicks the Moments button; count that click and stop it before its own handler starts a job
+  $('#analyzeBig').addEventListener('click', (e) => { clicks += 1; e.stopImmediatePropagation(); }, true);
+  btn.click();
+  assert.equal(clicks, 1);
+  jobs.jobs = [RUNNING];
+  t.mock.timers.tick(5000);
+  await page.settle();
+  assert.equal($('#stageAnalyze').hidden, true);
+});
+
+test('the empty preview button is hidden when the project has no videos (#810)', async (t) => {
+  const { $ } = await open(t, makeProject({ highlights: null, analysis: null, sources: [] }));
+  assert.equal($('#stageAnalyze').hidden, true);
+});
+
+test('Analyzing… alone is the status while the steps are listed (#810)', async (t) => {
+  const { page, $ } = await open(t, FRESH(), { 'GET /api/jobs': () => ({ jobs: [RUNNING] }) });
+  t.mock.timers.tick(5000);
+  await page.settle();
+  assert.equal($('#analyzeWhy').textContent, 'Analyzing…');
+});
+
+test('a stopped run waits for Resume: the empty preview points to it and has no Analyze footage button (#810)', async (t) => {
+  const { $ } = await open(t, makeProject({ highlights: null, analysis: null, run: { command: 'analyze', status: 'interrupted', resumable: true } }));
+  assert.equal($('#stageAnalyze'), null);
+  assert.equal($('#stageEmpty p').textContent, 'Resume the analysis in the Moments column to find its best moments.');
+});
