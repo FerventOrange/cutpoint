@@ -78,7 +78,7 @@ import numpy as np
 from cutpoint import cache, folders
 from cutpoint.errors import FFmpegError
 from cutpoint.events.common import Source
-from cutpoint.events.regions import Region, bigtext_region, preset_from_dict, source_tag
+from cutpoint.events.regions import Region, bigtext_region, source_tag
 from cutpoint.ffmpeg_utils import grab_images, probe
 from cutpoint.imageio import read_image, write_jpeg
 
@@ -1705,7 +1705,7 @@ def discover_regions(
     Returns:
         The proposal: a preset dict (``game``, ``regions``, ``banner_phrases``,
         ``discovery`` stats, per-region evidence, the HUD fit check's reference
-        profile of the sources over the regions (``fit_ref``, see
+        grid of where the sources' edge text lands (``fit_ref``, see
         :mod:`cutpoint.events.game_fit`) and the ids of the OCR records
         the run used, ``frames``, since ``ocr.jsonl`` can still hold records of an earlier,
         incomplete run). Extra notice regions where text shows outside every covered region
@@ -1782,10 +1782,8 @@ def discover_regions(
         preset["suggested_regions"] = extra_labelled
     from cutpoint.events import game_fit  # noqa: PLC0415
 
-    # how this game's text lands in the regions written, for the HUD fit check
-    preset["discovery"]["fit_ref"] = game_fit.profile(
-        game_frames, preset_from_dict(preset).regions, params.min_score
-    ).ref()
+    # where this game's edge text lands (edge-cell grid), for the HUD fit check
+    preset["discovery"]["fit_ref"] = game_fit.profile(game_frames, params.min_score).ref()
     out_dir.mkdir(parents=True, exist_ok=True)
     cache.save_json(out_dir / "proposal.json", preset)
     logger.info(

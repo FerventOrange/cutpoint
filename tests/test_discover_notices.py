@@ -369,7 +369,12 @@ def test_existing_preset_gets_suggestions_only(
     assert rec["installed"] is False
     assert [r["name"] for r in rec["suggested_regions"]] == ["extra_notice"]
     assert rec["suggested_regions"][0]["origin"] == "outside"
-    assert target.read_bytes() == before
+    # the preset keeps every key; a forced discovery adds only the HUD fit check's reference
+    got = json.loads(target.read_text(encoding="utf-8"))
+    assert got.setdefault("discovery", {}).pop("fit_ref")["cells"] == [16, 12]
+    old = json.loads(before)
+    old.setdefault("discovery", {})
+    assert got == old
     proposal = json.loads((project / "discovery" / "verbfeed" / "proposal.json").read_text())
     assert proposal["suggested_regions"] == rec["suggested_regions"]
     assert not any(r.get("origin") for r in proposal["regions"])

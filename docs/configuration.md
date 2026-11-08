@@ -446,13 +446,24 @@ digits).
 **HUD fit check.** The key from a folder or file name is a first guess: one folder can hold
 several games. Once that key has a preset (found, or discovered in this run), each source keyed
 this way is checked against it: does its HUD text (OCR text along the screen edges, outside the
-big-text area) land in the preset's regions, about as often per region as in the footage the
-preset was made from? Discovery stores that reference in the preset (`discovery.fit_ref`); for
-an older preset without it, at least 35% of the edge text must fall in its regions and some of
-it in a feed or notice region. A source discovered with others is compared with the rest of that
-run (the source with the most gameplay frames leads). A source that does not fit gets a key of
-its own and its own discovery (or the key of a source split off before it in the same run,
-when it fits the preset discovered for that one), and an INFO line says so:
+big-text area) land in the same places on screen as in the footage the preset was made from?
+The screen is split into a grid of 16 x 12 cells; per cell, the check counts the share of
+gameplay frames with edge text in it and compares the two grids (cosine similarity, at least
+0.57 fits; the preset's regions play no part). Discovery stores the preset's grid in the preset
+(`discovery.fit_ref`). A preset without one (written by hand, or by an older version) decides
+nothing: its sources keep the first guess. To give an older preset the fit check, run
+`cutpoint events <project> --discover-regions` (or `edit` with `--discover-regions`) on a folder
+where that game is the majority: discovery runs again and its sources are compared with each
+other as in a new discovery (the source with the most gameplay frames leads); the preset gets
+only a `discovery.fit_ref` made from the sources that fit (its regions and every other key stay
+as they are; an INFO line `Added the HUD fit check to the preset '<key>' (its regions are
+unchanged)` says so, and nothing is written when the footage has too little edge text to tell),
+and a source that does not fit is split off as below. With `--discover-regions` over a preset
+that has a `fit_ref`, the sources are checked against it instead; its `fit_ref` is made again
+from those that fit (and those with too little text to tell), and stays as it is when none fits. A source discovered with others is
+compared with the rest of that run (the source with the most gameplay frames leads). A source
+that does not fit gets a key of its own and its own discovery (or the key of a source split off
+before it in the same run, when its text lands like that one's), and an INFO line says so:
 `<file> does not fit the HUD preset '<key>' (score 0.12); discovering it as '<new key>'`. Its key
 is a slug of its file name, or `<folder key>-<6 hex digits>` (from its path) when that name says
 nothing about the game or is taken. A preset discovered in the same run is then made again from

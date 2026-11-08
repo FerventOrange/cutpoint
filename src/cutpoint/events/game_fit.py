@@ -1,4 +1,4 @@
-"""HUD fit check (#822): does a source's HUD text land in a preset's regions?
+"""HUD fit check (#822): does a source's HUD text land where a preset's game shows it?
 
 The game key of a source is first guessed from its folder or recorder file name
 (:func:`cutpoint.events.regions.first_guess`), so games recorded into one folder share
@@ -9,19 +9,17 @@ a key and a discovery of its own (:func:`cutpoint.events.pipeline._discover`).
 Only text along the screen edges counts (a HUD hugs them, the game view fills the
 centre): OCR boxes of at least the discovery's minimum score with two letters or digits,
 centred in the outer cells of discovery's coarse 8 x 6 menu grid and outside the big-text
-region (:func:`edge_boxes`). Per source and region set:
+region (:func:`edge_boxes`). The signal is a grid of :data:`GRID_W` x :data:`GRID_H` cells
+over the reference frame: per cell, the share of gameplay frames with an edge box centred
+in it (:meth:`Profile.grid`). The preset's regions play no part.
 
-* ``inside``: the share of those boxes inside a region;
-* ``occ``: per region, the share of gameplay frames with such a box in it.
-
-A source fits a reference when the cosine of its ``occ`` and the reference's is at
-least :data:`TAU_COS` and its ``inside`` at least :data:`INSIDE_SHARE` of the
-reference's. The reference is the other sources of the same discovery run
-(:func:`split_group`) or the preset's ``discovery.fit_ref``, which discovery writes; a
-preset without one needs ``inside`` of :data:`TAU_ABS` and a box in a feed or notice
-region, as does one whose ``fit_ref`` names regions it no longer has (:func:`against_ref`).
-Too little evidence (fewer than :data:`MIN_FRAMES`
-gameplay frames or :data:`MIN_BOXES` edge boxes) decides nothing: the guess stays.
+A source fits a reference when the cosine of the two grids is at least :data:`TAU_GRID`.
+The reference is the other sources of the same discovery run (:func:`split_group`) or the
+preset's ``discovery.fit_ref``, which discovery writes (:meth:`Profile.ref`). A preset
+without a grid ``fit_ref`` (none, or the per-region one of an earlier version) decides
+nothing: its sources keep the guess until a discovery writes one (:func:`against_ref`).
+Too little evidence (fewer than :data:`MIN_FRAMES` gameplay frames or :data:`MIN_BOXES`
+edge boxes) decides nothing either: the guess stays.
 
 No game names and no game-specific parsing: only positions of text boxes.
 """
@@ -30,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,18 +37,19 @@ from typing import Any
 from cutpoint.events.discover import (
     MENU_CELL_H,
     MENU_CELL_W,
+    REF_H,
+    REF_W,
     DiscoverParams,
     _ocr_frames,
     plan_bursts,
 )
 from cutpoint.events.regions import Region, bigtext_region
 
-# A source fits when cos(occ, reference occ) >= TAU_COS and its inside share is at least
-# INSIDE_SHARE of the reference's; against a preset without fit_ref: inside >= TAU_ABS and
-# a box in a feed or notice region. Starting values, to be calibrated on footage.
-TAU_COS = 0.5
-TAU_ABS = 0.35
-INSIDE_SHARE = 0.5
+# the edge-cell grid of the signal (columns, rows over REF_W x REF_H)
+GRID_W, GRID_H = 16, 12
+# A source fits when cos(grid, reference grid) >= TAU_GRID. Provisional: on 9 sources of 5
+# games, same-game pairs scored 0.62-0.99 and cross-game pairs at most 0.51.
+TAU_GRID = 0.57
 # evidence: fewer gameplay frames or edge boxes than these decide nothing
 MIN_FRAMES = 4
 MIN_BOXES = 15
@@ -84,42 +84,38 @@ def edge_boxes(frame: dict[str, Any], min_score: float) -> list[dict[str, Any]]:
     return out
 
 
+def _cell(b: dict[str, Any]) -> str | None:
+    """The grid cell (``"x,y"``) of a box's centre; None outside the reference frame."""
+    cx, cy = (b["x0"] + b["x1"]) / 2, (b["y0"] + b["y1"]) / 2
+    if not (0 <= cx < REF_W and 0 <= cy < REF_H):
+        return None
+    return f"{int(cx * GRID_W / REF_W)},{int(cy * GRID_H / REF_H)}"
+
+
 @dataclass(frozen=True)
 class Profile:
-    """Counts of one or more sources' gameplay frames over a region set.
+    """Counts of one or more sources' gameplay frames over the edge-cell grid.
 
     Attributes:
         frames: Gameplay frames.
         boxes: Edge boxes (:func:`edge_boxes`).
-        inside: Edge boxes inside a region.
-        feed_hits: Edge boxes inside a ``feed`` or ``notice`` region.
-        seen: Per region name: frames with an edge box in it (every region, also 0).
+        seen: Per grid cell (``"x,y"``): frames with an edge box centred in it (cells
+            with one only).
     """
 
     frames: int = 0
     boxes: int = 0
-    inside: int = 0
-    feed_hits: int = 0
     seen: tuple[tuple[str, int], ...] = ()
 
     def __add__(self, other: Profile) -> Profile:
         seen = dict(self.seen)
-        for name, n in other.seen:
-            seen[name] = seen.get(name, 0) + n
-        return Profile(
-            self.frames + other.frames,
-            self.boxes + other.boxes,
-            self.inside + other.inside,
-            self.feed_hits + other.feed_hits,
-            tuple(seen.items()),
-        )
+        for cell, n in other.seen:
+            seen[cell] = seen.get(cell, 0) + n
+        return Profile(self.frames + other.frames, self.boxes + other.boxes, tuple(seen.items()))
 
-    @property
-    def inside_share(self) -> float:
-        return self.inside / self.boxes if self.boxes else 0.0
-
-    def occ(self) -> dict[str, float]:
-        return {name: n / self.frames if self.frames else 0.0 for name, n in self.seen}
+    def grid(self) -> dict[str, float]:
+        """Per cell, the share of gameplay frames with an edge box in it."""
+        return {cell: n / self.frames if self.frames else 0.0 for cell, n in self.seen}
 
     def enough(self) -> bool:
         """Whether the counts can decide anything."""
@@ -128,98 +124,95 @@ class Profile:
     def ref(self) -> dict[str, Any]:
         """The ``discovery.fit_ref`` of a preset made from these frames."""
         return {
-            "inside": round(self.inside_share, 3),
-            "occ": {name: round(v, 3) for name, v in self.occ().items()},
+            "cells": [GRID_W, GRID_H],
+            "grid": {cell: round(v, 3) for cell, v in sorted(self.grid().items())},
+            "frames": self.frames,
+            "boxes": self.boxes,
         }
 
 
-def profile(
-    frames: Iterable[dict[str, Any]], regions: Iterable[Region], min_score: float
-) -> Profile:
-    """The :class:`Profile` of gameplay ``frames`` (OCR records) over ``regions`` (a
-    ``bigtext`` region is left out: its boxes never count)."""
-    regs = [r for r in regions if r.kind != "bigtext"]
-    n = boxes = inside = feed = 0
-    seen = dict.fromkeys((r.name for r in regs), 0)
+def profile(frames: Iterable[dict[str, Any]], min_score: float) -> Profile:
+    """The :class:`Profile` of gameplay ``frames`` (OCR records); each cell counts once
+    per frame."""
+    n = boxes = 0
+    seen: dict[str, int] = {}
     for f in frames:
         n += 1
         hit: set[str] = set()
         for b in edge_boxes(f, min_score):
             boxes += 1
-            got = [r for r in regs if _inside(b, r)]
-            inside += bool(got)
-            feed += any(r.kind in ("feed", "notice") for r in got)
-            hit.update(r.name for r in got)
-        for name in hit:
-            seen[name] += 1
-    return Profile(n, boxes, inside, feed, tuple(seen.items()))
+            cell = _cell(b)
+            if cell is not None:
+                hit.add(cell)
+        for cell in hit:
+            seen[cell] = seen.get(cell, 0) + 1
+    return Profile(n, boxes, tuple(seen.items()))
 
 
 def cosine(a: dict[str, float], b: dict[str, float]) -> float | None:
-    """Cosine of two occupancy vectors over ``b``'s regions; None when ``b`` is all zero
-    (no reference to compare with), 0 when ``a`` is."""
+    """Cosine of two grids over the union of their cells; None when either is all zero."""
+    na = math.sqrt(sum(v * v for v in a.values()))
     nb = math.sqrt(sum(v * v for v in b.values()))
-    if nb == 0:
+    if na == 0 or nb == 0:
         return None
-    na = math.sqrt(sum(a.get(k, 0.0) ** 2 for k in b))
-    if na == 0:
-        return 0.0
     return sum(a.get(k, 0.0) * v for k, v in b.items()) / (na * nb)
 
 
 @dataclass(frozen=True)
 class Fit:
     """A conclusive fit test: ``ok`` and the numbers it was decided on. ``score`` is the
-    cosine (``ref`` ``run`` or ``preset``) or the inside share (``absolute``)."""
+    grid cosine; ``ref`` is ``run`` (other sources of this run) or ``preset``."""
 
     ok: bool
     score: float
-    inside: float
     frames: int
     ref: str
 
     def record(self) -> dict[str, Any]:
         """The ``fit`` of a ``game_keys.json`` entry."""
-        return {
-            "score": round(self.score, 3),
-            "inside": round(self.inside, 3),
-            "frames": self.frames,
-            "ref": self.ref,
-        }
+        return {"score": round(self.score, 3), "frames": self.frames, "ref": self.ref}
 
 
-def _relative(p: Profile, occ: dict[str, float], inside: float, ref: str) -> Fit | None:
-    cos = cosine(p.occ(), occ)
+def _relative(p: Profile, grid: dict[str, float], ref: str) -> Fit | None:
+    cos = cosine(p.grid(), grid)
     if cos is None:
         return None
-    ok = cos >= TAU_COS and p.inside_share >= INSIDE_SHARE * inside
-    return Fit(ok, cos, p.inside_share, p.frames, ref)
+    return Fit(cos >= TAU_GRID, cos, p.frames, ref)
 
 
 def valid_ref(ref: Any) -> bool:
-    """Whether ``ref`` is a usable ``discovery.fit_ref``."""
-    return (
-        isinstance(ref, dict)
-        and isinstance(ref.get("inside"), int | float)
-        and isinstance(ref.get("occ"), dict)
-        and all(isinstance(v, int | float) for v in ref["occ"].values())
+    """Whether ``ref`` is a usable ``discovery.fit_ref``: a grid of this signal (not the
+    per-region ``occ`` of an earlier version, nor one of other cells), each value a share
+    from 0 to 1 (NaN is not)."""
+    if not isinstance(ref, dict) or ref.get("cells") != [GRID_W, GRID_H]:
+        return False
+    grid = ref.get("grid")
+    return isinstance(grid, dict) and all(
+        _valid_cell(k) and isinstance(v, int | float) and not isinstance(v, bool) and 0 <= v <= 1
+        for k, v in grid.items()
     )
 
 
-def against_ref(p: Profile, ref: dict[str, Any] | None) -> Fit | None:
-    """Fit of a source's profile (over a preset's regions) to the preset's ``fit_ref``,
-    or, without a usable one (also one naming a region the preset no longer has), to the
-    absolute rule. None: too little evidence."""
+def _valid_cell(key: Any) -> bool:
+    """Whether ``key`` names a cell of the grid (``"x,y"``)."""
+    m = re.fullmatch(r"([0-9]+),([0-9]+)", key) if isinstance(key, str) else None
+    return m is not None and int(m[1]) < GRID_W and int(m[2]) < GRID_H
+
+
+def against_ref(p: Profile, ref: Any) -> Fit | None:
+    """Fit of a source's profile to a preset's ``fit_ref``. None: too little evidence, or
+    no grid ``fit_ref`` (missing, or of an earlier version) to compare with."""
+    if not p.enough() or not valid_ref(ref):
+        return None
+    return _relative(p, {k: float(v) for k, v in ref["grid"].items()}, "preset")
+
+
+def against_run(p: Profile, other: Profile) -> Fit | None:
+    """Fit of a source's profile to another profile of this run (``ref`` ``run``). None:
+    too little evidence in ``p``."""
     if not p.enough():
         return None
-    names = {name for name, _ in p.seen}
-    # a fit_ref of regions the preset no longer has (renamed or replaced by hand) says nothing
-    if valid_ref(ref) and set(map(str, ref["occ"])) <= names:
-        assert ref is not None
-        occ = {str(k): float(v) for k, v in ref["occ"].items()}
-        return _relative(p, occ, float(ref["inside"]), "preset")
-    ok = p.inside_share >= TAU_ABS and p.feed_hits >= 1
-    return Fit(ok, p.inside_share, p.inside_share, p.frames, "absolute")
+    return _relative(p, other.grid(), "run")
 
 
 def split_group(
@@ -229,7 +222,7 @@ def split_group(
 
     The leader is the source with the most gameplay frames (enough evidence needed); the
     group profile starts as the leader plus the ``fixed`` sources (decided before, never
-    tested). The others, longest first, join when they fit the group profile, which then
+    tested). The others, longest first, join when their grid fits the group's, which then
     pools them too.
 
     Returns:
@@ -247,11 +240,11 @@ def split_group(
         if k != leader and k in profiles:
             group += profiles[k]
     if leader not in fixed:
-        out[leader] = _relative(profiles[leader], group.occ(), group.inside_share, "run")
+        out[leader] = against_run(profiles[leader], group)
     for k in order:
         if k == leader or k in fixed or not profiles[k].enough():
             continue
-        fit = _relative(profiles[k], group.occ(), group.inside_share, "run")
+        fit = against_run(profiles[k], group)
         out[k] = fit
         if fit is not None and fit.ok:
             group += profiles[k]
@@ -278,6 +271,7 @@ __all__ = [
     "Fit",
     "Profile",
     "against_ref",
+    "against_run",
     "cosine",
     "edge_boxes",
     "profile",

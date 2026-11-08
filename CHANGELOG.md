@@ -907,9 +907,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its own: pass `--game vods` to keep using it. Videos named by a date only (OBS), or by a
   generic recorder name and a date (`Replay <date>.mkv`, `Desktop <date>.DVR.mp4`), in one such
   folder share one key. A HUD fit check then tells games in one folder apart: a source whose HUD
-  text does not land in the regions of its guessed key's preset gets a key and a discovery of its
-  own (INFO line `<file> does not fit the HUD preset '<key>' ...`), and a preset discovered from
-  several sources is made from those that fit. The decisions are kept in
+  text lands in other places on screen (a grid of 16 x 12 cells) than in the footage of its
+  guessed key's preset gets a key and a discovery of its own (INFO line
+  `<file> does not fit the HUD preset '<key>' ...`), and a preset discovered from several sources
+  is made from those that fit. A preset from an older version splits nothing until it has the grid:
+  to give an older preset the fit check, run `cutpoint events <project> --discover-regions` (or
+  `edit` with `--discover-regions`) on a folder where that game is the majority, which checks the
+  sources against each other as in a new discovery and adds only `discovery.fit_ref`, made from
+  those that fit, to the preset (regions unchanged, INFO line `Added the HUD fit check to the
+  preset '<key>' ...`). Over a preset that has the grid, `--discover-regions` checks the sources
+  against it and makes the grid again from those that fit. The decisions are kept in
   `<project>/discovery/game_keys.json`; `--game` and preset `match` hints skip the check,
   `--discover-regions` runs it again (#822).
 - An explicit `--ollama-url` and/or `--ollama-model` on `analyze` and `edit` now wins over the AI

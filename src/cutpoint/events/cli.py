@@ -137,7 +137,8 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         default=None,
         help="run HUD region discovery even if the game has a "
         "preset (writes <project>/discovery/<game>/proposal.json + overlay.jpg; "
-        "an existing preset is kept). Default: only for games without one",
+        "an existing preset keeps its regions and only gets the HUD fit check, "
+        "discovery.fit_ref). Default: only for games without one",
     )
     d.add_argument(
         "--no-discover",

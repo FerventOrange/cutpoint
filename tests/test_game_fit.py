@@ -1,11 +1,13 @@
-"""The HUD fit check (#822): text boxes that land in a preset's regions fit, boxes in
-another corner do not, too little text decides nothing, a merged two-game discovery splits,
-and the key of a source that does not fit (invented boxes, regions and paths)."""
+"""The HUD fit check (#822): edge text in the same screen cells fits, text in another
+corner does not, too little text or no grid reference decides nothing, a merged two-game
+discovery splits, and the key of a source that does not fit (invented boxes and paths)."""
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,12 @@ from cutpoint.events.regions import Region, misfit_key
 MIN_SCORE = 0.5
 TOP_LEFT = Region("feed", 0, 0, 400, 200, "feed")
 BOTTOM_RIGHT = Region("corner", 1600, 900, 320, 180, "notice")
+# box centres per layout: top-left cells 0,0 1,0 1,1; bottom-right cells 14,10 15,11
+AT = {
+    "a": [(60, 40), (120, 80), (200, 150)],
+    "b": [(1700, 960), (1800, 1000), (1880, 1050)],
+    "c": [(60, 40)],  # one box a frame: too little text to tell
+}
 
 
 def _box(cx: int, cy: int, text: str = "ab12", score: float = 0.9) -> dict:
@@ -25,8 +33,7 @@ def _box(cx: int, cy: int, text: str = "ab12", score: float = 0.9) -> dict:
 
 def _frames(corner: str, n: int = 8, per: int = 3) -> list[dict]:
     """``n`` frames with ``per`` boxes in the top-left (``"a"``) or bottom-right (``"b"``)."""
-    at = {"a": [(60, 40), (120, 80), (200, 150)], "b": [(1700, 960), (1800, 1000), (1880, 1050)]}
-    return [{"id": f"{corner}{i}", "boxes": [_box(*p) for p in at[corner][:per]]} for i in range(n)]
+    return [{"id": f"{corner}{i}", "boxes": [_box(*p) for p in AT[corner][:per]]} for i in range(n)]
 
 
 def test_edge_boxes_need_score_letters_and_an_edge_outside_the_big_text() -> None:
@@ -42,79 +49,102 @@ def test_edge_boxes_need_score_letters_and_an_edge_outside_the_big_text() -> Non
     assert game_fit.edge_boxes(frame, MIN_SCORE) == [_box(60, 40)]
 
 
-def test_text_in_the_same_regions_fits() -> None:
-    ref = profile(_frames("a", 10), [TOP_LEFT], MIN_SCORE).ref()
-    fit = against_ref(profile(_frames("a"), [TOP_LEFT], MIN_SCORE), ref)
+def test_the_grid_counts_each_cell_once_per_frame() -> None:
+    frames = [{"boxes": [_box(60, 40), _box(70, 50), _box(1880, 1050)]}, {"boxes": [_box(60, 40)]}]
+    p = profile(frames, MIN_SCORE)
+    assert p.frames == 2 and p.boxes == 4
+    assert p.grid() == {"0,0": 1.0, "15,11": 0.5}
+    assert p.ref() == {
+        "cells": [16, 12],
+        "grid": {"0,0": 1.0, "15,11": 0.5},
+        "frames": 2,
+        "boxes": 4,
+    }
+
+
+def test_text_in_the_same_cells_fits() -> None:
+    ref = profile(_frames("a", 10), MIN_SCORE).ref()
+    fit = against_ref(profile(_frames("a"), MIN_SCORE), ref)
     assert fit is not None and fit.ok
     assert fit.ref == "preset" and fit.score == pytest.approx(1.0)
-    assert fit.record() == {"score": 1.0, "inside": 1.0, "frames": 8, "ref": "preset"}
+    assert fit.record() == {"score": 1.0, "frames": 8, "ref": "preset"}
 
 
 def test_text_in_another_corner_does_not_fit() -> None:
-    ref = profile(_frames("a", 10), [TOP_LEFT], MIN_SCORE).ref()
-    fit = against_ref(profile(_frames("b"), [TOP_LEFT], MIN_SCORE), ref)
+    ref = profile(_frames("a", 10), MIN_SCORE).ref()
+    fit = against_ref(profile(_frames("b"), MIN_SCORE), ref)
+    assert fit is not None and not fit.ok and fit.score == 0.0
+
+
+def test_a_layout_sharing_one_cell_does_not_fit() -> None:
+    """One cell of three in common, the rest elsewhere: below the threshold."""
+    ref = profile(_frames("a", 10), MIN_SCORE).ref()
+    other = [(60, 40), (1700, 960), (1800, 1000), (1880, 500)]
+    frames = [{"boxes": [_box(*p) for p in other]} for _ in range(8)]
+    fit = against_ref(profile(frames, MIN_SCORE), ref)
     assert fit is not None and not fit.ok
-    assert fit.score == 0.0 and fit.inside == 0.0
+    assert fit.score == pytest.approx(1 / (3**0.5 * 4**0.5))
+    assert fit.score < game_fit.TAU_GRID
 
 
 @pytest.mark.parametrize("frames", [_frames("b", n=3), _frames("b", n=8, per=1)])
 def test_too_little_text_decides_nothing(frames: list[dict]) -> None:
     """Fewer than 4 gameplay frames, or fewer than 15 edge boxes."""
-    ref = profile(_frames("a", 10), [TOP_LEFT], MIN_SCORE).ref()
-    assert against_ref(profile(frames, [TOP_LEFT], MIN_SCORE), ref) is None
-    assert against_ref(profile(_frames("b"), [], MIN_SCORE), ref) is None  # no regions
+    ref = profile(_frames("a", 10), MIN_SCORE).ref()
+    assert against_ref(profile(frames, MIN_SCORE), ref) is None
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        None,  # a preset of an earlier version, or written by hand
+        {"inside": 1.0, "occ": {"feed": 1.0}},  # the per-region fit_ref of an earlier version
+        {"cells": [8, 6], "grid": {"0,0": 1.0}},  # another grid
+        {"cells": [16, 12], "grid": "bad"},
+        {"cells": [16, 12], "grid": {"0,0": "x"}},
+        {"cells": [16, 12], "grid": {}},  # all zero: nothing to compare with
+        "bad",
+        {"cells": [16, 12], "grid": {"0,0": float("nan")}},
+        {"cells": [16, 12], "grid": {"0,0": -0.5}},
+        {"cells": [16, 12], "grid": {"junk": 5}},
+        {"cells": [16, 12], "grid": {"0,0": 1.5}},
+        {"cells": [16, 12], "grid": {"16,0": 1.0}},  # outside the grid
+    ],
+)
+def test_a_preset_without_a_grid_fit_ref_decides_nothing(ref) -> None:
+    """No split until a discovery writes a grid fit_ref."""
+    assert against_ref(profile(_frames("b"), MIN_SCORE), ref) is None
 
 
 def test_a_merged_discovery_of_two_games_splits_greedily() -> None:
-    """One discovery over two games found regions of both; the source with the most frames
-    leads, the others join when they look like the group."""
-    regions = [TOP_LEFT, BOTTOM_RIGHT]
+    """One discovery over two games; the source with the most frames leads, the others
+    join when their grid looks like the group's."""
     profs = {
-        "a1": profile(_frames("a", 12), regions, MIN_SCORE),
-        "a2": profile(_frames("a", 8), regions, MIN_SCORE),
-        "b1": profile(_frames("b", 8), regions, MIN_SCORE),
-        "b2": profile(_frames("b", 2), regions, MIN_SCORE),  # too little to tell
+        "a1": profile(_frames("a", 12), MIN_SCORE),
+        "a2": profile(_frames("a", 8), MIN_SCORE),
+        "b1": profile(_frames("b", 8), MIN_SCORE),
+        "b2": profile(_frames("b", 2), MIN_SCORE),  # too little to tell
     }
     fits = split_group(profs, {"a1": 300.0, "a2": 600.0, "b1": 900.0, "b2": 60.0})
     assert fits["a1"] is not None and fits["a1"].ok and fits["a1"].ref == "run"
     assert fits["a2"] is not None and fits["a2"].ok
-    assert fits["b1"] is not None and not fits["b1"].ok
+    assert fits["b1"] is not None and not fits["b1"].ok and fits["b1"].score == 0.0
     assert fits["b2"] is None
 
 
 def test_a_group_without_enough_evidence_keeps_every_guess() -> None:
-    profs = {k: profile(_frames("a", 2), [TOP_LEFT], MIN_SCORE) for k in ("x", "y")}
+    profs = {k: profile(_frames("a", 2), MIN_SCORE) for k in ("x", "y")}
     assert split_group(profs, {}) == {"x": None, "y": None}
 
 
 def test_fixed_sources_join_the_group_untested() -> None:
-    regions = [TOP_LEFT, BOTTOM_RIGHT]
     profs = {
-        "b0": profile(_frames("b", 20), regions, MIN_SCORE),  # decided before: leads, stays
-        "a1": profile(_frames("a", 8), regions, MIN_SCORE),
+        "b0": profile(_frames("b", 20), MIN_SCORE),  # decided before: leads, stays
+        "a1": profile(_frames("a", 8), MIN_SCORE),
     }
     fits = split_group(profs, {}, frozenset({"b0"}))
     assert set(fits) == {"a1"}
     assert fits["a1"] is not None and not fits["a1"].ok
-
-
-def test_a_preset_without_fit_ref_uses_the_absolute_rule() -> None:
-    fit = against_ref(profile(_frames("a"), [TOP_LEFT], MIN_SCORE), None)
-    assert fit is not None and fit.ok and fit.ref == "absolute"
-    fit = against_ref(profile(_frames("b"), [TOP_LEFT], MIN_SCORE), {"occ": "bad"})
-    assert fit is not None and not fit.ok and fit.ref == "absolute"
-    # all text inside, but only in a banner region: no feed or notice hit
-    banner = Region("banner", 0, 0, 400, 200, "banner")
-    fit = against_ref(profile(_frames("a"), [banner], MIN_SCORE), None)
-    assert fit is not None and not fit.ok
-
-
-def test_a_fit_ref_needs_the_inside_share_too() -> None:
-    """Same regions hit, but most of the text lands outside them: no fit."""
-    ref = profile(_frames("a", 10), [TOP_LEFT], MIN_SCORE).ref()
-    frames = [{"boxes": [_box(60, 40)] + [_box(1800, 1000)] * 4} for _ in range(8)]  # 1 of 5 inside
-    fit = against_ref(profile(frames, [TOP_LEFT], MIN_SCORE), ref)
-    assert fit is not None and fit.score == pytest.approx(1.0) and not fit.ok
 
 
 def _digest(path: str) -> str:
@@ -144,11 +174,10 @@ def test_a_misfit_whose_name_is_taken_gets_the_folder_key_and_a_hash() -> None:
 
 
 def test_profiles_pool() -> None:
-    a = Profile(4, 10, 5, 1, (("feed", 2),))
-    b = Profile(6, 20, 15, 2, (("feed", 3),))
-    assert a + b == Profile(10, 30, 20, 3, (("feed", 5),))
-    assert (a + b).inside_share == pytest.approx(2 / 3)
-    assert (a + b).occ() == {"feed": 0.5}
+    a = Profile(4, 10, (("0,0", 2),))
+    b = Profile(6, 20, (("0,0", 3), ("15,11", 6)))
+    assert a + b == Profile(10, 30, (("0,0", 5), ("15,11", 6)))
+    assert (a + b).grid() == {"0,0": 0.5, "15,11": 0.6}
 
 
 # --------------------------------------------------------------------------- pipeline
@@ -164,6 +193,7 @@ class _Fake:
         self.runs: list[tuple[str, list[str], bool]] = []  # (game, file names, re-cluster)
         self.sampled: list[str] = []
         self.fail: set[tuple[str, bool]] = set()  # (game, re-cluster) runs that are interrupted
+        self.ref: object = None  # when set, the fit_ref every discovery proposes
 
     def records(self, src, n: int) -> list[dict]:
         from cutpoint.events import discover  # noqa: PLC0415
@@ -198,7 +228,7 @@ class _Fake:
             "regions": [asdict(r) for r in regs],
             "discovery": {
                 "frames": [r["id"] for r in recs],
-                "fit_ref": profile(recs, regs, MIN_SCORE).ref(),
+                "fit_ref": self.ref if self.ref is not None else profile(recs, MIN_SCORE).ref(),
             },
         }
 
@@ -268,8 +298,8 @@ def test_two_games_in_one_folder_get_two_presets(folder, caplog) -> None:
     entries = regions.load_game_keys(folder.project)
     beta = entries[regions.source_id(srcs[2].path)]
     assert beta["guess"] == "neon-drift" and beta["tag"] == regions.source_tag(srcs[2].path)
-    # all its text is in the merged preset's regions, but not in those the folder's game uses
-    assert beta["fit"] == {"score": 0.0, "inside": 1.0, "frames": 8, "ref": "run"}
+    # its text lands in cells the folder's game never uses
+    assert beta["fit"] == {"score": 0.0, "frames": 8, "ref": "run"}
     # the folder's preset was made again from the sources that fit: no region of the other game
     names = [r.name for r in regions.load_preset("neon-drift").regions]
     assert names == ["feed"]
@@ -448,10 +478,33 @@ def test_a_lost_decision_finds_the_preset_made_from_its_source(folder, caplog) -
     ) in caplog.messages
 
 
-def test_a_fit_ref_of_regions_the_preset_no_longer_has_uses_the_absolute_rule() -> None:
-    ref = {"inside": 1.0, "occ": {"renamed": 1.0}}
-    fit = against_ref(profile(_frames("a"), [TOP_LEFT], MIN_SCORE), ref)
-    assert fit is not None and fit.ok and fit.ref == "absolute"
+def test_a_preset_with_an_old_fit_ref_splits_nothing(folder, caplog) -> None:
+    """A preset of an earlier version (per-region fit_ref, or none) decides nothing: every
+    source keeps the guess, without a misfit discovery."""
+    from cutpoint import paths  # noqa: PLC0415
+    from cutpoint.events import regions  # noqa: PLC0415
+
+    srcs = folder.sources({"alpha one.mp4": "a", "beta one.mp4": "b"})
+    for ref in ({"inside": 1.0, "occ": {"feed": 1.0}}, None):
+        target = paths.presets_dir() / "neon-drift.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        disc = {"fit_ref": ref} if ref is not None else {}
+        target.write_text(
+            json.dumps({"game": "neon-drift", "regions": [asdict(TOP_LEFT)], "discovery": disc}),
+            encoding="utf-8",
+        )
+        regions.game_keys_path(folder.project).unlink(missing_ok=True)
+        folder.fake.runs.clear()
+        with caplog.at_level("INFO"):
+            folder.run(srcs)
+        assert folder.fake.runs == []
+        assert _keys(folder.project) == {
+            "alpha one.mp4": "neon-drift",
+            "beta one.mp4": "neon-drift",
+        }
+        assert not [m for m in caplog.messages if "does not fit" in m]
+        entries = regions.load_game_keys(folder.project)
+        assert all(e["fit"] is None for e in entries.values())
 
 
 def test_discover_regions_clusters_only_the_kept_sources_and_writes_fit_ref(
@@ -506,8 +559,10 @@ def test_discover_regions_clusters_only_the_kept_sources_and_writes_fit_ref(
     frames = got["discovery"]["frames"]
     assert frames and all(f.startswith("a.mp4~0000aaaa@") for f in frames)
     ref = got["discovery"]["fit_ref"]
-    assert set(ref) == {"inside", "occ"}
-    assert got["regions"] and set(ref["occ"]) == {r["name"] for r in got["regions"]}
+    assert ref["cells"] == [16, 12] and ref["frames"] == len(frames)
+    # the stack at the top right and the label at the bottom left, in every frame
+    assert ref["grid"] == {"14,0": 1.0, "14,1": 1.0, "0,11": 1.0}
+    assert ref["boxes"] == 4 * len(frames)
 
 
 def test_a_stale_decision_keeps_its_key_while_another_source_holds_it(folder) -> None:
@@ -528,3 +583,183 @@ def test_a_stale_decision_keeps_its_key_while_another_source_holds_it(folder) ->
     assert folder.fake.runs == []
     assert folder.fake.sampled == ["beta one.mp4"]
     assert _keys(folder.project)["beta one.mp4"] == "beta-one"
+
+
+def _old_preset(discovery: dict | None) -> tuple[Path, bytes]:
+    """A preset ``neon-drift`` of an earlier version: its file and bytes."""
+    from cutpoint import cache, paths  # noqa: PLC0415
+
+    data = {"game": "neon-drift", "regions": [asdict(TOP_LEFT)], "banner_phrases": ["ACE"]}
+    if discovery is not None:
+        data["discovery"] = discovery
+    target = paths.presets_dir() / "neon-drift.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    cache.save_json(target, data)
+    return target, target.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "discovery",
+    [
+        None,
+        {"elapsed_s": 12.5},
+        {"elapsed_s": 12.5, "fit_ref": {"inside": 1.0, "occ": {"feed": 1}}},
+    ],
+)
+def test_a_forced_discovery_gives_an_old_preset_the_fit_ref_only(folder, caplog, discovery) -> None:
+    """``--discover-regions`` over a preset without a grid fit_ref adds (or replaces) only
+    ``discovery.fit_ref``: regions and every other key stay."""
+    srcs = folder.sources({"alpha one.mp4": "a", "alpha two.mp4": "a"})
+    target, before = _old_preset(discovery)
+    old = json.loads(before)
+    with caplog.at_level("INFO"):
+        folder.run(srcs, force=True)
+    got = json.loads(target.read_text(encoding="utf-8"))
+    ref = got["discovery"].pop("fit_ref")
+    assert ref["cells"] == [16, 12] and set(ref["grid"]) == {"0,0", "1,0", "1,1"}
+    old.setdefault("discovery", {}).pop("fit_ref", None)
+    assert got == old
+    assert list(got) == list(old)  # key order kept
+    assert (
+        f"Added the HUD fit check to the preset 'neon-drift' (its regions are unchanged): {target}"
+    ) in caplog.messages
+    assert _keys(folder.project) == {"alpha one.mp4": "neon-drift", "alpha two.mp4": "neon-drift"}
+
+
+def test_a_forced_discovery_with_too_little_text_leaves_the_preset(folder, caplog) -> None:
+    srcs = folder.sources({"alpha one.mp4": "c", "alpha two.mp4": "c"})
+    target, before = _old_preset({"elapsed_s": 12.5})
+    with caplog.at_level("INFO"):
+        folder.run(srcs, force=True)
+    assert target.read_bytes() == before
+    assert not [m for m in caplog.messages if "Added the HUD fit check" in m]
+
+
+@pytest.mark.parametrize(
+    ("ref", "written"),
+    [
+        (None, True),  # the fake's own: every source's frames
+        ({"cells": [16, 12], "grid": {"0,0": 1.0}, "frames": 2, "boxes": 6}, False),
+        ({"cells": [16, 12], "grid": {"0,0": 1.0}, "frames": 8, "boxes": 8}, False),
+        ({"cells": [16, 12], "grid": {}, "frames": 8, "boxes": 0}, False),
+        ({"inside": 1.0, "occ": {"feed": 1.0}}, False),  # not a grid
+    ],
+)
+def test_a_forced_discovery_of_a_named_game_writes_the_discovery_ref(folder, ref, written) -> None:
+    """With ``--game`` nothing is checked: every source is the game, discovery's fit_ref of
+    them all is written when it is usable."""
+    from cutpoint.events import pipeline  # noqa: PLC0415
+    from cutpoint.events.killfeed import OcrParams  # noqa: PLC0415
+
+    srcs = folder.sources({"alpha one.mp4": "a", "alpha two.mp4": "a"})
+    folder.fake.ref = ref
+    target, before = _old_preset({"elapsed_s": 12.5})
+    pipeline._discover(folder.project, srcs, OcrParams(game="neon-drift"), True, 4, "user")
+    if written:
+        got = json.loads(target.read_text(encoding="utf-8"))
+        assert set(got["discovery"]["fit_ref"]["grid"]) == {"0,0", "1,0", "1,1"}
+    else:
+        assert target.read_bytes() == before
+
+
+def test_a_forced_discovery_over_a_preset_splits_like_a_new_one(folder, caplog) -> None:
+    """Two games in the folder, an older preset: the sources are checked against each other,
+    the preset gets the grid of the leader's group only, the other game is split off."""
+    srcs = folder.sources({"alpha one.mp4": "a", "alpha two.mp4": "a", "beta one.mp4": "b"})
+    target, before = _old_preset({"elapsed_s": 12.5})
+    with caplog.at_level("INFO"):
+        folder.run(srcs, force=True)
+    got = json.loads(target.read_text(encoding="utf-8"))
+    leader_group = profile(_frames("a", 12) + _frames("a", 8), MIN_SCORE).ref()
+    assert got["discovery"].pop("fit_ref") == leader_group
+    assert got == json.loads(before)  # regions and every other key as they were
+    assert (
+        "beta one.mp4 does not fit the HUD preset 'neon-drift' (score 0.00); "
+        "discovering it as 'beta-one'"
+    ) in caplog.messages
+    assert [g for g, _, _ in folder.fake.runs] == ["neon-drift", "beta-one"]
+    assert _keys(folder.project) == {
+        "alpha one.mp4": "neon-drift",
+        "alpha two.mp4": "neon-drift",
+        "beta one.mp4": "beta-one",
+    }
+
+
+def test_a_forced_discovery_anchors_on_the_presets_grid(folder, caplog) -> None:
+    """The preset's game is the minority of the folder: its grid fit_ref decides, so its own
+    source stays and the new grid is made from it; the other game is split off."""
+    srcs = folder.sources({"beta one.mp4": "b", "beta two.mp4": "b", "alpha one.mp4": "a"})
+    target, before = _old_preset(
+        {"elapsed_s": 12.5, "fit_ref": profile(_frames("a", 10), MIN_SCORE).ref()}
+    )
+    with caplog.at_level("INFO"):
+        folder.run(srcs, force=True)
+    got = json.loads(target.read_text(encoding="utf-8"))
+    # alpha one's 8 discovery frames (the third source), not the folder's majority
+    assert got["discovery"].pop("fit_ref") == profile(_frames("a", 8), MIN_SCORE).ref()
+    old = json.loads(before)
+    old["discovery"].pop("fit_ref")
+    assert got == old
+    assert _keys(folder.project) == {
+        "alpha one.mp4": "neon-drift",
+        "beta one.mp4": "beta-one",
+        "beta two.mp4": "beta-one",
+    }
+    assert "beta two.mp4 fits the HUD preset 'beta-one' discovered for beta one.mp4" in (
+        caplog.messages
+    )
+
+
+def test_a_forced_discovery_where_no_source_fits_keeps_the_presets_grid(folder, caplog) -> None:
+    srcs = folder.sources({"beta one.mp4": "b", "beta two.mp4": "b"})
+    target, before = _old_preset(
+        {"elapsed_s": 12.5, "fit_ref": profile(_frames("a", 10), MIN_SCORE).ref()}
+    )
+    with caplog.at_level("INFO"):
+        folder.run(srcs, force=True)
+    assert target.read_bytes() == before
+    assert not [m for m in caplog.messages if "Added the HUD fit check" in m]
+    assert _keys(folder.project) == {"beta one.mp4": "beta-one", "beta two.mp4": "beta-one"}
+
+
+def test_a_preset_that_cannot_be_written_does_not_stop_the_run(folder, caplog, monkeypatch) -> None:
+    from cutpoint import cache  # noqa: PLC0415
+
+    srcs = folder.sources({"alpha one.mp4": "a", "alpha two.mp4": "a"})
+    target, before = _old_preset(None)
+    save = cache.save_json
+
+    def locked(path, data, **kw):
+        if Path(path) == target:
+            raise PermissionError(13, "Permission denied", str(path))
+        save(path, data, **kw)
+
+    monkeypatch.setattr(cache, "save_json", locked)
+    with caplog.at_level("INFO"):
+        folder.run(srcs, force=True)
+    assert target.read_bytes() == before
+    warned = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "Could not add the HUD fit check" in r.message and str(target) in r.message for r in warned
+    )
+    assert _keys(folder.project) == {"alpha one.mp4": "neon-drift", "alpha two.mp4": "neon-drift"}
+
+
+def test_a_bundled_preset_is_not_written(folder, monkeypatch) -> None:
+    from cutpoint import paths  # noqa: PLC0415
+
+    srcs = folder.sources({"alpha one.mp4": "a", "alpha two.mp4": "a"})
+    target, before = _old_preset(None)
+    monkeypatch.setattr(paths, "PRESETS_DIR", target.parent)  # as if it shipped with the package
+    folder.run(srcs, force=True)
+    assert target.read_bytes() == before
+
+
+def test_a_run_without_force_leaves_an_old_preset(folder, caplog) -> None:
+    srcs = folder.sources({"alpha one.mp4": "a", "beta one.mp4": "b"})
+    target, before = _old_preset(None)
+    with caplog.at_level("INFO"):
+        folder.run(srcs)
+    assert folder.fake.runs == []
+    assert target.read_bytes() == before
+    assert not [m for m in caplog.messages if "Added the HUD fit check" in m]
