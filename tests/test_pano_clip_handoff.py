@@ -203,7 +203,9 @@ def events(tmp_path: Path, monkeypatch):
         rec.handoff.append(handoff)
         return {}
 
-    def detect(project, force=False, encoder=None, warn_unreachable=True, llm=True, batch_size=0):
+    def detect(
+        project, force=False, encoder=None, warn_unreachable=True, llm=True, batch_size=0, **kw
+    ):
         rec.encoder.append(encoder)
         if rec.fail:
             raise RuntimeError("crash failed")
