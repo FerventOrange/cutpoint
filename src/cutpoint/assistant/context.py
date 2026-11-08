@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from cutpoint.config import source_path
+from cutpoint.events.scoring import LAUGH_STRONG
 
 CHARS_PER_TOKEN = 2.5  # of JSON, data blocks and tool results (2.0-2.4); prose has about 4
 LOCAL_TOKENS = 8192  # a small context: 40 moments, 4 turns, fewer images; more scales up
@@ -116,6 +117,7 @@ TAG_CUES = (
 )
 CUES = (*SIGNAL_CUES, "vision", "funny", *TAG_CUES)
 HEARD = ("laughter", "scream")  # signals.events: the strongest detected sound of each, 0-1
+# (laughter counts as heard from LAUGH_STRONG up, see LAUGH_STRONG; a scream from above 0)
 # What a cue name does not say itself, for the rules.
 CUE_HELP = {
     "vision": "the vision model's rating",
@@ -313,7 +315,11 @@ def _look(cand: dict[str, Any], windows: list[dict[str, Any]]) -> Look:
     rounded = [(k, min(10, round(v))) for k, v in cues.items()]
     ordered = dict(sorted(((k, v) for k, v in rounded if v > 0), key=lambda x: -x[1]))
     events = sig.get("events") if isinstance(sig.get("events"), dict) else {}
-    heard = [k for k in HEARD if (_num(events.get(k)) or 0) > 0]
+    heard = [
+        k
+        for k in HEARD
+        if (_num(events.get(k)) or 0) >= (LAUGH_STRONG if k == "laughter" else 1e-9)
+    ]
     label = shown_label(cand.get("label"), cand, best["label"] if best else "")
     vision = _text(cand.get("vision_label"), 60)
     seen = [vision] if vision and vision != label else []

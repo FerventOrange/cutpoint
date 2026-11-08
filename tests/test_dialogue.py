@@ -597,6 +597,14 @@ def test_a_source_without_speech_skips_the_step(monkeypatch):
     assert net.calls == []
 
 
+def test_a_source_with_only_marker_holders_skips_the_step(monkeypatch):
+    net = Net(monkeypatch)
+    holder = {"start": 0, "end": 1, "text": "", "words": [], "markers": [{"text": "[Music]"}]}
+    backend, steps = _skips("gaming", {"a.mp4": [holder]})
+    assert backend is None and steps.reasons["dialogue"] == "no speech to read"
+    assert net.calls == []
+
+
 def test_a_gaming_run_picks_its_backend_once(monkeypatch):
     Net(monkeypatch, ollama=True)
     backend, steps = _skips("gaming", {"a.mp4": [{"start": 0, "end": 1, "text": "hi"}]})

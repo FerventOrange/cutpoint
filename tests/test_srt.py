@@ -90,6 +90,25 @@ def test_final_cues_with_a_join_list_follow_each_join(tmp_path):
     assert assemble.clip_offsets(infos, [0.0, 0.0]) == pytest.approx([0.0, 4.1, 7.4])
 
 
+def test_a_laughter_only_transcript_part_makes_no_subtitle_cue(tmp_path, home):
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    cache.save_json(
+        cache.source_dir(video) / "transcript-small.json",
+        [
+            {
+                "start": 1.0, "end": 3.0, "text": "[Laughter]",
+                "words": [{"word": "[Laughter]", "start": 1.0, "end": 3.0}],
+            }
+        ],
+    )  # fmt: skip
+
+    words = sources.source_words(video)
+
+    assert words == []
+    assert srt.clip_cues(words or [], 0.0, 5.0) == []
+
+
 def test_missing_transcript_writes_no_srt_and_says_so_once(tmp_path, monkeypatch, caplog):
     clips_dir = tmp_path / "clips"
     clips_dir.mkdir()

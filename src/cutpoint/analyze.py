@@ -79,8 +79,10 @@ from cutpoint.transcribe import (
     Transcriber,
     cached_transcript,
     filter_hallucinations,
+    flat_markers,
     flat_words,
     record_transcript,
+    split_markers,
     transcript_name,
 )
 from cutpoint.utils import clock, find_videos, matches_glob, slugify
@@ -209,9 +211,10 @@ def _norm_token(word: str) -> str:
 
 
 def keyword_hits(
-    words: list[dict[str, Any]], patterns: dict[str, float]
+    words: list[dict[str, Any]], patterns: dict[str, float], *, once: bool = False
 ) -> list[tuple[float, float, str]]:
-    """Find (time, weight, phrase) matches; ``*`` suffix = prefix match."""
+    """Find (time, weight, phrase) matches; ``*`` suffix = prefix match. ``once``: a word that
+    several patterns match (``haha`` for ``haha*`` and ``hah*``) counts once, for the strongest."""
     compiled: dict[tuple[str, ...], tuple[float, str]] = {}
     for phrase, weight in patterns.items():
         parts = tuple(_norm_token(p) for p in phrase.split())
@@ -219,6 +222,7 @@ def keyword_hits(
     toks = [_norm_token(w["word"]) for w in words]
     hits = []
     for i in range(len(toks)):
+        found = []
         for parts, (weight, phrase) in compiled.items():
             if i + len(parts) > len(toks):
                 continue
@@ -226,7 +230,8 @@ def keyword_hits(
                 toks[i + j].startswith(p[:-1]) if p.endswith("*") else toks[i + j] == p
                 for j, p in enumerate(parts)
             ):
-                hits.append((float(words[i]["start"]), weight, phrase))
+                found.append((float(words[i]["start"]), weight, phrase))
+        hits += [max(found, key=lambda h: h[1])] if once and found else found
     return hits
 
 
@@ -241,12 +246,16 @@ _LAUGH_MARKER = re.compile(
 )
 
 
-def laughter_hits(words: list[dict[str, Any]]) -> list[tuple[float, float, str]]:
+def laughter_hits(
+    words: list[dict[str, Any]], markers: list[dict[str, Any]] | None = None
+) -> list[tuple[float, float, str]]:
     """Find the (time, weight, phrase) laughter hits of the transcript ``words``: the
     interjections of :data:`~cutpoint.styles.LAUGHTER` (haha, lol) and Whisper's non-speech
     markers for laughing (``[laughter]``, ``(laughs)``, ``*laughing*``; weight 1, the phrase is
-    the text inside the brackets). The spoken word "laughter" or "laugh" is not a hit."""
-    hits = keyword_hits(words, LAUGHTER)
+    the text inside the brackets), found among the ``words`` and in ``markers``
+    (:func:`~cutpoint.transcribe.flat_markers`: the markers taken out of the words). The spoken
+    word "laughter" or "laugh" is not a hit."""
+    hits = keyword_hits(words, LAUGHTER, once=True)
     text, at = "", []  # the words joined by spaces, and the word each character belongs to
     for i, w in enumerate(words):
         piece = str(w["word"]).strip()
@@ -255,6 +264,9 @@ def laughter_hits(words: list[dict[str, Any]]) -> list[tuple[float, float, str]]
     for m in _LAUGH_MARKER.finditer(text):
         phrase = m.group(0)[1:-1].strip().lower()
         hits.append((float(words[at[m.start()]]["start"]), 1.0, phrase))
+    for mark in markers or []:
+        if m := _LAUGH_MARKER.search(str(mark["text"])):
+            hits.append((float(mark["start"]), 1.0, m.group(0)[1:-1].strip().lower()))
     return sorted(hits, key=lambda h: h[0])
 
 
@@ -750,6 +762,7 @@ def sentence_bounds(segments: list[Segment], gap: float = 0.7) -> tuple[list[flo
     """Sentence start/end times: segment edges at terminal punctuation or pauses."""
     starts: list[float] = []
     ends: list[float] = []
+    segments = [s for s in segments if s.get("text")]  # not a marker holder
     for i, seg in enumerate(segments):
         prev = segments[i - 1] if i else None
         nxt = segments[i + 1] if i + 1 < len(segments) else None
@@ -762,7 +775,7 @@ def sentence_bounds(segments: list[Segment], gap: float = 0.7) -> tuple[list[flo
 
 
 def _in_speech(t: float, segments: list[Segment]) -> bool:
-    return any(s["start"] - 0.3 <= t <= s["end"] + 0.3 for s in segments)
+    return any(s["start"] - 0.3 <= t <= s["end"] + 0.3 for s in segments if s.get("text"))
 
 
 def _gap_before(t: float, words: list[dict[str, Any]]) -> float:
@@ -870,6 +883,8 @@ def transcript_text(name: str, segments: list[Segment], pause: float = 0.6) -> l
             cur.clear()
 
     for seg in segments:
+        if not seg.get("text"):  # a marker holder
+            continue
         words = seg.get("words") or [
             {"start": seg["start"], "end": seg["end"], "word": seg["text"]}
         ]
@@ -930,7 +945,7 @@ def text_signals(ps: PartSignals, style: Style, name: str) -> None:
     styles with ``profanity_alone`` False). ``name``: the source's, for the log."""
     n, sig, words = ps.n, ps.sig, ps.words
     kw_hits = keyword_hits(words, style.keywords)
-    laugh_hits = laughter_hits(words)
+    laugh_hits = laughter_hits(words, flat_markers(ps.segments))
     if not style.profanity_alone:
         n_before = len(kw_hits)
         n_profane = sum(1 for *_, p in kw_hits if p in PROFANE)
@@ -1130,7 +1145,12 @@ def _shift_segments(segments: list[Segment], dt: float) -> list[Segment]:
         words = [
             {**w, "start": w["start"] + dt, "end": w["end"] + dt} for w in seg.get("words", [])
         ]
-        out.append({**seg, "start": seg["start"] + dt, "end": seg["end"] + dt, "words": words})
+        shifted = {**seg, "start": seg["start"] + dt, "end": seg["end"] + dt, "words": words}
+        if seg.get("markers"):
+            shifted["markers"] = [
+                {**m, "start": m["start"] + dt, "end": m["end"] + dt} for m in seg["markers"]
+            ]
+        out.append(shifted)
     return out
 
 
@@ -1245,6 +1265,7 @@ def analyze_source(
                 overlap.stop()
             raise
         segments, dropped = filter_hallucinations(segments)
+        segments = split_markers(segments)  # non-speech markers: only the laughter hits see them
         if dropped:
             logger.info("%s: dropped %d likely-hallucinated transcript segments", src.name, dropped)
         stages["cached"] = not made
@@ -2042,7 +2063,7 @@ def _dialogue_backend(
     if not style.open_list:
         steps.skip("dialogue", f"for open-list styles only, not the {style.name} style")
         return None
-    if not any(segments for segments in transcripts.values()):
+    if not any(s.get("text") for segs in transcripts.values() for s in segs):
         steps.skip("dialogue", "no speech to read")
         return None
     choice = dialogue.choose_backend(ollama_url, ollama_model)

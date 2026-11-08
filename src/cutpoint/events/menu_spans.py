@@ -81,6 +81,7 @@ def _retranscribe(c: dict[str, Any], segments: list[dict[str, Any]] | None, styl
         keyword_hits,
         laughter_hits,
     )
+    from cutpoint.transcribe import flat_markers  # noqa: PLC0415
 
     said = [w for s in segments for w in s.get("words", []) if c["start"] <= w["start"] <= c["end"]]
     c["transcript"], unsure = _transcript_snippet(said)
@@ -91,7 +92,8 @@ def _retranscribe(c: dict[str, Any], segments: list[dict[str, Any]] | None, styl
     if not signals.get("keywords"):
         return
     st = get_style(style)
-    hits = sorted(keyword_hits(said, st.keywords) + laughter_hits(said), key=lambda h: -h[1])
+    marks = [m for m in flat_markers(segments) if c["start"] <= m["start"] <= c["end"]]
+    hits = sorted(keyword_hits(said, st.keywords) + laughter_hits(said, marks), key=lambda h: -h[1])
     still = {p for *_, p in hits}
     dropped = [k for k in signals["keywords"] if k not in still]
     if not dropped:

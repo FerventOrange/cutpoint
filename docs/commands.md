@@ -780,7 +780,7 @@ for …") and can be stopped with Cancel. The chat needs an analyzed project.
 The model reads the moments as text: label (a generic one replaced by what the vision model saw,
 as in the Moments list), score, times, transcript snippet and, when analysis has them, `kind`,
 `seen` (the vision rating label and the description of the `events` VLM window over the moment),
-`heard` (laughter or screams detected) and `cues`: visual, telemetry and vision-tag strengths on
+`heard` (laughter, from `signals.events.laughter` of 0.12 or more, or screams detected) and `cues`: visual, telemetry and vision-tag strengths on
 one 0-10 scale (`beauty`, `people`, `group`, `speed`, `carve`, `airtime`, `crash`, `wipeout`,
 `stopped`, the action-cam tags such as `chairlift` or `scenic_vista`, and more; the strongest six
 per moment in the list, all of them in `get_moment`). Its `find_moments` tool searches labels,
@@ -1008,7 +1008,9 @@ transcript, laughter, scene-cut density and speech continuity. The `laughter` si
 laughter written in the transcript: Whisper's non-speech markers (`[laughter]`, `(laughs)`,
 `*laughing*`, in brackets, parentheses or asterisks) and interjections such as `haha` and `lol`;
 the spoken word "laugh" or "laughter" does not count. Laughter heard in the audio is
-`signals.events.laughter`, a separate value. Likely Whisper hallucinations
+`signals.events.laughter`, a separate value. Whisper may write such a marker (the default token
+suppression that blocked `[`, `(` and `*` is off); the marker is taken out of the transcript, the
+subtitles and the captions and only counts here. Existing transcripts have none. Likely Whisper hallucinations
 (a short phrase repeated, very low confidence) are dropped first. Boundaries are snapped to
 scene cuts and never cut a word. Each signal is a named feature, and a style's weights name
 these features. The `score` is a candidate's weighted peak divided by the weights of the

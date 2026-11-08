@@ -85,7 +85,7 @@ from cutpoint.ffmpeg_utils import (
     run,
 )
 from cutpoint.timeline import TIMELINE_FORMATS, per_join, write_timeline
-from cutpoint.transcribe import Segment, Transcriber, flat_words
+from cutpoint.transcribe import Segment, Transcriber, flat_words, split_markers
 from cutpoint.utils import clip_files
 
 logger = logging.getLogger(__name__)
@@ -1122,7 +1122,7 @@ def post_process(
                 tr.close()
                 wav.unlink(missing_ok=True)
             ass = out.with_suffix(".ass")
-            chunks = caption_chunks(segments)
+            chunks = caption_chunks(split_markers(segments))
             write_ass(chunks, info.width, info.height, ass)
             logger.info(
                 "Captions: %d chunks (whisper %s on %s)", len(chunks), tr.model_name, tr.device
