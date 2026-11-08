@@ -41,7 +41,9 @@ BASELINE_PCT = 20  # percentile of RMS dB used as the local baseline
 BASELINE_MARGIN_DB = 6.0  # "settled" = within this many dB of the baseline
 SETTLE_PAD_S = 0.3  # keep a beat of the quiet after the reaction ends
 HOP_S, WIN_S, SMOOTH_S = 0.05, 0.10, 0.25
-_LAUGH_STEMS = tuple(p.rstrip("*") for p in LAUGHTER)
+# "laugh" is no transcript-signal word (analyze.laughter_hits counts Whisper's markers), but a
+# clip still waits for a laugh being written out after its last word
+_LAUGH_STEMS = (*(p.rstrip("*") for p in LAUGHTER), "laugh")
 
 
 @dataclass(frozen=True)

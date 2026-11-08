@@ -1462,14 +1462,14 @@ def test_a_widened_candidate_gets_the_transcript_of_its_new_span_and_gives_it_ba
 ):
     words = [
         {"start": float(t), "end": t + 0.5, "word": f"w{t}", "probability": 0.99}
-        for t in range(100, 180, 20)
+        for t in range(100, 180, 5)
     ]
     segs = [{"start": 100.0, "end": 180.0, "text": "x", "words": words}]
     monkeypatch.setattr(scoring, "_segments", lambda src, language=None: segs)
     cand = own("h001", 150.0, 60.0, end=158.0) | {"transcript": "w160"}
     hl = highlights([cand])
     scoring.nominate(hl, events_of([talk_event(100.0, 180.0)]), tmp_path, [grid()])
-    assert cand["transcript"].startswith("w100 w120") and cand["transcript"] != "w160"
+    assert cand["transcript"].startswith("w100 w105") and cand["transcript"] != "w160"
     assert "dialogue_description" not in cand
     scoring.nominate(hl, events_of([]), tmp_path, [grid()])
     assert cand["transcript"] == "w160" and (cand["start"], cand["end"]) == (150.0, 158.0)
@@ -1680,3 +1680,125 @@ def test_the_moments_view_marks_a_long_dialogue_bit_with_its_description(tmp_pat
         c["display_label"] != "Grandpa's Wobbly Treehouse" for c in view if not c["long_bit"]
     )
     assert moments_view(hl)["candidates"][0]["bit_description"] == ""  # no events.json
+
+
+# --------------------------------------------------------------------------- widening: silences
+def words_at(*spans: tuple[float, float]) -> list[dict[str, Any]]:
+    """Transcript segments with a word every 2 s over each ``(start, end)``."""
+    words = [
+        {"word": f"w{int(t)}", "start": float(t), "end": t + 0.5, "probability": 0.99}
+        for a, b in spans
+        for t in range(int(a), int(b), 2)
+    ]
+    return [{"start": words[0]["start"], "end": words[-1]["end"], "text": "x", "words": words}]
+
+
+def spoken_of(segs: list[dict[str, Any]]) -> list[tuple[float, float]]:
+    return [(w["start"], w["end"]) for s in segs for w in s["words"]]
+
+
+@pytest.mark.parametrize(
+    ("spans", "want"),
+    [
+        ([(100, 178)], (100, 178)),  # talk all along: nothing to cut
+        ([(100, 116), (122, 178)], (100, 178)),  # a gap of 7.5 s is not long
+        ([(100, 116), (140, 178)], (140, 178)),  # 23.5 s of silence before the moment
+        (
+            [(100, 116), (130, 160), (170, 178)],
+            (130, 178),
+        ),  # only the silence before the moment moves the start
+    ],
+)
+def test_trim_silence_starts_after_a_long_silence_before_the_moment(spans, want):
+    got = scoring.trim_silence(spoken_of(words_at(*spans)), 100.0, 178.0, (150.0, 158.0))
+    assert got[0] == want[0]
+
+
+def test_trim_silence_ends_before_a_long_silence_after_the_moment():
+    spoken = spoken_of(words_at((100, 166)))  # the last word ends at 164.5
+    assert scoring.trim_silence(spoken, 100.0, 178.0, (150.0, 158.0)) == (100.0, 164.5)
+
+
+def test_trim_silence_never_cuts_into_the_moment():
+    # a silence under the moment: it starts where the moment starts and ends where it ends
+    spoken = spoken_of(words_at((100, 120), (170, 178)))
+    assert scoring.trim_silence(spoken, 100.0, 178.0, (140.0, 160.0)) == (140.0, 160.0)
+    assert scoring.trim_silence([], 100.0, 178.0, (150.0, 158.0)) == (150.0, 158.0)
+
+
+def test_trim_silence_cuts_a_silent_head_up_to_the_first_word():
+    spoken = spoken_of(words_at((112, 178)))
+    assert scoring.trim_silence(spoken, 100.0, 178.0, (150.0, 158.0)) == (112.0, 178.0)
+
+
+def widened(tmp_path, monkeypatch, segs, stretch=(100.0, 178.0), **extra):
+    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: segs)
+    hl = widen_hl(own("h001", 150.0, 60.0, end=158.0) | {"transcript": "w150"})
+    scoring.nominate(hl, events_of([talk_event(*stretch)]), tmp_path, [grid()])
+    return hl
+
+
+def test_a_widened_candidate_starts_after_the_long_silence_before_its_moment(tmp_path, monkeypatch):
+    hl = widened(tmp_path, monkeypatch, words_at((100, 116), (140, 178)))
+    (cand,) = hl["candidates"]  # no nominee for the stretch the candidate was trimmed from
+    assert (cand["start"], cand["end"]) == (140.0, 178.0)
+    assert cand["duration"] == 38.0
+    assert (cand["widened_from"]["start"], cand["widened_from"]["end"]) == (150.0, 158.0)
+    assert cand["transcript"].startswith("w140") and "w100" not in cand["transcript"]
+
+
+def test_a_widened_candidate_ends_before_a_long_silence_after_its_moment(tmp_path, monkeypatch):
+    hl = widened(tmp_path, monkeypatch, words_at((100, 166)))
+    (cand,) = hl["candidates"]
+    assert (cand["start"], cand["end"]) == (100.0, 164.5)
+
+
+def test_a_trimmed_widening_is_undone_like_any_other(tmp_path, monkeypatch):
+    hl = widened(tmp_path, monkeypatch, words_at((100, 116), (140, 178)))
+    scoring.nominate(hl, events_of([]), tmp_path, [grid()])
+    (cand,) = hl["candidates"]
+    assert (cand["start"], cand["end"]) == (150.0, 158.0) and cand["transcript"] == "w150"
+
+
+def test_a_trim_back_to_the_moment_itself_widens_nothing_and_nominates_nothing(
+    tmp_path, monkeypatch
+):
+    # nothing is said around the moment: the stretch has no part that leads into it
+    hl = widened(tmp_path, monkeypatch, words_at((150, 158)))
+    (cand,) = hl["candidates"]
+    assert (cand["start"], cand["end"]) == (150.0, 158.0) and "widened_from" not in cand
+
+
+def test_a_trimmed_widened_candidate_keeps_the_stretch_title_and_its_type(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        scoring, "_segments", lambda src, language=None: words_at((100, 116), (140, 178))
+    )
+    stretch = talk_event(100.0, 178.0) | {"title": "Grandpa And The Ladder"}
+    hl = widen_hl(own("h001", 150.0, 60.0, end=158.0))
+    scoring.nominate(hl, events_of([stretch]), tmp_path, [grid()])
+    (cand,) = hl["candidates"]
+    assert cand["dialogue_title"] == "Grandpa And The Ladder"
+    assert (
+        cand["label"] == "grandpa-and-the-ladder"
+        and cand["widened_from"]["label"] == "gaming-moment"
+    )
+    assert (cand["start"], cand["end"]) == (140.0, 178.0)
+
+
+def test_a_stretch_over_the_cap_is_not_trimmed_and_stays_a_moment_of_its_own(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        scoring, "_segments", lambda src, language=None: words_at((100, 116), (300, 400))
+    )
+    hl = widen_hl(own("h001", 320.0, 60.0, end=328.0))
+    assert scoring.nominate(hl, events_of([talk_event(100.0, 400.0)]), tmp_path, [grid()]) == 1
+    (own_,) = [c for c in hl["candidates"] if not scoring.is_nominated(c)]
+    assert (own_["start"], own_["end"]) == (320.0, 328.0)
+    (nom,) = nominees(hl)
+    assert nom["start"] <= 100.0 and nom["end"] == pytest.approx(400.0)
+
+
+def test_without_a_transcript_a_widened_candidate_keeps_the_whole_stretch(tmp_path):
+    hl = widen_hl(own("h001", 150.0, 60.0, end=158.0))
+    scoring.nominate(hl, events_of([talk_event(100.0, 178.0)]), tmp_path, [grid()])
+    (cand,) = hl["candidates"]
+    assert (cand["start"], cand["end"]) == (100.0, 178.0)

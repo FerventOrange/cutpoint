@@ -1146,14 +1146,20 @@ function renderNerdStats(c = current()) {
   el.hidden = !cand;
   if (!cand) return (el.textContent = '');
   const sig = cand.signals;
+  // laughter has two sources, shown apart: said in the transcript (signals.laughter) and heard in the audio (signals.events.laughter)
   const bits = sig
-    ? Object.entries(sig).filter(([, n]) => typeof n === 'number' && n > 0).map(([k, n]) => `${k} ${n.toFixed(2)}`)
+    ? Object.entries(sig).filter(([k, n]) => k !== 'laughter' && typeof n === 'number' && n > 0).map(([k, n]) => `${k} ${n.toFixed(2)}`)
     : [];
+  const laugh = (n) => (typeof n === 'number' && n > 0 ? n.toFixed(2) : '');
+  const written = laugh(sig?.laughter);
+  const heard = laugh(sig?.events?.laughter);
   const all = cands();
   el.textContent = [
     `Score ${cand.score.toFixed(2)}, rank ${all.indexOf(cand) + 1} of ${all.length}`,
     `Analyzed ${fmt(cand.start)} to ${fmt(cand.end)}`,
     bits.length ? `Signals: ${bits.join(', ')}` : '',
+    written ? `Laughter in the transcript: ${written}` : '',
+    heard ? `Laughter heard in the audio: ${heard}` : '',
     sig?.keywords?.length ? `Keywords: ${sig.keywords.join(', ')}` : '',
   ].filter(Boolean).join('\n');
 }

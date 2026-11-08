@@ -50,7 +50,7 @@ from cutpoint.dsp import conv_same
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events import paths as event_paths
 from cutpoint.events.menu_spans import drop_menu_time
-from cutpoint.events.scoring import Seed, rescore
+from cutpoint.events.scoring import Seed, heard_laughter, rescore
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
@@ -228,6 +228,34 @@ def keyword_hits(
             ):
                 hits.append((float(words[i]["start"]), weight, phrase))
     return hits
+
+
+# Whisper's non-speech laughter markers: "[laughter]", "(laughs)", "*laughing*", "[light laughter]".
+# The brackets (or asterisks) are required: the plain spoken word is not laughter.
+_LAUGH_STEM = r"(?:laugh|giggl|chuckl|chortl|snicker|guffaw)"
+_LAUGH_MARKER = re.compile(
+    rf"\[[^\[\]()*]{{0,30}}?\b{_LAUGH_STEM}\w*[^\[\]()*]{{0,30}}\]"
+    rf"|\([^\[\]()*]{{0,30}}?\b{_LAUGH_STEM}\w*[^\[\]()*]{{0,30}}\)"
+    rf"|\*{_LAUGH_STEM}\w*\*",
+    re.IGNORECASE,
+)
+
+
+def laughter_hits(words: list[dict[str, Any]]) -> list[tuple[float, float, str]]:
+    """Find the (time, weight, phrase) laughter hits of the transcript ``words``: the
+    interjections of :data:`~cutpoint.styles.LAUGHTER` (haha, lol) and Whisper's non-speech
+    markers for laughing (``[laughter]``, ``(laughs)``, ``*laughing*``; weight 1, the phrase is
+    the text inside the brackets). The spoken word "laughter" or "laugh" is not a hit."""
+    hits = keyword_hits(words, LAUGHTER)
+    text, at = "", []  # the words joined by spaces, and the word each character belongs to
+    for i, w in enumerate(words):
+        piece = str(w["word"]).strip()
+        at += [i] * (len(piece) + 1)
+        text += piece + " "
+    for m in _LAUGH_MARKER.finditer(text):
+        phrase = m.group(0)[1:-1].strip().lower()
+        hits.append((float(words[at[m.start()]]["start"]), 1.0, phrase))
+    return sorted(hits, key=lambda h: h[0])
 
 
 def keyword_signal(
@@ -902,7 +930,7 @@ def text_signals(ps: PartSignals, style: Style, name: str) -> None:
     styles with ``profanity_alone`` False). ``name``: the source's, for the log."""
     n, sig, words = ps.n, ps.sig, ps.words
     kw_hits = keyword_hits(words, style.keywords)
-    laugh_hits = keyword_hits(words, LAUGHTER)
+    laugh_hits = laughter_hits(words)
     if not style.profanity_alone:
         n_before = len(kw_hits)
         n_profane = sum(1 for *_, p in kw_hits if p in PROFANE)
@@ -2287,6 +2315,7 @@ def _rate_vision(
                 style.base,
                 activity=activity,
                 transcript=c.get("transcript"),
+                laughter=heard_laughter(c),
             )
             is not None
             for c in top
@@ -2308,6 +2337,7 @@ def _rate_vision(
                     style.base,
                     activity=activity,
                     transcript=c.get("transcript"),
+                    laughter=heard_laughter(c),
                 )
                 if res is None:
                     n_failed += 1
@@ -2833,6 +2863,7 @@ def _analyze(
                         style.base,
                         activity=wording,
                         transcript=c.get("transcript"),
+                        laughter=heard_laughter(c),
                     )
                     is not None
                     for c in cands[:n_top]
