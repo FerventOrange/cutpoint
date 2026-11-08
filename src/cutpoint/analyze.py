@@ -713,8 +713,7 @@ def _pick_windows(
         start, end = max(0.0, start), min(duration, end)
         a, b = int(start / DT), max(int(start / DT) + 1, int(end / DT))
         score[a:b] = 0.0
-        if usual is not None:  # an open list has no cap to stop at
-            score[i] = 0.0  # the peak itself, also when the window ends at it (the last sample)
+        score[i] = 0.0  # the peak itself, also when the window ends at it (the last sample)
         out.append(
             Candidate(
                 source=src,

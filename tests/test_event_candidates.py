@@ -1003,14 +1003,25 @@ def test_an_open_list_ends_and_finds_the_peaks_before_a_loud_last_sample():
     assert [c.peak_t for c in out] == [pytest.approx(100.0), pytest.approx(50.0)]
 
 
-def test_a_list_with_a_cap_still_repeats_a_loud_last_sample_as_on_main():
-    # Kept as it is on main until its own issue is fixed: without an open list (usual None)
-    # the zeroing of the peak is not applied, so the last sample is picked again up to the cap.
+def test_a_list_with_a_cap_does_not_repeat_a_loud_last_sample():
+    # #771: the last sample is picked once, then the peak before it (not the last sample again)
     combined = end_loud()
     out = analyze._pick_windows(
         Path("a.mp4"), combined, {"loudness": combined}, get_style("action"), 100.0, 3
     )
-    assert [c.peak_t for c in out] == [pytest.approx(100.0)] * 3
+    assert [c.peak_t for c in out] == [pytest.approx(100.0), pytest.approx(50.0)]
+
+
+def test_a_capped_style_keeps_every_peak_of_a_600_s_source_that_ends_loud():
+    # ten bumps 50 s apart and a taller final sample: eleven distinct picks, not the last one again
+    n = 6001
+    combined = sum(bump(50.0 * k, n, 0.6) for k in range(1, 11))
+    combined[-1] = 1.0
+    out = analyze._pick_windows(
+        Path("a.mp4"), combined, {"loudness": combined}, get_style("action"), 600.0, 11
+    )
+    peaks = sorted(round(c.peak_t) for c in out)
+    assert peaks == [50 * k for k in range(1, 11)] + [600]
 
 
 def ranked_ids(style: str, events: list[dict[str, Any]], tmp_path) -> tuple[list[str], int]:
