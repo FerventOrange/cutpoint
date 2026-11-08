@@ -111,8 +111,8 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
   the Vision role in the `cutpoint ui` Models tab can route it to a hosted provider). It is off
   for every style unless `"vision": true` in the user's `config.json` turns it on; `--no-vision`
   then skips it. An explicit `--ollama-url` or `--ollama-model` wins over a hosted Vision
-  provider and over the AI Chat model for dialogue reading (the crash/profile step ignores them
-  for now). An `--ollama-url` on another machine, or a hosted Vision provider in the
+  provider and over the AI Chat model for dialogue reading, and also applies to the
+  crash/profile step. An `--ollama-url` on another machine, or a hosted Vision provider in the
   Models tab, needs the user's Vision consent (Models tab); without it vision is skipped with a
   `vision_consent_needed` warning: tell the user.
   `--vision-top`, `--ollama-url`, `--ollama-model` and `--skip` work as on

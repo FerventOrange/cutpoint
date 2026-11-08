@@ -536,6 +536,8 @@ def run_events(
                     warn_unreachable=False,
                     llm=llm,
                     batch_size=batch_size,
+                    ollama_url=ollama_url,
+                    ollama_model=ollama_model,
                 )
         finally:
             if enc is not None:

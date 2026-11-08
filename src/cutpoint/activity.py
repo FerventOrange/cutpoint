@@ -665,11 +665,21 @@ def _named_profile(context: str, lib: dict[str, dict[str, Any]]) -> str | None:
     return named.pop() if len(named) == 1 else None
 
 
-def default_ask() -> tuple[Ask | None, str | None]:
+def default_ask(
+    ollama_url: str | None = None, ollama_model: str | None = None
+) -> tuple[Ask | None, str | None]:
     """The local Ollama vision model as an :data:`Ask` (``(None, None)`` if unavailable, or
     if that Ollama is on another machine without the user's Vision consent: nothing is sent,
-    and :meth:`VisionRater.warn_consent` warns once)."""
-    rater = VisionRater(local_only=True)
+    and :meth:`VisionRater.warn_consent` warns once).
+
+    ``ollama_url``, ``ollama_model``: ``--ollama-url`` / ``--ollama-model``, which win over
+    ``config.json`` and the environment (#816). ``(None, None)`` too, with a WARNING, when the
+    Ollama URL has a bad port."""
+    try:
+        rater = VisionRater(ollama_url, ollama_model, local_only=True)
+    except ValueError as err:  # a bad port in OLLAMA_HOST / ollama_url
+        logger.warning("Activity detection: Ollama not usable (%s)", err)
+        return None, None
     if not rater.available():
         return None, None
     return functools.partial(rater.ask_json, timeout=PROFILE_TIMEOUT_S), rater.model
@@ -685,6 +695,8 @@ def resolve(
     ask: Ask | None = None,
     llm: bool = True,
     warn_unreachable: bool = True,
+    ollama_url: str | None = None,
+    ollama_model: str | None = None,
 ) -> dict[str, Any]:
     """Profile of a project, cached in ``<project>/activity.json`` (see the module doc).
 
@@ -697,6 +709,8 @@ def resolve(
         llm: Allow the local models (False: library and generic only).
         warn_unreachable: Warn about each unreachable source when the footage is read
             (:func:`keyframes`); False when the caller already did.
+        ollama_url, ollama_model: ``--ollama-url`` / ``--ollama-model`` for the default
+            ``ask`` (None: from config.json and the environment).
 
     Returns:
         The activity.json record; ``record["profile"]`` is the full profile.
@@ -738,7 +752,9 @@ def resolve(
         rec["source"] = "fallback"  # until the LLM delivers (retried on the next run)
         model = None
         if ask is None:
-            ask, model = default_ask()
+            # the flags only when given (a stand-in for default_ask takes none)
+            flags = {"ollama_url": ollama_url, "ollama_model": ollama_model}
+            ask, model = default_ask(**{k: v for k, v in flags.items() if v})
             why = "the Ollama model is unavailable (see the line above)"
         if ask is not None:
             why = "the LLM gave no usable profile"

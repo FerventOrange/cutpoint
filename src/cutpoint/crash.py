@@ -1151,6 +1151,8 @@ def detect_project(
     warn_unreachable: bool = True,
     llm: bool = True,
     batch_size: int = 0,
+    ollama_url: str | None = None,
+    ollama_model: str | None = None,
 ) -> Path:
     """Find crashes in every source of a project and write ``crashes.json``.
 
@@ -1181,6 +1183,8 @@ def detect_project(
             (:func:`cutpoint.activity.resolve`); False: library and generic profiles only.
         batch_size: ``--batch-size`` (#109): the CLIP model is closed after every this many
             dense windows and loaded again for the next ones (0: kept for all of them).
+        ollama_url, ollama_model: ``--ollama-url`` / ``--ollama-model``: the Ollama of the
+            profile detection (#816; None: from config.json and the environment).
 
     Returns:
         Path of crashes.json.
@@ -1212,6 +1216,8 @@ def detect_project(
             refresh=refresh_profile,
             llm=llm,
             warn_unreachable=False,  # warned above (or by the caller)
+            ollama_url=ollama_url,
+            ollama_model=ollama_model,
         )
         p = p.with_profile(prof["profile"])
     t_start = time.perf_counter()
