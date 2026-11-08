@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 PIECE_S = 480.0  # seconds of transcript the model reads at once
 OVERLAP_S = 60.0  # of the next piece already read in this one, so a bit on the edge is whole
-PROMPT_VERSION = 1  # bump when PROMPT, SCHEMA, the pieces or the parsing change (the cache key)
+PROMPT_VERSION = 2  # bump when PROMPT, SCHEMA, the pieces or the parsing change (the cache key)
 HOSTED_WORKERS = 4  # pieces asked of a hosted model at once
 MERGE_OVERLAP = 0.5  # stretches overlapping by more than this share of the shorter are one
 BASELINE_STRENGTH = 0.2  # of a stretch with no reaction sound (local backend), 0-1
@@ -54,6 +54,8 @@ DENSITY_FULL = 3.0  # reaction sounds per minute that give the full strength
 MIN_DENSITY_SPAN_S = 30.0  # a shorter stretch counts as this long, so one laugh is not a burst
 REACTION_SOUNDS = (*LAUGH_SOUNDS, *SCREAM_SOUNDS)  # the audio events scoring.seeds counts
 MAX_DESCRIPTION = 300  # characters of ``what_happens`` kept
+MAX_TITLE_WORDS = 6  # words of a ``title`` kept
+MAX_TITLE = 48  # characters of a ``title`` kept
 CACHE_PREFIX = "dialogue-"
 LOCAL_NUM_CTX = 16384  # a piece of talk, the prompt and the reply
 LOCAL_NUM_PREDICT = 3000
@@ -68,13 +70,14 @@ SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "properties": {
+                    "title": {"type": "string"},
                     "what_happens": {"type": "string"},
                     "first_line": {"type": "integer"},
                     "last_line": {"type": "integer"},
                     "kind": {"type": "string", "enum": list(KINDS)},
                     "rating": {"type": "integer"},
                 },
-                "required": ["what_happens", "first_line", "last_line", "kind", "rating"],
+                "required": ["title", "what_happens", "first_line", "last_line", "kind", "rating"],
             },
         }
     },
@@ -98,6 +101,7 @@ Rules:
 - Keep each stretch as tight as it can be while still complete: usually 20 to 90 seconds. Go longer only when one bit really keeps building.
 - Leave out routine play-by-play of what is on screen, greetings, thanking supporters, reading out settings, and filler.
 - If nothing in this part is worth keeping, return an empty list. Most of a recording is not worth keeping.
+- title: 3 to 6 words that name WHO or WHAT the stretch is about, as a person would label the clip, such as "Roommate's Terrible Cooking". Never a tone word or the kind ("funny banter", "heated argument").
 - rating: 1 to 10, where 5 is usable filler for a long edit and 10 is the best moment of the whole recording. Use the whole scale.
 
 Transcript, one numbered line each:
@@ -105,13 +109,13 @@ Transcript, one numbered line each:
 # Added after the transcript for a provider that cannot constrain its reply to SCHEMA.
 JSON_ONLY = (
     "\n\nReply with JSON only, no other text, in this shape: "
-    '{"moments": [{"what_happens": "...", "first_line": 0, "last_line": 0, '
+    '{"moments": [{"title": "...", "what_happens": "...", "first_line": 0, "last_line": 0, '
     f'"kind": "{"|".join(KINDS)}", "rating": 1}}]}}'
 )
 
 # Line = (start, end, text) of a transcript line, in source time.
 Line = tuple[float, float, str]
-# Stretch: {what_happens, first_line, last_line (indexes into the lines), kind, rating, start, end}
+# Stretch: {title, what_happens, first_line, last_line (indexes into the lines), kind, rating, start, end}
 Stretch = dict[str, Any]
 
 
@@ -185,6 +189,20 @@ def _line_id(value: Any) -> int | None:
     return None
 
 
+def clean_title(value: Any) -> str:
+    """A model's ``title`` as a label: one line, without quotes or closing punctuation, at most
+    :data:`MAX_TITLE_WORDS` words and :data:`MAX_TITLE` characters (cut at a word); "" for
+    anything that is not text or is empty."""
+    if not isinstance(value, str):
+        return ""
+    text = value.replace(chr(0x2019), "'")
+    words = text.strip(" \"'`.,;:!?-").split()
+    title = " ".join(words[:MAX_TITLE_WORDS])
+    if len(title) > MAX_TITLE:
+        title = title[:MAX_TITLE].rsplit(" ", 1)[0]
+    return title.strip(" \"'`.,;:!?-")
+
+
 def parse_reply(
     reply: dict[str, Any] | None, lines: Sequence[Line], idx: Sequence[int]
 ) -> tuple[list[Stretch], int]:
@@ -192,7 +210,8 @@ def parse_reply(
 
     An entry is dropped (and counted) unless its first and last line are lines of the piece
     with the last not before the first, its kind is one of :data:`KINDS` and its rating is a
-    number (clamped to 1-10). A reply that is not ``{"moments": [...]}`` has none and counts as
+    number (clamped to 1-10). The ``title`` is :func:`clean_title`'s ("" when the model gave none;
+    the entry is kept). A reply that is not ``{"moments": [...]}`` has none and counts as
     one dropped.
     """
     moments = reply.get("moments") if isinstance(reply, dict) else None
@@ -224,6 +243,7 @@ def parse_reply(
         text = " ".join(str(m.get("what_happens") or "").split())[:MAX_DESCRIPTION]
         out.append(
             {
+                "title": clean_title(m.get("title")),
                 "what_happens": text,
                 "first_line": a,
                 "last_line": b,
@@ -314,6 +334,9 @@ def to_events(
 ) -> list[dict[str, Any]]:
     """The events.json entries of one source's ``stretches``.
 
+    ``label`` is the stretch's kind and ``title`` its :func:`clean_title` ("" without one);
+    :func:`cutpoint.events.scoring.nominate` gives the candidate the title.
+
     Strength (``confidence``): the model's rating for the ``hosted`` backend, else the reaction
     density (:func:`reaction_strength`, ``sounds`` None: no audio events, every stretch at the
     baseline)."""
@@ -334,6 +357,7 @@ def to_events(
                 "funny": None,
                 "hype": None,
                 "label": s["kind"],
+                "title": s.get("title") or "",
                 "description": s["what_happens"],
                 "details": {
                     "rating": s["rating"],

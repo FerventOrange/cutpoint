@@ -662,7 +662,7 @@ function renderMoments() {
   const multi = sources.length > 1;
   // Sort and filter: the source file choice only with several sources, and only one of this project's
   const f = { ...S.filters, source: multi && sources.includes(S.filters.source) ? S.filters.source : '' };
-  syncFilterMenu(sources, f, !!list.length);
+  syncFilterMenu(sources, f, !!list.length, list.some((c) => c.long_bit));
   const segOf = (c) => S.segments.find((s) => s.id === c.id);
   const items = list
     .map((c, i) => ({ c, rank: i + 1 }))
@@ -693,14 +693,17 @@ function renderMoments() {
         still.append(h('span', { class: 'cand-dot', 'aria-hidden': 'true' }), h('span', { class: 'cand-len tc', text: `${(c.end - c.start).toFixed(1)} s` }));
         return h('li', { class: `cand${picked ? ' picked' : ''}`, 'data-id': c.id, 'data-kind': kind, 'aria-current': c.id === S.focus ? 'true' : null },
           // the hover tooltip: the full title and the transcript (the tile shows neither in full)
-          h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', 'aria-describedby': tip, title: c.transcript ? `${title}\n${c.transcript}` : title, onclick: () => focusMoment(c.id) },
+          h('button', { type: 'button', class: 'cand-main', 'data-act': 'focus', 'aria-describedby': tip, title: [title, c.bit_description, c.transcript].filter(Boolean).join('\n'), onclick: () => focusMoment(c.id) },
             still,
             h('span', { class: 'cand-top' },
               h('span', { class: 'rank tc', text: `#${rank}` }),
               h('span', { class: 'cand-title', text: title }),
               c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null,
+              bitBadge(c),
               poolBadge(c)),
             h('span', { class: 'cand-meta' }, KINDS[kind], h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', score ' }), scoreText(c.score, c.pool === 'visual'), badge),
+            // what the dialogue reader says happens (a dialogue moment): two lines at most, in the button's name
+            c.bit_description ? h('span', { class: 'cand-what', text: c.bit_description }) : null,
             h('span', { class: 'cand-time tc' },
               // the CLI id (h001) as text, for Candidate ids and clips --ids (#487)
               c.cli_id ? [h('span', { class: 'cand-id' }, h('span', { class: 'vh', text: 'Candidate ' }), c.cli_id), ' '] : null,
@@ -801,6 +804,12 @@ function shownName(cand, label) {
 
 /** The labels the list filter searches: the title, the analysis label and the vision label. */
 const filterLabel = (c) => [c.display_label, c.label, c.vision_label].filter(Boolean).join(' ');
+
+/** A long dialogue bit's badge: "Bit · 2:05" (the length in m:ss; words for a screen reader, never colour alone), or null. */
+function bitBadge(c) {
+  if (!c.long_bit) return null;
+  return h('span', { class: 'tag bit' }, 'Bit', h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' }), fmtLen(c.end - c.start));
+}
 
 /** "visual · view": a moment of the visual pool (#635: beauty shots, friends, cruising runs that
  * analysis adds without a sound or speech cue), with its kind when it has one. */
@@ -7024,6 +7033,7 @@ function initMomentFilters() {
   const showFilters = () => {
     for (const r of seqRadios) r.checked = r.value === S.filters.seq;
     $('#filterReady').checked = S.filters.ready;
+    $('#filterBits').checked = S.filters.bits;
   };
   showFilters();
   const open = (on, refocus = false) => {
@@ -7061,6 +7071,10 @@ function initMomentFilters() {
     S.filters.ready = e.target.checked;
     changed();
   });
+  $('#filterBits').addEventListener('change', (e) => {
+    S.filters.bits = e.target.checked;
+    changed();
+  });
   $('#filterSource').addEventListener('change', (e) => {
     S.filters.source = e.target.value;
     changed();
@@ -7077,7 +7091,7 @@ function initMomentFilters() {
  * ``sources``; ``f`` holds the one in use), and the funnel's dot and name while any filter or a
  * sort other than Score is on. Closed while the list has no moments (``shown`` false).
  */
-function syncFilterMenu(sources, f, shown) {
+function syncFilterMenu(sources, f, shown, anyBit) {
   const sel = $('#filterSource');
   const names = sources.slice().sort((a, b) => naturalCompare(baseName(a), baseName(b)) || naturalCompare(a, b));
   const tag = JSON.stringify(names);
@@ -7087,6 +7101,8 @@ function syncFilterMenu(sources, f, shown) {
   }
   sel.value = f.source;
   $('#filterSourceWrap').hidden = sources.length < 2;
+  $('#filterBits').checked = f.bits;
+  $('#filterBitsWrap').hidden = !anyBit && !f.bits; // only where the project has a long dialogue bit
   const on = [filtersOn(f) && 'filters on', S.order !== 'score' && `sorted by ${ORDER_NAMES[S.order]}`].filter(Boolean);
   const btn = $('#filterBtn');
   btn.classList.toggle('on', !!on.length);

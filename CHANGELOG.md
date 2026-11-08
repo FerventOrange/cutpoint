@@ -40,6 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--skip dialogue` leaves it out (also in the Skip steps choice of `cutpoint ui`). Readings are
   cached per source. With `CUTPOINT_PROGRESS=1`, `analyze` reports 7 steps and `edit` 9, with
   `dialogue` after `crashes`.
+  Each stretch also gets a short title of 3 to 6 words that names who or what the bit is about
+  (`title` on the event, the talk kind stays its `label`). The candidate it nominates, or the
+  candidate it widens (the most confident stretch's title), keeps the title as `dialogue_title`
+  and takes its slug as the label and clip file name, in place of `dialogue-<kind>`; the slug is
+  cut at a word, without apostrophes. A stretch the model gave no title keeps the old label.
+  Readings cached before titles are read again. In `cutpoint ui` a dialogue moment is named by its
+  title and shows what the reader says happens in it (two lines on the tile, and in the hover
+  text). A moment a stretch created counts as Dialogue; one a stretch only widened keeps its own
+  type. A long bit (a whole dialogue stretch over 90 s) has a "Bit" badge with its length, and Sort
+  and filter has a Long bits filter.
 - A discovered feed region that shows stream chat gives no events. It is judged by the distinct
   text lines it read per hour over the full OCR pass: 6000 per hour or more on at least 10 minutes of
   footage is chat; 3000 to 6000 per hour on at least 10 minutes of footage stays a feed with a
@@ -269,6 +279,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   camera's usual burned-in overlay does not make camera footage gameplay. A few seconds per unsure
   source, cached as `category-text-v1.json`; skipped in Cutpoint lite (the source stays
   ambiguous), and never run with an explicit `--style`.
+- `scripts/moment_eval.py` (development benchmark): scores how well a project's ranked moments match
+  the owner's labels (one private JSON file per video with `keep`, `skip`, `reference` ranges and a
+  `holdout` flag). Per video it reports the keeps and skips hit in the top 10 and 20, the keeps and
+  hand-edit reference ranges hit within 15% and 30% of the video length, each against a seeded
+  random-order control (mean, 95th percentile, multiple of chance; "beats noise" only above the
+  95th percentile). It also lists the labels the default edit (`select_moments` with no options, as
+  `clips`) and the highlights edit (`max_total` 180) contain; the edits have no control. Holdout
+  videos are listed apart. `--json` writes the results and `--compare A.json B.json` shows the
+  difference between two runs, warning when their seed, runs or overlap differ. Only reads.
 - `scripts/style_auto_eval.py` (#513, development harness): runs the footage category detection
   on sources with known categories (a local labels file) and reports the confusion by
   sure or ambiguous, the sure-wrong sources, the ambiguous share by count and minutes, the style

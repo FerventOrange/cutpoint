@@ -151,6 +151,7 @@ from cutpoint.config import (
 from cutpoint.edit import KINDS
 from cutpoint.encode import BT709_TAGS, TV_RANGE, preview_filter, still_filter
 from cutpoint.errors import EncoderUnavailableError, FFmpegError, FolderBusyError
+from cutpoint.events import scoring
 from cutpoint.ffmpeg_utils import (
     ChildScope,
     VideoEncoder,
@@ -3088,12 +3089,47 @@ def source_folder(p: Path) -> Path | None:
         return None
 
 
-def moments_view(hl: dict[str, Any] | None) -> dict[str, Any] | None:
+def bit_description(c: dict[str, Any], events: Any) -> str:
+    """What the dialogue reader said happens in the moment ``c`` if it is a dialogue moment (one a
+    talk stretch nominated or widened, or that has a ``dialogue_title``): the ``description`` of
+    the most confident dialogue event of ``events`` (the events.json object) inside it, else the
+    ``dialogue_description`` highlights.json keeps; "" for any other moment."""
+    nominated = ((c.get("signals") or {}).get("events") or {}).get("nominated") or []
+    if not (
+        any(str(n).startswith("dialogue-") for n in nominated)
+        or c.get("widened_from")
+        or c.get("dialogue_title")
+        or c.get("dialogue_description")
+    ):
+        return ""
+    best, conf = "", -1.0
+    for e in (events.get("events") or []) if isinstance(events, dict) else []:
+        if (
+            isinstance(e, dict)
+            and e.get("kind") == "text"
+            and e.get("type") == scoring.DIALOGUE_TYPE
+            and e.get("source") == c.get("source")
+            and isinstance(e.get("start"), int | float)
+            and isinstance(e.get("end"), int | float)
+            and e["start"] >= c["start"] - 0.01
+            and e["end"] <= c["end"] + 0.01
+            and e.get("description")
+            and (e.get("confidence") or 0) > conf
+        ):
+            best, conf = str(e["description"]), e.get("confidence") or 0
+    return best or str(c.get("dialogue_description") or "")
+
+
+def moments_view(hl: dict[str, Any] | None, events: Any = None) -> dict[str, Any] | None:
     """Keep saved trims attached to source intervals, not mutable CLI ranks; ``cli_id`` keeps the
     CLI id (h001) that the cards show and ``clips --ids`` takes. ``display_label`` is the label
     the moments list shows: a generic one (``action-moment``) gives way to what the vision model
     saw (:func:`cutpoint.assistant.context.shown_label`, as in AI Chat); ``label`` stays the
-    analysis label, which a moment added to the sequence takes."""
+    analysis label, which a moment added to the sequence takes. ``long_bit`` marks a long
+    dialogue bit (the "Bit" badge and "Long bits" filter), with ``bit_description`` what
+    happens in a dialogue moment (:func:`bit_description`; ``events``: the project's events.json
+    object). A
+    dialogue moment's ``display_label`` is its readable ``dialogue_title``, not the slug label."""
     if hl is None:
         return None
     return {
@@ -3102,7 +3138,10 @@ def moments_view(hl: dict[str, Any] | None) -> dict[str, Any] | None:
             {
                 **c,
                 "cli_id": c.get("id"),
-                "display_label": ai_context.shown_label(c.get("label"), c),
+                "display_label": c.get("dialogue_title")
+                or ai_context.shown_label(c.get("label"), c),
+                "long_bit": scoring.is_long_dialogue(c),
+                "bit_description": bit_description(c, events),
                 "id": hashlib.sha1(
                     f"{os.path.realpath(c['source'])}|{float(c['start'])}|{float(c['end'])}".encode()
                 ).hexdigest()[:12],
@@ -4922,7 +4961,7 @@ def create_app(port: int) -> FastAPI:
                     ],
                 }
             )
-        highlights = moments_view(hl)
+        highlights = moments_view(hl, _load(p, "events.json"))
         last_run = run_state(p, hl is not None)
         if highlights is not None and meta.get("kind") == "360":
             # #517: flags of each moment's cached camera path and its director preview (null:
