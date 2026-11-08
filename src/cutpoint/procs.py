@@ -251,11 +251,18 @@ def _win_created(k32: Any, handle: Any) -> float | None:
     return (ft - 116444736000000000) / 1e7
 
 
+# Windows file times (the lock's mtime) and process creation times come from clocks of
+# different granularity, so a lock written right after its process started can read a little
+# earlier than that process's creation time. Real id reuse comes long after the lock.
+_CREATED_SLACK = 2.0
+
+
 def pid_alive(pid: int, not_after: float | None = None) -> bool:
     """Whether the process ``pid`` is running (True when that cannot be told).
 
     ``not_after``: on Windows, which reuses process ids quickly, a process created after
-    this time (epoch seconds, the lock file's mtime) is another one that got the id: False.
+    this time (epoch seconds, the lock file's mtime, plus a small slack)
+    is another one that got the id: False.
     """
     if pid <= 0 or pid > 0xFFFFFFFF:
         return False
@@ -280,7 +287,7 @@ def pid_alive(pid: int, not_after: float | None = None) -> bool:
             if code.value != 259:  # STILL_ACTIVE
                 return False
             created = _win_created(k32, handle) if not_after is not None else None
-            return created is None or not_after is None or created <= not_after
+            return created is None or not_after is None or created <= not_after + _CREATED_SLACK
         finally:
             k32.CloseHandle(handle)
     try:

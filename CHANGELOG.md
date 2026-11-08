@@ -881,6 +881,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Windows: a lock written right after its run started is no longer read as stale (clock slack
+  in the process-id reuse check).
 - Whisper can write non-speech markers now (`[Laughter]`, `(laughs)`, `*sighs*`). Cutpoint had
   left faster-whisper's default list of suppressed tokens on, which blocks `[`, `(` and `*`, so none
   of 155 cached transcripts held a `[laughter]` marker and the marker rule of the `laughter`
