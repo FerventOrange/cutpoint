@@ -24,7 +24,8 @@ import numpy as np
 
 from cutpoint import cache, progress
 from cutpoint.errors import LowMemoryError
-from cutpoint.events.discover import REF_H, REF_W, boxes_in, read_image
+from cutpoint.events.discover import REF_H, REF_W, boxes_in
+from cutpoint.imageio import read_image
 
 logger = logging.getLogger(__name__)
 

@@ -39,6 +39,7 @@ from cutpoint.events.discover import DiscoverParams, _centre_cover, gameplay_fra
 from cutpoint.events.menu_spans import merge_menu_frames
 from cutpoint.events.regions import HudPreset, Region, game_key_for_path, load_preset, scaled
 from cutpoint.ffmpeg_utils import READ_ERROR_RE, decode_raw, decoder_for, probe
+from cutpoint.imageio import write_png
 
 logger = logging.getLogger(__name__)
 
@@ -3160,10 +3161,8 @@ def detect_ocr_events(
 
         def save_crop(out: Path, t: float, r: Region, crop: np.ndarray) -> None:
             """Save the region crop of a new event as a PNG in ``out``."""
-            import cv2  # noqa: PLC0415
-
             out.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(out / f"{src.path.stem[-24:]}_{t:07.1f}_{r.name}.png"), crop)
+            write_png(out / f"{src.path.stem[-24:]}_{t:07.1f}_{r.name}.png", crop)
 
         by_name = {r.name: r for r in regions}
         for si, (seg_a, seg_b) in enumerate(segments):

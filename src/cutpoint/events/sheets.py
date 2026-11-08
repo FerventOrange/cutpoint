@@ -20,6 +20,7 @@ import numpy as np
 
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import grab_images
+from cutpoint.imageio import write_jpeg
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ def contact_sheet(
         tiles.append(blank)
     grid = np.vstack([np.hstack(tiles[i : i + cols]) for i in range(0, len(tiles), cols)])
     out.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out), grid, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    write_jpeg(out, grid, 85)
     return out
 
 

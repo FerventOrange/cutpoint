@@ -731,7 +731,29 @@ def read_source(
             )
         except OSError as err:  # a cache must not fail the run
             logger.warning("Could not save the dialogue cache %s: %s", path, err)
+        else:
+            _drop_old_caches(path, backend.key)
     return result
+
+
+def _drop_old_caches(path: Path, model: str) -> None:
+    """Delete the stale dialogue cache files next to the fresh one ``path``: those of an
+    earlier prompt version, of the same ``model`` (other transcripts of the source) and
+    unreadable ones. A reading by another model under the current version stays."""
+    for old in path.parent.glob(f"{CACHE_PREFIX}*.json"):
+        if old == path:
+            continue
+        data = cache.load_json(old)
+        if (
+            isinstance(data, dict)
+            and data.get("version") == PROMPT_VERSION
+            and data.get("model") != model
+        ):
+            continue
+        try:
+            old.unlink(missing_ok=True)
+        except OSError as err:  # a locked file: it stays, the run goes on
+            logger.debug("Could not remove the old dialogue cache %s: %s", old, err)
 
 
 def read_all(
