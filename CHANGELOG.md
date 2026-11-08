@@ -595,8 +595,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint ui`: the Models tab has one short line per role, shorter provider, key and consent
   notices (what is sent where is kept; the rest is behind a "More" toggle), and the "Not connected"
   badge of each Connected accounts row stays on the title line. The AI Chat shows only the Ollama
-  model name for the default local model. Settings says "Shows at once; Save keeps it, in this
-  browser." once, and the Theme select has no hint.
+  model name for the default local model. Settings says once, below Projects, that Preview, Export
+  and Appearance show at once and Save keeps them in this browser, and the Theme select has no hint.
 - An automatic pick skips a candidate that mostly overlaps one already picked from the same source;
   `--ids` does not. The next candidate takes its place.
 - **BREAKING:** The AI Chat consent is version 3 (`assistant-v3:<provider>@<host>`; was `assistant-v2:`). Whole transcripts now go to a hosted chat model during `analyze`, so users of one are asked again, and a saved `assistant-v2:` entry no longer counts. The Vision consent is unchanged.
