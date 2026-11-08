@@ -1370,7 +1370,10 @@ def test_ollama_flags_win_over_an_ai_chat_ollama(home, monkeypatch, caplog):
         backend = dialogue.choose_backend("http://127.0.0.1:11434", None).backend
     assert backend is not None and backend.name == "local" and "127.0.0.1" in backend.key
     assert net.to(REMOTE) == []
-    want = "--ollama-url/--ollama-model given: using the Ollama at 127.0.0.1:11434, not ollama"
+    want = (
+        "--ollama-url/--ollama-model given: using the Ollama at 127.0.0.1:11434, "
+        "not the Ollama at 10.10.10.235:11434"
+    )
     assert caplog.text.count(want) == 1
 
 

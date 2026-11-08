@@ -590,7 +590,7 @@ def choose_backend(ollama_url: str | None = None, ollama_model: str | None = Non
             except ValueError:  # a bad port in OLLAMA_HOST / ollama_url: no line, no crash
                 chat_host = None
             if settings.provider != "ollama" or chat_host != providers.host_port(rater.url):
-                log_ollama_override(providers.host_port(rater.url), settings.provider)
+                log_ollama_override(providers.host_port(rater.url), settings.provider, chat_host)
     need = ollama_consent_key(rater.url) if rater is not None else None
     if rater is not None and need and need not in settings.consent:
         # an Ollama on another machine: whole transcripts need the assistant consent for it

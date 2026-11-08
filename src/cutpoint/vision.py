@@ -27,16 +27,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# (host, provider) pairs whose "flags win" INFO line was logged: a run builds several raters
+# (host, overridden target) pairs whose "flags win" INFO line was logged: a run builds several raters
 _override_logged: set[tuple[str, str]] = set()
 
 
-def log_ollama_override(host: str, provider: str) -> None:
-    """Log once per process that ``--ollama-url/--ollama-model`` won over ``provider`` (#805)."""
-    if (host, provider) in _override_logged:
+def log_ollama_override(host: str, provider: str, chat_host: str | None = None) -> None:
+    """Log once per process that ``--ollama-url/--ollama-model`` won over ``provider`` (#805).
+
+    An AI Chat Ollama is named by its host (``chat_host``; unknown after a bad port)."""
+    if provider == "ollama":
+        other = f"the Ollama at {chat_host}" if chat_host else "the AI Chat Ollama"
+    else:
+        other = provider
+    if (host, other) in _override_logged:
         return
-    _override_logged.add((host, provider))
-    logger.info("--ollama-url/--ollama-model given: using the Ollama at %s, not %s", host, provider)
+    _override_logged.add((host, other))
+    logger.info("--ollama-url/--ollama-model given: using the Ollama at %s, not %s", host, other)
 
 
 FALLBACK_MODEL = "qwen3.5:9b"
