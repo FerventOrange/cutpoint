@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--visual-index` / `--no-visual-index` on `analyze` and `edit`, and `"visual_index": true` in
+  `config.json` (off by default): also write the CLIP frame embeddings that the AI Chat's
+  `look_for` searches, for `gaming`, `funny` and `commentary` footage; `action`, `sport` and
+  `action-cam` always had them. It runs in the `keyframes` step (before the HUD text), changes no
+  ranking, needs the `events` extra, its model files and a CUDA GPU (without a GPU the HUD text
+  still runs), and shares the existing per-source cache. Measured on 72 min of 1080p60 gameplay
+  (RTX 3080): about 373 s per hour of video and about 25 MB per hour on disk. Sources with telemetry: the
+  crashes step also reads them, so `crashes.json` can differ; the ranking does not.
+- The AI Chat no longer offers `look_for` to a project none of whose sources has frame
+  embeddings. If a search still fails for that reason, the chat shows "Visual search isn't
+  available for this project: its analysis has no frame index (analyze --visual-index writes
+  it)" instead of the generic line.
 - HUD region discovery finds the real kill feed with the shared vision model. After discovery
   proposes regions, the model (Ollama `qwen3.5:9b`, or the hosted Vision model of the Models tab)
   looks at crops of each proposal and labels it `kill_feed`, `chat`, `notice`, `banner`, `menu`,

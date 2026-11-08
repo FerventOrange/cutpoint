@@ -1734,14 +1734,20 @@ def layer_category(style: Style) -> str:
 
 
 def plan_layers(
-    style: Style, sources: Sequence[Path], skip: Collection[str], cat: str | None = None
+    style: Style,
+    sources: Sequence[Path],
+    skip: Collection[str],
+    cat: str | None = None,
+    visual_index: bool = False,
 ) -> LayerPlan:
     """Which event layers the reactions, keyframes and crashes steps run.
 
     ``cat``: the footage category (:mod:`cutpoint.category`; None: :func:`layer_category`
     of ``style``). Reactions: the PANNs audio events (plus the voice layer for action-cam
     footage, whose crash audio score reads it). Keyframes: HUD OCR for gameplay, the CLIP
-    visual layer for action-cam and general footage (only with a CUDA GPU). Crashes:
+    visual layer for action-cam and general footage (only with a CUDA GPU); ``visual_index``
+    (``--visual-index``) adds the CLIP visual layer to the keyframes of gameplay (before the
+    HUD text) and talk too, for the assistant's visual search only. Crashes:
     action-cam and general footage, or any source with telemetry. A step whose events extra
     or model files are missing is left out with one INFO line naming the fix; nothing is
     downloaded.
@@ -1762,8 +1768,8 @@ def plan_layers(
         want["reactions"] = ("audio", "voice") if "crashes" in want else ("audio",)
     if "keyframes" not in plan.skipped:
         if plan.game:
-            want["keyframes"] = ("ocr",)
-        elif action:
+            want["keyframes"] = ("ocr", "visual") if visual_index else ("ocr",)
+        elif action or visual_index:
             want["keyframes"] = ("visual",)
         else:
             plan.skipped["keyframes"] = f"no keyframe layer for the {style.name} style"
@@ -1785,22 +1791,28 @@ def plan_layers(
             plan.skipped[step] = SKIP_NO_EXTRA
         want.clear()
         return plan
-    if "keyframes" in want and want["keyframes"] == ("visual",) and not _cuda():
+    if "visual" in want.get("keyframes", ()) and not _cuda():
+        rest = tuple(x for x in want["keyframes"] if x != "visual")  # gameplay: the HUD text stays
         logger.info(
-            "No CUDA GPU: keyframes skipped (CLIP on the CPU would take about an hour per "
-            "hour of footage)"
+            "No CUDA GPU: %s skipped (CLIP on the CPU would take about an hour per hour of "
+            "footage)",
+            "keyframes" if not rest else "the visual index",
         )
-        plan.skipped["keyframes"] = SKIP_NO_CUDA
-        del want["keyframes"]
+        if rest:
+            want["keyframes"] = rest
+        else:
+            plan.skipped["keyframes"] = SKIP_NO_CUDA
+            del want["keyframes"]
     components: dict[str, None] = {}
     for step, layers in list(want.items()):
         files = event_paths.missing_files(layers)
         if not files:
             continue
         components.update(dict.fromkeys(comp for comp, _ in files))
-        rest = tuple(x for x in layers if x != "voice")
-        if "voice" in layers and not event_paths.missing_files(rest):
-            want[step] = rest  # reactions without the voice layer
+        # reactions without the voice layer, keyframes of gameplay without the visual index
+        rest = tuple(x for x in layers if x not in ("voice", *(("visual",) if plan.game else ())))
+        if rest != layers and rest and not event_paths.missing_files(rest):
+            want[step] = rest
             continue
         need = " ".join(dict.fromkeys(comp for comp, _ in files))
         plan.skipped[step] = f"model files missing (cutpoint setup --only {need})"
@@ -1865,10 +1877,12 @@ class _StepHook:
     """``run_events``'s ``stage`` for :func:`analyze`: each layer reports as its step; a
     layer that fails fails its step (an ERROR line and a ``step_failed`` warning; for the
     OCR layer a WARNING naming the sources without menu filtering and HUD events, see
-    :func:`_ocr_failed`), and the next steps still run."""
+    :func:`_ocr_failed`), and the next steps still run. A layer in ``optional`` that fails
+    only gets a WARNING and a ``step_failed`` warning: its step is not failed."""
 
-    def __init__(self, steps: progress.Run) -> None:
+    def __init__(self, steps: progress.Run, optional: Collection[str] = ()) -> None:
         self.steps = steps
+        self.optional = optional
         self.failed: set[str] = set()
 
     @contextlib.contextmanager
@@ -1889,10 +1903,15 @@ class _StepHook:
             if layer == "ocr":  # analyze goes on, ranked without the HUD: a WARNING
                 message, files = _ocr_failed(err)
                 logger.warning("%s", message)
+            elif layer in self.optional:
+                message = f"Visual index failed: {err}; the HUD text still runs"
+                logger.warning("%s", message)
             else:
                 message = f"{LABELS[step]} failed: {err}; continuing without it"
                 logger.error("%s", message)
             jsonout.warn("step_failed", message, files)
+            if layer in self.optional:
+                return
             if self.steps.current == step:
                 self.steps.fail(message)
             self.failed.add(step)
@@ -2119,7 +2138,7 @@ def _run_layers(
                 audio=AudioParams(),
                 ocr=OcrParams(game=game, player_tags=tags),
                 vlm=VlmParams(max_windows=None),
-                stage=_StepHook(steps),
+                stage=_StepHook(steps, {"visual"} if plan.game else set()),
                 cached_ocr=plan.game,
                 llm=llm,
                 prefetch=prefetch,
@@ -2347,6 +2366,7 @@ def analyze(
     earlier_total_s: float | None = None,
     detection: dict[str, Any] | None = None,
     batch_size: int = 0,
+    visual_index: bool | None = None,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -2400,6 +2420,10 @@ def analyze(
             and loaded again for the next ones, and so are the event layers' models
             (:func:`~cutpoint.events.pipeline.run_events`); 0: one batch. The results are
             the same.
+        visual_index: True = also write the frame embeddings (the keyframes step's CLIP visual
+            layer) for gameplay and talk footage, for the assistant's visual search; they
+            change no ranking. False or None = only the styles that always write them
+            (action, sport, action-cam).
 
     Returns:
         Path of the written highlights.json.
@@ -2426,6 +2450,7 @@ def analyze(
             earlier_total_s=earlier_total_s,
             detection=detection,
             batch_size=batch_size,
+            visual_index=bool(visual_index),
         )
 
 
@@ -2451,6 +2476,7 @@ def _analyze(
     earlier_total_s: float | None,
     detection: dict[str, Any] | None,
     batch_size: int,
+    visual_index: bool,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
@@ -2697,7 +2723,7 @@ def _analyze(
         # ---- 2-4. reactions, keyframes, crashes: the event layers (events.json)
         events_new = False
         if layers:
-            plan = plan_layers(style, sources, skip, cat)
+            plan = plan_layers(style, sources, skip, cat, visual_index)
             for step, reason in plan.skipped.items():
                 steps.skip(step, reason)
             # ---- 5. dialogue: a text model reads the transcripts (open-list styles only).

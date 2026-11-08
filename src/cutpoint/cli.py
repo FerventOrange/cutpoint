@@ -46,6 +46,7 @@ from cutpoint.config import (
     projects_dir,
     resolve_project_path,
     vision_default,
+    visual_index_default,
 )
 from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
 from cutpoint.encode import LUT_SUFFIXES, Lut, check_lut
@@ -77,6 +78,12 @@ PROXY_PROVIDERS = ("claude-code", "codex", "antigravity")  # cutpoint.assistant.
 def _vision(a: argparse.Namespace) -> bool:
     """``--vision`` / ``--no-vision`` as given, else ``vision`` in config.json (default off)."""
     return vision_default() if a.vision is None else a.vision
+
+
+def _visual_index(a: argparse.Namespace) -> bool:
+    """``--visual-index`` / ``--no-visual-index`` as given, else ``visual_index`` in config.json
+    (default off)."""
+    return visual_index_default() if a.visual_index is None else a.visual_index
 
 
 def _skip(a: argparse.Namespace) -> tuple[str, ...]:
@@ -253,6 +260,7 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
         layers=True,
         skip=_skip(a),
         batch_size=a.batch_size,
+        visual_index=_visual_index(a),
     )
 
 
@@ -319,6 +327,7 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         ollama_url=a.ollama_url,
         ollama_model=a.ollama_model,
         skip=_skip(a),
+        visual_index=_visual_index(a),
         compress_peaks=_compress_peaks(a),
         lut=lut,
         color=color,
@@ -1257,6 +1266,20 @@ def _add_vision_arguments(p: argparse.ArgumentParser, lead: str) -> None:
     )
 
 
+def _add_visual_index_argument(p: argparse.ArgumentParser) -> None:
+    """``--visual-index`` / ``--no-visual-index``."""
+    p.add_argument(
+        "--visual-index",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="also write the frame embeddings the AI Chat's visual search reads (CLIP, about "
+        "one frame per second; needs the events extra and a CUDA GPU) for gameplay and talk "
+        "footage; action, sport and action-cam footage always has them. It changes no "
+        "ranking. --no-visual-index skips it when config.json turns it on "
+        "(default: visual_index in config.json, else off)",
+    )
+
+
 def _add_ollama_arguments(p: argparse.ArgumentParser) -> None:
     """``--ollama-url`` / ``--ollama-model`` for the vision step."""
     p.add_argument(
@@ -1394,6 +1417,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_vision_arguments(ed, "rate top candidates with the vision model, as analyze --vision; ")
     _add_ollama_arguments(ed)
     _add_skip_argument(ed)
+    _add_visual_index_argument(ed)
     _add_compress_peaks_argument(ed, "baked into the clips and so the final video")
     _add_lut_arguments(ed)
     _add_color_arguments(ed)
@@ -1460,6 +1484,7 @@ def build_parser() -> argparse.ArgumentParser:
         "least this confidence, 0-1 (default: style, 0.6 for action-cam; 0 = off)",
     )
     _add_skip_argument(an)
+    _add_visual_index_argument(an)
     add_batch_size_argument(an)
     _add_json_argument(an)
     an.set_defaults(func=_cmd_analyze)

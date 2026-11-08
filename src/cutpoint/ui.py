@@ -126,6 +126,7 @@ from cutpoint.assistant import cliproxy
 from cutpoint.assistant import context as ai_context
 from cutpoint.assistant import edges as ai_edges
 from cutpoint.assistant import keys as ai_keys
+from cutpoint.assistant import lookfor as ai_lookfor
 from cutpoint.assistant import ops as ai_ops
 from cutpoint.assistant import providers as ai_providers
 from cutpoint.assistant import session as ai_session
@@ -5908,7 +5909,14 @@ def create_app(port: int) -> FastAPI:
         # the events VLM windows: what the vision model saw, which find_moments searches
         windows = ai_context.vlm_windows(_load(p, "events.json"))
         project = ai_session.Project(
-            moments, segments, durations, transcript, key, windows, edge_planner(p)
+            moments,
+            segments,
+            durations,
+            transcript,
+            key,
+            windows,
+            edge_planner(p),
+            frame_index=ai_lookfor.indexed(list(durations)),  # no frames, no look_for
         )
         assistant_save(p, ai_store.CHAT)
         viewer = ai_watch.Viewer(p, provider, resolve=remap_source, consent=lambda: frames_given(p))

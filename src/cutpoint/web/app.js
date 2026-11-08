@@ -5101,7 +5101,7 @@ const TOOL_TEXT = {
   find_moments: (ev) => `Searched for “${ev.query}”: ${ev.found} found`,
   get_moment: (ev) => `Looked at ${momentName(ev.id)}`,
   get_transcript: (ev) => `Read the transcript around ${momentName(ev.id)}`,
-  look_for: (ev) => ev.error ? `Could not look through the footage for “${ev.query}”`
+  look_for: (ev) => ev.error ? (ev.reason || `Could not look through the footage for “${ev.query}”`)
     : `Looked through the footage for “${ev.query}”: ${ev.found} found${ev.new ? `, ${ev.new} new` : ''}${ev.weak ? `, ${ev.weak} weak` : ''}${ev.unconfirmed ? `, ${ev.unconfirmed} unconfirmed` : ''}`,
   view_moment: (ev) => ev.error === 'limit' ? `Did not watch ${momentName(ev.id)}: the limit of moments watched per message was reached`
     : ev.error ? `Could not watch ${momentName(ev.id)}: ${ev.error}`

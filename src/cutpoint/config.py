@@ -75,6 +75,7 @@ class Config:
     color: str = "off"
     vision_assistant: AssistantSettings = field(default_factory=AssistantSettings)
     memory_guard: float = MEMORY_GUARD_GB  # GB of RAM left free when a model loads (0: off)
+    visual_index: bool = False  # analyze writes frame embeddings for every style, not just action
 
 
 def load_config_data(path: Path | None = None) -> dict:
@@ -186,6 +187,7 @@ def _load_config(path: Path) -> Config:
     _check_type(path, data, "source_remap_exclude", _is_str_list, "a list of strings")
     _check_type(path, data, "player_tags", _is_str_or_list, "a list of names")
     _check_type(path, data, "vision", _is_bool, "true or false")
+    _check_type(path, data, "visual_index", _is_bool, "true or false")
     skip = _analysis_skip(path, data)
     projects = resolve_projects_dir(data)
     remap = data.get("source_remap") or {}
@@ -230,6 +232,7 @@ def _load_config(path: Path) -> Config:
         color,
         v_ast,
         _memory_guard(path, data),
+        data.get("visual_index") is True,
     )
 
 
@@ -415,6 +418,13 @@ def vision_default() -> bool:
     """Whether ``analyze`` and ``edit`` rate frames with Ollama when neither ``--vision`` nor
     ``--no-vision`` is given (``vision`` in ``config.json``; default False)."""
     return get_config().vision
+
+
+def visual_index_default() -> bool:
+    """Whether ``analyze`` and ``edit`` write frame embeddings for every style when neither
+    ``--visual-index`` nor ``--no-visual-index`` is given (``visual_index`` in ``config.json``;
+    default False: only action, sport and action-cam footage has them)."""
+    return get_config().visual_index
 
 
 def analysis_skip() -> tuple[str, ...]:
