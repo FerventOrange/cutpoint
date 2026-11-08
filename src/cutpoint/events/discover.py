@@ -301,6 +301,18 @@ def boxes_in(
 _LEGACY_FRAME = re.compile(r"b\d+_\d+\.jpg")
 
 
+def _source_tag(src: Source) -> str:
+    """Short digest of the source's path, size and mtime, like the key of
+    :func:`cutpoint.cache.source_dir`."""
+    key = str(src.path)
+    try:
+        st = src.io_path.stat()
+        key += f"|{st.st_size}|{st.st_mtime_ns}"
+    except OSError:  # gone since the plan: the path alone still tells files apart
+        pass
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+
+
 def _frame_name(source: str, t: float) -> str:
     """The JPEG name of a burst frame: from its source and time, so that no other burst
     plan writes a frame over a cached record's picture."""
@@ -327,16 +339,27 @@ def _ocr_frames(
     fh = None
     # a frame's id is its source and time; bursts overlap on a short source, so a time
     # taken by an earlier frame gets the burst and frame number too (unique and stable)
+    # the source's cache key (path, size, mtime; see cache.source_dir) is in the id, so two
+    # files of one name in different folders (or a file that changed) never share one (#794);
+    # `old_ids` are the ids older caches gave the same frames (the file name alone)
     seen: set[str] = set()
+    seen_old: set[str] = set()
     plan_ids = []
+    old_ids = []
     for bi, (src, t) in enumerate(bursts):
         ids = []
+        olds = []
         for k in range(params.burst_frames):
-            fid = f"{src.name}@{t + k * params.burst_step_s:.1f}"
+            at = f"@{t + k * params.burst_step_s:.1f}"
+            fid, old = f"{src.name}~{_source_tag(src)}{at}", f"{src.name}{at}"
             fid = f"{fid}#{bi}.{k}" if fid in seen else fid
+            old = f"{old}#{bi}.{k}" if old in seen_old else old
             seen.add(fid)
+            seen_old.add(old)
             ids.append(fid)
+            olds.append(old)
         plan_ids.append(ids)
+        old_ids.append(olds)
 
     # records whose JPEG is named by burst and frame number (older caches): a later plan's
     # frame may have replaced it, which shows as two records naming one file
@@ -344,12 +367,20 @@ def _ocr_frames(
         rec.get("frame") for rec in done.values() if _LEGACY_FRAME.fullmatch(str(rec.get("frame")))
     )
 
-    def cached(fid: str, t: float, bi: int, k: int) -> dict[str, Any] | None:
+    def cached(src: Source, bi: int, k: int) -> dict[str, Any] | None:
         """The cached record of this frame: same id and time (an older cache can hold
         another burst's frame under a shared id), in this run's burst, and its JPEG still
-        there and its own."""
+        there and its own. A record under the old id (file name only) counts when its
+        JPEG name is the one this source's path gives (the name hashes the full path),
+        and is taken over under the new id."""
+        fid, t = plan_ids[bi][k], bursts[bi][1] + k * params.burst_step_s
         rec = done.get(fid)
-        if rec is None or rec.get("t") != round(t + k * params.burst_step_s, 2):
+        if rec is None:
+            rec = done.get(old_ids[bi][k])
+            if rec is not None and rec.get("frame") != _frame_name(str(src.path), t):
+                return None
+            rec = rec and rec | {"id": fid}
+        if rec is None or rec.get("t") != round(t, 2):
             return None
         name = rec.get("frame")
         if not isinstance(name, str) or not (frame_dir / name).is_file() or shared[name] > 1:
@@ -361,7 +392,7 @@ def _ocr_frames(
     with folders.output_dir(frame_dir), ExitStack() as stack:
         for bi, (src, t) in enumerate(bursts):
             ids = plan_ids[bi]
-            hits = [cached(fid, t, bi, k) for k, fid in enumerate(ids)]
+            hits = [cached(src, bi, k) for k in range(len(ids))]
             if all(h is not None for h in hits):
                 out += [h for h in hits if h is not None]
                 report((bi + 1) * params.burst_frames, total)

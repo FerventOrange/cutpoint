@@ -55,7 +55,10 @@ def test_overlapping_bursts_get_unique_ids_and_replay_the_same(tmp_path, fake_oc
     first = _run(tmp_path, bursts)
     ids = [f["id"] for f in first]
     assert len(ids) == len(set(ids)) == 5 * 4
-    assert ids[:4] == [f"short.mp4@{t:.1f}" for t in (0.0, 1.5, 3.0, 4.5)]  # first keeps its id
+    tag = discover._source_tag(src)
+    assert ids[:4] == [
+        f"short.mp4~{tag}@{t:.1f}" for t in (0.0, 1.5, 3.0, 4.5)
+    ]  # first keeps its id
     assert [(f["burst"], f["k"]) for f in first] == [(b, k) for b in range(5) for k in range(4)]
 
     fake_ocr.clear()
@@ -238,3 +241,56 @@ def test_a_picture_that_cannot_be_removed_does_not_stop_discovery(tmp_path, fake
     monkeypatch.setattr(Path, "unlink", locked)
     second = _run(tmp_path, [(src, 0.0)])
     assert len(second) == discover.DiscoverParams().burst_frames
+
+
+def test_same_named_sources_in_other_folders_get_distinct_ids_and_both_replay(tmp_path, fake_ocr):
+    """#794: the file name alone was the id, so the second source's records replaced the first's."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    a = SimpleNamespace(name="clip.mp4", path=tmp_path / "a" / "clip.mp4", io_path=tmp_path / "a")
+    b = SimpleNamespace(name="clip.mp4", path=tmp_path / "b" / "clip.mp4", io_path=tmp_path / "b")
+    bursts = [(a, 0.0), (b, 0.0)]
+    first = _run(tmp_path, bursts)
+    # each alone (another plan) gives the ids it has in the shared run
+    assert {f["id"] for f in _run(tmp_path / "solo", [(a, 0.0)])}.isdisjoint(
+        {f["id"] for f in _run(tmp_path / "solo2", [(b, 0.0)])}
+    )
+    assert len({f["id"] for f in first}) == len(first)
+    assert len({f["frame"] for f in first}) == len(first)
+    assert all((tmp_path / "frames" / f["frame"]).is_file() for f in first)
+
+    fake_ocr.clear()
+    again = _run(tmp_path, bursts)
+    assert fake_ocr == []  # neither source's frames were overwritten or re-OCR'd
+    assert _key(again) == _key(first)
+
+
+def test_a_record_under_the_old_file_name_id_is_adopted_when_its_picture_matches(
+    tmp_path, fake_ocr
+):
+    """#794: older caches keyed a frame by file name and time; the same file's frames keep
+    their OCR (no re-read), and a record whose picture is another path's does not."""
+    src = SimpleNamespace(
+        name="clip.mp4", path=tmp_path / "clip.mp4", io_path=tmp_path / "clip.mp4"
+    )
+    bursts = [(src, 0.0)]
+    first = _run(tmp_path, bursts)
+    old = [f | {"id": f"clip.mp4@{f['t']:.1f}"} for f in first]
+    (tmp_path / "ocr.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in old), encoding="utf-8"
+    )
+    fake_ocr.clear()
+    again = _run(tmp_path, bursts)
+    assert fake_ocr == []
+    assert _key(again) == _key(first)  # taken over under the new ids
+
+    # the same old ids with pictures of another path (a same-named file elsewhere): redone
+    foreign = [r | {"frame": "0123456789abcdef.jpg"} for r in old]
+    for r in foreign:
+        (tmp_path / "frames" / r["frame"]).write_bytes(b"x")
+    (tmp_path / "ocr.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in foreign), encoding="utf-8"
+    )
+    fake_ocr.clear()
+    _run(tmp_path, bursts)
+    assert fake_ocr == [0.0]

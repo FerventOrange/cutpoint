@@ -46,7 +46,7 @@ def _two_lanes(tmp_path: Path) -> None:
 
 
 def _discovery(tmp_path: Path) -> None:
-    src = SimpleNamespace(name="a.mp4", io_path=tmp_path / "a.mp4")
+    src = SimpleNamespace(name="a.mp4", path=tmp_path / "a.mp4", io_path=tmp_path / "a.mp4")
     discover._ocr_frames(
         [(src, 1.0)], discover.DiscoverParams(), tmp_path / "frames", tmp_path / "ocr.jsonl"
     )
