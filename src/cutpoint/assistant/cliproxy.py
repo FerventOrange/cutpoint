@@ -23,6 +23,7 @@ import threading
 import time
 import webbrowser
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,8 @@ PREFIX_BY_PROVIDER = {
 }
 
 DEFAULT_PORT = 18317
+# what a request says while no Cutpoint proxy runs (``cutpoint ui`` starts one when needed)
+NOT_RUNNING = "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
 PINNED_VERSION = "8.0.47"
 
 PLATFORM_ASSETS: dict[tuple[str, str], tuple[str, str]] = {
@@ -280,9 +283,7 @@ def _ensure_keys(target_port: int | None = None) -> tuple[str, str]:
 def _load_keys() -> tuple[str, str]:
     res = _read_keys_file()
     if not res:
-        raise ProxyConnectionError(
-            "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
-        )
+        raise ProxyConnectionError(NOT_RUNNING)
     return res[0], res[1]
 
 
@@ -317,9 +318,7 @@ def _management_request(
     timeout: float = 15.0,
 ) -> dict[str, Any]:
     if not _is_daemon_owned():
-        raise ProxyConnectionError(
-            "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
-        )
+        raise ProxyConnectionError(NOT_RUNNING)
     mgmt_key, _ = _load_keys()
     url = f"{base_url().rstrip('/')}/{path.lstrip('/')}"
     headers = {
@@ -364,9 +363,7 @@ def _client_request(
     timeout: float = 180.0,
 ) -> dict[str, Any]:
     if not _is_daemon_owned():
-        raise ProxyConnectionError(
-            "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
-        )
+        raise ProxyConnectionError(NOT_RUNNING)
     _, client_key = _load_keys()
     url = f"{base_url().rstrip('/')}/{path.lstrip('/')}"
     headers = {
@@ -452,7 +449,7 @@ def statuses() -> list[dict[str, Any]]:
                 "org": None,
                 "expired": False,
                 "expires_ms": None,
-                "error": "cutpoint proxy not running; run 'cutpoint proxy' to authenticate",
+                "error": NOT_RUNNING,
             }
             for p in PROVIDERS
         ]
@@ -924,15 +921,20 @@ _STARTUP_NOTICE = 5.0
 _STARTUP_RETRY = 0.2
 
 
-def _wait_until_ready(proc: subprocess.Popen[Any]) -> None:
+def _wait_until_ready(
+    proc: subprocess.Popen[Any], *, cancel: threading.Event | None = None
+) -> None:
     """Wait while the supervisor is alive until the daemon answers and prefixes are set.
 
     Returns early when the supervisor exits with code 0 (the caller then sees that code);
-    raises ProxyError at once on a non-zero exit, and after ``_STARTUP_TIMEOUT`` seconds.
+    raises ProxyError at once on a non-zero exit, after ``_STARTUP_TIMEOUT`` seconds, and
+    once ``cancel`` is set (the UI is stopping).
     """
     started = time.monotonic()
     noticed = False
     while True:
+        if cancel is not None and cancel.is_set():
+            raise ProxyError("the server is stopping")
         rc = proc.poll()
         if rc is not None:
             if rc:
@@ -961,77 +963,118 @@ def _wait_until_ready(proc: subprocess.Popen[Any]) -> None:
             proc.wait(timeout=_STARTUP_RETRY)
 
 
+def _resolve_port(port: int | None) -> int:
+    """The port a new proxy listens on: ``port``, else CUTPOINT_CLIPROXY_PORT, else the saved one."""
+    if port is not None:
+        return _validate_port(port)
+    if os.environ.get("CUTPOINT_CLIPROXY_PORT"):
+        return _validate_port(os.environ["CUTPOINT_CLIPROXY_PORT"])
+    existing_keys = _read_keys_file()
+    return existing_keys[2] if existing_keys else DEFAULT_PORT
+
+
+def _prepare_launch(home_dir: Path, resolved_port: int) -> tuple[list[str], Path]:
+    """Check nothing else holds the port, write fresh keys and the config, find (or download)
+    the binary; return the guardian's command line and the daemon's working folder. Call it
+    while holding the ``launch`` lock."""
+    if _is_daemon_owned():
+        raise ProxyError("another cutpoint proxy is already running")
+    auths = auth_dir()
+    private_directory(auths)
+    run_dir = home_dir / "run"
+    private_directory(run_dir)
+    if (run_dir / ".env").exists():
+        raise ProxyError(f"untrusted .env found in daemon working directory: {run_dir}")
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", resolved_port))
+    except OSError as err:
+        raise ProxyError(
+            f"port {resolved_port} is already in use; refusing to send Cutpoint credentials"
+        ) from err
+
+    tls_cert, tls_key = proxy_tls.ensure_identity(home_dir)
+    mgmt_key, client_key = _ensure_keys(target_port=resolved_port)
+    cfg_path = config_path()
+    cfg_dict = _generate_config(
+        port=resolved_port,
+        auth_dir_path=auths,
+        mgmt_key=mgmt_key,
+        client_key=client_key,
+        tls_cert_path=tls_cert,
+        tls_key_path=tls_key,
+    )
+    _write_private_file(cfg_path, json.dumps(cfg_dict, indent=2))
+
+    env_bin = os.environ.get("CUTPOINT_CLIPROXY_BINARY")
+    if env_bin:
+        bin_file = Path(env_bin).expanduser().resolve()
+        if not bin_file.exists():
+            raise ProxyError(f"configured CUTPOINT_CLIPROXY_BINARY does not exist: {bin_file}")
+        if not os.access(bin_file, os.X_OK):
+            raise ProxyError(f"configured CUTPOINT_CLIPROXY_BINARY is not executable: {bin_file}")
+    else:
+        bin_file = _install_binary(paths.tools_dir() / "cliproxy")
+
+    cmd = [str(bin_file), "-config", str(cfg_path), "-no-browser", "--local-model"]
+    logger.info("Starting CLIProxyAPI on 127.0.0.1:%d", resolved_port)
+    guardian_cmd = [
+        sys.executable,
+        "-m",
+        "cutpoint.assistant._proxy_guardian",
+        "--root",
+        str(home_dir),
+        "--parent-pid",
+        str(os.getpid()),
+        "--",
+        *cmd,
+    ]
+    return guardian_cmd, run_dir
+
+
+def _spawn_guardian(guardian_cmd: list[str], run_dir: Path) -> subprocess.Popen[Any]:
+    """Start the guardian in its own process group (Windows) or session (POSIX), so the
+    console's Ctrl+C does not reach it. It stops CLIProxyAPI and saves the credentials when
+    its stdin closes, which also happens when this process dies."""
+    return subprocess.Popen(
+        guardian_cmd,
+        cwd=run_dir,
+        env=_sanitize_daemon_env(),
+        stdin=subprocess.PIPE,
+        close_fds=True,
+        creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0,
+        start_new_session=os.name != "nt",
+    )
+
+
+def _stop_guardian(proc: subprocess.Popen[Any]) -> int:
+    """Close the guardian's stdin (it then stops CLIProxyAPI and saves the credentials) and
+    wait for it; terminate it after 30 s.
+
+    Raises:
+        ProxyError: It did not exit within 10 s of that either.
+    """
+    if proc.stdin is not None and not proc.stdin.closed:
+        with contextlib.suppress(OSError):
+            proc.stdin.close()
+    try:
+        return proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+        try:
+            return proc.wait(timeout=10)
+        except subprocess.TimeoutExpired as err:
+            raise ProxyError("proxy supervisor did not finish credential cleanup") from err
+
+
 def run(port: int | None = None) -> None:
     """Run CLIProxyAPI in the foreground as an authenticated local loopback proxy."""
-    if port is not None:
-        resolved_port = _validate_port(port)
-    elif os.environ.get("CUTPOINT_CLIPROXY_PORT"):
-        resolved_port = _validate_port(os.environ["CUTPOINT_CLIPROXY_PORT"])
-    else:
-        existing_keys = _read_keys_file()
-        resolved_port = existing_keys[2] if existing_keys else DEFAULT_PORT
-
+    resolved_port = _resolve_port(port)
     home_dir = cliproxy_dir()
     private_directory(home_dir)
     try:
         with folders.swap_lock(home_dir / "launch"):
-            if _is_daemon_owned():
-                raise ProxyError("another cutpoint proxy is already running")
-            auths = auth_dir()
-            private_directory(auths)
-            run_dir = home_dir / "run"
-            private_directory(run_dir)
-            if (run_dir / ".env").exists():
-                raise ProxyError(f"untrusted .env found in daemon working directory: {run_dir}")
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-                    probe.bind(("127.0.0.1", resolved_port))
-            except OSError as err:
-                raise ProxyError(
-                    f"port {resolved_port} is already in use; refusing to send Cutpoint credentials"
-                ) from err
-
-            tls_cert, tls_key = proxy_tls.ensure_identity(home_dir)
-            mgmt_key, client_key = _ensure_keys(target_port=resolved_port)
-            cfg_path = config_path()
-            cfg_dict = _generate_config(
-                port=resolved_port,
-                auth_dir_path=auths,
-                mgmt_key=mgmt_key,
-                client_key=client_key,
-                tls_cert_path=tls_cert,
-                tls_key_path=tls_key,
-            )
-            _write_private_file(cfg_path, json.dumps(cfg_dict, indent=2))
-
-            env_bin = os.environ.get("CUTPOINT_CLIPROXY_BINARY")
-            if env_bin:
-                bin_file = Path(env_bin).expanduser().resolve()
-                if not bin_file.exists():
-                    raise ProxyError(
-                        f"configured CUTPOINT_CLIPROXY_BINARY does not exist: {bin_file}"
-                    )
-                if not os.access(bin_file, os.X_OK):
-                    raise ProxyError(
-                        f"configured CUTPOINT_CLIPROXY_BINARY is not executable: {bin_file}"
-                    )
-            else:
-                bin_file = _install_binary(paths.tools_dir() / "cliproxy")
-
-            cmd = [str(bin_file), "-config", str(cfg_path), "-no-browser", "--local-model"]
-            logger.info("Starting CLIProxyAPI on 127.0.0.1:%d", resolved_port)
-            guardian_cmd = [
-                sys.executable,
-                "-m",
-                "cutpoint.assistant._proxy_guardian",
-                "--root",
-                str(home_dir),
-                "--parent-pid",
-                str(os.getpid()),
-                "--",
-                *cmd,
-            ]
-            child_env = _sanitize_daemon_env()
+            guardian_cmd, run_dir = _prepare_launch(home_dir, resolved_port)
             proc: subprocess.Popen[Any] | None = None
             orig_handlers: dict[int, Any] = {}
 
@@ -1046,35 +1089,9 @@ def run(port: int | None = None) -> None:
                     with contextlib.suppress(ValueError, OSError):
                         orig_handlers[sig] = signal.signal(sig, _handle_signal)
 
-            def stop_guardian() -> int:
-                assert proc is not None
-                if proc.stdin is not None and not proc.stdin.closed:
-                    with contextlib.suppress(OSError):
-                        proc.stdin.close()
-                try:
-                    return proc.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    proc.terminate()
-                    try:
-                        return proc.wait(timeout=10)
-                    except subprocess.TimeoutExpired as err:
-                        raise ProxyError(
-                            "proxy supervisor did not finish credential cleanup"
-                        ) from err
-
             completed = False
             try:
-                proc = subprocess.Popen(
-                    guardian_cmd,
-                    cwd=run_dir,
-                    env=child_env,
-                    stdin=subprocess.PIPE,
-                    close_fds=True,
-                    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                    if os.name == "nt"
-                    else 0,
-                    start_new_session=os.name != "nt",
-                )
+                proc = _spawn_guardian(guardian_cmd, run_dir)
                 _wait_until_ready(proc)
 
                 while True:
@@ -1087,11 +1104,11 @@ def run(port: int | None = None) -> None:
                     raise ProxyError(f"CLIProxyAPI supervisor exited with non-zero code {rc}")
                 completed = True
             except KeyboardInterrupt:
-                if proc is not None and stop_guardian() != 0:
+                if proc is not None and _stop_guardian(proc) != 0:
                     raise ProxyError("proxy supervisor failed during interrupt cleanup") from None
                 raise
             finally:
-                # Restore the handlers first: stop_guardian() raises when the supervisor is
+                # Restore the handlers first: _stop_guardian() raises when the supervisor is
                 # stuck in credential cleanup, and the handlers must not outlive run().
                 try:
                     for sig, orig in orig_handlers.items():
@@ -1102,11 +1119,190 @@ def run(port: int | None = None) -> None:
                         # Startup or the run already failed: keep that error as the main
                         # one and only log a cleanup failure (#577).
                         try:
-                            if proc is not None and proc.poll() is None and stop_guardian() != 0:
+                            if (
+                                proc is not None
+                                and proc.poll() is None
+                                and _stop_guardian(proc) != 0
+                            ):
                                 logger.warning("proxy supervisor failed during cleanup")
                         except ProxyError as err:
                             logger.warning("proxy supervisor cleanup failed: %s", err)
-                    elif proc is not None and proc.poll() is None and stop_guardian() != 0:
+                    elif proc is not None and proc.poll() is None and _stop_guardian(proc) != 0:
                         raise ProxyError("proxy supervisor failed during cleanup") from None
     except FolderBusyError as err:
         raise ProxyError(f"another cutpoint proxy is already running: {err}") from err
+
+
+class ProxyProcess:
+    """A proxy :func:`start` started in the background: its guardian, and the ``launch`` lock
+    it holds until :meth:`stop`."""
+
+    def __init__(self, proc: subprocess.Popen[Any], lock: contextlib.ExitStack) -> None:
+        self.proc = proc
+        self._lock = lock
+
+    def poll(self) -> int | None:
+        return self.proc.poll()
+
+    def stop(self) -> None:
+        """Stop the guardian (it stops CLIProxyAPI and saves the credentials) and free the lock.
+
+        Raises:
+            ProxyError: The guardian did not finish its credential cleanup.
+        """
+        try:
+            if self.proc.poll() is None and _stop_guardian(self.proc) != 0:
+                raise ProxyError("proxy supervisor failed during cleanup")
+        finally:
+            self._lock.close()
+
+
+def start(port: int | None = None, *, cancel: threading.Event | None = None) -> ProxyProcess:
+    """Start the proxy in the background (what ``cutpoint proxy`` runs) and wait until it
+    answers (at most ``_STARTUP_TIMEOUT``; ``cancel`` set ends the wait with a ProxyError and
+    stops it). The guardian stops it when this process exits, also when it is killed: its
+    stdin then closes. Stop it sooner with :meth:`ProxyProcess.stop`.
+
+    Raises:
+        ProxyError: Another proxy runs, the port is taken, or it did not start in time.
+    """
+    resolved_port = _resolve_port(port)
+    home_dir = cliproxy_dir()
+    private_directory(home_dir)
+    lock = contextlib.ExitStack()
+    proc: subprocess.Popen[Any] | None = None
+    try:
+        try:
+            lock.enter_context(folders.swap_lock(home_dir / "launch"))
+        except FolderBusyError as err:
+            raise ProxyError(f"another cutpoint proxy is already running: {err}") from err
+        guardian_cmd, run_dir = _prepare_launch(home_dir, resolved_port)
+        proc = _spawn_guardian(guardian_cmd, run_dir)
+        if cancel is None:
+            _wait_until_ready(proc)
+        else:
+            _wait_until_ready(proc, cancel=cancel)
+        if proc.poll() is not None:  # _wait_until_ready returns on a code 0 exit too
+            raise ProxyError(f"CLIProxyAPI supervisor exited with code {proc.returncode}")
+    except BaseException:
+        # keep the startup error as the main one; only log a cleanup failure (#577)
+        try:
+            if proc is not None and proc.poll() is None and _stop_guardian(proc) != 0:
+                logger.warning("proxy supervisor failed during cleanup")
+        except ProxyError as err:
+            logger.warning("proxy supervisor cleanup failed: %s", err)
+        finally:
+            lock.close()
+        raise
+    return ProxyProcess(proc, lock)
+
+
+def has_saved_login() -> bool:
+    """Whether an earlier proxy run kept a subscription login: the credentials marker names
+    its files (never reads the keyring or a token). After the last logout it stays true until
+    the proxy has run once more."""
+    marker = cliproxy_dir() / "credentials-runtime.json"
+    try:
+        if marker.is_symlink() or not marker.is_file():
+            return False
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    managed = data.get("managed") if isinstance(data, dict) else None
+    return isinstance(managed, list) and bool(managed)
+
+
+class ProxyLauncher:
+    """Starts the proxy for ``cutpoint ui`` when it is needed and stops the one it started when
+    the UI exits (#821). A proxy that was already running (``cutpoint proxy`` in a terminal,
+    another UI) is used as it is and never stopped. One start runs at a time; requests that
+    come meanwhile wait for it and then use it.
+
+    ``start``, ``running`` and ``saved_login`` default to :func:`start`, whether a Cutpoint
+    proxy runs (:func:`_is_daemon_owned`) and :func:`has_saved_login`; tests pass their own.
+    """
+
+    def __init__(
+        self,
+        *,
+        start: Callable[[], ProxyProcess] | None = None,
+        running: Callable[[], bool] | None = None,
+        saved_login: Callable[[], bool] | None = None,
+    ) -> None:
+        self._start = start
+        self._running = running
+        self._saved_login = saved_login
+        self._starting = threading.Lock()  # one start at a time
+        self._state = threading.Lock()  # guards _proc and _closed; never held while starting
+        self._proc: ProxyProcess | None = None
+        self._closed = False
+        self._stopping = threading.Event()  # set by shutdown: ends a start that waits
+
+    def running(self) -> bool:
+        """Whether a Cutpoint proxy runs, this launcher's or another one. When ours exited on
+        its own, its ``launch`` lock is freed here, so ``cutpoint proxy`` can start again."""
+        with self._state:
+            exited = self._proc
+            if exited is not None and exited.poll() is not None:
+                self._proc = None
+            else:
+                exited = None
+        if exited is not None:
+            with contextlib.suppress(ProxyError):
+                exited.stop()
+        return (self._running or _is_daemon_owned)()
+
+    def saved_login(self) -> bool:
+        return (self._saved_login or has_saved_login)()
+
+    def wait_for_start(self) -> None:
+        """Wait while this launcher starts the proxy: it holds its lock (and so counts as
+        running) before it answers."""
+        if self._starting.locked():
+            with self._starting:
+                pass
+
+    def ensure(self, *, logged_in_only: bool = False) -> bool:
+        """Start the proxy unless one runs; True when this call started it. With
+        ``logged_in_only`` only when a subscription login is saved (else False).
+
+        Raises:
+            ProxyError: It did not start (the message says why), or the UI is stopping.
+        """
+        self.wait_for_start()
+        if self.running():
+            return False
+        if logged_in_only and not self.saved_login():
+            return False
+        with self._starting:
+            if self.running():  # started by the request this one waited for
+                return False
+            with self._state:
+                if self._closed:
+                    raise ProxyError("the server is stopping")
+                gone, self._proc = self._proc, None
+            if gone is not None:  # ours, but it exited: free its lock before starting again
+                with contextlib.suppress(ProxyError):
+                    gone.stop()
+            proc = self._start() if self._start else start(cancel=self._stopping)
+            with self._state:
+                if not self._closed:
+                    self._proc = proc
+                    return True
+            proc.stop()  # the UI began to stop while it started
+            raise ProxyError("the server is stopping")
+
+    def shutdown(self) -> None:
+        """Stop the proxy this launcher started, if any; a cleanup failure is logged."""
+        with self._state:
+            self._closed = True
+            proc, self._proc = self._proc, None
+        self._stopping.set()
+        if self._starting.locked():
+            logger.info("Stopping the subscription proxy that is still starting")
+        if proc is None:
+            return
+        try:
+            proc.stop()
+        except ProxyError as err:
+            logger.warning("could not stop the subscription proxy: %s", err)

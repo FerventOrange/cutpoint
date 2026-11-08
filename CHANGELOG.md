@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui` starts the subscription proxy itself, so `cutpoint proxy` no longer has to run in a
+  terminal to sign in (#821). Log in and Retry on a Connected accounts row start it when it is not
+  running (the row shows "Starting the proxy…" and any error); a chat turn with a subscription
+  model, a model-list refresh and opening Connected accounts start it only when a subscription
+  login is saved; nothing starts with the UI. A proxy the UI started stops when the UI exits; one
+  started with `cutpoint proxy` is left running. New `POST /api/assistant/proxy`;
+  `GET /api/assistant/logins` also returns `proxy_running` and `saved_login`.
 - `cutpoint ui`: while the first analysis runs the empty state is compact (no illustration, options or
   Analyzing button, no count of videos found) and has a yellow Pause analysis button, pinned to
   the top of the column, that stops the run; Resume continues it.

@@ -625,7 +625,7 @@
         <!-- Connected Accounts / Subscriptions -->
         <fieldset class="panel models-section">
           <legend>Connected accounts</legend>
-          <p class="hint">Subscriptions are managed by CLIProxyAPI. Run <code>cutpoint proxy</code> in a terminal to sign in or refresh. Use at your own risk.</p>
+          <p class="hint">Subscriptions are managed by CLIProxyAPI. Cutpoint starts the proxy when needed and stops it when the UI closes. Use at your own risk.</p>
           <details class="more"><summary>More</summary><p class="hint">Credentials use the OS keyring; the proxy needs private plaintext working files while running. A guardian handles CLI hard kills; keyring-write failures use encrypted recovery. A host crash or failed recovery write can leave private files. Antigravity sign-in may provision a free-tier project if your account has none.</p></details>
           <ul id="modelsSubsList" class="subs-list"></ul>
           <p id="modelsSubsStatus" class="hint" role="status"></p>
