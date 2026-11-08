@@ -22,6 +22,7 @@ from conftest import set_config
 from cutpoint import cache, config, ui
 from cutpoint.assistant import keys, providers
 from cutpoint.assistant import store as ai_store
+from proxy_helpers import FakeLauncher
 from test_assistant import FakeProvider, Reply, _Resp, call
 from test_assistant_byo import FakeRing, NoRing
 
@@ -667,6 +668,124 @@ def test_a_subscription_provider_misses_a_login_not_a_key(
     set_config(home, assistant={"provider": "anthropic"})
     got = client.get("/api/projects/cli/assistant").json()["consent"]
     assert got["missing_kind"] == "key"
+
+
+# --- the subscription proxy starts on demand (#821) ---
+
+
+def test_the_models_of_a_subscription_start_the_proxy_only_with_a_saved_login(
+    client: TestClient, monkeypatch, home: Path
+) -> None:
+    providers.clear_model_cache()
+    set_config(home, assistant={"provider": "codex"})
+    launcher = client.app.state.proxies = FakeLauncher(saved=False)
+    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": False, "error": None})
+    client.get("/api/assistant/models?provider=codex")
+    assert launcher.starts == 0 and launcher.calls == [True]
+
+    launcher.saved = True
+    client.get("/api/assistant/models?provider=codex")
+    assert launcher.starts == 1
+
+
+def test_the_models_of_a_subscription_say_why_the_proxy_did_not_start(
+    client: TestClient, home: Path
+) -> None:
+    set_config(home, assistant={"provider": "codex"})
+    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    launcher.error = ui.cliproxy.ProxyError("no binary for this platform")
+    res = client.get("/api/assistant/models?provider=codex")
+    assert res.status_code == 200
+    assert res.json() == {
+        "state": "error",
+        "models": [],
+        "message": "the subscription proxy did not start: no binary for this platform",
+    }
+
+
+def test_the_models_of_a_key_provider_never_touch_the_proxy(
+    client: TestClient, monkeypatch, home: Path
+) -> None:
+    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    monkeypatch.setattr(providers.requests, "get", lambda url, **kw: _Resp({"data": []}))
+    client.get("/api/assistant/models?provider=ollama")
+    assert launcher.calls == []
+
+
+CODEX_CONSENT = "assistant-v3:codex@chatgpt.com"
+
+
+def use_codex(monkeypatch: pytest.MonkeyPatch, home: Path, consent: bool = True) -> FakeProvider:
+    """A scripted subscription model (named codex, hosted) in place of the real one."""
+
+    class FakeCodex(FakeProvider):
+        name = "codex"
+        local = False
+        host = "chatgpt.com"
+
+    fake = FakeCodex([Reply("ok")])
+    monkeypatch.setitem(providers.PROVIDERS, "codex", lambda _settings: fake)
+    set_config(home, assistant={"provider": "codex", "consent": [CODEX_CONSENT] if consent else []})
+    return fake
+
+
+def test_a_turn_with_a_subscription_model_starts_the_proxy_only_with_a_saved_login(
+    client: TestClient, monkeypatch, home: Path, proj
+) -> None:
+    _, seq, _ = proj
+    use_codex(monkeypatch, home)
+    launcher = client.app.state.proxies = FakeLauncher(saved=False)
+    turns = "/api/projects/cli/assistant/turns"
+    res = client.post(turns, json={"text": "hi", "segments": seq})
+    assert res.status_code == 200, res.text
+    assert launcher.starts == 0 and launcher.calls == [True]
+
+    launcher.saved = True
+    res = client.post(turns, json={"text": "again", "segments": seq})
+    assert res.status_code in (200, 409), res.text  # 409: the first turn still runs
+    assert launcher.starts == 1
+
+
+def test_a_turn_refused_before_it_starts_leaves_the_proxy_alone(
+    client: TestClient, monkeypatch, home: Path, proj
+) -> None:
+    _, seq, _ = proj
+    use_codex(monkeypatch, home, consent=False)
+    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    turns = "/api/projects/cli/assistant/turns"
+    res = client.post(turns, json={"text": "hi", "segments": seq})
+    assert res.status_code == 409 and "agree first" in res.json()["detail"]
+    assert launcher.calls == []
+
+    set_config(home, assistant={"provider": "codex", "consent": [CODEX_CONSENT]})
+    res = client.post(turns, json={"text": "  ", "segments": seq})
+    assert res.status_code == 400
+    assert launcher.calls == []
+
+
+def test_a_turn_says_why_the_subscription_proxy_did_not_start(
+    client: TestClient, monkeypatch, home: Path, proj
+) -> None:
+    _, seq, _ = proj
+    use_codex(monkeypatch, home)
+    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    launcher.error = ui.cliproxy.ProxyError("port 18317 is already in use")
+    res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
+    assert res.status_code == 503
+    assert res.json()["detail"] == (
+        "the subscription proxy did not start: port 18317 is already in use"
+    )
+
+
+def test_a_turn_with_a_local_model_never_touches_the_proxy(
+    client: TestClient, monkeypatch, proj
+) -> None:
+    _, seq, _ = proj
+    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    use(monkeypatch, FakeProvider([Reply("ok")]))
+    res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
+    assert res.status_code == 200, res.text
+    assert launcher.calls == []
 
 
 def test_settings_view_and_put_vision_assistant(client: TestClient, home: Path) -> None:

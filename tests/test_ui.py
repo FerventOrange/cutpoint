@@ -54,6 +54,7 @@ from cutpoint.pano import project as pano_project
 from cutpoint.pano import render as pano_render
 from cutpoint.utils import find_videos
 from pano_helpers import x3clip
+from proxy_helpers import FakeLauncher, not_running
 
 PORT = 8765
 
@@ -8916,24 +8917,177 @@ def test_a_failed_subscription_login_says_why_and_can_start_again(
     assert client.post("/api/assistant/login", json={"provider": "other"}).status_code == 400
 
 
-def test_a_subscription_login_without_the_proxy_is_unavailable_not_a_server_error(
+def offline_until_started(launcher: FakeLauncher, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``cliproxy.start_login`` fails like a missing proxy until the launcher has started one."""
+    real = ui.cliproxy.start_login
+
+    def start_login(provider: str) -> dict:
+        if not launcher.is_running:
+            raise not_running()
+        return real(provider)
+
+    monkeypatch.setattr(ui.cliproxy, "start_login", start_login)
+
+
+def test_a_subscription_login_starts_the_proxy_when_none_runs_and_tries_again(
     client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    why = "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
+    launcher = client.app.state.proxies = FakeLauncher()
+    offline_until_started(launcher, monkeypatch)
+    res = client.post("/api/assistant/login", json={"provider": "codex"})
+    assert res.status_code == 200 and res.json() == {
+        "url": "https://auth.example/authorize?p=codex"
+    }
+    assert launcher.starts == 1 and launcher.calls == [False]  # a login always starts it
+    assert login_state(client, "codex")["state"] == "pending"
 
-    def offline(_provider: str) -> dict:
+
+def test_a_subscription_login_whose_proxy_does_not_start_is_unavailable_with_the_reason(
+    client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launcher = client.app.state.proxies = FakeLauncher()
+    launcher.error = ui.cliproxy.ProxyError("port 18317 is already in use")
+    offline_until_started(launcher, monkeypatch)
+    res = client.post("/api/assistant/login", json={"provider": "codex"})
+    assert res.status_code == 503, res.text
+    why = "the subscription proxy did not start: port 18317 is already in use"
+    assert res.json()["detail"] == why
+    assert login_state(client, "codex") == {"state": "error", "error": why}
+
+
+class StartedByAnother(FakeLauncher):
+    """``ensure`` finds the proxy another request just started: it runs, and this call did not start it."""
+
+    def ensure(self, *, logged_in_only: bool = False) -> bool:
+        self.calls.append(logged_in_only)
+        self.is_running = True
+        return False
+
+
+def test_a_subscription_login_retries_when_another_request_just_started_the_proxy(
+    client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launcher = client.app.state.proxies = StartedByAnother()
+    offline_until_started(launcher, monkeypatch)
+    res = client.post("/api/assistant/login", json={"provider": "codex"})
+    assert res.status_code == 200, res.text
+    assert res.json() == {"url": "https://auth.example/authorize?p=codex"}
+    assert launcher.calls == [False]
+
+
+def test_a_subscription_login_waits_for_a_proxy_that_is_still_starting(
+    client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launcher = client.app.state.proxies = FakeLauncher(running=True)
+    launcher.gate = threading.Event()  # another request is starting the proxy
+    real = ui.cliproxy.start_login
+
+    def start_login(provider: str) -> dict:
+        if not launcher.gate.is_set():
+            raise ui.cliproxy.ProxyConnectionError("proxy connection failed")
+        return real(provider)
+
+    monkeypatch.setattr(ui.cliproxy, "start_login", start_login)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(client.post, "/api/assistant/login", json={"provider": "codex"})
+        assert launcher.waiting.wait(5)  # the route waits before its first try
+        launcher.gate.set()
+        res = pending.result(10)
+    assert res.status_code == 200, res.text
+    assert launcher.starts == 0
+
+
+def test_a_subscription_login_with_a_running_proxy_keeps_the_original_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launcher = client.app.state.proxies = FakeLauncher(running=True)
+    why = "proxy answered 401"
+
+    def refused(_provider: str) -> dict:
         raise ui.cliproxy.ProxyConnectionError(why)
 
-    monkeypatch.setattr(ui.cliproxy, "start_login", offline)
+    monkeypatch.setattr(ui.cliproxy, "start_login", refused)
     res = client.post("/api/assistant/login", json={"provider": "codex"})
     assert res.status_code == 503 and res.json()["detail"] == why
+    assert launcher.starts == 0
     assert login_state(client, "codex") == {"state": "error", "error": why}
+
+
+def test_a_subscription_login_failing_for_another_reason_is_a_server_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client.app.state.proxies = FakeLauncher(running=True)
 
     def broken(_provider: str) -> dict:
         raise ui.cliproxy.ProxyError("failed to start login for codex: missing url")
 
     monkeypatch.setattr(ui.cliproxy, "start_login", broken)
     assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 500
+
+
+@pytest.mark.parametrize(
+    ("running", "saved", "expect"),
+    [(False, True, True), (False, False, False), (True, True, False), (True, False, False)],
+)
+def test_the_logins_say_whether_the_page_should_start_the_proxy(
+    client: TestClient, logins: SimpleNamespace, running: bool, saved: bool, expect: bool
+) -> None:
+    client.app.state.proxies = FakeLauncher(running=running, saved=saved)
+    got = client.get("/api/assistant/logins").json()
+    assert got["proxy_running"] is running
+    assert got["saved_login"] is expect  # only reported while no proxy runs
+
+
+def test_a_stopped_proxy_is_not_an_error_on_the_login_rows(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client.app.state.proxies = FakeLauncher()
+    monkeypatch.setattr(
+        ui.cliproxy,
+        "statuses",
+        lambda: [
+            {"provider": p, "logged_in": False, "error": ui.cliproxy.NOT_RUNNING}
+            for p in ui.cliproxy.PROVIDERS
+        ],
+    )
+    logins = client.get("/api/assistant/logins").json()["logins"]
+    assert [x["error"] for x in logins] == [None, None, None]
+
+
+def test_the_proxy_route_starts_it_only_with_a_saved_login(client: TestClient) -> None:
+    launcher = client.app.state.proxies = FakeLauncher(saved=False)
+    res = client.post("/api/assistant/proxy")
+    assert res.status_code == 200 and res.json() == {"running": False}
+    assert launcher.starts == 0 and launcher.calls == [True]
+
+    launcher.saved = True
+    res = client.post("/api/assistant/proxy")
+    assert res.status_code == 200 and res.json() == {"running": True}
+    assert launcher.starts == 1
+
+
+def test_the_proxy_route_says_why_it_did_not_start(client: TestClient) -> None:
+    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    launcher.error = ui.cliproxy.ProxyError("no binary for this platform")
+    res = client.post("/api/assistant/proxy")
+    assert res.status_code == 503
+    assert (
+        res.json()["detail"] == "the subscription proxy did not start: no binary for this platform"
+    )
+
+
+def test_the_proxy_route_needs_the_session_token(client: TestClient) -> None:
+    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    res = client.post("/api/assistant/proxy", headers={"X-Cutpoint-Token": "wrong"})
+    assert res.status_code == 403 and launcher.starts == 0
+
+
+def test_the_app_stops_the_proxy_it_started_on_shutdown() -> None:
+    app = ui.create_app(PORT)
+    launcher = app.state.proxies = FakeLauncher()
+    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}"):
+        assert launcher.shutdowns == 0
+    assert launcher.shutdowns == 1
 
 
 def test_login_timeout_cancellation_does_not_hold_login_lock(

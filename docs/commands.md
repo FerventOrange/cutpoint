@@ -255,9 +255,15 @@ The Models tab (next to AI Chat) sets the model for each role: Chat (the
 with its own provider and model; both roles offer the same providers. Provider names say how
 they sign in: Anthropic API, OpenAI API and xAI API use an API key (saved per provider and host, so
 one key serves both roles); Claude Code subscription, Codex subscription and Antigravity subscription
-use a login ("Connected accounts", managed via `cutpoint proxy` and `cutpoint login`). With the
-`cutpoint proxy` daemon running in the foreground and consent granted for the role, the tab lists
-each account's advertised models (Refresh catalog asks again); Other model… takes any id.
+use a login ("Connected accounts"). The UI starts the subscription [proxy](#proxy) itself, so
+you do not need `cutpoint proxy` in a terminal to sign in. Log in (and Retry) on a Connected
+accounts row always starts it when it is not running (the row shows "Starting the proxy…" and
+shows an error there if it fails). A chat turn with a subscription model, a model-list refresh and
+opening Connected accounts start it only when a subscription login is saved; nothing starts when
+the UI starts. A proxy the UI started stops when the UI exits (Ctrl+C, closing the console or a
+hard kill); a proxy you started with `cutpoint proxy` is left running. With the proxy running and
+consent granted for the role, the tab lists each account's advertised models (Refresh catalog asks
+again); Other model… takes any id.
 The tab works without a project, and
 one Save models saves both roles. "Rate frames with vision model"
 (off by default; saved as [`vision`](configuration.md#vision) in `config.json`) is there too:
@@ -2019,8 +2025,11 @@ cutpoint proxy [--port PORT]
 daemon in the foreground. **Use at your own risk**. Subscriptions (Claude Code, ChatGPT Codex,
 Google Antigravity) route their OAuth authorization, token refresh and inference requests
 through this loopback service (`127.0.0.1`). Available in both full and lite installs without
-requiring local models or PyTorch. Keep `cutpoint proxy` running in a dedicated terminal
-whenever you log in, refresh sessions, or run assistant or vision requests with a subscription provider.
+requiring local models or PyTorch. `cutpoint ui` starts this proxy itself when it needs it (see
+[`ui`](#ui)) and stops it on exit, so `cutpoint proxy` is no longer needed for sign-in there. Run it
+in a dedicated terminal to keep the proxy running across UI restarts, for `cutpoint login`, and for
+command-line runs (`analyze`, `edit`, `events`) whose Vision or AI Chat model is a subscription. A
+proxy started this way is never stopped by the UI.
 
 On first run, `cutpoint proxy` lazily downloads the checksum-verified ~24 MB binary (pinned version
 8.0.47) to `<CUTPOINT_HOME>/tools/cliproxy/` and starts it on port 18317 (`CUTPOINT_CLIPROXY_PORT` or

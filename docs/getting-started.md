@@ -213,9 +213,10 @@ catalogs and requests load only after consent for that role. Ollama/Local shows 
 Activity detection always uses Ollama, not the hosted Vision selection; an Ollama on another
 machine needs the Vision consent for it there too.
 
-For Claude Code, Codex or Antigravity subscriptions, run `uv run cutpoint proxy` in a dedicated
-terminal, then `uv run cutpoint login claude-code` (or `codex` / `antigravity`), or sign in under
-Connected accounts. It works in lite too, and needs a native OS keyring; the first start
+For Claude Code, Codex or Antigravity subscriptions, sign in under Connected accounts in
+`cutpoint ui`, which starts the proxy for you. To sign in from the command line, run
+`uv run cutpoint proxy` in a dedicated terminal, then `uv run cutpoint login claude-code` (or
+`codex` / `antigravity`). It works in lite too, and needs a native OS keyring; the first start
 downloads a checksum-verified CLIProxyAPI binary (about 24 MB). How credentials are stored and
 cleaned up: [`proxy`](commands.md#proxy) and [`login`](commands.md#login).
 

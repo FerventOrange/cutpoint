@@ -6066,14 +6066,26 @@ async function loadRoleModels(role, refresh) {
 }
 
 const SUB_POLL_MS = 1500;
+const PROXY_START_FAILED = 'the subscription proxy did not start'; // ui.py proxy_error and Log in
 const subNote = (...parts) => $('#modelsSubsStatus')?.replaceChildren(...parts);
 
-async function loadLogins() {
+async function loadLogins({ started = false } = {}) {
+  let r;
   try {
-    S.logins = (await api('/api/assistant/logins')).logins;
+    r = await api('/api/assistant/logins');
   } catch (e) {
     return subNote(e.message);
   }
+  S.logins = r.logins;
+  S.proxyRunning = r.proxy_running;
+  if (r.proxy_running) { // it runs now: drop the errors of an earlier start, keep login errors
+    S.proxyError = '';
+    for (const [p, msg] of Object.entries(S.loginErrors ?? {})) {
+      if (msg.startsWith(PROXY_START_FAILED)) delete S.loginErrors[p];
+    }
+  }
+  // a login kept from an earlier run needs the proxy to show: the server starts it (#821)
+  if (!started && !S.proxyStarting && !r.proxy_running && r.saved_login) return startSubProxy();
   renderLogins();
   await enumerateSubCatalogs(false);
 
@@ -6131,19 +6143,39 @@ async function enumerateSubCatalogs(refresh) {
 }
 
 
+/** Start the proxy for a login kept from an earlier run, then list the logins again. */
+async function startSubProxy() {
+  S.proxyStarting = true;
+  S.proxyError = '';
+  renderLogins();
+  try {
+    await api('/api/assistant/proxy', { method: 'POST' });
+  } catch (e) {
+    S.proxyError = e.message;
+  }
+  S.proxyStarting = false;
+  await loadLogins({ started: true });
+}
+
 function renderLogins() {
   S.loginPending ??= new Set();
+  S.loginStarting ??= new Set();
+  S.loginErrors ??= {};
   const list = $('#modelsSubsList');
   if (!list || !S.logins) return;
 
   list.replaceChildren(...S.logins.map((l) => {
-    const wait = S.loginPending.has(l.provider);
+    const starting = S.proxyStarting || S.loginStarting.has(l.provider);
+    const wait = starting || S.loginPending.has(l.provider);
     const title = PROVIDER_TITLES[l.provider] ?? l.title;
     const cat = S.subCatalogs?.[l.provider];
+    const failed = S.loginErrors[l.provider] || S.proxyError;
 
     let badgeClass = 'disconnected';
     let badgeText = 'Not connected';
-    if (wait) {
+    if (starting) {
+      badgeText = 'Starting the proxy…';
+    } else if (wait) {
       badgeClass = 'disconnected';
       badgeText = 'Waiting for browser…';
     } else if (l.logged_in) {
@@ -6157,15 +6189,17 @@ function renderLogins() {
     }
 
     let detailText = '';
-    if (wait) {
+    if (starting) {
+      detailText = 'Starting the subscription proxy…';
+    } else if (wait) {
       detailText = 'Sign in in the browser window that opened.';
     } else if (l.logged_in) {
       const emailMasked = maskEmail(l.email);
       const org = (l.org ?? '').replace(/[^\s@]+@[^\s@]+/g, maskEmail); // an org may be named after the email
       const who = [emailMasked, org].filter(Boolean).join(' · ');
       detailText = who ? `${who}` : 'Subscription active';
-    } else if (l.error) {
-      detailText = l.error;
+    } else if (failed || l.error) {
+      detailText = failed || l.error;
     } else {
       detailText = 'Not logged in. Log in to use this subscription without an API key.';
     }
@@ -6181,7 +6215,7 @@ function renderLogins() {
         type: 'button',
         class: 'btn small',
         disabled: wait,
-        text: wait ? 'Waiting…' : 'Log in',
+        text: starting ? 'Starting…' : wait ? 'Waiting…' : 'Log in',
         onclick: () => subLogin(l.provider),
       }));
     } else {
@@ -6233,12 +6267,24 @@ async function subLogin(provider) {
     if (!ok) return;
   }
   subNote();
+  S.loginStarting ??= new Set();
+  S.loginErrors ??= {};
+  delete S.loginErrors[provider];
+  S.proxyError = '';
+  // with no proxy running, the server starts it first (#821): say so on the row
+  if (S.proxyRunning === false) S.loginStarting.add(provider);
+  renderLogins();
   let r;
   try {
     r = await api('/api/assistant/login', { method: 'POST', body: { provider } });
   } catch (e) {
+    S.loginStarting.delete(provider);
+    S.loginErrors[provider] = e.message;
+    renderLogins();
     return subNote(e.message);
   }
+  S.loginStarting.delete(provider);
+  S.proxyRunning = true;
   S.loginPending.add(provider);
   window.open(r.url, '_blank', 'noopener');
   subNote('Finish signing in in the browser tab that opened. ',
