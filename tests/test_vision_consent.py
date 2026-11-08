@@ -764,3 +764,84 @@ def test_unload_sends_nothing_to_a_remote_ollama_without_consent(home, wire, mon
     monkeypatch.setattr(common.requests, "post", vision.requests.post)
     assert common.unload_ollama(REMOTE) == []
     assert wire == []
+
+
+# -- --ollama-url / --ollama-model win over a hosted Vision role (#805) -----------------------
+
+
+@pytest.mark.parametrize(
+    "flags", [{"url": "http://127.0.0.1:11434"}, {"model": "tiny:1b"}], ids=["url", "model"]
+)
+def test_an_ollama_flag_wins_over_a_hosted_vision_role(hosted, flags) -> None:
+    rater = vision.VisionRater(**flags)
+    assert rater.provider_name == "ollama" and rater.via is None
+    assert rater.consent_needed is None
+    assert rater.url.startswith("http://127.0.0.1")
+    assert hosted == []  # nothing went to the hosted role or the Ollama
+
+
+@pytest.fixture(autouse=True)
+def _fresh_override_log(monkeypatch) -> None:
+    monkeypatch.setattr(vision, "_override_logged", set())
+
+
+def test_an_ollama_flag_over_a_hosted_role_logs_one_info_line(hosted, caplog) -> None:
+    with caplog.at_level(logging.INFO):
+        vision.VisionRater(url="http://127.0.0.1:11434")
+        vision.VisionRater(url="http://127.0.0.1:11434", model="m")  # a second rater, same run
+    want = "--ollama-url/--ollama-model given: using the Ollama at 127.0.0.1:11434, not openai"
+    assert caplog.text.count(want) == 1
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        vision.VisionRater()  # no flags: no line
+    assert "--ollama-url" not in caplog.text
+
+
+def test_a_remote_ollama_flag_without_consent_sends_nothing_anywhere(hosted, caplog) -> None:
+    rater = vision.VisionRater(url=REMOTE, model="m")
+    assert rater.provider_name == "ollama" and rater.consent_needed == KEY
+    with caplog.at_level(logging.WARNING), jsonout.run("x") as res:
+        assert not rater.available()
+        assert rater.ask_json("q") is None
+    assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+    assert hosted == []  # neither the hosted role nor the Ollama was contacted
+
+
+def test_a_remote_ollama_flag_with_consent_is_used_over_a_hosted_role(home, monkeypatch) -> None:
+    set_config(
+        home,
+        vision_assistant={
+            "provider": "openai",
+            "consent": ["vision-v2:openai@api.openai.com", KEY],
+        },
+    )
+    fake = Ollama()
+    monkeypatch.setattr(vision.requests, "get", fake.get)
+    monkeypatch.setattr(vision.requests, "post", fake.post)
+
+    def no_session(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("the hosted role was asked")
+
+    monkeypatch.setattr(vision.requests.Session, "request", no_session)
+    rater = vision.VisionRater(url=REMOTE, model="qwen3.5:9b")
+    assert rater.provider_name == "ollama" and rater.consent_needed is None
+    assert rater.available()
+
+
+def test_without_flags_the_hosted_vision_role_is_still_used(hosted) -> None:
+    rater = vision.VisionRater()
+    assert rater.via is not None and rater.provider_name == "openai"
+    assert rater.consent_needed == HOSTED_KEY
+    assert hosted == []
+
+
+def test_run_events_with_an_ollama_model_flag_describes_with_the_ollama_not_the_hosted_role(
+    extra_ok,  # noqa: F811
+    hosted,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(vision.VisionRater, "available", lambda self: False)
+    data = _run_vlm(tmp_path, monkeypatch, ollama_model="tiny:1b")
+    assert data["settings"]["vlm"]["model"] == "ollama@127.0.0.1:11434:tiny:1b"
+    assert hosted == []

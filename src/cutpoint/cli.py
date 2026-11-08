@@ -1284,12 +1284,13 @@ def _add_ollama_arguments(p: argparse.ArgumentParser) -> None:
     """``--ollama-url`` / ``--ollama-model`` for the vision step."""
     p.add_argument(
         "--ollama-url",
-        help="default: $OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
+        help="default: vision_assistant.url in config.json (when the Vision role is an Ollama), "
+        "$OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
     )
     p.add_argument(
         "--ollama-model",
-        help="default: $CUTPOINT_VISION_MODEL, vision_assistant.model in config.json, or "
-        "qwen3.5:9b",
+        help="default: $CUTPOINT_VISION_MODEL, vision_assistant.model in config.json (when "
+        "the Vision role is an Ollama), or qwen3.5:9b",
     )
 
 

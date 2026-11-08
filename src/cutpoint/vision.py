@@ -27,6 +27,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# (host, overridden target) pairs whose "flags win" INFO line was logged: a run builds several raters
+_override_logged: set[tuple[str, str]] = set()
+
+
+def log_ollama_override(host: str, provider: str, chat_host: str | None = None) -> None:
+    """Log once per process that ``--ollama-url/--ollama-model`` won over ``provider`` (#805).
+
+    An AI Chat Ollama is named by its host (``chat_host``; unknown after a bad port)."""
+    if provider == "ollama":
+        other = f"the Ollama at {chat_host}" if chat_host else "the AI Chat Ollama"
+    else:
+        other = provider
+    if (host, other) in _override_logged:
+        return
+    _override_logged.add((host, other))
+    logger.info("--ollama-url/--ollama-model given: using the Ollama at %s, not %s", host, other)
+
+
 FALLBACK_MODEL = "qwen3.5:9b"
 
 
@@ -310,14 +328,22 @@ class AssistantVision:
 
 
 class VisionRater:
-    """Client for Ollama's /api/chat endpoint with images."""
+    """Client for Ollama's /api/chat endpoint with images.
+
+    ``url``, ``model``: ``--ollama-url`` and ``--ollama-model`` (None: not given). Given, either
+    one picks the Ollama over a hosted Vision role (#805); the other one takes its default. An
+    Ollama on another machine still needs the Vision consent (:attr:`consent_needed`); without
+    it nothing goes there, and nothing to the hosted Vision role either.
+    """
 
     def __init__(
         self, url: str | None = None, model: str | None = None, *, local_only: bool = False
     ) -> None:
         cfg = get_config()
         v_ast = cfg.vision_assistant
-        self.via = AssistantVision(v_ast) if not local_only and v_ast.provider != "ollama" else None
+        explicit = bool(url or model)  # given on the command line: they win (#805)
+        hosted = not local_only and not explicit and v_ast.provider != "ollama"
+        self.via = AssistantVision(v_ast) if hosted else None
         env_model = paths.env("VISION_MODEL")
         # the vision-v2: key the provider still needs (an Ollama on another machine, or the
         # hosted provider of self.via); None: on this machine or agreed to
@@ -345,6 +371,8 @@ class VisionRater:
             # the cache key's host (rating_key), as for a hosted provider: a local and a
             # remote Ollama with one model rate apart (#673)
             self.host = _host_port(self.url)
+            if explicit and not local_only and v_ast.provider != "ollama":
+                log_ollama_override(self.host, v_ast.provider)
             # an Ollama on another machine is hosted, as for AI Chat: frames go there only once
             # the user agreed to it for Vision (the Models tab of cutpoint ui). Activity
             # detection (local_only) too: it sends frames and the user's words

@@ -203,8 +203,8 @@ consent is separate from the assistant's: agreeing to one never covers the other
 when that is not the scheme's default); an entry without the `vision-v2:` prefix, saved by an earlier
 version under a narrower description, no longer counts, and the Models tab asks again.
 **Use at your own risk** when selecting a hosted provider.
-`--ollama-url` and `--ollama-model` have no effect for a provider other than `ollama`; ratings
-from those providers have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
+An explicit `--ollama-url` and/or `--ollama-model` on `analyze` or `edit` wins over a hosted provider here (VLM layer of events, feed labels, `analyze --vision`): that run uses the Ollama, with the usual default for a flag left out, and sends nothing to the hosted model; an Ollama on another machine needs this Vision consent, else the step is skipped with `vision_consent_needed`. Without the flags the provider is used, and ratings
+from hosted providers have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
 `analyze` always uses Ollama, independently of this selection; an Ollama on another machine
 needs this Vision consent for its URL there too, else the profile falls back without the model.
 
