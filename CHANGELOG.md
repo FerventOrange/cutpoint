@@ -869,6 +869,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Gaming analysis over-flagged three things from the screen text. A kill-feed row that OCR read
+  twice (an OCR variant of a name, or the two names split at another place) was two kills; reads
+  that start within 6 s of each other, never in the same frame, with the same names (side by side
+  or joined) are now one kill, and two kills of one killer or one victim with another name on the
+  other side stay two, as do two rows on screen together. A banner text that stays on a screen
+  (a scoreboard line with a player named "ACE", read as the same longer line three times running,
+  each within a minute of the last) was one scoring banner per sighting (14 moments in six
+  minutes); the first stays, with its `recurrences`, and announcing banners (the phrase alone, or
+  with another name each time) are never collapsed. And a system line of the feed ("friendly fire
+  turned off until action phase") that was read as a kill row, with the names cut anywhere, gives
+  no kill when the same line recurs as a notice. OCR events are interpreted again from the raw OCR
+  cache where one exists; older projects without it are read again.
+- Your `player_tags` match more OCR variants of your name and fewer other players' names: a
+  tag of 7 letters or more may be read with a letter dropped or added (12 or more: two, and a
+  letter read as another; 16 or more: three), a tag found anywhere in a name, so also glued to
+  a team name, counts, a row cut at the wrong place is credited to the side that holds most of the
+  tag (for a tag of 7 letters or more), and a 5 or 6 letter tag no longer matches a name one letter off;
+  a shorter tag read with an edit counts only as a whole name or word (`Dunmorrow` is no `Dunmore`).
+
 - HUD region labelling: a cached label is asked again when the prompt changes; a region found
   outside the others keeps the model's `label` in the preset; a stuck Ollama costs at most 60 s
   per call instead of 10 minutes; and the frame pictures of discovery are named after the frame, so
