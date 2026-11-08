@@ -13,7 +13,7 @@ cd cutpoint
 uv sync
 ```
 
-The dev tools (pytest, ruff, pre-commit) are a default dependency group, so no flag is needed.
+The dev tools (pytest with pytest-xdist, ruff, pre-commit) are a default dependency group, so no flag is needed.
 A plain `uv sync` also installs the `full` group (events and gpu extras: torch and CUDA, about
 7 GB or more). For a lighter, CI-like environment use `uv sync --no-group full`; add
 `--extra events` when working on that module. CI runs this way. See
@@ -29,6 +29,10 @@ uvx ruff@0.17.1 format --check src tests
 
 `uv run pytest` is the full suite as CI runs it, but it also syncs the `full` group; for a
 CI-like run without torch use `uv run --no-group full pytest` (or set `UV_NO_GROUP=full`).
+Tests run in parallel by default (pytest-xdist, `-n auto --dist loadfile` in `pyproject.toml`:
+one worker per CPU, each test file on one worker). Use `-n 0` to run serially, which you need for
+`pdb` / `--pdb` and for readable output while debugging, or `-n 4` to cap the workers. Tests must
+not share state: use `tmp_path`, `monkeypatch` and free ports, never a fixed path or port.
 Both runs deselect only tests marked `hardware`. CI also syncs `--group ocr-test` (CPU OCR for
 the slow discovery end-to-end test). For a
 quicker local run, skip the slow and ffmpeg tests (about a third of the time):
