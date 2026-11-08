@@ -286,3 +286,69 @@ def test_a_named_feed_reads_icon_lines_as_kills(
 
     preset = _discover(tmp_path, monkeypatch, labeler=labeler)
     assert preset["feed"] == {"row_notices": True}
+
+
+def test_the_cache_key_follows_the_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    frames = FRAMES[:4]
+    p = _prop("feed", "feed", 0.5)
+    before = feed_labels._key("m", p, frames)
+    assert feed_labels._key("m", p, frames) == before
+    monkeypatch.setattr(feed_labels, "_PROMPT", feed_labels._PROMPT + " Be brief.")
+    assert feed_labels._key("m", p, frames) != before
+
+
+def test_the_cache_key_follows_the_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    frames = FRAMES[:4]
+    p = _prop("feed", "feed", 0.5)
+    before = feed_labels._key("m", p, frames)
+    monkeypatch.setattr(feed_labels, "SCHEMA", feed_labels.SCHEMA | {"title": "other"})
+    assert feed_labels._key("m", p, frames) != before
+
+
+def test_an_outside_notice_the_model_labelled_carries_its_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = {
+        "name": "outside1",
+        "kind": "notice",
+        "score": 1.0,
+        "x": 20,
+        "y": 600,
+        "w": 400,
+        "h": 120,
+        "evidence": {"median_text_h": 20, "outside": True, "bursts": 5, "frames": 9},
+    }
+    monkeypatch.setattr(discover, "notice_proposals", lambda *_a, **_k: [outside])
+
+    def labeler(proposals: list[dict[str, Any]], frames: list[Any], folder: Path) -> dict[str, Any]:
+        return {"outside1": {"label": "chat", "model": "ollama@h:m"}}
+
+    preset = _discover(tmp_path, monkeypatch, labeler=labeler)
+    got = [r for r in preset["regions"] if r["name"] == "outside1"]
+    assert [r["label"] for r in got] == ["chat"] and got[0]["origin"] == "outside"
+    # the loader ignores the extra key
+    from cutpoint.events import regions as regions_mod  # noqa: PLC0415
+
+    loaded = {r.name: r for r in regions_mod._regions(preset)}
+    assert loaded["outside1"].kind == "notice"
+    unlabelled = _discover(tmp_path / "plain", monkeypatch, labeler=lambda *_a: {})
+    assert all("label" not in r for r in unlabelled["regions"])
+
+
+def test_labelling_asks_with_a_short_timeout_and_a_timeout_is_a_failure(tmp_path: Path) -> None:
+    _write_frames(tmp_path / "frames")
+    seen: list[Any] = []
+
+    def describe(*_a: Any, **kw: Any) -> None:
+        seen.append(kw.get("timeout"))
+        return None  # what VisionRater.describe gives when the request times out
+
+    rater = _rater(describe=describe)
+    proposals = [
+        _prop("feed", "feed", 0.5, x=1500, y=100),
+        _prop("feed2", "feed", 0.5, x=1500, y=400),
+        _prop("feed3", "feed", 0.5, x=1500, y=700),
+    ]
+    assert feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames") == {}
+    assert seen == [feed_labels.ASK_TIMEOUT] * feed_labels.STOP_AFTER
+    assert feed_labels.ASK_TIMEOUT == 60

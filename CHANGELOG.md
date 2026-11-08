@@ -869,6 +869,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HUD region labelling: a cached label is asked again when the prompt changes; a region found
+  outside the others keeps the model's `label` in the preset; a stuck Ollama costs at most 60 s
+  per call instead of 10 minutes; and the frame pictures of discovery are named after the frame, so
+  a later run with other bursts no longer replaces the picture of a cached frame (pictures no run
+  uses are removed).
+
 - `clips` without `--top`, `--ids` or `--max-total` no longer takes one long moment as the whole
   edit. The default edit used to count moments until their total reached the style's target length,
   so a best moment longer than the target (a 219 s dialogue stretch against the 90 s of `gaming`)
