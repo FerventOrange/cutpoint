@@ -343,3 +343,36 @@ def test_an_interrupted_run_leaves_the_ocr_cache_unpruned(tmp_path, fake_ocr):
             on_frame=stop,
         )
     assert "other.mp4@1.0" in cache.read_text("utf-8")
+
+
+def test_records_carry_a_per_file_src_key_also_from_the_cache(tmp_path, fake_ocr):
+    """#817: new records, cache hits without one (written before it) and records adopted
+    under an old id all get ``<file name>~<source tag>``; the cache keeps it."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    a = SimpleNamespace(name="clip.mp4", path=tmp_path / "a" / "clip.mp4", io_path=tmp_path / "a")
+    b = SimpleNamespace(name="clip.mp4", path=tmp_path / "b" / "clip.mp4", io_path=tmp_path / "b")
+    bursts = [(a, 0.0), (b, 0.0)]
+    first = _run(tmp_path, bursts)
+    keys = [f"clip.mp4~{discover._source_tag(s)}" for s in (a, b)]
+    assert keys[0] != keys[1]
+    assert [f["src_key"] for f in first] == [keys[0]] * 4 + [keys[1]] * 4
+    assert all(f["source"] == "clip.mp4" for f in first)
+    cached = discover.read_ocr_samples(tmp_path / "ocr.jsonl")
+    assert [f["src_key"] for f in cached] == [f["src_key"] for f in first]
+
+    # a cache written before src_key: same ids, or the old file-name ids
+    for strip_id in (False, True):
+        old = []
+        for f in first:
+            rec = {k: v for k, v in f.items() if k != "src_key"}
+            old.append(rec | {"id": f"clip.mp4@{f['t']:.1f}"} if strip_id else rec)
+        if strip_id:
+            old = old[:4]  # the old ids were shared: only the first source's records
+        (tmp_path / "ocr.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in old), encoding="utf-8"
+        )
+        fake_ocr.clear()
+        again = _run(tmp_path, bursts if not strip_id else [(a, 0.0)])
+        assert fake_ocr == []
+        assert [f["src_key"] for f in again] == [f["src_key"] for f in first[: len(again)]]

@@ -268,7 +268,9 @@ def plan_bursts(sources: list[Source], n: int) -> list[tuple[Source, float]]:
 def read_ocr_samples(path: Path) -> list[dict[str, Any]]:
     """The OCR'd burst frames cached in ``path`` (``discovery/<game>/ocr.jsonl``).
 
-    Each record: ``{id, source, t, burst, k, frame, boxes}``; a box is
+    Each record: ``{id, source, src_key, t, burst, k, frame, boxes}``; ``source`` is
+    the file name and ``src_key`` tells files of one name apart (the file name and
+    the source's cache key, see :func:`_src`; older records have none). A box is
     ``{x0, y0, x1, y1, text, score}`` in reference pixels. Unreadable lines are
     skipped; a missing file gives ``[]``.
     """
@@ -282,6 +284,13 @@ def read_ocr_samples(path: Path) -> list[dict[str, Any]]:
             if isinstance(rec, dict) and "id" in rec:
                 out.append(rec)
     return out
+
+
+def _src(f: dict[str, Any]) -> str:
+    """The source an OCR record belongs to, for grouping per source: its ``src_key``
+    (``<file name>~<cache key>``), so two files of one name in different folders stay
+    apart (#817), or the file name on records written before it."""
+    return str(f.get("src_key") or f.get("source"))
 
 
 def boxes_in(
@@ -346,12 +355,15 @@ def _ocr_frames(
     seen_old: set[str] = set()
     plan_ids = []
     old_ids = []
+    src_keys = []  # per burst: the record's src_key, the id's prefix (see _src)
     for bi, (src, t) in enumerate(bursts):
         ids = []
         olds = []
+        skey = f"{src.name}~{_source_tag(src)}"
+        src_keys.append(skey)
         for k in range(params.burst_frames):
             at = f"@{t + k * params.burst_step_s:.1f}"
-            fid, old = f"{src.name}~{_source_tag(src)}{at}", f"{src.name}{at}"
+            fid, old = f"{skey}{at}", f"{src.name}{at}"
             fid = f"{fid}#{bi}.{k}" if fid in seen else fid
             old = f"{old}#{bi}.{k}" if old in seen_old else old
             seen.add(fid)
@@ -372,7 +384,7 @@ def _ocr_frames(
         another burst's frame under a shared id), in this run's burst, and its JPEG still
         there and its own. A record under the old id (file name only) counts when its
         JPEG name is the one this source's path gives (the name hashes the full path),
-        and is taken over under the new id."""
+        and is taken over under the new id. Every hit gets this source's ``src_key``."""
         fid, t = plan_ids[bi][k], bursts[bi][1] + k * params.burst_step_s
         rec = done.get(fid)
         if rec is None:
@@ -385,7 +397,7 @@ def _ocr_frames(
         name = rec.get("frame")
         if not isinstance(name, str) or not (frame_dir / name).is_file() or shared[name] > 1:
             return None
-        return rec | {"burst": bi, "k": k}
+        return rec | {"src_key": src_keys[bi], "burst": bi, "k": k}
 
     # failed before the first frame is saved: no empty frames/ (or empty ocr.jsonl) left
     # behind; the cache is opened on the first record and closed before output_dir cleans up
@@ -432,6 +444,7 @@ def _ocr_frames(
                 rec = {
                     "id": fid,
                     "source": src.name,
+                    "src_key": src_keys[bi],
                     "t": round(t + k * params.burst_step_s, 2),
                     "burst": bi,
                     "k": k,
@@ -496,14 +509,13 @@ def gameplay_frames(frames: list[dict[str, Any]], params: DiscoverParams) -> lis
     """
     counts: dict[str, list[int]] = {}
     for f in frames:
-        counts.setdefault(str(f.get("source")), []).append(len(f.get("boxes", [])))
+        counts.setdefault(_src(f), []).append(len(f.get("boxes", [])))
     median = {s: float(np.median(c)) for s, c in counts.items()}
     out = []
     for f in frames:
         n = len(f.get("boxes", []))
         menu = n >= params.menu_min_boxes and (
-            _centre_cover(f) >= params.menu_cover
-            or n >= params.menu_jump * median[str(f.get("source"))]
+            _centre_cover(f) >= params.menu_cover or n >= params.menu_jump * median[_src(f)]
         )
         if not menu:
             out.append(f)
@@ -616,7 +628,7 @@ def _icon_lines(
                     right.add(re.sub(r"[^a-z]", "", b["text"].lower()))
         if found:
             hits += 1
-            bursts.add((f["source"], f["burst"]))
+            bursts.add((_src(f), f["burst"]))
     names, both = (left | right) - {""}, (left & right) - {""}
     return hits / max(1, len(inside)), len(bursts), len(names), len(both)
 
@@ -667,7 +679,7 @@ def _grow_feed(
         for b in f["boxes"]:
             cy, h = (b["y0"] + b["y1"]) / 2, b["y1"] - b["y0"]
             if x0 <= (b["x0"] + b["x1"]) / 2 <= x1 and 0.5 * med_h <= h <= 2 * med_h:
-                rows.append((str(f["id"]), (f["source"], f["burst"]), cy, b["text"]))
+                rows.append((str(f["id"]), (_src(f), f["burst"]), cy, b["text"]))
                 if y0 <= cy <= y1:
                     cys.append(cy)
         cys.sort()
@@ -789,7 +801,7 @@ def _banner_proposal(frames: list[dict[str, Any]], min_h: float) -> dict[str, An
         and _alpha_share([b["text"]]) >= 0.7
         and len(b["text"]) >= 5
     ]
-    bursts = {(f["source"], f["burst"]) for f, _ in tall}
+    bursts = {(_src(f), f["burst"]) for f, _ in tall}
     if len(tall) < 3 or len(bursts) < 2:
         return None
     x0 = int(np.percentile([b["x0"] for _, b in tall], 10))
@@ -890,7 +902,7 @@ def cluster_regions(
     burst_sets: dict[tuple[int, int], set] = {}
     by_burst: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for f in game_frames:
-        bkey = (f["source"], f["burst"])
+        bkey = (_src(f), f["burst"])
         by_burst.setdefault(bkey, []).append(f)
         seen = np.zeros((GH, GW), bool)
         for b in f["boxes"]:
@@ -1344,7 +1356,7 @@ def notice_proposals(
     n_frames = len(game_frames)
     per_source: dict[str, list[dict[str, Any]]] = {}
     for f in game_frames:
-        per_source.setdefault(str(f["source"]), []).append(f)
+        per_source.setdefault(_src(f), []).append(f)
     median = {s: float(np.median([len(f["boxes"]) for f in fs])) for s, fs in per_source.items()}
     static_texts: dict[str, set[str]] = {}
     for s, fs in per_source.items():
@@ -1355,11 +1367,9 @@ def notice_proposals(
         static_texts[s] = {k for k, c in seen.items() if c >= NOTICE_STATIC_SHARE * len(fs)}
     busy: set[str] = set()  # frames with a box-count jump (partial scoreboards)
     lines: list[dict[str, Any]] = []
-    order = sorted(
-        game_frames, key=lambda f: (str(f["source"]), int(f["burst"]), int(f.get("k", 0)))
-    )
+    order = sorted(game_frames, key=lambda f: (_src(f), int(f["burst"]), int(f.get("k", 0))))
     for f in order:
-        src = str(f["source"])
+        src = _src(f)
         if median[src] > 0 and len(f["boxes"]) >= params.menu_jump * median[src]:
             busy.add(str(f["id"]))
         left = []

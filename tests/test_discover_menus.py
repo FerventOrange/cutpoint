@@ -85,3 +85,27 @@ def test_proposal_records_run_frames(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(discover, "_ocr_frames", lambda *_a, **_k: frames)
     preset = discover.discover_regions([], tmp_path / "disc", "zonewar")
     assert preset["discovery"]["frames"] == [f["id"] for f in frames]
+
+
+def _keyed(key: str, b: int, k: int, boxes: list[dict[str, Any]]) -> dict[str, Any]:
+    """A frame of the file ``clip.mp4`` whose ``src_key`` is ``clip.mp4~<key>``."""
+    skey = f"clip.mp4~{key}"
+    return _frame(skey, b, k, boxes) | {"source": "clip.mp4", "src_key": skey}
+
+
+def test_box_count_jump_is_per_file_for_same_named_files() -> None:
+    """#817: two files named clip.mp4 in different folders keep their own median."""
+    quiet = [_box("HP", 20, 1040, w=40), _box("AMMO", 1800, 1040, w=60)]
+    menu_list = [_box(f"OPTION {chr(65 + i)}", 60, 100 + i * 30) for i in range(30)]
+    frames = [_keyed("aaaa1111", b, 0, quiet) for b in range(6)]
+    frames.append(_keyed("aaaa1111", 6, 0, menu_list))
+    frames += [_keyed("bbbb2222", 7 + b, 0, _busy_hud()) for b in range(6)]
+    kept = gameplay_frames(frames, DiscoverParams())
+    assert menu_list not in [f["boxes"] for f in kept]
+    assert len(kept) == 12
+    # records written before src_key (file name only) are one source, as before: over the
+    # merged median of 30 boxes the busy file's HUD frames are a jump and the menu is not
+    legacy = [{k: v for k, v in f.items() if k != "src_key"} for f in frames]
+    assert [f["boxes"] for f in gameplay_frames(legacy, DiscoverParams())] == [quiet] * 6 + [
+        menu_list
+    ]
