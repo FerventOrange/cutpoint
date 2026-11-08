@@ -44,7 +44,7 @@ stage (menu time dropped, events rescored, as ``analyze`` ranks) next to ``pre``
 analysis score).
 
 Metrics per clip, variant and stage, at ``--top`` (default ``5 10 suggested``; ``suggested``
-is the ``suggested_top`` of that ranking):
+is the count of the default edit on that ranking, as ``suggested_top``):
 
 - ``R@N``: reaction recall, each reaction label once, hit when its time is inside a top-N
   candidate;
@@ -91,7 +91,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import analyze, audio_tracks, cache, features, scorer
+from cutpoint import analyze, audio_tracks, cache, default_fit, features, scorer
 from cutpoint.analyze import DT, PartSignals, SourceResult, loudness_signal
 from cutpoint.config import remap_source, resolve_project_path
 from cutpoint.errors import FFmpegError
@@ -264,14 +264,8 @@ def to_records(
 
 
 def suggested_top(ranked: list[dict[str, Any]], target_total: float) -> int:
-    """How many of ``ranked`` fill ``target_total`` seconds, as analyze counts them."""
-    total, n = 0.0, 0
-    for c in ranked:
-        if total >= target_total:
-            break
-        total += c["end"] - c["start"]
-        n += 1
-    return n
+    """How many of ``ranked`` the default edit picks in ``target_total`` seconds, as analyze counts them."""
+    return len(default_fit.fit_target(ranked, target_total))
 
 
 def rank_pre(records: list[dict[str, Any]], target_total: float) -> tuple[list[dict], int]:

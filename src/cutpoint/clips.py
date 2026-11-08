@@ -1412,8 +1412,9 @@ def export_clips(
 
     Selection: ``segments`` (hand-picked JSON, exported exactly, in its order;
     ``order="arc"`` reorders a ``cutpoint mix`` file, see :func:`order_moments`),
-    else ``ids``, else the top ``top`` by score, else the analysis'
-    ``suggested_top``. ``max_total`` keeps the best-scoring moments whose
+    else ``ids``, else the top ``top`` by score, else the best moments that fit the
+    style's ``target_total`` (:func:`cutpoint.default_fit.fit_target`; ``suggested_top`` is
+    their count). ``max_total`` keeps the best-scoring moments whose
     summed length fits (e.g. 60 s for a Short). Candidates marked
     ``must_include`` (confident crashes, ``cutpoint crashes``) are always added to
     an automatic selection and kept under ``max_total``.

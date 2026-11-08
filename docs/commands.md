@@ -130,7 +130,7 @@ So do these combinations:
 |---|---|
 | `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
 | `resume` | `resume` (`argv`, `status_before`, `done_before`), `resumed`, and the replayed command's outputs |
-| `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set), `style`; with `--style auto`, `detection` (the `highlights.json` block, see [detect](#detect)) |
+| `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set; the number of moments the default `clips` edit picks), `style`; with `--style auto`, `detection` (the `highlights.json` block, see [detect](#detect)) |
 | `detect` | `category` (`gameplay`, `action-cam`, `talk` or `general`), `ambiguous`, `reason`, `scores` (share of the footage per category), `suggest` (`commentary` for talky gameplay, else `null`), `sources` (each `path`, `duration`, `category`, `ambiguous`, `reason`, `gameplay` (score 0-1, `null` with telemetry) and `speech` (share of the source covered by words, `null` before transcription)), `pending` (talk not checked yet: a long source has no transcript), `styles` (`analyze` and `funny-moments`: the style each would use) |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds`, `taken_over` (finished clips taken over from a stopped export's `.<folder>.cutpoint-resume`, not encoded again; 0 when none, missing for temporary clips) |
 | `extend` | As `clips` (`taken_over` included), and `seconds` (`{"start", "end"}`) |
@@ -1366,7 +1366,7 @@ computer (a network folder) is not, so delete it by hand if no run is active.
 
 | Option | Meaning |
 |---|---|
-| `--top N` | Top N by score (default: the style's target length). An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
+| `--top N` | Top N by score (default: the best moments that fit the style's target length, a moment that does not fit in the room left is skipped and the next one tried; a must-include crash is always kept, and if none fits the best one is taken). An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
 | `--ids ...` | Explicit candidate ids |
 | `--segments FILE` | Export exactly the listed segments in the listed order |
 | `--max-total S` | Keep the best-scoring moments that fit in S seconds. An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
@@ -1390,7 +1390,7 @@ computer (a network folder) is not, so delete it by hand if no run is active.
 | `--json` | Result as one [JSON envelope](#json-output) on stdout |
 
 Reserved slots for visual candidates. An automatic choice (`--top`, the default
-`suggested_top` and `--max-total`, so also `edit` and `assemble <project>`) in a project of
+edit and `--max-total`, so also `edit` and `assemble <project>`) in a project of
 an `action-cam`, `action` or `sport` style keeps about one pick in eight for the
 [visual candidates](#analyze): none below 5 picks, one from 5, two from 16 (at most 2; with
 `--max-total`, counted from the moments that fit). They go by peak, and only one with a peak
@@ -1674,7 +1674,7 @@ write to, as for `clips --segments`). Everything else is a clips folder, as befo
 options below are then refused (`bad_args`, exit 1).
 
 - The moments are chosen as `clips` chooses them: `--top N`, `--ids`, `--segments FILE`,
-  `--max-total S` and `--order` (default: `suggested_top` of `highlights.json`). `--mix` is
+  `--max-total S` and `--order` (default: the best moments that fit the style's target length, as `clips`; `suggested_top` of `highlights.json` is their count). `--mix` is
   not offered; pass `--segments <project>/mix_segments.json --order arc`.
 - They are exported with the export options of [`clips`](#clips): `--vertical`, `--size`,
   `--crop`, `--smart-tail`, `--tail-min`, `--tail-max`, `--event-tails`, `--event-window`,

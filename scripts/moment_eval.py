@@ -58,7 +58,7 @@ pool candidates (``pool: "visual"``) are not ranked, as in :func:`select_moments
   default 7), for every metric above. The report gives the mean and the 95th percentile. A
   keep or reference metric "beats noise" only when its value is above the 95th percentile.
 - Default edit: ``select_moments(project)``, what ``clips`` takes without options (the
-  analysis' ``suggested_top``; ``--edit-total`` gives it a ``max_total``). Edit highlights:
+  best moments that fit the style's ``target_total``; ``--edit-total`` gives it a ``max_total``). Edit highlights:
   ``select_moments(project, max_total=180)``, what ``edit --kind highlights`` takes. For both:
   which keep, skip and reference ranges the picks of this video hit by the same overlap rule,
   and the clips and seconds of this video (``clips_all`` counts the picks of every source).

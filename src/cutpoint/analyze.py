@@ -33,7 +33,18 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from cutpoint import cache, category, features, folders, jsonout, paths, progress, runstate, scorer
+from cutpoint import (
+    cache,
+    category,
+    default_fit,
+    features,
+    folders,
+    jsonout,
+    paths,
+    progress,
+    runstate,
+    scorer,
+)
 from cutpoint.config import remap_source, unc_path
 from cutpoint.dsp import conv_same
 from cutpoint.errors import FFmpegError, LowMemoryError
@@ -2839,12 +2850,7 @@ def _analyze(
         cands.sort(
             key=lambda c: (not c.get("must_include"), *scorer.rank_key(c))
         )  # must-include first
-        total, suggested = 0.0, 0
-        for c in cands:
-            if total >= style.target_total and not c.get("must_include"):
-                break
-            total += c["end"] - c["start"]
-            suggested += 1
+        suggested = len(default_fit.fit_target(cands, style.target_total))
         hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]
         hl["suggested_top"] = suggested
         hl["settings"]["last_candidate_id"] = len(cands)
