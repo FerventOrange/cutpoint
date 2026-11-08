@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -309,28 +310,94 @@ def preset_for_path(
 
 _DATE_RE = re.compile(r"\s+\d{4}[.\-_]\d{2}[.\-_]\d{2}.*$")
 
+# folder names that say nothing about the game: footage of many games lands in them, so
+# their name would give unrelated games one preset (#822)
+GENERIC_FOLDERS = frozenset(
+    {
+        "videos",
+        "vods",
+        "captures",
+        "recordings",
+        "clips",
+        "gameplay",
+        "footage",
+        "desktop",
+        "downloads",
+        "src",
+    }
+)
+_DIGITS_RE = re.compile(r"[0-9-]+")
+
+
+def _is_generic(slug: str) -> bool:
+    """Whether a slug names no game: one of :data:`GENERIC_FOLDERS`, "game" (also the slug
+    of a name without letters or digits, such as "🎮" or "___"), at most two characters
+    ("a", "b2") or only digits and dashes (a date or a number)."""
+    return (
+        slug in GENERIC_FOLDERS
+        or slug == "game"
+        or len(slug) <= 2
+        or bool(_DIGITS_RE.fullmatch(slug))
+    )
+
 
 def game_key_for_path(path: str, override: str | None = None, project: Path | None = None) -> str:
     """Like :func:`preset_for_path` but never None.
 
     Falls back to a slug of the game name, taken from a recorder-style file name
-    ("Some Game 2024.11.14 - 19.01.53.09.DVR.mp4" -> "some-game") or else the
-    parent folder's name.
+    ("Some Game 2024.11.14 - 19.01.53.09.DVR.mp4" -> "some-game") unless that name is
+    generic (see :func:`_is_generic`; "Desktop 2024.11.14 ... .DVR.mp4" of a desktop
+    capture), else the parent folder's name unless it is generic, else the file name
+    without extension. A key that :func:`_legacy_slug` spells differently (a
+    non-ASCII name) and that has no preset yet while the legacy key has one gives the
+    legacy key, so presets written before keep matching; not the legacy "game", which
+    every name without ASCII letters or digits had.
     """
     known = preset_for_path(path, override, project)
     if known:
         return known
     p = Path(path)
     stem = _DATE_RE.sub("", p.stem)
-    return _game_slug(stem if stem != p.stem else (p.parent.name or p.stem))
+    if stem != p.stem and not _is_generic(_game_slug(stem)):
+        name = stem
+    elif p.parent.name and not _is_generic(_game_slug(p.parent.name)):
+        name = p.parent.name
+    else:
+        name = p.stem
+    key, legacy = _game_slug(name), _legacy_slug(name)
+    if (
+        key != legacy
+        and legacy != "game"
+        and load_preset(key, project) is None
+        and load_preset(legacy, project) is not None
+    ):
+        return legacy
+    return key
 
 
 def _game_slug(name: str) -> str:
-    """Preset key for a game name ("Counter-strike 2" -> "counter-strike-2").
+    """Preset key for a game name ("Counter-strike 2" -> "counter-strike-2",
+    "vidéo ünï 日本" -> "vidéo-ünï-日本").
 
-    The key is persisted (preset file stem and OCR cache key), so keep these
-    exact semantics: no Unicode folding, non-ASCII characters become "-".
+    The key is persisted (preset file stem and OCR cache key). The name is NFC-normalised
+    and lower-cased; each character that is not a letter or digit (``str.isalnum``) or a
+    combining mark (Unicode category M, such as the vowel signs of "हिन्दी") becomes "-",
+    runs of "-" collapse to one and leading or trailing ones go; an empty result is
+    "game". For ASCII names this is exactly :func:`_legacy_slug`. Non-ASCII letters,
+    digits and marks stay as they are, without folding: "²" and "Ⅻ" stay (NFKC would
+    make them "2" and "xii", but also turn "™" into "tm").
     """
+    text = unicodedata.normalize("NFC", name).lower()
+    slug = "".join(
+        c if c.isalnum() or unicodedata.category(c).startswith("M") else "-" for c in text
+    )
+    return re.sub(r"-+", "-", slug).strip("-") or "game"
+
+
+def _legacy_slug(name: str) -> str:
+    """The key :func:`_game_slug` gave before non-ASCII letters were kept: lower-case
+    ASCII letters and digits, every other run of characters "-" ("Café Racer" ->
+    "caf-racer"). Only for finding presets written under it."""
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "game"
 
 

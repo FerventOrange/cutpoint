@@ -896,6 +896,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Gaming region discovery no longer groups the OCR frames of two files of one name in different
+  folders as one source, so each keeps its own menu-frame test and static texts (#817).
+- The game key (and so the HUD preset name) no longer comes from a generic folder name such as
+  `VODs`, `Videos`, `Captures` or `src`, a name of one or two characters, or a date: the file
+  name is used instead, so unrelated games in one such folder no longer share a preset. Non-ASCII
+  letters stay in the key (`vidéo ünï 日本` gives `vidéo-ünï-日本`, was `vid-o-n`); a preset saved
+  under the old key keeps matching. Videos in such a folder run region discovery again, once per
+  file name, and a preset saved under the folder's name (such as `vods.json`) no longer matches on
+  its own: pass `--game vods` to keep using it. A check that a folder holds one game follows (#822,
+  partly).
 - An explicit `--ollama-url` and/or `--ollama-model` on `analyze` and `edit` now wins over the AI
   Chat model for dialogue reading and over a hosted Vision role (VLM layer of events, feed labels,
   `analyze --vision`); a flag left out takes its usual default. An Ollama on another machine needs
@@ -904,7 +914,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#805).
 - The crash and profile step of `analyze` and `edit` (and of `resume` replaying them) now uses an
   explicit `--ollama-url` / `--ollama-model` too, with the same Vision consent rule for an Ollama on
-  another machine. A bad port in `OLLAMA_HOST` or `ollama_url` no longer fails the profile
+  another machine; as before, that step asks the model only with `--vision`. A bad port in `OLLAMA_HOST` or `ollama_url` no longer fails the profile
   detection of `crashes` and `profile`: it logs a warning and goes on without the vision model
   (#816).
 - Feed labelling gives the first request to an Ollama 300 s (model load) instead of 60 s, and a

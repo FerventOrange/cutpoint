@@ -423,6 +423,22 @@ and 2 overrides 3. To make a preset for a game, write one
 in folder 1 or 2, or let region discovery create it. The user folder (2) is trusted like the bundled one.
 A `"builtin"` key, which older presets may have, is ignored.
 
+Without `--game`, a source's game key is the `game` of the first preset whose `match` hints occur
+in its path. Otherwise it is made from a name: the game in a recorder-style file name
+(`Some Game 2024.11.14 - 19.01.53.09.DVR.mp4` gives `some-game`), else the parent folder's name,
+else the file name without extension. A name that says nothing about the game is skipped:
+`videos`, `vods`, `captures`, `recordings`, `clips`, `gameplay`, `footage`, `desktop`,
+`downloads`, `src`, `game`, a name of one or two characters, only digits and dashes (a date), or
+no letters or digits at all; so `Desktop 2024.11.14 - 19.01.53.09.DVR.mp4` takes the folder's
+name. Videos in such a folder are discovered once per file name, and a preset saved under the
+folder's name by an older version (such as `vods.json`) no longer matches on its own: pass
+`--game vods` to keep using it. The name
+is lower-cased, every character that is not a letter, digit or combining mark becomes `-`, and
+those of any script stay (`vidéo ünï 日本` gives `vidéo-ünï-日本`; an empty result is `game`). A preset written
+by an older version under the ASCII-only key (`Café Racer` gave `caf-racer`) still matches while
+no preset has the new key (not a `game` preset, the old key of every name without ASCII letters or
+digits).
+
 The OCR layer also keeps its raw read of each source (the text it read per frame) in the source's
 cache folder, `ocr-raw-*`. When an update changes only how that text is interpreted, the next run
 replays the raw read in seconds instead of reading the footage again; a change of the preset's
