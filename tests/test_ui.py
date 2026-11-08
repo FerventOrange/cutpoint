@@ -10408,7 +10408,9 @@ def test_the_page_pauses_the_first_analysis_and_labels_one_click_edit() -> None:
     )
     assert "class: `fresh-count fresh-lead" in unanalyzed
     assert "id: 'pauseBtn', class: 'btn primary'" in unanalyzed
-    assert ".empty.fresh.running #pauseBtn { position: sticky; top: var(--space-1); z-index: 2;" in css
+    assert (
+        ".empty.fresh.running #pauseBtn { position: sticky; top: var(--space-1); z-index: 2;" in css
+    )
     assert "#pauseBtn { background: var(--amber); border-color: var(--amber);" in css
     assert (
         '<legend>One-Click Edit <span class="tag pool" id="presetExp">Experimental</span></legend>'
