@@ -150,8 +150,9 @@ def test_lite_names_the_edition_and_the_install_command(monkeypatch) -> None:
     monkeypatch.setattr(util, "find_spec", lambda m, *a: None if m == "torch" else real(m, *a))
     why = lookfor.unavailable()
     assert why is not None and "not available in Cutpoint lite" in why
-    with pytest.raises(lookfor.LookForError, match="not available in Cutpoint lite"):
+    with pytest.raises(lookfor.LookForError, match="not available in Cutpoint lite") as e:
         lookfor.Finder([A]).search("x", 5, [], {})
+    assert e.value.reason == lookfor.NO_LITE == "Visual search isn't in Cutpoint lite"
 
 
 def test_missing_clip_weights_say_how_to_get_them(clip, monkeypatch) -> None:
@@ -159,8 +160,10 @@ def test_missing_clip_weights_say_how_to_get_them(clip, monkeypatch) -> None:
         raise V.ClipWeightsMissing("CLIP weights not found in /models")
 
     monkeypatch.setattr(V, "text_embeddings", missing)
-    with pytest.raises(lookfor.LookForError, match=r"cutpoint setup --only visual"):
+    with pytest.raises(lookfor.LookForError, match=r"cutpoint setup --only visual") as e:
         search()
+    assert e.value.reason == lookfor.NO_WEIGHTS
+    assert "CLIP weights" in lookfor.NO_WEIGHTS and "--only visual" in lookfor.NO_WEIGHTS
 
 
 def test_no_cached_embeddings_say_so(clip, monkeypatch) -> None:
