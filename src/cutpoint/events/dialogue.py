@@ -8,11 +8,13 @@ marked it. Open-list styles only (``Style.open_list``, today ``gaming``).
 
 Backend, chosen once per run (:func:`choose_backend`):
 
-* hosted: the AI Chat model, when it is a hosted API (not an Ollama) and the user agreed to send it
-  project data (``assistant-v3:`` consent, which names whole transcripts). A stretch's strength
+* hosted: the AI Chat model, when it is a hosted API (not an Ollama), the user agreed to send it
+  project data (``assistant-v3:`` consent, which names whole transcripts) and gave no
+  ``--ollama-url`` / ``--ollama-model``. A stretch's strength
   is the model's own 1-10 rating; up to :data:`HOSTED_WORKERS` pieces are asked at once.
-* local: an Ollama text model (the AI Chat model when that is an Ollama, else the default
-  vision model), on this machine or, only with the ``assistant-v3:`` consent for its host (the
+* local: an Ollama text model (the one ``--ollama-url`` / ``--ollama-model`` give, before any
+  AI Chat model; else the AI Chat model when that is an Ollama, else the default vision
+  model), on this machine or, only with the ``assistant-v3:`` consent for its host (the
   Vision consent does not count), on another one (backend ``remote``). Its ratings rank about
   like chance, so they are ignored: a stretch's strength is how many reaction sounds (laughter, screams, cheering) fall
   inside it per minute (:func:`reaction_strength`); one without any still nominates, at
@@ -538,8 +540,12 @@ def _local_backend(rater: Any) -> Backend | None:
 def choose_backend(ollama_url: str | None = None, ollama_model: str | None = None) -> Choice:
     """The backend of this run (see the module doc), logging what it decides.
 
-    ``ollama_url``, ``ollama_model``: ``analyze --ollama-url`` and ``--ollama-model``, for the
-    default Ollama (not for an AI Chat model that is a local Ollama, which brings its own).
+    ``ollama_url``, ``ollama_model``: ``analyze --ollama-url`` and ``--ollama-model`` (None:
+    not given). Given, either one picks the Ollama instead of any AI Chat model, hosted ones
+    the user agreed to included (#805); the other one takes its default as in
+    :class:`~cutpoint.vision.VisionRater`. An Ollama on another machine needs the same
+    ``assistant-v3:`` consent; without it the step is skipped with the warning, never handed
+    to the AI Chat model.
     """
     from cutpoint.assistant import keys, providers  # noqa: PLC0415
     from cutpoint.config import get_config  # noqa: PLC0415
@@ -547,16 +553,22 @@ def choose_backend(ollama_url: str | None = None, ollama_model: str | None = Non
 
     settings = get_config().assistant
     provider: Any = None
+    explicit = bool(ollama_url or ollama_model)  # given on the command line: they win (#805)
     try:
-        provider = providers.make(settings)
+        # the AI Chat model is not asked about when the flags name the Ollama
+        provider = None if explicit else providers.make(settings)
     except (ValueError, providers.ProviderError, keys.KeyringError) as err:
         logger.info("Dialogue reader: AI Chat provider not usable (%s)", keys.redact(str(err)))
     consent_missing: str | None = None
+    # host[:port] of the Ollama on another machine consent_missing names (None: a hosted API)
+    remote_host: str | None = None
     rater = None
     if provider is not None and not provider.local:
         key = providers.consent_key(provider)
         if key is not None and key not in settings.consent:
             consent_missing = consent_message(provider, key)
+            if isinstance(provider, providers.OllamaProvider):
+                remote_host = providers.host_port(provider.url)
         elif (
             not isinstance(provider, providers.OllamaProvider)
             and (backend := _hosted_backend(provider)) is not None
@@ -574,7 +586,9 @@ def choose_backend(ollama_url: str | None = None, ollama_model: str | None = Non
     need = ollama_consent_key(rater.url) if rater is not None else None
     if rater is not None and need and need not in settings.consent:
         # an Ollama on another machine: whole transcripts need the assistant consent for it
-        consent_missing = consent_missing or ollama_consent_message(rater.url, need)
+        if consent_missing is None:
+            consent_missing = ollama_consent_message(rater.url, need)
+            remote_host = providers.host_port(rater.url)
         rater = None
     if rater is not None and (local := _local_backend(rater)) is not None:
         if consent_missing:
@@ -584,6 +598,8 @@ def choose_backend(ollama_url: str | None = None, ollama_model: str | None = Non
         return Choice(local)
     if consent_missing:
         _warn_consent(consent_missing)
+        if remote_host is not None:
+            return Choice(reason=f"the Ollama at {remote_host} needs your consent (Models tab)")
         return Choice(
             reason="the hosted AI Chat model needs consent and no local text model answers"
         )

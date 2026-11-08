@@ -422,6 +422,7 @@ class Net:
 
     def __init__(self, monkeypatch, *, ollama: bool = False, hosted_text: str = '{"moments": []}'):
         self.ollama, self.hosted_text = ollama, hosted_text
+        self.pulled = ["qwen3.5:9b"]  # the models /api/tags lists
         self.calls: list[tuple[str, str]] = []
         self.bodies: list[dict[str, Any]] = []
         monkeypatch.setattr(requests, "get", lambda url, **kw: self._go("GET", url, kw))
@@ -434,7 +435,9 @@ class Net:
             if not self.ollama:
                 raise requests.ConnectionError("connection refused")
             if method == "GET" and url.endswith("/api/tags"):
-                return Resp({"models": [{"name": "qwen3.5:9b", "digest": "0123456789abcdef"}]})
+                return Resp(
+                    {"models": [{"name": n, "digest": "0123456789abcdef"} for n in self.pulled]}
+                )
             if method == "POST" and url.endswith("/api/generate"):
                 return Resp({"response": '{"moments": [{"first_line": 0}]}'})
         if "api.anthropic.com" in url:
@@ -1324,6 +1327,89 @@ def test_a_remote_ollama_with_the_assistant_consent_is_read_like_a_local_one(hom
     (ev,) = dialogue.to_events("a.mp4", [stretch(0.0, 60.0, rating=10)], None, "remote", "m")
     assert ev["confidence"] == dialogue.BASELINE_STRENGTH
     backend.close()  # frees the model
+
+
+# --------------------------------------------------------------------------- the flags win (#805)
+def test_ollama_flags_win_over_a_consented_hosted_ai_chat_model(hosted_chat, monkeypatch):
+    hosted_chat([f"assistant-v3:{ANTHROPIC}"])  # key and consent: it would be the backend
+    net = Net(monkeypatch, ollama=True)
+    net.pulled = ["tiny:1b"]
+    made: list[bool] = []
+    real = providers.make
+    monkeypatch.setattr(providers, "make", lambda *a, **k: made.append(True) or real(*a, **k))
+    with jsonout.run("analyze") as res:
+        backend = dialogue.choose_backend(None, "tiny:1b").backend
+    assert backend is not None and backend.name == "local" and backend.model == "tiny:1b"
+    assert "tiny:1b" in backend.key
+    assert net.to("api.anthropic.com") == [] and not made and res.warnings == []
+
+
+def test_ollama_flags_win_over_an_ai_chat_ollama(home, monkeypatch):
+    set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL, "consent": [REMOTE_KEY]})
+    net = Net(monkeypatch, ollama=True)
+    backend = dialogue.choose_backend("http://127.0.0.1:11434", None).backend
+    assert backend is not None and backend.name == "local" and "127.0.0.1" in backend.key
+    assert net.to(REMOTE) == []
+
+
+def test_a_remote_ollama_url_without_consent_is_skipped_not_handed_to_the_hosted_model(
+    hosted_chat, monkeypatch, caplog
+):
+    hosted_chat([f"assistant-v3:{ANTHROPIC}"])  # the hosted model is agreed to and usable
+    net = Net(monkeypatch, ollama=True)
+    with caplog.at_level(logging.INFO), jsonout.run("analyze") as res:
+        choice = dialogue.choose_backend(REMOTE_URL, None)
+    assert choice.backend is None
+    assert warning_codes(res.warnings) == ["chat_consent_needed"]
+    assert REMOTE_KEY in res.warnings[0]["message"]
+    assert net.to(REMOTE) == [] and net.to("api.anthropic.com") == []
+
+
+def test_a_remote_ollama_url_with_the_assistant_consent_is_used(hosted_chat, home, monkeypatch):
+    hosted_chat([f"assistant-v3:{ANTHROPIC}", REMOTE_KEY])
+    net = Net(monkeypatch, ollama=True)
+    with jsonout.run("analyze") as res:
+        backend = dialogue.choose_backend(REMOTE_URL, None).backend
+    assert backend is not None and backend.name == "remote" and REMOTE in backend.key
+    assert backend.ask("read this") == {"moments": [{"first_line": 0}]}
+    assert net.to(REMOTE) and net.to("api.anthropic.com") == [] and res.warnings == []
+
+
+def test_the_skip_reason_names_the_remote_ollama_url_that_needs_consent(hosted_chat, monkeypatch):
+    hosted_chat([f"assistant-v3:{ANTHROPIC}"])
+    Net(monkeypatch, ollama=True)
+    with jsonout.run("analyze"):
+        choice = dialogue.choose_backend(REMOTE_URL, None)
+    assert choice.backend is None
+    assert choice.reason == f"the Ollama at {REMOTE}:11434 needs your consent (Models tab)"
+
+
+def test_the_skip_reason_names_a_remote_ai_chat_ollama_that_needs_consent(home, monkeypatch):
+    set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL})
+    Net(monkeypatch, ollama=False)  # the default Ollama does not answer either
+    with jsonout.run("analyze"):
+        choice = dialogue.choose_backend()
+    assert choice.backend is None
+    assert choice.reason == f"the Ollama at {REMOTE}:11434 needs your consent (Models tab)"
+
+
+def test_the_skip_reason_of_a_hosted_chat_api_without_consent_is_unchanged(
+    hosted_chat, monkeypatch
+):
+    hosted_chat([])
+    Net(monkeypatch, ollama=False)
+    with jsonout.run("analyze"):
+        choice = dialogue.choose_backend()
+    assert choice.backend is None
+    assert choice.reason == "the hosted AI Chat model needs consent and no local text model answers"
+
+
+def test_an_ollama_model_flag_alone_uses_the_default_url(home, monkeypatch):
+    net = Net(monkeypatch, ollama=True)
+    net.pulled = ["tiny:1b"]
+    backend = dialogue.choose_backend(None, "tiny:1b").backend
+    assert backend is not None and backend.model == "tiny:1b" and "127.0.0.1" in backend.key
+    assert [c for c in net.calls if "11434" not in c[1]] == []
 
 
 # --------------------------------------------------------------------------- the hosted model (F5)
