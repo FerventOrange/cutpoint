@@ -869,6 +869,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `clips` without `--top`, `--ids` or `--max-total` no longer takes one long moment as the whole
+  edit. The default edit used to count moments until their total reached the style's target length,
+  so a best moment longer than the target (a 219 s dialogue stretch against the 90 s of `gaming`)
+  made it one clip. It now takes the best moments that fit the target, as `--max-total` does: a
+  moment that does not fit in the room left is skipped and the next one tried, one that mostly
+  overlaps a pick is still skipped, a must-include crash is always kept, and if no moment fits the
+  best one is taken. `suggested_top` in `highlights.json` is now the number of moments this edit
+  picks; `analyze`, `events` and `clips` use one rule, and `clips` works it out from the saved
+  `target_total`, so an older `highlights.json` needs no re-run. `--top`, `--ids` and `--max-total`
+  are unchanged.
 - Viewer chat in a feed region no longer reads as kills: a `:` or `;` (also full width) before a kill
   word, `assist` or `crashed` makes a row chat on every feed, not only in a clock-stamped log, so
   `Marlin: killed that corner` gives no event. This also holds with a preset's own `kill_words`. Chat

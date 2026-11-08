@@ -37,7 +37,7 @@ def write_project(tmp_path: Path, cands: list[dict], name: str = "proj") -> Path
     data = {
         "version": 1,
         "style": "gaming",
-        "settings": {"target_total": 30.0},
+        "settings": {"target_total": 20.0},
         "sources": [{"path": SRC, "duration": 1000.0}],
         "suggested_top": 2,
         "candidates": cands,
@@ -193,7 +193,7 @@ def test_reference_budget_and_default_edit(tmp_path):
     assert v["metrics"]["keep_15"]["value"] == 2  # candidates 0 and 2 are among the 15 best
     assert v["metrics"]["refsec_15"]["value"] == pytest.approx(20 / 30)
     assert v["metrics"]["ref_30"]["value"] == 3
-    # no total: the suggested top (2) of the project, as plain `clips`
+    # no total: the moments that fit the 20 s target (2), as plain `clips`
     edit = v["edit"]
     assert edit["max_total"] is None and edit["clips"] == 2 and edit["seconds"] == 20
     assert edit["keep"]["contained"] == [[0.0, 10.0]]

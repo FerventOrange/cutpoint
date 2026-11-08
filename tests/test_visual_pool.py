@@ -319,6 +319,21 @@ def test_reserved_slot_with_suggested_top_and_max_total(tmp_path):
     assert [c["id"] for c in chosen][-2:] == ["v001", "v002"]
 
 
+def test_default_edit_fits_the_target_and_still_reserves_a_slot(tmp_path):
+    project = _hl(tmp_path, 30, STRONG, settings={"target_total": 40})
+    chosen, _ = select_moments(project)  # 8 picks of 5 s fit; one slot goes to a visual moment
+    assert [c["id"] for c in chosen][-1] == "v001" and len(chosen) == 8
+    data = json.loads((project / "highlights.json").read_text(encoding="utf-8"))
+    crash = {
+        "id": "h900", "source": "a.mp4", "start": 5000.0, "end": 5005.0, "duration": 5.0,
+        "score": 1.0, "must_include": True,
+    }  # fmt: skip
+    data["candidates"].append(crash)
+    (project / "highlights.json").write_text(json.dumps(data), encoding="utf-8")
+    chosen, _ = select_moments(project)
+    assert "h900" in [c["id"] for c in chosen]  # kept though it scores last
+
+
 def test_reserved_slot_goes_by_the_shown_peak_so_commentary_breaks_a_tie(tmp_path):
     # analysis lists the one with speech first among equal shown scores (8.1 both)
     talky = {**_pool("v001", 0.81, 2000), "transcript": "look at that"}
@@ -394,7 +409,7 @@ def test_rescore_events_keeps_the_pool_last_and_unscored():
         {"id": "h002", "source": "a.mp4", "start": 50.0, "end": 58.0, "score": 20.0},
     ]
     pool = [{**_pool("v001", 0.9, 100), "score": 99.0}, _pool("v002", 0.5, 200)]
-    hl = {"style": "action", "settings": {"target_total": 10}, "candidates": scored + pool}
+    hl = {"style": "action", "settings": {"target_total": 20}, "candidates": scored + pool}
     win = {"source": "a.mp4", "start": 98.0, "end": 106.0, "highlight_score": 10}
     scorer.rescore_events(hl, {"events": [], "windows": [win]}, Path("proj"))
     assert [c["id"] for c in hl["candidates"]] == ["h002", "h001", "v001", "v002"]
