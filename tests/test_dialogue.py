@@ -1810,3 +1810,34 @@ def test_without_a_transcript_a_widened_candidate_keeps_the_whole_stretch(tmp_pa
     scoring.nominate(hl, events_of([talk_event(100.0, 178.0)]), tmp_path, [grid()])
     (cand,) = hl["candidates"]
     assert (cand["start"], cand["end"]) == (100.0, 178.0)
+
+
+def test_a_fresh_reading_removes_the_sources_stale_caches_only(tmp_path):
+    """#803: caches of an earlier prompt version or of the same model's other transcripts are
+    never read again; another model's current cache and another source's stay."""
+    a = write(tmp_path / "a.mp4")
+    b = write(tmp_path / "b.mp4")
+    lines = talk_lines(10)
+    other_lines = talk_lines(11)
+    same, _ = fake_backend(lambda _p: {"moments": []}, key="fake@h:same")
+    other, _ = fake_backend(lambda _p: {"moments": []}, key="fake@h:other")
+    dialogue.read_source(a, other_lines, same)
+    dialogue.read_source(a, lines, other)
+    dialogue.read_source(b, lines, same)
+    same_old = dialogue._cache_path(a, other_lines, same)
+    other_a = dialogue._cache_path(a, lines, other)
+    same_b = dialogue._cache_path(b, lines, same)
+    stale = dialogue._cache_path(a, lines, same).with_name("dialogue-oldversion.json")
+    stale.write_text(
+        json.dumps({"version": dialogue.PROMPT_VERSION - 1, "model": "fake@h:other"}),
+        encoding="utf-8",
+    )
+    assert same_old.is_file() and other_a.is_file() and same_b.is_file() and stale.is_file()
+
+    dialogue.read_source(a, lines, same)
+    assert dialogue._cache_path(a, lines, same).is_file()
+    assert not same_old.exists()  # same model, other transcript
+    assert not stale.exists()  # earlier prompt version
+    assert other_a.is_file()  # another model, current version
+    assert same_b.is_file()  # another source
+    assert dialogue.read_source(a, lines, same).cached
