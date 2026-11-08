@@ -164,9 +164,12 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
    reports a missing module, tell the user how to add the extra (see
    [When something fails](#when-something-fails)).
 4. **Choose moments.** Read `highlights.json` (`candidates` with `id`, `source`, `start`, `end`,
-   `score` 0-100, `label`, `transcript`; `suggested_top`, how many moments plain `clips` takes:
-   the best that fit the style's target length, never one long moment past it; `--top` with that number is not the same pick (it takes the N best whatever their length), so run plain `clips` for the default edit) and, for banter and funny moments,
-   `transcript.txt` (`[file.mp4 00:12:31.4-00:12:38.9] text`). Then either:
+   `score` 0-100, `label`, `transcript`; `suggested_top`) and, for banter and funny moments,
+   `transcript.txt` (`[file.mp4 00:12:31.4-00:12:38.9] text`). `suggested_top` is how many
+   moments plain `clips` takes: the best that fit the style's target length, skipping longer
+   ones (if none fits, the best one). `--top` with that number is not the same pick (it takes
+   the N best whatever their length), so for the default edit run `clips` without `--top`.
+   Then either:
    - take the top N: `uv run cutpoint clips clip-edit --top 8` (or `--max-total 60` for a
      length cap, `--ids h001 h004`), or
    - export your own picks with a segments file:

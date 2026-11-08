@@ -22,7 +22,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache
+from cutpoint import cache, progress
 from cutpoint.errors import LowMemoryError
 from cutpoint.events.discover import REF_H, REF_W, boxes_in
 
@@ -256,6 +256,7 @@ def make_labeler(rater: Any) -> Labeler:
     ) -> dict[str, dict[str, str]]:
         if not candidates(proposals) or not usable():
             return {}
+        progress.update(detail="labelling HUD regions with the vision model")
         try:
             labels = label_proposals(proposals, frames, frame_dir, ask, model_key(rater))
         except LowMemoryError as err:

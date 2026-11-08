@@ -1514,9 +1514,13 @@ def apply_labels(
 
     out: list[Region] = []
     for n in feeds:
-        r = _padded(by_name[n], "feed")
-        small = min(r.w * r.h, *(o.w * o.h for o in out)) if out else 0
-        if not any(_overlap(r, o) >= 0.6 * small for o in out):  # one read of the feed is enough
+        p = by_name[n]
+        if p.get("evidence", {}).get("outside"):  # notice_proposals padded it already
+            r = Region(p["name"], p["x"], p["y"], p["w"], p["h"], "feed", gate="det", every=1)
+        else:
+            r = _padded(p, "feed")
+        # one read of the feed is enough
+        if not any(_overlap(r, o) >= 0.6 * min(r.w * r.h, o.w * o.h) for o in out):
             out.append(r)
     for r in regions:
         if r.name in feeds:

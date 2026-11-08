@@ -119,6 +119,37 @@ def test_labels_make_the_regions() -> None:
     assert [r.name for r in out if r.kind == "feed" and r.name != "feed2"] == ["extra_notice"]
 
 
+def test_a_large_separate_feed_is_kept_beside_two_small_ones() -> None:
+    """The overlap test compares the pair, not the smallest region of all."""
+    big = {"name": "big", "kind": "feed", "score": 0.5, "x": 0, "y": 0, "w": 600, "h": 400}
+    tiny = {"name": "tiny", "kind": "feed", "score": 0.5, "x": 700, "y": 700, "w": 40, "h": 20}
+    tiny2 = {"name": "tiny2", "kind": "feed", "score": 0.5, "x": 700, "y": 700, "w": 40, "h": 20}
+    other = {"name": "other", "kind": "feed", "score": 0.5, "x": 560, "y": 0, "w": 300, "h": 100}
+    proposals = [tiny, tiny2, other, big]
+    labels = {p["name"]: {"label": "kill_feed", "model": "m"} for p in proposals}
+    out, _ = apply_labels(proposals, labels, [], [])
+    # tiny2 repeats tiny; big overlaps other slightly (far under 0.6 of the smaller): kept
+    assert [r.name for r in out] == ["tiny", "other", "big"]
+
+
+def test_an_outside_notice_labelled_kill_feed_keeps_its_rectangle() -> None:
+    p = {
+        "name": "extra_notice",
+        "kind": "notice",
+        "score": 77.0,
+        "x": 100,
+        "y": 200,
+        "w": 300,
+        "h": 80,
+        "evidence": {"outside": True},
+    }
+    labels = {"extra_notice": {"label": "kill_feed", "model": "m"}}
+    extra = [{"name": "extra_notice", "kind": "notice", "origin": "outside"}]
+    out, extra_out = apply_labels([p], labels, [], extra)
+    assert [(r.x, r.y, r.w, r.h, r.kind, r.every) for r in out] == [(100, 200, 300, 80, "feed", 1)]
+    assert extra_out == []
+
+
 def _write_frames(folder: Path) -> None:
     folder.mkdir(parents=True)
     img = np.full((720, 1280, 3), 40, np.uint8)
@@ -201,6 +232,21 @@ def test_no_model_gives_no_labels(tmp_path: Path) -> None:
     proposals = [_prop("feed", "feed", 0.5, x=1500, y=100)]
     assert feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames") == {}
     assert not rater.warned
+
+
+def test_low_memory_gives_no_labels_and_frees_the_model(tmp_path: Path) -> None:
+    from cutpoint.errors import LowMemoryError  # noqa: PLC0415
+
+    _write_frames(tmp_path / "frames")
+    unloaded: list[bool] = []
+
+    def describe(*_a: Any, **_k: Any) -> None:
+        raise LowMemoryError("Not enough memory for the model", "1 GB free")
+
+    rater = _rater(describe=describe, unload=lambda: unloaded.append(True))
+    proposals = [_prop("feed", "feed", 0.5, x=1500, y=100)]
+    assert feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames") == {}
+    assert unloaded == [True]
 
 
 def _discover(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **kw: Any) -> dict[str, Any]:
