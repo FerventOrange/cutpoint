@@ -454,14 +454,17 @@ gameplay frames with edge text in it and compares the two grids (cosine similari
 nothing: its sources keep the first guess. To give an older preset the fit check, run
 `cutpoint events <project> --discover-regions` on a folder
 where that game is the majority: discovery runs again and its sources are compared with each
-other as in a new discovery (the source with the most gameplay frames leads); the preset gets
+other as in a new discovery (the largest group leads, see below); the preset gets
 only a `discovery.fit_ref` made from the sources that fit (its regions and every other key stay
 as they are; an INFO line `Added the HUD fit check to the preset '<key>' (its regions are
 unchanged)` says so, and nothing is written when the footage has too little edge text to tell),
 and a source that does not fit is split off as below. With `--discover-regions` over a preset
 that has a `fit_ref`, the sources are checked against it instead; its `fit_ref` is made again
 from those that fit (and those with too little text to tell), and stays as it is when none fits. A source discovered with others is
-compared with the rest of that run (the source with the most gameplay frames leads). A source
+compared with the rest of that run: each source is tried as the start of a group that the
+others join when they fit it, and the group with the most gameplay frames in total keeps the key
+(on a tie, the group of more sources), so the game most of the footage shows keeps it even when
+the longest single file is of another game. A source
 that does not fit gets a key of its own and its own discovery (or the key of a source split off
 before it in the same run, when its text lands like that one's), and an INFO line says so:
 `<file> does not fit the HUD preset '<key>' (score 0.12); discovering it as '<new key>'`. Its key

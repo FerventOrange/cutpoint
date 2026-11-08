@@ -937,7 +937,8 @@ def _discover(
         install: bool = True,
     ) -> dict[str, Any]:
         """Discovery for ``game`` on ``srcs`` and its install, as a record in ``out``;
-        ``keep``: cluster again from these sources' records only (no OCR, no new log);
+        ``keep``: cluster again from these sources' records only (no OCR, no "No HUD
+        preset matches" line);
         ``install`` False: no preset written yet (:func:`install_preset` does it once the
         fit check has split off other games)."""
         gi = runs["started"]

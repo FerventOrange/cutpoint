@@ -1718,13 +1718,23 @@ def discover_regions(
     params = params or DiscoverParams()
     t0 = time.perf_counter()
     bursts = plan_bursts(sources, params.bursts)
-    logger.info(
-        "Region discovery for %s: %d bursts x %d frames over %d source(s)",
-        game,
-        len(bursts),
-        params.burst_frames,
-        len(sources),
-    )
+    if keep_src_keys is None:
+        logger.info(
+            "Region discovery for %s: %d bursts x %d frames over %d source(s)",
+            game,
+            len(bursts),
+            params.burst_frames,
+            len(sources),
+        )
+    else:  # the counts of the kept sources: their frames were read by the run before
+        logger.info(
+            "Region discovery for %s again: %d bursts x %d frames over %d source(s), "
+            "from the frames already read",
+            game,
+            sum(src_key(s) in keep_src_keys for s, _ in bursts),
+            params.burst_frames,
+            sum(src_key(s) in keep_src_keys for s in sources),
+        )
     frames = _ocr_frames(bursts, params, out_dir / "frames", out_dir / "ocr.jsonl", on_frame)
     if keep_src_keys is not None:
         frames = [f for f in frames if _src(f) in keep_src_keys]

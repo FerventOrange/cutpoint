@@ -910,7 +910,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   text lands in other places on screen (a grid of 16 x 12 cells) than in the footage of its
   guessed key's preset gets a key and a discovery of its own (INFO line
   `<file> does not fit the HUD preset '<key>' ...`), and a preset discovered from several sources
-  is made from those that fit. A preset from an older version splits nothing until it has the grid:
+  is made from the largest group of them that fits together (most gameplay frames in total), which
+  keeps the key. A preset from an older version splits nothing until it has the grid:
   to give an older preset the fit check, run `cutpoint events <project> --discover-regions` on a
   folder where that game is the majority, which checks the sources against each other as in a new
   discovery and adds only `discovery.fit_ref`, made from those that fit, to the preset (regions unchanged, INFO line `Added the HUD fit check to the

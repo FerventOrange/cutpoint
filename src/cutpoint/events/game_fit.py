@@ -218,36 +218,49 @@ def against_run(p: Profile, other: Profile) -> Fit | None:
 def split_group(
     profiles: dict[str, Profile], durations: dict[str, float], fixed: frozenset[str] = frozenset()
 ) -> dict[str, Fit | None]:
-    """Which sources of one discovery run fit together.
+    """Which sources of one discovery run fit together: the largest group leads.
 
-    The leader is the source with the most gameplay frames (enough evidence needed); the
-    group profile starts as the leader plus the ``fixed`` sources (decided before, never
-    tested). The others, longest first, join when their grid fits the group's, which then
-    pools them too.
+    A group grows from a seed (a source with enough evidence): its profile starts as the
+    seed plus the ``fixed`` sources (decided before, never tested); the others, longest
+    first, join when their grid fits the group's, which then pools them too. Each source
+    with enough evidence is tried as the seed; the group with the most gameplay frames in
+    total wins, so the game most of the run shows keeps the key even when one source of
+    another game is the longest. Ties: the group of more sources, then the seed with more
+    gameplay frames, then the seed first in the order (longest, then path).
 
     Returns:
-        Per source not in ``fixed``: its :class:`Fit` (``ref`` ``run``), or None when
-        there is too little evidence (its own, or no source has enough).
+        Per source not in ``fixed``: its :class:`Fit` (``ref`` ``run``) against the
+        winning group, or None when there is too little evidence (its own, or no source
+        has enough).
     """
     order = sorted(profiles, key=lambda k: (-durations.get(k, 0.0), k))
     usable = [k for k in order if profiles[k].enough()]
     out: dict[str, Fit | None] = {k: None for k in order if k not in fixed}
     if not usable:
         return out
-    leader = max(usable, key=lambda k: profiles[k].frames)  # ties: the longest
-    group = profiles[leader]
-    for k in fixed:
-        if k != leader and k in profiles:
-            group += profiles[k]
-    if leader not in fixed:
-        out[leader] = against_run(profiles[leader], group)
-    for k in order:
-        if k == leader or k in fixed or not profiles[k].enough():
-            continue
-        fit = against_run(profiles[k], group)
-        out[k] = fit
-        if fit is not None and fit.ok:
-            group += profiles[k]
+
+    def grow(seed: str) -> tuple[Profile, int, dict[str, Fit | None]]:
+        """The group grown from ``seed``: its pooled profile, its sources, the fits."""
+        group, members, fits = profiles[seed], 1, {}
+        for k in fixed:
+            if k != seed and k in profiles:
+                group += profiles[k]
+                members += 1
+        if seed not in fixed:
+            fits[seed] = against_run(profiles[seed], group)
+        for k in order:
+            if k == seed or k in fixed or not profiles[k].enough():
+                continue
+            fit = fits[k] = against_run(profiles[k], group)
+            if fit is not None and fit.ok:
+                group += profiles[k]
+                members += 1
+        return group, members, fits
+
+    # every seed grows a group: n^2 grid comparisons, cheap for a folder's sources
+    grown = [(i, seed, *grow(seed)) for i, seed in enumerate(usable)]
+    best = max(grown, key=lambda g: (g[2].frames, g[3], profiles[g[1]].frames, -g[0]))
+    out.update(best[4])
     return out
 
 

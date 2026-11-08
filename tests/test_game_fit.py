@@ -132,6 +132,37 @@ def test_a_merged_discovery_of_two_games_splits_greedily() -> None:
     assert fits["b2"] is None
 
 
+def test_the_largest_group_leads_not_the_longest_source() -> None:
+    """The Windows case in numbers: one source of game B has the most frames (52), but the
+    two of game A have more together (50 + 42): A's group leads, B does not fit it."""
+    profs = {
+        "a1": profile(_frames("a", 50), MIN_SCORE),
+        "a2": profile(_frames("a", 42), MIN_SCORE),
+        "b": profile(_frames("b", 52), MIN_SCORE),
+    }
+    fits = split_group(profs, {"a1": 600.0, "a2": 500.0, "b": 700.0})
+    assert fits["a1"] is not None and fits["a1"].ok and fits["a1"].score == pytest.approx(1.0)
+    assert fits["a2"] is not None and fits["a2"].ok
+    assert fits["b"] is not None and not fits["b"].ok and fits["b"].score == 0.0
+
+
+def test_groups_of_equal_frames_tie_on_sources_then_seed_then_order() -> None:
+    # 10 + 10 frames of A against 20 of B: the group of more sources leads
+    profs = {
+        "a1": profile(_frames("a", 10), MIN_SCORE),
+        "a2": profile(_frames("a", 10), MIN_SCORE),
+        "b": profile(_frames("b", 20), MIN_SCORE),
+    }
+    fits = split_group(profs, {"b": 900.0})
+    assert fits["a1"].ok and fits["a2"].ok and not fits["b"].ok
+    # one source each, as many frames: the first in the order (the longest) leads
+    profs = {"a": profile(_frames("a", 12), MIN_SCORE), "b": profile(_frames("b", 12), MIN_SCORE)}
+    fits = split_group(profs, {"a": 300.0, "b": 600.0})
+    assert fits["b"].ok and not fits["a"].ok
+    fits = split_group(profs, {"a": 600.0, "b": 300.0})
+    assert fits["a"].ok and not fits["b"].ok
+
+
 def test_a_group_without_enough_evidence_keeps_every_guess() -> None:
     profs = {k: profile(_frames("a", 2), MIN_SCORE) for k in ("x", "y")}
     assert split_group(profs, {}) == {"x": None, "y": None}
@@ -194,6 +225,8 @@ class _Fake:
         self.sampled: list[str] = []
         self.fail: set[tuple[str, bool]] = set()  # (game, re-cluster) runs that are interrupted
         self.ref: object = None  # when set, the fit_ref every discovery proposes
+        self.frames: dict[str, int] = {}  # per file name: frames a discovery reads (else 12/8)
+        self.kept: list[set[str]] = []  # the kept src_keys of each re-cluster
 
     def records(self, src, n: int) -> list[dict]:
         from cutpoint.events import discover  # noqa: PLC0415
@@ -213,12 +246,17 @@ class _Fake:
         self.runs.append((game, [s.name for s in srcs], keep_src_keys is not None))
         if (game, keep_src_keys is not None) in self.fail:
             raise KeyboardInterrupt
-        recs = [r for i, s in enumerate(srcs) for r in self.records(s, 12 if i == 0 else 8)]
+        recs = [
+            r
+            for i, s in enumerate(srcs)
+            for r in self.records(s, self.frames.get(s.name, 12 if i == 0 else 8))
+        ]
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "ocr.jsonl").write_text(
             "".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8"
         )
         if keep_src_keys is not None:
+            self.kept.append(set(keep_src_keys))
             recs = [r for r in recs if discover._src(r) in keep_src_keys]
         used = {self.corner[r["source"]] for r in recs}
         regs = [r for c, r in (("a", TOP_LEFT), ("b", BOTTOM_RIGHT)) if c in used]
@@ -407,6 +445,65 @@ def test_date_named_videos_of_two_games_in_a_generic_folder(folder, caplog) -> N
     ) in caplog.messages
 
 
+_R1, _R2, _R3 = (f"Replay 2026-11-08 {h}-01-53.mp4" for h in (19, 20, 21))
+
+
+@pytest.mark.parametrize(
+    ("corner", "frames"),
+    [
+        # the group's seed (most gameplay frames of its game) is also the first by name
+        ({_R1: "a", _R2: "a", _R3: "b"}, {_R1: 14, _R2: 8, _R3: 8}),
+        # the other game is first by name (it names the key), the seed comes second
+        ({_R1: "b", _R2: "a", _R3: "a"}, {_R1: 8, _R2: 14, _R3: 8}),
+        # the Windows case: the other game's source has the most frames of any one source,
+        # but the game of two sources has more in total (50 + 42 > 52)
+        ({_R1: "a", _R2: "a", _R3: "b"}, {_R1: 50, _R2: 42, _R3: 52}),
+    ],
+)
+def test_a_mixed_date_group_keeps_its_key_on_the_largest_group(folder, caplog, corner, frames):
+    """Two sources of one game and one of another in a date group of a generic folder: the
+    game of the largest group (most gameplay frames in total) keeps the date group's key,
+    its preset's regions and fit_ref come from that game's frames only, and the other game
+    gets the misfit key."""
+    from cutpoint.events import discover, regions  # noqa: PLC0415
+
+    srcs = folder.sources(corner, where="clips")
+    folder.fake.frames = frames
+    with caplog.at_level("INFO"):
+        folder.run(srcs)
+    key = "replay-2026-11-08-19-01-53"
+    a = [s for s in srcs if corner[s.name] == "a"]
+    (b,) = [s for s in srcs if corner[s.name] == "b"]
+    misfit = misfit_key(str(b.path), {key}.__contains__)  # its own name, unless that is the key
+    assert _keys(folder.project) == {s.name: key for s in a} | {b.name: misfit}
+    entries = regions.load_game_keys(folder.project)
+    leader = max(a, key=lambda s: folder.fake.frames[s.name])
+    fit = entries[regions.source_id(leader.path)]["fit"]
+    # the seed fits its own preset
+    assert fit == {"score": 1.0, "frames": frames[leader.name], "ref": "run"}
+    assert entries[regions.source_id(b.path)]["fit"]["score"] == 0.0
+    # one OCR pass over all three, a re-cluster from the leader's game only, the misfit's own
+    assert folder.fake.runs == [
+        (key, list(corner), False),
+        (key, list(corner), True),
+        (misfit, [b.name], False),
+    ]
+    assert folder.fake.kept == [{discover.src_key(s) for s in a}]
+    preset = regions.load_preset(key)
+    assert [r.name for r in preset.regions] == ["feed"]  # no region of the other game
+    data = json.loads(Path(preset.path).read_text(encoding="utf-8"))
+    a_recs = [r for s in a for r in folder.fake.records(s, folder.fake.frames[s.name])]
+    assert data["discovery"]["fit_ref"] == profile(a_recs, MIN_SCORE).ref()
+    assert game_fit.against_ref(
+        profile(folder.fake.records(leader, frames[leader.name]), MIN_SCORE),
+        data["discovery"]["fit_ref"],
+    ).ok
+    assert [r.name for r in regions.load_preset(misfit).regions] == ["corner"]
+    assert (
+        f"{b.name} does not fit the HUD preset '{key}' (score 0.00); discovering it as '{misfit}'"
+    ) in caplog.messages
+
+
 def test_sampling_loads_no_ocr_model_without_frames_to_read(tmp_path, monkeypatch) -> None:
     from types import SimpleNamespace  # noqa: PLC0415
 
@@ -508,7 +605,7 @@ def test_a_preset_with_an_old_fit_ref_splits_nothing(folder, caplog) -> None:
 
 
 def test_discover_regions_clusters_only_the_kept_sources_and_writes_fit_ref(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, caplog
 ) -> None:
     from types import SimpleNamespace  # noqa: PLC0415
 
@@ -548,14 +645,21 @@ def test_discover_regions_clusters_only_the_kept_sources_and_writes_fit_ref(
     monkeypatch.setattr(discover, "_ocr_frames", ocr_frames)
     monkeypatch.setattr(discover, "probe", lambda path: None)
     monkeypatch.setattr(discover, "write_overlay", lambda *a: None)
+    monkeypatch.setattr(discover, "src_key", lambda src: keys[src.name])
     srcs = [
         SimpleNamespace(name=n, path=tmp_path / n, io_path=tmp_path / n, duration=600.0)
         for n in keys
     ]
     params = discover.DiscoverParams(bursts=12)
-    got = discover.discover_regions(
-        srcs, tmp_path / "out", "zone-war", params, keep_src_keys={keys["a.mp4"]}
-    )
+    with caplog.at_level("INFO"):
+        got = discover.discover_regions(
+            srcs, tmp_path / "out", "zone-war", params, keep_src_keys={keys["a.mp4"]}
+        )
+    # the log counts the kept source and its bursts, not every source of the run
+    assert (
+        "Region discovery for zone-war again: 6 bursts x 4 frames over 1 source(s), "
+        "from the frames already read"
+    ) in caplog.messages
     frames = got["discovery"]["frames"]
     assert frames and all(f.startswith("a.mp4~0000aaaa@") for f in frames)
     ref = got["discovery"]["fit_ref"]
