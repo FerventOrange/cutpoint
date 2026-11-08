@@ -196,7 +196,14 @@ Alder`.
 
 Player tags (`--player`) tolerate OCR variants: spaces and punctuation are ignored, look-alike
 letters (`0`/`O`, `1`/`I`, `5`/`S`) are one, and a clan tag or weapon read with the name still
-matches. A tag shorter than 5 letters and digits must match a whole word of the name.
+matches. A tag shorter than 5 letters and digits must match a whole word of the name. A longer tag
+may also be read with a letter dropped or added (7 letters or more), or with two (12 or more) or
+three (16 or more) letters wrong, and one read as another counts only from 12 letters: a 9-letter
+`Emberfall` matches `Emberfal`, not `Emberwall`. A row cut at the wrong place between the names
+(`Stonhar,QQ` and `uillmerefox7`) is credited to the side that holds most of the tag, and to
+neither when the halves are equal; this is done for a tag of 7 letters or more only. A name that only has your tag inside it matches, as before; a name that needs an edit to hold a shorter tag (under 12 letters) matches only as a whole name or word (`Dunmorrow` is no `Dunmore`).
+A recurring system line that was read as a kill row (a notice that comes back five times in the
+feed region, 10 s or more apart) gives no kill; a notice that is a kill's own row does not count towards that.
 
 Limits: a `name verb name` row with any other verb stays unread unless a preset's `kill_words` lists
 it. A feed that writes a colon before its kill word (`Kip: killed Alder`) reads as chat and gives no

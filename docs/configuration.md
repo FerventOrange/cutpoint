@@ -136,7 +136,8 @@ Local folder for `cutpoint stage` copies. Default `<CUTPOINT_HOME>\stage`.
 ### player_tags
 
 Your in-game name(s) for game-HUD OCR in `cutpoint events`, so kills and deaths are attributed
-to you. Matching is fuzzy and ignores `_ . -` and spaces. `cutpoint events --player NAME`
+to you. Matching is fuzzy (OCR variants, tight for short tags; see
+[game streams](workflows/game-streams.md)) and ignores `_ . -` and spaces. `cutpoint events --player NAME`
 overrides it per run. Default: none.
 
 ### ollama_url

@@ -18,6 +18,7 @@ from cutpoint.events.killfeed import (
     _icon_name,
     _join_log_rows,
     is_player,
+    player_side,
 )
 
 NAMES = ["Alder", "Birch", "Cedar", "Dunmore", "Elmwood", "Fenwick", "Galewind"]
@@ -277,10 +278,65 @@ def test_a_word_of_no_default_list_gives_no_kill_without_a_preset() -> None:
         ("Viper", ("Sniper",), False),
         ("Skipper", ("Kip",), False),  # a short tag is a whole word
         ("Kipling", ("Kip",), False),
+        # a tag read with dropped letters or another letter, by the tag's length
+        ("Emberfal", ("Emberfall",), True),  # a letter dropped (9 letters)
+        ("Emberfa11", ("Emberfall",), True),  # look-alikes
+        ("Emberwall", ("Emberfall",), False),  # another letter in a short tag: another player
+        ("Emberfell", ("Emberfall",), False),
+        ("Embrfal", ("Emberfall",), False),  # two letters dropped from a short tag
+        ("QuillmeneFox7", ("QuillmereFox7",), True),  # r read as n (13 letters)
+        ("Quilmerefo7", ("QuillmereFox7",), True),  # two letters dropped
+        ("Quilmrefo", ("QuillmereFox7",), False),  # four
+        ("QuillmereFoxz", ("QuillmereFox7",), True),
+        ("QuixyxereFox7", ("QuillmereFox7",), False),  # three other letters
+        ("StonharQuilmereFo7", ("QuillmereFox7",), True),  # a tag glued to a team's name
+        ("Dunmorrow", ("Dunmore",), False),  # inside a longer name, with an edit
+        ("Phoenician", ("Phoenix",), False),
+        ("[AB] Emberfal", ("Emberfall",), True),  # a separate word
+        ("Marcus1", ("Marcus",), True),  # (6 letters: only a part of the name, no other edit)
+        ("Marcas", ("Marcus",), False),
+        ("Marcs", ("Marcus",), False),
     ],
 )
 def test_is_player_allows_ocr_variants(name: str, tags: tuple[str, ...], expected: bool) -> None:
     assert is_player(name, tags) is expected
+
+
+@pytest.mark.parametrize(
+    ("actor", "target", "side"),
+    [
+        ("QuillmeneFox7", "Boxer77", "actor"),
+        ("Alderwick", "QuillmeneFox7", "target"),
+        ("Stonhar,QQ", "uillmerefox7", "target"),  # the row cut one letter early
+        ("QuillmereF", "ox7Werm", "actor"),  # the row cut inside the tag
+        ("Quil", "lmereFox7Boxer", "target"),
+        ("QuillmereFo", "x7Box", "actor"),
+        ("Quillmer", "eFox7", "actor"),  # the larger part decides
+        ("Alderwick", "Boxer77", None),
+        ("Alderwick", "", None),
+    ],
+)
+def test_player_side_credits_the_side_with_the_tag(
+    actor: str, target: str, side: str | None
+) -> None:
+    assert player_side(actor, target, ("QuillmereFox7",)) == (side == "actor", side == "target")
+
+
+def test_player_side_does_not_join_two_names_for_a_short_tag() -> None:
+    assert player_side("Mike", "Vince", ("Kevin",)) == (False, False)
+
+
+def test_player_side_gives_no_side_to_a_tag_cut_in_equal_halves() -> None:
+    assert player_side("Mari", "gold", ("Marigold",)) == (False, False)
+
+
+def test_player_side_needs_a_tag_read_across_the_names_not_inside_one() -> None:
+    assert player_side("Dunmorrow", "Kip", ("Dunmore",)) == (False, False)
+    assert player_side("Kip", "Phoenician", ("Phoenix",)) == (False, False)
+
+
+def test_player_side_credits_both_sides_of_a_self_kill() -> None:
+    assert player_side("QuillmeneFox7", "QuillmereFox7", ("QuillmereFox7",)) == (True, True)
 
 
 @pytest.mark.parametrize(
