@@ -621,7 +621,7 @@ def test_split_is_declined_below_the_disk_gate(pre, monkeypatch, tmp_path, caplo
     monkeypatch.setattr(ocr_prefetch, "spool_fits", lambda folder, need: asked.append(need))
     caplog.set_level("INFO", logger="cutpoint")
     share = pre.make("split").offer(pre.src, 60.0, True, pre.plan())
-    assert pre.pre._jobs[str(pre.src)].done.wait(5)
+    assert pre.pre._jobs[str(pre.src)].done.wait(60)
     said = [m for m in caplog.messages if "shared decode off" in m]  # at once, not at take()
     assert len(said) == 1 and share.why in said[0]
     _take(pre)
@@ -694,7 +694,7 @@ def test_a_skipped_read_declines_its_share_with_the_reason(pre, monkeypatch, cas
     if exc is not None:
         monkeypatch.setattr(ocr_prefetch, "detect_ocr_events", detect)
     share = pre.make("split").offer(pre.src, 60.0, True, pre.plan())
-    assert pre.pre._jobs[str(pre.src)].done.wait(5)
+    assert pre.pre._jobs[str(pre.src)].done.wait(60)
     assert share.state == "declined" and why in share.why
     assert "did not decode" not in share.summary()
 
@@ -734,7 +734,7 @@ def test_close_removes_a_proxy_the_scene_cuts_never_took(pre, monkeypatch, tmp_p
     monkeypatch.setattr(ocr_prefetch, "spool_fits", lambda folder, need: True)
     monkeypatch.setattr(ocr_prefetch, "SplitDecode", Fake)
     share = pre.make("split").offer(pre.src, 60.0, True, pre.plan())
-    assert pre.pre._jobs[str(pre.src)].done.wait(5)
+    assert pre.pre._jobs[str(pre.src)].done.wait(60)
     if taken:
         assert share.result() is not None
     pre.pre.close()

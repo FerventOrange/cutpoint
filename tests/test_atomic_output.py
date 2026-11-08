@@ -1349,6 +1349,18 @@ def test_pid_alive_takes_a_process_created_after_the_lock_for_another_one(
     assert procs.pid_alive(os.getpid())  # no time to compare: running
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows reuses process ids quickly")
+@pytest.mark.parametrize(
+    ("offset", "alive"),
+    [(0.005, True), (procs._CREATED_SLACK, True), (procs._CREATED_SLACK + 0.5, False)],
+)
+def test_pid_alive_allows_clock_slack_after_the_lock(monkeypatch, offset, alive):
+    """A lock written right after its process started is not a reused id."""
+    written = 1_000_000.0
+    monkeypatch.setattr(procs, "_win_created", lambda _k32, _h: written + offset)
+    assert procs.pid_alive(os.getpid(), written) is alive
+
+
 def test_stale_lock_check_passes_the_locks_mtime(monkeypatch, tmp_path):
     lock = tmp_path / ".x.cutpoint-lock"
     lock.write_bytes(_lock_record(4321))

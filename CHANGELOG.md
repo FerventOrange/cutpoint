@@ -881,9 +881,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- HUD discovery debug crops (kill feed) and contact sheets were silently not written on Windows
-  when the path had non-ASCII characters (#797). They are now written through one shared writer
-  that encodes the picture first and writes the bytes, so such paths work.
+- AI Chat: an add whose start or end is far from the moment (times counted from the moment)
+  no longer throws out the proposal; that edge is ignored and the preview says so.
+- AI Chat: a failed visual search in Cutpoint lite or without the CLIP weights now says why.
+- Windows: a lock written right after its run started is no longer read as stale (clock slack
+  in the process-id reuse check).
+- `cutpoint events --ocr-debug` crops of kill-feed OCR events and contact sheets were silently not
+  written on Windows when the path had non-ASCII characters (#797). They are now written through
+  one shared writer that encodes the picture first and writes the bytes, so such paths work.
 - Discovery's OCR cache no longer mixes up files with the same name in different folders (#794):
   their entries used to collide and overwrite each other. Cached OCR records that belong to the
   same file are reused; the others are read again once.
