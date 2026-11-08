@@ -1024,3 +1024,25 @@ def test_take_records_the_seconds_the_main_thread_waited_per_source(fake) -> Non
     assert pre.waits.keys() == {str(fake.paths[0])} and pre.waits[str(fake.paths[0])] >= 0.25
     assert pre.take(fake.source(1), fake.params(), None) is None  # not offered: read inline
     assert str(fake.paths[1]) not in pre.waits
+
+
+def test_take_drops_a_result_whose_game_key_changed(fake, records, monkeypatch) -> None:
+    """The HUD fit check gave the source another key after its background read (#822): the
+    result and its log lines are dropped, the caller reads it again."""
+
+    def read(src, cancel):
+        logging.getLogger("cutpoint.events.killfeed").info("%s: read", src.name)
+        return [{"t": 1.0, "type": "kill", "src": src.name}], {"game": "neon-drift"}
+
+    fake.read = read
+    keys = {"a.mp4": "neon-drift", "b.mp4": "beta-one"}  # b.mp4 was split off
+    monkeypatch.setattr(
+        ocr_prefetch, "game_key_for_path", lambda path, game, project: keys[Path(path).name]
+    )
+    pre = fake.make()
+    pre.offer(fake.paths[0], 60.0, True)
+    pre.offer(fake.paths[1], 60.0, True)
+    assert pre.take(fake.source(0), fake.params(), None) is not None
+    assert pre.take(fake.source(1), fake.params(), None) is None
+    assert "a.mp4: read" in records.lines
+    assert "b.mp4: read" not in records.lines  # the dropped read's lines are not replayed

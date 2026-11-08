@@ -52,7 +52,8 @@ OCR regions come from a per-game preset (lookup order in
 [Configuration](../configuration.md#hud-presets)). No game presets are bundled. Write one, or let region
 discovery create it (below), in `<CUTPOINT_HOME>\presets` or in a project `hud_presets` folder. The game is
 picked from the file or folder name, or set with `--game KEY` (how the name becomes a key:
-[Configuration](../configuration.md#hud-presets)).
+[Configuration](../configuration.md#hud-presets)). A source whose HUD text does not land in the
+regions of that name's preset gets a key and a discovery of its own (the HUD fit check, same page).
 
 For a game without a preset, `analyze` (`gaming` and `funny` styles) and `events` run region discovery automatically; `analyze` logs `first run for <game>: discovering HUD regions`, which can take several minutes on CPU OCR. It samples bursts of
 frames, finds text that changes quickly (kill feeds, banners, notices), ignores static HUD and

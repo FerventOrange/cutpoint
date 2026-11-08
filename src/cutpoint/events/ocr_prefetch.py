@@ -327,6 +327,18 @@ class OcrPrefetch:
                 self.declined = None  # said once
             self.close()
             return None
+        read_as = job.result[1].get("game") if job.error is None and job.result else None
+        if read_as is not None and read_as != game_key_for_path(
+            str(src.path), self.params.game, self.project
+        ):
+            # the HUD fit check gave the source another game key after it was read: read
+            # again in its turn, with that key's preset (its lines are dropped). The worker
+            # stops first, as for other inputs: one OCR engine and one decode at a time, so
+            # the later sources are read in their turn too
+            logger.debug("OCR prefetch: %s was read as %r; reading it again", src.name, read_as)
+            job.records.clear()
+            self.close()
+            return None
         for handler, record in job.records:
             setattr(record, REPLAY, True)
             handler.handle(record)
