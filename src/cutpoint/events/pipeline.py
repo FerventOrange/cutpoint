@@ -419,9 +419,18 @@ def run_events(
     with stage("ocr") if "ocr" in layers else contextlib.nullcontext():
         base = 0.0  # progress the per-source OCR starts at (after discovery)
         if "ocr" in layers and discover is not False:
+            from cutpoint.events.feed_labels import make_labeler  # noqa: PLC0415
+
             try:
                 stats["discovery"] = _discover(
-                    project, sources, ocr, discover, discover_bursts, preset_scope, discover_hint
+                    project,
+                    sources,
+                    ocr,
+                    discover,
+                    discover_bursts,
+                    preset_scope,
+                    discover_hint,
+                    make_labeler(rater),
                 )
             except Exception as err:
                 if ocr_failure(err) is None:  # before _discover knew its games
@@ -875,8 +884,10 @@ def _discover(
     bursts: int,
     scope: str,
     hint: str = EVENTS_DISCOVER_HINT,
+    labeler: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Run region discovery per game where needed; install new presets.
+    """Run region discovery per game where needed; install new presets. ``labeler`` names the
+    proposals with the shared vision model (:mod:`cutpoint.events.feed_labels`).
 
     Returns:
         ``{game: {"preset": path, "installed": bool, "regions": [...], ...}}``; for a
@@ -931,6 +942,7 @@ def _discover(
                 DiscoverParams(bursts=bursts),
                 on_frame=on_frame,
                 **covered,
+                **({"labeler": labeler} if labeler else {}),
             )
         except Exception as err:  # the games before it have their presets
             _mark_ocr_failure(err, sources, discovery=True, games=len(todo))

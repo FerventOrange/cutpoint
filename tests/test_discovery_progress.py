@@ -49,7 +49,7 @@ def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(pipeline, "OcrEngine", lambda: None)
     monkeypatch.setattr(pipeline, "detect_ocr_events", lambda *a, **k: ([], {}))
 
-    def fake_discover(srcs, out, game, params, on_frame=None):
+    def fake_discover(srcs, out, game, params, on_frame=None, **_):
         for n in range(1, 9):
             on_frame(n, 8)
         return {"regions": []}

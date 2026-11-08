@@ -44,6 +44,12 @@ changes*:
   under ``suggested_regions`` in the proposal, to be copied into the preset by hand,
   and its own outside regions count against the 2.
 
+A ``feed`` needs a score of at least :data:`MIN_REGION_SCORE`, and a group of text whose rows
+change text height (chat over a battle log) is cut into one proposal per style
+(:func:`_style_split`). Then the shared vision model labels each proposal
+(:mod:`cutpoint.events.feed_labels`, :func:`apply_labels`): a ``kill_feed`` proposal is the
+feed region; without a model the rules alone decide.
+
 The proposal is written as a preset JSON (see :mod:`cutpoint.events.regions`)
 plus ``discovery/overlay.jpg`` (mean frame, dynamic-text heat map, proposed
 rectangles) and the sampled frames as JPEGs, so the result can be checked by eye
@@ -155,6 +161,19 @@ NOTICE_SAME_MIN = 4
 NOTICE_SAME_RATIO = 0.8
 NOTICE_SAME_EDITS = 3
 NOTICE_BAND = 0.5 * NOTICE_MAX_H * REF_H  # cluster lookup band: half the tallest text
+
+# a feed needs this score at least, as a banner or notice does (a loadout box that changes a
+# little scored 0.004 and was the only "feed", so it was kept as the best one)
+MIN_REGION_SCORE = 0.02
+
+# splitting a proposal whose rows differ in text style (stream chat above a battle log): the
+# rows are cut where the median text height changes by STYLE_JUMP or more and holds for
+# STYLE_MIN_ROWS rows; rows with fewer than STYLE_MIN_SHARE of the busiest row's boxes are noise
+STYLE_ROW = 12  # reference pixels per row
+STYLE_JUMP = 0.15
+STYLE_MIN_ROWS = 2
+STYLE_MIN_SHARE = 0.1
+STYLE_MIN_BOXES = 3
 
 
 @dataclass
@@ -724,6 +743,66 @@ def _banner_proposal(frames: list[dict[str, Any]], min_h: float) -> dict[str, An
     }
 
 
+def _style_split(
+    frames: list[dict[str, Any]], comp: tuple[int, int, int, int]
+) -> list[tuple[tuple[int, int, int, int], tuple[int, int]]]:
+    """The grid rectangle ``comp`` cut into bands of one text style, top to bottom, each with
+    the y span (reference px) it may grow to.
+
+    Text of different kinds that sit side by side (stream chat over a battle log) is one
+    connected group of dynamic cells. Its text boxes are binned into rows of
+    :data:`STYLE_ROW` px; a new band starts where the median box height of a row differs from
+    the band's by :data:`STYLE_JUMP` or more and the next row agrees with it (a lone row is
+    noise). A band shorter than :data:`STYLE_MIN_ROWS` rows joins its neighbour. ``comp`` stays
+    whole (one band, the whole span) when no style change is left, and when it is too large to
+    be a HUD element (:func:`cluster_regions` drops it).
+    """
+    gx0, gy0, gx1, gy1 = comp
+    x0, y0, x1, y1 = gx0 * CELL, gy0 * CELL, gx1 * CELL, gy1 * CELL
+    whole = [(comp, (0, REF_H))]
+    if (x1 - x0) * (y1 - y0) > 0.25 * REF_W * REF_H:
+        return whole
+    rows: dict[int, list[dict[str, Any]]] = {}
+    for f in frames:
+        for b in boxes_in(f, x0, y0, x1 - x0, y1 - y0):
+            rows.setdefault(round((b["y0"] + b["y1"]) / 2 / STYLE_ROW), []).append(b)
+    busiest = max((len(bs) for bs in rows.values()), default=0)
+    keep = sorted(
+        r for r, bs in rows.items() if len(bs) >= max(STYLE_MIN_BOXES, STYLE_MIN_SHARE * busiest)
+    )
+    if len(keep) < 2 * STYLE_MIN_ROWS:
+        return whole
+    height = {r: float(np.median([b["y1"] - b["y0"] for b in rows[r]])) for r in keep}
+
+    def differs(a: float, b: float) -> bool:
+        return abs(a - b) / max(a, b) >= STYLE_JUMP
+
+    bands: list[list[int]] = [[keep[0]]]
+    for i, r in enumerate(keep[1:], 1):
+        ref = float(np.median([height[q] for q in bands[-1]]))
+        nxt = keep[i + 1] if i + 1 < len(keep) else None
+        agrees = nxt is not None and not differs(height[nxt], height[r])
+        if differs(height[r], ref) and agrees and len(bands[-1]) >= STYLE_MIN_ROWS:
+            bands.append([r])
+        else:
+            bands[-1].append(r)
+    if len(bands) > 1 and len(bands[-1]) < STYLE_MIN_ROWS:
+        bands[-2] += bands.pop()
+    if len(bands) < 2:
+        return whole
+    cuts = [y0] + [round((a[-1] + b[0]) / 2 * STYLE_ROW) for a, b in pairwise(bands)] + [y1]
+    out = []
+    for band, lo, hi in zip(bands, cuts, cuts[1:], strict=False):
+        boxes = [b for r in band for b in rows[r]]
+        bx0 = max(x0, min(b["x0"] for b in boxes))
+        bx1 = min(x1, max(b["x1"] for b in boxes))
+        by0 = max(lo, min(b["y0"] for b in boxes))
+        by1 = min(hi, max(b["y1"] for b in boxes))
+        rect = (bx0 // CELL, by0 // CELL, -(-bx1 // CELL), -(-by1 // CELL))
+        out.append((rect, (lo, hi)))
+    return out
+
+
 def cluster_regions(
     frames: list[dict[str, Any]], params: DiscoverParams
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -782,6 +861,10 @@ def cluster_regions(
         recurring & (occ_rate >= params.min_occupancy) & (chg_rate >= params.min_change) & ~static
     )
     comps = _components(dynamic)
+    n_comps = len(comps)
+    parts = [part for comp in comps for part in _style_split(game_frames, comp)]
+    comps = [rect for rect, _ in parts]
+    span = dict(parts)  # the y span a feed split off a taller group may grow to
 
     proposals: list[dict[str, Any]] = []
     for gx0, gy0, gx1, gy1 in comps:
@@ -829,6 +912,8 @@ def cluster_regions(
             else:
                 kind = "feed"
                 y0, y1, grown = _grow_feed(game_frames, (x0, y0, x1, y1), med_h, len(inside))
+                lo, hi = span[gx0, gy0, gx1, gy1]
+                y0, y1 = max(y0, lo), min(y1, hi)
         elif med_h >= 0.034 * REF_H and 0.25 < cx < 0.75:
             kind = "banner"
         elif 0.3 < cx < 0.7:
@@ -884,7 +969,7 @@ def cluster_regions(
         "bursts": n_bursts,
         "dynamic_cells": int(dynamic.sum()),
         "static_cells": int(static.sum()),
-        "components": len(comps),
+        "components": n_comps,
     }
     return proposals, {
         "stats": stats,
@@ -1381,8 +1466,8 @@ def proposals_to_regions(
     keep = [
         p
         for p in proposals
-        if (p["kind"] == "feed" and p["score"] >= 0.25 * best)
-        or (p["kind"] in ("banner", "notice") and p["score"] >= 0.02)
+        if (p["kind"] == "feed" and p["score"] >= max(0.25 * best, MIN_REGION_SCORE))
+        or (p["kind"] in ("banner", "notice") and p["score"] >= MIN_REGION_SCORE)
     ]
     keep = keep or [p for p in proposals if p["kind"] not in ("readout", "popup")]
     out = []
@@ -1398,6 +1483,49 @@ def _padded(p: dict[str, Any], kind: str, pad: int = 12) -> Region:
     w = min(REF_W - x, p["w"] + 2 * pad)
     h = min(REF_H - y, p["h"] + 2 * pad)
     return Region(p["name"], x, y, w, h, kind, gate="det", every=1 if kind == "feed" else 3)
+
+
+def _overlap(a: Region, b: Region) -> int:
+    """Area (reference px) where regions ``a`` and ``b`` overlap."""
+    w = min(a.x + a.w, b.x + b.w) - max(a.x, b.x)
+    h = min(a.y + a.h, b.y + b.h) - max(a.y, b.y)
+    return max(0, w) * max(0, h)
+
+
+def apply_labels(
+    proposals: list[dict[str, Any]],
+    labels: dict[str, dict[str, str]],
+    regions: list[Region],
+    extra_regions: list[dict[str, Any]],
+) -> tuple[list[Region], list[dict[str, Any]]]:
+    """Regions after the vision model's ``labels`` (name -> ``{"label", "model"}``,
+    :mod:`cutpoint.events.feed_labels`).
+
+    * ``kill_feed``: the proposal is a ``feed`` region (padded, full rate), put first; one that
+      was a notice region of the outside text (``extra_regions``) leaves that list.
+    * A rule-made ``feed`` region labelled anything but ``kill_feed`` or ``chat`` becomes a
+      ``notice`` (read as text, not as kills). ``chat`` stays: reading the region tells chat
+      from a feed by how many different lines it shows, and drops its events.
+    * Every other region stays as the rules made it. Each region keeps its model label as
+      ``label`` in the preset (:func:`discover_regions`), ignored when it is read.
+    """
+    by_name = {p["name"]: p for p in proposals}
+    feeds = [n for n, v in labels.items() if v["label"] == "kill_feed" and n in by_name]
+
+    out: list[Region] = []
+    for n in feeds:
+        r = _padded(by_name[n], "feed")
+        small = min(r.w * r.h, *(o.w * o.h for o in out)) if out else 0
+        if not any(_overlap(r, o) >= 0.6 * small for o in out):  # one read of the feed is enough
+            out.append(r)
+    for r in regions:
+        if r.name in feeds:
+            continue
+        got = labels.get(r.name, {}).get("label")
+        if r.kind == "feed" and got not in (None, "kill_feed", "chat"):
+            r = Region(r.name, r.x, r.y, r.w, r.h, "notice", gate=r.gate, every=3)
+        out.append(r)
+    return out, [e for e in extra_regions if e["name"] not in feeds]
 
 
 def write_overlay(
@@ -1465,6 +1593,8 @@ def discover_regions(
     on_frame: Callable[[int, int], None] | None = None,
     covered: tuple[Region, ...] | None = None,
     outside: int = 0,
+    labeler: Callable[[list[dict[str, Any]], list[dict[str, Any]], Path], dict[str, Any]]
+    | None = None,
 ) -> dict[str, Any]:
     """Run discovery on ``sources`` and write the proposal into ``out_dir``.
 
@@ -1481,6 +1611,9 @@ def discover_regions(
             when it has none.
         outside: How many ``"origin": "outside"`` regions that preset already has;
             they count against ``params.notice_max_regions``.
+        labeler: Names what each proposal is (:func:`cutpoint.events.feed_labels.make_labeler`;
+            called with the proposals, the gameplay frames and their folder); None, or
+            no labels: the rules above decide alone.
 
     Returns:
         The proposal: a preset dict (``game``, ``regions``, ``banner_phrases``,
@@ -1490,7 +1623,8 @@ def discover_regions(
         (:func:`notice_proposals`, marked ``"origin": "outside"``) are added to
         ``regions`` when ``covered`` is None (the discovered regions and the
         big-text region count as covered), else listed in ``suggested_regions``
-        only.
+        only. When ``labeler`` labelled proposals, ``discovery.labels`` holds the labels (see
+        :func:`apply_labels`).
     """
     params = params or DiscoverParams()
     t0 = time.perf_counter()
@@ -1512,6 +1646,9 @@ def discover_regions(
     extra = notice_proposals(game_frames, cover, params, maps["static"], outside)
     extra_regions = [notice_region(p) for p in extra]
     proposals += extra
+    labels = labeler(proposals, game_frames, out_dir / "frames") if labeler else {}
+    if labels:
+        regions, extra_regions = apply_labels(proposals, labels, regions, extra_regions)
     info = probe(sources[0].io_path) if sources else None
     write_overlay(
         game_frames,
@@ -1522,16 +1659,23 @@ def discover_regions(
     )
     names = {r.name for r in regions if r.kind == "feed"}
     icon = any(p["evidence"].get("icon_feed") for p in proposals if p.get("name") in names)
+    # a feed the model named has no kill words to learn: its icon lines are the kills
+    icon = icon or any(labels.get(n, {}).get("label") == "kill_feed" for n in names)
     preset = {
         "game": game,
         "reference": [REF_W, REF_H],
         "source": "discovered",
-        "regions": [asdict(r) for r in regions] + (extra_regions if covered is None else []),
+        "regions": [
+            asdict(r) | ({"label": labels[r.name]["label"]} if r.name in labels else {})
+            for r in regions
+        ]
+        + (extra_regions if covered is None else []),
         "banner_phrases": [],
         # an icon feed's other rows ("Kip has left the game") are notices
         **({"feed": {"row_notices": True}} if icon else {}),
         "discovery": {
             **maps["stats"],
+            **({"labels": labels} if labels else {}),
             "params": asdict(params),
             "elapsed_s": round(time.perf_counter() - t0, 1),
             "source_resolution": [info.width, info.height] if info else None,
