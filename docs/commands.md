@@ -374,6 +374,11 @@ the steps by starting its jobs with `CUTPOINT_PROGRESS=1`; `GET /api/jobs` retur
 job will report as `step` and `label`). A Cutpoint version that sends no steps shows
 the log in Jobs only, as before.
 
+During the first analysis the illustration, "Analysis options…" and the "Analyzing…" button give way to
+"Show folder", the steps and "Pause analysis". Pause cancels the job as Cancel does, and the column then
+offers Resume, which continues from the last transcribed video. Before the first video is
+transcribed Pause asks first, because there is nothing to resume and the analysis starts over.
+
 The side column has three tabs: Sequence, AI Chat (see [AI Chat](#ai-chat) below) and Models.
 The header's Export button, next to Save sequence, opens the Export panel in the side column, with
 no tab selected; Back (or Escape) returns to the previous tab, and running jobs keep running. A
@@ -449,7 +454,7 @@ joins are not known (a One-Click Edit's, or one assembled by an earlier version)
 folder. The result becomes the current export. It is disabled while Extend start and Extend end
 are blank or 0 and Speech-aware cuts is off (extend would have nothing to do); the tooltip says so.
 
-**One-Click Edit** has the presets Highlights, Montage, Clips and Funny moments. Make runs
+**One-Click Edit** (marked Experimental: it picks and joins moments without your review) has the presets Highlights, Montage, Clips and Funny moments. Make runs
 `cutpoint edit --kind <preset>` in the project's own style, with the Vertical and Compress Audio
 Peaks choices and the vision choice from the Models tab. Clips go to `clips` and the video to
 `final.mp4` (`clips_vertical` and `final_vertical.mp4` when vertical), with the `<name>-final`

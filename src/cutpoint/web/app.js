@@ -734,7 +734,7 @@ function renderMoments() {
   markMoments();
   renderBusy(); // first: the buttons are as disabled as they will be when focus looks for one
   if (hadFocus && !empty.contains(document.activeElement))
-    ([$('#resumeBig'), $('#analyzeBig'), $('#candList button'), $('#resumeBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
+    ([$('#resumeBig'), $('#analyzeBig'), $('#pauseBtn'), $('#candList button'), $('#resumeBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
 }
 
 /**
@@ -884,9 +884,9 @@ function renderUnanalyzed(el, n, error, pano, run = null, lone = false) {
         pano
           ? (n ? `360 footage: ${n} recording${n === 1 ? '' : 's'} found` : 'No 360 recordings found')
           : (n ? `${n} video${n === 1 ? '' : 's'} found in the sources` : 'No videos found in the sources')),
-    h('h3', { text: resume ? `The ${RUN_NAMES[run.command] ?? 'analysis'} stopped before it finished` : 'No moments analyzed yet' }),
+    h('h3', { class: 'fresh-lead', text: resume ? `The ${RUN_NAMES[run.command] ?? 'analysis'} stopped before it finished` : 'No moments analyzed yet' }),
     h('p', {
-      text: resume ? 'Resume continues it with the same options and keeps the work it finished.' : pano
+      class: 'fresh-lead', text: resume ? 'Resume continues it with the same options and keeps the work it finished.' : pano
         ? 'Analyze footage to read the 360 recordings, transcribe audio and rank the strongest moments. Clips are reframed when you export them. Vision rating is not used for 360 footage.'
         : 'Analyze footage to transcribe audio and rank the strongest moments.',
     }),
@@ -895,7 +895,7 @@ function renderUnanalyzed(el, n, error, pano, run = null, lone = false) {
       onclick: (e) => resumeRun(e.currentTarget),
     }, resumeLabel(run)) : null,
     h('button', {
-      type: 'button', id: 'analyzeBig', class: `btn ${resume ? 'outline' : 'primary'}`, 'aria-describedby': 'analyzeWhy analyzeNote', hidden: lone,
+      type: 'button', id: 'analyzeBig', class: `btn ${resume ? 'outline' : 'primary'}`, 'aria-describedby': 'analyzeWhy analyzeNote', hidden: lone, 'data-gone': lone ? '1' : null,
       onclick: async (e) => {
         e.currentTarget.disabled = true; // no second start while the request is in flight
         keepEmptyFocus(el);
@@ -903,9 +903,15 @@ function renderUnanalyzed(el, n, error, pano, run = null, lone = false) {
         if (![...S.tracked.values()].some(live)) renderBusy(); // it failed: enable again
       },
     }, 'Analyze footage'),
+    // while the first analysis runs (renderBusy): the way to stop it, to continue with Resume
+    h('button', {
+      type: 'button', id: 'pauseBtn', class: 'btn outline', hidden: true, 'aria-describedby': 'pauseWhy',
+      onclick: (e) => pauseAnalysis(e.currentTarget),
+    }, 'Pause analysis'),
+    h('span', { id: 'pauseWhy', class: 'vh', text: 'Stops the analysis. Resume continues it and keeps the videos it finished; before the first is transcribed, it starts over.' }),
     // the Analyze options (#483) for the first analysis; Analyze footage alone uses none
     h('button', {
-      type: 'button', id: 'analyzeOptsBtn', class: 'btn outline', 'aria-haspopup': 'dialog', hidden: pano || lone,
+      type: 'button', id: 'analyzeOptsBtn', class: 'btn outline', 'aria-haspopup': 'dialog', hidden: pano || lone, 'data-gone': pano || lone ? '1' : null,
       onclick: () => analyzeAgain(true),
     }, 'Analysis options…'),
     h('button', {
@@ -917,6 +923,42 @@ function renderUnanalyzed(el, n, error, pano, run = null, lone = false) {
     h('p', { id: 'freshStepsStatus', class: 'vh', role: 'status' }),
     h('p', { id: 'analyzeNote', class: 'fresh-note', text: 'This process can take a long time on large footage.' }),
   );
+}
+
+/**
+ * Pause the first analysis (#811): cancel the job with its normal cleanup; the project then has a
+ * stopped run and the empty state offers Resume. aria-disabled, not disabled, so the button keeps focus.
+ */
+async function pauseAnalysis(btn) {
+  if (!S.active || btn.getAttribute('aria-disabled') === 'true') return;
+  // progress.json (what Resume continues) exists once the first source is transcribed; the page
+  // does not refresh the project during its own job, so read the server's record first
+  const transcribed = stepsJob()?.progress.steps.some((s) => s.step === 'transcribe' && s.state === 'done');
+  let rec = S.project?.run;
+  if (!rec && !transcribed) {
+    try {
+      rec = (await api(`/api/projects/${encodeURIComponent(S.id)}`)).run;
+    } catch { /* cannot tell: ask */ }
+  }
+  if (!rec && !transcribed) {
+    const ok = await confirmAction('Stop the analysis?', 'No video is transcribed yet, so the analysis starts over.', 'Stop', false);
+    if (!S.active || btn.hidden || !btn.isConnected) { // the run ended while the dialog was open: focus would drop to the body
+      ([$('#resumeBig'), $('#analyzeBig'), $('#revealBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
+      return;
+    }
+    if (!ok) return;
+  }
+  if (!S.active) return;
+  btn.setAttribute('aria-disabled', 'true');
+  btn.textContent = 'Pausing…';
+  try {
+    await api(`/api/jobs/${encodeURIComponent(S.active.id)}/cancel`, { method: 'POST' });
+    pollJobs();
+  } catch (e) {
+    btn.removeAttribute('aria-disabled');
+    btn.textContent = 'Pause analysis';
+    fail(e);
+  }
 }
 
 // What a recorded run (progress.json's command, #109) is called on the page
@@ -4332,7 +4374,9 @@ function renderBusy() {
   }
   const big = $('#analyzeBig');
   if (big) {
-    const own = S.active?.project_id === S.id && S.active?.action === 'analyze';
+    // a first analysis, or the resume of one (#811)
+    const own = S.active?.project_id === S.id
+      && (S.active.action === 'analyze' || (S.active.action === 'resume' && /analyze$/.test(p?.run?.command ?? '')));
     const steps = own && !!stepsJob(); // an older CLI sends no steps: the Jobs log is all there is
     const reason = own ? (steps ? 'Analyzing… each step is listed below.' : 'Analyzing… progress is in Jobs.') : busy ? why
       : held ? BUSY_TEXT : p?.source_error ? sourceErrorText(p) : 'Add videos to the source folder first.';
@@ -4340,6 +4384,21 @@ function renderBusy() {
     set('#analyzeOptsBtn', !p || busy || held || !p.sources?.length, reason);
     const label = own ? 'Analyzing…' : 'Analyze footage';
     if (big.textContent !== label) big.textContent = label;
+    // #811: while the first analysis runs only Show folder, the steps and Pause analysis stay
+    const empty = $('#momentsEmpty');
+    const pause = $('#pauseBtn');
+    const hiding = [big, $('#analyzeOptsBtn'), $('#resumeBig')];
+    const lost = hiding.includes(document.activeElement) || (!!empty.dataset.refocus && document.activeElement === document.body);
+    empty.classList.toggle('running', own);
+    for (const b of hiding) if (b) b.hidden = own || b.dataset.gone === '1';
+    if (!own && pause.getAttribute('aria-disabled')) {
+      pause.removeAttribute('aria-disabled');
+      pause.textContent = 'Pause analysis';
+    }
+    const wasPause = !pause.hidden && document.activeElement === pause;
+    pause.hidden = !own;
+    if (own && lost) pause.focus();
+    else if (wasPause && !own) ([$('#resumeBig'), big, $('#revealBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
     const out = $('#analyzeWhy');
     out.classList.toggle('progress', own);
     if (out.textContent !== big.title) out.textContent = big.title; // live region: announce changes only

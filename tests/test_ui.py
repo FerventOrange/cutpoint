@@ -7947,7 +7947,8 @@ def test_the_export_tab_offers_the_presets_and_asks_before_replacing() -> None:
     )
     assert kinds == list(edit.KINDS)
     make_btn = re.search(r'<button type="button" id="makeBtn"[^>]*>Make</button>', html)[0]
-    assert 'aria-describedby="dMake presetWhy"' in make_btn  # the reason it is off, if it is
+    # the reason it is off, if it is
+    assert 'aria-describedby="dMake presetWhy"' in make_btn
     # short option text, so the selects read fully in a 290 px column (details in titles)
     for sid in ("optKind", "optOrder"):
         select = re.search(rf'<select id="{sid}".*?</select>', html, re.S)[0]
@@ -10383,3 +10384,30 @@ def test_final_joins_are_null_for_an_export_record_without_them(
     )
     view = client.get("/api/projects/cli").json()
     assert view["final_joins"] is None and view["final_current"] is True
+
+
+def test_the_page_pauses_the_first_analysis_and_labels_one_click_edit() -> None:
+    """Contract pins (#811, #809): while the first analysis runs the empty state drops the art, the
+    options and the Analyzing button and offers a real Pause analysis button that cancels the job
+    (behaviour in tests/js/pause.test.mjs); One-Click Edit carries a visible Experimental badge."""
+    js = _web("app.js")
+    html = _web("index.html")
+    css = _web("app.css")
+    unanalyzed = _js_function(js, "renderUnanalyzed")
+    assert (
+        "id: 'pauseBtn'" in unanalyzed
+        and "type: 'button'" in unanalyzed
+        and "'Pause analysis'" in unanalyzed
+    )
+    assert "/cancel`" in _js_function(js, "pauseAnalysis")
+    busy = _js_function(js, "renderBusy")
+    assert "classList.toggle('running', own)" in busy and "pause.focus()" in busy
+    assert (
+        ".empty.fresh.running .fresh-art, .empty.fresh.running .fresh-lead { display: none; }"
+        in css
+    )
+    assert (
+        '<legend>One-Click Edit <span class="tag pool" id="presetExp">Experimental</span></legend>'
+        in html
+    )
+    assert 'aria-describedby="dMake presetWhy"' in html
