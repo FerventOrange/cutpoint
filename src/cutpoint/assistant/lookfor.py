@@ -120,6 +120,10 @@ NO_INDEX = (
 )
 
 
+NO_LITE = "Visual search isn't in Cutpoint lite"
+NO_WEIGHTS = "Visual search needs the CLIP weights (cutpoint setup --only visual)"
+
+
 class LookForError(Exception):
     """The search cannot run; the message says what to do and goes to the model. ``reason`` is a
     short plain sentence for the user's page (None: the page says only that it failed)."""
@@ -279,7 +283,7 @@ class Finder:
                 weights.
         """
         if (why := unavailable()) is not None:
-            raise LookForError(why)
+            raise LookForError(why, NO_LITE)
         frames = self._load()
         if not frames:
             raise LookForError(
@@ -294,7 +298,8 @@ class Finder:
         except V.ClipWeightsMissing:
             raise LookForError(
                 "the CLIP weights are not on this machine; the user can get them with: "
-                "cutpoint setup --only visual"
+                "cutpoint setup --only visual",
+                NO_WEIGHTS,
             ) from None
         hits: list[Hit] = []
         best = 0.0
