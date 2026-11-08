@@ -239,6 +239,14 @@ def test_announcing_banners_are_never_collapsed() -> None:
     assert collapse_banner_bursts(evs) == evs
 
 
+def test_short_different_names_after_a_phrase_are_not_collapsed() -> None:
+    evs = [
+        _banner(100 + 10 * i, "ELIMINATED", f"ELIMINATED {name}")
+        for i, name in enumerate(("Kip", "Kit", "Kim"))
+    ]
+    assert collapse_banner_bursts(evs) == evs
+
+
 def test_two_sightings_and_spaced_banners_are_kept() -> None:
     assert len(collapse_banner_bursts(_scoreboard((100, 150)))) == 2
     spaced = _scoreboard((100, 400, 700, 1000))

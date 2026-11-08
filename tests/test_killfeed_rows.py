@@ -330,6 +330,11 @@ def test_player_side_gives_no_side_to_a_tag_cut_in_equal_halves() -> None:
     assert player_side("Mari", "gold", ("Marigold",)) == (False, False)
 
 
+def test_player_side_needs_a_tag_read_across_the_names_not_inside_one() -> None:
+    assert player_side("Dunmorrow", "Kip", ("Dunmore",)) == (False, False)
+    assert player_side("Kip", "Phoenician", ("Phoenix",)) == (False, False)
+
+
 def test_player_side_credits_both_sides_of_a_self_kill() -> None:
     assert player_side("QuillmeneFox7", "QuillmereFox7", ("QuillmereFox7",)) == (True, True)
 

@@ -288,7 +288,7 @@ def player_side(actor: str, target: str, tags: tuple[str, ...]) -> tuple[bool, b
     for tag in tags:
         t = _fold(tag)
         found = _find_tag(na + nt, t) if _tag_edits(len(t)) >= 1 else None
-        if found:
+        if found and found[0] < len(na) < found[1]:  # a match inside one name is no tag
             on_actor = max(0, min(found[1], len(na)) - found[0])
             on_target = max(0, found[1] - max(found[0], len(na)))
             if on_actor != on_target:
@@ -929,11 +929,11 @@ def collapse_banner_bursts(events: list[dict[str, Any]]) -> list[dict[str, Any]]
     6 minutes, 10-50 s apart, all read from one screen."""
 
     def screen(e: dict[str, Any]) -> str:
-        """The banner's whole line when it has more than the phrase, else ""."""
+        """The text on the banner's line besides the phrase when it holds a name, else ""."""
         line = norm(e.get("raw") or "").replace(" ", "")
         phrase = norm(e.get("text") or "").replace(" ", "")
         rest = line.replace(phrase, "", 1)  # a score ("+100") is no screen, a name is
-        return line if re.search(r"[A-Za-z]{3}", rest) else ""
+        return rest if re.search(r"[A-Za-z]{3}", rest) else ""
 
     runs: list[list[dict[str, Any]]] = []
     for e in sorted((e for e in events if e.get("type") == "banner"), key=lambda e: e["t"]):
