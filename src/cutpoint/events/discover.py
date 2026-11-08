@@ -80,6 +80,7 @@ from cutpoint.errors import FFmpegError
 from cutpoint.events.common import Source
 from cutpoint.events.regions import Region, bigtext_region
 from cutpoint.ffmpeg_utils import grab_images, probe
+from cutpoint.imageio import read_image, write_jpeg
 
 logger = logging.getLogger(__name__)
 
@@ -298,28 +299,6 @@ def boxes_in(
 
 
 _LEGACY_FRAME = re.compile(r"b\d+_\d+\.jpg")
-
-
-def write_jpeg(path: Path, img: np.ndarray, quality: int) -> bool:
-    """Write ``img`` as a JPEG; through bytes, as ``cv2.imwrite`` fails silently on a
-    non-ASCII path on Windows. False when it could not be encoded."""
-    import cv2  # noqa: PLC0415
-
-    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
-    if ok:
-        path.write_bytes(buf.tobytes())
-    return bool(ok)
-
-
-def read_image(path: Path) -> np.ndarray | None:
-    """The picture at ``path``, or None; read through bytes (see :func:`write_jpeg`)."""
-    import cv2  # noqa: PLC0415
-
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return None
-    return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
 
 
 def _frame_name(source: str, t: float) -> str:
