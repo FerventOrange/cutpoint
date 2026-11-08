@@ -233,17 +233,22 @@ def _num(v: Any) -> float | None:
 
 
 def shown_label(label: Any, cand: dict[str, Any] | None, window: str = "") -> str:
-    """``label``, or for a generic one (``action-moment``, ``loud-moment``, ``vlm``, none) what
+    """A dialogue title for the candidate's analysis label, otherwise ``label``.
+
+    For a generic label (``action-moment``, ``loud-moment``, ``vlm``, none), prefer what
     the vision model saw: the candidate's ``vision_label``, the label of its events VLM window
-    (``signals.events.vlm``) or ``window`` (an events.json window's label); else ``label``.
+    (``signals.events.vlm``) or ``window`` (an events.json window's label).
 
     For the assistant and the ``cutpoint ui`` moments list only: highlights.json and the clip
     file names keep the analysis label.
     """
+    cand = cand or {}
+    title = cand.get("dialogue_title")
+    if isinstance(title, str) and title.strip() and label == cand.get("label"):
+        return title
     label = label if isinstance(label, str) else ""
     if not _GENERIC.fullmatch(label):
         return label
-    cand = cand or {}
     signals = cand.get("signals") if isinstance(cand.get("signals"), dict) else {}
     events = signals.get("events") if isinstance(signals.get("events"), dict) else {}
     vlm = events.get("vlm") if isinstance(events.get("vlm"), dict) else {}
@@ -407,7 +412,7 @@ class MomentTable:
 
     def label(self, real: str, label: Any) -> str:
         """``label`` of the moment ``real`` (its own, or a sequence row's) as the model sees it:
-        a generic one replaced by what the vision model saw (:func:`shown_label`)."""
+        its dialogue title or what the vision model saw when applicable (:func:`shown_label`)."""
         cand, look = self.candidates.get(real), self.looks.get(real)
         if cand is not None and look is not None and label == cand.get("label"):
             return look.label

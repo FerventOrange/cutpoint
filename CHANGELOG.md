@@ -881,6 +881,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AI Chat names dialogue moments by their readable title, as the moments list does, while
+  sequence labels keep their renamed text (#806).
 - AI Chat: an add whose start or end is far from the moment (times counted from the moment)
   no longer throws out the proposal; that edge is ignored and the preview says so.
 - AI Chat: a failed visual search in Cutpoint lite or without the CLIP weights now says why.
