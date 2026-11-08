@@ -310,14 +310,22 @@ class AssistantVision:
 
 
 class VisionRater:
-    """Client for Ollama's /api/chat endpoint with images."""
+    """Client for Ollama's /api/chat endpoint with images.
+
+    ``url``, ``model``: ``--ollama-url`` and ``--ollama-model`` (None: not given). Given, either
+    one picks the Ollama over a hosted Vision role (#805); the other one takes its default. An
+    Ollama on another machine still needs the Vision consent (:attr:`consent_needed`); without
+    it nothing goes there, and nothing to the hosted Vision role either.
+    """
 
     def __init__(
         self, url: str | None = None, model: str | None = None, *, local_only: bool = False
     ) -> None:
         cfg = get_config()
         v_ast = cfg.vision_assistant
-        self.via = AssistantVision(v_ast) if not local_only and v_ast.provider != "ollama" else None
+        explicit = bool(url or model)  # given on the command line: they win (#805)
+        hosted = not local_only and not explicit and v_ast.provider != "ollama"
+        self.via = AssistantVision(v_ast) if hosted else None
         env_model = paths.env("VISION_MODEL")
         # the vision-v2: key the provider still needs (an Ollama on another machine, or the
         # hosted provider of self.via); None: on this machine or agreed to
