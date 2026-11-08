@@ -880,7 +880,7 @@ function renderUnanalyzed(el, n, error, pano, run = null, lone = false) {
     folderArt(),
     lone ? null : error
       ? h('p', { class: 'fresh-error', text: error })
-      : h('p', { class: `fresh-count${n ? '' : ' none'}` },
+      : h('p', { class: `fresh-count fresh-lead${n ? '' : ' none'}` },
         pano
           ? (n ? `360 footage: ${n} recording${n === 1 ? '' : 's'} found` : 'No 360 recordings found')
           : (n ? `${n} video${n === 1 ? '' : 's'} found in the sources` : 'No videos found in the sources')),
@@ -905,7 +905,7 @@ function renderUnanalyzed(el, n, error, pano, run = null, lone = false) {
     }, 'Analyze footage'),
     // while the first analysis runs (renderBusy): the way to stop it, to continue with Resume
     h('button', {
-      type: 'button', id: 'pauseBtn', class: 'btn outline', hidden: true, 'aria-describedby': 'pauseWhy',
+      type: 'button', id: 'pauseBtn', class: 'btn primary', hidden: true, 'aria-describedby': 'pauseWhy',
       onclick: (e) => pauseAnalysis(e.currentTarget),
     }, 'Pause analysis'),
     h('span', { id: 'pauseWhy', class: 'vh', text: 'Stops the analysis. Resume continues it and keeps the videos it finished; before the first is transcribed, it starts over.' }),

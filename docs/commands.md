@@ -374,8 +374,8 @@ the steps by starting its jobs with `CUTPOINT_PROGRESS=1`; `GET /api/jobs` retur
 job will report as `step` and `label`). A Cutpoint version that sends no steps shows
 the log in Jobs only, as before.
 
-During the first analysis the illustration, "Analysis options…" and the "Analyzing…" button give way to
-"Show folder", the steps and "Pause analysis". Pause cancels the job as Cancel does, and the column then
+During the first analysis the illustration, the count of videos found, "Analysis options…" and the "Analyzing…" button give way to
+"Show folder", the steps and a yellow "Pause analysis" button that stays at the top of the column. Pause cancels the job as Cancel does, and the column then
 offers Resume, which continues from the last transcribed video. Before the first video is
 transcribed Pause asks first, because there is nothing to resume and the analysis starts over.
 

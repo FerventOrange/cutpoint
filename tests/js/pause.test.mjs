@@ -39,6 +39,8 @@ test('while the first analysis runs the art, options and Analyzing… button hid
   assert.equal($('#analyzeBig').hidden, true);
   assert.equal($('#analyzeOptsBtn').hidden, true);
   assert.equal($('#revealBtn').hidden, false);
+  assert.ok($('.fresh-count').classList.contains('fresh-lead'), 'the videos-found line hides with the lead (CSS)');
+  assert.ok($('#pauseBtn').classList.contains('primary'), 'the amber button');
   assert.equal($('#freshSteps').hidden, false);
   assert.equal($('#pauseBtn').hidden, false);
   assert.equal($('#pauseBtn').tagName, 'BUTTON');
