@@ -881,6 +881,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HUD discovery debug crops (kill feed) and contact sheets were silently not written on Windows
+  when the path had non-ASCII characters (#797). They are now written through one shared writer
+  that encodes the picture first and writes the bytes, so such paths work.
+- Discovery's OCR cache no longer mixes up files with the same name in different folders (#794):
+  their entries used to collide and overwrite each other. Cached OCR records that belong to the
+  same file are reused; the others are read again once.
+- Discovery's `ocr.jsonl` keeps only the records of the current run after a complete run (#795).
+  An interrupted run leaves it as it was.
+- After a fresh dialogue reading, the older dialogue caches of that source are removed (#803):
+  those of earlier prompt versions and the same model's previous reading. A current reading by
+  another model is kept.
 - Whisper can write non-speech markers now (`[Laughter]`, `(laughs)`, `*sighs*`). Cutpoint had
   left faster-whisper's default list of suppressed tokens on, which blocks `[`, `(` and `*`, so none
   of 155 cached transcripts held a `[laughter]` marker and the marker rule of the `laughter`
