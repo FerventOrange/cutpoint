@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui`: the filmstrip trim rail shows talk (dialogue) stretches as "Talk" ranges labelled with the bit's title (#804), and crashes from `crashes.json` as crash markers when their confidence is at least max(0.2, 0.6 x the project's best crash), deduplicated against telemetry crashes within 2 s (#754).
 - `cutpoint ui` starts the subscription proxy itself, so `cutpoint proxy` no longer has to run in a
   terminal to sign in (#821). Log in and Retry on a Connected accounts row start it when it is not
   running (the row shows "Starting the proxy…" and any error); a chat turn with a subscription
@@ -906,6 +907,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint ui` starts the subscription proxy before an analysis or edit job (or a resumed one) whose
   Vision model or gaming dialogue step uses a subscription provider, when a login is saved. If the
   start fails, the job log has a WARNING and the job still runs (#832).
+- `cutpoint ui`: the moment marker colours in the Light theme now meet 3:1 contrast (#755).
 - Gaming region discovery no longer groups the OCR frames of two files of one name in different
   folders as one source, so each keeps its own menu-frame test and static texts (#817).
 - The game key (and so the HUD preset name) no longer comes from a generic folder name such as

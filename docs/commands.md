@@ -582,7 +582,10 @@ and the page asks again every 5 s). A time ruler runs under the rail. Below it, 
 found (`GET /api/projects/<id>/events`, from `events.json`: sounds such as laughter, on-screen
 text such as kill feeds, and camera crashes, with their time and confidence; the model's
 descriptions are left out) are marked in the view with a short label, at least 80 px apart, the
-most confident first; hover one for its kind, time and confidence. A source with no events (also
+most confident first; hover one for its kind, time and confidence. Talk (dialogue) stretches show as "Talk"
+ranges labelled with the bit's title. Crashes from `crashes.json` (the `crashes` step) are marked
+when their confidence is at least max(0.2, 0.6 x the project's best crash); one within 2 s of a
+telemetry crash is not marked twice. A source with no events (also
 in a project that has an `events.json`) marks the other moments of the same source that start in the
 view instead, with their names, coloured by kind. The thin overview strip under the rail shows the view in the whole source
 and pans it (drag, or the arrow keys by a tenth of the view, PageUp and PageDown by a whole view,

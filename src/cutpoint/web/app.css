@@ -71,6 +71,7 @@
   --ev-sound: var(--k-dialogue);
   --ev-text: var(--k-action);
   --ev-cam: var(--k-funny);
+  --ev-talk: var(--k-scenic);
   --font: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
   --ease: 0.2s ease;
@@ -196,6 +197,11 @@
   --ev-sound: #7a45d0; /* 5.2:1 on --slate; the Graphite and Blue shades are 3:1 or more on theirs */
   --ev-text: #2f5fc4;
   --ev-cam: #b4530f;
+  /* the kind colours (fallback markers, dots, bars) darkened to 3:1 on both this ground and their dark tint */
+  --k-action: #4e79ce;
+  --k-scenic: #309180;
+  --k-funny: #b46838;
+  --k-dialogue: #886cb8;
   --film-gap-shade: rgba(23, 33, 46, 0.32); /* the rail's gaps while stills show */
   --hatch: rgba(71, 86, 105, 0.2);
   --gap-shade: rgba(23, 33, 46, 0.12);
@@ -787,14 +793,17 @@ body.tips-off .flag-tip { display: none; }
   --k: var(--muted); position: absolute; top: 0; max-width: 11em; padding-left: var(--space-1); border-left: 2px solid var(--k);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 18px;
 }
+.rail-event.range { max-width: none; box-sizing: border-box; overflow: visible; border-right: 2px solid var(--k); background: color-mix(in srgb, var(--k) 18%, transparent); } /* a stretch (talk): its length */
+.rail-event-name { display: block; max-width: 11em; overflow: hidden; text-overflow: ellipsis; }
 .rail-event[data-kind="action"] { --k: var(--k-action); }
 .rail-event[data-kind="scenic"] { --k: var(--k-scenic); }
 .rail-event[data-kind="funny"] { --k: var(--k-funny); }
 .rail-event[data-kind="dialogue"] { --k: var(--k-dialogue); }
-/* detected events: sound, on-screen text, camera; the bar is 3:1 on the stage ground in every theme */
+/* detected events: sound, on-screen text, camera, talk; the bar is 3:1 on the stage ground in every theme */
 .rail-event[data-ev="audio"] { --k: var(--ev-sound); }
 .rail-event[data-ev="ocr"] { --k: var(--ev-text); }
 .rail-event[data-ev="telemetry"] { --k: var(--ev-cam); }
+.rail-event[data-ev="text"] { --k: var(--ev-talk); }
 .rail-presets, .stage-mode { flex: none; flex-wrap: nowrap; }
 .rail-presets .seg-btn:disabled, .stage-mode .seg-btn:disabled, .stage-mode .seg-btn[aria-disabled="true"] { opacity: 0.5; cursor: default; color: var(--muted); filter: none; }
 /* the overview strip: the whole source, the rail's view as a box, the clip in gold. Thin to look at;
