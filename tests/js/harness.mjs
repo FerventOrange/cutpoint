@@ -165,7 +165,7 @@ const ALWAYS = ['window', 'document', 'location', 'history', 'localStorage', 'se
   'confirm', 'alert', 'prompt', 'open', 'scrollTo', 'getSelection'];
 const KEEP_NODE = new Set(['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'setImmediate',
   'clearImmediate', 'queueMicrotask', 'fetch', 'Response', 'Request', 'Headers', 'structuredClone',
-  'URL', 'URLSearchParams', 'AbortController', 'AbortSignal', 'TextEncoder', 'TextDecoder', 'performance',
+  'URL', 'URLSearchParams', 'TextEncoder', 'TextDecoder', 'performance',
   'console', 'Event', 'EventTarget', 'CustomEvent', 'Blob', 'FormData', 'File', 'atob', 'btoa']);
 
 // Node 22.1.0 MockTimers throws on clearTimeout(undefined|null); browsers and real timers accept it.
@@ -281,7 +281,8 @@ export async function boot({ routes = {}, project = makeProject(), hash = '', to
   // confirm, requestAnimationFrame and cancelAnimationFrame are live views of the window (see installGlobals),
   // so a test can override them on page.window and bare calls in app.js see the override
   current?.close({ check: false }); // a test that never closed its page must not leave globals behind
-  const restore = installGlobals(window, { fetch: fetchMock });
+  // AbortController/AbortSignal are jsdom's: addEventListener({ signal }) (keepEmptyFocus) rejects a Node signal (other realm)
+  const restore = installGlobals(window, { fetch: fetchMock, AbortController: window.AbortController, AbortSignal: window.AbortSignal });
 
   // fresh module graph per boot: a copy of the real files in a temp dir (api.js reads the token at load)
   const dir = await mkdtemp(join(tmpdir(), 'cutpoint-web-'));
