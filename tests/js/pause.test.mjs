@@ -3,7 +3,7 @@
 // with Resume after the pause.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boot, makeProject } from './harness.mjs';
+import { boot, makeProject, reply } from './harness.mjs';
 
 const STEPS = [{ step: 'transcribe', label: 'Transcribe', state: 'running', pct: 40 }];
 const RUNNING = { id: 'j1', project_id: 'p1', action: 'analyze', status: 'running', logs: [], progress: { total: 1, steps: STEPS }, started: '' };
@@ -154,26 +154,57 @@ test('Pause analysis cancels the job and the panel then offers Resume', async (t
   assert.notEqual(page.document.activeElement, page.document.body);
 });
 
-test('the empty preview has a title, one line and an Analyze footage button that starts the analysis and hides while it runs (#810)', async (t) => {
-  const jobs = { jobs: [] };
-  const { page, $ } = await open(t, FRESH(), { 'GET /api/jobs': () => jobs });
+test('the empty preview has a title, one line and an Analyze footage button (#810)', async (t) => {
+  const { $ } = await open(t, FRESH());
   const stage = $('#stageEmpty');
   assert.equal(stage.querySelector('h3').textContent, 'No moments yet');
   assert.equal(stage.querySelector('p').textContent, 'Analyze the footage to find its best moments. Preview and trim them here.');
   assert.equal(stage.querySelector('svg').getAttribute('aria-hidden'), 'true');
-  const btn = $('#stageAnalyze');
-  assert.equal(btn.textContent, 'Analyze footage');
-  assert.equal(btn.hidden, false);
-  let clicks = 0;
-  // the stage button clicks the Moments button; count that click and stop it before its own handler starts a job
-  $('#analyzeBig').addEventListener('click', (e) => { clicks += 1; e.stopImmediatePropagation(); }, true);
-  btn.click();
-  assert.equal(clicks, 1);
-  jobs.jobs = [RUNNING];
-  t.mock.timers.tick(5000);
-  await page.settle();
-  assert.equal($('#stageAnalyze').hidden, true);
+  assert.equal($('#stageAnalyze').textContent, 'Analyze footage');
+  assert.equal($('#stageAnalyze').hidden, false);
 });
+
+for (const id of ['analyzeBig', 'stageAnalyze']) {
+  test(`#${id} starts the analysis through the real handler: disabled while starting, hidden while it runs (#823)`, async (t) => {
+    const jobs = { jobs: [] };
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const { page, $ } = await open(t, FRESH(), {
+      'GET /api/jobs': () => jobs,
+      'POST /api/projects/p1/jobs': async () => { await gate; jobs.jobs = [RUNNING]; return RUNNING; },
+    });
+    const starts = () => page.requests.filter((r) => r.method === 'POST' && r.path === '/api/projects/p1/jobs');
+    $(`#${id}`).click();
+    await page.settle();
+    assert.equal(starts().length, 1);
+    assert.deepEqual(starts()[0].body, { action: 'analyze' });
+    assert.equal($('#analyzeBig').disabled, true, 'no second start while the request is in flight');
+    release();
+    await page.settle();
+    t.mock.timers.tick(5000);
+    await page.settle();
+    assert.equal($('#stageAnalyze').hidden, true);
+    assert.equal($('#analyzeBig').hidden, true);
+    assert.equal($('#pauseBtn').hidden, false);
+  });
+
+  test(`#${id} is enabled again when the start fails (#823)`, async (t) => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const { page, $ } = await open(t, FRESH(), {
+      'GET /api/jobs': { jobs: [] },
+      'POST /api/projects/p1/jobs': async () => { await gate; return reply(500, { detail: 'no worker' }); },
+    });
+    $(`#${id}`).click();
+    await page.settle();
+    assert.equal($('#analyzeBig').disabled, true);
+    release();
+    await page.settle();
+    assert.equal(page.requests.filter((r) => r.method === 'POST' && r.path === '/api/projects/p1/jobs').length, 1);
+    assert.equal($('#analyzeBig').disabled, false);
+    assert.equal($('#analyzeBig').hidden, false);
+  });
+}
 
 test('the empty preview button is hidden when the project has no videos (#810)', async (t) => {
   const { $ } = await open(t, makeProject({ highlights: null, analysis: null, sources: [] }));

@@ -314,7 +314,7 @@ test('an Analyze that fails with folder_busy leaves focus on a button that works
   let jobs = [];
   const { page, $ } = await openRoutes(t, idle, { 'GET /api/projects/p1': () => project, 'GET /api/jobs': () => ({ jobs }) });
   $('#analyzeBig').focus();
-  $('#momentsEmpty').dataset.refocus = '1'; // what the button's click sets (keepEmptyFocus; its AbortSignal is not jsdom's)
+  $('#momentsEmpty').dataset.refocus = '1'; // what the button's click sets (keepEmptyFocus); the test starts the job itself via the jobs poll
   jobs = [{ ...failed, status: 'running', error: null, error_code: null }]; // the page's own Analyze starts
   t.mock.timers.tick(5000);
   await page.settle();
