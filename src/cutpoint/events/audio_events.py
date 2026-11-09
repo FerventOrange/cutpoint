@@ -93,6 +93,18 @@ DEFAULT_GROUPS: tuple[ClassGroup, ...] = (
         rel_margin=0.015,
         rel_floor=0.02,
     ),
+    # Booms (#801), never a VLM seed by themselves: gameplay booms all the time, so an
+    # Explosion counts only once :mod:`cutpoint.events.explosions` confirms it. Gunshot classes
+    # are left out: they fire on every shot of the player's own gun.
+    ClassGroup(
+        "Explosion",
+        ("Explosion", "Boom", "Eruption"),
+        abs_thr=0.10,
+        rel_factor=4.0,
+        rel_margin=0.05,
+        rel_floor=0.05,
+        seed=False,
+    ),
 )
 
 

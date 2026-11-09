@@ -52,7 +52,19 @@ def normalize(source: str, ev: dict[str, Any]) -> dict[str, Any]:
             + (" (relative to local baseline)" if ev.get("relative") else "")
         )
         out["details"] = {
-            k: ev[k] for k in ("peak_t", "mean", "baseline", "top_class", "relative") if k in ev
+            k: ev[k]
+            for k in (
+                "peak_t",
+                "mean",
+                "baseline",
+                "top_class",
+                "relative",
+                "loud_jump",
+                "backing",
+                "confirmed",
+                "after_black",
+            )
+            if k in ev
         }
     elif kind == "ocr":
         out["label"] = ev.get("text", "")
@@ -89,7 +101,14 @@ def normalize(source: str, ev: dict[str, Any]) -> dict[str, Any]:
 def _event_line(name: str, e: dict[str, Any]) -> str:
     t = f"[{name} {clock(e['start'])}]"
     if e["kind"] == "audio":
-        return f"{t} AUDIO: {e['label']} ({e['confidence']:.2f}, {e['end'] - e['start']:.1f}s)"
+        details = e.get("details") or {}
+        conf = details.get("confirmed")
+        mark = "" if conf is None else (" confirmed" if conf else " unconfirmed")
+        if details.get("after_black"):
+            mark += ", after black"
+        return (
+            f"{t} AUDIO: {e['label']} ({e['confidence']:.2f}, {e['end'] - e['start']:.1f}s){mark}"
+        )
     if e["kind"] == "ocr":
         if e["type"] == "kill":
             d = e.get("details", {})

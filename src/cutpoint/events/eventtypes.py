@@ -24,8 +24,8 @@ A matcher takes the event ``type`` plus one of ``prefix`` / ``contains``
 ``player_kill``, ...; several space-separated flags must all hold, ``!flag``
 must be false). Preset types are checked before
 :data:`DEFAULT_EVENT_TYPES` and replace a default with the same name; the
-first matching type wins, whatever the project style (``styles`` gates only
-the points). Unset ``payoff`` / ``tail_s`` / ``seed`` keep the
+first matching type wins, whatever the project style (``styles`` gates the
+points and the VLM seed). Unset ``payoff`` / ``tail_s`` / ``seed`` keep the
 built-in rules, so the defaults reproduce the original behaviour exactly,
 except that the player's own deaths no longer count as player kills, a self-kill counts as
 ``self_kills`` (half a kill) instead, in the ``funny`` style a death
@@ -76,20 +76,28 @@ MAX_SEED = 3.0  # custom types: VLM seed priority (the built-in tiers top out at
 # with one of these names would overwrite them. Names ending in ``_reaction`` are
 # reserved too: ``<type>_reaction`` is the reaction evidence key of a type.
 RESERVED_NAMES = frozenset({"laughter", "scream", "boost", "vlm"})
+MATCH_KINDS = ("ocr", "audio")  # what a matcher's ``kind`` may be
 
 
 @dataclass(frozen=True)
 class Matcher:
-    """One ``when`` entry: an OCR event ``type`` plus an optional text or flag test."""
+    """One ``when`` entry: an OCR event ``type`` plus an optional text or flag test.
+
+    With ``kind`` ``"audio"`` it matches audio events instead, ``type`` being the sound's label
+    (``Explosion``); the flags are the layer's fields as for OCR (``confirmed``).
+    """
 
     type: str
     prefix: tuple[str, ...] = ()
     contains: tuple[str, ...] = ()
     flag: str = ""
+    kind: str = "ocr"
 
     def matches(self, e: dict[str, Any]) -> bool:
-        """Whether an events.json entry or a raw layer-1 OCR event matches."""
-        if e.get("kind") != "ocr" or e.get("type") != self.type:
+        """Whether an events.json entry or a raw layer-1 OCR or audio event matches."""
+        if e.get("kind") != self.kind:
+            return False
+        if (e.get("label") if self.kind == "audio" else e.get("type")) != self.type:
             return False
         label = (e.get("label") or e.get("text") or "").upper()
         if self.prefix and not any(label.startswith(p) for p in self.prefix):
@@ -166,11 +174,15 @@ class EventType:
 # player (``player_kill``). Score changes: an on-screen number that stepped by one (``score``
 # events of a "score" region, :class:`cutpoint.events.killfeed.ScoreTracker`), worth a kill
 # each, at most 3 counted, a tail payoff, a seed like a round banner and at most one moment
-# seed a minute per source. Announcements come last: big-text lines (never notices) the OCR
+# seed a minute per source. Announcements: big-text lines (never notices) the OCR
 # layer learned as pop-ups that come back all through the source (``announce``,
 # :func:`cutpoint.events.killfeed.learn_announcements`), half a kill each, at most 2 counted, no tail
 # payoff. Boost-only: they add points to candidates that exist and never nominate a moment or seed a
 # VLM window.
+# Explosions (#801): a heard boom with a loudness jump out of ongoing
+# sound (``confirmed``, :mod:`cutpoint.events.explosions`): two thirds of a kill,
+# at most 2 counted, a VLM seed a little below a player kill; only where blasts are moments
+# (gaming, action, sport), not in the funny or talk styles.
 DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
     EventType(
         "teamkills",
@@ -218,6 +230,14 @@ DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
         max=2,
         nominate=False,
     ),
+    EventType(
+        "explosions",
+        (Matcher("Explosion", flag="confirmed", kind="audio"),),
+        score=4.0,
+        max=2,
+        seed=1.0,
+        styles=("gaming", "action", "sport"),
+    ),
 )
 
 
@@ -258,12 +278,15 @@ def from_dict(data: dict[str, Any]) -> EventType:
             prefix=_strs(m.get("prefix")),
             contains=_strs(m.get("contains")),
             flag=str(m.get("flag") or ""),
+            kind=str(m.get("kind") or "ocr"),
         )
         for m in data["when"]
     )
     if not data.get("name") or not when:
         raise ValueError("an event type needs a name and at least one matcher")
     for m in when:
+        if m.kind not in MATCH_KINDS:
+            raise ValueError(f"kind must be one of {MATCH_KINDS}, not {m.kind!r}")
         if any(f == "!" or f.startswith("!!") for f in m.flag.split()):
             raise ValueError(f"bad flag {m.flag!r}")
     name = str(data["name"])

@@ -59,7 +59,11 @@ EVIDENCE_KEYS = (
     "self_kills",
     "announcements",
     "score_changes",
+    "explosions",
 )
+# Event kinds the event types match: OCR events, and audio events of a type with an audio
+# matcher (``explosions``); laughter and screams score on their own (below).
+TYPED_KINDS = ("ocr", "audio")
 REACTION_WINDOW_S = 6.0  # a reaction starts at most this long after the event
 REACTION_PAUSE_S = 1.5  # speech is a reaction only after this much silence up to the event
 REACTION_SOUNDS = ("Laughter", "Scream")
@@ -174,13 +178,13 @@ def event_boost(
                 laughs += bool(e["confidence"])
             elif e["label"] in SCREAM_SOUNDS:
                 scream = max(scream, e["confidence"] or 0)
-        elif e["kind"] == "text":
+        if e["kind"] == "text":
             if e.get("type") == DIALOGUE_TYPE:
                 if talk is None:  # stretches left in events.json by an earlier style do not count
                     talk = _open_list(names)
                 if talk:
                     dialogue = max(dialogue, e["confidence"] or 0)
-        elif e["kind"] == "ocr":
+        elif e["kind"] in TYPED_KINDS:  # OCR events, and sounds a type matches (explosions)
             t = first_match(types, e)
             if t and t.name in scored:
                 counts[t.name] += 1
@@ -315,12 +319,16 @@ def seeds(
         if any(a <= e["start"] < b for a, b in menu or ()):
             continue
         length = max(0.0, e["end"] - e["start"])
-        if e["kind"] == "audio":
-            if (e["label"] in LAUGH_SOUNDS or e["label"] in SCREAM_SOUNDS) and e["confidence"]:
-                if e["label"] in LAUGH_SOUNDS and not laugh_backed(e, events, backup):
-                    continue
-                out.append(Seed(e["label"].lower(), e["start"], e["end"], length))
-        elif e["kind"] == "ocr":
+        if (
+            e["kind"] == "audio"
+            and (e["label"] in LAUGH_SOUNDS or e["label"] in SCREAM_SOUNDS)
+            and e["confidence"]
+        ):
+            if e["label"] in LAUGH_SOUNDS and not laugh_backed(e, events, backup):
+                continue
+            out.append(Seed(e["label"].lower(), e["start"], e["end"], length))
+            continue
+        if e["kind"] in TYPED_KINDS:
             t = first_match(types, e)
             if t and t.nominate and t.score and t.applies(*style):
                 seed = Seed(t.name, e["start"], e["end"], min(length, OCR_HOLD_S), t.tail_s)
