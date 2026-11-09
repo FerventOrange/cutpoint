@@ -308,6 +308,8 @@ def folder(tmp_path, monkeypatch):
 def _keys(project) -> dict[str, str]:
     from cutpoint.events import regions  # noqa: PLC0415
 
+    # Entry names are case-folded where the file system ignores case (Windows): compare
+    # with ``os.path.normcase(name)`` for names with capitals.
     return {Path(k).name: v["key"] for k, v in regions.load_game_keys(project).items()}
 
 
@@ -475,7 +477,9 @@ def test_a_mixed_date_group_keeps_its_key_on_the_largest_group(folder, caplog, c
     a = [s for s in srcs if corner[s.name] == "a"]
     (b,) = [s for s in srcs if corner[s.name] == "b"]
     misfit = misfit_key(str(b.path), {key}.__contains__)  # its own name, unless that is the key
-    assert _keys(folder.project) == {s.name: key for s in a} | {b.name: misfit}
+    assert _keys(folder.project) == {os.path.normcase(s.name): key for s in a} | {
+        os.path.normcase(b.name): misfit
+    }
     entries = regions.load_game_keys(folder.project)
     leader = max(a, key=lambda s: folder.fake.frames[s.name])
     fit = entries[regions.source_id(leader.path)]["fit"]
