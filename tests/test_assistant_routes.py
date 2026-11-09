@@ -1277,6 +1277,9 @@ def test_the_key_routes_refuse_an_unknown_role_and_default_to_the_chat(
         ("To start with, what does the score mean?", False),
         ("I don't know where to start with this.", False),
         ("I want to learn how to use this.", False),
+        ("Can you use my GPU?", False),
+        ("Can we use LUTs?", False),
+        ("We use OBS to record.", False),
         # a request with them still does
         ("ok, use the laugh then", True),
         ("Can you use the laugh at 12:30?", True),

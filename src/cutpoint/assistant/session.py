@@ -83,10 +83,14 @@ _EDIT_ASK = re.compile(
 )
 # Edit words that are common in help questions too ("how do I use the timeline?", "can it use my
 # GPU?"): an edit only where they open a clause or follow a request word ("drop the intro", "ok,
-# use the laugh", "can you take out the menu part?", "let's start with the crash")
+# use the laugh", "can you take out the menu part?", "let's start with the crash"). "use" after
+# "you" or "we" only with a moment or a time later in the sentence ("can you use m3?", "can you use
+# the laugh at 12:30?"; not "can you use my GPU?", "we use OBS to record.")
 _EDIT_LEAD = re.compile(
-    r"(?:^\s*|[.!;,]\s*|\b(?:please|just|then|and|also|you|we|let's)\s+)"
-    r"(?:drop|get rid|take out|use|(?:open|start|end)\s+with)\b",
+    r"(?:(?:^\s*|[.!;,]\s*|\b(?:please|just|then|and|also|you|we|let's)\s+)"
+    r"(?:drop|get rid|take out|(?:open|start|end)\s+with)"
+    r"|(?:^\s*|[.!;,]\s*|\b(?:please|just|then|and|also|let's)\s+)use"
+    r"|\b(?:you|we)\s+use(?=[^.?!]*\b(?:m\d+|\d+:\d\d)\b))\b",
     re.I,
 )
 _LAST_SENTENCE = re.compile(r"[^.:;!]*$")
