@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, AI_OTHER, aiModelChoices, baseName, colorNote, filtersOn, fmt, fmtBytes, fmtLen, h, KINDS, kindOf, markdown, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, scoreText, spanText, svg, themeFromStored } from './util.js';
+import { $, AI_OTHER, aiModelChoices, baseName, colorNote, crashOf, crashText, filtersOn, fmt, fmtBytes, fmtLen, h, KINDS, kindOf, markdown, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, scoreText, spanText, svg, themeFromStored } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -642,7 +642,15 @@ function renderMoments() {
   $('.moments').classList.toggle('bare', !hl);
   $('#filterWrap').hidden = !list.length;
   $('#kindSeg').hidden = !list.length;
-  for (const b of $('#kindSeg').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.kind === S.kind));
+  // a kind shows only when a moment of this project has it (All always); an emptied one falls back to All
+  const present = new Set(list.map(kindOf));
+  if (S.kind && !present.has(S.kind)) S.kind = '';
+  for (const b of $('#kindSeg').querySelectorAll('button')) {
+    const gone = !!b.dataset.kind && !present.has(b.dataset.kind);
+    if (gone && b === document.activeElement) $('#kindSeg [data-kind=""]').focus();
+    b.hidden = gone;
+    b.setAttribute('aria-pressed', String(b.dataset.kind === S.kind));
+  }
   $('#momentsCount').textContent = hl ? String(list.length) : ''; // the project's total, whatever the filter shows
   const empty = $('#momentsEmpty');
   // the big button had focus (disabling it while analysis runs moves focus to body): keep it in this column
@@ -698,7 +706,8 @@ function renderMoments() {
             h('span', { class: 'cand-top' },
               h('span', { class: 'rank tc', text: `#${rank}` }),
               h('span', { class: 'cand-title', text: title }),
-              c.must_include ? h('span', { class: 'tag', text: 'must include' }) : null,
+              c.must_include && !crashOf(c) ? h('span', { class: 'tag', text: 'must include' }) : null,
+              crashBadge(c),
               bitBadge(c),
               poolBadge(c)),
             h('span', { class: 'cand-meta' }, KINDS[kind], h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', score ' }), scoreText(c.score, c.pool === 'visual'), badge),
@@ -809,6 +818,18 @@ const filterLabel = (c) => [c.display_label, c.label, c.vision_label].filter(Boo
 function bitBadge(c) {
   if (!c.long_bit) return null;
   return h('span', { class: 'tag bit' }, 'Bit', h('span', { 'aria-hidden': 'true', text: ' · ' }), h('span', { class: 'vh', text: ', ' }), fmtLen(c.end - c.start));
+}
+
+/**
+ * "CRASH 0.91": a moment with a crash of crashes.json (util.js crashOf), with its confidence; a solid
+ * outline when it is always kept (forced), dashed when it is ranked like any moment. Words say which
+ * (the title and the screen reader), never the outline alone. Null for no crash.
+ */
+function crashBadge(c) {
+  const crash = crashOf(c);
+  if (!crash) return null;
+  const how = crash.forced ? 'always kept' : 'ranked like any moment';
+  return h('span', { class: `tag crash${crash.forced ? '' : ' weak'}`, title: `Crash found, ${how}` }, crashText(crash), h('span', { class: 'vh', text: `, ${how}` }));
 }
 
 /** "visual · view": a moment of the visual pool (#635: beauty shots, friends, cruising runs that
@@ -3025,7 +3046,8 @@ function confirmAction(title, text, ok = 'Remove', danger = true) {
 /**
  * Analyze options (#483): filled with what the project's analysis used (``analyze_options``), so
  * Analyze again repeats it unless changed; the disclosure starts open when one is set. Hidden
- * for 360 projects; Must-include crash only for action-cam styles (``must_include_crash_default``).
+ * for 360 projects; "Crashes become moments at" (--must-include-crash) when the style has a default
+ * (``must_include_crash_default``: every style but 360 projects).
  */
 function fillAnalyzeOptions(p) {
   const o = p.analyze_options ?? {};
@@ -7115,7 +7137,8 @@ function initSideTabs() {
 
 /**
  * The kind filter above the Moments grid: All or one of util.js KINDS, buttons that press in turn
- * (aria-pressed). A view of the list only: it is not stored and a project switch clears it.
+ * (aria-pressed); renderMoments hides a kind no moment has. A view of the list only: it is not
+ * stored and a project switch clears it.
  */
 function initKindFilter() {
   $('#kindSeg').addEventListener('click', (e) => {

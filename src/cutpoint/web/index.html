@@ -87,6 +87,7 @@
         <button type="button" class="seg-btn" data-kind="scenic" aria-pressed="false">Scenic</button>
         <button type="button" class="seg-btn" data-kind="funny" aria-pressed="false">Funny</button>
         <button type="button" class="seg-btn" data-kind="dialogue" aria-pressed="false">Dialogue</button>
+        <button type="button" class="seg-btn" data-kind="crash" aria-pressed="false">Crashes</button>
       </div>
       <div id="momentsEmpty" class="empty"></div>
       <ol id="candList" class="cand-list moments-compact"></ol>
@@ -756,9 +757,9 @@
           <label for="anMaxCandidates" title="The most moments found per video before they are merged (--max-candidates). Blank: automatic, by length.">Max candidates</label>
           <input type="number" id="anMaxCandidates" min="1" step="1" inputmode="numeric" placeholder="Auto" aria-describedby="dAnMaxCandidates">
           <span id="dAnMaxCandidates" class="vh">The most moments found per video before they are merged (--max-candidates). Blank: automatic, by length.</span>
-          <label for="anCrash" id="anCrashLabel" title="Always clips crashes in crashes.json with at least this confidence, 0 to 1; 0 turns it off (--must-include-crash). Blank: the style's.">Must-include crash</label>
+          <label for="anCrash" id="anCrashLabel" title="Crashes found with at least this confidence, 0 to 1, always become moments, with their reaction; weaker crashes are ranked like any moment. 0: none are forced (--must-include-crash). Blank: the style's.">Crashes become moments at</label>
           <input type="number" id="anCrash" min="0" max="1" step="any" inputmode="decimal" aria-describedby="dAnCrash">
-          <span id="dAnCrash" class="vh">Always clips crashes in crashes.json with at least this confidence, 0 to 1; 0 turns it off (--must-include-crash). Blank: the style's.</span>
+          <span id="dAnCrash" class="vh">Crashes found with at least this confidence, 0 to 1, always become moments, with their reaction; weaker crashes are ranked like any moment. 0: none are forced (--must-include-crash). Blank: the style's.</span>
         </div>
         <label class="check" title="Leaves out scene detection (--no-scenes): cuts in the video no longer add to a moment's score, and the analysis takes less time."><input type="checkbox" id="anNoScenes" aria-describedby="dAnNoScenes"> Skip scene detection</label>
         <span id="dAnNoScenes" class="vh">Leaves out scene detection (--no-scenes): cuts in the video no longer add to a moment's score, and the analysis takes less time.</span>
