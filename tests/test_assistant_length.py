@@ -368,6 +368,7 @@ def planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> edges.EdgePlanne
     # speech 10-12.5 (words 0.3 s apart run on), a pause, speech 20-21
     spoken = words((10, 10.5), (10.8, 11.5), (11.8, 12.5), (20, 21))
     monkeypatch.setattr(edges.sources, "source_words", lambda _src, _lang=None: spoken)
+    monkeypatch.setattr(edges.sources, "parts", lambda _p: [])  # no cached transcript file
     return edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
 
 
@@ -379,10 +380,56 @@ def test_the_phrase_end_is_the_last_word_of_the_speech_that_runs_on_and_a_breath
     assert planner.phrase_end(A, 12.6) == 12.6  # after the phrase
 
 
+def test_the_phrase_end_reads_the_transcript_of_the_projects_forced_language(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked: list[str | None] = []
+
+    def source_words(_src: Path, language: str | None = None) -> list[dict[str, Any]]:
+        asked.append(language)
+        return words((10, 10.5), (10.8, 11.5))
+
+    monkeypatch.setattr(edges.sources, "source_words", source_words)
+    monkeypatch.setattr(edges.sources, "parts", lambda _p: [])
+    plan = edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
+    plan.phrase_end(A, 11.0)
+    (tmp_path / "highlights.json").write_text(json.dumps({"settings": {"language": "de"}}))
+    plan.phrase_end(A, 11.0)
+    assert asked == [None, "de"]  # the chains of each language are kept apart
+
+
+def test_a_new_transcript_drops_the_cached_phrase_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cdir = tmp_path / "cache"
+    cdir.mkdir()
+    transcript = cdir / "transcript-small.json"
+    monkeypatch.setattr(
+        edges.sources, "parts", lambda _p: [SimpleNamespace(offset=0.0, cdir=cdir, end=None)]
+    )
+    spoken = [words((10, 10.5), (10.8, 11.5))]
+    reads = []
+
+    def source_words(_src: Path, _lang: str | None = None) -> list[dict[str, Any]]:
+        reads.append(1)
+        return spoken[0]
+
+    monkeypatch.setattr(edges.sources, "source_words", source_words)
+    plan = edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
+    transcript.write_text("[]")
+    first = plan.phrase_end(A, 11.0)
+    assert plan.phrase_end(A, 11.0) == first and len(reads) == 1  # cached
+    spoken[0] = words((10, 10.5), (10.8, 13.0))  # the video was transcribed again
+    transcript.write_text('["new"]')
+    assert plan.phrase_end(A, 11.0) == pytest.approx(13.4)
+    assert len(reads) == 2
+
+
 def test_no_transcript_leaves_the_end_where_it_was_asked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(edges.sources, "source_words", lambda _src, _lang=None: None)
+    monkeypatch.setattr(edges.sources, "parts", lambda _p: [])
     assert edges.EdgePlanner(tmp_path).phrase_end(A, 11.0) == 11.0
 
 
@@ -701,7 +748,7 @@ def test_too_long_is_sent_back_too_and_a_retry_further_off_falls_back_on_the_fir
 def test_a_model_that_answers_in_text_or_runs_out_of_rounds_gets_the_earlier_proposal() -> None:
     add = propose("Add the laugh", {"op": "add", "id": "m1"})
     text = Reply("I cannot reach it", [], {"role": "assistant", "content": "I cannot reach it"})
-    turn = run(FakeProvider([add, text]), "make it 60 s")
+    turn = run(FakeProvider([add, text, text]), "make it 60 s")  # the text again after the nudge
     assert turn.status == "done" and kinds(turn) == ["rejected", "proposal"]
     lookups = [call("find_moments", query="laugh")] * session.MAX_ROUNDS
     turn = run(FakeProvider([add, *lookups]), "make it 60 s")
@@ -896,6 +943,247 @@ def test_a_reply_that_announces_more_work_gets_the_one_nudge() -> None:
     # only once: the second announcement is the answer
     fake = FakeProvider([said, said])
     assert kinds(run(fake, "add some beauty shots")) == ["reply"]
+
+
+def test_a_text_only_edit_turn_without_a_target_gets_one_nudge_toward_a_proposal() -> None:
+    # #743: no length asked and no moment named, but an edit asked for
+    said = Reply(
+        "The jump and the crash would work well.", [], {"role": "assistant", "content": "x"}
+    )
+    ok = propose("Add the laugh", {"op": "add", "id": "m1"})
+    fake = FakeProvider([said, ok])
+    assert kinds(run(fake, "add something funny")) == ["proposal"]
+    assert fake.requests[1]["messages"][-1]["content"] == session.NUDGE
+    # once a turn: the answer given again is the reply
+    fake = FakeProvider([said, said])
+    turn = run(fake, "add something funny")
+    assert kinds(turn) == ["reply"] and len(fake.requests) == 2
+    assert turn.view()["events"][0]["text"] == said.text
+    # a message that asks no edit gets no nudge
+    fake = FakeProvider([said])
+    assert kinds(run(fake, "what is the best moment?")) == ["reply"] and len(fake.requests) == 1
+    # nor does a question with an edit word, unless it is a request
+    fake = FakeProvider([said])
+    assert kinds(run(fake, "what would you trim?")) == ["reply"] and len(fake.requests) == 1
+    fake = FakeProvider([said, ok])
+    assert kinds(run(fake, "can you add something funny?")) == ["proposal"]
+    assert fake.requests[1]["messages"][-1]["content"] == session.NUDGE
+
+
+@pytest.mark.parametrize(
+    ("msg", "nudged"),
+    [
+        ("could we add the laugh?", True),
+        ("can we add something funny?", True),
+        ("hey, can you add the laugh?", True),
+        ("add the laugh, ok?", True),
+        ("can you trim the intro?", True),
+        ("what would you trim?", False),
+        ("anything to fix?", False),
+        ("should I cut the intro?", False),
+    ],
+)
+def test_a_question_that_asks_for_an_edit_gets_the_nudge_one_that_asks_advice_not(
+    msg: str, nudged: bool
+) -> None:
+    said = Reply(
+        "The jump and the crash would work well.", [], {"role": "assistant", "content": "x"}
+    )
+    fake = FakeProvider([said, propose("Add the laugh", {"op": "add", "id": "m1"})])
+    turn = run(fake, msg)
+    assert kinds(turn) == (["proposal"] if nudged else ["reply"])
+    assert (len(fake.requests) == 2) is nudged
+
+
+@pytest.mark.parametrize(
+    "msg", ["could we add the laugh?", "make it 2 min?", "hey, can you add the laugh?"]
+)
+def test_a_reply_that_announces_work_is_nudged_for_any_edit_request(msg: str) -> None:
+    said = Reply("Let me search for more funny moments.", [], {"role": "assistant", "content": "x"})
+    fake = FakeProvider([said, propose("Add the laugh", {"op": "add", "id": "m1"})])
+    run(fake, msg)  # "make it 2 min?": the 34 s proposal then goes back as short
+    assert fake.requests[1]["messages"][-1]["content"] == session.NUDGE
+
+
+@pytest.mark.parametrize(
+    ("summary", "wrong"),
+    [
+        ("Added the laugh; now about 3 minutes.", True),
+        ("Added the laugh for a total of 90 s.", True),
+        ("Added the laugh; it is now about 34 s long.", False),
+        ("Added the laugh, about 30 s in total.", False),  # within the tolerance
+        ("Added the laugh.", False),  # no length claimed
+        ("Extended the jump by 10 s.", False),  # a change, no length
+        # a length without a whole-sequence cue, a bound or a clip's length is no claim
+        ("Added about 15 seconds of banter.", False),
+        ("Added 3 clips (about 12 s) for a total of 34 s.", False),
+        ("Added the laugh (about 12 s); now about 34 s.", False),
+        ("Extended the jump; it is now about 8 s.", False),
+        ("Kept it under 1 minute; now 34 s.", False),
+        ("The jump is now 8 s.", False),
+        ("m3 now runs 12 s.", False),
+        ("Each clip is now 5 s.", False),
+        # a change in length, a clip's length or a place in the source is no claim (#863 review)
+        ("Added the laugh; the video is now 12 s longer.", False),
+        ("Added the laugh, now 12 s longer.", False),
+        ("Trimmed every clip; now 5 s each.", False),
+        ("Trimmed all clips, now about 5 s apiece.", False),
+        ("Extended the jump, now 8 s.", False),
+        ("Extended the jump; now 8 s long.", False),
+        ("Trimmed the intro; the laugh now runs 12 s.", False),
+        ("The jump now lasts 8 s.", False),
+        ("Cut 20 s in total from the intro.", False),
+        ("Trimmed about 10 s overall from m3 and m5.", False),
+        ("Trimmed it by 20 s overall.", False),
+        ("Removed a total of 20 s of dead air.", False),
+        ("Added three clips totalling about 15 s.", False),
+        ("Added 3 clips (12 s in all).", False),
+        ("Swapped in the laugh, now at 12:30 in the source.", False),
+        ("Added m4 and m6 (about 12 s each), now 34 s overall.", False),
+        ("Lengthened m3 by 4 s; the montage now lasts about 34 seconds.", False),
+        # a whole-sequence length is read
+        ("Added the laugh; now 90 s.", True),
+        ("Added the laugh for a total 90 s.", True),
+        ("Added the laugh, 90 s in all.", True),
+        ("Added the laugh; the video is now 90 seconds.", True),
+        ("Added the laugh; it now runs 1:30.", True),
+    ],
+)
+def test_a_length_claim_in_the_summary_is_checked_against_the_exported_length(
+    summary: str, wrong: bool
+) -> None:
+    gap = session.Turn._length_gap(summary, {"length": 34.0})
+    assert (gap is not None) is wrong
+    if wrong:
+        assert "makes 34 s as exported" in gap
+        claim = context.claimed_seconds(summary)
+        assert claim is not None and f"says the sequence is {claim:.0f} s" in gap
+    if "90 s" in summary or "90 seconds" in summary or "1:30" in summary:
+        assert context.claimed_seconds(summary) == 90.0
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Made it 4 min 30 s overall.",
+        "Made it 4 minutes and 30 seconds in total.",
+        "It now runs 4 min 30 s.",
+    ],
+)
+def test_a_claim_in_minutes_and_seconds_is_read_whole(summary: str) -> None:
+    assert context.claimed_seconds(summary) == 270.0
+    assert session.Turn._length_gap(summary, {"length": 270.0}) is None
+
+
+def test_a_claim_that_fits_the_change_or_a_clip_is_not_flagged() -> None:
+    # read as the sequence's, but it is the change in length or one clip's length
+    assert session.Turn._length_gap("Added the laugh; now 10 s.", {"length": 34.0}) is not None
+    assert (
+        session.Turn._length_gap("Added the laugh; now 10 s.", {"length": 34.0}, lambda: [10.0])
+        is None
+    )
+    # through a turn: the laugh adds 10 s (24 s to 34 s), c3 is 4 s
+    for summary in ("Added the laugh; now 10 s.", "Added the laugh; it now runs 4 s."):
+        event = run(FakeProvider([propose(summary, {"op": "add", "id": "m1"})]), "add the laugh")
+        assert event.view()["events"][-1]["summary"] == summary
+    lie = propose("Added the laugh; now about 3 minutes.", {"op": "add", "id": "m1"})
+    event = run(FakeProvider([lie]), "add the laugh").view()["events"][-1]
+    assert event["summary"] == "Changes: 1 added; 34 s in all."
+
+
+@pytest.mark.parametrize("text", ["add the laugh", "make it 34 s"])
+def test_a_wrong_length_claim_is_flagged_with_or_without_a_target(text: str) -> None:
+    # 34 s as proposed: within the 34 s target, so only the claim is wrong
+    lie = propose("Added the laugh; now about 3 minutes.", {"op": "add", "id": "m1"})
+    turn = run(FakeProvider([lie]), text)
+    event = turn.view()["events"][-1]
+    assert event["kind"] == "proposal" and event["length"] == 34.0
+    assert event["summary"] == "Changes: 1 added; 34 s in all."
+    true = propose("Added the laugh; now about 34 s long.", {"op": "add", "id": "m1"})
+    event = run(FakeProvider([true]), text).view()["events"][-1]
+    assert event["summary"] == "Added the laugh; now about 34 s long."
+
+
+def test_a_wrong_length_claim_goes_back_with_a_short_proposal() -> None:
+    lie = propose("Added the laugh; now about 1 minute.", {"op": "add", "id": "m1"})
+    fake = FakeProvider([lie, propose("Add the laugh", {"op": "add", "id": "m1"})])
+    run(fake, "make it 60 s")
+    sent = fake.requests[1]["messages"][-1]["content"]
+    assert "makes 34 s of the 60 s asked" in sent and "says the sequence is 60 s" in sent
+
+
+@pytest.mark.parametrize(
+    ("summary", "seconds"),
+    [
+        # the length the user asked for is no claim
+        ("You asked for a total of 60 s; I found only 34 s of funny moments.", None),
+        ("Now 34 s, below the target total of 60 s.", 34.0),
+        ("It is 34 s now, short of the 60 s total.", None),
+        ("34 s, not the 60 s overall you wanted.", None),
+        ("Now 34 s; you wanted 40 s in all, but there is no more funny footage.", 34.0),
+        ("Added the laugh; now 34 s of the 40 s asked.", 34.0),
+        # a place in the sequence is no length
+        ("Moved the laugh earlier, now at 0:12 in the video.", None),
+        ("Added the laugh at the end, now at 0:28.", None),
+        # the sequence's length still is
+        ("Now 34 s in total.", 34.0),
+        ("The video is now 60 s.", 60.0),
+    ],
+)
+def test_an_asked_length_or_a_place_is_no_claim(summary: str, seconds: float | None) -> None:
+    assert context.claimed_seconds(summary) == seconds
+    assert (session.Turn._length_gap(summary, {"length": 34.0}) is not None) is (seconds == 60.0)
+
+
+@pytest.mark.parametrize(
+    ("summary", "seconds"),
+    [
+        # "as" is not "a s"
+        ("Moved the laugh to the start, now as the opener.", None),
+        ("Now 34 s total as planned.", 34.0),
+        ("Added the laugh, the video now runs 34 s overall as one sequence.", 34.0),
+        ("Added the laugh, now as funny as it gets.", None),
+        # the count words still read
+        ("It is about a minute total.", 60.0),
+        ("Now a minute and 4 s in all.", 64.0),
+        ("Now one minute overall.", 60.0),
+        ("Now 1:30 overall.", 90.0),
+        # target talk after a length is not a claim
+        ("Now 60 s total to match the target.", None),
+        ("Now 1:00 total so it hits the goal.", None),
+        ("Now 34 s; 60 s total was the goal.", 34.0),
+        ("Now 34 s, 60 s overall is still the target.", 34.0),
+        ("It runs 34 s; 60 s in total is your target.", 34.0),
+        ("It is 34 s, 60 s total is the goal you set.", None),
+        ("Now 34 s, short of 60 s overall you hoped for.", 34.0),
+    ],
+)
+def test_as_is_no_count(summary: str, seconds: float | None) -> None:
+    assert context.claimed_seconds(summary) == seconds
+
+
+@pytest.mark.parametrize(
+    ("text", "seconds"),
+    [
+        ("make it as short as possible", None),
+        ("the overall as funny as you can", None),
+        ("about a minute total", 60),
+        ("make it a minute and 4 s", 64),
+        ("one minute overall", 60),
+        ("make it 1:30", 90),
+    ],
+)
+def test_as_is_no_count_in_a_target(text: str, seconds: float | None) -> None:
+    assert context.target_seconds(text) == seconds
+
+
+def test_a_summary_that_names_the_asked_length_is_taken_as_it_is() -> None:
+    summary = "Added the laugh. You asked for a total of 4 minutes, but only 34 s exist."
+    fake = FakeProvider([propose(summary, {"op": "add", "id": "m1"})] * 4)
+    turn = run(fake, "build about 4 minutes")
+    rejected = [e["text"] for e in turn.view()["events"] if e["kind"] == "rejected"]
+    assert rejected and not any("summary says" in text for text in rejected)
+    assert turn.view()["events"][-1]["summary"].startswith(summary)
 
 
 # -- round 4 ----------------------------------------------------------------------------------------
@@ -1144,7 +1432,8 @@ def text_reply(text: str) -> Reply:
 
 def test_a_turn_that_ends_in_text_gets_a_labelled_fill_to_review() -> None:
     p = session.Project(list(KINDS), list(KSEQ), durations(), "", "key0")
-    turn = run(FakeProvider([text_reply("I would add a few more views.")]), "make it 40 s", proj=p)
+    said = text_reply("I would add a few more views.")
+    turn = run(FakeProvider([said, said]), "make it 40 s", proj=p)  # again after the nudge
     assert kinds(turn) == ["reply", "proposal"]  # the text stays
     event = turn.view()["events"][1]
     assert "(the assistant didn't propose an edit)" in event["summary"]
@@ -1168,7 +1457,8 @@ def test_no_fill_for_a_question_a_long_enough_sequence_or_no_target() -> None:
     p = session.Project(list(KINDS), list(KSEQ), durations(), "", "key0")
     said = text_reply("It is 8 s now.")
     assert kinds(run(FakeProvider([said]), "can it be 40 s long?", proj=p)) == ["reply"]
-    assert kinds(run(FakeProvider([said]), "make it 8 s", proj=p)) == ["reply"]
+    # a length asked for gets the nudge: the model gives its answer again
+    assert kinds(run(FakeProvider([said, said]), "make it 8 s", proj=p)) == ["reply"]
     assert kinds(run(FakeProvider([said]), "what is in it?", proj=p)) == ["reply"]
 
 

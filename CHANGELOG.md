@@ -17,8 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   project floor (max(0.2, 0.6 x the strongest crash)) is ranked like any moment; when it overlaps
   an existing moment it only marks it. `highlights.json` gets `crash`, `crash_confidence` and
   `crash_forced` on those candidates, kind `crash` and labels `crash` and `crash-reaction` on new
-  ones, and `settings.crash_moments`. Only `analyze` and a re-analysis build them; `360 analyze`
+  ones, and `settings.crash_moments`. `analyze`, a re-analysis and an `events` re-run build them; `360 analyze`
   makes none (`settings.crash_moments` is false).
+- A `cutpoint events` re-run (and "Look closer with vision" in `cutpoint ui`) rebuilds the crash moments from the current `crashes.json` before it re-ranks, with the same moments and marks as a re-analysis. A moment whose crash is unchanged stays as it is, repeat runs change nothing, and new moments take the ids after `settings.last_candidate_id`. 360 projects, `settings.crash_moments` false and action-cam are as before (#847).
+- AI Chat: `pacing.moment_kind` names crash moments `crash` (kind `crash` or `wipeout`, or a must-include `crash` record), so AI Chat can name and filter them; pacing treats them like the activity footage, not as a breaker. The other kinds are unchanged (#848).
 - `cutpoint ui`: a Crashes kind filter after Dialogue, and crash tiles show a "CRASH 0.91" badge
   (solid: always kept, dashed: ranked like any moment) (#486).
 - `cutpoint style list|show|create|validate|delete|features` (all with `--json`) manage your own scoring styles: schema-1 JSON files in `<CUTPOINT_HOME>/styles` (`CUTPOINT_STYLES_DIR`) with partial weight overrides over a built-in style, a description, an activity profile and `applies_to` (stored only for now). Legacy learned presets load as before and are converted only by `create NAME --from FILE --force`. New warnings `unknown_profile`, `feature_not_computed` and `invalid_style`; `highlights.json` records `settings.style_hash` (#514, phase 2).
@@ -377,9 +379,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a 3-wide grid, each stamped with its number and source time, sized for about 1.5k image tokens
   on Claude) with the moment's transcript lines and the sounds `events.json` heard in it
   (laughter, scream). The instructions say to watch only when labels, transcripts and scores
-  cannot answer, never every moment. A message can watch at most 2 moments with a context of
-  8192 tokens or less (local models), 4 with a larger one. Sheets are cached in
-  `ui/assistant/sheets` per moment, window and source file. A local Ollama model gets the tool
+  cannot answer, never every moment. Under 24576 tokens of context a sheet is half-size (about
+  750 image tokens on Claude): a message can watch at most 1 moment with a context of 8192
+  tokens or less (local models), 2 under 24576 tokens, and 4 with a larger one. Sheets are cached in `ui/assistant/sheets` per moment, window, sheet
+  size and source file. A local Ollama model gets the tool
   when Ollama lists `vision` for it, Claude always, other models unless their name is a known
   text-only one (`gpt-3.5`, `o1-mini`, `o3-mini`, `grok-code`, `grok-build`); a model
   that refuses the image is asked again without it and is not offered the tool again until
@@ -612,6 +615,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The vision model (frame rating, the VLM layer of `cutpoint events`, dialogue reading and
+  activity profiles on Ollama) asks a local Ollama for the context the model is loaded with
+  when that is larger than the request needs, so AI Chat (`num_ctx` 50000) and vision on the
+  same model no longer reload it at every switch (about 7 s each for `qwen3.5:9b`). A request
+  never asks for less than it needs, and an Ollama on another machine, or one whose `/api/ps`
+  does not answer, gets what the request needs as before. The memory guard checks the vision
+  model again before a request with another context, as Ollama reloads it then. Measured on an
+  RTX 3080: `qwen3.5:9b` takes 5.46 GiB of VRAM at 8192 and 6.67 GiB at 50000 (#732).
 - HUD region discovery spends far less time on the vision model's feed labels (#845). An Ollama
   model is loaded by a request of its own (300 s), then every label request gets 60 s and all of
   them 120 s together; a request that times out ends the labelling and keeps the labels so far.
@@ -936,6 +947,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AI Chat edit requests without a length (#743): a turn that ends in text after the message asked for a change ("add something funny", "could we add the laugh?"; not a question that asks for advice, "what would you trim?") gets the one nudge toward a proposal (before, only a reply that named moments or announced more work got it, as it still does); the model's second answer stands. A length the summary gives the sequence ("now about 3 minutes", "a total of 90 s"; not a bound such as "under 1 minute", a change such as "12 s longer" or "cut 20 s in total", one clip's length, the length the user asked for ("not the 60 s you wanted") or a place ("now at 0:12"; "as" is no count, in a length the user asks for too); a claim that matches the change in length or a clip's exported length is taken for it) is checked against the proposal's exported length with or without a target: more than 15% off, the summary is replaced by one made from the changes (it goes back to the model with a proposal sent back for its length), as for a claimed change the ops do not make.
+- AI Chat at small chat contexts (#735): the budget reserves each frame sheet at what the turn's fit counts it as, and measures the look_for and view_moment rules with the others, so above 8192 tokens one whole tool result fits after the prompt (before, at 12288-20000 tokens with view_moment, every round left earlier results out). Under 24576 tokens a turn views 2 half-size sheets (about 750 image tokens each) instead of 4 full ones; at 8192 tokens and below 1 half-size sheet, where the prompt keeps its minimum size and earlier results may still be left out. Half-size sheets are cached apart.
+- AI Chat phrase ends (the snap of a lengthened clip end) read the transcript of the language the analysis forced (`--language`), as the export does, and their cache is keyed on the transcript file (path, modification time, size) instead of the video, so a re-transcription is picked up (#742).
 - AI Chat length parsing (#739, #740, #741): "each highlight about 5 s" and "each of the highlights about 5 s" are a per-moment length, not the sequence length; "extend m3 to 60 s, make the video 4 minutes", "per clip 5 s, cut to 2 min" and "every clip around 5 s overall 2 min" give a target; parsing only looks 300 characters back from each length, so a message with many lengths is no longer slow.
 - An explicit `--ollama-url` is normalised like `OLLAMA_HOST`: `myhost` gets `http://` and port 11434, `0.0.0.0:11434` becomes `127.0.0.1:11434`, a bare `::1` is bracketed and a trailing `/` is dropped. Before, the value was used as given, so `--ollama-url myhost` went to port 80 and vision was skipped (#840).
 - A vision rating no longer counts once `events` widens a moment or a menu trim cuts it: its frames

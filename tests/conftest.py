@@ -89,12 +89,15 @@ def no_host_probes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the host out of the tests: no ``nvidia-smi`` spawn (the GPU probes see no GPU) and no
     gcc/ld/ldconfig run by ``ctypes.util.find_library`` (keyring's macOS backend calls it on
     import), and no read of the host's free RAM (the memory guard is off, as on an unknown
-    platform). A test of a probe patches ``subprocess.run`` or the probe itself, as before."""
+    platform), and no ``/api/ps`` probe of the context Ollama has the vision model loaded with
+    (it asks for the context it needs, #732). A test of a probe patches ``subprocess.run`` or the
+    probe itself, as before."""
     import ctypes.util  # noqa: PLC0415
 
     from cutpoint import memguard  # noqa: PLC0415
 
     monkeypatch.setattr(memguard, "ram_free", lambda: None)
+    monkeypatch.setattr(memguard, "ollama_context", lambda url, model: None)
 
     monkeypatch.setattr(memguard, "subprocess", _NoNvidiaSmi())  # every nvidia-smi query
     monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)

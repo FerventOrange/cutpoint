@@ -687,9 +687,11 @@ Lengths: the model sees each clip's length as it will export, with its room in t
 sequence total and the length you asked for in your message ("~4 min", "240 s", "1:30"). A
 proposal more than 15% over or under that length is sent back to the model up to 3 times (a summary
 that claims a change its ops do not make is sent back along with it, once; otherwise Cutpoint
-rebuilds the summary from the changes). The closest valid one that is not more than 15% over is
-offered if the retries miss, and a proposal more than 15% over is never shown; the chat shows such
-an attempt as a muted line.
+rebuilds the summary from the changes). A sequence length the summary claims ("now about 34 s", "a
+total of 90 s") is checked against the exported length, with or without a length in your message:
+a claim more than 15% off goes back with a proposal sent back for its length, else the summary is
+rebuilt. The closest valid one that is not more than 15% over is offered if the retries miss, and a
+proposal more than 15% over is never shown; the chat shows such an attempt as a muted line.
 A trim that lengthens a clip ends it at the end of the phrase spoken there.
 
 Auto-fill: when the proposal you are shown would still be more than 15% short of the length you
@@ -798,9 +800,10 @@ these has the best view"); it is told never to watch every moment. Each watched 
 image, a timeline sheet: 6 frames spread across the clip (9 for a clip longer than 12 s), three
 per row, each stamped with its number and source time, about 1.5k image tokens on Claude, with
 the moment's transcript lines and the sounds heard in it (from `events.json`, such as laughter
-or a scream) as text. A message can watch at most 2 moments with a context of 8192 tokens or
-less, 4 with a larger one; the steps show "Watched … (6 frames)". Sheets are
-cached in the project's `ui/assistant/sheets`, per moment, clip window and source file.
+or a scream) as text. Under 24576 tokens of context a sheet is half-size (about 750 image tokens
+on Claude): a message can watch at most 1 moment with a context of 8192 tokens or less, 2 under
+24576 tokens, and 4 with a larger one; the steps show "Watched … (6 frames)". Sheets are
+cached in the project's `ui/assistant/sheets`, per moment, clip window, sheet size and source file.
 
 - Which models: an Ollama model when Ollama lists `vision` for it (`qwen3.5:9b` does), every
   Claude model, and any other model unless its name has `gpt-3.5`, `o1-mini`, `o3-mini`,
@@ -1223,7 +1226,7 @@ ranked with events yet.
 
 ### Crash moments
 
-After the crash step, crashes in `crashes.json` become moments for every style except 360 (`360 analyze` makes none; `settings.crash_moments` in `highlights.json` is false there). A crash with a confidence of at least `--must-include-crash` (default 0.6) becomes a must-include moment with its reaction: it replaces the moments it overlaps and ranks first. A weaker crash at or above the project floor, max(0.2, 0.6 x the strongest crash), is ranked like any moment; if it overlaps an existing moment, it marks that moment and changes nothing else. New crash moments have `kind` `crash` and the labels `crash` and `crash-reaction`. Crash candidates carry `crash`, `crash_confidence` and `crash_forced`, and `settings.must_include_crash` records the threshold. Only `analyze` and a re-analysis build them. In `gaming`, dialogue widening and menu-time dropping leave must-include moments alone.
+After the crash step, crashes in `crashes.json` become moments for every style except 360 (`360 analyze` makes none; `settings.crash_moments` in `highlights.json` is false there). A crash with a confidence of at least `--must-include-crash` (default 0.6) becomes a must-include moment with its reaction: it replaces the moments it overlaps and ranks first. A weaker crash at or above the project floor, max(0.2, 0.6 x the strongest crash), is ranked like any moment; if it overlaps an existing moment, it marks that moment and changes nothing else. New crash moments have `kind` `crash` and the labels `crash` and `crash-reaction`. Crash candidates carry `crash`, `crash_confidence` and `crash_forced`, and `settings.must_include_crash` records the threshold. `analyze` and a re-analysis build them; a `cutpoint events` re-run (and "Look closer with vision" in `cutpoint ui`) rebuilds them from the current `crashes.json`, as a re-analysis would: the same moments and marks, a moment whose crash is unchanged stays as it is (id, vision rating), new ones take the next ids after `settings.last_candidate_id`, and `--no-rescore`, 360 projects and `settings.crash_moments` false leave them alone (action-cam keeps its re-analysis). A candidate that a must-include crash replaced does not come back when that crash goes away: re-analyze for that. AI Chat names them as the `crash` kind (`find_moments` finds them by `crash`, and its pacing treats them as footage of the activity, not as a breaker). In `gaming`, dialogue widening and menu-time dropping leave must-include moments alone.
 
 ### Candidates
 
@@ -1942,6 +1945,16 @@ RAM check and a `WARNING`, as Cutpoint cannot unload it: llama-server, LM Studio
 OpenAI-compatible servers have no unload request in that API, so `--batch-size` does not free
 their memory either. A hosted Vision provider has nothing on this machine to free and gets no
 extra request.
+
+Ollama reloads a model asked for another context size (`num_ctx`), about 7 s for `qwen3.5:9b`.
+AI Chat asks for 50000 (`context_tokens`); vision requests need 8192 (16384 for the VLM layer
+and dialogue reading, 12288 for a rating's retry). Before each request, vision asks a local
+Ollama which context the model is loaded with (`/api/ps`) and, when that is larger, uses it, so
+chatting while an analysis rates frames loads the model once. A request never asks for less
+than it needs; an Ollama on another machine, or one that does not answer `/api/ps`, gets what
+the request needs. The memory guard checks the vision model again before a request with
+another context than its last one, as Ollama reloads it then. The larger context costs VRAM:
+measured on an RTX 3080, `qwen3.5:9b` takes 5.46 GiB at 8192 and 6.67 GiB at 50000.
 
 ### Run lock and progress.json
 

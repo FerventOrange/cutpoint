@@ -382,6 +382,8 @@ class VisionRater:
             want = _ollama_consent_key(self.url)
             self.consent_needed = want if want is not None and want not in v_ast.consent else None
         self.used = False  # True once a request went to the model: unload() frees it
+        # the context (num_ctx) of the last request to Ollama; the memory guard's (#732)
+        self.num_ctx: int | None = None
         self.hits = 0  # ratings taken from the cache by rate()
         self.asked = 0  # ratings rate() asked the model for (failed ones included)
         self.missed = 0  # cache misses rate() gave no rating for (cache_only)
@@ -433,16 +435,34 @@ class VisionRater:
         self.size = size if isinstance(size, int) and not isinstance(size, bool) and size else None
         return True
 
-    def check_memory(self) -> None:
+    def check_memory(self, num_ctx: int | None = None) -> None:
         """The memory guard before a request (:func:`cutpoint.memguard.check_vision`): before
-        the first one to Ollama after a load or :meth:`unload`; before each one to a server on
-        this machine Cutpoint cannot unload.
+        the first one to Ollama after a load or :meth:`unload`, and before one with a context
+        (``num_ctx``) other than the last one, which makes Ollama reload the model (#732);
+        before each one to a server on this machine Cutpoint cannot unload.
 
         Raises:
             LowMemoryError: If the model's memory is not free, also after freeing cached models.
         """
-        if not self.used:
+        changed = num_ctx is not None and num_ctx != self.num_ctx
+        if num_ctx is not None:
+            self.num_ctx = num_ctx
+        if not self.used or changed:
             memguard.check_vision(self)
+
+    def _context(self, need: int) -> int:
+        """``num_ctx`` for an Ollama request that needs ``need`` tokens of context: the context
+        the model is loaded with already when that is larger, so Ollama does not reload it
+        (about 7 s for qwen3.5:9b; the AI Chat loads it with 50000), else ``need`` (#732).
+        Asked of an Ollama on this machine only (``/api/ps``, per request: the AI Chat can load
+        the model at any time); one on another machine, or one that does not answer, gets
+        ``need``."""
+        from cutpoint.assistant.providers import is_consent_exempt  # noqa: PLC0415
+
+        if not is_consent_exempt(self.url):
+            return need
+        loaded = memguard.ollama_context(self.url, self.model)
+        return loaded if loaded is not None and loaded > need else need
 
     def warn_consent(self) -> str:
         """Log (once, a WARNING and the ``vision_consent_needed`` warning of ``--json``) and
@@ -481,7 +501,8 @@ class VisionRater:
         runs out, so text-only turns to a Qwen model (name starting with ``qwen``) go
         through ``/api/generate`` in raw mode with the ChatML turn and an empty
         ``<think></think>`` block already written; other models use ``/api/chat``.
-        ``num_ctx``: the context window asked of Ollama.
+        ``num_ctx``: the context window the turn needs; Ollama is asked for more when the model
+        is loaded with more already (:meth:`_context`).
         """
         if self.via:
             self.check_memory()
@@ -495,6 +516,7 @@ class VisionRater:
         if self.consent_needed:
             self.warn_consent()
             return None
+        num_ctx = self._context(num_ctx)
         options = {"temperature": 0.2, "num_ctx": num_ctx, "num_predict": num_predict}
         payload: dict = {"model": self.model, "stream": False, "format": schema or "json"}
         raw = not images and self.model.lower().startswith("qwen")
@@ -512,7 +534,7 @@ class VisionRater:
                 "options": options,
             }
             endpoint = "generate"
-        self.check_memory()
+        self.check_memory(num_ctx)
         self.used = True
         try:
             resp = requests.post(
@@ -547,7 +569,9 @@ class VisionRater:
         Vision role goes through :meth:`AssistantVision.ask` and its consent check. The prompt
         tokens Ollama counted are left in ``last_prompt_tokens`` (None when not known).
         ``timeout``: seconds Ollama may take to answer (a request that runs out fails like any
-        other); a hosted Vision role has its own limits and ignores it.
+        other); a hosted Vision role has its own limits and ignores it. ``num_ctx``: the context
+        the request needs; Ollama is asked for more when the model is loaded with more already
+        (:meth:`_context`).
         """
         self.last_prompt_tokens = None
         if self.via:
@@ -567,6 +591,7 @@ class VisionRater:
         if self.consent_needed:
             self.warn_consent()
             return None
+        num_ctx = self._context(num_ctx)
         payload = {
             "model": self.model,
             "messages": [
@@ -581,7 +606,7 @@ class VisionRater:
             "format": schema,
             "options": {"temperature": temperature, "num_ctx": num_ctx, "num_predict": num_predict},
         }
-        self.check_memory()
+        self.check_memory(num_ctx)
         self.used = True
         self.timed_out = False
         try:
@@ -759,6 +784,7 @@ class VisionRater:
                     return None
                 content = reply
             else:
+                num_ctx = self._context(num_ctx)
                 payload = {
                     "model": self.model,
                     "messages": [{"role": "user", "content": text, "images": images}],
@@ -773,7 +799,7 @@ class VisionRater:
                 }
                 if profile and profile.expected:
                     payload |= {"logprobs": True, "top_logprobs": _TOP_LOGPROBS}
-                self.check_memory()
+                self.check_memory(num_ctx)
                 self.used = True
                 try:
                     resp = requests.post(
