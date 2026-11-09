@@ -73,13 +73,51 @@ _ANNOUNCES = re.compile(
 # A message that asks for an edit: a turn that ends in text gets the one nudge toward a proposal.
 # A question that asks for advice ("what would you trim?", "anything to fix?") asks none.
 _ADVICE = re.compile(
-    r"\s*(?:what|which|why|where|when|who|is|are|does|do|should|any|anything)\b", re.I
+    r"\s*(?:what|which|why|where|when|who|how\b(?!\s+about)|is|are|does|do|should|any|anything)\b",
+    re.I,
 )
 _EDIT_ASK = re.compile(
     r"\b(?:make|build|add|put|place|change|extend|lengthen|trim|shorten|remove|delete|move|reorder"
     r"|sort|create|assemble|cut|fix|longer|shorter|arrange|include|insert|swap|replace|color|grade)\b",
     re.I,
 )
+# Edit words that are common in help questions too ("how do I use the timeline?", "can it use my
+# GPU?"): an edit only where they open a clause or follow a request word ("drop the intro", "ok,
+# use the laugh", "can you take out the menu part?", "let's start with the crash"). "use" after
+# "you" or "we" only with a moment or a time later in the sentence ("can you use m3?", "can you use
+# the laugh at 12:30?"; not "can you use my GPU?", "we use OBS to record.")
+_EDIT_LEAD = re.compile(
+    r"(?:(?:^\s*|[.!;,]\s*|\b(?:please|just|then|and|also|you|we|let's)\s+)"
+    r"(?:drop|get rid|take out|(?:open|start|end)\s+with)"
+    r"|(?:^\s*|[.!;,]\s*|\b(?:please|just|then|and|also|let's)\s+)use"
+    r"|\b(?:you|we)\s+use(?=[^.?!]*\b(?:m\d+|\d+:\d\d)\b))\b",
+    re.I,
+)
+_LAST_SENTENCE = re.compile(r"[^.:;!]*$")
+
+
+def _edits(text: str) -> bool:
+    """Whether ``text`` has an edit word (:data:`_EDIT_ASK`, :data:`_EDIT_LEAD`)."""
+    return bool(_EDIT_ASK.search(text) or _EDIT_LEAD.search(text))
+
+
+def _asks_advice(text: str) -> bool:
+    """Whether a message is a question that asks for advice, not for an edit: it ends in "?"
+    and opens with an advice word or has no edit word ("what would you trim?", "should I drop
+    the intro?", "how do I use the timeline?", "can it be 40 s long?"). "could we add the
+    laugh?" asks for an edit. With only a leading edit word, a last sentence that opens with an
+    advice word asks for advice too ("Let's start with the basics: what is a style?"). One rule
+    for the proposal nudge and the auto-fill offer."""
+    text = text.rstrip()
+    if not text.endswith("?"):
+        return False
+    if _ADVICE.match(text) or _EDIT_ASK.search(text):
+        return bool(_ADVICE.match(text))
+    if not _EDIT_LEAD.search(text):
+        return True
+    return bool(_ADVICE.match(_LAST_SENTENCE.search(text[:-1]).group()))  # type: ignore[union-attr]
+
+
 _REMOVES = re.compile(
     r"\b(?:remove|delete|drop|clear|get rid|discard|take out|cut out|replace|swap|start over"
     r"|from scratch)\b",
@@ -574,7 +612,7 @@ class Turn:
     def _announces_work(self, text: str) -> bool:
         """Whether ``text`` says more work follows ("Now let me search for ...") to a message
         that asks for an edit, instead of doing it."""
-        return bool(_ANNOUNCES.search(text) and (self.target or _EDIT_ASK.search(self.text)))
+        return bool(_ANNOUNCES.search(text) and (self.target or _edits(self.text)))
 
     def _asks_edit(self) -> bool:
         """Whether the user's message asks for a change to the sequence: a length or an edit
@@ -582,8 +620,8 @@ class Turn:
         for advice: "could we add the laugh?" and "add the laugh, ok?" do; "what would you
         trim?", "anything to fix?" and "can it be 40 s long?" do not."""
         if self.text.rstrip().endswith("?"):
-            return not _ADVICE.match(self.text) and bool(_EDIT_ASK.search(self.text))
-        return bool(self.target or _EDIT_ASK.search(self.text))
+            return not _asks_advice(self.text)
+        return bool(self.target or _edits(self.text))
 
     def _names_moments(self, text: str) -> bool:
         """Whether ``text`` names a moment of the table (``m3``)."""
@@ -947,14 +985,17 @@ class Turn:
         minutes", read by :func:`context.claimed_seconds`) more than the tolerance off the
         proposal's exported length; None when it gives none or the right one. ``others`` gives
         the other lengths a summary may name (the change in length, each clip's): a claim that
-        fits one of them is taken for it, not flagged."""
+        fits one of them is taken for it, not flagged. A summary that names the exported length
+        anywhere ("now 34 s; reaching 60 s total needs more footage") is not flagged either."""
         claim = context.claimed_seconds(summary)
         have = main["length"]
 
-        def fits(seconds: float) -> bool:
-            return abs(claim - seconds) <= max(claim * TOLERANCE, 0.5)  # type: ignore[operator]
+        def fits(seconds: float, said: float | None = claim) -> bool:
+            return abs(said - seconds) <= max(said * TOLERANCE, 0.5)  # type: ignore[operator]
 
         if claim is None or fits(have) or (others is not None and any(map(fits, others()))):
+            return None
+        if any(fits(have, said) for said in context.named_seconds(summary)):
             return None
         return (
             f"The summary says the sequence is {claim:.0f} s, but this proposal makes {have:.0f} s "
@@ -991,11 +1032,9 @@ class Turn:
         """The turn ends with no proposal of the model's while the sequence is short of the
         length asked for: offer one that code builds from the current sequence (the fill), for
         the user to review. False when the message asks no edit, nothing is short or there is
-        nothing to fill it with."""
+        nothing to fill it with. An advice question (:func:`_asks_advice`) gets none."""
         p = self.project
-        if not self.target or (
-            not _EDIT_ASK.search(self.text) and self.text.rstrip().endswith("?")
-        ):
+        if not self.target or _asks_advice(self.text):
             return False
         planned = p.edges.plan(p.segments) if p.edges is not None else None
         have = length(p.segments, planned)

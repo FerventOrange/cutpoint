@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import requests
 
-from cutpoint import activity, ffmpeg_utils
+from cutpoint import activity, ffmpeg_utils, memguard
 from cutpoint.pano import vlcheck as V
 
 
@@ -173,3 +173,44 @@ def test_a_redirect_is_not_followed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(requests, "post", moved)
     assert chk.ask(b"jpeg") is None and chk.dead
     assert sent == [("http://127.0.0.1:1/api/chat", False)]
+
+
+def _ctx_sent(monkeypatch: pytest.MonkeyPatch, url: str, loaded: int | None) -> tuple[Any, list]:
+    """A checker for ``url`` whose Ollama has the model loaded with ``loaded``: the
+    ``num_ctx`` it sends and the contexts the memory guard is given."""
+    chk = V.VLChecker(url=url, model="m")
+    chk.rater.consent_needed = None
+    probed: list[tuple[str, str]] = []
+    guarded: list[int | None] = []
+    monkeypatch.setattr(memguard, "ollama_context", lambda u, m: probed.append((u, m)) or loaded)
+    monkeypatch.setattr(memguard, "check_vision", lambda rater: guarded.append(rater.num_ctx))
+    sent: list[int] = []
+
+    def post(url: str, json: dict, timeout: Any, allow_redirects: bool = True) -> Any:
+        sent.append(json["options"]["num_ctx"])
+        resp = requests.Response()
+        resp.status_code = 200
+        resp._content = b'{"message": {"content": "{}"}}'
+        return resp
+
+    monkeypatch.setattr(requests, "post", post)
+    chk._post("p", "aW1n", 10)
+    return sent, [probed, guarded]
+
+
+def test_a_larger_loaded_context_is_reused_and_seen_by_the_memory_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#865: no reload of a model the AI Chat loaded with 50000."""
+    sent, (probed, guarded) = _ctx_sent(monkeypatch, "http://127.0.0.1:11434", 50000)
+    assert sent == [50000] and guarded == [50000] and probed
+
+
+def test_nothing_loaded_gets_8192(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent, (_, guarded) = _ctx_sent(monkeypatch, "http://127.0.0.1:11434", None)
+    assert sent == [8192] and guarded == [8192]
+
+
+def test_a_remote_ollama_is_not_asked_for_its_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent, (probed, guarded) = _ctx_sent(monkeypatch, "http://gpu-box.example.com:11434", 50000)
+    assert sent == [8192] and guarded == [8192] and not probed

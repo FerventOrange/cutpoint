@@ -589,7 +589,11 @@ def choose_backend(ollama_url: str | None = None, ollama_model: str | None = Non
             logger.warning("Dialogue reader: Ollama URL not usable (%s); no local model", err)
         if explicit and rater is not None:
             try:
-                chat_host = providers.host_port(settings.url or ollama_url_default())
+                chat_host = providers.host_port(
+                    providers.normalize_ollama_url(
+                        settings.url or ollama_url_default(), "Ollama URL"
+                    )
+                )
             except ValueError:  # a bad port in OLLAMA_HOST / ollama_url: no line, no crash
                 chat_host = None
             if settings.provider != "ollama" or chat_host != providers.host_port(rater.url):

@@ -1186,6 +1186,112 @@ def test_a_summary_that_names_the_asked_length_is_taken_as_it_is() -> None:
     assert turn.view()["events"][-1]["summary"].startswith(summary)
 
 
+# the four shapes of #867, with an exported length of 34 s
+ASKED_AFTER = [
+    "Added the laugh; now 34 s. To get 60 s overall, you would need more footage.",
+    "Added the laugh, now 34 s; reaching 60 s total needs more footage.",
+    "Added the laugh; now 34 s, short of 60 s overall, which you asked for.",
+    "Added the laugh; now 34 s, not 60 s total, which you wanted.",
+]
+
+
+@pytest.mark.parametrize("summary", ASKED_AFTER)
+def test_a_summary_that_names_the_exported_length_and_the_asked_one_is_not_flagged(
+    summary: str,
+) -> None:
+    assert session.Turn._length_gap(summary, {"length": 34.0}) is None
+
+
+@pytest.mark.parametrize(
+    ("summary", "seconds"),
+    [
+        # "which you asked for" or "you would need" after a comma, or "reaching" before: asked
+        ("Added the laugh, short of 60 s total, which you asked for.", None),
+        ("Added the laugh, not yet 60 s in all, which you wanted.", None),
+        ("Added the laugh; 60 s total, you would need more footage.", None),
+        ("Added the laugh, still short of reaching 60 s total.", None),
+        # "short of", "shy of", "would need" or "need more" near a length: the length asked for
+        ("Added the laugh, short of 60 s total.", None),
+        ("Added the laugh, just shy of 60 s total.", None),
+        ("Added the laugh. 60 s in total would need more footage.", None),
+        ("Added the laugh. 60 s in total needs more footage.", None),
+        # the sequence's length still is
+        ("Added the laugh, now 90 s in all.", 90.0),
+        ("Added the laugh, 90 s overall, as the opener.", 90.0),
+    ],
+)
+def test_the_asked_length_after_a_comma_or_reaching_is_no_claim(
+    summary: str, seconds: float | None
+) -> None:
+    assert context.claimed_seconds(summary) == seconds
+
+
+@pytest.mark.parametrize(
+    ("summary", "wrong"),
+    [
+        ("Added the laugh. 60 s in total would need more footage.", False),
+        ("Added the laugh, short of 60 s total.", False),
+        # how much more it needs, or the asked length after a comma (#881 review)
+        ("Added the laugh; 60 s overall needs about 26 s more footage.", False),
+        ("Added the laugh; 60 s total needs 26 more seconds.", False),
+        ("Added the laugh, still below 60 s overall, which was your target.", False),
+        ("Added the laugh; 60 s total, which was your goal, needs more footage.", False),
+        ("Added the laugh; 60 s total, as requested, needs more footage.", False),
+        # a wrong claim is still flagged
+        ("Now 60 s in total.", True),
+        ("Added the laugh; now 60 s in all.", True),
+        ("Added the laugh; now 90 s overall, up 26 s.", True),
+    ],
+)
+def test_a_length_that_would_need_more_or_falls_short_is_not_flagged(
+    summary: str, wrong: bool
+) -> None:
+    assert (session.Turn._length_gap(summary, {"length": 34.0}) is not None) is wrong
+
+
+def test_a_wrong_claim_is_still_flagged_when_no_length_named_fits() -> None:
+    summary = "Added the laugh; now 90 s, after 24 s."
+    assert context.named_seconds(summary) == [90.0, 24.0]
+    assert session.Turn._length_gap(summary, {"length": 34.0}) is not None
+    assert session.Turn._length_gap(summary, {"length": 24.0}) is None  # 24 s is named
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Added the laugh, taking it from 34 s to 60 s total.",
+        "Added the laugh, going from 0:34 to 1:00 overall.",
+    ],
+)
+def test_the_length_before_a_change_does_not_excuse_a_wrong_claim(summary: str) -> None:
+    assert context.named_seconds(summary) == [60.0]
+    assert session.Turn._length_gap(summary, {"length": 39.0}) is not None
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        # a length at a place, after "the" or in parentheses can be the sequence's: kept
+        "Added the laugh; now at 34 s, still not 60 s in total.",
+        "Added the laugh, now the 34 s cut; 60 s total is too long for the footage.",
+        "Added the laugh (now 34 s); 60 s overall is not possible.",
+    ],
+)
+def test_a_correct_summary_with_the_exported_length_anywhere_but_after_from_is_not_flagged(
+    summary: str,
+) -> None:
+    assert session.Turn._length_gap(summary, {"length": 34.0}) is None
+
+
+def test_a_turn_with_a_summary_that_names_the_asked_length_keeps_it() -> None:
+    for summary in ASKED_AFTER:
+        turn = run(FakeProvider([propose(summary, {"op": "add", "id": "m1"})]), "add the laugh")
+        events = turn.view()["events"]
+        assert not any("summary says" in e.get("text", "") for e in events)
+        assert kinds(turn) == ["proposal"] and events[-1]["length"] == 34.0
+        assert events[-1]["summary"] == summary
+
+
 # -- round 4 ----------------------------------------------------------------------------------------
 
 
@@ -1460,6 +1566,32 @@ def test_no_fill_for_a_question_a_long_enough_sequence_or_no_target() -> None:
     # a length asked for gets the nudge: the model gives its answer again
     assert kinds(run(FakeProvider([said, said]), "make it 8 s", proj=p)) == ["reply"]
     assert kinds(run(FakeProvider([said]), "what is in it?", proj=p)) == ["reply"]
+
+
+@pytest.mark.parametrize(
+    ("msg", "request_"),
+    [
+        ("could we make it 40 s?", True),
+        ("could we add the laugh to make it 40 s?", True),
+        ("make it 40 s, ok?", True),
+        ("make it 40 s", True),
+        ("should I make it 40 s?", False),
+        ("what would you add to make it 40 s?", False),
+        ("can it be 40 s long?", False),
+    ],
+)
+def test_the_nudge_and_the_fill_offer_read_a_question_the_same_way(
+    msg: str, request_: bool
+) -> None:
+    # #866: one rule for both; a request gets the nudge and then the fill, advice gets neither
+    assert session._asks_advice(msg) is not request_
+    p = session.Project(list(KINDS), list(KSEQ), durations(), "", "key0")
+    said = text_reply("It is 8 s now.")
+    fake = FakeProvider([said, said])
+    turn = run(fake, msg, proj=p)
+    assert turn._asks_edit() is request_
+    assert (len(fake.requests) == 2) is request_  # the nudge
+    assert kinds(turn) == (["reply", "proposal"] if request_ else ["reply"])  # the fill
 
 
 # -- review fixes (PR #737) ---------------------------------------------------------------------------

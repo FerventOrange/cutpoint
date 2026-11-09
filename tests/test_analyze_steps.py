@@ -1937,7 +1937,7 @@ def test_analyze_source_times_each_stage_and_flags_a_cached_source(tmp_path, mon
             return []
 
     timings: dict = {}
-    res = analyze.analyze_source(src, get_style("funny"), Tr(), True, None, timings)
+    res = analyze.analyze_source(src, get_style("gaming"), Tr(), True, None, timings)
     assert set(res.stages) == {*analyze.SOURCE_STAGES, "cached"}
     assert res.stages["cached"] is cached
     assert all(res.stages[k] >= 0 for k in analyze.SOURCE_STAGES)
