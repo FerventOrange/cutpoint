@@ -1461,9 +1461,9 @@ function drawRuler(lo, hi) {
   el.replaceChildren(...ticks);
 }
 
-/** The detected events (``GET .../events``) of the open project by source path; ``sig`` is the project's ``events_sig``: it tells when ``events.json`` changed. */
+/** The detected events (``GET .../events``) of the open project by source path; ``sig`` is the project's ``events_sig``: it tells when ``events.json`` or ``crashes.json`` changed. */
 const railEvents = { id: null, sig: '', by: new Map() };
-const EVENT_NAMES = { audio: 'Sound', ocr: 'On-screen text', telemetry: 'Camera' };
+const EVENT_NAMES = { audio: 'Sound', ocr: 'On-screen text', telemetry: 'Camera', text: 'Talk' };
 
 /** Fetch the open project's events once (again when its events.json changed); the markers fall back to the other moments until they arrive or when there are none. */
 async function loadRailEvents(p) {
@@ -1506,7 +1506,13 @@ function drawEvents(c, lo, hi) {
       if (marks.length >= EVENTS_MAX || !room(at)) continue;
       const sure = e.confidence == null ? '' : `, confidence ${e.confidence}`;
       const kind = EVENT_NAMES[e.kind] ?? e.kind;
-      marks.push({ at, name: e.label, ev: e.kind, title: `${kind}: ${e.label}, ${fmt(e.start)}${sure}`, said: `${kind}: ${e.label} at ${fmt(e.start)}` });
+      // a stretch (talk) shows its length: to its end or the view's
+      const wide = e.kind === 'text' ? ((Math.min(e.end, hi) - Math.max(e.start, lo)) / span) * 100 : 0;
+      marks.push({
+        at, name: e.label, ev: e.kind, ...(wide > 0 ? { wide } : {}),
+        title: `${kind}: ${e.label}, ${fmt(e.start)}${wide > 0 ? ` to ${fmt(e.end)}` : ''}${sure}`,
+        said: `${kind}: ${e.label} at ${fmt(e.start)}${wide > 0 ? ` to ${fmt(e.end)}` : ''}`,
+      });
     }
   } else {
     const near = cands().filter((x) => x.id !== c.id && x.source === c.source && x.start >= lo && x.start <= hi)
@@ -1521,14 +1527,19 @@ function drawEvents(c, lo, hi) {
     }
   }
   marks.sort((a, b) => a.at - b.at);
-  const sig = marks.map((m) => `${m.at.toFixed(2)}${m.name}${m.ev ?? ''}`).join('|');
+  const sig = marks.map((m) => `${m.at.toFixed(2)}${m.name}${m.ev ?? ''}${m.wide?.toFixed(2) ?? ''}`).join('|');
   if (el.dataset.sig === sig) return;
   el.dataset.sig = sig;
   // the markers are aria-hidden: the events they show are read from this visually hidden line
   $('#railEventsText').textContent = marks.filter((m) => m.said).map((m) => m.said).join('; ');
-  el.replaceChildren(...marks.map((m) => h('span', {
-    class: 'rail-event', ...(m.ev ? { 'data-ev': m.ev } : { 'data-kind': m.kind }), style: `left: ${m.at.toFixed(2)}%`, title: m.title, text: m.name,
-  })));
+  el.replaceChildren(...marks.map((m) => {
+    const props = {
+      class: m.wide ? 'rail-event range' : 'rail-event', ...(m.ev ? { 'data-ev': m.ev } : { 'data-kind': m.kind }),
+      style: `left: ${m.at.toFixed(2)}%${m.wide ? `; width: ${m.wide.toFixed(2)}%` : ''}`, title: m.title,
+    };
+    // a range's label sits in its own box: as wide as the range it would vanish when narrow, and run under later labels when long
+    return m.wide ? h('span', props, h('span', { class: 'rail-event-name', text: m.name })) : h('span', { ...props, text: m.name });
+  }));
 }
 
 // The audio envelope behind the rail's markers (``GET .../envelope``: ``step`` seconds per value in ``peaks``, 0-1): fetched once

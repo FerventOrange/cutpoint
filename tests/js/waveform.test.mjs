@@ -212,6 +212,19 @@ test('an events response for an older events_sig arriving late does not overwrit
   assert.deepEqual(m.marks().map((e) => e.textContent), ['Fresh'], 'the late older answer is dropped');
 });
 
+test('a talk stretch is a range labelled with its title, as wide as its length in the view', async (t) => {
+  const events = [ev({ start: 60, end: 90, kind: 'text', type: 'dialogue', label: 'Mia drops the cup', confidence: 0.7 })];
+  const m = await open(t, { [`GET ${EVENTS}`]: { events } });
+  await m.zoom(120);
+  const [talk] = m.marks();
+  assert.equal(talk.textContent, 'Mia drops the cup');
+  assert.equal(talk.dataset.ev, 'text');
+  assert.ok(talk.classList.contains('range'));
+  assert.match(talk.getAttribute('style'), /width: 25(\.0+)?%/);
+  assert.match(talk.title, /^Talk: Mia drops the cup, .* to .*, confidence 0\.7$/);
+  assert.match(m.$('#railEventsText').textContent, /^Talk: Mia drops the cup at /);
+});
+
 // ---- contrast of the marker colours ----
 
 const css = readFileSync(join(WEB_DIR, 'app.css'), 'utf8');
@@ -245,8 +258,25 @@ test('the event marker bars are 3:1 on the stage ground in Graphite, Blue and Li
   };
   for (const [name, [blocks, ground]] of Object.entries(themes)) {
     const bg = token(ground, ...blocks);
-    for (const k of ['--ev-sound', '--ev-text', '--ev-cam']) {
+    for (const k of ['--ev-sound', '--ev-text', '--ev-cam', '--ev-talk']) {
       assert.ok(ratio(token(k, ...blocks), bg) >= 3, `${name} ${k}`);
+    }
+  }
+});
+
+test('the moment kind colours are 3:1 on the stage ground in Graphite, Blue and Light, and on their tint', () => {
+  const root = block(':root');
+  const themes = {
+    graphite: [[root], '--center'],
+    blue: [[block(':root[data-theme="blue"]'), root], '--slate'],
+    light: [[block(':root[data-theme="light"]'), root], '--slate'],
+  };
+  for (const [name, [blocks, ground]] of Object.entries(themes)) {
+    const bg = token(ground, ...blocks);
+    for (const k of ['action', 'scenic', 'funny', 'dialogue']) {
+      assert.ok(ratio(token(`--k-${k}`, ...blocks), bg) >= 3, `${name} --k-${k} on the ground`);
+      // Light darkens the colours for its pale ground; the bars and dots on the kind's dark tint (no theme changes it) must stay 3:1
+      if (name === 'light') assert.ok(ratio(token(`--k-${k}`, ...blocks), token(`--k-${k}-tint`, ...blocks)) >= 3, `${name} --k-${k} on its tint`);
     }
   }
 });

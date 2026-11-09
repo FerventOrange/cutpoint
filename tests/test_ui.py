@@ -10209,6 +10209,12 @@ def test_project_events_sig_follows_events_json(client: TestClient, tmp_path: Pa
     assert first
     path.write_text('{"events": [], "x": 1}', encoding="utf-8")
     assert client.get(f"/api/projects/{pid}").json()["events_sig"] != first
+    second = client.get(f"/api/projects/{pid}").json()["events_sig"]
+    (ui.project_dir(pid) / "crashes.json").write_text('{"crashes": []}', encoding="utf-8")
+    third = client.get(f"/api/projects/{pid}").json()["events_sig"]
+    assert third and third != second  # crashes.json counts too
+    path.unlink()
+    assert client.get(f"/api/projects/{pid}").json()["events_sig"]  # crashes.json alone
 
 
 def test_events_are_the_located_events_without_model_descriptions(
@@ -10253,6 +10259,104 @@ def test_events_are_the_located_events_without_model_descriptions(
 
     (ui.project_dir(pid) / "events.json").write_text("{not json", encoding="utf-8")
     assert client.get(url).json() == {"events": []}
+
+
+def test_events_serve_talk_stretches_with_their_title(client: TestClient, tmp_path: Path) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    talk = {
+        "source": "/v/a.mp4", "start": 10.0, "end": 24.5, "kind": "text", "type": "dialogue",
+        "label": "funny", "title": "Mia drops the cup", "confidence": 0.7,
+        "description": "x" * 300, "details": {"a": 1},
+    }  # fmt: skip
+    plain = talk | {"start": 40.0, "end": 41.0, "title": ""}
+    doc = {"events": [plain, talk]}
+    (ui.project_dir(pid) / "events.json").write_text(json.dumps(doc), encoding="utf-8")
+    events = client.get(f"/api/projects/{pid}/events").json()["events"]
+    assert events == [
+        {
+            "source": "/v/a.mp4", "start": 10.0, "end": 24.5, "kind": "text", "type": "dialogue",
+            "label": "Mia drops the cup", "confidence": 0.7,
+        },
+        {
+            "source": "/v/a.mp4", "start": 40.0, "end": 41.0, "kind": "text", "type": "dialogue",
+            "label": "funny", "confidence": 0.7,
+        },
+    ]  # fmt: skip
+
+
+def test_events_add_crashes_json_entries_not_already_telemetry_crashes(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    url = f"/api/projects/{pid}/events"
+    src = "/v/a.mp4"
+    crashes = {
+        "crashes": [
+            {
+                "id": "c001",
+                "source": src,
+                "t0": 5.0,
+                "t1": 7.0,
+                "confidence": 0.81234,
+            },  # = telemetry
+            {"id": "c002", "source": src, "t0": 50.0, "t1": 52.0, "confidence": 0.6},
+            {"id": "c006", "source": src, "t0": 7.5, "t1": 8.0, "confidence": 0.55},  # 1.5 s on
+            {"id": "c007", "source": src, "t0": 8.5, "t1": 9.0, "confidence": 0.5},  # 2.5 s on
+            {"id": "c003", "source": "/v/b.mp4", "t0": 5.0, "t1": 7.0, "confidence": 0.5},
+            {"id": "c004", "source": src, "t0": "soon", "t1": 1.0},
+            {"id": "c005", "source": 3, "t0": 1.0, "t1": 2.0},
+            "junk",
+        ]
+    }
+    (ui.project_dir(pid) / "crashes.json").write_text(json.dumps(crashes), encoding="utf-8")
+    only = client.get(url).json()["events"]  # no events.json: all the valid entries
+    assert [(e["source"], e["start"], e["end"]) for e in only] == [
+        (src, 5.0, 7.0), (src, 7.5, 8.0), (src, 8.5, 9.0), (src, 50.0, 52.0), ("/v/b.mp4", 5.0, 7.0)
+    ]  # fmt: skip
+    assert only[0] == {
+        "source": src, "start": 5.0, "end": 7.0, "kind": "telemetry", "type": "crash",
+        "label": "crash", "confidence": 0.812,
+    }  # fmt: skip
+
+    tel = {
+        "source": src, "start": 6.0, "end": 6.0, "kind": "telemetry", "type": "crash",
+        "label": "impact", "confidence": 0.9,
+    }  # fmt: skip
+    (ui.project_dir(pid) / "events.json").write_text(
+        json.dumps({"events": [tel]}), encoding="utf-8"
+    )
+    events = client.get(url).json()["events"]
+    assert [(e["source"], e["start"], e["confidence"]) for e in events] == [
+        (src, 6.0, 0.9),
+        (src, 8.5, 0.5),
+        (src, 50.0, 0.6),
+        ("/v/b.mp4", 5.0, 0.5),
+    ]  # fmt: skip  (c001 and the 7.5 s one are within 2 s of the telemetry crash, 8.5 s is not)
+
+    (ui.project_dir(pid) / "crashes.json").write_text("{not json", encoding="utf-8")
+    assert [e["start"] for e in client.get(url).json()["events"]] == [6.0]
+
+
+def test_events_serve_only_crashes_above_the_relative_confidence_floor(
+    client: TestClient, tmp_path: Path
+) -> None:
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    url = f"/api/projects/{pid}/events"
+    path = ui.project_dir(pid) / "crashes.json"
+
+    def served(*confs: float | None) -> list[float]:
+        rows = [
+            {"source": "/v/a.mp4", "t0": 10.0 * i, "t1": 10.0 * i + 1, "confidence": c}
+            for i, c in enumerate(confs)
+        ]
+        path.write_text(json.dumps({"crashes": rows}), encoding="utf-8")
+        return [e["confidence"] for e in client.get(url).json()["events"]]
+
+    assert served(0.9, 0.55, 0.53, 0.3) == [0.9, 0.55]  # 0.6 x 0.9 = 0.54 and up
+    assert served(0.5, 0.3, 0.29) == [0.5, 0.3]  # relative to the best, not a fixed number
+    assert served(0.3, 0.19, 0.1) == [0.3]  # 0.6 x 0.3 = 0.18 is under the 0.2 minimum
+    assert served(0.15, 0.1) == []  # even the best is under the minimum
+    assert served(0.9, None) == [0.9]  # no confidence, no marker
 
 
 # ---------------------------------------------------------------- per-join transitions (#768)

@@ -233,7 +233,12 @@ ENVELOPE_TIMEOUT_S = 1800.0  # a decode running longer is killed (a multi-hour s
 ENVELOPE_STALE_S = (
     10.0  # a queued decode nobody asked for in this long (2 x the page's 5 s) is dropped
 )
-EVENT_KINDS = ("audio", "ocr", "telemetry")  # events.json kinds the rail marks (not the VLM blobs)
+EVENT_KINDS = (
+    "audio",
+    "ocr",
+    "telemetry",
+    "text",
+)  # events.json kinds the rail marks (not the VLM blobs)
 EVENTS_MAX = 5000  # events sent per project
 SOURCES_CACHE_MAX = 32  # projects whose source lists are kept; the least recently used go first
 SOURCES_CACHE_S = 60.0  # rebuild a kept source list at least this often (what stats miss)
@@ -3334,20 +3339,27 @@ def _highlights(p: Path) -> dict[str, Any] | None:
 
 
 def _events_sig(p: Path) -> str | None:
-    """``<mtime_ns>-<size>`` of the project's ``events.json``, which changes when a run rewrites
-    it; None when there is none."""
-    try:
-        st = (p / "events.json").stat()
-    except OSError:
-        return None
-    return f"{st.st_mtime_ns}-{st.st_size}"
+    """``<mtime_ns>-<size>`` of the project's ``events.json`` and ``crashes.json`` (joined by
+    ``+``, a missing file skipped), which changes when a run rewrites either; None when both are
+    missing."""
+    parts = []
+    for name in ("events.json", "crashes.json"):
+        try:
+            st = (p / name).stat()
+        except OSError:
+            continue
+        parts.append(f"{st.st_mtime_ns}-{st.st_size}")
+    return "+".join(parts) or None
 
 
 def _rail_events(p: Path) -> list[dict[str, Any]]:
     """The time-located events of ``events.json`` the trim rail marks, cut to ``{source, start,
-    end, kind, type, label, confidence}``: sounds (``audio``), on-screen text (``ocr``) and
-    camera telemetry such as crashes. No model descriptions and no coverage spans. At most
-    ``EVENTS_MAX`` (the most confident), by start. [] when the file is missing or unreadable."""
+    end, kind, type, label, confidence}``: sounds (``audio``), on-screen text (``ocr``), camera
+    telemetry such as crashes and talk stretches (``text``, labelled with their
+    ``dialogue_title`` when they have one), plus the crashes of ``crashes.json`` that no
+    telemetry crash of events.json already covers (``kind`` telemetry, ``type`` crash). No model
+    descriptions and no coverage spans. At most ``EVENTS_MAX`` (the most confident), by start.
+    [] when there are none or the files are unreadable."""
     doc = _load(p, "events.json")
     raw = doc.get("events") if isinstance(doc, dict) else None
     out = []
@@ -3360,6 +3372,8 @@ def _rail_events(p: Path) -> list[dict[str, Any]]:
         if not all(isinstance(x, (int, float)) and math.isfinite(x) for x in (start, end)):
             continue
         label = e.get("type") if e["kind"] == "telemetry" else e.get("label")
+        if e["kind"] == "text" and isinstance(e.get("title"), str) and e["title"].strip():
+            label = e["title"].strip()
         out.append(
             {
                 "source": e["source"],
@@ -3373,9 +3387,63 @@ def _rail_events(p: Path) -> list[dict[str, Any]]:
                 else None,
             }
         )
+    out += _crash_events(p, out)
     if len(out) > EVENTS_MAX:
         out = sorted(out, key=lambda e: -(e["confidence"] or 0.0))[:EVENTS_MAX]
     return sorted(out, key=lambda e: (e["source"], e["start"]))
+
+
+CRASH_SAME_S = 2.0  # a crashes.json entry this close to a telemetry crash event is the same crash
+CRASH_FLOOR_MIN = 0.2  # a crashes.json entry needs this confidence ...
+CRASH_FLOOR_REL = 0.6  # ... and this share of the project's best one (as in mix.crash_candidates)
+
+
+def _crash_events(p: Path, have: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The ``crashes.json`` entries as telemetry crash events for the rail, without those within
+    CRASH_SAME_S of a telemetry crash in ``have`` (same source) and those below the confidence
+    floor: max(CRASH_FLOOR_MIN, CRASH_FLOOR_REL x the best confidence in the file)."""
+    doc = _load(p, "crashes.json")
+    raw = doc.get("crashes") if isinstance(doc, dict) else None
+    known = [
+        (e["source"], e["start"], e["end"])
+        for e in have
+        if e["kind"] == "telemetry" and e["type"] == "crash"
+    ]
+    entries = [
+        c
+        for c in (raw if isinstance(raw, list) else [])
+        if isinstance(c, dict)
+        and isinstance(c.get("source"), str)
+        and isinstance(c.get("confidence"), (int, float))
+        and math.isfinite(c["confidence"])
+    ]
+    best = max((c["confidence"] for c in entries), default=0.0)
+    floor = max(CRASH_FLOOR_MIN, CRASH_FLOOR_REL * best)
+    out = []
+    for c in entries:
+        start, end, conf = c.get("t0"), c.get("t1"), c["confidence"]
+        if conf < floor:
+            continue
+        if not all(isinstance(x, (int, float)) and math.isfinite(x) for x in (start, end)):
+            continue
+        end = max(start, end)
+        if any(
+            src == c["source"] and start <= b + CRASH_SAME_S and end >= a - CRASH_SAME_S
+            for src, a, b in known
+        ):
+            continue
+        out.append(
+            {
+                "source": c["source"],
+                "start": start,
+                "end": end,
+                "kind": "telemetry",
+                "type": "crash",
+                "label": "crash",
+                "confidence": round(conf, 3),
+            }
+        )
+    return out
 
 
 TARGET_MAX_S = 36000  # the sequence's target length: up to 10 hours
