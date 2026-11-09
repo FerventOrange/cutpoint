@@ -168,6 +168,17 @@ def _transcript_file(
     return (detected or files)[0]
 
 
+def transcript_stamp(cdir: Path, language: str | None = None) -> tuple[str, int, int] | None:
+    """``(path, mtime_ns, size)`` of the transcript :func:`_transcript_file` picks in
+    ``cdir``, or None without one: changes when the cached transcript does."""
+    found = _transcript_file(cdir, language)
+    try:
+        stamp = found.stat() if found is not None else None
+    except OSError:
+        stamp = None
+    return (str(found), stamp.st_mtime_ns, stamp.st_size) if stamp is not None else None
+
+
 def source_segments(
     src: Path, language: str | None = None, model: str | None = None
 ) -> list[dict[str, Any]] | None:

@@ -938,6 +938,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AI Chat phrase ends (the snap of a lengthened clip end) read the transcript of the language the analysis forced (`--language`), as the export does, and their cache is keyed on the transcript file (path, modification time, size) instead of the video, so a re-transcription is picked up (#742).
 - AI Chat length parsing (#739, #740, #741): "each highlight about 5 s" and "each of the highlights about 5 s" are a per-moment length, not the sequence length; "extend m3 to 60 s, make the video 4 minutes", "per clip 5 s, cut to 2 min" and "every clip around 5 s overall 2 min" give a target; parsing only looks 300 characters back from each length, so a message with many lengths is no longer slow.
 - An explicit `--ollama-url` is normalised like `OLLAMA_HOST`: `myhost` gets `http://` and port 11434, `0.0.0.0:11434` becomes `127.0.0.1:11434`, a bare `::1` is bracketed and a trailing `/` is dropped. Before, the value was used as given, so `--ollama-url myhost` went to port 80 and vision was skipped (#840).
 - A vision rating no longer counts once `events` widens a moment or a menu trim cuts it: its frames
