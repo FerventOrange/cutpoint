@@ -530,16 +530,32 @@ def run_events(
         vram["ocr"] = vm.summary()
         stats["ocr"] = ocr_stats
     timings["ocr_s"] = round(time.perf_counter() - t0, 1)
-    # ---- explosions (#801): a heard boom counts once the loudness jumps with it
+    # ---- explosions (#801): a heard boom counts once the loudness jumps with it and the
+    # picture was not black just before it (a loading screen ending)
+    t0 = time.perf_counter()
     booms = sum(
         explosions.confirm(
-            layer1[str(s.path)], [(p.offset, p.cdir) for p in source_parts(s.path)], boom
+            layer1[str(s.path)],
+            [(p.offset, p.cdir) for p in source_parts(s.path)],
+            boom,
+            luma=explosions.luma_reader(s.path),  # --recover parts share the file and its time
         )
         for s in sources
         if explosions.has_booms(layer1[str(s.path)])
     )
-    if booms:
-        logger.info("%d explosion(s) confirmed by a loudness jump", booms)
+    timings["explosions_s"] = round(time.perf_counter() - t0, 1)
+    dark = sum(
+        1
+        for s in sources
+        for e in layer1[str(s.path)]
+        if e.get("kind") == "audio" and e.get("label") == explosions.LABEL and e.get("after_black")
+    )
+    if booms or dark:
+        logger.info(
+            "%d explosion(s) confirmed by a loudness jump, %d set aside after a black screen",
+            booms,
+            dark,
+        )
     if make_engine is not None:  # no OCR after this: the engine is not kept through the VLM
         if prefetch is not None and make_engine is prefetch.make_engine:
             prefetch.close()  # its worker uses the engine: stopped first (idempotent)

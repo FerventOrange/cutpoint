@@ -640,13 +640,15 @@ before.
   counted, in every style; it is not a player kill, and like a death it stays a tail payoff and a
   VLM seed.
   `explosions` matches an audio `Explosion` that is `confirmed` (the loudness jumps at least 6 LU
-  over the 3 s before it, and those 3 s are not near-silent, at least -50 LUFS) and adds 4 points
-  each, at most 2 counted, in the gaming, action and sport styles. In `gaming` a confirmed boom can
-  nominate a moment of its own. Own gunfire can pass, and quiet or microphone-heavy mixes get no
-  explosions. The thresholds are in `settings.explosions` of `events.json`.
+  over the 3 s before it, those 3 s are not near-silent, at least -50 LUFS, and the 3 s before it
+  to 0.2 s after hold less than 0.4 s of near-black: a boom after a black screen gets
+  `after_black`) and adds 4 points each, at most 2 counted, in the gaming, action and sport styles.
+  In `gaming` a confirmed boom can nominate a moment of its own. Own gunfire can pass, and quiet or
+  microphone-heavy mixes get no explosions. The thresholds are in `settings.explosions` of `events.json`.
   A preset type's `seed` applies only within its `styles`: in another style the built-in seed rule
   decides (a boom is no seed there). In `events.txt` and in the AI Chat's "heard" list, booms that are
-  not `confirmed` are marked `unconfirmed` or left out.
+  not `confirmed` are marked `unconfirmed` or left out (`unconfirmed, after black` in `events.txt`
+  after a black screen).
   `player_deaths` matches the player's own deaths (not a self-kill) and adds no per-event boost, so a death
   does not count as a kill; it stays a tail payoff and a VLM seed. Its default is `reaction` 8 with
   `styles` `["funny"]`: with `--style funny`, a candidate where the player dies and someone

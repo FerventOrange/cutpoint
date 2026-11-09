@@ -6,11 +6,14 @@ All data is invented: a flat loudness track with jumps, scene cuts and OCR rows.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from typing import Any
 
 import numpy as np
 import pytest
 
+from conftest import needs_ffmpeg
 from cutpoint.assistant import watch
 from cutpoint.events import common, eventtypes, explosions, pipeline, scoring, sheets, vlm_windows
 from cutpoint.events.audio_events import DEFAULT_GROUPS
@@ -217,6 +220,9 @@ def test_report_line_and_heard_tell_confirmed_from_not():
     assert _event_line("a", no).endswith(" unconfirmed")
     laugh = normalize("a.mp4", {**_boom(30.0), "label": "Laughter"})
     assert _event_line("a", laugh).endswith("s)")
+    blk = _boom(50.0)
+    explosions.confirm([blk], None, loudness=_loudness({50.0: 12.0}), luma=lambda a, b: [0.0] * 5)
+    assert _event_line("a", normalize("a.mp4", blk)).endswith(" unconfirmed, after black")
     got = watch.heard([yes, no, laugh], "a.mp4", 0.0, 60.0)
     assert len(got) == 2
     assert any("Explosion" in g for g in got)
@@ -251,10 +257,133 @@ def test_run_events_confirms_booms_and_writes_the_settings(tmp_path, monkeypatch
     monkeypatch.setattr(pipeline, "source_parts", lambda path: [Part(0.0, cdir, None)])
     monkeypatch.setattr(common, "gpu_memory_used_mib", lambda: None)
     monkeypatch.setattr(sheets, "write_visual_sheets", lambda *a, **k: None)
+    seen: list[Any] = []
+    real_confirm = explosions.confirm
+
+    def spy(events, parts, params=None, **kw):
+        seen.append(kw.get("luma"))
+        return real_confirm(events, parts, params, **kw)
+
+    monkeypatch.setattr(explosions, "luma_reader", lambda video: lambda t0, t1: None)
+    monkeypatch.setattr(explosions, "confirm", spy)
     jpath, _ = pipeline.run_events(project, layers=("audio",), discover=False, sheets=False)
+    assert len(seen) == 1
+    assert callable(seen[0])
     data = json.loads(jpath.read_text())
     booms = [e for e in data["events"] if e["label"] == "Explosion"]
     assert [e["details"]["confirmed"] for e in booms] == [True, False]
     assert data["settings"]["explosions"] == json.loads(
         json.dumps(explosions.ExplosionParams().key())
     )
+
+
+# ---- loading-screen guard: a loud boom right after a black picture is not a moment
+
+
+def _loud_boom(luma, t: float = 20.0) -> dict[str, Any]:
+    e = _boom(t)
+    explosions.confirm([e], None, loudness=_loudness({t: 12.0}), luma=luma)
+    return e
+
+
+@pytest.mark.parametrize(
+    ("frames", "black"),
+    [
+        ([0.3, 0.01, 0.02, 0.3], True),  # two consecutive near-black frames
+        ([0.01] * 15, True),
+        ([0.3, 0.02, 0.3], False),  # one dark frame: a brief transition
+        ([0.02, 0.3, 0.02, 0.3, 0.02], False),  # not consecutive
+        ([0.23, 0.09, 0.053, 0.097, 0.13], False),  # dark dip that never gets near-black
+    ],
+)
+def test_after_black_needs_consecutive_near_black_frames(frames, black):
+    e = _loud_boom(lambda t0, t1: frames)
+    assert e["after_black"] is black
+    assert e["confirmed"] is not black
+    assert "loud" in e["backing"]
+
+
+@pytest.mark.parametrize("fail", [None, RuntimeError("no video")])
+def test_unreadable_frames_keep_the_loudness_decision(fail):
+    def luma(t0, t1):
+        if fail:
+            raise fail
+        return None
+
+    e = _loud_boom(luma)
+    assert e["confirmed"] is True
+    assert "after_black" not in e
+
+
+def test_no_luma_skips_the_guard():
+    e = _loud_boom(None)
+    assert e["confirmed"] is True
+    assert "after_black" not in e
+
+
+def test_an_interrupt_is_not_swallowed():
+    def luma(t0, t1):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        _loud_boom(luma)
+
+
+def test_a_boom_that_is_not_loud_never_reads_frames():
+    calls: list[tuple[float, float]] = []
+    e = _boom(20.0)
+    n = explosions.confirm(
+        [e],
+        None,
+        loudness=_loudness({20.0: 3.0}),
+        luma=lambda a, b: calls.append((a, b)) or [0.0] * 5,
+    )
+    assert n == 0
+    assert calls == []
+    assert "after_black" not in e
+
+
+def test_luma_is_read_around_the_peak():
+    calls: list[tuple[float, float]] = []
+    e = _boom(20.0)
+    e["peak_t"] = 20.5  # differs from t: the window follows the peak
+    explosions.confirm(
+        [e],
+        None,
+        loudness=_loudness({20.5: 12.0}),
+        luma=lambda a, b: calls.append((a, b)) or [0.5] * 5,
+    )
+    assert calls == [(pytest.approx(17.5), pytest.approx(20.7))]
+
+
+def test_settings_key_has_the_black_guard():
+    key = explosions.ExplosionParams().key()
+    assert key["black_luma"] == 0.03
+    assert key["black_frames"] == 2
+    assert tuple(key["black_s"]) == (3.0, 0.2)
+
+
+@needs_ffmpeg
+def test_luma_reader_reads_a_real_clip(tmp_path):
+    clip = tmp_path / "bw.mp4"
+    parts = []
+    for i, color in enumerate(("black", "gray")):
+        part = tmp_path / f"{i}.mp4"
+        subprocess.run(
+            [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
+             f"color=c={color}:size=64x36:rate=10:duration=2", "-pix_fmt", "yuv420p", str(part)],
+            check=True,
+        )  # fmt: skip
+        parts.append(part)
+    (tmp_path / "list.txt").write_text("".join(f"file '{p}'\n" for p in parts))
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-v", "error", "-f", "concat", "-safe", "0", "-i",
+         str(tmp_path / "list.txt"), "-c", "copy", str(clip)],
+        check=True,
+    )  # fmt: skip
+    read = explosions.luma_reader(clip)
+    dark = read(0.0, 1.0)
+    bright = read(2.5, 3.5)
+    assert dark and max(dark) <= 0.03
+    assert bright and min(bright) > 0.2
+    assert explosions.luma_reader(tmp_path / "missing.mp4")(0.0, 1.0) is None

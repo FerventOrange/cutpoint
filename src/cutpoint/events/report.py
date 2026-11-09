@@ -62,6 +62,7 @@ def normalize(source: str, ev: dict[str, Any]) -> dict[str, Any]:
                 "loud_jump",
                 "backing",
                 "confirmed",
+                "after_black",
             )
             if k in ev
         }
@@ -100,8 +101,11 @@ def normalize(source: str, ev: dict[str, Any]) -> dict[str, Any]:
 def _event_line(name: str, e: dict[str, Any]) -> str:
     t = f"[{name} {clock(e['start'])}]"
     if e["kind"] == "audio":
-        conf = (e.get("details") or {}).get("confirmed")
+        details = e.get("details") or {}
+        conf = details.get("confirmed")
         mark = "" if conf is None else (" confirmed" if conf else " unconfirmed")
+        if details.get("after_black"):
+            mark += ", after black"
         return (
             f"{t} AUDIO: {e['label']} ({e['confidence']:.2f}, {e['end'] - e['start']:.1f}s){mark}"
         )
