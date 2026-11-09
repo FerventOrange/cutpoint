@@ -10,8 +10,8 @@ FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce
 # .github/workflows/ci.yml (the docker job fails if they differ). To bump, change both places.
 # Downloaded in its own stage so curl and xz stay out of the runtime image.
 FROM base AS ffmpeg
-ARG FFMPEG_LINUX_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-25-13-00/ffmpeg-n9.0.2-36-g6882969ce9-linux64-gpl-9.0.tar.xz
-ARG FFMPEG_LINUX_SHA256=fdcc15b1ba538ee94c087c1ce9c1efe166cfe392beb362ccb778f595065365cc
+ARG FFMPEG_LINUX_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-08-12-35/ffmpeg-n9.0.2-48-gd4070a14ce-linux64-gpl-9.0.tar.xz
+ARG FFMPEG_LINUX_SHA256=bf5e935a51afb65ddd14bf67104361508bcc7c77026a66d7e193a05a56ab8d77
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl xz-utils ca-certificates \
