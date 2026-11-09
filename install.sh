@@ -15,7 +15,7 @@
 CUTPOINT_VERSION_DEFAULT="0.4.0"
 
 # uv is installed from this pinned installer when missing (keep in step with the Dockerfile pin).
-UV_VERSION="0.13.6"
+UV_VERSION="0.13.7"
 # Oldest uv that has `uv tool install --torch-backend`.
 UV_MIN_MAJOR=0
 UV_MIN_MINOR=13
