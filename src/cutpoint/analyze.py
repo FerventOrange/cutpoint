@@ -4,7 +4,8 @@ Signals per source (all on a 0.1 s grid, each normalised to 0-1):
     loudness  - robust z-score of ebur128 momentary loudness vs the clip's baseline
     speech    - style keywords/exclamations from the faster-whisper transcript
     laughter  - laughter tokens in the transcript
-    scene     - density of PySceneDetect cuts (from a small, low-fps proxy)
+    scene     - density of PySceneDetect cuts (from a small, low-fps proxy); a style that does
+                not weigh it detects cuts only around candidate edges, to snap them (#730)
     continuity- fraction of the surrounding ~10 s covered by speech (commentary)
 Each is a feature of :mod:`cutpoint.features`; their weighted sum (:mod:`cutpoint.scorer`) is
 peak-picked into windows, merged, snapped to scene cuts and word boundaries, scored 0-100 over
@@ -25,7 +26,7 @@ import re
 import sys
 import threading
 import time
-from collections.abc import Callable, Collection, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from itertools import pairwise
@@ -443,6 +444,12 @@ SOURCE_STAGES = ("probe_s", "audio_extract_s", "loudness_s", "transcribe_s", "sc
 SCENE_OVERLAP_ENV = "ANALYZE_SCENE_OVERLAP"  # CUTPOINT_ANALYZE_SCENE_OVERLAP=1: opt in (#725)
 SCENE_JOIN_S = 8.0  # a cancelled scene thread gets this long to stop (a daemon, never waited on)
 SCENE_POLL_S = 0.5  # waits on the scene thread in steps this long: Ctrl+C gets through on Windows
+# Scene cuts of a style that does not weigh them, only around candidate edges (#730, EdgeCuts)
+SCENE_WINDOWS_FILE = "scenes-windows.json"  # per part cache folder, next to scenes.json
+SNAP_REACH_S = 1.0  # _snap moves an edge to a scene cut at most this far
+SCENE_WARMUP_S = 1.5  # picture the detector needs around a cut (2-frame window, 0.5 s min)
+WINDOW_PAD_S = SNAP_REACH_S + SCENE_WARMUP_S  # a window reaches this far either side of an edge
+SCENE_GRID_S = 0.1  # the full proxy's frame step (10 fps, _proxy_args): windows start on it
 
 
 def scene_overlap() -> bool:
@@ -467,6 +474,8 @@ def _source_timings(results: Sequence[SourceResult], prefetch: OcrPrefetch | Non
         rec["cached"] = bool(r.stages.get("cached", False))
         if r.stages.get("overlap"):  # the scene cuts ran alongside the transcription
             rec["overlap"] = True
+        if r.stages.get("scene_windows"):  # scenes_s: windows around the candidate edges only
+            rec["scene_windows"] = True
         out.append(rec)
     return out
 
@@ -634,7 +643,21 @@ def scene_cuts(
     if shared is not None and (made := shared.result()) is not None:
         return _detect(made, path, **dopts)
     proxy = cdir / "proxy.mp4"
-    pre, post, vf, enc = _proxy_args(duration, offset, limit)
+    _make_proxy(src, proxy, _proxy_args(duration, offset, limit), duration, cancel)
+    return _detect(proxy, path, **dopts)
+
+
+def _make_proxy(
+    src: Path,
+    proxy: Path,
+    args: tuple[list[str], list[str], str, list[str]],
+    seconds: float,
+    cancel: threading.Event | None = None,
+) -> None:
+    """Encode the scene proxy ``proxy`` of ``src`` with the :func:`_proxy_args` ``args``
+    (``seconds`` long, for the progress lines): on the GPU decoder when there is one, else or
+    when that fails on the CPU. A ``cancel`` (see :func:`scene_cuts`) removes the proxy."""
+    pre, post, vf, enc = args
     label = f"scene proxy {src.name}"
 
     def command(dec: HwDecoder | None) -> list[str]:  # the decoder's input options go before -i
@@ -646,19 +669,18 @@ def scene_cuts(
     opts = {"cancel": cancel} if cancel is not None else {}  # plain call when not overlapped
     try:
         try:
-            run_progress(command(hw), duration, label, **opts)
+            run_progress(command(hw), seconds, label, **opts)
         except FFmpegError:
             if cancel is not None and cancel.wait(STOP_GRACE_S):  # Ctrl+C reached ffmpeg too
                 raise RunCancelled(label) from None
             if hw is None:
                 raise
-            run_progress(command(None), duration, label, **opts)
+            run_progress(command(None), seconds, label, **opts)
         if cancel is not None and cancel.is_set():
             raise RunCancelled(label)
     except RunCancelled:
         proxy.unlink(missing_ok=True)
         raise
-    return _detect(proxy, path, **dopts)
 
 
 class _SceneJob:
@@ -706,6 +728,127 @@ class _SceneJob:
         self._thread.join(SCENE_JOIN_S)
         if self._thread.is_alive():
             logger.debug("scene thread still busy after %.0fs; left to exit", SCENE_JOIN_S)
+
+
+def scores_scenes(style: Style) -> bool:
+    """True when ``style`` weighs the scene curve. A style that does not (``funny``,
+    ``commentary``, a user style whose weights give ``scene`` 0) uses scene cuts only to snap
+    candidate edges, so they are detected only around those edges (:class:`EdgeCuts`, #730)."""
+    return bool(style.weights.get("scene"))
+
+
+def _edge_window(t: float, span: float) -> tuple[float, float]:
+    """The decode window of the candidate edge ``t`` of a part ``span`` long:
+    :data:`WINDOW_PAD_S` either side, its start on the full proxy's frame grid
+    (:data:`SCENE_GRID_S`) so the window's frames are those of a full pass."""
+    a = math.floor(max(0.0, t - WINDOW_PAD_S) / SCENE_GRID_S + 1e-6) * SCENE_GRID_S
+    return round(a, 3), round(min(span, t + WINDOW_PAD_S), 3)
+
+
+def _merge_windows(wins: Sequence[tuple[float, float]]) -> list[tuple[float, float]]:
+    """``wins`` sorted, the ones that overlap or touch merged."""
+    out: list[tuple[float, float]] = []
+    for a, b in sorted(wins):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def _window_cuts(io: Path, cdir: Path, offset: float, a: float, b: float) -> list[float]:
+    """Scene cuts of ``[a, b]`` of the part at ``offset`` of ``io`` (part-relative time), from a
+    proxy of that stretch made as the full one of a normal-length file (:func:`_proxy_args`)."""
+    # its own name: another run (project) may read the same source from the shared cache folder
+    proxy = cdir / f"proxy-window-{os.getpid()}-{threading.get_ident()}.mp4"
+    try:
+        _make_proxy(io, proxy, _proxy_args(b - a, offset + a, b - a), b - a)
+        found = _scan(proxy, None)  # its video handle is closed on return
+    finally:
+        try:
+            proxy.unlink(missing_ok=True)
+        except OSError as exc:  # never replace the original exception
+            logger.debug("could not delete %s: %s", proxy, exc)
+    return [round(a + t, 3) for t in found]
+
+
+class EdgeCuts:
+    """The scene cuts of one part (or recovered part) of a style that does not weigh the scene
+    curve (:func:`scores_scenes`), detected only in windows around candidate edges (#730).
+
+    :func:`_snap` moves an edge to a cut at most :data:`SNAP_REACH_S` away, and the detector
+    needs :data:`SCENE_WARMUP_S` of picture around a cut, so a window reaches
+    :data:`WINDOW_PAD_S` either side of an edge. The windows decoded and their cuts are kept in
+    the part's cache folder as :data:`SCENE_WINDOWS_FILE` (part-relative time, as
+    ``scenes.json``): a later run decodes only the windows not covered yet and adds them. The
+    saved windows never overlap: a new window that touches saved ones is decoded together with
+    them, so every cut comes from one decode that saw the whole window. A full ``scenes.json``
+    of the part (a full pass, for a style that weighs scenes) is always used instead."""
+
+    def __init__(
+        self,
+        io: Path,
+        cdir: Path,
+        span: float,
+        offset: float = 0.0,
+        limit: float | None = None,
+        on_time: Callable[[float], None] | None = None,
+    ) -> None:
+        self.io, self.cdir, self.span, self.offset, self.limit = io, cdir, span, offset, limit
+        self.on_time = on_time  # gets the seconds each decode took (``scenes_s``)
+
+    def _saved(self) -> tuple[list[tuple[float, float]], list[float]]:
+        data = cache.load_json(self.cdir / SCENE_WINDOWS_FILE)
+        try:
+            wins = [(float(a), float(b)) for a, b in data["windows"]]
+            return wins, [float(x) for x in data["cuts"]]
+        except (TypeError, KeyError, ValueError):  # none yet, or not this file's shape
+            return [], []
+
+    def around(self, edges: Iterable[float]) -> list[float]:
+        """All the cuts known, once the windows of ``edges`` (part-relative) are decoded."""
+        full = cache.load_json(self.cdir / "scenes.json")
+        if full is not None:
+            return list(full)
+        wins, cuts = self._saved()
+        eps = 1e-6
+        need = [
+            w
+            for w in (_edge_window(t, self.span) for t in edges)
+            if w[1] > w[0] and not any(a <= w[0] + eps and w[1] - eps <= b for a, b in wins)
+        ]
+        if not need:
+            return sorted(cuts)
+        t0 = time.perf_counter()
+        todo = _merge_windows(need)
+        logger.info(
+            "%s: detecting scene cuts around the candidate edges (%d windows, %.0fs)",
+            self.io.name,
+            len(todo),
+            sum(b - a for a, b in todo),
+        )
+        for a, b in todo:
+            touch = [w for w in wins if w[0] <= b and a <= w[1]]
+            a, b = min([a, *(w[0] for w in touch)]), max([b, *(w[1] for w in touch)])
+            found = _window_cuts(self.io, self.cdir, self.offset, a, b)
+            wins = sorted([*(w for w in wins if w not in touch), (a, b)])
+            cuts = sorted([*(x for x in cuts if not a <= x <= b), *found])
+            cache.save_json(
+                self.cdir / SCENE_WINDOWS_FILE,
+                {"version": 1, "windows": [list(w) for w in wins], "cuts": cuts},
+            )
+        if self.on_time is not None:
+            self.on_time(time.perf_counter() - t0)
+        return cuts
+
+    def full(self) -> list[float]:
+        """The full pass (:func:`scene_cuts`, cached as ``scenes.json``): for a style that
+        weighs the scene curve after all (``--style auto`` decided after the transcript)."""
+        t0 = time.perf_counter()
+        cuts = scene_cuts(self.io, self.cdir, self.span, self.offset, self.limit)
+        if self.on_time is not None:
+            self.on_time(time.perf_counter() - t0)
+        return cuts
 
 
 # --------------------------------------------------------------------------- windowing
@@ -868,7 +1011,7 @@ def _snap(
     """Snap to nearby scene cuts, then sentence edges (long-form), then word edges."""
     for attr in ("start", "end"):
         t = getattr(c, attr)
-        near = [x for x in cuts if abs(x - t) <= 1.0]
+        near = [x for x in cuts if abs(x - t) <= SNAP_REACH_S]
         if near:
             setattr(c, attr, min(near, key=lambda x: abs(x - t)))
     if style.snap_sentences and not c.whole:  # a dialogue stretch ends where the reader said
@@ -1010,7 +1153,9 @@ class PartSignals:
     laugh_hits: list[tuple[float, float, str]]
     words: list[dict[str, Any]]
     segments: list[Segment]
-    cuts: list[float]
+    cuts: list[float]  # for snapping; with ``edge_cuts``, those found around edges so far
+    scenes: bool = False  # scene detection is on (the scene curve follows the style)
+    edge_cuts: EdgeCuts | None = None  # the cuts are detected around candidate edges only
 
 
 def text_signals(ps: PartSignals, style: Style, name: str) -> None:
@@ -1048,20 +1193,41 @@ def part_signals(
     """The signal grids of a part ``span`` seconds long: loudness from ``lufs_data`` (the cached
     times and momentary loudness; None without audio), the transcript ``segments``' signals
     (``text`` False leaves them for :func:`text_signals`) and, with ``cuts`` (None: no scene
-    detection), the scene curve; ``cuts`` are also kept, for snapping. ``name``: the source's, for the log."""
+    detection), the scene curve of a style that weighs it (:func:`scene_signal`); ``cuts`` are
+    also kept, for snapping. ``name``: the source's, for the log."""
     n = max(1, int(span / DT) + 1)
     sig = {k: np.zeros(n) for k in ("loudness", "speech", "laughter", "scene", "continuity")}
     if lufs_data is not None:
         times, lufs = lufs_data
         sig["loudness"] = np.interp(np.arange(n) * DT, times, loudness_signal(lufs))
     words = flat_words(segments)
-    ps = PartSignals(n, sig, [], [], words, segments, list(cuts or []))
+    ps = PartSignals(n, sig, [], [], words, segments, list(cuts or []), cuts is not None)
     if text:
         text_signals(ps, style, name)
     sig["continuity"] = continuity_signal(n, words)
-    if cuts is not None:
-        sig["scene"] = _impulse_signal(n, [(t, 0.7) for t in cuts], sigma_s=1.5)
+    scene_signal(ps, style)
     return ps
+
+
+def scene_signal(ps: PartSignals, style: Style) -> None:
+    """The scene curve of ``ps`` for ``style``: from the cuts when scene detection is on and the
+    style weighs it (:func:`scores_scenes`), else zeros (it would add nothing to the score). Cuts
+    found only around edges (``edge_cuts``) are replaced by a full pass first."""
+    if not ps.scenes:
+        return
+    if not scores_scenes(style):
+        ps.sig["scene"] = np.zeros(ps.n)
+        return
+    if ps.edge_cuts is not None:  # --style auto chose a style that weighs scenes after all
+        ps.cuts, ps.edge_cuts = ps.edge_cuts.full(), None
+    ps.sig["scene"] = _impulse_signal(ps.n, [(t, 0.7) for t in ps.cuts], sigma_s=1.5)
+
+
+def _cover_edges(ps: PartSignals, cands: Sequence[Candidate]) -> None:
+    """With ``ps.edge_cuts``, detect the scene cuts around the edges of ``cands`` (part-relative,
+    not snapped yet) so :func:`_snap` finds every cut it can reach."""
+    if ps.edge_cuts is not None and cands:
+        ps.cuts = ps.edge_cuts.around(t for c in cands for t in (c.start, c.end))
 
 
 @dataclass
@@ -1273,6 +1439,8 @@ def analyze_source(
         add(name, time.perf_counter() - t0)
 
     io = remap_source(src)  # read the copy, record the original
+    # A style that does not weigh the scene curve: cuts only around candidate edges (#730)
+    windowed = use_scenes and not scores_scenes(style)
     t0 = time.perf_counter()
     info = probe(io)
     stages["probe_s"] = round(time.perf_counter() - t0, 2)
@@ -1321,6 +1489,7 @@ def analyze_source(
         try:
             if (
                 use_scenes
+                and not windowed
                 and scene_overlap()
                 and shared is None
                 and cache.load_json(cdir / "scenes.json") is None
@@ -1350,7 +1519,21 @@ def analyze_source(
             shared = read_checked(info, None)
 
     cuts: list[float] = []
-    if use_scenes:
+    edge_cuts: EdgeCuts | None = None
+    if windowed:  # a full pass already cached is used as it is
+        if (found := cache.load_json(cdir / "scenes.json")) is not None:
+            cuts = found
+        else:
+            stages["scene_windows"] = True
+            edge_cuts = EdgeCuts(
+                io,
+                cdir,
+                span,
+                offset,
+                span if read_error else None,
+                on_time=lambda took: add("scenes_s", took),
+            )
+    elif use_scenes:
         t0 = time.perf_counter()
         if overlap is not None:
             cuts = overlap.cuts
@@ -1373,6 +1556,7 @@ def analyze_source(
     ps = part_signals(
         span, lufs_data, segments, cuts if use_scenes else None, style, src.name, text
     )
+    ps.edge_cuts = edge_cuts
 
     res = SourceResult(
         source=src,
@@ -1389,12 +1573,13 @@ def analyze_source(
         res.candidates = pick_candidates(res, style, max_candidates, timings, ski_ctx)
     where = f" from {clock(offset)}" if offset else ""
     logger.info(
-        "%s%s: %.0fs, %d words, %d scene cuts%s",
+        "%s%s: %.0fs, %d words, %d scene cuts%s%s",
         src.name,
         where,
         span,
         len(ps.words),
-        len(cuts),
+        len(ps.cuts),
+        " (around candidate edges)" if ps.edge_cuts is not None else "",
         f", {len(res.candidates)} candidates" if pick else "",
     )
     return res
@@ -1429,6 +1614,7 @@ def pick_candidates(
         # fill what those leave free, so a longer list never changes the top of a shorter one.
         head, tail = (raw[:usual], raw[usual:]) if usual is not None else (raw, [])
         cands = _merge(head, style)
+        _cover_edges(ps, cands)
         for c in cands:
             _snap(c, ps.cuts, segments, span, style)
         cands = _resolve_overlaps(cands, style)
@@ -1518,6 +1704,7 @@ def _place_free(
         if c.over or _fit_free(c, taken, span, style):
             stretches.setdefault(_free_around(c.peak_t, taken, span), []).append(c)
     cands = [m for group in stretches.values() for m in _merge(group, style)]
+    _cover_edges(ps, cands)
     for c in cands:
         _snap(c, ps.cuts, ps.segments, span, style)
     cands = [
@@ -1591,7 +1778,12 @@ def nominate_candidates(
 def cached_grid_parts(hl: dict[str, Any], style: Style) -> list[GridPart]:
     """The grids of the analysis ``hl`` as its caches give them (what :func:`analyze_source`
     built: the loudness, the transcript of the analysis's model and language, the scene cuts).
-    A source with a recovered part, or whose caches are gone or offline, has none."""
+    A source with a recovered part, or offline, has none; nor has one whose caches are gone,
+    unless the style detects its scene cuts around candidate edges (:class:`EdgeCuts`): such
+    a source (also one without audio, so without loudness or transcript) gets its part, the
+    cuts decoded when an edge needs them. With a style that weighs the scene curve, a source
+    without ``scenes.json`` gets no scene curve or cuts (an INFO line names it; ``analyze``
+    detects them again)."""
     settings = hl.get("settings") or {}
     entries = hl.get("sources", [])
     recovered = {e["path"] for e in entries if e.get("offset") or e.get("read_errors")}
@@ -1607,12 +1799,21 @@ def cached_grid_parts(hl: dict[str, Any], style: Style) -> list[GridPart]:
         loud = cache.load_json(cdir / "loudness.json")
         segments = source_segments(src, settings.get("language"), settings.get("whisper_model"))
         found = cache.load_json(cdir / "scenes.json")
-        if loud is None and segments is None and found is None:  # nothing cached to build from
-            continue
+        scenes = bool(settings.get("scenes", True))
+        windowed = scenes and found is None and not scores_scenes(style)  # EdgeCuts serve it
+        if loud is None and segments is None and found is None and not windowed:
+            continue  # nothing cached to build from
+        if scenes and found is None and scores_scenes(style):
+            logger.info(
+                "%s: no scene cuts cached; its scene score is missing until analyze runs again",
+                src.name,
+            )
         span = float(e.get("analyzed_s") or e["duration"])
-        cuts = (found or []) if settings.get("scenes", True) else None
+        cuts = (found or []) if scenes else None
         lufs = (np.asarray(loud["t"]) - 0.2, np.asarray(loud["m"])) if loud else None
         ps = part_signals(span, lufs, segments or [], cuts, style, src.name)
+        if windowed:  # as the analysis did: cuts around edges (scenes-windows.json, else decoded)
+            ps.edge_cuts = EdgeCuts(remap_source(src), cdir, span)
         out.append(GridPart(src, i, 0.0, span, ps))
     return out
 
@@ -2980,7 +3181,7 @@ def _analyze(
             def offer(info: MediaInfo, rec: dict[str, Any] | None) -> Any:
                 ok = not offset and rec is None and tr.device == "cuda"
                 plan = None
-                if ok and use_scenes and prefetch.mode is not None:
+                if ok and use_scenes and scores_scenes(style) and prefetch.mode is not None:
                     plan = _scene_plan(src, info.duration)
                 return prefetch.offer(src, round(info.duration, 3), ok, plan)
 
@@ -3083,6 +3284,9 @@ def _analyze(
                 for r in results:
                     if r.signals is not None:
                         text_signals(r.signals, style, r.source.name)
+                        scene_signal(r.signals, style)  # a full pass if it weighs scenes
+                        if r.signals.edge_cuts is None:  # cut by a full pass after all
+                            r.stages.pop("scene_windows", None)
                         r.candidates = pick_candidates(r, style, max_candidates, timings)
             category.warn(det, style.name, fallback)
             detection_rec = det.record(auto.emphasis, style.name, fallback)

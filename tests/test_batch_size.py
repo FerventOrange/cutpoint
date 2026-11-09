@@ -252,7 +252,7 @@ def test_a_first_analyze_stopped_in_scene_detection_can_be_resumed(home, tmp_pat
     monkeypatch.setattr(analyze, "Transcriber", _Whisper)
     monkeypatch.setattr(analyze, "plan_layers", lambda *a: analyze.LayerPlan())
     _Whisper.calls, _Whisper.stop = [], None
-    argv = ["analyze", "videos/a.mp4", "--style", "funny", "--no-vision", "--out", "p"]
+    argv = ["analyze", "videos/a.mp4", "--style", "action", "--no-vision", "--out", "p"]
     assert cli.main(argv) == 130
     project = home / "projects" / "p"
     rec = _read(project)

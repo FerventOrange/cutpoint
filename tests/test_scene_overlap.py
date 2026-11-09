@@ -106,13 +106,13 @@ def world(home, tmp_path, monkeypatch):
     monkeypatch.setattr(analyze, "_loudness", lambda wav, cdir: (times, lufs))
     monkeypatch.setattr(analyze, "scene_cuts", scene)
     w.source = lambda use_scenes=True, timings=None: analyze.analyze_source(
-        src, get_style("funny"), w.tr, use_scenes, None, {} if timings is None else timings
+        src, get_style("gaming"), w.tr, use_scenes, None, {} if timings is None else timings
     )
     w.source_with = lambda **kw: analyze.analyze_source(
-        src, get_style("funny"), w.tr, True, None, {}, **kw
+        src, get_style("gaming"), w.tr, True, None, {}, **kw
     )
     w.run = lambda: analyze.analyze(
-        src, get_style("funny"), w.proj, vision=False, use_scenes=True, layers=False
+        src, get_style("gaming"), w.proj, vision=False, use_scenes=True, layers=False
     )
     yield w
     for t in scene_threads():  # never leave a thread behind for the next test
@@ -201,7 +201,7 @@ def test_no_scene_thread_for_a_style_without_scenes_through_analyze(world, monke
     monkeypatch.setenv(ENV, "1")
     monkeypatch.setattr(analyze, "_SceneJob", lambda *a, **k: pytest.fail("thread started"))
     analyze.analyze(
-        world.src, get_style("funny"), world.proj, vision=False, use_scenes=False, layers=False
+        world.src, get_style("gaming"), world.proj, vision=False, use_scenes=False, layers=False
     )
     (rec,) = highlights(world.proj)["timings"]["sources"]
     assert "overlap" not in rec and world.scene_calls == []
@@ -295,7 +295,7 @@ def test_an_error_after_the_transcription_also_stops_the_job(real_scenes, monkey
 
     with pytest.raises(RuntimeError, match="callback failed"):
         analyze.analyze_source(
-            world.src, get_style("funny"), world.tr, True, None, {}, on_transcript=boom
+            world.src, get_style("gaming"), world.tr, True, None, {}, on_transcript=boom
         )
     assert ffmpeg.cancel.is_set() and not scene_threads()
     assert not (world.cdir / "scenes.json").exists()
