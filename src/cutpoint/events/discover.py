@@ -78,7 +78,7 @@ import numpy as np
 from cutpoint import cache, folders
 from cutpoint.errors import FFmpegError
 from cutpoint.events.common import Source
-from cutpoint.events.regions import Region, bigtext_region
+from cutpoint.events.regions import Region, bigtext_region, source_tag
 from cutpoint.ffmpeg_utils import grab_images, probe
 from cutpoint.imageio import read_image, write_jpeg
 
@@ -312,14 +312,13 @@ _LEGACY_FRAME = re.compile(r"b\d+_\d+\.jpg")
 
 def _source_tag(src: Source) -> str:
     """Short digest of the source's path, size and mtime, like the key of
-    :func:`cutpoint.cache.source_dir`."""
-    key = str(src.path)
-    try:
-        st = src.io_path.stat()
-        key += f"|{st.st_size}|{st.st_mtime_ns}"
-    except OSError:  # gone since the plan: the path alone still tells files apart
-        pass
-    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+    :func:`cutpoint.cache.source_dir` (:func:`~cutpoint.events.regions.source_tag`)."""
+    return source_tag(src.path, src.io_path)
+
+
+def src_key(src: Source) -> str:
+    """The ``src_key`` of the source's OCR records (see :func:`_src`)."""
+    return f"{src.name}~{_source_tag(src)}"
 
 
 def _frame_name(source: str, t: float) -> str:
@@ -359,7 +358,7 @@ def _ocr_frames(
     for bi, (src, t) in enumerate(bursts):
         ids = []
         olds = []
-        skey = f"{src.name}~{_source_tag(src)}"
+        skey = src_key(src)
         src_keys.append(skey)
         for k in range(params.burst_frames):
             at = f"@{t + k * params.burst_step_s:.1f}"
@@ -412,17 +411,17 @@ def _ocr_frames(
             frames = _burst_frames(
                 src.io_path, t, params.burst_frames, params.burst_step_s, params.width
             )
-            if engine is None:
-                # full frames, one at a time: all the threads on one engine. A frame has
-                # many boxes of very different widths: recognised one at a time, none is
-                # padded to the widest of a batch, which made first-run discovery about 22%
-                # faster on 5 test clips (#443)
-                engine = OcrEngine(lanes=1, rec_batch=1)
             for k, img in enumerate(frames):
                 fid, hit = ids[k], hits[k]
                 if hit is not None:
                     out.append(hit)
                     continue
+                if engine is None:  # only once a frame needs reading
+                    # full frames, one at a time: all the threads on one engine. A frame has
+                    # many boxes of very different widths: recognised one at a time, none is
+                    # padded to the widest of a batch, which made first-run discovery about
+                    # 22% faster on 5 test clips (#443)
+                    engine = OcrEngine(lanes=1, rec_batch=1)
                 sx = REF_W / img.shape[1]
                 items = engine(img, params.min_score)
                 boxes = []
@@ -1678,6 +1677,7 @@ def discover_regions(
     outside: int = 0,
     labeler: Callable[[list[dict[str, Any]], list[dict[str, Any]], Path], dict[str, Any]]
     | None = None,
+    keep_src_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Run discovery on ``sources`` and write the proposal into ``out_dir``.
 
@@ -1697,10 +1697,16 @@ def discover_regions(
         labeler: Names what each proposal is (:func:`cutpoint.events.feed_labels.make_labeler`;
             called with the proposals, the gameplay frames and their folder); None, or
             no labels: the rules above decide alone.
+        keep_src_keys: Cluster only the OCR records of these sources (their ``src_key``,
+            see :func:`_src`); the burst plan stays that of all ``sources``, so a run
+            after one that read them all reads nothing again (the HUD fit check drops the
+            sources of another game this way).
 
     Returns:
         The proposal: a preset dict (``game``, ``regions``, ``banner_phrases``,
-        ``discovery`` stats, per-region evidence and the ids of the OCR records
+        ``discovery`` stats, per-region evidence, the HUD fit check's reference
+        grid of where the sources' edge text lands (``fit_ref``, see
+        :mod:`cutpoint.events.game_fit`) and the ids of the OCR records
         the run used, ``frames``, since ``ocr.jsonl`` can still hold records of an earlier,
         incomplete run). Extra notice regions where text shows outside every covered region
         (:func:`notice_proposals`, marked ``"origin": "outside"``) are added to
@@ -1712,14 +1718,26 @@ def discover_regions(
     params = params or DiscoverParams()
     t0 = time.perf_counter()
     bursts = plan_bursts(sources, params.bursts)
-    logger.info(
-        "Region discovery for %s: %d bursts x %d frames over %d source(s)",
-        game,
-        len(bursts),
-        params.burst_frames,
-        len(sources),
-    )
+    if keep_src_keys is None:
+        logger.info(
+            "Region discovery for %s: %d bursts x %d frames over %d source(s)",
+            game,
+            len(bursts),
+            params.burst_frames,
+            len(sources),
+        )
+    else:  # the counts of the kept sources: their frames were read by the run before
+        logger.info(
+            "Region discovery for %s again: %d bursts x %d frames over %d source(s), "
+            "from the frames already read",
+            game,
+            sum(src_key(s) in keep_src_keys for s, _ in bursts),
+            params.burst_frames,
+            sum(src_key(s) in keep_src_keys for s in sources),
+        )
     frames = _ocr_frames(bursts, params, out_dir / "frames", out_dir / "ocr.jsonl", on_frame)
+    if keep_src_keys is not None:
+        frames = [f for f in frames if _src(f) in keep_src_keys]
     proposals, maps = cluster_regions(frames, params)
     regions = proposals_to_regions(proposals)
     game_frames = gameplay_frames(frames, params)
@@ -1772,6 +1790,10 @@ def discover_regions(
     }
     if covered is not None:
         preset["suggested_regions"] = extra_labelled
+    from cutpoint.events import game_fit  # noqa: PLC0415
+
+    # where this game's edge text lands (edge-cell grid), for the HUD fit check
+    preset["discovery"]["fit_ref"] = game_fit.profile(game_frames, params.min_score).ref()
     out_dir.mkdir(parents=True, exist_ok=True)
     cache.save_json(out_dir / "proposal.json", preset)
     logger.info(

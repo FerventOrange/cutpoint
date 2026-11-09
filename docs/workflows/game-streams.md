@@ -52,7 +52,12 @@ OCR regions come from a per-game preset (lookup order in
 [Configuration](../configuration.md#hud-presets)). No game presets are bundled. Write one, or let region
 discovery create it (below), in `<CUTPOINT_HOME>\presets` or in a project `hud_presets` folder. The game is
 picked from the file or folder name, or set with `--game KEY` (how the name becomes a key:
-[Configuration](../configuration.md#hud-presets)).
+[Configuration](../configuration.md#hud-presets)). A source whose HUD text lands in other places on
+screen than in the footage of that name's preset gets a key and a discovery of its own (the HUD
+fit check, same page). To give an older preset the fit check, run
+`cutpoint events <project> --discover-regions` on a folder
+where that game is the majority; it adds only the check's reference to the preset, made from the
+sources that fit.
 
 For a game without a preset, `analyze` (`gaming` and `funny` styles) and `events` run region discovery automatically; `analyze` logs `first run for <game>: discovering HUD regions`, which can take several minutes on CPU OCR. It samples bursts of
 frames, finds text that changes quickly (kill feeds, banners, notices), ignores static HUD and
@@ -90,7 +95,8 @@ A game that already has a preset does not pick this up: discovery does not run f
 preset (no feed region, no `row_notices`) stays, so its kills stay at 0. Either move or rename the old
 preset (`<presets>/<game>.json`, or the project's `hud_presets/<game>.json`) and run `analyze` or
 `events` again, so discovery installs the new one, or run `events --discover-regions` (which leaves
-the preset file alone and writes only `projects/<name>/discovery/<game>/proposal.json`) and copy the
+the preset's regions alone, at most adds the HUD fit check's `discovery.fit_ref`, and writes
+`projects/<name>/discovery/<game>/proposal.json`) and copy the
 proposal's `feed` region and `"feed": {"row_notices": true}` into the preset by hand. Either way the new region needs new OCR reads (no cache replay).
 Menus with little text (hangar or crew screens) are found because they hold still: a frame is a
 static screen when a small grey thumbnail of the HUD area stays nearly the same, with no feed
@@ -152,7 +158,8 @@ with far more text than usual (a partial scoreboard). When the preset already ha
 `"origin": "outside"`, they count against the 2. These regions carry `"origin": "outside"`, which the preset loader ignores. A new
 preset gets them with the other regions; the INFO line `Discovery: text shows outside the ...
 regions` gives their rectangles, burst and frame counts, never the text. For a game that already
-has a preset, `--discover-regions` never changes the preset file: the extra regions are listed under
+has a preset, `--discover-regions` never changes the preset's regions (it only adds the HUD fit
+check's `discovery.fit_ref`): the extra regions are listed under
 `suggested_regions` in `proposal.json` (with sample texts in the `proposals` evidence) and an
 INFO line says to copy them into the preset's `regions` to have OCR read them. `overlay.jpg`
 draws them in magenta.
