@@ -395,3 +395,78 @@ def test_the_events_command_rebuilds_the_crash_moments_before_it_rescores(tmp_pa
     args = ap.parse_args([str(tmp_path)])
     events_cli.run_args(args)
     assert calls == ["rebuild", "rescore"]
+
+
+def _menu(proj: Path, src: Path, *spans: list[float]) -> None:
+    ev = {"sources": [str(src)], "events": [], "windows": []}
+    ev["stats"] = {"ocr": {src.name: {"menu_spans": [list(s) for s in spans]}}}
+    cache.save_json(proj / "events.json", ev)
+
+
+def _state(proj: Path) -> tuple[list[tuple[Any, ...]], Any]:
+    hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
+    rows = sorted(
+        (c["id"], c["start"], c["end"], json.dumps(c["signals"].get("vision")))
+        for c in hl["candidates"]
+    )
+    return rows, hl["settings"].get("last_candidate_id")
+
+
+@pytest.mark.parametrize("span", [(38.0, 43.0), (38.0, 60.0)], ids=["trimmed", "dropped"])
+def test_menu_time_on_a_weak_crash_moment_keeps_repeat_runs_stable(
+    home, tmp_path, monkeypatch, span
+):
+    proj, _ = _analyzed(tmp_path, monkeypatch)
+    src = tmp_path / "a.mp4"
+    _set_crashes(proj, record("c1", 20.0, 0.9, src), record("c2", 45.0, 0.55, src))
+    _menu(proj, src, span)
+    analyze.rebuild_crash_moments(proj)
+    scoring.rescore_highlights(proj)  # trims or drops the weak one (not must-include)
+    hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
+    weak = [c for c in hl["candidates"] if (c.get("crash") or {}).get("id") == "c2"]
+    if span == (38.0, 43.0):
+        assert [(c["start"], c["end"]) for c in weak] == [(43.0, 53.0)]
+        weak[0]["signals"]["vision"] = {"score": 7, "label": "wipe"}  # rated after the trim
+        cache.save_json(proj / "highlights.json", hl)
+    else:
+        assert weak == []
+    once = _state(proj)
+    for _ in range(2):  # the events re-runs that follow
+        assert analyze.rebuild_crash_moments(proj) is False
+        scoring.rescore_highlights(proj)
+        assert _state(proj) == once
+
+
+def test_a_widened_candidate_alone_is_no_change(home, tmp_path, monkeypatch):
+    proj, hl = _analyzed(tmp_path, monkeypatch)
+    hl["candidates"].append(
+        {
+            "id": "h003", "source": hl["sources"][0]["path"], "source_index": 0,
+            "start": 40.0, "end": 50.0, "duration": 10.0, "score": 30.0, "signals": {},
+            "label": "talk", "widened_from": {"start": 42.0, "end": 46.0},
+        }
+    )  # fmt: skip
+    cache.save_json(proj / "highlights.json", hl)
+    saved = (proj / "highlights.json").read_bytes()
+    assert analyze.rebuild_crash_moments(proj) is False
+    assert (proj / "highlights.json").read_bytes() == saved
+
+
+def test_a_nominated_candidate_hosts_no_crash_as_in_a_reanalysis(home, tmp_path, monkeypatch):
+    proj, hl = _analyzed(tmp_path, monkeypatch)
+    src = tmp_path / "a.mp4"
+    nominee = {
+        "id": "h003", "source": hl["sources"][0]["path"], "source_index": 0,
+        "start": 40.0, "end": 50.0, "duration": 10.0, "score": 30.0,
+        "signals": {"events": {"nominated": ["laughter"]}}, "label": "laugh",
+        "crash": {"id": "old"}, "crash_confidence": 0.5, "crash_forced": False,
+    }  # fmt: skip
+    hl["candidates"].append(nominee)
+    cache.save_json(proj / "highlights.json", hl)
+    _set_crashes(proj, record("c1", 20.0, 0.9, src), record("c2", 45.0, 0.55, src))
+    assert analyze.rebuild_crash_moments(proj) is True
+    after = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))["candidates"]
+    [nom] = [c for c in after if c["id"] == "h003"]
+    assert not any(k in nom for k in analyze.CRASH_MARKS)
+    [weak] = [c for c in after if (c.get("crash") or {}).get("id") == "c2"]
+    assert weak["kind"] == "crash" and (weak["start"], weak["end"]) == (40.0, 53.0)

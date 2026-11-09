@@ -54,6 +54,7 @@ from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.events.scoring import (
     Seed,
     heard_laughter,
+    is_nominated,
     number_candidates,
     rescore,
     restore_widened,
@@ -1848,6 +1849,25 @@ def add_crash_candidates(
 CRASH_MARKS = ("crash", "crash_confidence", "crash_forced")  # the keys of a candidate's crash
 
 
+def _crash_keys(recs: list[dict[str, Any]]) -> dict[tuple[Any, ...], dict[str, Any]]:
+    """The crash moments ``recs`` by what names one across runs: its part and crash (id and
+    impact span, not its confidence) and its place among that crash's windows in time order
+    (0: its clip, 1: its reaction). Not its span, which menu time may have trimmed, nor its
+    label, which a vision rating may have renamed."""
+    out: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for rec in sorted(recs, key=lambda r: (r["source_index"], r["start"])):
+        crash = rec.get("crash") or {}
+        base = (rec["source_index"], crash.get("id"), crash.get("t"), crash.get("end"))
+        out[(*base, sum(k[:4] == base for k in out))] = rec
+    return out
+
+
+def _canonical(hl: dict[str, Any]) -> dict[str, Any]:
+    """``hl`` with its candidates in a fixed order, to compare two analyses whatever the order."""
+    cands = sorted(hl.get("candidates", []), key=lambda c: str(c.get("id", "")))
+    return {**hl, "candidates": cands}
+
+
 def rebuild_crash_moments(project: Path) -> bool:
     """Rebuild the crash moments of ``<project>/highlights.json`` from the current crashes.json,
     as :func:`analyze` and :func:`reanalyze` build them (:func:`add_crash_candidates`), for a
@@ -1855,10 +1875,13 @@ def rebuild_crash_moments(project: Path) -> bool:
 
     The crash moments and marks of the analysis are taken off and made again over the grids its
     caches give (:func:`cached_grid_parts`), so a moment whose crash is unchanged stays as it is
-    (id, vision rating) and repeat runs change nothing. New ones get the next ids
-    (``settings.last_candidate_id``). Left alone: action-cam (its scorer reads crashes.json),
-    360 projects, ``settings.crash_moments`` false, and a source whose grids are not cached
-    (recovered, offline). A candidate that a forced crash moment replaced is not brought back
+    (id, vision rating, a span menu time trimmed) and repeat runs change nothing. A moment is
+    matched by its crash, not its span. As in :func:`analyze`, the candidates events nominated
+    host no crash (they come after the crash moments; the re-rank nominates again) and menu time
+    drops or trims a new crash moment (:func:`drop_menu_time`) before it takes an id. New ones
+    get the next ids (``settings.last_candidate_id``). Left alone: action-cam (its scorer reads
+    crashes.json), 360 projects, ``settings.crash_moments`` false, and a source whose grids are
+    not cached (recovered, offline). A candidate that a forced crash moment replaced is not brought back
     when that crash goes away: only a re-analysis does."""
     from cutpoint.crash import load_crashes  # noqa: PLC0415
     from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
@@ -1879,24 +1902,29 @@ def rebuild_crash_moments(project: Path) -> bool:
     }
     if not parts:
         return False
-    before = copy.deepcopy(hl)
     cands = hl.get("candidates", [])
     restore_widened(cands)  # as analyze made the crash moments, before any widening
+    before = copy.deepcopy(hl)
     rest: list[dict[str, Any]] = []
     rec_of: dict[int, dict[str, Any]] = {}  # id() of a candidate made from a record -> record
-    was: dict[tuple[int, float, float], dict[str, Any]] = {}  # the crash moments there were
+    olds: list[dict[str, Any]] = []  # the crash moments there were
     for rec in cands:
         i = rec.get("source_index")
         if i not in parts or is_pool(rec):
             rest.append(rec)
+        elif is_nominated(rec):  # analyze builds crash moments before events nominate
+            for k in CRASH_MARKS:
+                rec.pop(k, None)
+            rest.append(rec)
         elif rec.get("kind") == CRASH_KIND:
-            was[(i, round(rec["start"], 2), round(rec["end"], 2))] = rec
+            olds.append(rec)
         else:
             c = Candidate(parts[i].source, rec["start"], rec["end"], rec["start"], 0.0, {})
             parts[i].candidates.append(c)
             rec_of[id(c)] = rec
     add_crash_candidates(list(parts.values()), style, load_crashes(project))
     kept: list[dict[str, Any]] = []
+    built: list[dict[str, Any]] = []  # the crash moments made now
     for i, part in parts.items():
         for c in part.candidates:
             rec = rec_of.get(id(c))
@@ -1909,22 +1937,31 @@ def rebuild_crash_moments(project: Path) -> bool:
                     rec["crash_forced"] = c.must_include
                 kept.append(rec)
                 continue
-            new = _candidate_record(c, i, style)
-            old = was.get((i, round(new["start"], 2), round(new["end"], 2)))
-            if old is not None:  # the same moment: as it was if it is the same, else its id
-                same = all(
-                    old.get(k) == new.get(k) for k in (*CRASH_MARKS, "must_include", "label")
-                )
-                new = old if same else ({"id": old["id"]} if "id" in old else {}) | new
-            kept.append(new)
+            built.append(_candidate_record(c, i, style))
+    was = _crash_keys(olds)
+    fresh: list[dict[str, Any]] = []  # crash moments with no earlier record
+    for key, new in _crash_keys(built).items():
+        old = was.get(key)
+        if old is None:
+            fresh.append(new)
+            continue
+        # the same crash: as it was (a span menu time trimmed included) if its marks are the
+        # same, else the new moment with its id
+        same = all(old.get(k) == new.get(k) for k in (*CRASH_MARKS, "must_include"))
+        kept.append(old if same else ({"id": old["id"]} if "id" in old else {}) | new)
+    ev = cache.load_json(project / "events.json")
+    if fresh and ev:  # menu time drops or trims a new one as analyze does, so it takes no id
+        menu_hl = {"style": hl.get("style"), "settings": hl.get("settings"), "candidates": fresh}
+        drop_menu_time(menu_hl, ev)
+        fresh = menu_hl["candidates"]
     pool = [c for c in rest if is_pool(c)]
     kept = sorted(
-        [c for c in rest if not is_pool(c)] + kept,
+        [c for c in rest if not is_pool(c)] + kept + fresh,
         key=lambda c: (not c.get("must_include"), *scorer.rank_key(c)),
     )
     hl["candidates"] = kept + pool
     number_candidates(hl)
-    if hl == before:
+    if _canonical(hl) == _canonical(before):  # the same records, maybe in another order
         return False
     cache.save_json(path, hl)
     logger.info("Crash moments rebuilt from crashes.json in %s", path.name)
