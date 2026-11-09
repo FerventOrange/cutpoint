@@ -526,6 +526,23 @@ def _proxy_args(
     return pre, post, vf, ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "32"]
 
 
+_SCENE_DOWNLOAD = {"yuv420p": "nv12", "yuvj420p": "nv12", "yuv420p10le": "p010le"}
+
+
+def _scene_decode(hw: HwDecoder | None, vf: str, src: Path) -> tuple[list[str], str]:
+    """The decoder's input options and the filter chain of the scene proxy. On a GPU decoder and
+    an 8- or 10-bit 4:2:0 source the frames stay on the GPU until the leading filter (``fps``)
+    dropped the ones the detector does not read, so only those are downloaded. Other formats
+    (4:4:4, 12-bit, unknown) and the CPU keep the plain path."""
+    if hw is None:
+        return [], vf
+    fmt = _SCENE_DOWNLOAD.get(probe(src).pix_fmt or "")
+    if fmt is None:
+        return hw.input_args(), gpu_chain(hw, vf) or vf
+    first, sep, rest = vf.partition(",")  # the proxy chain starts with its fps filter
+    return hw.input_args(keep_on_gpu=True), f"{first},hwdownload,format={fmt}{sep}{rest}"
+
+
 def _detect(proxy: Path, path: Path, cancel: threading.Event | None = None) -> list[float]:
     """Scene cuts of ``proxy`` (deleted after), saved to ``path``.
 
@@ -621,8 +638,8 @@ def scene_cuts(
     label = f"scene proxy {src.name}"
 
     def command(dec: HwDecoder | None) -> list[str]:  # the decoder's input options go before -i
-        chain = gpu_chain(dec, vf)
-        args = [*pre, *(dec.input_args() if dec else []), "-i", str(src), *post]
+        dec_args, chain = _scene_decode(dec, vf, src)
+        args = [*pre, *dec_args, "-i", str(src), *post]
         return ["ffmpeg", "-y", "-v", "error", *args, "-an", "-vf", chain, *enc, str(proxy)]
 
     hw = decoder_for(src)  # NVDEC or VAAPI when probed here; a failed GPU run decodes on the CPU

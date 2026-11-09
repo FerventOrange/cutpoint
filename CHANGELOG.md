@@ -615,6 +615,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Scene detection on a GPU decoder keeps the frames on the GPU until `fps` has dropped the ones the detector does not read, so only those are copied back (8- and 10-bit 4:2:0 sources; other formats decode as before); the cuts are unchanged (#730).
 - The vision model (frame rating, the VLM layer of `cutpoint events`, dialogue reading and
   activity profiles on Ollama) asks a local Ollama for the context the model is loaded with
   when that is larger than the request needs, so AI Chat (`num_ctx` 50000) and vision on the
