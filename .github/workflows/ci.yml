@@ -42,6 +42,8 @@ jobs:
     env:
       FFMPEG_LINUX_URL: https://github.com/FerventOrange/cutpoint/releases/download/ffmpeg-n9.0.2/ffmpeg-n9.0.2-48-gd4070a14ce-linux64-gpl-9.0.tar.xz
       FFMPEG_LINUX_SHA256: bf5e935a51afb65ddd14bf67104361508bcc7c77026a66d7e193a05a56ab8d77
+      FFMPEG_WIN_VERSION: "9.0.2"
+      FFMPEG_WIN_SHA256: 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
     strategy:
       fail-fast: false
       matrix:
@@ -123,26 +125,24 @@ jobs:
       # Windows has no ffmpeg: pinned gyan.dev 9.0.2 essentials build (the version the pano code was
       # measured on), downloaded from the GyanD/codexffmpeg release and verified by SHA256. The
       # zip is cached under its SHA256 and the download retries with backoff (HTTP 504s happen).
+      # To bump: change FFMPEG_WIN_VERSION and FFMPEG_WIN_SHA256 in this job's env; the cache key follows.
       - name: Restore ffmpeg cache (Windows)
         id: ffmpeg-cache-win
         if: runner.os == 'Windows'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ffmpeg-cache
-          key: ffmpeg-windows-60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
+          key: ffmpeg-windows-${{ env.FFMPEG_WIN_SHA256 }}
       - name: Install ffmpeg (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         timeout-minutes: 25
-        env:
-          FFMPEG_VERSION: "9.0.2"
-          FFMPEG_SHA256: 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
         run: |
           $dir = Join-Path $env:RUNNER_TEMP "ffmpeg-cache"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           $zip = Join-Path $dir "ffmpeg.zip"
-          $uri = "https://github.com/GyanD/codexffmpeg/releases/download/$env:FFMPEG_VERSION/ffmpeg-$env:FFMPEG_VERSION-essentials_build.zip"
-          $want = $env:FFMPEG_SHA256.ToUpper()
+          $uri = "https://github.com/GyanD/codexffmpeg/releases/download/$env:FFMPEG_WIN_VERSION/ffmpeg-$env:FFMPEG_WIN_VERSION-essentials_build.zip"
+          $want = $env:FFMPEG_WIN_SHA256.ToUpper()
           function Test-Zip { (Test-Path $zip) -and ((Get-FileHash -Algorithm SHA256 $zip).Hash -eq $want) }
           if (-not (Test-Zip)) {
             Remove-Item -Force -ErrorAction SilentlyContinue $zip
@@ -163,14 +163,14 @@ jobs:
             if (-not $ok) { throw "ffmpeg download failed after 5 attempts" }
           }
           Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "ffmpeg")
-          $bin = Join-Path $env:RUNNER_TEMP "ffmpeg/ffmpeg-$env:FFMPEG_VERSION-essentials_build/bin"
+          $bin = Join-Path $env:RUNNER_TEMP "ffmpeg/ffmpeg-$env:FFMPEG_WIN_VERSION-essentials_build/bin"
           Add-Content -Path $env:GITHUB_PATH -Value $bin
       - name: Save ffmpeg cache (Windows)
         if: runner.os == 'Windows' && steps.ffmpeg-cache-win.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ffmpeg-cache
-          key: ffmpeg-windows-60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
+          key: ffmpeg-windows-${{ env.FFMPEG_WIN_SHA256 }}
       - name: Show ffmpeg
         run: |
           ffmpeg -version
