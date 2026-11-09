@@ -83,7 +83,13 @@ import numpy as np
 from cutpoint import cache, folders
 from cutpoint.errors import FFmpegError
 from cutpoint.events.common import Source
-from cutpoint.events.regions import Region, bigtext_region, source_tag
+from cutpoint.events.regions import (
+    Region,
+    bigtext_region,
+    guard_entry,
+    guard_regions,
+    source_tag,
+)
 from cutpoint.ffmpeg_utils import grab_images, probe
 from cutpoint.imageio import read_image, write_jpeg
 
@@ -1854,7 +1860,8 @@ def discover_regions(
     if keep_src_keys is not None:
         frames = [f for f in frames if _src(f) in keep_src_keys]
     proposals, maps = cluster_regions(frames, params)
-    regions = proposals_to_regions(proposals)
+    where = f"discovery {game}"
+    regions = guard_regions(proposals_to_regions(proposals), where)
     game_frames = gameplay_frames(frames, params)
     cover = covered if covered is not None else (*regions, bigtext_region())
     # score popups are not read, but their labels are no notices either
@@ -1871,6 +1878,8 @@ def discover_regions(
     labels = labeler(proposals, game_frames, out_dir / "frames") if labeler else {}
     if labels:
         regions, extra_regions = apply_labels(proposals, labels, regions, extra_regions)
+        regions = guard_regions(regions, where)
+    extra_regions = [e for e in (guard_entry(e, where) for e in extra_regions) if e is not None]
     extra_labelled = [
         e | ({"label": labels[e["name"]]["label"]} if e["name"] in labels else {})
         for e in extra_regions
