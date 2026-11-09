@@ -440,8 +440,8 @@ Other keys are kept as they are. A style file is checked strictly; one that fail
 (`feature_not_computed`).
 
 A style whose weights give `scene` 0 (as `funny` and `commentary` do) skips the full scene
-detection pass of `analyze` and detects cuts only around the candidate edges, to snap them (see
-[analyze](commands.md#analyze)).
+detection pass of `analyze` on sources up to 30 minutes and detects cuts only around the
+candidate edges, to snap them, decoded on the CPU (see [analyze](commands.md#analyze)).
 
 Learned styles from the development script `scripts/refmatch.py` are files without `schema`
 (legacy). They load as before, read as `source` `fitted` and are never rewritten automatically;

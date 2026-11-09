@@ -5,7 +5,8 @@ Signals per source (all on a 0.1 s grid, each normalised to 0-1):
     speech    - style keywords/exclamations from the faster-whisper transcript
     laughter  - laughter tokens in the transcript
     scene     - density of PySceneDetect cuts (from a small, low-fps proxy); a style that does
-                not weigh it detects cuts only around candidate edges, to snap them (#730)
+                not weigh it detects cuts only around candidate edges (parts up to
+                LONG_FILE_S), to snap them (#730)
     continuity- fraction of the surrounding ~10 s covered by speech (commentary)
 Each is a feature of :mod:`cutpoint.features`; their weighted sum (:mod:`cutpoint.scorer`) is
 peak-picked into windows, merged, snapped to scene cuts and word boundaries, scored 0-100 over
@@ -653,10 +654,12 @@ def _make_proxy(
     args: tuple[list[str], list[str], str, list[str]],
     seconds: float,
     cancel: threading.Event | None = None,
+    gpu: bool = True,
 ) -> None:
     """Encode the scene proxy ``proxy`` of ``src`` with the :func:`_proxy_args` ``args``
     (``seconds`` long, for the progress lines): on the GPU decoder when there is one, else or
-    when that fails on the CPU. A ``cancel`` (see :func:`scene_cuts`) removes the proxy."""
+    when that fails on the CPU; ``gpu`` False always on the CPU. A ``cancel`` (see
+    :func:`scene_cuts`) removes the proxy."""
     pre, post, vf, enc = args
     label = f"scene proxy {src.name}"
 
@@ -665,7 +668,8 @@ def _make_proxy(
         args = [*pre, *dec_args, "-i", str(src), *post]
         return ["ffmpeg", "-y", "-v", "error", *args, "-an", "-vf", chain, *enc, str(proxy)]
 
-    hw = decoder_for(src)  # NVDEC or VAAPI when probed here; a failed GPU run decodes on the CPU
+    # NVDEC or VAAPI when probed here; a failed GPU run decodes on the CPU
+    hw = decoder_for(src) if gpu else None
     opts = {"cancel": cancel} if cancel is not None else {}  # plain call when not overlapped
     try:
         try:
@@ -733,8 +737,17 @@ class _SceneJob:
 def scores_scenes(style: Style) -> bool:
     """True when ``style`` weighs the scene curve. A style that does not (``funny``,
     ``commentary``, a user style whose weights give ``scene`` 0) uses scene cuts only to snap
-    candidate edges, so they are detected only around those edges (:class:`EdgeCuts`, #730)."""
+    candidate edges, so they are detected only around those edges (:func:`edge_windows`)."""
     return bool(style.weights.get("scene"))
+
+
+def edge_windows(style: Style, span: float) -> bool:
+    """True when the scene cuts of a part ``span`` seconds long are detected only around its
+    candidate edges (:class:`EdgeCuts`, #730): ``style`` does not weigh them
+    (:func:`scores_scenes`) and the part is not longer than :data:`LONG_FILE_S`. A longer part's
+    full pass decodes keyframes only (:func:`_proxy_args`), faster than the windows' 10 fps
+    decode, so it keeps the full pass (``scenes.json``)."""
+    return not scores_scenes(style) and span <= LONG_FILE_S
 
 
 def _edge_window(t: float, span: float) -> tuple[float, float]:
@@ -758,11 +771,13 @@ def _merge_windows(wins: Sequence[tuple[float, float]]) -> list[tuple[float, flo
 
 def _window_cuts(io: Path, cdir: Path, offset: float, a: float, b: float) -> list[float]:
     """Scene cuts of ``[a, b]`` of the part at ``offset`` of ``io`` (part-relative time), from a
-    proxy of that stretch made as the full one of a normal-length file (:func:`_proxy_args`)."""
+    proxy of that stretch made as the full one of a normal-length file (:func:`_proxy_args`),
+    always decoded on the CPU: each window is a short ffmpeg run, and a GPU decoder's start-up
+    costs more than the few seconds it decodes."""
     # its own name: another run (project) may read the same source from the shared cache folder
     proxy = cdir / f"proxy-window-{os.getpid()}-{threading.get_ident()}.mp4"
     try:
-        _make_proxy(io, proxy, _proxy_args(b - a, offset + a, b - a), b - a)
+        _make_proxy(io, proxy, _proxy_args(b - a, offset + a, b - a), b - a, gpu=False)
         found = _scan(proxy, None)  # its video handle is closed on return
     finally:
         try:
@@ -774,7 +789,8 @@ def _window_cuts(io: Path, cdir: Path, offset: float, a: float, b: float) -> lis
 
 class EdgeCuts:
     """The scene cuts of one part (or recovered part) of a style that does not weigh the scene
-    curve (:func:`scores_scenes`), detected only in windows around candidate edges (#730).
+    curve, up to :data:`LONG_FILE_S` long (:func:`edge_windows`), detected only in windows
+    around candidate edges (#730), decoded on the CPU (:func:`_window_cuts`).
 
     :func:`_snap` moves an edge to a cut at most :data:`SNAP_REACH_S` away, and the detector
     needs :data:`SCENE_WARMUP_S` of picture around a cut, so a window reaches
@@ -1439,8 +1455,6 @@ def analyze_source(
         add(name, time.perf_counter() - t0)
 
     io = remap_source(src)  # read the copy, record the original
-    # A style that does not weigh the scene curve: cuts only around candidate edges (#730)
-    windowed = use_scenes and not scores_scenes(style)
     t0 = time.perf_counter()
     info = probe(io)
     stages["probe_s"] = round(time.perf_counter() - t0, 2)
@@ -1489,7 +1503,7 @@ def analyze_source(
         try:
             if (
                 use_scenes
-                and not windowed
+                and not edge_windows(style, span)
                 and scene_overlap()
                 and shared is None
                 and cache.load_json(cdir / "scenes.json") is None
@@ -1520,7 +1534,8 @@ def analyze_source(
 
     cuts: list[float] = []
     edge_cuts: EdgeCuts | None = None
-    if windowed:  # a full pass already cached is used as it is
+    # A style that does not weigh the scene curve: cuts only around candidate edges (#730)
+    if use_scenes and edge_windows(style, span):  # a full pass already cached is used as it is
         if (found := cache.load_json(cdir / "scenes.json")) is not None:
             cuts = found
         else:
@@ -1779,11 +1794,11 @@ def cached_grid_parts(hl: dict[str, Any], style: Style) -> list[GridPart]:
     """The grids of the analysis ``hl`` as its caches give them (what :func:`analyze_source`
     built: the loudness, the transcript of the analysis's model and language, the scene cuts).
     A source with a recovered part, or offline, has none; nor has one whose caches are gone,
-    unless the style detects its scene cuts around candidate edges (:class:`EdgeCuts`): such
+    unless the style detects its scene cuts around candidate edges (:func:`edge_windows`): such
     a source (also one without audio, so without loudness or transcript) gets its part, the
-    cuts decoded when an edge needs them. With a style that weighs the scene curve, a source
-    without ``scenes.json`` gets no scene curve or cuts (an INFO line names it; ``analyze``
-    detects them again)."""
+    cuts decoded when an edge needs them. Otherwise a source without ``scenes.json`` gets no
+    scene curve or cuts (with a style that weighs the curve, an INFO line names it;
+    ``analyze`` detects them again)."""
     settings = hl.get("settings") or {}
     entries = hl.get("sources", [])
     recovered = {e["path"] for e in entries if e.get("offset") or e.get("read_errors")}
@@ -1800,7 +1815,8 @@ def cached_grid_parts(hl: dict[str, Any], style: Style) -> list[GridPart]:
         segments = source_segments(src, settings.get("language"), settings.get("whisper_model"))
         found = cache.load_json(cdir / "scenes.json")
         scenes = bool(settings.get("scenes", True))
-        windowed = scenes and found is None and not scores_scenes(style)  # EdgeCuts serve it
+        span = float(e.get("analyzed_s") or e["duration"])
+        windowed = scenes and found is None and edge_windows(style, span)  # EdgeCuts serve it
         if loud is None and segments is None and found is None and not windowed:
             continue  # nothing cached to build from
         if scenes and found is None and scores_scenes(style):
@@ -1808,7 +1824,6 @@ def cached_grid_parts(hl: dict[str, Any], style: Style) -> list[GridPart]:
                 "%s: no scene cuts cached; its scene score is missing until analyze runs again",
                 src.name,
             )
-        span = float(e.get("analyzed_s") or e["duration"])
         cuts = (found or []) if scenes else None
         lufs = (np.asarray(loud["t"]) - 0.2, np.asarray(loud["m"])) if loud else None
         ps = part_signals(span, lufs, segments or [], cuts, style, src.name)
@@ -3181,7 +3196,8 @@ def _analyze(
             def offer(info: MediaInfo, rec: dict[str, Any] | None) -> Any:
                 ok = not offset and rec is None and tr.device == "cuda"
                 plan = None
-                if ok and use_scenes and scores_scenes(style) and prefetch.mode is not None:
+                windows = edge_windows(style, info.duration)  # no full pass to share
+                if ok and use_scenes and not windows and prefetch.mode is not None:
                     plan = _scene_plan(src, info.duration)
                 return prefetch.offer(src, round(info.duration, 3), ok, plan)
 

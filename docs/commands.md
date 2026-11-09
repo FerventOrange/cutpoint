@@ -1068,10 +1068,11 @@ scene cuts (at most 1 s away) and never cut a word. A style whose `scene` weight
 `analyze` does not decode the whole video for them: once the candidates are picked, it detects
 cuts only in windows of 2.5 s either side of each candidate edge, cached per source as
 `scenes-windows.json` next to `scenes.json` (later runs decode only the windows not covered yet).
+The windows always decode on the CPU, also when a GPU decoder (NVDEC, VAAPI) is in use: each is a
+short ffmpeg run, and a GPU decoder's start-up costs more than it saves there. A source over 30
+minutes keeps the full pass, which reads keyframes only there and is faster than the windows.
 A full `scenes.json` already in the cache is used instead, and a style with a scene weight runs
-the full pass as before, also on a project analysed with a style without one. On sources over 30
-minutes the windows are decoded at 10 fps, while the full pass reads keyframes only, so an edge
-can snap to a slightly different cut there. The `scene` signal of such a style's candidates is 0. Each signal is a named feature, and a style's weights name
+the full pass as before, also on a project analysed with a style without one. The `scene` signal of such a style's candidates is 0. Each signal is a named feature, and a style's weights name
 these features. The `score` is a candidate's weighted peak divided by the weights of the
 features this install can compute. A feature that needs a missing extra (the `events` extra
 in Cutpoint lite) is left out, so the built-in generic styles (gaming, action, sport, funny,

@@ -94,6 +94,50 @@ def test_a_window_proxy_has_its_own_name_and_goes_after_a_failed_encode(tmp_path
     assert not list(tmp_path.glob("proxy-window*"))
 
 
+@pytest.mark.parametrize("kind", ["cuda", "vaapi"])
+def test_a_window_proxy_decodes_on_the_cpu_with_a_gpu_decoder(tmp_path, monkeypatch, kind):
+    """Each window is a short ffmpeg run: a GPU decoder's start-up costs more than it saves, so
+    the windows decode on the CPU whatever decoder the full pass would use (same 10 fps chain)."""
+    seen = []
+    hw = analyze.HwDecoder(kind, "/dev/dri/renderD128" if kind == "vaapi" else None)
+    monkeypatch.setattr(analyze, "decoder_for", lambda s: hw)
+    monkeypatch.setattr(analyze, "run_progress", lambda args, total, label, **k: seen.append(args))
+    monkeypatch.setattr(analyze, "_scan", lambda proxy, cancel: [0.4])
+    assert analyze._window_cuts(write(tmp_path / "a.mp4"), tmp_path, 0.0, 17.5, 22.5) == [17.9]
+    (args,) = seen
+    assert "-hwaccel" not in args and "hwdownload" not in " ".join(args)
+    assert args[args.index("-vf") + 1] == "fps=10,scale=320:-2"
+
+
+@pytest.mark.parametrize(
+    ("span", "windows"),
+    [(60.0, True), (analyze.LONG_FILE_S, True), (analyze.LONG_FILE_S + 1, False)],
+)
+def test_edge_windows_only_up_to_the_long_file_length(span, windows):
+    """Past LONG_FILE_S the full pass decodes keyframes only, faster than the 10 fps windows."""
+    assert analyze.edge_windows(get_style("funny"), span) is windows
+    assert analyze.edge_windows(get_style("gaming"), span) is False
+
+
+def test_scene_snapping_reaches_one_second_but_sentence_snapping_goes_further():
+    """Moves past SNAP_REACH_S come from the sentence snap after the scene snap, not from a
+    longer cut reach: two cut lists that differ only within 1 s of the edge put the start of a
+    ``commentary`` candidate on two sentence starts 2.5 s apart."""
+
+    def seg(a, b):
+        d = (b - a) / 4
+        words = [{"start": a + i * d, "end": a + (i + 1) * d - 0.02, "word": "w"} for i in range(4)]
+        return {"start": a, "end": b, "text": "one two three four.", "words": words}
+
+    segs = [seg(96.0, 99.5), seg(99.6, 102.0), seg(102.1, 106.0)]
+    got = []
+    for cuts in ([102.4], [101.3]):  # each within reach of the unsnapped start 101.9
+        c = analyze.Candidate(Path("a.mp4"), 101.9, 130.0, 110.0, 1.0, {})
+        analyze._snap(c, cuts, segs, 600.0, get_style("commentary"))
+        got.append(c.start)
+    assert got[0] - got[1] > 2 * analyze.SNAP_REACH_S
+
+
 # ----------------------------------------------------------------- EdgeCuts and its cache
 @pytest.fixture
 def decodes(monkeypatch):
@@ -237,6 +281,43 @@ def test_edges_snap_to_window_cuts_as_to_full_ones(world, monkeypatch):
     assert world.decodes == [] and world.full == []  # the cached full pass was used
 
 
+@pytest.mark.parametrize("name", ["funny", "commentary"])
+def test_a_long_source_keeps_the_full_pass(world, monkeypatch, name):
+    """Over LONG_FILE_S the full pass decodes keyframes only and is faster than the windows:
+    a style without scene weight runs it as main did, and no windows."""
+    long = analyze.LONG_FILE_S + 1
+    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, long, audio_streams=1))
+    res = world.source(get_style(name))
+    assert world.full == [threading.current_thread()] and world.decodes == []
+    assert res.signals.cuts == [16.4] and res.signals.edge_cuts is None
+    assert not res.signals.sig["scene"].any()  # weight 0: still no curve
+    assert "scene_windows" not in res.stages and res.stages["scenes_s"] >= 0
+    assert not (world.cdir / WINDOWS).exists()
+    assert "scene_windows" not in analyze._source_timings([res], None)[0]
+
+
+def test_a_long_source_of_a_style_without_scene_weight_overlaps_as_before(world, monkeypatch):
+    """With CUTPOINT_ANALYZE_SCENE_OVERLAP=1 its full pass runs alongside Whisper, as on main."""
+    monkeypatch.setenv("CUTPOINT_ANALYZE_SCENE_OVERLAP", "1")
+    long = analyze.LONG_FILE_S + 1
+    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, long, audio_streams=1))
+    started = []
+
+    class Job:
+        def __init__(self, *args):
+            started.append(args)
+            self.cuts, self.took = [16.4], 0.5
+
+        def result(self):
+            return self.cuts
+
+    monkeypatch.setattr(analyze, "_SceneJob", Job)
+    tr = type("Tr", (StubTranscriber,), {"load": lambda self: None})()
+    res = analyze.analyze_source(world.src, get_style("funny"), tr, True, None, {})
+    assert len(started) == 1 and world.decodes == [] and res.stages["overlap"] is True
+    assert res.signals.cuts == [16.4] and "scene_windows" not in res.stages
+
+
 def test_a_cached_full_pass_is_used_by_a_style_without_scene_weight(world):
     cache.save_json(world.cdir / "scenes.json", [16.4])
     res = world.source(get_style("funny"))
@@ -342,6 +423,18 @@ def test_cached_grids_keep_a_source_without_audio_for_a_style_without_scene_weig
     assert not part.signals.sig["loudness"].any()
     assert analyze.cached_grid_parts(hl, get_style("gaming")) == []
     hl["settings"]["scenes"] = False  # --no-scenes: no edge cuts either
+    assert analyze.cached_grid_parts(hl, get_style("funny")) == []
+
+
+def test_cached_grids_of_a_long_source_decode_no_windows(tmp_path, decodes):
+    """Over LONG_FILE_S, as in analyze: no edge windows; without scenes.json it has no cuts."""
+    src = write(tmp_path / "a.mp4")
+    cache.save_json(cache.source_dir(src) / "loudness.json", {"t": [0.2], "m": [-30.0]})
+    entry = {"path": str(src), "duration": analyze.LONG_FILE_S + 1}
+    hl = {"settings": {"scenes": True}, "sources": [entry]}
+    (part,) = analyze.cached_grid_parts(hl, get_style("funny"))
+    assert part.signals.edge_cuts is None and part.signals.cuts == [] and decodes == []
+    entry["path"] = str(write(tmp_path / "silent.mp4"))  # nothing cached at all
     assert analyze.cached_grid_parts(hl, get_style("funny")) == []
 
 
