@@ -195,7 +195,7 @@ def iter_frames(path: Path, width: int, height: int, keyframes: bool, hwaccel: b
             path,
             size=(width, height),
             vf=f"{rate}scale={width}:{height}:flags=area,format=rgb24",
-            vf_cuda=f"{rate}scale_cuda={width}:{height},hwdownload,format=nv12,format=rgb24",
+            vf_cuda=f"{rate}scale_cuda={width}:{height}:format=nv12,hwdownload,format=nv12,format=rgb24",
             keyframes_only=keyframes,
             pts=True,
             hwaccel="auto" if hwaccel else None,

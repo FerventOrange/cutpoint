@@ -1643,7 +1643,7 @@ def decode_raw(
             the caller's order).
         vf_cuda: Filter chain for the CUDA pass with frames kept on the GPU
             (``-hwaccel_output_format cuda``), e.g.
-            ``"scale_cuda=W:H,hwdownload,format=nv12,..."``. ``None`` uses ``vf``
+            ``"scale_cuda=W:H:format=nv12,hwdownload,format=nv12,..."``. ``None`` uses ``vf``
             on the CUDA pass too (ffmpeg downloads the frames).
         pix_fmt: Output pixel format (``-pix_fmt``): ``rgb24``, ``bgr24`` or ``gray``.
         start: Input seek (``-ss`` before ``-i``) in seconds; ``None`` = no seek.
