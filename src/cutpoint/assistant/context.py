@@ -534,8 +534,8 @@ _SEQ_CUE = (
     r" be|it should be|keep it (?:to|at)"
 )
 _LEN_CUE = (
-    r"(?:make it|get it to|bring it to|cut it to|trim it to|keep it to|keep it under|build"
-    r"|aim(?:ing)? for|target(?:ing)?(?: of)?|total(?:ling)? of|totall?ing|want|need|~|about|around"
+    r"(?:make it|get it to|bring it to|cut it to|cut to|trim it to|keep it to|keep it under|build"
+    r"|aim(?:ing)? for|overall|target(?:ing)?(?: of)?|total(?:ling)? of|totall?ing|want|need|~|about|around"
     r"|approx\w*|roughly|nearly|almost|under|at most|up to|at least|no more than|no longer than"
     rf"|{_SEQ_CUE})"
 )
@@ -559,13 +559,18 @@ _CLOCK = re.compile(
 # A change to a clip ("by 2 minutes", "trim 5 s") is no length, nor is one named by its id
 # ("extend m3 to 60 s").
 _CHANGE = re.compile(r"\b(?:by|extra|another|add|more|trim|cut|remove|plus|extend|each)\W*$", re.I)
-_CLIP_REF = re.compile(r"\bm\d+\b[^.!?;\n]*$")
+_CLIP_REF = re.compile(r"\bm\d+\b[^.!?;,\n]*$")
+# How far back from a length the checks look: they run per match, so the whole text would make a
+# message with many lengths quadratic.
+_LOOKBACK = 300
 # A length for each clip ("each clip about 5 s", "clips around 8 seconds", "10 s clips") or a change
 # ("30 s more", "5 s longer") is none either.
 _SEQ_WORD = rf"\b(?:it|whole|total|overall|{_VIDEO})\b"
 _SEQ = re.compile(_SEQ_WORD, re.I)
 _PER_CLIP_BEFORE = re.compile(
-    rf"\b(?:each|every|per)\b(?:(?!{_SEQ_WORD}|{_NUM}{_UNIT})[^.!?;\n])*$", re.I
+    rf"\b(?:each|every|per)\b(?:\s+(?:one\s+)?(?:of\s+(?:the|these|those)\s+)?{_VIDEO}\b)?"
+    rf"(?:(?!{_SEQ_WORD}|{_NUM}{_UNIT})[^.!?;\n])*$",
+    re.I,
 )
 # The text before a length cue ("make the clips about 5 s long": the cue "about" ends it)
 _CUE_END = re.compile(rf"{_LEN_CUE}\s*(?:be\s+|a\s+|an\s+)?~?\s*$", re.I)
@@ -592,14 +597,14 @@ def target_seconds(text: str) -> float | None:
     minutes", "around 4:20") and a change to a clip ("by 2 minutes") are no length."""
     for pattern in (_BEFORE, _AFTER):
         for m in pattern.finditer(text):
-            before = text[: m.start()]
+            before = text[max(0, m.start() - _LOOKBACK) : m.start()]
             if _CHANGE.search(before) or _CLIP_REF.search(before):
                 continue
             n, unit = _count(m.group(1)), m.group(2).lower()
             stems = (before, _CUE_END.sub("", before))
-            if _PER_CLIP_BEFORE.search(text[: m.start(1)]) and not _SEQ.search(
-                text[m.end(2) : m.end()]
-            ):
+            if _PER_CLIP_BEFORE.search(
+                text[max(0, m.start(1) - _LOOKBACK) : m.start(1)]
+            ) and not _SEQ.search(text[m.end(2) : m.end()]):
                 continue
             if _PER_CLIP_AFTER.match(text, m.end()):
                 continue
@@ -612,7 +617,7 @@ def target_seconds(text: str) -> float | None:
                 return n * 60 + _count(more.group(1))
             return n * 60
     for m in _CLOCK.finditer(text):
-        if not _CLIP_REF.search(text[: m.start()]):
+        if not _CLIP_REF.search(text[max(0, m.start() - _LOOKBACK) : m.start()]):
             groups = [g for g in m.groups() if g is not None]
             return int(groups[0]) * 60 + int(groups[1])
     return None

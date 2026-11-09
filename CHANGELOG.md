@@ -927,6 +927,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AI Chat length parsing (#739, #740, #741): "each highlight about 5 s" and "each of the highlights about 5 s" are a per-moment length, not the sequence length; "extend m3 to 60 s, make the video 4 minutes", "per clip 5 s, cut to 2 min" and "every clip around 5 s overall 2 min" give a target; parsing only looks 300 characters back from each length, so a message with many lengths is no longer slow.
 - A vision rating no longer counts once `events` widens a moment or a menu trim cuts it: its frames
   no longer show the clip, so the score, `vision_label` and the label it gave are put aside in
   `vision_stale` until the moment has the rated span again (#802).

@@ -8,6 +8,7 @@ The model is the scripted ``FakeProvider`` of ``test_assistant``.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -1290,12 +1291,39 @@ def test_a_phrase_end_far_away_leaves_the_end_and_a_trim_never_passes_the_cap(
         ("make each clip snappier and get it to 2 min", 120),
         ("tighten each clip and make the video about 3 min", 180),
         ("tighten every clip and aim for a 2 minute montage", 120),
+        ("make each highlight about 5 seconds", None),
+        ("each of the highlights about 5 s", None),
+        ("each edit about 4 s", None),
+        ("each highlight about 5 s, make it 2 min", 120),
+        ("every moment about 6 s, cut to 90 s", 90),
     ],
 )
 def test_a_length_for_each_clip_or_a_change_is_no_sequence_target(
     text: str, seconds: float | None
 ) -> None:
     assert context.target_seconds(text) == seconds
+
+
+@pytest.mark.parametrize(
+    ("text", "seconds"),
+    [
+        ("extend m3 to 60 s, make the video 4 minutes", 240),
+        ("per clip 5 s, cut to 2 min", 120),
+        ("every clip around 5 s overall 2 min", 120),
+        ("cut it to 90 s", 90),
+        ("extend m3 to 60 s", None),
+    ],
+)
+def test_more_length_phrasings_give_a_target(text: str, seconds: float | None) -> None:
+    assert context.target_seconds(text) == seconds
+
+
+def test_a_long_message_with_many_lengths_is_parsed_fast() -> None:
+    text = "each clip about 5 s " * 1000 + "make it 2 min"
+    start = time.perf_counter()
+    assert context.target_seconds(text) == 120
+    assert context.target_seconds("about 5 s, " * 2000) == 5
+    assert time.perf_counter() - start < 2.0
 
 
 def test_a_length_below_the_sequence_may_remove_half_the_clips() -> None:
