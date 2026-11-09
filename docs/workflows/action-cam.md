@@ -39,8 +39,8 @@ cutpoint clips trip --max-total 480
 
 Candidates come from full-rate IMU shocks plus spoken crash cues. Each gets telemetry, visual,
 dense-frame, audio and transcript sub-scores and a confidence. Crashes at or above the style's
-`must_include_crash` threshold (0.6 for `action-cam`) are always exported with their lead-in,
-aftermath and a reaction clip. `analyze --must-include-crash CONF` overrides it; 0 disables.
+`must_include_crash` threshold (0.6, as for every other style) are always exported with their
+lead-in, aftermath and a reaction clip. `analyze --must-include-crash CONF` overrides it; 0 forces none.
 Check `crash_check\` by eye: weights and thresholds are hand-set, and the detector misses
 tumbles when the camera points at the rider's own skis and can be fooled by shadows.
 

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Crashes in `crashes.json` become moments for every style except 360 (#486). A crash with a
+  confidence of at least `must_include_crash` (default 0.6) becomes a must-include moment with its
+  reaction, replaces the moments it overlaps and ranks first. A weaker crash at or above the
+  project floor (max(0.2, 0.6 x the strongest crash)) is ranked like any moment; when it overlaps
+  an existing moment it only marks it. `highlights.json` gets `crash`, `crash_confidence` and
+  `crash_forced` on those candidates, kind `crash` and labels `crash` and `crash-reaction` on new
+  ones, and `settings.crash_moments`. Only `analyze` and a re-analysis build them; `360 analyze`
+  makes none (`settings.crash_moments` is false).
+- `cutpoint ui`: a Crashes kind filter after Dialogue, and crash tiles show a "CRASH 0.91" badge
+  (solid: always kept, dashed: ranked like any moment) (#486).
 - `cutpoint ui`: the filmstrip trim rail shows talk (dialogue) stretches as "Talk" ranges labelled with the bit's title (#804), and crashes from `crashes.json` as crash markers when their confidence is at least max(0.2, 0.6 x the project's best crash), deduplicated against telemetry crashes within 2 s (#754).
 - `cutpoint ui` starts the subscription proxy itself, so `cutpoint proxy` no longer has to run in a
   terminal to sign in (#821). Log in and Retry on a Connected accounts row start it when it is not
@@ -594,6 +604,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `--must-include-crash` and the default `must_include_crash` (0.6) now apply to every non-360
+  style, not only action-cam; `settings.must_include_crash` is recorded for every style (#486).
+  The Analyze field is renamed "Crashes become moments at".
+- `cutpoint ui`: a kind filter chip is hidden when no moment has that kind; the filter falls back
+  to All (#486).
+- `analyze` (gaming): dialogue widening and menu-time dropping leave must-include moments alone (#486).
 - `cutpoint ui`: one type scale (five font-size tokens) and one gap token between sibling controls
   in the header, toolbar and Jobs rows; the Sequence, AI Chat, Export and Models tabs share the same
   body and label sizes; the slash in the header and "Analysis options…" in the Moments panel are
