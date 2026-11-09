@@ -15,9 +15,9 @@ const SRC = '/videos/a.mp4';
 const peaks = () => Array.from({ length: 12000 }, (_, i) => (i >= 400 && i < 500 ? 0.9 : 0.1));
 const ev = (over) => ({ source: SRC, start: 30, end: 31, kind: 'audio', type: 'audio', label: 'Laughter', confidence: 0.9, ...over });
 
-async function open(t, routes) {
+async function open(t, routes, project = makeProject()) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const page = await boot({ project: makeProject(), routes });
+  const page = await boot({ project, routes });
   t.after(() => page.close());
   const d = page.document;
   const m = {
@@ -70,6 +70,40 @@ test('an envelope still decoding (202) is asked for again after 5 s until it is 
   t.mock.timers.tick(20000);
   await m.page.settle();
   assert.equal(m.calls(ENVELOPE), 3, 'no more asks once it is drawn');
+});
+
+test('leaving a source during a 202 ends its retry chain, so the source on screen decodes first (#760)', async (t) => {
+  const project = makeProject();
+  project.sources.push({ id: 's2', path: '/videos/b.mp4', name: 'b.mp4', status: 'ready', url: '/api/projects/p1/sources/s2?t=x', duration: 600 });
+  project.highlights.candidates[1].source = '/videos/b.mp4';
+  const OTHER = '/api/projects/p1/sources/s2/envelope';
+  const m = await open(t, { [`GET ${ENVELOPE}`]: reply(202, { pending: true }), [`GET ${OTHER}`]: reply(202, { pending: true }) }, project);
+  await m.zoom(120);
+  assert.equal(m.calls(ENVELOPE), 1);
+  m.$('#candList li[data-id=h002] [data-act=focus]').click(); // another source
+  await m.page.settle();
+  assert.equal(m.calls(OTHER), 1);
+  t.mock.timers.tick(5000);
+  await m.page.settle();
+  assert.equal(m.calls(ENVELOPE), 1, 'the source left is not asked for again');
+  assert.equal(m.calls(OTHER), 2, 'the source on screen keeps its chain');
+});
+
+test('in Cut mode the other side of the cut keeps asking for its envelope during a 202', async (t) => {
+  const project = makeProject();
+  project.sources.push({ id: 's2', path: '/videos/b.mp4', name: 'b.mp4', status: 'ready', url: '/api/projects/p1/sources/s2?t=x', duration: 600 });
+  const [c1, c2] = project.highlights.candidates;
+  c2.source = '/videos/b.mp4';
+  project.review = { segments: [c1, c2].map((c) => ({ id: c.id, source: c.source, start: c.start, end: c.end, label: c.label })) };
+  const OTHER = '/api/projects/p1/sources/s2/envelope';
+  const m = await open(t, { [`GET ${ENVELOPE}`]: reply(202, { pending: true }), [`GET ${OTHER}`]: reply(202, { pending: true }) }, project);
+  m.$('#stageMode [data-mode=cut]').click();
+  await m.page.settle();
+  assert.equal(m.calls(OTHER), 1, 'the side not in focus asks once');
+  t.mock.timers.tick(5000);
+  await m.page.settle();
+  assert.equal(m.calls(OTHER), 2, 'and again after 5 s: it is on screen');
+  assert.equal(m.calls(ENVELOPE), 2);
 });
 
 test('closing a project and opening it again within 5 s leaves one retry chain, not two', async (t) => {
