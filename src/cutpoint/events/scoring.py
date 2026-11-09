@@ -52,7 +52,14 @@ logger = logging.getLogger(__name__)
 LOOKAHEAD_S = 10.0  # events this long after a candidate still count for it
 MAX_BOOST = 30.0
 # Evidence keys of the default event types, always present and summed in this order.
-EVIDENCE_KEYS = ("player_kills", "teamkills", "banners", "self_kills", "announcements")
+EVIDENCE_KEYS = (
+    "player_kills",
+    "teamkills",
+    "banners",
+    "self_kills",
+    "announcements",
+    "score_changes",
+)
 REACTION_WINDOW_S = 6.0  # a reaction starts at most this long after the event
 REACTION_PAUSE_S = 1.5  # speech is a reaction only after this much silence up to the event
 REACTION_SOUNDS = ("Laughter", "Scream")

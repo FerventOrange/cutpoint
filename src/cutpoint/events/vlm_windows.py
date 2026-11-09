@@ -613,6 +613,7 @@ def _hints(events: list[dict[str, Any]], start: float, end: float) -> str:
             "crit",
             "fire",
             "multikill",
+            "score",
         ):
             extra = " (TEAMKILL)" if ev.get("teamkill") else ""
             # feed kills and other feed verbs: say whose kill it is

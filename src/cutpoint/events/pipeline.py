@@ -914,8 +914,8 @@ def _discover(
 
     Returns:
         ``{game: {"preset": path, "installed": bool, "regions": [...], ...}}``; for a
-        game with a preset also ``suggested_regions`` (extra notice regions the
-        preset does not have; never written into it).
+        game with a preset also ``suggested_regions`` (extra notice regions and a score
+        readout the preset does not have; never written into it).
     """
     from cutpoint.events import discover, game_fit  # noqa: PLC0415
     from cutpoint.events import regions as hud  # noqa: PLC0415
@@ -1024,9 +1024,9 @@ def _discover(
             )
             if rec["suggested_regions"]:
                 logger.info(
-                    "Discovery suggests %d extra notice region(s) for %r where text shows "
-                    'outside the preset\'s regions (%s); to OCR them, copy the "suggested_regions" '
-                    'entries of %s into the "regions" of %s',
+                    "Discovery suggests %d extra region(s) for %r the preset does not have "
+                    "(%s: notices where text shows outside its regions, a score readout); to OCR "
+                    'them, copy the "suggested_regions" entries of %s into the "regions" of %s',
                     len(rec["suggested_regions"]),
                     game,
                     ", ".join(r["name"] for r in rec["suggested_regions"]),

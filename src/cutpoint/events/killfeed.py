@@ -8,7 +8,8 @@ or its "HUD pixel" mask (white text, blue/orange boxes) changed ("mask"), which
 skips the vast majority of frames.
 
 Events: ``{t, end, type, text, confidence, region, ...}`` with type one of
-``kill`` (and the other feed verbs), ``banner``, ``notice``, ``bigtext``, ``multikill``.
+``kill`` (and the other feed verbs), ``banner``, ``notice``, ``bigtext``, ``multikill`` and
+``score`` (a "score" region's number stepped by one, :class:`ScoreTracker`).
 """
 
 from __future__ import annotations
@@ -35,7 +36,13 @@ import numpy as np
 from cutpoint import cache, memguard, state
 from cutpoint.events import ocr_raw
 from cutpoint.events.common import Source, layer_cache_path
-from cutpoint.events.discover import DiscoverParams, _centre_cover, gameplay_frames
+from cutpoint.events.discover import (
+    SCORE_SLOT_PX,
+    DiscoverParams,
+    _centre_cover,
+    gameplay_frames,
+    score_value,
+)
 from cutpoint.events.menu_spans import merge_menu_frames
 from cutpoint.events.regions import HudPreset, Region, game_key_for_path, load_preset, scaled
 from cutpoint.ffmpeg_utils import READ_ERROR_RE, decode_raw, decoder_for, probe
@@ -476,6 +483,21 @@ ANNOUNCE_MIN_GAP_S = 30.0
 ANNOUNCE_PART_S = 600.0
 ANNOUNCE_MIN_PARTS = 4
 _ANNOUNCE_WORD_RE = re.compile(r"[^\W\d_]{4,}")  # a word of 4 letters or more, any script
+# Score readout (:class:`ScoreTracker`): the number in a "score" region (a round score, a
+# counter; :func:`~cutpoint.events.discover.score_value`) is read per slot (boxes whose centres
+# lie within half of SCORE_SLOT_PX across). A value counts once read SCORE_CONFIRM times in a
+# row at SCORE_MIN_CONF or more. A change is an event when the new value is one more or one
+# less than the old, the old one held SCORE_HOLD_S, and the HUD showed no number for at most
+# SCORE_MAX_GAP_S between them; each slot keeps the direction of its first change (a counter
+# that counts down is fine, a step back afterwards is no event). Anything else is taken as the
+# new value silently (a reset between matches). A value that comes back within SCORE_HOLD_S is
+# a misread. A slot whose value changes more often than every SCORE_HOLD_S (median) or that
+# shows more than SCORE_MAX_VALUES values is no score (a clock, ammo): no events from it.
+SCORE_CONFIRM = 2
+SCORE_MIN_CONF = 0.7
+SCORE_HOLD_S = 15.0
+SCORE_MAX_GAP_S = 60.0
+SCORE_MAX_VALUES = 12
 
 
 def column_colours(bgr: np.ndarray) -> list[str | None]:
@@ -1102,6 +1124,148 @@ def learn_announcements(
                 e["announce"] = True
                 e.setdefault("announce_words", []).append(key)
     return [*events, *(e for e in extra if e.get("announce"))]
+
+
+@dataclass
+class _ScoreRun:
+    """Reads of one value in a row (:class:`ScoreTracker`)."""
+
+    value: int
+    first: float
+    last: float
+    n: int
+    conf: float  # the sum of the reads' confidences
+
+    def held(self) -> float:
+        return self.last - self.first
+
+
+def _score_runs(reads: list[tuple[float, int, float]]) -> list[_ScoreRun]:
+    """The confirmed values of one slot in time order: runs of :data:`SCORE_CONFIRM` reads or
+    more of one value (each within :data:`SCORE_MAX_GAP_S` of the last), runs of one value
+    joined across the misreads between them, and a value that comes back within
+    :data:`SCORE_HOLD_S` joined across the other one (a misread too)."""
+    runs: list[_ScoreRun] = []
+    for t, v, c in reads:
+        last = runs[-1] if runs else None
+        if last is not None and last.value == v and t - last.last <= SCORE_MAX_GAP_S:
+            last.last, last.n, last.conf = t, last.n + 1, last.conf + c
+        else:
+            runs.append(_ScoreRun(v, t, t, 1, c))
+    out: list[_ScoreRun] = []
+    for r in (r for r in runs if r.n >= SCORE_CONFIRM):
+        if out and out[-1].value == r.value and r.first - out[-1].last <= SCORE_MAX_GAP_S:
+            out[-1] = _join(out[-1], r)
+        else:
+            out.append(r)
+    i = 1
+    while i < len(out) - 1:
+        a, b, c = out[i - 1 : i + 2]
+        if a.value == c.value and b.held() < SCORE_HOLD_S and c.first - a.last <= SCORE_MAX_GAP_S:
+            out[i - 1 : i + 2] = [_join(a, c)]
+            i = max(1, i - 1)
+        else:
+            i += 1
+    return out
+
+
+def _join(a: _ScoreRun, b: _ScoreRun) -> _ScoreRun:
+    return _ScoreRun(a.value, a.first, b.last, a.n + b.n, a.conf + b.conf)
+
+
+class ScoreTracker:
+    """The score readout of "score" regions: their reads per slot during the pass
+    (:meth:`see`), the changes of the value as ``score`` events at its end (:meth:`finish`,
+    rules at :data:`SCORE_SLOT_PX`)."""
+
+    def __init__(self) -> None:
+        self.reads: dict[tuple[str, int], list[tuple[float, int, float]]] = {}
+        self._slots: dict[str, list[float]] = {}  # per region the slots' centre x (reference px)
+
+    def see(
+        self,
+        t: float,
+        region: str,
+        items: list[tuple[list, str, float]],
+        ref: tuple[float, float, float, float],
+    ) -> None:
+        """Record the numbers of one read of ``region`` at ``t`` (``ref``: the crop's left and
+        top in frame px and the frame-to-reference factors): per slot the surest one."""
+        rx, _, sx, _ = ref
+        best: dict[int, tuple[int, float]] = {}
+        for box, text, score in items:
+            v = score_value(text)
+            if v is None or score < SCORE_MIN_CONF:
+                continue
+            cx = (rx + (min(p[0] for p in box) + max(p[0] for p in box)) / 2) * sx
+            slot = self._slot(region, cx)
+            if slot not in best or score > best[slot][1]:
+                best[slot] = (v, float(score))
+        for slot, (v, c) in best.items():
+            self.reads.setdefault((region, slot), []).append((t, v, c))
+
+    def _slot(self, region: str, cx: float) -> int:
+        """The slot of a number centred at ``cx`` (reference px): the first one within half
+        of :data:`SCORE_SLOT_PX`, or a new one there; named by its centre x."""
+        xs = self._slots.setdefault(region, [])
+        for x in xs:
+            if abs(cx - x) <= SCORE_SLOT_PX / 2:
+                return round(x)
+        xs.append(cx)
+        return round(cx)
+
+    def finish(self, menu: set[float]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """The ``score`` events of the pass, reads at the ``menu`` frame times left out,
+        and per slot (``<region>@<x>``) its ``reads``, ``values``, ``changes`` and whether it
+        was ``disabled`` (no score: it changes too often or shows too many values)."""
+        events: list[dict[str, Any]] = []
+        stats: dict[str, Any] = {}
+        for (region, slot), reads in self.reads.items():
+            runs = _score_runs([r for r in reads if r[0] not in menu])
+            spans = [b.first - a.first for a, b in pairwise(runs)]
+            disabled = len({r.value for r in runs}) > SCORE_MAX_VALUES or (
+                len(spans) >= 2 and float(np.median(spans)) < SCORE_HOLD_S
+            )
+            found = [] if disabled else _score_changes(runs, region, slot)
+            events += found
+            stats[f"{region}@{slot}"] = {
+                "reads": len(reads),
+                "values": len({r.value for r in runs}),
+                "changes": len(found),
+                "disabled": disabled,
+            }
+        return events, stats
+
+
+def _score_changes(runs: list[_ScoreRun], region: str, slot: int) -> list[dict[str, Any]]:
+    """The ``score`` events of one slot's confirmed values (:data:`SCORE_SLOT_PX`): at the last
+    read of the old value, ending at the first read of the new one."""
+    out = []
+    step = 0  # the slot's direction, once set
+    for a, b in pairwise(runs):
+        d = b.value - a.value
+        gap = b.first - a.last
+        if abs(d) != 1 or a.held() < SCORE_HOLD_S or gap > SCORE_MAX_GAP_S:
+            continue  # a reset or a misread: the new value counts from here
+        if step and d != step:
+            continue  # a step back
+        step = d
+        out.append(
+            {
+                "t": round(a.last, 2),
+                "end": round(b.first, 2),
+                "type": "score",
+                "text": f"{a.value} > {b.value}",
+                "confidence": round(min(a.conf / a.n, b.conf / b.n), 3),
+                "region": region,
+                "before": a.value,
+                "after": b.value,
+                "seen_at": round(b.first, 2),
+                "gap_s": round(gap, 2),
+                "slot": slot,
+            }
+        )
+    return out
 
 
 # --------------------------------------------------------------------------- OCR logic
@@ -2746,6 +2910,8 @@ class OcrReader:
                     self.engine.detect(crop), r.min_text_h * self.scale, 10 * self.scale
                 )
             return g, [(y0, x0, y1, x1) for _, x0, x1, y0, y1 in rows], None
+        if r.gate == "read":
+            return {}, None, self._full_read(r, crop)
         mask = _small(hud_mask(crop))
         if mask.mean() < r.min_fill:
             self.last_mask[r.name] = mask
@@ -2754,7 +2920,22 @@ class OcrReader:
         if prev is not None and np.mean(np.abs(mask - prev) > 0.25) < r.min_change:
             return None, None, None
         self.last_mask[r.name] = mask
-        return {}, None, self.engine(crop, MIN_TEXT_SCORE)
+        return {}, None, self._full_read(r, crop)
+
+    def _full_read(self, r: Region, crop: np.ndarray) -> list[tuple[list, str, float]]:
+        """Detection and recognition on the crop, enlarged first when ``r.upscale`` asks for
+        more than the decoded size (``upscale`` x the reference size; ``upscale`` 1 reads the
+        crop as decoded, whatever the source's size); boxes in crop px."""
+        f = r.upscale / self.scale
+        if r.upscale == 1.0 or f <= 1.0:
+            return self.engine(crop, MIN_TEXT_SCORE)
+        import cv2  # noqa: PLC0415
+
+        big = cv2.resize(crop, None, fx=f, fy=f, interpolation=cv2.INTER_CUBIC)
+        return [
+            ([[p[0] / f, p[1] / f] for p in box], text, score)
+            for box, text, score in self.engine(big, MIN_TEXT_SCORE)
+        ]
 
     def read(self, n: int, t: float, frame: np.ndarray) -> tuple[FrameRec, dict[str, np.ndarray]]:
         """The record of frame ``n`` (time ``t``) and the crops of the regions read."""
@@ -2933,6 +3114,7 @@ class OcrInterpretation:
         if self.menus:
             stats["static_area"] = round(area, 2)
         self.region_events: dict[str, list[dict[str, Any]]] = {}
+        self.scores = ScoreTracker()  # the "score" regions' reads
         # distinct text lines read per feed region (:func:`chat_label`); only a discovered
         # preset's regions can be labelled chat, a hand-made preset's feed is the user's word
         self.lines: dict[str, set[str]] = {r.name: set() for r in regions if r.kind == "feed"}
@@ -2965,6 +3147,9 @@ class OcrInterpretation:
             stats["ocr_calls"][r.name] += 1
             img = _band_image(self.shapes[r.name], g.get("rows", []), rec.bands.get(r.name))
             items = [(box, text, score) for box, text, score in g["items"]]
+            if r.kind == "score":
+                self.scores.see(rec.t, r.name, items, self.ref[r.name])
+                continue
             if r.name in self.lines:
                 self.lines[r.name].update(_chat_lines(items))
             n_before = len(tracker.events)
@@ -3083,6 +3268,7 @@ class OcrInterpretation:
         self._drop_chat()
         self.interp.drop_labels()
         self.interp.drop_notice_kills()
+        menu: set[float] = set()
         if self.menus:
             feeds = {r.name for r in self.regions if r.kind == "feed"}
 
@@ -3184,6 +3370,9 @@ class OcrInterpretation:
             ]
         events = collapse_banner_bursts(events)
         events = learn_announcements(events, self.interp.digits.finish())
+        if any(r.kind == "score" for r in self.regions):
+            scores, stats["score_slots"] = self.scores.finish(menu)
+            events += scores
         for e in events:
             e["kind"] = "ocr"
         return events

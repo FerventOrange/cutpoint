@@ -28,8 +28,8 @@ the points). Unset ``payoff`` / ``tail_s`` / ``seed`` keep the
 built-in rules, so the defaults reproduce the original behaviour exactly,
 except that the player's own deaths no longer count as player kills, a self-kill counts as
 ``self_kills`` (half a kill) instead, in the ``funny`` style a death
-followed by a reaction adds ``player_deaths``' reaction points, and learned on-screen
-announcements count as ``announcements``.
+followed by a reaction adds ``player_deaths``' reaction points, on-screen score changes count
+as ``score_changes`` and learned on-screen announcements as ``announcements``.
 """
 
 from __future__ import annotations
@@ -158,7 +158,10 @@ class EventType:
 # built-in rules (a tail payoff, seed 1.2 for player rows). Self-kills (the player is killer
 # and victim) come after teamkills and before both: their own type, worth half
 # a kill, a tail payoff and a seed like a death. Player kills: kills by the
-# player (``player_kill``). Announcements come last: big-text lines (never notices) the OCR
+# player (``player_kill``). Score changes: an on-screen number that stepped by one (``score``
+# events of a "score" region, :class:`cutpoint.events.killfeed.ScoreTracker`), worth a kill
+# each, at most 3 counted, a tail payoff, a seed like a round banner and at most one moment
+# seed a minute per source. Announcements come last: big-text lines (never notices) the OCR
 # layer learned as pop-ups that come back all through the source (``announce``,
 # :func:`cutpoint.events.killfeed.learn_announcements`), half a kill each, at most 2 counted, a
 # low VLM seed and at most one moment seed a minute per source; no tail payoff.
@@ -192,6 +195,15 @@ DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
         (Matcher("banner", prefix=BANNER_PAYOFFS), Matcher("multikill")),
         score=6.0,
         max=2,
+    ),
+    EventType(
+        "score_changes",
+        (Matcher("score"),),
+        score=6.0,
+        max=3,
+        payoff=True,
+        seed=1.3,
+        seed_gap_s=60.0,
     ),
     EventType(
         "announcements",

@@ -37,7 +37,7 @@ MARGIN_MIN = 16  # ...and at least this many reference pixels
 CROP_MIN_SIDE = 256  # crops are upscaled until the short side is this long...
 CROP_MAX_SIDE = 1280  # ...but the long side stays within this
 MAX_CALLS = 12  # proposals asked about per game
-SKIP_KINDS = ("readout", "popup", "banner")  # the rules are confident about these
+SKIP_KINDS = ("readout", "popup", "banner", "score")  # the rules are confident about these
 STOP_AFTER = 2  # failed calls in a row after which the rest are not asked
 ASK_TIMEOUT = 60  # seconds a call may take
 # ...but the first call to an Ollama also loads the model (#796), so it gets as long as one of
@@ -130,8 +130,8 @@ def crop_jpeg(img: np.ndarray, p: dict[str, Any]) -> bytes | None:
 
 def candidates(proposals: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The proposals to ask about, best guesses for a kill feed first (feeds, notices outside
-    the other regions, other notices, the rest), at most :data:`MAX_CALLS`. Readouts, banners
-    and score popups are not asked about."""
+    the other regions, other notices, the rest), at most :data:`MAX_CALLS`. Readouts, banners,
+    score popups and score readouts are not asked about."""
 
     def rank(p: dict[str, Any]) -> int:
         if p["kind"] == "feed":

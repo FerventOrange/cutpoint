@@ -33,6 +33,11 @@ changes*:
       appears briefly;
     - ``notice``: other centred text lines (objective messages, hints);
     - ``dynamic``: anything else (reported, OCR'd with the generic vocabulary).
+* Small numbers that hold still within a burst and change between bursts (a round score, a
+  counter) become up to 2 ``score`` proposals on their own, wherever they are, also inside a
+  readout (:func:`score_proposals`); their regions are read in full at 2.5x, once a second
+  (:func:`score_region`). For a game with a preset without a ``score`` region they are only
+  listed under ``suggested_regions``.
 * Text that keeps appearing outside every covered region (the discovered ones and
   the big-text region, or an existing preset's regions) but too rarely for its
   cells to count as dynamic becomes up to 2 extra ``notice`` regions
@@ -67,7 +72,7 @@ import time
 from collections import Counter, deque
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from difflib import SequenceMatcher
 from itertools import pairwise
 from pathlib import Path
@@ -163,6 +168,24 @@ NOTICE_SAME_MIN = 4
 NOTICE_SAME_RATIO = 0.8
 NOTICE_SAME_EDITS = 3
 NOTICE_BAND = 0.5 * NOTICE_MAX_H * REF_H  # cluster lookup band: half the tallest text
+
+# Score readout (score_proposals): a small number that holds still and now and then steps, such
+# as a round score or a counter. A box whose text is a number of 1 or 2 digits with at most one
+# stray glyph on each side (an icon stuck to the digit; score_value), never a clock (":"), a
+# share ("%") or a point pop-up ("+10"). Boxes cluster into slots by centre, within half of
+# SCORE_SLOT_PX. A slot needs gameplay boxes in SCORE_MIN_BURSTS bursts, one value all through
+# a burst in SCORE_STEADY_SHARE of them (a timer, ammo or a speed changes within the 4.5 s of a
+# burst), at least 2 values over the bursts and none above SCORE_MAX_VALUE. At most
+# SCORE_MAX_SLOTS (two sides) become "score" regions, read on every SCORE_EVERY-th frame at
+# SCORE_UPSCALE x (a thin digit read in 27% of the seconds at 1x, 46% at 2.5x).
+SCORE_SLOT_PX = 48
+SCORE_MIN_BURSTS = 6
+SCORE_STEADY_SHARE = 0.8
+SCORE_MAX_VALUE = 30
+SCORE_MAX_SLOTS = 2
+SCORE_EVERY = 3
+SCORE_UPSCALE = 2.5
+_SCORE_VALUE_RE = re.compile(r"\D?(\d{1,2})\D?")
 
 # a feed needs this score at least, as a banner or notice does (a loadout box that changes a
 # little scored 0.004 and was the only "feed", so it was kept as the best one)
@@ -591,6 +614,73 @@ def _score_rows(frames: list[list[dict[str, Any]]]) -> float:
     to a name stays on the name's line instead of counting as a row of its own."""
     rows = ["".join(o["text"] for o in ln) for bs in frames for ln in _lines(bs)]
     return sum(bool(_SCORE_RE.fullmatch(t.strip())) for t in rows) / max(1, len(rows))
+
+
+def score_value(text: str) -> int | None:
+    """The number a score box shows (:data:`SCORE_SLOT_PX`): 1 or 2 digits with at most one
+    other glyph before and after ("3", "12", "3X"), else None; never with ":" or "%" (a clock,
+    a share) or starting with "+" (a point pop-up)."""
+    t = text.strip()
+    if ":" in t or "%" in t or t.startswith("+"):
+        return None
+    m = _SCORE_VALUE_RE.fullmatch(t)
+    return int(m[1]) if m else None
+
+
+def score_proposals(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``score`` proposals from the gameplay ``frames``: the slots of small numbers that hold
+    still within a burst and change between bursts (:data:`SCORE_SLOT_PX`), the
+    :data:`SCORE_MAX_SLOTS` seen in the most bursts, as tight rectangles (unpadded)."""
+    slots: list[dict[str, Any]] = []  # {"cx", "cy", "bursts": {burst: [values]}, "boxes"}
+    half = SCORE_SLOT_PX / 2
+    for f in frames:
+        bkey = (_src(f), f["burst"])
+        for b in f["boxes"]:
+            v = score_value(b["text"])
+            if v is None:
+                continue
+            cx, cy = (b["x0"] + b["x1"]) / 2, (b["y0"] + b["y1"]) / 2
+            for slot in slots:
+                if abs(cx - slot["cx"]) <= half and abs(cy - slot["cy"]) <= half:
+                    break
+            else:
+                slot = {"cx": cx, "cy": cy, "bursts": {}, "boxes": []}
+                slots.append(slot)
+            slot["bursts"].setdefault(bkey, []).append(v)
+            slot["boxes"].append(b)
+    out = []
+    for slot in slots:
+        per_burst = list(slot["bursts"].values())
+        steady = [vs[0] for vs in per_burst if len(set(vs)) == 1]
+        values = sorted(set(steady))
+        if (
+            len(per_burst) < SCORE_MIN_BURSTS
+            or len(steady) < SCORE_STEADY_SHARE * len(per_burst)
+            or len(values) < 2
+            or max(v for vs in per_burst for v in vs) > SCORE_MAX_VALUE
+        ):
+            continue
+        bs = slot["boxes"]
+        x0, y0 = min(b["x0"] for b in bs), min(b["y0"] for b in bs)
+        x1, y1 = max(b["x1"] for b in bs), max(b["y1"] for b in bs)
+        out.append(
+            {
+                "kind": "score",
+                "x": int(x0),
+                "y": int(y0),
+                "w": int(x1 - x0),
+                "h": int(y1 - y0),
+                "score": round(len(steady) / len(per_burst), 3),
+                "evidence": {
+                    "bursts": len(per_burst),
+                    "steady_bursts": len(steady),
+                    "values": values,
+                    "median_text_h": round(float(np.median([b["y1"] - b["y0"] for b in bs])), 1),
+                },
+            }
+        )
+    out.sort(key=lambda p: (-p["evidence"]["bursts"], p["x"], p["y"]))
+    return out[:SCORE_MAX_SLOTS]
 
 
 def _name_like(text: str) -> bool:
@@ -1036,7 +1126,17 @@ def cluster_regions(
         ban = _banner_proposal(game_frames, 0.034 * REF_H)
         if ban:
             proposals.append(ban)
-    order = {"feed": 0, "banner": 1, "notice": 2, "dynamic": 3, "readout": 4, "popup": 5}
+    # readouts stay unread; the score slots in them (and anywhere else) are read on their own
+    proposals += score_proposals(game_frames)
+    order = {
+        "feed": 0,
+        "banner": 1,
+        "notice": 2,
+        "dynamic": 3,
+        "readout": 4,
+        "popup": 5,
+        "score": 6,
+    }
     proposals.sort(key=lambda p: (order.get(p["kind"], 9), -p["score"]))
     counts: dict[str, int] = {}
     for p in proposals:
@@ -1525,7 +1625,7 @@ def notice_region(proposal: dict[str, Any]) -> dict[str, Any]:
         every=3,
         det_scale=0.6 if big else 1.0,
     )
-    return asdict(r) | {"origin": "outside"}
+    return r.key() | {"origin": "outside"}
 
 
 # --------------------------------------------------------------------------- output
@@ -1538,7 +1638,8 @@ def proposals_to_regions(
 
     ``feed`` regions keep the det gate at full rate; banners and notices are
     sampled at a third of the OCR rate. ``dynamic`` proposals are left out
-    unless nothing else was found.
+    unless nothing else was found. ``score`` proposals become ``score`` regions after
+    them (:func:`score_region`), not counted in ``max_regions``.
     """
     best = max((p["score"] for p in proposals if p["kind"] == "feed"), default=0.0)
     keep = [
@@ -1547,12 +1648,25 @@ def proposals_to_regions(
         if (p["kind"] == "feed" and p["score"] >= max(0.25 * best, MIN_REGION_SCORE))
         or (p["kind"] in ("banner", "notice") and p["score"] >= MIN_REGION_SCORE)
     ]
-    keep = keep or [p for p in proposals if p["kind"] not in ("readout", "popup")]
+    keep = keep or [p for p in proposals if p["kind"] not in ("readout", "popup", "score")]
     out = []
     for p in keep[:max_regions]:
         kind = {"feed": "feed", "banner": "banner", "notice": "notice"}.get(p["kind"], "notice")
         out.append(_padded(p, kind, pad))
-    return out
+    return out + [score_region(p, pad) for p in proposals if p["kind"] == "score"]
+
+
+def score_region(p: dict[str, Any], pad: int = 12) -> Region:
+    """The ``score`` region of a :func:`score_proposals` proposal: padded by ``pad`` px, read
+    in full (detection and recognition) on every :data:`SCORE_EVERY`-th frame at
+    :data:`SCORE_UPSCALE` x. When every value seen had one digit, the sides grow to at least
+    one digit width (0.6 of the text height), so a later two-digit value is not clipped."""
+    r = _padded(p, "score", pad)
+    if all(v < 10 for v in p.get("evidence", {}).get("values", [10])):
+        dx = max(pad, round(0.6 * p["evidence"].get("median_text_h", p["h"])))
+        x = max(0, p["x"] - dx)
+        r = replace(r, x=x, w=min(REF_W - x, p["w"] + 2 * dx))
+    return replace(r, gate="read", every=SCORE_EVERY, upscale=SCORE_UPSCALE)
 
 
 def _padded(p: dict[str, Any], kind: str, pad: int = 12) -> Region:
@@ -1649,6 +1763,7 @@ def write_overlay(
         "banner": (0, 200, 255),
         "notice": (255, 200, 0),
         "dynamic": (200, 200, 200),
+        "score": (0, 128, 255),
     }
     for p in proposals:
         outside = p.get("evidence", {}).get("outside")
@@ -1712,7 +1827,7 @@ def discover_regions(
         (:func:`notice_proposals`, marked ``"origin": "outside"``) are added to
         ``regions`` when ``covered`` is None (the discovered regions and the
         big-text region count as covered), else listed in ``suggested_regions``
-        only. When ``labeler`` labelled proposals, ``discovery.labels`` holds the labels (see
+        only, as are the ``score`` regions when the preset has none. When ``labeler`` labelled proposals, ``discovery.labels`` holds the labels (see
         :func:`apply_labels`).
     """
     params = params or DiscoverParams()
@@ -1744,6 +1859,12 @@ def discover_regions(
     cover = covered if covered is not None else (*regions, bigtext_region())
     # score popups are not read, but their labels are no notices either
     cover += tuple(_padded(p, "notice") for p in proposals if p["kind"] == "popup")
+    # a preset's own score readout, or the one discovery suggests for it
+    scores = [r for r in regions if r.kind == "score"]
+    if covered is not None:
+        cover += tuple(scores)
+        if any(r.kind == "score" for r in covered):
+            scores = []
     extra = notice_proposals(game_frames, cover, params, maps["static"], outside)
     extra_regions = [notice_region(p) for p in extra]
     proposals += extra
@@ -1771,7 +1892,7 @@ def discover_regions(
         "reference": [REF_W, REF_H],
         "source": "discovered",
         "regions": [
-            asdict(r) | ({"label": labels[r.name]["label"]} if r.name in labels else {})
+            r.key() | ({"label": labels[r.name]["label"]} if r.name in labels else {})
             for r in regions
         ]
         + (extra_labelled if covered is None else []),
@@ -1788,8 +1909,8 @@ def discover_regions(
             "frames": [f["id"] for f in frames],  # this run's OCR records
         },
     }
-    if covered is not None:
-        preset["suggested_regions"] = extra_labelled
+    if covered is not None:  # a preset without a score readout is suggested the discovered one
+        preset["suggested_regions"] = extra_labelled + [r.key() for r in scores]
     from cutpoint.events import game_fit  # noqa: PLC0415
 
     # where this game's edge text lands (edge-cell grid), for the HUD fit check
@@ -1829,4 +1950,7 @@ __all__ = [
     "notice_proposals",
     "notice_region",
     "read_ocr_samples",
+    "score_proposals",
+    "score_region",
+    "score_value",
 ]
