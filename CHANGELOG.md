@@ -614,6 +614,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The vision model (frame rating, the VLM layer of `cutpoint events`, dialogue reading and
+  activity profiles on Ollama) asks a local Ollama for the context the model is loaded with
+  when that is larger than the request needs, so AI Chat (`num_ctx` 50000) and vision on the
+  same model no longer reload it at every switch (about 7 s each for `qwen3.5:9b`). A request
+  never asks for less than it needs, and an Ollama on another machine, or one whose `/api/ps`
+  does not answer, gets what the request needs as before. The memory guard checks the vision
+  model again before a request with another context, as Ollama reloads it then. Measured on an
+  RTX 3080: `qwen3.5:9b` takes 5.46 GiB of VRAM at 8192 and 6.67 GiB at 50000 (#732).
 - `--must-include-crash` and the default `must_include_crash` (0.6) now apply to every non-360
   style, not only action-cam; `settings.must_include_crash` is recorded for every style (#486).
   The Analyze field is renamed "Crashes become moments at".
