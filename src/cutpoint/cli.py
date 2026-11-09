@@ -1,5 +1,5 @@
 """Command-line interface: ``cutpoint edit | analyze | events | crashes | profile | clips |
-extend | assemble | stage | 360 | setup | paths | capabilities | guide | skill | ui``.
+extend | assemble | stage | 360 | setup | paths | capabilities | style | guide | skill | ui``.
 
 Installed as the ``cutpoint`` console script.
 """
@@ -959,6 +959,140 @@ def _cmd_capabilities(a: argparse.Namespace) -> None:
         jsonout.warn("sdk_needs_nvidia", sdk["warning"])
 
 
+def _table(rows: list[tuple[str, ...]]) -> None:
+    """Print ``rows`` (the first is the header) as left-aligned columns."""
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+    for r in rows:
+        print("  ".join(c.ljust(w) for c, w in zip(r, widths, strict=True)).rstrip())
+
+
+def _applies_text(applies: dict[str, list[str]]) -> str:
+    items = [f"category:{c}" for c in applies["categories"]]
+    items += [f"profile:{p}" for p in applies["profiles"]]
+    return " ".join(items) or "-"
+
+
+def _cmd_style_list(a: argparse.Namespace) -> None:
+    from cutpoint import stylefiles  # noqa: PLC0415
+
+    entries = stylefiles.list_styles()
+    for e in entries:
+        if not e["valid"]:
+            message = f"style {e['name']!r} cannot be used: {'; '.join(e['problems'])}"
+            jsonout.warn("invalid_style", message, [e["path"]])
+    if jsonout.active():
+        jsonout.output("styles_dir", paths.styles_dir())
+        jsonout.output("styles", entries)
+        return
+    rows = [("name", "type", "base", "source", "applies to", "status")]
+    for e in entries:
+        status = "legacy" if e["legacy"] else "ok"
+        if not e["valid"]:
+            status = "invalid: " + "; ".join(e["problems"])
+        rows.append(
+            (
+                e["name"],
+                e["type"],
+                e["base"] or "-",
+                e["source"] or "-",
+                _applies_text(e["applies_to"]),
+                status,
+            )
+        )
+    _table(rows)
+
+
+def _cmd_style_show(a: argparse.Namespace) -> None:
+    from cutpoint import stylefiles  # noqa: PLC0415
+
+    info = stylefiles.show(a.name)
+    if jsonout.active():
+        for key, value in info.items():
+            jsonout.output(key, value)
+        return
+    kind = "built-in style" if info["type"] == "built-in" else "your style"
+    extra = f", source {info['source']}" if info["source"] else ""
+    print(f"name: {info['name']} ({kind}{', legacy preset' if info['legacy'] else ''}{extra})")
+    print(f"base: {info['base']}")
+    for label, key in (("file", "path"), ("description", "description"), ("profile", "profile")):
+        if info[key]:
+            print(f"{label}: {info[key]}")
+    print(f"applies to: {_applies_text(info['applies_to'])}")
+    print(f"hash: {info['hash']}")
+    if info["kind"] == "action-cam":
+        print(f"mask_friends: {info['mask_friends']:g}")
+        print(f"must_include_crash: {info['must_include_crash']:g}")
+    print("weights:")
+    rows = [("  feature", "weight", "from")]
+    rows += [(f"  {w['feature']}", f"{w['weight']:g}", w["from"]) for w in info["weights"]]
+    _table(rows)
+
+
+def _cmd_style_create(a: argparse.Namespace) -> None:
+    from cutpoint import stylefiles  # noqa: PLC0415
+
+    existed = a.name in stylefiles.user_files()
+    path, res = stylefiles.create(
+        a.name,
+        base=a.base,
+        weights=stylefiles.parse_weights(a.weight or []),
+        description=a.description,
+        applies_to=stylefiles.parse_applies(a.applies_to) if a.applies_to else None,
+        profile=a.profile,
+        from_file=Path(a.from_file).expanduser() if a.from_file else None,
+        force=a.force,
+    )
+    for code, message in res.warnings:
+        logger.warning("%s: %s", path, message)
+        jsonout.warn(code, message, [path])
+    logger.info("%s style %r: %s", "replaced" if existed else "saved", a.name, path)
+    jsonout.output("name", a.name)
+    jsonout.output("path", path)
+    jsonout.output("replaced", existed)
+    jsonout.output("style", stylefiles.show(a.name))
+
+
+def _cmd_style_validate(a: argparse.Namespace) -> None:
+    from cutpoint import stylefiles  # noqa: PLC0415
+
+    res = stylefiles.validate(a.target)
+    where = res["path"] or res["name"]
+    for w in res["warnings"]:
+        logger.warning("%s: %s", where, w["message"])
+        jsonout.warn(w["code"], w["message"], [res["path"]] if res["path"] else [])
+    for key, value in res.items():
+        if key != "warnings":
+            jsonout.output(key, value)
+    if not res["valid"]:
+        raise jsonout.ArgumentError(f"{where} is not a valid style: {'; '.join(res['problems'])}")
+    for note in res["notes"]:
+        logger.info("%s: %s", where, note)
+    logger.info("%s is a valid style", where)
+
+
+def _cmd_style_delete(a: argparse.Namespace) -> None:
+    from cutpoint import stylefiles  # noqa: PLC0415
+
+    path = stylefiles.delete(a.name)
+    logger.info("deleted style %r: %s", a.name, path)
+    jsonout.output("name", a.name)
+    jsonout.output("path", path)
+
+
+def _cmd_style_features(a: argparse.Namespace) -> None:
+    from cutpoint import stylefiles  # noqa: PLC0415
+
+    rows = stylefiles.feature_list()
+    if jsonout.active():
+        jsonout.output("features", rows)
+        return
+    table = [("feature", "layer", "available", "needs", "what it measures")]
+    for f in rows:
+        avail = "yes" if f["available"] else "no"
+        table.append((f["name"], f["layer"], avail, f["extra"] or "-", f["description"]))
+    _table(table)
+
+
 def _cmd_guide(a: argparse.Namespace) -> None:
     # The wheel ships AGENTS.md inside the package; editable installs read the repo-root file.
     packaged = files("cutpoint") / "AGENTS.md"
@@ -1340,6 +1474,86 @@ class _Parser(argparse.ArgumentParser):
             super().error(message)
         except SystemExit as exc:
             raise UsageError(self, message, exc.code) from None
+
+
+def _add_style_parsers(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint style list | show | create | validate | delete | features``."""
+    sy = sub.add_parser(
+        "style",
+        help="list, show, create, check and delete scoring styles (your styles are saved in "
+        "the styles folder, see cutpoint paths)",
+    )
+    verbs = sy.add_subparsers(dest="style_command", required=True)
+    ls = verbs.add_parser(
+        "list", help="built-in and your styles, with source, base, applies_to and status"
+    )
+    _add_json_argument(ls)
+    ls.set_defaults(func=_cmd_style_list)
+
+    sh = verbs.add_parser(
+        "show", help="a style's effective weights (its base's, then its own), and their origin"
+    )
+    sh.add_argument("name", help="style name")
+    _add_json_argument(sh)
+    sh.set_defaults(func=_cmd_style_show)
+
+    cr = verbs.add_parser(
+        "create",
+        help="save a style of your own: weights over a built-in style (source: hand)",
+    )
+    cr.add_argument(
+        "name", help="new style name: letters, digits, - and _ (not a built-in name, not auto)"
+    )
+    cr.add_argument(
+        "--base",
+        metavar="STYLE",
+        help="the built-in style it builds on (required unless the --from file has one)",
+    )
+    cr.add_argument(
+        "--weight",
+        nargs="+",
+        action="extend",
+        metavar="FEATURE=W",
+        help="a feature weight over the base's (0 or more); see cutpoint style features",
+    )
+    cr.add_argument("--description", metavar="TEXT", help="what the style is for")
+    cr.add_argument(
+        "--applies-to",
+        nargs="+",
+        action="extend",
+        metavar="KIND:NAME",
+        help="category:NAME (action-cam, gameplay, talk, general) or profile:NAME; stored "
+        "for later automatic use, a style is used by --style NAME",
+    )
+    cr.add_argument("--profile", metavar="NAME", help="activity profile name (stored)")
+    cr.add_argument(
+        "--from",
+        dest="from_file",
+        metavar="FILE",
+        help="start from this style JSON (also a legacy preset); the options above replace "
+        "its values and --weight adds to its weights; its source is kept",
+    )
+    cr.add_argument("--force", action="store_true", help="replace your style of this name")
+    _add_json_argument(cr)
+    cr.set_defaults(func=_cmd_style_create)
+
+    va = verbs.add_parser(
+        "validate", help="check a style or style file and say what is wrong (exit 1 if invalid)"
+    )
+    va.add_argument("target", metavar="NAME|FILE", help="style name or path to a .json file")
+    _add_json_argument(va)
+    va.set_defaults(func=_cmd_style_validate)
+
+    de = verbs.add_parser("delete", help="delete one of your styles (built-ins cannot be)")
+    de.add_argument("name", help="style name")
+    _add_json_argument(de)
+    de.set_defaults(func=_cmd_style_delete)
+
+    fe = verbs.add_parser(
+        "features", help="the features style weights can name, and which this install has"
+    )
+    _add_json_argument(fe)
+    fe.set_defaults(func=_cmd_style_features)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1838,6 +2052,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_argument(cp)
     cp.set_defaults(func=_cmd_capabilities)
+
+    _add_style_parsers(sub)
 
     gd = sub.add_parser("guide", help="print the guide for AI agents driving Cutpoint")
     gd.set_defaults(func=_cmd_guide)
