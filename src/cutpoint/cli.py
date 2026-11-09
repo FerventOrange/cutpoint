@@ -55,7 +55,15 @@ from cutpoint.events import paths as event_paths
 from cutpoint.extend import extend_clips, manifest_project
 from cutpoint.planning import Padding
 from cutpoint.progress import SKIPPABLE
-from cutpoint.styles import AUTO, AutoRequest, Style, get_style, style_arg, style_names
+from cutpoint.styles import (
+    ANALYZE_STYLE,
+    AUTO,
+    AutoRequest,
+    Style,
+    get_style,
+    style_arg,
+    style_names,
+)
 from cutpoint.utils import (
     command_line,
     input_name,
@@ -66,8 +74,6 @@ from cutpoint.utils import (
 )
 
 logger = logging.getLogger("cutpoint")
-
-ANALYZE_STYLE = "gaming"  # analyze's default --style (and --style auto's fallback)
 
 # Parser-time constants of modules imported only when their command runs, so that every
 # ``cutpoint`` start does not load the action-cam and proxy code (tests check they match).

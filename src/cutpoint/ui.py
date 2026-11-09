@@ -36,11 +36,12 @@ Trust boundaries:
   dialog (Windows: Tk's system dialog; macOS: ``osascript``; Linux: zenity, else kdialog) in a
   child process without a shell, one at a time; the server never lists folders itself. With no
   dialog (no display, Docker) the page hides those buttons and the path is typed or pasted.
-* Settings (``GET``/``PUT /api/settings``) change only ``projects_dir``, ``vision`` and the
-  assistant's ``provider``, ``model`` and ``url`` in ``config.json``. The projects folder never changes while a job runs or when
+* Settings (``GET``/``PUT /api/settings``) change only ``projects_dir``, ``vision``,
+  ``visual_index`` and the assistant's ``provider``, ``model`` and ``url`` in ``config.json``. The projects folder never changes while a job runs or when
   ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved. Every analysis the page
   starts (first or again) passes ``--vision`` or ``--no-vision`` as ``vision`` says when it
-  starts; the page has no per-run vision box.
+  starts; the page has no per-run vision box. The same goes for ``--visual-index`` or
+  ``--no-visual-index`` as ``visual_index`` says.
   While ``config.json`` is unreadable or holds a value Cutpoint rejects, the project routes answer
   409 naming the file and the error; session, pick and settings keep working.
 * The assistant (``/api/projects/<id>/assistant/...``) takes the token header only, never
@@ -140,6 +141,7 @@ from cutpoint.config import (
     COMPRESS_PEAKS,
     VISION_PROVIDERS,
     AssistantSettings,
+    analysis_skip,
     assistant_settings,
     get_config,
     load_config_data,
@@ -169,6 +171,8 @@ from cutpoint.pano.project import default_style as pano_style
 from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import (
     ACTION_CAM,
+    ANALYZE_STYLE,
+    AUTO,
     Style,
     get_style,
     learned_styles,
@@ -640,6 +644,7 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
         "projects_dir_locked": paths.env("PROJECTS_DIR") is not None,
         "config_file": str(paths.config_file()),
         "vision": data.get("vision") is True,
+        "visual_index": data.get("visual_index") is True,
         "vision_model": default_model(),
         "compress_peaks": peaks if peaks in COMPRESS_PEAKS else "off",
         # whether config.json sets it: the page's Compress peaks then starts from it, else Light
@@ -4062,10 +4067,32 @@ def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[A
     return inputs, meta.get("style") or (hl or {}).get("style")
 
 
+def _subscription_roles(args: list[str], style: object) -> bool:
+    """Whether an analyze/edit job with ``args`` on ``style`` has a role on a subscription
+    provider (#832): Vision (rating on) or the AI Chat model of the ``dialogue`` step (open-list
+    styles; ``auto`` may pick one; not when ``--skip`` names it, ``analysis.skip`` when there is
+    none). An explicit ``--ollama-url`` or ``--ollama-model`` wins over both."""
+    if any(a.startswith(("--ollama-url", "--ollama-model")) for a in args):
+        return False
+    try:
+        rating = "--vision" in args or ("--no-vision" not in args and get_config().vision)
+        if rating and ai_providers.is_subscription(vision_assistant_settings().provider):
+            return True
+        skipped = _values(args, "--skip") if "--skip" in args else analysis_skip()
+        if "dialogue" in skipped or not ai_providers.is_subscription(assistant_settings().provider):
+            return False
+        return style == AUTO or get_style(str(style)).open_list
+    except (ValueError, TypeError, AttributeError):  # an invalid config.json or style: the job says
+        return False
+
+
 def _vision_args(st: dict[str, Any]) -> list[str]:
-    """Vision options for an analysis: the Settings value now (explicit, so the job and the page
-    agree even if config.json changes before the CLI reads it) and the recorded Ollama options."""
-    args = ["--vision" if get_config().vision else "--no-vision"]
+    """Vision options for an analysis: the Settings values now (explicit, so the job and the page
+    agree even if config.json changes before the CLI reads it), including the visual index, and
+    the recorded Ollama options."""
+    cfg = get_config()
+    args = ["--vision" if cfg.vision else "--no-vision"]
+    args.append("--visual-index" if cfg.visual_index else "--no-visual-index")
     vision_top = st.get("vision_top")
     if isinstance(vision_top, int) and not isinstance(vision_top, bool) and vision_top > 0:
         args.append(f"--vision-top={vision_top}")
@@ -4538,17 +4565,20 @@ def create_app(port: int) -> FastAPI:
 
     @secure.put("/settings")
     def put_settings(body: dict[str, Any]):
-        """Change the projects folder, the vision default and/or the assistant's provider, model
+        """Change the projects folder, the vision and visual index defaults and/or the assistant's provider, model
         and base URL in ``config.json``. Existing projects stay where they are. A changed
         assistant is checked at once (reachable, key accepted, tool calls or JSON output):
         ``assistant_check`` is why it cannot answer, or None. Nothing (a key least of all) is
         sent to a hosted provider the user has not agreed to in AI Chat (#504): its check waits
         for the consent, and ``assistant_note`` says so."""
-        if not {"projects_dir", "vision", "assistant", "vision_assistant"} & set(body):
-            raise bad("send projects_dir, vision, assistant and/or vision_assistant")
+        if not {"projects_dir", "vision", "visual_index", "assistant", "vision_assistant"} & set(
+            body
+        ):
+            raise bad("send projects_dir, vision, visual_index, assistant and/or vision_assistant")
         updates: dict[str, Any] = {}
-        if "vision" in body:
-            updates["vision"] = _flag(body, "vision")
+        for flag in ("vision", "visual_index"):
+            if flag in body:
+                updates[flag] = _flag(body, flag)
         data = config_data()  # an unreadable config.json: refuse before creating the folder
         existing_ast = data.get("assistant")
         existing_ast_prov = existing_ast.get("provider") if isinstance(existing_ast, dict) else None
@@ -5619,6 +5649,25 @@ def create_app(port: int) -> FastAPI:
 
         # --json: the envelope's error.code tells a busy project apart (Jobs._busy) and a resume
         # names what it wrote. The jobs run in the projects folder, not where the server started.
+        if action in ("analyze", "edit") and meta.get("kind") != "360":
+            needs_proxy = _subscription_roles(args, style)
+        elif action == "resume" and run["command"] in ("analyze", "edit"):
+            argv = [str(a) for a in rec.get("argv") or []]
+            # no --style: analyze's default (edit's defaults have no dialogue step)
+            default = ANALYZE_STYLE if run["command"] == "analyze" else None
+            style_arg = next(iter(_values(argv, "--style")), default)
+            needs_proxy = _subscription_roles(argv, style_arg)
+        else:
+            needs_proxy = False
+        if needs_proxy and before is None:
+
+            def before(job: Job) -> list[str] | None:
+                # a Vision or dialogue role on a subscription needs the proxy (#832); the step
+                # is skipped with its usual warning when it does not start
+                if why := proxy_error(logged_in_only=True):
+                    job.note("WARNING", why)
+                return None
+
         args = [*args, "--json"]
         try:
             return jobs.start(

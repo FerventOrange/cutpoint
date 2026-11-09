@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui` Settings > Analysis has a visual index toggle (`visual_index`), so the AI Chat's
+  visual search works for `gaming`, `funny` and `commentary` footage without `--visual-index` on
+  the command line (#798). It needs a CUDA GPU, the full install and its model files (`cutpoint setup`), and is
+  skipped otherwise; it affects search only, not ranking.
 - `cutpoint ui`: the filmstrip trim rail shows talk (dialogue) stretches as "Talk" ranges labelled with the bit's title (#804), and crashes from `crashes.json` as crash markers when their confidence is at least max(0.2, 0.6 x the project's best crash), deduplicated against telemetry crashes within 2 s (#754).
 - `cutpoint ui` starts the subscription proxy itself, so `cutpoint proxy` no longer has to run in a
   terminal to sign in (#821). Log in and Retry on a Connected accounts row start it when it is not
@@ -909,6 +913,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local Ollama, each with a WARNING. An explicit `--ollama-url` with an invalid port (such as
   `myhost:99999`) or no host (`:11434`) exits 2 with `bad_args`; `profile` and `crashes` now take
   `--ollama-url` and `--ollama-model` (#825).
+- `cutpoint ui`: the filmstrip waveform no longer keeps asking for a source that is no longer on
+  screen, so the one on screen decodes first (#760).
+- `cutpoint ui` starts the subscription proxy before an analysis or edit job (or a resumed one) whose
+  Vision model or gaming dialogue step uses a subscription provider, when a login is saved. If the
+  start fails, the job log has a WARNING and the job still runs (#832).
 - `cutpoint ui`: the moment marker colours in the Light theme now meet 3:1 contrast (#755).
 - Gaming region discovery no longer groups the OCR frames of two files of one name in different
   folders as one source, so each keeps its own menu-frame test and static texts (#817).
