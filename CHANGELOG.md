@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint style list|show|create|validate|delete|features` (all with `--json`) manage your own scoring styles: schema-1 JSON files in `<CUTPOINT_HOME>/styles` (`CUTPOINT_STYLES_DIR`) with partial weight overrides over a built-in style, a description, an activity profile and `applies_to` (stored only for now). Legacy learned presets load as before and are converted only by `create NAME --from FILE --force`. New warnings `unknown_profile`, `feature_not_computed` and `invalid_style`; `highlights.json` records `settings.style_hash` (#514, phase 2).
 - `cutpoint ui`: the filmstrip trim rail shows talk (dialogue) stretches as "Talk" ranges labelled with the bit's title (#804), and crashes from `crashes.json` as crash markers when their confidence is at least max(0.2, 0.6 x the project's best crash), deduplicated against telemetry crashes within 2 s (#754).
 - `cutpoint ui` starts the subscription proxy itself, so `cutpoint proxy` no longer has to run in a
   terminal to sign in (#821). Log in and Retry on a Connected accounts row start it when it is not
