@@ -40,6 +40,7 @@ from cutpoint import (
     edit,
     encode,
     errors,
+    extras,
     ffmpeg_utils,
     folders,
     procs,
@@ -10931,3 +10932,227 @@ def test_subscription_roles(
 ) -> None:
     set_config(home, **config_data)
     assert ui._subscription_roles(args, style) is want
+
+
+# ------------------------------------------------ Describe the footage / Look closer with vision (#486)
+def refine_project(tmp_path: Path, style: str = "action", **hl_over: object) -> Path:
+    """A command-line project analysed in ``style`` (extra ``highlights.json`` keys)."""
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl.update(style=style, **hl_over)
+    cache.save_json(p / "highlights.json", hl)
+    return p
+
+
+def refine_job(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, body: dict, *, lite: str | None = None
+) -> tuple[object, list[dict[str, object]]]:
+    """POST ``body`` as a job of ``cli``, ``Jobs.start`` recording what it was given."""
+    seen: list[dict[str, object]] = []
+
+    def start(self, project_id, action, args, on_success, same_folder, *rest, **kw):
+        seen.append({"action": action, "args": job_args(args), "before": rest[1], **kw})
+        same_folder()
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    monkeypatch.setattr(ui, "events_unavailable", lambda: lite)
+    return client.post("/api/projects/cli/jobs", json=body), seen
+
+
+def test_describe_the_footage_runs_crashes_with_the_context(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    refine_project(tmp_path)
+    text = "  enduro race, mud on the lens  "
+    res, seen = refine_job(client, monkeypatch, {"action": "crashes", "context": text})
+    assert res.status_code == 200, res.text
+    args = _cli_args(seen[0]["args"])  # parses with the CLI
+    assert args == [
+        "crashes",
+        str(ui.projects_dir() / "cli"),
+        "--context=enduro race, mud on the lens",
+    ]
+    parsed = cli.build_parser().parse_args(args)
+    assert (parsed.context, parsed.reanalyze) == ("enduro race, mud on the lens", True)
+    assert seen[0]["action"] == "crashes" and seen[0]["cwd"] == ui.projects_dir()
+
+
+@pytest.mark.parametrize(
+    ("body", "style", "message"),
+    [
+        ({"context": ""}, "action", "describe the footage first"),
+        ({"context": "   "}, "action", "describe the footage first"),
+        ({"context": 5}, "action", "describe the footage first"),
+        ({}, "action", "describe the footage first"),
+        ({"context": "x" * 501}, "action", "at most 500"),
+        ({"context": "mud"}, "funny", "does not run for this footage"),
+    ],
+    ids=["empty", "blank", "number", "missing", "long", "no-crash-step"],
+)
+def test_describe_the_footage_is_refused_when_it_cannot_apply(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    body: dict,
+    style: str,
+    message: str,
+) -> None:
+    refine_project(tmp_path, style)
+    res, seen = refine_job(client, monkeypatch, {"action": "crashes", **body})
+    assert res.status_code == 400 and message in res.json()["detail"]
+    assert seen == []
+
+
+@pytest.mark.parametrize("action", ["crashes", "events"])
+def test_refining_is_refused_before_the_first_analysis_for_360_and_in_lite(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, action: str
+) -> None:
+    body = {"action": action, "context": "mud"}
+    p = ui.projects_dir() / "cli"
+    write(p / "ui" / "meta.json", json.dumps({"style": "action", "source": str(tmp_path)}))
+    res, seen = refine_job(client, monkeypatch, body)
+    assert res.status_code == 400 and "analyze the footage first" in res.json()["detail"]
+
+    cache.save_json(p / "highlights.json", {"style": "action", "settings": {}})
+    cache.save_json(p / "ui" / "meta.json", {**ui.read_meta(p), "kind": "360"})
+    res, _ = refine_job(client, monkeypatch, body)
+    assert res.status_code == 400 and "360" in res.json()["detail"]
+
+    cache.save_json(p / "ui" / "meta.json", {**ui.read_meta(p), "kind": "video"})
+    res, _ = refine_job(client, monkeypatch, body, lite="x is not available in Cutpoint lite")
+    assert res.status_code == 409 and "Cutpoint lite" in res.json()["detail"]
+    assert seen == []
+
+
+def test_look_closer_with_vision_runs_events_on_the_project(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    refine_project(tmp_path, "funny")  # any style: events has a VLM layer for all of them
+    res, seen = refine_job(client, monkeypatch, {"action": "events"})
+    assert res.status_code == 200, res.text
+    args = _cli_args(seen[0]["args"])
+    assert args == ["events", str(ui.projects_dir() / "cli")]
+    assert seen[0]["action"] == "events" and seen[0]["on_result"] is not None
+
+
+@pytest.mark.parametrize("action", ["crashes", "events"])
+def test_the_vision_consent_warnings_reach_the_job_as_notes(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, action: str
+) -> None:
+    refine_project(tmp_path)
+    _, seen = refine_job(client, monkeypatch, {"action": action, "context": "mud"})
+    job = ui.Job("cli", action)
+    job.add_output("12:00:00 WARNING already in the log\n")
+    warnings = [
+        {"code": "vision_consent_needed", "message": "frames would go to host:1; skipping vision"},
+        {"code": "vision_unavailable", "message": "no vision model"},
+        {"code": "vlm_unavailable", "message": "no VLM"},
+        {"code": "context_not_applied", "message": "the Ollama model is unavailable"},
+        {"code": "vision_consent_needed", "message": "already in the log"},
+        {"code": "highlights_not_updated", "message": "a source could not be found"},
+    ]
+    job.result = {"warnings": warnings}
+    seen[0]["on_result"](job)
+    added = list(job.logs)[1:]
+    assert [ln.split(" WARNING ", 1)[1] for ln in added] == [w["message"] for w in warnings[:4]]
+    assert sum("already in the log" in ln for ln in job.logs) == 1  # the CLI's own line only
+
+
+def test_a_refining_job_waits_for_the_subscription_proxy_of_the_vision_model(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, home: Path
+) -> None:
+    refine_project(tmp_path)
+    _, seen = refine_job(client, monkeypatch, {"action": "events"})
+    assert seen[0]["before"] is None
+    set_config(home, vision_assistant={"provider": "codex"})
+    _, seen = refine_job(client, monkeypatch, {"action": "events"})
+    assert seen[0]["before"] is not None
+
+
+@pytest.mark.parametrize(
+    ("style", "hl_over", "crashes_json", "want"),
+    [
+        ("action", {}, False, True),
+        ("sport", {}, False, True),
+        ("action-cam", {}, False, True),
+        ("funny", {}, False, False),
+        ("funny", {}, True, True),  # sources with telemetry: the analysis wrote crashes.json
+        ("funny", {"detection": {"category": "general"}}, False, True),  # --style auto
+        ("funny", {"detection": {"category": "general", "fallback": True}}, False, False),
+        ("funny", {"detection": {"category": "talk"}}, False, False),
+    ],
+)
+def test_the_project_says_whether_the_crash_step_applies(
+    client: TestClient, tmp_path: Path, style: str, hl_over: dict, crashes_json: bool, want: bool
+) -> None:
+    p = refine_project(tmp_path, style, **hl_over)
+    if crashes_json:
+        cache.save_json(p / "crashes.json", {"crashes": []})
+    assert client.get("/api/projects/cli").json()["refine"]["crash_step"] is want
+
+
+@pytest.mark.parametrize(
+    ("meta", "want"),
+    [
+        ({"style": "action"}, True),
+        ({"style": "sport"}, True),
+        ({"style": "action-cam"}, True),
+        ({"style": "auto"}, True),
+        ({}, True),  # no style: the footage decides
+        ({"style": "funny"}, False),
+        ({"style": "gaming"}, False),
+        ({"style": "commentary"}, False),
+        ({"style": "action", "kind": "360"}, False),
+    ],
+)
+def test_before_the_first_analysis_the_chosen_style_says_whether_the_crash_step_applies(
+    client: TestClient, tmp_path: Path, meta: dict, want: bool
+) -> None:
+    p = ui.projects_dir() / "cli"
+    write(p / "ui" / "meta.json", json.dumps({"source": str(tmp_path), **meta}))
+    view = client.get("/api/projects/cli").json()
+    assert view["highlights"] is None and view["refine"]["crash_step"] is want
+
+
+@pytest.mark.parametrize(
+    ("command", "proxy"), [("events", True), ("crashes", True), ("clips", False)]
+)
+def test_resuming_a_refining_run_starts_the_proxy_of_a_subscription_vision_model(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    home: Path,
+    command: str,
+    proxy: bool,
+) -> None:
+    p, _ = cli_project(tmp_path)
+    progress_record(p, command=command, argv=[command, str(p)])
+    set_config(home, vision_assistant={"provider": "codex"})
+    res, seen = resume_job(client, monkeypatch, "cli")
+    assert res.status_code == 200, res.text
+    assert (seen[0]["rest"][1] is not None) is proxy
+
+
+def test_the_project_says_the_description_it_has_and_whether_events_run_here(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p = refine_project(tmp_path)
+    monkeypatch.setattr(ui, "events_unavailable", lambda: None)
+    view = client.get("/api/projects/cli").json()["refine"]
+    assert (view["context"], view["unavailable"]) == (None, None)
+    cache.save_json(p / "activity.json", {"request": {"activity": None, "context": "mud"}})
+    monkeypatch.setattr(ui, "events_unavailable", lambda: "torch is not installed")
+    view = client.get("/api/projects/cli").json()["refine"]
+    assert (view["context"], view["unavailable"]) == ("mud", "torch is not installed")
+
+
+def test_the_lite_message_names_the_missing_module_and_how_to_add_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(extras, "edition", lambda: "full")
+    assert ui.events_unavailable() is None
+    monkeypatch.setattr(extras, "edition", lambda: "lite")
+    monkeypatch.setattr(ui.importlib.util, "find_spec", lambda name: None)
+    message = ui.events_unavailable()
+    assert message is not None and "not available in Cutpoint lite" in message
