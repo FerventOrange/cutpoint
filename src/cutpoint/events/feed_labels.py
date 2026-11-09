@@ -16,6 +16,7 @@ model (provider, host and model id), the rectangle and the frames shown.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -40,11 +41,26 @@ MAX_CALLS = 12  # proposals asked about per game
 SKIP_KINDS = ("readout", "popup", "banner")  # the rules are confident about these
 STOP_AFTER = 2  # failed calls in a row after which the rest are not asked
 ASK_TIMEOUT = 60  # seconds a call may take
-# ...but the first call to an Ollama also loads the model (#796), so it gets as long as one of
-# the VLM layer's requests (VisionRater._rate_frames) or a local AI Chat read (CHAT_TIMEOUT_S).
-# A stuck Ollama costs this plus STOP_AFTER x ASK_TIMEOUT at most: a failed cold call does not
-# count toward STOP_AFTER
+# ...but loading the model into an Ollama (#796) is a request of its own before the first call
+# (VisionRater.load), and gets as long as one of the VLM layer's requests
+# (VisionRater._rate_frames) or a local AI Chat read (CHAT_TIMEOUT_S). An Ollama that refuses
+# that request gives the first call this timeout instead, as it then loads the model
 FIRST_ASK_TIMEOUT = 300
+LABEL_NUM_CTX = 16384  # the load and every call ask for the same context (no reload)
+# all the calls of one discovery together (the model load not counted): a slow model labels the
+# best guesses for a kill feed (candidates() asks them first) and the rules decide the rest.
+# A call that runs out of its timeout stops the labelling: the next one would too (#845)
+LABEL_BUDGET = 120
+MIN_ASK = 15  # seconds of budget a call needs at least; with less left nothing more is asked
+# an Ollama that runs the model on the CPU alone (no GPU memory in /api/ps) takes minutes per
+# call (#845: 4 crops, about 3 min on a 4-core CPU): no labels, the rules decide
+ON_CPU = False
+
+
+class StopLabelling(Exception):
+    """Raised by a :data:`Labeler`'s ``ask`` when no more calls should go out (the model is
+    too slow, or the budget is spent); the labels so far are kept."""
+
 
 SCHEMA = {
     "type": "object",
@@ -163,7 +179,6 @@ def label_proposals(
     frame_dir: Path,
     ask: Callable[[str, list[bytes], dict[str, Any]], dict[str, Any] | None],
     model: str,
-    cold: Callable[[], bool] | None = None,
 ) -> dict[str, dict[str, str]]:
     """Ask the vision model what each candidate proposal is.
 
@@ -172,10 +187,8 @@ def label_proposals(
         frames: The gameplay frames discovery OCR'd.
         frame_dir: Folder of their JPEGs (``frames/``); the cache file is next to it.
         ask: ``(prompt, jpegs, schema) -> reply dict or None``.
-        model: The model's cache key (provider, host and model id).
-        cold: Whether the next ``ask`` also loads the model (asked before each call; None:
-            never). A cold call that fails does not count toward :data:`STOP_AFTER` (#796):
-            a slow load and one slow call after it do not give up.
+        model: The model's cache key (provider, host and model id). ``ask`` may raise
+            :class:`StopLabelling` to end the labelling; the labels so far are kept.
 
     Returns:
         ``{proposal name: {"label": ..., "model": ...}}`` for the proposals the model
@@ -207,11 +220,14 @@ def label_proposals(
                 jpegs.append(jpeg)
         if not jpegs:
             continue
-        loading = cold is not None and cold()
-        reply = ask(_PROMPT.format(n=len(jpegs), where=where(p)), jpegs, SCHEMA)
+        try:
+            reply = ask(_PROMPT.format(n=len(jpegs), where=where(p)), jpegs, SCHEMA)
+        except StopLabelling as why:
+            logger.info("Feed labels: %s; the rules decide the rest", why)
+            break
         label = reply.get("label") if reply else None
         if label not in LABELS:
-            failed += 0 if loading else 1
+            failed += 1
             if failed >= STOP_AFTER:
                 logger.info("Feed labels: the vision model gave no usable answer; stopping")
                 break
@@ -242,8 +258,11 @@ def make_labeler(rater: Any) -> Labeler:
     It asks nothing, and gives no labels, when the model is not there: an Ollama that does not
     answer or lacks the model (an INFO line), a provider the user has not allowed for Vision
     (the ``vision_consent_needed`` warning, :meth:`~cutpoint.vision.VisionRater.warn_consent`)
-    or too little free memory (a WARNING). The rules then decide alone. The model is freed
-    after the last call unless it is hosted.
+    or too little free memory (a WARNING). The rules then decide alone. An Ollama model is
+    loaded by a request of its own first; when ``/api/ps`` shows it on the CPU alone nothing
+    is asked (:data:`ON_CPU`). The calls of one game share :data:`LABEL_BUDGET`, and one that times out
+    ends the labelling (an INFO line); the labels so far are kept. The model is freed after
+    the last call unless it is hosted.
     """
     state: dict[str, bool] = {}
 
@@ -258,30 +277,56 @@ def make_labeler(rater: Any) -> Labeler:
                     logger.info("Feed labels: no vision model answers; the rules decide")
         return state["ok"]
 
-    def cold() -> bool:
-        # an Ollama that was sent nothing yet (or was unloaded) loads the model first; a
-        # hosted Vision role ignores the timeout
-        return rater.provider_name == "ollama" and not rater.used
+    ollama = rater.provider_name == "ollama"
+    deadline: list[float] = []  # set after a game's first call: LABEL_BUDGET from then
+    stop: list[str] = []  # why the model cannot label: it is the same for every game
 
     def ask(prompt: str, jpegs: list[bytes], schema: dict[str, Any]) -> dict[str, Any] | None:
-        return rater.describe(
+        cold = False  # this call also loads the model
+        if stop:
+            raise StopLabelling(stop[0])
+        if ollama and not rater.used:
+            # the load gets its own, long timeout (#796); the calls then get ASK_TIMEOUT
+            if rater.load(FIRST_ASK_TIMEOUT, num_ctx=LABEL_NUM_CTX):
+                if not ON_CPU and rater.on_gpu() is False:
+                    stop.append(f"{rater.model} runs on the CPU only, too slow to label")
+                    raise StopLabelling(stop[0])
+            elif rater.timed_out:
+                stop.append(f"the vision model did not load within {FIRST_ASK_TIMEOUT}s")
+                raise StopLabelling(stop[0])
+            else:
+                cold = True  # the load request was refused: the call loads it, as before
+        if cold:
+            timeout: float = FIRST_ASK_TIMEOUT
+        else:
+            if not deadline:
+                deadline.append(time.monotonic() + LABEL_BUDGET)
+            left = deadline[0] - time.monotonic()
+            if left < MIN_ASK:
+                raise StopLabelling(f"the {LABEL_BUDGET}s for labelling are spent")
+            timeout = min(ASK_TIMEOUT, left)
+        reply = rater.describe(
             prompt,
             jpegs,
             schema,
-            num_ctx=16384,
+            num_ctx=LABEL_NUM_CTX,
             num_predict=500,
             temperature=0.0,
-            timeout=FIRST_ASK_TIMEOUT if cold() else ASK_TIMEOUT,
+            timeout=timeout,
         )
+        if reply is None and getattr(rater, "timed_out", False) is True:
+            raise StopLabelling(f"a call ran out of its {timeout:.0f}s")
+        return reply
 
     def label(
         proposals: list[dict[str, Any]], frames: list[dict[str, Any]], frame_dir: Path
     ) -> dict[str, dict[str, str]]:
         if not candidates(proposals) or not usable():
             return {}
+        deadline.clear()  # each game has its own budget
         progress.update(detail="labelling HUD regions with the vision model")
         try:
-            labels = label_proposals(proposals, frames, frame_dir, ask, model_key(rater), cold)
+            labels = label_proposals(proposals, frames, frame_dir, ask, model_key(rater))
         except LowMemoryError as err:
             logger.warning("Feed labels skipped, the rules decide: %s", err)
             return {}
