@@ -1561,12 +1561,23 @@ function envelopeOf(c) {
   return null;
 }
 
-/** Ask for an envelope; while the server is still decoding it (``pending``) ask again after WAVE_RETRY_MS, until it is answered or the project changes. */
+/** Whether ``source``'s waveform is on screen: the focused clip's, or in Cut mode either side of the current cut. */
+function onScreen(source) {
+  if (current()?.source === source) return true;
+  const k = S.cutMode ? cutIndex() : -1;
+  return k >= 0 && (S.segments[k].source === source || S.segments[k + 1].source === source);
+}
+
+/** Ask for an envelope; while the server is still decoding it (``pending``) ask again after WAVE_RETRY_MS, until it is answered, the project changes or the user leaves the source. */
 function fetchEnvelope(key, token, source, url) {
   api(url).then((d) => {
     if (envelopes.get(key) !== token) return; // another project was opened meanwhile
     if (d?.pending) {
-      setTimeout(() => envelopes.get(key) === token && fetchEnvelope(key, token, source, url), WAVE_RETRY_MS);
+      setTimeout(() => {
+        if (envelopes.get(key) !== token) return;
+        if (!onScreen(source)) envelopes.delete(key); // left: the next draw of it starts a new chain
+        else fetchEnvelope(key, token, source, url);
+      }, WAVE_RETRY_MS);
       return;
     }
     envelopes.set(key, Array.isArray(d?.peaks) && d.peaks.length && d.step > 0 ? d : 'none');
@@ -5666,6 +5677,9 @@ async function openSettings() {
   $('#setProjectsNote').textContent = st.projects_dir_locked
     ? 'Set by the CUTPOINT_PROJECTS_DIR environment variable. Change or unset it, then restart cutpoint ui, to choose the folder here.'
     : `${PROJECTS_NOTE} Saved in ${st.config_file}.`;
+  const index = $('#setVisualIndex');
+  index.checked = st.visual_index === true;
+  index.dataset.saved = String(index.checked);
   $('#setNerdStats').checked = S.nerdStats;
   S.nerdStatsWas = S.nerdStats; // Cancel or Escape goes back to this
   $('#setAdvExport').checked = S.advExport;
@@ -5689,6 +5703,8 @@ async function saveSettings() {
     if (!value) return (err.textContent = 'Enter the full path of a folder (~ is your home folder).');
     if (value !== input.dataset.saved) body.projects_dir = value;
   }
+  const index = $('#setVisualIndex');
+  if (index.checked !== (index.dataset.saved === 'true')) body.visual_index = index.checked;
   if (!Object.keys(body).length) return $('#settingsDialog').close();
   if (body.projects_dir && dirty() && !confirm('The project list will show the new folder. Discard the unsaved changes to this sequence?')) return;
   $('#settingsSave').disabled = true;

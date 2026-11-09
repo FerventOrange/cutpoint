@@ -2168,6 +2168,30 @@ def test_analyze_job_passes_the_settings_vision_explicitly(
     assert ("--no-vision" in captured[0]) is not vision
 
 
+def test_put_settings_saves_visual_index_and_jobs_pass_it_explicitly(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """visual_index (#798): saved by Settings, shown by GET, and --visual-index or
+    --no-visual-index on every analysis and preset the page starts."""
+    assert client.get("/api/settings").json()["visual_index"] is False
+    pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    for value in (True, False):
+        res = client.put("/api/settings", json={"visual_index": value})
+        assert res.status_code == 200, res.text
+        assert res.json()["visual_index"] is value
+        assert client.get("/api/settings").json()["visual_index"] is value
+        assert config.visual_index_default() is value  # the CLI default too
+        assert (
+            client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"}).status_code == 200
+        )
+        assert ("--visual-index" in captured[-1]) is value
+        assert ("--no-visual-index" in captured[-1]) is not value
+    for bad_value in ("yes", 1, None):
+        assert client.put("/api/settings", json={"visual_index": bad_value}).status_code == 400
+
+
 def test_analyze_follows_settings_saved_just_before(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -7796,7 +7820,7 @@ def test_a_preset_runs_edit_with_its_kind_in_the_projects_own_style(
     args = _cli_args(captured[0])
     src = str(tmp_path / "clip.mp4")
     assert args == ["edit", src, "--kind", kind, "--style", "funny", "--out", str(p),
-                    "--compress-peaks", "off", "--no-vision"]  # fmt: skip
+                    "--compress-peaks", "off", "--no-vision", "--no-visual-index"]  # fmt: skip
 
 
 def test_a_preset_passes_vertical_compress_peaks_and_the_settings_vision(
@@ -7809,7 +7833,7 @@ def test_a_preset_passes_vertical_compress_peaks_and_the_settings_vision(
     assert res.status_code == 200, res.text
     args = _cli_args(captured[0])
     assert "--vertical" in args and _after(args, "--compress-peaks") == "strong"
-    assert args[-3:] == ["--vision", "--vision-top=12", "--ollama-model=m:1"]
+    assert args[-4:] == ["--vision", "--no-visual-index", "--vision-top=12", "--ollama-model=m:1"]
     assert "--force" not in args
 
 

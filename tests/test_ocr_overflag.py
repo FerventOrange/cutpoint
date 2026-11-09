@@ -247,6 +247,22 @@ def test_short_different_names_after_a_phrase_are_not_collapsed() -> None:
     assert collapse_banner_bursts(evs) == evs
 
 
+def test_short_names_after_a_consistently_misread_phrase_are_not_collapsed() -> None:
+    # the phrase is read with the same wrong letter every time, so it is not on the line as is
+    evs = [
+        _banner(100 + 10 * i, "ELIMINATED", f"ELIMINATEO {name}")
+        for i, name in enumerate(("Kip", "Kit", "Kim"))
+    ]
+    assert collapse_banner_bursts(evs) == evs
+
+
+def test_scoreboard_with_a_misread_phrase_still_collapses() -> None:
+    evs = [_banner(t, "ACE", "ACF Alderwick 12 4 8") for t in (100, 130, 160, 205)]
+    out = collapse_banner_bursts(evs)
+    assert [e["t"] for e in out] == [100]
+    assert out[0]["recurrences"] == 3
+
+
 def test_two_sightings_and_spaced_banners_are_kept() -> None:
     assert len(collapse_banner_bursts(_scoreboard((100, 150)))) == 2
     spaced = _scoreboard((100, 400, 700, 1000))

@@ -3,13 +3,34 @@
 from __future__ import annotations
 
 import os
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from cutpoint.config import get_config
 
 OLLAMA_FALLBACK_URL = "http://127.0.0.1:11434"
 OLLAMA_PORT = 11434
 _ANY_HOST = ("0.0.0.0", "::", "")  # bind-all addresses: replaced below
+
+
+def split_ollama_url(raw: str, what: str) -> tuple[SplitResult, int | None]:
+    """``raw`` split as ``(parts, port)``: ``http://`` is added to a value without a scheme
+    (a bare IPv6 address is bracketed), and a bare value without a port gets Ollama's.
+
+    Raises:
+        ValueError: ``<what> '<raw>': invalid port`` if the port is not a number in 0-65535.
+    """
+    url = raw
+    bare = "://" not in url
+    if bare:
+        if url.count(":") > 1 and not url.startswith("["):
+            url = f"[{url}]"
+        url = "http://" + url
+    parts = urlsplit(url)
+    try:
+        port = parts.port or (OLLAMA_PORT if bare else None)
+    except ValueError:
+        raise ValueError(f"{what} {raw!r}: invalid port") from None
+    return parts, port
 
 
 def ollama_url() -> str:
@@ -31,17 +52,7 @@ def ollama_url() -> str:
         or get_config().ollama_url.strip()
         or OLLAMA_FALLBACK_URL
     )
-    url = raw
-    bare = "://" not in url
-    if bare:
-        if url.count(":") > 1 and not url.startswith("["):
-            url = f"[{url}]"
-        url = "http://" + url
-    parts = urlsplit(url)
-    try:
-        port = parts.port or (OLLAMA_PORT if bare else None)
-    except ValueError:
-        raise ValueError(f"OLLAMA_HOST/ollama_url {raw!r}: invalid port") from None
+    parts, port = split_ollama_url(raw, "OLLAMA_HOST/ollama_url")
     host = parts.hostname or ""
     if host in _ANY_HOST:
         host = "127.0.0.1"

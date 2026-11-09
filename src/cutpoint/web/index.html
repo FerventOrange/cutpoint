@@ -699,6 +699,11 @@
           <p id="setProjectsNote" class="hint"></p>
         </div>
       </fieldset>
+      <fieldset class="panel">
+        <legend>Analysis</legend>
+        <label class="check"><input type="checkbox" id="setVisualIndex" aria-describedby="setVisualIndexHint"> Index video frames for AI Chat's visual search</label>
+        <p id="setVisualIndexHint" class="hint">Writes frame embeddings during analysis so AI Chat can search what is on screen in gaming, funny and commentary projects; it changes no ranking. Needs a CUDA GPU, the full install and its model files (<code>cutpoint setup</code>); skipped otherwise; about 373 s and 25 MB per hour of video. Action, sport and action-cam projects have it whenever a CUDA GPU is present. Off by default; applies to the next analysis. Saved in config.json.</p>
+      </fieldset>
       <p class="hint">Preview, Export and Appearance show at once; Save keeps them, in this browser.</p>
       <fieldset class="panel">
         <legend>Preview</legend>
