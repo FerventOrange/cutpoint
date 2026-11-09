@@ -495,6 +495,24 @@ keeps a recorded `--recover` the same way. `highlights.json` does not record `--
 keeps it in `ui/analysis.json` for that analysis only; after a command-line re-run it starts
 unticked. 360 projects have no Analysis options (`360 analyze` takes none of these flags).
 
+**Refine** is a block of the same dialog, below the options. Each control starts its own job,
+not an analysis:
+
+| Control | CLI command |
+|---|---|
+| Describe the footage + Apply | [`crashes`](#crashes) `<project> --context=<text>` |
+| Look closer with vision | [`events`](#events) `<project>` |
+
+Both are off until the project has been analyzed, and in Cutpoint lite (the reason is shown).
+Describe the footage shows only where the analysis runs the crash step: an action, sport or
+action-cam style, footage that Auto detection chose as action-cam or general, or sources with
+camera telemetry (the analysis wrote `crashes.json`); before the first analysis, no style or
+Auto. It is filled with the
+description `activity.json` holds and needs text to apply (there is no reset). Look closer with
+vision is off for 360 projects. A `vision_consent_needed`, `vision_unavailable`, `vlm_unavailable` or
+`context_not_applied` (the description was not used) warning of the run is shown as a note in the job's log. A cancelled run is offered as **Resume crash detection**
+or **Resume closer look**.
+
 API: the clips job accepts the new fields (also `crop`, `size` and `audio_fade`), the assemble
 job `fade_dur`, `audio_fade` and `caption_model` (`fade_dur` is refused with the Cut transition
 and `caption_model` without `captions`), `POST /api/projects/<id>/jobs` takes the new `extend` and `edit` actions,
