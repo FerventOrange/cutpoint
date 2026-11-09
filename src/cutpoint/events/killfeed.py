@@ -117,7 +117,8 @@ class OcrParams:
 # match (:func:`collapse_banner_bursts`)
 # 22: big-text lines that come back as short pop-ups all through a source are flagged
 # ``announce`` (:func:`learn_announcements`), short lines with digits included
-GENERIC_VERSION = 22
+# 23: text-rule menu frames are further than STATIC_FEED_GUARD_S from feed activity (#858)
+GENERIC_VERSION = 23
 
 # Chat overlays (Twitch VODs): a discovered "feed" region that shows this many distinct text
 # lines per hour of footage is chat, not a kill feed. Measured on real footage: chat 9000-40000
@@ -2270,7 +2271,12 @@ STATIC_LONG_S = 45.0
 # (a missed read, a region read every few frames or a clip that opens on a fade) and for at
 # least TEXT_HUD_SHARE of it, so a source shorter than TEXT_STAY_MAX_S is covered too.
 # Like the static rule it runs only with ``feed_times`` and ``text_spans`` (the decoded HUD
-# area is at least STATIC_MIN_AREA of the frame).
+# area is at least STATIC_MIN_AREA of the frame), and like it leaves out the frames within
+# STATIC_FEED_GUARD_S of feed activity (#858): a busy gameplay moment (name tags, location labels
+# and prompts piling up over seconds, the notices of a death) can reach TEXT_LINES staying lines,
+# TEXT_TOGETHER of them first read together, for TEXT_MIN_S, but the kill feed goes on beside it;
+# a lobby or result screen has no feed sightings or kills. Measured on footage of four games, this
+# cleared a 3.3 s and a 28 s stretch of gameplay and kept every text-rule menu (two).
 TEXT_LINES = 5
 TEXT_TOGETHER = 3
 TEXT_HUD_SHARE = 0.5
@@ -2480,26 +2486,35 @@ def text_frames(
     text_spans: list[tuple[float, float]],
     text_keys: list[Any] | None = None,
     max_gap: float = STATIC_MAX_GAP_S,
+    feed_times: set[float] | None = None,
 ) -> set[Any]:
     """Ids of the frames of a text screen (see :data:`TEXT_LINES`): stretches of at
     least :data:`STATIC_MIN_FRAMES` frames over at least :data:`TEXT_MIN_S`, at most
     ``max_gap`` apart, that each show at least :data:`TEXT_LINES` :func:`staying_lines`,
-    :data:`TEXT_TOGETHER` of them first read together."""
+    :data:`TEXT_TOGETHER` of them first read together, and are further than
+    :data:`STATIC_FEED_GUARD_S` from every time of ``feed_times`` (feed sightings and kills)."""
     out: set[Any] = set()
     run: list[dict[str, Any]] = []
+    busy = sorted(feed_times or ())
+
+    def near_feed(t: float) -> bool:
+        i = bisect.bisect_left(busy, t - STATIC_FEED_GUARD_S)
+        return i < len(busy) and busy[i] <= t + STATIC_FEED_GUARD_S
+
     shown = staying_lines(frames, text_spans, text_keys, max_gap)
     for f, (n, together) in [*zip(frames, shown, strict=True), (None, (0, 0))]:
-        if (
+        screen = (
             f is not None
             and n >= TEXT_LINES
             and together >= TEXT_TOGETHER
-            and (not run or f["t"] - run[-1]["t"] <= max_gap)
-        ):
+            and not near_feed(f["t"])
+        )
+        if f is not None and screen and (not run or f["t"] - run[-1]["t"] <= max_gap):
             run.append(f)
             continue
         if len(run) >= STATIC_MIN_FRAMES and run[-1]["t"] - run[0]["t"] >= TEXT_MIN_S:
             out.update(r["id"] for r in run)
-        run = [f] if f is not None and n >= TEXT_LINES and together >= TEXT_TOGETHER else []
+        run = [f] if f is not None and screen else []
     return out
 
 
@@ -2543,8 +2558,8 @@ def menu_rules(
     ``jump`` thresholds, inf when off, the ``static_s`` (with new menu text,
     ``text_spans``), ``static_bare_s`` (without, near menu frames) and ``static_diff`` of the static
     rule, which runs only with ``feed_times``, and the ``text_lines`` of the text
-    rule (:func:`text_frames`, with ``text_keys`` and ``max_gap``), which runs only with
-    ``feed_times`` and ``text_spans``)."""
+    rule (:func:`text_frames`, with ``text_keys``, ``max_gap`` and ``feed_times``), which runs
+    only with ``feed_times`` and ``text_spans``)."""
     params = params or DiscoverParams()
     median = float(np.median([len(f["boxes"]) for f in frames])) if frames else 0.0
     lists = median < params.menu_min_boxes / params.menu_jump
@@ -2552,7 +2567,7 @@ def menu_rules(
         params = replace(params, menu_jump=float("inf"))
     keep = {f["id"] for f in gameplay_frames(frames, params)}
     on = feed_times is not None and text_spans is not None
-    texts = text_frames(frames, text_spans or [], text_keys, max_gap) if on else set()
+    texts = text_frames(frames, text_spans or [], text_keys, max_gap, feed_times) if on else set()
     rules = {}
     for f in frames:
         if f["id"] not in keep:
