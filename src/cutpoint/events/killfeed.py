@@ -73,7 +73,7 @@ class OcrParams:
             "fuzzy": FUZZY,
             "persist_s": PERSIST_S,
             "regions": [r.key() for r in (preset.all_regions() if preset else ())],
-            "v": 4,  # 4: no built-in (R6) presets, no ``extra``
+            "v": 4,  # 4: no built-in presets, no ``extra``
         }
         if preset is not None:
             key["preset"] = preset.key() | {"interp": GENERIC_VERSION}
@@ -301,7 +301,7 @@ def player_side(actor: str, target: str, tags: tuple[str, ...]) -> tuple[bool, b
 
 
 def hud_mask(bgr: np.ndarray) -> np.ndarray:
-    """Boolean mask of likely HUD pixels: white text, R6 blue and orange boxes."""
+    """Boolean mask of likely HUD pixels: white text, blue and orange boxes."""
     b, g, r = (bgr[..., i].astype(np.int16) for i in range(3))
     mn = np.minimum(np.minimum(b, g), r)
     mx = np.maximum(np.maximum(b, g), r)
@@ -398,9 +398,9 @@ def colour_runs(img: np.ndarray, row: list[tuple]) -> list[tuple[str | None, str
 # white text and dark icon boxes have neither) and the icon gap is the widest run of other
 # columns, with a text height of coloured columns on both sides. The characters are shared
 # out by the widths on both sides and the cut moved to the nearest word boundary within
-# ICON_SNAP characters (a space wins a tie). Measured on R6 (solid and see-through name boxes):
-# most kill-line reads split with both names right, and of the other rows only a menu tab
-# row, whose right part _icon_name rejects.
+# ICON_SNAP characters (a space wins a tie). Measured on one VOD (solid and see-through
+# name boxes): most kill-line reads split with both names right, and of the other rows only a
+# menu tab row, whose right part _icon_name rejects.
 ICON_GAP = 1.0
 ICON_SAT = 60
 ICON_VAL = 90
@@ -409,7 +409,8 @@ ICON_SNAP = 2.5
 _ICON_NAME_BAD = re.compile(r"[:%/]")
 # Feed rows read as notices (``row_notices``) that stay longer than this are no feed lines but
 # text that stays in the feed's area (a lobby line: "We're estimating your chances to win..."
-# for 49 s on R6); feed lines scroll out within seconds (R6 kill lines and notices: up to 10 s).
+# for 49 s in one VOD); feed lines scroll out within seconds (kill lines and notices
+# there: up to 10 s).
 ROW_NOTICE_MAX_S = 20.0
 # Kill lines tracked by their two names: icon lines and the kills of a clock-stamped log
 LINE_ENTRIES = ("icon", "text")
@@ -709,8 +710,8 @@ class EventTracker:
         the reads seen at least twice, or among all when none repeats (a read with junk
         glued on, seen once, does not win; both names from one read, so two bad splits are
         not combined; a tie keeps the earlier read). Only reads of one line
-        (:meth:`_same_line`) get here. Measured on R6: a cut read ("dramati", 0.95) often has
-        a higher confidence than the whole line ("dramatic_rail39", 0.91)."""
+        (:meth:`_same_line`) get here. Measured on one VOD: a cut read ("dramati", 0.95)
+        often has a higher confidence than the whole line ("dramatic_rail39", 0.91)."""
         read = (fields.get("killer"), fields.get("victim"))
         hues = {k: fields.get(k) for k in ("killer_hue", "victim_hue")}
         # a kill first read with no entry (a log row before its clock showed) has no reads yet
@@ -1422,8 +1423,8 @@ class FeedParser:
     * a row containing a kill word ("A destroyed B", "A eliminated B"): actor before the
       word, target after it;
     * icon feeds without words, where an entry is a coloured *actor* line and
-      a differently coloured *target* line (``"entry": "two_line"``, War
-      Thunder) or two coloured names on one row (``"entry": "one_line"``);
+      a differently coloured *target* line (``"entry": "two_line"``)
+      or two coloured names on one row (``"entry": "one_line"``);
       without a colour map, in a discovered icon feed (``"row_notices": true``), a
       row of two names split by an icon gap is a kill, left name first
       (:meth:`_icon_line`).
@@ -1638,7 +1639,7 @@ class FeedParser:
         :func:`icon_split`) are kept as ``killer_hue`` and ``victim_hue``."""
         if not names:
             return None, False
-        if len(names) > 2:  # menu rows ("PLAY | STORE | OPERATORS"), no name pair
+        if len(names) > 2:  # menu rows ("PLAY | STORE | CHARACTERS"), no name pair
             return None, False
         if len(names) == 2:
             (ba, ta, _), (bb, tb, _) = names
@@ -1882,7 +1883,7 @@ def derive_streaks(events: list[dict[str, Any]], window_s: float = 20.0) -> None
 
 LIST_MENU_COVER = 0.25  # centre cover of a list menu (2 columns: ~0.33) when the jump is off
 
-# Static screens (rule "static"): hangar, crew and loadout menus show as little text as a busy
+# Static screens (rule "static"): garage, crew and loadout menus show as little text as a busy
 # HUD (6-17 boxes, centre cover 0.04-0.12), so the box rules miss them, but they hold still
 # while gameplay moves. Every OCR frame takes a STATIC_THUMB (w, h) grayscale thumbnail of the
 # HUD area it already decoded (:func:`_thumb_bgr`, :func:`_grey`; no extra decode) and :class:`StillRuns` gives it
@@ -1909,13 +1910,13 @@ LIST_MENU_COVER = 0.25  # centre cover of a list menu (2 columns: ~0.33) when th
 # sky or ground would pass as a menu).
 # Stillness alone is weak evidence: a bare still part (no new menu text) also fits still
 # gameplay (a respawn or spectator wait, a preparation phase), which held still for 11-34 s on
-# hand-labelled War Thunder and R6 footage and was flagged as a menu. A bare part is a static
+# hand-labelled footage of two games and was flagged as a menu. A bare part is a static
 # screen only when menu evidence lies within STATIC_ANCHOR_S of it: a frame of another menu
 # rule (``cover``, ``jump``, ``list``, ``text``); a still part with menu text is no evidence
-# (a preparation phase after a still text screen would follow it). Menus come in runs (lobby, hangar, matchmaking), so a hangar next to its menu screens stays, an
-# isolated still stretch in gameplay does not. A bare part that holds still for STATIC_LONG_S
-# needs none: the longest still gameplay measured was 37.7 s (an R6 preparation phase), a
-# War Thunder hangar held 55.7 s.
+# (a preparation phase after a still text screen would follow it). Menus come in runs (lobby,
+# garage, matchmaking), so a garage next to its menu screens stays, an isolated still stretch
+# in gameplay does not. A bare part that holds still for STATIC_LONG_S needs none: the longest
+# still gameplay measured was 37.7 s (a preparation phase), a garage menu held 55.7 s.
 STATIC_THUMB = (32, 18)
 STATIC_MAX_DIFF = 3.0
 STATIC_MIN_S = 5.0
@@ -1928,7 +1929,7 @@ STATIC_TEXT_LINES = 2
 STATIC_TEXT_SHARE = 0.5
 STATIC_LONG_S = 45.0
 
-# Text screens (rule "text"): lobbies, operator select, deploy maps and result screens rarely
+# Text screens (rule "text"): lobbies, character select, map screens and result screens rarely
 # hold still (animated backgrounds, cursors, countdowns end their still runs within seconds) and
 # show their words in HUD regions in numbers no box rule sees, but many of their lines stay on
 # screen. A frame is a text screen when at least TEXT_LINES lines of new menu text (the
@@ -1940,16 +1941,15 @@ STATIC_LONG_S = 45.0
 # a line's first read to its last, so it bridges gaps up to PERSIST_S (8 s): a notice that
 # keeps coming back counts as one line that stays. Gameplay text flashes (notices, kill lines,
 # score popups) or is a few lasting labels that arrive one by one (a location, an objective,
-# an overlay, a returning notice); a menu opens with many lines at once. Measured on R6,
-# Battlefield, War Thunder and Destiny footage, gameplay showed at most 5 staying lines at
-# once, never for TEXT_MIN_S and never TEXT_TOGETHER of them first read together; menus show
-# up to 11. A line that is part of the HUD is no screen that opens and closes: a line on
-# screen for over TEXT_STAY_MAX_S (a player list that stays all match: 7 lines over all 90 s
-# of a War Thunder clip), and a line (one text in one region, all its spans: a list hidden by
-# a scoreboard comes back as a new span) first read within TEXT_STAY_S of the read's start, on
-# screen until within TEXT_STAY_S of its end (a missed read, a region read every few frames or
-# a clip that opens on a fade) and for at least TEXT_HUD_SHARE of it, so a source shorter than
-# TEXT_STAY_MAX_S is covered too.
+# an overlay, a returning notice); a menu opens with many lines at once. Measured on footage of
+# four games, gameplay showed at most 5 staying lines at once, never for TEXT_MIN_S and never
+# TEXT_TOGETHER of them first read together; menus show up to 11. A line that is part of the
+# HUD is no screen that opens and closes: a line on screen for over TEXT_STAY_MAX_S (a player
+# list that stays all match: 7 lines over all 90 s of a long clip), and a line (one text in
+# one region, all its spans: a list hidden by a scoreboard comes back as a new span) first
+# read within TEXT_STAY_S of the read's start, on screen until within TEXT_STAY_S of its end
+# (a missed read, a region read every few frames or a clip that opens on a fade) and for at
+# least TEXT_HUD_SHARE of it, so a source shorter than TEXT_STAY_MAX_S is covered too.
 # Like the static rule it runs only with ``feed_times`` and ``text_spans`` (the decoded HUD
 # area is at least STATIC_MIN_AREA of the frame).
 TEXT_LINES = 5
@@ -1961,14 +1961,14 @@ TEXT_MIN_S = 3.0
 
 # Gaps between menu screens (rule "fill", #409): loading, matchmaking and "processing" screens
 # between a lobby and the next screen show no text the box or text rules see, and an animated
-# hangar holds no still run, so a lobby-heavy source kept them as gameplay. Frames that no rule
-# flags between two frames of the box or text rules (``cover``, ``jump``, ``list``, ``text``) at
-# most MENU_FILL_S apart, with no feed activity between them, are menus too. A static frame is
-# no end of a gap: still gameplay can pass the static rule, and a gap filled from it would grow
-# into the gameplay next to it. Measured on War Thunder and R6 footage (hand-labelled menu time),
-# recall rose from 0.75 to 0.89 and 0.54 to 0.64 with no new gameplay frame flagged; 15 s spans
-# their loading screens, and longer gaps added none. Like the static rule it runs only with
-# ``feed_times``.
+# garage menu holds no still run, so a lobby-heavy source kept them as gameplay. Frames that no
+# rule flags between two frames of the box or text rules (``cover``, ``jump``, ``list``,
+# ``text``) at most MENU_FILL_S apart, with no feed activity between them, are menus too. A
+# static frame is no end of a gap: still gameplay can pass the static rule, and a gap filled
+# from it would grow into the gameplay next to it. Measured on footage of two games
+# (hand-labelled menu time), recall rose from 0.75 to 0.89 and 0.54 to 0.64 with no new
+# gameplay frame flagged; 15 s spans their loading screens, and longer gaps added none. Like
+# the static rule it runs only with ``feed_times``.
 MENU_FILL_S = 15.0
 FILL_ENDS = ("cover", "jump", "list", "text")
 STATIC_ANCHOR_S = MENU_FILL_S  # menu evidence for a bare still screen (see STATIC_THUMB)
