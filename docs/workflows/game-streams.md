@@ -28,7 +28,7 @@ This needs your name set, as above; other styles are unchanged.
 | Layer | Detects |
 |---|---|
 | `audio` | Laughter, screams, cheering (PANNs) |
-| `ocr` | Kill-feed rows (who killed whom, your kills and deaths), round banners, notices, multi-kills |
+| `ocr` | Kill-feed rows (who killed whom, your kills and deaths), round banners, notices, multi-kills, learned announcements |
 | `vlm` | The shared vision model (Ollama `qwen3.5:9b`, or a hosted (API or subscription) Vision model you allowed in the Models tab) describes candidate windows from frames, the transcript and the other layers' hints |
 
 Outputs (written by `analyze` and by `events`): `events.json` and `events.txt`. `events.txt` interleaves the transcript with the
@@ -184,6 +184,23 @@ A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice
 A preset can also define its own event types (what an event is worth, how clip tails end, which
 moments the vision model describes first) and the game name used in the vision prompt; see
 [Event types and prompt keys](../configuration.md#event-types-and-prompt-keys).
+
+## Learned announcements
+
+Pop-ups that are no preset phrase can still count. A big-text line that comes back as a short
+pop-up all through one source is learned as an announcement: its event in `events.json`
+gets `announce: true` and `announce_words` (the learned words) in `details`, and counts as the
+`announcements` event type. Any line counts, a one-word line too. A line is learned by its words
+of 4 letters or more; a short line with digits, a shorter word and no such word ("4 VS 5") by
+its shape, digits as `#` ("# VS #"). Such digit lines make no event otherwise. A bare number
+("+100", "12:34") is never learned. A word must show at least 10 times,
+in at least 4 different 10-minute stretches (so a source of at least 30 minutes), with a median
+gap of at least 30 s, and at most a fifth of its appearances may stay longer than 30 s (labels
+and place names stay). Reads within 8 s of each other are one appearance. Only big text is
+learned: notice-sized lines (item and action prompts recur there), feed rows and banners never
+are, and text that stays on a screen (the same word with the same name beside it
+3 times in a row, each within 60 s) keeps only its first. Learning runs on the cached reads, so
+it needs no new OCR.
 
 ## Kill feed rows without a preset
 

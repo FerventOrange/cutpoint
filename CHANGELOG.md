@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Learned on-screen announcements (#800, phase 1): a big-text line that comes back as a short pop-up all through a source (at least 10 times, in 4 or more 10-minute stretches) gets `announce` in `events.json` and counts as the new `announcements` event type, 3 points each, at most 2 per candidate. Any line counts, a one-word line too; a short line with digits and a word ("4 VS 5") counts by its shape and makes no event otherwise; a bare number ("+100") is never learned. Only big text is learned: notice-sized lines (item and action prompts), feed rows, banners and text that stays on a screen are left out. In `gaming` an announcement can make a moment of its own, at most one a minute per source. The OCR results are re-interpreted once from the cached reads, with no new OCR.
 - `--ocr-det-skip` / `--no-ocr-det-skip` on `analyze`, `edit` and `events`, and `"ocr_det_skip": true` in `config.json` (off by default): the gameplay HUD text reading skips the text detection of a HUD region that has not changed since detection last ran there. On two test clips it saved a third and a tenth of the detection calls and lost no event. A read with it is cached apart, so runs without it keep their cache; OCR stats count the saved calls as `det_skipped` (#807).
 - Crashes in `crashes.json` become moments for every style except 360 (#486). A crash with a
   confidence of at least `must_include_crash` (default 0.6) becomes a must-include moment with its

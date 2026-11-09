@@ -108,7 +108,9 @@ class OcrParams:
 # (:func:`player_side`)
 # 21: banner bursts remove a phrase OCR reads the same wrong way at its best fuzzy
 # match (:func:`collapse_banner_bursts`)
-GENERIC_VERSION = 21
+# 22: big-text lines that come back as short pop-ups all through a source are flagged
+# ``announce`` (:func:`learn_announcements`), short lines with digits included
+GENERIC_VERSION = 22
 
 # Chat overlays (Twitch VODs): a discovered "feed" region that shows this many distinct text
 # lines per hour of footage is chat, not a kill feed. Measured on real footage: chat 9000-40000
@@ -455,6 +457,25 @@ SAME_NAME = 0.9  # a side this similar is the same name, so a mismatch on the ot
 # on the measured gameplay were at least 45 s apart and never three in a row within a minute.
 BANNER_BURST_GAP_S = 60.0
 BANNER_BURST_MIN = 3
+# Learned announcements (:func:`learn_announcements`): a word of a big-text line no phrase
+# matched, or a short line with digits and a word read as its shape ("4 VS 5" is "# VS #"; a
+# bare number such as "+100" or "12:34" is never learned), that comes back as a short pop-up
+# all through a source is an announcement. Notice-sized lines never are: item and action
+# prompts recur there. Appearances: reads of
+# the key that start within ANNOUNCE_BRIEF_S of the previous one's end are one (one pop-up read
+# in two regions); one longer than ANNOUNCE_LONG_S is a label or a place name, not a pop-up. A
+# key is learned with at least ANNOUNCE_MIN_N short appearances, at most ANNOUNCE_LONG_SHARE of
+# all its appearances long, a median gap of at least ANNOUNCE_MIN_GAP_S between the short ones,
+# and short ones in at least ANNOUNCE_MIN_PARTS different ANNOUNCE_PART_S stretches (so at
+# least 30 minutes of one source).
+ANNOUNCE_MIN_N = 10
+ANNOUNCE_BRIEF_S = 8.0
+ANNOUNCE_LONG_S = 30.0
+ANNOUNCE_LONG_SHARE = 0.2
+ANNOUNCE_MIN_GAP_S = 30.0
+ANNOUNCE_PART_S = 600.0
+ANNOUNCE_MIN_PARTS = 4
+_ANNOUNCE_WORD_RE = re.compile(r"[^\W\d_]{4,}")  # a word of 4 letters or more, any script
 
 
 def column_colours(bgr: np.ndarray) -> list[str | None]:
@@ -934,50 +955,153 @@ def collapse_banner_bursts(events: list[dict[str, Any]]) -> list[dict[str, Any]]
     after them. Other event types and the banners not in such a burst are returned as they
     were. Measured on a held-out scoreboard whose player names include "ACE": 14 banners within
     6 minutes, 10-50 s apart, all read from one screen."""
-
-    screens: dict[int, str] = {}
+    texts: dict[int, str] = {}
 
     def screen(e: dict[str, Any]) -> str:
         """The text on the banner's line besides the phrase when it holds a name, else ""."""
-        if id(e) not in screens:
-            screens[id(e)] = _screen(e)
-        return screens[id(e)]
+        if id(e) not in texts:
+            texts[id(e)] = _line_rest(e.get("raw") or "", e.get("text") or "")
+        return texts[id(e)]
 
-    def _screen(e: dict[str, Any]) -> str:
-        line = norm(e.get("raw") or "").replace(" ", "")
-        phrase = norm(e.get("text") or "").replace(" ", "")
-        # a score ("+100") is no screen, a name is; a phrase OCR reads the same wrong way every
-        # time is removed at its best fuzzy match, or the leftover would pass as a name
-        rest = line.replace(phrase, "", 1)
-        if phrase and phrase not in line:
-            best, at = 0.0, 0  # strictly better only, so a tie keeps the leftmost window
-            for i in range(len(line) - len(phrase) + 1):
-                ratio = difflib.SequenceMatcher(None, line[i : i + len(phrase)], phrase).ratio()
-                if ratio > best:
-                    best, at = ratio, i
-            if best >= FUZZY:
-                rest = line[:at] + line[at + len(phrase) :]
-        return rest if re.search(r"[A-Za-z]{3}", rest) else ""
+    banners = [e for e in events if e.get("type") == "banner"]
+    dropped: set[int] = set()
+    for run in _held_runs(banners, lambda e: e.get("text") or "", screen):
+        run[0]["recurrences"] = len(run) - 1
+        dropped |= {id(e) for e in run[1:]}
+    return [e for e in events if id(e) not in dropped]
 
+
+def _line_rest(raw: str, phrase: str) -> str:
+    """The text of the line ``raw`` besides ``phrase`` when it holds a name (three letters in a
+    row), else "" (:func:`collapse_banner_bursts`)."""
+    line = norm(raw).replace(" ", "")
+    phrase = norm(phrase).replace(" ", "")
+    # a score ("+100") is no screen, a name is; a phrase OCR reads the same wrong way every
+    # time is removed at its best fuzzy match, or the leftover would pass as a name
+    rest = line.replace(phrase, "", 1)
+    if phrase and phrase not in line:
+        best, at = 0.0, 0  # strictly better only, so a tie keeps the leftmost window
+        for i in range(len(line) - len(phrase) + 1):
+            ratio = difflib.SequenceMatcher(None, line[i : i + len(phrase)], phrase).ratio()
+            if ratio > best:
+                best, at = ratio, i
+        if best >= FUZZY:
+            rest = line[:at] + line[at + len(phrase) :]
+    return rest if re.search(r"[A-Za-z]{3}", rest) else ""
+
+
+def _held_runs(
+    events: list[dict[str, Any]],
+    phrase: Callable[[dict[str, Any]], str],
+    screen: Callable[[dict[str, Any]], str],
+) -> list[list[dict[str, Any]]]:
+    """The runs of ``events`` that are text staying on a screen: :data:`BANNER_BURST_MIN` or
+    more in a row, each within :data:`BANNER_BURST_GAP_S` of the one before, with a similar
+    ``phrase`` and the same ``screen`` text besides it (never an empty one)."""
     runs: list[list[dict[str, Any]]] = []
-    for e in sorted((e for e in events if e.get("type") == "banner"), key=lambda e: e["t"]):
+    for e in sorted(events, key=lambda e: e["t"]):
         for run in runs:
             if (
                 e["t"] - run[-1]["t"] <= BANNER_BURST_GAP_S
                 and screen(e)
-                and similar(run[0].get("text") or "", e.get("text") or "") >= FUZZY
+                and similar(phrase(run[0]), phrase(e)) >= FUZZY
                 and similar(screen(run[0]), screen(e)) >= FUZZY
             ):
                 run.append(e)
                 break
         else:
             runs.append([e])
-    dropped: set[int] = set()
-    for run in runs:
-        if len(run) >= BANNER_BURST_MIN and all(screen(e) for e in run):
-            run[0]["recurrences"] = len(run) - 1
-            dropped |= {id(e) for e in run[1:]}
-    return [e for e in events if id(e) not in dropped]
+    return [run for run in runs if len(run) >= BANNER_BURST_MIN and all(screen(e) for e in run)]
+
+
+def _announce_keys(text: str) -> list[str]:
+    """The keys a line can be learned by (:func:`learn_announcements`): its words of 4 letters
+    or more, upper-case, any script; for a line with none, its shape: its upper-case words with
+    each run of digits as "#" ("4 VS 5" is "# VS #"), when it has a letter (none for a bare
+    number: "+100", "12:34", "2 - 3")."""
+    words = [w.upper() for w in _ANNOUNCE_WORD_RE.findall(text)]
+    if words:
+        return list(dict.fromkeys(words))
+    shape = " ".join(re.sub(r"\d+", "#", w) for w in re.findall(r"[^\W_]+", text.upper()))
+    return [shape] if re.search(r"[^\W\d_]", shape) else []
+
+
+def _announce_screen(e: dict[str, Any], key: str, learned: set[str], fixed: set[str]) -> str:
+    """The text on an event's line besides the announcement, for the held-screen test: for a
+    word ``key``, the rest of the line without the ``fixed`` words of the announcement (tokens of
+    :func:`norm`) and every ``learned`` word in it when that holds a name (three letters in a
+    row, as :func:`_line_rest`), else ""; for a shape, its digits."""
+    text = e.get("text") or ""
+    if not _ANNOUNCE_WORD_RE.fullmatch(key):
+        return " ".join(re.findall(r"\d+", text))
+    line = "".join(w for w in norm(text).split() if w not in fixed)
+    for word in sorted(learned.intersection(_announce_keys(text)), key=len, reverse=True):
+        line = line.replace(norm(word).replace(" ", ""), "", 1) if norm(word) else line
+    return line if re.search(r"[A-Za-z]{3}", line) else ""
+
+
+def learn_announcements(
+    events: list[dict[str, Any]], extra: Sequence[dict[str, Any]] = ()
+) -> list[dict[str, Any]]:
+    """Flag the big-text lines no phrase matched that come back as short pop-ups all through
+    the source: ``announce`` True and ``announce_words`` (the learned keys in the line,
+    :func:`_announce_keys`). Any such line counts, a one-word line too, but not notices (an item
+    or action prompt recurs there as often) and not banners. ``extra``: the short big-text lines
+    with digits that the interpretation keeps out of its events (:meth:`Interpreter.handle`);
+    the flagged ones are added to the events returned, the others dropped.
+
+    Per key, reads that start within :data:`ANNOUNCE_BRIEF_S` of the last one's end are one
+    appearance, and a key is learned under the gate of :data:`ANNOUNCE_MIN_N`. The first event
+    of each short appearance is flagged, but text that stays on a screen
+    (:func:`_held_runs` with the key as the phrase and :func:`_announce_screen`: the line without
+    every learned key and the words in at least half of the key's lines, so another word of the
+    announcement is no name) keeps only its first. The event type stays as it was."""
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for e in (*events, *extra):
+        if e.get("type") == "bigtext" and e.get("unknown"):
+            for key in _announce_keys(e.get("text") or ""):
+                by_key.setdefault(key, []).append(e)
+    shown: dict[str, list[dict[str, Any]]] = {}  # learned key -> first events of its appearances
+    for key, found in by_key.items():
+        apps: list[list[dict[str, Any]]] = []
+        end = 0.0
+        for e in sorted(found, key=lambda e: e["t"]):
+            if apps and e["t"] - end <= ANNOUNCE_BRIEF_S:
+                apps[-1].append(e)
+                end = max(end, e["end"])
+            else:
+                apps.append([e])
+                end = e["end"]
+        brief = [a for a in apps if max(x["end"] for x in a) - a[0]["t"] <= ANNOUNCE_LONG_S]
+        starts = [a[0]["t"] for a in brief]
+        if (
+            len(brief) < ANNOUNCE_MIN_N
+            or len(apps) - len(brief) > ANNOUNCE_LONG_SHARE * len(apps)
+            or float(np.median([b - a for a, b in pairwise(starts)])) < ANNOUNCE_MIN_GAP_S
+            or len({int(t // ANNOUNCE_PART_S) for t in starts}) < ANNOUNCE_MIN_PARTS
+        ):
+            continue
+        shown[key] = [a[0] for a in brief]
+    learned = set(shown)
+    for key, firsts in shown.items():
+        # the announcement's own words, short ones too ("YOU", "RED"): tokens in at least half
+        # of the key's lines; a name beside it repeats only within a burst
+        counts: dict[str, int] = {}
+        for e in by_key[key]:
+            for w in set(norm(e.get("text") or "").split()):
+                counts[w] = counts.get(w, 0) + 1
+        fixed = {w for w, n in counts.items() if 2 * n >= len(by_key[key])}
+        runs = _held_runs(
+            firsts,
+            lambda e, k=key: k,
+            lambda e, k=key, f=fixed: _announce_screen(e, k, learned, f),
+        )
+        held = {id(e) for run in runs for e in run[1:]}
+        for e in firsts:
+            if id(e) not in held:
+                e["announce"] = True
+                e.setdefault("announce_words", []).append(key)
+    return [*events, *(e for e in extra if e.get("announce"))]
 
 
 # --------------------------------------------------------------------------- OCR logic
@@ -1168,6 +1292,10 @@ class Interpreter:
             dict.fromkeys([*params.player_tags, *(preset.player_tags if preset else ())])
         )
         self.tracker = EventTracker(PERSIST_S, FUZZY)
+        # short big-text lines with digits ("4 VS 5"), which make no event: tracked apart for
+        # :func:`learn_announcements` only, so the menu test and the kill and feed rules never
+        # see them
+        self.digits = EventTracker(PERSIST_S, FUZZY)
         self.feed = FeedParser(preset.feed if preset else {}, self.tags, scale)
 
     def drop_labels(self) -> None:
@@ -1297,10 +1425,13 @@ class Interpreter:
             if region.kind == "bigtext" and h < 1.4 * min_h:
                 continue  # unknown text must be really big to count as a banner
             letters = sum(ch.isalpha() for ch in line)
-            if letters < 4 or letters < 0.6 * len(line.replace(" ", "")):
-                continue  # numbers, ranges, reticle marks
             etype = "notice" if region.kind == "notice" else "bigtext"
-            self.tracker.see(
+            tracker = self.tracker
+            if letters < 4 or letters < 0.6 * len(line.replace(" ", "")):
+                if etype == "notice" or not any(ch.isdigit() for ch in line):
+                    continue  # ranges, reticle marks; numbers in a notice are never learned
+                tracker = self.digits  # numbers: no event unless learned as an announcement
+            tracker.see(
                 t,
                 etype,
                 norm(line),
@@ -2839,9 +2970,10 @@ class OcrInterpretation:
             n_before = len(tracker.events)
             if r.gate == "det":
                 tracker.reset_touched()
+                interp.digits.reset_touched()
                 interp.feed.notice_boxes = []
                 interp.handle(rec.t, r, img, items)
-                self.region_events[r.name] = list(tracker.touched)
+                self.region_events[r.name] = [*tracker.touched, *interp.digits.touched]
                 if self.menus and self.feed_notices and r.kind == "feed":
                     rx, ry, sx, sy = self.ref[r.name]
                     self.det_boxes[r.name] = [
@@ -3032,6 +3164,7 @@ class OcrInterpretation:
             menu = {f["t"] for f in frames if rules[f["id"]] != "none"}
             menu_spans = merge_menu_frames(menu, self.interp.params.fps)
             tracker.drop_sightings(menu, keep=kept)
+            self.interp.digits.drop_sightings(menu)
             stats["menu_frames"] = len(menu)
             stats["menu_spans"] = menu_spans
             stats["static_frames"] = sum(r == "static" for r in rules.values())
@@ -3050,6 +3183,7 @@ class OcrInterpretation:
                 )
             ]
         events = collapse_banner_bursts(events)
+        events = learn_announcements(events, self.interp.digits.finish())
         for e in events:
             e["kind"] = "ocr"
         return events
