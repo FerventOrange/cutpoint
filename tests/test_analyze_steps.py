@@ -35,6 +35,7 @@ from cutpoint import (
     vision,
 )
 from cutpoint.errors import FFmpegError
+from cutpoint.events import cli as events_cli
 from cutpoint.events import common, pipeline, report, scoring
 from cutpoint.events import paths as event_paths
 from cutpoint.ffmpeg_utils import MediaInfo
@@ -2082,3 +2083,71 @@ def test_the_speech_lift_is_taken_off_only_when_there_are_words(style, said, rat
     assert analyze._rate_vision([cand], Rater(), 1, get_style(style))[0] is True
     assert cand["score"] == analyze.vision_blend(50.0, want, weight)
     assert cand["signals"]["vision"] == rating
+
+
+# ----------------------------------------------------------------- HUD OCR det skip (#807)
+class _Ran(Exception):
+    """run_events was reached."""
+
+
+def _events_det_skip(project: Path, monkeypatch, *argv: str) -> bool:
+    """The ``det_skip`` a ``cutpoint events <project> ...`` run gives its OCR layer."""
+    import argparse  # noqa: PLC0415
+
+    seen: list = []
+
+    def run_events(project, **kw):
+        seen.append(kw["ocr"].det_skip)
+        raise _Ran
+
+    monkeypatch.setattr(events_cli.pipeline, "run_events", run_events)
+    parser = argparse.ArgumentParser()
+    events_cli.add_arguments(parser)
+    with pytest.raises(_Ran):
+        events_cli.run_args(parser.parse_args([str(project), *argv]))
+    return seen[0]
+
+
+def test_events_reads_ocr_as_the_analysis_did(home, run, monkeypatch) -> None:
+    run.plan = plan(reactions=("audio",), keyframes=("ocr",))
+    run.go("gaming")
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    assert "ocr_det_skip" not in hl["settings"]  # off: highlights.json as before
+    assert _events_det_skip(run.proj, monkeypatch, "--layers", "vlm") is False
+    # config on does not change it: the analysis read without the skip
+    set_config(home, ocr_det_skip=True)
+    assert _events_det_skip(run.proj, monkeypatch, "--layers", "vlm") is False
+    set_config(home, ocr_det_skip=False)
+
+    run.go("gaming", ocr_det_skip=True)
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    assert hl["settings"]["ocr_det_skip"] is True
+    # no flag, config off: the analysis's setting, so the cached OCR read is found
+    assert _events_det_skip(run.proj, monkeypatch, "--layers", "vlm") is True
+    assert _events_det_skip(run.proj, monkeypatch) is True
+    assert _events_det_skip(run.proj, monkeypatch, "--no-ocr-det-skip") is False
+    # a re-rank keeps it
+    analyze.reanalyze(run.proj)
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    assert hl["settings"]["ocr_det_skip"] is True
+
+
+def test_prefetch_and_layers_get_the_same_ocr_params(run, monkeypatch) -> None:
+    from cutpoint.events import ocr_prefetch  # noqa: PLC0415
+
+    made: list = []
+
+    def prefetch(project, sources, params, batch_size=0):
+        made.append(params)
+        return FakePrefetch(project)
+
+    monkeypatch.setattr(analyze, "EVENTS_MODULES", ())
+    monkeypatch.setattr(event_paths, "missing_files", lambda *a: [])
+    monkeypatch.setattr(ocr_prefetch, "enabled", lambda: True)
+    monkeypatch.setattr(ocr_prefetch, "OcrPrefetch", prefetch)
+    run.plan = plan(reactions=("audio",), keyframes=("ocr",))
+    run.go("gaming", ocr_det_skip=True)
+    ((_project, _layers, kw),) = run.events_calls
+    (pre,) = made
+    assert pre.det_skip is True and kw["ocr"].det_skip is True
+    assert pre == kw["ocr"]  # else the prefetch's read is thrown away

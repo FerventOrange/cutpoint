@@ -42,6 +42,7 @@ from cutpoint.config import (
     color_default,
     compress_peaks_default,
     get_config,
+    ocr_det_skip_default,
     path_key,
     projects_dir,
     resolve_project_path,
@@ -90,6 +91,12 @@ def _visual_index(a: argparse.Namespace) -> bool:
     """``--visual-index`` / ``--no-visual-index`` as given, else ``visual_index`` in config.json
     (default off)."""
     return visual_index_default() if a.visual_index is None else a.visual_index
+
+
+def _ocr_det_skip(a: argparse.Namespace) -> bool:
+    """``--ocr-det-skip`` / ``--no-ocr-det-skip`` as given, else ``ocr_det_skip`` in config.json
+    (default off)."""
+    return ocr_det_skip_default() if a.ocr_det_skip is None else a.ocr_det_skip
 
 
 def _skip(a: argparse.Namespace) -> tuple[str, ...]:
@@ -267,6 +274,7 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
         skip=_skip(a),
         batch_size=a.batch_size,
         visual_index=_visual_index(a),
+        ocr_det_skip=_ocr_det_skip(a),
     )
 
 
@@ -334,6 +342,7 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         ollama_model=a.ollama_model,
         skip=_skip(a),
         visual_index=_visual_index(a),
+        ocr_det_skip=_ocr_det_skip(a),
         compress_peaks=_compress_peaks(a),
         lut=lut,
         color=color,
@@ -1424,6 +1433,19 @@ def _add_visual_index_argument(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_ocr_det_skip_argument(p: argparse.ArgumentParser) -> None:
+    """``--ocr-det-skip`` / ``--no-ocr-det-skip``."""
+    p.add_argument(
+        "--ocr-det-skip",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="gameplay HUD text: skip the text detection of a HUD region that has not "
+        "changed since it last ran, which makes the read faster. The read is cached apart "
+        "from one without it. --no-ocr-det-skip turns it off when config.json turns it on "
+        "(default: ocr_det_skip in config.json, else off)",
+    )
+
+
 def _ollama_url_arg(text: str) -> str:
     """argparse type of ``--ollama-url``: the value, if it has a host and a valid port."""
     from cutpoint.backends import split_ollama_url  # noqa: PLC0415
@@ -1657,6 +1679,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ollama_arguments(ed)
     _add_skip_argument(ed)
     _add_visual_index_argument(ed)
+    _add_ocr_det_skip_argument(ed)
     _add_compress_peaks_argument(ed, "baked into the clips and so the final video")
     _add_lut_arguments(ed)
     _add_color_arguments(ed)
@@ -1724,6 +1747,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_skip_argument(an)
     _add_visual_index_argument(an)
+    _add_ocr_det_skip_argument(an)
     add_batch_size_argument(an)
     _add_json_argument(an)
     an.set_defaults(func=_cmd_analyze)

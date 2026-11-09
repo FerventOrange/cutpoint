@@ -126,6 +126,15 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         "--ocr-fps", type=float, default=3.0, help="frames per second read by the OCR (default 3)"
     )
     g.add_argument("--no-hwaccel", action="store_true", help="decode on the CPU")
+    g.add_argument(
+        "--ocr-det-skip",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="skip the text detection of a HUD region that has not changed since it last "
+        "ran, which makes the read faster; cached apart from a read without it "
+        "(default: as the analysis read it; without an analysis ocr_det_skip in config.json, "
+        "else off)",
+    )
     # developer tuning: save region crops of OCR events here
     g.add_argument("--ocr-debug", type=Path, help=argparse.SUPPRESS)
     d = g.add_mutually_exclusive_group()
@@ -184,6 +193,21 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     )
 
 
+def _ocr_det_skip(args: argparse.Namespace) -> bool:
+    """``--ocr-det-skip`` / ``--no-ocr-det-skip`` as given, else the analysis's
+    (``settings.ocr_det_skip`` in highlights.json, so its OCR read is reused; no key: it read
+    without), else, with no recorded analysis, ``ocr_det_skip`` in config.json."""
+    from cutpoint.config import ocr_det_skip_default  # noqa: PLC0415
+
+    if args.ocr_det_skip is not None:
+        return args.ocr_det_skip
+    hl = cache.load_json(args.project / "highlights.json")
+    settings = hl.get("settings") if isinstance(hl, dict) else None
+    if isinstance(settings, dict):
+        return settings.get("ocr_det_skip") is True
+    return ocr_det_skip_default()
+
+
 def run_args(
     args: argparse.Namespace, *, ollama_url: str | None = None, ollama_model: str | None = None
 ) -> tuple[Path, Path]:
@@ -200,6 +224,7 @@ def run_args(
         game=args.game,
         hwaccel=not args.no_hwaccel,
         player_tags=tuple(args.player) or player_tags(),
+        det_skip=_ocr_det_skip(args),
     )
     vlm = VlmParams(
         window_s=args.window,

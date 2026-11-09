@@ -93,14 +93,18 @@ def edit_name(target: Path) -> str:
     return input_name(target, "edit")
 
 
-def _events_namespace(project: Path, layers: tuple[str, ...] | None) -> argparse.Namespace:
+def _events_namespace(
+    project: Path, layers: tuple[str, ...] | None, ocr_det_skip: bool = False
+) -> argparse.Namespace:
     """``cutpoint events <project>`` arguments with every default, as the CLI parses them;
-    ``layers`` (not None) is its ``--layers``."""
+    ``layers`` (not None) is its ``--layers``, ``ocr_det_skip`` its ``--ocr-det-skip`` (the
+    analysis's, so the OCR layer reuses its read)."""
     from cutpoint.events.cli import add_arguments  # noqa: PLC0415
 
     parser = argparse.ArgumentParser()
     add_arguments(parser)
-    return parser.parse_args([str(project), *(["--layers", *layers] if layers else [])])
+    det_skip = "--ocr-det-skip" if ocr_det_skip else "--no-ocr-det-skip"
+    return parser.parse_args([str(project), *(["--layers", *layers] if layers else []), det_skip])
 
 
 def _action_cam(style: Style | AutoRequest, videos: list[Path]) -> bool:
@@ -138,6 +142,7 @@ def run_edit(
     ollama_model: str | None = None,
     skip: Collection[str] = (),
     visual_index: bool | None = None,
+    ocr_det_skip: bool | None = None,
     compress_peaks: str = "off",
     lut: Lut | None = None,
     color: str | None = None,
@@ -154,7 +159,8 @@ def run_edit(
     ``ollama_model`` and ``skip`` are analyze's options of those names (the Ollama ones also
     for the events VLM layer; ``skip`` also leaves its steps' layers out of ``events``,
     :data:`~cutpoint.analyze.LAYER_STEP`); ``visual_index`` is ``analyze --visual-index``
-    (opt-in: None or False writes the frame embeddings only for the styles that always do).
+    (opt-in: None or False writes the frame embeddings only for the styles that always do);
+    ``ocr_det_skip`` is ``analyze --ocr-det-skip`` (None or False: off), also for ``events``.
     ``compress_peaks``
     (``clips``/``assemble --compress-peaks``) is baked into the clips, so the final keeps it
     without compressing twice. ``lut`` (:func:`~cutpoint.encode.check_lut`) grades the clips
@@ -195,6 +201,7 @@ def run_edit(
             ollama_model=ollama_model,
             skip=skip,
             visual_index=visual_index,
+            ocr_det_skip=ocr_det_skip,
             compress_peaks=compress_peaks,
             lut=lut,
             color=color,
@@ -219,6 +226,7 @@ def _run_edit(
     ollama_model: str | None,
     skip: Collection[str],
     visual_index: bool | None,
+    ocr_det_skip: bool | None,
     compress_peaks: str,
     lut: Lut | None,
     color: str | None,
@@ -276,13 +284,14 @@ def _run_edit(
         layers=True,
         skip=skip,
         visual_index=visual_index,
+        ocr_det_skip=bool(ocr_det_skip),
     )
     if events:
         from cutpoint.events.cli import run_args  # noqa: PLC0415
 
         with steps.step("keyframes", detail="describing moments with the VLM"):
             run_args(
-                _events_namespace(project, event_layers),
+                _events_namespace(project, event_layers, bool(ocr_det_skip)),
                 ollama_url=ollama_url,
                 ollama_model=ollama_model,
             )
