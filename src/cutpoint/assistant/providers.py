@@ -47,7 +47,7 @@ from urllib3.exceptions import LocationParseError
 from urllib3.util import parse_url
 
 from cutpoint.assistant import cliproxy, keys
-from cutpoint.backends import ollama_url
+from cutpoint.backends import normalize_ollama_url, ollama_url
 from cutpoint.config import AssistantSettings, assistant_settings
 from cutpoint.vision import default_model as vision_model
 
@@ -578,8 +578,8 @@ class OllamaProvider:
 
     def __init__(self, url: str, model: str, context_tokens: int) -> None:
         """``model`` "": auto, resolved by :meth:`resolve_model` on first use."""
-        url = url.rstrip("/")
-        self.url = url if url.startswith("http") else f"http://{url}"
+        # like $OLLAMA_HOST and --ollama-url (#857): a bare host gets :11434; a bad port raises
+        self.url = normalize_ollama_url(url, "Ollama URL")
         self.host = host_of(self.url)
         self.on_machine = is_local(self.url)
         # an Ollama on another machine or on the proxy's port is hosted (consent)
