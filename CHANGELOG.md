@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui` Settings > Analysis has a visual index toggle (`visual_index`), so the AI Chat's
+  visual search works for `gaming`, `funny` and `commentary` footage without `--visual-index` on
+  the command line (#798). It needs a CUDA GPU and the full install; it affects search only, not
+  ranking.
 - `cutpoint ui` starts the subscription proxy itself, so `cutpoint proxy` no longer has to run in a
   terminal to sign in (#821). Log in and Retry on a Connected accounts row start it when it is not
   running (the row shows "Starting the proxy…" and any error); a chat turn with a subscription
@@ -903,6 +907,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui`: the filmstrip waveform no longer keeps asking for a source that is no longer on
+  screen, so the one on screen decodes first (#760).
 - Gaming region discovery no longer groups the OCR frames of two files of one name in different
   folders as one source, so each keeps its own menu-frame test and static texts (#817).
 - The game key (and so the HUD preset name) no longer comes from a generic folder name such as

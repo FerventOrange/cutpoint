@@ -249,6 +249,8 @@ The gear button in the header opens Settings, which sets the projects folder (sa
 `projects_dir` in `config.json`). The folder must exist, or only its last part may be missing, in
 which case it is created; it must be writable. Existing projects are not moved. The setting is
 read-only when `CUTPOINT_PROJECTS_DIR` is set, and it cannot be changed while a job is running.
+Settings > Analysis also turns on [`visual_index`](configuration.md#visual_index); every analysis
+or One-Click Edit the page starts passes `--visual-index` or `--no-visual-index` from it.
 The Models tab (next to AI Chat) sets the model for each role: Chat (the
 [`assistant`](configuration.md#assistant) of AI Chat) and Vision
 ([`vision_assistant`](configuration.md#vision_assistant), the model that rates frames), each
