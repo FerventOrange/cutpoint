@@ -910,6 +910,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `cutpoint ui`: the filmstrip waveform no longer keeps asking for a source that is no longer on
   screen, so the one on screen decodes first (#760).
+- `cutpoint ui` starts the subscription proxy before an analysis or edit job (or a resumed one) whose
+  Vision model or gaming dialogue step uses a subscription provider, when a login is saved. If the
+  start fails, the job log has a WARNING and the job still runs (#832).
 - `cutpoint ui`: the moment marker colours in the Light theme now meet 3:1 contrast (#755).
 - Gaming region discovery no longer groups the OCR frames of two files of one name in different
   folders as one source, so each keeps its own menu-frame test and static texts (#817).

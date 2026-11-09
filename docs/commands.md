@@ -262,7 +262,9 @@ you do not need `cutpoint proxy` in a terminal to sign in. Log in (and Retry) on
 accounts row always starts it when it is not running (the row shows "Starting the proxy…" and
 shows an error there if it fails). A chat turn with a subscription model, a model-list refresh and
 opening Connected accounts start it only when a subscription login is saved; nothing starts when
-the UI starts. A proxy the UI started stops when the UI exits (Ctrl+C, closing the console or a
+the UI starts. It also starts before an analyze or edit job (or a resumed one) whose Vision role or
+gaming dialogue step uses a subscription provider, when a login is saved; if the start fails, the job
+log has a WARNING and the job still runs. 360 jobs do not start it. A proxy the UI started stops when the UI exits (Ctrl+C, closing the console or a
 hard kill); a proxy you started with `cutpoint proxy` is left running. With the proxy running and
 consent granted for the role, the tab lists each account's advertised models (Refresh catalog asks
 again); Other model… takes any id.
