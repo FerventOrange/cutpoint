@@ -83,6 +83,7 @@ RETRY_TEMPLATE = (
     'or blur. Output only JSON: {{"blocked": true|false, "where": '
     '"left|right|center|bottom|top|none", "what": "<2-5 words>", "low_info": true|false}}'
 )
+CHECK_NUM_CTX = 8192  # the context one frame needs; a larger loaded one is reused (#865)
 NUM_PREDICT = (2048, 3072)  # per attempt: the prompt, then the retry
 
 
@@ -213,14 +214,17 @@ class VLChecker:
                 return None
             return {"content": text}
 
+        # the context the model is loaded with already when larger (no reload, #732/#865)
+        num_ctx = self.rater._context(CHECK_NUM_CTX)
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt, "images": [image]}],
             "stream": False,
             "think": False,
             # no "format": the JSON grammar made this model pad with whitespace
-            "options": {"temperature": 0.1, "num_ctx": 8192, "num_predict": num_predict},
+            "options": {"temperature": 0.1, "num_ctx": num_ctx, "num_predict": num_predict},
         }
+        self.rater.check_memory(num_ctx)  # raises LowMemoryError: the run stops (resumable)
         self.rater.used = True  # so unload() frees it
         try:
             resp = requests.post(
