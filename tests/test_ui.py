@@ -10625,6 +10625,7 @@ def proxy_job(
     action: str = "analyze",
     style: str = "gaming",
     meta: dict | None = None,
+    argv: list[str] | None = None,
 ) -> tuple[Any, list[SimpleNamespace]]:
     """Post a job of ``action`` on a ``style`` project (``meta`` added to its ui/meta.json) with
     ``launcher`` as the proxy; the jobs ``Jobs.start`` was asked for (each with the notes the
@@ -10639,8 +10640,7 @@ def proxy_job(
         cache.save_json(p / "ui" / "meta.json", {**ui.read_meta(p), **meta})
     client.app.state.proxies = launcher
     if action == "resume":
-        argv = ["analyze", str(src), "--style", style]
-        progress_record(p, "analyze", argv=argv)
+        progress_record(p, "analyze", argv=argv or ["analyze", str(src), "--style", style])
     return post_proxy_job(client, monkeypatch, pid, action)
 
 
@@ -10763,6 +10763,17 @@ def test_a_resumed_analysis_starts_the_proxy_its_recorded_command_needs(
     assert launcher.calls == [True] and launcher.starts == 1 and started[0].notes == []
 
 
+def test_a_resumed_analysis_without_a_style_uses_the_analyze_default(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    set_config(home, assistant={"provider": "claude-code"})
+    launcher = FakeLauncher(saved=True)
+    argv = ["analyze", str(tmp_path / "clip.mp4")]  # gaming: it has the dialogue step
+    res, _ = proxy_job(client, monkeypatch, tmp_path, launcher, action="resume", argv=argv)
+    assert res.status_code == 200, res.text
+    assert launcher.calls == [True] and launcher.starts == 1
+
+
 CHAT = {"assistant": {"provider": "claude-code"}}
 
 
@@ -10770,6 +10781,8 @@ CHAT = {"assistant": {"provider": "claude-code"}}
     ("config_data", "args", "style", "want"),
     [
         ({"vision_assistant": {"provider": "codex"}}, ["--vision"], "funny", True),
+        # neither --vision nor --no-vision: the vision setting of config.json
+        ({"vision": True, "vision_assistant": {"provider": "codex"}}, [], "funny", True),
         # an explicit Ollama option wins over a subscription Vision model and the chat model
         (
             {"vision_assistant": {"provider": "codex"}, **CHAT},

@@ -170,6 +170,7 @@ from cutpoint.pano.project import default_style as pano_style
 from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import (
     ACTION_CAM,
+    ANALYZE_STYLE,
     AUTO,
     Style,
     get_style,
@@ -5576,7 +5577,10 @@ def create_app(port: int) -> FastAPI:
             needs_proxy = _subscription_roles(args, style)
         elif action == "resume" and run["command"] in ("analyze", "edit"):
             argv = [str(a) for a in rec.get("argv") or []]
-            needs_proxy = _subscription_roles(argv, next(iter(_values(argv, "--style")), None))
+            # no --style: analyze's default (edit's defaults have no dialogue step)
+            default = ANALYZE_STYLE if run["command"] == "analyze" else None
+            style_arg = next(iter(_values(argv, "--style")), default)
+            needs_proxy = _subscription_roles(argv, style_arg)
         else:
             needs_proxy = False
         if needs_proxy and before is None:
