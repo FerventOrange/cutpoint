@@ -67,6 +67,8 @@ Choosing the moments yourself:
 ## Rules
 
 - Never modify or delete the user's source videos.
+- Own scoring styles: `cutpoint style list`, `show` and `features` before `create`; never invent feature
+  names (`cutpoint style features` lists them). Use a style with `--style NAME`.
 - Ask the user before `cutpoint setup` (about 2.5 GB of downloads, 3.5 GB with an NVIDIA GPU),
   `cutpoint stage` (copies footage to local disk), and before `cutpoint clips --force` or
   `cutpoint edit --force` over a non-empty folder.
