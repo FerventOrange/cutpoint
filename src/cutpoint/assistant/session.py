@@ -73,24 +73,45 @@ _ANNOUNCES = re.compile(
 # A message that asks for an edit: a turn that ends in text gets the one nudge toward a proposal.
 # A question that asks for advice ("what would you trim?", "anything to fix?") asks none.
 _ADVICE = re.compile(
-    r"\s*(?:what|which|why|where|when|who|is|are|does|do|should|any|anything)\b", re.I
+    r"\s*(?:what|which|why|where|when|who|how\b(?!\s+about)|is|are|does|do|should|any|anything)\b",
+    re.I,
 )
 _EDIT_ASK = re.compile(
     r"\b(?:make|build|add|put|place|change|extend|lengthen|trim|shorten|remove|delete|move|reorder"
-    r"|sort|create|assemble|cut|fix|longer|shorter|arrange|include|insert|swap|replace|color|grade"
-    r"|drop|get rid|take out|use|(?:open|start|end)\s+with)\b",
+    r"|sort|create|assemble|cut|fix|longer|shorter|arrange|include|insert|swap|replace|color|grade)\b",
     re.I,
 )
+# Edit words that are common in help questions too ("how do I use the timeline?", "can it use my
+# GPU?"): an edit only where they open a clause or follow a request word ("drop the intro", "ok,
+# use the laugh", "can you take out the menu part?", "let's start with the crash")
+_EDIT_LEAD = re.compile(
+    r"(?:^\s*|[.!;,]\s*|\b(?:please|just|then|and|also|you|we|let's)\s+)"
+    r"(?:drop|get rid|take out|use|(?:open|start|end)\s+with)\b",
+    re.I,
+)
+_LAST_SENTENCE = re.compile(r"[^.:;!]*$")
+
+
+def _edits(text: str) -> bool:
+    """Whether ``text`` has an edit word (:data:`_EDIT_ASK`, :data:`_EDIT_LEAD`)."""
+    return bool(_EDIT_ASK.search(text) or _EDIT_LEAD.search(text))
 
 
 def _asks_advice(text: str) -> bool:
     """Whether a message is a question that asks for advice, not for an edit: it ends in "?"
     and opens with an advice word or has no edit word ("what would you trim?", "should I drop
-    the intro?", "can it be 40 s long?"). "could we add the laugh?" asks for an edit. One rule
+    the intro?", "how do I use the timeline?", "can it be 40 s long?"). "could we add the
+    laugh?" asks for an edit. With only a leading edit word, a last sentence that opens with an
+    advice word asks for advice too ("Let's start with the basics: what is a style?"). One rule
     for the proposal nudge and the auto-fill offer."""
-    if not text.rstrip().endswith("?"):
+    text = text.rstrip()
+    if not text.endswith("?"):
         return False
-    return bool(_ADVICE.match(text)) or not _EDIT_ASK.search(text)
+    if _ADVICE.match(text) or _EDIT_ASK.search(text):
+        return bool(_ADVICE.match(text))
+    if not _EDIT_LEAD.search(text):
+        return True
+    return bool(_ADVICE.match(_LAST_SENTENCE.search(text[:-1]).group()))  # type: ignore[union-attr]
 
 
 _REMOVES = re.compile(
@@ -587,7 +608,7 @@ class Turn:
     def _announces_work(self, text: str) -> bool:
         """Whether ``text`` says more work follows ("Now let me search for ...") to a message
         that asks for an edit, instead of doing it."""
-        return bool(_ANNOUNCES.search(text) and (self.target or _EDIT_ASK.search(self.text)))
+        return bool(_ANNOUNCES.search(text) and (self.target or _edits(self.text)))
 
     def _asks_edit(self) -> bool:
         """Whether the user's message asks for a change to the sequence: a length or an edit
@@ -596,7 +617,7 @@ class Turn:
         trim?", "anything to fix?" and "can it be 40 s long?" do not."""
         if self.text.rstrip().endswith("?"):
             return not _asks_advice(self.text)
-        return bool(self.target or _EDIT_ASK.search(self.text))
+        return bool(self.target or _edits(self.text))
 
     def _names_moments(self, text: str) -> bool:
         """Whether ``text`` names a moment of the table (``m3``)."""

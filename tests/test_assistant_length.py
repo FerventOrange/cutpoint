@@ -1231,7 +1231,16 @@ def test_the_asked_length_after_a_comma_or_reaching_is_no_claim(
     [
         ("Added the laugh. 60 s in total would need more footage.", False),
         ("Added the laugh, short of 60 s total.", False),
-        ("Now 60 s in total.", True),  # a wrong claim is still flagged
+        # how much more it needs, or the asked length after a comma (#881 review)
+        ("Added the laugh; 60 s overall needs about 26 s more footage.", False),
+        ("Added the laugh; 60 s total needs 26 more seconds.", False),
+        ("Added the laugh, still below 60 s overall, which was your target.", False),
+        ("Added the laugh; 60 s total, which was your goal, needs more footage.", False),
+        ("Added the laugh; 60 s total, as requested, needs more footage.", False),
+        # a wrong claim is still flagged
+        ("Now 60 s in total.", True),
+        ("Added the laugh; now 60 s in all.", True),
+        ("Added the laugh; now 90 s overall, up 26 s.", True),
     ],
 )
 def test_a_length_that_would_need_more_or_falls_short_is_not_flagged(
@@ -1241,10 +1250,37 @@ def test_a_length_that_would_need_more_or_falls_short_is_not_flagged(
 
 
 def test_a_wrong_claim_is_still_flagged_when_no_length_named_fits() -> None:
-    summary = "Added the laugh; now 90 s, up from 24 s."
+    summary = "Added the laugh; now 90 s, after 24 s."
     assert context.named_seconds(summary) == [90.0, 24.0]
     assert session.Turn._length_gap(summary, {"length": 34.0}) is not None
     assert session.Turn._length_gap(summary, {"length": 24.0}) is None  # 24 s is named
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Added the laugh, taking it from 34 s to 60 s total.",
+        "Added the laugh, going from 0:34 to 1:00 overall.",
+    ],
+)
+def test_the_length_before_a_change_does_not_excuse_a_wrong_claim(summary: str) -> None:
+    assert context.named_seconds(summary) == [60.0]
+    assert session.Turn._length_gap(summary, {"length": 39.0}) is not None
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        # a length at a place, after "the" or in parentheses can be the sequence's: kept
+        "Added the laugh; now at 34 s, still not 60 s in total.",
+        "Added the laugh, now the 34 s cut; 60 s total is too long for the footage.",
+        "Added the laugh (now 34 s); 60 s overall is not possible.",
+    ],
+)
+def test_a_correct_summary_with_the_exported_length_anywhere_but_after_from_is_not_flagged(
+    summary: str,
+) -> None:
+    assert session.Turn._length_gap(summary, {"length": 34.0}) is None
 
 
 def test_a_turn_with_a_summary_that_names_the_asked_length_keeps_it() -> None:

@@ -1266,6 +1266,23 @@ def test_the_key_routes_refuse_an_unknown_role_and_default_to_the_chat(
         ("should I drop the intro?", False),
         ("what would you use to end with?", False),
         ("is it worth it to get rid of the long pause?", False),
+        # nor does a help question or statement with one of these words (#881 review)
+        ("how do I use the timeline?", False),
+        ("Can I use this for YouTube Shorts?", False),
+        ("How do I get rid of the warning?", False),
+        ("Tell me how to use the timeline.", False),
+        ("Let's start with the basics: what is a style?", False),
+        ("How much VRAM does it use?", False),
+        ("can it use my GPU?", False),
+        ("To start with, what does the score mean?", False),
+        ("I don't know where to start with this.", False),
+        ("I want to learn how to use this.", False),
+        # a request with them still does
+        ("ok, use the laugh then", True),
+        ("Can you use the laugh at 12:30?", True),
+        ("let's start with the crash", True),
+        ("how about we drop the intro?", True),
+        ("could we add the laugh?", True),
     ],
 )
 def test_more_edit_phrasings_get_the_nudge_and_advice_questions_do_not(
