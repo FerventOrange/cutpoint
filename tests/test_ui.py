@@ -22,7 +22,7 @@ import urllib.request
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import numpy as np
 import pytest
@@ -10612,3 +10612,181 @@ def test_empty_preview_is_centred_and_the_running_panel_is_top_aligned() -> None
         r"^\.moments:has\(> \.empty\.fresh\.running\) > \.empty\.fresh \{([^}]*)\}", css, re.M
     )
     assert running and "margin: 0 auto;" in running[1]
+
+
+# --- the subscription proxy for an analysis (#832) ---
+
+
+def proxy_job(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    launcher: FakeLauncher,
+    action: str = "analyze",
+    style: str = "gaming",
+    meta: dict | None = None,
+) -> tuple[Any, list[SimpleNamespace]]:
+    """Post a job of ``action`` on a ``style`` project (``meta`` added to its ui/meta.json) with
+    ``launcher`` as the proxy; the jobs ``Jobs.start`` was asked for (each with the notes the
+    job's ``before`` hook added)."""
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"x")
+    res = client.post("/api/projects", json={"name": "P", "source": str(src), "style": style})
+    assert res.status_code == 200, res.text
+    pid = res.json()["id"]
+    p = ui.project_dir(pid)
+    if meta:
+        cache.save_json(p / "ui" / "meta.json", {**ui.read_meta(p), **meta})
+    client.app.state.proxies = launcher
+    if action == "resume":
+        argv = ["analyze", str(src), "--style", style]
+        progress_record(p, "analyze", argv=argv)
+    return post_proxy_job(client, monkeypatch, pid, action)
+
+
+def post_proxy_job(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, pid: str, action: str
+) -> tuple[Any, list[SimpleNamespace]]:
+    started: list[SimpleNamespace] = []
+
+    def start(self, project_id, action, args, on_success, check, plan, before, **kw):
+        check()
+        job = SimpleNamespace(notes=[], view=lambda: {"status": "running"})
+        job.note = lambda level, msg: job.notes.append((level, msg))
+        started.append(job)
+        if before is not None:
+            assert before(job) is None
+        return job
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    body = {"action": action, **({"kind": "montage"} if action == "edit" else {})}
+    return client.post(f"/api/projects/{pid}/jobs", json=body), started
+
+
+def test_an_analysis_with_a_subscription_dialogue_model_starts_the_proxy(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    set_config(home, assistant={"provider": "claude-code"})
+    launcher = FakeLauncher(saved=True)
+    res, started = proxy_job(client, monkeypatch, tmp_path, launcher)
+    assert res.status_code == 200, res.text
+    assert launcher.calls == [True] and launcher.starts == 1 and started[0].notes == []
+
+
+def test_an_analysis_with_a_subscription_vision_model_starts_the_proxy(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    set_config(home, vision=True, vision_assistant={"provider": "codex"})
+    launcher = FakeLauncher(saved=True)
+    res, _ = proxy_job(client, monkeypatch, tmp_path, launcher, style="funny")
+    assert res.status_code == 200, res.text
+    assert launcher.calls == [True] and launcher.starts == 1
+
+
+def test_an_analysis_without_a_saved_login_does_not_start_the_proxy(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    set_config(home, assistant={"provider": "claude-code"})
+    launcher = FakeLauncher(saved=False)
+    res, started = proxy_job(client, monkeypatch, tmp_path, launcher)
+    assert res.status_code == 200, res.text
+    assert launcher.calls == [True] and launcher.starts == 0 and started[0].notes == []
+
+
+@pytest.mark.parametrize(
+    ("config_data", "style"),
+    [
+        ({}, "gaming"),  # Ollama everywhere
+        ({"assistant": {"provider": "claude-code"}}, "funny"),  # no dialogue step
+        ({"vision": False, "vision_assistant": {"provider": "codex"}}, "funny"),  # no rating
+    ],
+)
+def test_an_analysis_without_a_subscription_role_leaves_the_proxy_alone(
+    client: TestClient,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    config_data: dict,
+    style: str,
+) -> None:
+    set_config(home, **config_data)
+    launcher = FakeLauncher(saved=True)
+    res, _ = proxy_job(client, monkeypatch, tmp_path, launcher, style=style)
+    assert res.status_code == 200, res.text
+    assert launcher.calls == []
+
+
+def test_an_analysis_still_runs_when_the_proxy_does_not_start_and_the_log_says_why(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    set_config(home, assistant={"provider": "claude-code"})
+    launcher = FakeLauncher(saved=True)
+    launcher.error = ui.cliproxy.ProxyError("port 18317 is already in use")
+    res, started = proxy_job(client, monkeypatch, tmp_path, launcher)
+    assert res.status_code == 200, res.text
+    assert started[0].notes == [
+        ("WARNING", "the subscription proxy did not start: port 18317 is already in use")
+    ]
+
+
+def test_a_preset_edit_with_a_subscription_vision_model_starts_the_proxy(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    set_config(home, vision=True, vision_assistant={"provider": "codex"})
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl["style"] = "funny"
+    cache.save_json(p / "highlights.json", hl)
+    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    res, started = post_proxy_job(client, monkeypatch, "cli", "edit")
+    assert res.status_code == 200, res.text
+    assert launcher.calls == [True] and launcher.starts == 1 and started[0].notes == []
+
+
+def test_a_360_analysis_leaves_the_proxy_alone(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    set_config(home, vision=True, vision_assistant={"provider": "codex"})
+    launcher = FakeLauncher(saved=True)
+    res, _ = proxy_job(client, monkeypatch, tmp_path, launcher, meta={"kind": "360"})
+    assert res.status_code == 200, res.text
+    assert launcher.calls == []
+
+
+def test_a_resumed_analysis_starts_the_proxy_its_recorded_command_needs(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    set_config(home, assistant={"provider": "claude-code"})
+    launcher = FakeLauncher(saved=True)
+    res, started = proxy_job(client, monkeypatch, tmp_path, launcher, action="resume")
+    assert res.status_code == 200, res.text
+    assert launcher.calls == [True] and launcher.starts == 1 and started[0].notes == []
+
+
+CHAT = {"assistant": {"provider": "claude-code"}}
+
+
+@pytest.mark.parametrize(
+    ("config_data", "args", "style", "want"),
+    [
+        ({"vision_assistant": {"provider": "codex"}}, ["--vision"], "funny", True),
+        # an explicit Ollama option wins over a subscription Vision model and the chat model
+        (
+            {"vision_assistant": {"provider": "codex"}, **CHAT},
+            ["--vision", "--ollama-model=m:1"],
+            "gaming",
+            False,
+        ),
+        (CHAT, ["--no-vision"], "auto", True),
+        (CHAT, ["--no-vision"], "funny", False),
+        (CHAT, ["--no-vision", "--skip", "reactions", "dialogue"], "gaming", False),
+        (CHAT, ["--no-vision", "--skip", "reactions"], "gaming", True),
+        # no --skip: analysis.skip of config.json decides
+        ({**CHAT, "analysis": {"skip": ["dialogue"]}}, ["--no-vision"], "gaming", False),
+    ],
+)
+def test_subscription_roles(
+    home: Path, config_data: dict, args: list[str], style: str, want: bool
+) -> None:
+    set_config(home, **config_data)
+    assert ui._subscription_roles(args, style) is want
