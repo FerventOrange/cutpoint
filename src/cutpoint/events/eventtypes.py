@@ -7,6 +7,9 @@ once per candidate when a reaction follows one of its events, both in
 styles listed in ``styles`` (unset: every style), whether the event is a payoff
 for clip tails (``payoff``, ``tail_s``, :mod:`cutpoint.events.tails`) and its
 priority as a VLM window seed (``seed``, :mod:`cutpoint.events.vlm_windows`).
+A built-in type can also space its moment seeds (``seed_gap_s``,
+:func:`cutpoint.events.scoring.seeds`) or be boost-only (``nominate`` false): it adds its points
+to candidates that exist but never makes a moment seed or a VLM window seed.
 
 HUD presets can define their own types in an ``events`` list::
 
@@ -25,8 +28,9 @@ first matching type wins, whatever the project style (``styles`` gates only
 the points). Unset ``payoff`` / ``tail_s`` / ``seed`` keep the
 built-in rules, so the defaults reproduce the original behaviour exactly,
 except that the player's own deaths no longer count as player kills, a self-kill counts as
-``self_kills`` (half a kill) instead, and in the ``funny`` style a death
-followed by a reaction adds ``player_deaths``' reaction points.
+``self_kills`` (half a kill) instead, in the ``funny`` style a death
+followed by a reaction adds ``player_deaths``' reaction points, and learned on-screen
+announcements count as ``announcements``.
 """
 
 from __future__ import annotations
@@ -119,6 +123,12 @@ class EventType:
         payoff: Clip-tail payoff (None: the built-in rule of :func:`tails.is_payoff`).
         tail_s: Reaction kept after the payoff (None: ``EventTailSettings.pad``).
         seed: VLM window seed priority (None: the built-in rule).
+        seed_gap_s: Moment seeds of this type in one source at least this far apart, the best
+            kept (None: no limit; :func:`cutpoint.events.scoring.seeds`). Not read from preset
+            JSON.
+        nominate: False: boost-only. The type adds its ``score`` to candidates that already exist
+            but never nominates one (:func:`cutpoint.events.scoring.seeds`) or seeds a VLM
+            window, whatever its ``seed``. Not read from preset JSON.
     """
 
     name: str
@@ -130,6 +140,8 @@ class EventType:
     seed: float | None = None
     reaction: float | None = None
     styles: tuple[str, ...] | None = None
+    seed_gap_s: float | None = None
+    nominate: bool = True
 
     def matches(self, e: dict[str, Any]) -> bool:
         """Whether any matcher matches the event."""
@@ -151,7 +163,11 @@ class EventType:
 # built-in rules (a tail payoff, seed 1.2 for player rows). Self-kills (the player is killer
 # and victim) come after teamkills and before both: their own type, worth half
 # a kill, a tail payoff and a seed like a death. Player kills: kills by the
-# player (``player_kill``).
+# player (``player_kill``). Announcements come last: big-text lines (never notices) the OCR
+# layer learned as pop-ups that come back all through the source (``announce``,
+# :func:`cutpoint.events.killfeed.learn_announcements`), half a kill each, at most 2 counted, no tail
+# payoff. Boost-only: they add points to candidates that exist and never nominate a moment or seed a
+# VLM window.
 DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
     EventType(
         "teamkills",
@@ -182,6 +198,13 @@ DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
         (Matcher("banner", prefix=BANNER_PAYOFFS), Matcher("multikill")),
         score=6.0,
         max=2,
+    ),
+    EventType(
+        "announcements",
+        (Matcher("bigtext", flag="announce"),),
+        score=3.0,
+        max=2,
+        nominate=False,
     ),
 )
 

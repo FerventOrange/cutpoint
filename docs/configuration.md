@@ -612,7 +612,13 @@ before.
   unset or false, for example `"flag": "player !verb"`). A lone `!` or `!!` is invalid: the type is
   skipped with a warning.
 - Preset types are checked before the built-in ones (`teamkills`, `self_kills`, `player_deaths`,
-  `player_kills`, `banners`); the first matching type wins, and a type with a built-in's name replaces it.
+  `player_kills`, `banners`, `announcements`); the first matching type wins, and a type with a built-in's name replaces it.
+  `announcements` matches a `bigtext` event with `announce` set (a learned big-text pop-up, see
+  [game streams](workflows/game-streams.md#learned-announcements)) and adds 3 points each, at most
+  2 counted, in every style. It has no tail payoff and is boost-only: it adds its points to a
+  candidate that already exists, but never makes a moment of its own (not in `gaming` either) and
+  never seeds a VLM window. A preset type named `announcements` replaces it and behaves like any
+  preset type.
   `self_kills` matches a kill where the player is both killer and victim (`player_kill` and
   `player_death` set; a teamkill stays a teamkill) and adds 3 points each, half a kill, at most 3
   counted, in every style; it is not a player kill, and like a death it stays a tail payoff and a
