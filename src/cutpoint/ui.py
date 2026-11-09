@@ -36,11 +36,12 @@ Trust boundaries:
   dialog (Windows: Tk's system dialog; macOS: ``osascript``; Linux: zenity, else kdialog) in a
   child process without a shell, one at a time; the server never lists folders itself. With no
   dialog (no display, Docker) the page hides those buttons and the path is typed or pasted.
-* Settings (``GET``/``PUT /api/settings``) change only ``projects_dir``, ``vision`` and the
-  assistant's ``provider``, ``model`` and ``url`` in ``config.json``. The projects folder never changes while a job runs or when
+* Settings (``GET``/``PUT /api/settings``) change only ``projects_dir``, ``vision``,
+  ``visual_index`` and the assistant's ``provider``, ``model`` and ``url`` in ``config.json``. The projects folder never changes while a job runs or when
   ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved. Every analysis the page
   starts (first or again) passes ``--vision`` or ``--no-vision`` as ``vision`` says when it
-  starts; the page has no per-run vision box.
+  starts; the page has no per-run vision box. The same goes for ``--visual-index`` or
+  ``--no-visual-index`` as ``visual_index`` says.
   While ``config.json`` is unreadable or holds a value Cutpoint rejects, the project routes answer
   409 naming the file and the error; session, pick and settings keep working.
 * The assistant (``/api/projects/<id>/assistant/...``) takes the token header only, never
@@ -643,6 +644,7 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
         "projects_dir_locked": paths.env("PROJECTS_DIR") is not None,
         "config_file": str(paths.config_file()),
         "vision": data.get("vision") is True,
+        "visual_index": data.get("visual_index") is True,
         "vision_model": default_model(),
         "compress_peaks": peaks if peaks in COMPRESS_PEAKS else "off",
         # whether config.json sets it: the page's Compress peaks then starts from it, else Light
@@ -4085,9 +4087,12 @@ def _subscription_roles(args: list[str], style: object) -> bool:
 
 
 def _vision_args(st: dict[str, Any]) -> list[str]:
-    """Vision options for an analysis: the Settings value now (explicit, so the job and the page
-    agree even if config.json changes before the CLI reads it) and the recorded Ollama options."""
-    args = ["--vision" if get_config().vision else "--no-vision"]
+    """Vision options for an analysis: the Settings values now (explicit, so the job and the page
+    agree even if config.json changes before the CLI reads it), including the visual index, and
+    the recorded Ollama options."""
+    cfg = get_config()
+    args = ["--vision" if cfg.vision else "--no-vision"]
+    args.append("--visual-index" if cfg.visual_index else "--no-visual-index")
     vision_top = st.get("vision_top")
     if isinstance(vision_top, int) and not isinstance(vision_top, bool) and vision_top > 0:
         args.append(f"--vision-top={vision_top}")
@@ -4560,17 +4565,20 @@ def create_app(port: int) -> FastAPI:
 
     @secure.put("/settings")
     def put_settings(body: dict[str, Any]):
-        """Change the projects folder, the vision default and/or the assistant's provider, model
+        """Change the projects folder, the vision and visual index defaults and/or the assistant's provider, model
         and base URL in ``config.json``. Existing projects stay where they are. A changed
         assistant is checked at once (reachable, key accepted, tool calls or JSON output):
         ``assistant_check`` is why it cannot answer, or None. Nothing (a key least of all) is
         sent to a hosted provider the user has not agreed to in AI Chat (#504): its check waits
         for the consent, and ``assistant_note`` says so."""
-        if not {"projects_dir", "vision", "assistant", "vision_assistant"} & set(body):
-            raise bad("send projects_dir, vision, assistant and/or vision_assistant")
+        if not {"projects_dir", "vision", "visual_index", "assistant", "vision_assistant"} & set(
+            body
+        ):
+            raise bad("send projects_dir, vision, visual_index, assistant and/or vision_assistant")
         updates: dict[str, Any] = {}
-        if "vision" in body:
-            updates["vision"] = _flag(body, "vision")
+        for flag in ("vision", "visual_index"):
+            if flag in body:
+                updates[flag] = _flag(body, flag)
         data = config_data()  # an unreadable config.json: refuse before creating the folder
         existing_ast = data.get("assistant")
         existing_ast_prov = existing_ast.get("provider") if isinstance(existing_ast, dict) else None
