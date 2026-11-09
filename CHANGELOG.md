@@ -908,6 +908,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A banner that OCR misreads the same way every time no longer merges different names into one
+  banner burst, so a multi-kill read that way keeps every kill (#793). Comments in the kill-feed
+  reader no longer name games (#799).
 - A bad port in `OLLAMA_HOST` or `ollama_url` no longer fails `events`, `analyze` or `edit`: it skips only
   the VLM layer (`vlm_unavailable`), the vision step (`vision_unavailable`) or the dialogue reader's
   local Ollama, each with a WARNING. An explicit `--ollama-url` with an invalid port (such as
