@@ -2798,6 +2798,24 @@ def _band_image(
     return img
 
 
+def readable_regions(
+    regions: tuple[Region, ...], width: int, height: int, name: str
+) -> tuple[Region, ...]:
+    """The ``regions`` with a crop in a ``width`` x ``height`` frame; the others are left
+    out with one WARNING each (a rectangle scaled outside the frame has an empty crop)."""
+    out = []
+    for r in regions:
+        _, _, w, h = scaled(r, width, height)
+        if w > 0 and h > 0:
+            out.append(r)
+        else:
+            logger.warning(
+                "%s: region %s@%d,%d %dx%d has no pixels in the %dx%d frame; skipped",
+                name, r.name, r.x, r.y, r.w, r.h, width, height,
+            )  # fmt: skip
+    return tuple(out)
+
+
 def _union(rects: list[tuple[int, int, int, int]]) -> tuple[int, int, int, int]:
     """The decoded rectangle: the bounding box of the region ``rects`` (even size)."""
     x0 = min(x for x, _, _, _ in rects)
@@ -2964,6 +2982,7 @@ class OcrReader:
         for r in due:
             x, y, w, h = self.rects[r.name]
             cut[r.name] = frame[y - uy : y - uy + h, x - ux : x - ux + w]
+        due = [r for r in due if cut[r.name].size]  # a crop clipped to nothing has no text
         # the regions' gates at once (each region's state is its own), then the rows in order;
         # the rows of new regions are keyed in region order, as the state is saved as is
         for r in due:
@@ -3487,9 +3506,14 @@ def detect_ocr_events(
     preset = load_preset(game, params.project)
     regions = preset.all_regions() if preset else ()
     if not regions:
-        logger.info(
-            "%s: no HUD preset for %r; skipping OCR (run with --discover-regions)", src.name, game
-        )
+        if preset is not None:
+            logger.info("%s: HUD preset %r has no usable region; skipping OCR", src.name, game)
+        else:
+            logger.info(
+                "%s: no HUD preset for %r; skipping OCR (run with --discover-regions)",
+                src.name,
+                game,
+            )
         return [], {"skipped": "no preset", "game": game}
     avoid = sorted(avoid or [])
     newest = str(preset.feed.get("newest", "bottom")) if preset is not None else "bottom"
@@ -3523,6 +3547,9 @@ def detect_ocr_events(
     else:
         info = probe(src.io_path)
         width, height, duration = info.width, info.height, info.duration
+    regions = readable_regions(regions, width, height, src.name)
+    if not regions:
+        return [], {"skipped": "no region in the frame", "game": game}
     rects = {r.name: scaled(r, width, height) for r in regions}
     union = _union(list(rects.values()))
     stats: dict[str, Any] = {"game": game, "hwaccel": False}
