@@ -90,7 +90,11 @@ and `label` on the regions), so this runs once per game. The preset of a game wi
 `"feed": {"row_notices": true}`, so icon lines in it are read as kills. It runs whenever the vision model
 answers: a local Ollama, or an Ollama on another machine or a hosted provider only with your
 Vision consent (otherwise the `vision_consent_needed` warning). Without a model an INFO line says
-so and the rules decide alone. About 3.5 s per proposal, at most 12 proposals.
+so and the rules decide alone. An Ollama model is loaded first (up to 300 s); when Ollama runs it
+on the CPU alone (no GPU memory in `ollama ps`) nothing is asked, an INFO line says so and the
+rules decide. Each proposal then gets up to 60 s and all of them 120 s together, the likely kill
+feeds first; a proposal that runs out of time ends the labelling and the labels so far are kept.
+About 3.5 s per proposal on a GPU, at most 12 proposals.
 A game that already has a preset does not pick this up: discovery does not run for it and the old
 preset (no feed region, no `row_notices`) stays, so its kills stay at 0. Either move or rename the old
 preset (`<presets>/<game>.json`, or the project's `hud_presets/<game>.json`) and run `analyze` or

@@ -623,6 +623,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not answer, gets what the request needs as before. The memory guard checks the vision
   model again before a request with another context, as Ollama reloads it then. Measured on an
   RTX 3080: `qwen3.5:9b` takes 5.46 GiB of VRAM at 8192 and 6.67 GiB at 50000 (#732).
+- HUD region discovery spends far less time on the vision model's feed labels (#845). An Ollama
+  model is loaded by a request of its own (300 s), then every label request gets 60 s and all of
+  them 120 s together; a request that times out ends the labelling and keeps the labels so far.
+  When Ollama runs the model on the CPU alone (no GPU memory in `/api/ps`) nothing is asked and the
+  rules decide (an INFO line). An Ollama that refuses the load request, or whose `/api/ps` does not
+  answer, is asked as before. On a 4-core CPU discovery went from 791 s to 410 s and from 593 s to
+  184 s with the same regions and events. A hosted Vision model loads nothing and keeps its own
+  timeouts, but its label requests also stop once 120 s are spent.
 - `--must-include-crash` and the default `must_include_crash` (0.6) now apply to every non-360
   style, not only action-cam; `settings.must_include_crash` is recorded for every style (#486).
   The Analyze field is renamed "Crashes become moments at".

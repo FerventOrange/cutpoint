@@ -200,10 +200,7 @@ def test_a_label_outside_the_list_is_no_label(tmp_path: Path) -> None:
     assert out == {} and len(calls) == feed_labels.STOP_AFTER
 
 
-@pytest.mark.parametrize(("cold", "calls"), [(True, 3), (None, 2)], ids=["cold-first", "no-cold"])
-def test_a_failed_cold_call_does_not_count_toward_stopping(
-    tmp_path: Path, cold: bool | None, calls: int
-) -> None:
+def test_failed_calls_in_a_row_stop_the_labelling(tmp_path: Path) -> None:
     _write_frames(tmp_path / "frames")
     asked: list[int] = []
 
@@ -211,12 +208,9 @@ def test_a_failed_cold_call_does_not_count_toward_stopping(
         asked.append(1)
         return None
 
-    is_cold = None if cold is None else (lambda: len(asked) == 0)  # only the first call loads
     proposals = [_prop(f"feed{i}", "feed", 0.5, x=1500, y=100 + 100 * i) for i in range(5)]
-    out = feed_labels.label_proposals(
-        proposals, FRAMES, tmp_path / "frames", ask, "m", cold=is_cold
-    )
-    assert out == {} and len(asked) == calls
+    out = feed_labels.label_proposals(proposals, FRAMES, tmp_path / "frames", ask, "m")
+    assert out == {} and len(asked) == feed_labels.STOP_AFTER
 
 
 def _rater(**kw: Any) -> SimpleNamespace:
@@ -231,17 +225,28 @@ def _rater(**kw: Any) -> SimpleNamespace:
         "model": "m",
         "unload": lambda: None,
         "describe": lambda *a, **k: {"text_in_box": "", "label": "chat"},
+        "load": lambda _timeout, num_ctx=None: True,
+        "on_gpu": lambda: True,
         "used": False,
+        "timed_out": False,
         "warned": warned,
+        "loads": [],
+        "load_ctx": [],
     }
     rater = SimpleNamespace(**(base | kw))
-    inner = rater.describe
+    inner, inner_load = rater.describe, rater.load
 
     def describe(*a: Any, **k: Any) -> Any:
         rater.used = True  # as VisionRater: set when a request goes out, before it can fail
         return inner(*a, **k)
 
-    rater.describe = describe
+    def load(timeout: float, num_ctx: int | None = None) -> bool:
+        rater.used = True
+        rater.loads.append(timeout)
+        rater.load_ctx.append(num_ctx)
+        return inner_load(timeout, num_ctx)
+
+    rater.describe, rater.load = describe, load
     return rater
 
 
@@ -363,26 +368,102 @@ def test_an_outside_notice_the_model_labelled_carries_its_label(
     assert all("label" not in r for r in unlabelled["regions"])
 
 
-def test_labelling_asks_with_a_short_timeout_and_a_timeout_is_a_failure(tmp_path: Path) -> None:
+def test_a_call_that_times_out_stops_the_labelling(tmp_path: Path) -> None:
     _write_frames(tmp_path / "frames")
     seen: list[Any] = []
 
     def describe(*_a: Any, **kw: Any) -> None:
         seen.append(kw.get("timeout"))
-        return None  # what VisionRater.describe gives when the request times out
+        assert kw["num_ctx"] == feed_labels.LABEL_NUM_CTX
+        rater.timed_out = True  # as VisionRater.describe when the request times out
+        return None
 
     rater = _rater(describe=describe)
     proposals = [_prop(f"feed{i}", "feed", 0.5, x=1500, y=100 + 100 * i) for i in range(4)]
     assert feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames") == {}
-    # the first call to an Ollama loads the model: it may take longer, the others may not; the
-    # failed cold call is not counted, so the run stops after STOP_AFTER further failures
-    assert seen == [
-        feed_labels.FIRST_ASK_TIMEOUT,
-        feed_labels.ASK_TIMEOUT,
-        feed_labels.ASK_TIMEOUT,
-    ]
-    assert feed_labels.ASK_TIMEOUT == 60
+    # the load gets the long timeout, the call the short one, and the next would time out too
+    assert rater.loads == [feed_labels.FIRST_ASK_TIMEOUT]
+    assert seen == [feed_labels.ASK_TIMEOUT]
+    assert rater.load_ctx == [feed_labels.LABEL_NUM_CTX]
     assert feed_labels.FIRST_ASK_TIMEOUT > feed_labels.ASK_TIMEOUT
+
+
+def test_a_model_on_the_cpu_only_is_not_asked(tmp_path: Path) -> None:
+    _write_frames(tmp_path / "frames")
+    sent: list[int] = []
+    unloaded: list[bool] = []
+    rater = _rater(
+        on_gpu=lambda: False,
+        describe=lambda *a, **k: sent.append(1),
+        unload=lambda: unloaded.append(True),
+    )
+    proposals = [_prop("feed", "feed", 0.5, x=1500, y=100)]
+    assert feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames") == {}
+    assert not sent and unloaded == [True]  # loaded to find out, then freed
+
+
+def test_a_refused_load_falls_back_to_a_long_first_call(tmp_path: Path) -> None:
+    _write_frames(tmp_path / "frames")
+    seen: list[Any] = []
+    checked: list[bool] = []
+
+    def describe(*_a: Any, **kw: Any) -> dict[str, str]:
+        seen.append(kw.get("timeout"))
+        return {"text_in_box": "", "label": "chat"}
+
+    # the load request failed without a timeout (a proxy or an old Ollama refused it)
+    rater = _rater(
+        load=lambda _t, num_ctx=None: False,
+        describe=describe,
+        on_gpu=lambda: checked.append(True) or False,
+    )
+    proposals = [_prop(f"feed{i}", "feed", 0.5, x=1500, y=100 + 100 * i) for i in range(2)]
+    got = feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames")
+    # GPU status unknown: asked as before, the first call loads the model
+    assert len(got) == 2 and not checked
+    assert seen == [feed_labels.FIRST_ASK_TIMEOUT, feed_labels.ASK_TIMEOUT]
+
+
+def test_a_load_that_times_out_stops_the_labelling(tmp_path: Path) -> None:
+    _write_frames(tmp_path / "frames")
+    sent: list[int] = []
+
+    def load(_t: float, num_ctx: int | None = None) -> bool:
+        rater.timed_out = True
+        return False
+
+    rater = _rater(load=load, describe=lambda *a, **k: sent.append(1))
+    proposals = [_prop("feed", "feed", 0.5, x=1500, y=100)]
+    assert feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames") == {}
+    assert not sent
+
+
+def test_an_unknown_gpu_status_still_asks(tmp_path: Path) -> None:
+    _write_frames(tmp_path / "frames")
+    rater = _rater(on_gpu=lambda: None)
+    proposals = [_prop("feed", "feed", 0.5, x=1500, y=100)]
+    got = feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames")
+    assert got["feed"]["label"] == "chat"
+
+
+def test_the_budget_ends_the_labelling_and_keeps_the_labels_so_far(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_frames(tmp_path / "frames")
+    clock = [0.0]
+    monkeypatch.setattr(feed_labels.time, "monotonic", lambda: clock[0])
+    seen: list[Any] = []
+
+    def describe(*_a: Any, **kw: Any) -> dict[str, str]:
+        seen.append(kw.get("timeout"))
+        clock[0] += 50  # each call takes 50 s
+        return {"text_in_box": "", "label": "chat"}
+
+    rater = _rater(describe=describe)
+    proposals = [_prop(f"feed{i}", "feed", 0.5, x=1500, y=100 + 100 * i) for i in range(4)]
+    got = feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames")
+    # 120 s: two calls of 50 s, the third gets the 20 s left, then fewer than MIN_ASK are left
+    assert seen == [60, 60, 20] and len(got) == 3
 
 
 def test_a_hosted_rater_is_never_given_the_model_load_timeout(tmp_path: Path) -> None:
@@ -402,7 +483,7 @@ def test_a_hosted_rater_is_never_given_the_model_load_timeout(tmp_path: Path) ->
     assert seen == [feed_labels.ASK_TIMEOUT] * 2
 
 
-def test_only_the_first_ollama_call_gets_the_load_timeout(tmp_path: Path) -> None:
+def test_only_the_model_load_gets_the_load_timeout(tmp_path: Path) -> None:
     _write_frames(tmp_path / "frames")
     seen: list[Any] = []
 
@@ -416,4 +497,46 @@ def test_only_the_first_ollama_call_gets_the_load_timeout(tmp_path: Path) -> Non
     ]
     rater = _rater(describe=describe)
     feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames")
-    assert seen == [feed_labels.FIRST_ASK_TIMEOUT, feed_labels.ASK_TIMEOUT]
+    # the load has its own request: every call gets the short timeout
+    assert rater.loads == [feed_labels.FIRST_ASK_TIMEOUT]
+    assert seen == [feed_labels.ASK_TIMEOUT, feed_labels.ASK_TIMEOUT]
+
+
+def test_each_game_has_its_own_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for game in ("a", "b"):
+        _write_frames(tmp_path / game / "frames")
+    clock = [0.0]
+    monkeypatch.setattr(feed_labels.time, "monotonic", lambda: clock[0])
+    seen: list[Any] = []
+
+    def describe(*_a: Any, **kw: Any) -> dict[str, str]:
+        seen.append(kw.get("timeout"))
+        clock[0] += feed_labels.LABEL_BUDGET  # the first game spends the whole budget
+        return {"text_in_box": "", "label": "chat"}
+
+    rater = _rater(describe=describe)
+    labeler = feed_labels.make_labeler(rater)
+    proposals = [_prop("feed", "feed", 0.5, x=1500, y=100)]
+    assert labeler(proposals, FRAMES, tmp_path / "a" / "frames")
+    rater.used = False  # freed after the first game, loaded again for the next
+    assert labeler(proposals, FRAMES, tmp_path / "b" / "frames")
+    assert seen == [feed_labels.ASK_TIMEOUT] * 2
+
+
+def test_a_model_on_the_cpu_only_is_checked_once_for_all_games(tmp_path: Path) -> None:
+    for game in ("a", "b"):
+        _write_frames(tmp_path / game / "frames")
+    sent: list[int] = []
+    checks: list[int] = []
+
+    def on_gpu() -> bool:
+        checks.append(1)
+        return False
+
+    rater = _rater(on_gpu=on_gpu, describe=lambda *a, **k: sent.append(1))
+    labeler = feed_labels.make_labeler(rater)
+    proposals = [_prop("feed", "feed", 0.5, x=1500, y=100)]
+    assert labeler(proposals, FRAMES, tmp_path / "a" / "frames") == {}
+    rater.used = False  # freed after the first game
+    assert labeler(proposals, FRAMES, tmp_path / "b" / "frames") == {}
+    assert rater.loads == [feed_labels.FIRST_ASK_TIMEOUT] and len(checks) == 1 and not sent
