@@ -532,6 +532,14 @@ def widen_for_dialogue(
                     max((c.get("widened_from") or c)["end"] for c in hits),
                 )
                 start, end = trim_silence(words, start, end, core)
+            if any(  # widening across a forced crash would export its footage twice
+                c["source"] == src
+                and c.get("must_include")
+                and c["end"] > start
+                and c["start"] < end
+                for c in cands
+            ):
+                continue
             if handled is not None:
                 handled.add((src, e["start"], e["end"]))
             if len(hits) == 1 and (start, end) == (best["start"], best["end"]):

@@ -155,7 +155,7 @@ def rescore_events(
         if score != c["score"]:
             changed += 1
         c["score"] = score
-    cands.sort(key=rank_key)
+    cands.sort(key=lambda c: (not c.get("must_include"), *rank_key(c)))  # forced crashes first
     hl["candidates"][:] = cands + pool  # in place, as the sort was
     target = (hl.get("settings") or {}).get("target_total")
     if target:

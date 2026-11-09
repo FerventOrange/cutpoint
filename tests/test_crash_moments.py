@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from conftest import StubTranscriber, media_info, write
-from cutpoint import analyze, cache, crash, mix, ui
+from cutpoint import analyze, cache, crash, mix, scorer, ui
 from cutpoint.events import scoring
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.styles import ACTION_CAM, STYLES, get_style, load_learned
@@ -220,6 +220,34 @@ def test_a_dialogue_stretch_does_not_widen_a_forced_crash_moment():
     scoring.widen_for_dialogue(cands, {"a.mp4": [stretch]})
     assert cands[0] is forced and (forced["start"], forced["end"]) == (10.0, 20.0)
     assert "widened_from" not in forced
+
+
+def test_a_dialogue_stretch_does_not_widen_a_moment_across_a_forced_crash():
+    forced = {"source": "a.mp4", "start": 10.0, "end": 20.0, "score": 90.0, "must_include": True}
+    other = {"source": "a.mp4", "start": 22.0, "end": 26.0, "score": 40.0}
+    clear = {"source": "a.mp4", "start": 100.0, "end": 104.0, "score": 40.0}
+    cands = [forced, other, clear]
+    stretches = [
+        {"kind": "text", "type": scoring.DIALOGUE_TYPE, "start": 15.0, "end": 30.0},
+        {"kind": "text", "type": scoring.DIALOGUE_TYPE, "start": 98.0, "end": 110.0},
+    ]
+    handled: set[tuple[str, float, float]] = set()
+    scoring.widen_for_dialogue(cands, {"a.mp4": stretches}, handled=handled)
+    assert (other["start"], other["end"]) == (22.0, 26.0) and "widened_from" not in other
+    assert handled == {("a.mp4", 98.0, 110.0)}  # the crash's stretch is left to nominate
+    assert (clear["start"], clear["end"]) == (98.0, 110.0)
+
+
+def test_rescore_events_keeps_a_forced_crash_first(tmp_path):
+    def c(cid: str, score: float, forced: bool = False) -> dict[str, Any]:
+        return {
+            "id": cid, "source": "a.mp4", "start": 0.0, "end": 5.0, "score": score,
+            "signals": {}, "must_include": forced,
+        }  # fmt: skip
+
+    hl = {"style": "action", "settings": {}, "candidates": [c("h001", 80), c("h002", 20, True)]}
+    scorer.rescore_events(hl, {"events": [], "windows": []}, tmp_path)
+    assert [x["id"] for x in hl["candidates"]] == ["h002", "h001"]
 
 
 def test_menu_time_does_not_drop_a_forced_crash_moment():
