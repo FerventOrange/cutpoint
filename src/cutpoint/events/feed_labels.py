@@ -46,6 +46,7 @@ ASK_TIMEOUT = 60  # seconds a call may take
 # (VisionRater._rate_frames) or a local AI Chat read (CHAT_TIMEOUT_S). An Ollama that refuses
 # that request gives the first call this timeout instead, as it then loads the model
 FIRST_ASK_TIMEOUT = 300
+LABEL_NUM_CTX = 16384  # the load and every call ask for the same context (no reload)
 # all the calls of one discovery together (the model load not counted): a slow model labels the
 # best guesses for a kill feed (candidates() asks them first) and the rules decide the rest.
 # A call that runs out of its timeout stops the labelling: the next one would too (#845)
@@ -286,7 +287,7 @@ def make_labeler(rater: Any) -> Labeler:
             raise StopLabelling(stop[0])
         if ollama and not rater.used:
             # the load gets its own, long timeout (#796); the calls then get ASK_TIMEOUT
-            if rater.load(FIRST_ASK_TIMEOUT):
+            if rater.load(FIRST_ASK_TIMEOUT, num_ctx=LABEL_NUM_CTX):
                 if not ON_CPU and rater.on_gpu() is False:
                     stop.append(f"{rater.model} runs on the CPU only, too slow to label")
                     raise StopLabelling(stop[0])
@@ -308,7 +309,7 @@ def make_labeler(rater: Any) -> Labeler:
             prompt,
             jpegs,
             schema,
-            num_ctx=16384,
+            num_ctx=LABEL_NUM_CTX,
             num_predict=500,
             temperature=0.0,
             timeout=timeout,

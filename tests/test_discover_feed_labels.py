@@ -225,12 +225,13 @@ def _rater(**kw: Any) -> SimpleNamespace:
         "model": "m",
         "unload": lambda: None,
         "describe": lambda *a, **k: {"text_in_box": "", "label": "chat"},
-        "load": lambda _timeout: True,
+        "load": lambda _timeout, num_ctx=None: True,
         "on_gpu": lambda: True,
         "used": False,
         "timed_out": False,
         "warned": warned,
         "loads": [],
+        "load_ctx": [],
     }
     rater = SimpleNamespace(**(base | kw))
     inner, inner_load = rater.describe, rater.load
@@ -239,10 +240,11 @@ def _rater(**kw: Any) -> SimpleNamespace:
         rater.used = True  # as VisionRater: set when a request goes out, before it can fail
         return inner(*a, **k)
 
-    def load(timeout: float) -> bool:
+    def load(timeout: float, num_ctx: int | None = None) -> bool:
         rater.used = True
         rater.loads.append(timeout)
-        return inner_load(timeout)
+        rater.load_ctx.append(num_ctx)
+        return inner_load(timeout, num_ctx)
 
     rater.describe, rater.load = describe, load
     return rater
@@ -372,6 +374,7 @@ def test_a_call_that_times_out_stops_the_labelling(tmp_path: Path) -> None:
 
     def describe(*_a: Any, **kw: Any) -> None:
         seen.append(kw.get("timeout"))
+        assert kw["num_ctx"] == feed_labels.LABEL_NUM_CTX
         rater.timed_out = True  # as VisionRater.describe when the request times out
         return None
 
@@ -381,6 +384,7 @@ def test_a_call_that_times_out_stops_the_labelling(tmp_path: Path) -> None:
     # the load gets the long timeout, the call the short one, and the next would time out too
     assert rater.loads == [feed_labels.FIRST_ASK_TIMEOUT]
     assert seen == [feed_labels.ASK_TIMEOUT]
+    assert rater.load_ctx == [feed_labels.LABEL_NUM_CTX]
     assert feed_labels.FIRST_ASK_TIMEOUT > feed_labels.ASK_TIMEOUT
 
 
@@ -409,7 +413,9 @@ def test_a_refused_load_falls_back_to_a_long_first_call(tmp_path: Path) -> None:
 
     # the load request failed without a timeout (a proxy or an old Ollama refused it)
     rater = _rater(
-        load=lambda _t: False, describe=describe, on_gpu=lambda: checked.append(True) or False
+        load=lambda _t, num_ctx=None: False,
+        describe=describe,
+        on_gpu=lambda: checked.append(True) or False,
     )
     proposals = [_prop(f"feed{i}", "feed", 0.5, x=1500, y=100 + 100 * i) for i in range(2)]
     got = feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames")
@@ -422,7 +428,7 @@ def test_a_load_that_times_out_stops_the_labelling(tmp_path: Path) -> None:
     _write_frames(tmp_path / "frames")
     sent: list[int] = []
 
-    def load(_t: float) -> bool:
+    def load(_t: float, num_ctx: int | None = None) -> bool:
         rater.timed_out = True
         return False
 

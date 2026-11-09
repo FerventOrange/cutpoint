@@ -80,6 +80,33 @@ def test_load_success_sends_a_promptless_generate(monkeypatch, rater):
     ]
 
 
+def test_load_with_num_ctx_sends_it_and_describe_is_not_rechecked(monkeypatch):
+    checks: list[int] = []
+    monkeypatch.setattr(vision.memguard, "check_vision", lambda _r: checks.append(1))
+    monkeypatch.setattr(vision.memguard, "ollama_context", lambda _u, _m: None)
+    rater = vision.VisionRater(url=URL, model="qwen-test")
+    sent = _post(monkeypatch, _Resp({"message": {"content": "{}"}}))
+    assert rater.load(30, num_ctx=16384) is True
+    assert sent[0]["json"] == {"model": "qwen-test", "options": {"num_ctx": 16384}}
+    assert checks == [1]
+    rater.describe("p", [], {}, num_ctx=16384)
+    assert sent[1]["json"]["options"]["num_ctx"] == 16384
+    assert checks == [1]  # the same context: no second memory guard
+
+
+def test_load_with_num_ctx_keeps_a_larger_loaded_context(monkeypatch):
+    checks: list[int] = []
+    monkeypatch.setattr(vision.memguard, "check_vision", lambda _r: checks.append(1))
+    monkeypatch.setattr(vision.memguard, "ollama_context", lambda _u, _m: 50000)
+    rater = vision.VisionRater(url=URL, model="qwen-test")
+    sent = _post(monkeypatch, _Resp({"message": {"content": "{}"}}))
+    assert rater.load(30, num_ctx=16384) is True
+    assert sent[0]["json"]["options"] == {"num_ctx": 50000}
+    rater.describe("p", [], {}, num_ctx=16384)
+    assert sent[1]["json"]["options"]["num_ctx"] == 50000
+    assert checks == [1]
+
+
 @pytest.mark.parametrize(
     ("reply", "timed_out"),
     [

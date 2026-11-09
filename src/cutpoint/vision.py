@@ -831,9 +831,11 @@ class VisionRater:
         logger.warning("Vision reply not parseable: %.120s", content)
         return None
 
-    def load(self, timeout: float) -> bool:
+    def load(self, timeout: float, num_ctx: int | None = None) -> bool:
         """Load the Ollama model now (``/api/generate`` without a prompt), so that the next
-        request's timeout is for its answer alone. True when the model is in memory; False
+        request's timeout is for its answer alone. ``num_ctx``: the context the next request
+        needs (:meth:`_context`); the model is loaded with it, so that request does not make
+        Ollama reload it, and the memory guard runs once. True when the model is in memory; False
         (an INFO line) when the load failed, and :attr:`timed_out` then says whether it took
         longer than ``timeout`` s (any other failure, such as a server that refuses a request
         without a prompt, says nothing about the model). Hosted Vision roles load nothing: True.
@@ -843,13 +845,17 @@ class VisionRater:
         """
         if self.via:
             return True
-        self.check_memory()
+        body: dict[str, Any] = {"model": self.model}
+        if num_ctx is not None:
+            num_ctx = self._context(num_ctx)
+            body["options"] = {"num_ctx": num_ctx}
+        self.check_memory(num_ctx)
         self.used = True
         self.timed_out = False
         try:
             resp = requests.post(
                 f"{self.url}/api/generate",
-                json={"model": self.model},
+                json=body,
                 timeout=timeout,
                 allow_redirects=False,
             )
