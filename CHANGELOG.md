@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `cutpoint ui`: the Analyze dialog has a Refine block (#486). "Describe the footage" with Apply runs `cutpoint crashes <project> --context=<text>`, shown for analyzed projects whose style runs the crash step (action, sport, action-cam; before the first analysis also no style or Auto) and filled with the description in `activity.json`. "Look closer with vision" runs `cutpoint events <project>`; vision consent and availability warnings appear as job notes. Both are off before the first analysis and in Cutpoint lite, and "Look closer" is off for 360 projects. A cancelled run resumes as "Resume crash detection" or "Resume closer look".
+- `cutpoint ui`: the Analyze dialog has a Refine block (#486). "Describe the footage" with Apply runs `cutpoint crashes <project> --context=<text>`, shown where the analysis runs the crash step (an action, sport or action-cam style, footage Auto detected as action-cam or general, or sources with camera telemetry; before the first analysis also no style or Auto) and filled with the description in `activity.json`. "Look closer with vision" runs `cutpoint events <project>`; vision consent and availability warnings appear as job notes. Both are off before the first analysis and in Cutpoint lite, and "Look closer" is off for 360 projects. A cancelled run resumes as "Resume crash detection" or "Resume closer look".
 - `cutpoint ui` Settings > Analysis has a visual index toggle (`visual_index`), so the AI Chat's
   visual search works for `gaming`, `funny` and `commentary` footage without `--visual-index` on
   the command line (#798). It needs a CUDA GPU, the full install and its model files (`cutpoint setup`), and is

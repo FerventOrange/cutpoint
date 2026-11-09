@@ -505,10 +505,12 @@ not an analysis:
 
 Both are off until the project has been analyzed, and in Cutpoint lite (the reason is shown).
 Describe the footage shows only where the analysis runs the crash step: an action, sport or
-action-cam style, or no style or Auto before the first analysis. It is filled with the
+action-cam style, footage that Auto detection chose as action-cam or general, or sources with
+camera telemetry (the analysis wrote `crashes.json`); before the first analysis, no style or
+Auto. It is filled with the
 description `activity.json` holds and needs text to apply (there is no reset). Look closer with
-vision is off for 360 projects. A `vision_consent_needed` or `vision_unavailable` warning of the
-run is shown as a note in the job's log. A cancelled run is offered as **Resume crash detection**
+vision is off for 360 projects. A `vision_consent_needed`, `vision_unavailable`, `vlm_unavailable` or
+`context_not_applied` (the description was not used) warning of the run is shown as a note in the job's log. A cancelled run is offered as **Resume crash detection**
 or **Resume closer look**.
 
 API: the clips job accepts the new fields (also `crop`, `size` and `audio_fade`), the assemble
