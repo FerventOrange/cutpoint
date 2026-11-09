@@ -155,7 +155,7 @@ export const crashText = (crash) => (crash.confidence == null ? 'CRASH' : `CRASH
 /**
  * The kind a moment is shown as, for display only; highlights.json holds no such field. A crash comes
  * first: a crash moment or its reaction (``kind`` crash or wipeout, or a forced ``crash`` record) is
- * crash, which AI Chat does not name (pacing calls it action); a moment a weaker crash only marked keeps
+ * crash, which AI Chat names alike (pacing.moment_kind); a moment a weaker crash only marked keeps
  * its kind (it shows the crash badge). A moment made
  * from a talk stretch is dialogue, and a widened moment is judged by ``widened_from.label``, not its
  * title. Otherwise it follows
