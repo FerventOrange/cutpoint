@@ -3,7 +3,7 @@ FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d
 
 # ubuntu 24.04, pinned by multi-arch index digest so a rebuild at the same commit starts from the same base.
 # Dependabot (docker ecosystem) proposes updates.
-FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS base
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS base
 
 # ffmpeg: the same pinned BtbN static GPL build n9.0.2 that Linux CI uses, verified by SHA256.
 # Keep FFMPEG_LINUX_URL and FFMPEG_LINUX_SHA256 identical to the env of the test job in
