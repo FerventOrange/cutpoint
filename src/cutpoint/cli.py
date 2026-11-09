@@ -1280,10 +1280,22 @@ def _add_visual_index_argument(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _ollama_url_arg(text: str) -> str:
+    """argparse type of ``--ollama-url``: the value, if its port is valid."""
+    from cutpoint.backends import split_ollama_url  # noqa: PLC0415
+
+    try:
+        split_ollama_url(text.strip(), "--ollama-url")
+    except ValueError as err:
+        raise argparse.ArgumentTypeError(str(err)) from None
+    return text
+
+
 def _add_ollama_arguments(p: argparse.ArgumentParser) -> None:
     """``--ollama-url`` / ``--ollama-model`` for the vision step."""
     p.add_argument(
         "--ollama-url",
+        type=_ollama_url_arg,
         help="default: vision_assistant.url in config.json (when the Vision role is an Ollama), "
         "$OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
     )

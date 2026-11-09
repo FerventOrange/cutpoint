@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import run_json, warning_codes, write
+from conftest import envelope, run_json, warning_codes, write
 from cutpoint import analyze, cache, cli, crash
 from cutpoint.events import pipeline, scoring
 
@@ -181,3 +181,17 @@ def test_events_crash_layer_one_warning_line_per_unreachable_source(
     assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [
         [str(gone)]
     ]
+
+
+def test_a_bad_ollama_url_port_is_bad_args(home, capsys):
+    """#825: --ollama-url with an out-of-range port is refused at the command line."""
+    for cmd in (["analyze", "talk.mp4"], ["edit", "talk.mp4"]):
+        with pytest.raises(SystemExit) as exc:
+            run_json(capsys, [*cmd, "--ollama-url", "myhost:99999"])
+        assert exc.value.code == 2
+        doc = envelope(capsys.readouterr().out)
+        assert doc["ok"] is False and doc["error"]["code"] == "bad_args"
+        message = doc["error"]["message"]
+        assert "invalid port" in message and "myhost:99999" in message
+    args = cli._parse(cli.build_parser(), ["analyze", "talk.mp4", "--ollama-url", "myhost:11434"])
+    assert args.ollama_url == "myhost:11434"
