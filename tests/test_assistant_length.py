@@ -1135,6 +1135,45 @@ def test_an_asked_length_or_a_place_is_no_claim(summary: str, seconds: float | N
     assert (session.Turn._length_gap(summary, {"length": 34.0}) is not None) is (seconds == 60.0)
 
 
+@pytest.mark.parametrize(
+    ("summary", "seconds"),
+    [
+        # "as" is not "a s"
+        ("Moved the laugh to the start, now as the opener.", None),
+        ("Now 34 s total as planned.", 34.0),
+        ("Added the laugh, the video now runs 34 s overall as one sequence.", 34.0),
+        ("Added the laugh, now as funny as it gets.", None),
+        # the count words still read
+        ("It is about a minute total.", 60.0),
+        ("Now a minute and 4 s in all.", 64.0),
+        ("Now one minute overall.", 60.0),
+        ("Now 1:30 overall.", 90.0),
+        # the model's own claim to have hit the target is a claim
+        ("Now 60 s total to match the target.", 60.0),
+        ("Now 1:00 total so it hits the goal.", 60.0),
+    ],
+)
+def test_as_is_no_count_and_the_models_own_target_talk_is_a_claim(
+    summary: str, seconds: float | None
+) -> None:
+    assert context.claimed_seconds(summary) == seconds
+
+
+@pytest.mark.parametrize(
+    ("text", "seconds"),
+    [
+        ("make it as short as possible", None),
+        ("the overall as funny as you can", None),
+        ("about a minute total", 60),
+        ("make it a minute and 4 s", 64),
+        ("one minute overall", 60),
+        ("make it 1:30", 90),
+    ],
+)
+def test_as_is_no_count_in_a_target(text: str, seconds: float | None) -> None:
+    assert context.target_seconds(text) == seconds
+
+
 def test_a_summary_that_names_the_asked_length_is_taken_as_it_is() -> None:
     summary = "Added the laugh. You asked for a total of 4 minutes, but only 34 s exist."
     fake = FakeProvider([propose(summary, {"op": "add", "id": "m1"})] * 4)

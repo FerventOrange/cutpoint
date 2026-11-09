@@ -527,7 +527,7 @@ _COUNTS = {
     "twenty": 20,
     "thirty": 30,
 }
-_NUM = r"(\d+(?:[.,]\d+)?|" + "|".join(_COUNTS) + ")"
+_NUM = r"(\d+(?:[.,]\d+)?|(?:" + "|".join(_COUNTS) + r")\b)"
 _UNIT = r"\s*-?\s*(minutes?|mins?|seconds?|secs?|s)\b"
 # A length is a duration the message gives to the whole sequence: after a word that says so ("make
 # it ~4 min", "get it to 4 minutes", "total of 240 s", "under 2 minutes"), or before one ("4 minutes
@@ -697,6 +697,8 @@ _PART_AFTER = re.compile(r"[^.;:,!?\n()\d]{0,30}")
 # In a length's part of the sentence: the length the user asked for, not the sequence's ("You asked
 # for a total of 60 s", "below the target total of 60 s", "not the 60 s overall you wanted")
 _ASKED = re.compile(r"\b(?:you|ask(?:ed)?|want(?:ed)?|request(?:ed)?|target|goal|reach)\b", re.I)
+# After the length only the user's words count: the model's "to match the target" is its own claim
+_ASKED_AFTER = re.compile(r"\b(?:ask(?:ed)?|want(?:ed)?|request(?:ed)?)\b", re.I)
 _THE = re.compile(r"\bthe\s+$", re.I)
 _BY = re.compile(
     r"\bby\s+(?:(?:about|around|roughly|approx\w*|nearly|almost|just)\s+|~\s*)?$", re.I
@@ -758,7 +760,7 @@ def _other_length(m: re.Match[str]) -> bool:
         return True
     part = _PART.search(head).group()  # type: ignore[union-attr]
     after = _PART_AFTER.match(text, m.end()).group()  # type: ignore[union-attr]
-    if _ASKED.search(part) or _THE.search(part) or _ASKED.search(after):
+    if _ASKED.search(part) or _THE.search(part) or _ASKED_AFTER.search(after):
         return True
     if _BY.search(part):  # "Trimmed it by 20 s overall": a change
         return True
