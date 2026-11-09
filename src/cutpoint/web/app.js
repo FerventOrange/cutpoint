@@ -5629,6 +5629,9 @@ async function openSettings() {
   $('#setProjectsNote').textContent = st.projects_dir_locked
     ? 'Set by the CUTPOINT_PROJECTS_DIR environment variable. Change or unset it, then restart cutpoint ui, to choose the folder here.'
     : `${PROJECTS_NOTE} Saved in ${st.config_file}.`;
+  const index = $('#setVisualIndex');
+  index.checked = st.visual_index === true;
+  index.dataset.saved = String(index.checked);
   $('#setNerdStats').checked = S.nerdStats;
   S.nerdStatsWas = S.nerdStats; // Cancel or Escape goes back to this
   $('#setAdvExport').checked = S.advExport;
@@ -5652,6 +5655,8 @@ async function saveSettings() {
     if (!value) return (err.textContent = 'Enter the full path of a folder (~ is your home folder).');
     if (value !== input.dataset.saved) body.projects_dir = value;
   }
+  const index = $('#setVisualIndex');
+  if (index.checked !== (index.dataset.saved === 'true')) body.visual_index = index.checked;
   if (!Object.keys(body).length) return $('#settingsDialog').close();
   if (body.projects_dir && dirty() && !confirm('The project list will show the new folder. Discard the unsaved changes to this sequence?')) return;
   $('#settingsSave').disabled = true;
