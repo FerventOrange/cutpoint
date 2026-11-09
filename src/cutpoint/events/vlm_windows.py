@@ -381,9 +381,12 @@ GAP_FILL_TYPES = ("stopped/lift",)
 def _seed_priority(ev: dict[str, Any], types: tuple[EventType, ...] = ()) -> float | None:
     """Priority of a layer-1 event as a window seed (None = not a seed).
 
-    The ``seed`` of the first matching preset event type in ``types`` comes first.
+    The ``seed`` of the first matching preset event type in ``types`` comes first; a boost-only
+    type (``nominate`` false) is no seed.
     """
     t = first_match(types, ev)
+    if t and not t.nominate:
+        return None
     if t and t.seed is not None:
         return t.seed
     if ev.get("kind") == "audio":

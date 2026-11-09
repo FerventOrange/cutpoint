@@ -259,7 +259,9 @@ def test_first_match_and_a_preset_type_of_the_same_name() -> None:
         None,
     )
     mine = [t for t in eventtypes.types_for(preset) if t.name == "announcements"]
-    assert len(mine) == 1 and mine[0].score == 1.0 and mine[0].seed_gap_s is None
+    assert (
+        len(mine) == 1 and mine[0].score == 1.0 and mine[0].seed_gap_s is None and mine[0].nominate
+    )
 
 
 def test_event_boost_counts_half_a_kill_up_to_two() -> None:
@@ -274,36 +276,38 @@ def test_announcements_key_is_always_in_the_evidence() -> None:
     assert evidence["announcements"] == 0
 
 
-def test_seeds_are_a_minute_apart_the_best_first() -> None:
-    events = [
-        _json_event(100.0, conf=0.9),
-        _json_event(130.0, words=2, conf=0.8),  # the best: two learned words
-        _json_event(150.0, conf=0.95),
-        _json_event(220.0, conf=0.7),  # 90 s from 130, 60 s from 280
-        _json_event(280.0, conf=0.9),
-    ]
-    kills = [
-        {
-            "source": "rec.mp4",
-            "start": t,
-            "end": t + 4,
-            "kind": "ocr",
-            "type": "kill",
-            "label": "Alderwick > Boxer77",
-            "confidence": 0.9,
-            "details": {"player_kill": True},
-        }
-        for t in (101.0, 102.0)
-    ]
-    got = scoring.seeds(events + kills, eventtypes.DEFAULT_EVENT_TYPES, ("gaming",))
-    assert [s.start for s in got if s.name == "announcements"] == [130.0, 220.0, 280.0]
-    assert [s.start for s in got if s.name == "player_kills"] == [101.0, 102.0]
+def test_announcements_are_boost_only_and_seed_no_moment() -> None:
+    types = eventtypes.DEFAULT_EVENT_TYPES
+    (mine,) = [t for t in types if t.name == "announcements"]
+    assert not mine.nominate and mine.score
+    events = [_json_event(t, words=2) for t in (100.0, 130.0, 280.0)]
+    assert scoring.seeds(events, types, ("gaming",)) == []
+    kill = {
+        "source": "rec.mp4",
+        "start": 101.0,
+        "end": 105.0,
+        "kind": "ocr",
+        "type": "kill",
+        "label": "Alderwick > Boxer77",
+        "confidence": 0.9,
+        "details": {"player_kill": True},
+    }
+    got = scoring.seeds([*events, kill], types, ("gaming",))
+    assert [s.name for s in got] == ["player_kills"]
+
+
+def test_announcement_still_adds_points_to_an_overlapping_candidate() -> None:
+    cand = {"start": 90.0, "end": 120.0}
+    boost, evidence = scoring.event_boost(cand, [_json_event(100.0)], style="gaming")
+    assert boost == 3.0 and evidence["announcements"] == 1
+    far, _ = scoring.event_boost(cand, [_json_event(300.0)], style="gaming")
+    assert far == 0.0
 
 
 # --------------------------------------------------------------------------- VLM
 
 
-def test_vlm_seed_of_a_flagged_big_text_line() -> None:
+def test_no_vlm_seed_for_a_flagged_big_text_line() -> None:
     ev = {
         "kind": "ocr",
         "type": "bigtext",
@@ -312,13 +316,32 @@ def test_vlm_seed_of_a_flagged_big_text_line() -> None:
         "announce": True,
     }
     types = eventtypes.DEFAULT_EVENT_TYPES
-    assert vlm_windows._seed_priority(ev, types) == 0.6
+    assert vlm_windows._seed_priority(ev, types) is None  # boost-only: no window of its own
     assert vlm_windows._seed_priority(ev | {"type": "notice"}, types) is None
+
+
+# a custom type with a seed gap (the spacing is generic, announcements no longer use it)
+SPACED = (
+    eventtypes.EventType(
+        "relay", (eventtypes.Matcher("bigtext"),), score=3.0, seed=0.6, seed_gap_s=60.0
+    ),
+)
+
+
+def test_seeds_are_a_minute_apart_the_best_first() -> None:
+    events = [
+        _json_event(100.0, conf=0.9),
+        _json_event(130.0, words=2, conf=0.8),  # the best: two learned words
+        _json_event(150.0, conf=0.95),
+        _json_event(220.0, conf=0.7),  # 90 s from 130, 60 s from 280
+        _json_event(280.0, conf=0.9),
+    ]
+    got = scoring.seeds(events, SPACED, ("gaming",))
+    assert [s.start for s in got] == [130.0, 220.0, 280.0]
 
 
 def test_seeds_a_candidate_covers_take_no_room() -> None:
     events = [_json_event(100.0, words=2), _json_event(150.0)]
-    types = eventtypes.DEFAULT_EVENT_TYPES
-    got = scoring.seeds(events, types, ("gaming",), covered=lambda s: s.start < 120)
+    got = scoring.seeds(events, SPACED, ("gaming",), covered=lambda s: s.start < 120)
     assert [s.start for s in got] == [100.0, 150.0]
-    assert [s.start for s in scoring.seeds(events, types, ("gaming",))] == [100.0]
+    assert [s.start for s in scoring.seeds(events, SPACED, ("gaming",))] == [100.0]
