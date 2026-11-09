@@ -373,35 +373,79 @@ def test_budget_counts_the_tool_definitions_and_keeps_room_for_a_reply() -> None
     assert (with_tools.moments, with_tools.turns) == (40, 4)
 
 
+def sheet_chars(provider: OllamaProvider) -> int:
+    """What _fit counts one of the provider's sheets as."""
+    msg = watch.image_message("x", b"", watch.sheet_tokens(provider))
+    return context.size(msg["content"][1])
+
+
 @pytest.mark.parametrize(
-    ("tokens", "watching"), [(12288, False), (16384, False), (24576, True), (32768, True)]
+    ("tokens", "watching"),
+    [
+        (12288, False),
+        (16384, False),
+        (12288, True),
+        (16384, True),
+        (20000, True),
+        (24576, True),
+        (32768, True),
+    ],
 )
 def test_a_prompt_leaves_room_for_a_result_inside_the_fit_limit(
     tokens: int, watching: bool
 ) -> None:
-    """The table, the tool definitions and the sheets of a turn leave one whole tool result
-    under the limit _fit works to, or every round would leave out every earlier result. (At
-    8192 the rules, tools and sheets alone are over it: the budget is at its floor there.)"""
+    """The table, the rules (look_for's and view_moment's too), the tool definitions and the
+    sheets of a turn leave one whole tool result under the limit _fit works to, or every round
+    would leave out every earlier result. Above 8192 tokens; at 8192 and below the budget is at
+    its floor (test_at_8192_one_small_sheet_leaves_the_budget_at_its_floor)."""
     provider = OllamaProvider("http://h:1", "m", tokens)
     turn = session.Turn(provider, many(), "x")
     turn._watch = watching
     sheets = watch.view_cap(provider) if watching else 0
-    image = context.size({"type": "image"})
-    total = context.size(turn._messages(False)) + len(json.dumps(turn._tools())) + sheets * image
+    messages = turn._messages(False)
+    if watching:
+        assert "view_moment(id)" in messages[0]["content"]
+    assert "look_for" in messages[0]["content"]
+    tools = len(json.dumps(turn._tools()))
+    total = context.size(messages) + tools + sheets * sheet_chars(provider)
     limit = (tokens - context.REPLY_TOKENS) * session.FIT_CHARS_PER_TOKEN
     assert total + session.MAX_RESULT_CHARS <= limit
+
+
+def test_at_8192_one_small_sheet_leaves_the_budget_at_its_floor() -> None:
+    """At 8192 tokens with view_moment the rules, tools and one half-size sheet leave no room
+    for a whole result inside the fit limit: the budget takes its floor (a quarter of the
+    context) and a round may leave earlier results out. The prompt is still built."""
+    provider = OllamaProvider("http://h:1", "m", 8192)
+    assert (watch.view_cap(provider), watch.sheet_tokens(provider)) == (1, 750)
+    turn = session.Turn(provider, many(), "x")
+    turn._watch = True
+    plan = context.budget(8192, turn._tools(), images=1, image_tokens=750)
+    assert plan.chars == int(8192 // 4 * context.CHARS_PER_TOKEN)  # the floor
+    messages = turn._messages(False)
+    assert "view_moment(id)" in messages[0]["content"] and "m1" in messages[1]["content"]
+    assert messages[-1] == {"role": "user", "content": "x"}
+
+
+def test_the_fit_cap_counts_the_tools_and_sheets_as_size_counts_them() -> None:
+    """F13: in the fit cap a sheet takes what _fit counts it as (CHARS_PER_TOKEN), not
+    FIT_CHARS_PER_TOKEN."""
+    b = context.budget(20000, session.TOOLS, images=2, image_tokens=750)
+    fits = int((20000 - context.REPLY_TOKENS) * session.FIT_CHARS_PER_TOKEN)
+    fits -= int((b.tools + 2 * 750) * context.CHARS_PER_TOKEN) + session.MAX_RESULT_CHARS
+    assert b.chars == fits
 
 
 def test_the_8192_budget_is_what_the_fit_allows_less_the_tools_and_one_result() -> None:
     plain = context.budget(8192)
     assert plain.chars == int((8192 - context.REPLY_TOKENS) * session.FIT_CHARS_PER_TOKEN) - 6000
-    with_sheets = context.budget(8192, session.TOOLS, images=2)
+    with_sheets = context.budget(8192, session.TOOLS, images=1, image_tokens=750)
     assert with_sheets.chars == int(8192 // 4 * context.CHARS_PER_TOKEN)  # the floor
     assert with_sheets.chars <= plain.chars
 
 
 def test_the_budget_for_a_large_or_hosted_context_is_not_cut_by_the_fit_limit() -> None:
-    for tokens in (32768, 50000, 200000):
+    for tokens in (50000, 200000):
         b = context.budget(tokens, session.TOOLS, images=4)
         reserve = max(context.REPLY_TOKENS, int(tokens * context.REPLY_SHARE))
         free = tokens - reserve - b.tools - 4 * context.IMAGE_TOKENS
@@ -430,6 +474,7 @@ def test_size_counts_text_wherever_it_sits_and_an_image_as_its_tokens() -> None:
     assert context.size(nested) == len("text") + len("hello") + len("m1")
     image = {"type": "image", "media_type": "image/jpeg", "data": "A" * 100000}
     assert context.size(image) == int(context.IMAGE_TOKENS * context.CHARS_PER_TOKEN)
+    assert context.size({**image, "tokens": 750}) == int(750 * context.CHARS_PER_TOKEN)
     assert context.size(None) == 0 and context.size(7) == 0
 
 

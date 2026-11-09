@@ -157,6 +157,7 @@ class Budget:
     tools: int = 0  # tokens of the tool definitions the request carries
     tight: bool = False  # half the room: the retry after a cut-off reply
     images: int = 0  # images (timeline sheets) a turn may add
+    image_tokens: int = IMAGE_TOKENS  # of each of them
 
     @property
     def chars(self) -> int:
@@ -164,41 +165,48 @@ class Budget:
         turn may add and the room for a reply or tool results (:data:`REPLY_TOKENS`,
         :data:`REPLY_SHARE`). In a small context also under what the turn's fit allows
         (``FIT_CHARS_PER_TOKEN``) once one whole tool result follows the prompt, or the first
-        round would already leave every earlier result out."""
+        round would already leave every earlier result out; the tools and images count there
+        as :func:`size` counts them (``CHARS_PER_TOKEN``)."""
         reserve = max(REPLY_TOKENS, int(self.tokens * REPLY_SHARE))
-        pictures = self.images * IMAGE_TOKENS
+        pictures = self.images * self.image_tokens
         free = max(self.tokens - reserve - self.tools - pictures, self.tokens // 4)
         room = int(free * CHARS_PER_TOKEN)
-        fits = int((self.tokens - REPLY_TOKENS - pictures) * FIT_CHARS_PER_TOKEN)
-        fits -= int(self.tools * CHARS_PER_TOKEN) + MAX_RESULT_CHARS
+        fits = int((self.tokens - REPLY_TOKENS) * FIT_CHARS_PER_TOKEN)
+        fits -= int((self.tools + pictures) * CHARS_PER_TOKEN) + MAX_RESULT_CHARS
         floor = int(self.tokens // 4 * CHARS_PER_TOKEN)
         return max(min(room, fits), floor) // (2 if self.tight else 1)
 
 
 def budget(
-    context_tokens: int, tools: Any = None, *, tight: bool = False, images: int = 0
+    context_tokens: int,
+    tools: Any = None,
+    *,
+    tight: bool = False,
+    images: int = 0,
+    image_tokens: int = IMAGE_TOKENS,
 ) -> Budget:
     """The profile for a model with ``context_tokens``: 40 moments and 4 turns at 8k or less,
     more for a larger context. ``tools``: the tool definitions sent with the request, whose size
     is kept free. ``tight`` halves the prompt and the turns repeated. ``images``: sheets a turn
-    may add, whose room is kept free."""
+    may add, ``image_tokens`` each, whose room is kept free."""
     used = int(len(json.dumps(tools)) / CHARS_PER_TOKEN) if tools else 0
     if context_tokens <= LOCAL_TOKENS:
         moments, turns = 40, 4
     else:
         scale = context_tokens / LOCAL_TOKENS
         moments, turns = min(200, int(40 * scale)), min(12, 4 + int(scale))
-    return Budget(context_tokens, moments, turns // 2 if tight else turns, used, tight, images)
+    turns = turns // 2 if tight else turns
+    return Budget(context_tokens, moments, turns, used, tight, images, image_tokens)
 
 
 def size(value: Any) -> int:
     """Characters of the text in a message or a list of them (JSON text, content parts, tool
-    calls), an image counting as :data:`IMAGE_TOKENS`."""
+    calls), an image counting as its ``tokens`` (:data:`IMAGE_TOKENS` without)."""
     if isinstance(value, str):
         return len(value)
     if isinstance(value, dict):
         if value.get("type") == "image":
-            return int(IMAGE_TOKENS * CHARS_PER_TOKEN)
+            return int(value.get("tokens", IMAGE_TOKENS) * CHARS_PER_TOKEN)
         return sum(size(v) for v in value.values())
     if isinstance(value, list):
         return sum(size(v) for v in value)
@@ -740,6 +748,7 @@ def build_messages(
     json_tools: list[str] | None = None,
     images: bool = False,
     target: float | None = None,
+    late_rules: str = "",
 ) -> list[dict[str, Any]]:
     """The conversation for one new user message ``text``.
 
@@ -751,9 +760,12 @@ def build_messages(
         json_tools: Tool names, when the model answers in JSON mode instead of tool calls.
         images: Whether view_moment is offered, so the rules say it shows frames.
         target: The length in seconds the user asked for, if any (:func:`target_seconds`).
+        late_rules: Rules that follow all others (look_for, view_moment), measured with them.
     """
-    text_rules = rules(table, images=images) + (
-        JSON_RULES + ", ".join(json_tools) + "." if json_tools else ""
+    text_rules = (
+        rules(table, images=images)
+        + (JSON_RULES + ", ".join(json_tools) + "." if json_tools else "")
+        + late_rules
     )
     seq = sequence_block(table)
     room = plan.chars - len(text_rules) - len(text) - len(seq)
