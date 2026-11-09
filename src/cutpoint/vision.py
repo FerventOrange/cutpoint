@@ -394,6 +394,7 @@ class VisionRater:
         # True: rate() gives only cached ratings and asks the model nothing (Ollama down)
         self.cache_only = False
         self.last_prompt_tokens: int | None = None  # of the last describe() (Ollama only)
+        self.timed_out = False  # the last describe() to Ollama ran out of its timeout
         # per source: (cache file, its ratings), or None when the source cannot be keyed
         self._ratings: dict[Path, tuple[Path, dict[str, Any]] | None] = {}
 
@@ -607,6 +608,7 @@ class VisionRater:
         }
         self.check_memory(num_ctx)
         self.used = True
+        self.timed_out = False
         try:
             resp = requests.post(
                 f"{self.url}/api/chat", json=payload, timeout=timeout, allow_redirects=False
@@ -617,6 +619,7 @@ class VisionRater:
             content = body["message"]["content"]
             data = _json_object(content)
         except (requests.RequestException, KeyError, TypeError, ValueError) as err:
+            self.timed_out = isinstance(err, requests.Timeout)
             logger.warning("Vision request failed: %s", err)
             return None
         tokens = body.get("prompt_eval_count")
@@ -826,6 +829,62 @@ class VisionRater:
                 "retrying" if attempt < len(_ATTEMPTS) else "giving up",
             )
         logger.warning("Vision reply not parseable: %.120s", content)
+        return None
+
+    def load(self, timeout: float, num_ctx: int | None = None) -> bool:
+        """Load the Ollama model now (``/api/generate`` without a prompt), so that the next
+        request's timeout is for its answer alone. ``num_ctx``: the context the next request
+        needs (:meth:`_context`); the model is loaded with it, so that request does not make
+        Ollama reload it, and the memory guard runs once. True when the model is in memory; False
+        (an INFO line) when the load failed, and :attr:`timed_out` then says whether it took
+        longer than ``timeout`` s (any other failure, such as a server that refuses a request
+        without a prompt, says nothing about the model). Hosted Vision roles load nothing: True.
+
+        Raises:
+            LowMemoryError: If the model's memory is not free (:meth:`check_memory`).
+        """
+        if self.via:
+            return True
+        body: dict[str, Any] = {"model": self.model}
+        if num_ctx is not None:
+            num_ctx = self._context(num_ctx)
+            body["options"] = {"num_ctx": num_ctx}
+        self.check_memory(num_ctx)
+        self.used = True
+        self.timed_out = False
+        try:
+            resp = requests.post(
+                f"{self.url}/api/generate",
+                json=body,
+                timeout=timeout,
+                allow_redirects=False,
+            )
+            refuse_redirect(resp)
+            resp.raise_for_status()
+        except requests.RequestException as err:
+            self.timed_out = isinstance(err, requests.Timeout)
+            logger.info("Ollama model %s did not load: %s", self.model, err)
+            return False
+        return True
+
+    def on_gpu(self) -> bool | None:
+        """Whether Ollama holds any of the loaded model in GPU memory (``size_vram`` of
+        ``/api/ps``): False when it runs on the CPU alone; None when not known (a hosted
+        Vision role, the model not loaded, no answer)."""
+        if self.via:
+            return None
+        try:
+            resp = requests.get(f"{self.url}/api/ps", timeout=3, allow_redirects=False)
+            refuse_redirect(resp)
+            resp.raise_for_status()
+            models = resp.json().get("models", [])
+        except (requests.RequestException, ValueError, AttributeError):
+            return None
+        for m in models if isinstance(models, list) else []:
+            names = (self.model, f"{self.model}:latest")
+            if isinstance(m, dict) and (m.get("name") in names or m.get("model") in names):
+                vram = m.get("size_vram")
+                return vram > 0 if isinstance(vram, int) else None
         return None
 
     def unload(self) -> None:

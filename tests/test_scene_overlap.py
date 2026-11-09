@@ -395,6 +395,7 @@ def hw_ffmpeg(monkeypatch, *, cancels, calls):
     """For the real ``scene_cuts``: the GPU run fails with FFmpegError (and sets the event when
     ``cancels``); the CPU run succeeds. ``calls`` records which ran."""
     monkeypatch.setattr(analyze, "decoder_for", lambda src: ffmpeg_utils.HwDecoder("cuda"))
+    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 60.0))
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
     monkeypatch.setattr(analyze, "STOP_GRACE_S", 0.01)
     monkeypatch.setattr(analyze, "_detect", lambda proxy, path, **k: CUTS)
@@ -709,3 +710,116 @@ def test_a_stopped_transcription_kills_the_real_child_of_the_scene_job(
     assert err.value is boom
     assert sleeper[0].poll() is not None and not scene_threads()
     assert not (world.cdir / "scenes.json").exists() and not (world.cdir / "proxy.mp4").exists()
+
+
+# ---------------------------------------------------------------- scene proxy command (#730)
+
+
+def _proxy_command(tmp_path, monkeypatch, hw, duration=60.0, pix_fmt="yuv420p"):
+    """The ffmpeg commands the real ``scene_cuts`` runs when ``hw`` is the decoder (the GPU run
+    fails when ``hw`` is set, so the CPU one follows)."""
+    cmds = []
+    monkeypatch.setattr(analyze, "decoder_for", lambda src: hw)
+    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, duration, pix_fmt=pix_fmt))
+    monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
+    monkeypatch.setattr(analyze, "_detect", lambda proxy, path, **k: CUTS)
+
+    def run_progress(args, total, label, **kw):
+        cmds.append(args)
+        if hw is not None and len(cmds) == 1:
+            raise FFmpegError("no gpu")
+        return ffmpeg_utils.ProgressResult(stderr="", out_time=total)
+
+    monkeypatch.setattr(analyze, "run_progress", run_progress)
+    assert analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, duration) == CUTS
+    return cmds
+
+
+def _vf(cmd):
+    return cmd[cmd.index("-vf") + 1]
+
+
+def test_a_cuda_scene_proxy_downloads_after_fps(tmp_path, monkeypatch):
+    cmds = _proxy_command(tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"))
+    gpu = cmds[0]
+    assert gpu[gpu.index("-hwaccel") : gpu.index("-i")] == [
+        "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
+    ]  # fmt: skip
+    assert _vf(gpu) == "fps=10,hwdownload,format=nv12,scale=320:-2"
+
+
+def test_a_10_bit_cuda_scene_proxy_downloads_p010le(tmp_path, monkeypatch):
+    cmds = _proxy_command(
+        tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"), pix_fmt="yuv420p10le"
+    )
+    assert _vf(cmds[0]) == "fps=10,hwdownload,format=p010le,scale=320:-2"
+
+
+def test_a_444_cuda_scene_proxy_keeps_the_plain_gpu_path(tmp_path, monkeypatch):
+    gpu = _proxy_command(tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"), pix_fmt="yuv444p")[
+        0
+    ]
+    assert gpu[gpu.index("-hwaccel") : gpu.index("-i")] == ["-hwaccel", "cuda"]
+    assert "-hwaccel_output_format" not in gpu
+    assert _vf(gpu) == "fps=10,scale=320:-2"
+
+
+def test_a_vaapi_scene_proxy_downloads_after_fps(tmp_path, monkeypatch):
+    hw = ffmpeg_utils.HwDecoder("vaapi", "/dev/dri/renderD128")
+    gpu = _proxy_command(tmp_path, monkeypatch, hw)[0]
+    assert gpu[gpu.index("-hwaccel") : gpu.index("-i")] == [
+        "-hwaccel", "vaapi", "-hwaccel_device", "/dev/dri/renderD128",
+        "-hwaccel_output_format", "vaapi",
+    ]  # fmt: skip
+    assert _vf(gpu) == "fps=10,hwdownload,format=nv12,scale=320:-2"
+
+
+def test_a_long_file_scene_proxy_keeps_its_keyframe_skip_and_downloads_after_fps(
+    tmp_path, monkeypatch
+):
+    long = analyze.LONG_FILE_S + 1
+    gpu = _proxy_command(tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"), long)[0]
+    assert gpu[:2] == ["ffmpeg", "-y"] and "-skip_frame" in gpu
+    assert _vf(gpu) == "fps=2,hwdownload,format=nv12,scale=256:-2"
+
+
+def test_a_cpu_scene_proxy_has_no_gpu_options_or_download(tmp_path, monkeypatch):
+    (cpu,) = _proxy_command(tmp_path, monkeypatch, None)
+    assert "-hwaccel" not in cpu and "-hwaccel_output_format" not in cpu
+    assert _vf(cpu) == "fps=10,scale=320:-2"
+
+
+def test_the_cpu_fallback_after_a_gpu_failure_is_the_plain_cpu_command(tmp_path, monkeypatch):
+    gpu, cpu = _proxy_command(tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"))
+    assert "-hwaccel" in gpu and "hwdownload" in _vf(gpu)
+    assert "-hwaccel" not in cpu and "-hwaccel_output_format" not in cpu
+    assert _vf(cpu) == "fps=10,scale=320:-2"
+
+
+def test_a_failing_probe_on_a_gpu_decoder_runs_the_plain_cpu_command(tmp_path, monkeypatch):
+    cmds = []
+
+    def broken_probe(path):
+        raise FFmpegError("x")
+
+    monkeypatch.setattr(analyze, "decoder_for", lambda src: ffmpeg_utils.HwDecoder("cuda"))
+    monkeypatch.setattr(analyze, "probe", broken_probe)
+    monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
+    monkeypatch.setattr(analyze, "_detect", lambda proxy, path, **k: CUTS)
+
+    def run_progress(args, total, label, **kw):
+        cmds.append(args)
+        return ffmpeg_utils.ProgressResult(stderr="", out_time=total)
+
+    monkeypatch.setattr(analyze, "run_progress", run_progress)
+    assert analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0) == CUTS
+    cpu = cmds[-1]
+    assert "-hwaccel" not in cpu and "-hwaccel_output_format" not in cpu
+    assert _vf(cpu) == "fps=10,scale=320:-2"
+
+
+def test_an_unknown_pix_fmt_keeps_the_plain_cuda_path(tmp_path, monkeypatch):
+    gpu = _proxy_command(tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"), pix_fmt="")[0]
+    assert gpu[gpu.index("-hwaccel") : gpu.index("-i")] == ["-hwaccel", "cuda"]
+    assert "-hwaccel_output_format" not in gpu
+    assert _vf(gpu) == "fps=10,scale=320:-2"
