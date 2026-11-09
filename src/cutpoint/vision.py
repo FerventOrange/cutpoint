@@ -16,7 +16,7 @@ import numpy as np
 import requests
 
 from cutpoint import cache, memguard, paths, state
-from cutpoint.backends import ollama_url
+from cutpoint.backends import normalize_ollama_url, ollama_url
 from cutpoint.config import get_config
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import grab_frame_jpeg
@@ -364,10 +364,13 @@ class VisionRater:
                 or (v_ast.model if v_ast.provider == "ollama" else "")
                 or default_model()
             )
-            raw_url = (
-                url or (v_ast.url if v_ast.provider == "ollama" else "") or ollama_url()
-            ).rstrip("/")
-            self.url = raw_url if raw_url.startswith("http") else f"http://{raw_url}"
+            if url:  # --ollama-url: normalised like $OLLAMA_HOST (#840)
+                self.url = normalize_ollama_url(url, "--ollama-url")
+            else:
+                raw_url = (
+                    (v_ast.url if v_ast.provider == "ollama" else "") or ollama_url()
+                ).rstrip("/")
+                self.url = raw_url if raw_url.startswith("http") else f"http://{raw_url}"
             # the cache key's host (rating_key), as for a hosted provider: a local and a
             # remote Ollama with one model rate apart (#673)
             self.host = _host_port(self.url)

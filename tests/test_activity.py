@@ -243,7 +243,8 @@ def test_default_ask_survives_a_bad_port(home, monkeypatch, caplog):
     monkeypatch.delenv("OLLAMA_HOST")
     with caplog.at_level("WARNING"):
         assert activity.default_ask("myhost:99999") == (None, None)
-    assert "Activity detection: Ollama not usable" not in caplog.text  # a flag is no OLLAMA_HOST
+    assert "Activity detection: Ollama not usable" in caplog.text  # a flag is checked like the env
+    assert "--ollama-url 'myhost:99999'" in caplog.text
 
 
 def test_resolve_hands_the_ollama_flags_to_default_ask(tmp_path, monkeypatch, footage):

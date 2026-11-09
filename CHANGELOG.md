@@ -927,6 +927,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An explicit `--ollama-url` is normalised like `OLLAMA_HOST`: `myhost` gets `http://` and port 11434, `0.0.0.0:11434` becomes `127.0.0.1:11434`, a bare `::1` is bracketed and a trailing `/` is dropped. Before, the value was used as given, so `--ollama-url myhost` went to port 80 and vision was skipped (#840).
 - A vision rating no longer counts once `events` widens a moment or a menu trim cuts it: its frames
   no longer show the clip, so the score, `vision_label` and the label it gave are put aside in
   `vision_stale` until the moment has the rated span again (#802).

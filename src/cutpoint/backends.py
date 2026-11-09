@@ -33,16 +33,34 @@ def split_ollama_url(raw: str, what: str) -> tuple[SplitResult, int | None]:
     return parts, port
 
 
+def normalize_ollama_url(raw: str, what: str) -> str:
+    """``raw`` as an Ollama base URL, without a trailing slash, normalised like Ollama's own
+    client does: a value without a scheme (``myhost``, ``0.0.0.0:11434``, ``::1``) gets
+    ``http://`` and, if it has no port, ``:11434``; a bare IPv6 address is bracketed; a
+    bind-all host (``0.0.0.0``, ``::`` or empty, as set for ``ollama serve``) becomes
+    ``127.0.0.1`` with the port kept. ``user:pw@`` is kept.
+
+    Used for ``$OLLAMA_HOST``, ``ollama_url`` in ``config.json`` and ``--ollama-url`` alike.
+
+    Raises:
+        ValueError: ``<what> '<raw>': invalid port`` if the port is not a number in 0-65535.
+    """
+    parts, port = split_ollama_url(raw.strip(), what)
+    host = parts.hostname or ""
+    if host in _ANY_HOST:
+        host = "127.0.0.1"
+    elif ":" in host:
+        host = f"[{host}]"
+    auth = parts.netloc.rpartition("@")[0]
+    netloc = (f"{auth}@" if auth else "") + host + (f":{port}" if port else "")
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment)).rstrip("/")
+
+
 def ollama_url() -> str:
     """Ollama base URL, without a trailing slash.
 
     Taken from ``$OLLAMA_HOST``, else ``ollama_url`` in ``config.json``, else
-    ``http://127.0.0.1:11434``, and normalised like Ollama's own client does:
-    a value without a scheme (``myhost``, ``0.0.0.0:11434``, ``::1``) gets
-    ``http://`` and, if it has no port, ``:11434``; a bare IPv6 address is
-    bracketed; a bind-all host (``0.0.0.0``, ``::`` or empty, as set for
-    ``ollama serve``) becomes ``127.0.0.1`` with the port kept. ``user:pw@``
-    is kept.
+    ``http://127.0.0.1:11434``, and normalised by :func:`normalize_ollama_url`.
 
     Raises:
         ValueError: If the port is not a number in 0-65535.
@@ -52,12 +70,4 @@ def ollama_url() -> str:
         or get_config().ollama_url.strip()
         or OLLAMA_FALLBACK_URL
     )
-    parts, port = split_ollama_url(raw, "OLLAMA_HOST/ollama_url")
-    host = parts.hostname or ""
-    if host in _ANY_HOST:
-        host = "127.0.0.1"
-    elif ":" in host:
-        host = f"[{host}]"
-    auth = parts.netloc.rpartition("@")[0]
-    netloc = (f"{auth}@" if auth else "") + host + (f":{port}" if port else "")
-    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment)).rstrip("/")
+    return normalize_ollama_url(raw, "OLLAMA_HOST/ollama_url")
