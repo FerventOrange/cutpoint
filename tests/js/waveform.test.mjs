@@ -273,10 +273,20 @@ test('the moment kind colours are 3:1 on the stage ground in Graphite, Blue and 
   };
   for (const [name, [blocks, ground]] of Object.entries(themes)) {
     const bg = token(ground, ...blocks);
-    for (const k of ['action', 'scenic', 'funny', 'dialogue']) {
+    for (const k of ['action', 'scenic', 'funny', 'dialogue', 'crash']) {
       assert.ok(ratio(token(`--k-${k}`, ...blocks), bg) >= 3, `${name} --k-${k} on the ground`);
       // Light darkens the colours for its pale ground; the bars and dots on the kind's dark tint (no theme changes it) must stay 3:1
       if (name === 'light') assert.ok(ratio(token(`--k-${k}`, ...blocks), token(`--k-${k}-tint`, ...blocks)) >= 3, `${name} --k-${k} on its tint`);
+    }
+  }
+});
+
+test('the crash badge text is 4.5:1 on the tile grounds in Graphite, Blue and Light', () => {
+  const root = block(':root');
+  const themes = { graphite: [root], blue: [block(':root[data-theme="blue"]'), root], light: [block(':root[data-theme="light"]'), root] };
+  for (const [name, blocks] of Object.entries(themes)) {
+    for (const bg of ['--slate', '--panel', '--deep']) {
+      assert.ok(ratio(token('--crash-text', ...blocks), token(bg, ...blocks)) >= 4.5, `${name} --crash-text on ${bg}`);
     }
   }
 });

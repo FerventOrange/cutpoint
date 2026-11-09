@@ -92,3 +92,22 @@ test('kindOf: a moment a stretch only widened keeps its own type, from the label
   assert.equal(u.kindOf(widened), 'funny');
   assert.equal(u.kindOf({ ...widened, widened_from: { label: 'ski-moment' } }), 'action', 'a generic label names nothing: the transcript decides');
 });
+
+test('kindOf: a crash comes first (its crash record, or kind crash or wipeout); KINDS ends with Crashes', () => {
+  assert.deepEqual(Object.entries(u.KINDS), [['action', 'Action'], ['scenic', 'Scenic'], ['funny', 'Funny'], ['dialogue', 'Dialogue'], ['crash', 'Crashes']]);
+  assert.equal(u.kindOf({ label: 'laugh', crash: { confidence: 0.4 }, crash_forced: false }), 'funny', 'a moment a weaker crash marked keeps its kind');
+  assert.equal(u.kindOf({ label: 'crash-reaction', kind: 'crash', crash: { confidence: 0.4 }, crash_forced: false }), 'crash', 'a weak crash moment');
+  assert.equal(u.kindOf({ label: 'crash-reaction', must_include: true, crash: { confidence: 0.9 } }), 'crash', 'a forced reaction, older record without kind');
+  assert.equal(u.kindOf({ label: 'wipeout', kind: 'wipeout' }), 'crash');
+  assert.equal(u.kindOf({ label: 'x', signals: { events: { nominated: ['dialogue-funny'] } }, crash: { confidence: 0.9 }, crash_forced: true }), 'crash');
+  assert.equal(u.kindOf({ label: 'ski-moment', signals: { crash: 0.9 } }), 'action', 'a crash cue alone stays action, as in AI Chat');
+});
+
+test('crashOf and crashText: the confidence with two decimals, forced from crash_forced or must_include', () => {
+  assert.equal(u.crashOf({}), null);
+  assert.deepEqual(u.crashOf({ crash: { confidence: 0.5 }, crash_confidence: 0.912, crash_forced: true }), { confidence: 0.912, forced: true });
+  assert.deepEqual(u.crashOf({ crash: { confidence: 0.72 }, must_include: true }), { confidence: 0.72, forced: true }, 'an older action-cam record');
+  assert.deepEqual(u.crashOf({ crash: {}, crash_forced: false }), { confidence: null, forced: false });
+  assert.equal(u.crashText({ confidence: 0.912 }), 'CRASH 0.91');
+  assert.equal(u.crashText({ confidence: null }), 'CRASH');
+});

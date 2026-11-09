@@ -121,7 +121,7 @@ def drop_menu_time(hl: dict[str, Any], ev: dict[str, Any]) -> None:
     ``duration``, transcript snippet (from the analysis's ``whisper_model``), keywords
     and a label named after a cut-off keyword follow (:func:`_retranscribe`), and a vision
     rating of the old span goes stale (:func:`cutpoint.analyze.sync_vision`). Menu time
-    only in the middle stays.
+    only in the middle stays. A ``must_include`` candidate (a forced crash) is left as it is.
     One INFO line per source with menu time in its candidates (counts and seconds).
     """
     from cutpoint.analyze import sync_vision  # noqa: PLC0415 - imports this module
@@ -138,7 +138,7 @@ def drop_menu_time(hl: dict[str, Any], ev: dict[str, Any]) -> None:
     for c in hl.get("candidates", []):
         spans = by_src.get(c["source"])
         menu = _overlap(c["start"], c["end"], spans) if spans else 0.0
-        if not spans or menu <= 0:
+        if not spans or menu <= 0 or c.get("must_include"):  # a forced crash moment stays
             kept.append(c)
             continue
         n = counts.setdefault(c["source"], [0, 0.0, 0, 0.0, 0, 0.0])

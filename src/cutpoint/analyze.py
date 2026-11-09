@@ -45,7 +45,7 @@ from cutpoint import (
     runstate,
     scorer,
 )
-from cutpoint.config import remap_source, unc_path
+from cutpoint.config import path_key, remap_source, unc_path
 from cutpoint.dsp import conv_same
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events import paths as event_paths
@@ -164,9 +164,9 @@ class Candidate:
     transcript_unsure: list[tuple[int, float]] | None = None  # see _transcript_snippet
     score: float = 0.0
     label: str = ""
-    kind: str = ""  # action-cam: dominant feature of the clip (airtime, crash, speed, ...)
-    must_include: bool = False  # action-cam: confident crash (cutpoint clips always exports it)
-    event: dict[str, Any] | None = None  # action-cam: the crash behind a must-include clip
+    kind: str = ""  # action-cam: dominant feature (airtime, crash, ...); a crash moment: crash
+    must_include: bool = False  # a confident crash (cutpoint clips always exports it)
+    event: dict[str, Any] | None = None  # the crash behind a crash moment (or one it overlaps)
     nominated: list[str] = field(default_factory=list)  # event types that seeded it (nominate)
     whole: bool = False  # a dialogue stretch: its span stays as marked (no max_len, no merging)
     over: bool = (
@@ -1672,6 +1672,151 @@ def _ski_candidates(
     return cands
 
 
+CRASH_KIND = "crash"  # the ``kind`` of a crash moment outside action-cam (ski's: ``wipeout``)
+
+
+def _crash_event(c: dict[str, Any]) -> dict[str, Any]:
+    """The ``crash`` record of a candidate for the crashes.json crash ``c`` (as ski's)."""
+    return {
+        "type": "crash",
+        "id": c.get("id"),
+        "t": c["t0"],
+        "end": c["t1"],
+        "confidence": c["confidence"],
+    }
+
+
+def _crash_entries(crashes: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The usable crashes of a crashes.json object: a source, a finite confidence, ``t0`` and
+    ``t1``, and a planned clip (with a reaction that has a start and end, or none)."""
+
+    def num(x: Any) -> bool:
+        return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+    raw = crashes.get("crashes") if isinstance(crashes, dict) else None
+    return [
+        c
+        for c in (raw if isinstance(raw, list) else [])
+        if isinstance(c, dict)
+        and isinstance(c.get("source"), str)
+        and all(num(c.get(k)) for k in ("confidence", "t0", "t1"))
+        and isinstance(c.get("clip"), dict)
+        and num(c["clip"].get("start"))
+        and num(c["clip"].get("end"))
+        and (
+            (r := c["clip"].get("reaction")) is None
+            or (isinstance(r, dict) and num(r.get("start")) and num(r.get("end")))
+        )
+    ]
+
+
+def _crash_windows(
+    r: SourceResult, c: dict[str, Any], style: Style, forced: bool
+) -> list[Candidate]:
+    """The candidates of the crash ``c`` in the part ``r`` (absolute source time): its planned
+    clip (approach, impact, aftermath) and, when ``forced``, its reaction. A forced one scores
+    its confidence (:func:`cutpoint.scorer.score`); any other is scored from the part's grids
+    over its span, as a picked window there would be. Word edges only (no scene snapping)."""
+    ps, off, span = r.signals, r.offset, r.duration
+    if ps is None:
+        return []
+    spans = [("crash", c["clip"]["start"], c["clip"]["end"], c["t0"])]
+    reaction = c["clip"].get("reaction")
+    if forced and isinstance(reaction, dict):
+        spans.append(("crash reaction", reaction["start"], reaction["end"], reaction["start"]))
+    words_only = replace(style, snap_sentences=False)
+    combined = scorer.combined(ps.sig, style)
+    out = []
+    for label, a, b, peak_t in spans:
+        a, b = max(0.0, a - off), min(span, b - off)
+        if b - a < 1.0:
+            continue  # in another part of a recovered source
+        cand = Candidate(
+            r.source,
+            a,
+            b,
+            peak_t - off,
+            0.0,
+            {},
+            label_hint=label,
+            kind=CRASH_KIND,
+            must_include=forced,
+            event=_crash_event(c),
+        )
+        _snap(cand, [], ps.segments, span, words_only)
+        i = max(0, min(int(cand.start / DT), ps.n - 1))
+        j = max(i + 1, int(cand.end / DT))
+        cand.signals = {k: round(float(v[i:j].max()), 3) for k, v in ps.sig.items()}
+        cand.peak = float(c["confidence"]) if forced else float(combined[i:j].max())
+        out.append(cand)
+    return describe_candidates(out, style, ps, off)
+
+
+def add_crash_candidates(
+    results: list[SourceResult], style: Style, crashes: dict[str, Any] | None
+) -> None:
+    """Make the crashes of ``crashes`` (a crashes.json object) moments of ``results`` (any
+    style but action-cam, whose own scorer reads crashes.json).
+
+    Only crashes at or above the project's floor (:func:`cutpoint.crash.crash_floor`) count.
+    One at or above ``style.must_include_crash`` (0: none) is forced, as in action-cam: its
+    clip and its reaction become must-include candidates (``kind`` crash) that replace the
+    candidates they overlap. A weaker one marks the candidate it overlaps most (its ``event``;
+    span and score stay), or else becomes a candidate of its own, scored and ranked like any
+    other. A crash counts in the part (of a recovered source) its ``t0`` falls in."""
+    from cutpoint.crash import crash_floor  # noqa: PLC0415
+
+    entries = _crash_entries(crashes)
+    if not entries:
+        return
+    floor = crash_floor(c["confidence"] for c in entries)
+    at = style.must_include_crash
+    n_forced = n_new = n_marked = 0
+    for r in results:
+        if r.signals is None:
+            continue
+        key = path_key(str(r.source))
+        mine = [
+            c
+            for c in entries
+            if c["confidence"] >= floor
+            and path_key(c["source"]) == key
+            and r.offset <= c["t0"] < r.offset + r.duration
+        ]
+        forced = [c for c in mine if at > 0 and c["confidence"] >= at]
+        made = [x for c in forced for x in _crash_windows(r, c, style, forced=True)]
+        if made:
+            r.candidates = made + [
+                x
+                for x in r.candidates
+                if not any(x.start < f.end and f.start < x.end for f in made)
+            ]
+            n_forced += len(forced)
+        weak = sorted((c for c in mine if c not in forced), key=lambda c: -c["confidence"])
+        for c in weak:
+            a, b = c["clip"]["start"], c["clip"]["end"]
+            hits = [x for x in r.candidates if x.start < b and a < x.end]
+            if hits:
+                host = max(hits, key=lambda x: min(b, x.end) - max(a, x.start))
+                if host.event is None:  # a crash moment shows its own crash
+                    host.event = _crash_event(c)
+                    n_marked += 1
+                continue
+            new = _crash_windows(r, c, style, forced=False)
+            r.candidates += new
+            n_new += len(new)
+    if n_forced or n_new or n_marked:
+        logger.info(
+            "Crashes: %d must-include (confidence >= %.2f), %d new moment(s), %d marked "
+            "(floor %.2f)",
+            n_forced,
+            at,
+            n_new,
+            n_marked,
+            floor,
+        )
+
+
 def auto_vision_top(total_duration_s: float) -> int:
     """Default ``--vision-top``: one candidate per 2 minutes of footage, 10-60."""
     return max(VISION_TOP_MIN, min(VISION_TOP_MAX, math.ceil(total_duration_s / 120)))
@@ -2292,7 +2437,16 @@ def _candidate_record(c: Candidate, source_index: int, style: Style) -> dict[str
         },
         "label": _label(c, style),
         **({"kind": c.kind} if c.kind else {}),
-        **({"must_include": True, "crash": c.event} if c.must_include else {}),
+        **({"must_include": True} if c.must_include else {}),
+        **(
+            {
+                "crash": c.event,
+                "crash_confidence": round(float(c.event["confidence"]), 3),
+                "crash_forced": c.must_include,
+            }
+            if c.event
+            else {}
+        ),
         "transcript": c.transcript,
         **({"transcript_unsure": c.transcript_unsure} if c.transcript_unsure else {}),
     }
@@ -2478,6 +2632,7 @@ def analyze(
     detection: dict[str, Any] | None = None,
     batch_size: int = 0,
     visual_index: bool | None = None,
+    crash_moments: bool = True,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -2535,6 +2690,9 @@ def analyze(
             layer) for gameplay and talk footage, for the assistant's visual search; they
             change no ranking. False or None = only the styles that always write them
             (action, sport, action-cam).
+        crash_moments: Make the crashes of crashes.json moments (:func:`add_crash_candidates`,
+            every style but action-cam); False (``360 analyze``) leaves them out and records
+            ``settings.crash_moments`` false, which :func:`reanalyze` keeps.
 
     Returns:
         Path of the written highlights.json.
@@ -2562,6 +2720,7 @@ def analyze(
             detection=detection,
             batch_size=batch_size,
             visual_index=bool(visual_index),
+            crash_moments=crash_moments,
         )
 
 
@@ -2588,6 +2747,7 @@ def _analyze(
     detection: dict[str, Any] | None,
     batch_size: int,
     visual_index: bool,
+    crash_moments: bool,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
@@ -2769,14 +2929,8 @@ def _analyze(
             **({"detection": detection_rec} if detection_rec is not None else {}),
             "created": None,
             "settings": {
-                **(
-                    {
-                        "mask_friends": style.mask_friends,
-                        "must_include_crash": style.must_include_crash,
-                    }
-                    if style.kind == ACTION_CAM
-                    else {}
-                ),
+                **({"mask_friends": style.mask_friends} if style.kind == ACTION_CAM else {}),
+                "must_include_crash": style.must_include_crash,
                 "whisper_model": tr.model_name,
                 "whisper_device": tr.device,
                 "scenes": use_scenes,
@@ -2805,6 +2959,7 @@ def _analyze(
                 "language": language,
                 "max_candidates": max_candidates,
                 "recover": recover,
+                **({} if crash_moments else {"crash_moments": False}),  # 360 analyze
                 **({"style_requested": AUTO} if detection_rec is not None else {}),
             },
             "timings": timings,
@@ -2891,6 +3046,10 @@ def _analyze(
                 for r in results:
                     r.candidates = pick_candidates(r, style, max_candidates, timings, ski_ctx)
                     logger.info("%s: %d candidates", r.source.name, len(r.candidates))
+        if crash_moments and style.kind != ACTION_CAM:  # this run's crash step, `cutpoint crashes`
+            from cutpoint.crash import load_crashes  # noqa: PLC0415
+
+            add_crash_candidates(results, style, load_crashes(out_dir))
         hl["candidates"] = records()
         ev = None
         if style.kind != ACTION_CAM:  # action-cam: the events are features of its scorer
@@ -3068,6 +3227,7 @@ def reanalyze(project: Path) -> Path:
         ValueError: If highlights.json is unreadable, not valid JSON or records
             no analysis.
     """
+    from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
     from cutpoint.styles import get_style  # noqa: PLC0415
 
     try:
@@ -3108,6 +3268,8 @@ def reanalyze(project: Path) -> Path:
         # the analysis time stays the first run's; this re-rank's is timings.rerank_s
         earlier_total_s=float(total) if isinstance(total, int | float) else None,
         detection=detection if isinstance(detection, dict) else None,
+        # off for 360 projects (pano.json: also one analysed before crash_moments was recorded)
+        crash_moments=st.get("crash_moments") is not False and not (project / PANO_FILE).is_file(),
     )
 
 

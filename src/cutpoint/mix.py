@@ -56,7 +56,7 @@ from cutpoint.clips import (
     source_key,
 )
 from cutpoint.config import is_absolute_any, remap_source, source_path
-from cutpoint.crash import load_crashes
+from cutpoint.crash import crash_floor, load_crashes
 from cutpoint.dsp import mask_runs
 from cutpoint.events.sheets import contact_sheet
 from cutpoint.events.visual import load_visual
@@ -409,8 +409,7 @@ def part_candidates(d: dict[str, Any], max_picks: int = 30) -> list[Cand]:
 
 def crash_candidates(crashes: list[dict[str, Any]], top: int = 3) -> list[Cand]:
     """Confident, corroborated crashes (best ``top``), each with its reaction span."""
-    best = max((c["confidence"] for c in crashes), default=0.0)
-    floor = max(0.2, 0.6 * best)
+    floor = crash_floor(c["confidence"] for c in crashes)
     corroborate = {"words": 0.5, "audio": 0.5, "telemetry": 0.4, "dense": 0.3}
     ok = [
         c
