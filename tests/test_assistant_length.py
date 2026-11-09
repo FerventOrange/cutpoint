@@ -971,6 +971,41 @@ def test_a_text_only_edit_turn_without_a_target_gets_one_nudge_toward_a_proposal
 
 
 @pytest.mark.parametrize(
+    ("msg", "nudged"),
+    [
+        ("could we add the laugh?", True),
+        ("can we add something funny?", True),
+        ("hey, can you add the laugh?", True),
+        ("add the laugh, ok?", True),
+        ("can you trim the intro?", True),
+        ("what would you trim?", False),
+        ("anything to fix?", False),
+        ("should I cut the intro?", False),
+    ],
+)
+def test_a_question_that_asks_for_an_edit_gets_the_nudge_one_that_asks_advice_not(
+    msg: str, nudged: bool
+) -> None:
+    said = Reply(
+        "The jump and the crash would work well.", [], {"role": "assistant", "content": "x"}
+    )
+    fake = FakeProvider([said, propose("Add the laugh", {"op": "add", "id": "m1"})])
+    turn = run(fake, msg)
+    assert kinds(turn) == (["proposal"] if nudged else ["reply"])
+    assert (len(fake.requests) == 2) is nudged
+
+
+@pytest.mark.parametrize(
+    "msg", ["could we add the laugh?", "make it 2 min?", "hey, can you add the laugh?"]
+)
+def test_a_reply_that_announces_work_is_nudged_for_any_edit_request(msg: str) -> None:
+    said = Reply("Let me search for more funny moments.", [], {"role": "assistant", "content": "x"})
+    fake = FakeProvider([said, propose("Add the laugh", {"op": "add", "id": "m1"})])
+    run(fake, msg)  # "make it 2 min?": the 34 s proposal then goes back as short
+    assert fake.requests[1]["messages"][-1]["content"] == session.NUDGE
+
+
+@pytest.mark.parametrize(
     ("summary", "wrong"),
     [
         ("Added the laugh; now about 3 minutes.", True),
@@ -988,6 +1023,24 @@ def test_a_text_only_edit_turn_without_a_target_gets_one_nudge_toward_a_proposal
         ("The jump is now 8 s.", False),
         ("m3 now runs 12 s.", False),
         ("Each clip is now 5 s.", False),
+        # a change in length, a clip's length or a place in the source is no claim (#863 review)
+        ("Added the laugh; the video is now 12 s longer.", False),
+        ("Added the laugh, now 12 s longer.", False),
+        ("Trimmed every clip; now 5 s each.", False),
+        ("Trimmed all clips, now about 5 s apiece.", False),
+        ("Extended the jump, now 8 s.", False),
+        ("Extended the jump; now 8 s long.", False),
+        ("Trimmed the intro; the laugh now runs 12 s.", False),
+        ("The jump now lasts 8 s.", False),
+        ("Cut 20 s in total from the intro.", False),
+        ("Trimmed about 10 s overall from m3 and m5.", False),
+        ("Trimmed it by 20 s overall.", False),
+        ("Removed a total of 20 s of dead air.", False),
+        ("Added three clips totalling about 15 s.", False),
+        ("Added 3 clips (12 s in all).", False),
+        ("Swapped in the laugh, now at 12:30 in the source.", False),
+        ("Added m4 and m6 (about 12 s each), now 34 s overall.", False),
+        ("Lengthened m3 by 4 s; the montage now lasts about 34 seconds.", False),
         # a whole-sequence length is read
         ("Added the laugh; now 90 s.", True),
         ("Added the laugh for a total 90 s.", True),
@@ -1007,6 +1060,35 @@ def test_a_length_claim_in_the_summary_is_checked_against_the_exported_length(
         assert claim is not None and f"says the sequence is {claim:.0f} s" in gap
     if "90 s" in summary or "90 seconds" in summary or "1:30" in summary:
         assert context.claimed_seconds(summary) == 90.0
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Made it 4 min 30 s overall.",
+        "Made it 4 minutes and 30 seconds in total.",
+        "It now runs 4 min 30 s.",
+    ],
+)
+def test_a_claim_in_minutes_and_seconds_is_read_whole(summary: str) -> None:
+    assert context.claimed_seconds(summary) == 270.0
+    assert session.Turn._length_gap(summary, {"length": 270.0}) is None
+
+
+def test_a_claim_that_fits_the_change_or_a_clip_is_not_flagged() -> None:
+    # read as the sequence's, but it is the change in length or one clip's length
+    assert session.Turn._length_gap("Added the laugh; now 10 s.", {"length": 34.0}) is not None
+    assert (
+        session.Turn._length_gap("Added the laugh; now 10 s.", {"length": 34.0}, lambda: [10.0])
+        is None
+    )
+    # through a turn: the laugh adds 10 s (24 s to 34 s), c3 is 4 s
+    for summary in ("Added the laugh; now 10 s.", "Added the laugh; it now runs 4 s."):
+        event = run(FakeProvider([propose(summary, {"op": "add", "id": "m1"})]), "add the laugh")
+        assert event.view()["events"][-1]["summary"] == summary
+    lie = propose("Added the laugh; now about 3 minutes.", {"op": "add", "id": "m1"})
+    event = run(FakeProvider([lie]), "add the laugh").view()["events"][-1]
+    assert event["summary"] == "Changes: 1 added; 34 s in all."
 
 
 @pytest.mark.parametrize("text", ["add the laugh", "make it 34 s"])

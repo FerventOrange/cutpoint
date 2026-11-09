@@ -666,6 +666,37 @@ _OTHER_SUBJECT = re.compile(
     re.I,
 )
 _CLIP_CHANGE = re.compile(r"\b(?:extend|lengthen|trimm?|shorten)\w*", re.I)
+# A subject cue with the sequence named as its subject ("the montage now lasts 34 s"), or another
+# ("the laugh now runs 12 s", "the jump now lasts 8 s")
+_VIDEO_SUBJECT = re.compile(rf"\b(?:the|this|that|whole|final)\s+{_VIDEO}\b", re.I)
+_NOUN_NOW = re.compile(
+    rf"\b(?:the|this|that)\s+(?!{_VIDEO}\b|whole\b|final\b)\w+\s+(?:now\b|(?:is|was|runs|lasts)\b)",
+    re.I,
+)
+# After a length: a change ("12 s longer"), a clip's ("5 s each") or a place in the source ("12:30
+# in the source") is no sequence length.
+_NOT_SEQ_AFTER = re.compile(
+    r"\s*(?:long\s+)?(?:longer|shorter|more|less|extra|each|apiece|per\b|a clip|a piece"
+    r"|(?:in|of|from|into)\s+the\s+(?:source|recording|stream|original|footage|vod))\b",
+    re.I,
+)
+# Before a length in its clause: a change that takes it as object ("Cut 20 s in total", "Removed a
+# total of 20 s", "Added three clips totalling 15 s")
+_CHANGE_VERB = re.compile(
+    r"\b(?:add(?:ed|ing|s)?|cut(?:ting|s)?|trimm?(?:ed|ing|s)?|remov\w*|delet\w*|dropp?\w*"
+    r"|extend\w*|lengthen\w*|shorten\w*|shav\w*|sav(?:e|ed|es|ing)|took|tak(?:e|es|ing)"
+    r"|gain\w*|lost|los(?:e|es|ing))\b",
+    re.I,
+)
+# Between the change and the length, a word that makes the length the sequence's ("Added the laugh
+# for a total of 90 s", "Trimmed m3, bringing it to 34 s")
+_CHANGE_TO = re.compile(rf"\b(?:for|to|into|bringing|making|so|now|it|{_VIDEO})\b", re.I)
+_PART = re.compile(r"[^.;:,!?\n()]*$")
+_BY = re.compile(
+    r"\bby\s+(?:(?:about|around|roughly|approx\w*|nearly|almost|just)\s+|~\s*)?$", re.I
+)
+# "4 min 30 s overall": the minutes before the seconds
+_MINUTES_BEFORE = re.compile(rf"(?<![\w.,]){_NUM}\s*-?\s*(?:minutes?|mins?)\s+(?:and\s+)?$", re.I)
 
 
 def _claim_value(m: re.Match[str]) -> float:
@@ -673,6 +704,8 @@ def _claim_value(m: re.Match[str]) -> float:
         return float(int(m.group("mm")) * 60 + int(m.group("ss")))
     n = _count(m.group("n"))
     if not m.group("u").lower().startswith("m"):
+        if minutes := _MINUTES_BEFORE.search(m.string, max(0, m.start("n") - 40), m.start("n")):
+            return _count(minutes.group(1)) * 60 + n
         return n
     more = _AND_SECONDS.match(m.string, m.end())
     if more and more.group(2).lower().startswith("s"):
@@ -688,17 +721,39 @@ def claimed_seconds(summary: str) -> float | None:
     Unlike :func:`target_seconds`, which reads what the user asks for."""
     found: list[tuple[int, float]] = []
     for m in _CLAIM_AFTER.finditer(summary):
-        found.append((m.start(), _claim_value(m)))
+        if not _other_length(m):
+            found.append((m.start(), _claim_value(m)))
     for m in _CLAIM_BEFORE.finditer(summary):
+        if _other_length(m):
+            continue
         if m.group("cue").lower() in _SUBJECT_CUES:
             clause = _CLAUSE.search(summary, 0, m.end("cue")).group()  # type: ignore[union-attr]
             sentence = _SENTENCE.search(summary, 0, m.start()).group()  # type: ignore[union-attr]
-            if _OTHER_SUBJECT.search(clause) or (
-                re.search(r"\bit\b", clause, re.I) and _CLIP_CHANGE.search(sentence)
+            if (
+                _OTHER_SUBJECT.search(clause)
+                or _NOUN_NOW.search(clause)
+                or (_CLIP_CHANGE.search(sentence) and not _VIDEO_SUBJECT.search(clause))
             ):
                 continue
         found.append((m.start(), _claim_value(m)))
     return max(found)[1] if found else None
+
+
+def _other_length(m: re.Match[str]) -> bool:
+    """Whether the length of a claim match is another one than the sequence's: in parentheses
+    ("(12 s in all)"), a change or a clip's ("12 s longer", "5 s each"), a place in the source
+    ("12:30 in the source") or the object of a change ("Cut 20 s in total", "Removed a total of
+    20 s")."""
+    text = m.string
+    at = m.start("n") if m.group("n") is not None else m.start("mm")
+    head = text[max(0, at - _LOOKBACK) : at]
+    if head.rfind("(") > head.rfind(")") or _NOT_SEQ_AFTER.match(text, m.end()):
+        return True
+    part = _PART.search(head).group()  # type: ignore[union-attr]
+    if _BY.search(part):  # "Trimmed it by 20 s overall": a change
+        return True
+    verbs = list(_CHANGE_VERB.finditer(part))
+    return bool(verbs) and not _CHANGE_TO.search(part, verbs[-1].end())
 
 
 def transcript_lines(transcript: str, source: str, start: float, end: float) -> list[str]:
