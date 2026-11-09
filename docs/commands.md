@@ -1819,7 +1819,7 @@ uses new copies, and a changed `stage_dir` or `source_remap`, without a restart.
 cutpoint crashes <project> [--dense | --no-dense] [--dense-top N] [--sheets N] [--lead S]
                  [--max-after S] [--max-clip S] [--force] [--reanalyze | --no-reanalyze]
                  [--batch-size N] [--activity NAME] [--context TEXT] [--refresh-profile]
-                 [--json]
+                 [--ollama-url URL] [--ollama-model NAME] [--json]
 ```
 
 Action-cam module (its visual check needs the `events` extra, which Cutpoint lite leaves out).
@@ -1827,7 +1827,7 @@ Finds crashes and wipeouts in an analysed
 project from full-rate IMU data, visual, audio and transcript evidence, and writes
 `crashes.json` plus contact sheets in `crash_check\`. Confident crashes are always exported by
 `clips`. The visual prompts and crash words come from the project's activity profile (see
-`profile`; `--activity`, `--context` and `--refresh-profile` work as on [`profile`](#profile)). See
+`profile`; `--activity`, `--context`, `--refresh-profile`, `--ollama-url` and `--ollama-model` work as on [`profile`](#profile)). See
 [action-cam workflow](workflows/action-cam.md). `--batch-size N` closes the dense confirm's
 CLIP model after N dense windows and loads it again for the next ones, to give memory back on
 long runs (as the crash layer of [`events`](#events) does); `crashes.json` is the same. Default
@@ -1926,7 +1926,8 @@ process is gone on this computer, as `interrupted`.
 ## profile
 
 ```text
-cutpoint profile <project> [--activity NAME] [--context TEXT] [--refresh-profile] [--json]
+cutpoint profile <project> [--activity NAME] [--context TEXT] [--refresh-profile]
+                 [--ollama-url URL] [--ollama-model NAME] [--json]
 ```
 
 Picks or builds the project's activity profile (what a crash looks and sounds like in this
@@ -1938,6 +1939,7 @@ reuse it.
 | `--activity NAME` | Use a library profile: `ski`, `snowboard`, `mtb`, `moto`, `skate`, `surf`, `hike`, `generic`, or one learned earlier. Default: detected from the footage |
 | `--context TEXT` | What the video is, in the user's words. The local LLM turns it into extra crash captions and slang on top of the profile. A changed text rebuilds the profile |
 | `--refresh-profile` | Ignore `activity.json` and detect or build the profile again |
+| `--ollama-url`, `--ollama-model` | The Ollama server and model that build the profile, as on [`analyze`](#analyze) (a flag left out takes its default). A new profile needs no deleting of `activity.json` to use them: add `--refresh-profile` |
 | `--json` | One [result envelope](#json-output) on stdout; `outputs` holds the `activity.json` record (`name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `scores`, `description`, `profile`) and `activity_file`. Output of the local model never reaches stdout |
 
 Needs the visual layer of `events` for detection, and Ollama with a Qwen model

@@ -906,7 +906,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A bad port in `OLLAMA_HOST` or `ollama_url` no longer fails `events`, `analyze` or `edit`: it skips only
   the VLM layer (`vlm_unavailable`), the vision step (`vision_unavailable`) or the dialogue reader's
   local Ollama, each with a WARNING. An explicit `--ollama-url` with an invalid port (such as
-  `myhost:99999`) exits 2 with `bad_args` (#825).
+  `myhost:99999`) or no host (`:11434`) exits 2 with `bad_args`; `profile` and `crashes` now take
+  `--ollama-url` and `--ollama-model` (#825).
 - Gaming region discovery no longer groups the OCR frames of two files of one name in different
   folders as one source, so each keeps its own menu-frame test and static texts (#817).
 - The game key (and so the HUD preset name) no longer comes from a generic folder name such as

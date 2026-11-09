@@ -539,6 +539,8 @@ def _cmd_crashes(a: argparse.Namespace) -> None:
             context=a.context,
             refresh_profile=a.refresh_profile,
             batch_size=a.batch_size,
+            ollama_url=a.ollama_url,
+            ollama_model=a.ollama_model,
         )
     if jsonout.active():  # recorded before reanalyze, so a failure there still reports them
         data = cache.load_json(out) or {}
@@ -659,6 +661,8 @@ def _cmd_profile(a: argparse.Namespace) -> None:
         activity=a.activity,
         context=a.context,
         refresh=a.refresh_profile,
+        ollama_url=a.ollama_url,
+        ollama_model=a.ollama_model,
     )
     if jsonout.active():
         for key, value in rec.items():  # the record's own keys, as the old --json printed them
@@ -1281,13 +1285,15 @@ def _add_visual_index_argument(p: argparse.ArgumentParser) -> None:
 
 
 def _ollama_url_arg(text: str) -> str:
-    """argparse type of ``--ollama-url``: the value, if its port is valid."""
+    """argparse type of ``--ollama-url``: the value, if it has a host and a valid port."""
     from cutpoint.backends import split_ollama_url  # noqa: PLC0415
 
     try:
-        split_ollama_url(text.strip(), "--ollama-url")
+        parts, _ = split_ollama_url(text.strip(), "--ollama-url")
     except ValueError as err:
         raise argparse.ArgumentTypeError(str(err)) from None
+    if not parts.hostname:
+        raise argparse.ArgumentTypeError(f"--ollama-url {text!r}: no host")
     return text
 
 
@@ -1673,6 +1679,7 @@ def build_parser() -> argparse.ArgumentParser:
         "(default: 0, keep it loaded)",
     )
     _add_activity_arguments(cr)
+    _add_ollama_arguments(cr)
     _add_json_argument(cr)
     cr.set_defaults(func=_cmd_crashes)
 
@@ -1683,6 +1690,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pf.add_argument("project", help="analysed project (bare name = projects folder)")
     _add_activity_arguments(pf)
+    _add_ollama_arguments(pf)
     _add_json_argument(pf)
     pf.set_defaults(func=_cmd_profile)
 
