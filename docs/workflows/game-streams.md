@@ -120,7 +120,7 @@ the preset's regions alone, at most adds the HUD fit check's `discovery.fit_ref`
 `projects/<name>/discovery/<game>/proposal.json`) and copy the
 proposal's `feed` region and `"feed": {"row_notices": true}` into the preset by hand. Either way the new region needs new OCR reads (no cache replay).
 Menus with little text (hangar or crew screens) are found because they hold still: a frame is a
-static screen when a small grey thumbnail of the HUD area stays nearly the same, with no feed
+static screen when a small grey thumbnail of the HUD area (the regions but `score` ones) stays nearly the same, with no feed
 sighting or kill within 2 s, for at least 5 s when new menu text shows (at least 2 text lines
 that are no preset phrase, first read in that stretch or just before it, each on screen for at
 least half of it; one gameplay notice is not enough). Without new menu text the screen needs at
@@ -135,7 +135,7 @@ least 3 s. A line on screen for over 60 s, or from within 6 s of the start of th
 6 s of its end for at least half of it (also when a scoreboard hides it for a while), is part of
 the HUD and does not count. A gap of up to 15 s between two menu or text screens, with no feed
 sighting or kill in between (a loading or matchmaking screen), is menu time too; a still screen
-does not count as an end of such a gap. These tests run only when the preset's regions span at least a quarter of the frame
+does not count as an end of such a gap. These tests run only when the preset's regions (but `score` ones) span at least a quarter of the frame
 (`static_area`), since a few small corner regions see too little of the screen.
 `stats.ocr.<source>.menu_frames` in `events.json` reports how many frames were left out,
 `static_frames` how many of them held still and `text_frames` how many were text screens;
@@ -249,14 +249,19 @@ first change: a counter that counts down is fine, and a step back afterwards is 
 Anything else (a reset between matches, a jump) is taken as the new value without an event, a
 value that comes back within 15 s is a misread, and reads on menu frames are left out. A spot
 whose value changes more often than every 15 s (median) or that shows more than 12 values is no
-score (a fast-changing clock or ammo) and makes no events; a slow counter that steps by one (lives, grenades) does. Each change is an OCR event of `type` `score` in
+score (a fast-changing clock or ammo) and makes no events. Nor does a spot whose value once
+moves by two or more in its direction (the direction of its first change) to a value that then
+stays 15 s, at most 60 s after the old one: a score moves one point at a time, a count of items
+(gadgets placed, charges used) drops by several at once. A jump the other way is a reset and
+changes nothing. A slow counter that only ever steps by one (lives, grenades) still makes events. Each change is an OCR event of `type` `score` in
 `events.json`, labelled like `4 > 3`, at the last read of the old value, with `before`,
 `after`, `seen_at` (the first read of the new value), `gap_s`, `region` and `slot` (the spot's
 centre x in reference pixels) in `details`; `events.txt` shows it as `OCR score: 4 > 3` and the
 vision model gets the hint `on-screen score: 4 > 3`. It counts as the `score_changes` event type
 (see [Event types and prompt keys](../configuration.md#event-types-and-prompt-keys)).
 `stats.ocr.<source>.score_slots` in `events.json` lists per spot its reads, values, changes
-and whether it was disabled.
+and whether it was disabled. A `score` region is left out of the HUD area the static-screen
+test compares, so adding one does not change the other regions' events.
 
 ## Kill feed rows without a preset
 

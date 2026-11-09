@@ -16,6 +16,7 @@ from cutpoint.events import (
     discover,
     eventtypes,
     killfeed,
+    ocr_raw,
     pipeline,
     report,
     scoring,
@@ -130,6 +131,42 @@ def test_each_slot_keeps_its_first_direction() -> None:
     assert _changes(up) == ["0 > 1", "1 > 2", "1 > 2"]
     down = _reads((0, 40, "3"), (41, 80, "2"), (81, 120, "3"), (121, 160, "2"))
     assert _changes(down) == ["3 > 2", "3 > 2"]
+
+
+def test_a_counter_that_drops_by_several_is_no_score() -> None:
+    """Items used two at a time, then one: a count, not a score (#872)."""
+    reads = _reads((0, 30, "9"), (40, 100, "7"), (101, 160, "6"))
+    events, stats = _track(reads)
+    assert events == [] and stats["score@135"]["disabled"] is True
+
+
+def test_a_jump_counts_without_a_long_old_value() -> None:
+    """The old value had few reads (the HUD hidden before it), the new one held: a jump."""
+    events, stats = _track(_reads((0, 5, "8"), (12, 70, "6"), (71, 130, "5")))
+    assert events == [] and stats["score@135"]["disabled"] is True
+
+
+def test_a_jump_to_a_value_that_does_not_hold_is_no_count() -> None:
+    reads = _reads((0, 40, "5"), (41, 80, "4"), (81, 85, "2"), (86, 130, "3"), (131, 170, "2"))
+    assert _changes(reads) == ["5 > 4", "3 > 2"]
+
+
+def test_a_reset_the_other_way_keeps_the_score() -> None:
+    up = _reads((0, 40, "0"), (41, 80, "1"), (81, 120, "2"), (125, 160, "0"), (161, 200, "1"))
+    assert _changes(up) == ["0 > 1", "1 > 2", "0 > 1"]
+    down = _reads((0, 40, "3"), (41, 80, "2"), (81, 120, "1"), (125, 160, "4"), (161, 200, "3"))
+    assert _changes(down) == ["3 > 2", "2 > 1", "4 > 3"]
+
+
+def test_a_jump_before_the_direction_is_known_counts() -> None:
+    reads = _reads((0, 40, "2"), (41, 80, "4"), (81, 120, "5"))  # +2, then +1
+    events, stats = _track(reads)
+    assert events == [] and stats["score@135"]["disabled"] is True
+
+
+def test_a_jump_over_a_long_gap_is_a_new_match() -> None:
+    reads = _reads((0, 40, "1"), (41, 80, "2"), (141, 200, "5"), (201, 240, "6"))
+    assert _changes(reads) == ["1 > 2", "5 > 6"]
 
 
 def test_reads_need_confidence_and_two_in_a_row() -> None:
@@ -344,6 +381,33 @@ def test_read_gate_enlarges_to_the_reference_size(height: int, shape: tuple[int,
     ]
 
 
+class _DetEngine(_Engine):
+    def detect(self, crop: np.ndarray, scale: float = 1.0) -> list[list]:
+        return []
+
+
+def test_the_static_test_area_leaves_score_regions_out() -> None:
+    """A score box above the text regions grows the decoded area, not the thumbnails the
+    static-screen test compares nor its area share (#872)."""
+    notice = Region("notice", 0, 124, 400, 200, "notice", gate="det", every=1)
+    score = Region("score", 40, 0, 60, 40, "score", gate="read", every=3, upscale=2.5)
+    rects = {"notice": (0, 124, 400, 200), "score": (40, 0, 60, 40)}
+    assert killfeed._still_rect((notice, score), rects) == (0, 124, 400, 200)
+    assert killfeed._still_rect((score,), {"score": rects["score"]}) == (40, 0, 60, 40)
+    engine = _DetEngine()
+    union = killfeed._union(list(rects.values()))
+    params, size = OcrParams(), (1920, 1080)
+    reader = OcrReader((notice, score), rects, union, engine, params, 1.0, "bottom", size)  # type: ignore[arg-type]
+    frame = np.random.default_rng(0).integers(0, 255, (union[3], union[2], 3), np.uint8)
+    rec, _ = reader.read(1, 0.0, frame)
+    assert rec.thumb is not None
+    np.testing.assert_array_equal(rec.thumb, killfeed._thumb_bgr(frame[124:324, 0:400]))
+    stats: dict[str, Any] = {}
+    preset = preset_from_dict({"game": "tilefall", "regions": []}, None)
+    OcrInterpretation("rec.mp4", params, preset, (notice, score), size, stats)
+    assert stats["static_area"] == round(400 * 200 / (1920 * 1080), 2)
+
+
 def test_no_upscale_reads_the_crop_as_decoded() -> None:
     plain = Region("score", 100, 20, 80, 60, "score", gate="read")
     reader, engine = _reader(plain, 720)  # a small source: still as decoded
@@ -527,3 +591,16 @@ def test_a_score_change_is_a_tail_payoff(tmp_path: Path) -> None:
 def test_vlm_hint_names_the_score() -> None:
     ev = {"kind": "ocr", "type": "score", "t": 12.0, "text": "4 > 3"}
     assert vlm_windows._hints([ev], 10.0, 20.0) == "2.0s on-screen score: 4 > 3"
+
+
+def test_raw_key_marks_only_score_regions_off_the_stills() -> None:
+    plain = [Region("a", 0, 0, 100, 50, "feed"), Region("b", 0, 60, 100, 50, "notice")]
+    args = (2.0, "bottom", 0.5, [])
+    base = ocr_raw.raw_key(args[0], [r.key() for r in plain], *args[1:])
+    assert ocr_raw.raw_key(args[0], killfeed._raw_region_keys(plain), *args[1:]) == base
+    with_score = [*plain, Region("c", 0, 120, 40, 30, "score")]
+    keys = killfeed._raw_region_keys(with_score)
+    assert [k.get("still") for k in keys] == [None, None, False]
+    assert ocr_raw.raw_key(args[0], keys, *args[1:]) != ocr_raw.raw_key(
+        args[0], [r.key() for r in with_score], *args[1:]
+    )

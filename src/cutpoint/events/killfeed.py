@@ -493,6 +493,11 @@ _ANNOUNCE_WORD_RE = re.compile(r"[^\W\d_]{4,}")  # a word of 4 letters or more, 
 # new value silently (a reset between matches). A value that comes back within SCORE_HOLD_S is
 # a misread. A slot whose value changes more often than every SCORE_HOLD_S (median) or that
 # shows more than SCORE_MAX_VALUES values is no score (a clock, ammo): no events from it.
+# Nor is a slot that once moved by two or more in its direction to a value that held
+# SCORE_HOLD_S, with at most SCORE_MAX_GAP_S between them (:func:`_score_jumps`): a
+# score goes up or down one point at a time, a count of items (gadgets placed, charges used)
+# drops by several at once; on a 60 min recording a gadget counter beside the team badge
+# was taken for a round score that way (#872). A jump the other way is a reset and stays fine.
 SCORE_CONFIRM = 2
 SCORE_MIN_CONF = 0.7
 SCORE_HOLD_S = 15.0
@@ -1218,14 +1223,17 @@ class ScoreTracker:
     def finish(self, menu: set[float]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """The ``score`` events of the pass, reads at the ``menu`` frame times left out,
         and per slot (``<region>@<x>``) its ``reads``, ``values``, ``changes`` and whether it
-        was ``disabled`` (no score: it changes too often or shows too many values)."""
+        was ``disabled`` (no score: it changes too often, shows too many values or jumped in
+        its direction, :func:`_score_jumps`)."""
         events: list[dict[str, Any]] = []
         stats: dict[str, Any] = {}
         for (region, slot), reads in self.reads.items():
             runs = _score_runs([r for r in reads if r[0] not in menu])
             spans = [b.first - a.first for a, b in pairwise(runs)]
-            disabled = len({r.value for r in runs}) > SCORE_MAX_VALUES or (
-                len(spans) >= 2 and float(np.median(spans)) < SCORE_HOLD_S
+            disabled = (
+                len({r.value for r in runs}) > SCORE_MAX_VALUES
+                or (len(spans) >= 2 and float(np.median(spans)) < SCORE_HOLD_S)
+                or _score_jumps(runs) > 0
             )
             found = [] if disabled else _score_changes(runs, region, slot)
             events += found
@@ -1238,6 +1246,30 @@ class ScoreTracker:
         return events, stats
 
 
+def _in_play(a: _ScoreRun, b: _ScoreRun) -> bool:
+    """Whether the change from ``a`` to ``b`` happened in play: ``a`` held
+    :data:`SCORE_HOLD_S` and at most :data:`SCORE_MAX_GAP_S` passed until ``b``."""
+    return a.held() >= SCORE_HOLD_S and b.first - a.last <= SCORE_MAX_GAP_S
+
+
+def _score_jumps(runs: list[_ScoreRun]) -> int:
+    """How often one slot's value moved by two or more in its direction (the sign of its
+    first in-play change by one, :func:`_in_play`) to a value that then held
+    :data:`SCORE_HOLD_S`, at most :data:`SCORE_MAX_GAP_S` after the old one: a count of
+    items, no score (:data:`SCORE_MAX_VALUES`). The old value need not have held: menus
+    and the HUD hidden between rounds leave it few reads. None without a direction."""
+    pairs = list(pairwise(runs))
+    step = next(
+        (b.value - a.value for a, b in pairs if abs(b.value - a.value) == 1 and _in_play(a, b)), 0
+    )
+    return sum(
+        (b.value - a.value) * step >= 2
+        and b.held() >= SCORE_HOLD_S
+        and b.first - a.last <= SCORE_MAX_GAP_S
+        for a, b in pairs
+    )
+
+
 def _score_changes(runs: list[_ScoreRun], region: str, slot: int) -> list[dict[str, Any]]:
     """The ``score`` events of one slot's confirmed values (:data:`SCORE_SLOT_PX`): at the last
     read of the old value, ending at the first read of the new one."""
@@ -1246,7 +1278,7 @@ def _score_changes(runs: list[_ScoreRun], region: str, slot: int) -> list[dict[s
     for a, b in pairwise(runs):
         d = b.value - a.value
         gap = b.first - a.last
-        if abs(d) != 1 or a.held() < SCORE_HOLD_S or gap > SCORE_MAX_GAP_S:
+        if abs(d) != 1 or not _in_play(a, b):
             continue  # a reset or a misread: the new value counts from here
         if step and d != step:
             continue  # a step back
@@ -2205,7 +2237,8 @@ LIST_MENU_COVER = 0.25  # centre cover of a list menu (2 columns: ~0.33) when th
 # Static screens (rule "static"): garage, crew and loadout menus show as little text as a busy
 # HUD (6-17 boxes, centre cover 0.04-0.12), so the box rules miss them, but they hold still
 # while gameplay moves. Every OCR frame takes a STATIC_THUMB (w, h) grayscale thumbnail of the
-# HUD area it already decoded (:func:`_thumb_bgr`, :func:`_grey`; no extra decode) and :class:`StillRuns` gives it
+# HUD area it already decoded, "score" regions left out (:func:`_still_rect`, :func:`_thumb_bgr`,
+# :func:`_grey`; no extra decode) and :class:`StillRuns` gives it
 # the id of its still run (``"still"`` in the frame record; no thumbnail is kept). A run goes
 # on while thumbnails stay within STATIC_MAX_DIFF of its first frame (mean absolute difference
 # in 0-255 grey levels: still video and its compression noise stay below 1, a moving game view
@@ -2299,6 +2332,18 @@ def _thumb_bgr(frame: np.ndarray) -> np.ndarray:
     import cv2  # noqa: PLC0415
 
     return cv2.resize(frame, STATIC_THUMB, interpolation=cv2.INTER_AREA)
+
+
+def _still_rect(
+    regions: tuple[Region, ...], rects: dict[str, tuple[int, int, int, int]]
+) -> tuple[int, int, int, int]:
+    """The HUD area of the static-screen test (:data:`STATIC_THUMB`, :data:`STATIC_MIN_AREA`)
+    in frame px: the :func:`_union` of the regions but the "score" ones (all of them when
+    there are only those). A score box at a screen edge grows the decoded area; the
+    thumbnails of the larger area put still runs and so the menu frames elsewhere (#872),
+    which moved the text events of the other regions."""
+    text = [rects[r.name] for r in regions if r.kind != "score"]
+    return _union(text or list(rects.values()))
 
 
 def _grey(thumb: np.ndarray) -> np.ndarray:
@@ -2737,7 +2782,8 @@ class FrameRec:
     (:data:`PIXEL_KINDS`) carry ``rows``, the crop rows ``[a, b]`` their
     boxes cover, whose pixels are stacked in ``bands``. A region skipped by its
     ``every``, or that its "mask" gate did not let through, has no record.
-    ``thumb`` is the :func:`_thumb_bgr` thumbnail (None without "det" gates).
+    ``thumb`` is the :func:`_thumb_bgr` thumbnail of the :func:`_still_rect` area (None
+    without "det" gates).
     """
 
     n: int
@@ -2826,6 +2872,8 @@ class OcrReader:
         self.newest = -1 if newest == "bottom" else 0
         self.sx, self.sy = 1920 / size[0], 1080 / size[1]
         self.thumbs = any(r.gate == "det" for r in regions)  # the static-screen test
+        x, y, w, h = _still_rect(regions, rects)
+        self.still = (slice(y - union[1], y - union[1] + h), slice(x - union[0], x - union[0] + w))
         self.last_mask: dict[str, np.ndarray | None] = {r.name: None for r in regions}
         self.last_layout: dict[str, list[tuple[int, ...]] | None] = {r.name: None for r in regions}
         self.last_rows: dict[str, list[tuple[float, float, float, float, float]]] = {}
@@ -2941,7 +2989,7 @@ class OcrReader:
 
     def read(self, n: int, t: float, frame: np.ndarray) -> tuple[FrameRec, dict[str, np.ndarray]]:
         """The record of frame ``n`` (time ``t``) and the crops of the regions read."""
-        rec = FrameRec(n, t, _thumb_bgr(frame) if self.thumbs else None)
+        rec = FrameRec(n, t, _thumb_bgr(frame[self.still]) if self.thumbs else None)
         crops: dict[str, np.ndarray] = {}
         ux, uy, _, _ = self.union
         due = [r for r in self.regions if r.every <= 1 or not n % r.every]
@@ -3110,8 +3158,9 @@ class OcrInterpretation:
         self.menus = preset is not None and det
         self.det_boxes: dict[str, list[list[float]]] = {}
         self.frame_boxes: list[dict[str, Any]] = []
-        # static screens (see STATIC_THUMB): only when the decoded HUD area sees enough of the frame
-        area = union[2] * union[3] / max(1, width * height)
+        # static screens (see STATIC_THUMB): only when the HUD area sees enough of the frame
+        _, _, still_w, still_h = _still_rect(regions, rects)
+        area = still_w * still_h / max(1, width * height)
         self.still_runs = StillRuns(params.fps) if self.menus and area >= STATIC_MIN_AREA else None
         if self.menus:
             stats["static_area"] = round(area, 2)
@@ -3404,6 +3453,15 @@ class OcrInterpretation:
         return events
 
 
+def _raw_region_keys(regions: list[Region]) -> list[dict[str, Any]]:
+    """Region keys for :func:`ocr_raw.raw_key`.
+
+    A "score" region is left out of the static-screen thumbnails (:func:`_still_rect`): keyed
+    apart, so a read made before with it in them is read again.
+    """
+    return [r.key() | ({"still": False} if r.kind == "score" else {}) for r in regions]
+
+
 def detect_ocr_events(
     src: Source,
     params: OcrParams,
@@ -3420,8 +3478,8 @@ def detect_ocr_events(
 
     What menu and scoreboard frames show is dropped (:func:`menu_times`): every frame records the text boxes the "det" gates
     last detected in its regions other than feeds (a region keeps its boxes on
-    the frames it is skipped) and the still run of the decoded HUD area
-    (:func:`static_frames`; when that area is at least :data:`STATIC_MIN_AREA` of
+    the frames it is skipped) and the still run of the decoded HUD area without the
+    "score" regions (:func:`_still_rect`, :func:`static_frames`; when that area is at least :data:`STATIC_MIN_AREA` of
     the frame), and after the pass the sightings in menu frames
     are forgotten.
     No OCR runs for this; ``stats["menu_frames"]`` counts them (``stats["menu_spans"]``:
@@ -3482,7 +3540,7 @@ def detect_ocr_events(
         src.cdir,
         ocr_raw.raw_key(
             params.fps,
-            [r.key() for r in regions],
+            _raw_region_keys(regions),
             newest,
             MIN_TEXT_SCORE,
             avoid,
