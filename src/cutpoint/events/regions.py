@@ -63,20 +63,25 @@ class Region:
         x, y, w, h: Rectangle in 1920x1080 reference pixels.
         kind: How OCR text is interpreted: "feed" (stacked text lines: "A
             destroyed B" or coloured names), "banner", "bigtext" (large
-            centred text) or "notice".
+            centred text), "notice" or "score" (a small on-screen number such as a
+            round score or a counter; :class:`cutpoint.events.killfeed.ScoreTracker`).
         min_change: Fraction of the downscaled HUD-pixel mask that must change
             before the region is OCR'd again ("mask" gate).
         min_fill: Minimum fraction of HUD pixels for the region to be OCR'd at
             all (big banner text fills ~3-8% of the banner region).
         gate: When to run recognition: "mask" (the HUD-colour pixel mask
-            changed) or "det" (game-agnostic: RapidOCR text *detection* on the
-            crop; recognition only when the text-box layout changed).
+            changed), "det" (game-agnostic: RapidOCR text *detection* on the
+            crop; recognition only when the text-box layout changed) or "read"
+            (detection and recognition on every frame the region is due).
         every: Process the region on every n-th sampled frame only (banners
             need ~1 fps, kill feeds the full OCR rate).
         min_text_h: Generic banners: only text lines at least this tall
             (reference px) count.
         det_scale: "det" gate: run text detection on the crop downscaled by
             this factor (big text survives 0.35x; feeds need ~0.6x).
+        upscale: "mask" and "read" gates: OCR the crop enlarged to this factor of its
+            1920x1080 reference size (small, thin digits read far better at 2.5x); 1:
+            as decoded. Left out of the cache key at 1, so older keys stay.
     """
 
     name: str
@@ -91,10 +96,15 @@ class Region:
     every: int = 1
     min_text_h: int = 0
     det_scale: float = 1.0
+    upscale: float = 1.0
 
     def key(self) -> dict[str, Any]:
-        """Cache-key dict: every field."""
-        return asdict(self)
+        """Cache-key dict (also the region's preset JSON entry): every field, ``upscale``
+        only when it is not 1."""
+        d = asdict(self)
+        if self.upscale == 1.0:
+            del d["upscale"]
+        return d
 
 
 def _regions(data: dict[str, Any]) -> tuple[Region, ...]:
