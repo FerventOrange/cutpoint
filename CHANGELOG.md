@@ -910,6 +910,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A vision rating no longer counts once `events` widens a moment or a menu trim cuts it: its frames
+  no longer show the clip, so the score, `vision_label` and the label it gave are put aside in
+  `vision_stale` until the moment has the rated span again (#802).
 - A banner that OCR misreads the same way every time no longer merges different names into one
   banner burst, so a multi-kill read that way keeps every kill (#793). Comments in the kill-feed
   reader no longer name games (#799).

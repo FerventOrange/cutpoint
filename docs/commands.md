@@ -1071,7 +1071,11 @@ Each candidate in `highlights.json` has `id`, `source`, `start`, `end`, `score` 
 Whisper heard with confidence below 0.5 as `[index, confidence]`, the index counting words in
 `transcript.split(" ")` (omitted when none is unsure or the transcript has no confidences). With
 `--vision`, a rated candidate also has the model's own label in `vision_label` (`label` takes it
-only from a rating of 7). A candidate the dialogue reader widened also has `widened_from` (its
+only from a rating of 7) and `vision_rated` (the `start` and `end` it rated, the score before
+and after the rating, `base` and `blended`, and the label it replaced). The rating counts only
+while the candidate keeps that span: once `events` widens or a menu trim cuts it, the rating
+moves to `vision_stale` (`score`, `label`, `window`), `signals.vision` is `null`, `vision_label`
+goes and the label returns to the one before; the span coming back restores them. A candidate the dialogue reader widened also has `widened_from` (its
 earlier `start`, `end`, `transcript` and `transcript_unsure`, and `absorbed`, the full candidates
 merged into it), and `dialogue_description` (the stretch's description) when no transcript
 snippet could be rebuilt for its new span; where the reader ran, `signals.events.dialogue` is
