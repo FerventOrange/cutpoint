@@ -44,8 +44,8 @@ import logging
 import os
 import re
 import unicodedata
-from collections.abc import Callable
-from dataclasses import asdict, dataclass, field, fields
+from collections.abc import Callable, Iterable
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -107,11 +107,64 @@ class Region:
         return d
 
 
-def _regions(data: dict[str, Any]) -> tuple[Region, ...]:
-    """Regions of preset JSON (unknown keys are ignored)."""
+REF_W, REF_H = 1920, 1080  # the reference frame the region rectangles are in
+_WARNED: set[tuple[Any, ...]] = set()  # region warnings given, one per region and place
+
+
+def clamp_box(x: int, y: int, w: int, h: int) -> tuple[int, int, int, int] | None:
+    """The part of the rectangle inside the 1920x1080 reference frame, or None when
+    its width or height is not positive or none of it is inside."""
+    if w <= 0 or h <= 0:
+        return None
+    x0, y0, x1, y1 = max(0, x), max(0, y), min(REF_W, x + w), min(REF_H, y + h)
+    return (x0, y0, x1 - x0, y1 - y0) if x1 > x0 and y1 > y0 else None
+
+
+def guard_entry(entry: dict[str, Any], where: str) -> dict[str, Any] | None:
+    """A region (preset entry or :meth:`Region.key`) kept inside the reference frame.
+
+    Clamped to the frame when that leaves a rectangle of positive size (WARNING naming
+    the region and both rectangles); None, with a WARNING, when its width or height is not
+    positive or it lies wholly outside. Each warning is given once per region and ``where``.
+    """
+    box = tuple(entry.get(k) for k in ("x", "y", "w", "h"))
+    name = entry.get("name", "?")
+    try:
+        ints = tuple(int(v) for v in box)  # type: ignore[arg-type]
+        got = clamp_box(*ints)
+    except (TypeError, ValueError):
+        ints, got = box, None
+    if got == ints:
+        return entry
+    shown = "{}@{},{} {}x{}".format(name, *box)
+    if (where, shown) not in _WARNED:
+        _WARNED.add((where, shown))
+        if got is None:
+            logger.warning("%s: region %s dropped: empty or outside the frame", where, shown)
+        else:
+            logger.warning("%s: region %s clamped to %d,%d %dx%d", where, shown, *got)
+    return None if got is None else entry | dict(zip("xywh", got, strict=True))
+
+
+def guard_regions(regions: Iterable[Region], where: str) -> list[Region]:
+    """``regions`` kept inside the reference frame (:func:`guard_entry`), others dropped."""
+    out = []
+    for r in regions:
+        kept = guard_entry({"name": r.name, "x": r.x, "y": r.y, "w": r.w, "h": r.h}, where)
+        if kept is not None:
+            out.append(replace(r, x=kept["x"], y=kept["y"], w=kept["w"], h=kept["h"]))
+    return out
+
+
+def _regions(data: dict[str, Any], where: str = "preset") -> tuple[Region, ...]:
+    """Regions of preset JSON (unknown keys are ignored); a region outside the frame is
+    clamped or dropped (:func:`guard_entry`)."""
     names = {f.name for f in fields(Region)}
     return tuple(
-        Region(**{k: v for k, v in r.items() if k in names}) for r in data.get("regions", [])
+        guard_regions(
+            (Region(**{k: v for k, v in r.items() if k in names}) for r in data.get("regions", [])),
+            where,
+        )
     )
 
 
@@ -254,9 +307,10 @@ def preset_from_dict(data: dict[str, Any], path: Path | None = None) -> HudPrese
     phrases = tuple(map(str, data.get("banner_phrases", [])))
     events = tuple(e for e in data.get("events") or [] if isinstance(e, dict))
     phrases = tuple(dict.fromkeys([*phrases, *GENERIC_BANNERS, *_event_phrases(events)]))
+    game = str(data.get("game") or (path.stem if path else "game"))
     return HudPreset(
-        game=str(data.get("game") or (path.stem if path else "game")),
-        regions=_regions(data),
+        game=game,
+        regions=_regions(data, f"preset {game}"),
         phrases=phrases,
         player_tags=tuple(data.get("player_tags", [])),
         feed=dict(data.get("feed") or {}),
