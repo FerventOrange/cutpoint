@@ -3397,14 +3397,14 @@ def _rail_events(p: Path) -> list[dict[str, Any]]:
 
 
 CRASH_SAME_S = 2.0  # a crashes.json entry this close to a telemetry crash event is the same crash
-CRASH_FLOOR_MIN = 0.2  # a crashes.json entry needs this confidence ...
-CRASH_FLOOR_REL = 0.6  # ... and this share of the project's best one (as in mix.crash_candidates)
 
 
 def _crash_events(p: Path, have: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The ``crashes.json`` entries as telemetry crash events for the rail, without those within
     CRASH_SAME_S of a telemetry crash in ``have`` (same source) and those below the confidence
-    floor: max(CRASH_FLOOR_MIN, CRASH_FLOOR_REL x the best confidence in the file)."""
+    floor (:func:`cutpoint.crash.crash_floor` of every confidence in the file)."""
+    from cutpoint.crash import crash_floor  # noqa: PLC0415
+
     doc = _load(p, "crashes.json")
     raw = doc.get("crashes") if isinstance(doc, dict) else None
     known = [
@@ -3420,8 +3420,7 @@ def _crash_events(p: Path, have: list[dict[str, Any]]) -> list[dict[str, Any]]:
         and isinstance(c.get("confidence"), (int, float))
         and math.isfinite(c["confidence"])
     ]
-    best = max((c["confidence"] for c in entries), default=0.0)
-    floor = max(CRASH_FLOOR_MIN, CRASH_FLOOR_REL * best)
+    floor = crash_floor(c["confidence"] for c in entries)
     out = []
     for c in entries:
         start, end, conf = c.get("t0"), c.get("t1"), c["confidence"]
@@ -4131,10 +4130,11 @@ def _style(name: object) -> Style | None:
 
 
 def _style_crash(style: object) -> float | None:
-    """The ``must_include_crash`` of an action-cam ``style`` (what ``--must-include-crash``
-    overrides), else None: the flag only changes action-cam analysis."""
-    s = _style(style)
-    return s.must_include_crash if s is not None and s.kind == ACTION_CAM else None
+    """The ``must_include_crash`` of ``style`` (what ``--must-include-crash`` overrides), else
+    None (no known style). ``auto`` picks a built-in style, all with the same value: the
+    default style's."""
+    s = _style(ANALYZE_STYLE if style == AUTO else style)
+    return s.must_include_crash if s is not None else None
 
 
 def _no_scenes(st: dict[str, Any], style: object) -> bool:
@@ -5224,11 +5224,11 @@ def create_app(port: int) -> FastAPI:
             # earlier clips a run would replace (the page asks first).
             "preset_problem": preset_problem(meta, hl),
             # Analyze options (#483): what the analysis used, which the page shows; the style's
-            # --must-include-crash default, null when the style is not action-cam (no such option)
+            # --must-include-crash default, null for 360 projects or no known style (no option)
             "analyze_options": analyze_options(p, meta, hl),
-            "must_include_crash_default": _style_crash(
-                meta.get("style") or (hl or {}).get("style")
-            ),
+            "must_include_crash_default": None
+            if meta.get("kind") == "360"
+            else _style_crash(meta.get("style") or (hl or {}).get("style")),
             # "Describe the footage" (crashes --context) and "Look closer with vision" (events)
             "refine": refine_state(p, meta, hl),
             "preset_taken": preset_taken(p),

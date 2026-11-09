@@ -163,13 +163,70 @@ test('the kind filter shows one kind, All brings the rest back, and the pressed 
   assert.deepEqual(ids(), ['v001']);
   assert.equal(seg('scenic').getAttribute('aria-pressed'), 'true');
   assert.equal(seg('').getAttribute('aria-pressed'), 'false');
-  seg('dialogue').click();
-  await page.settle();
-  assert.deepEqual(ids(), []);
-  assert.match(d.querySelector('#candList').textContent, /No moments match these filters/);
+  // a kind no moment has shows no chip; All always shows
+  assert.equal(seg('dialogue').hidden, true);
+  assert.equal(seg('crash').hidden, true);
+  assert.equal(seg('').hidden, false);
+  assert.deepEqual(['action', 'scenic', 'funny'].map((k) => seg(k).hidden), [false, false, false]);
   seg('').click();
   await page.settle();
   assert.deepEqual(ids(), ['h001', 'v001', 'h003']);
+});
+
+test('crash moments: the Crashes chip shows, tiles carry the CRASH badge (dashed when weak), and an emptied kind falls back to All', async (t) => {
+  const p = kinds();
+  const [a, b, c] = p.highlights.candidates;
+  p.highlights.candidates = [
+    { ...a, kind: 'crash', must_include: true, crash: { type: 'crash', confidence: 0.912 }, crash_confidence: 0.912, crash_forced: true },
+    b,
+    { ...c, crash: { type: 'crash', confidence: 0.47 }, crash_confidence: 0.47, crash_forced: false },
+  ];
+  const page = await open(t, { project: p });
+  const d = page.document;
+  const tile = (id) => d.querySelector(`#candList li.cand[data-id="${id}"]`);
+  const seg = (k) => d.querySelector(`#kindSeg [data-kind="${k}"]`);
+  assert.equal(tile('h001').dataset.kind, 'crash');
+  assert.equal(tile('h003').dataset.kind, 'funny'); // a moment a weaker crash marked keeps its kind
+  const strong = tile('h001').querySelector('.tag.crash');
+  assert.equal(strong.firstChild.textContent, 'CRASH 0.91');
+  assert.equal(strong.classList.contains('weak'), false);
+  assert.equal(tile('h001').querySelector('.tag:not(.crash)'), null, 'no separate must include tag');
+  const weak = tile('h003').querySelector('.tag.crash');
+  assert.equal(weak.firstChild.textContent, 'CRASH 0.47');
+  assert.ok(weak.classList.contains('weak'));
+  assert.match(weak.textContent, /ranked like any moment/);
+  assert.equal(tile('h001').querySelector('.cand-meta').textContent.startsWith('Crashes'), true);
+  assert.equal(seg('crash').hidden, false);
+  assert.equal(seg('action').hidden, true); // no Action moment left
+  seg('crash').click();
+  await page.settle();
+  assert.deepEqual([...d.querySelectorAll('#candList li.cand')].map((li) => li.dataset.id), ['h001']);
+});
+
+test('when the pressed kind empties (the project read again without crashes), the filter falls back to All', async (t) => {
+  const p = kinds();
+  const [a, b, c] = p.highlights.candidates;
+  const crashy = { ...p, highlights: { ...p.highlights, candidates: [{ ...a, kind: 'crash', crash: { confidence: 0.9 } }, b, c] } };
+  let reads = 0;
+  const page = await open(t, {
+    project: crashy,
+    routes: {
+      'GET /api/projects': { projects: [{ id: p.id, name: p.name }, { id: 'p2', name: 'Again' }] },
+      [`GET /api/projects/${p.id}`]: () => (++reads === 1 ? crashy : p),
+      'GET /api/projects/p2': () => p, // the same project (same id), analysed again without crashes
+    },
+  });
+  const d = page.document;
+  const seg = (k) => d.querySelector(`#kindSeg [data-kind="${k}"]`);
+  seg('crash').click();
+  await page.settle();
+  assert.equal(seg('crash').getAttribute('aria-pressed'), 'true');
+  d.querySelector('#projectBtn').click();
+  d.querySelector('#projectMenu [data-id=p2]').click();
+  await page.settle();
+  assert.equal(seg('crash').hidden, true);
+  assert.equal(seg('').getAttribute('aria-pressed'), 'true');
+  assert.deepEqual([...d.querySelectorAll('#candList li.cand')].map((li) => li.dataset.id), ['h001', 'v001', 'h003']);
 });
 
 // ---- header Export ----

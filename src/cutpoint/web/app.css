@@ -58,7 +58,7 @@
   --scrim-raise: #3a3f48;
   --scrim-hover: #4a505b;
   --scrim-line: #8d94a0;
-  /* a moment's kind (Action, Scenic, Funny, Dialogue): a bar or dot, and the tint under its thumbnail; the same in every theme */
+  /* a moment's kind (Action, Scenic, Funny, Dialogue, Crash): a bar or dot, and the tint under its thumbnail; the same in every theme but Light */
   --k-action: #5b8def;
   --k-action-tint: #1f3157;
   --k-scenic: #3fbfa8;
@@ -67,6 +67,9 @@
   --k-funny-tint: #4a2b19;
   --k-dialogue: #b590f5;
   --k-dialogue-tint: #352a4f;
+  --k-crash: #f26d6d;
+  --k-crash-tint: #4a1f24;
+  --crash-text: #ffa3a3; /* the crash badge's text and outline: 4.5:1 or more on --slate, --panel and --deep (Graphite and Blue) */
   /* detected events under the rail (sound, on-screen text, camera); Light darkens them for its pale ground */
   --ev-sound: var(--k-dialogue);
   --ev-text: var(--k-action);
@@ -202,6 +205,8 @@
   --k-scenic: #309180;
   --k-funny: #b46838;
   --k-dialogue: #886cb8;
+  --k-crash: #d0454f;
+  --crash-text: #a8232d; /* 4.5:1 or more on --slate, --panel and --deep */
   --film-gap-shade: rgba(23, 33, 46, 0.32); /* the rail's gaps while stills show */
   --hatch: rgba(71, 86, 105, 0.2);
   --gap-shade: rgba(23, 33, 46, 0.12);
@@ -552,6 +557,7 @@ select { max-width: 100%; }
 .cand[data-kind="scenic"], .seq[data-kind="scenic"] { --k: var(--k-scenic); --kt: var(--k-scenic-tint); }
 .cand[data-kind="funny"], .seq[data-kind="funny"] { --k: var(--k-funny); --kt: var(--k-funny-tint); }
 .cand[data-kind="dialogue"], .seq[data-kind="dialogue"] { --k: var(--k-dialogue); --kt: var(--k-dialogue-tint); }
+.cand[data-kind="crash"], .seq[data-kind="crash"] { --k: var(--k-crash); --kt: var(--k-crash-tint); }
 .cand > * { grid-area: 1 / 1; }
 .cand > .cand-toggle, .cand > .btn { justify-self: end; align-self: start; margin: var(--space-2) var(--space-2) 0 0; z-index: 1; }
 /* Add: a dark + on --amber (--amber-ink, well above 4.5:1). Remove: a white - on --danger-btn (white 5.5:1 in
@@ -595,6 +601,9 @@ select { max-width: 100%; }
 .tag.bit { color: var(--text); background: none; border: 1px solid var(--amber); line-height: 16px; }
 /* a visual-pool moment (#635): an outline, so it does not read as the amber must include */
 .tag.pool { color: var(--text); background: none; border: 1px solid var(--line); line-height: 16px; }
+/* a crash (crashes.json) with its confidence: solid when always kept, dashed when ranked like any moment */
+.tag.crash { color: var(--crash-text); background: none; border: 1px solid var(--crash-text); line-height: 16px; font-family: var(--mono); }
+.tag.crash.weak { border-style: dashed; }
 /* a moment's place in its source, read-only (the preview's overview in small): --gold on --deep, 3:1 or more in every theme */
 .cand-strip { position: relative; display: block; height: 8px; margin: var(--space-0) 0; background: var(--deep); border: 1px solid var(--line); border-radius: var(--radius-xs); overflow: hidden; }
 .cand-strip-clip { position: absolute; top: 1px; bottom: 1px; min-width: 4px; background: var(--gold); }
@@ -641,6 +650,7 @@ body.tips-off .flag-tip { display: none; }
 .stage-dot[data-kind="scenic"] { --k: var(--k-scenic); }
 .stage-dot[data-kind="funny"] { --k: var(--k-funny); }
 .stage-dot[data-kind="dialogue"] { --k: var(--k-dialogue); }
+.stage-dot[data-kind="crash"] { --k: var(--k-crash); }
 #stageTitle, #stageMeta { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 /* no width of its own: the buttons stay on the title's line and the source name gives way first */
 #stageMeta { flex: 1 1 0; min-width: 6em; }
@@ -799,6 +809,7 @@ body.tips-off .flag-tip { display: none; }
 .rail-event[data-kind="scenic"] { --k: var(--k-scenic); }
 .rail-event[data-kind="funny"] { --k: var(--k-funny); }
 .rail-event[data-kind="dialogue"] { --k: var(--k-dialogue); }
+.rail-event[data-kind="crash"] { --k: var(--k-crash); }
 /* detected events: sound, on-screen text, camera, talk; the bar is 3:1 on the stage ground in every theme */
 .rail-event[data-ev="audio"] { --k: var(--ev-sound); }
 .rail-event[data-ev="ocr"] { --k: var(--ev-text); }
@@ -860,6 +871,7 @@ body.tips-off .flag-tip { display: none; }
 .sb-block[data-kind="scenic"] { --k: var(--k-scenic); --kt: var(--k-scenic-tint); }
 .sb-block[data-kind="funny"] { --k: var(--k-funny); --kt: var(--k-funny-tint); }
 .sb-block[data-kind="dialogue"] { --k: var(--k-dialogue); --kt: var(--k-dialogue-tint); }
+.sb-block[data-kind="crash"] { --k: var(--k-crash); --kt: var(--k-crash-tint); }
 .sb-block:hover { filter: brightness(1.25); }
 .sb-block[aria-current="true"] { box-shadow: inset 0 0 0 2px var(--amber); }
 .sb-block.playing .sb-n { font-weight: 700; text-decoration: underline; }
@@ -897,6 +909,7 @@ body.tips-off .flag-tip { display: none; }
 .cut-side[data-kind="scenic"] { --k: var(--k-scenic); --kt: var(--k-scenic-tint); }
 .cut-side[data-kind="funny"] { --k: var(--k-funny); --kt: var(--k-funny-tint); }
 .cut-side[data-kind="dialogue"] { --k: var(--k-dialogue); --kt: var(--k-dialogue-tint); }
+.cut-side[data-kind="crash"] { --k: var(--k-crash); --kt: var(--k-crash-tint); }
 .cut-side.a { clip-path: inset(0 calc(100% - var(--join)) 0 0); }
 .cut-side.b { clip-path: inset(0 0 0 var(--join)); }
 .cut-wave { position: absolute; inset: 18px 0 var(--space-1); width: 100%; height: calc(100% - 22px); }
@@ -924,6 +937,7 @@ body.tips-off .flag-tip { display: none; }
 .cut-block[data-kind="scenic"] { --k: var(--k-scenic); --kt: var(--k-scenic-tint); }
 .cut-block[data-kind="funny"] { --k: var(--k-funny); --kt: var(--k-funny-tint); }
 .cut-block[data-kind="dialogue"] { --k: var(--k-dialogue); --kt: var(--k-dialogue-tint); }
+.cut-block[data-kind="crash"] { --k: var(--k-crash); --kt: var(--k-crash-tint); }
 .cut-block:hover { filter: brightness(1.25); }
 .cut-block.on { background: var(--k); }
 .cut-block.at { box-shadow: inset -3px 0 0 var(--amber), inset 0 0 0 1px var(--amber-ink); }
@@ -1207,6 +1221,7 @@ details.more > p { margin-top: var(--space-1); overflow-wrap: anywhere; }
 .prop-block[data-kind="scenic"] { --k: var(--k-scenic); }
 .prop-block[data-kind="funny"] { --k: var(--k-funny); }
 .prop-block[data-kind="dialogue"] { --k: var(--k-dialogue); }
+.prop-block[data-kind="crash"] { --k: var(--k-crash); }
 .prop-acts { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .prop-acts .btn { min-height: 34px; }
 .chat-history summary { cursor: pointer; font-weight: 650; font-size: var(--fs-body); }

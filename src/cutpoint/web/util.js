@@ -118,7 +118,7 @@ export function momentMatches(m, q, f) {
 }
 
 /** The kinds a moment is shown as (the Moments grid's dot and filter, the sequence row's bar). */
-export const KINDS = Object.freeze({ action: 'Action', scenic: 'Scenic', funny: 'Funny', dialogue: 'Dialogue' });
+export const KINDS = Object.freeze({ action: 'Action', scenic: 'Scenic', funny: 'Funny', dialogue: 'Dialogue', crash: 'Crashes' });
 
 // The word sets of cutpoint.assistant.pacing (moment_kind), so the page and AI Chat name a moment's
 // kind alike; tests/test_web_kind.py fails when they drift apart.
@@ -140,7 +140,23 @@ const roundEven = (x) => { // Python's round(): halves go to the even number
 const TALK_WORDS = ['talk', 'talking', 'speech', 'dialogue', 'dialog', 'conversation', 'banter', 'chat', 'commentary', 'voice', 'speaking'];
 
 /**
- * The kind a moment is shown as, for display only; highlights.json holds no such field. A moment made
+ * The crash a moment shows (its ``crash`` record): ``confidence`` (0-1, null when not a number) and
+ * ``forced`` (at or above the analysis' must-include confidence: always kept), or null for none.
+ */
+export function crashOf(c) {
+  if (!c?.crash || typeof c.crash !== 'object') return null;
+  const conf = c.crash_confidence ?? c.crash.confidence;
+  return { confidence: typeof conf === 'number' && Number.isFinite(conf) ? conf : null, forced: c.crash_forced ?? !!c.must_include };
+}
+
+/** A crash badge's text: ``CRASH 0.91`` (two decimals), or ``CRASH`` without a confidence. */
+export const crashText = (crash) => (crash.confidence == null ? 'CRASH' : `CRASH ${crash.confidence.toFixed(2)}`);
+
+/**
+ * The kind a moment is shown as, for display only; highlights.json holds no such field. A crash comes
+ * first: a crash moment or its reaction (``kind`` crash or wipeout, or a forced ``crash`` record) is
+ * crash, which AI Chat does not name (pacing calls it action); a moment a weaker crash only marked keeps
+ * its kind (it shows the crash badge). A moment made
  * from a talk stretch is dialogue, and a widened moment is judged by ``widened_from.label``, not its
  * title. Otherwise it follows
  * pacing.moment_kind (what AI Chat calls the moment) in the same order: the words of its labels
@@ -153,9 +169,10 @@ const TALK_WORDS = ['talk', 'talking', 'speech', 'dialogue', 'dialog', 'conversa
  */
 export function kindOf(c) {
   if (!c) return null;
+  const kind = typeof c.kind === 'string' ? c.kind : '';
+  if (kind === 'crash' || kind === 'wipeout' || crashOf(c)?.forced) return 'crash';
   const nominated = c.signals?.events?.nominated;
   if (Array.isArray(nominated) && nominated.some((n) => String(n).startsWith('dialogue-'))) return 'dialogue'; // made from a talk stretch, whatever its title says
-  const kind = typeof c.kind === 'string' ? c.kind : '';
   // a moment a stretch only widened keeps its own type: its words are the label it had, not the title's
   const words = c.dialogue_title ? [c.widened_from?.label ?? c.label, c.vision_label] : [c.display_label, c.label, c.vision_label];
   const named = words.filter((x) => x && !GENERIC.test(String(x)));
