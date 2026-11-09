@@ -57,6 +57,9 @@ class OcrParams:
     player_tags: tuple[str, ...] = ()  # config.json ``player_tags`` (or ``--player``)
     hwaccel: bool = True
     project: Path | None = None  # for project-local presets (not part of the key)
+    # skip the det gate of a region that has not changed (DET_SKIP_*); config.json
+    # ``ocr_det_skip`` or ``--ocr-det-skip``. In the raw read's key, so in the key through it
+    det_skip: bool = False
 
     def key(self, game: str | None, preset: HudPreset | None = None) -> dict[str, Any]:
         """Cache key (hwaccel does not change results, so it is left out).
@@ -2390,6 +2393,36 @@ def _log_menu_frames(
 # Region kinds whose interpretation looks at pixels: only their reads keep a band.
 PIXEL_KINDS = ("feed",)
 
+# Det-gate skip (``OcrParams.det_skip``, #807): a det-gated region whose grey crop, scaled
+# down DET_SKIP_SCALE times, differs from the one of its last det run by less than
+# DET_SKIP_MAX_DIFF (0-255) in every DET_SKIP_TILE px tile (mean abs difference) keeps that
+# run's outcome without a det call. Measured: a third and a tenth of the det calls on two
+# clips, no event lost.
+DET_SKIP_SCALE = 4
+DET_SKIP_TILE = 8
+DET_SKIP_MAX_DIFF = 8.0
+
+
+def _skip_image(crop: np.ndarray) -> np.ndarray:
+    """The grey crop scaled down :data:`DET_SKIP_SCALE` times (uint8), the det skip compares."""
+    import cv2  # noqa: PLC0415
+
+    grey = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    h, w = grey.shape
+    size = (max(1, w // DET_SKIP_SCALE), max(1, h // DET_SKIP_SCALE))
+    return cv2.resize(grey, size, interpolation=cv2.INTER_AREA)
+
+
+def _tile_diff(a: np.ndarray, b: np.ndarray) -> float:
+    """The largest mean abs difference of ``a`` and ``b`` over :data:`DET_SKIP_TILE` px tiles
+    (the tiles at the right and bottom edges may be smaller)."""
+    d = np.abs(a.astype(np.float32) - b.astype(np.float32))
+    ys = np.arange(0, d.shape[0], DET_SKIP_TILE)
+    xs = np.arange(0, d.shape[1], DET_SKIP_TILE)
+    sums = np.add.reduceat(np.add.reduceat(d, ys, axis=0), xs, axis=1)
+    counts = np.outer(np.diff(ys, append=d.shape[0]), np.diff(xs, append=d.shape[1]))
+    return float((sums / counts).max())
+
 
 @dataclass
 class FrameRec:
@@ -2401,7 +2434,9 @@ class FrameRec:
     "keep"}`` (the layout did not change: the text is still on screen) or ``{"g":
     "read", "items": [[box, text, score], ...]}`` (an OCR call). Records of "det"
     gate regions other than feeds carry the gate's ``boxes`` (reference px ``[x0,
-    y0, x1, y1]``, for the menu test); reads in regions whose kind looks at pixels
+    y0, x1, y1]``, for the menu test); a "det" or "keep" record the det skip made
+    without a det call (``OcrParams.det_skip``) has ``"s": 1`` and the boxes of the
+    region's last det call; reads in regions whose kind looks at pixels
     (:data:`PIXEL_KINDS`) carry ``rows``, the crop rows ``[a, b]`` their
     boxes cover, whose pixels are stacked in ``bands``. A region skipped by its
     ``every``, or that its "mask" gate did not let through, has no record.
@@ -2497,6 +2532,10 @@ class OcrReader:
         self.last_mask: dict[str, np.ndarray | None] = {r.name: None for r in regions}
         self.last_layout: dict[str, list[tuple[int, ...]] | None] = {r.name: None for r in regions}
         self.last_rows: dict[str, list[tuple[float, float, float, float, float]]] = {}
+        # det skip: per det-gated region the image of its last det run and that run's boxes
+        self.det_skip = params.det_skip
+        self.anchor: dict[str, np.ndarray] = {}
+        self.last_boxes: dict[str, list[list[float]]] = {}
 
     def _det_changed(self, r: Region, crop: np.ndarray, rec: dict[str, Any]) -> bool:
         """Text-layout gate: True when the detected text *rows* changed.
@@ -2551,7 +2590,21 @@ class OcrReader:
         its ``items``; neither when the layout did not change."""
         if r.gate == "det":
             g: dict[str, Any] = {}
-            if not self._det_changed(r, crop, g):
+            if self.det_skip:
+                small = _skip_image(crop)
+                anchor = self.anchor.get(r.name)
+                if anchor is not None and _tile_diff(small, anchor) < DET_SKIP_MAX_DIFF:
+                    # unchanged since the last det run: its outcome, without a det call
+                    g["g"] = "keep" if self.last_layout[r.name] else "det"
+                    g["s"] = 1
+                    if r.name in self.last_boxes:
+                        g["boxes"] = list(self.last_boxes[r.name])
+                    return g, None, None
+                self.anchor[r.name] = small
+            changed = self._det_changed(r, crop, g)
+            if self.det_skip and "boxes" in g:
+                self.last_boxes[r.name] = g["boxes"]
+            if not changed:
                 g["g"] = "keep" if self.last_layout[r.name] else "det"
                 return g, None, None
             rows = self.last_rows[r.name]
@@ -2610,13 +2663,22 @@ class OcrReader:
         return rec, crops
 
     def state(self) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
-        """The reader's state: JSON (layouts, rows) and arrays (masks)."""
+        """The reader's state: JSON (layouts, rows; with the det skip its last boxes) and
+        arrays (masks; with the det skip its images)."""
         masks = {
             f"mask{i}": m
             for i, r in enumerate(self.regions)
             if (m := self.last_mask[r.name]) is not None
         }
-        return {"layout": self.last_layout, "rows": self.last_rows}, masks
+        state: dict[str, Any] = {"layout": self.last_layout, "rows": self.last_rows}
+        if self.det_skip:
+            state["boxes"] = self.last_boxes
+            masks |= {
+                f"anchor{i}": a
+                for i, r in enumerate(self.regions)
+                if (a := self.anchor.get(r.name)) is not None
+            }
+        return state, masks
 
     def restore(self, state: dict[str, Any], arrays: dict[str, np.ndarray]) -> None:
         """Continue from a :meth:`state`."""
@@ -2627,6 +2689,14 @@ class OcrReader:
         }
         self.last_rows = {k: [tuple(v) for v in rows] for k, rows in state["rows"].items()}
         self.last_mask = {r.name: arrays.get(f"mask{i}") for i, r in enumerate(self.regions)}
+        self.last_boxes = {
+            k: [list(b) for b in boxes] for k, boxes in state.get("boxes", {}).items()
+        }
+        self.anchor = {
+            r.name: a
+            for i, r in enumerate(self.regions)
+            if (a := arrays.get(f"anchor{i}")) is not None
+        }
 
 
 def _chunk(
@@ -2720,6 +2790,8 @@ class OcrInterpretation:
         det = any(r.gate == "det" for r in regions)
         if det:
             stats["det_calls"] = {r.name: 0 for r in regions if r.gate == "det"}
+            if params.det_skip:  # det calls the det skip saved (not in det_calls)
+                stats["det_skipped"] = {r.name: 0 for r in regions if r.gate == "det"}
         # menu test: the det boxes of every region in reference px, per frame
         self.menus = preset is not None and det
         self.det_boxes: dict[str, list[list[float]]] = {}
@@ -2750,7 +2822,7 @@ class OcrInterpretation:
             if g is None:
                 continue
             if r.gate == "det":
-                stats["det_calls"][r.name] += 1
+                stats["det_skipped" if g.get("s") else "det_calls"][r.name] += 1
                 if self.menus and r.kind != "feed":
                     self.det_boxes[r.name] = g.get("boxes", [])
                 elif self.menus and self.feed_notices and g["g"] == "det":
@@ -3065,6 +3137,7 @@ def detect_ocr_events(
             newest,
             MIN_TEXT_SCORE,
             avoid,
+            [DET_SKIP_SCALE, DET_SKIP_TILE, DET_SKIP_MAX_DIFF] if params.det_skip else None,
         ),
     )
     key = params.key(game, preset) | ({"avoid": avoid} if avoid else {})
@@ -3292,6 +3365,14 @@ def detect_ocr_events(
             stats["frames"],
             stats["ocr_calls"],
             stats["elapsed_s"],
+        )
+    if "det_skipped" in stats:
+        skipped = sum(stats["det_skipped"].values())
+        logger.info(
+            "%s: det gate skipped on %d of %d region reads (unchanged since its last det call)",
+            src.name,
+            skipped,
+            skipped + sum(stats["det_calls"].values()),
         )
     cache.save_json(
         cpath, {"source": str(src.path), "params": key, "stats": stats, "events": events}

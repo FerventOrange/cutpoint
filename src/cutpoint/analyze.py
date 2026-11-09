@@ -2195,12 +2195,13 @@ def _ocr_prefetch(
     layers: bool,
     cat: str | None = None,
     batch_size: int = 0,
+    det_skip: bool = False,
 ) -> contextlib.AbstractContextManager[Any]:
     """The background OCR reader of :mod:`cutpoint.events.ocr_prefetch` when the keyframes
     step will run HUD OCR (the conditions of :func:`plan_layers` with the category ``cat``,
     checked without its log lines, which keep their place) and ``CUTPOINT_ANALYZE_OVERLAP``
     is not ``0``; else a context giving None. ``batch_size``: ``--batch-size`` (its engine
-    is made again every this many sources)."""
+    is made again every this many sources); ``det_skip``: ``--ocr-det-skip``."""
     gameplay = (cat or layer_category(style)) == category.GAMEPLAY
     if not layers or not gameplay or "keyframes" in skip:
         return contextlib.nullcontext()
@@ -2214,7 +2215,7 @@ def _ocr_prefetch(
     if not ocr_prefetch.enabled():
         return contextlib.nullcontext()
     tags, game = _ocr_options(project, log=False)
-    params = OcrParams(game=game, player_tags=tags)
+    params = OcrParams(game=game, player_tags=tags, det_skip=det_skip)
     return ocr_prefetch.OcrPrefetch(project, sources, params, batch_size=batch_size)
 
 
@@ -2349,6 +2350,7 @@ def _run_layers(
     ollama_model: str | None = None,
     batch_size: int = 0,
     dialogue: Callable[[dict[str, list[dict[str, Any]]]], list[dict[str, Any]]] | None = None,
+    det_skip: bool = False,
 ) -> bool:
     """Run the planned event layers on the analysis ``hl`` (not written yet) and write
     events.json, as ``cutpoint events`` would (held back with the other
@@ -2358,7 +2360,8 @@ def _run_layers(
     ``ollama_url``, ``ollama_model``: the VLM layer's Ollama (``analyze --ollama-url``, #660;
     None: from config.json and the environment); ``batch_size``: ``--batch-size``
     (:func:`~cutpoint.events.pipeline.run_events`); ``dialogue``: the dialogue reader it runs as
-    the ``dialogue`` step before it writes events.json (:func:`_dialogue_reader`)."""
+    the ``dialogue`` step before it writes events.json (:func:`_dialogue_reader`); ``det_skip``:
+    ``--ocr-det-skip`` (``OcrParams.det_skip``)."""
     from cutpoint.crash import no_visual_reason  # noqa: PLC0415
     from cutpoint.events.audio_events import AudioParams  # noqa: PLC0415
     from cutpoint.events.common import pending_highlights  # noqa: PLC0415
@@ -2379,7 +2382,7 @@ def _run_layers(
                 project,
                 layers=plan.all_layers(),
                 audio=AudioParams(),
-                ocr=OcrParams(game=game, player_tags=tags),
+                ocr=OcrParams(game=game, player_tags=tags, det_skip=det_skip),
                 vlm=VlmParams(max_windows=None),
                 stage=_StepHook(steps, {"visual"} if plan.game else set()),
                 cached_ocr=plan.game,
@@ -2632,6 +2635,7 @@ def analyze(
     detection: dict[str, Any] | None = None,
     batch_size: int = 0,
     visual_index: bool | None = None,
+    ocr_det_skip: bool | None = None,
     crash_moments: bool = True,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
@@ -2690,6 +2694,9 @@ def analyze(
             layer) for gameplay and talk footage, for the assistant's visual search; they
             change no ranking. False or None = only the styles that always write them
             (action, sport, action-cam).
+        ocr_det_skip: True = the HUD OCR skips the det gate of a region that has not
+            changed since its last det call (``OcrParams.det_skip``), recorded as
+            ``settings.ocr_det_skip`` for ``cutpoint events``; False or None = off.
         crash_moments: Make the crashes of crashes.json moments (:func:`add_crash_candidates`,
             every style but action-cam); False (``360 analyze``) leaves them out and records
             ``settings.crash_moments`` false, which :func:`reanalyze` keeps.
@@ -2720,6 +2727,7 @@ def analyze(
             detection=detection,
             batch_size=batch_size,
             visual_index=bool(visual_index),
+            ocr_det_skip=bool(ocr_det_skip),
             crash_moments=crash_moments,
         )
 
@@ -2747,6 +2755,7 @@ def _analyze(
     detection: dict[str, Any] | None,
     batch_size: int,
     visual_index: bool,
+    ocr_det_skip: bool,
     crash_moments: bool,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
@@ -2773,7 +2782,9 @@ def _analyze(
         runstate.project_ready(out_dir),  # the run lock of a new project, now it exists
         cache.hold_outputs(out_dir, HELD_OUTPUTS) as held,
         # HUD OCR in the background while the GPU steps run; stopped before the folder goes
-        _ocr_prefetch(style, sources, skip, out_dir, layers, cat, batch_size) as prefetch,
+        _ocr_prefetch(
+            style, sources, skip, out_dir, layers, cat, batch_size, ocr_det_skip
+        ) as prefetch,
     ):
         # ---- 1. transcribe: audio, loudness, Whisper and scene cuts per source
         use_scenes = use_scenes and style.use_scenes
@@ -2961,6 +2972,8 @@ def _analyze(
                 "recover": recover,
                 **({} if crash_moments else {"crash_moments": False}),  # 360 analyze
                 **({"style_requested": AUTO} if detection_rec is not None else {}),
+                # --ocr-det-skip: `cutpoint events` reads HUD text as this run did (only when on)
+                **({"ocr_det_skip": True} if ocr_det_skip else {}),
             },
             "timings": timings,
             "suggested_top": 0,
@@ -3025,6 +3038,7 @@ def _analyze(
                     ollama_model=ollama_model,
                     batch_size=batch_size,
                     dialogue=(lambda layer1: reader(_audio_events(layer1))) if reader else None,
+                    det_skip=ocr_det_skip,
                 )
                 timings["events_s"] = round(time.perf_counter() - t0, 2)
                 free_models()
@@ -3268,6 +3282,7 @@ def reanalyze(project: Path) -> Path:
         # the analysis time stays the first run's; this re-rank's is timings.rerank_s
         earlier_total_s=float(total) if isinstance(total, int | float) else None,
         detection=detection if isinstance(detection, dict) else None,
+        ocr_det_skip=st.get("ocr_det_skip") is True,
         # off for 360 projects (pano.json: also one analysed before crash_moments was recorded)
         crash_moments=st.get("crash_moments") is not False and not (project / PANO_FILE).is_file(),
     )

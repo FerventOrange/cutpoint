@@ -136,6 +136,7 @@ def _run(
     fail_hw_at: float | None = None,
     on_cut: Any = None,
     gpu: bool = True,
+    det_skip: bool = False,
     **kwargs: Any,
 ) -> tuple[list[dict], dict]:
     """Detect the OCR events of a 60 s source whose frames are moving gameplay (a new
@@ -147,7 +148,7 @@ def _run(
     ``exit_after`` frames ffmpeg exits with code 255 that the decode did not cause; a CUDA
     pass starting at ``fail_hw_at`` gives no frames (the CPU pass does); ``on_cut`` is
     called when a pass ends after ``cut_after`` frames. ``gpu`` False: no GPU decoder fits the
-    source, so a ``hw`` pass is a CPU pass."""
+    source, so a ``hw`` pass is a CPU pass. ``det_skip``: ``OcrParams.det_skip``."""
     data = preset or _preset()
     monkeypatch.setattr(killfeed, "load_preset", lambda *_a, **_k: preset_from_dict(data))
     monkeypatch.setattr(
@@ -195,7 +196,7 @@ def _run(
 
     monkeypatch.setattr(killfeed, "iter_frames", frames)
     src = Source(cdir / "rec.mp4", 60.0, cdir, [])
-    params = OcrParams(game="zonewar", fps=fps)
+    params = OcrParams(game="zonewar", fps=fps, det_skip=det_skip)
     return detect_ocr_events(src, params, engine, avoid=avoid, **kwargs)
 
 

@@ -41,7 +41,8 @@ from cutpoint import cache
 logger = logging.getLogger(__name__)
 
 # bump when the reader's records change (what is recorded, or how a gate decides);
-# 2: no det_side, regions keyed with all their fields
+# 2: no det_side, regions keyed with all their fields. A det skip read (``det_skip`` in
+# :func:`raw_key`) is keyed apart, so reads without it keep their cache
 RAW_VERSION = 2
 CHUNK_FRAMES = 600  # frames per chunk: what an interrupted read loses at most
 KEEP_RAW = 2  # complete raw reads kept per source (the most recently used)
@@ -62,6 +63,7 @@ def raw_key(
     newest: str,
     min_text_score: float,
     avoid: list[tuple[float, float]],
+    det_skip: list[float] | None = None,
 ) -> dict[str, Any]:
     """Key of a raw read: everything the reader's records depend on.
 
@@ -71,8 +73,10 @@ def raw_key(
         newest: The feed end new entries appear at (the preset's ``feed.newest``).
         min_text_score: Recognition score below which text is dropped.
         avoid: Time ranges never decoded.
+        det_skip: The det skip's settings (scale, tile, largest difference) when it is
+            on; None leaves it out of the key (the key of a read without it).
     """
-    return {
+    key: dict[str, Any] = {
         "v": RAW_VERSION,
         "fps": fps,
         "regions": regions,
@@ -81,6 +85,9 @@ def raw_key(
         "avoid": [list(a) for a in avoid],
         "engine": engine_version(),
     }
+    if det_skip is not None:
+        key["det_skip"] = list(det_skip)
+    return key
 
 
 @dataclass

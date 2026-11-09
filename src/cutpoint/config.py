@@ -76,6 +76,7 @@ class Config:
     vision_assistant: AssistantSettings = field(default_factory=AssistantSettings)
     memory_guard: float = MEMORY_GUARD_GB  # GB of RAM left free when a model loads (0: off)
     visual_index: bool = False  # analyze writes frame embeddings for every style, not just action
+    ocr_det_skip: bool = False  # HUD OCR skips the det gate of unchanged regions (#807)
 
 
 def load_config_data(path: Path | None = None) -> dict:
@@ -188,6 +189,7 @@ def _load_config(path: Path) -> Config:
     _check_type(path, data, "player_tags", _is_str_or_list, "a list of names")
     _check_type(path, data, "vision", _is_bool, "true or false")
     _check_type(path, data, "visual_index", _is_bool, "true or false")
+    _check_type(path, data, "ocr_det_skip", _is_bool, "true or false")
     skip = _analysis_skip(path, data)
     projects = resolve_projects_dir(data)
     remap = data.get("source_remap") or {}
@@ -233,6 +235,7 @@ def _load_config(path: Path) -> Config:
         v_ast,
         _memory_guard(path, data),
         data.get("visual_index") is True,
+        data.get("ocr_det_skip") is True,
     )
 
 
@@ -425,6 +428,13 @@ def visual_index_default() -> bool:
     ``--visual-index`` nor ``--no-visual-index`` is given (``visual_index`` in ``config.json``;
     default False: only action, sport and action-cam footage has them)."""
     return get_config().visual_index
+
+
+def ocr_det_skip_default() -> bool:
+    """Whether the HUD OCR of ``analyze``, ``edit`` and ``events`` skips the det gate of a
+    region that has not changed when neither ``--ocr-det-skip`` nor ``--no-ocr-det-skip`` is
+    given (``ocr_det_skip`` in ``config.json``; default False)."""
+    return get_config().ocr_det_skip
 
 
 def analysis_skip() -> tuple[str, ...]:

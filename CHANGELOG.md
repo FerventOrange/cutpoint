@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--ocr-det-skip` / `--no-ocr-det-skip` on `analyze`, `edit` and `events`, and `"ocr_det_skip": true` in `config.json` (off by default): the gameplay HUD text reading skips the text detection of a HUD region that has not changed since detection last ran there. On two test clips it saved a third and a tenth of the detection calls and lost no event. A read with it is cached apart, so runs without it keep their cache; OCR stats count the saved calls as `det_skipped` (#807).
 - Crashes in `crashes.json` become moments for every style except 360 (#486). A crash with a
   confidence of at least `must_include_crash` (default 0.6) becomes a must-include moment with its
   reaction, replaces the moments it overlaps and ranks first. A weaker crash at or above the
