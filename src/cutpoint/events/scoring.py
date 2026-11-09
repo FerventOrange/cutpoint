@@ -485,7 +485,8 @@ def widen_for_dialogue(
     :data:`DIALOGUE_WIDEN_MAX_S` long; otherwise the candidates stay as they are (no partial
     widening) and :func:`nominate` makes the stretch a moment of its own. The earlier span
     is kept in ``widened_from`` (with the merged ones, ``absorbed``), so :func:`restore_widened`
-    undoes it and a re-run widens from the same bounds. Visual pool candidates are left alone.
+    undoes it and a re-run widens from the same bounds. Visual pool candidates and
+    ``must_include`` ones (forced crash moments) are left alone.
     The widened span keeps only the part of the stretch that leads into the original moments:
     with ``spoken(source)`` (the ``(start, end)`` of the transcript's words; none: no
     trimming) it starts after a silence of :data:`WIDEN_SILENCE_S` or more before the moment
@@ -513,6 +514,7 @@ def widen_for_dialogue(
                 for c in cands
                 if c["source"] == src
                 and not is_pool(c)
+                and not c.get("must_include")  # a forced crash moment stays as it is
                 and not is_nominated(c)
                 and c["end"] >= e["start"]
                 and c["start"] <= e["end"]

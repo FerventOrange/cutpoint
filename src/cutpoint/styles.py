@@ -99,10 +99,14 @@ class Style:
         open_list: The candidate list ends when moments stop qualifying (a stricter floor
             past :func:`cutpoint.analyze.usual_count` candidates), not at that count. Learned
             presets follow their base.
-        must_include_crash: Action-cam only: crashes in ``crashes.json`` (``cutpoint
-            crashes``) with at least this confidence (0-1) are always clipped,
-            with their approach, aftermath and reaction, whatever the weights
-            say; 0 = off. Learned presets may set ``"must_include_crash"``.
+        must_include_crash: Crashes in ``crashes.json`` (``cutpoint crashes``, or the
+            crash step of ``analyze``) with at least this confidence (0-1) become
+            must-include moments, with their approach, aftermath and reaction, whatever
+            the weights say (they replace the moments they overlap and rank first); 0 =
+            off. Weaker crashes above the floor (:func:`cutpoint.crash.crash_floor`) are
+            ranked like any moment (``analyze.add_crash_candidates``; action-cam: its
+            ``wipeout`` feature). 0.6 for every style; learned presets may set
+            ``"must_include_crash"``.
     """
 
     name: str
@@ -130,7 +134,7 @@ class Style:
     use_scenes: bool = True
     learned: dict | None = None
     mask_friends: float = 7.0
-    must_include_crash: float = 0.0
+    must_include_crash: float = 0.6
     open_list: bool = False
 
     @property
