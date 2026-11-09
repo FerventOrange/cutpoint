@@ -155,6 +155,7 @@ def _ev(
         "self_kills": self_kills,
         "announcements": announcements,
         "score_changes": score_changes,
+        "explosions": 0,
     }
 
 

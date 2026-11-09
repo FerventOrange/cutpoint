@@ -23,11 +23,28 @@ With `--style funny`, a moment where you die and someone reacts (laughter, a scr
 after a pause, within 6 s) gets +8 points, so a friend's warning after the fact ranks higher.
 This needs your name set, as above; other styles are unchanged.
 
+## Explosions
+
+The audio layer also keeps PANNs "Explosion" sounds (Explosion, Boom, Eruption). Gameplay is full
+of booms, so one counts only when it is `confirmed`: the loudness jumps at least 6 LU over the 3 s
+before it, and those 3 s are not near-silent (at least -50 LUFS). A loud boom right after a black
+screen is not confirmed: when the 3 s before it to 0.2 s after hold at least 0.4 s of near-black
+(mean luma 0.03 or less, such as a loading screen ending; a single dark frame does not count), the
+row gets `after_black: true`. Each row in
+`events.json` has `loud_jump`, `backing` (a scene cut or OCR text nearby; recorded only, not
+required) and `confirmed`. The thresholds are in `settings.explosions`.
+
+Confirmed booms are the built-in event type `explosions`: 4 points each, at most 2 per candidate,
+in the gaming, action and sport styles. In `gaming` a boom can nominate a moment of its own.
+
+Limits: your own gunfire can pass, and quiet or microphone-heavy mixes get no explosions. The
+first run after updating re-runs the audio model once per source (new class group).
+
 ## What `events` adds
 
 | Layer | Detects |
 |---|---|
-| `audio` | Laughter, screams, cheering (PANNs) |
+| `audio` | Laughter, screams, cheering, explosions (PANNs) |
 | `ocr` | Kill-feed rows (who killed whom, your kills and deaths), round banners, notices, multi-kills, learned announcements, on-screen score changes |
 | `vlm` | The shared vision model (Ollama `qwen3.5:9b`, or a hosted (API or subscription) Vision model you allowed in the Models tab) describes candidate windows from frames, the transcript and the other layers' hints |
 

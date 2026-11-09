@@ -315,6 +315,8 @@ def heard(events: list[Any], source: str, start: float, end: float) -> list[str]
             continue
         if not isinstance(label, str) or t1 < start or t0 > end:
             continue
+        if label == "Explosion" and (e.get("details") or {}).get("confirmed") is not True:
+            continue  # an unconfirmed boom is noise (engines, off-screen fire)
         conf = e.get("confidence")
         how = f"{conf:.2f}, " if isinstance(conf, (int, float)) else ""
         out.append(f"{clock(float(t0))} {label} ({how}{float(t1) - float(t0):.1f} s)")

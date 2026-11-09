@@ -610,18 +610,19 @@ before.
   Two more fields: `reaction` (points added once per candidate when a reaction follows one of
   the type's events, clamped to 0-12; unset: none) and `styles` (a style name or a list of names;
   `score` and `reaction` count only in a project with one of these styles, and a learned style
-  counts through its base; unset: every style). `styles` gates only the points: matching, tail
-  payoffs and seeds ignore it. An unknown style name invalidates the entry. When `reaction` applies
+  counts through its base; unset: every style). `styles` gates the points and the VLM
+  seed: matching and tail payoffs ignore it. An unknown style name invalidates the entry. When `reaction` applies
   to the project's style, the evidence in `signals.events` gains `<name>_reaction` (0 or 1);
   otherwise the key is absent.
 - A matcher is an OCR event `type` (such as `kill`, `banner` or `multikill`) plus at most one
-  test: `prefix` or `contains` (lists of upper-case label text; the label must start with, or
+  test (with `"kind": "audio"` it matches an audio event instead, `type` being the sound's label,
+  such as `Explosion`; `kind` is `"ocr"` by default): `prefix` or `contains` (lists of upper-case label text; the label must start with, or
   contain, one of them) or `flag` (one or more space-separated fields of the event that must be set
   (true or non-empty), such as `player`, `teamkill` or `player_kill`; a field written `!name` must be
   unset or false, for example `"flag": "player !verb"`). A lone `!` or `!!` is invalid: the type is
   skipped with a warning.
 - Preset types are checked before the built-in ones (`teamkills`, `self_kills`, `player_deaths`,
-  `player_kills`, `banners`, `score_changes`, `announcements`); the first matching type wins, and a type with a built-in's name replaces it.
+  `player_kills`, `banners`, `score_changes`, `announcements`, `explosions`); the first matching type wins, and a type with a built-in's name replaces it.
   `score_changes` matches a `score` event (an on-screen number that stepped by one, read in a
   `score` region, see [game streams](workflows/game-streams.md#score-readout)) and adds 6 points
   each, a kill's worth, at most 3 counted, in every style. It is a tail payoff and a VLM seed like
@@ -638,6 +639,16 @@ before.
   `player_death` set; a teamkill stays a teamkill) and adds 3 points each, half a kill, at most 3
   counted, in every style; it is not a player kill, and like a death it stays a tail payoff and a
   VLM seed.
+  `explosions` matches an audio `Explosion` that is `confirmed` (the loudness jumps at least 6 LU
+  over the 3 s before it, those 3 s are not near-silent, at least -50 LUFS, and the 3 s before it
+  to 0.2 s after hold less than 0.4 s of near-black: a boom after a black screen gets
+  `after_black`) and adds 4 points each, at most 2 counted, in the gaming, action and sport styles.
+  In `gaming` a confirmed boom can nominate a moment of its own. Own gunfire can pass, and quiet or
+  microphone-heavy mixes get no explosions. The thresholds are in `settings.explosions` of `events.json`.
+  A preset type's `seed` applies only within its `styles`: in another style the built-in seed rule
+  decides (a boom is no seed there). In `events.txt` and in the AI Chat's "heard" list, booms that are
+  not `confirmed` are marked `unconfirmed` or left out (`unconfirmed, after black` in `events.txt`
+  after a black screen).
   `player_deaths` matches the player's own deaths (not a self-kill) and adds no per-event boost, so a death
   does not count as a kill; it stays a tail payoff and a VLM seed. Its default is `reaction` 8 with
   `styles` `["funny"]`: with `--style funny`, a candidate where the player dies and someone

@@ -26,7 +26,7 @@ from typing import Any, NamedTuple
 
 from cutpoint import cache, jsonout, progress
 from cutpoint import paths as cutpoint_paths
-from cutpoint.events import paths
+from cutpoint.events import explosions, paths, scoring
 from cutpoint.events.audio_events import (
     AudioParams,
     PannsDetector,
@@ -64,6 +64,7 @@ from cutpoint.events.vlm_windows import (
     select_windows,
     windows_to_events,
 )
+from cutpoint.sources import parts as source_parts
 from cutpoint.styles import ACTION_CAM, project_kind
 from cutpoint.vision import VisionRater
 
@@ -238,6 +239,7 @@ def run_events(
         Paths of events.json and events.txt.
     """
     audio, ocr, vlm = audio or AudioParams(), ocr or OcrParams(), vlm or VlmParams()
+    boom = explosions.ExplosionParams()
     stage = stage or _layer_step
     hl = load_highlights(project)
     ski = project_kind(hl) == ACTION_CAM
@@ -528,6 +530,32 @@ def run_events(
         vram["ocr"] = vm.summary()
         stats["ocr"] = ocr_stats
     timings["ocr_s"] = round(time.perf_counter() - t0, 1)
+    # ---- explosions (#801): a heard boom counts once the loudness jumps with it and the
+    # picture was not black just before it (a loading screen ending)
+    t0 = time.perf_counter()
+    booms = sum(
+        explosions.confirm(
+            layer1[str(s.path)],
+            [(p.offset, p.cdir) for p in source_parts(s.path)],
+            boom,
+            luma=explosions.luma_reader(s.path),  # --recover parts share the file and its time
+        )
+        for s in sources
+        if explosions.has_booms(layer1[str(s.path)])
+    )
+    timings["explosions_s"] = round(time.perf_counter() - t0, 1)
+    dark = sum(
+        1
+        for s in sources
+        for e in layer1[str(s.path)]
+        if e.get("kind") == "audio" and e.get("label") == explosions.LABEL and e.get("after_black")
+    )
+    if booms or dark:
+        logger.info(
+            "%d explosion(s) confirmed by a loudness jump, %d set aside after a black screen",
+            booms,
+            dark,
+        )
     if make_engine is not None:  # no OCR after this: the engine is not kept through the VLM
         if prefetch is not None and make_engine is prefetch.make_engine:
             prefetch.close()  # its worker uses the engine: stopped first (idempotent)
@@ -598,6 +626,7 @@ def run_events(
         vlm,
         seed_types,
         quiet="vlm" not in layers,
+        style=scoring.style_and_base(hl.get("style")),
     )
     # a provider the user did not agree to (a hosted one, or an Ollama on another machine): no
     # request, no cached descriptions or windows either, as for analyze's vision ratings
@@ -710,6 +739,7 @@ def run_events(
             "layers": list(layers),
             "avoid": dict(bad),
             "audio": audio.key(),
+            "explosions": boom.key(),
             "ocr": ocr.key(None) | {"game": ocr.game},
             "vlm": vlm_settings,
         }
