@@ -1944,6 +1944,16 @@ OpenAI-compatible servers have no unload request in that API, so `--batch-size` 
 their memory either. A hosted Vision provider has nothing on this machine to free and gets no
 extra request.
 
+Ollama reloads a model asked for another context size (`num_ctx`), about 7 s for `qwen3.5:9b`.
+AI Chat asks for 50000 (`context_tokens`); vision requests need 8192 (16384 for the VLM layer
+and dialogue reading, 12288 for a rating's retry). Before each request, vision asks a local
+Ollama which context the model is loaded with (`/api/ps`) and, when that is larger, uses it, so
+chatting while an analysis rates frames loads the model once. A request never asks for less
+than it needs; an Ollama on another machine, or one that does not answer `/api/ps`, gets what
+the request needs. The memory guard checks the vision model again before a request with
+another context than its last one, as Ollama reloads it then. The larger context costs VRAM:
+measured on an RTX 3080, `qwen3.5:9b` takes 5.46 GiB at 8192 and 6.67 GiB at 50000.
+
 ### Run lock and progress.json
 
 `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` and `clips` hold the lock

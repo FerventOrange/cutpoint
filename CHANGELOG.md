@@ -615,6 +615,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The vision model (frame rating, the VLM layer of `cutpoint events`, dialogue reading and
+  activity profiles on Ollama) asks a local Ollama for the context the model is loaded with
+  when that is larger than the request needs, so AI Chat (`num_ctx` 50000) and vision on the
+  same model no longer reload it at every switch (about 7 s each for `qwen3.5:9b`). A request
+  never asks for less than it needs, and an Ollama on another machine, or one whose `/api/ps`
+  does not answer, gets what the request needs as before. The memory guard checks the vision
+  model again before a request with another context, as Ollama reloads it then. Measured on an
+  RTX 3080: `qwen3.5:9b` takes 5.46 GiB of VRAM at 8192 and 6.67 GiB at 50000 (#732).
 - `--must-include-crash` and the default `must_include_crash` (0.6) now apply to every non-360
   style, not only action-cam; `settings.must_include_crash` is recorded for every style (#486).
   The Analyze field is renamed "Crashes become moments at".
@@ -932,6 +940,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - AI Chat at small chat contexts (#735): the budget reserves each frame sheet at what the turn's fit counts it as, and measures the look_for and view_moment rules with the others, so above 8192 tokens one whole tool result fits after the prompt (before, at 12288-20000 tokens with view_moment, every round left earlier results out). Under 24576 tokens a turn views 2 half-size sheets (about 750 image tokens each) instead of 4 full ones; at 8192 tokens and below 1 half-size sheet, where the prompt keeps its minimum size and earlier results may still be left out. Half-size sheets are cached apart.
+- AI Chat phrase ends (the snap of a lengthened clip end) read the transcript of the language the analysis forced (`--language`), as the export does, and their cache is keyed on the transcript file (path, modification time, size) instead of the video, so a re-transcription is picked up (#742).
 - AI Chat length parsing (#739, #740, #741): "each highlight about 5 s" and "each of the highlights about 5 s" are a per-moment length, not the sequence length; "extend m3 to 60 s, make the video 4 minutes", "per clip 5 s, cut to 2 min" and "every clip around 5 s overall 2 min" give a target; parsing only looks 300 characters back from each length, so a message with many lengths is no longer slow.
 - An explicit `--ollama-url` is normalised like `OLLAMA_HOST`: `myhost` gets `http://` and port 11434, `0.0.0.0:11434` becomes `127.0.0.1:11434`, a bare `::1` is bracketed and a trailing `/` is dropped. Before, the value was used as given, so `--ollama-url myhost` went to port 80 and vision was skipped (#840).
 - A vision rating no longer counts once `events` widens a moment or a menu trim cuts it: its frames
