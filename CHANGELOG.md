@@ -379,9 +379,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a 3-wide grid, each stamped with its number and source time, sized for about 1.5k image tokens
   on Claude) with the moment's transcript lines and the sounds `events.json` heard in it
   (laughter, scream). The instructions say to watch only when labels, transcripts and scores
-  cannot answer, never every moment. A message can watch at most 2 moments with a context of
-  8192 tokens or less (local models), 4 with a larger one. Sheets are cached in
-  `ui/assistant/sheets` per moment, window and source file. A local Ollama model gets the tool
+  cannot answer, never every moment. A message can watch at most 1 moment with a context of
+  8192 tokens or less (local models), 2 with a context under 24576 tokens (half-size sheets),
+  4 with a larger one. Sheets are cached in `ui/assistant/sheets` per moment, window, sheet
+  size and source file. A local Ollama model gets the tool
   when Ollama lists `vision` for it, Claude always, other models unless their name is a known
   text-only one (`gpt-3.5`, `o1-mini`, `o3-mini`, `grok-code`, `grok-build`); a model
   that refuses the image is asked again without it and is not offered the tool again until

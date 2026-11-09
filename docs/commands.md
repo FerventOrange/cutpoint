@@ -798,9 +798,10 @@ these has the best view"); it is told never to watch every moment. Each watched 
 image, a timeline sheet: 6 frames spread across the clip (9 for a clip longer than 12 s), three
 per row, each stamped with its number and source time, about 1.5k image tokens on Claude, with
 the moment's transcript lines and the sounds heard in it (from `events.json`, such as laughter
-or a scream) as text. A message can watch at most 2 moments with a context of 8192 tokens or
-less, 4 with a larger one; the steps show "Watched … (6 frames)". Sheets are
-cached in the project's `ui/assistant/sheets`, per moment, clip window and source file.
+or a scream) as text. A message can watch at most 1 moment with a context of 8192 tokens or
+less, 2 with a context under 24576 tokens (half-size sheets, about 750 image tokens on Claude),
+4 with a larger one; the steps show "Watched … (6 frames)". Sheets are
+cached in the project's `ui/assistant/sheets`, per moment, clip window, sheet size and source file.
 
 - Which models: an Ollama model when Ollama lists `vision` for it (`qwen3.5:9b` does), every
   Claude model, and any other model unless its name has `gpt-3.5`, `o1-mini`, `o3-mini`,
