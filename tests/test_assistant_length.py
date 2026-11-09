@@ -368,6 +368,7 @@ def planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> edges.EdgePlanne
     # speech 10-12.5 (words 0.3 s apart run on), a pause, speech 20-21
     spoken = words((10, 10.5), (10.8, 11.5), (11.8, 12.5), (20, 21))
     monkeypatch.setattr(edges.sources, "source_words", lambda _src, _lang=None: spoken)
+    monkeypatch.setattr(edges.sources, "parts", lambda _p: [])  # no cached transcript file
     return edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
 
 
@@ -379,10 +380,56 @@ def test_the_phrase_end_is_the_last_word_of_the_speech_that_runs_on_and_a_breath
     assert planner.phrase_end(A, 12.6) == 12.6  # after the phrase
 
 
+def test_the_phrase_end_reads_the_transcript_of_the_projects_forced_language(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked: list[str | None] = []
+
+    def source_words(_src: Path, language: str | None = None) -> list[dict[str, Any]]:
+        asked.append(language)
+        return words((10, 10.5), (10.8, 11.5))
+
+    monkeypatch.setattr(edges.sources, "source_words", source_words)
+    monkeypatch.setattr(edges.sources, "parts", lambda _p: [])
+    plan = edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
+    plan.phrase_end(A, 11.0)
+    (tmp_path / "highlights.json").write_text(json.dumps({"settings": {"language": "de"}}))
+    plan.phrase_end(A, 11.0)
+    assert asked == [None, "de"]  # the chains of each language are kept apart
+
+
+def test_a_new_transcript_drops_the_cached_phrase_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cdir = tmp_path / "cache"
+    cdir.mkdir()
+    transcript = cdir / "transcript-small.json"
+    monkeypatch.setattr(
+        edges.sources, "parts", lambda _p: [SimpleNamespace(offset=0.0, cdir=cdir, end=None)]
+    )
+    spoken = [words((10, 10.5), (10.8, 11.5))]
+    reads = []
+
+    def source_words(_src: Path, _lang: str | None = None) -> list[dict[str, Any]]:
+        reads.append(1)
+        return spoken[0]
+
+    monkeypatch.setattr(edges.sources, "source_words", source_words)
+    plan = edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
+    transcript.write_text("[]")
+    first = plan.phrase_end(A, 11.0)
+    assert plan.phrase_end(A, 11.0) == first and len(reads) == 1  # cached
+    spoken[0] = words((10, 10.5), (10.8, 13.0))  # the video was transcribed again
+    transcript.write_text('["new"]')
+    assert plan.phrase_end(A, 11.0) == pytest.approx(13.4)
+    assert len(reads) == 2
+
+
 def test_no_transcript_leaves_the_end_where_it_was_asked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(edges.sources, "source_words", lambda _src, _lang=None: None)
+    monkeypatch.setattr(edges.sources, "parts", lambda _p: [])
     assert edges.EdgePlanner(tmp_path).phrase_end(A, 11.0) == 11.0
 
 

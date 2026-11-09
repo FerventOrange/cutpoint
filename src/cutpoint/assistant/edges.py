@@ -84,7 +84,7 @@ class EdgePlanner:
         self.resolve = resolve
         self._lock = threading.Lock()
         self._plans: OrderedDict[tuple[Any, ...], tuple[Edges, Reasons]] = OrderedDict()
-        self._chains: dict[tuple[str, tuple[int, int]], list[tuple[float, float]]] = {}
+        self._chains: dict[tuple[Any, ...], list[tuple[float, float]]] = {}
 
     # -- exported edges ----------------------------------------------------------------
     def _stamp(self) -> tuple[int, ...]:
@@ -240,18 +240,31 @@ class EdgePlanner:
         return planned, reasons, len(infos) == len(io_paths)
 
     # -- phrase ends -------------------------------------------------------------------
+    def _language(self) -> str | None:
+        """The transcription language the analysis forced (``settings.language``), or None."""
+        hl = cache.load_json(self.project / "highlights.json")
+        settings = hl.get("settings") if isinstance(hl, dict) else None
+        language = settings.get("language") if isinstance(settings, dict) else None
+        return language if isinstance(language, str) and language else None
+
     def _phrases(self, source: str) -> list[tuple[float, float]]:
         """The stretches of ``source`` where speech runs on (words closer than
         ``chain_gap``), as ``(start, end)``; [] without a transcript."""
         path = self.resolve(source)
-        try:
-            stamp = path.stat()
-            version = (stamp.st_mtime_ns, stamp.st_size)
-        except OSError:
-            version = (0, 0)
-        key = (str(path), version)
+        language = self._language()
+        transcripts = []
+        for part in sources.parts(path):
+            found = sources._transcript_file(part.cdir, language)
+            try:
+                stamp = found.stat() if found is not None else None
+            except OSError:
+                stamp = None
+            transcripts.append(
+                (str(found), stamp.st_mtime_ns, stamp.st_size) if stamp is not None else None
+            )
+        key = (str(path), language, tuple(transcripts))
         if key not in self._chains:
-            words = sources.source_words(path) or []
+            words = sources.source_words(path, language) or []
             chains: list[tuple[float, float]] = []
             for w in words:
                 start, end = float(w["start"]), float(w["end"])
