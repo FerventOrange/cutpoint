@@ -305,6 +305,11 @@ in the browser, and Cancel or Escape undoes it.
 to end time in the Moments tab; off, the tile keeps its score, kind, label and length, and the
 search still finds a moment by the hidden name and id. It works like Stats for Nerds: at once, Save
 keeps it in the browser, Cancel or Escape undoes it.
+"Single-key shortcuts" (on by default) lets the keys M (mute), I and [ (trim start) and O and ] (trim end,
+at the playhead) act on the page. Turn it off, as WCAG 2.1.4 asks for speech-input and stray-key
+users, and none of them does anything and their hints disappear; Space, Escape, arrow keys, keys
+inside text fields and controls, and Ctrl or Cmd shortcuts such as Ctrl+Z keep working. It works like
+Stats for Nerds: at once, Save keeps it in the browser, Cancel or Escape undoes it.
 The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
 
 With a project open, Settings also has "Delete this project". The dialog names the project and the
@@ -586,7 +591,7 @@ clip as soon as a short proxy covers all of it. HDR and BT.2020 sources are prev
 to SDR, as in exports.
 The preview transport has a mute button and a volume slider next to Play. One setting covers every
 preview (moments, clips and final) and is remembered per browser; the default is unmuted at 100%.
-`M` toggles mute, and Space plays or pauses even when the volume controls have focus.
+`M` toggles mute (unless Single-key shortcuts is off in Settings > Keyboard), and Space plays or pauses even when the volume controls have focus.
 Playback and scrubbing cover the whole source: playback runs on past the clip end, and Play at
 the end of the source starts the clip again. The trim rail under the video is a zoomable view of
 the source with the clip (gold) and the analyzed range (dashed) as markers; it opens on the clip
@@ -616,7 +621,7 @@ view instead, with their names, coloured by kind. The thin overview strip under 
 and pans it (drag, or the arrow keys by a tenth of the view, PageUp and PageDown by a whole view,
 Home and End to the ends), and the wheel over the rail pans it. The
 rail follows the playhead during playback. On the rail, the arrow keys move the playhead by 0.5%
-of the view (at least 0.05 s), and PageUp and PageDown by a tenth of the view. `I` and `O` (or `[` and `]`) set the clip's in and out points at the playhead, anywhere in the source,
+of the view (at least 0.05 s), and PageUp and PageDown by a tenth of the view. `I` and `O` (or `[` and `]`) set the clip's in and out points at the playhead (unless Single-key shortcuts is off in Settings > Keyboard), anywhere in the source,
 and the rail widens to show it; they work whenever no form field (sliders excepted), menu, dialog or column splitter has the focus. The gold start and end edges on the rail are handles: drag them (a drag held at
 the rail's edge pans a zoomed view), or Tab to one and move it with the arrow keys (0.1 s;
 Shift+arrow 1 s), PageUp and PageDown (5 s), Home and End (as far as it can go). A handle keeps
