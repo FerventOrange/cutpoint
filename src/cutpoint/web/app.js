@@ -29,6 +29,7 @@ const NERD_KEY = 'cutpoint.nerdStats'; // localStorage: "1" while Stats for Nerd
 const ADV_KEY = 'cutpoint.advancedExport'; // localStorage: "1" while Show advanced export options is on (off by default)
 const THEME_KEY = 'cutpoint.theme'; // localStorage: "light" or "blue"; absent for Graphite, the default (a stored "dark" is dropped). index.html reads it too
 const VERBOSE_KEY = 'cutpoint.verboseMoments'; // localStorage: "1" while Verbose moment labels is on (off by default)
+const KEYS_KEY = 'cutpoint.singleKeys'; // localStorage: "0" while Single-key shortcuts is off (WCAG 2.1.4); absent for on, the default
 const TAB_KEY = 'cutpoint.sideTab'; // localStorage: the sequence column's tab; absent for Sequence, the default
 const ORDER_KEY = 'cutpoint.momentOrder'; // localStorage: "position" for video order; absent for Score, the default
 const ORDER_NAMES = { score: 'score', position: 'position in video' }; // the moments list's orders (#469)
@@ -104,6 +105,8 @@ const S = {
   advExportWas: false, // advExport when Settings opened, restored by Cancel or Escape
   verboseMoments: false, // Settings > Verbose moment labels: each tile's file, id and start-end
   verboseMomentsWas: false, // verboseMoments when Settings opened, restored by Cancel or Escape
+  singleKeys: true, // Settings > Single-key shortcuts: M, [, ], I and O act (off: only modifier shortcuts and keys inside controls)
+  singleKeysWas: true, // singleKeys when Settings opened, restored by Cancel or Escape
   themeWas: 'graphite', // Settings > Theme when Settings opened, restored by Cancel or Escape
   renaming: null, // sequence id whose label is being edited
   renameDraft: '',
@@ -5708,6 +5711,8 @@ async function openSettings() {
   S.advExportWas = S.advExport;
   $('#setVerboseMoments').checked = S.verboseMoments;
   S.verboseMomentsWas = S.verboseMoments;
+  $('#setSingleKeys').checked = S.singleKeys;
+  S.singleKeysWas = S.singleKeys;
   S.themeWas = $('#setTheme').value = theme();
   $('#setDeletePanel').hidden = !S.id; // only the open project can be deleted
   d.showModal();
@@ -6823,6 +6828,45 @@ function initVerboseMoments() {
   $('#setVerboseMoments').addEventListener('change', (e) => setVerboseMoments(e.target.checked));
 }
 
+/** Show the keys the page answers to in the accessible names and tooltips; with Single-key shortcuts off, no character key is promised. */
+function renderKeyHints() {
+  const on = S.singleKeys;
+  for (const el of document.querySelectorAll('[data-keys]')) {
+    if (on) el.setAttribute('aria-keyshortcuts', el.dataset.keys);
+    else el.removeAttribute('aria-keyshortcuts');
+  }
+  for (const [id, key] of [['startHandle', 'I'], ['endHandle', 'O']]) {
+    $(`#${id}`).title = `Drag, or use the arrow keys.${on ? ` ${key} sets it at the playhead.` : ''}`;
+  }
+}
+
+/** Turn Single-key shortcuts on or off (#748): store it in this browser (on is stored as no key), update the hints and tick the box to match. */
+function setSingleKeys(on) {
+  S.singleKeys = on;
+  try {
+    if (on) localStorage.removeItem(KEYS_KEY);
+    else localStorage.setItem(KEYS_KEY, '0');
+  } catch {
+    // storage blocked or full: the setting still applies until reload
+  }
+  $('#setSingleKeys').checked = on;
+  renderKeyHints();
+}
+
+/**
+ * Single-key shortcuts (M, [, ], I, O; on by default) can be turned off to meet WCAG 2.1.4. Like
+ * the theme it lives in this browser's storage, previews on change, and Cancel or Escape puts it back.
+ */
+function initSingleKeys() {
+  try {
+    S.singleKeys = localStorage.getItem(KEYS_KEY) !== '0';
+  } catch {
+    // storage blocked: start from the default (on)
+  }
+  setSingleKeys(S.singleKeys);
+  $('#setSingleKeys').addEventListener('change', (e) => setSingleKeys(e.target.checked));
+}
+
 /** The theme in use: index.html set data-theme on <html> before first paint; none is Graphite. */
 function theme() {
   return document.documentElement.dataset.theme ?? 'graphite';
@@ -6866,6 +6910,7 @@ function bindSettings() {
     // a field revealed for an out-of-range value (showAdvExport(true)) stays unless the box changed
     if ($('#setAdvExport').checked !== S.advExportWas) setAdvExport(S.advExportWas);
     setVerboseMoments(S.verboseMomentsWas);
+    setSingleKeys(S.singleKeysWas);
     setTheme(S.themeWas);
   };
   $('#settingsCancel').addEventListener('click', () => {
@@ -7034,7 +7079,7 @@ function initVolume() {
       // storage blocked or full: the setting still applies until reload
     }
   };
-  const btn = h('button', { type: 'button', class: 'btn icon-btn', 'aria-label': 'Mute', title: 'Mute', 'aria-keyshortcuts': 'M' });
+  const btn = h('button', { type: 'button', class: 'btn icon-btn', 'aria-label': 'Mute', title: 'Mute', 'aria-keyshortcuts': S.singleKeys ? 'M' : null, 'data-keys': 'M' });
   const range = h('input', { type: 'range', min: 0, max: 100, step: 1, 'aria-label': 'Volume' });
   const apply = () => {
     for (const el of vids) {
@@ -7592,6 +7637,7 @@ function bind() {
   S.savedOpts = initExportOptions();
   initAdvExport();
   initVerboseMoments();
+  initSingleKeys();
   showPlaying(false);
   $('#resetBtn').addEventListener('click', () => {
     const c = current();
@@ -7748,7 +7794,8 @@ function bind() {
     // text fields, the column splitters (their own arrow keys) and any dialog or popover keep their keys
     if (e.target.closest('input:not([type=range]),textarea,select,[role=menu],[role=separator],dialog,[popover]')) return;
     if (!$('#filterPop').hidden && e.target.closest('#filterWrap')) return; // a plain div, and its button stays outside it
-    if (e.key === '[' || e.key === ']' || (!e.shiftKey && (k === 'i' || k === 'o'))) {
+    const single = S.singleKeys; // Settings > Single-key shortcuts: off, M [ ] I O do nothing (WCAG 2.1.4)
+    if (single && (e.key === '[' || e.key === ']' || (!e.shiftKey && (k === 'i' || k === 'o')))) {
       e.preventDefault(); // [ ] and I O: the trim point at the playhead; Cut mode shows none
       if (!S.cutMode) setRange(e.key === '[' || k === 'i' ? 'start' : 'end', playhead());
     } else if (e.key === ' ' && (!e.target.closest('button,a,summary') || e.target.closest('.vol'))) {
@@ -7757,7 +7804,7 @@ function bind() {
     } else if (e.key === 'Escape' && S.seqPlay) {
       e.preventDefault();
       seqStop();
-    } else if (e.key.toLowerCase() === 'm' && !e.repeat) {
+    } else if (single && e.key.toLowerCase() === 'm' && !e.repeat) {
       e.preventDefault();
       toggleMute();
     }

@@ -5,21 +5,23 @@ FROM ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b98
 # Dependabot (docker ecosystem) proposes updates.
 FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS base
 
-# ffmpeg: the same pinned BtbN static GPL build n9.0.2 that Linux CI uses, verified by SHA256.
+# ffmpeg: the same pinned BtbN static GPL build n9.0.2 that Linux CI uses, mirrored as an asset of this repo's
+# `ffmpeg-n9.0.2` release (BtbN prunes old tags), verified by SHA256.
 # Keep FFMPEG_LINUX_URL and FFMPEG_LINUX_SHA256 identical to the env of the test job in
 # .github/workflows/ci.yml (the docker job fails if they differ). To bump, change both places.
 # Downloaded in its own stage so curl and xz stay out of the runtime image.
 FROM base AS ffmpeg
-ARG FFMPEG_LINUX_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-08-12-35/ffmpeg-n9.0.2-48-gd4070a14ce-linux64-gpl-9.0.tar.xz
+ARG FFMPEG_LINUX_URL=https://github.com/FerventOrange/cutpoint/releases/download/ffmpeg-n9.0.2/ffmpeg-n9.0.2-48-gd4070a14ce-linux64-gpl-9.0.tar.xz
 ARG FFMPEG_LINUX_SHA256=bf5e935a51afb65ddd14bf67104361508bcc7c77026a66d7e193a05a56ab8d77
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl xz-utils ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-# BtbN prunes old autobuild tags. A failed download (404, network) leaves /tmp/ffmpeg/bin empty and the
-# final stage then installs Ubuntu's apt ffmpeg instead; a checksum mismatch still fails the build.
+# A missing asset (404) leaves /tmp/ffmpeg/bin empty and the
+# final stage then installs Ubuntu's apt ffmpeg instead, with a WARNING; a checksum mismatch or other
+# failure fails the build, and the docker job's version check in CI is the hard gate.
 RUN mkdir -p /tmp/ffmpeg/bin \
-    && code=$(curl -sSL --retry 3 -w '%{http_code}' -o /tmp/ffmpeg.tar.xz "$FFMPEG_LINUX_URL") || code=000; \
+    && code=$(curl -sSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 300 -w '%{http_code}' -o /tmp/ffmpeg.tar.xz "$FFMPEG_LINUX_URL") || code=000; \
     if [ "$code" = 200 ]; then \
         echo "$FFMPEG_LINUX_SHA256  /tmp/ffmpeg.tar.xz" | sha256sum -c - \
         && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1 \
@@ -27,7 +29,7 @@ RUN mkdir -p /tmp/ffmpeg/bin \
         && /tmp/ffmpeg/bin/ffprobe -version >/dev/null \
         && rm -f /tmp/ffmpeg/bin/ffplay; \
     elif [ "$code" = 404 ]; then \
-        echo "WARNING: static ffmpeg not found (HTTP 404, tag pruned?) at $FFMPEG_LINUX_URL; falling back to apt ffmpeg" >&2; \
+        echo "WARNING: static ffmpeg not found (HTTP 404, release asset missing?) at $FFMPEG_LINUX_URL; falling back to apt ffmpeg" >&2; \
     else \
         echo "ffmpeg download failed (HTTP $code)" >&2; exit 1; \
     fi

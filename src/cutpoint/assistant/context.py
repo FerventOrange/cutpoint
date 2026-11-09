@@ -157,6 +157,7 @@ class Budget:
     tools: int = 0  # tokens of the tool definitions the request carries
     tight: bool = False  # half the room: the retry after a cut-off reply
     images: int = 0  # images (timeline sheets) a turn may add
+    image_tokens: int = IMAGE_TOKENS  # of each of them
 
     @property
     def chars(self) -> int:
@@ -164,41 +165,48 @@ class Budget:
         turn may add and the room for a reply or tool results (:data:`REPLY_TOKENS`,
         :data:`REPLY_SHARE`). In a small context also under what the turn's fit allows
         (``FIT_CHARS_PER_TOKEN``) once one whole tool result follows the prompt, or the first
-        round would already leave every earlier result out."""
+        round would already leave every earlier result out; the tools and images count there
+        as :func:`size` counts them (``CHARS_PER_TOKEN``)."""
         reserve = max(REPLY_TOKENS, int(self.tokens * REPLY_SHARE))
-        pictures = self.images * IMAGE_TOKENS
+        pictures = self.images * self.image_tokens
         free = max(self.tokens - reserve - self.tools - pictures, self.tokens // 4)
         room = int(free * CHARS_PER_TOKEN)
-        fits = int((self.tokens - REPLY_TOKENS - pictures) * FIT_CHARS_PER_TOKEN)
-        fits -= int(self.tools * CHARS_PER_TOKEN) + MAX_RESULT_CHARS
+        fits = int((self.tokens - REPLY_TOKENS) * FIT_CHARS_PER_TOKEN)
+        fits -= int((self.tools + pictures) * CHARS_PER_TOKEN) + MAX_RESULT_CHARS
         floor = int(self.tokens // 4 * CHARS_PER_TOKEN)
         return max(min(room, fits), floor) // (2 if self.tight else 1)
 
 
 def budget(
-    context_tokens: int, tools: Any = None, *, tight: bool = False, images: int = 0
+    context_tokens: int,
+    tools: Any = None,
+    *,
+    tight: bool = False,
+    images: int = 0,
+    image_tokens: int = IMAGE_TOKENS,
 ) -> Budget:
     """The profile for a model with ``context_tokens``: 40 moments and 4 turns at 8k or less,
     more for a larger context. ``tools``: the tool definitions sent with the request, whose size
     is kept free. ``tight`` halves the prompt and the turns repeated. ``images``: sheets a turn
-    may add, whose room is kept free."""
+    may add, ``image_tokens`` each, whose room is kept free."""
     used = int(len(json.dumps(tools)) / CHARS_PER_TOKEN) if tools else 0
     if context_tokens <= LOCAL_TOKENS:
         moments, turns = 40, 4
     else:
         scale = context_tokens / LOCAL_TOKENS
         moments, turns = min(200, int(40 * scale)), min(12, 4 + int(scale))
-    return Budget(context_tokens, moments, turns // 2 if tight else turns, used, tight, images)
+    turns = turns // 2 if tight else turns
+    return Budget(context_tokens, moments, turns, used, tight, images, image_tokens)
 
 
 def size(value: Any) -> int:
     """Characters of the text in a message or a list of them (JSON text, content parts, tool
-    calls), an image counting as :data:`IMAGE_TOKENS`."""
+    calls), an image counting as its ``tokens`` (:data:`IMAGE_TOKENS` without)."""
     if isinstance(value, str):
         return len(value)
     if isinstance(value, dict):
         if value.get("type") == "image":
-            return int(IMAGE_TOKENS * CHARS_PER_TOKEN)
+            return int(value.get("tokens", IMAGE_TOKENS) * CHARS_PER_TOKEN)
         return sum(size(v) for v in value.values())
     if isinstance(value, list):
         return sum(size(v) for v in value)
@@ -519,7 +527,7 @@ _COUNTS = {
     "twenty": 20,
     "thirty": 30,
 }
-_NUM = r"(\d+(?:[.,]\d+)?|" + "|".join(_COUNTS) + ")"
+_NUM = r"(\d+(?:[.,]\d+)?|(?:" + "|".join(_COUNTS) + r")\b)"
 _UNIT = r"\s*-?\s*(minutes?|mins?|seconds?|secs?|s)\b"
 # A length is a duration the message gives to the whole sequence: after a word that says so ("make
 # it ~4 min", "get it to 4 minutes", "total of 240 s", "under 2 minutes"), or before one ("4 minutes
@@ -534,8 +542,8 @@ _SEQ_CUE = (
     r" be|it should be|keep it (?:to|at)"
 )
 _LEN_CUE = (
-    r"(?:make it|get it to|bring it to|cut it to|trim it to|keep it to|keep it under|build"
-    r"|aim(?:ing)? for|target(?:ing)?(?: of)?|total(?:ling)? of|totall?ing|want|need|~|about|around"
+    r"(?:make it|get it to|bring it to|cut it to|cut to|trim it to|keep it to|keep it under|build"
+    r"|aim(?:ing)? for|overall|target(?:ing)?(?: of)?|total(?:ling)? of|totall?ing|want|need|~|about|around"
     r"|approx\w*|roughly|nearly|almost|under|at most|up to|at least|no more than|no longer than"
     rf"|{_SEQ_CUE})"
 )
@@ -559,13 +567,23 @@ _CLOCK = re.compile(
 # A change to a clip ("by 2 minutes", "trim 5 s") is no length, nor is one named by its id
 # ("extend m3 to 60 s").
 _CHANGE = re.compile(r"\b(?:by|extra|another|add|more|trim|cut|remove|plus|extend|each)\W*$", re.I)
-_CLIP_REF = re.compile(r"\bm\d+\b[^.!?;\n]*$")
+_SEQ_NOUN = re.compile(
+    r"\b(?:whole|total|overall|video|montage|reel|sequence|highlights?|compilation|film|movie"
+    r"|trailer|recap)\b",
+    re.I,
+)
+_CLIP_REF = re.compile(rf"\bm\d+\b(?:(?!{_SEQ_NOUN.pattern})[^.!?;\n])*$", re.I)
+# How far back from a length the checks look: they run per match, so the whole text would make a
+# message with many lengths quadratic.
+_LOOKBACK = 300
 # A length for each clip ("each clip about 5 s", "clips around 8 seconds", "10 s clips") or a change
 # ("30 s more", "5 s longer") is none either.
 _SEQ_WORD = rf"\b(?:it|whole|total|overall|{_VIDEO})\b"
 _SEQ = re.compile(_SEQ_WORD, re.I)
 _PER_CLIP_BEFORE = re.compile(
-    rf"\b(?:each|every|per)\b(?:(?!{_SEQ_WORD}|{_NUM}{_UNIT})[^.!?;\n])*$", re.I
+    rf"\b(?:each|every|per)\b(?:\s+(?:one\s+)?(?:of\s+(?:the|these|those)\s+)?{_VIDEO}\b)?"
+    rf"(?:(?!{_SEQ_WORD}|{_NUM}{_UNIT})[^.!?;\n])*$",
+    re.I,
 )
 # The text before a length cue ("make the clips about 5 s long": the cue "about" ends it)
 _CUE_END = re.compile(rf"{_LEN_CUE}\s*(?:be\s+|a\s+|an\s+)?~?\s*$", re.I)
@@ -592,14 +610,16 @@ def target_seconds(text: str) -> float | None:
     minutes", "around 4:20") and a change to a clip ("by 2 minutes") are no length."""
     for pattern in (_BEFORE, _AFTER):
         for m in pattern.finditer(text):
-            before = text[: m.start()]
-            if _CHANGE.search(before) or _CLIP_REF.search(before):
+            before = text[max(0, m.start() - _LOOKBACK) : m.start()]
+            if _CHANGE.search(before) or (
+                _CLIP_REF.search(before) and not _SEQ_NOUN.search(text[m.start() : m.end()])
+            ):
                 continue
             n, unit = _count(m.group(1)), m.group(2).lower()
             stems = (before, _CUE_END.sub("", before))
-            if _PER_CLIP_BEFORE.search(text[: m.start(1)]) and not _SEQ.search(
-                text[m.end(2) : m.end()]
-            ):
+            if _PER_CLIP_BEFORE.search(
+                text[max(0, m.start(1) - _LOOKBACK) : m.start(1)]
+            ) and not _SEQ.search(text[m.end(2) : m.end()]):
                 continue
             if _PER_CLIP_AFTER.match(text, m.end()):
                 continue
@@ -612,10 +632,138 @@ def target_seconds(text: str) -> float | None:
                 return n * 60 + _count(more.group(1))
             return n * 60
     for m in _CLOCK.finditer(text):
-        if not _CLIP_REF.search(text[: m.start()]):
+        before = text[max(0, m.start() - _LOOKBACK) : m.start()]
+        if not _CLIP_REF.search(before) or _SEQ_NOUN.search(text[m.start() : m.end()]):
             groups = [g for g in m.groups() if g is not None]
             return int(groups[0]) * 60 + int(groups[1])
     return None
+
+
+# A length a proposal's summary gives the whole sequence: tied to a cue ("now about 34 s", "a total
+# of 90 s", "the video is 1:30", "brings it to 2 min", "now runs 1:30", "90 s in all"). "under 1
+# minute", a length without a cue ("added about 12 s") and a place ("now at 0:12") are no claim.
+_CLAIM_NUM = _NUM.replace("(", "(?P<n>", 1)
+_CLAIM_UNIT = _UNIT.replace("(", "(?P<u>", 1)
+_CLAIM_LEN = rf"(?:{_CLAIM_NUM}{_CLAIM_UNIT}|(?P<mm>\d{{1,2}}):(?P<ss>[0-5]\d)(?![\d:]))"
+_CLAIM_FILL = (
+    r"(?:\s*(?:(?:about|around|roughly|approx\w*|nearly|almost|just|at|to|of|is|now|runs|lasts"
+    r"|comes\s+to|for|a)\b|~))*\s*"
+)
+_CLAIM_BEFORE = re.compile(
+    rf"(?<![\w])(?P<cue>now(?!\s+at\b)|total(?:l?ing)?|overall|in all|brings? it to|bringing it to|runs|lasts"
+    rf"|{_VIDEO}\s+(?:is|runs|lasts))\b{_CLAIM_FILL}{_CLAIM_LEN}",
+    re.I,
+)
+_CLAIM_AFTER = re.compile(rf"(?<![\w:.]){_CLAIM_LEN}\s+(?:in all|in total|total|overall)\b", re.I)
+# A cue that needs the sequence as its subject: "the jump is now 8 s", "m3 now runs 12 s", "each
+# clip is now 5 s" and "Extended the jump; it is now 8 s" give a clip's length.
+_SUBJECT_CUES = ("now", "runs", "lasts")
+_CLAUSE = re.compile(r"[^.;!?\n()]*$")
+_SENTENCE = re.compile(r"[^.!?\n]*$")
+_OTHER_SUBJECT = re.compile(
+    rf"\bm\d+\b|\b(?:each|every|per)\b|\b(?:the|this|that)\s+(?!{_VIDEO}\b)\w+\s+(?:is|was|runs"
+    r"|lasts)\b",
+    re.I,
+)
+_CLIP_CHANGE = re.compile(r"\b(?:extend|lengthen|trimm?|shorten)\w*", re.I)
+# A subject cue with the sequence named as its subject ("the montage now lasts 34 s"), or another
+# ("the laugh now runs 12 s", "the jump now lasts 8 s")
+_VIDEO_SUBJECT = re.compile(rf"\b(?:the|this|that|whole|final)\s+{_VIDEO}\b", re.I)
+_NOUN_NOW = re.compile(
+    rf"\b(?:the|this|that)\s+(?!{_VIDEO}\b|whole\b|final\b)\w+\s+(?:now\b|(?:is|was|runs|lasts)\b)",
+    re.I,
+)
+# After a length: a change ("12 s longer"), a clip's ("5 s each") or a place in the source ("12:30
+# in the source") is no sequence length.
+_NOT_SEQ_AFTER = re.compile(
+    r"\s*(?:long\s+)?(?:longer|shorter|more|less|extra|each|apiece|per\b|a clip|a piece"
+    r"|(?:in|of|from|into)\s+the\s+(?:source|recording|stream|original|footage|vod))\b",
+    re.I,
+)
+# Before a length in its clause: a change that takes it as object ("Cut 20 s in total", "Removed a
+# total of 20 s", "Added three clips totalling 15 s")
+_CHANGE_VERB = re.compile(
+    r"\b(?:add(?:ed|ing|s)?|cut(?:ting|s)?|trimm?(?:ed|ing|s)?|remov\w*|delet\w*|dropp?\w*"
+    r"|extend\w*|lengthen\w*|shorten\w*|shav\w*|sav(?:e|ed|es|ing)|took|tak(?:e|es|ing)"
+    r"|gain\w*|lost|los(?:e|es|ing))\b",
+    re.I,
+)
+# Between the change and the length, a word that makes the length the sequence's ("Added the laugh
+# for a total of 90 s", "Trimmed m3, bringing it to 34 s")
+_CHANGE_TO = re.compile(rf"\b(?:for|to|into|bringing|making|so|now|it|{_VIDEO})\b", re.I)
+_PART = re.compile(r"[^.;:,!?\n()]*$")
+# Up to 30 characters after a length, before the next number or the end of its part
+_PART_AFTER = re.compile(r"[^.;:,!?\n()\d]{0,30}")
+# In a length's part of the sentence: the length the user asked for, not the sequence's ("You asked
+# for a total of 60 s", "below the target total of 60 s", "not the 60 s overall you wanted")
+_ASKED = re.compile(r"\b(?:you|ask(?:ed)?|want(?:ed)?|request(?:ed)?|target|goal|reach)\b", re.I)
+_THE = re.compile(r"\bthe\s+$", re.I)
+_BY = re.compile(
+    r"\bby\s+(?:(?:about|around|roughly|approx\w*|nearly|almost|just)\s+|~\s*)?$", re.I
+)
+# "4 min 30 s overall": the minutes before the seconds
+_MINUTES_BEFORE = re.compile(rf"(?<![\w.,]){_NUM}\s*-?\s*(?:minutes?|mins?)\s+(?:and\s+)?$", re.I)
+
+
+def _claim_value(m: re.Match[str]) -> float:
+    if m.group("mm") is not None:
+        return float(int(m.group("mm")) * 60 + int(m.group("ss")))
+    n = _count(m.group("n"))
+    if not m.group("u").lower().startswith("m"):
+        if minutes := _MINUTES_BEFORE.search(m.string, max(0, m.start("n") - 40), m.start("n")):
+            return _count(minutes.group(1)) * 60 + n
+        return n
+    more = _AND_SECONDS.match(m.string, m.end())
+    if more and more.group(2).lower().startswith("s"):
+        return n * 60 + _count(more.group(1))
+    return n * 60
+
+
+def claimed_seconds(summary: str) -> float | None:
+    """The length in seconds that a proposal's ``summary`` gives the whole sequence, the last one
+    tied to a cue ("now about 34 s", "a total of 90 s", "the video is now 90 seconds", "now runs
+    1:30", "90 s in all"), else None. A bound ("under 1 minute"), a length without a cue ("added
+    about 12 s") and a clip's length ("the jump is now 8 s", "m3 now runs 12 s") are no claim.
+    Unlike :func:`target_seconds`, which reads what the user asks for."""
+    found: list[tuple[int, float]] = []
+    for m in _CLAIM_AFTER.finditer(summary):
+        if not _other_length(m):
+            found.append((m.start(), _claim_value(m)))
+    for m in _CLAIM_BEFORE.finditer(summary):
+        if _other_length(m):
+            continue
+        if m.group("cue").lower() in _SUBJECT_CUES:
+            clause = _CLAUSE.search(summary, 0, m.end("cue")).group()  # type: ignore[union-attr]
+            sentence = _SENTENCE.search(summary, 0, m.start()).group()  # type: ignore[union-attr]
+            if (
+                _OTHER_SUBJECT.search(clause)
+                or _NOUN_NOW.search(clause)
+                or (_CLIP_CHANGE.search(sentence) and not _VIDEO_SUBJECT.search(clause))
+            ):
+                continue
+        found.append((m.start(), _claim_value(m)))
+    return max(found)[1] if found else None
+
+
+def _other_length(m: re.Match[str]) -> bool:
+    """Whether the length of a claim match is another one than the sequence's: in parentheses
+    ("(12 s in all)"), a change or a clip's ("12 s longer", "5 s each"), a place in the source
+    ("12:30 in the source"), the object of a change ("Cut 20 s in total", "Removed a total of
+    20 s") or the length the user asked for ("You asked for a total of 60 s", "not the 60 s
+    overall you wanted")."""
+    text = m.string
+    at = m.start("n") if m.group("n") is not None else m.start("mm")
+    head = text[max(0, at - _LOOKBACK) : at]
+    if head.rfind("(") > head.rfind(")") or _NOT_SEQ_AFTER.match(text, m.end()):
+        return True
+    part = _PART.search(head).group()  # type: ignore[union-attr]
+    after = _PART_AFTER.match(text, m.end()).group()  # type: ignore[union-attr]
+    if _ASKED.search(part) or _THE.search(part) or _ASKED.search(after):
+        return True
+    if _BY.search(part):  # "Trimmed it by 20 s overall": a change
+        return True
+    verbs = list(_CHANGE_VERB.finditer(part))
+    return bool(verbs) and not _CHANGE_TO.search(part, verbs[-1].end())
 
 
 def transcript_lines(transcript: str, source: str, start: float, end: float) -> list[str]:
@@ -727,6 +875,7 @@ def build_messages(
     json_tools: list[str] | None = None,
     images: bool = False,
     target: float | None = None,
+    late_rules: str = "",
 ) -> list[dict[str, Any]]:
     """The conversation for one new user message ``text``.
 
@@ -738,9 +887,12 @@ def build_messages(
         json_tools: Tool names, when the model answers in JSON mode instead of tool calls.
         images: Whether view_moment is offered, so the rules say it shows frames.
         target: The length in seconds the user asked for, if any (:func:`target_seconds`).
+        late_rules: Rules that follow all others (look_for, view_moment), measured with them.
     """
-    text_rules = rules(table, images=images) + (
-        JSON_RULES + ", ".join(json_tools) + "." if json_tools else ""
+    text_rules = (
+        rules(table, images=images)
+        + (JSON_RULES + ", ".join(json_tools) + "." if json_tools else "")
+        + late_rules
     )
     seq = sequence_block(table)
     room = plan.chars - len(text_rules) - len(text) - len(seq)

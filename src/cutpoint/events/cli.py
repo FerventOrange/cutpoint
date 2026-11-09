@@ -285,8 +285,10 @@ def run_args(
             else:
                 jsonout.output("highlights", highlights)
         else:
+            from cutpoint.analyze import rebuild_crash_moments  # noqa: PLC0415
             from cutpoint.events.scoring import rescore_highlights  # noqa: PLC0415
 
+            rebuild_crash_moments(args.project)  # crashes.json may have changed since analyze
             rescore_highlights(args.project)
             jsonout.output("highlights", highlights)
         if not had_backup and backup.exists():

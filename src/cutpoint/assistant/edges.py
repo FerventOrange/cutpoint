@@ -84,7 +84,7 @@ class EdgePlanner:
         self.resolve = resolve
         self._lock = threading.Lock()
         self._plans: OrderedDict[tuple[Any, ...], tuple[Edges, Reasons]] = OrderedDict()
-        self._chains: dict[tuple[str, tuple[int, int]], list[tuple[float, float]]] = {}
+        self._chains: dict[tuple[Any, ...], list[tuple[float, float]]] = {}
 
     # -- exported edges ----------------------------------------------------------------
     def _stamp(self) -> tuple[int, ...]:
@@ -244,14 +244,13 @@ class EdgePlanner:
         """The stretches of ``source`` where speech runs on (words closer than
         ``chain_gap``), as ``(start, end)``; [] without a transcript."""
         path = self.resolve(source)
-        try:
-            stamp = path.stat()
-            version = (stamp.st_mtime_ns, stamp.st_size)
-        except OSError:
-            version = (0, 0)
-        key = (str(path), version)
+        language = sources.project_language(self.project)
+        transcripts = [
+            sources.transcript_stamp(part.cdir, language) for part in sources.parts(path)
+        ]
+        key = (str(path), language, tuple(transcripts))
         if key not in self._chains:
-            words = sources.source_words(path) or []
+            words = sources.source_words(path, language) or []
             chains: list[tuple[float, float]] = []
             for w in words:
                 start, end = float(w["start"]), float(w["end"])

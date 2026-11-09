@@ -19,7 +19,7 @@ import logging
 import re
 import secrets
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -69,6 +69,11 @@ _ANNOUNCES = re.compile(
     r"|i am going to|i'm going to|i need to|i should)\s+(?:now\s+)?(?:search|find|look|add|check"
     r"|extend|build|get|propose|put|trim|lengthen|pick|select|create|make|fetch|query|use|grab)\b",
     re.I,
+)
+# A message that asks for an edit: a turn that ends in text gets the one nudge toward a proposal.
+# A question that asks for advice ("what would you trim?", "anything to fix?") asks none.
+_ADVICE = re.compile(
+    r"\s*(?:what|which|why|where|when|who|is|are|does|do|should|any|anything)\b", re.I
 )
 _EDIT_ASK = re.compile(
     r"\b(?:make|build|add|put|place|change|extend|lengthen|trim|shorten|remove|delete|move|reorder"
@@ -375,11 +380,21 @@ class Turn:
         # the tool definitions of a tool-call request count; JSON mode lists them in the rules
         sent = None if json_mode else self._tools()
         sheets = watch.view_cap(self.provider) if self._watch else 0
-        plan = context.budget(self.provider.context_tokens, sent, tight=tight, images=sheets)
+        plan = context.budget(
+            self.provider.context_tokens,
+            sent,
+            tight=tight,
+            images=sheets,
+            image_tokens=watch.sheet_tokens(self.provider),
+        )
         tools = None
         if json_mode:
             listed = [t for t in _JSON_TOOLS if self.project.frame_index or t != lookfor.JSON_TOOL]
             tools = [*listed, *([watch.JSON_TOOL] if self._watch else [])]
+        # look_for's rules, then how and when to watch, after the others and measured with them
+        late = lookfor.rules(bool(self._watch)) if self.project.frame_index else ""
+        if self._watch:
+            late += watch.RULES.replace("{cap}", watch.views(sheets))
         out = context.build_messages(
             self.table,
             self.earlier,
@@ -388,12 +403,8 @@ class Turn:
             json_tools=tools,
             images=bool(self._watch),
             target=self.target,
+            late_rules=late,
         )
-        if self.project.frame_index:
-            out[0] = {**out[0], "content": out[0]["content"] + lookfor.rules(bool(self._watch))}
-        if self._watch:  # how and when to watch, after the rules
-            cap = str(watch.view_cap(self.provider))
-            out[0] = {**out[0], "content": out[0]["content"] + watch.RULES.replace("{cap}", cap)}
         return out
 
     def _names(self) -> list[str]:
@@ -516,10 +527,13 @@ class Turn:
                 if (
                     self._nudged is None
                     and rnd < MAX_ROUNDS - 1  # a nudge in the last round would leave no answer
-                    and (self._names_moments(text) or self._announces_work(text))
+                    and (
+                        self._names_moments(text) or self._announces_work(text) or self._asks_edit()
+                    )
                 ):
-                    # moments chosen in text, perhaps for a change: ask once more (the nudge
-                    # stays in this conversation; the page and chat.json never get it)
+                    # moments chosen in text, more work announced, or an edit asked for and
+                    # answered in text: ask once more (the nudge stays in this conversation; the page and chat.json
+                    # never get it)
                     self._nudged = text
                     messages.append({"role": "user", "content": NUDGE})
                     continue
@@ -561,6 +575,15 @@ class Turn:
         """Whether ``text`` says more work follows ("Now let me search for ...") to a message
         that asks for an edit, instead of doing it."""
         return bool(_ANNOUNCES.search(text) and (self.target or _EDIT_ASK.search(self.text)))
+
+    def _asks_edit(self) -> bool:
+        """Whether the user's message asks for a change to the sequence: a length or an edit
+        word ("add", "trim", "make", ...). A question asks one only with an edit word and not
+        for advice: "could we add the laugh?" and "add the laugh, ok?" do; "what would you
+        trim?", "anything to fix?" and "can it be 40 s long?" do not."""
+        if self.text.rstrip().endswith("?"):
+            return not _ADVICE.match(self.text) and bool(_EDIT_ASK.search(self.text))
+        return bool(self.target or _EDIT_ASK.search(self.text))
 
     def _names_moments(self, text: str) -> bool:
         """Whether ``text`` names a moment of the table (``m3``)."""
@@ -755,7 +778,7 @@ class Turn:
         if len(self._viewed) >= cap:
             self._emit({"kind": "tool", "name": watch.NAME, "id": real, "error": "limit"})
             return (
-                f"error: at most {cap} moments can be viewed per message; answer with what you "
+                f"error: at most {watch.views(cap)} can be viewed per message; answer with what you "
                 "have seen, or ask the user to send another message",
                 False,
             )
@@ -766,7 +789,9 @@ class Turn:
         if view.sheet is not None:
             self._viewed.add(real)
             text = f"{watch.NAME} {short}: timeline sheet"
-            self._sheets.append(watch.image_message(text, view.sheet))
+            self._sheets.append(
+                watch.image_message(text, view.sheet, watch.sheet_tokens(self.provider))
+            )
         return view.text, False
 
     def _checked(self, ops: Any) -> tuple[dict[str, Any] | None, str]:
@@ -851,6 +876,8 @@ class Turn:
                 problem, f"error: proposal rejected: {problem}. Fix the ops and propose again."
             )
         gap = summary_gap(summary, main["diff"], main.get("color"))
+        if wrong := self._length_gap(summary, main, lambda: self._other_lengths(main)):
+            gap = f"{gap} {wrong}" if gap else wrong
         if note := self._send_back(summary, main, gap):
             if main.get("notes"):  # the model learns that its edges were not used
                 note = f"{note} {' '.join(main['notes'])}"
@@ -909,6 +936,38 @@ class Turn:
         logger.info("assistant: proposal not accepted: %s", reason)
         self._emit({"kind": "rejected", "text": reason[:MAX_SUMMARY]})
         return result, False
+
+    @staticmethod
+    def _length_gap(
+        summary: str,
+        main: dict[str, Any],
+        others: Callable[[], Iterable[float]] | None = None,
+    ) -> str | None:
+        """A sentence for the model when ``summary`` gives the sequence a length ("now about 3
+        minutes", read by :func:`context.claimed_seconds`) more than the tolerance off the
+        proposal's exported length; None when it gives none or the right one. ``others`` gives
+        the other lengths a summary may name (the change in length, each clip's): a claim that
+        fits one of them is taken for it, not flagged."""
+        claim = context.claimed_seconds(summary)
+        have = main["length"]
+
+        def fits(seconds: float) -> bool:
+            return abs(claim - seconds) <= max(claim * TOLERANCE, 0.5)  # type: ignore[operator]
+
+        if claim is None or fits(have) or (others is not None and any(map(fits, others()))):
+            return None
+        return (
+            f"The summary says the sequence is {claim:.0f} s, but this proposal makes {have:.0f} s "
+            "as exported. Fix the summary or the ops and propose again."
+        )
+
+    def _other_lengths(self, main: dict[str, Any]) -> list[float]:
+        """The change in length that ``main`` makes and each of its clips' exported length."""
+        p = self.project
+        after = main["after"] or []
+        was = length(p.segments, p.edges.plan(p.segments) if p.edges is not None else None)
+        planned = p.edges.plan(after) if p.edges is not None else None
+        return [abs(main["length"] - was), *(length([r], planned) for r in after)]
 
     @staticmethod
     def _true_summary(main: dict[str, Any]) -> str:
