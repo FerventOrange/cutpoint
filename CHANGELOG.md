@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui`: the Analyze dialog has a Refine block (#486). "Describe the footage" with Apply runs `cutpoint crashes <project> --context=<text>`, shown for analyzed projects whose style runs the crash step (action, sport, action-cam; before the first analysis also no style or Auto) and filled with the description in `activity.json`. "Look closer with vision" runs `cutpoint events <project>`; vision consent and availability warnings appear as job notes. Both are off before the first analysis and in Cutpoint lite, and "Look closer" is off for 360 projects. A cancelled run resumes as "Resume crash detection" or "Resume closer look".
 - `cutpoint ui`: the filmstrip trim rail shows talk (dialogue) stretches as "Talk" ranges labelled with the bit's title (#804), and crashes from `crashes.json` as crash markers when their confidence is at least max(0.2, 0.6 x the project's best crash), deduplicated against telemetry crashes within 2 s (#754).
 - `cutpoint ui` starts the subscription proxy itself, so `cutpoint proxy` no longer has to run in a
   terminal to sign in (#821). Log in and Retry on a Connected accounts row start it when it is not

@@ -180,7 +180,7 @@ The final preview includes download links for the final video or, with a timelin
 the FCPXML or OTIO file, plus the `.srt` subtitles.
 
 If a run stopped (interrupted, `low_memory`, or failed before `highlights.json` was written), the
-project page offers **Resume analysis**, **Resume export** or **Resume one-click edit**, matching
+project page offers **Resume analysis**, **Resume export**, **Resume one-click edit**, **Resume crash detection** or **Resume closer look**, matching
 the stopped run. It first shows a dialog with what `cutpoint resume --dry-run` reports: the
 status, the steps done so far, any warnings and the command it will replay (check it before
 confirming: a recorded `--force` is replayed too). Confirm to replay the run with the same options,
