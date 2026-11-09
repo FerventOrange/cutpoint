@@ -214,6 +214,82 @@ def test_score_regions_make_score_events() -> None:
     assert report._event_line("rec.mp4", normal).endswith("OCR score: 5 > 4")
 
 
+def test_score_region_reads_make_no_text_event_and_are_not_learned() -> None:
+    """A counter box misread as a CJK character and a number is no big text: the tracker
+    sees it, the announcement learner never does."""
+    reads = [
+        (float(t), [(_box(20.0), f"\u6708{t % 5 + 1}", 0.95)])
+        for t in range(0, 3000, 240)
+        for t in (t, t + 1)
+    ]
+    events, _ = _interpret(reads)
+    assert not any(e["type"] in ("bigtext", "notice", "banner") for e in events)
+    assert not any(e.get("announce") for e in events)
+
+
+def test_the_interpreter_ignores_a_score_region() -> None:
+    interp = killfeed.Interpreter(OcrParams(game="tilefall", fps=1.0), 1.0)
+    interp.handle(5.0, SCORE, None, [(_box(20.0), "\u670810", 0.95)])
+    assert interp.tracker.events == [] and interp.digits.events == []
+
+
+def test_the_score_tracker_still_sees_the_misread() -> None:
+    events, _ = _track(_reads((0, 40, "\u67085"), (41, 80, "\u67086")))
+    assert [e["type"] for e in events] == ["score"]
+
+
+BIGTEXT = Region("big", 0, 0, 1920, 1080, "bigtext", gate="read", every=1, min_text_h=36)
+
+
+def _bigtext_lines(
+    regions: tuple[Region, ...],
+    *lines: tuple[float, str],
+    size: tuple[int, int] = (1920, 1080),
+) -> list[str]:
+    """The texts the big-text region's reads leave in the tracker; ``lines``: ``(x, text)`` of
+    a 60 px tall line, the first at y 20 and the others each 100 px lower, read for 5 frames."""
+    interp = OcrInterpretation(
+        "rec.mp4",
+        OcrParams(game="tilefall", fps=1.0),
+        preset_from_dict({"game": "tilefall", "regions": []}, None),
+        regions,
+        size,
+        {},
+    )
+    for n in range(5):
+        items = [
+            ([[x, y], [x + 40, y], [x + 40, y + 60], [x, y + 60]], text, 0.95)
+            for (x, text), y in zip(lines, range(20, 1000, 100), strict=False)
+        ]
+        recs: dict[str, dict[str, Any]] = {r.name: {"g": "read", "items": items} for r in regions}
+        interp.add(FrameRec(n=n, t=float(n), regions=recs))
+    return [e["text"] for e in interp.interp.tracker.events]
+
+
+def test_a_text_line_centred_in_a_score_box_is_no_text() -> None:
+    got = _bigtext_lines((SCORE, BIGTEXT), (110.0, "ZONE 7"), (110.0, "OTHER WORDS"))
+    assert got == ["OTHER WORDS"]  # the rest of the big region's lines stay
+
+
+def test_score_box_test_applies_the_text_region_offset_and_the_frame_scale() -> None:
+    """On a 3840x2160 frame the score box (500, 400, 80x60 reference px) spans x 1000-1160,
+    y 800-920 and the text region (400, 300) starts at 800, 600: the line (x 200, third row, y 220)
+    is centred at (1020, 850) and is a counter; the line (x 1000, ninth row, y 820) is centred
+    in the box only when the crop offset is ignored, so it stays."""
+    score = Region("score2", 500, 400, 80, 60, "score", gate="read", every=1)
+    text = Region("big2", 400, 300, 1000, 500, "bigtext", gate="read", every=1, min_text_h=18)
+    lines = [(1500.0, f"FILLER {i}") for i in range(9)]
+    lines[2] = (200.0, "COUNTER")
+    lines[8] = (1000.0, "REAL TEXT")
+    got = _bigtext_lines((score, text), *lines, size=(3840, 2160))
+    assert "COUNTER" not in got and "REAL TEXT" in got
+
+
+def test_without_score_regions_text_lines_stay() -> None:
+    got = _bigtext_lines((BIGTEXT,), (110.0, "ZONE 7"), (110.0, "OTHER WORDS"))
+    assert sorted(got) == ["OTHER WORDS", "ZONE 7"]
+
+
 def test_menu_frames_drop_score_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     def rules(frames: list[dict[str, Any]], **_k: Any) -> tuple[dict[Any, str], dict]:
         return {f["id"]: "cover" if f["t"] > 50 else "none" for f in frames}, {}

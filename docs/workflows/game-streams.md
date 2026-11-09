@@ -192,8 +192,8 @@ pop-up all through one source is learned as an announcement: its event in `event
 gets `announce: true` and `announce_words` (the learned words) in `details`, and counts as the
 `announcements` event type. Any line counts, a one-word line too. A line is learned by its words
 of 4 letters or more; a short line with digits, a shorter word and no such word ("4 VS 5") by
-its shape, digits as `#` ("# VS #"). Such digit lines make no event otherwise. A bare number
-("+100", "12:34") is never learned. A word must show at least 10 times,
+its shape, digits as `#` ("# VS #"); the shape needs a word of 2 letters or more, so one letter beside digits is never learned. Such digit lines make no event otherwise. A bare number
+("+100", "12:34") is never learned. A `score` region's reads never become text events or announcements, and a line another region reads with its box centre inside a `score` region is dropped (the region's other lines stay). A word must show at least 10 times,
 in at least 4 different 10-minute stretches (so a source of at least 30 minutes), with a median
 gap of at least 30 s, and at most a fifth of its appearances may stay longer than 30 s (labels
 and place names stay). Reads within 8 s of each other are one appearance. Only big text is

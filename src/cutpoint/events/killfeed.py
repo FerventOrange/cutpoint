@@ -1039,13 +1039,14 @@ def _held_runs(
 def _announce_keys(text: str) -> list[str]:
     """The keys a line can be learned by (:func:`learn_announcements`): its words of 4 letters
     or more, upper-case, any script; for a line with none, its shape: its upper-case words with
-    each run of digits as "#" ("4 VS 5" is "# VS #"), when it has a letter (none for a bare
-    number: "+100", "12:34", "2 - 3")."""
+    each run of digits as "#" ("4 VS 5" is "# VS #"), when it has a word of 2 letters or more
+    (none for a bare number: "+100", "12:34", "2 - 3"; none for one letter beside digits, a
+    misread counter such as "x10")."""
     words = [w.upper() for w in _ANNOUNCE_WORD_RE.findall(text)]
     if words:
         return list(dict.fromkeys(words))
     shape = " ".join(re.sub(r"\d+", "#", w) for w in re.findall(r"[^\W_]+", text.upper()))
-    return [shape] if re.search(r"[^\W\d_]", shape) else []
+    return [shape] if re.search(r"[^\W\d_]{2,}", shape) else []
 
 
 def _announce_screen(e: dict[str, Any], key: str, learned: set[str], fixed: set[str]) -> str:
@@ -1566,8 +1567,9 @@ class Interpreter:
         self, t: float, region: Region, img: np.ndarray, items: list[tuple[list, str, float]]
     ) -> None:
         """Interpret OCR ``items`` of ``region`` (crop ``img``) at time ``t``: feeds,
-        banners, notices and big text."""
-        if not items:
+        banners, notices and big text. A "score" region makes no text event: its reads go to
+        :class:`ScoreTracker` only."""
+        if not items or region.kind == "score":
             return
         if region.kind == "feed":
             for ev in self.feed.parse(img, items):
@@ -3115,6 +3117,14 @@ class OcrInterpretation:
             stats["static_area"] = round(area, 2)
         self.region_events: dict[str, list[dict[str, Any]]] = {}
         self.scores = ScoreTracker()  # the "score" regions' reads
+        # the "score" regions' rectangles in frame px: a text line centred in one is a counter
+        # read by a text region too, not text
+        self.score_zones = [
+            (x, y, x + w, y + h)
+            for r in regions
+            if r.kind == "score"
+            for x, y, w, h in [rects[r.name]]
+        ]
         # distinct text lines read per feed region (:func:`chat_label`); only a discovered
         # preset's regions can be labelled chat, a hand-made preset's feed is the user's word
         self.lines: dict[str, set[str]] = {r.name: set() for r in regions if r.kind == "feed"}
@@ -3123,6 +3133,20 @@ class OcrInterpretation:
         # screen's text there), in reference px
         self.feed_notices = bool(preset and preset.feed.get("row_notices"))
         self.ref = {n: (x, y, 1920 / width, 1080 / height) for n, (x, y, _, _) in rects.items()}
+
+    def _outside_scores(
+        self, items: list[tuple[list, str, float]], ref: tuple[float, float, float, float]
+    ) -> list[tuple[list, str, float]]:
+        """``items`` of a text region (crop at ``ref``) without the lines whose box centre lies
+        in a "score" region."""
+        rx, ry = ref[0], ref[1]
+
+        def inside(box: list) -> bool:
+            cx = rx + (min(p[0] for p in box) + max(p[0] for p in box)) / 2
+            cy = ry + (min(p[1] for p in box) + max(p[1] for p in box)) / 2
+            return any(x0 <= cx <= x1 and y0 <= cy <= y1 for x0, y0, x1, y1 in self.score_zones)
+
+        return [it for it in items if not inside(it[0])]
 
     def add(self, rec: FrameRec) -> list[str]:
         """Interpret one frame; returns the names of the regions whose reading made a
@@ -3150,6 +3174,8 @@ class OcrInterpretation:
             if r.kind == "score":
                 self.scores.see(rec.t, r.name, items, self.ref[r.name])
                 continue
+            if self.score_zones:
+                items = self._outside_scores(items, self.ref[r.name])
             if r.name in self.lines:
                 self.lines[r.name].update(_chat_lines(items))
             n_before = len(tracker.events)

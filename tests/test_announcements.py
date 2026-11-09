@@ -152,6 +152,16 @@ def test_digit_lines_are_learned_by_their_shape_and_others_dropped() -> None:
     assert len(out) == 13 and all(e["announce_words"] == ["# VS #"] for e in out[1:])
 
 
+@pytest.mark.parametrize("text", ["\u670810", "X 7", "x10"])
+def test_one_letter_beside_digits_is_not_learned(text: str) -> None:
+    assert learn_announcements([], [_line(t, text) for t in EVERY_4_MIN]) == []
+
+
+def test_a_two_letter_cjk_word_with_digits_is_learned() -> None:
+    out = learn_announcements([], [_line(t, "\u52dd\u5229 3") for t in EVERY_4_MIN])
+    assert len(out) == 12 and all(e["announce_words"] == ["\u52dd\u5229 #"] for e in out)
+
+
 def test_bare_numbers_are_never_learned() -> None:
     points = [_line(t, f"+{100 * (k % 3 + 1)}") for k, t in enumerate(EVERY_4_MIN)]
     clocks = [_line(t + 100, f"{k % 3 + 1} - {k % 4}") for k, t in enumerate(EVERY_4_MIN)]
