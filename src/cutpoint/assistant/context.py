@@ -641,7 +641,7 @@ def target_seconds(text: str) -> float | None:
 
 # A length a proposal's summary gives the whole sequence: tied to a cue ("now about 34 s", "a total
 # of 90 s", "the video is 1:30", "brings it to 2 min", "now runs 1:30", "90 s in all"). "under 1
-# minute" and a length without a cue ("added about 12 s") are no claim.
+# minute", a length without a cue ("added about 12 s") and a place ("now at 0:12") are no claim.
 _CLAIM_NUM = _NUM.replace("(", "(?P<n>", 1)
 _CLAIM_UNIT = _UNIT.replace("(", "(?P<u>", 1)
 _CLAIM_LEN = rf"(?:{_CLAIM_NUM}{_CLAIM_UNIT}|(?P<mm>\d{{1,2}}):(?P<ss>[0-5]\d)(?![\d:]))"
@@ -650,7 +650,7 @@ _CLAIM_FILL = (
     r"|comes\s+to|for|a)\b|~))*\s*"
 )
 _CLAIM_BEFORE = re.compile(
-    rf"(?<![\w])(?P<cue>now|total(?:l?ing)?|overall|in all|brings? it to|bringing it to|runs|lasts"
+    rf"(?<![\w])(?P<cue>now(?!\s+at\b)|total(?:l?ing)?|overall|in all|brings? it to|bringing it to|runs|lasts"
     rf"|{_VIDEO}\s+(?:is|runs|lasts))\b{_CLAIM_FILL}{_CLAIM_LEN}",
     re.I,
 )
@@ -692,6 +692,12 @@ _CHANGE_VERB = re.compile(
 # for a total of 90 s", "Trimmed m3, bringing it to 34 s")
 _CHANGE_TO = re.compile(rf"\b(?:for|to|into|bringing|making|so|now|it|{_VIDEO})\b", re.I)
 _PART = re.compile(r"[^.;:,!?\n()]*$")
+# Up to 30 characters after a length, before the next number or the end of its part
+_PART_AFTER = re.compile(r"[^.;:,!?\n()\d]{0,30}")
+# In a length's part of the sentence: the length the user asked for, not the sequence's ("You asked
+# for a total of 60 s", "below the target total of 60 s", "not the 60 s overall you wanted")
+_ASKED = re.compile(r"\b(?:you|ask(?:ed)?|want(?:ed)?|request(?:ed)?|target|goal|reach)\b", re.I)
+_THE = re.compile(r"\bthe\s+$", re.I)
 _BY = re.compile(
     r"\bby\s+(?:(?:about|around|roughly|approx\w*|nearly|almost|just)\s+|~\s*)?$", re.I
 )
@@ -742,14 +748,18 @@ def claimed_seconds(summary: str) -> float | None:
 def _other_length(m: re.Match[str]) -> bool:
     """Whether the length of a claim match is another one than the sequence's: in parentheses
     ("(12 s in all)"), a change or a clip's ("12 s longer", "5 s each"), a place in the source
-    ("12:30 in the source") or the object of a change ("Cut 20 s in total", "Removed a total of
-    20 s")."""
+    ("12:30 in the source"), the object of a change ("Cut 20 s in total", "Removed a total of
+    20 s") or the length the user asked for ("You asked for a total of 60 s", "not the 60 s
+    overall you wanted")."""
     text = m.string
     at = m.start("n") if m.group("n") is not None else m.start("mm")
     head = text[max(0, at - _LOOKBACK) : at]
     if head.rfind("(") > head.rfind(")") or _NOT_SEQ_AFTER.match(text, m.end()):
         return True
     part = _PART.search(head).group()  # type: ignore[union-attr]
+    after = _PART_AFTER.match(text, m.end()).group()  # type: ignore[union-attr]
+    if _ASKED.search(part) or _THE.search(part) or _ASKED.search(after):
+        return True
     if _BY.search(part):  # "Trimmed it by 20 s overall": a change
         return True
     verbs = list(_CHANGE_VERB.finditer(part))

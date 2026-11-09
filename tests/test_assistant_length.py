@@ -1112,6 +1112,38 @@ def test_a_wrong_length_claim_goes_back_with_a_short_proposal() -> None:
     assert "makes 34 s of the 60 s asked" in sent and "says the sequence is 60 s" in sent
 
 
+@pytest.mark.parametrize(
+    ("summary", "seconds"),
+    [
+        # the length the user asked for is no claim
+        ("You asked for a total of 60 s; I found only 34 s of funny moments.", None),
+        ("Now 34 s, below the target total of 60 s.", 34.0),
+        ("It is 34 s now, short of the 60 s total.", None),
+        ("34 s, not the 60 s overall you wanted.", None),
+        ("Now 34 s; you wanted 40 s in all, but there is no more funny footage.", 34.0),
+        ("Added the laugh; now 34 s of the 40 s asked.", 34.0),
+        # a place in the sequence is no length
+        ("Moved the laugh earlier, now at 0:12 in the video.", None),
+        ("Added the laugh at the end, now at 0:28.", None),
+        # the sequence's length still is
+        ("Now 34 s in total.", 34.0),
+        ("The video is now 60 s.", 60.0),
+    ],
+)
+def test_an_asked_length_or_a_place_is_no_claim(summary: str, seconds: float | None) -> None:
+    assert context.claimed_seconds(summary) == seconds
+    assert (session.Turn._length_gap(summary, {"length": 34.0}) is not None) is (seconds == 60.0)
+
+
+def test_a_summary_that_names_the_asked_length_is_taken_as_it_is() -> None:
+    summary = "Added the laugh. You asked for a total of 4 minutes, but only 34 s exist."
+    fake = FakeProvider([propose(summary, {"op": "add", "id": "m1"})] * 4)
+    turn = run(fake, "build about 4 minutes")
+    rejected = [e["text"] for e in turn.view()["events"] if e["kind"] == "rejected"]
+    assert rejected and not any("summary says" in text for text in rejected)
+    assert turn.view()["events"][-1]["summary"].startswith(summary)
+
+
 # -- round 4 ----------------------------------------------------------------------------------------
 
 
