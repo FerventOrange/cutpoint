@@ -52,7 +52,7 @@ import contextlib
 import logging
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -89,6 +89,10 @@ CHECK_DIR = "crash_check"
 # jostle the camera just before the ride, and the GPS lift mask starts up to
 # ~1 s after the chair departs.
 LIFT_LEAD_S = 5.0
+# The crashes that count (the trim rail, crash moments of ``analyze``, ``mix``): at least
+# CRASH_FLOOR_MIN confidence and CRASH_FLOOR_REL of the best one in the project's crashes.json.
+CRASH_FLOOR_MIN = 0.2
+CRASH_FLOOR_REL = 0.6
 
 
 # --------------------------------------------------------------------------- params
@@ -1129,6 +1133,12 @@ def _absorb(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 {"t0": c["t0"], "t1": c["t1"], "confidence": c["confidence"], "origin": c["origin"]}
             )
     return kept
+
+
+def crash_floor(confidences: Iterable[float]) -> float:
+    """The lowest confidence a crash of crashes.json counts with: max(:data:`CRASH_FLOOR_MIN`,
+    :data:`CRASH_FLOOR_REL` x the best of ``confidences``, those of every crash in the file)."""
+    return max(CRASH_FLOOR_MIN, CRASH_FLOOR_REL * max(confidences, default=0.0))
 
 
 def load_crashes(project: Path) -> dict[str, Any] | None:

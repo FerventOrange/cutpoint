@@ -1742,8 +1742,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--must-include-crash",
         type=unit_float,
         metavar="CONF",
-        help="action-cam: always clip crashes from crashes.json (cutpoint crashes) with at "
-        "least this confidence, 0-1 (default: style, 0.6 for action-cam; 0 = off)",
+        help="crashes from crashes.json (the crash step or cutpoint crashes) with at least this "
+        "confidence, 0-1, become must-include moments with their reaction; weaker ones are "
+        "ranked like any moment (default: the style's, 0.6; 0 = none forced)",
     )
     _add_skip_argument(an)
     _add_visual_index_argument(an)

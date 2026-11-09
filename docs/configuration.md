@@ -113,7 +113,7 @@ copy you have not verified).
 
 Projects analyzed with a remap by cutpoint 0.1.0 recorded the copy paths. Run `analyze` again to
 record the original paths, then run `crashes` and `events` again: their existing results still
-name sources by the copy path, so event boosts and action-cam crash must-includes stop matching until
+name sources by the copy path, so event boosts and crash must-includes stop matching until
 they are regenerated.
 
 On Windows, a prefix on a mapped network drive matches in either form: `Z:\Footage` and

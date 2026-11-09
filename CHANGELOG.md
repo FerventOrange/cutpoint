@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `--ocr-det-skip` / `--no-ocr-det-skip` on `analyze`, `edit` and `events`, and `"ocr_det_skip": true` in `config.json` (off by default): the gameplay HUD text reading skips the text detection of a HUD region that has not changed since detection last ran there. On two test clips it saved a third and a tenth of the detection calls and lost no event. A read with it is cached apart, so runs without it keep their cache; OCR stats count the saved calls as `det_skipped` (#807).
+- Crashes in `crashes.json` become moments for every style except 360 (#486). A crash with a
+  confidence of at least `must_include_crash` (default 0.6) becomes a must-include moment with its
+  reaction, replaces the moments it overlaps and ranks first. A weaker crash at or above the
+  project floor (max(0.2, 0.6 x the strongest crash)) is ranked like any moment; when it overlaps
+  an existing moment it only marks it. `highlights.json` gets `crash`, `crash_confidence` and
+  `crash_forced` on those candidates, kind `crash` and labels `crash` and `crash-reaction` on new
+  ones, and `settings.crash_moments`. Only `analyze` and a re-analysis build them; `360 analyze`
+  makes none (`settings.crash_moments` is false).
+- `cutpoint ui`: a Crashes kind filter after Dialogue, and crash tiles show a "CRASH 0.91" badge
+  (solid: always kept, dashed: ranked like any moment) (#486).
 - `cutpoint style list|show|create|validate|delete|features` (all with `--json`) manage your own scoring styles: schema-1 JSON files in `<CUTPOINT_HOME>/styles` (`CUTPOINT_STYLES_DIR`) with partial weight overrides over a built-in style, a description, an activity profile and `applies_to` (stored only for now). Legacy learned presets load as before and are converted only by `create NAME --from FILE --force`. New warnings `unknown_profile`, `feature_not_computed` and `invalid_style`; `highlights.json` records `settings.style_hash` (#514, phase 2).
 - `cutpoint ui`: the Analyze dialog has a Refine block (#486). "Describe the footage" with Apply runs `cutpoint crashes <project> --context=<text>`, shown where the analysis runs the crash step (an action, sport or action-cam style, footage Auto detected as action-cam or general, or sources with camera telemetry; before the first analysis also no style or Auto) and filled with the description in `activity.json`. "Look closer with vision" runs `cutpoint events <project>`; vision consent and availability warnings appear as job notes. Both are off before the first analysis and in Cutpoint lite, and "Look closer" is off for 360 projects. A cancelled run resumes as "Resume crash detection" or "Resume closer look".
 - `cutpoint ui` Settings > Analysis has a visual index toggle (`visual_index`), so the AI Chat's
@@ -601,6 +611,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `--must-include-crash` and the default `must_include_crash` (0.6) now apply to every non-360
+  style, not only action-cam; `settings.must_include_crash` is recorded for every style (#486).
+  The Analyze field is renamed "Crashes become moments at".
+- `cutpoint ui`: a kind filter chip is hidden when no moment has that kind; the filter falls back
+  to All (#486).
+- `analyze` (gaming): dialogue widening and menu-time dropping leave must-include moments alone (#486).
 - `cutpoint ui`: one type scale (five font-size tokens) and one gap token between sibling controls
   in the header, toolbar and Jobs rows; the Sequence, AI Chat, Export and Models tabs share the same
   body and label sizes; the slash in the header and "Analysis options…" in the Moments panel are
@@ -911,6 +927,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A vision rating no longer counts once `events` widens a moment or a menu trim cuts it: its frames
+  no longer show the clip, so the score, `vision_label` and the label it gave are put aside in
+  `vision_stale` until the moment has the rated span again (#802).
 - A banner that OCR misreads the same way every time no longer merges different names into one
   banner burst, so a multi-kill read that way keeps every kill (#793). Comments in the kill-feed
   reader no longer name games (#799).

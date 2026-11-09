@@ -349,9 +349,9 @@ moments match these filters." Escape closes the menu. The sort and filters are r
 browser (local storage); the source file only while the project stays open. A project with a
 long dialogue bit (a whole dialogue stretch over 90 s) also offers Long bits, which shows only those; they
 have a "Bit" badge with the length (m:ss), and the tile's hover text adds what happens in the bit.
-Long bits is not remembered; it lasts until the page is reloaded.
+Long bits is not remembered; it lasts until the page is reloaded. A crash moment has a "CRASH 0.91" badge with its confidence: solid when it is always kept, dashed when it is ranked like any moment.
 The moments are tiles, two across in the default column width. A kind filter above them (All,
-Action, Scenic, Funny, Dialogue) shows one kind; it is a view of the list and is not kept. The
+Action, Scenic, Funny, Dialogue, Crashes) shows one kind; a chip is hidden when no moment has that kind, and the filter falls back to All; it is a view of the list and is not kept. The
 kind is worked out in the page for display, as AI Chat names it. A moment a talk stretch created
 (`signals.events.nominated` holds `dialogue-<kind>`) is always Dialogue, titled or not. For any
 other moment, the words of its labels
@@ -477,7 +477,7 @@ copy next to it; that export becomes the current one. If earlier clips exist,
 a second run asks before replacing them and passes `--force` only when you confirm. The presets
 are off, with the reason shown, for 360 projects and for projects analyzed with `--exclude` or
 `--recursive`, `--no-scenes`, a non-default whisper `--model`, `--language`, `--max-candidates`,
-`--must-include-crash` or `--recover`. A Skip steps choice is passed on as `edit --skip`.
+`--must-include-crash` with a value other than the style's default (0.6) or `--recover`. A Skip steps choice is passed on as `edit --skip`.
 
 **Analysis options** are in the "Analyze again" dialog, and in the dialog that "Analysis
 options…" opens before the first analysis ("Analyze footage" alone uses none of them). Each one
@@ -489,7 +489,7 @@ applies:
 | Transcription model | `--model` |
 | Language | `--language` |
 | Max candidates | `--max-candidates` |
-| Must-include crash (action-cam styles only) | `--must-include-crash` |
+| Crashes become moments at | `--must-include-crash` |
 | Skip scene detection | `--no-scenes` |
 | Recover after read errors | `--recover` |
 | Skip steps: Reactions, Keyframes, Crashes, Dialogue | `--skip reactions keyframes crashes dialogue` |
@@ -525,7 +525,7 @@ and the project view reports `preset_problem` (why the presets are off) and `pre
 earlier clips a second Make would replace). The analyze job takes `model`, `language`,
 `max_candidates`, `must_include_crash`, `no_scenes`, `recover` and `skip` (a list); a field it
 does not send keeps what the analysis used, which the project view reports as `analyze_options`
-(with `must_include_crash_default`, the style's value, `null` for styles other than action-cam).
+(with `must_include_crash_default`, the style's value, `null` for 360 projects).
 
 The sequence panel shows a thumbnail per clip and supports inline rename (pencil or double-click),
 remove, multi-select with batch remove (a "Select all" checkbox above the list ticks every clip, or clears
@@ -1025,7 +1025,7 @@ an analysed set processes only the new file.
 | `--no-scenes` | Skip scene detection |
 | `--max-candidates N` | Candidates per source before merging. Default: enough to cover about 3 times the style's target length, at least 30. `gaming` has an open list instead: see [Candidates](#candidates) |
 | `--recover` | After a read error, resume analysis past the bad region |
-| `--must-include-crash CONF` | Action-cam: always clip crashes with at least this confidence, 0 to 1 (0 disables) |
+| `--must-include-crash CONF` | Crashes in `crashes.json` with at least this confidence, 0 to 1, become must-include moments with their reaction: they replace the moments they overlap and rank first. Every style; default 0.6; 0 forces none. Weaker crashes at or above the project floor (max(0.2, 0.6 x the strongest crash)) are ranked like any moment, and one overlapping a moment only marks it. See [Crash moments](#crash-moments) |
 | `--batch-size N` | Close each model (Whisper, the step models, the background HUD OCR engine and the `--vision` rating's Ollama model, which then rates the candidates of N sources at a time) after N sources and load it again for the next ones, to give memory back on long runs; the results are the same. Default 0: keep it loaded. Also on `360 analyze` (its view layer, analysis and events) |
 | `--json` | Result as one [JSON envelope](#json-output) on stdout |
 
@@ -1073,7 +1073,11 @@ Each candidate in `highlights.json` has `id`, `source`, `start`, `end`, `score` 
 Whisper heard with confidence below 0.5 as `[index, confidence]`, the index counting words in
 `transcript.split(" ")` (omitted when none is unsure or the transcript has no confidences). With
 `--vision`, a rated candidate also has the model's own label in `vision_label` (`label` takes it
-only from a rating of 7). A candidate the dialogue reader widened also has `widened_from` (its
+only from a rating of 7) and `vision_rated` (the `start` and `end` it rated, the score before
+and after the rating, `base` and `blended`, and the label it replaced). The rating counts only
+while the candidate keeps that span: once `events` widens or a menu trim cuts it, the rating
+moves to `vision_stale` (`score`, `label`, `window`), `signals.vision` is `null`, `vision_label`
+goes and the label returns to the one before; the span coming back restores them. A candidate the dialogue reader widened also has `widened_from` (its
 earlier `start`, `end`, `transcript` and `transcript_unsure`, and `absorbed`, the full candidates
 merged into it), and `dialogue_description` (the stretch's description) when no transcript
 snippet could be rebuilt for its new span; where the reader ran, `signals.events.dialogue` is
@@ -1211,6 +1215,10 @@ local LLM to the profile library. `analyze` never writes `visual_check\`; only
 [`events --sheets`](#events) does. The analysis score stays in each candidate's
 `score_pre_events`, and `highlights.pre-events.json` is written only when the analysis was not
 ranked with events yet.
+
+### Crash moments
+
+After the crash step, crashes in `crashes.json` become moments for every style except 360 (`360 analyze` makes none; `settings.crash_moments` in `highlights.json` is false there). A crash with a confidence of at least `--must-include-crash` (default 0.6) becomes a must-include moment with its reaction: it replaces the moments it overlaps and ranks first. A weaker crash at or above the project floor, max(0.2, 0.6 x the strongest crash), is ranked like any moment; if it overlaps an existing moment, it marks that moment and changes nothing else. New crash moments have `kind` `crash` and the labels `crash` and `crash-reaction`. Crash candidates carry `crash`, `crash_confidence` and `crash_forced`, and `settings.must_include_crash` records the threshold. Only `analyze` and a re-analysis build them. In `gaming`, dialogue widening and menu-time dropping leave must-include moments alone.
 
 ### Candidates
 
@@ -1458,7 +1466,7 @@ an `action-cam`, `action` or `sport` style keeps about one pick in eight for the
 [visual candidates](#analyze): none below 5 picks, one from 5, two from 16 (at most 2; with
 `--max-total`, counted from the moments that fit). They go by peak, and only one with a peak
 of at least 0.6 that overlaps no picked moment takes a slot, in place of the lowest-scoring
-pick that is not a must-include crash, a crash or a jump (an action-cam crash, jump or
+pick that is not a must-include crash, a crash or a jump (a crash moment, an action-cam jump or
 wipeout moment, or a moment overlapping a `crashes.json` crash of at least 0.2 confidence; with
 `--max-total` only when the total still fits). A slot no visual candidate qualifies for keeps
 its scored moment, and other styles choose as before. `--ids v001` exports a visual candidate in any project.

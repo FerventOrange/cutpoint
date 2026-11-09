@@ -15,7 +15,7 @@ everything into a project folder.
 | CLI `cutpoint` with the commands below | `--context` on `edit`, clip order chosen by a local model |
 | `cutpoint edit`: analyze, clips and assemble in one command | |
 | `cutpoint resume <project>`: re-runs an interrupted or failed run from its `progress.json` | |
-| `cutpoint analyze` includes the reaction, keyframe and crash steps, and for `gaming` a `dialogue` step (a text model marks funny or heated talk) | |
+| `cutpoint analyze` includes the reaction, keyframe and crash steps, and for `gaming` a `dialogue` step (a text model marks funny or heated talk); crashes in `crashes.json` become moments (not for 360) | |
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for the other layers and for games |
 | Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | |
 | Footage category detection: `cutpoint detect`, and `--style auto` on `analyze` and `edit` (opt-in; unclear footage gets the default style) | |
@@ -234,7 +234,7 @@ Variants:
 
 | File | Written by | Content |
 |---|---|---|
-| `highlights.json` | `analyze` (written once, at the end), `events` | Ranked candidates (`h001`...) and settings (`settings.last_candidate_id`: the highest id given); in `gaming`, events can add candidates of their own: `signals.events.nominated` names the events, `grid_score` is the score before the events; `gaming` has no fixed cap on candidates; action, sport and action-cam projects also list visual candidates last (`v001`..., `"pool": "visual"`, `kind` `view`, `crew` or `cruise`, `score` 0-10) |
+| `highlights.json` | `analyze` (written once, at the end), `events` | Ranked candidates (`h001`...) and settings (`settings.last_candidate_id`: the highest id given; `settings.must_include_crash`); crashes from `crashes.json` are candidates too (not for 360): `crash`, `crash_confidence`, `crash_forced` (confidence at least `must_include_crash`, default 0.6: kept and ranked first), new ones with `kind` `crash`; in `gaming`, events can add candidates of their own: `signals.events.nominated` names the events, `grid_score` is the score before the events; `gaming` has no fixed cap on candidates; action, sport and action-cam projects also list visual candidates last (`v001`..., `"pool": "visual"`, `kind` `view`, `crew` or `cruise`, `score` 0-10) |
 | `transcript.txt` | `analyze` | Time-stamped transcript |
 | `events.json`, `events.txt` | `analyze`, `events` | Detected sounds, HUD events, model descriptions, talk stretches (`kind` `text`, `type` `dialogue`) |
 | `clips/manifest.json` | `clips`, `extend` | Per clip: source, start, end, score, label, tail, crop, lut or color, srt |
