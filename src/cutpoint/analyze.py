@@ -15,6 +15,7 @@ the available features, optionally re-scored by a vision model, and written to
 from __future__ import annotations
 
 import contextlib
+import copy
 import gc
 import importlib.util
 import logging
@@ -29,7 +30,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
@@ -50,7 +51,13 @@ from cutpoint.dsp import conv_same
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events import paths as event_paths
 from cutpoint.events.menu_spans import drop_menu_time
-from cutpoint.events.scoring import Seed, heard_laughter, rescore
+from cutpoint.events.scoring import (
+    Seed,
+    heard_laughter,
+    number_candidates,
+    rescore,
+    restore_widened,
+)
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
@@ -1710,9 +1717,30 @@ def _crash_entries(crashes: dict[str, Any] | None) -> list[dict[str, Any]]:
     ]
 
 
-def _crash_windows(
-    r: SourceResult, c: dict[str, Any], style: Style, forced: bool
-) -> list[Candidate]:
+class CrashPart(Protocol):
+    """What :func:`add_crash_candidates` reads and changes of a part: a :class:`SourceResult`
+    of this run, or a :class:`HighlightsPart` of an earlier one."""
+
+    source: Path
+    offset: float
+    duration: float
+    candidates: list[Candidate]
+    signals: PartSignals | None
+
+
+@dataclass
+class HighlightsPart:
+    """A part of an earlier analysis, for :func:`rebuild_crash_moments`: its cached grids and
+    the candidates of its highlights.json records."""
+
+    source: Path
+    offset: float
+    duration: float
+    candidates: list[Candidate]
+    signals: PartSignals | None
+
+
+def _crash_windows(r: CrashPart, c: dict[str, Any], style: Style, forced: bool) -> list[Candidate]:
     """The candidates of the crash ``c`` in the part ``r`` (absolute source time): its planned
     clip (approach, impact, aftermath) and, when ``forced``, its reaction. A forced one scores
     its confidence (:func:`cutpoint.scorer.score`); any other is scored from the part's grids
@@ -1753,7 +1781,7 @@ def _crash_windows(
 
 
 def add_crash_candidates(
-    results: list[SourceResult], style: Style, crashes: dict[str, Any] | None
+    results: Sequence[CrashPart], style: Style, crashes: dict[str, Any] | None
 ) -> None:
     """Make the crashes of ``crashes`` (a crashes.json object) moments of ``results`` (any
     style but action-cam, whose own scorer reads crashes.json).
@@ -1815,6 +1843,92 @@ def add_crash_candidates(
             n_marked,
             floor,
         )
+
+
+CRASH_MARKS = ("crash", "crash_confidence", "crash_forced")  # the keys of a candidate's crash
+
+
+def rebuild_crash_moments(project: Path) -> bool:
+    """Rebuild the crash moments of ``<project>/highlights.json`` from the current crashes.json,
+    as :func:`analyze` and :func:`reanalyze` build them (:func:`add_crash_candidates`), for a
+    re-run of ``cutpoint events`` that does not re-analyse. Returns whether it wrote the file.
+
+    The crash moments and marks of the analysis are taken off and made again over the grids its
+    caches give (:func:`cached_grid_parts`), so a moment whose crash is unchanged stays as it is
+    (id, vision rating) and repeat runs change nothing. New ones get the next ids
+    (``settings.last_candidate_id``). Left alone: action-cam (its scorer reads crashes.json),
+    360 projects, ``settings.crash_moments`` false, and a source whose grids are not cached
+    (recovered, offline). A candidate that a forced crash moment replaced is not brought back
+    when that crash goes away: only a re-analysis does."""
+    from cutpoint.crash import load_crashes  # noqa: PLC0415
+    from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
+    from cutpoint.visual_pool import is_pool  # noqa: PLC0415
+
+    path = project / "highlights.json"
+    hl = cache.load_json(path)
+    if not isinstance(hl, dict) or "style" not in hl or "sources" not in hl:
+        return False
+    if (hl.get("settings") or {}).get("crash_moments") is False or (project / PANO_FILE).is_file():
+        return False
+    style = _recorded_style(hl)
+    if style.kind == ACTION_CAM:
+        return False
+    parts = {
+        p.index: HighlightsPart(p.source, p.offset, p.duration, [], p.signals)
+        for p in cached_grid_parts(hl, style)
+    }
+    if not parts:
+        return False
+    before = copy.deepcopy(hl)
+    cands = hl.get("candidates", [])
+    restore_widened(cands)  # as analyze made the crash moments, before any widening
+    rest: list[dict[str, Any]] = []
+    rec_of: dict[int, dict[str, Any]] = {}  # id() of a candidate made from a record -> record
+    was: dict[tuple[int, float, float], dict[str, Any]] = {}  # the crash moments there were
+    for rec in cands:
+        i = rec.get("source_index")
+        if i not in parts or is_pool(rec):
+            rest.append(rec)
+        elif rec.get("kind") == CRASH_KIND:
+            was[(i, round(rec["start"], 2), round(rec["end"], 2))] = rec
+        else:
+            c = Candidate(parts[i].source, rec["start"], rec["end"], rec["start"], 0.0, {})
+            parts[i].candidates.append(c)
+            rec_of[id(c)] = rec
+    add_crash_candidates(list(parts.values()), style, load_crashes(project))
+    kept: list[dict[str, Any]] = []
+    for i, part in parts.items():
+        for c in part.candidates:
+            rec = rec_of.get(id(c))
+            if rec is not None:  # a candidate of the analysis: with its crash mark, or none
+                for k in CRASH_MARKS:
+                    rec.pop(k, None)
+                if c.event:
+                    rec["crash"] = c.event
+                    rec["crash_confidence"] = round(float(c.event["confidence"]), 3)
+                    rec["crash_forced"] = c.must_include
+                kept.append(rec)
+                continue
+            new = _candidate_record(c, i, style)
+            old = was.get((i, round(new["start"], 2), round(new["end"], 2)))
+            if old is not None:  # the same moment: as it was if it is the same, else its id
+                same = all(
+                    old.get(k) == new.get(k) for k in (*CRASH_MARKS, "must_include", "label")
+                )
+                new = old if same else ({"id": old["id"]} if "id" in old else {}) | new
+            kept.append(new)
+    pool = [c for c in rest if is_pool(c)]
+    kept = sorted(
+        [c for c in rest if not is_pool(c)] + kept,
+        key=lambda c: (not c.get("must_include"), *scorer.rank_key(c)),
+    )
+    hl["candidates"] = kept + pool
+    number_candidates(hl)
+    if hl == before:
+        return False
+    cache.save_json(path, hl)
+    logger.info("Crash moments rebuilt from crashes.json in %s", path.name)
+    return True
 
 
 def auto_vision_top(total_duration_s: float) -> int:
@@ -3228,6 +3342,17 @@ def report_highlights(out_dir: Path, highlights: Path) -> None:
         jsonout.output("detection", saved["detection"])
 
 
+def _recorded_style(hl: dict[str, Any]) -> Style:
+    """The style of the analysis ``hl``, with the ``--must-include-crash`` it recorded."""
+    from cutpoint.styles import get_style  # noqa: PLC0415
+
+    style = get_style(hl["style"])
+    at = (hl.get("settings") or {}).get("must_include_crash")
+    if at is not None:  # an `analyze --must-include-crash`
+        style = replace(style, must_include_crash=float(at))
+    return style
+
+
 def reanalyze(project: Path) -> Path:
     """Re-run ``analyze`` with the inputs and style recorded in highlights.json.
 
@@ -3242,7 +3367,6 @@ def reanalyze(project: Path) -> Path:
             no analysis.
     """
     from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
-    from cutpoint.styles import get_style  # noqa: PLC0415
 
     try:
         hl = cache.read_json(
@@ -3257,9 +3381,7 @@ def reanalyze(project: Path) -> Path:
         )
     st = hl.get("settings", {})
     inputs = st.get("inputs") or [s["path"] for s in hl["sources"]]
-    style = get_style(hl["style"])
-    if st.get("must_include_crash") is not None:  # an `analyze --must-include-crash`
-        style = replace(style, must_include_crash=float(st["must_include_crash"]))
+    style = _recorded_style(hl)
     total = (hl.get("timings") or {}).get("total_s")
     # --style auto: the style it chose, and its decision kept (never detected again)
     detection = hl.get("detection") if st.get("style_requested") == AUTO else None

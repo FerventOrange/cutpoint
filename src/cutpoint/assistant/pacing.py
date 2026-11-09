@@ -22,7 +22,8 @@ from cutpoint.assistant.context import _GENERIC
 from cutpoint.assistant.ops import _in_order
 from cutpoint.assistant.topup import Evaluate, _overlaps, _round_robin
 
-ACTION, SCENIC, FUNNY, DIALOGUE = "action", "scenic", "funny", "dialogue"
+ACTION, SCENIC, FUNNY, DIALOGUE, CRASH = "action", "scenic", "funny", "dialogue", "crash"
+RUNS = (ACTION, CRASH)  # the kinds the breakers go between: a crash is footage of the activity
 BREAKERS = (FUNNY, DIALOGUE, SCENIC)  # the order the summary names them in
 MAX_DIALOGUE = 3  # dialogue moments added to a sequence that has none
 SPOKEN_WORDS = 4  # words over a moment that make it dialogue
@@ -191,9 +192,11 @@ def moment_kind(
     cues: Mapping[str, int],
     spoken: Callable[[], bool],
 ) -> str:
-    """The kind of a moment: ``scenic``, ``funny``, ``dialogue`` or ``action``.
+    """The kind of a moment: ``crash``, ``scenic``, ``funny``, ``dialogue`` or ``action``.
 
-    The words of its labels and ``kind`` decide first (visual pool ``view`` is scenic, ``crew`` and
+    A crash moment comes first: ``kind`` crash or wipeout (a crash moment, its reaction, an
+    action-cam crash), or a forced ``crash`` record (the crash behind it, at or above the
+    analysis' must-include confidence). A moment a weaker crash only marked keeps its kind. The words of its labels and ``kind`` decide first (visual pool ``view`` is scenic, ``crew`` and
     ``cruise`` are action; ``beauty``/``view``/``scenic``; ``laugh``/``funny``; ``fast``, ``speed``,
     ``crash``, ``jump``, ...; ``talk``/``voice``). Then the strongest cue of a generic label
     (``ski-moment``, ``loud-moment``) decides, then speech over it (``spoken``: dialogue), else it
@@ -202,6 +205,10 @@ def moment_kind(
     had before it took the stretch's title.
     """
     cand = cand or {}
+    if cand.get("kind") in (CRASH, "wipeout") or (
+        cand.get("crash") and cand.get("crash_forced", bool(cand.get("must_include")))
+    ):
+        return CRASH
     events = (cand.get("signals") or {}).get("events") or {}
     if any(str(n).startswith("dialogue-") for n in events.get("nominated") or []):
         return DIALOGUE  # made from a talk stretch, whatever its title says
@@ -252,10 +259,10 @@ def arrange(kinds: Sequence[str]) -> list[int]:
     (an even split, so a run is short whenever the breakers are enough). The order is
     unchanged without action clips or without breakers."""
     keep = [0] if kinds and kinds[0] == SCENIC else []
-    action = [i for i, k in enumerate(kinds) if k == ACTION]
+    action = [i for i, k in enumerate(kinds) if k in RUNS]
     queues: dict[str, list[int]] = {}
     for i, k in enumerate(kinds):
-        if k != ACTION and i not in keep:
+        if k not in RUNS and i not in keep:
             queues.setdefault(k, []).append(i)
     breakers = _interleaved(queues)
     if not action or not breakers:
@@ -277,7 +284,7 @@ def longest_run(kinds: Sequence[str]) -> int:
     """The most action clips in a row."""
     best = run = 0
     for k in kinds:
-        run = run + 1 if k == ACTION else 0
+        run = run + 1 if k in RUNS else 0
         best = max(best, run)
     return best
 
@@ -386,7 +393,7 @@ def pace(
             action = [
                 (i, r)
                 for i, r in enumerate(rows, 1)
-                if kind_of(r) == ACTION
+                if kind_of(r) in RUNS
                 and r["id"] in removable
                 and abs((r["end"] - r["start"]) - size) <= max(3.0, size / 2)
             ]

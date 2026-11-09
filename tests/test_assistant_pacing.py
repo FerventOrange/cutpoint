@@ -231,6 +231,60 @@ def test_the_kind_of_a_row_comes_from_its_label_kind_cues_and_speech(
     assert kind(label, cand, cues, spoken) == want
 
 
+@pytest.mark.parametrize(
+    ("label", "cand", "want"),
+    [
+        ("crash", {"kind": "crash", "must_include": True}, "crash"),  # a crash moment (#848)
+        ("crash reaction", {"kind": "crash"}, "crash"),
+        ("wipeout", {"kind": "wipeout"}, "crash"),  # an action-cam crash
+        ("ski-moment", {"crash": {"type": "crash"}, "crash_forced": True}, "crash"),
+        ("ski-moment", {"crash": {"type": "crash"}, "must_include": True}, "crash"),
+        ("crash", None, "action"),  # the word alone: unchanged
+        ("fast", {"crash": {"type": "crash"}, "crash_forced": False}, "action"),  # only marked
+        ("laugh", {"crash": {"type": "crash"}, "crash_forced": False}, "funny"),
+        ("fast", {"kind": "cruise"}, "action"),
+    ],
+)
+def test_a_crash_moment_is_the_crash_kind(label, cand, want) -> None:
+    assert kind(label, cand) == want
+
+
+def test_crash_moments_are_footage_of_the_activity_for_the_spread() -> None:
+    assert pacing.arrange(["crash", "action", "crash", "funny"]) == [0, 1, 3, 2]
+    assert pacing.longest_run(["crash", "action", "crash", "funny", "action"]) == 3
+
+
+def test_a_turn_names_crash_moments_and_spreads_the_breakers_between_them() -> None:
+    cands = [moment(i, FAST) for i in range(6)] + [
+        moment(6, "crash", kind="crash", must_include=True),
+        moment(7, "crash reaction", kind="crash", must_include=True),
+        moment(8, LAUGH),
+        moment(9, LAUGH),
+    ]
+    proj = session.Project(cands, [], durations(), "", "key0")
+    turn = play("Break up the skiing and the crashes with the funny moments", proj)
+    kinds = kinds_of(turn, proj)
+    assert kinds.count("crash") == 2 and kinds.count("funny") == 2
+    assert longest_run([k if k != "crash" else "action" for k in kinds]) <= 3
+    assert "funny" in proposal(turn)["summary"]
+
+
+def test_find_moments_finds_crash_moments_by_their_kind() -> None:
+    proj = session.Project(
+        [moment(0, FAST), moment(1, "vlm", kind="crash", must_include=True)],
+        [],
+        durations(),
+        "",
+        "key0",
+    )
+    fake = FakeProvider([call("find_moments", query="crash")] * 4)
+    turn = session.Turn(fake, proj, "find the crash")
+    turn.start()
+    assert turn.done.wait(10)
+    found = next(m for m in fake.requests[1]["messages"] if m.get("role") == "tool")["content"]
+    assert '"kind":"crash"' in found.replace(" ", "")
+
+
 # -- the order ----------------------------------------------------------------------------------
 
 

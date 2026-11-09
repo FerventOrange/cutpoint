@@ -16,8 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   project floor (max(0.2, 0.6 x the strongest crash)) is ranked like any moment; when it overlaps
   an existing moment it only marks it. `highlights.json` gets `crash`, `crash_confidence` and
   `crash_forced` on those candidates, kind `crash` and labels `crash` and `crash-reaction` on new
-  ones, and `settings.crash_moments`. Only `analyze` and a re-analysis build them; `360 analyze`
+  ones, and `settings.crash_moments`. `analyze`, a re-analysis and an `events` re-run build them; `360 analyze`
   makes none (`settings.crash_moments` is false).
+- A `cutpoint events` re-run (and "Look closer with vision" in `cutpoint ui`) rebuilds the crash moments from the current `crashes.json` before it re-ranks, with the same moments and marks as a re-analysis. A moment whose crash is unchanged stays as it is, repeat runs change nothing, and new moments take the ids after `settings.last_candidate_id`. 360 projects, `settings.crash_moments` false and action-cam are as before (#847).
+- AI Chat: `pacing.moment_kind` names crash moments `crash` (kind `crash` or `wipeout`, or a must-include `crash` record), so AI Chat can name and filter them; pacing treats them like the activity footage, not as a breaker. The other kinds are unchanged (#848).
 - `cutpoint ui`: a Crashes kind filter after Dialogue, and crash tiles show a "CRASH 0.91" badge
   (solid: always kept, dashed: ranked like any moment) (#486).
 - `cutpoint style list|show|create|validate|delete|features` (all with `--json`) manage your own scoring styles: schema-1 JSON files in `<CUTPOINT_HOME>/styles` (`CUTPOINT_STYLES_DIR`) with partial weight overrides over a built-in style, a description, an activity profile and `applies_to` (stored only for now). Legacy learned presets load as before and are converted only by `create NAME --from FILE --force`. New warnings `unknown_profile`, `feature_not_computed` and `invalid_style`; `highlights.json` records `settings.style_hash` (#514, phase 2).

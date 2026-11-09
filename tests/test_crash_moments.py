@@ -274,3 +274,124 @@ def test_the_analyze_field_is_renamed_and_the_crashes_kind_has_a_chip():
     html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
     assert ">Crashes become moments at</label>" in html and "Must-include crash" not in html
     assert 'data-kind="crash" aria-pressed="false">Crashes</button>' in html
+
+
+# ---- a `cutpoint events` re-run rebuilds the crash moments (#847)
+def _moments(proj: Path) -> list[dict[str, Any]]:
+    hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
+    keys = (
+        "id",
+        "start",
+        "end",
+        "kind",
+        "must_include",
+        "crash",
+        "crash_confidence",
+        "crash_forced",
+    )
+    return [{k: c.get(k) for k in keys} for c in hl["candidates"]]
+
+
+def _analyzed(tmp_path, monkeypatch) -> tuple[Path, dict[str, Any]]:
+    """:func:`_analyze_with_crash`, with a cache for the grids the events re-run builds from
+    (this footage has no audio, so analyze cached none)."""
+    proj, hl = _analyze_with_crash(tmp_path, monkeypatch)
+    cache.save_json(cache.source_dir(tmp_path / "a.mp4") / "scenes.json", [])
+    return proj, hl
+
+
+def _set_crashes(proj: Path, *crashes: dict[str, Any]) -> None:
+    cache.save_json(proj / "crashes.json", {"crashes": list(crashes)})
+
+
+def _without_ids(moments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{k: v for k, v in m.items() if k != "id"} for m in moments]
+
+
+def test_an_events_rerun_rebuilds_the_crash_moments_as_reanalyze_does(home, tmp_path, monkeypatch):
+    proj, _ = _analyzed(tmp_path, monkeypatch)
+    src = tmp_path / "a.mp4"
+    # c1 goes, a forced c2 and a weak c3 come
+    _set_crashes(proj, record("c2", 40.0, 0.7, src), record("c3", 58.0, 0.5, src))
+    assert analyze.rebuild_crash_moments(proj) is True
+    rebuilt = _moments(proj)
+    found = {m["crash"]["id"] for m in rebuilt if m["crash"]}
+    assert found == {"c2", "c3"}
+    forced = [m for m in rebuilt if m["must_include"]]
+    assert forced and all(m["crash_forced"] and m["crash_confidence"] == 0.7 for m in forced)
+    analyze.reanalyze(proj)
+    assert _without_ids(_moments(proj)) == _without_ids(rebuilt)
+
+
+def test_an_events_rerun_changes_nothing_the_second_time(home, tmp_path, monkeypatch):
+    proj, _ = _analyzed(tmp_path, monkeypatch)
+    src = tmp_path / "a.mp4"
+    assert analyze.rebuild_crash_moments(proj) is False  # crashes.json as analyze read it
+    _set_crashes(proj, record("c1", 20.0, 0.9, src), record("c2", 40.0, 0.95, src))
+    assert analyze.rebuild_crash_moments(proj) is True
+    once = _moments(proj)
+    assert analyze.rebuild_crash_moments(proj) is False
+    assert _moments(proj) == once
+    ids = [m["id"] for m in once]
+    assert len(ids) == len(set(ids))
+
+
+def test_new_crash_moments_continue_from_last_candidate_id(home, tmp_path, monkeypatch):
+    proj, hl = _analyzed(tmp_path, monkeypatch)
+    src = tmp_path / "a.mp4"
+    before = {m["id"] for m in _moments(proj)}
+    hl["settings"]["last_candidate_id"] = 40
+    cache.save_json(proj / "highlights.json", hl)
+    _set_crashes(proj, record("c1", 20.0, 0.9, src), record("c2", 45.0, 0.95, src))
+    analyze.rebuild_crash_moments(proj)
+    new = {m["id"] for m in _moments(proj)} - before
+    assert new and all(int(i[1:]) > 40 for i in new)
+    saved = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
+    assert saved["settings"]["last_candidate_id"] >= max(int(i[1:]) for i in new)
+
+
+def test_an_events_rerun_leaves_360_and_crash_moments_false_projects_alone(
+    home, tmp_path, monkeypatch
+):
+    proj, hl = _analyzed(tmp_path, monkeypatch)
+    src = tmp_path / "a.mp4"
+    _set_crashes(proj, record("c2", 40.0, 0.95, src))
+    hl["settings"]["crash_moments"] = False
+    cache.save_json(proj / "highlights.json", hl)
+    off = (proj / "highlights.json").read_bytes()
+    assert analyze.rebuild_crash_moments(proj) is False
+    assert (proj / "highlights.json").read_bytes() == off
+    del hl["settings"]["crash_moments"]
+    cache.save_json(proj / "highlights.json", hl)
+    cache.save_json(proj / "pano.json", {"clips": []})
+    assert analyze.rebuild_crash_moments(proj) is False
+
+
+def test_an_events_rerun_leaves_action_cam_to_its_scorer(tmp_path):
+    cache.save_json(
+        tmp_path / "highlights.json",
+        {"style": ACTION_CAM, "settings": {}, "sources": [], "candidates": []},
+    )
+    _set_crashes(tmp_path, record("c1", 20.0, 0.9))
+    assert analyze.rebuild_crash_moments(tmp_path) is False
+
+
+def test_the_events_command_rebuilds_the_crash_moments_before_it_rescores(tmp_path, monkeypatch):
+    import argparse  # noqa: PLC0415
+
+    from cutpoint.events import cli as events_cli  # noqa: PLC0415
+
+    calls: list[str] = []
+    monkeypatch.setattr(analyze, "rebuild_crash_moments", lambda p: calls.append("rebuild"))
+    monkeypatch.setattr(scoring, "rescore_highlights", lambda p: calls.append("rescore"))
+    monkeypatch.setattr(events_cli, "project_kind", lambda hl: "gaming")
+    monkeypatch.setattr("cutpoint.events.common.load_highlights", lambda p: {"style": "gaming"})
+    monkeypatch.setattr(
+        "cutpoint.events.pipeline.run_events",
+        lambda *a, **k: (tmp_path / "events.json", tmp_path / "events.txt"),
+    )
+    ap = argparse.ArgumentParser()
+    events_cli.add_arguments(ap)
+    args = ap.parse_args([str(tmp_path)])
+    events_cli.run_args(args)
+    assert calls == ["rebuild", "rescore"]
