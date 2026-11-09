@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `cutpoint ui` Settings > Analysis has a visual index toggle (`visual_index`), so the AI Chat's
   visual search works for `gaming`, `funny` and `commentary` footage without `--visual-index` on
-  the command line (#798). It needs a CUDA GPU and the full install; it affects search only, not
-  ranking.
+  the command line (#798). It needs a CUDA GPU, the full install and its model files (`cutpoint setup`), and is
+  skipped otherwise; it affects search only, not ranking.
 - `cutpoint ui` starts the subscription proxy itself, so `cutpoint proxy` no longer has to run in a
   terminal to sign in (#821). Log in and Retry on a Connected accounts row start it when it is not
   running (the row shows "Starting the proxy…" and any error); a chat turn with a subscription

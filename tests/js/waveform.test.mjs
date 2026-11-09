@@ -104,6 +104,10 @@ test('in Cut mode the other side of the cut keeps asking for its envelope during
   await m.page.settle();
   assert.equal(m.calls(OTHER), 2, 'and again after 5 s: it is on screen');
   assert.equal(m.calls(ENVELOPE), 2);
+  t.mock.timers.tick(5000);
+  await m.page.settle();
+  assert.equal(m.calls(OTHER), 3, 'the retry chain goes on');
+  assert.equal(m.calls(ENVELOPE), 3);
 });
 
 test('closing a project and opening it again within 5 s leaves one retry chain, not two', async (t) => {

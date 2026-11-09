@@ -26,7 +26,7 @@ test('off by default, with the cost and what it is for in the hint', async (t) =
   assert.match(hint, /about 373 s and 25 MB per hour/);
   assert.match(hint, /gaming, funny and commentary/);
   assert.match(hint, /changes no ranking/);
-  assert.match(hint, /Needs a CUDA GPU and the full install/);
+  assert.match(hint, /Needs a CUDA GPU, the full install and its model files \(cutpoint setup\); skipped otherwise/);
   assert.match(hint, /Action, sport and action-cam projects have it whenever a CUDA GPU is present/);
 });
 
