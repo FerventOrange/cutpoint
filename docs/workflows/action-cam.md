@@ -139,6 +139,8 @@ uv run python scripts/refmatch.py match trip D:\Videos\trip-cut.mp4 --name my_st
 cutpoint analyze D:\Videos\trip --style my_style --out trip      # re-rank with the learned style
 ```
 
+To write or check a style by hand, see `cutpoint style` (`cutpoint style --help`).
+
 Use `scripts/refmatch.py match ... --no-fit` on several projects, then
 `scripts/refmatch.py fit proj1 proj2 --name my_style` to fit one style on all of them. Learned styles are JSON in
 `<CUTPOINT_HOME>\styles\`. The fit is only as good as the edit you teach it: with one or two

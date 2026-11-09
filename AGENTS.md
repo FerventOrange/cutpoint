@@ -21,7 +21,8 @@ everything into a project folder.
 | Footage category detection: `cutpoint detect`, and `--style auto` on `analyze` and `edit` (opt-in; unclear footage gets the default style) | |
 | Frame index for the AI Chat's visual search: `--visual-index` on `analyze` and `edit` (off by default; `"visual_index": true` in `config.json`) also writes the CLIP frame embeddings for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` always have them | |
 | VLM layer of `cutpoint events` through the shared vision model: Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the Models tab of `cutpoint ui` | |
-| `--json` result envelope on stdout: `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `events`, `resume`, `360 ...` | |
+| `--json` result envelope on stdout: `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `style ...`, `events`, `resume`, `360 ...` | |
+| Custom styles: `cutpoint style list\|show\|create\|validate\|delete\|features` (weights over a built-in style, used with `--style NAME`; `applies_to` is stored only, `--style auto` ignores it) | |
 | Agent skill: `cutpoint skill install` (Claude Code), `cutpoint skill print` | |
 | Color grade with a 3D LUT the user supplies: `--lut FILE` and `--lut-strength` on `clips` and `edit` | Color matching between clips |
 | Automatic color correction per clip: `--color auto\|underwater` and `--color-strength` on `clips` and `edit` (not with `--lut`) | |
@@ -66,6 +67,7 @@ To let Claude Code find Cutpoint on its own, the user can install the skill with
   With `CUTPOINT_PROGRESS=1`, stderr also has `PROGRESS {...}` lines per step (`analyze` has 7 steps, `edit` 9). Keys of both:
   [docs/commands.md#json-output](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#json-output)
   and [#progress-output](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#progress-output).
+- Custom styles: run `style list`, `style show` and `style features` before `style create`; never invent feature names (`style features` lists them). `style delete` asks nothing: only delete a style you created.
 - Commands are re-runnable. Per-source results are cached (path, size, modification time).
 - `clips` refuses a non-empty output folder without `--force`. `--force` replaces only the clips
   its `manifest.json` lists, once every new clip is exported; every other file stays, sources

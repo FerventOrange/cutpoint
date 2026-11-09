@@ -26,6 +26,7 @@ prints tracebacks of errors.
 | [`crashes`](#crashes), [`mix`](#mix) | Action-cam module |
 | [`resume`](#resume) | Re-run an interrupted or failed run from its `progress.json` |
 | [`profile`](#profile) | Pick or build the project's activity profile for crash detection |
+| [`style`](#style) | List, show, create, validate and delete your own scoring styles |
 | [`360 ...`](workflows/360.md) | Insta360 X3 module |
 | [`setup`](#setup), [`paths`](#paths), [`guide`](#guide), [`skill`](#skill) | Setup, data, the agent guide and skill |
 | [`proxy`](#proxy), [`login`, `logout`](#login) | Subscription logins for the hosted models of `cutpoint ui` |
@@ -34,7 +35,7 @@ prints tracebacks of errors.
 
 `--json` makes a command write its result as exactly one JSON object on stdout. It is available
 on `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
-`setup`, `events`, `crashes`, `profile`, `resume` and every `360` subcommand (`scan`, `analyze`, `status`,
+`setup`, `events`, `crashes`, `profile`, `style` (every verb), `resume` and every `360` subcommand (`scan`, `analyze`, `status`,
 `director`, `stitch`, `qa`, `repair`). `ui`, `guide`, `skill`, `proxy`, `login` and
 `logout` have no `--json`. Logs and errors stay on stderr, and
 output of child processes such as ffmpeg goes to stderr too, so stdout can be parsed as is. Exit
@@ -102,6 +103,9 @@ So do these combinations:
 | `loudness_below_target` | `assemble` (so `edit`) | `--loudnorm` left the final more than 1 LU below -14 LUFS: the limiter took the peaks the gain pushed over the ceiling; `--compress-peaks` leaves it more room |
 | `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it. The dialogue step adds it too when there was not enough free memory for its text model (`Dialogue skipped: ...`). A failed HUD OCR (keyframes for `gaming` and `funny`) is a `WARNING` instead, whose message names the effect (menu filtering and HUD events skipped) and the source it failed on; `files` lists the sources it did not read. Out of memory says so, with what to try |
 | `style_ambiguous` | `analyze`, `detect` (so `edit`) | `--style auto` could not tell the footage category apart (the message gives the evidence), so the run used the default style: `gaming` for `analyze`, the kind's style for `edit`; `files` lists the sources that were not clear. Give `--style` to choose one |
+| `unknown_profile` | `style create`, `style validate` | The style's `profile` or an `applies_to` profile is not in the [activity profile library](#profile); it is stored as written |
+| `feature_not_computed` | `style create`, `style validate` | A weight names a feature the style's base never measures (for example a telemetry feature over a generic base), so it has no effect |
+| `invalid_style` | `style list` | A file in the styles folder is not a usable style; the message gives the reason. Run `style validate NAME` |
 | `style_sources_disagree` | `analyze`, `detect` (so `edit`) | With `--style auto`, sources making up more than 10% of the footage look like another category than the project's; the whole project still gets one style. `files` names them: analyze them apart, or give `--style` |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
 | `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
@@ -150,6 +154,7 @@ So do these combinations:
 | `crashes` | `crashes` (the `crashes.json` path), `count`, `candidates` (strongest first, each with the `crashes.json` keys `id`, `source`, `t0` and `t1` (impact span, s), `confidence` (0-1), `confirmed` (dense check ran), `origin` (`telemetry` or `words`), `clip` (`start`, `end`, `until`, and `reaction` when planned) and `sheet` (when one was written)), `activity_file` (the `activity.json` path), `profile_name` |
 | `events` | See [events outputs](#events-outputs) below |
 | `profile` | The `activity.json` record's own keys (as the older `profile --json` printed them: `version`, `request`, `name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `profile`, and when set `scores`, `description`, `described_by`, `model`), and `activity_file` (its path) |
+| `style` | `style list`: `styles_dir`, `styles` (each `name`, `type` (`built-in` or `user`), `legacy`, `valid`, `problems`, `warnings` (each `code`, `message`), `source`, `base`, `description`, `profile`, `applies_to` (`categories`, `profiles`), `path`). `style show`: `name`, `type`, `legacy`, `source`, `base`, `kind`, `description`, `profile`, `applies_to`, `path`, `hash`, `mask_friends`, `must_include_crash`, `weights` (each `feature`, `weight`, `from`: `base` or `style`). `style create`: `name`, `path`, `replaced`, `style` (as `style show`). `style validate`: `name`, `path`, `type`, `legacy`, `valid`, `problems`, `notes`. `style delete`: `name`, `path`. `style features`: `features` (each `name`, `layer`, `description`, `extra`, `available`) |
 
 ### events outputs
 
@@ -1004,7 +1009,7 @@ an analysed set processes only the new file.
 
 | Option | Meaning |
 |---|---|
-| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `action-cam` (formerly `ski`, no longer accepted), a learned preset, or `auto`: pick one from the footage, as [`detect`](#detect) does. `auto` never picks `sport` or `funny`; unclear footage gets `gaming` with a `style_ambiguous` warning. `highlights.json` keeps the style it picked in `style`, `settings.style_requested` is `auto` and `detection` holds the evidence, so `events` and re-runs keep it without detecting again |
+| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `action-cam` (formerly `ski`, no longer accepted), one of your own styles ([`cutpoint style`](#style)) or a learned preset, or `auto`: pick one from the footage, as [`detect`](#detect) does. `auto` never picks `sport` or `funny`; unclear footage gets `gaming` with a `style_ambiguous` warning. `highlights.json` keeps the style it picked in `style`, `settings.style_requested` is `auto` and `detection` holds the evidence, so `events` and re-runs keep it without detecting again |
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
@@ -1979,6 +1984,61 @@ tries again on the next run. An Ollama on another machine (not `localhost` or a 
 address) gets frames and the `--context` text only once the Vision consent for it was given in
 the Models tab of `cutpoint ui`; until then it is not used, with a WARNING
 (`vision_consent_needed`).
+
+## style
+
+```text
+cutpoint style list [--json]
+cutpoint style show NAME [--json]
+cutpoint style create NAME (--base STYLE | --from FILE) [--weight FEATURE=W ...] [--description TEXT]
+                      [--applies-to KIND:NAME ...] [--profile NAME] [--force] [--json]
+cutpoint style validate NAME|FILE [--json]
+cutpoint style delete NAME [--json]
+cutpoint style features [--json]
+```
+
+Manages your own scoring styles: JSON files in `<CUTPOINT_HOME>/styles` (`CUTPOINT_STYLES_DIR`;
+format in [Configuration](configuration.md#custom-styles)). A style is partial weight overrides over
+a built-in style and is used with `--style NAME` on `analyze` and `edit`. Nothing here reads
+footage or a project.
+
+| Verb | Meaning |
+|---|---|
+| `list` | The built-in styles and yours, with `source`, `base`, `applies_to` and whether each is valid. A file that is not usable is listed with a warning (`invalid_style`) |
+| `show NAME` | The effective weights of a style (its base's, then its own) and where each comes from (`base` or `style`), with the style `hash` |
+| `create NAME` | Save a style (`source: hand`). Needs `--base`, or a `--from` file that has one |
+| `validate NAME\|FILE` | Check a style by name or a `.json` file by path and list every problem; exit 1 if invalid. A legacy preset is valid and noted as legacy |
+| `delete NAME` | Delete one of your styles. Built-in styles cannot be deleted. There is no confirmation |
+| `features` | The feature names weights can use, their layer, and whether this install has them (`available`; `extra` names the extra a feature needs) |
+
+`create` options:
+
+| Option | Meaning |
+|---|---|
+| `NAME` | Letters, digits, `-` and `_`; not a built-in style name and not `auto` |
+| `--base STYLE` | The built-in style it builds on (not another style of yours) |
+| `--from FILE` | Start from this style JSON (a legacy preset also works). The other options replace its values and `--weight` adds to its weights; its `source` is kept. `create NAME --from FILE --force` converts a legacy preset to schema 1 |
+| `--weight FEATURE=W ...` | A feature weight, 0 or more, over the base's. Names are those of `style features` |
+| `--description TEXT` | What the style is for |
+| `--applies-to KIND:NAME ...` | `category:NAME` (`action-cam`, `gameplay`, `talk`, `general`) or `profile:NAME`. Stored only: `--style auto` does not use it yet |
+| `--profile NAME` | An activity profile name. Stored only |
+| `--force` | Replace your style of this name |
+| `--json` | One [result envelope](#json-output) on stdout; `outputs` per verb in [the table above](#json-output). The command names are `style list`, `style show` and so on |
+
+An existing name without `--force` is `output_not_empty`; a missing style or file is `not_found`;
+a rejected value (unknown feature, negative weight, bad name) is `bad_args` with exit 1, and a
+command-line syntax error is exit 2. `create` and `validate` warn with `unknown_profile` and
+`feature_not_computed`; a legacy preset is never rewritten automatically.
+
+`analyze` records `settings.style_hash` in `highlights.json`: the first 12 hex characters of the
+SHA-256 of the style's canonical JSON, so a change to a style file shows in the project.
+
+```powershell
+uv run cutpoint style features
+uv run cutpoint style create bmx --base action --weight scene=0.4 --weight speech=0.1 --description "BMX park"
+uv run cutpoint style show bmx
+uv run cutpoint analyze D:\Videos\ride.mp4 --style bmx --out ride
+```
 
 ## mix
 

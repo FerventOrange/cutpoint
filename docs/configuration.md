@@ -15,7 +15,7 @@ CUTPOINT_HOME/
   models/          PANNs, CLIP, detector, aesthetic head, Silero VAD
   tools/           CLIProxyAPI binary (subscription models of the Models tab)
   stage/           local copies made by `cutpoint stage`; disposable
-  styles/          learned styles from `scripts/refmatch.py` (JSON, editable)
+  styles/          your styles (`cutpoint style`) and learned styles from `scripts/refmatch.py` (JSON, editable)
   presets/         HUD presets written by region discovery
   profiles/        activity profiles built by `cutpoint profile` / `crashes` (JSON)
   projects/        project folders, unless `projects_dir` says otherwise
@@ -42,7 +42,7 @@ All optional.
 | `CUTPOINT_MODELS_DIR`, `CUTPOINT_TOOLS_DIR` | Model weights, the CLIProxyAPI binary |
 | `CUTPOINT_PROJECTS_DIR` | Projects folder (overrides `projects_dir`) |
 | `CUTPOINT_STAGE_DIR` | Folder for `cutpoint stage` copies (overrides `stage_dir`) |
-| `CUTPOINT_STYLES_DIR` | Learned styles |
+| `CUTPOINT_STYLES_DIR` | Your styles and learned styles (see [Custom styles](#custom-styles)) |
 | `CUTPOINT_FFMPEG`, `CUTPOINT_FFPROBE` | Full paths to ffmpeg and ffprobe |
 | `CUTPOINT_VIDEO_ENCODER` | Video encoder for exported clips, assembled videos and rendered 360 clips: `auto` (default), `nvenc`, `amf`, `vaapi` or `cpu`. Overrides `video_encoder` |
 | `CUTPOINT_EXPORT_WORKERS` | Clips `clips` and `edit` export at once: `auto` (default) or a number from 1 to 3. Overrides `export_workers` |
@@ -391,9 +391,45 @@ A style tells `analyze` how to score and how long clips and the final cut should
 
 `action-cam` is the telemetry-driven action-cam style (formerly `ski`; `ski` is no longer accepted: a `--style ski`, a `config.json` value, a project or a learned preset that says `ski` stops with an error naming `action-cam`). Speed, airtime and crash scoring need GoPro HERO 9-13 telemetry (or the Insta360 X3 IMU); other footage is scored from audio, speech and model features only.
 
-Learned styles are JSON files in `<CUTPOINT_HOME>\styles\<name>.json`, written by the
-development script `scripts/refmatch.py`. They appear as extra `--style` choices, hold the feature weights
-and the fit report, and can be edited by hand. Style definitions live in `src/cutpoint/styles.py`.
+### Custom styles
+
+Your own styles are JSON files in `<CUTPOINT_HOME>\styles\<name>.json` (or `CUTPOINT_STYLES_DIR`).
+They appear as extra `--style` choices. Manage them with [`cutpoint style`](commands.md#style) or
+edit the file by hand; `cutpoint style validate NAME` checks it. Schema 1:
+
+```json
+{
+  "schema": 1,
+  "name": "bmx",
+  "base": "action",
+  "source": "hand",
+  "description": "BMX park sessions",
+  "profile": "mtb",
+  "applies_to": {"categories": ["action-cam"], "profiles": ["mtb"]},
+  "weights": {"scene": 0.4}
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `schema` | `1` |
+| `name` | The file name without `.json`; letters, digits, `-` and `_`, not a built-in name or `auto` |
+| `base` | A built-in style (not another style of yours) |
+| `weights` | Optional. Partial overrides of the base's weights: feature names from `cutpoint style features`, numbers of 0 or more |
+| `source` | `hand`, `fitted` or `assistant` |
+| `description` | Optional text |
+| `profile` | Optional activity profile name; stored only, with a warning if no such profile exists |
+| `applies_to` | Optional `categories` and `profiles` lists; stored only (a later phase may use it to match footage to a style; `--style auto` does not) |
+| `mask_friends`, `must_include_crash` | Optional numbers, as in learned styles |
+
+Other keys are kept as they are. A style file is checked strictly; one that fails is not used and
+`cutpoint style list` says why. A weight on a feature the base never measures only warns
+(`feature_not_computed`).
+
+Learned styles from the development script `scripts/refmatch.py` are files without `schema`
+(legacy). They load as before, read as `source` `fitted` and are never rewritten automatically;
+`cutpoint style create NAME --from FILE --force` converts one to schema 1. They hold the feature
+weights and the fit report. Style definitions live in `src/cutpoint/styles.py`.
 In an action-cam style, the weight of laughter heard over the wind noise is `voice_laughter`; older
 learned styles call it `laughter`, which still works.
 

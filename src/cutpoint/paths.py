@@ -11,7 +11,7 @@
       tools/          CLIProxyAPI binary (``tools/cliproxy/``)
       cliproxy/       CLIProxyAPI keys, config, and subscription auth records
       stage/          local copies of sources on slow/network storage (``cutpoint stage``)
-      styles/         learned style presets (``scripts/refmatch.py``)
+      styles/         your styles (``cutpoint style``) and learned presets
       presets/        HUD presets written by region discovery (``cutpoint events``)
       projects/       project folders, unless ``projects_dir`` says otherwise
 
@@ -26,7 +26,7 @@ models              CUTPOINT_MODELS_DIR
 tools               CUTPOINT_TOOLS_DIR
 stage               CUTPOINT_STAGE_DIR
 projects            CUTPOINT_PROJECTS_DIR
-learned styles      CUTPOINT_STYLES_DIR
+your styles         CUTPOINT_STYLES_DIR
 ==================  ======================
 
 ``stage_dir`` and ``projects_dir`` in ``config.json`` sit between the
@@ -114,7 +114,7 @@ def tools_dir() -> Path:
 
 
 def styles_dir() -> Path:
-    """Learned style presets: ``CUTPOINT_STYLES_DIR`` or ``<home>/styles``."""
+    """Your styles (``cutpoint style``) and learned presets: ``CUTPOINT_STYLES_DIR`` or ``<home>/styles``."""
     return _dir("STYLES_DIR", "styles")
 
 

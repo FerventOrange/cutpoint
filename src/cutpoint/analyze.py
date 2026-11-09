@@ -73,7 +73,15 @@ from cutpoint.ffmpeg_utils import (
 )
 from cutpoint.progress import ANALYZE_STEPS, LABELS, SKIPPABLE
 from cutpoint.sources import READ_ERRORS_FILE, load_read_errors, source_segments
-from cutpoint.styles import ACTION_CAM, AUTO, LAUGHTER, PROFANITY, AutoRequest, Style
+from cutpoint.styles import (
+    ACTION_CAM,
+    AUTO,
+    LAUGHTER,
+    PROFANITY,
+    AutoRequest,
+    Style,
+    style_hash,
+)
 from cutpoint.transcribe import (
     Segment,
     Transcriber,
@@ -2881,6 +2889,9 @@ def _analyze(
                 "ollama_model": ollama_model,
                 "target_total": style.target_total,
                 "weights": style.weights,
+                # Which version of the style scored this (styles.style_hash): the file's
+                # content hash for a user style. Recorded only; a re-rank does not compare it.
+                "style_hash": style_hash(style),
                 # The features this install can compute; scores divide by their weights.
                 "features_available": sorted(features.available()),
                 # Enough to re-run the same analysis (``reanalyze``, used by cutpoint events).
