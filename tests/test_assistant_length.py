@@ -748,7 +748,7 @@ def test_too_long_is_sent_back_too_and_a_retry_further_off_falls_back_on_the_fir
 def test_a_model_that_answers_in_text_or_runs_out_of_rounds_gets_the_earlier_proposal() -> None:
     add = propose("Add the laugh", {"op": "add", "id": "m1"})
     text = Reply("I cannot reach it", [], {"role": "assistant", "content": "I cannot reach it"})
-    turn = run(FakeProvider([add, text]), "make it 60 s")
+    turn = run(FakeProvider([add, text, text]), "make it 60 s")  # the text again after the nudge
     assert turn.status == "done" and kinds(turn) == ["rejected", "proposal"]
     lookups = [call("find_moments", query="laugh")] * session.MAX_ROUNDS
     turn = run(FakeProvider([add, *lookups]), "make it 60 s")
@@ -943,6 +943,66 @@ def test_a_reply_that_announces_more_work_gets_the_one_nudge() -> None:
     # only once: the second announcement is the answer
     fake = FakeProvider([said, said])
     assert kinds(run(fake, "add some beauty shots")) == ["reply"]
+
+
+def test_a_text_only_edit_turn_without_a_target_gets_one_nudge_toward_a_proposal() -> None:
+    # #743: no length asked and no moment named, but an edit asked for
+    said = Reply(
+        "The jump and the crash would work well.", [], {"role": "assistant", "content": "x"}
+    )
+    ok = propose("Add the laugh", {"op": "add", "id": "m1"})
+    fake = FakeProvider([said, ok])
+    assert kinds(run(fake, "add something funny")) == ["proposal"]
+    assert fake.requests[1]["messages"][-1]["content"] == session.NUDGE
+    # once a turn: the answer given again is the reply
+    fake = FakeProvider([said, said])
+    turn = run(fake, "add something funny")
+    assert kinds(turn) == ["reply"] and len(fake.requests) == 2
+    assert turn.view()["events"][0]["text"] == said.text
+    # a message that asks no edit gets no nudge
+    fake = FakeProvider([said])
+    assert kinds(run(fake, "what is the best moment?")) == ["reply"] and len(fake.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("summary", "wrong"),
+    [
+        ("Added the laugh; now about 3 minutes.", True),
+        ("Added the laugh for a total of 90 s.", True),
+        ("Added the laugh; it is now about 34 s long.", False),
+        ("Added the laugh, about 30 s in total.", False),  # within the tolerance
+        ("Added the laugh.", False),  # no length claimed
+        ("Extended the jump by 10 s.", False),  # a change, no length
+    ],
+)
+def test_a_length_claim_in_the_summary_is_checked_against_the_exported_length(
+    summary: str, wrong: bool
+) -> None:
+    gap = session.Turn._length_gap(summary, {"length": 34.0})
+    assert (gap is not None) is wrong
+    if wrong:
+        assert "makes 34 s as exported" in gap
+
+
+@pytest.mark.parametrize("text", ["add the laugh", "make it 34 s"])
+def test_a_wrong_length_claim_is_flagged_with_or_without_a_target(text: str) -> None:
+    # 34 s as proposed: within the 34 s target, so only the claim is wrong
+    lie = propose("Added the laugh; now about 3 minutes.", {"op": "add", "id": "m1"})
+    turn = run(FakeProvider([lie]), text)
+    event = turn.view()["events"][-1]
+    assert event["kind"] == "proposal" and event["length"] == 34.0
+    assert event["summary"] == "Changes: 1 added; 34 s in all."
+    true = propose("Added the laugh; now about 34 s long.", {"op": "add", "id": "m1"})
+    event = run(FakeProvider([true]), text).view()["events"][-1]
+    assert event["summary"] == "Added the laugh; now about 34 s long."
+
+
+def test_a_wrong_length_claim_goes_back_with_a_short_proposal() -> None:
+    lie = propose("Added the laugh; now about 1 minute.", {"op": "add", "id": "m1"})
+    fake = FakeProvider([lie, propose("Add the laugh", {"op": "add", "id": "m1"})])
+    run(fake, "make it 60 s")
+    sent = fake.requests[1]["messages"][-1]["content"]
+    assert "makes 34 s of the 60 s asked" in sent and "says the sequence is 60 s" in sent
 
 
 # -- round 4 ----------------------------------------------------------------------------------------
@@ -1191,7 +1251,8 @@ def text_reply(text: str) -> Reply:
 
 def test_a_turn_that_ends_in_text_gets_a_labelled_fill_to_review() -> None:
     p = session.Project(list(KINDS), list(KSEQ), durations(), "", "key0")
-    turn = run(FakeProvider([text_reply("I would add a few more views.")]), "make it 40 s", proj=p)
+    said = text_reply("I would add a few more views.")
+    turn = run(FakeProvider([said, said]), "make it 40 s", proj=p)  # again after the nudge
     assert kinds(turn) == ["reply", "proposal"]  # the text stays
     event = turn.view()["events"][1]
     assert "(the assistant didn't propose an edit)" in event["summary"]
@@ -1214,8 +1275,9 @@ def test_the_rounds_running_out_gets_the_fill_too() -> None:
 def test_no_fill_for_a_question_a_long_enough_sequence_or_no_target() -> None:
     p = session.Project(list(KINDS), list(KSEQ), durations(), "", "key0")
     said = text_reply("It is 8 s now.")
-    assert kinds(run(FakeProvider([said]), "can it be 40 s long?", proj=p)) == ["reply"]
-    assert kinds(run(FakeProvider([said]), "make it 8 s", proj=p)) == ["reply"]
+    # a length asked for gets the nudge: the model gives its answer again
+    assert kinds(run(FakeProvider([said, said]), "can it be 40 s long?", proj=p)) == ["reply"]
+    assert kinds(run(FakeProvider([said, said]), "make it 8 s", proj=p)) == ["reply"]
     assert kinds(run(FakeProvider([said]), "what is in it?", proj=p)) == ["reply"]
 
 

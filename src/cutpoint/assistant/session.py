@@ -62,14 +62,7 @@ SHORT_REPLY = (
     "(a one-sentence summary), or answer in a few lines."
 )
 # A message that asks to empty the sequence: only then may a proposal remove every clip.
-# A text reply that says more work follows ("Now let me search for ...") without doing it, and a
-# message that asks for an edit: such a reply gets the one nudge to go on with the tools.
-_ANNOUNCES = re.compile(
-    r"(?:^|[.!?:\n])\s*(?:(?:now|ok|okay|next|first|so|alright)\b,?\s*)?(?:let me|let's|i'll|i will"
-    r"|i am going to|i'm going to|i need to|i should)\s+(?:now\s+)?(?:search|find|look|add|check"
-    r"|extend|build|get|propose|put|trim|lengthen|pick|select|create|make|fetch|query|use|grab)\b",
-    re.I,
-)
+# A message that asks for an edit: a turn that ends in text gets the one nudge toward a proposal.
 _EDIT_ASK = re.compile(
     r"\b(?:make|build|add|put|place|change|extend|lengthen|trim|shorten|remove|delete|move|reorder"
     r"|sort|create|assemble|cut|fix|longer|shorter|arrange|include|insert|swap|replace|color|grade)\b",
@@ -522,10 +515,11 @@ class Turn:
                 if (
                     self._nudged is None
                     and rnd < MAX_ROUNDS - 1  # a nudge in the last round would leave no answer
-                    and (self._names_moments(text) or self._announces_work(text))
+                    and (self._names_moments(text) or self._asks_edit())
                 ):
-                    # moments chosen in text, perhaps for a change: ask once more (the nudge
-                    # stays in this conversation; the page and chat.json never get it)
+                    # moments chosen in text, or an edit asked for and answered in text: ask
+                    # once more (the nudge stays in this conversation; the page and chat.json
+                    # never get it)
                     self._nudged = text
                     messages.append({"role": "user", "content": NUDGE})
                     continue
@@ -563,10 +557,10 @@ class Turn:
             self._emit({"kind": "reply", "text": self._nudged})
             self._finish("done")
 
-    def _announces_work(self, text: str) -> bool:
-        """Whether ``text`` says more work follows ("Now let me search for ...") to a message
-        that asks for an edit, instead of doing it."""
-        return bool(_ANNOUNCES.search(text) and (self.target or _EDIT_ASK.search(self.text)))
+    def _asks_edit(self) -> bool:
+        """Whether the user's message asks for a change to the sequence: a length or an edit
+        word ("add", "trim", "make", ...)."""
+        return bool(self.target or _EDIT_ASK.search(self.text))
 
     def _names_moments(self, text: str) -> bool:
         """Whether ``text`` names a moment of the table (``m3``)."""
@@ -859,6 +853,8 @@ class Turn:
                 problem, f"error: proposal rejected: {problem}. Fix the ops and propose again."
             )
         gap = summary_gap(summary, main["diff"], main.get("color"))
+        if wrong := self._length_gap(summary, main):
+            gap = f"{gap} {wrong}" if gap else wrong
         if note := self._send_back(summary, main, gap):
             if main.get("notes"):  # the model learns that its edges were not used
                 note = f"{note} {' '.join(main['notes'])}"
@@ -917,6 +913,20 @@ class Turn:
         logger.info("assistant: proposal not accepted: %s", reason)
         self._emit({"kind": "rejected", "text": reason[:MAX_SUMMARY]})
         return result, False
+
+    @staticmethod
+    def _length_gap(summary: str, main: dict[str, Any]) -> str | None:
+        """A sentence for the model when ``summary`` gives the sequence a length ("now about 3
+        minutes", read as :func:`context.target_seconds` reads a message) more than the
+        tolerance off the proposal's exported length; None when it gives none or the right one."""
+        claim = context.target_seconds(summary)
+        have = main["length"]
+        if claim is None or abs(claim - have) <= claim * TOLERANCE:
+            return None
+        return (
+            f"The summary says the sequence is {claim:.0f} s, but this proposal makes {have:.0f} s "
+            "as exported. Fix the summary or the ops and propose again."
+        )
 
     @staticmethod
     def _true_summary(main: dict[str, Any]) -> str:
