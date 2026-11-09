@@ -1148,14 +1148,17 @@ def test_an_asked_length_or_a_place_is_no_claim(summary: str, seconds: float | N
         ("Now a minute and 4 s in all.", 64.0),
         ("Now one minute overall.", 60.0),
         ("Now 1:30 overall.", 90.0),
-        # the model's own claim to have hit the target is a claim
-        ("Now 60 s total to match the target.", 60.0),
-        ("Now 1:00 total so it hits the goal.", 60.0),
+        # target talk after a length is not a claim
+        ("Now 60 s total to match the target.", None),
+        ("Now 1:00 total so it hits the goal.", None),
+        ("Now 34 s; 60 s total was the goal.", 34.0),
+        ("Now 34 s, 60 s overall is still the target.", 34.0),
+        ("It runs 34 s; 60 s in total is your target.", 34.0),
+        ("It is 34 s, 60 s total is the goal you set.", None),
+        ("Now 34 s, short of 60 s overall you hoped for.", 34.0),
     ],
 )
-def test_as_is_no_count_and_the_models_own_target_talk_is_a_claim(
-    summary: str, seconds: float | None
-) -> None:
+def test_as_is_no_count(summary: str, seconds: float | None) -> None:
     assert context.claimed_seconds(summary) == seconds
 
 
