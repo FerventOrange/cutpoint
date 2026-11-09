@@ -109,6 +109,7 @@ PROFANITY_CUE_S = 3.0  # a profane word counts only if another cue is this close
 PROFANITY_CUE_MIN = 0.8  # minimum weight of a keyword that counts as a cue
 VISION_TOP_MIN, VISION_TOP_MAX = 10, 60  # auto --vision-top: 1 per 2 min, clamped
 VISION_LABEL_MIN = 7.0  # --vision: from this rating, the model's label names the clip
+VISION_SPAN_EPS = 1e-3  # seconds: a candidate span this close to its rated one still matches
 PICK_FLOOR = 0.25  # a peak below this share of the strongest one is not a candidate ...
 LONG_LIST_FLOOR = 0.5  # ... and, past the usual count (:func:`usual_count`), not below this share
 SNIPPET_CHARS = 240  # a candidate's transcript snippet
@@ -920,6 +921,47 @@ def vision_label(rating: float, label: str) -> str | None:
     ``VISION_LABEL_MIN``; None keeps the clip's own label."""
     slug = slugify(label, 30) if label and rating >= VISION_LABEL_MIN else ""
     return slug or None
+
+
+def sync_vision(c: dict[str, Any]) -> float | None:
+    """Keep the vision rating of the candidate ``c`` only while it describes the clip (#802).
+
+    ``vision_rated`` (written by :func:`_rate_vision`) holds the span the frames were rated
+    over and the analysis score before and after the blend. While ``c`` has that span (within
+    :data:`VISION_SPAN_EPS`) the rating counts; once the span changes (widened, trimmed, merged
+    back) it moves to ``vision_stale`` (``score``, ``label``, ``window``): ``signals.vision``
+    becomes None, ``vision_label`` goes and a label the rating gave returns to the one before
+    it. The span coming back restores all of it. Returns the analysis score to rank by (the
+    blended one or the one before the blend); None for a candidate without ``vision_rated``
+    (a project rated before this, or never rated), which is left as it is."""
+    rated = c.get("vision_rated")
+    if not isinstance(rated, dict):
+        return None
+    sig = c.setdefault("signals", {})
+    stale = c.get("vision_stale")
+    if (
+        abs(c["start"] - rated["start"]) <= VISION_SPAN_EPS
+        and abs(c["end"] - rated["end"]) <= VISION_SPAN_EPS
+    ):
+        if isinstance(stale, dict):
+            sig["vision"] = stale.get("score")
+            if stale.get("label"):
+                c["vision_label"] = stale["label"]
+            if stale.get("renamed") and c.get("label") == rated.get("label_before"):
+                c["label"] = rated["label"]
+            del c["vision_stale"]
+        return rated["blended"]
+    if not isinstance(stale, dict):
+        stale = c["vision_stale"] = {
+            "score": sig.get("vision"),
+            "label": c.pop("vision_label", None),
+            "window": [rated["start"], rated["end"]],
+        }
+        sig["vision"] = None
+    if rated.get("label") and c.get("label") == rated["label"]:
+        c["label"] = rated.get("label_before")
+        stale["renamed"] = True  # put back with the window
+    return rated["base"]
 
 
 def _label(c: Candidate, style: Style) -> str:
@@ -2328,7 +2370,9 @@ def _rate_vision(
     """Rate the first ``n_top`` candidates with Ollama and apply the rating to their
     analysis score (``score_pre_events`` once events rescored them) with
     :func:`vision_blend` and the style's ``vision_weight``; the model's label replaces a candidate's from
-    ``VISION_LABEL_MIN``. ``activity`` words the action-cam prompt (the project's activity
+    ``VISION_LABEL_MIN``. Each rated candidate keeps ``vision_rated`` (the span rated, the
+    score before and after the blend, a label it renamed) for :func:`sync_vision`.
+    ``activity`` words the action-cam prompt (the project's activity
     prompt set). ``batch_size``: ``--batch-size`` (#713), the model is unloaded after the
     candidates of every this many sources (:func:`_vision_batches`); the ratings are the same.
     Returns ``(any rated, failures)``."""
@@ -2371,16 +2415,25 @@ def _rate_vision(
                     n_failed += 1
                     continue
                 used = True
+                rated: dict[str, Any] = {"start": c["start"], "end": c["end"]}
                 c["signals"]["vision"] = res.score
                 if res.label:
                     c["vision_label"] = res.label
                 if label := vision_label(res.score, res.label):
+                    # under a dialogue title: the candidate's own label, not the title's slug
+                    was = c.get("widened_from") or {}
+                    titled = "label" in was and was.get("title_label") == c.get("label")
+                    rated["label_before"] = was["label"] if titled else c.get("label")
+                    rated["label"] = label
                     c["label"] = label
                 key = "score_pre_events" if "score_pre_events" in c else "score"
                 rating = res.score
                 if speech_excerpt(c.get("transcript"), style.base):
                     rating = max(0.0, rating - SPEECH_PROMPT_LIFT)  # same scale as no speech
-                c[key] = vision_blend(c[key], rating, style.vision_weight)
+                rated["base"] = c[key]
+                c[key] = rated["blended"] = vision_blend(c[key], rating, style.vision_weight)
+                c["vision_rated"] = rated  # for sync_vision: the rating holds for this span only
+                c.pop("vision_stale", None)
                 logger.info(
                     "vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c["start"], c["end"]
                 )
