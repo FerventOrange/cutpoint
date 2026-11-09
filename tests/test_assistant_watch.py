@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint.assistant import lookfor, providers, session, watch
+from cutpoint.assistant import context, lookfor, providers, session, watch
 from cutpoint.assistant.providers import (
     AnthropicProvider,
     Capabilities,
@@ -216,6 +216,50 @@ def test_a_sheet_is_cached_per_moment_window_and_source_file(proj_dir: Path, src
     assert len(list(folder.iterdir())) == 2
 
 
+@pytest.mark.parametrize(
+    ("tokens", "cap", "pixels", "image_tokens"),
+    [
+        (4096, 1, watch.SMALL_SHEET_PIXELS, 750),
+        (8192, 1, watch.SMALL_SHEET_PIXELS, 750),
+        (12288, 2, watch.SMALL_SHEET_PIXELS, 750),
+        (20000, 2, watch.SMALL_SHEET_PIXELS, 750),
+        (24575, 2, watch.SMALL_SHEET_PIXELS, 750),
+        (24576, 4, watch.SHEET_PIXELS, 1500),
+        (50000, 4, watch.SHEET_PIXELS, 1500),
+    ],
+)
+def test_a_small_context_views_fewer_and_half_size_sheets(
+    tokens: int, cap: int, pixels: int, image_tokens: int
+) -> None:
+    fake = FakeProvider([])
+    fake.context_tokens = tokens
+    assert watch.view_cap(fake) == cap
+    assert watch.sheet_pixels(fake) == pixels and watch.sheet_tokens(fake) == image_tokens
+    image = watch.image_message("x", b"\xff\xd8x", watch.sheet_tokens(fake))["content"][1]
+    assert image["tokens"] == image_tokens
+    assert context.size(image) == int(image_tokens * context.CHARS_PER_TOKEN)
+
+
+@pytest.mark.parametrize("aspect", [16 / 9, 9 / 16])
+@pytest.mark.parametrize("n", [6, 9])
+def test_a_half_size_sheet_stays_legible(aspect: float, n: int) -> None:
+    w, h, cols, rows = watch.sheet_size(aspect, n, watch.SMALL_SHEET_PIXELS)
+    assert w * cols * h * rows <= watch.SMALL_SHEET_PIXELS
+    assert w >= 300 or h >= 300
+
+
+def test_a_small_context_caches_its_own_half_size_sheet(proj_dir: Path, src: Path) -> None:
+    grab = Grab()
+    small, full = FakeProvider([]), FakeProvider([])
+    full.context_tokens = 50000
+    half, _ = viewer(proj_dir, small, src, grab).sheet("c1", "/v/a.mp4", 10.0, 20.0)
+    whole, cached = viewer(proj_dir, full, src, grab).sheet("c1", "/v/a.mp4", 10.0, 20.0)
+    assert not cached and len(grab.times) == 12  # another size, another key
+    (hh, hw), (wh, ww) = decode(half).shape[:2], decode(whole).shape[:2]
+    assert hh * hw <= watch.SMALL_SHEET_PIXELS < wh * ww
+    assert watch.sheet_key(src, 10, 20, watch.SMALL_SHEET_PIXELS) != watch.sheet_key(src, 10, 20)
+
+
 def test_a_cache_folder_linked_out_of_the_project_is_not_written(
     proj_dir: Path, src: Path, tmp_path: Path
 ) -> None:
@@ -381,7 +425,7 @@ def test_hosted_with_frames_consent_watches(proj_dir: Path, src: Path) -> None:
 # -- the per-turn cap ----------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("provider", "cap"), [(FakeProvider, 2), (Hosted, 4)])
+@pytest.mark.parametrize(("provider", "cap"), [(FakeProvider, 1), (Hosted, 4)])
 def test_a_turn_views_at_most_its_cap_and_a_repeat_sends_nothing_new(
     proj_dir: Path, src: Path, provider: type, cap: int
 ) -> None:
@@ -404,11 +448,11 @@ def test_a_turn_views_at_most_its_cap_and_a_repeat_sends_nothing_new(
     assert watch.view_cap(fake) == cap
     assert len(images_in(fake.requests[-1]["messages"])) == min(cap, 4)
     assert any("already viewed" in r for r in given)
-    if cap == 2:
-        assert any(f"at most {cap} moments" in r for r in given)
+    if cap < 4:
+        assert any(f"at most {watch.views(cap)} can" in r for r in given)
         assert any(e.get("error") == "limit" for e in turn.events)
     rules = fake.requests[0]["messages"][0]["content"]
-    assert f"at most {cap} moments" in rules and "never for every moment" in rules
+    assert f"at most {watch.views(cap)}." in rules and "never for every moment" in rules
 
 
 # -- offered or hidden ---------------------------------------------------------------------------

@@ -379,9 +379,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a 3-wide grid, each stamped with its number and source time, sized for about 1.5k image tokens
   on Claude) with the moment's transcript lines and the sounds `events.json` heard in it
   (laughter, scream). The instructions say to watch only when labels, transcripts and scores
-  cannot answer, never every moment. A message can watch at most 2 moments with a context of
-  8192 tokens or less (local models), 4 with a larger one. Sheets are cached in
-  `ui/assistant/sheets` per moment, window and source file. A local Ollama model gets the tool
+  cannot answer, never every moment. Under 24576 tokens of context a sheet is half-size (about
+  750 image tokens on Claude): a message can watch at most 1 moment with a context of 8192
+  tokens or less (local models), 2 under 24576 tokens, and 4 with a larger one. Sheets are cached in `ui/assistant/sheets` per moment, window, sheet
+  size and source file. A local Ollama model gets the tool
   when Ollama lists `vision` for it, Claude always, other models unless their name is a known
   text-only one (`gpt-3.5`, `o1-mini`, `o3-mini`, `grok-code`, `grok-build`); a model
   that refuses the image is asked again without it and is not offered the tool again until
@@ -938,6 +939,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AI Chat at small chat contexts (#735): the budget reserves each frame sheet at what the turn's fit counts it as, and measures the look_for and view_moment rules with the others, so above 8192 tokens one whole tool result fits after the prompt (before, at 12288-20000 tokens with view_moment, every round left earlier results out). Under 24576 tokens a turn views 2 half-size sheets (about 750 image tokens each) instead of 4 full ones; at 8192 tokens and below 1 half-size sheet, where the prompt keeps its minimum size and earlier results may still be left out. Half-size sheets are cached apart.
 - AI Chat phrase ends (the snap of a lengthened clip end) read the transcript of the language the analysis forced (`--language`), as the export does, and their cache is keyed on the transcript file (path, modification time, size) instead of the video, so a re-transcription is picked up (#742).
 - AI Chat length parsing (#739, #740, #741): "each highlight about 5 s" and "each of the highlights about 5 s" are a per-moment length, not the sequence length; "extend m3 to 60 s, make the video 4 minutes", "per clip 5 s, cut to 2 min" and "every clip around 5 s overall 2 min" give a target; parsing only looks 300 characters back from each length, so a message with many lengths is no longer slow.
 - An explicit `--ollama-url` is normalised like `OLLAMA_HOST`: `myhost` gets `http://` and port 11434, `0.0.0.0:11434` becomes `127.0.0.1:11434`, a bare `::1` is bracketed and a trailing `/` is dropped. Before, the value was used as given, so `--ollama-url myhost` went to port 80 and vision was skipped (#840).

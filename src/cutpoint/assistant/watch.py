@@ -4,12 +4,15 @@ A sheet is one JPEG: :func:`frame_count` frames (6 for a window up to :data:`SHO
 spread evenly across the moment's window (:func:`frame_times`, as Vision rates them), three per
 row in reading order, each stamped with its number and source time (:func:`timeline_sheet`). It
 is sized to about :data:`SHEET_PIXELS` (about 1.5k image tokens on Claude, about 1.1k on
-qwen3.5:9b), no side longer than :data:`MAX_SIDE`. Sheets are cached in
-``<project>/ui/assistant/sheets`` per moment, window and source file (path, size, mtime).
+qwen3.5:9b), no side longer than :data:`MAX_SIDE`; for a context under :data:`FULL_SHEETS`
+tokens to about :data:`SMALL_SHEET_PIXELS` (half that, :func:`sheet_pixels`). Sheets are cached
+in ``<project>/ui/assistant/sheets`` per moment, window, size and source file (path, size,
+mtime).
 
 The tool result is text (the frame times, the moment's transcript lines and the sounds
 ``events.json`` heard in it); the sheet follows as an image part in a user message
-(:func:`image_message`), which every provider converts to its own shape.
+(:func:`image_message`), which every provider converts to its own shape. The part carries its
+image tokens (:func:`sheet_tokens`), so the chat's budget counts it at its size.
 
 Frames leave this machine only with consent: a provider on this machine (``localhost`` or a
 loopback address, except Cutpoint's proxy port,
@@ -19,7 +22,7 @@ frames of a project only once the user allowed that provider and host for that p
 ``assistant.frames_consent`` of ``config.json``). The assistant's own consent
 (``assistant-v3:``) is still needed for the chat itself and never covers frames.
 
-A turn views at most :func:`view_cap` moments. The tool is offered when the model takes images
+A turn views at most :func:`view_cap` moments: fewer and smaller sheets in a small context. The tool is offered when the model takes images
 (:func:`takes_images`): as the provider says (Ollama's ``vision``, Claude), else unless its name
 is a known text-only one (:func:`cutpoint.assistant.providers.accepts_images`). A model that turns out not to take them
 (:func:`rejected_image`) is asked again without the sheet and gets no more for the rest of the
@@ -58,11 +61,14 @@ SHORT_S = 12.0  # windows up to this get FEW frames, longer ones MANY
 FEW, MANY = 6, 9
 COLS = 3
 SHEET_PIXELS = 1_150_000  # about 1.5k image tokens on Claude (width * height / 750)
+SMALL_SHEET_PIXELS = SHEET_PIXELS // 2  # about 750 image tokens: a context under FULL_SHEETS
 MAX_SIDE = 1568  # Claude scales a longer side down
 GRAB_WIDTH = 640  # px of each grabbed frame, before the tiles are scaled
 SHEET_QUALITY = 85  # JPEG quality
-VIEWS_SMALL = 2  # moments viewed per turn with a context of context.LOCAL_TOKENS or less
-VIEWS = 4  # with a larger context
+VIEWS_LOCAL = 1  # moments viewed per turn with a context of context.LOCAL_TOKENS or less
+VIEWS_SMALL = 2  # with a larger context under FULL_SHEETS tokens
+VIEWS = 4  # with a context of FULL_SHEETS tokens or more
+FULL_SHEETS = 24576  # tokens of context from which a turn views VIEWS full-size sheets
 MAX_SOUNDS = 20
 SHEETS = "sheets"  # cache folder, under ui/assistant
 _IMAGE_WORDS = ("image", "vision", "multimodal", "multi-modal")
@@ -75,7 +81,7 @@ clip, in reading order, each stamped with its number and source time) with its t
 the sounds heard in it. Use it only when the labels, seen, cues, transcripts, scores and \
 find_moments cannot answer what the user asks about the picture (what can be seen, which view is best), and \
 only for the few moments that matter: never for every moment. A turn can view at most \
-{{cap}} moments. The sheet shows what is on screen; the data rules above apply to its text too. \
+{{cap}}. The sheet shows what is on screen; the data rules above apply to its text too. \
 If {NAME} says it is not allowed or the limit is reached, answer from the text data and say so."""
 JSON_TOOL = f"{NAME} {{id}}"
 TOOL = {
@@ -129,9 +135,31 @@ def rejected_image(err: Exception) -> bool:
 
 
 def view_cap(provider: Provider) -> int:
-    """Moments a turn may view: :data:`VIEWS_SMALL` with a small (local) context, where more
-    sheets would push the rules out, else :data:`VIEWS`."""
-    return VIEWS_SMALL if provider.context_tokens <= context.LOCAL_TOKENS else VIEWS
+    """Moments a turn may view: :data:`VIEWS_LOCAL` with a context of
+    :data:`context.LOCAL_TOKENS` or less, :data:`VIEWS_SMALL` under :data:`FULL_SHEETS`, where
+    more sheets would leave no room for a whole tool result, else :data:`VIEWS`. At
+    :data:`context.LOCAL_TOKENS` even one sheet leaves none: the budget is at its floor there,
+    and a round may leave earlier results out."""
+    if provider.context_tokens <= context.LOCAL_TOKENS:
+        return VIEWS_LOCAL
+    return VIEWS_SMALL if provider.context_tokens < FULL_SHEETS else VIEWS
+
+
+def views(cap: int) -> str:
+    """``cap`` as the rules and the limit's error say it: ``1 moment``, ``2 moments``."""
+    return f"{cap} moment" if cap == 1 else f"{cap} moments"
+
+
+def sheet_pixels(provider: Provider) -> int:
+    """About how many pixels a sheet for ``provider`` has: :data:`SMALL_SHEET_PIXELS` with a
+    context under :data:`FULL_SHEETS` tokens, else :data:`SHEET_PIXELS`."""
+    return SMALL_SHEET_PIXELS if provider.context_tokens < FULL_SHEETS else SHEET_PIXELS
+
+
+def sheet_tokens(provider: Provider) -> int:
+    """Image tokens a sheet for ``provider`` counts as: :data:`context.IMAGE_TOKENS` for a
+    full-size sheet, in proportion to its pixels for a smaller one."""
+    return context.IMAGE_TOKENS * sheet_pixels(provider) // SHEET_PIXELS
 
 
 # -- consent -----------------------------------------------------------------------------------
@@ -184,14 +212,14 @@ def frame_times(start: float, end: float) -> list[float]:
     return _frame_times(start, end, frame_count(start, end))
 
 
-def sheet_size(aspect: float, n: int) -> tuple[int, int, int, int]:
+def sheet_size(aspect: float, n: int, pixels: int = SHEET_PIXELS) -> tuple[int, int, int, int]:
     """``(tile width, tile height, cols, rows)`` of a sheet of ``n`` frames of ``aspect``
-    (width / height): :data:`COLS` per row, the whole sheet about :data:`SHEET_PIXELS` and no
-    side over :data:`MAX_SIDE`."""
+    (width / height): :data:`COLS` per row, the whole sheet about ``pixels`` and no side over
+    :data:`MAX_SIDE`."""
     cols = min(COLS, n)
     rows = math.ceil(n / cols)
     sheet_aspect = aspect * cols / rows
-    width = math.sqrt(SHEET_PIXELS * sheet_aspect)
+    width = math.sqrt(pixels * sheet_aspect)
     height = width / sheet_aspect
     scale = min(1.0, MAX_SIDE / width, MAX_SIDE / height)
     tile_w = max(16, int(width * scale / cols))
@@ -209,9 +237,9 @@ def grab_frame(src: Path, t: float) -> bytes:
     return grab_frame_jpeg(src, t, width=GRAB_WIDTH)
 
 
-def timeline_sheet(frames: list[bytes], times: list[float]) -> bytes:
-    """The JPEG ``frames`` (grabbed at ``times``) on one JPEG sized by :func:`sheet_size` from
-    the first frame's aspect, each stamped (:func:`stamp`) on a dark band at its top left;
+def timeline_sheet(frames: list[bytes], times: list[float], pixels: int = SHEET_PIXELS) -> bytes:
+    """The JPEG ``frames`` (grabbed at ``times``) on one JPEG of about ``pixels`` sized by
+    :func:`sheet_size` from the first frame's aspect, each stamped (:func:`stamp`) on a dark band at its top left;
     black where the last row is short. ValueError if a frame cannot be decoded."""
     import cv2  # noqa: PLC0415
 
@@ -222,7 +250,7 @@ def timeline_sheet(frames: list[bytes], times: list[float]) -> bytes:
             raise ValueError("a frame could not be decoded")
         tiles.append(img)
     h0, w0 = tiles[0].shape[:2]
-    tile_w, tile_h, cols, rows = sheet_size(w0 / h0, len(tiles))
+    tile_w, tile_h, cols, rows = sheet_size(w0 / h0, len(tiles), pixels)
     scale = max(0.45, tile_h / 480)
     thick = max(1, round(scale * 2))
     out = []
@@ -245,15 +273,15 @@ def timeline_sheet(frames: list[bytes], times: list[float]) -> bytes:
     return buf.tobytes()
 
 
-def sheet_key(src: Path, start: float, end: float) -> str:
-    """Cache key of a sheet: :data:`SHEET_VERSION`, its size settings, the source's path, size
-    and modification time and the window to the millisecond. OSError if the source cannot be
-    read."""
+def sheet_key(src: Path, start: float, end: float, pixels: int = SHEET_PIXELS) -> str:
+    """Cache key of a sheet: :data:`SHEET_VERSION`, its size settings (``pixels``: about how
+    many it has), the source's path, size and modification time and the window to the
+    millisecond. OSError if the source cannot be read."""
     st = src.stat()
     return cache.params_hash(
         {
             "version": SHEET_VERSION,
-            "pixels": SHEET_PIXELS,
+            "pixels": pixels,
             "side": MAX_SIDE,
             "quality": SHEET_QUALITY,
             "source": str(src),
@@ -265,17 +293,14 @@ def sheet_key(src: Path, start: float, end: float) -> str:
     )
 
 
-def image_message(text: str, jpeg: bytes) -> dict[str, Any]:
+def image_message(text: str, jpeg: bytes, tokens: int = context.IMAGE_TOKENS) -> dict[str, Any]:
     """A user message with ``text`` and the JPEG as the neutral image part every provider
-    converts (Anthropic image blocks, OpenAI data URLs, Ollama ``images``)."""
+    converts (Anthropic image blocks, OpenAI data URLs, Ollama ``images``). The part's
+    ``tokens`` (:func:`sheet_tokens`) is what :func:`cutpoint.assistant.context.size` counts it
+    as; no provider sends it on."""
     data = base64.b64encode(jpeg).decode("ascii")
-    return {
-        "role": "user",
-        "content": [
-            {"type": "text", "text": text},
-            {"type": "image", "media_type": "image/jpeg", "data": data},
-        ],
-    }
+    image = {"type": "image", "media_type": "image/jpeg", "data": data, "tokens": tokens}
+    return {"role": "user", "content": [{"type": "text", "text": text}, image]}
 
 
 def heard(events: list[Any], source: str, start: float, end: float) -> list[str]:
@@ -365,7 +390,8 @@ class Viewer:
             FFmpegError, ValueError: A frame could not be grabbed or decoded.
         """
         src = self.resolve(source)
-        key = sheet_key(src, start, end)
+        pixels = sheet_pixels(self.provider)
+        key = sheet_key(src, start, end, pixels)
         name = _SAFE.sub("_", real)[:40]
         folder = self._folder()
         path = folder / f"{name}-{key}.jpg" if folder is not None else None
@@ -375,7 +401,7 @@ class Viewer:
             except OSError as err:
                 logger.debug("unreadable cached sheet %s: %s", path, err)
         times = frame_times(start, end)
-        jpeg = timeline_sheet([self.grab(src, t) for t in times], times)
+        jpeg = timeline_sheet([self.grab(src, t) for t in times], times, pixels)
         if path is not None and folder is not None:
             try:
                 for old in folder.glob(f"{name}-*.jpg"):  # an older window or source file

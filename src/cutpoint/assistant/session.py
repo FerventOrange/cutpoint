@@ -375,11 +375,21 @@ class Turn:
         # the tool definitions of a tool-call request count; JSON mode lists them in the rules
         sent = None if json_mode else self._tools()
         sheets = watch.view_cap(self.provider) if self._watch else 0
-        plan = context.budget(self.provider.context_tokens, sent, tight=tight, images=sheets)
+        plan = context.budget(
+            self.provider.context_tokens,
+            sent,
+            tight=tight,
+            images=sheets,
+            image_tokens=watch.sheet_tokens(self.provider),
+        )
         tools = None
         if json_mode:
             listed = [t for t in _JSON_TOOLS if self.project.frame_index or t != lookfor.JSON_TOOL]
             tools = [*listed, *([watch.JSON_TOOL] if self._watch else [])]
+        # look_for's rules, then how and when to watch, after the others and measured with them
+        late = lookfor.rules(bool(self._watch)) if self.project.frame_index else ""
+        if self._watch:
+            late += watch.RULES.replace("{cap}", watch.views(sheets))
         out = context.build_messages(
             self.table,
             self.earlier,
@@ -388,12 +398,8 @@ class Turn:
             json_tools=tools,
             images=bool(self._watch),
             target=self.target,
+            late_rules=late,
         )
-        if self.project.frame_index:
-            out[0] = {**out[0], "content": out[0]["content"] + lookfor.rules(bool(self._watch))}
-        if self._watch:  # how and when to watch, after the rules
-            cap = str(watch.view_cap(self.provider))
-            out[0] = {**out[0], "content": out[0]["content"] + watch.RULES.replace("{cap}", cap)}
         return out
 
     def _names(self) -> list[str]:
@@ -755,7 +761,7 @@ class Turn:
         if len(self._viewed) >= cap:
             self._emit({"kind": "tool", "name": watch.NAME, "id": real, "error": "limit"})
             return (
-                f"error: at most {cap} moments can be viewed per message; answer with what you "
+                f"error: at most {watch.views(cap)} can be viewed per message; answer with what you "
                 "have seen, or ask the user to send another message",
                 False,
             )
@@ -766,7 +772,9 @@ class Turn:
         if view.sheet is not None:
             self._viewed.add(real)
             text = f"{watch.NAME} {short}: timeline sheet"
-            self._sheets.append(watch.image_message(text, view.sheet))
+            self._sheets.append(
+                watch.image_message(text, view.sheet, watch.sheet_tokens(self.provider))
+            )
         return view.text, False
 
     def _checked(self, ops: Any) -> tuple[dict[str, Any] | None, str]:
