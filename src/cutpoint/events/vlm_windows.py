@@ -378,13 +378,16 @@ TELEMETRY_SEEDS = {"crash": 2.0, "airtime": 1.0, "coverage": 0.25}
 GAP_FILL_TYPES = ("stopped/lift",)
 
 
-def _seed_priority(ev: dict[str, Any], types: tuple[EventType, ...] = ()) -> float | None:
+def _seed_priority(
+    ev: dict[str, Any], types: tuple[EventType, ...] = (), style: tuple[str, ...] = ()
+) -> float | None:
     """Priority of a layer-1 event as a window seed (None = not a seed).
 
-    The ``seed`` of the first matching preset event type in ``types`` comes first.
+    The ``seed`` of the first matching event type in ``types`` comes first, when the type
+    applies in the project's ``style`` (its name and base); otherwise the built-in rule.
     """
     t = first_match(types, ev)
-    if t and t.seed is not None:
+    if t and t.seed is not None and t.applies(*style):
         return t.seed
     if ev.get("kind") == "audio":
         w = SEED_WEIGHTS.get(ev["label"])
@@ -458,6 +461,7 @@ def select_windows(
     params: VlmParams,
     types: dict[str, tuple[EventType, ...]] | None = None,
     quiet: bool = False,
+    style: tuple[str, ...] = (),
 ) -> list[Window]:
     """Build, merge and cap the windows to send to the VLM.
 
@@ -469,6 +473,8 @@ def select_windows(
         types: ``{source_path: event types}`` (custom seed priorities).
         quiet: Log the window counts at debug level (VLM layer off: only cached
             descriptions are reused).
+        style: The project style's name and base (``scoring.style_and_base``); an event type
+            limited to some styles seeds only in those.
     """
     dur = {str(s.path): s.duration for s in sources}
     raw: list[Window] = []
@@ -493,7 +499,7 @@ def select_windows(
     for src, events in layer1.items():
         src_types = (types or {}).get(src, ())
         for ev in events:
-            pr = _seed_priority(ev, src_types)
+            pr = _seed_priority(ev, src_types, style)
             if pr is None:
                 continue
             t = ev.get("peak_t", ev["t"])

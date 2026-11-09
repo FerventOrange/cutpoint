@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Explosions (#801): the audio event layer also keeps PANNs "Explosion" sounds (the Explosion, Boom and Eruption classes). A boom is `confirmed` when the loudness jumps at least 6 LU over the 3 s before it and those 3 s are not near-silent (at least -50 LUFS). Rows in `events.json` carry `loud_jump`, `backing` (a scene cut or OCR text nearby; recorded only) and `confirmed`, and the thresholds are written to `settings.explosions`. Confirmed booms count as the built-in event type `explosions`: 4 points, at most 2 per candidate, for the gaming, action and sport styles. In `gaming` a boom can also nominate a moment of its own. Preset event-type matchers accept `"kind": "audio"` (default `"ocr"`). Own gunfire can pass, and quiet or microphone-heavy mixes get no explosions. The first run after updating re-runs the audio model once per source (new class group).
 - Settings in `cutpoint ui` has a "Single-key shortcuts" switch under Keyboard, on by default. Off, the single-character keys M, [, ], I and O do nothing and their shortcut hints go; Space, Escape, arrow keys and Ctrl or Cmd shortcuts stay (WCAG 2.1.4, #748).
 - `--ocr-det-skip` / `--no-ocr-det-skip` on `analyze`, `edit` and `events`, and `"ocr_det_skip": true` in `config.json` (off by default): the gameplay HUD text reading skips the text detection of a HUD region that has not changed since detection last ran there. On two test clips it saved a third and a tenth of the detection calls and lost no event. A read with it is cached apart, so runs without it keep their cache; OCR stats count the saved calls as `det_skipped` (#807).
 - Crashes in `crashes.json` become moments for every style except 360 (#486). A crash with a
@@ -615,6 +616,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A preset event type's `seed` now applies only in the styles its `styles` lists (it used
+  to seed VLM windows in every style); a type without `styles` is unchanged (#801).
 - The vision model (frame rating, the VLM layer of `cutpoint events`, dialogue reading and
   activity profiles on Ollama) asks a local Ollama for the context the model is loaded with
   when that is larger than the request needs, so AI Chat (`num_ctx` 50000) and vision on the

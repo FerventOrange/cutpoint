@@ -144,6 +144,7 @@ def _ev(laugh=0.0, scream=0.0, kills=0, tk=0, banners=0, self_kills=0) -> dict[s
         "teamkills": tk,
         "banners": banners,
         "self_kills": self_kills,
+        "explosions": 0,
     }
 
 
