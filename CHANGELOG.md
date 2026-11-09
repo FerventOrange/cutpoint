@@ -904,6 +904,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A banner that OCR misreads the same way every time no longer merges different names into one
+  banner burst, so a multi-kill read that way keeps every kill (#793). Comments in the kill-feed
+  reader no longer name games (#799).
 - `cutpoint ui`: the moment marker colours in the Light theme now meet 3:1 contrast (#755).
 - Gaming region discovery no longer groups the OCR frames of two files of one name in different
   folders as one source, so each keeps its own menu-frame test and static texts (#817).

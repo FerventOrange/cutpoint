@@ -103,7 +103,9 @@ class OcrParams:
 # screen is one banner (:func:`collapse_banner_bursts`), a recurring system line is no kill
 # (:meth:`Interpreter.drop_notice_kills`) and tags match tighter and in glued names
 # (:func:`player_side`)
-GENERIC_VERSION = 20
+# 21: banner bursts remove a phrase OCR reads the same wrong way at its best fuzzy
+# match (:func:`collapse_banner_bursts`)
+GENERIC_VERSION = 21
 
 # Chat overlays (Twitch VODs): a discovered "feed" region that shows this many distinct text
 # lines per hour of footage is chat, not a kill feed. Measured on real footage: chat 9000-40000
@@ -930,19 +932,36 @@ def collapse_banner_bursts(events: list[dict[str, Any]]) -> list[dict[str, Any]]
     were. Measured on a held-out scoreboard whose player names include "ACE": 14 banners within
     6 minutes, 10-50 s apart, all read from one screen."""
 
+    screens: dict[int, str] = {}
+
     def screen(e: dict[str, Any]) -> str:
         """The text on the banner's line besides the phrase when it holds a name, else ""."""
+        if id(e) not in screens:
+            screens[id(e)] = _screen(e)
+        return screens[id(e)]
+
+    def _screen(e: dict[str, Any]) -> str:
         line = norm(e.get("raw") or "").replace(" ", "")
         phrase = norm(e.get("text") or "").replace(" ", "")
-        rest = line.replace(phrase, "", 1)  # a score ("+100") is no screen, a name is
+        # a score ("+100") is no screen, a name is; a phrase OCR reads the same wrong way every
+        # time is removed at its best fuzzy match, or the leftover would pass as a name
+        rest = line.replace(phrase, "", 1)
+        if phrase and phrase not in line:
+            best, at = 0.0, 0  # strictly better only, so a tie keeps the leftmost window
+            for i in range(len(line) - len(phrase) + 1):
+                ratio = difflib.SequenceMatcher(None, line[i : i + len(phrase)], phrase).ratio()
+                if ratio > best:
+                    best, at = ratio, i
+            if best >= FUZZY:
+                rest = line[:at] + line[at + len(phrase) :]
         return rest if re.search(r"[A-Za-z]{3}", rest) else ""
 
     runs: list[list[dict[str, Any]]] = []
     for e in sorted((e for e in events if e.get("type") == "banner"), key=lambda e: e["t"]):
         for run in runs:
             if (
-                screen(e)
-                and e["t"] - run[-1]["t"] <= BANNER_BURST_GAP_S
+                e["t"] - run[-1]["t"] <= BANNER_BURST_GAP_S
+                and screen(e)
                 and similar(run[0].get("text") or "", e.get("text") or "") >= FUZZY
                 and similar(screen(run[0]), screen(e)) >= FUZZY
             ):
