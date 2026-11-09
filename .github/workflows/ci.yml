@@ -40,7 +40,7 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     env:
-      FFMPEG_LINUX_URL: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-08-12-35/ffmpeg-n9.0.2-48-gd4070a14ce-linux64-gpl-9.0.tar.xz
+      FFMPEG_LINUX_URL: https://github.com/FerventOrange/cutpoint/releases/download/ffmpeg-n9.0.2/ffmpeg-n9.0.2-48-gd4070a14ce-linux64-gpl-9.0.tar.xz
       FFMPEG_LINUX_SHA256: bf5e935a51afb65ddd14bf67104361508bcc7c77026a66d7e193a05a56ab8d77
     strategy:
       fail-fast: false
@@ -53,16 +53,16 @@ jobs:
           enable-cache: true
           python-version: "3.12"
       # The real-ffmpeg tests skip when ffmpeg/ffprobe are not on PATH, so install them.
-      # Linux: pinned BtbN/FFmpeg-Builds static GPL build (n9.0.2; libx264, xfade, acrossfade,
-      # loudnorm, zscale, tonemap), downloaded from a GitHub release and verified by SHA256, so CI
-      # does not depend on Ubuntu apt mirrors (they failed on many PR runs). BtbN prunes old
-      # autobuild tags, so the verified tarball is cached under the SHA256: a deleted tag only
-      # breaks a cache miss, and then the bounded apt install below (Ubuntu 24.04 ships ffmpeg 6.1)
-      # is the fallback. The cache is saved only after a successful static install, never after
-      # an apt fallback, so a failed download cannot poison the key.
-      # To bump: pick a newer autobuild tag and change FFMPEG_LINUX_URL and FFMPEG_LINUX_SHA256
-      # both in this job's env and in the Dockerfile ARGs (the docker job checks they match; the
-      # release API lists `digest: sha256:...` per asset).
+      # Linux: pinned static GPL build (BtbN/FFmpeg-Builds n9.0.2; libx264, xfade, acrossfade,
+      # loudnorm, zscale, tonemap), verified by SHA256. BtbN prunes old autobuild tags, so the
+      # exact tarball is mirrored as an asset of this repo's `ffmpeg-n9.0.2` release, and the
+      # verified tarball is also cached under the SHA256. If both fail, a loud ::warning:: is
+      # raised and a bounded apt install (Ubuntu 24.04 ships ffmpeg 6.1) is the fallback. The
+      # cache is saved only after a successful static install, never after an apt fallback.
+      # To bump: upload the new tarball to a new `ffmpeg-<version>` release of this repo and
+      # change FFMPEG_LINUX_URL and FFMPEG_LINUX_SHA256 both in this job's env and in the
+      # Dockerfile ARGs (the docker job checks they match; BtbN's release API lists
+      # `digest: sha256:...` per asset).
       - name: Restore ffmpeg cache (Linux)
         id: ffmpeg-cache
         if: runner.os == 'Linux'
@@ -81,7 +81,7 @@ jobs:
             mkdir -p "$dir" || return 1
             if ! echo "$FFMPEG_LINUX_SHA256  $tarball" | sha256sum -c --status 2>/dev/null; then
               rm -f "$tarball"
-              curl -fsSL --retry 3 --retry-delay 5 --retry-max-time 420 --connect-timeout 30 --max-time 300 \
+              curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --retry-max-time 420 --connect-timeout 30 --max-time 300 \
                 -o "$tarball" "$FFMPEG_LINUX_URL" || { rm -f "$tarball"; return 1; }
               echo "$FFMPEG_LINUX_SHA256  $tarball" | sha256sum -c --status || { echo "ffmpeg checksum mismatch" >&2; rm -f "$tarball"; return 1; }
             fi
@@ -99,7 +99,7 @@ jobs:
             exit 0
           fi
           rm -rf "$RUNNER_TEMP/ffmpeg-cache"
-          echo "::warning::Static ffmpeg download failed; falling back to apt"
+          echo "::warning title=ffmpeg static build unavailable::Download of $FFMPEG_LINUX_URL failed; falling back to apt ffmpeg (not the pinned n9.0.2 build). Check the ffmpeg-n9.0.2 release asset."
           # apt hung on the runner twice (no output, no timeout): bound every call and retry.
           apt_opts="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
           for attempt in 1 2 3; do
@@ -121,21 +121,56 @@ jobs:
           path: ${{ runner.temp }}/ffmpeg-cache
           key: ffmpeg-linux-${{ env.FFMPEG_LINUX_SHA256 }}
       # Windows has no ffmpeg: pinned gyan.dev 9.0.2 essentials build (the version the pano code was
-      # measured on), downloaded from the GyanD/codexffmpeg release and verified by SHA256.
+      # measured on), downloaded from the GyanD/codexffmpeg release and verified by SHA256. The
+      # zip is cached under its SHA256 and the download retries with backoff (HTTP 504s happen).
+      - name: Restore ffmpeg cache (Windows)
+        id: ffmpeg-cache-win
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ffmpeg-cache
+          key: ffmpeg-windows-60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
       - name: Install ffmpeg (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        timeout-minutes: 25
         env:
           FFMPEG_VERSION: "9.0.2"
           FFMPEG_SHA256: 60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
         run: |
-          $zip = Join-Path $env:RUNNER_TEMP "ffmpeg.zip"
-          Invoke-WebRequest -Uri "https://github.com/GyanD/codexffmpeg/releases/download/$env:FFMPEG_VERSION/ffmpeg-$env:FFMPEG_VERSION-essentials_build.zip" -OutFile $zip
-          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash
-          if ($hash -ne $env:FFMPEG_SHA256.ToUpper()) { throw "ffmpeg checksum mismatch: $hash" }
+          $dir = Join-Path $env:RUNNER_TEMP "ffmpeg-cache"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $zip = Join-Path $dir "ffmpeg.zip"
+          $uri = "https://github.com/GyanD/codexffmpeg/releases/download/$env:FFMPEG_VERSION/ffmpeg-$env:FFMPEG_VERSION-essentials_build.zip"
+          $want = $env:FFMPEG_SHA256.ToUpper()
+          function Test-Zip { (Test-Path $zip) -and ((Get-FileHash -Algorithm SHA256 $zip).Hash -eq $want) }
+          if (-not (Test-Zip)) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $zip
+            $ok = $false
+            foreach ($attempt in 1..5) {
+              try {
+                Invoke-WebRequest -Uri $uri -OutFile $zip -TimeoutSec 300
+                if (Test-Zip) { $ok = $true; break }
+                $got = (Get-FileHash -Algorithm SHA256 $zip).Hash
+                Remove-Item -Force $zip
+                throw "ffmpeg checksum mismatch: $got"
+              } catch {
+                if ($_.Exception.Message -like "ffmpeg checksum mismatch*") { throw }
+                Write-Host "download attempt $attempt failed: $($_.Exception.Message)"
+                if ($attempt -lt 5) { Start-Sleep -Seconds (10 * $attempt) }
+              }
+            }
+            if (-not $ok) { throw "ffmpeg download failed after 5 attempts" }
+          }
           Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "ffmpeg")
           $bin = Join-Path $env:RUNNER_TEMP "ffmpeg/ffmpeg-$env:FFMPEG_VERSION-essentials_build/bin"
           Add-Content -Path $env:GITHUB_PATH -Value $bin
+      - name: Save ffmpeg cache (Windows)
+        if: runner.os == 'Windows' && steps.ffmpeg-cache-win.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ffmpeg-cache
+          key: ffmpeg-windows-60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba
       - name: Show ffmpeg
         run: |
           ffmpeg -version
@@ -457,7 +492,7 @@ jobs:
       - run: docker run --rm --entrypoint /app/.venv/bin/python cutpoint:ci -c "import cv2, scenedetect"
       # Burned-in captions need fontconfig and a font.
       - run: docker run --rm --entrypoint fc-match cutpoint:ci sans-serif | grep -F DejaVu
-      # Fails when the Dockerfile fell back to apt ffmpeg (BtbN pruned the pinned tag): bump FFMPEG_LINUX_URL/SHA256 in both places.
+      # Hard gate: fails when the Dockerfile fell back to apt ffmpeg (the release asset is missing): fix the ffmpeg-n9.0.2 release or bump FFMPEG_LINUX_URL/SHA256 in both places.
       - run: docker run --rm --entrypoint ffmpeg cutpoint:ci -version | head -1 | grep -F "n9.0.2"
       - run: docker run --rm cutpoint:ci capabilities
       # Non-root with an arbitrary uid, as users run it with --user.
