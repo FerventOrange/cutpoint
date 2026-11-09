@@ -47,6 +47,18 @@ test('an export with smart tails still matches the sequence: the manifest\'s ori
   assert.doesNotMatch(m.state(), /differs/);
 });
 
+test('the Forza case: pick.end 1852.14 with a smart tail still matches a sequence end of 1849.38 (#775)', async (t) => {
+  const m = await open(t, exported(['h001', 'h002'], { clip: (c, i) => (i ? { end: 1852.14, original_end: 1849.38, pick: { start: c.start, end: 1852.14 }, tail: { end: 1852.14, extension: 2.76, reason: 'settled' } } : {}) }));
+  m.project.review.segments[1].end = 1849.38;
+  m.page.close();
+  const n = await open(t, m.project);
+  assert.match(n.state(), /matches this sequence/);
+  n.page.close();
+  m.project.review.segments[1].end = 1848; // a real trim after the export
+  const o = await open(t, m.project);
+  assert.match(o.state(), /differs from this sequence/);
+});
+
 test('without original_end, pick.end is the sequence\'s end even when the clip\'s own start and end are wider', async (t) => {
   const m = await open(t, exported(['h001', 'h002'], { clip: (c) => ({ start: c.start - 1, end: c.end + 1, pick: { start: c.start, end: c.end } }) }));
   assert.match(m.state(), /matches this sequence/);

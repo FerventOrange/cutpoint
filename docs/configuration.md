@@ -169,7 +169,8 @@ embeddings (about one per second) that the AI Chat's visual search (`look_for`) 
 `--visual-index` turns it on for one run. It changes no ranking, costs GPU time in the
 `keyframes` step (see [analysis time](commands.md#typical-cost)) and needs the `events` extra, its
 model files and a CUDA GPU. Sources with telemetry: the crashes step also reads them, so
-`crashes.json` can differ; the ranking does not. Other values are rejected.
+`crashes.json` can differ; the ranking does not. Also set in `cutpoint ui` Settings > Analysis.
+Other values are rejected.
 
 ### vision_assistant
 

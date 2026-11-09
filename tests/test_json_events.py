@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import run_json, warning_codes, write
+from conftest import envelope, run_json, warning_codes, write
 from cutpoint import analyze, cache, cli, crash
 from cutpoint.events import pipeline, scoring
 
@@ -181,3 +181,43 @@ def test_events_crash_layer_one_warning_line_per_unreachable_source(
     assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [
         [str(gone)]
     ]
+
+
+def test_a_bad_ollama_url_port_is_bad_args(home, capsys):
+    """#825: --ollama-url with an out-of-range port is refused at the command line."""
+    for cmd in (["analyze", "talk.mp4"], ["edit", "talk.mp4"]):
+        with pytest.raises(SystemExit) as exc:
+            run_json(capsys, [*cmd, "--ollama-url", "myhost:99999"])
+        assert exc.value.code == 2
+        doc = envelope(capsys.readouterr().out)
+        assert doc["ok"] is False and doc["error"]["code"] == "bad_args"
+        message = doc["error"]["message"]
+        assert "invalid port" in message and "myhost:99999" in message
+    with pytest.raises(SystemExit) as exc:  # no host
+        run_json(capsys, ["analyze", "talk.mp4", "--ollama-url", ":11434"])
+    assert exc.value.code == 2
+    assert "no host" in envelope(capsys.readouterr().out)["error"]["message"]
+    args = cli._parse(cli.build_parser(), ["analyze", "talk.mp4", "--ollama-url", "myhost:11434"])
+    assert args.ollama_url == "myhost:11434"
+
+
+@pytest.mark.parametrize("cmd", ["profile", "crashes"])
+def test_profile_and_crashes_pass_the_ollama_flags(home, monkeypatch, cmd):
+    """#825: the Ollama flags of profile and crashes reach the activity resolution."""
+    from cutpoint import activity, crash  # noqa: PLC0415 - action-cam modules
+
+    seen = {}
+
+    def fake(*a, **kw):
+        seen.update(kw)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(activity, "resolve", fake)
+    monkeypatch.setattr(crash, "detect_project", fake)
+    args = cli._parse(
+        cli.build_parser(),
+        [cmd, "p", "--ollama-url", "myhost:11434", "--ollama-model", "m:1"],
+    )
+    with pytest.raises(RuntimeError):
+        args.func(args)
+    assert (seen["ollama_url"], seen["ollama_model"]) == ("myhost:11434", "m:1")

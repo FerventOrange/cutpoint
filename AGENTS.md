@@ -116,7 +116,7 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
   provider and over the AI Chat model for dialogue reading, and also applies to the
   crash/profile step. An `--ollama-url` on another machine, or a hosted Vision provider in the
   Models tab, needs the user's Vision consent (Models tab); without it vision is skipped with a
-  `vision_consent_needed` warning: tell the user.
+  `vision_consent_needed` warning: tell the user. An invalid port in `--ollama-url` exits 2 (`bad_args`).
   `--vision-top`, `--ollama-url`, `--ollama-model` and `--skip` work as on
   `analyze`; `--visual-index` and `--no-visual-index` as on `analyze` (the frame embeddings for
   the visual search of `cutpoint ui`, off by default; they change no ranking);

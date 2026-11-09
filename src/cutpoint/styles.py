@@ -170,6 +170,7 @@ RENAMED = {"ski": ACTION_CAM}
 # ``--style auto`` (analyze, edit): the style follows the detected footage category
 # (:mod:`cutpoint.category`). A reserved name: a learned ``auto.json`` is ignored.
 AUTO = "auto"
+ANALYZE_STYLE = "gaming"  # analyze's default --style (and --style auto's fallback)
 # The style of each footage category per emphasis (analyze: hype; edit --kind
 # funny-moments: funny). sport is never chosen automatically.
 AUTO_STYLES: dict[str, dict[str, str]] = {

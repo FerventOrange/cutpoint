@@ -583,8 +583,11 @@ def choose_backend(ollama_url: str | None = None, ollama_model: str | None = Non
         except providers.ProviderError as err:
             logger.info("Dialogue reader: %s", keys.redact(str(err)))
     elif not isinstance(provider, providers.OllamaProvider) or consent_missing:
-        rater = VisionRater(ollama_url, ollama_model, local_only=True)
-        if explicit:
+        try:
+            rater = VisionRater(ollama_url, ollama_model, local_only=True)
+        except ValueError as err:  # a bad port in OLLAMA_HOST / ollama_url: no local model
+            logger.warning("Dialogue reader: Ollama URL not usable (%s); no local model", err)
+        if explicit and rater is not None:
             try:
                 chat_host = providers.host_port(settings.url or ollama_url_default())
             except ValueError:  # a bad port in OLLAMA_HOST / ollama_url: no line, no crash

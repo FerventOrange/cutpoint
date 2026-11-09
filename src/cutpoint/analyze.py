@@ -2856,15 +2856,25 @@ def _analyze(
 
         # ---- 6. vision: the Ollama rating, blended into the top candidates
         cands = hl["candidates"]
+        rater: VisionRater | None = None
+        bad_url: ValueError | None = None
+        if vision and cands:
+            try:
+                rater = VisionRater(
+                    **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
+                )
+            except ValueError as err:  # a bad port in OLLAMA_HOST / ollama_url
+                bad_url = err
         if not vision:
             steps.skip("vision", "vision is off (Settings, config.json or --vision)")
         elif not cands:
             steps.skip("vision", "no candidates to rate")
-        elif (
-            rater := VisionRater(
-                **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
-            )
-        ).consent_needed:
+        elif rater is None:
+            message = f"vision model not usable ({bad_url}); the vision step is skipped"
+            logger.warning("%s", message)
+            jsonout.warn("vision_unavailable", message)
+            steps.skip("vision", message)
+        elif rater.consent_needed:
             # a provider the user did not agree to (a hosted one, or an Ollama on another
             # machine): no request, no cached ratings either
             steps.skip("vision", rater.warn_consent())

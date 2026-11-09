@@ -55,7 +55,15 @@ from cutpoint.events import paths as event_paths
 from cutpoint.extend import extend_clips, manifest_project
 from cutpoint.planning import Padding
 from cutpoint.progress import SKIPPABLE
-from cutpoint.styles import AUTO, AutoRequest, Style, get_style, style_arg, style_names
+from cutpoint.styles import (
+    ANALYZE_STYLE,
+    AUTO,
+    AutoRequest,
+    Style,
+    get_style,
+    style_arg,
+    style_names,
+)
 from cutpoint.utils import (
     command_line,
     input_name,
@@ -66,8 +74,6 @@ from cutpoint.utils import (
 )
 
 logger = logging.getLogger("cutpoint")
-
-ANALYZE_STYLE = "gaming"  # analyze's default --style (and --style auto's fallback)
 
 # Parser-time constants of modules imported only when their command runs, so that every
 # ``cutpoint`` start does not load the action-cam and proxy code (tests check they match).
@@ -539,6 +545,8 @@ def _cmd_crashes(a: argparse.Namespace) -> None:
             context=a.context,
             refresh_profile=a.refresh_profile,
             batch_size=a.batch_size,
+            ollama_url=a.ollama_url,
+            ollama_model=a.ollama_model,
         )
     if jsonout.active():  # recorded before reanalyze, so a failure there still reports them
         data = cache.load_json(out) or {}
@@ -659,6 +667,8 @@ def _cmd_profile(a: argparse.Namespace) -> None:
         activity=a.activity,
         context=a.context,
         refresh=a.refresh_profile,
+        ollama_url=a.ollama_url,
+        ollama_model=a.ollama_model,
     )
     if jsonout.active():
         for key, value in rec.items():  # the record's own keys, as the old --json printed them
@@ -1414,10 +1424,24 @@ def _add_visual_index_argument(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _ollama_url_arg(text: str) -> str:
+    """argparse type of ``--ollama-url``: the value, if it has a host and a valid port."""
+    from cutpoint.backends import split_ollama_url  # noqa: PLC0415
+
+    try:
+        parts, _ = split_ollama_url(text.strip(), "--ollama-url")
+    except ValueError as err:
+        raise argparse.ArgumentTypeError(str(err)) from None
+    if not parts.hostname:
+        raise argparse.ArgumentTypeError(f"--ollama-url {text!r}: no host")
+    return text
+
+
 def _add_ollama_arguments(p: argparse.ArgumentParser) -> None:
     """``--ollama-url`` / ``--ollama-model`` for the vision step."""
     p.add_argument(
         "--ollama-url",
+        type=_ollama_url_arg,
         help="default: vision_assistant.url in config.json (when the Vision role is an Ollama), "
         "$OLLAMA_HOST, ollama_url in config.json, or http://127.0.0.1:11434",
     )
@@ -1875,6 +1899,7 @@ def build_parser() -> argparse.ArgumentParser:
         "(default: 0, keep it loaded)",
     )
     _add_activity_arguments(cr)
+    _add_ollama_arguments(cr)
     _add_json_argument(cr)
     cr.set_defaults(func=_cmd_crashes)
 
@@ -1885,6 +1910,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pf.add_argument("project", help="analysed project (bare name = projects folder)")
     _add_activity_arguments(pf)
+    _add_ollama_arguments(pf)
     _add_json_argument(pf)
     pf.set_defaults(func=_cmd_profile)
 

@@ -246,19 +246,31 @@ def run_events(
     if cached_ocr is None:
         cached_ocr = not ski
     preflight(layers)
-    rater = VisionRater(ollama_url, ollama_model)  # the shared vision client
-    hosted = rater.provider_name != "ollama"
+    try:
+        rater: VisionRater | None = VisionRater(ollama_url, ollama_model)  # the shared client
+    except ValueError as err:  # a bad port in OLLAMA_HOST / ollama_url: only the VLM is lost
+        rater = None
+        if "vlm" in layers:
+            logger.warning("VLM: vision model not usable (%s); that layer is skipped", err)
+            jsonout.warn("vlm_unavailable", f"VLM: vision model not usable ({err})")
+        else:
+            logger.info("vision model not usable (%s); feed labels are skipped", err)
+    hosted = rater is not None and rater.provider_name != "ollama"
     from cutpoint.assistant.providers import AUTO_SERVER_MODEL, host_port  # noqa: PLC0415
 
     online: bool | None = None  # rater.available(), asked once
-    if hosted and "vlm" in layers and rater.model == AUTO_SERVER_MODEL:
-        # resolve the server's model before any cache lookup: the descriptions are keyed on
-        # it. Offline it stays the placeholder, and its cached descriptions are not found.
-        online = rater.available()
-    # the descriptions are keyed on the host too: one model id at two servers describes
-    # apart (rater.host: providers.endpoint; an Ollama's host[:port] of its URL, #670)
-    host = rater.host if hosted else host_port(rater.url)
-    vlm.model = f"{rater.provider_name}@{host}:{rater.model}"
+    if rater is None:
+        vlm.model = "ollama@unavailable"  # no descriptions are cached under it
+    else:
+        if hosted and "vlm" in layers and rater.model == AUTO_SERVER_MODEL:
+            # resolve the server's model before any cache lookup: the descriptions are keyed
+            # on it. Offline it stays the placeholder, and its cached descriptions are not
+            # found.
+            online = rater.available()
+        # the descriptions are keyed on the host too: one model id at two servers describes
+        # apart (rater.host: providers.endpoint; an Ollama's host[:port] of its URL, #670)
+        host = rater.host if hosted else host_port(rater.url)
+        vlm.model = f"{rater.provider_name}@{host}:{rater.model}"
     sources = []
     seen: set[str] = set()
     unreachable: list[tuple[str, OSError]] = []
@@ -431,7 +443,7 @@ def run_events(
                     discover_bursts,
                     preset_scope,
                     discover_hint,
-                    make_labeler(rater),
+                    make_labeler(rater) if rater is not None else None,
                 )
             except Exception as err:
                 if ocr_failure(err) is None:  # before _discover knew its games
@@ -589,8 +601,8 @@ def run_events(
     )
     # a provider the user did not agree to (a hosted one, or an Ollama on another machine): no
     # request, no cached descriptions or windows either, as for analyze's vision ratings
-    no_consent = rater.consent_needed is not None
-    if ski and "vlm" not in force and not no_consent:
+    no_vision = rater is None or rater.consent_needed is not None
+    if ski and "vlm" not in force and not no_vision:
         # reuse described windows; only fill new footage
         prev = cached_windows(sources, vlm)
         if prev:
@@ -613,10 +625,10 @@ def run_events(
         if not any(w.start < b + 2 and w.end > a - 2 for a, b in bad.get(w.source, []))
     ]
     results: list[dict[str, Any]] = []
-    if no_consent:
+    if no_vision:
         cached, _ = describe_windows(None, by_path, windows, vlm, prompts, transcript, layer1)
         # the VLM layer is skipped; say why cached descriptions (or reused windows) are gone
-        if (
+        if rater is not None and (
             "vlm" in layers
             or cached
             or (ski and "vlm" not in force and cached_windows(sources, vlm))
