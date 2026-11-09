@@ -705,7 +705,7 @@ def test_events_stops_with_low_memory_and_resume_finishes(
     memory free, resume describes the windows to the events.json of a plain run."""
     s = vlm_project
     s.highlights(None)
-    monkeypatch.setattr(memguard, "_ollama_loaded", lambda url, model: False)
+    monkeypatch.setattr(memguard, "_ollama_loaded", lambda url, model, num_ctx=None: False)
     argv = ["events", "p", "--layers", "vlm", "--no-rescore"]
     assert cli.main(argv) == 0
     reference = _events_json(s.project)

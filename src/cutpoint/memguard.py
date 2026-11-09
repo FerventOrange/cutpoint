@@ -7,7 +7,9 @@ headroom of ``config.json`` (GB of RAM left free, default
 :data:`cutpoint.config.MEMORY_GUARD_GB`; 0 turns the guard off). A model on the CPU needs its RAM; on a GPU its VRAM, with the headroom alone left in RAM.
 Ollama's vision model needs the size Ollama reports for it (:attr:`VisionRater.size
 <cutpoint.vision.VisionRater>`), in RAM and VRAM together (Ollama splits a model between them),
-and nothing when Ollama has it loaded already.
+and nothing when Ollama has it loaded already with the context (``num_ctx``) the request asks
+for: Ollama reloads a model asked for another context, so the vision model is checked again
+before a request with a context other than its last one (#732).
 
 When memory is short, :func:`cutpoint.analyze.free_models` and
 :func:`cutpoint.events.common.unload_ollama` free what they can and the guard checks again;
@@ -319,8 +321,9 @@ def device_for(
     return device
 
 
-def _ollama_loaded(url: str, model: str) -> bool:
-    """Ollama at ``url`` has ``model`` in memory (``/api/ps``); False when it does not answer."""
+def _ollama_entry(url: str, model: str) -> dict | None:
+    """``model``'s entry in the ``/api/ps`` list of the Ollama at ``url``; None when it is not
+    loaded or Ollama does not answer."""
     import requests  # noqa: PLC0415
 
     from cutpoint.vision import refuse_redirect  # noqa: PLC0415
@@ -330,9 +333,33 @@ def _ollama_loaded(url: str, model: str) -> bool:
         refuse_redirect(resp)
         loaded = resp.json().get("models", [])
     except (requests.RequestException, ValueError, AttributeError):
+        return None
+    names = (model, f"{model}:latest")
+    found = (
+        m for m in loaded if isinstance(m, dict) and (m.get("name") or m.get("model")) in names
+    )
+    return next(found, None)
+
+
+def ollama_context(url: str, model: str) -> int | None:
+    """The context (``num_ctx``) ``model`` is loaded with in the Ollama at ``url``
+    (``context_length`` of ``/api/ps``); None when it is not loaded, Ollama does not report it
+    or does not answer."""
+    entry = _ollama_entry(url, model)
+    ctx = entry.get("context_length") if entry else None
+    return ctx if isinstance(ctx, int) and not isinstance(ctx, bool) and ctx > 0 else None
+
+
+def _ollama_loaded(url: str, model: str, num_ctx: int | None = None) -> bool:
+    """Ollama at ``url`` has ``model`` in memory (``/api/ps``) and a request for ``num_ctx``
+    keeps it there: Ollama reloads a model asked for another context (#732), so a model loaded
+    with another ``context_length`` does not count. ``num_ctx`` None, or an Ollama that does not
+    report the context: the model's name alone. False when Ollama does not answer."""
+    entry = _ollama_entry(url, model)
+    if entry is None:
         return False
-    names = {m.get("name") or m.get("model") for m in loaded if isinstance(m, dict)}
-    return model in names or f"{model}:latest" in names
+    ctx = entry.get("context_length")
+    return num_ctx is None or not isinstance(ctx, int) or ctx == num_ctx
 
 
 def check_vision(rater: VisionRater) -> None:
@@ -364,6 +391,6 @@ def check_vision(rater: VisionRater) -> None:
         size,
         None,
         pooled=True,
-        loaded=lambda: _ollama_loaded(rater.url, rater.model),
+        loaded=lambda: _ollama_loaded(rater.url, rater.model, rater.num_ctx),
         url=rater.url,
     )
