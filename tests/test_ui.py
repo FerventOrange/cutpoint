@@ -8180,6 +8180,20 @@ def test_a_proposal_is_previewed_before_it_replaces_the_working_sequence() -> No
     assert "proposal" not in _js_function(js, "saveReview")
 
 
+def test_single_key_shortcuts_setting_is_browser_side_and_on_by_default() -> None:
+    """Contract pin (#748, WCAG 2.1.4): Settings > Single-key shortcuts is a real checkbox with a
+    label and hint, kept in the browser (not config.json; "0" while off), and gates M [ ] I O."""
+    html = _web("index.html")
+    js = _web("app.js")
+    assert re.search(
+        r'<label class="check"><input type="checkbox" id="setSingleKeys"[^>]*> Single-key shortcuts</label>',
+        html,
+    )
+    assert "const KEYS_KEY = 'cutpoint.singleKeys';" in js
+    assert "singleKeys: true," in js
+    assert "single && (e.key === '[' ||" in js and "single && e.key.toLowerCase() === 'm'" in js
+
+
 def test_one_undo_stack_holds_manual_and_ai_edits_with_ctrl_z() -> None:
     """Contract pin (#346): every edit of the working sequence (add, remove, move, trims,
     rename, batch remove, Apply) first pushes a snapshot of the segments and drafts onto one
@@ -8196,7 +8210,7 @@ def test_one_undo_stack_holds_manual_and_ai_edits_with_ctrl_z() -> None:
         assert "remember();" in _js_function(js, name), name
     assert "remember(`trim:${c.id}:${which}`)" in _js_function(js, "setRange")
     assert "remember(null, !!entry.color);" in _js_function(js, "applyProposal")
-    keys = js[js.index("// Ctrl+Z / Ctrl+Y") : js.index("if (e.key === '[' || e.key === ']' ||")]
+    keys = js[js.index("// Ctrl+Z / Ctrl+Y") : js.index("const single = S.singleKeys;")]
     assert "(k === 'z' || k === 'y')" in keys and "textarea" in keys
     assert "if (k === 'y' || e.shiftKey) redo();" in keys and "else undo();" in keys
     for bid, shortcut in (("undoBtn", "Control+Z"), ("redoBtn", "Control+Y Control+Shift+Z")):

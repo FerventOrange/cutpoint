@@ -305,6 +305,11 @@ in the browser, and Cancel or Escape undoes it.
 to end time in the Moments tab; off, the tile keeps its score, kind, label and length, and the
 search still finds a moment by the hidden name and id. It works like Stats for Nerds: at once, Save
 keeps it in the browser, Cancel or Escape undoes it.
+"Single-key shortcuts" (on by default) lets the keys M (mute), I and [ (trim start) and O and ] (trim end,
+at the playhead) act on the page. Turn it off, as WCAG 2.1.4 asks for speech-input and stray-key
+users, and none of them does anything and their hints disappear; Space, Escape, arrow keys, keys
+inside text fields and controls, and Ctrl or Cmd shortcuts such as Ctrl+Z keep working. It works like
+Stats for Nerds: at once, Save keeps it in the browser, Cancel or Escape undoes it.
 The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for Settings.
 
 With a project open, Settings also has "Delete this project". The dialog names the project and the
