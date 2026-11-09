@@ -63,6 +63,8 @@ SHORT_REPLY = (
 )
 # A message that asks to empty the sequence: only then may a proposal remove every clip.
 # A message that asks for an edit: a turn that ends in text gets the one nudge toward a proposal.
+# A question asks none unless it is a request ("can you add something funny?").
+_REQUEST = re.compile(r"\s*(?:please|can you|could you|would you|will you)\b", re.I)
 _EDIT_ASK = re.compile(
     r"\b(?:make|build|add|put|place|change|extend|lengthen|trim|shorten|remove|delete|move|reorder"
     r"|sort|create|assemble|cut|fix|longer|shorter|arrange|include|insert|swap|replace|color|grade)\b",
@@ -559,7 +561,10 @@ class Turn:
 
     def _asks_edit(self) -> bool:
         """Whether the user's message asks for a change to the sequence: a length or an edit
-        word ("add", "trim", "make", ...)."""
+        word ("add", "trim", "make", ...), and no question ("anything to fix?") unless it is a
+        request ("can you add something funny?")."""
+        if self.text.rstrip().endswith("?") and not _REQUEST.match(self.text):
+            return False
         return bool(self.target or _EDIT_ASK.search(self.text))
 
     def _names_moments(self, text: str) -> bool:
@@ -917,9 +922,9 @@ class Turn:
     @staticmethod
     def _length_gap(summary: str, main: dict[str, Any]) -> str | None:
         """A sentence for the model when ``summary`` gives the sequence a length ("now about 3
-        minutes", read as :func:`context.target_seconds` reads a message) more than the
-        tolerance off the proposal's exported length; None when it gives none or the right one."""
-        claim = context.target_seconds(summary)
+        minutes", read by :func:`context.claimed_seconds`) more than the tolerance off the
+        proposal's exported length; None when it gives none or the right one."""
+        claim = context.claimed_seconds(summary)
         have = main["length"]
         if claim is None or abs(claim - have) <= claim * TOLERANCE:
             return None

@@ -639,6 +639,68 @@ def target_seconds(text: str) -> float | None:
     return None
 
 
+# A length a proposal's summary gives the whole sequence: tied to a cue ("now about 34 s", "a total
+# of 90 s", "the video is 1:30", "brings it to 2 min", "now runs 1:30", "90 s in all"). "under 1
+# minute" and a length without a cue ("added about 12 s") are no claim.
+_CLAIM_NUM = _NUM.replace("(", "(?P<n>", 1)
+_CLAIM_UNIT = _UNIT.replace("(", "(?P<u>", 1)
+_CLAIM_LEN = rf"(?:{_CLAIM_NUM}{_CLAIM_UNIT}|(?P<mm>\d{{1,2}}):(?P<ss>[0-5]\d)(?![\d:]))"
+_CLAIM_FILL = (
+    r"(?:\s*(?:(?:about|around|roughly|approx\w*|nearly|almost|just|at|to|of|is|now|runs|lasts"
+    r"|comes\s+to|for|a)\b|~))*\s*"
+)
+_CLAIM_BEFORE = re.compile(
+    rf"(?<![\w])(?P<cue>now|total(?:l?ing)?|overall|in all|brings? it to|bringing it to|runs|lasts"
+    rf"|{_VIDEO}\s+(?:is|runs|lasts))\b{_CLAIM_FILL}{_CLAIM_LEN}",
+    re.I,
+)
+_CLAIM_AFTER = re.compile(rf"(?<![\w:.]){_CLAIM_LEN}\s+(?:in all|in total|total|overall)\b", re.I)
+# A cue that needs the sequence as its subject: "the jump is now 8 s", "m3 now runs 12 s", "each
+# clip is now 5 s" and "Extended the jump; it is now 8 s" give a clip's length.
+_SUBJECT_CUES = ("now", "runs", "lasts")
+_CLAUSE = re.compile(r"[^.;!?\n()]*$")
+_SENTENCE = re.compile(r"[^.!?\n]*$")
+_OTHER_SUBJECT = re.compile(
+    rf"\bm\d+\b|\b(?:each|every|per)\b|\b(?:the|this|that)\s+(?!{_VIDEO}\b)\w+\s+(?:is|was|runs"
+    r"|lasts)\b",
+    re.I,
+)
+_CLIP_CHANGE = re.compile(r"\b(?:extend|lengthen|trimm?|shorten)\w*", re.I)
+
+
+def _claim_value(m: re.Match[str]) -> float:
+    if m.group("mm") is not None:
+        return float(int(m.group("mm")) * 60 + int(m.group("ss")))
+    n = _count(m.group("n"))
+    if not m.group("u").lower().startswith("m"):
+        return n
+    more = _AND_SECONDS.match(m.string, m.end())
+    if more and more.group(2).lower().startswith("s"):
+        return n * 60 + _count(more.group(1))
+    return n * 60
+
+
+def claimed_seconds(summary: str) -> float | None:
+    """The length in seconds that a proposal's ``summary`` gives the whole sequence, the last one
+    tied to a cue ("now about 34 s", "a total of 90 s", "the video is now 90 seconds", "now runs
+    1:30", "90 s in all"), else None. A bound ("under 1 minute"), a length without a cue ("added
+    about 12 s") and a clip's length ("the jump is now 8 s", "m3 now runs 12 s") are no claim.
+    Unlike :func:`target_seconds`, which reads what the user asks for."""
+    found: list[tuple[int, float]] = []
+    for m in _CLAIM_AFTER.finditer(summary):
+        found.append((m.start(), _claim_value(m)))
+    for m in _CLAIM_BEFORE.finditer(summary):
+        if m.group("cue").lower() in _SUBJECT_CUES:
+            clause = _CLAUSE.search(summary, 0, m.end("cue")).group()  # type: ignore[union-attr]
+            sentence = _SENTENCE.search(summary, 0, m.start()).group()  # type: ignore[union-attr]
+            if _OTHER_SUBJECT.search(clause) or (
+                re.search(r"\bit\b", clause, re.I) and _CLIP_CHANGE.search(sentence)
+            ):
+                continue
+        found.append((m.start(), _claim_value(m)))
+    return max(found)[1] if found else None
+
+
 def transcript_lines(transcript: str, source: str, start: float, end: float) -> list[str]:
     """Lines of ``transcript.txt`` from the file of ``source`` that overlap ``start``-``end``."""
     name = file_name(source)

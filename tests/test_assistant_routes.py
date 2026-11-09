@@ -158,8 +158,7 @@ def test_a_proposal_is_applied_rebased_or_refused_and_kept_in_the_history(
 
 def test_get_routes_change_nothing(client: TestClient, monkeypatch, proj) -> None:
     p, seq, _ = proj
-    # "fix" asks for an edit: the nudge gets the answer again
-    use(monkeypatch, FakeProvider([Reply("Nothing to change.")] * 2))
+    use(monkeypatch, FakeProvider([Reply("Nothing to change.")]))
     view = ask(client, "anything to fix?", seq)
     assert view["events"][-1] == {"n": 0, "kind": "reply", "text": "Nothing to change."}
     before = files(p)

@@ -687,9 +687,11 @@ Lengths: the model sees each clip's length as it will export, with its room in t
 sequence total and the length you asked for in your message ("~4 min", "240 s", "1:30"). A
 proposal more than 15% over or under that length is sent back to the model up to 3 times (a summary
 that claims a change its ops do not make is sent back along with it, once; otherwise Cutpoint
-rebuilds the summary from the changes). The closest valid one that is not more than 15% over is
-offered if the retries miss, and a proposal more than 15% over is never shown; the chat shows such
-an attempt as a muted line.
+rebuilds the summary from the changes). A sequence length the summary claims ("now about 34 s", "a
+total of 90 s") is checked against the exported length, with or without a length in your message:
+a claim more than 15% off goes back with a proposal sent back for its length, else the summary is
+rebuilt. The closest valid one that is not more than 15% over is offered if the retries miss, and a
+proposal more than 15% over is never shown; the chat shows such an attempt as a muted line.
 A trim that lengthens a clip ends it at the end of the phrase spoken there.
 
 Auto-fill: when the proposal you are shown would still be more than 15% short of the length you

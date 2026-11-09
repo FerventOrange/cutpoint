@@ -962,6 +962,12 @@ def test_a_text_only_edit_turn_without_a_target_gets_one_nudge_toward_a_proposal
     # a message that asks no edit gets no nudge
     fake = FakeProvider([said])
     assert kinds(run(fake, "what is the best moment?")) == ["reply"] and len(fake.requests) == 1
+    # nor does a question with an edit word, unless it is a request
+    fake = FakeProvider([said])
+    assert kinds(run(fake, "what would you trim?")) == ["reply"] and len(fake.requests) == 1
+    fake = FakeProvider([said, ok])
+    assert kinds(run(fake, "can you add something funny?")) == ["proposal"]
+    assert fake.requests[1]["messages"][-1]["content"] == session.NUDGE
 
 
 @pytest.mark.parametrize(
@@ -973,6 +979,21 @@ def test_a_text_only_edit_turn_without_a_target_gets_one_nudge_toward_a_proposal
         ("Added the laugh, about 30 s in total.", False),  # within the tolerance
         ("Added the laugh.", False),  # no length claimed
         ("Extended the jump by 10 s.", False),  # a change, no length
+        # a length without a whole-sequence cue, a bound or a clip's length is no claim
+        ("Added about 15 seconds of banter.", False),
+        ("Added 3 clips (about 12 s) for a total of 34 s.", False),
+        ("Added the laugh (about 12 s); now about 34 s.", False),
+        ("Extended the jump; it is now about 8 s.", False),
+        ("Kept it under 1 minute; now 34 s.", False),
+        ("The jump is now 8 s.", False),
+        ("m3 now runs 12 s.", False),
+        ("Each clip is now 5 s.", False),
+        # a whole-sequence length is read
+        ("Added the laugh; now 90 s.", True),
+        ("Added the laugh for a total 90 s.", True),
+        ("Added the laugh, 90 s in all.", True),
+        ("Added the laugh; the video is now 90 seconds.", True),
+        ("Added the laugh; it now runs 1:30.", True),
     ],
 )
 def test_a_length_claim_in_the_summary_is_checked_against_the_exported_length(
@@ -982,6 +1003,10 @@ def test_a_length_claim_in_the_summary_is_checked_against_the_exported_length(
     assert (gap is not None) is wrong
     if wrong:
         assert "makes 34 s as exported" in gap
+        claim = context.claimed_seconds(summary)
+        assert claim is not None and f"says the sequence is {claim:.0f} s" in gap
+    if "90 s" in summary or "90 seconds" in summary or "1:30" in summary:
+        assert context.claimed_seconds(summary) == 90.0
 
 
 @pytest.mark.parametrize("text", ["add the laugh", "make it 34 s"])
@@ -1275,8 +1300,8 @@ def test_the_rounds_running_out_gets_the_fill_too() -> None:
 def test_no_fill_for_a_question_a_long_enough_sequence_or_no_target() -> None:
     p = session.Project(list(KINDS), list(KSEQ), durations(), "", "key0")
     said = text_reply("It is 8 s now.")
+    assert kinds(run(FakeProvider([said]), "can it be 40 s long?", proj=p)) == ["reply"]
     # a length asked for gets the nudge: the model gives its answer again
-    assert kinds(run(FakeProvider([said, said]), "can it be 40 s long?", proj=p)) == ["reply"]
     assert kinds(run(FakeProvider([said, said]), "make it 8 s", proj=p)) == ["reply"]
     assert kinds(run(FakeProvider([said]), "what is in it?", proj=p)) == ["reply"]
 
