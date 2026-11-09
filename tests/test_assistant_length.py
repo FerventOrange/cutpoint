@@ -1312,6 +1312,11 @@ def test_a_length_for_each_clip_or_a_change_is_no_sequence_target(
         ("every clip around 5 s overall 2 min", 120),
         ("cut it to 90 s", 90),
         ("extend m3 to 60 s", None),
+        ("remove m3, about 2 min total", 120),
+        ("m3, make it 8 seconds", None),
+        ("for m3, make it about 5 s", None),
+        ("take m3, trim it to 10 s", None),
+        ("on m4, keep it under 6 seconds", None),
     ],
 )
 def test_more_length_phrasings_give_a_target(text: str, seconds: float | None) -> None:
