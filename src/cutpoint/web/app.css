@@ -1070,6 +1070,18 @@ body.tips-off .flag-tip { display: none; }
 .analyze-opts summary { cursor: pointer; font-weight: 650; font-size: var(--fs-body); line-height: var(--control-h-sm); }
 .analyze-opts-body { display: grid; gap: var(--space-1); padding-top: var(--space-1); }
 .analyze-opts .opt-grid { margin: 0 0 var(--space-1); }
+/* Describe the footage and Look closer with vision: after the analysis, each with its own button */
+.refine, .refine-box { display: grid; gap: var(--space-1); }
+.refine { gap: var(--space-3); }
+.refine-box > .btn { justify-self: start; }
+.refine label { font-weight: 650; font-size: var(--fs-body); }
+.refine textarea {
+  font: inherit; font-size: var(--fs-body); color: var(--text); background: var(--deep); border: 1px solid var(--line);
+  border-radius: var(--radius-sm); padding: var(--space-2); min-width: 0; resize: vertical;
+}
+.refine textarea::placeholder { color: var(--muted); opacity: 1; } /* 4.5:1 on --deep in every theme */
+.refine textarea:disabled { opacity: 0.6; }
+.refine .hint:empty { display: none; }
 .analyze-skip { border: 0; display: grid; gap: 0; margin-top: var(--space-1); }
 .analyze-skip legend { font-size: var(--fs-body); font-weight: 650; padding: 0; margin-bottom: var(--space-0); }
 .panel { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: var(--space-3); display: grid; gap: var(--space-3); min-width: 0; }

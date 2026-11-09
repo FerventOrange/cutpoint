@@ -4187,6 +4187,96 @@ def analyze_options(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
     }
 
 
+# Warnings of a refining job's envelope (crashes, events) the user must read: where a vision frame
+# would go and how to allow it, a vision model that is not there, and a description that was not used
+REFINE_WARNINGS = (
+    "vision_consent_needed",
+    "vision_unavailable",
+    "vlm_unavailable",
+    "context_not_applied",
+)
+
+
+def events_unavailable() -> str | None:
+    """Why the events extra's steps (``events``, crash detection) cannot run here: the lite
+    edition's message with the install command (:func:`cutpoint.extras.missing_module_message`),
+    else None."""
+    from cutpoint import extras  # noqa: PLC0415
+
+    if extras.edition() != "lite":
+        return None
+    missing = next(
+        (
+            m
+            for m, e in extras.MODULE_EXTRA.items()
+            if e == "events" and not importlib.util.find_spec(m)
+        ),
+        None,
+    )
+    return extras.missing_module_message(missing) if missing else None
+
+
+def crash_step_runs(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> bool:
+    """The project's analysis ran (or would run) the crash step (``plan_layers``): not a 360
+    project; an action, sport or action-cam style, footage detected as action-cam or general
+    (``--style auto``), or sources with camera telemetry (the analysis then wrote crashes.json).
+    Before the first analysis (``hl`` None) the project's chosen style answers: yes for those
+    styles, ``auto`` or none (the footage decides), no for any other."""
+    if meta.get("kind") == "360":
+        return False
+    if hl is None:
+        style = meta.get("style")
+        if not style or style == AUTO:
+            return True
+        s = _style(style)
+        return s is not None and (s.kind == ACTION_CAM or s.base in ("action", "sport"))
+    from cutpoint import category  # noqa: PLC0415
+
+    s = _style(hl.get("style") or meta.get("style"))
+    if s is not None and (s.kind == ACTION_CAM or s.base in ("action", "sport")):
+        return True
+    det = hl.get("detection")
+    if (
+        isinstance(det, dict)
+        and not det.get("fallback")
+        and det.get("category") in (category.ACTION_CAM, category.GENERAL)
+    ):
+        return True
+    return _inside(p, "crashes.json") and (p / "crashes.json").is_file()
+
+
+def footage_context(p: Path) -> str | None:
+    """The description of the footage ``activity.json`` was made with (``request.context``)."""
+    rec = _load(p, "activity.json")
+    req = rec.get("request") if isinstance(rec, dict) else None
+    ctx = req.get("context") if isinstance(req, dict) else None
+    return ctx if isinstance(ctx, str) and ctx.strip() else None
+
+
+def refine_state(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, Any]:
+    """What the page's "Describe the footage" and "Look closer with vision" need: whether the
+    crash step applies (``crash_step``), the saved description (``context``) and why the events
+    extra's steps cannot run here (``unavailable``)."""
+    return {
+        "crash_step": crash_step_runs(p, meta, hl),
+        "context": footage_context(p),
+        "unavailable": events_unavailable(),
+    }
+
+
+def _note_warnings(job: Job) -> None:
+    """Put the envelope's :data:`REFINE_WARNINGS` into the job's log as WARNING notes, when the
+    CLI's own line (logged as it ran) is not there already."""
+    for w in (job.result or {}).get("warnings") or []:
+        msg = w.get("message") if isinstance(w, dict) else None
+        if (
+            isinstance(msg, str)
+            and w.get("code") in REFINE_WARNINGS
+            and not any(msg in line for line in job.logs)
+        ):
+            job.note("WARNING", msg)
+
+
 def _analyze_args(body: dict[str, Any], recorded: dict[str, Any]) -> tuple[list[str], list[str]]:
     """The Analyze options' flags and the ``--skip`` steps: each from the request, else (a key it
     does not send) what the project's analysis used, so Analyze again repeats it."""
@@ -5131,6 +5221,8 @@ def create_app(port: int) -> FastAPI:
             "must_include_crash_default": _style_crash(
                 meta.get("style") or (hl or {}).get("style")
             ),
+            # "Describe the footage" (crashes --context) and "Look closer with vision" (events)
+            "refine": refine_state(p, meta, hl),
             "preset_taken": preset_taken(p),
             "final_current": exp is None or (bool(outputs) and outputs[0] == exp.get("final")),
             # The transition each join of that final came out with, for the page's "Assemble
@@ -5592,6 +5684,37 @@ def create_app(port: int) -> FastAPI:
                         e["final_joins"] = final_joins
                 cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
 
+        elif action in ("crashes", "events"):
+            # The analysis refined after the fact, one CLI command each: "Describe the footage"
+            # is `crashes --context` (profiles, redoes the crash detection, re-ranks), "Look
+            # closer with vision" is `events` (the VLM layer, re-ranks).
+            if hl is None:
+                raise bad("analyze the footage first")
+            if meta.get("kind") == "360":
+                raise bad(f"{action} does not apply to 360 projects")
+            if why := events_unavailable():
+                raise bad(why, 409)
+            _own(p, "highlights.json")  # the re-rank rewrites it
+            if action == "crashes":
+                context = body.get("context")
+                if not isinstance(context, str) or not context.strip():
+                    raise bad("describe the footage first")
+                from cutpoint.activity import MAX_CONTEXT_CHARS  # noqa: PLC0415
+
+                if len(context.strip()) > MAX_CONTEXT_CHARS:
+                    raise bad(f"the description is at most {MAX_CONTEXT_CHARS} characters")
+                if not crash_step_runs(p, meta, hl):
+                    raise bad("crash detection does not run for this footage")
+                _own(p, "activity.json")
+                _own(p, "crashes.json")
+                args = cutpoint_cmd("crashes", str(p), f"--context={context.strip()}")
+            else:
+                _own(p, "events.json")
+                args = cutpoint_cmd("events", str(p))
+
+            def on_result(job: Job) -> None:
+                _note_warnings(job)
+
         elif action == "resume":
             # cutpoint resume replays the stopped run of progress.json (#109) from its own cwd
             rec = runstate.read(p) if _inside(p, runstate.FILE) else None
@@ -5629,7 +5752,10 @@ def create_app(port: int) -> FastAPI:
                     resumed(p, rec, outputs, stamp)
 
         else:
-            raise bad("action must be 'analyze', 'edit', 'clips', 'extend', 'assemble' or 'resume'")
+            raise bad(
+                "action must be 'analyze', 'edit', 'clips', 'extend', 'assemble', 'crashes', "
+                "'events' or 'resume'"
+            )
 
         def same_folder() -> None:
             # Under the jobs lock, like the settings change: a folder changed since ``p`` was
@@ -5649,6 +5775,13 @@ def create_app(port: int) -> FastAPI:
             default = ANALYZE_STYLE if run["command"] == "analyze" else None
             style_arg = next(iter(_values(argv, "--style")), default)
             needs_proxy = _subscription_roles(argv, style_arg)
+        elif action in ("crashes", "events") or (
+            action == "resume" and run["command"] in ("crashes", "events")
+        ):  # the profile's and the VLM layer's Vision model
+            try:
+                needs_proxy = ai_providers.is_subscription(vision_assistant_settings().provider)
+            except (ValueError, TypeError, AttributeError):  # an invalid config.json: the job says
+                needs_proxy = False
         else:
             needs_proxy = False
         if needs_proxy and before is None:
