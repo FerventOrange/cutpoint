@@ -929,7 +929,7 @@ def decode(video: Path, fps: float, size: tuple[int, int]) -> tuple[np.ndarray, 
         video,
         size=size,
         vf=f"fps={fps:g}:round=up,scale={w}:{h}:flags=area,format=rgb24",
-        vf_cuda=f"fps={fps:g}:round=up,scale_cuda={w}:{h},hwdownload,format=nv12,format=rgb24",
+        vf_cuda=f"fps={fps:g}:round=up,scale_cuda={w}:{h}:format=nv12,hwdownload,format=nv12,format=rgb24",
         pts=True,
     ):
         ts.append(t)
