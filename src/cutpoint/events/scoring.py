@@ -12,7 +12,7 @@ computed from ``score_pre_events``. Candidate ids are kept; the list is
 re-sorted by the new score and ``suggested_top`` is recomputed.
 
 In styles with an open list (``gaming``), events that can score and that no candidate covers
-nominate candidates of their own first (:func:`nominate`, marked ``signals.events.nominated``), so a game with little talk still gets
+(except those of a boost-only type, ``nominate=False``) nominate candidates of their own first (:func:`nominate`, marked ``signals.events.nominated``), so a game with little talk still gets
 moments from what happens on screen; they are rescored like the others. A stretch of talk the
 dialogue reader marked (:mod:`cutpoint.events.dialogue`, a ``text`` event of type ``dialogue``)
 nominates a candidate of its own, as marked, and adds a few points to any candidate it overlaps
@@ -295,7 +295,8 @@ def seeds(
     covered: Callable[[Seed], bool] | None = None,
 ) -> list[Seed]:
     """The events of one source that can score in a project of ``style`` (its name and base):
-    those of an event type with a ``score`` that applies, and the laughter, scream and
+    those of an event type with a ``score`` that applies and that may ``nominate`` (an
+    announcement is boost-only and seeds nothing), and the laughter, scream and
     cheering sounds :func:`event_boost` counts, and the dialogue stretches (``whole`` seeds).
     Events starting in a ``menu`` span are left out, and so is a weak heard laugh nothing backs
     (:func:`laugh_backed`, with ``backup``). The seeds of a type with a ``seed_gap_s`` that no
@@ -314,7 +315,7 @@ def seeds(
                 out.append(Seed(e["label"].lower(), e["start"], e["end"], length))
         elif e["kind"] == "ocr":
             t = first_match(types, e)
-            if t and t.score and t.applies(*style):
+            if t and t.nominate and t.score and t.applies(*style):
                 seed = Seed(t.name, e["start"], e["end"], min(length, OCR_HOLD_S), t.tail_s)
                 if t.seed_gap_s and not (covered and covered(seed)):
                     spaced.append((len(out), t, _seed_worth(e)))

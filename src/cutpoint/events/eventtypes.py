@@ -8,7 +8,8 @@ styles listed in ``styles`` (unset: every style), whether the event is a payoff
 for clip tails (``payoff``, ``tail_s``, :mod:`cutpoint.events.tails`) and its
 priority as a VLM window seed (``seed``, :mod:`cutpoint.events.vlm_windows`).
 A built-in type can also space its moment seeds (``seed_gap_s``,
-:func:`cutpoint.events.scoring.seeds`).
+:func:`cutpoint.events.scoring.seeds`) or be boost-only (``nominate`` false): it adds its points
+to candidates that exist but never makes a moment seed or a VLM window seed.
 
 HUD presets can define their own types in an ``events`` list::
 
@@ -125,6 +126,9 @@ class EventType:
         seed_gap_s: Moment seeds of this type in one source at least this far apart, the best
             kept (None: no limit; :func:`cutpoint.events.scoring.seeds`). Not read from preset
             JSON.
+        nominate: False: boost-only. The type adds its ``score`` to candidates that already exist
+            but never nominates one (:func:`cutpoint.events.scoring.seeds`) or seeds a VLM
+            window, whatever its ``seed``. Not read from preset JSON.
     """
 
     name: str
@@ -137,6 +141,7 @@ class EventType:
     reaction: float | None = None
     styles: tuple[str, ...] | None = None
     seed_gap_s: float | None = None
+    nominate: bool = True
 
     def matches(self, e: dict[str, Any]) -> bool:
         """Whether any matcher matches the event."""
@@ -160,8 +165,9 @@ class EventType:
 # a kill, a tail payoff and a seed like a death. Player kills: kills by the
 # player (``player_kill``). Announcements come last: big-text lines (never notices) the OCR
 # layer learned as pop-ups that come back all through the source (``announce``,
-# :func:`cutpoint.events.killfeed.learn_announcements`), half a kill each, at most 2 counted, a
-# low VLM seed and at most one moment seed a minute per source; no tail payoff.
+# :func:`cutpoint.events.killfeed.learn_announcements`), half a kill each, at most 2 counted, no tail
+# payoff. Boost-only: they add points to candidates that exist and never nominate a moment or seed a
+# VLM window.
 DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
     EventType(
         "teamkills",
@@ -198,8 +204,7 @@ DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
         (Matcher("bigtext", flag="announce"),),
         score=3.0,
         max=2,
-        seed=0.6,
-        seed_gap_s=60.0,
+        nominate=False,
     ),
 )
 

@@ -427,6 +427,17 @@ def test_default_own_death_type_sets_nothing(name):
     assert (t.payoff, t.tail_s, t.seed) == (None, None, None)
 
 
+def test_only_announcements_are_boost_only():
+    """Announcements add points but nominate nothing; every other type, and a preset type
+    (``nominate`` is not a preset key), keeps seeding."""
+    off = [t.name for t in eventtypes.DEFAULT_EVENT_TYPES if not t.nominate]
+    assert off == ["announcements"]
+    t = eventtypes.from_dict({**PLACER, "nominate": False})
+    assert t.nominate
+    raw = {"kind": "ocr", "type": "bigtext", "text": "SIGNAL", "announce": True, "t": 1.0}
+    assert vw._seed_priority(raw, eventtypes.DEFAULT_EVENT_TYPES) is None
+
+
 def test_default_self_kill_type_keeps_payoff_and_seed():
     """Like a death, a self-kill keeps the built-in tail payoff and VLM seed."""
     raw = {"kind": "ocr", "type": "kill", "text": "zed > zed", "t": 1.0, "end": 4.0}

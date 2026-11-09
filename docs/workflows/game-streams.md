@@ -202,6 +202,9 @@ are, and text that stays on a screen (the same word with the same name beside it
 3 times in a row, each within 60 s) keeps only its first. Learning runs on the cached reads, so
 it needs no new OCR.
 
+An announcement is boost-only: it adds 3 points (at most 2 counted) to a candidate that already
+exists, and it never makes a moment of its own or seeds a vision window, in `gaming` too.
+
 ## Kill feed rows without a preset
 
 Without a preset (or with one that sets no `kill_words`), these generic kill words read text rows:
