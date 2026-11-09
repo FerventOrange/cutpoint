@@ -694,9 +694,17 @@ _CHANGE_TO = re.compile(rf"\b(?:for|to|into|bringing|making|so|now|it|{_VIDEO})\
 _PART = re.compile(r"[^.;:,!?\n()]*$")
 # Up to 30 characters after a length, before the next number or the end of its part
 _PART_AFTER = re.compile(r"[^.;:,!?\n()\d]{0,30}")
+# The next part after a length's that speaks of the user's ask ("60 s, which you asked for", "60 s
+# total, you would need more footage")
+_ASKED_NEXT = re.compile(r",\s*(?:(?:which|that|as)\s+)?you\b", re.I)
 # In a length's part of the sentence: the length the user asked for, not the sequence's ("You asked
-# for a total of 60 s", "below the target total of 60 s", "not the 60 s overall you wanted")
-_ASKED = re.compile(r"\b(?:you|ask(?:ed)?|want(?:ed)?|request(?:ed)?|target|goal|reach)\b", re.I)
+# for a total of 60 s", "below the target total of 60 s", "not the 60 s overall you wanted",
+# "reaching 60 s total", "short of 60 s total", "60 s in total would need more footage")
+_ASKED = re.compile(
+    r"\b(?:you|ask(?:ed)?|want(?:ed)?|request(?:ed)?|target|goal|reach(?:ed|es|ing)?"
+    r"|(?:short|shy)\s+of|would\s+need|needs?\s+more)\b",
+    re.I,
+)
 _THE = re.compile(r"\bthe\s+$", re.I)
 _BY = re.compile(
     r"\bby\s+(?:(?:about|around|roughly|approx\w*|nearly|almost|just)\s+|~\s*)?$", re.I
@@ -745,12 +753,21 @@ def claimed_seconds(summary: str) -> float | None:
     return max(found)[1] if found else None
 
 
+_NAMED_LEN = re.compile(rf"(?<![\w:.]){_CLAIM_LEN}", re.I)
+
+
+def named_seconds(summary: str) -> list[float]:
+    """Every length that ``summary`` names, tied to a cue or not ("now 34 s", "60 s, which you
+    asked for", "1:30"), in seconds."""
+    return [_claim_value(m) for m in _NAMED_LEN.finditer(summary)]
+
+
 def _other_length(m: re.Match[str]) -> bool:
     """Whether the length of a claim match is another one than the sequence's: in parentheses
     ("(12 s in all)"), a change or a clip's ("12 s longer", "5 s each"), a place in the source
     ("12:30 in the source"), the object of a change ("Cut 20 s in total", "Removed a total of
     20 s") or the length the user asked for ("You asked for a total of 60 s", "not the 60 s
-    overall you wanted")."""
+    overall you wanted", "60 s, which you asked for", "reaching 60 s total")."""
     text = m.string
     at = m.start("n") if m.group("n") is not None else m.start("mm")
     head = text[max(0, at - _LOOKBACK) : at]
@@ -759,6 +776,8 @@ def _other_length(m: re.Match[str]) -> bool:
     part = _PART.search(head).group()  # type: ignore[union-attr]
     after = _PART_AFTER.match(text, m.end()).group()  # type: ignore[union-attr]
     if _ASKED.search(part) or _THE.search(part) or _ASKED.search(after):
+        return True
+    if _ASKED_NEXT.match(text, m.end() + len(after)):
         return True
     if _BY.search(part):  # "Trimmed it by 20 s overall": a change
         return True

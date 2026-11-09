@@ -77,9 +77,22 @@ _ADVICE = re.compile(
 )
 _EDIT_ASK = re.compile(
     r"\b(?:make|build|add|put|place|change|extend|lengthen|trim|shorten|remove|delete|move|reorder"
-    r"|sort|create|assemble|cut|fix|longer|shorter|arrange|include|insert|swap|replace|color|grade)\b",
+    r"|sort|create|assemble|cut|fix|longer|shorter|arrange|include|insert|swap|replace|color|grade"
+    r"|drop|get rid|take out|use|(?:open|start|end)\s+with)\b",
     re.I,
 )
+
+
+def _asks_advice(text: str) -> bool:
+    """Whether a message is a question that asks for advice, not for an edit: it ends in "?"
+    and opens with an advice word or has no edit word ("what would you trim?", "should I drop
+    the intro?", "can it be 40 s long?"). "could we add the laugh?" asks for an edit. One rule
+    for the proposal nudge and the auto-fill offer."""
+    if not text.rstrip().endswith("?"):
+        return False
+    return bool(_ADVICE.match(text)) or not _EDIT_ASK.search(text)
+
+
 _REMOVES = re.compile(
     r"\b(?:remove|delete|drop|clear|get rid|discard|take out|cut out|replace|swap|start over"
     r"|from scratch)\b",
@@ -582,7 +595,7 @@ class Turn:
         for advice: "could we add the laugh?" and "add the laugh, ok?" do; "what would you
         trim?", "anything to fix?" and "can it be 40 s long?" do not."""
         if self.text.rstrip().endswith("?"):
-            return not _ADVICE.match(self.text) and bool(_EDIT_ASK.search(self.text))
+            return not _asks_advice(self.text)
         return bool(self.target or _EDIT_ASK.search(self.text))
 
     def _names_moments(self, text: str) -> bool:
@@ -947,14 +960,17 @@ class Turn:
         minutes", read by :func:`context.claimed_seconds`) more than the tolerance off the
         proposal's exported length; None when it gives none or the right one. ``others`` gives
         the other lengths a summary may name (the change in length, each clip's): a claim that
-        fits one of them is taken for it, not flagged."""
+        fits one of them is taken for it, not flagged. A summary that names the exported length
+        anywhere ("now 34 s; reaching 60 s total needs more footage") is not flagged either."""
         claim = context.claimed_seconds(summary)
         have = main["length"]
 
-        def fits(seconds: float) -> bool:
-            return abs(claim - seconds) <= max(claim * TOLERANCE, 0.5)  # type: ignore[operator]
+        def fits(seconds: float, said: float | None = claim) -> bool:
+            return abs(said - seconds) <= max(said * TOLERANCE, 0.5)  # type: ignore[operator]
 
         if claim is None or fits(have) or (others is not None and any(map(fits, others()))):
+            return None
+        if any(fits(have, said) for said in context.named_seconds(summary)):
             return None
         return (
             f"The summary says the sequence is {claim:.0f} s, but this proposal makes {have:.0f} s "
@@ -991,11 +1007,9 @@ class Turn:
         """The turn ends with no proposal of the model's while the sequence is short of the
         length asked for: offer one that code builds from the current sequence (the fill), for
         the user to review. False when the message asks no edit, nothing is short or there is
-        nothing to fill it with."""
+        nothing to fill it with. An advice question (:func:`_asks_advice`) gets none."""
         p = self.project
-        if not self.target or (
-            not _EDIT_ASK.search(self.text) and self.text.rstrip().endswith("?")
-        ):
+        if not self.target or _asks_advice(self.text):
             return False
         planned = p.edges.plan(p.segments) if p.edges is not None else None
         have = length(p.segments, planned)

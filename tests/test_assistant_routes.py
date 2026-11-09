@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from conftest import set_config
 from cutpoint import cache, config, ui
-from cutpoint.assistant import keys, providers
+from cutpoint.assistant import keys, providers, session
 from cutpoint.assistant import store as ai_store
 from proxy_helpers import FakeLauncher
 from test_assistant import FakeProvider, Reply, _Resp, call
@@ -1248,3 +1248,35 @@ def test_the_key_routes_refuse_an_unknown_role_and_default_to_the_chat(
     assert ring.saved == {("cutpoint", "openai@chat.example.com"): SECRET}  # no role: the chat
     client.post("/api/assistant/key/clear", json={"provider": "openai", "role": "assistant"})
     assert ring.saved == {}
+
+
+@pytest.mark.parametrize(
+    ("text", "nudged"),
+    [
+        # more edit phrasings get the nudge toward a proposal (#864)
+        ("drop the intro", True),
+        ("get rid of the long pause", True),
+        ("take out the menu part", True),
+        ("use the laugh at 12:30", True),
+        ("open with the jump", True),
+        ("start with the crash", True),
+        ("end with the win", True),
+        ("can you drop the intro?", True),
+        # an advice question still asks none (#863)
+        ("should I drop the intro?", False),
+        ("what would you use to end with?", False),
+        ("is it worth it to get rid of the long pause?", False),
+    ],
+)
+def test_more_edit_phrasings_get_the_nudge_and_advice_questions_do_not(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj, text: str, nudged: bool
+) -> None:
+    _, seq, _ = proj
+    said = Reply("The jump would work well.")
+    add = call("propose_edit", summary="Add the fall", ops=[{"op": "add", "id": "m3"}])
+    fake = use(monkeypatch, FakeProvider([said, add]))
+    view = ask(client, text, seq)
+    assert view["events"][-1]["kind"] == ("proposal" if nudged else "reply")
+    assert len(fake.requests) == (2 if nudged else 1)
+    if nudged:
+        assert fake.requests[1]["messages"][-1]["content"] == session.NUDGE
