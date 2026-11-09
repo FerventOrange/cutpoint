@@ -401,7 +401,7 @@ def decode_window(
                 path,
                 size=(width, height),
                 vf=f"scale={width}:{height}:flags=area,fps={fps:g},format=rgb24",
-                vf_cuda=f"scale_cuda={width}:{height},hwdownload,format=nv12,fps={fps:g},format=rgb24",
+                vf_cuda=f"scale_cuda={width}:{height}:format=nv12,hwdownload,format=nv12,fps={fps:g},format=rgb24",
                 start=t0,
                 duration=dur,
                 stamp_fps=fps,
