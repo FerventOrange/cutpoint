@@ -951,7 +951,7 @@ cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [-
               [--format mp4|fcpxml|otio] [--events]
               [--vision | --no-vision] [--vision-top N] [--ollama-url URL]
               [--ollama-model MODEL] [--skip STEP [STEP ...]]
-              [--visual-index | --no-visual-index]
+              [--visual-index | --no-visual-index] [--ocr-det-skip | --no-ocr-det-skip]
               [--compress-peaks off|light|strong] [--lut FILE [--lut-strength 0-1]]
               [--color off|auto|underwater [--color-strength 0-1]] [--json]
 ```
@@ -983,6 +983,7 @@ one of them is refused.
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model (also for the VLM layer of `--events`); an invalid port in `--ollama-url` exits 2 (`bad_args`) |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes`, `crashes` and/or `dialogue`. Give it after the input paths |
 | `--visual-index` / `--no-visual-index` | As on `analyze`: also write the frame embeddings of the AI Chat's visual search for `gaming`, `funny` and `commentary` footage, or not. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
+| `--ocr-det-skip` / `--no-ocr-det-skip` | As on `analyze`, also for the OCR layer of `--events`. Default: [`ocr_det_skip`](configuration.md#ocr_det_skip) in `config.json`, else off |
 | `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression), baked into the clips (so the final has it too). Default: `compress_peaks` in `config.json`, else off |
 | `--lut FILE`, `--lut-strength 0-1` | Grade the clips with a 3D LUT, as on [`clips`](#clips) (so the final has it too). Checked before the analysis |
 | `--color off\|auto\|underwater`, `--color-strength 0-1` | [Automatic color correction](#clips) of the clips, as on `clips` (so the final has it too). Not with `--lut`; checked before the analysis |
@@ -1020,6 +1021,7 @@ an analysed set processes only the new file.
 | `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
 | `--skip STEP ...` | Leave out `reactions`, `keyframes`, `crashes` and/or `dialogue` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
 | `--visual-index` / `--no-visual-index` | Also write the frame embeddings (the CLIP visual layer, in the `keyframes` step, before the HUD text for `gaming` and `funny`) that the AI Chat's [`look_for`](#ai-chat) searches, for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` footage always has them. They change no ranking. Sources with telemetry: the crashes step also reads them, so `crashes.json` can differ; the ranking does not. Like that layer for the other styles it needs the `events` extra, its model files and a CUDA GPU, and is left out with an INFO line otherwise (the HUD text of `gaming` and `funny` still runs). Cached per source like the rest: a later run with the option on computes only what is missing, and one with it off leaves what exists. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
+| `--ocr-det-skip` / `--no-ocr-det-skip` | Gameplay HUD text (the `keyframes` step): skip the text detection of a HUD region that has not changed since detection last ran there, and keep that result. Faster on footage with a still HUD; on two test clips it saved a third and a tenth of the detection calls and lost no event. A read with it is cached apart from one without it, so switching reads the footage again once. Default: [`ocr_det_skip`](configuration.md#ocr_det_skip) in `config.json`, else off |
 | `--no-scenes` | Skip scene detection |
 | `--max-candidates N` | Candidates per source before merging. Default: enough to cover about 3 times the style's target length, at least 30. `gaming` has an open list instead: see [Candidates](#candidates) |
 | `--recover` | After a read error, resume analysis past the bad region |
@@ -1354,6 +1356,7 @@ Tuning options, rarely needed:
 | `--audio-thr GROUP=P`, `--audio-floor GROUP=P` | PANNs absolute threshold and relative-rule floor per sound group, for example `Laughter=0.1` |
 | `--ocr-fps F` | Frames per second read by the HUD OCR (default 3.0) |
 | `--no-hwaccel` | Decode on the CPU for the OCR |
+| `--ocr-det-skip` / `--no-ocr-det-skip` | Skip the text detection of a HUD region that has not changed since detection last ran there, as on [`analyze`](#analyze). Without the flag, `events` reads as the analysis did, so it reuses that read: on when `analyze --ocr-det-skip` recorded `"ocr_det_skip": true` in the `settings` of `highlights.json`, off when it did not (older projects too). Only without a recorded analysis: [`ocr_det_skip`](configuration.md#ocr_det_skip) in `config.json`, else off |
 | `--ocr-debug DIR` | Save region crops of OCR events to `DIR` |
 | `--discover-bursts N` | Frame bursts sampled by HUD region discovery, 4 frames each (default 40) |
 | `--frames N` | Frames per model window (default 14) |

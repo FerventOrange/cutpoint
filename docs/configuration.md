@@ -81,6 +81,7 @@ with `_` are ignored.
   "memory_guard": 2,
   "vision": false,
   "visual_index": false,
+  "ocr_det_skip": false,
   "compress_peaks": "off",
   "color": "off",
   "analysis": {"skip": []},
@@ -171,6 +172,18 @@ embeddings (about one per second) that the AI Chat's visual search (`look_for`) 
 model files and a CUDA GPU. Sources with telemetry: the crashes step also reads them, so
 `crashes.json` can differ; the ranking does not. Also set in `cutpoint ui` Settings > Analysis.
 Other values are rejected.
+
+### ocr_det_skip
+
+`true` or `false` (default). With `true`, the HUD text reading (OCR) of gameplay in `analyze`,
+`edit` and `events` skips the text detection of a HUD region that has not changed since the
+last time detection ran there, and keeps that result. This makes the read faster on footage with
+a still HUD; on two test clips it saved a third and a tenth of the detection calls and lost no
+event. `--no-ocr-det-skip` turns it off for one run; with `false` or no key, only
+`--ocr-det-skip` turns it on. A read with it is cached apart from one without it, so switching
+reads the footage again once. `events` without the flag uses the setting the analysis used
+(`settings.ocr_det_skip` in `highlights.json`; no entry means off, older projects too), not
+this key; this key applies there only when no analysis is recorded. Other values are rejected.
 
 ### vision_assistant
 

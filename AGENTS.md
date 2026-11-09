@@ -120,6 +120,8 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
   `--vision-top`, `--ollama-url`, `--ollama-model` and `--skip` work as on
   `analyze`; `--visual-index` and `--no-visual-index` as on `analyze` (the frame embeddings for
   the visual search of `cutpoint ui`, off by default; they change no ranking);
+  `--ocr-det-skip` and `--no-ocr-det-skip` as on `analyze` (faster gameplay HUD reading, off
+  by default; `"ocr_det_skip": true` in `config.json`);
   `--compress-peaks`, `--lut`, `--lut-strength`, `--color` and `--color-strength` as on `clips`.
 - Outputs: the project `<projects>/clip` (`--out NAME` to change it) with the clips,
   `final.mp4` and `clip-final.mp4` plus `.srt` subtitles. The last log lines name the final
