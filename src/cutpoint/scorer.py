@@ -100,7 +100,9 @@ def rescore_events(
     ``project`` from the events ``ev`` (an events.json object); returns the candidates changed.
 
     Each candidate keeps its analysis score as ``score_pre_events`` (so re-running is
-    idempotent) and records the evidence in ``signals.events``. The candidates are re-sorted
+    idempotent) and records the evidence in ``signals.events``. A vision rating blended into
+    it counts only while the candidate keeps the span it was rated over
+    (:func:`cutpoint.analyze.sync_vision`). The candidates are re-sorted
     and ``suggested_top`` is recomputed. In styles with an open list (``gaming``), events that
     can score and that no candidate covers nominate candidates first
     (:func:`cutpoint.events.scoring.nominate`, scored from the grids ``parts`` or, without,
@@ -108,6 +110,7 @@ def rescore_events(
     (:mod:`cutpoint.visual_pool`) are left as they are, last, in their order, and outside
     ``suggested_top``.
     """
+    from cutpoint import analyze  # noqa: PLC0415 - imports this module
     from cutpoint.events import scoring  # noqa: PLC0415 - the evidence; imports this module
     from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, resolve  # noqa: PLC0415
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports ski, which imports this
@@ -126,6 +129,9 @@ def rescore_events(
     pool = [c for c in hl.get("candidates", []) if is_pool(c)]
     for c in cands:
         base = c.get("score_pre_events", c["score"])
+        rated = analyze.sync_vision(c)  # the vision blend only while the span is the one rated
+        if rated is not None:
+            base = rated
         nominated = c["signals"]["events"]["nominated"] if scoring.is_nominated(c) else None
         src = c["source"]
         src_types = types.get(src, DEFAULT_EVENT_TYPES)
