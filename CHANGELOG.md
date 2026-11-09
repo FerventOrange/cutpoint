@@ -903,6 +903,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint ui` starts the subscription proxy before an analysis or edit job (or a resumed one) whose
+  Vision model or gaming dialogue step uses a subscription provider, when a login is saved. If the
+  start fails, the job log has a WARNING and the job still runs (#832).
 - Gaming region discovery no longer groups the OCR frames of two files of one name in different
   folders as one source, so each keeps its own menu-frame test and static texts (#817).
 - The game key (and so the HUD preset name) no longer comes from a generic folder name such as
