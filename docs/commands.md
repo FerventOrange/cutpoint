@@ -1063,7 +1063,16 @@ the spoken word "laugh" or "laughter" does not count. Laughter heard in the audi
 suppression that blocked `[`, `(` and `*` is off); the marker is taken out of the transcript, the
 subtitles and the captions and only counts here. Existing transcripts have none. Likely Whisper hallucinations
 (a short phrase repeated, very low confidence) are dropped first. Boundaries are snapped to
-scene cuts and never cut a word. Each signal is a named feature, and a style's weights name
+scene cuts (at most 1 s away) and never cut a word. A style whose `scene` weight is 0 (`funny`,
+`commentary`, or one of your styles that sets it to 0) uses scene cuts only for that snapping, so
+`analyze` does not decode the whole video for them: once the candidates are picked, it detects
+cuts only in windows of 2.5 s either side of each candidate edge, cached per source as
+`scenes-windows.json` next to `scenes.json` (later runs decode only the windows not covered yet).
+The windows always decode on the CPU, also when a GPU decoder (NVDEC, VAAPI) is in use: each is a
+short ffmpeg run, and a GPU decoder's start-up costs more than it saves there. A source over 30
+minutes keeps the full pass, which reads keyframes only there and is faster than the windows.
+A full `scenes.json` already in the cache is used instead, and a style with a scene weight runs
+the full pass as before, also on a project analysed with a style without one. The `scene` signal of such a style's candidates is 0. Each signal is a named feature, and a style's weights name
 these features. The `score` is a candidate's weighted peak divided by the weights of the
 features this install can compute. A feature that needs a missing extra (the `events` extra
 in Cutpoint lite) is left out, so the built-in generic styles (gaming, action, sport, funny,
@@ -1096,8 +1105,10 @@ analysis; a re-rank of an earlier analysis (`events` on action-cam projects, `36
 `offset`): `source` (the path as in `sources[].path`), `probe_s`, `audio_extract_s`,
 `loudness_s`, `transcribe_s`, `scenes_s`, `ocr_wait_s` (seconds the analysis waited for the
 background HUD text read of that source; 0 without one) and `cached` (its audio and transcript
-were reused) and `overlap` (`true` when its scene cuts ran alongside Whisper with
-`CUTPOINT_ANALYZE_SCENE_OVERLAP=1`; omitted otherwise). The sums above are unchanged; the log also marks the start of each
+were reused), `overlap` (`true` when its scene cuts ran alongside Whisper with
+`CUTPOINT_ANALYZE_SCENE_OVERLAP=1`; omitted otherwise) and `scene_windows` (`true` when its
+scene cuts were detected only around candidate edges, see above; `scenes_s` is then the time of
+those windows; omitted otherwise). The sums above are unchanged; the log also marks the start of each
 source's scene cuts. After a re-rank, `sources`, like the step timings, describes the re-rank's
 own pass, usually all `cached`.
 `transcript.txt` has one line per pause or sentence: `[Round1.mp4 00:12:31.4-00:12:38.9] text`.
@@ -1150,7 +1161,7 @@ OCR in the background removes them.
 
 Opt-in, off by default: `CUTPOINT_ANALYZE_SCENE_OVERLAP=1` detects a source's scene cuts at the
 same time as Whisper transcribes it, instead of after it. It starts only for a source whose
-style uses scene cuts, that is not skipped, whose scene cuts are not cached and whose
+style weighs scene cuts (not one that detects them around candidate edges only), that is not skipped, whose scene cuts are not cached and whose
 transcript is about to be made; with the transcript cached, the cuts are detected in their turn
 as usual. It helps on long sources where Whisper and scene detection take about as long (a long
 talk or screen recording): the step takes about the longer of the two, but Whisper runs slower

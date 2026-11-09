@@ -439,6 +439,10 @@ Other keys are kept as they are. A style file is checked strictly; one that fail
 `cutpoint style list` says why. A weight on a feature the base never measures only warns
 (`feature_not_computed`).
 
+A style whose weights give `scene` 0 (as `funny` and `commentary` do) skips the full scene
+detection pass of `analyze` on sources up to 30 minutes and detects cuts only around the
+candidate edges, to snap them, decoded on the CPU (see [analyze](commands.md#analyze)).
+
 Learned styles from the development script `scripts/refmatch.py` are files without `schema`
 (legacy). They load as before, read as `source` `fitted` and are never rewritten automatically;
 `cutpoint style create NAME --from FILE --force` converts one to schema 1. They hold the feature

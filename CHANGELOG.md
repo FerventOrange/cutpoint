@@ -618,6 +618,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `analyze` with a style whose `scene` weight is 0 (`funny`, `commentary`, or a style of yours that sets it to 0) no longer decodes the whole video for scene cuts: those cuts only snap candidate edges, so it detects them in windows of 2.5 s either side of each candidate edge, once the candidates are picked, and caches them as `scenes-windows.json` per source (later runs decode only the windows not covered). The windows always decode on the CPU, also with a GPU video decoder: each is a short ffmpeg run, and a GPU decoder's start-up costs more than it saves there. Sources over 30 minutes keep the full pass, which reads keyframes only there and is faster than the windows. A cached full `scenes.json` is used instead, and styles with a scene weight run the full pass as before. On 10-minute clips the scene time drops to about a third to a half; the snapped edges matched the full pass at 59 of 59 edges. Such candidates record `signals.scene` 0, and `timings.sources` marks the source `scene_windows` (#730).
 - A preset event type's `seed` now applies only in the styles its `styles` lists (it used
   to seed VLM windows in every style); a type without `styles` is unchanged (#801).
 - Scene detection on a GPU decoder keeps the frames on the GPU until `fps` has dropped the ones the detector does not read, so only those are copied back (8- and 10-bit 4:2:0 sources; other formats decode as before); the cuts are unchanged (#730).
