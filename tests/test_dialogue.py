@@ -555,6 +555,16 @@ def test_no_model_at_all_skips_the_step_with_a_note_and_no_warning(home, monkeyp
     assert "consent" not in choice.reason and res.warnings == []
 
 
+def test_a_bad_ollama_port_means_no_backend_not_a_crash(home, monkeypatch, caplog):
+    """#825: OLLAMA_HOST with an invalid port: no local model, no exception."""
+    Net(monkeypatch, ollama=False)
+    monkeypatch.setenv("OLLAMA_HOST", "myhost:99999")
+    with caplog.at_level(logging.WARNING), jsonout.run("analyze"):
+        choice = dialogue.choose_backend()
+    assert choice.backend is None and choice.reason
+    assert "invalid port" in caplog.text
+
+
 def test_a_hosted_model_that_cannot_be_asked_leaves_the_step_to_a_local_model(
     home, monkeypatch, hosted_chat
 ):

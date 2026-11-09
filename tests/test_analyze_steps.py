@@ -32,6 +32,7 @@ from cutpoint import (
     jsonout,
     progress,
     transcribe,
+    vision,
 )
 from cutpoint.errors import FFmpegError
 from cutpoint.events import common, pipeline, report, scoring
@@ -242,6 +243,20 @@ def test_vision_is_skipped_when_ollama_is_unreachable(run, capsys):
     assert "not reachable" in with_warning["detail"]
     assert (run.proj / "highlights.json").is_file()
     assert run.rated == 0
+
+
+def test_vision_is_skipped_on_a_bad_ollama_port(run, capsys, monkeypatch, caplog):
+    """#825: a bad port in OLLAMA_HOST skips the vision step with a warning, not a failure."""
+    monkeypatch.setattr(analyze, "VisionRater", vision.VisionRater)  # the real one parses the URL
+    monkeypatch.setenv("OLLAMA_HOST", "myhost:99999")
+    with jsonout.run("analyze") as result:
+        run.go(vision=True)
+    got = last_states(progress_lines(capsys))["vision"]
+    assert got["state"] == "skipped" and "invalid port" in got["detail"]
+    codes = [w["code"] for w in result.warnings]
+    assert "vision_unavailable" in codes and "step_failed" not in codes
+    assert "vision model not usable" in caplog.text
+    assert (run.proj / "highlights.json").is_file()
 
 
 def test_vision_uses_the_cached_ratings_when_ollama_is_unreachable(run, capsys, caplog):
