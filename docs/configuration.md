@@ -563,6 +563,15 @@ is not added) and at least half of its frames show the full feed (the feed's row
 all others but one, as OCR misses a box now and then; so a notice or chat line next to the feed
 is not added).
 
+Discovery also proposes up to 2 `score` regions (`score`, `score2`) where a small number holds
+still and now and then changes, such as a round score or a counter (see
+[game streams](workflows/game-streams.md#score-readout)). Such an entry has `"kind": "score"`,
+`"gate": "read"` (detection and recognition on every frame it is due), `"every": 3` and
+`"upscale": 2.5` (the crop is read enlarged to 2.5 times its 1920x1080 reference size; 1, the
+default, reads it as decoded and is left out of the entry). For a game that already has a preset
+without a `score` region, they are only written to `suggested_regions` in `proposal.json`, like
+the extra notices below.
+
 Discovery also proposes up to 2 extra `notice` regions (`extra_notice`, `extra_notice2`) where
 text keeps showing outside every other region, including small text inside the big-text area
 (see [game streams](workflows/game-streams.md)). Their entries carry `"origin": "outside"`; the
@@ -612,7 +621,13 @@ before.
   unset or false, for example `"flag": "player !verb"`). A lone `!` or `!!` is invalid: the type is
   skipped with a warning.
 - Preset types are checked before the built-in ones (`teamkills`, `self_kills`, `player_deaths`,
-  `player_kills`, `banners`, `announcements`); the first matching type wins, and a type with a built-in's name replaces it.
+  `player_kills`, `banners`, `score_changes`, `announcements`); the first matching type wins, and a type with a built-in's name replaces it.
+  `score_changes` matches a `score` event (an on-screen number that stepped by one, read in a
+  `score` region, see [game streams](workflows/game-streams.md#score-readout)) and adds 6 points
+  each, a kill's worth, at most 3 counted, in every style. It is a tail payoff and a VLM seed like
+  a won round (1.3). In open-list styles (`gaming`) a score change no candidate covers makes a
+  moment of its own, at most one a minute per source. A preset type named `score_changes`
+  replaces it without that limit.
   `announcements` matches a `bigtext` event with `announce` set (a learned big-text pop-up, see
   [game streams](workflows/game-streams.md#learned-announcements)) and adds 3 points each, at most
   2 counted, in every style. It has no tail payoff and is boost-only: it adds its points to a

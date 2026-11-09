@@ -137,7 +137,14 @@ def _boost(names: list[str]) -> tuple[float, dict[str, Any]]:
 
 
 def _ev(
-    laugh=0.0, scream=0.0, kills=0, tk=0, banners=0, self_kills=0, announcements=0
+    laugh=0.0,
+    scream=0.0,
+    kills=0,
+    tk=0,
+    banners=0,
+    self_kills=0,
+    announcements=0,
+    score_changes=0,
 ) -> dict[str, Any]:
     return {
         "laughter": laugh,
@@ -147,6 +154,7 @@ def _ev(
         "banners": banners,
         "self_kills": self_kills,
         "announcements": announcements,
+        "score_changes": score_changes,
     }
 
 
