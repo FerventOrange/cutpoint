@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   makes none (`settings.crash_moments` is false).
 - `cutpoint ui`: a Crashes kind filter after Dialogue, and crash tiles show a "CRASH 0.91" badge
   (solid: always kept, dashed: ranked like any moment) (#486).
+- `cutpoint ui`: the Analyze dialog has a Refine block (#486). "Describe the footage" with Apply runs `cutpoint crashes <project> --context=<text>`, shown where the analysis runs the crash step (an action, sport or action-cam style, footage Auto detected as action-cam or general, or sources with camera telemetry; before the first analysis also no style or Auto) and filled with the description in `activity.json`. "Look closer with vision" runs `cutpoint events <project>`; vision consent and availability warnings appear as job notes. Both are off before the first analysis and in Cutpoint lite, and "Look closer" is off for 360 projects. A cancelled run resumes as "Resume crash detection" or "Resume closer look".
+- `cutpoint ui` Settings > Analysis has a visual index toggle (`visual_index`), so the AI Chat's
+  visual search works for `gaming`, `funny` and `commentary` footage without `--visual-index` on
+  the command line (#798). It needs a CUDA GPU, the full install and its model files (`cutpoint setup`), and is
+  skipped otherwise; it affects search only, not ranking.
 - `cutpoint ui`: the filmstrip trim rail shows talk (dialogue) stretches as "Talk" ranges labelled with the bit's title (#804), and crashes from `crashes.json` as crash markers when their confidence is at least max(0.2, 0.6 x the project's best crash), deduplicated against telemetry crashes within 2 s (#754).
 - `cutpoint ui` starts the subscription proxy itself, so `cutpoint proxy` no longer has to run in a
   terminal to sign in (#821). Log in and Retry on a Connected accounts row start it when it is not
@@ -920,6 +925,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A banner that OCR misreads the same way every time no longer merges different names into one
+  banner burst, so a multi-kill read that way keeps every kill (#793). Comments in the kill-feed
+  reader no longer name games (#799).
+- A bad port in `OLLAMA_HOST` or `ollama_url` no longer fails `events`, `analyze` or `edit`: it skips only
+  the VLM layer (`vlm_unavailable`), the vision step (`vision_unavailable`) or the dialogue reader's
+  local Ollama, each with a WARNING. An explicit `--ollama-url` with an invalid port (such as
+  `myhost:99999`) or no host (`:11434`) exits 2 with `bad_args`; `profile` and `crashes` now take
+  `--ollama-url` and `--ollama-model` (#825).
+- `cutpoint ui`: the filmstrip waveform no longer keeps asking for a source that is no longer on
+  screen, so the one on screen decodes first (#760).
 - `cutpoint ui` starts the subscription proxy before an analysis or edit job (or a resumed one) whose
   Vision model or gaming dialogue step uses a subscription provider, when a login is saved. If the
   start fails, the job log has a WARNING and the job still runs (#832).

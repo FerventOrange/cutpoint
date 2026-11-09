@@ -14,7 +14,7 @@ const FILM_STEP = 0.25; // seconds: filmstrip stills sit on multiples of this ti
 const FILM_EXACT = 1; // seconds: a finer grid asks for exact stills; keyframe ones would repeat the same keyframe
 const FILM_WAIT = 150; // ms the view stays still before new filmstrip stills are asked for
 const FILM_FAILS = 3; // failed stills after which a source gets no filmstrip this session
-const JOB_NAMES = { analyze: 'Analysis', edit: 'One-click edit', clips: 'Clip export', extend: 'Export extension', assemble: 'Assembly', resume: 'Resume' };
+const JOB_NAMES = { analyze: 'Analysis', edit: 'One-click edit', clips: 'Clip export', extend: 'Export extension', assemble: 'Assembly', resume: 'Resume', crashes: 'Crash detection', events: 'Closer look with vision' };
 const live = (status) => status === 'running' || status === 'cancelling'; // the job still holds the server
 const SIDE_KEY = 'cutpoint.sideWidth'; // localStorage: the sequence column width the user dragged to
 const SIDE_MIN = 290; // pixels; the column's CSS default is 290-360
@@ -992,7 +992,7 @@ const RUN_ENDS = { interrupted: 'was stopped', low_memory: 'stopped because memo
 const BUSY_TEXT = 'Analysis is running on this project; wait for it to finish';
 /** Another run holds the open project: one of the command line, or of another server (not this page's own job). */
 const heldElsewhere = (p) => !!p?.busy && S.active?.project_id !== p.id;
-const resumeLabel = (run) => (run.command === 'clips' ? 'Resume export' : run.command === 'edit' ? 'Resume one-click edit' : 'Resume analysis');
+const resumeLabel = (run) => (run.command === 'clips' ? 'Resume export' : run.command === 'edit' ? 'Resume one-click edit' : run.command === 'crashes' ? 'Resume crash detection' : run.command === 'events' ? 'Resume closer look' : 'Resume analysis');
 
 /**
  * Resume the project's stopped run (#109): the server's ``cutpoint resume --dry-run`` says what it continues, a
@@ -1582,12 +1582,23 @@ function envelopeOf(c) {
   return null;
 }
 
-/** Ask for an envelope; while the server is still decoding it (``pending``) ask again after WAVE_RETRY_MS, until it is answered or the project changes. */
+/** Whether ``source``'s waveform is on screen: the focused clip's, or in Cut mode either side of the current cut. */
+function onScreen(source) {
+  if (current()?.source === source) return true;
+  const k = S.cutMode ? cutIndex() : -1;
+  return k >= 0 && (S.segments[k].source === source || S.segments[k + 1].source === source);
+}
+
+/** Ask for an envelope; while the server is still decoding it (``pending``) ask again after WAVE_RETRY_MS, until it is answered, the project changes or the user leaves the source. */
 function fetchEnvelope(key, token, source, url) {
   api(url).then((d) => {
     if (envelopes.get(key) !== token) return; // another project was opened meanwhile
     if (d?.pending) {
-      setTimeout(() => envelopes.get(key) === token && fetchEnvelope(key, token, source, url), WAVE_RETRY_MS);
+      setTimeout(() => {
+        if (envelopes.get(key) !== token) return;
+        if (!onScreen(source)) envelopes.delete(key); // left: the next draw of it starts a new chain
+        else fetchEnvelope(key, token, source, url);
+      }, WAVE_RETRY_MS);
       return;
     }
     envelopes.set(key, Array.isArray(d?.peaks) && d.peaks.length && d.step > 0 ? d : 'none');
@@ -3080,6 +3091,38 @@ function analyzeOptions() {
   };
 }
 
+const AFTER_ANALYSIS = 'Available after the first analysis';
+
+/**
+ * "Describe the footage" (``crashes --context``) and "Look closer with vision" (``events``) in the Analyze
+ * dialog, from the project's ``refine``. Both wait for an analysis. Describe shows only where the analysis
+ * runs the crash step (``crash_step``, from the style before the first analysis; 360 projects get a note), is filled with the description ``activity.json`` has, and
+ * Applies only with text (an empty one keeps the profile). Each is off, with its reason, where the events
+ * extra is missing (Cutpoint lite).
+ */
+function fillRefine(p) {
+  const r = p.refine ?? {};
+  const analyzed = !!p.highlights;
+  const pano = p.kind === '360';
+  const text = $('#anDescribe');
+  const apply = $('#anDescribeBtn');
+  const why = (id, msg) => { $(id).textContent = msg; };
+  $('#describeBox').hidden = !pano && !r.crash_step;
+  apply.onclick = () => $('#analyzeDialog').close('describe');
+  $('#anVisionBtn').onclick = () => $('#analyzeDialog').close('vision');
+  for (const el of [text, apply, $('#dAnDescribe'), $('#describeBox label')]) el.hidden = pano; // only the note stays
+  text.value = r.context ?? '';
+  const off = pano ? "Describe the footage doesn't apply to 360 footage." : !analyzed ? AFTER_ANALYSIS : r.unavailable ?? '';
+  why('#anDescribeWhy', off);
+  text.disabled = !!off;
+  apply.disabled = !!off || !text.value.trim();
+  text.oninput = () => { apply.disabled = !!off || !text.value.trim(); };
+  const vision = $('#anVisionBtn');
+  const noVision = pano ? 'Vision rating is not used for 360 footage.' : !analyzed ? AFTER_ANALYSIS : r.unavailable ?? '';
+  why('#anVisionWhy', noVision);
+  vision.disabled = !!noVision;
+}
+
 /**
  * "Analyze again" (``fresh``: the first analysis, from the empty state's Analysis options):
  * confirm in a dialog with the Analyze options; vision follows Settings, as for a first analysis.
@@ -3094,15 +3137,20 @@ function analyzeAgain(fresh = false) {
     ? 'Analyze footage to transcribe audio and rank the strongest moments.'
     : "The project's footage is analyzed again and its moments are ranked anew.";
   fillAnalyzeOptions(p);
+  fillRefine(p);
   if (fresh) $('#analyzeOpts').open = true;
   d.returnValue = '';
   d.showModal();
   $('#againCancel').focus();
   d.addEventListener('close', () => {
+    const answer = d.returnValue;
     if (back?.isConnected) back.focus();
-    if (fresh && d.returnValue === 'ok') keepEmptyFocus($('#momentsEmpty')); // after focus is back, or it ends at once
+    if (fresh && answer === 'ok') keepEmptyFocus($('#momentsEmpty')); // after focus is back, or it ends at once
     // 360 projects have no Analyze options (360 analyze takes none of them)
-    if (d.returnValue === 'ok') startJob('analyze', p.kind === '360' ? {} : analyzeOptions());
+    if (answer === 'ok') startJob('analyze', p.kind === '360' ? {} : analyzeOptions());
+    // each of these is its own CLI command, not an analysis: crashes --context, events
+    else if (answer === 'describe') startJob('crashes', { context: $('#anDescribe').value.trim() });
+    else if (answer === 'vision') startJob('events');
   }, { once: true });
 }
 
@@ -5651,6 +5699,9 @@ async function openSettings() {
   $('#setProjectsNote').textContent = st.projects_dir_locked
     ? 'Set by the CUTPOINT_PROJECTS_DIR environment variable. Change or unset it, then restart cutpoint ui, to choose the folder here.'
     : `${PROJECTS_NOTE} Saved in ${st.config_file}.`;
+  const index = $('#setVisualIndex');
+  index.checked = st.visual_index === true;
+  index.dataset.saved = String(index.checked);
   $('#setNerdStats').checked = S.nerdStats;
   S.nerdStatsWas = S.nerdStats; // Cancel or Escape goes back to this
   $('#setAdvExport').checked = S.advExport;
@@ -5674,6 +5725,8 @@ async function saveSettings() {
     if (!value) return (err.textContent = 'Enter the full path of a folder (~ is your home folder).');
     if (value !== input.dataset.saved) body.projects_dir = value;
   }
+  const index = $('#setVisualIndex');
+  if (index.checked !== (index.dataset.saved === 'true')) body.visual_index = index.checked;
   if (!Object.keys(body).length) return $('#settingsDialog').close();
   if (body.projects_dir && dirty() && !confirm('The project list will show the new folder. Discard the unsaved changes to this sequence?')) return;
   $('#settingsSave').disabled = true;

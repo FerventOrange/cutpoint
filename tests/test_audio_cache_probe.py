@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import cache
+from cutpoint import cache, jsonout
 from cutpoint.events import audio_events, common, pipeline, sheets
 from cutpoint.events.audio_events import AudioParams, cached_audio_events
 from cutpoint.events.common import AudioPart, Source, layer_cache_path
@@ -36,7 +36,7 @@ def run(tmp_path: Path, monkeypatch):
     """``run_events`` with the audio layer only over ``srcs``; returns the detector count
     and the ``(source, det, force)`` calls to ``detect_audio_events``. Stops after the audio layer."""
 
-    def go(srcs: list[Source], force: tuple[str, ...] = ()):
+    def go(srcs: list[Source], force: tuple[str, ...] = (), layers: tuple[str, ...] = ("audio",)):
         by_path = {str(s.path): s for s in srcs}
         monkeypatch.setattr(
             pipeline, "load_highlights", lambda p: {"sources": [{"path": k} for k in by_path]}
@@ -71,9 +71,7 @@ def run(tmp_path: Path, monkeypatch):
         monkeypatch.setattr(pipeline, "detect_audio_events", detect)
         monkeypatch.setattr(sheets, "write_visual_sheets", stop)
         with pytest.raises(_Stop):
-            pipeline.run_events(
-                tmp_path, layers=("audio",), force=force, discover=False, sheets=True
-            )
+            pipeline.run_events(tmp_path, layers=layers, force=force, discover=False, sheets=True)
         return made, calls
 
     return go
@@ -115,6 +113,28 @@ def test_a_source_without_audio_loads_no_detector(tmp_path: Path, run, caplog):
     made, calls = run([_source(tmp_path, "a", audio=False)])
     assert made == [] and calls == []
     assert "a.mp4: no cached 16 kHz audio" in caplog.text
+
+
+def test_a_bad_ollama_port_loses_only_the_vlm_layer(tmp_path: Path, run, monkeypatch, caplog):
+    """#825: a bad port in OLLAMA_HOST must not stop the other layers."""
+    monkeypatch.setenv("OLLAMA_HOST", "myhost:99999")
+    caplog.set_level(logging.WARNING, logger="cutpoint.events.pipeline")
+    with jsonout.run("events") as result:
+        _made, calls = run([_source(tmp_path, "a")], layers=("audio", "vlm"))
+    assert len(calls) == 1  # the audio layer ran
+    assert "vision model not usable" in caplog.text and "invalid port" in caplog.text
+    assert [w["code"] for w in result.warnings] == ["vlm_unavailable"]
+    assert "invalid port" in result.warnings[0]["message"]
+
+
+def test_a_bad_ollama_port_without_the_vlm_layer_gives_no_vlm_warning(
+    tmp_path: Path, run, monkeypatch
+):
+    monkeypatch.setenv("OLLAMA_HOST", "myhost:99999")
+    with jsonout.run("events") as result:
+        _made, calls = run([_source(tmp_path, "a")], layers=("audio",))
+    assert len(calls) == 1
+    assert [w["code"] for w in result.warnings] == []
 
 
 @pytest.fixture

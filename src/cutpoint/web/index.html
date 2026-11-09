@@ -700,6 +700,11 @@
           <p id="setProjectsNote" class="hint"></p>
         </div>
       </fieldset>
+      <fieldset class="panel">
+        <legend>Analysis</legend>
+        <label class="check"><input type="checkbox" id="setVisualIndex" aria-describedby="setVisualIndexHint"> Index video frames for AI Chat's visual search</label>
+        <p id="setVisualIndexHint" class="hint">Writes frame embeddings during analysis so AI Chat can search what is on screen in gaming, funny and commentary projects; it changes no ranking. Needs a CUDA GPU, the full install and its model files (<code>cutpoint setup</code>); skipped otherwise; about 373 s and 25 MB per hour of video. Action, sport and action-cam projects have it whenever a CUDA GPU is present. Off by default; applies to the next analysis. Saved in config.json.</p>
+      </fieldset>
       <p class="hint">Preview, Export and Appearance show at once; Save keeps them, in this browser.</p>
       <fieldset class="panel">
         <legend>Preview</legend>
@@ -776,6 +781,24 @@
         <p class="hint">One-Click Edit repeats Skip steps; the other options turn it off for this project, as cutpoint edit does not take them.</p>
         </div>
       </details>
+      <!-- After the analysis, each its own CLI command and its own button (type=button, so Enter in
+           an option field never starts one; a click closes the dialog with 'describe' or 'vision'
+           and starts that job, not the analysis): Describe the footage is `crashes --context`,
+           Look closer with vision is `events`. Shown for 360 projects too, as a note. -->
+      <div id="refine" class="refine">
+        <div id="describeBox" class="refine-box">
+          <label for="anDescribe">Describe the footage</label>
+          <textarea id="anDescribe" rows="3" maxlength="500" autocomplete="off" placeholder="e.g. enduro race, mud on the lens" aria-describedby="dAnDescribe anDescribeWhy"></textarea>
+          <p id="dAnDescribe" class="hint">Picks the activity profile that tunes crash detection.</p>
+          <p id="anDescribeWhy" class="hint"></p>
+          <button type="button" class="btn small" id="anDescribeBtn">Apply</button>
+        </div>
+        <div id="visionBox" class="refine-box">
+          <button type="button" class="btn" id="anVisionBtn" aria-describedby="dAnVision anVisionWhy">Look closer with vision</button>
+          <p id="dAnVision" class="hint">A vision model watches the top moments, adds what it sees and re-ranks.</p>
+          <p id="anVisionWhy" class="hint"></p>
+        </div>
+      </div>
       <div class="dialog-actions">
         <button type="submit" value="cancel" class="btn" id="againCancel" formnovalidate>Cancel</button>
         <button type="submit" value="ok" class="btn primary" id="againOk">Analyze</button>

@@ -36,11 +36,12 @@ Trust boundaries:
   dialog (Windows: Tk's system dialog; macOS: ``osascript``; Linux: zenity, else kdialog) in a
   child process without a shell, one at a time; the server never lists folders itself. With no
   dialog (no display, Docker) the page hides those buttons and the path is typed or pasted.
-* Settings (``GET``/``PUT /api/settings``) change only ``projects_dir``, ``vision`` and the
-  assistant's ``provider``, ``model`` and ``url`` in ``config.json``. The projects folder never changes while a job runs or when
+* Settings (``GET``/``PUT /api/settings``) change only ``projects_dir``, ``vision``,
+  ``visual_index`` and the assistant's ``provider``, ``model`` and ``url`` in ``config.json``. The projects folder never changes while a job runs or when
   ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved. Every analysis the page
   starts (first or again) passes ``--vision`` or ``--no-vision`` as ``vision`` says when it
-  starts; the page has no per-run vision box.
+  starts; the page has no per-run vision box. The same goes for ``--visual-index`` or
+  ``--no-visual-index`` as ``visual_index`` says.
   While ``config.json`` is unreadable or holds a value Cutpoint rejects, the project routes answer
   409 naming the file and the error; session, pick and settings keep working.
 * The assistant (``/api/projects/<id>/assistant/...``) takes the token header only, never
@@ -643,6 +644,7 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
         "projects_dir_locked": paths.env("PROJECTS_DIR") is not None,
         "config_file": str(paths.config_file()),
         "vision": data.get("vision") is True,
+        "visual_index": data.get("visual_index") is True,
         "vision_model": default_model(),
         "compress_peaks": peaks if peaks in COMPRESS_PEAKS else "off",
         # whether config.json sets it: the page's Compress peaks then starts from it, else Light
@@ -4084,9 +4086,12 @@ def _subscription_roles(args: list[str], style: object) -> bool:
 
 
 def _vision_args(st: dict[str, Any]) -> list[str]:
-    """Vision options for an analysis: the Settings value now (explicit, so the job and the page
-    agree even if config.json changes before the CLI reads it) and the recorded Ollama options."""
-    args = ["--vision" if get_config().vision else "--no-vision"]
+    """Vision options for an analysis: the Settings values now (explicit, so the job and the page
+    agree even if config.json changes before the CLI reads it), including the visual index, and
+    the recorded Ollama options."""
+    cfg = get_config()
+    args = ["--vision" if cfg.vision else "--no-vision"]
+    args.append("--visual-index" if cfg.visual_index else "--no-visual-index")
     vision_top = st.get("vision_top")
     if isinstance(vision_top, int) and not isinstance(vision_top, bool) and vision_top > 0:
         args.append(f"--vision-top={vision_top}")
@@ -4185,6 +4190,96 @@ def analyze_options(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
         else None,
         "recover": st.get("recover") is True,
     }
+
+
+# Warnings of a refining job's envelope (crashes, events) the user must read: where a vision frame
+# would go and how to allow it, a vision model that is not there, and a description that was not used
+REFINE_WARNINGS = (
+    "vision_consent_needed",
+    "vision_unavailable",
+    "vlm_unavailable",
+    "context_not_applied",
+)
+
+
+def events_unavailable() -> str | None:
+    """Why the events extra's steps (``events``, crash detection) cannot run here: the lite
+    edition's message with the install command (:func:`cutpoint.extras.missing_module_message`),
+    else None."""
+    from cutpoint import extras  # noqa: PLC0415
+
+    if extras.edition() != "lite":
+        return None
+    missing = next(
+        (
+            m
+            for m, e in extras.MODULE_EXTRA.items()
+            if e == "events" and not importlib.util.find_spec(m)
+        ),
+        None,
+    )
+    return extras.missing_module_message(missing) if missing else None
+
+
+def crash_step_runs(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> bool:
+    """The project's analysis ran (or would run) the crash step (``plan_layers``): not a 360
+    project; an action, sport or action-cam style, footage detected as action-cam or general
+    (``--style auto``), or sources with camera telemetry (the analysis then wrote crashes.json).
+    Before the first analysis (``hl`` None) the project's chosen style answers: yes for those
+    styles, ``auto`` or none (the footage decides), no for any other."""
+    if meta.get("kind") == "360":
+        return False
+    if hl is None:
+        style = meta.get("style")
+        if not style or style == AUTO:
+            return True
+        s = _style(style)
+        return s is not None and (s.kind == ACTION_CAM or s.base in ("action", "sport"))
+    from cutpoint import category  # noqa: PLC0415
+
+    s = _style(hl.get("style") or meta.get("style"))
+    if s is not None and (s.kind == ACTION_CAM or s.base in ("action", "sport")):
+        return True
+    det = hl.get("detection")
+    if (
+        isinstance(det, dict)
+        and not det.get("fallback")
+        and det.get("category") in (category.ACTION_CAM, category.GENERAL)
+    ):
+        return True
+    return _inside(p, "crashes.json") and (p / "crashes.json").is_file()
+
+
+def footage_context(p: Path) -> str | None:
+    """The description of the footage ``activity.json`` was made with (``request.context``)."""
+    rec = _load(p, "activity.json")
+    req = rec.get("request") if isinstance(rec, dict) else None
+    ctx = req.get("context") if isinstance(req, dict) else None
+    return ctx if isinstance(ctx, str) and ctx.strip() else None
+
+
+def refine_state(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, Any]:
+    """What the page's "Describe the footage" and "Look closer with vision" need: whether the
+    crash step applies (``crash_step``), the saved description (``context``) and why the events
+    extra's steps cannot run here (``unavailable``)."""
+    return {
+        "crash_step": crash_step_runs(p, meta, hl),
+        "context": footage_context(p),
+        "unavailable": events_unavailable(),
+    }
+
+
+def _note_warnings(job: Job) -> None:
+    """Put the envelope's :data:`REFINE_WARNINGS` into the job's log as WARNING notes, when the
+    CLI's own line (logged as it ran) is not there already."""
+    for w in (job.result or {}).get("warnings") or []:
+        msg = w.get("message") if isinstance(w, dict) else None
+        if (
+            isinstance(msg, str)
+            and w.get("code") in REFINE_WARNINGS
+            and not any(msg in line for line in job.logs)
+        ):
+            job.note("WARNING", msg)
 
 
 def _analyze_args(body: dict[str, Any], recorded: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -4560,17 +4655,20 @@ def create_app(port: int) -> FastAPI:
 
     @secure.put("/settings")
     def put_settings(body: dict[str, Any]):
-        """Change the projects folder, the vision default and/or the assistant's provider, model
+        """Change the projects folder, the vision and visual index defaults and/or the assistant's provider, model
         and base URL in ``config.json``. Existing projects stay where they are. A changed
         assistant is checked at once (reachable, key accepted, tool calls or JSON output):
         ``assistant_check`` is why it cannot answer, or None. Nothing (a key least of all) is
         sent to a hosted provider the user has not agreed to in AI Chat (#504): its check waits
         for the consent, and ``assistant_note`` says so."""
-        if not {"projects_dir", "vision", "assistant", "vision_assistant"} & set(body):
-            raise bad("send projects_dir, vision, assistant and/or vision_assistant")
+        if not {"projects_dir", "vision", "visual_index", "assistant", "vision_assistant"} & set(
+            body
+        ):
+            raise bad("send projects_dir, vision, visual_index, assistant and/or vision_assistant")
         updates: dict[str, Any] = {}
-        if "vision" in body:
-            updates["vision"] = _flag(body, "vision")
+        for flag in ("vision", "visual_index"):
+            if flag in body:
+                updates[flag] = _flag(body, flag)
         data = config_data()  # an unreadable config.json: refuse before creating the folder
         existing_ast = data.get("assistant")
         existing_ast_prov = existing_ast.get("provider") if isinstance(existing_ast, dict) else None
@@ -5131,6 +5229,8 @@ def create_app(port: int) -> FastAPI:
             "must_include_crash_default": None
             if meta.get("kind") == "360"
             else _style_crash(meta.get("style") or (hl or {}).get("style")),
+            # "Describe the footage" (crashes --context) and "Look closer with vision" (events)
+            "refine": refine_state(p, meta, hl),
             "preset_taken": preset_taken(p),
             "final_current": exp is None or (bool(outputs) and outputs[0] == exp.get("final")),
             # The transition each join of that final came out with, for the page's "Assemble
@@ -5592,6 +5692,37 @@ def create_app(port: int) -> FastAPI:
                         e["final_joins"] = final_joins
                 cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
 
+        elif action in ("crashes", "events"):
+            # The analysis refined after the fact, one CLI command each: "Describe the footage"
+            # is `crashes --context` (profiles, redoes the crash detection, re-ranks), "Look
+            # closer with vision" is `events` (the VLM layer, re-ranks).
+            if hl is None:
+                raise bad("analyze the footage first")
+            if meta.get("kind") == "360":
+                raise bad(f"{action} does not apply to 360 projects")
+            if why := events_unavailable():
+                raise bad(why, 409)
+            _own(p, "highlights.json")  # the re-rank rewrites it
+            if action == "crashes":
+                context = body.get("context")
+                if not isinstance(context, str) or not context.strip():
+                    raise bad("describe the footage first")
+                from cutpoint.activity import MAX_CONTEXT_CHARS  # noqa: PLC0415
+
+                if len(context.strip()) > MAX_CONTEXT_CHARS:
+                    raise bad(f"the description is at most {MAX_CONTEXT_CHARS} characters")
+                if not crash_step_runs(p, meta, hl):
+                    raise bad("crash detection does not run for this footage")
+                _own(p, "activity.json")
+                _own(p, "crashes.json")
+                args = cutpoint_cmd("crashes", str(p), f"--context={context.strip()}")
+            else:
+                _own(p, "events.json")
+                args = cutpoint_cmd("events", str(p))
+
+            def on_result(job: Job) -> None:
+                _note_warnings(job)
+
         elif action == "resume":
             # cutpoint resume replays the stopped run of progress.json (#109) from its own cwd
             rec = runstate.read(p) if _inside(p, runstate.FILE) else None
@@ -5629,7 +5760,10 @@ def create_app(port: int) -> FastAPI:
                     resumed(p, rec, outputs, stamp)
 
         else:
-            raise bad("action must be 'analyze', 'edit', 'clips', 'extend', 'assemble' or 'resume'")
+            raise bad(
+                "action must be 'analyze', 'edit', 'clips', 'extend', 'assemble', 'crashes', "
+                "'events' or 'resume'"
+            )
 
         def same_folder() -> None:
             # Under the jobs lock, like the settings change: a folder changed since ``p`` was
@@ -5649,6 +5783,13 @@ def create_app(port: int) -> FastAPI:
             default = ANALYZE_STYLE if run["command"] == "analyze" else None
             style_arg = next(iter(_values(argv, "--style")), default)
             needs_proxy = _subscription_roles(argv, style_arg)
+        elif action in ("crashes", "events") or (
+            action == "resume" and run["command"] in ("crashes", "events")
+        ):  # the profile's and the VLM layer's Vision model
+            try:
+                needs_proxy = ai_providers.is_subscription(vision_assistant_settings().provider)
+            except (ValueError, TypeError, AttributeError):  # an invalid config.json: the job says
+                needs_proxy = False
         else:
             needs_proxy = False
         if needs_proxy and before is None:
