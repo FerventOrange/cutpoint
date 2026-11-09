@@ -227,8 +227,7 @@ def _warn_consent(message: str) -> str:
 
 def ollama_allowed(url: str) -> bool:
     """True if the Ollama at ``url`` is on this machine or the user agreed to it for Vision."""
-    url = url.rstrip("/")
-    want = _ollama_consent_key(url if url.startswith("http") else f"http://{url}")
+    want = _ollama_consent_key(url)  # OllamaProvider normalises it (#857)
     return want is None or want in get_config().vision_assistant.consent
 
 
@@ -367,10 +366,10 @@ class VisionRater:
             if url:  # --ollama-url: normalised like $OLLAMA_HOST (#840)
                 self.url = normalize_ollama_url(url, "--ollama-url")
             else:
-                raw_url = (
-                    (v_ast.url if v_ast.provider == "ollama" else "") or ollama_url()
-                ).rstrip("/")
-                self.url = raw_url if raw_url.startswith("http") else f"http://{raw_url}"
+                self.url = normalize_ollama_url(
+                    (v_ast.url if v_ast.provider == "ollama" else "") or ollama_url(),
+                    "vision_assistant.url",
+                )
             # the cache key's host (rating_key), as for a hosted provider: a local and a
             # remote Ollama with one model rate apart (#673)
             self.host = _host_port(self.url)

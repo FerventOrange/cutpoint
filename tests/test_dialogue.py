@@ -1387,6 +1387,14 @@ def test_ollama_flags_win_over_an_ai_chat_ollama(home, monkeypatch, caplog):
     assert caplog.text.count(want) == 1
 
 
+def test_ollama_flags_name_a_bare_ai_chat_url_with_its_port(home, monkeypatch, caplog):
+    set_config(home, assistant={"provider": "ollama", "url": "myhost", "consent": []})
+    Net(monkeypatch, ollama=True)
+    with caplog.at_level(logging.INFO):
+        dialogue.choose_backend("http://127.0.0.1:11434", None)
+    assert "not the Ollama at myhost:11434" in caplog.text
+
+
 def test_ollama_flags_at_the_ai_chat_ollama_host_log_no_override_line(home, monkeypatch, caplog):
     set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL, "consent": [REMOTE_KEY]})
     Net(monkeypatch, ollama=True)
