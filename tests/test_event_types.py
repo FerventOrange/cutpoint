@@ -136,7 +136,16 @@ def _boost(names: list[str]) -> tuple[float, dict[str, Any]]:
     return scoring.event_boost(CAND, [EVENTS[n] for n in names])
 
 
-def _ev(laugh=0.0, scream=0.0, kills=0, tk=0, banners=0, self_kills=0) -> dict[str, Any]:
+def _ev(
+    laugh=0.0,
+    scream=0.0,
+    kills=0,
+    tk=0,
+    banners=0,
+    self_kills=0,
+    announcements=0,
+    score_changes=0,
+) -> dict[str, Any]:
     return {
         "laughter": laugh,
         "scream": scream,
@@ -144,6 +153,8 @@ def _ev(laugh=0.0, scream=0.0, kills=0, tk=0, banners=0, self_kills=0) -> dict[s
         "teamkills": tk,
         "banners": banners,
         "self_kills": self_kills,
+        "announcements": announcements,
+        "score_changes": score_changes,
         "explosions": 0,
     }
 
@@ -423,6 +434,17 @@ def test_default_own_death_type_sets_nothing(name):
     assert t is not None
     assert t.name == "player_deaths"
     assert (t.payoff, t.tail_s, t.seed) == (None, None, None)
+
+
+def test_only_announcements_are_boost_only():
+    """Announcements add points but nominate nothing; every other type, and a preset type
+    (``nominate`` is not a preset key), keeps seeding."""
+    off = [t.name for t in eventtypes.DEFAULT_EVENT_TYPES if not t.nominate]
+    assert off == ["announcements"]
+    t = eventtypes.from_dict({**PLACER, "nominate": False})
+    assert t.nominate
+    raw = {"kind": "ocr", "type": "bigtext", "text": "SIGNAL", "announce": True, "t": 1.0}
+    assert vw._seed_priority(raw, eventtypes.DEFAULT_EVENT_TYPES) is None
 
 
 def test_default_self_kill_type_keeps_payoff_and_seed():

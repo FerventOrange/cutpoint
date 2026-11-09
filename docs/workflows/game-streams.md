@@ -42,7 +42,7 @@ first run after updating re-runs the audio model once per source (new class grou
 | Layer | Detects |
 |---|---|
 | `audio` | Laughter, screams, cheering, explosions (PANNs) |
-| `ocr` | Kill-feed rows (who killed whom, your kills and deaths), round banners, notices, multi-kills |
+| `ocr` | Kill-feed rows (who killed whom, your kills and deaths), round banners, notices, multi-kills, learned announcements, on-screen score changes |
 | `vlm` | The shared vision model (Ollama `qwen3.5:9b`, or a hosted (API or subscription) Vision model you allowed in the Models tab) describes candidate windows from frames, the transcript and the other layers' hints |
 
 Outputs (written by `analyze` and by `events`): `events.json` and `events.txt`. `events.txt` interleaves the transcript with the
@@ -182,7 +182,7 @@ check's `discovery.fit_ref`): the extra regions are listed under
 INFO line says to copy them into the preset's `regions` to have OCR read them. `overlay.jpg`
 draws them in magenta.
 
-A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice` or `banner`; optional `gate`: `mask` (default, a HUD colour mask) or `det` (text detection, works for any game); optional `every`),
+A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice`, `banner` or `score` (see [Score readout](#score-readout)); optional `gate`: `mask` (default, a HUD colour mask), `det` (text detection, works for any game) or `read` (detection and recognition every time, for `score`); optional `every`; optional `upscale`, for `mask` and `read`: read the crop enlarged to this many times its reference size),
 `banner_phrases`, `player_tags`, `match` hints and optional `feed` settings. Coordinates are in
 1920x1080 reference pixels and are scaled per axis to the video. A small example, saved as
 `my-game.json`:
@@ -202,6 +202,58 @@ A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice
 A preset can also define its own event types (what an event is worth, how clip tails end, which
 moments the vision model describes first) and the game name used in the vision prompt; see
 [Event types and prompt keys](../configuration.md#event-types-and-prompt-keys).
+
+## Learned announcements
+
+Pop-ups that are no preset phrase can still count. A big-text line that comes back as a short
+pop-up all through one source is learned as an announcement: its event in `events.json`
+gets `announce: true` and `announce_words` (the learned words) in `details`, and counts as the
+`announcements` event type. Any line counts, a one-word line too. A line is learned by its words
+of 4 letters or more; a short line with digits, a shorter word and no such word ("4 VS 5") by
+its shape, digits as `#` ("# VS #"); the shape needs a word of 2 letters or more, so one letter beside digits is never learned. Such digit lines make no event otherwise. A bare number
+("+100", "12:34") is never learned. A `score` region's reads never become text events or announcements, and a line another region reads with its box centre inside a `score` region is dropped (the region's other lines stay). A word must show at least 10 times,
+in at least 4 different 10-minute stretches (so a source of at least 30 minutes), with a median
+gap of at least 30 s, and at most a fifth of its appearances may stay longer than 30 s (labels
+and place names stay). Reads within 8 s of each other are one appearance. Only big text is
+learned: notice-sized lines (item and action prompts recur there), feed rows and banners never
+are, and text that stays on a screen (the same word with the same name beside it
+3 times in a row, each within 60 s) keeps only its first. Learning runs on the cached reads, so
+it needs no new OCR.
+
+An announcement is boost-only: it adds 3 points (at most 2 counted) to a candidate that already
+exists, and it never makes a moment of its own or seeds a vision window, in `gaming` too.
+
+## Score readout
+
+A small number on the HUD that holds still and now and then steps by one, such as a round score,
+a lap or a counter that counts down, can make events. Discovery looks for it in the frames it
+already reads: a box that holds a number of 1 or 2 digits (one stray glyph beside it, such as an
+icon stuck to the digit, is allowed; never a clock with `:`, a share with `%` or a pop-up
+starting with `+`), at one screen spot in at least 6 bursts, one value all through 80% of those
+bursts (a timer, ammo or a speed changes within the seconds of a burst), at least 2 values over
+the bursts and none above 30. Up to 2 such spots become `score` regions (`score`, `score2`),
+read once a second (every 3rd frame at the default 3 fps) and enlarged to 2.5 times their
+reference size, as thin digits read far better that way. For a game that already has a preset,
+`--discover-regions` lists them under `suggested_regions` in `proposal.json` (unless the preset
+has a `score` region) and leaves the preset alone; copy them into its `regions` to read them.
+Presets discovered before this have none, and are not discovered again for it. A new region
+means new OCR reads (no cache replay).
+
+A value counts once it is read twice in a row with a confidence of 0.7 or more. A change is an
+event when the new value is one more or one less than the old, the old one stayed at least 15 s
+and the HUD showed no number for at most 60 s in between. Each spot keeps the direction of its
+first change: a counter that counts down is fine, and a step back afterwards is no event.
+Anything else (a reset between matches, a jump) is taken as the new value without an event, a
+value that comes back within 15 s is a misread, and reads on menu frames are left out. A spot
+whose value changes more often than every 15 s (median) or that shows more than 12 values is no
+score (a fast-changing clock or ammo) and makes no events; a slow counter that steps by one (lives, grenades) does. Each change is an OCR event of `type` `score` in
+`events.json`, labelled like `4 > 3`, at the last read of the old value, with `before`,
+`after`, `seen_at` (the first read of the new value), `gap_s`, `region` and `slot` (the spot's
+centre x in reference pixels) in `details`; `events.txt` shows it as `OCR score: 4 > 3` and the
+vision model gets the hint `on-screen score: 4 > 3`. It counts as the `score_changes` event type
+(see [Event types and prompt keys](../configuration.md#event-types-and-prompt-keys)).
+`stats.ocr.<source>.score_slots` in `events.json` lists per spot its reads, values, changes
+and whether it was disabled.
 
 ## Kill feed rows without a preset
 

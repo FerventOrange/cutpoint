@@ -110,6 +110,8 @@ def _event_line(name: str, e: dict[str, Any]) -> str:
             d = e.get("details", {})
             tags = _kill_flags(d)
             return f"{t} OCR kill: {e['label']}" + (f" ({', '.join(tags)})" if tags else "")
+        if e["type"] == "score":
+            return f"{t} OCR score: {e['label']}"
         detail = (e.get("details") or {}).get("detail")
         return f"{t} OCR: {e['label']}" + (f" ({detail})" if detail else "")
     if e["kind"] == "telemetry":

@@ -384,9 +384,12 @@ def _seed_priority(
     """Priority of a layer-1 event as a window seed (None = not a seed).
 
     The ``seed`` of the first matching event type in ``types`` comes first, when the type
-    applies in the project's ``style`` (its name and base); otherwise the built-in rule.
+    applies in the project's ``style`` (its name and base); a boost-only
+    type (``nominate`` false) is no seed; otherwise the built-in rule.
     """
     t = first_match(types, ev)
+    if t and not t.nominate:
+        return None
     if t and t.seed is not None and t.applies(*style):
         return t.seed
     if ev.get("kind") == "audio":
@@ -619,6 +622,7 @@ def _hints(events: list[dict[str, Any]], start: float, end: float) -> str:
             "crit",
             "fire",
             "multikill",
+            "score",
         ):
             extra = " (TEAMKILL)" if ev.get("teamkill") else ""
             # feed kills and other feed verbs: say whose kill it is

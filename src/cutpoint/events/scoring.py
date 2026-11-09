@@ -12,7 +12,7 @@ computed from ``score_pre_events``. Candidate ids are kept; the list is
 re-sorted by the new score and ``suggested_top`` is recomputed.
 
 In styles with an open list (``gaming``), events that can score and that no candidate covers
-nominate candidates of their own first (:func:`nominate`, marked ``signals.events.nominated``), so a game with little talk still gets
+(except those of a boost-only type, ``nominate=False``) nominate candidates of their own first (:func:`nominate`, marked ``signals.events.nominated``), so a game with little talk still gets
 moments from what happens on screen; they are rescored like the others. A stretch of talk the
 dialogue reader marked (:mod:`cutpoint.events.dialogue`, a ``text`` event of type ``dialogue``)
 nominates a candidate of its own, as marked, and adds a few points to any candidate it overlaps
@@ -52,7 +52,15 @@ logger = logging.getLogger(__name__)
 LOOKAHEAD_S = 10.0  # events this long after a candidate still count for it
 MAX_BOOST = 30.0
 # Evidence keys of the default event types, always present and summed in this order.
-EVIDENCE_KEYS = ("player_kills", "teamkills", "banners", "self_kills", "explosions")
+EVIDENCE_KEYS = (
+    "player_kills",
+    "teamkills",
+    "banners",
+    "self_kills",
+    "announcements",
+    "score_changes",
+    "explosions",
+)
 # Event kinds the event types match: OCR events, and audio events of a type with an audio
 # matcher (``explosions``); laughter and screams score on their own (below).
 TYPED_KINDS = ("ocr", "audio")
@@ -295,13 +303,18 @@ def seeds(
     style: tuple[str, ...],
     menu: list[list[float]] | None = None,
     backup: Callable[[dict[str, Any]], bool] | None = None,
+    covered: Callable[[Seed], bool] | None = None,
 ) -> list[Seed]:
     """The events of one source that can score in a project of ``style`` (its name and base):
-    those of an event type with a ``score`` that applies, and the laughter, scream and
+    those of an event type with a ``score`` that applies and that may ``nominate`` (an
+    announcement is boost-only and seeds nothing), and the laughter, scream and
     cheering sounds :func:`event_boost` counts, and the dialogue stretches (``whole`` seeds).
     Events starting in a ``menu`` span are left out, and so is a weak heard laugh nothing backs
-    (:func:`laugh_backed`, with ``backup``)."""
+    (:func:`laugh_backed`, with ``backup``). The seeds of a type with a ``seed_gap_s`` that no
+    candidate covers (``covered``; None: none is) are kept at least that far apart, the best
+    first (:func:`_seed_worth`); covered ones are all kept and take no room."""
     out = []
+    spaced: list[tuple[int, EventType, tuple[float, ...]]] = []  # index in out, type, worth
     for e in events:
         if any(a <= e["start"] < b for a, b in menu or ()):
             continue
@@ -317,12 +330,30 @@ def seeds(
             continue
         if e["kind"] in TYPED_KINDS:
             t = first_match(types, e)
-            if t and t.score and t.applies(*style):
-                out.append(Seed(t.name, e["start"], e["end"], min(length, OCR_HOLD_S), t.tail_s))
+            if t and t.nominate and t.score and t.applies(*style):
+                seed = Seed(t.name, e["start"], e["end"], min(length, OCR_HOLD_S), t.tail_s)
+                if t.seed_gap_s and not (covered and covered(seed)):
+                    spaced.append((len(out), t, _seed_worth(e)))
+                out.append(seed)
         elif e["kind"] == "text" and e.get("type") == DIALOGUE_TYPE:
             # the whole stretch as the reader marked it, with no reaction kept after it
             out.append(Seed(f"dialogue-{e['label']}", e["start"], e["end"], length, 0.0, True))
-    return out
+    dropped: set[int] = set()
+    kept: dict[str, list[float]] = {}
+    for i, t, _ in sorted(spaced, key=lambda x: x[2], reverse=True):
+        near = kept.setdefault(t.name, [])
+        if any(abs(out[i].start - s) < (t.seed_gap_s or 0.0) for s in near):
+            dropped.add(i)
+        else:
+            near.append(out[i].start)
+    return [s for i, s in enumerate(out) if i not in dropped]
+
+
+def _seed_worth(e: dict[str, Any]) -> tuple[float, ...]:
+    """How good an OCR event is as a moment seed among those of its type (higher first): the
+    learned announcement words in its line, its confidence, then the earlier one."""
+    d = e["details"] if isinstance(e.get("details"), dict) else e
+    return (len(d.get("announce_words") or ()), e.get("confidence") or 0.0, -e["start"])
 
 
 def sound_backed(e: dict[str, Any], events: list[dict[str, Any]]) -> bool:
@@ -712,8 +743,17 @@ def nominate(
     for src, evs in by_src.items():
         mine = [c for c in own if c["source"] == src]
         left = []
+
+        def covers(s: Seed, mine: list[dict[str, Any]] = mine) -> bool:
+            return any(s.end >= c["start"] and s.start <= c["end"] for c in mine)
+
         for s in seeds(
-            evs, types.get(src, DEFAULT_EVENT_TYPES), names, menu.get(src), backed_by_talk(src)
+            evs,
+            types.get(src, DEFAULT_EVENT_TYPES),
+            names,
+            menu.get(src),
+            backed_by_talk(src),
+            covers,
         ):
             hit = [c for c in mine if s.end >= c["start"] and s.start <= c["end"]]
             if not hit:
