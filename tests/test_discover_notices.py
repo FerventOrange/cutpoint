@@ -369,7 +369,12 @@ def test_existing_preset_gets_suggestions_only(
     assert rec["installed"] is False
     assert [r["name"] for r in rec["suggested_regions"]] == ["extra_notice"]
     assert rec["suggested_regions"][0]["origin"] == "outside"
-    assert target.read_bytes() == before
+    # the preset keeps every key; a forced discovery adds only the HUD fit check's reference
+    got = json.loads(target.read_text(encoding="utf-8"))
+    assert got.setdefault("discovery", {}).pop("fit_ref")["cells"] == [16, 12]
+    old = json.loads(before)
+    old.setdefault("discovery", {})
+    assert got == old
     proposal = json.loads((project / "discovery" / "verbfeed" / "proposal.json").read_text())
     assert proposal["suggested_regions"] == rec["suggested_regions"]
     assert not any(r.get("origin") for r in proposal["regions"])
@@ -482,3 +487,34 @@ def test_notice_centred_on_a_covered_region_gives_nothing() -> None:
     assert len(_extra(frames, covered=(FEED, bigtext_region()))) == 1
     counter = Region("counter", 600, 795, 720, 10, "counter")
     assert _extra(frames, covered=(FEED, counter, bigtext_region())) == []
+
+
+def test_static_texts_are_per_file_for_same_named_files() -> None:
+    """#817: a label one clip.mp4 shows all the time is no static text of another clip.mp4
+    in a different folder, so the other file's notice with that text stays."""
+    texts = ["Hold the line", "Zone lost", "Hold the line"]
+    notice = {
+        (b, k): [_centred(t, 960, 870, h=22)]
+        for b, t in zip((5, 18, 30), texts, strict=True)
+        for k in (0, 1)
+    }
+    labels = [_box("Hold the line", 60, 480, w=180), _box("Zone lost", 60, 520, w=130)]
+
+    def keyed(key: str, first: int, extra: dict[Any, list[dict[str, Any]]]) -> list[dict]:
+        skey = f"clip.mp4~{key}"
+        return [
+            _frame(skey, first + b, k, _hud(b, k) + extra.get((b, k), []))
+            | {"source": "clip.mp4", "src_key": skey}
+            for b in range(BURSTS)
+            for k in range(4)
+        ]
+
+    frames = keyed("aaaa1111", 0, {(b, k): labels for b in range(BURSTS) for k in range(4)})
+    frames += keyed("bbbb2222", BURSTS, notice)
+    bottom = [p for p in _extra(frames) if p["y"] > 800]
+    assert len(bottom) == 1
+    assert all(_holds(bottom[0], b) for bs in notice.values() for b in bs)
+    assert bottom[0]["evidence"]["sources"] == 1
+    # records written before src_key: one source, whose static texts hide the notice
+    legacy = [{k: v for k, v in f.items() if k != "src_key"} for f in frames]
+    assert [p for p in _extra(legacy) if p["y"] > 800] == []

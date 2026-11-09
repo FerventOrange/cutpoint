@@ -19,6 +19,7 @@ everything into a project folder.
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for the other layers and for games |
 | Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | |
 | Footage category detection: `cutpoint detect`, and `--style auto` on `analyze` and `edit` (opt-in; unclear footage gets the default style) | |
+| Frame index for the AI Chat's visual search: `--visual-index` on `analyze` and `edit` (off by default; `"visual_index": true` in `config.json`) also writes the CLIP frame embeddings for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` always have them | |
 | VLM layer of `cutpoint events` through the shared vision model: Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the Models tab of `cutpoint ui` | |
 | `--json` result envelope on stdout: `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `events`, `resume`, `360 ...` | |
 | Agent skill: `cutpoint skill install` (Claude Code), `cutpoint skill print` | |
@@ -109,12 +110,15 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
   except for `action-cam` (Ollama by default;
   the Vision role in the `cutpoint ui` Models tab can route it to a hosted provider). It is off
   for every style unless `"vision": true` in the user's `config.json` turns it on; `--no-vision`
-  then skips it. An `--ollama-url` on another machine, or a hosted Vision provider in the
+  then skips it. An explicit `--ollama-url` or `--ollama-model` wins over a hosted Vision
+  provider and over the AI Chat model for dialogue reading, and also applies to the
+  crash/profile step. An `--ollama-url` on another machine, or a hosted Vision provider in the
   Models tab, needs the user's Vision consent (Models tab); without it vision is skipped with a
   `vision_consent_needed` warning: tell the user.
   `--vision-top`, `--ollama-url`, `--ollama-model` and `--skip` work as on
-  `analyze`; `--compress-peaks`, `--lut`, `--lut-strength`, `--color` and `--color-strength` as
-  on `clips`.
+  `analyze`; `--visual-index` and `--no-visual-index` as on `analyze` (the frame embeddings for
+  the visual search of `cutpoint ui`, off by default; they change no ranking);
+  `--compress-peaks`, `--lut`, `--lut-strength`, `--color` and `--color-strength` as on `clips`.
 - Outputs: the project `<projects>/clip` (`--out NAME` to change it) with the clips,
   `final.mp4` and `clip-final.mp4` plus `.srt` subtitles. The last log lines name the final
   video, its subtitles and the clips folder (`none (temporary, removed)` with
@@ -151,7 +155,8 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
    stretch is a candidate of its own and the others stay as they are), so a candidate id from an
    earlier run can be absorbed:
    it stays in `highlights.json` under `widened_from.absorbed` but is no longer a candidate, and
-   `--ids` rejects it. Read the file again. A hosted AI Chat model needs the user's chat
+   `--ids` rejects it. Read the file again. A widened candidate drops a silence of 8 s or more
+   (no speech in the transcript) before or after its original moment. A hosted AI Chat model needs the user's chat
    consent for it (`chat_consent_needed` warning: tell the user); with `--max-total` such a
    candidate longer than the cap is dropped, not trimmed. A stretch over 90 s overlaps the candidates
    inside it: `--top` and `--max-total` skip the overlapping one, but `--ids` does not, so do not
@@ -165,7 +170,11 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
    [When something fails](#when-something-fails)).
 4. **Choose moments.** Read `highlights.json` (`candidates` with `id`, `source`, `start`, `end`,
    `score` 0-100, `label`, `transcript`; `suggested_top`) and, for banter and funny moments,
-   `transcript.txt` (`[file.mp4 00:12:31.4-00:12:38.9] text`). Then either:
+   `transcript.txt` (`[file.mp4 00:12:31.4-00:12:38.9] text`). `suggested_top` is how many
+   moments plain `clips` takes: the best that fit the style's target length, skipping longer
+   ones (if none fits, the best one). `--top` with that number is not the same pick (it takes
+   the N best whatever their length), so for the default edit run `clips` without `--top`.
+   Then either:
    - take the top N: `uv run cutpoint clips clip-edit --top 8` (or `--max-total 60` for a
      length cap, `--ids h001 h004`), or
    - export your own picks with a segments file:

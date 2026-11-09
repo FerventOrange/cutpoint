@@ -11,7 +11,7 @@ import pytest
 
 from conftest import StubTranscriber, media_info, remap, set_config, write
 from cutpoint import analyze, config, extras, features, reset_state
-from cutpoint.styles import get_style
+from cutpoint.styles import LAUGHTER, get_style
 
 
 @pytest.mark.parametrize(
@@ -384,3 +384,82 @@ def test_pick_candidates_carry_word_confidence():
     assert all(p == 0.3 for _, p in c.transcript_unsure)
     whole = [i for i, _ in c.transcript_unsure if i < len(toks) - 1]  # the last may be cut
     assert all(int(toks[i][1:]) % 2 == 0 for i in whole)
+
+
+def _said(*pieces: str, step: float = 1.0) -> list[dict]:
+    """Transcript words, one per second, as Whisper writes them (a leading space each)."""
+    return [
+        {"word": f" {p}", "start": i * step, "end": i * step + 0.5} for i, p in enumerate(pieces)
+    ]
+
+
+@pytest.mark.parametrize(
+    "marker", ["[laughter]", "(laughs)", "*laughing*", "[LAUGHTER]", "(Laughing)", "[giggles]"]
+)
+def test_whisper_laughter_markers_are_laughter_hits(marker):
+    (hit,) = analyze.laughter_hits(_said("so", marker, "anyway"))
+    assert hit[0] == 1.0 and hit[1] == 1.0
+    assert hit[2] == marker[1:-1].lower()
+
+
+def test_a_marker_of_several_words_is_one_hit_at_its_first_word():
+    (hit,) = analyze.laughter_hits(_said("ok", "[light", "laughter]", "right"))
+    assert hit == (1.0, 1.0, "light laughter")
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        ("he", "said", "laughter", "is", "funny"),
+        ("stop", "laughing", "at", "me"),
+        ("i", "laugh", "every", "time"),
+        ("Laughter,", "he", "says."),
+        ("the", "(laughing", "stock", "of", "town"),  # no closing mark
+        ("what", "the", "f***", "are", "you", "laughing", "at", "s***"),  # censored profanity
+        ("so", "(laughs]", "anyway"),  # mismatched delimiters
+        ("so", "[laughs)", "anyway"),
+    ],
+)
+def test_the_spoken_word_laugh_or_laughter_is_not_a_laughter_hit(words):
+    assert analyze.laughter_hits(_said(*words)) == []
+
+
+def test_each_laughter_word_counts_once():
+    hits = analyze.laughter_hits(_said("haha", "hah", "hahaha", "hehe", "lmao", "lol"))
+    assert [(t, p) for t, _, p in hits] == [
+        (0.0, "haha"),
+        (1.0, "hah"),
+        (2.0, "haha"),
+        (3.0, "hehe"),
+        (4.0, "lmao"),
+        (5.0, "lol"),
+    ]
+    assert [w for _, w, _ in hits] == [1.0, 0.8, 1.0, 0.8, 1.0, 0.8]  # the strongest match
+
+
+def test_keyword_hits_count_every_match_unless_asked_for_one():
+    assert len(analyze.keyword_hits(_said("haha"), LAUGHTER)) == 2
+    assert len(analyze.keyword_hits(_said("haha"), LAUGHTER, once=True)) == 1
+
+
+def test_laughing_interjections_still_count_beside_the_markers():
+    hits = analyze.laughter_hits(_said("haha", "no", "[laughs]", "lol"))
+    assert {(t, p) for t, _, p in hits} >= {(0.0, "haha"), (2.0, "laughs"), (3.0, "lol")}
+
+
+def test_the_laughter_signal_comes_from_the_markers_only_for_the_word():
+    n = 100
+    ps = analyze.PartSignals(
+        n=n,
+        sig={k: np.zeros(n) for k in ("loudness", "speech", "laughter", "scene", "continuity")},
+        kw_hits=[],
+        laugh_hits=[],
+        words=_said("laughter", "laughter", "laugh"),
+        segments=[],
+        cuts=[],
+    )
+    analyze.text_signals(ps, get_style("gaming"), "a.mp4")
+    assert ps.laugh_hits == [] and not ps.sig["laughter"].any()
+    ps.words = _said("so", "[laughter]")
+    analyze.text_signals(ps, get_style("gaming"), "a.mp4")
+    assert [p for *_, p in ps.laugh_hits] == ["laughter"] and ps.sig["laughter"].max() > 0.3

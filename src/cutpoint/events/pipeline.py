@@ -193,7 +193,8 @@ def run_events(
         avoid: Extra ``(name glob, start, end)`` ranges never decoded (bad
             sectors), on top of the ``read_errors`` recorded in highlights.json.
         discover: Run HUD region discovery: True = always (the proposal is
-            written; an existing preset is kept), None = only for games
+            written; an existing preset keeps its regions and only gets the fresh
+            ``discovery.fit_ref``), None = only for games
             without a preset, False = never.
         discover_bursts: Frame bursts sampled by discovery (x4 frames).
         preset_scope: Where a newly discovered preset is installed:
@@ -419,9 +420,18 @@ def run_events(
     with stage("ocr") if "ocr" in layers else contextlib.nullcontext():
         base = 0.0  # progress the per-source OCR starts at (after discovery)
         if "ocr" in layers and discover is not False:
+            from cutpoint.events.feed_labels import make_labeler  # noqa: PLC0415
+
             try:
                 stats["discovery"] = _discover(
-                    project, sources, ocr, discover, discover_bursts, preset_scope, discover_hint
+                    project,
+                    sources,
+                    ocr,
+                    discover,
+                    discover_bursts,
+                    preset_scope,
+                    discover_hint,
+                    make_labeler(rater),
                 )
             except Exception as err:
                 if ocr_failure(err) is None:  # before _discover knew its games
@@ -527,6 +537,8 @@ def run_events(
                     warn_unreachable=False,
                     llm=llm,
                     batch_size=batch_size,
+                    ollama_url=ollama_url,
+                    ollama_model=ollama_model,
                 )
         finally:
             if enc is not None:
@@ -875,29 +887,67 @@ def _discover(
     bursts: int,
     scope: str,
     hint: str = EVENTS_DISCOVER_HINT,
+    labeler: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Run region discovery per game where needed; install new presets.
+    """Run region discovery per game where needed; install new presets. ``labeler`` names the
+    proposals with the shared vision model (:mod:`cutpoint.events.feed_labels`).
+
+    Sources whose key is a first guess (no ``--game``, no preset ``match`` hint) and that
+    have no recorded decision (or all of them with ``force``) get the HUD fit check
+    (:mod:`cutpoint.events.game_fit`) once their guess has a preset, found or discovered
+    here: one whose edge text lands elsewhere on screen gets a key and a discovery of its
+    own, and a preset discovered here is made again from the sources that fit. The
+    decisions go to ``<project>/discovery/game_keys.json``
+    (:func:`~cutpoint.events.regions.game_key_for_path` reads them).
 
     Returns:
         ``{game: {"preset": path, "installed": bool, "regions": [...], ...}}``; for a
         game with a preset also ``suggested_regions`` (extra notice regions the
         preset does not have; never written into it).
     """
-    from cutpoint.events.discover import DiscoverParams, discover_regions  # noqa: PLC0415
+    from cutpoint.events import discover, game_fit  # noqa: PLC0415
+    from cutpoint.events import regions as hud  # noqa: PLC0415
 
+    params = discover.DiscoverParams(bursts=bursts)
+    named = bool(ocr.game and ocr.game != "auto")
     by_game: dict[str, list[Any]] = {}
+    guesses: dict[str, str] = {}  # path -> first guess, for the sources the fit check decides
+    before: dict[str, str] = {}  # path -> the key recorded before (stale, or checked again)
     for s in sources:
-        by_game.setdefault(game_key_for_path(str(s.path), ocr.game, project), []).append(s)
-    todo = []  # the games discovery runs for, with their existing preset
-    for game, srcs in by_game.items():
-        existing = load_preset(game, project)
-        if existing is None or force:
-            todo.append((game, srcs, existing))
+        path = str(s.path)
+        key = game_key_for_path(path, ocr.game, project)
+        if not named and hud.preset_for_path(path, None, project) is None:
+            entry = hud.decided_entry(path, project)
+            if entry is None or force:
+                key = guesses[path] = str(entry["guess"]) if entry else key
+                raw = hud.load_game_keys(project).get(hud.source_id(path)) or {}
+                if isinstance(raw.get("key"), str):
+                    before[path] = raw["key"]
+        by_game.setdefault(key, []).append(s)
+    planned = sum(force or load_preset(g, project) is None for g in by_game)
+    runs = {"started": 0, "total": max(1, planned)}  # discoveries (a misfit adds one)
+    shown = [0.0]  # the discovery part's pct never goes back
     out: dict[str, Any] = {}
-    for gi, (game, srcs, existing) in enumerate(todo):
+
+    def run(
+        game: str,
+        srcs: list[Any],
+        existing: Any,
+        keep: set[str] | None = None,
+        install: bool = True,
+    ) -> dict[str, Any]:
+        """Discovery for ``game`` on ``srcs`` and its install, as a record in ``out``;
+        ``keep``: cluster again from these sources' records only (no OCR, no "No HUD
+        preset matches" line);
+        ``install`` False: no preset written yet (:func:`install_preset` does it once the
+        fit check has split off other games)."""
+        gi = runs["started"]
+        if keep is None:
+            runs["started"] += 1
+            runs["total"] = max(runs["total"], runs["started"])
         name = "this game" if game == "game" else game
         first = "" if existing is not None else f"first run for {name}: "
-        if existing is None:
+        if existing is None and keep is None:
             progress.update(detail=f"{first}discovering HUD regions")
             logger.info(
                 "No HUD preset matches %s; discovering regions as %r (a few minutes). "
@@ -908,14 +958,15 @@ def _discover(
                 hint,
             )
 
-        def on_frame(done: int, total: int, gi: int = gi, first: str = first) -> None:
-            # the first DISCOVERY_PCT of the step, an equal part per game
-            share = (gi + progress.fraction(done, total) / 100) / len(todo)
-            progress.update(DISCOVERY_PCT * share, f"{first}discovering HUD: {done}/{total} frames")
+        def on_frame(done: int, total: int) -> None:
+            # the first DISCOVERY_PCT of the step, an equal part per discovery
+            share = (gi + progress.fraction(done, total) / 100) / runs["total"]
+            shown[0] = max(shown[0], DISCOVERY_PCT * share)
+            progress.update(shown[0], f"{first}discovering HUD: {done}/{total} frames")
 
         t0 = time.perf_counter()
         # an existing preset's regions (and big-text check) are the covered ones: extra
-        # notice regions outside them are only suggested, the preset file stays as it is;
+        # notice regions outside them are only suggested, the preset's regions stay as they are;
         # the outside regions it already has count against the extra-notice cap
         covered: dict[str, Any] = {}
         if existing is not None:
@@ -924,16 +975,18 @@ def _discover(
             outside = sum(isinstance(r, dict) and r.get("origin") == "outside" for r in regs or [])
             covered = {"covered": existing.all_regions(), "outside": outside}
         try:
-            proposal = discover_regions(
+            proposal = discover.discover_regions(
                 srcs,
                 project / "discovery" / game,
                 game,
-                DiscoverParams(bursts=bursts),
-                on_frame=on_frame,
+                params,
+                on_frame=on_frame if keep is None else None,
                 **covered,
+                **({"labeler": labeler} if labeler else {}),
+                **({"keep_src_keys": keep} if keep is not None else {}),
             )
         except Exception as err:  # the games before it have their presets
-            _mark_ocr_failure(err, sources, discovery=True, games=len(todo))
+            _mark_ocr_failure(err, sources, discovery=True, games=runs["total"])
             raise
         rec: dict[str, Any] = {
             "proposal": str(project / "discovery" / game / "proposal.json"),
@@ -942,15 +995,12 @@ def _discover(
             "elapsed_s": round(time.perf_counter() - t0, 1),
             "installed": False,
         }
+        if keep is not None and game in out:
+            rec["elapsed_s"] = round(out[game]["elapsed_s"] + rec["elapsed_s"], 1)
+        out[game] = rec
         if existing is None:
-            folder = project / "hud_presets" if scope == "project" else cutpoint_paths.presets_dir()
-            folder.mkdir(parents=True, exist_ok=True)
-            target = folder / f"{game}.json"
-            cache.save_json(target, proposal)
-            rec.update(installed=True, preset=str(target))
-            logger.info(
-                "Installed discovered HUD preset for %r: %s (edit it to calibrate)", game, target
-            )
+            if install:
+                install_preset(game, proposal)
         else:
             rec["preset"] = str(existing.path)
             rec["suggested_regions"] = list(proposal.get("suggested_regions") or [])
@@ -971,7 +1021,237 @@ def _discover(
                     rec["proposal"],
                     rec["preset"],
                 )
-        out[game] = rec
+        return proposal
+
+    def add_fit_ref(game: str, path: Path | None, ref: Any) -> None:
+        """Give an existing preset the fresh grid ``fit_ref`` of a forced discovery (the HUD
+        fit check); every other key stays as it is. A ref of too little evidence is not
+        written, nor one for a bundled preset; a preset that cannot be written is left as it
+        is (WARNING)."""
+        if path is None or not game_fit.valid_ref(ref) or not ref["grid"]:
+            return
+        if Path(path).resolve().is_relative_to(cutpoint_paths.PRESETS_DIR.resolve()):
+            return  # bundled with the package: read-only data
+        if not (
+            isinstance(ref.get("frames"), int)
+            and isinstance(ref.get("boxes"), int)
+            and ref["frames"] >= game_fit.MIN_FRAMES
+            and ref["boxes"] >= game_fit.MIN_BOXES
+        ):
+            return
+        data = cache.load_json(path)
+        disc = data.get("discovery", {}) if isinstance(data, dict) else None
+        if not isinstance(disc, dict) or disc.get("fit_ref") == ref:
+            return
+        assert isinstance(data, dict)
+        data["discovery"] = disc | {"fit_ref": ref}
+        try:
+            cache.save_json(path, data)
+        except OSError as err:
+            logger.warning(
+                "Could not add the HUD fit check to the preset '%s' (%s): %s", game, path, err
+            )
+            return
+        logger.info(
+            "Added the HUD fit check to the preset '%s' (its regions are unchanged): %s", game, path
+        )
+
+    def install_preset(game: str, proposal: dict[str, Any]) -> None:
+        """Write a discovered preset (its record in ``out`` says where)."""
+        folder = project / "hud_presets" if scope == "project" else cutpoint_paths.presets_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{game}.json"
+        cache.save_json(target, proposal)
+        out[game].update(installed=True, preset=str(target))
+        logger.info(
+            "Installed discovered HUD preset for %r: %s (edit it to calibrate)", game, target
+        )
+
+    def per_source(recs: list[dict[str, Any]], srcs: list[Any]) -> dict[str, list[dict[str, Any]]]:
+        """The gameplay frames among OCR records, per source path."""
+        paths = {discover.src_key(s): str(s.path) for s in srcs}
+        got: dict[str, list[dict[str, Any]]] = {}
+        for f in discover.gameplay_frames(recs, params):
+            if discover._src(f) in paths:
+                got.setdefault(paths[discover._src(f)], []).append(f)
+        return got
+
+    def fit_frames(
+        game: str, proposal: dict[str, Any] | None, srcs: list[Any], tested: list[Any]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Gameplay frames per source: this run's discovery records, and a sample of their own
+        for ``tested`` sources with too few."""
+        got: dict[str, list[dict[str, Any]]] = {}
+        ids = set(((proposal or {}).get("discovery") or {}).get("frames") or [])
+        if ids:
+            recs = discover.read_ocr_samples(project / "discovery" / game / "ocr.jsonl")
+            got = per_source([f for f in recs if f["id"] in ids], srcs)
+        need = [s for s in tested if len(got.get(str(s.path), [])) < game_fit.TOP_UP_FRAMES]
+        if need:
+            logger.debug("HUD fit check for %r: sampling %d source(s)", game, len(need))
+            recs = game_fit.sample_frames(need, project / "discovery" / "_fit" / game, params)
+            for path, frames in per_source(recs, need).items():
+                got.setdefault(path, []).extend(frames)
+        return got
+
+    def fit_ref(preset: Any) -> Any:
+        data = cache.load_json(preset.path) if preset.path else None
+        return (
+            ((data or {}).get("discovery") or {}).get("fit_ref") if isinstance(data, dict) else None
+        )
+
+    decided: dict[str, tuple[str, Any]] = {}  # path -> (key, Fit or None)
+
+    def persist() -> None:
+        """Save the decisions made so far (each as soon as it is made: an interrupted run
+        keeps them), with the date groups of their folders."""
+        entries, groups = hud.load_game_keys(project), hud.load_game_groups(project)
+        for path, (key, fit) in decided.items():
+            entries[hud.source_id(path)] = {
+                "tag": hud.source_tag(path),
+                "guess": guesses[path],
+                "key": key,
+                "fit": fit.record() if fit is not None else None,
+            }
+            folder, stem = hud.date_group(path, project)
+            if stem is not None:
+                groups[folder] = stem
+        hud.save_game_keys(project, entries, groups)
+
+    def made_from(key: str, s: Any) -> bool:
+        """Whether the preset ``key`` was discovered from source ``s`` (its OCR records)."""
+        preset = load_preset(key, project)
+        data = cache.load_json(preset.path) if preset is not None and preset.path else None
+        ids = (
+            ((data or {}).get("discovery") or {}).get("frames") if isinstance(data, dict) else None
+        )
+        prefix = f"{discover.src_key(s)}@"
+        return isinstance(ids, list) and any(str(i).startswith(prefix) for i in ids)
+
+    for game, srcs in by_game.items():
+        existing = load_preset(game, project)
+        tested = [s for s in srcs if str(s.path) in guesses]
+        # a discovery whose sources are checked against each other installs its preset only
+        # after the check: an interrupted run leaves no preset of two games mixed
+        split = existing is None and len(srcs) > 1 and bool(tested)
+        proposal = (
+            run(game, srcs, existing, install=not split) if existing is None or force else None
+        )
+        # a forced discovery over an existing preset: the sources are checked against its grid
+        # fit_ref, or, without one, against each other like a new discovery; the preset gets
+        # the fit_ref of the sources that fit (its regions stay)
+        redo = existing is not None and proposal is not None
+        if not tested:
+            if redo:  # every source is the game (--game, a match hint): all of them are the group
+                assert existing is not None and proposal is not None
+                add_fit_ref(game, existing.path, (proposal.get("discovery") or {}).get("fit_ref"))
+            continue
+        if existing is None and len(srcs) == 1:  # nothing to compare with
+            decided[str(tested[0].path)] = (game, None)
+            persist()
+            continue
+        got = fit_frames(game, proposal, srcs, tested)
+        old_ref = fit_ref(existing) if redo else None
+        anchored = game_fit.valid_ref(old_ref) and bool(old_ref["grid"])
+        if redo and anchored:  # the preset's grid decides; those that fit make the new one
+            assert existing is not None
+            profs = {
+                str(s.path): game_fit.profile(got.get(str(s.path), []), params.min_score)
+                for s in srcs
+            }
+            fits = {str(s.path): game_fit.against_ref(profs[str(s.path)], old_ref) for s in tested}
+            if any(f is not None and f.ok for f in fits.values()):  # else the old ref stays
+                group = game_fit.Profile()
+                for k, prof in profs.items():
+                    fit = fits.get(k)
+                    if fit is None or fit.ok:  # decided before, inconclusive, or fits
+                        group += prof
+                add_fit_ref(game, existing.path, group.ref())
+        elif existing is None or redo:  # the sources of this discovery against each other
+            profs = {
+                str(s.path): game_fit.profile(got.get(str(s.path), []), params.min_score)
+                for s in srcs
+            }
+            fits = game_fit.split_group(
+                profs,
+                {str(s.path): float(s.duration) for s in srcs},
+                frozenset(p for p in profs if p not in guesses),
+            )
+            if redo:  # the leader's group: the decided sources and those that fit
+                assert existing is not None
+                group = game_fit.Profile()
+                for k, prof in profs.items():
+                    fit = fits.get(k)
+                    if k not in fits or (fit is not None and fit.ok):
+                        group += prof
+                add_fit_ref(game, existing.path, group.ref())
+        else:  # against the preset found
+            ref = fit_ref(existing)  # none, or an earlier version's: no decision, no split
+            fits = {
+                str(s.path): game_fit.against_ref(
+                    game_fit.profile(got.get(str(s.path), []), params.min_score), ref
+                )
+                for s in tested
+            }
+        misfits = []
+        for s in tested:
+            fit = fits.get(str(s.path))
+            if fit is None:
+                logger.debug("%s: HUD fit check for %r inconclusive; keeping it", s.name, game)
+            if fit is not None and not fit.ok:
+                misfits.append(s)
+            else:
+                decided[str(s.path)] = (game, fit)
+        if split:  # the preset from the sources that fit only, or as discovered
+            if misfits:
+                keep = {discover.src_key(s) for s in srcs if s not in misfits}
+                proposal = run(game, srcs, None, keep=keep, install=False)
+            assert proposal is not None
+            install_preset(game, proposal)
+        persist()
+        # presets made for earlier misfits: (key, that misfit's profile, its name)
+        made: list[tuple[str, Any, str]] = []
+        for s in misfits:
+            path, fit = str(s.path), fits[str(s.path)]
+            prof = game_fit.profile(got.get(path, []), params.min_score)
+            for key, other_prof, other in made:
+                again = game_fit.against_run(prof, other_prof)
+                if again is not None and again.ok:
+                    logger.info("%s fits the HUD preset '%s' discovered for %s", s.name, key, other)
+                    decided[path] = (key, again)
+                    persist()
+                    break
+            else:
+                taken = set(by_game) | {k for k, _ in decided.values()}
+                # the key this source had before (also a stale decision) or whose preset was
+                # discovered from it is its own, not another game's
+                mine = before.get(path)
+                new = hud.misfit_key(
+                    path,
+                    lambda k, taken=taken, mine=mine, s=s: (
+                        k != mine
+                        and (
+                            k in taken
+                            or (load_preset(k, project) is not None and not made_from(k, s))
+                        )
+                    ),
+                )
+                logger.info(
+                    "%s does not fit the HUD preset '%s' (score %.2f); discovering it as '%s'",
+                    s.name,
+                    game,
+                    fit.score,
+                    new,
+                )
+                decided[path] = (new, fit)
+                persist()  # before its discovery: an interrupted one keeps the key
+                own = load_preset(new, project)
+                if own is None or force:
+                    prop = run(new, [s], own)
+                    if own is not None:  # one source: it is the group
+                        ref = (prop.get("discovery") or {}).get("fit_ref")
+                        add_fit_ref(new, own.path, ref)
+                made.append((new, prof, s.name))
     return out
 
 

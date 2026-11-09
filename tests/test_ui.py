@@ -54,6 +54,7 @@ from cutpoint.pano import project as pano_project
 from cutpoint.pano import render as pano_render
 from cutpoint.utils import find_videos
 from pano_helpers import x3clip
+from proxy_helpers import FakeLauncher, not_running
 
 PORT = 8765
 
@@ -7947,7 +7948,8 @@ def test_the_export_tab_offers_the_presets_and_asks_before_replacing() -> None:
     )
     assert kinds == list(edit.KINDS)
     make_btn = re.search(r'<button type="button" id="makeBtn"[^>]*>Make</button>', html)[0]
-    assert 'aria-describedby="dMake presetWhy"' in make_btn  # the reason it is off, if it is
+    # the reason it is off, if it is
+    assert 'aria-describedby="dMake presetWhy"' in make_btn
     # short option text, so the selects read fully in a 290 px column (details in titles)
     for sid in ("optKind", "optOrder"):
         select = re.search(rf'<select id="{sid}".*?</select>', html, re.S)[0]
@@ -8054,14 +8056,17 @@ def test_the_consent_texts_name_what_each_role_sends() -> None:
     assert "D:/Videos" not in "".join(m["content"] for m in msgs)
     vision = _js_function(_web("app.js"), "renderVisionConsent")
     text = re.search(r"\$\('#visionConsentText'\)\.textContent = `(.*?)`;", vision)[1]
+    text += re.search(r"\$\('#visionConsentMore'\)\.textContent = '(.*?)';", vision)[
+        1
+    ]  # behind "More"
     for part in (
         "video frames",
         "transcript excerpts",
         "file names and times",
         "on-screen text",
         "telemetry",
-        "The AI Chat assistant gets other data",
-        "agreeing for one never covers the other",
+        "The AI Chat gets other data",
+        "allowing one never covers the other",
     ):
         assert part in text, part
     # analysis (the dialogue step) sends whole transcripts to the chat model; its consent says so
@@ -8912,24 +8917,177 @@ def test_a_failed_subscription_login_says_why_and_can_start_again(
     assert client.post("/api/assistant/login", json={"provider": "other"}).status_code == 400
 
 
-def test_a_subscription_login_without_the_proxy_is_unavailable_not_a_server_error(
+def offline_until_started(launcher: FakeLauncher, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``cliproxy.start_login`` fails like a missing proxy until the launcher has started one."""
+    real = ui.cliproxy.start_login
+
+    def start_login(provider: str) -> dict:
+        if not launcher.is_running:
+            raise not_running()
+        return real(provider)
+
+    monkeypatch.setattr(ui.cliproxy, "start_login", start_login)
+
+
+def test_a_subscription_login_starts_the_proxy_when_none_runs_and_tries_again(
     client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    why = "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
+    launcher = client.app.state.proxies = FakeLauncher()
+    offline_until_started(launcher, monkeypatch)
+    res = client.post("/api/assistant/login", json={"provider": "codex"})
+    assert res.status_code == 200 and res.json() == {
+        "url": "https://auth.example/authorize?p=codex"
+    }
+    assert launcher.starts == 1 and launcher.calls == [False]  # a login always starts it
+    assert login_state(client, "codex")["state"] == "pending"
 
-    def offline(_provider: str) -> dict:
+
+def test_a_subscription_login_whose_proxy_does_not_start_is_unavailable_with_the_reason(
+    client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launcher = client.app.state.proxies = FakeLauncher()
+    launcher.error = ui.cliproxy.ProxyError("port 18317 is already in use")
+    offline_until_started(launcher, monkeypatch)
+    res = client.post("/api/assistant/login", json={"provider": "codex"})
+    assert res.status_code == 503, res.text
+    why = "the subscription proxy did not start: port 18317 is already in use"
+    assert res.json()["detail"] == why
+    assert login_state(client, "codex") == {"state": "error", "error": why}
+
+
+class StartedByAnother(FakeLauncher):
+    """``ensure`` finds the proxy another request just started: it runs, and this call did not start it."""
+
+    def ensure(self, *, logged_in_only: bool = False) -> bool:
+        self.calls.append(logged_in_only)
+        self.is_running = True
+        return False
+
+
+def test_a_subscription_login_retries_when_another_request_just_started_the_proxy(
+    client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launcher = client.app.state.proxies = StartedByAnother()
+    offline_until_started(launcher, monkeypatch)
+    res = client.post("/api/assistant/login", json={"provider": "codex"})
+    assert res.status_code == 200, res.text
+    assert res.json() == {"url": "https://auth.example/authorize?p=codex"}
+    assert launcher.calls == [False]
+
+
+def test_a_subscription_login_waits_for_a_proxy_that_is_still_starting(
+    client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launcher = client.app.state.proxies = FakeLauncher(running=True)
+    launcher.gate = threading.Event()  # another request is starting the proxy
+    real = ui.cliproxy.start_login
+
+    def start_login(provider: str) -> dict:
+        if not launcher.gate.is_set():
+            raise ui.cliproxy.ProxyConnectionError("proxy connection failed")
+        return real(provider)
+
+    monkeypatch.setattr(ui.cliproxy, "start_login", start_login)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(client.post, "/api/assistant/login", json={"provider": "codex"})
+        assert launcher.waiting.wait(5)  # the route waits before its first try
+        launcher.gate.set()
+        res = pending.result(10)
+    assert res.status_code == 200, res.text
+    assert launcher.starts == 0
+
+
+def test_a_subscription_login_with_a_running_proxy_keeps_the_original_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launcher = client.app.state.proxies = FakeLauncher(running=True)
+    why = "proxy answered 401"
+
+    def refused(_provider: str) -> dict:
         raise ui.cliproxy.ProxyConnectionError(why)
 
-    monkeypatch.setattr(ui.cliproxy, "start_login", offline)
+    monkeypatch.setattr(ui.cliproxy, "start_login", refused)
     res = client.post("/api/assistant/login", json={"provider": "codex"})
     assert res.status_code == 503 and res.json()["detail"] == why
+    assert launcher.starts == 0
     assert login_state(client, "codex") == {"state": "error", "error": why}
+
+
+def test_a_subscription_login_failing_for_another_reason_is_a_server_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client.app.state.proxies = FakeLauncher(running=True)
 
     def broken(_provider: str) -> dict:
         raise ui.cliproxy.ProxyError("failed to start login for codex: missing url")
 
     monkeypatch.setattr(ui.cliproxy, "start_login", broken)
     assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 500
+
+
+@pytest.mark.parametrize(
+    ("running", "saved", "expect"),
+    [(False, True, True), (False, False, False), (True, True, False), (True, False, False)],
+)
+def test_the_logins_say_whether_the_page_should_start_the_proxy(
+    client: TestClient, logins: SimpleNamespace, running: bool, saved: bool, expect: bool
+) -> None:
+    client.app.state.proxies = FakeLauncher(running=running, saved=saved)
+    got = client.get("/api/assistant/logins").json()
+    assert got["proxy_running"] is running
+    assert got["saved_login"] is expect  # only reported while no proxy runs
+
+
+def test_a_stopped_proxy_is_not_an_error_on_the_login_rows(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client.app.state.proxies = FakeLauncher()
+    monkeypatch.setattr(
+        ui.cliproxy,
+        "statuses",
+        lambda: [
+            {"provider": p, "logged_in": False, "error": ui.cliproxy.NOT_RUNNING}
+            for p in ui.cliproxy.PROVIDERS
+        ],
+    )
+    logins = client.get("/api/assistant/logins").json()["logins"]
+    assert [x["error"] for x in logins] == [None, None, None]
+
+
+def test_the_proxy_route_starts_it_only_with_a_saved_login(client: TestClient) -> None:
+    launcher = client.app.state.proxies = FakeLauncher(saved=False)
+    res = client.post("/api/assistant/proxy")
+    assert res.status_code == 200 and res.json() == {"running": False}
+    assert launcher.starts == 0 and launcher.calls == [True]
+
+    launcher.saved = True
+    res = client.post("/api/assistant/proxy")
+    assert res.status_code == 200 and res.json() == {"running": True}
+    assert launcher.starts == 1
+
+
+def test_the_proxy_route_says_why_it_did_not_start(client: TestClient) -> None:
+    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    launcher.error = ui.cliproxy.ProxyError("no binary for this platform")
+    res = client.post("/api/assistant/proxy")
+    assert res.status_code == 503
+    assert (
+        res.json()["detail"] == "the subscription proxy did not start: no binary for this platform"
+    )
+
+
+def test_the_proxy_route_needs_the_session_token(client: TestClient) -> None:
+    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    res = client.post("/api/assistant/proxy", headers={"X-Cutpoint-Token": "wrong"})
+    assert res.status_code == 403 and launcher.starts == 0
+
+
+def test_the_app_stops_the_proxy_it_started_on_shutdown() -> None:
+    app = ui.create_app(PORT)
+    launcher = app.state.proxies = FakeLauncher()
+    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}"):
+        assert launcher.shutdowns == 0
+    assert launcher.shutdowns == 1
 
 
 def test_login_timeout_cancellation_does_not_hold_login_lock(
@@ -10383,3 +10541,74 @@ def test_final_joins_are_null_for_an_export_record_without_them(
     )
     view = client.get("/api/projects/cli").json()
     assert view["final_joins"] is None and view["final_current"] is True
+
+
+def test_the_page_pauses_the_first_analysis_and_labels_one_click_edit() -> None:
+    """Contract pins (#811, #809): while the first analysis runs the empty state drops the art, the
+    options and the Analyzing button and offers a real Pause analysis button that cancels the job
+    (behaviour in tests/js/pause.test.mjs); One-Click Edit carries a visible Experimental badge."""
+    js = _web("app.js")
+    html = _web("index.html")
+    css = _web("app.css")
+    unanalyzed = _js_function(js, "renderUnanalyzed")
+    assert (
+        "id: 'pauseBtn'" in unanalyzed
+        and "type: 'button'" in unanalyzed
+        and "'Pause analysis'" in unanalyzed
+    )
+    assert "/cancel`" in _js_function(js, "pauseAnalysis")
+    busy = _js_function(js, "renderBusy")
+    assert "classList.toggle('running', own)" in busy and "pause.focus()" in busy
+    assert (
+        ".empty.fresh.running .fresh-art, .empty.fresh.running .fresh-lead { display: none; }"
+        in css
+    )
+    assert "class: `fresh-count fresh-lead" in unanalyzed
+    assert "id: 'pauseBtn', class: 'btn primary'" in unanalyzed
+    assert (
+        ".empty.fresh.running #pauseBtn { position: sticky; top: var(--space-1); z-index: 2;" in css
+    )
+    assert "#pauseBtn { background: var(--amber); border-color: var(--amber);" in css
+    assert (
+        '<legend>One-Click Edit <span class="tag pool" id="presetExp">Experimental</span></legend>'
+        in html
+    )
+    assert 'aria-describedby="dMake presetWhy"' in html
+
+
+def test_font_sizes_come_from_the_type_scale_tokens() -> None:
+    """Contract pin (#810): app.css has five font-size tokens on :root, and no rule sets a literal
+    px font size; the header gaps use one --gap token."""
+    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
+    root = css[: css.index("\n}")]
+    sizes = dict(re.findall(r"--fs-(\w+): ([\d.]+)px;", root))
+    assert sizes == {
+        "caption": "11.5",
+        "small": "12.5",
+        "body": "13.5",
+        "title": "15",
+        "heading": "20",
+    }
+    assert not re.findall(r"font-size: ?[\d.]+px|\bfont: (?:\d+ )?[\d.]+px", css)
+    assert re.search(r"^\.top \{[^}]*gap: var\(--gap\);", css, re.M)
+    for sel in (r"\.stage-head", r"\.cut-line", r"\.cut-nav", r"\.jobs-head"):
+        assert re.search(rf"^{sel} \{{[^}}]*gap: [^;]*var\(--gap\);", css, re.M), sel
+
+
+def test_empty_preview_is_centred_and_the_running_panel_is_top_aligned() -> None:
+    """Contract pin (#810): both empty previews (no project, not analyzed) share .stage-empty,
+    centred both ways with its button centred under the text; while the first analysis runs the
+    Moments panel is top-aligned (margin: 0 auto) so Pause is the first thing in the column."""
+    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
+    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
+    box = re.search(r"^\.stage > \.empty\.stage-empty \{([^}]*)\}", css, re.M)
+    assert box and "justify-items: center;" in box[1] and "text-align: center;" in box[1]
+    assert "align-self: center;" in box[1] and "margin: auto;" in box[1]
+    assert re.search(
+        r"^\.stage > \.empty\.stage-empty \.btn \{[^}]*justify-self: center;", css, re.M
+    )
+    assert "classList.toggle('stage-empty', !c && !S.project?.highlights)" in js
+    running = re.search(
+        r"^\.moments:has\(> \.empty\.fresh\.running\) > \.empty\.fresh \{([^}]*)\}", css, re.M
+    )
+    assert running and "margin: 0 auto;" in running[1]

@@ -214,3 +214,46 @@ def test_resolve_unloads_the_default_ask_model_after_synthesis(
     monkeypatch.setattr(activity, "synthesize", lambda *a, **k: None)
     activity.resolve(tmp_path, activity="ski", context="slalom race", refresh=True)
     assert unloads == [1]
+
+
+def test_default_ask_uses_the_ollama_flags_over_config_and_environment(home, monkeypatch):
+    """#816: --ollama-url/--ollama-model win for the crash/profile step."""
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:1")
+    seen: list[vision.VisionRater] = []
+
+    def available(self):
+        seen.append(self)
+        return True
+
+    monkeypatch.setattr(vision.VisionRater, "available", available)
+    ask, model = activity.default_ask("http://127.0.0.1:2", "my-vl:7b")
+    assert ask is not None and model == "my-vl:7b"
+    assert seen[0].url == "http://127.0.0.1:2" and seen[0].local_only
+    ask, model = activity.default_ask()  # no flags: the environment's Ollama
+    assert seen[1].url == "http://127.0.0.1:1" and model == "qwen3.5:9b"
+
+
+def test_default_ask_survives_a_bad_port(home, monkeypatch, caplog):
+    monkeypatch.setenv("OLLAMA_HOST", "myhost:99999")
+    with caplog.at_level("WARNING"):
+        assert activity.default_ask() == (None, None)
+    assert "Activity detection: Ollama not usable" in caplog.text
+    assert "invalid port" in caplog.text
+    caplog.clear()
+    monkeypatch.delenv("OLLAMA_HOST")
+    with caplog.at_level("WARNING"):
+        assert activity.default_ask("myhost:99999") == (None, None)
+    assert "Activity detection: Ollama not usable" not in caplog.text  # a flag is no OLLAMA_HOST
+
+
+def test_resolve_hands_the_ollama_flags_to_default_ask(tmp_path, monkeypatch, footage):
+    got: list[dict] = []
+
+    def fake(**kw):
+        got.append(kw)
+        return None, None
+
+    monkeypatch.setattr(activity, "default_ask", fake)
+    activity.resolve(tmp_path, context="a lake", ollama_url="http://h:1", ollama_model="m")
+    activity.resolve(tmp_path, context="a lake", refresh=True)
+    assert got == [{"ollama_url": "http://h:1", "ollama_model": "m"}, {}]

@@ -348,7 +348,7 @@ class _ByStartRater:
     def cached(self, *_a, **_k) -> None:
         return None
 
-    def rate(self, _src, start, _end, _style, activity=None, transcript=None):
+    def rate(self, _src, start, _end, _style, activity=None, transcript=None, laughter=False):
         return vision.VisionResult(*self.ratings[start])
 
     def unload(self) -> None:
@@ -1017,3 +1017,80 @@ def test_rate_and_cached_build_the_same_key_for_the_same_speech(posts, src):
         )
         is not None
     )
+
+
+def test_describe_waits_600_s_by_default_and_for_the_given_timeout(monkeypatch):
+    waited: list[float] = []
+
+    def post(url, json, timeout, **_k):
+        waited.append(timeout)
+        raise requests.Timeout("too slow")
+
+    monkeypatch.setattr(vision.requests, "post", post)
+    monkeypatch.setattr(vision.memguard, "check_vision", lambda _r: None)
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    assert rater.describe("q", [b"x"], {}) is None
+    assert rater.describe("q", [b"x"], {}, timeout=60) is None  # a timeout is a failure: None
+    assert waited == [600, 60]
+
+
+def test_the_prompts_say_laughter_was_heard_only_when_it_was():
+    for speech in (False, True):
+        plain = vision._prompts("gaming", None, speech=speech)
+        heard = vision._prompts("gaming", None, speech=speech, laughter=True)
+        assert all("Laughter was heard" not in p for p in plain)
+        assert all("aughter was heard" in p for p in heard)
+        # the sentence sits before the closing JSON instruction and the prompts still format
+        assert heard[0].index("Laughter was heard") < heard[0].index("Respond with JSON only")
+        assert heard[1].index("aughter was heard") < heard[1].index("Output only JSON")
+        for p in heard:
+            p.format(n=3, style="gaming", speech="")
+    profile = vision.rating_profile("qwen3.5:9b")
+    sheet = vision._prompts("gaming", profile, laughter=True)
+    assert all("aughter was heard" in p for p in sheet) and "grid of {n} frames" in sheet[0]
+
+
+def test_the_action_cam_prompts_do_not_mention_laughter():
+    assert vision._prompts("action-cam", None, laughter=True) == vision._prompts("action-cam", None)
+
+
+def test_heard_laughter_rates_under_its_own_key_and_the_other_keys_stay():
+    args = ("m", "gaming", [1.0, 2.0, 3.0])
+    plain = vision.rating_key(*args)
+    assert vision.rating_key(*args, laughter=False) == plain
+    assert vision.rating_key(*args, laughter=True) != plain
+    assert vision.rating_key(*args, transcript="so funny", laughter=True) != vision.rating_key(
+        *args, transcript="so funny"
+    )
+    assert vision.rating_key("m", "action-cam", [1.0], laughter=True) == vision.rating_key(
+        "m", "action-cam", [1.0]
+    )
+
+
+class _LaughterRater(_ByStartRater):
+    """Records what ``rate`` and ``cached`` are told about laughter."""
+
+    def __init__(self) -> None:
+        super().__init__({0.0: (5.0, "a"), 10.0: (5.0, "b"), 20.0: (5.0, "c")})
+        self.told: list[bool] = []
+
+    def rate(self, _src, start, _end, _style, activity=None, transcript=None, laughter=False):
+        self.told.append(laughter)
+        return super().rate(_src, start, _end, _style)
+
+
+def test_rate_vision_tells_the_model_about_laughter_heard_in_a_moment():
+    def moment(start, events):
+        return {
+            "source": "a.mp4", "start": start, "end": start + 5, "score": 30.0, "label": "x",
+            "signals": {"events": events},
+        }  # fmt: skip
+
+    cands = [
+        moment(0.0, {"laughter": 0.3}),  # heard
+        moment(10.0, {"laughter": 0.05}),  # a weak sound nothing backs is not "heard"
+        moment(20.0, {"boost": 0.0}),  # no laughter evidence at all
+    ]
+    rater = _LaughterRater()
+    cutpoint.analyze._rate_vision(cands, rater, 3, get_style("gaming"))  # type: ignore[arg-type]
+    assert rater.told == [True, False, False]

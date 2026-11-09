@@ -130,7 +130,7 @@ So do these combinations:
 |---|---|
 | `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
 | `resume` | `resume` (`argv`, `status_before`, `done_before`), `resumed`, and the replayed command's outputs |
-| `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set), `style`; with `--style auto`, `detection` (the `highlights.json` block, see [detect](#detect)) |
+| `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set; the number of moments the default `clips` edit picks), `style`; with `--style auto`, `detection` (the `highlights.json` block, see [detect](#detect)) |
 | `detect` | `category` (`gameplay`, `action-cam`, `talk` or `general`), `ambiguous`, `reason`, `scores` (share of the footage per category), `suggest` (`commentary` for talky gameplay, else `null`), `sources` (each `path`, `duration`, `category`, `ambiguous`, `reason`, `gameplay` (score 0-1, `null` with telemetry) and `speech` (share of the source covered by words, `null` before transcription)), `pending` (talk not checked yet: a long source has no transcript), `styles` (`analyze` and `funny-moments`: the style each would use) |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds`, `taken_over` (finished clips taken over from a stopped export's `.<folder>.cutpoint-resume`, not encoded again; 0 when none, missing for temporary clips) |
 | `extend` | As `clips` (`taken_over` included), and `seconds` (`{"start", "end"}`) |
@@ -255,9 +255,15 @@ The Models tab (next to AI Chat) sets the model for each role: Chat (the
 with its own provider and model; both roles offer the same providers. Provider names say how
 they sign in: Anthropic API, OpenAI API and xAI API use an API key (saved per provider and host, so
 one key serves both roles); Claude Code subscription, Codex subscription and Antigravity subscription
-use a login ("Connected accounts", managed via `cutpoint proxy` and `cutpoint login`). With the
-`cutpoint proxy` daemon running in the foreground and consent granted for the role, the tab lists
-each account's advertised models (Refresh catalog asks again); Other model… takes any id.
+use a login ("Connected accounts"). The UI starts the subscription [proxy](#proxy) itself, so
+you do not need `cutpoint proxy` in a terminal to sign in. Log in (and Retry) on a Connected
+accounts row always starts it when it is not running (the row shows "Starting the proxy…" and
+shows an error there if it fails). A chat turn with a subscription model, a model-list refresh and
+opening Connected accounts start it only when a subscription login is saved; nothing starts when
+the UI starts. A proxy the UI started stops when the UI exits (Ctrl+C, closing the console or a
+hard kill); a proxy you started with `cutpoint proxy` is left running. With the proxy running and
+consent granted for the role, the tab lists each account's advertised models (Refresh catalog asks
+again); Other model… takes any id.
 The tab works without a project, and
 one Save models saves both roles. "Rate frames with vision model"
 (off by default; saved as [`vision`](configuration.md#vision) in `config.json`) is there too:
@@ -334,6 +340,7 @@ moments match these filters." Escape closes the menu. The sort and filters are r
 browser (local storage); the source file only while the project stays open. A project with a
 long dialogue bit (a whole dialogue stretch over 90 s) also offers Long bits, which shows only those; they
 have a "Bit" badge with the length (m:ss), and the tile's hover text adds what happens in the bit.
+Long bits is not remembered; it lasts until the page is reloaded.
 The moments are tiles, two across in the default column width. A kind filter above them (All,
 Action, Scenic, Funny, Dialogue) shows one kind; it is a view of the list and is not kept. The
 kind is worked out in the page for display, as AI Chat names it. A moment a talk stretch created
@@ -372,6 +379,11 @@ the steps by starting its jobs with `CUTPOINT_PROGRESS=1`; `GET /api/jobs` retur
 `progress` (`total` and `steps`, ordered by step; for a 360 analysis also `plan`, the steps the
 job will report as `step` and `label`). A Cutpoint version that sends no steps shows
 the log in Jobs only, as before.
+
+During the first analysis the illustration, the count of videos found, "Analysis options…" and the "Analyzing…" button give way to
+"Show folder", the steps and a yellow "Pause analysis" button that stays at the top of the column. Pause cancels the job as Cancel does, and the column then
+offers Resume, which continues from the last transcribed video. Before the first video is
+transcribed Pause asks first, because there is nothing to resume and the analysis starts over.
 
 The side column has three tabs: Sequence, AI Chat (see [AI Chat](#ai-chat) below) and Models.
 The header's Export button, next to Save sequence, opens the Export panel in the side column, with
@@ -448,7 +460,7 @@ joins are not known (a One-Click Edit's, or one assembled by an earlier version)
 folder. The result becomes the current export. It is disabled while Extend start and Extend end
 are blank or 0 and Speech-aware cuts is off (extend would have nothing to do); the tooltip says so.
 
-**One-Click Edit** has the presets Highlights, Montage, Clips and Funny moments. Make runs
+**One-Click Edit** (marked Experimental: it picks and joins moments without your review) has the presets Highlights, Montage, Clips and Funny moments. Make runs
 `cutpoint edit --kind <preset>` in the project's own style, with the Vertical and Compress Audio
 Peaks choices and the vision choice from the Models tab. Clips go to `clips` and the video to
 `final.mp4` (`clips_vertical` and `final_vertical.mp4` when vertical), with the `<name>-final`
@@ -779,7 +791,7 @@ for …") and can be stopped with Cancel. The chat needs an analyzed project.
 The model reads the moments as text: label (a generic one replaced by what the vision model saw,
 as in the Moments list), score, times, transcript snippet and, when analysis has them, `kind`,
 `seen` (the vision rating label and the description of the `events` VLM window over the moment),
-`heard` (laughter or screams detected) and `cues`: visual, telemetry and vision-tag strengths on
+`heard` (laughter, from `signals.events.laughter` of 0.12 or more, or screams detected) and `cues`: visual, telemetry and vision-tag strengths on
 one 0-10 scale (`beauty`, `people`, `group`, `speed`, `carve`, `airtime`, `crash`, `wipeout`,
 `stopped`, the action-cam tags such as `chairlift` or `scenic_vista`, and more; the strongest six
 per moment in the list, all of them in `get_moment`). Its `find_moments` tool searches labels,
@@ -795,8 +807,11 @@ frames go only through view_moment (above), once allowed for the project.
 `look_for` searches the footage itself, with every chat provider, local or hosted. It compares a
 short English description ("powder spray", "sunset over the peaks") with the cached frame
 embeddings of every source of the project (the `events` visual layer, about one frame per second,
-the same ones the visual candidates read) using local CLIP, so it also finds footage the scorer
-never proposed. It decodes nothing and downloads nothing, and no frame leaves the machine: the
+the same ones the visual candidates read; written by `analyze` for `action`, `sport` and `action-cam`
+footage, and for the other styles only with [`--visual-index`](#analyze)) using local CLIP, so it also finds footage the scorer
+never proposed. A project none of whose sources has them is not offered the tool, and a call that
+still fails shows the page "Visual search isn't available for this project: its analysis has no
+frame index (analyze --visual-index writes it)". It decodes nothing and downloads nothing, and no frame leaves the machine: the
 model gets text only, the best windows as moment rows with `match` 0-10 and `confidence`:
 `strong` from a CLIP cosine of 0.222, `weak` from 0.202 (a few at most, so a query the footage
 may answer, such as "fish" in a reef, still lists its best guesses, while one it cannot answer
@@ -861,7 +876,8 @@ consent is missing). A turn's events can include `frames_consent` (`id`, `key`, 
 model asked to watch without it, `tool` events named `view_moment` (`id`, `frames`,
 `cached`, or `error`: `limit` when the per-message limit was reached) and `look_for` (`query`,
 `found`, `new`, `weak`, `unconfirmed`, `possible` (the unconfirmed windows: `id`, `source`,
-`start`, `end`, `label`, `confidence`), or `error`: why it could not search); a `proposal` event can carry `color`
+`start`, `end`, `label`, `confidence`), or `error`: why it could not search, with `reason`, a short
+sentence for the page, when there is one); a `proposal` event can carry `color`
 (`mode`, `strength` or null) and `moments` (the `look_for` moments its ops add);
 `POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
 save or remove a keyring key for the host of the saved base URL and return only where each key
@@ -905,6 +921,7 @@ cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [-
               [--format mp4|fcpxml|otio] [--events]
               [--vision | --no-vision] [--vision-top N] [--ollama-url URL]
               [--ollama-model MODEL] [--skip STEP [STEP ...]]
+              [--visual-index | --no-visual-index]
               [--compress-peaks off|light|strong] [--lut FILE [--lut-strength 0-1]]
               [--color off|auto|underwater [--color-strength 0-1]] [--json]
 ```
@@ -935,6 +952,7 @@ one of them is refused.
 | `--vision` / `--no-vision` | As on `analyze`: rate top candidates with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off |
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model (also for the VLM layer of `--events`) |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes`, `crashes` and/or `dialogue`. Give it after the input paths |
+| `--visual-index` / `--no-visual-index` | As on `analyze`: also write the frame embeddings of the AI Chat's visual search for `gaming`, `funny` and `commentary` footage, or not. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
 | `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression), baked into the clips (so the final has it too). Default: `compress_peaks` in `config.json`, else off |
 | `--lut FILE`, `--lut-strength 0-1` | Grade the clips with a 3D LUT, as on [`clips`](#clips) (so the final has it too). Checked before the analysis |
 | `--color off\|auto\|underwater`, `--color-strength 0-1` | [Automatic color correction](#clips) of the clips, as on `clips` (so the final has it too). Not with `--lut`; checked before the analysis |
@@ -967,10 +985,11 @@ an analysed set processes only the new file.
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
 | `--vision` / `--no-vision` | Rate top candidates with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), on their frames and, except for `action-cam`, the speech in them, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. See **Vision rating** below |
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
-| `--ollama-url`, `--ollama-model` | Defaults: `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a [`vision_assistant`](configuration.md#vision_assistant) of any provider other than `ollama` in `config.json`, the frames (here and for `360 director --vl-check`) go to that provider instead: an API (`anthropic`, `openai`, `xai`, with your API key) or a subscription (`claude-code`, `codex`, `antigravity`), once you agreed to it in the Models tab ("Allow vision requests"), and these two options are not used. An Ollama URL that is not this machine (`localhost` or a loopback address, except on the Cutpoint proxy's port) needs that Vision consent too; without it vision is skipped with a WARNING (`vision_consent_needed`) |
+| `--ollama-url`, `--ollama-model` | Defaults: `vision_assistant.url` (Vision role `ollama`) / `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `vision_assistant.model` (Vision role `ollama`) / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a [`vision_assistant`](configuration.md#vision_assistant) of any provider other than `ollama` in `config.json`, the frames (here and for `360 director --vl-check`) go to that provider instead: an API (`anthropic`, `openai`, `xai`, with your API key) or a subscription (`claude-code`, `codex`, `antigravity`), once you agreed to it in the Models tab ("Allow vision requests"), unless you give `--ollama-url` and/or `--ollama-model`: then that Ollama is used instead (a flag left out takes its default) and nothing goes to the hosted provider. An Ollama URL that is not this machine (`localhost` or a loopback address, except on the Cutpoint proxy's port) needs that Vision consent too; without it vision is skipped with a WARNING (`vision_consent_needed`) |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
 | `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
 | `--skip STEP ...` | Leave out `reactions`, `keyframes`, `crashes` and/or `dialogue` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
+| `--visual-index` / `--no-visual-index` | Also write the frame embeddings (the CLIP visual layer, in the `keyframes` step, before the HUD text for `gaming` and `funny`) that the AI Chat's [`look_for`](#ai-chat) searches, for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` footage always has them. They change no ranking. Sources with telemetry: the crashes step also reads them, so `crashes.json` can differ; the ranking does not. Like that layer for the other styles it needs the `events` extra, its model files and a CUDA GPU, and is left out with an INFO line otherwise (the HUD text of `gaming` and `funny` still runs). Cached per source like the rest: a later run with the option on computes only what is missing, and one with it off leaves what exists. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
 | `--no-scenes` | Skip scene detection |
 | `--max-candidates N` | Candidates per source before merging. Default: enough to cover about 3 times the style's target length, at least 30. `gaming` has an open list instead: see [Candidates](#candidates) |
 | `--recover` | After a read error, resume analysis past the bad region |
@@ -996,7 +1015,13 @@ rating threshold reads the raw rating. `action-cam` is unchanged. A rating
 with speech has its own cache key: those windows are rated again once, then cached.
 
 Signals combined: loudness (EBU R128 against the clip's own baseline), speech keywords from the
-transcript, laughter, scene-cut density and speech continuity. Likely Whisper hallucinations
+transcript, laughter, scene-cut density and speech continuity. The `laughter` signal counts
+laughter written in the transcript: Whisper's non-speech markers (`[laughter]`, `(laughs)`,
+`*laughing*`, in brackets, parentheses or asterisks) and interjections such as `haha` and `lol`;
+the spoken word "laugh" or "laughter" does not count. Laughter heard in the audio is
+`signals.events.laughter`, a separate value. Whisper may write such a marker (the default token
+suppression that blocked `[`, `(` and `*` is off); the marker is taken out of the transcript, the
+subtitles and the captions and only counts here. Existing transcripts have none. Likely Whisper hallucinations
 (a short phrase repeated, very low confidence) are dropped first. Boundaries are snapped to
 scene cuts and never cut a word. Each signal is a named feature, and a style's weights name
 these features. The `score` is a candidate's weighted peak divided by the weights of the
@@ -1099,11 +1124,11 @@ the transcription starts. Any other value, or unset: as described above.
 |---|---|
 | `transcribe` | Whisper transcription, scoring and scene detection |
 | `reactions` | PANNs sound events (laughter, screams, cheering). Also the voice layer when `crashes` will run |
-| `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game. For `action`, `action-cam` and `sport`, the CLIP visual layer, only with a CUDA GPU |
+| `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game; the vision model, when it answers, labels the regions it proposes. For `action`, `action-cam` and `sport`, the CLIP visual layer, only with a CUDA GPU; with `--visual-index` that layer runs for `gaming`, `funny` and `commentary` too (frame embeddings for the AI Chat's visual search, no effect on ranking) |
 | `crashes` | Action-cam footage only (telemetry found, or style `action-cam`, `action` or `sport`) |
 | `dialogue` | A text model reads the whole transcript and marks talk worth keeping. Open-list styles only (`gaming`). See [Dialogue reader](#dialogue-reader) |
 | `ranking` | Re-ranks the candidates with the events, after leaving out those in HUD menu time ([game streams](workflows/game-streams.md)); `highlights.json`, `events.json`, `events.txt` and the other result files are written after the last step |
-| `vision` | Ollama frame rating, only when vision is on |
+| `vision` | Ollama frame rating, only when vision is on. The model sees frames only, so a moment with laughter heard in it (`signals.events.laughter` of 0.12 or more) gets a sentence in the prompt saying so |
 
 Nothing new is required. Without the `events` extra or the model files, a step is skipped with an
 `INFO` line and nothing is downloaded; `cutpoint setup` and the extra add them. A step that fails
@@ -1115,12 +1140,13 @@ layer is not part of `analyze`; it stays in [`events`](#events) and `edit --even
 
 #### Dialogue reader
 
-The `dialogue` step runs for open-list styles (`gaming`) after the reactions and events layers, and is skipped with a reason for the others and for footage with no speech. `--skip dialogue` (or `analysis.skip`) leaves it out. A text model reads the whole transcript of each source in overlapping pieces (8 minutes each, 1 minute shared) and marks stretches of talk worth keeping: `funny`, `out_of_pocket`, `ragebait`, `back_and_forth` or `story`, from the setup to the payoff. Each becomes an event in `events.json` with `kind` `text` and `type` `dialogue` (`label` is the talk kind, `title` 3 to 6 words naming who or what the bit is about ("" when the model gave none), `description` what happens, `details` the model's rating, backend and model). The candidate the stretch nominates, or the one it widens (the most confident stretch's title), gets the title as `dialogue_title` and its slug (without apostrophes, cut at a word) as `label`, so it is part of the clip file name (`dialogue-<kind>` for a nominee without a title, and a widened candidate keeps its label). In `cutpoint ui` the moment is named by the title. Each stretch also gets a `DIALOGUE` line in `events.txt`. A later `events` run, or an `analyze --skip dialogue`, keeps the dialogue events an earlier run wrote.
+The `dialogue` step runs for open-list styles (`gaming`) after the reactions and events layers, and is skipped with a reason for the others and for footage with no speech. `--skip dialogue` (or `analysis.skip`) leaves it out. A text model reads the whole transcript of each source in overlapping pieces (8 minutes each, 1 minute shared) and marks stretches of talk worth keeping: `funny`, `out_of_pocket`, `ragebait`, `back_and_forth` or `story`, from the setup to the payoff. Each becomes an event in `events.json` with `kind` `text` and `type` `dialogue` (`label` is the talk kind, `title` 3 to 6 words naming who or what the bit is about ("" when the model gave none), `description` what happens, `details` the model's rating, backend and model). The candidate the stretch nominates, or the one it widens (the most confident stretch's title), gets the title as `dialogue_title` and its slug (without apostrophes, cut at a word) as `label`, so it is part of the clip file name (`dialogue-<kind>` for a nominee without a title, and a widened candidate keeps its label). In `cutpoint ui` the moment is named by the title, in the moments list and in AI Chat. Each stretch also gets a `DIALOGUE` line in `events.txt`. A later `events` run, or an `analyze --skip dialogue`, keeps the dialogue events an earlier run wrote.
 
 The model is chosen once per run:
 
 | Model | Ranked by |
 |---|---|
+| An explicit `--ollama-url` and/or `--ollama-model` on `analyze` or `edit` (wins over the AI Chat model, hosted or Ollama; a flag left out takes its default; an Ollama on another machine needs the AI Chat consent, else the step is skipped with a `chat_consent_needed` warning and nothing goes to a hosted model) | As the Ollama row below |
 | The AI Chat model, when it is a hosted API or subscription and you gave the [AI Chat consent](configuration.md#assistant) (`assistant-v3:`) | The model's own 1 to 10 rating |
 | A local Ollama (the AI Chat model when that is an Ollama, else `qwen3.5:9b`), or an Ollama on another machine you gave the AI Chat consent for | Reaction sounds (laughter, screams, cheering) per minute inside the stretch; a stretch with none still counts, at a low baseline |
 | A hosted AI Chat model without the consent, and no local model | The step is skipped with a `chat_consent_needed` warning |
@@ -1132,7 +1158,7 @@ The transcript is sent whole to a hosted model, which is why the AI Chat consent
 The stretches feed the candidates:
 
 - A stretch no candidate overlaps (or one too long to widen them) nominates a candidate of its own that keeps the whole stretch (starting 1 s before it), not limited by the style's maximum length.
-- A candidate a stretch overlaps is widened to cover the whole stretch, but only when the result (the stretch and every candidate it overlaps) stays within 90 s. Several candidates one stretch overlaps become one, the best scoring; its id and signals stay. **The others stay in `highlights.json` under `widened_from.absorbed` but are no longer candidates, so `--ids` rejects their ids**; a moment you noted by id may be inside another candidate now. A longer stretch is a candidate of its own, over the candidates it overlaps, and those stay as they are. A re-run widens again from the original bounds.
+- A candidate a stretch overlaps is widened to cover the whole stretch, but only when the result (the stretch and every candidate it overlaps) stays within 90 s. Several candidates one stretch overlaps become one, the best scoring; its id and signals stay. **The others stay in `highlights.json` under `widened_from.absorbed` but are no longer candidates, so `--ids` rejects their ids**; a moment you noted by id may be inside another candidate now. A longer stretch is a candidate of its own, over the candidates it overlaps, and those stay as they are. A widened candidate keeps only the part of the stretch that leads into its original moment: where the transcript has no speech for 8 s or more before the moment, it starts after that silence, and it ends before such a silence after the moment (the 90 s limit is checked before this). A re-run widens again from the original bounds.
 - A candidate a stretch overlaps gets up to 3 points on top of its other event points, scaled by the stretch's strength.
 - A pick skips a candidate that mostly overlaps one already picked from the same source (not with `--ids`), so a clip inside a long stretch is not picked twice.
 - `--max-total` (and the `montage` kind) skips a dialogue candidate that is longer than what is left of the cap; it is not trimmed.
@@ -1167,7 +1193,10 @@ In styles with an open list (`gaming`), detected events can also create candidat
 create none and behave as before. When events are scored (`analyze` with its event
 steps, or `events`), each event that can score and that no candidate covers gets a window
 (a few seconds before it, and after it as its type's tail or the style's post-roll); events
-close together make one candidate. A nominated candidate has `signals.events.nominated` (the
+close together make one candidate. A laughter sound heard with a confidence below 0.12 (the detector's own threshold) nominates a
+candidate, and so labels it `laughter`, only with backup within 5 s: another laughter, scream or
+cheering sound, a laughter word or marker in the transcript, or loud speech. A stronger laugh
+needs none. A nominated candidate has `signals.events.nominated` (the
 event names) and keeps the score its window had from the grids as `grid_score`; its `score` is at
 least 0.6 of the best other candidate's of that source, so the events decide its rank. A dialogue stretch over 90 s has exactly 0.6 of it, and its laughter and on-screen events count per minute. Ids of
 nominees continue after the highest id ever given (`settings.last_candidate_id`). Menu time is
@@ -1187,6 +1216,7 @@ Measured on 1080p gaming footage (RTX 3080 10 GB), rounded:
 |---|---|---|---|
 | GPU, one 7.4 min file, first run | about 8.5 min | `transcribe` 76 s, `reactions` 5 s, `keyframes` 7 min (about 4 min of it HUD discovery), `ranking` under 1 s | about 4 GB |
 | GPU, 2 x 10 min files, first run | about 17 min | `transcribe` 2.7 min, `reactions` 26 s, `keyframes` 14 min (about 7 min of it discovery) | about 3.7 GB |
+| GPU, 72 min 1080p60 gameplay, `--visual-index` | | visual index about 373 s per hour of video, about 25 MB per hour of cache | |
 | Cached re-run | about 5 s | | |
 | CPU only, one 10 min file, discovery done | about 5.7 min | `transcribe` 2 min, `reactions` 16 s, `keyframes` 3.4 min (OCR on the CPU) | |
 | CPU only, 60 s action clip | 25 s | `keyframes` skipped with "no CUDA GPU (CLIP on the CPU: about an hour per hour)" | |
@@ -1366,7 +1396,7 @@ computer (a network folder) is not, so delete it by hand if no run is active.
 
 | Option | Meaning |
 |---|---|
-| `--top N` | Top N by score (default: the style's target length). An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
+| `--top N` | Top N by score (default: the best moments that fit the style's target length, a moment that does not fit in the room left is skipped and the next one tried; a must-include crash is always kept, and if none fits the best one is taken). An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
 | `--ids ...` | Explicit candidate ids |
 | `--segments FILE` | Export exactly the listed segments in the listed order |
 | `--max-total S` | Keep the best-scoring moments that fit in S seconds. An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
@@ -1390,7 +1420,7 @@ computer (a network folder) is not, so delete it by hand if no run is active.
 | `--json` | Result as one [JSON envelope](#json-output) on stdout |
 
 Reserved slots for visual candidates. An automatic choice (`--top`, the default
-`suggested_top` and `--max-total`, so also `edit` and `assemble <project>`) in a project of
+edit and `--max-total`, so also `edit` and `assemble <project>`) in a project of
 an `action-cam`, `action` or `sport` style keeps about one pick in eight for the
 [visual candidates](#analyze): none below 5 picks, one from 5, two from 16 (at most 2; with
 `--max-total`, counted from the moments that fit). They go by peak, and only one with a peak
@@ -1674,7 +1704,7 @@ write to, as for `clips --segments`). Everything else is a clips folder, as befo
 options below are then refused (`bad_args`, exit 1).
 
 - The moments are chosen as `clips` chooses them: `--top N`, `--ids`, `--segments FILE`,
-  `--max-total S` and `--order` (default: `suggested_top` of `highlights.json`). `--mix` is
+  `--max-total S` and `--order` (default: the best moments that fit the style's target length, as `clips`; `suggested_top` of `highlights.json` is their count). `--mix` is
   not offered; pass `--segments <project>/mix_segments.json --order arc`.
 - They are exported with the export options of [`clips`](#clips): `--vertical`, `--size`,
   `--crop`, `--smart-tail`, `--tail-min`, `--tail-max`, `--event-tails`, `--event-window`,
@@ -1995,8 +2025,11 @@ cutpoint proxy [--port PORT]
 daemon in the foreground. **Use at your own risk**. Subscriptions (Claude Code, ChatGPT Codex,
 Google Antigravity) route their OAuth authorization, token refresh and inference requests
 through this loopback service (`127.0.0.1`). Available in both full and lite installs without
-requiring local models or PyTorch. Keep `cutpoint proxy` running in a dedicated terminal
-whenever you log in, refresh sessions, or run assistant or vision requests with a subscription provider.
+requiring local models or PyTorch. `cutpoint ui` starts this proxy itself when it needs it (see
+[`ui`](#ui)) and stops it on exit, so `cutpoint proxy` is no longer needed for sign-in there. Run it
+in a dedicated terminal to keep the proxy running across UI restarts, for `cutpoint login`, and for
+command-line runs (`analyze`, `edit`, `events`) whose Vision or AI Chat model is a subscription. A
+proxy started this way is never stopped by the UI.
 
 On first run, `cutpoint proxy` lazily downloads the checksum-verified ~24 MB binary (pinned version
 8.0.47) to `<CUTPOINT_HOME>/tools/cliproxy/` and starts it on port 18317 (`CUTPOINT_CLIPROXY_PORT` or

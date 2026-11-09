@@ -17,7 +17,7 @@ import pytest
 import requests
 
 from conftest import set_config, warning_codes, write
-from cutpoint import analyze, cache, jsonout, planning, progress
+from cutpoint import analyze, cache, jsonout, planning, progress, vision
 from cutpoint.assistant import providers
 from cutpoint.events import dialogue, report, scoring
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES
@@ -422,6 +422,7 @@ class Net:
 
     def __init__(self, monkeypatch, *, ollama: bool = False, hosted_text: str = '{"moments": []}'):
         self.ollama, self.hosted_text = ollama, hosted_text
+        self.pulled = ["qwen3.5:9b"]  # the models /api/tags lists
         self.calls: list[tuple[str, str]] = []
         self.bodies: list[dict[str, Any]] = []
         monkeypatch.setattr(requests, "get", lambda url, **kw: self._go("GET", url, kw))
@@ -434,7 +435,9 @@ class Net:
             if not self.ollama:
                 raise requests.ConnectionError("connection refused")
             if method == "GET" and url.endswith("/api/tags"):
-                return Resp({"models": [{"name": "qwen3.5:9b", "digest": "0123456789abcdef"}]})
+                return Resp(
+                    {"models": [{"name": n, "digest": "0123456789abcdef"} for n in self.pulled]}
+                )
             if method == "POST" and url.endswith("/api/generate"):
                 return Resp({"response": '{"moments": [{"first_line": 0}]}'})
         if "api.anthropic.com" in url:
@@ -593,6 +596,14 @@ def test_a_style_without_an_open_list_skips_the_step_and_asks_no_model(style, mo
 def test_a_source_without_speech_skips_the_step(monkeypatch):
     net = Net(monkeypatch)
     backend, steps = _skips("gaming", {"a.mp4": []})
+    assert backend is None and steps.reasons["dialogue"] == "no speech to read"
+    assert net.calls == []
+
+
+def test_a_source_with_only_marker_holders_skips_the_step(monkeypatch):
+    net = Net(monkeypatch)
+    holder = {"start": 0, "end": 1, "text": "", "words": [], "markers": [{"text": "[Music]"}]}
+    backend, steps = _skips("gaming", {"a.mp4": [holder]})
     assert backend is None and steps.reasons["dialogue"] == "no speech to read"
     assert net.calls == []
 
@@ -1264,12 +1275,17 @@ def test_a_remote_ollama_as_ai_chat_with_only_vision_consent_gets_no_transcripts
     assert REMOTE_KEY in res.warnings[0]["message"]
 
 
-def test_a_remote_ollama_as_ai_chat_gives_way_to_the_local_one_without_asking_it(home, monkeypatch):
+def test_a_remote_ollama_as_ai_chat_gives_way_to_the_local_one_without_asking_it(
+    home, monkeypatch, caplog
+):
     set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL})
     net = Net(monkeypatch, ollama=True)
-    choice = dialogue.choose_backend()
+    with caplog.at_level(logging.INFO):
+        choice = dialogue.choose_backend()
     assert choice.backend is not None and choice.backend.name == "local"
     assert "127.0.0.1" in choice.backend.key and net.to(REMOTE) == []
+    assert f"Dialogue reader: the Ollama at {REMOTE}:11434 has no consent; using" in caplog.text
+    assert "hosted AI Chat model" not in caplog.text
 
 
 def test_hosted_chat_without_consent_and_a_remote_ollama_url_with_only_vision_consent(
@@ -1316,6 +1332,124 @@ def test_a_remote_ollama_with_the_assistant_consent_is_read_like_a_local_one(hom
     (ev,) = dialogue.to_events("a.mp4", [stretch(0.0, 60.0, rating=10)], None, "remote", "m")
     assert ev["confidence"] == dialogue.BASELINE_STRENGTH
     backend.close()  # frees the model
+
+
+# --------------------------------------------------------------------------- the flags win (#805)
+@pytest.fixture(autouse=True)
+def _fresh_override_log(monkeypatch):
+    monkeypatch.setattr(vision, "_override_logged", set())
+
+
+def test_ollama_flags_win_over_a_consented_hosted_ai_chat_model(hosted_chat, monkeypatch):
+    hosted_chat([f"assistant-v3:{ANTHROPIC}"])  # key and consent: it would be the backend
+    net = Net(monkeypatch, ollama=True)
+    net.pulled = ["tiny:1b"]
+    made: list[bool] = []
+    real = providers.make
+    monkeypatch.setattr(providers, "make", lambda *a, **k: made.append(True) or real(*a, **k))
+    with jsonout.run("analyze") as res:
+        backend = dialogue.choose_backend(None, "tiny:1b").backend
+    assert backend is not None and backend.name == "local" and backend.model == "tiny:1b"
+    assert "tiny:1b" in backend.key
+    assert net.to("api.anthropic.com") == [] and not made and res.warnings == []
+
+
+def test_ollama_flags_over_a_hosted_model_log_one_info_line(hosted_chat, monkeypatch, caplog):
+    hosted_chat([f"assistant-v3:{ANTHROPIC}"])
+    Net(monkeypatch, ollama=True)
+    with caplog.at_level(logging.INFO):
+        dialogue.choose_backend("http://127.0.0.1:11434", None)
+    want = "--ollama-url/--ollama-model given: using the Ollama at 127.0.0.1:11434, not anthropic"
+    assert caplog.text.count(want) == 1
+
+
+def test_ollama_flags_win_over_an_ai_chat_ollama(home, monkeypatch, caplog):
+    set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL, "consent": [REMOTE_KEY]})
+    net = Net(monkeypatch, ollama=True)
+    with caplog.at_level(logging.INFO):
+        backend = dialogue.choose_backend("http://127.0.0.1:11434", None).backend
+    assert backend is not None and backend.name == "local" and "127.0.0.1" in backend.key
+    assert net.to(REMOTE) == []
+    want = (
+        "--ollama-url/--ollama-model given: using the Ollama at 127.0.0.1:11434, "
+        "not the Ollama at 10.10.10.235:11434"
+    )
+    assert caplog.text.count(want) == 1
+
+
+def test_ollama_flags_at_the_ai_chat_ollama_host_log_no_override_line(home, monkeypatch, caplog):
+    set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL, "consent": [REMOTE_KEY]})
+    Net(monkeypatch, ollama=True)
+    with caplog.at_level(logging.INFO):
+        dialogue.choose_backend(REMOTE_URL, None)
+    assert "--ollama-url/--ollama-model given" not in caplog.text
+
+
+def test_ollama_flags_with_a_bad_port_in_ollama_host_do_not_raise(home, monkeypatch):
+    set_config(home, assistant={"provider": "ollama"})
+    monkeypatch.setenv("OLLAMA_HOST", "myhost:99999")
+    Net(monkeypatch, ollama=True)
+    dialogue.choose_backend("http://127.0.0.1:11434")
+
+
+def test_a_remote_ollama_url_without_consent_is_skipped_not_handed_to_the_hosted_model(
+    hosted_chat, monkeypatch, caplog
+):
+    hosted_chat([f"assistant-v3:{ANTHROPIC}"])  # the hosted model is agreed to and usable
+    net = Net(monkeypatch, ollama=True)
+    with caplog.at_level(logging.INFO), jsonout.run("analyze") as res:
+        choice = dialogue.choose_backend(REMOTE_URL, None)
+    assert choice.backend is None
+    assert warning_codes(res.warnings) == ["chat_consent_needed"]
+    assert REMOTE_KEY in res.warnings[0]["message"]
+    assert net.to(REMOTE) == [] and net.to("api.anthropic.com") == []
+
+
+def test_a_remote_ollama_url_with_the_assistant_consent_is_used(hosted_chat, home, monkeypatch):
+    hosted_chat([f"assistant-v3:{ANTHROPIC}", REMOTE_KEY])
+    net = Net(monkeypatch, ollama=True)
+    with jsonout.run("analyze") as res:
+        backend = dialogue.choose_backend(REMOTE_URL, None).backend
+    assert backend is not None and backend.name == "remote" and REMOTE in backend.key
+    assert backend.ask("read this") == {"moments": [{"first_line": 0}]}
+    assert net.to(REMOTE) and net.to("api.anthropic.com") == [] and res.warnings == []
+
+
+def test_the_skip_reason_names_the_remote_ollama_url_that_needs_consent(hosted_chat, monkeypatch):
+    hosted_chat([f"assistant-v3:{ANTHROPIC}"])
+    Net(monkeypatch, ollama=True)
+    with jsonout.run("analyze"):
+        choice = dialogue.choose_backend(REMOTE_URL, None)
+    assert choice.backend is None
+    assert choice.reason == f"the Ollama at {REMOTE}:11434 needs your consent (Models tab)"
+
+
+def test_the_skip_reason_names_a_remote_ai_chat_ollama_that_needs_consent(home, monkeypatch):
+    set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL})
+    Net(monkeypatch, ollama=False)  # the default Ollama does not answer either
+    with jsonout.run("analyze"):
+        choice = dialogue.choose_backend()
+    assert choice.backend is None
+    assert choice.reason == f"the Ollama at {REMOTE}:11434 needs your consent (Models tab)"
+
+
+def test_the_skip_reason_of_a_hosted_chat_api_without_consent_is_unchanged(
+    hosted_chat, monkeypatch
+):
+    hosted_chat([])
+    Net(monkeypatch, ollama=False)
+    with jsonout.run("analyze"):
+        choice = dialogue.choose_backend()
+    assert choice.backend is None
+    assert choice.reason == "the hosted AI Chat model needs consent and no local text model answers"
+
+
+def test_an_ollama_model_flag_alone_uses_the_default_url(home, monkeypatch):
+    net = Net(monkeypatch, ollama=True)
+    net.pulled = ["tiny:1b"]
+    backend = dialogue.choose_backend(None, "tiny:1b").backend
+    assert backend is not None and backend.model == "tiny:1b" and "127.0.0.1" in backend.key
+    assert [c for c in net.calls if "11434" not in c[1]] == []
 
 
 # --------------------------------------------------------------------------- the hosted model (F5)
@@ -1462,14 +1596,14 @@ def test_a_widened_candidate_gets_the_transcript_of_its_new_span_and_gives_it_ba
 ):
     words = [
         {"start": float(t), "end": t + 0.5, "word": f"w{t}", "probability": 0.99}
-        for t in range(100, 180, 20)
+        for t in range(100, 180, 5)
     ]
     segs = [{"start": 100.0, "end": 180.0, "text": "x", "words": words}]
     monkeypatch.setattr(scoring, "_segments", lambda src, language=None: segs)
     cand = own("h001", 150.0, 60.0, end=158.0) | {"transcript": "w160"}
     hl = highlights([cand])
     scoring.nominate(hl, events_of([talk_event(100.0, 180.0)]), tmp_path, [grid()])
-    assert cand["transcript"].startswith("w100 w120") and cand["transcript"] != "w160"
+    assert cand["transcript"].startswith("w100 w105") and cand["transcript"] != "w160"
     assert "dialogue_description" not in cand
     scoring.nominate(hl, events_of([]), tmp_path, [grid()])
     assert cand["transcript"] == "w160" and (cand["start"], cand["end"]) == (150.0, 158.0)
@@ -1680,3 +1814,156 @@ def test_the_moments_view_marks_a_long_dialogue_bit_with_its_description(tmp_pat
         c["display_label"] != "Grandpa's Wobbly Treehouse" for c in view if not c["long_bit"]
     )
     assert moments_view(hl)["candidates"][0]["bit_description"] == ""  # no events.json
+
+
+# --------------------------------------------------------------------------- widening: silences
+def words_at(*spans: tuple[float, float]) -> list[dict[str, Any]]:
+    """Transcript segments with a word every 2 s over each ``(start, end)``."""
+    words = [
+        {"word": f"w{int(t)}", "start": float(t), "end": t + 0.5, "probability": 0.99}
+        for a, b in spans
+        for t in range(int(a), int(b), 2)
+    ]
+    return [{"start": words[0]["start"], "end": words[-1]["end"], "text": "x", "words": words}]
+
+
+def spoken_of(segs: list[dict[str, Any]]) -> list[tuple[float, float]]:
+    return [(w["start"], w["end"]) for s in segs for w in s["words"]]
+
+
+@pytest.mark.parametrize(
+    ("spans", "want"),
+    [
+        ([(100, 178)], (100, 178)),  # talk all along: nothing to cut
+        ([(100, 116), (122, 178)], (100, 178)),  # a gap of 7.5 s is not long
+        ([(100, 116), (140, 178)], (140, 178)),  # 23.5 s of silence before the moment
+        (
+            [(100, 116), (130, 160), (170, 178)],
+            (130, 178),
+        ),  # only the silence before the moment moves the start
+    ],
+)
+def test_trim_silence_starts_after_a_long_silence_before_the_moment(spans, want):
+    got = scoring.trim_silence(spoken_of(words_at(*spans)), 100.0, 178.0, (150.0, 158.0))
+    assert got[0] == want[0]
+
+
+def test_trim_silence_ends_before_a_long_silence_after_the_moment():
+    spoken = spoken_of(words_at((100, 166)))  # the last word ends at 164.5
+    assert scoring.trim_silence(spoken, 100.0, 178.0, (150.0, 158.0)) == (100.0, 164.5)
+
+
+def test_trim_silence_never_cuts_into_the_moment():
+    # a silence under the moment: it starts where the moment starts and ends where it ends
+    spoken = spoken_of(words_at((100, 120), (170, 178)))
+    assert scoring.trim_silence(spoken, 100.0, 178.0, (140.0, 160.0)) == (140.0, 160.0)
+    assert scoring.trim_silence([], 100.0, 178.0, (150.0, 158.0)) == (150.0, 158.0)
+
+
+def test_trim_silence_cuts_a_silent_head_up_to_the_first_word():
+    spoken = spoken_of(words_at((112, 178)))
+    assert scoring.trim_silence(spoken, 100.0, 178.0, (150.0, 158.0)) == (112.0, 178.0)
+
+
+def widened(tmp_path, monkeypatch, segs, stretch=(100.0, 178.0), **extra):
+    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: segs)
+    hl = widen_hl(own("h001", 150.0, 60.0, end=158.0) | {"transcript": "w150"})
+    scoring.nominate(hl, events_of([talk_event(*stretch)]), tmp_path, [grid()])
+    return hl
+
+
+def test_a_widened_candidate_starts_after_the_long_silence_before_its_moment(tmp_path, monkeypatch):
+    hl = widened(tmp_path, monkeypatch, words_at((100, 116), (140, 178)))
+    (cand,) = hl["candidates"]  # no nominee for the stretch the candidate was trimmed from
+    assert (cand["start"], cand["end"]) == (140.0, 178.0)
+    assert cand["duration"] == 38.0
+    assert (cand["widened_from"]["start"], cand["widened_from"]["end"]) == (150.0, 158.0)
+    assert cand["transcript"].startswith("w140") and "w100" not in cand["transcript"]
+
+
+def test_a_widened_candidate_ends_before_a_long_silence_after_its_moment(tmp_path, monkeypatch):
+    hl = widened(tmp_path, monkeypatch, words_at((100, 166)))
+    (cand,) = hl["candidates"]
+    assert (cand["start"], cand["end"]) == (100.0, 164.5)
+
+
+def test_a_trimmed_widening_is_undone_like_any_other(tmp_path, monkeypatch):
+    hl = widened(tmp_path, monkeypatch, words_at((100, 116), (140, 178)))
+    scoring.nominate(hl, events_of([]), tmp_path, [grid()])
+    (cand,) = hl["candidates"]
+    assert (cand["start"], cand["end"]) == (150.0, 158.0) and cand["transcript"] == "w150"
+
+
+def test_a_trim_back_to_the_moment_itself_widens_nothing_and_nominates_nothing(
+    tmp_path, monkeypatch
+):
+    # nothing is said around the moment: the stretch has no part that leads into it
+    hl = widened(tmp_path, monkeypatch, words_at((150, 158)))
+    (cand,) = hl["candidates"]
+    assert (cand["start"], cand["end"]) == (150.0, 158.0) and "widened_from" not in cand
+
+
+def test_a_trimmed_widened_candidate_keeps_the_stretch_title_and_its_type(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        scoring, "_segments", lambda src, language=None: words_at((100, 116), (140, 178))
+    )
+    stretch = talk_event(100.0, 178.0) | {"title": "Grandpa And The Ladder"}
+    hl = widen_hl(own("h001", 150.0, 60.0, end=158.0))
+    scoring.nominate(hl, events_of([stretch]), tmp_path, [grid()])
+    (cand,) = hl["candidates"]
+    assert cand["dialogue_title"] == "Grandpa And The Ladder"
+    assert (
+        cand["label"] == "grandpa-and-the-ladder"
+        and cand["widened_from"]["label"] == "gaming-moment"
+    )
+    assert (cand["start"], cand["end"]) == (140.0, 178.0)
+
+
+def test_a_stretch_over_the_cap_is_not_trimmed_and_stays_a_moment_of_its_own(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        scoring, "_segments", lambda src, language=None: words_at((100, 116), (300, 400))
+    )
+    hl = widen_hl(own("h001", 320.0, 60.0, end=328.0))
+    assert scoring.nominate(hl, events_of([talk_event(100.0, 400.0)]), tmp_path, [grid()]) == 1
+    (own_,) = [c for c in hl["candidates"] if not scoring.is_nominated(c)]
+    assert (own_["start"], own_["end"]) == (320.0, 328.0)
+    (nom,) = nominees(hl)
+    assert nom["start"] <= 100.0 and nom["end"] == pytest.approx(400.0)
+
+
+def test_without_a_transcript_a_widened_candidate_keeps_the_whole_stretch(tmp_path):
+    hl = widen_hl(own("h001", 150.0, 60.0, end=158.0))
+    scoring.nominate(hl, events_of([talk_event(100.0, 178.0)]), tmp_path, [grid()])
+    (cand,) = hl["candidates"]
+    assert (cand["start"], cand["end"]) == (100.0, 178.0)
+
+
+def test_a_fresh_reading_removes_the_sources_stale_caches_only(tmp_path):
+    """#803: caches of an earlier prompt version or of the same model's other transcripts are
+    never read again; another model's current cache and another source's stay."""
+    a = write(tmp_path / "a.mp4")
+    b = write(tmp_path / "b.mp4")
+    lines = talk_lines(10)
+    other_lines = talk_lines(11)
+    same, _ = fake_backend(lambda _p: {"moments": []}, key="fake@h:same")
+    other, _ = fake_backend(lambda _p: {"moments": []}, key="fake@h:other")
+    dialogue.read_source(a, other_lines, same)
+    dialogue.read_source(a, lines, other)
+    dialogue.read_source(b, lines, same)
+    same_old = dialogue._cache_path(a, other_lines, same)
+    other_a = dialogue._cache_path(a, lines, other)
+    same_b = dialogue._cache_path(b, lines, same)
+    stale = dialogue._cache_path(a, lines, same).with_name("dialogue-oldversion.json")
+    stale.write_text(
+        json.dumps({"version": dialogue.PROMPT_VERSION - 1, "model": "fake@h:other"}),
+        encoding="utf-8",
+    )
+    assert same_old.is_file() and other_a.is_file() and same_b.is_file() and stale.is_file()
+
+    dialogue.read_source(a, lines, same)
+    assert dialogue._cache_path(a, lines, same).is_file()
+    assert not same_old.exists()  # same model, other transcript
+    assert not stale.exists()  # earlier prompt version
+    assert other_a.is_file()  # another model, current version
+    assert same_b.is_file()  # another source
+    assert dialogue.read_source(a, lines, same).cached

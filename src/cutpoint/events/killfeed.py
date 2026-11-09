@@ -16,6 +16,7 @@ from __future__ import annotations
 import bisect
 import contextlib
 import difflib
+import functools
 import logging
 import os
 import queue
@@ -31,13 +32,14 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache, memguard
+from cutpoint import cache, memguard, state
 from cutpoint.events import ocr_raw
 from cutpoint.events.common import Source, layer_cache_path
 from cutpoint.events.discover import DiscoverParams, _centre_cover, gameplay_frames
 from cutpoint.events.menu_spans import merge_menu_frames
 from cutpoint.events.regions import HudPreset, Region, game_key_for_path, load_preset, scaled
 from cutpoint.ffmpeg_utils import READ_ERROR_RE, decode_raw, decoder_for, probe
+from cutpoint.imageio import write_png
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +99,11 @@ class OcrParams:
 # 17: feeds learn nothing from the footage, so no kills learned at 16 are reused
 # 18: a discovered feed region that reads like stream chat (:func:`chat_label`) gives no events
 # 19: a chat row (:func:`_is_chat`) gives no kill, assist or crash on any feed, not only in a log
-GENERIC_VERSION = 19
+# 20: reads of one kill row are one kill (:func:`merge_kill_reads`), a banner text that stays on a
+# screen is one banner (:func:`collapse_banner_bursts`), a recurring system line is no kill
+# (:meth:`Interpreter.drop_notice_kills`) and tags match tighter and in glued names
+# (:func:`player_side`)
+GENERIC_VERSION = 20
 
 # Chat overlays (Twitch VODs): a discovered "feed" region that shows this many distinct text
 # lines per hour of footage is chat, not a kill feed. Measured on real footage: chat 9000-40000
@@ -189,6 +195,12 @@ def similar(a: str, b: str) -> float:
 # Letters OCR reads for one another, folded to one form when names are compared
 _LOOKALIKES = str.maketrans("0158L", "OISBI")
 TAG_MIN_FUZZY = 5  # shorter player tags must match a whole word of the name
+# A tag read with OCR errors (:func:`_find_tag`): the edits (a dropped, added or, in a long tag,
+# another letter) allowed by the tag's length (letters and digits), so a name that is another
+# player's does not pass for the tag. Measured on gameplay footage (a 13-letter tag, misread in 11
+# of 42 kill rows): one letter read as another (r as n), one or two dropped, never more than two.
+TAG_EDIT_STEPS = (7, 12, 16)  # a tag this long or longer allows one, two, three edits more
+TAG_SUBSTITUTE_MIN = 12  # a shorter tag allows no letter read as another ("Moonrock", "Moonreck")
 
 
 def _fold(text: str) -> str:
@@ -197,12 +209,58 @@ def _fold(text: str) -> str:
     return norm(text).replace(" ", "").translate(_LOOKALIKES)
 
 
-def is_player(name: str, tags: tuple[str, ...], thr: float = 0.8) -> bool:
+def _tag_edits(n_tag: int) -> int:
+    """The edits a tag of ``n_tag`` letters and digits may be read with (:data:`TAG_EDIT_STEPS`)."""
+    return sum(n_tag >= size for size in TAG_EDIT_STEPS)
+
+
+@state.register_cache
+@functools.lru_cache(maxsize=8192)
+def _find_tag(text: str, tag: str) -> tuple[int, int] | None:
+    """Where the folded ``tag`` is in the folded ``text``, as (start, end), allowing the OCR
+    errors of :func:`_tag_edits`; None if nowhere. The closest stretch wins (the earlier on a
+    tie)."""
+    at = text.find(tag)
+    if at >= 0:
+        return at, at + len(tag)
+    allowed = _tag_edits(len(tag))
+    if not allowed:
+        return None
+    sub = 1 if len(tag) >= TAG_SUBSTITUTE_MIN else 2  # else a letter read as another costs two
+    best: tuple[int, int, int] | None = None
+    for size in range(len(tag) - allowed, len(tag) + allowed + 1):
+        for start in range(len(text) - size + 1):
+            row = list(range(len(tag) + 1))
+            for i in range(1, size + 1):
+                prev, row = row, [i]
+                for j, c in enumerate(tag, 1):
+                    same = text[start + i - 1] == c
+                    row.append(min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (0 if same else sub)))
+            if row[-1] <= allowed and (best is None or row[-1] < best[0]):
+                best = (row[-1], start, start + size)
+    return None if best is None else (best[1], best[2])
+
+
+def _fuzzy_player(n: str, words: set[str], t: str) -> bool:
+    """Whether the folded name ``n`` holds the folded tag ``t`` read with OCR errors. A read
+    that needs an edit counts only when it is the whole name or a whole word of it, or the tag
+    is at least :data:`TAG_SUBSTITUTE_MIN` letters long: "Dunmorrow" is no read of "Dunmore" and
+    "Phoenician" none of "Phoenix". A missed credit is better than a false one."""
+    found = _find_tag(n, t)
+    if not found:
+        return False
+    if n.find(t) >= 0 or len(t) >= TAG_SUBSTITUTE_MIN:
+        return True
+    return any(_find_tag(w, t) == (0, len(w)) for w in (n, *words))
+
+
+def is_player(name: str, tags: tuple[str, ...]) -> bool:
     """Whether an OCR'd name is one of the user's tags, allowing OCR variants: spaces and
     punctuation are ignored ("Mari _gold"), look-alike letters are one (:func:`_fold`:
-    "M00nrock") and a clan tag or a weapon may be read with the name. A tag of fewer than
-    :data:`TAG_MIN_FUZZY` letters and digits must be a whole word: "Kip" is no part of
-    "Skipper"."""
+    "M00nrock"), a clan tag or a weapon may be read with the name, and a long enough tag may
+    be read with a letter dropped or added (:func:`_find_tag`: "Marigld" for "Marigold"; a
+    long tag also with a letter read as another). A tag of fewer than :data:`TAG_MIN_FUZZY`
+    letters and digits must be a whole word: "Kip" is no part of "Skipper"."""
     n = _fold(name)
     words = {_fold(w) for w in re.findall(r"[^\W_]+", _CAMEL_RE.sub(" ", name))}
     for tag in tags:
@@ -211,9 +269,32 @@ def is_player(name: str, tags: tuple[str, ...], thr: float = 0.8) -> bool:
             continue
         if t == n or t in words or t == _fold(split_name(name)[0]):
             return True
-        if len(t) >= TAG_MIN_FUZZY and (t in n or similar(n, t) >= thr):
+        if len(t) >= TAG_MIN_FUZZY and _fuzzy_player(n, words, t):
             return True
     return False
+
+
+def player_side(actor: str, target: str, tags: tuple[str, ...]) -> tuple[bool, bool]:
+    """Whether the actor and the target of a feed row are one of the user's tags
+    (:func:`is_player` per side; both are when a player kills themself). When neither is, but
+    the two names joined hold a tag of 7 letters or more (OCR cut the row between the names at
+    the wrong place: "Stonhar,QQ" and "uillmere77" for "Stonhar,Q" and "Quillmere77"), the side
+    that holds most of the tag is; neither is when the sides hold equal parts. A shorter tag is
+    not looked for in two joined names: "Mike" and "Vince" are no "Kevin"."""
+    p_actor = bool(actor.strip()) and is_player(actor, tags)
+    p_target = is_player(target, tags)
+    if p_actor or p_target or not actor.strip():
+        return p_actor, p_target
+    na, nt = _fold(actor), _fold(target)
+    for tag in tags:
+        t = _fold(tag)
+        found = _find_tag(na + nt, t) if _tag_edits(len(t)) >= 1 else None
+        if found and found[0] < len(na) < found[1]:  # a match inside one name is no tag
+            on_actor = max(0, min(found[1], len(na)) - found[0])
+            on_target = max(0, found[1] - max(found[0], len(na)))
+            if on_actor != on_target:
+                return on_actor > on_target, on_target > on_actor
+    return False, False
 
 
 # --------------------------------------------------------------------------- pixels
@@ -335,6 +416,18 @@ LINE_ENTRIES = ("icon", "text")
 # Two words that come back this often with neither ever seen with another name are a label
 # ("Target | Marked"), not two players: a replay shows a kill twice at most
 LABEL_REPEATS = 3
+# A system line of the feed ("friendly fire is now active") read as a kill row with the names
+# cut in the wrong place. The same line read as a notice recurs, a kill's two names do not read
+# like it: a notice text that comes back NOTICE_LINE_REPEATS times in one region (reads at least
+# NOTICE_LINE_APART_S apart, each similar to the first, :data:`NOTICE_LINE_SIMILAR`) is a system
+# line, and a kill in that region whose two names joined read like it (at least
+# NOTICE_LINE_MIN_CHARS letters and digits) is that line. Measured on gameplay footage: 12 of 270
+# kill rows were such a line; no real kill row was. A notice that is a kill's own row (read as a
+# notice when the icon gap was missed) does not count.
+NOTICE_LINE_REPEATS = 5
+NOTICE_LINE_APART_S = 10.0
+NOTICE_LINE_SIMILAR = 0.7
+NOTICE_LINE_MIN_CHARS = 12
 # Two reads of an icon kill line's name are one name when the shorter shares a run of
 # ICON_PART of its characters with the longer (a cut read with noise at the cut)
 ICON_PART = 0.8
@@ -342,6 +435,20 @@ ICON_PART = 0.8
 # one) of a start of the longer (misread letters: "NAVA" for "NOVA", "DRARNATI" of
 # "DRAMATICRAIL39")
 ICON_EDIT_CHARS = 4
+# Reads of one kill row that were not matched as it was tracked (a name split at the wrong
+# place, a different cut of it) are one kill when the later read starts within KILL_ROW_S of the
+# earlier one's start (a feed row lasts about 5 s: the median kill event of the measured footage
+# is 4.7 s) and no later than KILL_REREAD_GAP_S after its last sighting (a row is missed for a
+# few frames while it slides in or fades; at 3 frames a second that is a second or two).
+KILL_ROW_S = 6.0
+KILL_REREAD_GAP_S = 2.0
+SAME_NAME = 0.9  # a side this similar is the same name, so a mismatch on the other side is a kill
+# A banner phrase that comes back BANNER_BURST_MIN times running, each time within
+# BANNER_BURST_GAP_S of the last, on the same longer line of text, is text that stays on a
+# screen (a scoreboard with player names, a tournament table), not announcements. Such banners
+# on the measured gameplay were at least 45 s apart and never three in a row within a minute.
+BANNER_BURST_GAP_S = 60.0
+BANNER_BURST_MIN = 3
 
 
 def column_colours(bgr: np.ndarray) -> list[str | None]:
@@ -722,6 +829,134 @@ class EventTracker:
         return out
 
 
+def _same_kill_read(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """Whether two kill events are reads of one feed row: per side the names are nested,
+    misread or similar (:meth:`EventTracker._same_line`'s rules), or the two names joined
+    are similar (:data:`FUZZY`; OCR can cut the row between the names at another place, so
+    neither side matches). Never when the two were seen in one frame (``_times``, which the
+    tracker keeps until it finishes): the tracker keeps two rows on screen at once apart on
+    purpose. Never when one side is the same player and the other clearly another (a killer
+    with two victims, a victim of two killers): that is two kills. A wrong cut changes both
+    sides, so a side that is nearly the same name (:data:`SAME_NAME`) while the other does not
+    match is two kills too ("Alderwick > Boxer77" and "Alderwick > Boxer12")."""
+    if set(a.get("_times", ())) & set(b.get("_times", ())):
+        return False
+    sides = [(_fold(a.get(s) or ""), _fold(b.get(s) or "")) for s in ("killer", "victim")]
+    if not all(x and y for x, y in sides):
+        return False
+    ratios = [difflib.SequenceMatcher(None, x, y).ratio() for x, y in sides]
+    if max(ratios) >= 0.9 and min(ratios) < 0.5:
+        return False
+    if all(
+        EventTracker._nested(x, y) or EventTracker._misread(x, y) or r >= FUZZY
+        for (x, y), r in zip(sides, ratios, strict=True)
+    ):
+        return True
+    if max(ratios) >= SAME_NAME:
+        return False
+    joined = difflib.SequenceMatcher(None, sides[0][0] + sides[1][0], sides[0][1] + sides[1][1])
+    return joined.ratio() >= FUZZY
+
+
+def merge_kill_reads(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge the kill events that are reads of one feed row into one (the events not merged
+    away are returned in their order; the merged one is updated in place). Run on the
+    tracker's events, which still have their ``_times`` (:meth:`EventTracker.finish` removes
+    them).
+
+    The tracker joins sightings of a row when their names match side by side, which fails for
+    OCR variants and for a row split at another place ("Mari > goldKip" and "Marigold > Kip"),
+    so one row can leave two kills, which would count twice. Reads of one row are
+    close in time (:data:`KILL_ROW_S`, :data:`KILL_REREAD_GAP_S`) and have the same names
+    (:func:`_same_kill_read`). The read kept is that of the most letters and digits over both
+    names among those seen at least twice, or among all when none was (a cut read often has a
+    higher confidence than the whole row, as in :meth:`EventTracker._most_complete`; the more
+    confident one on a tie). It starts at the first read's start and ends at the last read's end,
+    counts all the sightings and keeps any player flag of the reads. Two kills of one killer, or
+    of one victim, with another name on the other side stay two."""
+    kills = sorted((e for e in events if e.get("type") == "kill"), key=lambda e: e["t"])
+    groups: list[list[dict[str, Any]]] = []
+    live: list[list[dict[str, Any]]] = []  # the groups that can still take a read
+    for e in kills:
+        live = [
+            g
+            for g in live
+            if e["t"] - g[0]["t"] <= KILL_ROW_S
+            and e["t"] - max(x["end"] for x in g) <= KILL_REREAD_GAP_S
+        ]
+        for g in live:
+            if any(_same_kill_read(x, e) for x in g) and not any(
+                set(x.get("_times", ())) & set(e.get("_times", ())) for x in g
+            ):
+                g.append(e)
+                break
+        else:
+            groups.append([e])
+            live.append(groups[-1])
+    dropped: set[int] = set()
+    for g in groups:
+        if len(g) == 1:
+            continue
+        seen_twice = [x for x in g if x.get("sightings", 1) >= 2] or g
+        best = max(
+            seen_twice,
+            key=lambda x: (
+                _alnum_len(x.get("killer") or "") + _alnum_len(x.get("victim") or ""),
+                x.get("confidence") or 0,
+            ),
+        )
+        best["t"] = min(x["t"] for x in g)
+        best["end"] = max(x["end"] for x in g)
+        best["sightings"] = sum(x.get("sightings", 1) for x in g)
+        if "_times" in best:
+            best["_times"] = sorted({t for x in g for t in x.get("_times", ())})
+        for k in ("player", "player_kill", "player_death"):
+            if k in best:
+                best[k] = any(bool(x.get(k)) for x in g)
+        dropped |= {id(x) for x in g if x is not best}
+    return [e for e in events if id(e) not in dropped]
+
+
+def collapse_banner_bursts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the first banner of each burst of text that stays on a screen (:data:`BANNER_BURST_MIN`
+    or more in a row, each within :data:`BANNER_BURST_GAP_S` of the one before). Such text is a
+    scoreboard or table that holds a phrase in a player name: its banners have a ``raw`` line
+    longer than the phrase and the same line every time (:func:`similar`). Banners that
+    announce something come in the same words each time but with nothing else on the line or
+    with another ``detail`` each time ("ELIMINATED" and a name), so they are never collapsed,
+    however often they come. The ones kept have ``recurrences``, the number of banners dropped
+    after them. Other event types and the banners not in such a burst are returned as they
+    were. Measured on a held-out scoreboard whose player names include "ACE": 14 banners within
+    6 minutes, 10-50 s apart, all read from one screen."""
+
+    def screen(e: dict[str, Any]) -> str:
+        """The text on the banner's line besides the phrase when it holds a name, else ""."""
+        line = norm(e.get("raw") or "").replace(" ", "")
+        phrase = norm(e.get("text") or "").replace(" ", "")
+        rest = line.replace(phrase, "", 1)  # a score ("+100") is no screen, a name is
+        return rest if re.search(r"[A-Za-z]{3}", rest) else ""
+
+    runs: list[list[dict[str, Any]]] = []
+    for e in sorted((e for e in events if e.get("type") == "banner"), key=lambda e: e["t"]):
+        for run in runs:
+            if (
+                screen(e)
+                and e["t"] - run[-1]["t"] <= BANNER_BURST_GAP_S
+                and similar(run[0].get("text") or "", e.get("text") or "") >= FUZZY
+                and similar(screen(run[0]), screen(e)) >= FUZZY
+            ):
+                run.append(e)
+                break
+        else:
+            runs.append([e])
+    dropped: set[int] = set()
+    for run in runs:
+        if len(run) >= BANNER_BURST_MIN and all(screen(e) for e in run):
+            run[0]["recurrences"] = len(run) - 1
+            dropped |= {id(e) for e in run[1:]}
+    return [e for e in events if id(e) not in dropped]
+
+
 # --------------------------------------------------------------------------- OCR logic
 
 
@@ -942,6 +1177,53 @@ class Interpreter:
 
         gone = {id(e) for e in lines if label(e)}
         tracker.events = [e for e in tracker.events if id(e) not in gone]
+
+    def drop_notice_kills(self) -> None:
+        """Forget the kills that are a system line read as a kill row (see
+        :data:`NOTICE_LINE_REPEATS`)."""
+        tracker = self.tracker
+        lines: dict[Any, list[list[Any]]] = {}  # region -> [first text, texts, read times]
+        kills = [e for e in tracker.events if e["type"] == "kill"]
+
+        def own_row(e: dict[str, Any], text: str) -> bool:
+            """Whether the notice is the row of a kill in its region, read without the icon gap."""
+            return any(
+                k.get("region") == e.get("region")
+                and e["t"] - KILL_ROW_S <= k["t"] <= e["end"] + KILL_ROW_S
+                and difflib.SequenceMatcher(
+                    None, _fold(k.get("killer") or "") + _fold(k.get("victim") or ""), text
+                ).ratio()
+                >= NOTICE_LINE_SIMILAR
+                for k in kills
+            )
+
+        for e in sorted((e for e in tracker.events if e["type"] == "notice"), key=lambda e: e["t"]):
+            text = _fold(e.get("text") or "")
+            if len(text) < NOTICE_LINE_MIN_CHARS or own_row(e, text):
+                continue
+            if e.get("unknown") and e.get("sightings", 1) < 2:
+                continue
+            for line in lines.setdefault(e.get("region"), []):
+                if difflib.SequenceMatcher(None, line[0], text).ratio() >= NOTICE_LINE_SIMILAR:
+                    line[1].add(text)
+                    if e["t"] - line[2][-1] >= NOTICE_LINE_APART_S:
+                        line[2].append(e["t"])
+                    break
+            else:
+                lines[e.get("region")].append([text, {text}, [e["t"]]])
+        recurring = {
+            region: {t for line in found if len(line[2]) >= NOTICE_LINE_REPEATS for t in line[1]}
+            for region, found in lines.items()
+        }
+
+        def system_line(e: dict[str, Any]) -> bool:
+            names = _fold(e.get("killer") or "") + _fold(e.get("victim") or "")
+            return len(names) >= NOTICE_LINE_MIN_CHARS and any(
+                difflib.SequenceMatcher(None, names, t).ratio() >= NOTICE_LINE_SIMILAR
+                for t in recurring.get(e.get("region"), ())
+            )
+
+        tracker.events = [e for e in tracker.events if not (e["type"] == "kill" and system_line(e))]
 
     def _phrases(self, t: float, region: Region, text: str, conf: float) -> bool:
         """Phrase matches, keeping only the longest of nested matches
@@ -1196,8 +1478,7 @@ class FeedParser:
         teamkill = bool(a_team and t_team and a_team == t_team == "ally" and verb == "kill")
         # The player check uses the whole text before the vehicle group: OCR
         # splits names ("Player Name") and glues clan tags to them.
-        p_actor = bool(actor.strip()) and is_player(_before_group(actor), self.tags)
-        p_target = is_player(_before_group(target), self.tags)
+        p_actor, p_target = player_side(_before_group(actor), _before_group(target), self.tags)
         etype = "kill" if verb == "kill" else verb
         text = (
             f"{a_name}{f' ({a_veh})' if a_veh else ''} > {t_name}{f' ({t_veh})' if t_veh else ''}"
@@ -2578,6 +2859,7 @@ class OcrInterpretation:
         tracker, stats = self.interp.tracker, self.stats
         self._drop_chat()
         self.interp.drop_labels()
+        self.interp.drop_notice_kills()
         if self.menus:
             feeds = {r.name for r in self.regions if r.kind == "feed"}
 
@@ -2663,6 +2945,7 @@ class OcrInterpretation:
             stats["menu_spans"] = menu_spans
             stats["static_frames"] = sum(r == "static" for r in rules.values())
             stats["text_frames"] = sum(r == "text" for r in rules.values())
+        tracker.events = merge_kill_reads(tracker.events)  # needs the sightings' times
         events = tracker.finish()
         if self.feed_notices:
             feeds = {r.name for r in self.regions if r.kind == "feed"}
@@ -2675,6 +2958,7 @@ class OcrInterpretation:
                     and e["end"] - e["t"] > ROW_NOTICE_MAX_S
                 )
             ]
+        events = collapse_banner_bursts(events)
         for e in events:
             e["kind"] = "ocr"
         return events
@@ -2877,10 +3161,8 @@ def detect_ocr_events(
 
         def save_crop(out: Path, t: float, r: Region, crop: np.ndarray) -> None:
             """Save the region crop of a new event as a PNG in ``out``."""
-            import cv2  # noqa: PLC0415
-
             out.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(out / f"{src.path.stem[-24:]}_{t:07.1f}_{r.name}.png"), crop)
+            write_png(out / f"{src.path.stem[-24:]}_{t:07.1f}_{r.name}.png", crop)
 
         by_name = {r.name: r for r in regions}
         for si, (seg_a, seg_b) in enumerate(segments):

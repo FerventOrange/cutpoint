@@ -80,6 +80,7 @@ with `_` are ignored.
   "export_workers": "auto",
   "memory_guard": 2,
   "vision": false,
+  "visual_index": false,
   "compress_peaks": "off",
   "color": "off",
   "analysis": {"skip": []},
@@ -135,7 +136,8 @@ Local folder for `cutpoint stage` copies. Default `<CUTPOINT_HOME>\stage`.
 ### player_tags
 
 Your in-game name(s) for game-HUD OCR in `cutpoint events`, so kills and deaths are attributed
-to you. Matching is fuzzy and ignores `_ . -` and spaces. `cutpoint events --player NAME`
+to you. Matching is fuzzy (OCR variants, tight for short tags; see
+[game streams](workflows/game-streams.md)) and ignores `_ . -` and spaces. `cutpoint events --player NAME`
 overrides it per run. Default: none.
 
 ### ollama_url
@@ -157,6 +159,17 @@ every analysis the UI starts ("Analyze footage" or "Analyze again") passes its v
 moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other values are rejected.
 A rating covers a moment's frames and, except for `action-cam`, the speech in it (the Vision
 consent already covers these transcript excerpts).
+
+### visual_index
+
+`true` or `false` (default). With `true`, `analyze` and `edit` also write the CLIP frame
+embeddings (about one per second) that the AI Chat's visual search (`look_for`) reads, for
+`gaming`, `funny` and `commentary` footage too, unless `--no-visual-index` is given; `action`,
+`sport` and `action-cam` footage always has them. With `false` or no key, only
+`--visual-index` turns it on for one run. It changes no ranking, costs GPU time in the
+`keyframes` step (see [analysis time](commands.md#typical-cost)) and needs the `events` extra, its
+model files and a CUDA GPU. Sources with telemetry: the crashes step also reads them, so
+`crashes.json` can differ; the ranking does not. Other values are rejected.
 
 ### vision_assistant
 
@@ -190,8 +203,8 @@ consent is separate from the assistant's: agreeing to one never covers the other
 when that is not the scheme's default); an entry without the `vision-v2:` prefix, saved by an earlier
 version under a narrower description, no longer counts, and the Models tab asks again.
 **Use at your own risk** when selecting a hosted provider.
-`--ollama-url` and `--ollama-model` have no effect for a provider other than `ollama`; ratings
-from those providers have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
+An explicit `--ollama-url` and/or `--ollama-model` on `analyze` or `edit` wins over a hosted provider here (VLM layer of events, feed labels, `analyze --vision`): that run uses the Ollama, with the usual default for a flag left out, and sends nothing to the hosted model; an Ollama on another machine needs this Vision consent, else the step is skipped with `vision_consent_needed`. Without the flags the provider is used, and ratings
+from hosted providers have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
 `analyze` always uses Ollama, independently of this selection; an Ollama on another machine
 needs this Vision consent for its URL there too, else the profile falls back without the model.
 
@@ -409,6 +422,66 @@ The first preset whose `game` key (or file name, without `game`) matches wins: 1
 and 2 overrides 3. To make a preset for a game, write one
 in folder 1 or 2, or let region discovery create it. The user folder (2) is trusted like the bundled one.
 A `"builtin"` key, which older presets may have, is ignored.
+
+Without `--game`, a source's game key is the `game` of the first preset whose `match` hints occur
+in its path. Otherwise it is made from a name: the game in a recorder-style file name
+(`Some Game 2024.11.14 - 19.01.53.09.DVR.mp4` gives `some-game`), else the parent folder's name,
+else the file name without extension. A name that says nothing about the game is skipped:
+`videos`, `vods`, `captures`, `recordings`, `clips`, `gameplay`, `footage`, `desktop`,
+`downloads`, `src`, `replay`, `game`, a name of one or two characters, only digits and dashes (a date), or
+no letters or digits at all; so `Desktop 2024.11.14 - 19.01.53.09.DVR.mp4` takes the folder's
+name. Videos in such a folder are discovered once per file name, except videos named by a date or
+number only (OBS: `2026-11-08 19-01-53.mkv`) or by such a skipped recorder name and a date (OBS
+replay buffer `Replay 2026-11-08 19-01-53.mkv`, `Desktop 2024.11.14 - 19.01.53.09.DVR.mp4`):
+those in one folder share the key of the first of them by name, so one session gets one
+discovery and the fit check below splits other games off. A preset
+saved under the folder's name by an older version (such as `vods.json`) no longer matches on its
+own: pass `--game vods` to keep using it. The name
+is lower-cased, every character that is not a letter, digit or combining mark becomes `-`, and
+those of any script stay (`vidéo ünï 日本` gives `vidéo-ünï-日本`; an empty result is `game`). A preset written
+by an older version under the ASCII-only key (`Café Racer` gave `caf-racer`) still matches while
+no preset has the new key (not a `game` preset, the old key of every name without ASCII letters or
+digits).
+
+**HUD fit check.** The key from a folder or file name is a first guess: one folder can hold
+several games. Once that key has a preset (found, or discovered in this run), each source keyed
+this way is checked against it: does its HUD text (OCR text along the screen edges, outside the
+big-text area) land in the same places on screen as in the footage the preset was made from?
+The screen is split into a grid of 16 x 12 cells; per cell, the check counts the share of
+gameplay frames with edge text in it and compares the two grids (cosine similarity, at least
+0.57 fits; the preset's regions play no part). Discovery stores the preset's grid in the preset
+(`discovery.fit_ref`). A preset without one (written by hand, or by an older version) decides
+nothing: its sources keep the first guess. To give an older preset the fit check, run
+`cutpoint events <project> --discover-regions` on a folder
+where that game is the majority: discovery runs again and its sources are compared with each
+other as in a new discovery (the largest group leads, see below); the preset gets
+only a `discovery.fit_ref` made from the sources that fit (its regions and every other key stay
+as they are; an INFO line `Added the HUD fit check to the preset '<key>' (its regions are
+unchanged)` says so, and nothing is written when the footage has too little edge text to tell),
+and a source that does not fit is split off as below. With `--discover-regions` over a preset
+that has a `fit_ref`, the sources are checked against it instead; its `fit_ref` is made again
+from those that fit (and those with too little text to tell), and stays as it is when none fits. A source discovered with others is
+compared with the rest of that run: each source is tried as the start of a group that the
+others join when they fit it, and the group with the most gameplay frames in total keeps the key
+(on a tie, the group of more sources), so the game most of the footage shows keeps it even when
+the longest single file is of another game. A source
+that does not fit gets a key of its own and its own discovery (or the key of a source split off
+before it in the same run, when its text lands like that one's), and an INFO line says so:
+`<file> does not fit the HUD preset '<key>' (score 0.12); discovering it as '<new key>'`. Its key
+is a slug of its file name, or `<folder key>-<6 hex digits>` (from its path) when that name says
+nothing about the game or is taken. A preset discovered in the same run is then made again from
+the sources that fit. For a source with a preset, the check OCRs 2 short bursts of 4 frames;
+a source discovery just read uses those frames when it has 8 gameplay frames. With too little text to tell
+(fewer than 4 gameplay frames or 15 edge text boxes) the source keeps the first guess. Sources of
+one game in one folder still share one discovery run.
+
+The decisions are kept per source in `<project>\discovery\game_keys.json`, with the file's
+digest and the first guess, so later runs and every step read the same key without checking
+again; a changed file or a changed first guess is checked again. The file also keeps the first
+name of each folder of date-named videos, so deleting the oldest recording or a folder that is
+offline changes no key. To skip the check, name the
+game with `--game KEY` or add a `match` hint to its preset (neither is checked); to check every
+source again, run with `--discover-regions`.
 
 The OCR layer also keeps its raw read of each source (the text it read per frame) in the source's
 cache folder, `ocr-raw-*`. When an update changes only how that text is interpreted, the next run

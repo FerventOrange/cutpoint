@@ -197,6 +197,22 @@ def test_a_row_carries_compact_cues_seen_heard_and_kind() -> None:
     assert t.row("v001")["kind"] == "view"  # #635 visual pool kinds show in the compact row
 
 
+def test_heard_laughter_follows_the_shared_rule_and_a_scream_any_level() -> None:
+    def heard(**events: float) -> list[str]:
+        cand = {**CANDS[0], "signals": {"events": events}}
+        return context.MomentTable([cand], []).row("c1").get("heard", [])
+
+    assert heard(laughter=0.05) == []  # below LAUGH_STRONG: not heard
+    assert heard(laughter=0.12) == ["laughter"]
+    assert heard(laughter=0.05, scream=0.02) == ["scream"]
+
+
+def test_malformed_signals_do_not_break_the_heard_cue() -> None:
+    for signals in ("loud", {"events": "x"}, {"events": {"laughter": "high", "scream": None}}):
+        cand = {**CANDS[0], "signals": signals}
+        assert context.MomentTable([cand], []).row("c1").get("heard", []) == []
+
+
 def test_seen_is_cut_in_the_table_and_whole_in_get_moment() -> None:
     long = {**EVENTS["windows"][0], "summary": "x" * 500}
     t = context.MomentTable(list(CANDS), [], context.vlm_windows({"windows": [long]}))

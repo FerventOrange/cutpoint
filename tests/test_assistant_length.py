@@ -722,12 +722,59 @@ def test_a_trim_lengthens_an_edge_by_at_most_ten_seconds_per_proposal() -> None:
     assert trim({"end_delta": -5}).error is None  # shorter is free
 
 
-def test_an_add_stays_within_ten_seconds_of_the_moments_window() -> None:
-    def add(**e: Any) -> Any:
-        return ops.apply_ops(SEQ, [{"op": "add", "id": "c1", **e}], CANDS, durations())
+def test_an_add_edge_far_from_the_moment_is_ignored_and_the_rest_kept() -> None:
+    def add(*extra: dict, **e: Any) -> Any:
+        return ops.apply_ops(SEQ, [{"op": "add", "id": "c1", **e}, *extra], CANDS, durations())
 
-    assert add(start=0, end=30).error is None  # 10-20, +-10
-    assert "within 10 s of the moment's own 10-20" in add(end=31).error
+    def edges(out: Any) -> tuple[float, float]:
+        row = next(s for s in out.after if s["id"] == "c1")
+        return row["start"], row["end"]
+
+    out = add(start=0, end=30)  # the moment is 10-20: both within 10 s
+    assert out.error is None and out.notes == [] and edges(out) == (0, 30)
+    out = add(end=31)  # 11 s away: the moment's own end, with a note
+    assert out.error is None and edges(out) == (10, 20)
+    assert out.notes == ["add c1: end 31 ignored (not near the moment's 10-20); added as it is"]
+    out = add({"op": "remove", "id": "c2"}, start=-10, end=15)  # negative start; rest applied
+    assert out.error is None and edges(out) == (10, 15)
+    assert all(s["id"] != "c2" for s in out.after)
+    assert out.notes == ["add c1: start -10 ignored (not near the moment's 10-20); added as it is"]
+    out = add(start=-50, end=2)  # both far away
+    assert edges(out) == (10, 20) and len(out.notes) == 2
+    out = add(start=20)  # within the slack but not before the moment's own end: both fall back
+    assert edges(out) == (10, 20) and out.notes[0].startswith("add c1: start 20 ignored (")
+    out = add(start=19.95)  # under the shortest clip: only the edge given is named
+    assert edges(out) == (10, 20) and out.notes[0].startswith("add c1: start 19.95 ignored (")
+    early = [{"id": "e1", "source": CANDS[0]["source"], "start": 5.0, "end": 9.0, "score": 1}]
+    out = ops.apply_ops(SEQ, [{"op": "add", "id": "e1", "start": -3}], early, durations())
+    assert (out.after[-1]["start"], out.after[-1]["end"]) == (5, 9)  # -3 is before 0
+    assert out.notes[0].startswith("add e1: start -3 ignored (")
+    assert "must be a number" in add(start="x").error  # the other checks stay
+    unknown = ops.apply_ops(SEQ, [{"op": "add", "id": "zz"}], CANDS, durations())
+    assert "not a moment" in unknown.error
+
+
+def test_a_proposal_with_an_ignored_add_edge_is_shown_with_a_note() -> None:
+    bad = {"op": "add", "id": "m1", "start": -10, "end": 5}  # times relative to the moment
+    turn = run(FakeProvider([propose("Add the laugh", bad)]), "add the laugh")
+    final = turn.view()["events"][-1]
+    assert final["kind"] == "proposal" and "notes" not in final
+    assert "add m1: start -10 ignored (not near the moment's 10-20)" in final["summary"]
+    assert "add m1: end 5 ignored" in final["summary"]
+    assert next(r["changes"] for r in final["diff"] if r["id"] == "c1")
+
+
+def test_a_fallback_proposal_keeps_the_edge_note_and_no_notes_key() -> None:
+    bad = {"op": "add", "id": "m1", "start": -10, "end": 20}
+    turn = run(
+        FakeProvider([propose("Add the laugh", bad)] + [call("find_moments", query="x")] * 8),
+        "make it 240 s",
+    )
+    events = turn.view()["events"]
+    assert any(e["kind"] == "rejected" and "start -10 ignored" in e["text"] for e in events)
+    final = events[-1]
+    assert final["kind"] == "proposal" and "notes" not in final
+    assert "add m1: start -10 ignored" in final["summary"]
 
 
 def test_one_past_the_end_is_the_last_position() -> None:

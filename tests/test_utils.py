@@ -101,14 +101,46 @@ def test_slugify():
 @pytest.mark.parametrize(
     "name, key",
     [
-        ("Caf\u00e9 Racer", "caf-racer"),  # legacy: no Unicode folding
+        ("Caf\u00e9 Racer", "caf\u00e9-racer"),  # letters of any script stay (#822)
+        ("vid\u00e9o \u00fcn\u00ef \u65e5\u672c", "vid\u00e9o-\u00fcn\u00ef-\u65e5\u672c"),
         ("Battlefield\u2122 2042", "battlefield-2042"),
         ("Counter-strike 2", "counter-strike-2"),
         ("\u2122\u2122\u2122", "game"),
+        ("Far Cry\u00b2", "far-cry\u00b2"),  # digits are not folded (no NFKC)
+        ("\u0939\u093f\u0928\u094d\u0926\u0940", "\u0939\u093f\u0928\u094d\u0926\u0940"),  # marks
+        (
+            "\u0e2a\u0e27\u0e31\u0e2a\u0e14\u0e35",
+            "\u0e2a\u0e27\u0e31\u0e2a\u0e14\u0e35",
+        ),  # Thai vowel marks
     ],
 )
-def test_game_slug_keeps_legacy_keys(name, key):
+def test_game_slug_keeps_letters_of_any_script(name, key):
     assert regions._game_slug(name) == key
+
+
+def test_game_slug_normalises_to_nfc():
+    # "vidéo" with a combining acute accent (NFD) gives the same key as with "é"
+    assert regions._game_slug("Vide\u0301o Clip") == regions._game_slug("Vid\u00e9o Clip")
+    assert regions._game_slug("Vide\u0301o Clip") == "vid\u00e9o-clip"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [chr(c) for c in range(32, 127)]
+    + [
+        "".join(chr(c) for c in range(32, 127)),
+        "Some Game 2",
+        "  --My__Game--  ",
+        "ALL CAPS!!",
+        "a-b_c.d e",
+        "007",
+        "",
+        "---",
+    ],
+)
+def test_game_slug_is_the_legacy_slug_for_ascii(name):
+    """Keys of ASCII names are byte-identical to before #822, so their presets keep matching."""
+    assert regions._game_slug(name) == regions._legacy_slug(name)
 
 
 # -- find_videos: unreadable inputs ------------------------------------------------------

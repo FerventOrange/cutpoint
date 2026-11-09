@@ -26,6 +26,9 @@ def _fake_rapidocr(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         def __init__(self, **kwargs: Any) -> None:
             made.append(kwargs)
 
+        def __call__(self, *_args: Any, **_kwargs: Any) -> tuple[None, None]:
+            return None, None  # no text
+
     module = ModuleType("rapidocr_onnxruntime")
     module.RapidOCR = RapidOCR  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "rapidocr_onnxruntime", module)
@@ -46,7 +49,7 @@ def _two_lanes(tmp_path: Path) -> None:
 
 
 def _discovery(tmp_path: Path) -> None:
-    src = SimpleNamespace(name="a.mp4", io_path=tmp_path / "a.mp4")
+    src = SimpleNamespace(name="a.mp4", path=tmp_path / "a.mp4", io_path=tmp_path / "a.mp4")
     discover._ocr_frames(
         [(src, 1.0)], discover.DiscoverParams(), tmp_path / "frames", tmp_path / "ocr.jsonl"
     )
@@ -75,7 +78,8 @@ def test_engines_get_the_thread_cap(
     """#374, #403, #443: what each OcrEngine passes to RapidOCR."""
     made = _fake_rapidocr(monkeypatch)
     monkeypatch.setattr(killfeed, "OCR_THREADS", threads)
-    monkeypatch.setattr(discover, "_burst_frames", lambda *a: [])
+    # discovery makes its engine for the first frame to read
+    monkeypatch.setattr(discover, "_burst_frames", lambda *a: [np.zeros((72, 128, 3), np.uint8)])
     make(tmp_path)
     assert made == [_kwargs(threads // per_engine, **more)] * count
 

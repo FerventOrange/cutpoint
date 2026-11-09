@@ -363,6 +363,7 @@ def text_check(faked_probe, monkeypatch):
     monkeypatch.setattr(category, "_frame_probe", frame_probe)
     monkeypatch.setattr(category, "text_probe", text_probe)
     monkeypatch.setattr(ocr_raw, "engine_version", lambda: "x")
+    monkeypatch.setattr(category, "ocr_installed", lambda: True)  # also in Cutpoint lite
     monkeypatch.setattr(category, "_metadata", lambda data: {"handler": "VideoHandle"})
     return state
 

@@ -427,6 +427,29 @@ def test_untrusted_text_stays_inside_its_data_block() -> None:
     assert "< < <END DATA> > >" in ctx
 
 
+@pytest.mark.parametrize(
+    ("label", "title", "sequence_label", "expected"),
+    [
+        ("the-comeback", "The Comeback", "the-comeback", "The Comeback"),
+        ("the-comeback", "The Comeback", "my pick", "my pick"),
+        ("action-moment", "", "action-moment", "a visual moment"),
+        ("big laugh", None, "big laugh", "big laugh"),
+    ],
+)
+def test_dialogue_moments_use_readable_titles_in_chat(
+    label: str, title: str | None, sequence_label: str, expected: str
+) -> None:
+    """A widened dialogue moment's slug hid its readable title from AI Chat (#806)."""
+    candidate = {**CANDS[0], "label": label, "vision_label": "a visual moment"}
+    if title is not None:
+        candidate["dialogue_title"] = title
+    segment = {**CANDS[0], "label": sequence_label}
+    table = context.MomentTable([candidate], [segment])
+
+    assert table.row("c1")["label"] == expected
+    assert json.loads(context.sequence_block(table).splitlines()[1])["label"] == expected
+
+
 @pytest.mark.parametrize(("tokens", "moments"), [(8192, 40), (32768, 160)], ids=["local", "hosted"])
 def test_the_context_budget_lists_the_top_moments_that_fit(tokens: int, moments: int) -> None:
     cands = [

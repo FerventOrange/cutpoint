@@ -190,6 +190,8 @@ class Project:
     windows: list[dict[str, Any]] = field(default_factory=list)  # context.vlm_windows(events.json)
     # exported edges of rows and phrase ends; None: the raw ranges, and trims are not snapped
     edges: EdgePlanner | None = None
+    # some source has cached frame embeddings (lookfor.indexed): without any, look_for is not offered
+    frame_index: bool = True
 
 
 def _now() -> str:
@@ -374,7 +376,10 @@ class Turn:
         sent = None if json_mode else self._tools()
         sheets = watch.view_cap(self.provider) if self._watch else 0
         plan = context.budget(self.provider.context_tokens, sent, tight=tight, images=sheets)
-        tools = [*_JSON_TOOLS, *([watch.JSON_TOOL] if self._watch else [])] if json_mode else None
+        tools = None
+        if json_mode:
+            listed = [t for t in _JSON_TOOLS if self.project.frame_index or t != lookfor.JSON_TOOL]
+            tools = [*listed, *([watch.JSON_TOOL] if self._watch else [])]
         out = context.build_messages(
             self.table,
             self.earlier,
@@ -384,19 +389,25 @@ class Turn:
             images=bool(self._watch),
             target=self.target,
         )
-        out[0] = {**out[0], "content": out[0]["content"] + lookfor.rules(bool(self._watch))}
+        if self.project.frame_index:
+            out[0] = {**out[0], "content": out[0]["content"] + lookfor.rules(bool(self._watch))}
         if self._watch:  # how and when to watch, after the rules
             cap = str(watch.view_cap(self.provider))
             out[0] = {**out[0], "content": out[0]["content"] + watch.RULES.replace("{cap}", cap)}
         return out
 
+    def _names(self) -> list[str]:
+        """The names of the tools offered: ``look_for`` only with cached frame embeddings."""
+        return [n for n in TOOL_NAMES if self.project.frame_index or n != lookfor.NAME]
+
     def _tools(self) -> list[dict[str, Any]]:
-        return [*TOOLS, watch.TOOL] if self._watch else TOOLS
+        base = TOOLS if self.project.frame_index else [t for t in TOOLS if t is not lookfor.TOOL]
+        return [*base, watch.TOOL] if self._watch else base
 
     def _schema(self) -> dict[str, Any]:
-        if not self._watch:
+        if not self._watch and self.project.frame_index:
             return JSON_SCHEMA
-        names = [*TOOL_NAMES, watch.NAME, "reply"]
+        names = [*self._names(), *([watch.NAME] if self._watch else []), "reply"]
         props = {**JSON_SCHEMA["properties"], "tool": {"type": "string", "enum": names}}
         return {**JSON_SCHEMA, "properties": props}
 
@@ -576,7 +587,7 @@ class Turn:
         """``(result for the model, whether the turn is over)``."""
         if call.error:
             return f"error: {call.name}: {call.error}", False
-        names = [*TOOL_NAMES, *([watch.NAME] if self._watch else [])]
+        names = [*self._names(), *([watch.NAME] if self._watch else [])]
         handler = getattr(self, f"_tool_{call.name}", None) if call.name in names else None
         if handler is None:
             return f"error: unknown tool {call.name!r}; the tools are {', '.join(names)}", False
@@ -622,7 +633,13 @@ class Turn:
             got = self._finder.search(query, limit, covering, p.durations)
         except lookfor.LookForError as err:
             self._emit(
-                {"kind": "tool", "name": lookfor.NAME, "query": query[:200], "error": str(err)}
+                {
+                    "kind": "tool",
+                    "name": lookfor.NAME,
+                    "query": query[:200],
+                    "error": str(err),
+                    **({"reason": err.reason} if err.reason else {}),
+                }
             )
             return f"error: look_for is not available: {err}", False
         rows = []
@@ -817,6 +834,8 @@ class Turn:
         }
         if out.color is not None:
             checked["color"] = out.color
+        if out.notes:
+            checked["notes"] = out.notes
         used = {row["id"] for row in out.after or []}
         if moments := [c for c in known if c["id"] in used]:
             checked["moments"] = moments  # look_for finds: the page's analysis does not have them
@@ -833,6 +852,8 @@ class Turn:
             )
         gap = summary_gap(summary, main["diff"], main.get("color"))
         if note := self._send_back(summary, main, gap):
+            if main.get("notes"):  # the model learns that its edges were not used
+                note = f"{note} {' '.join(main['notes'])}"
             return self._rejected(note, note)
         if gap:  # a summary that claims what the ops do not do is replaced by what they do
             summary = self._true_summary(main)
@@ -849,7 +870,9 @@ class Turn:
                 f"cut about {over:.0f} s (shorten or remove clips) and propose again."
             )
             return self._rejected(note, note)
+        summary, edges = self._reserve(summary, main)
         summary, main = self._paced(*self._filled(summary, main))
+        summary = self._noted(summary, main, edges)
         suggestions = []
         for sug in (raw if isinstance(raw, list) else [])[:MAX_SUGGESTIONS]:
             label = sug.get("label") if isinstance(sug, dict) else None
@@ -857,10 +880,28 @@ class Turn:
             if checked is None or not label.strip():
                 logger.debug("assistant: dropped a suggestion that does not apply: %r", sug)
                 continue
+            checked.pop("notes", None)
             suggestions.append(self._numbered("s", label.strip()[:80], checked))
         event = {"kind": "proposal", **self._numbered("p", summary.strip(), main)}
         self._emit({**event, "suggestions": suggestions})
         return "proposal shown to the user", True
+
+    @staticmethod
+    def _reserve(summary: str, main: dict[str, Any]) -> tuple[str, str]:
+        """``(summary, note)``: the note on the edges of an add that were ignored (at most 150
+        characters), and the summary cut to leave room for it and for the fill's own notes."""
+        note = " ".join(main.get("notes") or [])
+        if not note:
+            return summary, ""
+        if len(note) > 150:
+            note = note[:149] + "…"
+        return summary.strip()[: max(MAX_SUMMARY - 200 - len(note) - 1, 100)], note
+
+    @staticmethod
+    def _noted(summary: str, main: dict[str, Any], note: str) -> str:
+        """``summary`` with the edge ``note`` after it; the proposal ``main`` loses its notes."""
+        main.pop("notes", None)
+        return f"{summary.strip()} {note}" if note else summary
 
     def _rejected(self, reason: str, result: str) -> tuple[str, bool]:
         """Tell the model ``result`` (the turn goes on) and the page ``reason`` (a muted line of
@@ -1084,7 +1125,9 @@ class Turn:
         found = self._closest()
         if found is None:
             return False
-        summary, main = self._paced(*self._filled(*found))
+        summary, edges = self._reserve(*found)
+        summary, main = self._paced(*self._filled(summary, found[1]))
+        summary = self._noted(summary, main, edges)
         self._candidates = []
         event = {"kind": "proposal", **self._numbered("p", summary.strip(), main)}
         return self._emit({**event, "suggestions": []})

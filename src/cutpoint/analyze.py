@@ -33,13 +33,24 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from cutpoint import cache, category, features, folders, jsonout, paths, progress, runstate, scorer
+from cutpoint import (
+    cache,
+    category,
+    default_fit,
+    features,
+    folders,
+    jsonout,
+    paths,
+    progress,
+    runstate,
+    scorer,
+)
 from cutpoint.config import remap_source, unc_path
 from cutpoint.dsp import conv_same
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events import paths as event_paths
 from cutpoint.events.menu_spans import drop_menu_time
-from cutpoint.events.scoring import Seed, rescore
+from cutpoint.events.scoring import Seed, heard_laughter, rescore
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.ffmpeg_utils import (
     READ_ERROR_RE,
@@ -68,8 +79,10 @@ from cutpoint.transcribe import (
     Transcriber,
     cached_transcript,
     filter_hallucinations,
+    flat_markers,
     flat_words,
     record_transcript,
+    split_markers,
     transcript_name,
 )
 from cutpoint.utils import clock, find_videos, matches_glob, slugify
@@ -198,9 +211,10 @@ def _norm_token(word: str) -> str:
 
 
 def keyword_hits(
-    words: list[dict[str, Any]], patterns: dict[str, float]
+    words: list[dict[str, Any]], patterns: dict[str, float], *, once: bool = False
 ) -> list[tuple[float, float, str]]:
-    """Find (time, weight, phrase) matches; ``*`` suffix = prefix match."""
+    """Find (time, weight, phrase) matches; ``*`` suffix = prefix match. ``once``: a word that
+    several patterns match (``haha`` for ``haha*`` and ``hah*``) counts once, for the strongest."""
     compiled: dict[tuple[str, ...], tuple[float, str]] = {}
     for phrase, weight in patterns.items():
         parts = tuple(_norm_token(p) for p in phrase.split())
@@ -208,6 +222,7 @@ def keyword_hits(
     toks = [_norm_token(w["word"]) for w in words]
     hits = []
     for i in range(len(toks)):
+        found = []
         for parts, (weight, phrase) in compiled.items():
             if i + len(parts) > len(toks):
                 continue
@@ -215,8 +230,44 @@ def keyword_hits(
                 toks[i + j].startswith(p[:-1]) if p.endswith("*") else toks[i + j] == p
                 for j, p in enumerate(parts)
             ):
-                hits.append((float(words[i]["start"]), weight, phrase))
+                found.append((float(words[i]["start"]), weight, phrase))
+        hits += [max(found, key=lambda h: h[1])] if once and found else found
     return hits
+
+
+# Whisper's non-speech laughter markers: "[laughter]", "(laughs)", "*laughing*", "[light laughter]".
+# The brackets (or asterisks) are required: the plain spoken word is not laughter.
+_LAUGH_STEM = r"(?:laugh|giggl|chuckl|chortl|snicker|guffaw)"
+_LAUGH_MARKER = re.compile(
+    rf"\[[^\[\]()*]{{0,30}}?\b{_LAUGH_STEM}\w*[^\[\]()*]{{0,30}}\]"
+    rf"|\([^\[\]()*]{{0,30}}?\b{_LAUGH_STEM}\w*[^\[\]()*]{{0,30}}\)"
+    rf"|\*{_LAUGH_STEM}\w*\*",
+    re.IGNORECASE,
+)
+
+
+def laughter_hits(
+    words: list[dict[str, Any]], markers: list[dict[str, Any]] | None = None
+) -> list[tuple[float, float, str]]:
+    """Find the (time, weight, phrase) laughter hits of the transcript ``words``: the
+    interjections of :data:`~cutpoint.styles.LAUGHTER` (haha, lol) and Whisper's non-speech
+    markers for laughing (``[laughter]``, ``(laughs)``, ``*laughing*``; weight 1, the phrase is
+    the text inside the brackets), found among the ``words`` and in ``markers``
+    (:func:`~cutpoint.transcribe.flat_markers`: the markers taken out of the words). The spoken
+    word "laughter" or "laugh" is not a hit."""
+    hits = keyword_hits(words, LAUGHTER, once=True)
+    text, at = "", []  # the words joined by spaces, and the word each character belongs to
+    for i, w in enumerate(words):
+        piece = str(w["word"]).strip()
+        at += [i] * (len(piece) + 1)
+        text += piece + " "
+    for m in _LAUGH_MARKER.finditer(text):
+        phrase = m.group(0)[1:-1].strip().lower()
+        hits.append((float(words[at[m.start()]]["start"]), 1.0, phrase))
+    for mark in markers or []:
+        if m := _LAUGH_MARKER.search(str(mark["text"])):
+            hits.append((float(mark["start"]), 1.0, m.group(0)[1:-1].strip().lower()))
+    return sorted(hits, key=lambda h: h[0])
 
 
 def keyword_signal(
@@ -662,8 +713,7 @@ def _pick_windows(
         start, end = max(0.0, start), min(duration, end)
         a, b = int(start / DT), max(int(start / DT) + 1, int(end / DT))
         score[a:b] = 0.0
-        if usual is not None:  # an open list has no cap to stop at
-            score[i] = 0.0  # the peak itself, also when the window ends at it (the last sample)
+        score[i] = 0.0  # the peak itself, also when the window ends at it (the last sample)
         out.append(
             Candidate(
                 source=src,
@@ -711,6 +761,7 @@ def sentence_bounds(segments: list[Segment], gap: float = 0.7) -> tuple[list[flo
     """Sentence start/end times: segment edges at terminal punctuation or pauses."""
     starts: list[float] = []
     ends: list[float] = []
+    segments = [s for s in segments if s.get("text")]  # not a marker holder
     for i, seg in enumerate(segments):
         prev = segments[i - 1] if i else None
         nxt = segments[i + 1] if i + 1 < len(segments) else None
@@ -723,7 +774,7 @@ def sentence_bounds(segments: list[Segment], gap: float = 0.7) -> tuple[list[flo
 
 
 def _in_speech(t: float, segments: list[Segment]) -> bool:
-    return any(s["start"] - 0.3 <= t <= s["end"] + 0.3 for s in segments)
+    return any(s["start"] - 0.3 <= t <= s["end"] + 0.3 for s in segments if s.get("text"))
 
 
 def _gap_before(t: float, words: list[dict[str, Any]]) -> float:
@@ -831,6 +882,8 @@ def transcript_text(name: str, segments: list[Segment], pause: float = 0.6) -> l
             cur.clear()
 
     for seg in segments:
+        if not seg.get("text"):  # a marker holder
+            continue
         words = seg.get("words") or [
             {"start": seg["start"], "end": seg["end"], "word": seg["text"]}
         ]
@@ -891,7 +944,7 @@ def text_signals(ps: PartSignals, style: Style, name: str) -> None:
     styles with ``profanity_alone`` False). ``name``: the source's, for the log."""
     n, sig, words = ps.n, ps.sig, ps.words
     kw_hits = keyword_hits(words, style.keywords)
-    laugh_hits = keyword_hits(words, LAUGHTER)
+    laugh_hits = laughter_hits(words, flat_markers(ps.segments))
     if not style.profanity_alone:
         n_before = len(kw_hits)
         n_profane = sum(1 for *_, p in kw_hits if p in PROFANE)
@@ -1091,7 +1144,12 @@ def _shift_segments(segments: list[Segment], dt: float) -> list[Segment]:
         words = [
             {**w, "start": w["start"] + dt, "end": w["end"] + dt} for w in seg.get("words", [])
         ]
-        out.append({**seg, "start": seg["start"] + dt, "end": seg["end"] + dt, "words": words})
+        shifted = {**seg, "start": seg["start"] + dt, "end": seg["end"] + dt, "words": words}
+        if seg.get("markers"):
+            shifted["markers"] = [
+                {**m, "start": m["start"] + dt, "end": m["end"] + dt} for m in seg["markers"]
+            ]
+        out.append(shifted)
     return out
 
 
@@ -1206,6 +1264,7 @@ def analyze_source(
                 overlap.stop()
             raise
         segments, dropped = filter_hallucinations(segments)
+        segments = split_markers(segments)  # non-speech markers: only the laughter hits see them
         if dropped:
             logger.info("%s: dropped %d likely-hallucinated transcript segments", src.name, dropped)
         stages["cached"] = not made
@@ -1723,14 +1782,20 @@ def layer_category(style: Style) -> str:
 
 
 def plan_layers(
-    style: Style, sources: Sequence[Path], skip: Collection[str], cat: str | None = None
+    style: Style,
+    sources: Sequence[Path],
+    skip: Collection[str],
+    cat: str | None = None,
+    visual_index: bool = False,
 ) -> LayerPlan:
     """Which event layers the reactions, keyframes and crashes steps run.
 
     ``cat``: the footage category (:mod:`cutpoint.category`; None: :func:`layer_category`
     of ``style``). Reactions: the PANNs audio events (plus the voice layer for action-cam
     footage, whose crash audio score reads it). Keyframes: HUD OCR for gameplay, the CLIP
-    visual layer for action-cam and general footage (only with a CUDA GPU). Crashes:
+    visual layer for action-cam and general footage (only with a CUDA GPU); ``visual_index``
+    (``--visual-index``) adds the CLIP visual layer to the keyframes of gameplay (before the
+    HUD text) and talk too, for the assistant's visual search only. Crashes:
     action-cam and general footage, or any source with telemetry. A step whose events extra
     or model files are missing is left out with one INFO line naming the fix; nothing is
     downloaded.
@@ -1751,8 +1816,8 @@ def plan_layers(
         want["reactions"] = ("audio", "voice") if "crashes" in want else ("audio",)
     if "keyframes" not in plan.skipped:
         if plan.game:
-            want["keyframes"] = ("ocr",)
-        elif action:
+            want["keyframes"] = ("ocr", "visual") if visual_index else ("ocr",)
+        elif action or visual_index:
             want["keyframes"] = ("visual",)
         else:
             plan.skipped["keyframes"] = f"no keyframe layer for the {style.name} style"
@@ -1774,22 +1839,28 @@ def plan_layers(
             plan.skipped[step] = SKIP_NO_EXTRA
         want.clear()
         return plan
-    if "keyframes" in want and want["keyframes"] == ("visual",) and not _cuda():
+    if "visual" in want.get("keyframes", ()) and not _cuda():
+        rest = tuple(x for x in want["keyframes"] if x != "visual")  # gameplay: the HUD text stays
         logger.info(
-            "No CUDA GPU: keyframes skipped (CLIP on the CPU would take about an hour per "
-            "hour of footage)"
+            "No CUDA GPU: %s skipped (CLIP on the CPU would take about an hour per hour of "
+            "footage)",
+            "keyframes" if not rest else "the visual index",
         )
-        plan.skipped["keyframes"] = SKIP_NO_CUDA
-        del want["keyframes"]
+        if rest:
+            want["keyframes"] = rest
+        else:
+            plan.skipped["keyframes"] = SKIP_NO_CUDA
+            del want["keyframes"]
     components: dict[str, None] = {}
     for step, layers in list(want.items()):
         files = event_paths.missing_files(layers)
         if not files:
             continue
         components.update(dict.fromkeys(comp for comp, _ in files))
-        rest = tuple(x for x in layers if x != "voice")
-        if "voice" in layers and not event_paths.missing_files(rest):
-            want[step] = rest  # reactions without the voice layer
+        # reactions without the voice layer, keyframes of gameplay without the visual index
+        rest = tuple(x for x in layers if x not in ("voice", *(("visual",) if plan.game else ())))
+        if rest != layers and rest and not event_paths.missing_files(rest):
+            want[step] = rest
             continue
         need = " ".join(dict.fromkeys(comp for comp, _ in files))
         plan.skipped[step] = f"model files missing (cutpoint setup --only {need})"
@@ -1854,10 +1925,12 @@ class _StepHook:
     """``run_events``'s ``stage`` for :func:`analyze`: each layer reports as its step; a
     layer that fails fails its step (an ERROR line and a ``step_failed`` warning; for the
     OCR layer a WARNING naming the sources without menu filtering and HUD events, see
-    :func:`_ocr_failed`), and the next steps still run."""
+    :func:`_ocr_failed`), and the next steps still run. A layer in ``optional`` that fails
+    only gets a WARNING and a ``step_failed`` warning: its step is not failed."""
 
-    def __init__(self, steps: progress.Run) -> None:
+    def __init__(self, steps: progress.Run, optional: Collection[str] = ()) -> None:
         self.steps = steps
+        self.optional = optional
         self.failed: set[str] = set()
 
     @contextlib.contextmanager
@@ -1878,10 +1951,15 @@ class _StepHook:
             if layer == "ocr":  # analyze goes on, ranked without the HUD: a WARNING
                 message, files = _ocr_failed(err)
                 logger.warning("%s", message)
+            elif layer in self.optional:
+                message = f"Visual index failed: {err}; the HUD text still runs"
+                logger.warning("%s", message)
             else:
                 message = f"{LABELS[step]} failed: {err}; continuing without it"
                 logger.error("%s", message)
             jsonout.warn("step_failed", message, files)
+            if layer in self.optional:
+                return
             if self.steps.current == step:
                 self.steps.fail(message)
             self.failed.add(step)
@@ -1984,7 +2062,7 @@ def _dialogue_backend(
     if not style.open_list:
         steps.skip("dialogue", f"for open-list styles only, not the {style.name} style")
         return None
-    if not any(segments for segments in transcripts.values()):
+    if not any(s.get("text") for segs in transcripts.values() for s in segs):
         steps.skip("dialogue", "no speech to read")
         return None
     choice = dialogue.choose_backend(ollama_url, ollama_model)
@@ -2108,7 +2186,7 @@ def _run_layers(
                 audio=AudioParams(),
                 ocr=OcrParams(game=game, player_tags=tags),
                 vlm=VlmParams(max_windows=None),
-                stage=_StepHook(steps),
+                stage=_StepHook(steps, {"visual"} if plan.game else set()),
                 cached_ocr=plan.game,
                 llm=llm,
                 prefetch=prefetch,
@@ -2257,6 +2335,7 @@ def _rate_vision(
                 style.base,
                 activity=activity,
                 transcript=c.get("transcript"),
+                laughter=heard_laughter(c),
             )
             is not None
             for c in top
@@ -2278,6 +2357,7 @@ def _rate_vision(
                     style.base,
                     activity=activity,
                     transcript=c.get("transcript"),
+                    laughter=heard_laughter(c),
                 )
                 if res is None:
                     n_failed += 1
@@ -2336,6 +2416,7 @@ def analyze(
     earlier_total_s: float | None = None,
     detection: dict[str, Any] | None = None,
     batch_size: int = 0,
+    visual_index: bool | None = None,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -2389,6 +2470,10 @@ def analyze(
             and loaded again for the next ones, and so are the event layers' models
             (:func:`~cutpoint.events.pipeline.run_events`); 0: one batch. The results are
             the same.
+        visual_index: True = also write the frame embeddings (the keyframes step's CLIP visual
+            layer) for gameplay and talk footage, for the assistant's visual search; they
+            change no ranking. False or None = only the styles that always write them
+            (action, sport, action-cam).
 
     Returns:
         Path of the written highlights.json.
@@ -2415,6 +2500,7 @@ def analyze(
             earlier_total_s=earlier_total_s,
             detection=detection,
             batch_size=batch_size,
+            visual_index=bool(visual_index),
         )
 
 
@@ -2440,6 +2526,7 @@ def _analyze(
     earlier_total_s: float | None,
     detection: dict[str, Any] | None,
     batch_size: int,
+    visual_index: bool,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
@@ -2686,7 +2773,7 @@ def _analyze(
         # ---- 2-4. reactions, keyframes, crashes: the event layers (events.json)
         events_new = False
         if layers:
-            plan = plan_layers(style, sources, skip, cat)
+            plan = plan_layers(style, sources, skip, cat, visual_index)
             for step, reason in plan.skipped.items():
                 steps.skip(step, reason)
             # ---- 5. dialogue: a text model reads the transcripts (open-list styles only).
@@ -2796,6 +2883,7 @@ def _analyze(
                         style.base,
                         activity=wording,
                         transcript=c.get("transcript"),
+                        laughter=heard_laughter(c),
                     )
                     is not None
                     for c in cands[:n_top]
@@ -2839,12 +2927,7 @@ def _analyze(
         cands.sort(
             key=lambda c: (not c.get("must_include"), *scorer.rank_key(c))
         )  # must-include first
-        total, suggested = 0.0, 0
-        for c in cands:
-            if total >= style.target_total and not c.get("must_include"):
-                break
-            total += c["end"] - c["start"]
-            suggested += 1
+        suggested = len(default_fit.fit_target(cands, style.target_total))
         hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]
         hl["suggested_top"] = suggested
         hl["settings"]["last_candidate_id"] = len(cands)

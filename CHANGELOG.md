@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint ui` starts the subscription proxy itself, so `cutpoint proxy` no longer has to run in a
+  terminal to sign in (#821). Log in and Retry on a Connected accounts row start it when it is not
+  running (the row shows "Starting the proxy…" and any error); a chat turn with a subscription
+  model, a model-list refresh and opening Connected accounts start it only when a subscription
+  login is saved; nothing starts with the UI. A proxy the UI started stops when the UI exits; one
+  started with `cutpoint proxy` is left running. New `POST /api/assistant/proxy`;
+  `GET /api/assistant/logins` also returns `proxy_running` and `saved_login`.
+- `cutpoint ui`: while the first analysis runs the empty state is compact (no illustration, options or
+  Analyzing button, no count of videos found) and has a yellow Pause analysis button, pinned to
+  the top of the column, that stops the run; Resume continues it.
+- `cutpoint ui`: One-Click Edit in the Export panel is marked Experimental.
+- `--visual-index` / `--no-visual-index` on `analyze` and `edit`, and `"visual_index": true` in
+  `config.json` (off by default): also write the CLIP frame embeddings that the AI Chat's
+  `look_for` searches, for `gaming`, `funny` and `commentary` footage; `action`, `sport` and
+  `action-cam` always had them. It runs in the `keyframes` step (before the HUD text), changes no
+  ranking, needs the `events` extra, its model files and a CUDA GPU (without a GPU the HUD text
+  still runs), and shares the existing per-source cache. Measured on 72 min of 1080p60 gameplay
+  (RTX 3080): about 373 s per hour of video and about 25 MB per hour on disk. Sources with telemetry: the
+  crashes step also reads them, so `crashes.json` can differ; the ranking does not.
+- The AI Chat no longer offers `look_for` to a project none of whose sources has frame
+  embeddings. If a search still fails for that reason, the chat shows "Visual search isn't
+  available for this project: its analysis has no frame index (analyze --visual-index writes
+  it)" instead of the generic line.
+- HUD region discovery finds the real kill feed with the shared vision model. After discovery
+  proposes regions, the model (Ollama `qwen3.5:9b`, or the hosted Vision model of the Models tab)
+  looks at crops of each proposal and labels it `kill_feed`, `chat`, `notice`, `banner`, `menu`,
+  `readout` or `other`; a `kill_feed` proposal becomes the feed region, even one that discovery
+  had read as a notice. It runs once per game, saves the labels in the discovered preset, and
+  runs whenever the vision model answers (an Ollama on another machine or a hosted model only
+  with the Vision consent; without it the `vision_consent_needed` warning). Without a model the
+  rules decide alone. A discovered feed now needs a score of at least 0.02 (one scoring 0.004 was
+  kept as the only feed), and a group of text whose rows change text size, such as stream chat
+  over a battle log, is split into one proposal per text size.
+
 - A dialogue reader for `gaming`: the new `dialogue` analyze step has a text model read the whole
   transcript in overlapping pieces and mark talk worth keeping (`funny`, `out_of_pocket`,
   `ragebait`, `back_and_forth`, `story`). Each stretch is an `events.json` event (`kind` `text`,
@@ -268,6 +302,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   camera's usual burned-in overlay does not make camera footage gameplay. A few seconds per unsure
   source, cached as `category-text-v1.json`; skipped in Cutpoint lite (the source stays
   ambiguous), and never run with an explicit `--style`.
+- `scripts/moment_eval.py` (development benchmark): scores how well a project's ranked moments match
+  the owner's labels (one private JSON file per video with `keep`, `skip`, `reference` ranges and a
+  `holdout` flag). Per video it reports the keeps and skips hit in the top 10 and 20, the keeps and
+  hand-edit reference ranges hit within 15% and 30% of the video length, each against a seeded
+  random-order control (mean, 95th percentile, multiple of chance; "beats noise" only above the
+  95th percentile). It also lists the labels the default edit (`select_moments` with no options, as
+  `clips`) and the highlights edit (`max_total` 180) contain; the edits have no control. Holdout
+  videos are listed apart. `--json` writes the results and `--compare A.json B.json` shows the
+  difference between two runs, warning when their seed, runs or overlap differ. Only reads.
 - `scripts/style_auto_eval.py` (#513, development harness): runs the footage category detection
   on sources with known categories (a local labels file) and reports the confusion by
   sure or ambiguous, the sure-wrong sources, the ambiguous share by count and minutes, the style
@@ -550,6 +593,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `cutpoint ui`: one type scale (five font-size tokens) and one gap token between sibling controls
+  in the header, toolbar and Jobs rows; the Sequence, AI Chat, Export and Models tabs share the same
+  body and label sizes; the slash in the header and "Analysis options…" in the Moments panel are
+  evenly spaced; the empty preview is centred: with no project a line and New project, before
+  analysis a title, one line and Analyze footage (or a pointer to Resume after a stopped run); while the first analysis runs the Pause button is at the top of the
+  Moments column; "Analyzing…" no longer adds "each step is listed below".
+- `cutpoint ui`: the Models tab has one short line per role, shorter provider, key and consent
+  notices (what is sent where is kept; the rest is behind a "More" toggle), and the "Not connected"
+  badge of each Connected accounts row stays on the title line. The AI Chat shows only the Ollama
+  model name for the default local model. Settings says once, below Projects, that Preview, Export
+  and Appearance show at once and Save keeps them in this browser, and the Theme select has no hint.
 - An automatic pick skips a candidate that mostly overlaps one already picked from the same source;
   `--ids` does not. The next candidate takes its place.
 - **BREAKING:** The AI Chat consent is version 3 (`assistant-v3:<provider>@<host>`; was `assistant-v2:`). Whole transcripts now go to a hosted chat model during `analyze`, so users of one are asked again, and a saved `assistant-v2:` entry no longer counts. The Vision consent is unchanged.
@@ -849,6 +903,126 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Gaming region discovery no longer groups the OCR frames of two files of one name in different
+  folders as one source, so each keeps its own menu-frame test and static texts (#817).
+- The game key (and so the HUD preset name) no longer comes from a generic folder name such as
+  `VODs`, `Videos`, `Captures`, `Replay` or `src`, a name of one or two characters, or a date: the file
+  name is used instead, so unrelated games in one such folder no longer share a preset. Non-ASCII
+  letters stay in the key (`vidéo ünï 日本` gives `vidéo-ünï-日本`, was `vid-o-n`); a preset saved
+  under the old key keeps matching. Videos in such a folder run region discovery again, once per
+  file name, and a preset saved under the folder's name (such as `vods.json`) no longer matches on
+  its own: pass `--game vods` to keep using it. Videos named by a date only (OBS), or by a
+  generic recorder name and a date (`Replay <date>.mkv`, `Desktop <date>.DVR.mp4`), in one such
+  folder share one key. A HUD fit check then tells games in one folder apart: a source whose HUD
+  text lands in other places on screen (a grid of 16 x 12 cells) than in the footage of its
+  guessed key's preset gets a key and a discovery of its own (INFO line
+  `<file> does not fit the HUD preset '<key>' ...`), and a preset discovered from several sources
+  is made from the largest group of them that fits together (most gameplay frames in total), which
+  keeps the key. A preset from an older version splits nothing until it has the grid:
+  to give an older preset the fit check, run `cutpoint events <project> --discover-regions` on a
+  folder where that game is the majority, which checks the sources against each other as in a new
+  discovery and adds only `discovery.fit_ref`, made from those that fit, to the preset (regions unchanged, INFO line `Added the HUD fit check to the
+  preset '<key>' ...`). Over a preset that has the grid, `--discover-regions` checks the sources
+  against it and makes the grid again from those that fit. The decisions are kept in
+  `<project>/discovery/game_keys.json`; `--game` and preset `match` hints skip the check,
+  `--discover-regions` runs it again (#822).
+- An explicit `--ollama-url` and/or `--ollama-model` on `analyze` and `edit` now wins over the AI
+  Chat model for dialogue reading and over a hosted Vision role (VLM layer of events, feed labels,
+  `analyze --vision`); a flag left out takes its usual default. An Ollama on another machine needs
+  the Vision consent (vision) or the AI Chat consent (dialogue); without it the step is skipped
+  with `vision_consent_needed` or `chat_consent_needed` and nothing is sent to the hosted model
+  (#805).
+- The crash and profile step of `analyze` and `edit` (and of `resume` replaying them) now uses an
+  explicit `--ollama-url` / `--ollama-model` too, with the same Vision consent rule for an Ollama on
+  another machine; as before, that step asks the model only with `--vision`. A bad port in `OLLAMA_HOST` or `ollama_url` no longer fails the profile
+  detection of `crashes` and `profile`: it logs a warning and goes on without the vision model
+  (#816).
+- Feed labelling gives the first request to an Ollama 300 s (model load) instead of 60 s, and a
+  failed first request no longer counts toward giving up. Hosted models are unchanged (#796).
+- AI Chat names dialogue moments by their readable title, as the moments list does, while
+  sequence labels keep their renamed text (#806).
+- AI Chat: an add whose start or end is far from the moment (times counted from the moment)
+  no longer throws out the proposal; that edge is ignored and the preview says so.
+- AI Chat: a failed visual search in Cutpoint lite or without the CLIP weights now says why.
+- Windows: a lock written right after its run started is no longer read as stale (clock slack
+  in the process-id reuse check).
+- `cutpoint events --ocr-debug` crops of kill-feed OCR events and contact sheets were silently not
+  written on Windows when the path had non-ASCII characters (#797). They are now written through
+  one shared writer that encodes the picture first and writes the bytes, so such paths work.
+- Discovery's OCR cache no longer mixes up files with the same name in different folders (#794):
+  their entries used to collide and overwrite each other. Cached OCR records that belong to the
+  same file are reused; the others are read again once.
+- Discovery's `ocr.jsonl` keeps only the records of the current run after a complete run (#795).
+  An interrupted run leaves it as it was.
+- After a fresh dialogue reading, the older dialogue caches of that source are removed (#803):
+  those of earlier prompt versions and the same model's previous reading. A current reading by
+  another model is kept.
+- Whisper can write non-speech markers now (`[Laughter]`, `(laughs)`, `*sighs*`). Cutpoint had
+  left faster-whisper's default list of suppressed tokens on, which blocks `[`, `(` and `*`, so none
+  of 155 cached transcripts held a `[laughter]` marker and the marker rule of the `laughter`
+  signal had nothing to read. New transcriptions keep those tokens; the rest of the default list
+  (speaker tags, music notes) stays suppressed. A marker is taken out of the segment text and
+  the words before anything else reads them, so subtitles, captions, `transcript.txt`, dialogue
+  stretches, the AI Chat and the speech checks never show or count it; only the laughter hits
+  read it (`markers` of the segment). Existing transcripts are not made again (the cache name
+  does not change); they have no markers. Measured with Whisper medium on three 12.5 min
+  excerpts of gameplay: no laughter marker came out, the one non-speech marker kind was
+  `*singing*` (9 times in a stretch of music, 6 of them dropped as a repeated phrase), run time
+  within the difference between two runs of the same settings.
+- A laughter word is counted once: `haha` matched both `haha*` and `hah*` and counted twice (1.8
+  instead of 1.0). The strongest pattern counts.
+- The AI Chat's `heard` laughter follows the same rule as the analysis: the audio laughter
+  evidence (`signals.events.laughter`) must be 0.12 or more; before, any value above 0 counted.
+  Screams are unchanged.
+- Laughter scoring is stricter about what was actually laughed. The `laughter` transcript signal
+  counts only Whisper's non-speech markers (`[laughter]`, `(laughs)`, `*laughing*`) and
+  interjections such as `haha` and `lol`; the spoken word "laugh" or "laughter" no longer counts.
+  A laugh heard in the audio with a confidence below 0.12 (the detector's own threshold) no
+  longer makes a `laughter` moment, or labels one, unless another laughter, scream or cheering
+  sound, a laughter word in the transcript, or loud speech is within 5 s. The vision rating
+  prompt now says when laughter was heard in a moment (the model sees frames only, so a funny
+  moment no longer rates low for looking ordinary); those moments are rated again, as the prompt
+  is part of the cache key. In `cutpoint ui`, Stats for Nerds shows laughter in the transcript and
+  laughter heard in the audio as two lines.
+- A candidate widened to cover a dialogue stretch keeps only the part that leads into its
+  original moment: it starts after a silence of 8 s or more (no speech in the transcript) before
+  the moment, and ends before one after it, instead of opening on dead air. Stretches longer than
+  90 s, which are moments of their own, are unchanged.
+- Gaming analysis over-flagged three things from the screen text. A kill-feed row that OCR read
+  twice (an OCR variant of a name, or the two names split at another place) was two kills; reads
+  that start within 6 s of each other, never in the same frame, with the same names (side by side
+  or joined) are now one kill, and two kills of one killer or one victim with another name on the
+  other side stay two, as do two rows on screen together. A banner text that stays on a screen
+  (a scoreboard line with a player named "ACE", read as the same longer line three times running,
+  each within a minute of the last) was one scoring banner per sighting (14 moments in six
+  minutes); the first stays, with its `recurrences`, and announcing banners (the phrase alone, or
+  with another name each time) are never collapsed. And a system line of the feed ("friendly fire
+  turned off until action phase") that was read as a kill row, with the names cut anywhere, gives
+  no kill when the same line recurs as a notice. OCR events are interpreted again from the raw OCR
+  cache where one exists; older projects without it are read again.
+- Your `player_tags` match more OCR variants of your name and fewer other players' names: a
+  tag of 7 letters or more may be read with a letter dropped or added (12 or more: two, and a
+  letter read as another; 16 or more: three), a tag found anywhere in a name, so also glued to
+  a team name, counts, a row cut at the wrong place is credited to the side that holds most of the
+  tag (for a tag of 7 letters or more), and a 5 or 6 letter tag no longer matches a name one letter off;
+  a shorter tag read with an edit counts only as a whole name or word (`Dunmorrow` is no `Dunmore`).
+
+- HUD region labelling: a cached label is asked again when the prompt changes; a region found
+  outside the others keeps the model's `label` in the preset; a stuck Ollama costs at most 60 s
+  per call instead of 10 minutes; and the frame pictures of discovery are named after the frame, so
+  a later run with other bursts no longer replaces the picture of a cached frame (pictures no run
+  uses are removed).
+
+- `clips` without `--top`, `--ids` or `--max-total` no longer takes one long moment as the whole
+  edit. The default edit used to count moments until their total reached the style's target length,
+  so a best moment longer than the target (a 219 s dialogue stretch against the 90 s of `gaming`)
+  made it one clip. It now takes the best moments that fit the target, as `--max-total` does: a
+  moment that does not fit in the room left is skipped and the next one tried, one that mostly
+  overlaps a pick is still skipped, a must-include crash is always kept, and if no moment fits the
+  best one is taken. `suggested_top` in `highlights.json` is now the number of moments this edit
+  picks; `analyze`, `events` and `clips` use one rule, and `clips` works it out from the saved
+  `target_total`, so an older `highlights.json` needs no re-run. `--top`, `--ids` and `--max-total`
+  are unchanged.
 - Viewer chat in a feed region no longer reads as kills: a `:` or `;` (also full width) before a kill
   word, `assist` or `crashed` makes a row chat on every feed, not only in a clock-stamped log, so
   `Marlin: killed that corner` gives no event. This also holds with a preset's own `kill_words`. Chat
@@ -1210,6 +1384,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default model ahead of time (medium with CUDA, small without; `--whisper-model NAME` for
   another name or repo id); it needs no extra, so it works in Cutpoint lite, and the default
   `cutpoint setup` includes it (#651).
+- For styles with a candidate cap, a source that ends loud no longer has its final moment picked
+  again and again up to the cap, which pushed out lower peaks (#771). On a synthetic 600 s `action`
+  source the analysis now gives 11 candidates instead of 4; on real footage few picks change.
 
 ## [0.4.0] - 2026-10-29
 

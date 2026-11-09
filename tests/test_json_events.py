@@ -14,7 +14,6 @@ import pytest
 
 from conftest import run_json, warning_codes, write
 from cutpoint import analyze, cache, cli, crash
-from cutpoint.events import cli as events_cli
 from cutpoint.events import pipeline, scoring
 
 
@@ -45,7 +44,7 @@ def _fake_run_events(monkeypatch, layers: list[str], stats: dict | None = None) 
         tpath.write_text("events\n", encoding="utf-8")
         return jpath, tpath
 
-    monkeypatch.setattr(events_cli, "run_events", run)
+    monkeypatch.setattr(pipeline, "run_events", run)
 
 
 def test_events_json(project, monkeypatch, capsys):
@@ -133,7 +132,7 @@ def test_events_json_interrupted(project, monkeypatch, capsys):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr(events_cli, "run_events", interrupted)
+    monkeypatch.setattr(pipeline, "run_events", interrupted)
     code, doc = run_json(capsys, ["events", "ev", "--layers", "audio"])
     assert code == 130 and doc["ok"] is False
     assert doc["error"]["code"] == "interrupted"

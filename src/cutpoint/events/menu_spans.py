@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import sources
-from cutpoint.styles import LAUGHTER, get_style
+from cutpoint.styles import get_style
 from cutpoint.utils import slugify
 
 logger = logging.getLogger(__name__)
@@ -75,7 +75,13 @@ def _retranscribe(c: dict[str, Any], segments: list[dict[str, Any]] | None, styl
     """
     if segments is None:
         return
-    from cutpoint.analyze import PROFANE, _transcript_snippet, keyword_hits  # noqa: PLC0415
+    from cutpoint.analyze import (  # noqa: PLC0415
+        PROFANE,
+        _transcript_snippet,
+        keyword_hits,
+        laughter_hits,
+    )
+    from cutpoint.transcribe import flat_markers  # noqa: PLC0415
 
     said = [w for s in segments for w in s.get("words", []) if c["start"] <= w["start"] <= c["end"]]
     c["transcript"], unsure = _transcript_snippet(said)
@@ -86,9 +92,8 @@ def _retranscribe(c: dict[str, Any], segments: list[dict[str, Any]] | None, styl
     if not signals.get("keywords"):
         return
     st = get_style(style)
-    hits = sorted(
-        keyword_hits(said, st.keywords) + keyword_hits(said, LAUGHTER), key=lambda h: -h[1]
-    )
+    marks = [m for m in flat_markers(segments) if c["start"] <= m["start"] <= c["end"]]
+    hits = sorted(keyword_hits(said, st.keywords) + laughter_hits(said, marks), key=lambda h: -h[1])
     still = {p for *_, p in hits}
     dropped = [k for k in signals["keywords"] if k not in still]
     if not dropped:

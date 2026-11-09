@@ -6,7 +6,7 @@ extra and models are installed, which re-rank the candidates and let clips run o
 after the banter; otherwise those steps are skipped with an INFO line. The optional `events`
 command adds the model descriptions (`vlm` layer) and can force layers.
 
-For `gaming`, `analyze` also runs a `dialogue` step: a text model reads the whole transcript and marks funny or heated talk, and those stretches become candidates that keep the whole stretch. A candidate such a stretch overlaps is widened to it, and candidates it joins become one, but only when the result stays within 90 s (a longer stretch is a candidate of its own), so an id seen in an earlier `highlights.json` can be gone. See [Dialogue reader](../commands.md#dialogue-reader); `--skip dialogue` leaves it out.
+For `gaming`, `analyze` also runs a `dialogue` step: a text model reads the whole transcript and marks funny or heated talk, and those stretches become candidates that keep the whole stretch. A candidate such a stretch overlaps is widened to it, and candidates it joins become one, but only when the result stays within 90 s (a longer stretch is a candidate of its own), so an id seen in an earlier `highlights.json` can be gone. A widened candidate drops a silence of 8 s or more (no speech in the transcript) before or after its original moment. See [Dialogue reader](../commands.md#dialogue-reader); `--skip dialogue` leaves it out.
 
 ```powershell
 cutpoint analyze D:\Videos\Game --style gaming --out match-night
@@ -51,7 +51,13 @@ With `events.json` present, `clips` also applies event tails: if a payoff starts
 OCR regions come from a per-game preset (lookup order in
 [Configuration](../configuration.md#hud-presets)). No game presets are bundled. Write one, or let region
 discovery create it (below), in `<CUTPOINT_HOME>\presets` or in a project `hud_presets` folder. The game is
-picked from the file or folder name, or set with `--game KEY`.
+picked from the file or folder name, or set with `--game KEY` (how the name becomes a key:
+[Configuration](../configuration.md#hud-presets)). A source whose HUD text lands in other places on
+screen than in the footage of that name's preset gets a key and a discovery of its own (the HUD
+fit check, same page). To give an older preset the fit check, run
+`cutpoint events <project> --discover-regions` on a folder
+where that game is the majority; it adds only the check's reference to the preset, made from the
+sources that fit.
 
 For a game without a preset, `analyze` (`gaming` and `funny` styles) and `events` run region discovery automatically; `analyze` logs `first run for <game>: discovering HUD regions`, which can take several minutes on CPU OCR. It samples bursts of
 frames, finds text that changes quickly (kill feeds, banners, notices), ignores static HUD and
@@ -72,11 +78,25 @@ dropped. With such a preset, menu and scoreboard frames produce no OCR events ou
 and icon kills read on menu frames (a settings row such as "Subtitles | Enabled") are dropped too;
 an icon kill first read as a still screen opens is not taken as feed activity, so a still menu
 is still found as one.
+A region proposed as a `feed` needs a score of at least 0.02, as a banner or notice does, and a
+group of text whose rows change text height (stream chat over a battle log) is split into one
+proposal per text size. Then the shared vision model (Ollama, or the hosted Vision model of the
+Models tab of `cutpoint ui`) looks at up to four crops of each proposal and says what it is:
+`kill_feed`, `chat`, `notice`, `banner`, `menu`, `readout` or `other`. It does not draw a box; it
+names the rectangles discovery found. A `kill_feed` proposal becomes the feed region, a `feed`
+the model calls anything but `kill_feed` or `chat` becomes a `notice`, and `chat` stays a `feed`
+region, which the chat check below drops. The labels are saved in the preset (`discovery.labels`,
+and `label` on the regions), so this runs once per game. The preset of a game with a `kill_feed` region also gets
+`"feed": {"row_notices": true}`, so icon lines in it are read as kills. It runs whenever the vision model
+answers: a local Ollama, or an Ollama on another machine or a hosted provider only with your
+Vision consent (otherwise the `vision_consent_needed` warning). Without a model an INFO line says
+so and the rules decide alone. About 3.5 s per proposal, at most 12 proposals.
 A game that already has a preset does not pick this up: discovery does not run for it and the old
 preset (no feed region, no `row_notices`) stays, so its kills stay at 0. Either move or rename the old
 preset (`<presets>/<game>.json`, or the project's `hud_presets/<game>.json`) and run `analyze` or
 `events` again, so discovery installs the new one, or run `events --discover-regions` (which leaves
-the preset file alone and writes only `projects/<name>/discovery/<game>/proposal.json`) and copy the
+the preset's regions alone, at most adds the HUD fit check's `discovery.fit_ref`, and writes
+`projects/<name>/discovery/<game>/proposal.json`) and copy the
 proposal's `feed` region and `"feed": {"row_notices": true}` into the preset by hand. Either way the new region needs new OCR reads (no cache replay).
 Menus with little text (hangar or crew screens) are found because they hold still: a frame is a
 static screen when a small grey thumbnail of the HUD area stays nearly the same, with no feed
@@ -138,7 +158,8 @@ with far more text than usual (a partial scoreboard). When the preset already ha
 `"origin": "outside"`, they count against the 2. These regions carry `"origin": "outside"`, which the preset loader ignores. A new
 preset gets them with the other regions; the INFO line `Discovery: text shows outside the ...
 regions` gives their rectangles, burst and frame counts, never the text. For a game that already
-has a preset, `--discover-regions` never changes the preset file: the extra regions are listed under
+has a preset, `--discover-regions` never changes the preset's regions (it only adds the HUD fit
+check's `discovery.fit_ref`): the extra regions are listed under
 `suggested_regions` in `proposal.json` (with sample texts in the `proposals` evidence) and an
 INFO line says to copy them into the preset's `regions` to have OCR read them. `overlay.jpg`
 draws them in magenta.
@@ -183,7 +204,14 @@ Alder`.
 
 Player tags (`--player`) tolerate OCR variants: spaces and punctuation are ignored, look-alike
 letters (`0`/`O`, `1`/`I`, `5`/`S`) are one, and a clan tag or weapon read with the name still
-matches. A tag shorter than 5 letters and digits must match a whole word of the name.
+matches. A tag shorter than 5 letters and digits must match a whole word of the name. A longer tag
+may also be read with a letter dropped or added (7 letters or more), or with two (12 or more) or
+three (16 or more) letters wrong, and one read as another counts only from 12 letters: a 9-letter
+`Emberfall` matches `Emberfal`, not `Emberwall`. A row cut at the wrong place between the names
+(`Stonhar,QQ` and `uillmerefox7`) is credited to the side that holds most of the tag, and to
+neither when the halves are equal; this is done for a tag of 7 letters or more only. A name that only has your tag inside it matches, as before; a name that needs an edit to hold a shorter tag (under 12 letters) matches only as a whole name or word (`Dunmorrow` is no `Dunmore`).
+A recurring system line that was read as a kill row (a notice that comes back five times in the
+feed region, 10 s or more apart) gives no kill; a notice that is a kill's own row does not count towards that.
 
 Limits: a `name verb name` row with any other verb stays unread unless a preset's `kill_words` lists
 it. A feed that writes a colon before its kill word (`Kip: killed Alder`) reads as chat and gives no

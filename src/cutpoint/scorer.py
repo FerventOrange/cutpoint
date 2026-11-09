@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from cutpoint import features
+from cutpoint import default_fit, features
 
 if TYPE_CHECKING:
     from cutpoint.analyze import GridPart
@@ -159,12 +159,7 @@ def rescore_events(
     hl["candidates"][:] = cands + pool  # in place, as the sort was
     target = (hl.get("settings") or {}).get("target_total")
     if target:
-        total, n = 0.0, 0
-        for c in cands:
-            if total >= target:
-                break
-            total += c["end"] - c["start"]
-            n += 1
+        n = len(default_fit.fit_target(cands, target))
         hl["suggested_top"] = n
     hl.setdefault("settings", {})["events_rescored"] = ev.get("created")
     return changed

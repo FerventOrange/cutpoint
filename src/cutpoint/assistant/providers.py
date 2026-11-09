@@ -53,7 +53,7 @@ from cutpoint.vision import default_model as vision_model
 
 DEFAULT_OLLAMA_MODEL = "qwen3.5:9b"  # tools, vision and thinking; about 6.6 GB
 PREVIOUS_VISION_MODEL = "qwen3-vl:8b"  # the default vision model before qwen3.5:9b
-AUTO_MODEL = f"{DEFAULT_OLLAMA_MODEL} or the vision model"  # shown until resolved
+AUTO_MODEL = DEFAULT_OLLAMA_MODEL  # shown until resolved
 CHAT_TIMEOUT_S = 300.0  # one read of a local model's reply on a slow GPU
 HOSTED_TIMEOUT_S = 180.0  # a hosted model's whole reply (not streamed)
 CONNECT_TIMEOUT_S = 10.0

@@ -137,6 +137,7 @@ def run_edit(
     ollama_url: str | None = None,
     ollama_model: str | None = None,
     skip: Collection[str] = (),
+    visual_index: bool | None = None,
     compress_peaks: str = "off",
     lut: Lut | None = None,
     color: str | None = None,
@@ -152,7 +153,9 @@ def run_edit(
     (opt-in: None or False rates nothing with Ollama); ``vision_top``, ``ollama_url``,
     ``ollama_model`` and ``skip`` are analyze's options of those names (the Ollama ones also
     for the events VLM layer; ``skip`` also leaves its steps' layers out of ``events``,
-    :data:`~cutpoint.analyze.LAYER_STEP`). ``compress_peaks``
+    :data:`~cutpoint.analyze.LAYER_STEP`); ``visual_index`` is ``analyze --visual-index``
+    (opt-in: None or False writes the frame embeddings only for the styles that always do).
+    ``compress_peaks``
     (``clips``/``assemble --compress-peaks``) is baked into the clips, so the final keeps it
     without compressing twice. ``lut`` (:func:`~cutpoint.encode.check_lut`) grades the clips
     as ``clips --lut`` does, ``color`` and ``color_strength`` as ``clips --color`` and
@@ -191,6 +194,7 @@ def run_edit(
             ollama_url=ollama_url,
             ollama_model=ollama_model,
             skip=skip,
+            visual_index=visual_index,
             compress_peaks=compress_peaks,
             lut=lut,
             color=color,
@@ -214,6 +218,7 @@ def _run_edit(
     ollama_url: str | None,
     ollama_model: str | None,
     skip: Collection[str],
+    visual_index: bool | None,
     compress_peaks: str,
     lut: Lut | None,
     color: str | None,
@@ -270,6 +275,7 @@ def _run_edit(
         ollama_model=ollama_model,
         layers=True,
         skip=skip,
+        visual_index=visual_index,
     )
     if events:
         from cutpoint.events.cli import run_args  # noqa: PLC0415

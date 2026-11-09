@@ -44,6 +44,12 @@ changes*:
   under ``suggested_regions`` in the proposal, to be copied into the preset by hand,
   and its own outside regions count against the 2.
 
+A ``feed`` needs a score of at least :data:`MIN_REGION_SCORE`, and a group of text whose rows
+change text height (chat over a battle log) is cut into one proposal per style
+(:func:`_style_split`). Then the shared vision model labels each proposal
+(:mod:`cutpoint.events.feed_labels`, :func:`apply_labels`): a ``kill_feed`` proposal is the
+feed region; without a model the rules alone decide.
+
 The proposal is written as a preset JSON (see :mod:`cutpoint.events.regions`)
 plus ``discovery/overlay.jpg`` (mean frame, dynamic-text heat map, proposed
 rectangles) and the sampled frames as JPEGs, so the result can be checked by eye
@@ -53,6 +59,7 @@ and edited.
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 import logging
 import re
@@ -71,8 +78,9 @@ import numpy as np
 from cutpoint import cache, folders
 from cutpoint.errors import FFmpegError
 from cutpoint.events.common import Source
-from cutpoint.events.regions import Region, bigtext_region
+from cutpoint.events.regions import Region, bigtext_region, source_tag
 from cutpoint.ffmpeg_utils import grab_images, probe
+from cutpoint.imageio import read_image, write_jpeg
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +163,19 @@ NOTICE_SAME_MIN = 4
 NOTICE_SAME_RATIO = 0.8
 NOTICE_SAME_EDITS = 3
 NOTICE_BAND = 0.5 * NOTICE_MAX_H * REF_H  # cluster lookup band: half the tallest text
+
+# a feed needs this score at least, as a banner or notice does (a loadout box that changes a
+# little scored 0.004 and was the only "feed", so it was kept as the best one)
+MIN_REGION_SCORE = 0.02
+
+# splitting a proposal whose rows differ in text style (stream chat above a battle log): the
+# rows are cut where the median text height changes by STYLE_JUMP or more and holds for
+# STYLE_MIN_ROWS rows; rows with fewer than STYLE_MIN_SHARE of the busiest row's boxes are noise
+STYLE_ROW = 12  # reference pixels per row
+STYLE_JUMP = 0.15
+STYLE_MIN_ROWS = 2
+STYLE_MIN_SHARE = 0.1
+STYLE_MIN_BOXES = 3
 
 
 @dataclass
@@ -247,7 +268,9 @@ def plan_bursts(sources: list[Source], n: int) -> list[tuple[Source, float]]:
 def read_ocr_samples(path: Path) -> list[dict[str, Any]]:
     """The OCR'd burst frames cached in ``path`` (``discovery/<game>/ocr.jsonl``).
 
-    Each record: ``{id, source, t, burst, k, frame, boxes}``; a box is
+    Each record: ``{id, source, src_key, t, burst, k, frame, boxes}``; ``source`` is
+    the file name and ``src_key`` tells files of one name apart (the file name and
+    the source's cache key, see :func:`_src`; older records have none). A box is
     ``{x0, y0, x1, y1, text, score}`` in reference pixels. Unreadable lines are
     skipped; a missing file gives ``[]``.
     """
@@ -261,6 +284,13 @@ def read_ocr_samples(path: Path) -> list[dict[str, Any]]:
             if isinstance(rec, dict) and "id" in rec:
                 out.append(rec)
     return out
+
+
+def _src(f: dict[str, Any]) -> str:
+    """The source an OCR record belongs to, for grouping per source: its ``src_key``
+    (``<file name>~<cache key>``), so two files of one name in different folders stay
+    apart (#817), or the file name on records written before it."""
+    return str(f.get("src_key") or f.get("source"))
 
 
 def boxes_in(
@@ -277,6 +307,26 @@ def boxes_in(
     ]
 
 
+_LEGACY_FRAME = re.compile(r"b\d+_\d+\.jpg")
+
+
+def _source_tag(src: Source) -> str:
+    """Short digest of the source's path, size and mtime, like the key of
+    :func:`cutpoint.cache.source_dir` (:func:`~cutpoint.events.regions.source_tag`)."""
+    return source_tag(src.path, src.io_path)
+
+
+def src_key(src: Source) -> str:
+    """The ``src_key`` of the source's OCR records (see :func:`_src`)."""
+    return f"{src.name}~{_source_tag(src)}"
+
+
+def _frame_name(source: str, t: float) -> str:
+    """The JPEG name of a burst frame: from its source and time, so that no other burst
+    plan writes a frame over a cached record's picture."""
+    return hashlib.sha1(f"{source}@{t:.2f}".encode()).hexdigest()[:16] + ".jpg"
+
+
 def _ocr_frames(
     bursts: list[tuple[Source, float]],
     params: DiscoverParams,
@@ -286,7 +336,6 @@ def _ocr_frames(
 ) -> list[dict[str, Any]]:
     """OCR every burst frame (cached in ``cache_path`` as JSON lines); ``on_frame`` is
     called with (frames done, frames planned) after each frame and each burst."""
-    import cv2  # noqa: PLC0415
 
     from cutpoint.events.killfeed import OcrEngine  # noqa: PLC0415
 
@@ -298,31 +347,63 @@ def _ocr_frames(
     fh = None
     # a frame's id is its source and time; bursts overlap on a short source, so a time
     # taken by an earlier frame gets the burst and frame number too (unique and stable)
+    # the source's cache key (path, size, mtime; see cache.source_dir) is in the id, so two
+    # files of one name in different folders (or a file that changed) never share one (#794);
+    # `old_ids` are the ids older caches gave the same frames (the file name alone)
     seen: set[str] = set()
+    seen_old: set[str] = set()
     plan_ids = []
+    old_ids = []
+    src_keys = []  # per burst: the record's src_key, the id's prefix (see _src)
     for bi, (src, t) in enumerate(bursts):
         ids = []
+        olds = []
+        skey = src_key(src)
+        src_keys.append(skey)
         for k in range(params.burst_frames):
-            fid = f"{src.name}@{t + k * params.burst_step_s:.1f}"
+            at = f"@{t + k * params.burst_step_s:.1f}"
+            fid, old = f"{skey}{at}", f"{src.name}{at}"
             fid = f"{fid}#{bi}.{k}" if fid in seen else fid
+            old = f"{old}#{bi}.{k}" if old in seen_old else old
             seen.add(fid)
+            seen_old.add(old)
             ids.append(fid)
+            olds.append(old)
         plan_ids.append(ids)
+        old_ids.append(olds)
 
-    def cached(fid: str, t: float, bi: int, k: int) -> dict[str, Any] | None:
+    # records whose JPEG is named by burst and frame number (older caches): a later plan's
+    # frame may have replaced it, which shows as two records naming one file
+    shared = Counter(
+        rec.get("frame") for rec in done.values() if _LEGACY_FRAME.fullmatch(str(rec.get("frame")))
+    )
+
+    def cached(src: Source, bi: int, k: int) -> dict[str, Any] | None:
         """The cached record of this frame: same id and time (an older cache can hold
-        another burst's frame under a shared id), in this run's burst."""
+        another burst's frame under a shared id), in this run's burst, and its JPEG still
+        there and its own. A record under the old id (file name only) counts when its
+        JPEG name is the one this source's path gives (the name hashes the full path),
+        and is taken over under the new id. Every hit gets this source's ``src_key``."""
+        fid, t = plan_ids[bi][k], bursts[bi][1] + k * params.burst_step_s
         rec = done.get(fid)
-        if rec is None or rec.get("t") != round(t + k * params.burst_step_s, 2):
+        if rec is None:
+            rec = done.get(old_ids[bi][k])
+            if rec is not None and rec.get("frame") != _frame_name(str(src.path), t):
+                return None
+            rec = rec and rec | {"id": fid}
+        if rec is None or rec.get("t") != round(t, 2):
             return None
-        return rec | {"burst": bi, "k": k}
+        name = rec.get("frame")
+        if not isinstance(name, str) or not (frame_dir / name).is_file() or shared[name] > 1:
+            return None
+        return rec | {"src_key": src_keys[bi], "burst": bi, "k": k}
 
     # failed before the first frame is saved: no empty frames/ (or empty ocr.jsonl) left
     # behind; the cache is opened on the first record and closed before output_dir cleans up
     with folders.output_dir(frame_dir), ExitStack() as stack:
         for bi, (src, t) in enumerate(bursts):
             ids = plan_ids[bi]
-            hits = [cached(fid, t, bi, k) for k, fid in enumerate(ids)]
+            hits = [cached(src, bi, k) for k in range(len(ids))]
             if all(h is not None for h in hits):
                 out += [h for h in hits if h is not None]
                 report((bi + 1) * params.burst_frames, total)
@@ -330,17 +411,17 @@ def _ocr_frames(
             frames = _burst_frames(
                 src.io_path, t, params.burst_frames, params.burst_step_s, params.width
             )
-            if engine is None:
-                # full frames, one at a time: all the threads on one engine. A frame has
-                # many boxes of very different widths: recognised one at a time, none is
-                # padded to the widest of a batch, which made first-run discovery about 22%
-                # faster on 5 test clips (#443)
-                engine = OcrEngine(lanes=1, rec_batch=1)
             for k, img in enumerate(frames):
                 fid, hit = ids[k], hits[k]
                 if hit is not None:
                     out.append(hit)
                     continue
+                if engine is None:  # only once a frame needs reading
+                    # full frames, one at a time: all the threads on one engine. A frame has
+                    # many boxes of very different widths: recognised one at a time, none is
+                    # padded to the widest of a batch, which made first-run discovery about
+                    # 22% faster on 5 test clips (#443)
+                    engine = OcrEngine(lanes=1, rec_batch=1)
                 sx = REF_W / img.shape[1]
                 items = engine(img, params.min_score)
                 boxes = []
@@ -357,11 +438,12 @@ def _ocr_frames(
                             "score": round(score, 3),
                         }
                     )
-                fname = f"b{bi:03d}_{k}.jpg"
-                cv2.imwrite(str(frame_dir / fname), img, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                fname = _frame_name(str(src.path), t + k * params.burst_step_s)
+                write_jpeg(frame_dir / fname, img, 80)
                 rec = {
                     "id": fid,
                     "source": src.name,
+                    "src_key": src_keys[bi],
                     "t": round(t + k * params.burst_step_s, 2),
                     "burst": bi,
                     "k": k,
@@ -377,6 +459,24 @@ def _ocr_frames(
             report((bi + 1) * params.burst_frames, total)  # a short burst counts as done
             if (bi + 1) % 10 == 0:
                 logger.info("  discovery OCR: %d/%d bursts", bi + 1, len(bursts))
+        # JPEGs of frames this run does not use (another burst plan, older names) go
+        keep = {rec["frame"] for rec in out}
+        for old in frame_dir.glob("*.jpg"):
+            if old.name not in keep:
+                try:
+                    old.unlink(missing_ok=True)
+                except OSError as err:  # a locked file: it stays, discovery goes on
+                    logger.debug("Could not remove %s: %s", old, err)
+        # the records of earlier plans, files and sources are never read again (#795); a
+        # run that stopped early never gets here, so its records stay for the next one
+        if out and set(done) != {rec["id"] for rec in out}:
+            text = "".join(json.dumps(rec, ensure_ascii=False) + "\n" for rec in out)
+            try:
+                if fh is not None:
+                    fh.close()  # the append handle: the rewrite replaces the file
+                cache.save_bytes(cache_path, text.encode("utf-8"))
+            except OSError as err:  # a locked file: the old records stay, discovery goes on
+                logger.debug("Could not prune %s: %s", cache_path, err)
     return out
 
 
@@ -408,14 +508,13 @@ def gameplay_frames(frames: list[dict[str, Any]], params: DiscoverParams) -> lis
     """
     counts: dict[str, list[int]] = {}
     for f in frames:
-        counts.setdefault(str(f.get("source")), []).append(len(f.get("boxes", [])))
+        counts.setdefault(_src(f), []).append(len(f.get("boxes", [])))
     median = {s: float(np.median(c)) for s, c in counts.items()}
     out = []
     for f in frames:
         n = len(f.get("boxes", []))
         menu = n >= params.menu_min_boxes and (
-            _centre_cover(f) >= params.menu_cover
-            or n >= params.menu_jump * median[str(f.get("source"))]
+            _centre_cover(f) >= params.menu_cover or n >= params.menu_jump * median[_src(f)]
         )
         if not menu:
             out.append(f)
@@ -528,7 +627,7 @@ def _icon_lines(
                     right.add(re.sub(r"[^a-z]", "", b["text"].lower()))
         if found:
             hits += 1
-            bursts.add((f["source"], f["burst"]))
+            bursts.add((_src(f), f["burst"]))
     names, both = (left | right) - {""}, (left & right) - {""}
     return hits / max(1, len(inside)), len(bursts), len(names), len(both)
 
@@ -579,7 +678,7 @@ def _grow_feed(
         for b in f["boxes"]:
             cy, h = (b["y0"] + b["y1"]) / 2, b["y1"] - b["y0"]
             if x0 <= (b["x0"] + b["x1"]) / 2 <= x1 and 0.5 * med_h <= h <= 2 * med_h:
-                rows.append((str(f["id"]), (f["source"], f["burst"]), cy, b["text"]))
+                rows.append((str(f["id"]), (_src(f), f["burst"]), cy, b["text"]))
                 if y0 <= cy <= y1:
                     cys.append(cy)
         cys.sort()
@@ -701,7 +800,7 @@ def _banner_proposal(frames: list[dict[str, Any]], min_h: float) -> dict[str, An
         and _alpha_share([b["text"]]) >= 0.7
         and len(b["text"]) >= 5
     ]
-    bursts = {(f["source"], f["burst"]) for f, _ in tall}
+    bursts = {(_src(f), f["burst"]) for f, _ in tall}
     if len(tall) < 3 or len(bursts) < 2:
         return None
     x0 = int(np.percentile([b["x0"] for _, b in tall], 10))
@@ -724,6 +823,66 @@ def _banner_proposal(frames: list[dict[str, Any]], min_h: float) -> dict[str, An
     }
 
 
+def _style_split(
+    frames: list[dict[str, Any]], comp: tuple[int, int, int, int]
+) -> list[tuple[tuple[int, int, int, int], tuple[int, int]]]:
+    """The grid rectangle ``comp`` cut into bands of one text style, top to bottom, each with
+    the y span (reference px) it may grow to.
+
+    Text of different kinds that sit side by side (stream chat over a battle log) is one
+    connected group of dynamic cells. Its text boxes are binned into rows of
+    :data:`STYLE_ROW` px; a new band starts where the median box height of a row differs from
+    the band's by :data:`STYLE_JUMP` or more and the next row agrees with it (a lone row is
+    noise). A band shorter than :data:`STYLE_MIN_ROWS` rows joins its neighbour. ``comp`` stays
+    whole (one band, the whole span) when no style change is left, and when it is too large to
+    be a HUD element (:func:`cluster_regions` drops it).
+    """
+    gx0, gy0, gx1, gy1 = comp
+    x0, y0, x1, y1 = gx0 * CELL, gy0 * CELL, gx1 * CELL, gy1 * CELL
+    whole = [(comp, (0, REF_H))]
+    if (x1 - x0) * (y1 - y0) > 0.25 * REF_W * REF_H:
+        return whole
+    rows: dict[int, list[dict[str, Any]]] = {}
+    for f in frames:
+        for b in boxes_in(f, x0, y0, x1 - x0, y1 - y0):
+            rows.setdefault(round((b["y0"] + b["y1"]) / 2 / STYLE_ROW), []).append(b)
+    busiest = max((len(bs) for bs in rows.values()), default=0)
+    keep = sorted(
+        r for r, bs in rows.items() if len(bs) >= max(STYLE_MIN_BOXES, STYLE_MIN_SHARE * busiest)
+    )
+    if len(keep) < 2 * STYLE_MIN_ROWS:
+        return whole
+    height = {r: float(np.median([b["y1"] - b["y0"] for b in rows[r]])) for r in keep}
+
+    def differs(a: float, b: float) -> bool:
+        return abs(a - b) / max(a, b) >= STYLE_JUMP
+
+    bands: list[list[int]] = [[keep[0]]]
+    for i, r in enumerate(keep[1:], 1):
+        ref = float(np.median([height[q] for q in bands[-1]]))
+        nxt = keep[i + 1] if i + 1 < len(keep) else None
+        agrees = nxt is not None and not differs(height[nxt], height[r])
+        if differs(height[r], ref) and agrees and len(bands[-1]) >= STYLE_MIN_ROWS:
+            bands.append([r])
+        else:
+            bands[-1].append(r)
+    if len(bands) > 1 and len(bands[-1]) < STYLE_MIN_ROWS:
+        bands[-2] += bands.pop()
+    if len(bands) < 2:
+        return whole
+    cuts = [y0] + [round((a[-1] + b[0]) / 2 * STYLE_ROW) for a, b in pairwise(bands)] + [y1]
+    out = []
+    for band, lo, hi in zip(bands, cuts, cuts[1:], strict=False):
+        boxes = [b for r in band for b in rows[r]]
+        bx0 = max(x0, min(b["x0"] for b in boxes))
+        bx1 = min(x1, max(b["x1"] for b in boxes))
+        by0 = max(lo, min(b["y0"] for b in boxes))
+        by1 = min(hi, max(b["y1"] for b in boxes))
+        rect = (bx0 // CELL, by0 // CELL, -(-bx1 // CELL), -(-by1 // CELL))
+        out.append((rect, (lo, hi)))
+    return out
+
+
 def cluster_regions(
     frames: list[dict[str, Any]], params: DiscoverParams
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -742,7 +901,7 @@ def cluster_regions(
     burst_sets: dict[tuple[int, int], set] = {}
     by_burst: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for f in game_frames:
-        bkey = (f["source"], f["burst"])
+        bkey = (_src(f), f["burst"])
         by_burst.setdefault(bkey, []).append(f)
         seen = np.zeros((GH, GW), bool)
         for b in f["boxes"]:
@@ -782,6 +941,10 @@ def cluster_regions(
         recurring & (occ_rate >= params.min_occupancy) & (chg_rate >= params.min_change) & ~static
     )
     comps = _components(dynamic)
+    n_comps = len(comps)
+    parts = [part for comp in comps for part in _style_split(game_frames, comp)]
+    comps = [rect for rect, _ in parts]
+    span = dict(parts)  # the y span a feed split off a taller group may grow to
 
     proposals: list[dict[str, Any]] = []
     for gx0, gy0, gx1, gy1 in comps:
@@ -829,6 +992,8 @@ def cluster_regions(
             else:
                 kind = "feed"
                 y0, y1, grown = _grow_feed(game_frames, (x0, y0, x1, y1), med_h, len(inside))
+                lo, hi = span[gx0, gy0, gx1, gy1]
+                y0, y1 = max(y0, lo), min(y1, hi)
         elif med_h >= 0.034 * REF_H and 0.25 < cx < 0.75:
             kind = "banner"
         elif 0.3 < cx < 0.7:
@@ -884,7 +1049,7 @@ def cluster_regions(
         "bursts": n_bursts,
         "dynamic_cells": int(dynamic.sum()),
         "static_cells": int(static.sum()),
-        "components": len(comps),
+        "components": n_comps,
     }
     return proposals, {
         "stats": stats,
@@ -1190,7 +1355,7 @@ def notice_proposals(
     n_frames = len(game_frames)
     per_source: dict[str, list[dict[str, Any]]] = {}
     for f in game_frames:
-        per_source.setdefault(str(f["source"]), []).append(f)
+        per_source.setdefault(_src(f), []).append(f)
     median = {s: float(np.median([len(f["boxes"]) for f in fs])) for s, fs in per_source.items()}
     static_texts: dict[str, set[str]] = {}
     for s, fs in per_source.items():
@@ -1201,11 +1366,9 @@ def notice_proposals(
         static_texts[s] = {k for k, c in seen.items() if c >= NOTICE_STATIC_SHARE * len(fs)}
     busy: set[str] = set()  # frames with a box-count jump (partial scoreboards)
     lines: list[dict[str, Any]] = []
-    order = sorted(
-        game_frames, key=lambda f: (str(f["source"]), int(f["burst"]), int(f.get("k", 0)))
-    )
+    order = sorted(game_frames, key=lambda f: (_src(f), int(f["burst"]), int(f.get("k", 0))))
     for f in order:
-        src = str(f["source"])
+        src = _src(f)
         if median[src] > 0 and len(f["boxes"]) >= params.menu_jump * median[src]:
             busy.add(str(f["id"]))
         left = []
@@ -1381,8 +1544,8 @@ def proposals_to_regions(
     keep = [
         p
         for p in proposals
-        if (p["kind"] == "feed" and p["score"] >= 0.25 * best)
-        or (p["kind"] in ("banner", "notice") and p["score"] >= 0.02)
+        if (p["kind"] == "feed" and p["score"] >= max(0.25 * best, MIN_REGION_SCORE))
+        or (p["kind"] in ("banner", "notice") and p["score"] >= MIN_REGION_SCORE)
     ]
     keep = keep or [p for p in proposals if p["kind"] not in ("readout", "popup")]
     out = []
@@ -1400,6 +1563,53 @@ def _padded(p: dict[str, Any], kind: str, pad: int = 12) -> Region:
     return Region(p["name"], x, y, w, h, kind, gate="det", every=1 if kind == "feed" else 3)
 
 
+def _overlap(a: Region, b: Region) -> int:
+    """Area (reference px) where regions ``a`` and ``b`` overlap."""
+    w = min(a.x + a.w, b.x + b.w) - max(a.x, b.x)
+    h = min(a.y + a.h, b.y + b.h) - max(a.y, b.y)
+    return max(0, w) * max(0, h)
+
+
+def apply_labels(
+    proposals: list[dict[str, Any]],
+    labels: dict[str, dict[str, str]],
+    regions: list[Region],
+    extra_regions: list[dict[str, Any]],
+) -> tuple[list[Region], list[dict[str, Any]]]:
+    """Regions after the vision model's ``labels`` (name -> ``{"label", "model"}``,
+    :mod:`cutpoint.events.feed_labels`).
+
+    * ``kill_feed``: the proposal is a ``feed`` region (padded, full rate), put first; one that
+      was a notice region of the outside text (``extra_regions``) leaves that list.
+    * A rule-made ``feed`` region labelled anything but ``kill_feed`` or ``chat`` becomes a
+      ``notice`` (read as text, not as kills). ``chat`` stays: reading the region tells chat
+      from a feed by how many different lines it shows, and drops its events.
+    * Every other region stays as the rules made it. Each region keeps its model label as
+      ``label`` in the preset (:func:`discover_regions`), ignored when it is read.
+    """
+    by_name = {p["name"]: p for p in proposals}
+    feeds = [n for n, v in labels.items() if v["label"] == "kill_feed" and n in by_name]
+
+    out: list[Region] = []
+    for n in feeds:
+        p = by_name[n]
+        if p.get("evidence", {}).get("outside"):  # notice_proposals padded it already
+            r = Region(p["name"], p["x"], p["y"], p["w"], p["h"], "feed", gate="det", every=1)
+        else:
+            r = _padded(p, "feed")
+        # one read of the feed is enough
+        if not any(_overlap(r, o) >= 0.6 * min(r.w * r.h, o.w * o.h) for o in out):
+            out.append(r)
+    for r in regions:
+        if r.name in feeds:
+            continue
+        got = labels.get(r.name, {}).get("label")
+        if r.kind == "feed" and got not in (None, "kill_feed", "chat"):
+            r = Region(r.name, r.x, r.y, r.w, r.h, "notice", gate=r.gate, every=3)
+        out.append(r)
+    return out, [e for e in extra_regions if e["name"] not in feeds]
+
+
 def write_overlay(
     frames: list[dict[str, Any]],
     frame_dir: Path,
@@ -1412,7 +1622,7 @@ def write_overlay(
 
     acc, n = None, 0
     for f in frames[:: max(1, len(frames) // 40)]:
-        img = cv2.imread(str(frame_dir / f["frame"]))
+        img = read_image(frame_dir / f["frame"])
         if img is None:
             continue
         img = cv2.resize(img, (REF_W, REF_H)).astype(np.float32)
@@ -1454,7 +1664,7 @@ def write_overlay(
             2,
         )
     path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(path), base, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    write_jpeg(path, base, 85)
 
 
 def discover_regions(
@@ -1465,6 +1675,9 @@ def discover_regions(
     on_frame: Callable[[int, int], None] | None = None,
     covered: tuple[Region, ...] | None = None,
     outside: int = 0,
+    labeler: Callable[[list[dict[str, Any]], list[dict[str, Any]], Path], dict[str, Any]]
+    | None = None,
+    keep_src_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Run discovery on ``sources`` and write the proposal into ``out_dir``.
 
@@ -1481,28 +1694,50 @@ def discover_regions(
             when it has none.
         outside: How many ``"origin": "outside"`` regions that preset already has;
             they count against ``params.notice_max_regions``.
+        labeler: Names what each proposal is (:func:`cutpoint.events.feed_labels.make_labeler`;
+            called with the proposals, the gameplay frames and their folder); None, or
+            no labels: the rules above decide alone.
+        keep_src_keys: Cluster only the OCR records of these sources (their ``src_key``,
+            see :func:`_src`); the burst plan stays that of all ``sources``, so a run
+            after one that read them all reads nothing again (the HUD fit check drops the
+            sources of another game this way).
 
     Returns:
         The proposal: a preset dict (``game``, ``regions``, ``banner_phrases``,
-        ``discovery`` stats, per-region evidence and the ids of the OCR records
-        the run used, ``frames``, since ``ocr.jsonl`` keeps records of earlier
-        runs). Extra notice regions where text shows outside every covered region
+        ``discovery`` stats, per-region evidence, the HUD fit check's reference
+        grid of where the sources' edge text lands (``fit_ref``, see
+        :mod:`cutpoint.events.game_fit`) and the ids of the OCR records
+        the run used, ``frames``, since ``ocr.jsonl`` can still hold records of an earlier,
+        incomplete run). Extra notice regions where text shows outside every covered region
         (:func:`notice_proposals`, marked ``"origin": "outside"``) are added to
         ``regions`` when ``covered`` is None (the discovered regions and the
         big-text region count as covered), else listed in ``suggested_regions``
-        only.
+        only. When ``labeler`` labelled proposals, ``discovery.labels`` holds the labels (see
+        :func:`apply_labels`).
     """
     params = params or DiscoverParams()
     t0 = time.perf_counter()
     bursts = plan_bursts(sources, params.bursts)
-    logger.info(
-        "Region discovery for %s: %d bursts x %d frames over %d source(s)",
-        game,
-        len(bursts),
-        params.burst_frames,
-        len(sources),
-    )
+    if keep_src_keys is None:
+        logger.info(
+            "Region discovery for %s: %d bursts x %d frames over %d source(s)",
+            game,
+            len(bursts),
+            params.burst_frames,
+            len(sources),
+        )
+    else:  # the counts of the kept sources: their frames were read by the run before
+        logger.info(
+            "Region discovery for %s again: %d bursts x %d frames over %d source(s), "
+            "from the frames already read",
+            game,
+            sum(src_key(s) in keep_src_keys for s, _ in bursts),
+            params.burst_frames,
+            sum(src_key(s) in keep_src_keys for s in sources),
+        )
     frames = _ocr_frames(bursts, params, out_dir / "frames", out_dir / "ocr.jsonl", on_frame)
+    if keep_src_keys is not None:
+        frames = [f for f in frames if _src(f) in keep_src_keys]
     proposals, maps = cluster_regions(frames, params)
     regions = proposals_to_regions(proposals)
     game_frames = gameplay_frames(frames, params)
@@ -1512,6 +1747,13 @@ def discover_regions(
     extra = notice_proposals(game_frames, cover, params, maps["static"], outside)
     extra_regions = [notice_region(p) for p in extra]
     proposals += extra
+    labels = labeler(proposals, game_frames, out_dir / "frames") if labeler else {}
+    if labels:
+        regions, extra_regions = apply_labels(proposals, labels, regions, extra_regions)
+    extra_labelled = [
+        e | ({"label": labels[e["name"]]["label"]} if e["name"] in labels else {})
+        for e in extra_regions
+    ]
     info = probe(sources[0].io_path) if sources else None
     write_overlay(
         game_frames,
@@ -1522,16 +1764,23 @@ def discover_regions(
     )
     names = {r.name for r in regions if r.kind == "feed"}
     icon = any(p["evidence"].get("icon_feed") for p in proposals if p.get("name") in names)
+    # a feed the model named has no kill words to learn: its icon lines are the kills
+    icon = icon or any(labels.get(n, {}).get("label") == "kill_feed" for n in names)
     preset = {
         "game": game,
         "reference": [REF_W, REF_H],
         "source": "discovered",
-        "regions": [asdict(r) for r in regions] + (extra_regions if covered is None else []),
+        "regions": [
+            asdict(r) | ({"label": labels[r.name]["label"]} if r.name in labels else {})
+            for r in regions
+        ]
+        + (extra_labelled if covered is None else []),
         "banner_phrases": [],
         # an icon feed's other rows ("Kip has left the game") are notices
         **({"feed": {"row_notices": True}} if icon else {}),
         "discovery": {
             **maps["stats"],
+            **({"labels": labels} if labels else {}),
             "params": asdict(params),
             "elapsed_s": round(time.perf_counter() - t0, 1),
             "source_resolution": [info.width, info.height] if info else None,
@@ -1540,7 +1789,11 @@ def discover_regions(
         },
     }
     if covered is not None:
-        preset["suggested_regions"] = extra_regions
+        preset["suggested_regions"] = extra_labelled
+    from cutpoint.events import game_fit  # noqa: PLC0415
+
+    # where this game's edge text lands (edge-cell grid), for the HUD fit check
+    preset["discovery"]["fit_ref"] = game_fit.profile(game_frames, params.min_score).ref()
     out_dir.mkdir(parents=True, exist_ok=True)
     cache.save_json(out_dir / "proposal.json", preset)
     logger.info(

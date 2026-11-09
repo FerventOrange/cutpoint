@@ -89,6 +89,7 @@ class Outcome:
     diff: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
     color: dict[str, Any] | None = None
+    notes: list[str] = field(default_factory=list)  # edges of an add that were ignored
 
 
 class Durations(Mapping[str, float | None]):
@@ -145,12 +146,13 @@ def apply_ops(
         :func:`diff`, or ``error`` naming the op or row and what is wrong.
     """
     color: dict[str, Any] = {}
+    notes: list[str] = []
     try:
-        rows = _apply(before, ops, candidates, durations, name, color, snap)
+        rows = _apply(before, ops, candidates, durations, name, color, snap, notes)
         after = _check(rows, durations, name)
     except OpsError as err:
         return Outcome(error=str(err))
-    return Outcome(after, diff(before, after), color=color or None)
+    return Outcome(after, diff(before, after), color=color or None, notes=notes)
 
 
 def _number(op: dict[str, Any], key: str, where: str) -> float | None:
@@ -189,7 +191,9 @@ def _apply(
     name: Callable[[str], str],
     color: dict[str, Any],
     snap: Snap | None = None,
+    notes: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    notes = [] if notes is None else notes
     if not isinstance(ops, list) or not ops:
         raise OpsError("ops must be a non-empty list of edits")
     if len(ops) > MAX_OPS:
@@ -228,13 +232,26 @@ def _apply(
                 raise OpsError(f"{where}: at must be a position from 1 to {len(rows) + 1}")
             at = at if at and at <= len(rows) + 1 else len(rows) + 1  # 0 or too far: append
             start, end = _number(op, "start", where), _number(op, "end", where)
+            own = f"{cand['start']:g}-{cand['end']:g}"
+            said = f"add {name(sid)}"
             for edge, value in (("start", start), ("end", end)):
                 if value is not None and abs(value - float(cand[edge])) > ADD_SLACK_S:
-                    raise OpsError(
-                        f"{where}: {edge} {value:g} must be within {ADD_SLACK_S:g} s of the "
-                        f"moment's own {cand['start']:g}-{cand['end']:g}; add it as it is, "
-                        "then trim"
+                    notes.append(
+                        f"{said}: {edge} {value:g} ignored (not near the moment's {own}); "
+                        "added as it is"
                     )
+                    start, end = (None, end) if edge == "start" else (start, None)
+            first = float(cand["start"]) if start is None else start
+            last = float(cand["end"]) if end is None else end
+            if (start, end) != (None, None) and (first < 0 or last - first < MIN_EXPORT_S):
+                given = " and ".join(
+                    f"{e} {v:g}" for e, v in (("start", start), ("end", end)) if v is not None
+                )
+                notes.append(
+                    f"{said}: {given} ignored (the clip would start before 0 or be under "
+                    f"{MIN_EXPORT_S:g} s); added as it is"
+                )
+                start = end = None
             label = cand.get("label") if isinstance(cand.get("label"), str) else ""
             rows.insert(
                 at - 1,

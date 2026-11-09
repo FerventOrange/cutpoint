@@ -9,12 +9,15 @@ speech maps; no model, no ffmpeg.
 
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
 from conftest import media_info
-from cutpoint import analyze, planning
+from cutpoint import analyze, planning, transcribe
 from cutpoint.boundaries import (
     ClipBounds,
     Span,
@@ -24,8 +27,16 @@ from cutpoint.boundaries import (
     fit_start,
     separate,
 )
+from cutpoint.events.dialogue import lines_from_segments
 from cutpoint.extend import ExtendPlan, apply_overrides
-from cutpoint.transcribe import filter_hallucinations
+from cutpoint.transcribe import (
+    Transcriber,
+    filter_hallucinations,
+    flat_markers,
+    flat_words,
+    split_markers,
+    suppressed,
+)
 
 SETTINGS = SpeechSettings()
 
@@ -267,3 +278,155 @@ def test_clip_override_padding_replaces_the_runs_padding_per_side(plans):
 def test_clip_override_mistakes_are_refused(plans, overrides, message):
     with pytest.raises(ValueError, match=message):
         apply_overrides(plans, overrides)
+
+
+# ------------------------------------------------------------------- non-speech markers
+def _marked(*pieces: str) -> dict:
+    """A segment of words one second apart, as Whisper writes them (a leading space each)."""
+    words = [
+        {"word": f" {p}", "start": float(i), "end": i + 0.5, "probability": 0.9}
+        for i, p in enumerate(pieces)
+    ]
+    return {"start": 0.0, "end": len(pieces) - 0.5, "text": " " + " ".join(pieces), "words": words}
+
+
+def test_split_markers_takes_a_marker_out_of_the_text_and_the_words_and_keeps_it():
+    (seg,) = split_markers([_marked("so", "[Laughter]", "anyway")])
+
+    assert seg["text"] == "so anyway"
+    assert [w["word"].strip() for w in flat_words([seg])] == ["so", "anyway"]
+    assert flat_markers([seg]) == [{"start": 1.0, "end": 1.5, "text": "[Laughter]"}]
+
+
+def test_split_markers_handles_every_bracket_and_a_marker_of_several_words():
+    out = split_markers([_marked("(laughs)", "ok", "*sighs*.", "[light", "laughter]", "go")])
+
+    assert out[0]["text"] == "ok go"
+    assert [m["text"] for m in flat_markers(out)] == ["(laughs)", "*sighs*.", "[light laughter]"]
+
+
+def test_split_markers_keeps_a_marker_only_segment_as_an_empty_holder():
+    far = {**_marked("[Music]"), "start": 50.0, "end": 51.0}
+    far["words"] = [{"word": " [Music]", "start": 50.0, "end": 51.0}]
+    near = {**_marked("hello"), "start": 48.0, "end": 49.0}
+    near["words"] = [{"word": " hello", "start": 48.0, "end": 49.0}]
+    first = _marked("hi", "there")
+
+    out = split_markers([first, near, far])
+
+    assert [s["text"].strip() for s in out] == ["hi there", "hello", ""]
+    assert out[2]["words"] == [] and (out[2]["start"], out[2]["end"]) == (50.0, 51.0)
+    assert [m["text"] for m in flat_markers(out)] == ["[Music]"]
+    assert [m["text"] for m in flat_markers([out[2]])] == ["[Music]"]
+    assert far["words"] and "markers" not in near  # the input is not changed
+    assert split_markers(out) == out  # safe to run twice
+
+
+def test_a_marker_only_holder_is_no_speech_and_no_line_or_subtitle():
+    holder = {**_marked("[Laughter]"), "start": 10.0, "end": 12.0}
+    (seg,) = split_markers([holder])
+    spoken = split_markers([_marked("so", "anyway")])[0]
+
+    assert analyze._in_speech(11.0, [seg]) is False
+    assert analyze.sentence_bounds([seg]) == ([], [])
+    assert analyze.sentence_bounds([spoken, seg]) == analyze.sentence_bounds([spoken])
+    assert analyze.transcript_text("clip.mp4", [seg]) == []
+    assert lines_from_segments([seg]) == []
+    assert flat_words([seg]) == []
+    (hit,) = analyze.laughter_hits(flat_words([seg]), flat_markers([seg]))
+    assert hit[2] == "laughter"
+
+
+def test_a_removed_marker_tightens_the_segment_bounds():
+    (seg,) = split_markers([_marked("[Laughter]", "so", "anyway", "[Music]")])
+
+    assert (seg["start"], seg["end"]) == (1.0, 2.5)  # the first and last word left
+    assert [m["text"] for m in flat_markers([seg])] == ["[Laughter]", "[Music]"]
+
+
+def test_split_markers_takes_a_marker_out_of_a_segment_without_words():
+    (seg,) = split_markers([{"start": 1.0, "end": 3.0, "text": "[Laughter] ok", "words": []}])
+
+    assert seg["text"] == "ok"
+    assert flat_markers([seg]) == [{"start": 1.0, "end": 3.0, "text": "[Laughter]"}]
+
+
+def test_shift_segments_moves_the_markers_with_the_words():
+    (seg,) = split_markers([_marked("so", "[Laughter]", "anyway")])
+
+    (moved,) = analyze._shift_segments([seg], 100.0)
+
+    assert flat_markers([moved]) == [{"start": 101.0, "end": 101.5, "text": "[Laughter]"}]
+    assert moved["words"][0]["start"] == 100.0
+    assert flat_markers([seg])[0]["start"] == 1.0  # the input is not changed
+
+
+@pytest.mark.parametrize(
+    "pieces",
+    [("holy", "f***", "that", "was"), ("f*ckin'", "wow"), ("so", "[laughs", "anyway"), ("a", "b")],
+)
+def test_split_markers_leaves_speech_alone(pieces):
+    seg = _marked(*pieces)
+    assert split_markers([seg]) == [seg]
+
+
+def test_a_laughter_marker_still_counts_after_it_left_the_words():
+    out = split_markers([_marked("no", "way", "[Laughter]", "(applause)")])
+
+    (hit,) = analyze.laughter_hits(flat_words(out), flat_markers(out))
+    assert hit == (2.0, 1.0, "laughter")  # "(applause)" is a marker, not laughter
+    assert [w["word"].strip() for w in flat_words(out)] == ["no", "way"]
+
+
+def test_a_marker_is_not_speech_for_the_transcript_text():
+    out = split_markers([_marked("so", "[Music]", "anyway")])
+
+    lines = analyze.transcript_text("clip.mp4", out)
+    assert " ".join(line.partition("] ")[2] for line in lines).split() == ["so", "anyway"]
+
+
+def test_suppressed_tokens_keep_the_marker_brackets_out_of_the_default_list():
+    class Tok:
+        non_speech_tokens = (1, 2, 3, 4, 5, 6, 7)
+        ids: ClassVar = {"[": [1], " [": [2], "]": [3], "(": [4], " (": [5], ")": [6], "*": [7]}
+
+        def __init__(self, *_a, **_k):
+            pass
+
+        def encode(self, text):
+            return self.ids.get(text, [9, 9])
+
+    mod = types.ModuleType("faster_whisper.tokenizer")
+    mod.Tokenizer = Tok
+    model = types.SimpleNamespace(
+        hf_tokenizer=object(), model=types.SimpleNamespace(is_multilingual=True)
+    )
+    saved = sys.modules.get("faster_whisper.tokenizer")
+    sys.modules["faster_whisper.tokenizer"] = mod
+    try:
+        assert suppressed(model) == []
+    finally:
+        if saved is None:
+            del sys.modules["faster_whisper.tokenizer"]
+        else:
+            sys.modules["faster_whisper.tokenizer"] = saved
+
+
+def test_suppressed_tokens_fall_back_to_the_default_list_without_a_tokenizer():
+    assert suppressed(object()) == [-1]
+
+
+def test_the_transcriber_asks_whisper_for_the_marker_friendly_suppress_list(monkeypatch):
+    seen = {}
+
+    class Model:
+        def transcribe(self, _audio, **kw):
+            seen.update(kw)
+            return iter(()), types.SimpleNamespace(duration=1.0)
+
+    tr = Transcriber(model="small")
+    tr._model = Model()
+    tr._suppress = [10, 11]
+    monkeypatch.setattr(transcribe, "load_wav", lambda _p: None)
+    tr._run(Path("x.wav"))
+    assert seen["suppress_tokens"] == [10, 11] and seen["suppress_tokens"] is not tr._suppress

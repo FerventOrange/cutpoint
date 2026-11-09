@@ -63,10 +63,6 @@ test('Resume shows what the dry run reports and starts the resume job only once 
   await answer('cancel');
   assert.deepEqual(posts, []);
 
-  // keepEmptyFocus listens with an AbortSignal, which jsdom's addEventListener takes only from its own window
-  const nodeAbort = globalThis.AbortController;
-  globalThis.AbortController = page.window.AbortController;
-  t.after(() => { globalThis.AbortController = nodeAbort; });
   $('#resumeBig').click();
   await page.settle();
   await answer('ok');

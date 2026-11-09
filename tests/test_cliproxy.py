@@ -1461,3 +1461,379 @@ def test_startup_gives_up_at_the_deadline(monkeypatch: pytest.MonkeyPatch) -> No
 def test_startup_deadline_is_about_two_minutes() -> None:
     assert 60 <= cliproxy._STARTUP_TIMEOUT <= 180
     assert cliproxy._STARTUP_NOTICE < cliproxy._STARTUP_TIMEOUT
+
+
+# --- start in the background, the saved-login check and ProxyLauncher (#821) ---
+
+
+class FakeGuardian:
+    """A stand-in for the guardian process."""
+
+    def __init__(self, returncode: int | None = None, exit_code: int = 0) -> None:
+        self.returncode = returncode
+        self.exit_code = exit_code
+        self.stopped = 0
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+
+def _fake_stop_guardian(proc: FakeGuardian) -> int:
+    proc.stopped += 1
+    proc.returncode = proc.exit_code
+    return proc.exit_code
+
+
+class FakeProxy:
+    """What ``ProxyLauncher`` gets from its ``start``: counts the stops."""
+
+    def __init__(self) -> None:
+        self.stops = 0
+        self.fail_stop = False
+        self.exit_code: int | None = None
+
+    def poll(self) -> int | None:
+        return self.exit_code
+
+    def die(self, code: int = 1) -> None:
+        self.exit_code = code
+
+    def stop(self) -> None:
+        self.stops += 1
+        if self.fail_stop:
+            raise cliproxy.ProxyError("cleanup failed")
+
+
+class Starter:
+    """A ``ProxyLauncher`` start that records its calls; ``is_running`` answers the proxy check."""
+
+    def __init__(self, *, saved: bool = True, running: bool = False) -> None:
+        self.calls = 0
+        self.started: list[FakeProxy] = []
+        self.is_running = running
+        self.saved = saved
+        self.error: Exception | None = None
+        self.entered = threading.Event()
+        self.release: threading.Event | None = None
+
+    def start(self) -> FakeProxy:
+        self.calls += 1
+        self.is_running = True  # the real proxy runs before its start returns
+        self.entered.set()
+        if self.release is not None:
+            assert self.release.wait(5)
+        if self.error is not None:
+            self.is_running = False
+            raise self.error
+        proxy = FakeProxy()
+        self.started.append(proxy)
+        return proxy
+
+    def launcher(self) -> cliproxy.ProxyLauncher:
+        return cliproxy.ProxyLauncher(
+            start=self.start, running=lambda: self.is_running, saved_login=lambda: self.saved
+        )
+
+
+def _write_marker(home: Path, text: str) -> None:
+    folder = home / "cliproxy"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "credentials-runtime.json").write_text(text, encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("marker", "expected"),
+    [
+        (None, False),
+        ('{"managed": ["codex-a.json"]}', True),
+        ('{"managed": []}', False),
+        ('{"managed": "codex-a.json"}', False),
+        ("[1, 2]", False),
+        ("{not json", False),
+    ],
+    ids=["absent", "one-file", "no-files", "wrong-type", "not-an-object", "malformed"],
+)
+def test_a_saved_login_is_a_credentials_marker_that_names_files(
+    temp_home: Path, marker: str | None, expected: bool
+) -> None:
+    if marker is not None:
+        _write_marker(temp_home, marker)
+    assert cliproxy.has_saved_login() is expected
+
+
+def _fake_launch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, exited: int | None = None, ready=None
+) -> list[FakeGuardian]:
+    """Stub the launch: every spawn makes a new guardian (listed in the result)."""
+    spawned: list[FakeGuardian] = []
+
+    def spawn(cmd: list[str], cwd: Path) -> FakeGuardian:
+        spawned.append(FakeGuardian(returncode=exited))
+        return spawned[-1]
+
+    monkeypatch.setattr(cliproxy, "_prepare_launch", lambda home, port: (["g"], tmp_path))
+    monkeypatch.setattr(cliproxy, "_spawn_guardian", spawn)
+    monkeypatch.setattr(cliproxy, "_wait_until_ready", ready or (lambda proc, **kw: None))
+    monkeypatch.setattr(cliproxy, "_stop_guardian", _fake_stop_guardian)
+    return spawned
+
+
+def test_start_waits_for_the_proxy_and_holds_the_launch_lock_until_stop(
+    temp_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    spawned = _fake_launch(monkeypatch, tmp_path)
+
+    running = cliproxy.start()
+    assert running.poll() is None
+    with pytest.raises(cliproxy.ProxyError, match="already running"):
+        cliproxy.start()  # the launch lock is held by the first
+    running.stop()
+    assert spawned[0].stopped == 1
+    cliproxy.start().stop()  # the lock was freed
+
+
+def test_a_proxy_that_does_not_come_up_is_stopped_and_frees_the_lock(
+    temp_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def never_ready(_proc: object) -> None:
+        raise cliproxy.ProxyError("CLIProxyAPI did not start in time")
+
+    spawned = _fake_launch(monkeypatch, tmp_path, ready=never_ready)
+    with pytest.raises(cliproxy.ProxyError, match="did not start in time"):
+        cliproxy.start()
+    assert spawned[0].stopped == 1
+
+    monkeypatch.setattr(cliproxy, "_wait_until_ready", lambda proc: None)
+    cliproxy.start().stop()  # no lock left behind
+
+
+def test_a_guardian_that_exits_while_starting_is_an_error_and_frees_the_lock(
+    temp_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _fake_launch(monkeypatch, tmp_path, exited=0)
+    with pytest.raises(cliproxy.ProxyError, match="exited with code 0"):
+        cliproxy.start()
+    _fake_launch(monkeypatch, tmp_path)
+    cliproxy.start().stop()
+
+
+def test_the_launcher_starts_the_proxy_when_none_runs_and_stops_it_on_shutdown() -> None:
+    starter = Starter()
+    launcher = starter.launcher()
+    assert launcher.ensure() is True
+    assert launcher.ensure() is False  # now it runs
+    assert starter.calls == 1
+    launcher.shutdown()
+    launcher.shutdown()
+    assert [p.stops for p in starter.started] == [1]
+
+
+def test_the_launcher_starts_for_a_saved_login_only_when_asked_to() -> None:
+    starter = Starter(saved=False)
+    launcher = starter.launcher()
+    assert launcher.ensure(logged_in_only=True) is False
+    assert starter.calls == 0
+
+    starter.saved = True
+    assert launcher.ensure(logged_in_only=True) is True
+    assert starter.calls == 1
+
+
+def test_the_launcher_uses_a_proxy_that_already_runs_and_never_stops_it() -> None:
+    starter = Starter(running=True)
+    launcher = starter.launcher()
+    assert launcher.ensure() is False
+    assert launcher.ensure(logged_in_only=True) is False
+    launcher.shutdown()
+    assert starter.calls == 0 and starter.started == []
+
+
+def test_a_proxy_of_ours_that_exits_is_freed_and_a_later_request_starts_a_new_one() -> None:
+    starter = Starter()
+    launcher = starter.launcher()
+    launcher.ensure()
+    first = starter.started[0]
+    first.die(1)
+    starter.is_running = False
+    assert launcher.running() is False
+    assert first.stops == 1  # its launch lock is freed as soon as the exit is noticed
+    assert launcher.ensure() is True
+    assert starter.calls == 2
+    launcher.shutdown()
+    assert [p.stops for p in starter.started] == [1, 1]
+
+
+def test_wait_for_start_blocks_only_while_our_own_start_is_in_flight() -> None:
+    starter = Starter()
+    launcher = starter.launcher()
+    launcher.wait_for_start()  # nothing starting: returns at once
+
+    starter.release = threading.Event()
+    first = threading.Thread(target=launcher.ensure)
+    first.start()
+    assert starter.entered.wait(5)
+    done = threading.Event()
+
+    def wait() -> None:
+        launcher.wait_for_start()
+        done.set()
+
+    waiter = threading.Thread(target=wait)
+    waiter.start()
+    assert not done.wait(0.2)
+    starter.release.set()
+    assert done.wait(5)
+    first.join(5)
+    waiter.join(5)
+    launcher.wait_for_start()  # done: returns at once
+    launcher.shutdown()
+
+
+def test_waiting_for_the_proxy_stops_at_once_when_the_server_is_stopping() -> None:
+    stopping = threading.Event()
+    stopping.set()
+    with pytest.raises(cliproxy.ProxyError, match="stopping"):
+        cliproxy._wait_until_ready(FakeGuardian(), cancel=stopping)
+
+
+def test_a_request_during_a_start_waits_for_it_instead_of_returning_early() -> None:
+    starter = Starter()
+    starter.release = threading.Event()
+    launcher = starter.launcher()
+    first = threading.Thread(target=launcher.ensure)
+    first.start()
+    assert starter.entered.wait(5)
+    assert starter.is_running  # the proxy answers "running" before the start returned
+
+    done = threading.Event()
+    results: list[bool] = []
+
+    def second() -> None:
+        results.append(launcher.ensure())
+        done.set()
+
+    waiter = threading.Thread(target=second)
+    waiter.start()
+    assert not done.wait(0.2)  # still waiting for the start in progress
+    starter.release.set()
+    assert done.wait(5)
+    first.join(5)
+    waiter.join(5)
+    assert results == [False] and starter.calls == 1
+    launcher.shutdown()
+
+
+def test_concurrent_requests_start_the_proxy_once() -> None:
+    starter = Starter()
+    starter.release = threading.Event()
+    launcher = starter.launcher()
+    results: list[bool] = []
+    threads = [threading.Thread(target=lambda: results.append(launcher.ensure())) for _ in range(5)]
+    for thread in threads:
+        thread.start()
+    assert starter.entered.wait(5)
+    time.sleep(0.05)  # the others queue behind the start in progress
+    assert starter.calls == 1
+    starter.release.set()
+    for thread in threads:
+        thread.join(5)
+    assert starter.calls == 1
+    assert sorted(results) == [False] * 4 + [True]
+    launcher.shutdown()
+    assert starter.started[0].stops == 1
+
+
+def test_a_start_that_finishes_after_shutdown_is_stopped_at_once() -> None:
+    starter = Starter()
+    starter.release = threading.Event()
+    launcher = starter.launcher()
+    errors: list[Exception] = []
+
+    def ask() -> None:
+        try:
+            launcher.ensure()
+        except cliproxy.ProxyError as err:
+            errors.append(err)
+
+    thread = threading.Thread(target=ask)
+    thread.start()
+    assert starter.entered.wait(5)
+    launcher.shutdown()  # the UI exits while the proxy starts
+    starter.release.set()
+    thread.join(5)
+    assert [p.stops for p in starter.started] == [1]
+    assert len(errors) == 1 and "stopping" in str(errors[0])
+
+
+def test_the_launcher_refuses_to_start_after_shutdown() -> None:
+    starter = Starter()
+    launcher = starter.launcher()
+    launcher.shutdown()
+    with pytest.raises(cliproxy.ProxyError, match="stopping"):
+        launcher.ensure()
+    assert starter.calls == 0
+
+
+def test_a_start_failure_reaches_the_caller_and_the_next_request_tries_again() -> None:
+    starter = Starter()
+    starter.error = cliproxy.ProxyError("port 18317 is already in use")
+    launcher = starter.launcher()
+    with pytest.raises(cliproxy.ProxyError, match="already in use"):
+        launcher.ensure()
+    assert starter.started == []
+
+    starter.error = None
+    assert launcher.ensure() is True
+    assert starter.calls == 2
+    launcher.shutdown()
+    assert starter.started[0].stops == 1
+
+
+def test_a_proxy_that_fails_to_stop_on_shutdown_is_logged_not_raised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    starter = Starter()
+    launcher = starter.launcher()
+    launcher.ensure()
+    starter.started[0].fail_stop = True
+    launcher.shutdown()
+    assert "could not stop the subscription proxy: cleanup failed" in caplog.text
+
+
+def test_shutdown_during_a_start_ends_it_stops_the_guardian_and_frees_the_lock(
+    temp_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    waiting = threading.Event()
+    launcher = cliproxy.ProxyLauncher(running=lambda: False)
+
+    def wait_for_cancel(_proc: object, *, cancel: threading.Event | None = None) -> None:
+        assert cancel is not None
+        waiting.set()
+        assert cancel.wait(5)
+        raise cliproxy.ProxyError("the server is stopping")
+
+    spawned = _fake_launch(monkeypatch, tmp_path, ready=wait_for_cancel)
+    errors: list[Exception] = []
+
+    def ask() -> None:
+        try:
+            launcher.ensure()
+        except cliproxy.ProxyError as err:
+            errors.append(err)
+
+    caplog.set_level("INFO", logger=cliproxy.logger.name)
+    thread = threading.Thread(target=ask)
+    thread.start()
+    assert waiting.wait(5)
+    launcher.shutdown()
+    thread.join(5)
+    assert not thread.is_alive()
+    assert [str(e) for e in errors] == ["the server is stopping"]
+    assert spawned[0].stopped == 1
+    assert "Stopping the subscription proxy that is still starting" in caplog.text
+
+    monkeypatch.setattr(cliproxy, "_wait_until_ready", lambda proc, **kw: None)
+    cliproxy.start().stop()  # the launch lock was freed

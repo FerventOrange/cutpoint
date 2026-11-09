@@ -734,7 +734,7 @@ function renderMoments() {
   markMoments();
   renderBusy(); // first: the buttons are as disabled as they will be when focus looks for one
   if (hadFocus && !empty.contains(document.activeElement))
-    ([$('#resumeBig'), $('#analyzeBig'), $('#candList button'), $('#resumeBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
+    ([$('#resumeBig'), $('#analyzeBig'), $('#pauseBtn'), $('#candList button'), $('#resumeBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
 }
 
 /**
@@ -880,13 +880,13 @@ function renderUnanalyzed(el, n, error, pano, run = null, lone = false) {
     folderArt(),
     lone ? null : error
       ? h('p', { class: 'fresh-error', text: error })
-      : h('p', { class: `fresh-count${n ? '' : ' none'}` },
+      : h('p', { class: `fresh-count fresh-lead${n ? '' : ' none'}` },
         pano
           ? (n ? `360 footage: ${n} recording${n === 1 ? '' : 's'} found` : 'No 360 recordings found')
           : (n ? `${n} video${n === 1 ? '' : 's'} found in the sources` : 'No videos found in the sources')),
-    h('h3', { text: resume ? `The ${RUN_NAMES[run.command] ?? 'analysis'} stopped before it finished` : 'No moments analyzed yet' }),
+    h('h3', { class: 'fresh-lead', text: resume ? `The ${RUN_NAMES[run.command] ?? 'analysis'} stopped before it finished` : 'No moments analyzed yet' }),
     h('p', {
-      text: resume ? 'Resume continues it with the same options and keeps the work it finished.' : pano
+      class: 'fresh-lead', text: resume ? 'Resume continues it with the same options and keeps the work it finished.' : pano
         ? 'Analyze footage to read the 360 recordings, transcribe audio and rank the strongest moments. Clips are reframed when you export them. Vision rating is not used for 360 footage.'
         : 'Analyze footage to transcribe audio and rank the strongest moments.',
     }),
@@ -895,7 +895,7 @@ function renderUnanalyzed(el, n, error, pano, run = null, lone = false) {
       onclick: (e) => resumeRun(e.currentTarget),
     }, resumeLabel(run)) : null,
     h('button', {
-      type: 'button', id: 'analyzeBig', class: `btn ${resume ? 'outline' : 'primary'}`, 'aria-describedby': 'analyzeWhy analyzeNote', hidden: lone,
+      type: 'button', id: 'analyzeBig', class: `btn ${resume ? 'outline' : 'primary'}`, 'aria-describedby': 'analyzeWhy analyzeNote', hidden: lone, 'data-gone': lone ? '1' : null,
       onclick: async (e) => {
         e.currentTarget.disabled = true; // no second start while the request is in flight
         keepEmptyFocus(el);
@@ -903,9 +903,15 @@ function renderUnanalyzed(el, n, error, pano, run = null, lone = false) {
         if (![...S.tracked.values()].some(live)) renderBusy(); // it failed: enable again
       },
     }, 'Analyze footage'),
+    // while the first analysis runs (renderBusy): the way to stop it, to continue with Resume
+    h('button', {
+      type: 'button', id: 'pauseBtn', class: 'btn primary', hidden: true, 'aria-describedby': 'pauseWhy',
+      onclick: (e) => pauseAnalysis(e.currentTarget),
+    }, 'Pause analysis'),
+    h('span', { id: 'pauseWhy', class: 'vh', text: 'Stops the analysis. Resume continues it and keeps the videos it finished; before the first is transcribed, it starts over.' }),
     // the Analyze options (#483) for the first analysis; Analyze footage alone uses none
     h('button', {
-      type: 'button', id: 'analyzeOptsBtn', class: 'btn outline', 'aria-haspopup': 'dialog', hidden: pano || lone,
+      type: 'button', id: 'analyzeOptsBtn', class: 'btn outline', 'aria-haspopup': 'dialog', hidden: pano || lone, 'data-gone': pano || lone ? '1' : null,
       onclick: () => analyzeAgain(true),
     }, 'Analysis options…'),
     h('button', {
@@ -917,6 +923,42 @@ function renderUnanalyzed(el, n, error, pano, run = null, lone = false) {
     h('p', { id: 'freshStepsStatus', class: 'vh', role: 'status' }),
     h('p', { id: 'analyzeNote', class: 'fresh-note', text: 'This process can take a long time on large footage.' }),
   );
+}
+
+/**
+ * Pause the first analysis (#811): cancel the job with its normal cleanup; the project then has a
+ * stopped run and the empty state offers Resume. aria-disabled, not disabled, so the button keeps focus.
+ */
+async function pauseAnalysis(btn) {
+  if (!S.active || btn.getAttribute('aria-disabled') === 'true') return;
+  // progress.json (what Resume continues) exists once the first source is transcribed; the page
+  // does not refresh the project during its own job, so read the server's record first
+  const transcribed = stepsJob()?.progress.steps.some((s) => s.step === 'transcribe' && s.state === 'done');
+  let rec = S.project?.run;
+  if (!rec && !transcribed) {
+    try {
+      rec = (await api(`/api/projects/${encodeURIComponent(S.id)}`)).run;
+    } catch { /* cannot tell: ask */ }
+  }
+  if (!rec && !transcribed) {
+    const ok = await confirmAction('Stop the analysis?', 'No video is transcribed yet, so the analysis starts over.', 'Stop', false);
+    if (!S.active || btn.hidden || !btn.isConnected) { // the run ended while the dialog was open: focus would drop to the body
+      ([$('#resumeBig'), $('#analyzeBig'), $('#revealBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
+      return;
+    }
+    if (!ok) return;
+  }
+  if (!S.active) return;
+  btn.setAttribute('aria-disabled', 'true');
+  btn.textContent = 'Pausing…';
+  try {
+    await api(`/api/jobs/${encodeURIComponent(S.active.id)}/cancel`, { method: 'POST' });
+    pollJobs();
+  } catch (e) {
+    btn.removeAttribute('aria-disabled');
+    btn.textContent = 'Pause analysis';
+    fail(e);
+  }
 }
 
 // What a recorded run (progress.json's command, #109) is called on the page
@@ -1082,8 +1124,19 @@ function renderStage(seekToStart, keepVideo = false) {
       h('p', { class: 'muted' }, 'Create one from a video file or a folder of footage on this computer. Source files are never changed.'),
       h('button', { type: 'button', class: 'btn primary', onclick: () => openDialog(S.styles), text: 'New project' }));
   else if (!c)
-    setEmpty($('#stageEmpty'), h('p', {}, S.project.highlights ? 'Pick a moment to preview it.' : 'Analyze the footage to rank its best moments, then preview and trim them here.'));
+    setEmpty($('#stageEmpty'), ...(S.project.highlights ? [h('p', {}, 'Pick a moment to preview it.')] : [
+      svg('icon stage-empty-art', ICONS.film),
+      h('h3', { text: 'No moments yet' }),
+      // a stopped run waits for Resume in the Moments column: no start-over button here
+      S.project.run?.resumable
+        ? h('p', {}, 'Resume the analysis in the Moments column to find its best moments.')
+        : h('p', {}, 'Analyze the footage to find its best moments. Preview and trim them here.'),
+      // the same action as the Analyze footage button of the Moments column
+      S.project.run?.resumable ? null : h('button', { type: 'button', id: 'stageAnalyze', class: 'btn primary', onclick: () => $('#analyzeBig')?.click(), text: 'Analyze footage' }),
+    ]));
   else setEmpty($('#stageEmpty'));
+  $('#stageEmpty').classList.toggle('stage-empty', !c && !S.project?.highlights); // no project, or not analyzed: one centred layout
+  syncStageAnalyze();
   if (!c) {
     v.pause();
     return;
@@ -1146,14 +1199,20 @@ function renderNerdStats(c = current()) {
   el.hidden = !cand;
   if (!cand) return (el.textContent = '');
   const sig = cand.signals;
+  // laughter has two sources, shown apart: said in the transcript (signals.laughter) and heard in the audio (signals.events.laughter)
   const bits = sig
-    ? Object.entries(sig).filter(([, n]) => typeof n === 'number' && n > 0).map(([k, n]) => `${k} ${n.toFixed(2)}`)
+    ? Object.entries(sig).filter(([k, n]) => k !== 'laughter' && typeof n === 'number' && n > 0).map(([k, n]) => `${k} ${n.toFixed(2)}`)
     : [];
+  const laugh = (n) => (typeof n === 'number' && n > 0 ? n.toFixed(2) : '');
+  const written = laugh(sig?.laughter);
+  const heard = laugh(sig?.events?.laughter);
   const all = cands();
   el.textContent = [
     `Score ${cand.score.toFixed(2)}, rank ${all.indexOf(cand) + 1} of ${all.length}`,
     `Analyzed ${fmt(cand.start)} to ${fmt(cand.end)}`,
     bits.length ? `Signals: ${bits.join(', ')}` : '',
+    written ? `Laughter in the transcript: ${written}` : '',
+    heard ? `Laughter heard in the audio: ${heard}` : '',
     sig?.keywords?.length ? `Keywords: ${sig.keywords.join(', ')}` : '',
   ].filter(Boolean).join('\n');
 }
@@ -4302,6 +4361,16 @@ function renderExport() {
   renderBusy();
 }
 
+/** The preview's Analyze footage button follows the Moments column's: gone while an analysis runs or with no videos. */
+function syncStageAnalyze() {
+  const b = $('#stageAnalyze');
+  if (!b) return;
+  const big = $('#analyzeBig');
+  b.hidden = !big || big.hidden || !!$('#resumeBig') || !S.project?.sources?.length;
+  b.disabled = !!big?.disabled;
+  b.title = big?.title ?? '';
+}
+
 function renderBusy() {
   const p = S.project;
   const busy = !!S.active;
@@ -4326,18 +4395,36 @@ function renderBusy() {
   }
   const big = $('#analyzeBig');
   if (big) {
-    const own = S.active?.project_id === S.id && S.active?.action === 'analyze';
+    // a first analysis, or the resume of one (#811)
+    const own = S.active?.project_id === S.id
+      && (S.active.action === 'analyze' || (S.active.action === 'resume' && /analyze$/.test(p?.run?.command ?? '')));
     const steps = own && !!stepsJob(); // an older CLI sends no steps: the Jobs log is all there is
-    const reason = own ? (steps ? 'Analyzing… each step is listed below.' : 'Analyzing… progress is in Jobs.') : busy ? why
+    const reason = own ? (steps ? 'Analyzing…' : 'Analyzing… progress is in Jobs.') : busy ? why
       : held ? BUSY_TEXT : p?.source_error ? sourceErrorText(p) : 'Add videos to the source folder first.';
     set('#analyzeBig', !p || busy || held || !p.sources?.length, reason);
     set('#analyzeOptsBtn', !p || busy || held || !p.sources?.length, reason);
     const label = own ? 'Analyzing…' : 'Analyze footage';
     if (big.textContent !== label) big.textContent = label;
+    // #811: while the first analysis runs only Show folder, the steps and Pause analysis stay
+    const empty = $('#momentsEmpty');
+    const pause = $('#pauseBtn');
+    const hiding = [big, $('#analyzeOptsBtn'), $('#resumeBig')];
+    const lost = [...hiding, $('#stageAnalyze')].includes(document.activeElement) || (!!empty.dataset.refocus && document.activeElement === document.body);
+    empty.classList.toggle('running', own);
+    for (const b of hiding) if (b) b.hidden = own || b.dataset.gone === '1';
+    if (!own && pause.getAttribute('aria-disabled')) {
+      pause.removeAttribute('aria-disabled');
+      pause.textContent = 'Pause analysis';
+    }
+    const wasPause = !pause.hidden && document.activeElement === pause;
+    pause.hidden = !own;
+    if (own && lost) pause.focus();
+    else if (wasPause && !own) ([$('#resumeBig'), big, $('#revealBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
     const out = $('#analyzeWhy');
     out.classList.toggle('progress', own);
     if (out.textContent !== big.title) out.textContent = big.title; // live region: announce changes only
   }
+  syncStageAnalyze();
   if (picks() === 'auto') set('#clipsBtn', !p || busy || !p.highlights?.candidates?.length, busy ? why : 'Analyze the footage first.');
   else set('#clipsBtn', !p || busy || !S.segments.length, busy ? why : 'Add moments to the sequence first.');
   // Without Speech-aware cuts and padding, extend has nothing to do (the CLI refuses it)
@@ -5101,7 +5188,7 @@ const TOOL_TEXT = {
   find_moments: (ev) => `Searched for “${ev.query}”: ${ev.found} found`,
   get_moment: (ev) => `Looked at ${momentName(ev.id)}`,
   get_transcript: (ev) => `Read the transcript around ${momentName(ev.id)}`,
-  look_for: (ev) => ev.error ? `Could not look through the footage for “${ev.query}”`
+  look_for: (ev) => ev.error ? (ev.reason || `Could not look through the footage for “${ev.query}”`)
     : `Looked through the footage for “${ev.query}”: ${ev.found} found${ev.new ? `, ${ev.new} new` : ''}${ev.weak ? `, ${ev.weak} weak` : ''}${ev.unconfirmed ? `, ${ev.unconfirmed} unconfirmed` : ''}`,
   view_moment: (ev) => ev.error === 'limit' ? `Did not watch ${momentName(ev.id)}: the limit of moments watched per message was reached`
     : ev.error ? `Could not watch ${momentName(ev.id)}: ${ev.error}`
@@ -5396,7 +5483,7 @@ function renderChat() {
   const atEnd = !col || col.scrollHeight - col.scrollTop - col.clientHeight < 24;
   const count = log.children.length;
   const height = log.scrollHeight;
-  preserveFocus(() => log.replaceChildren(...(items.length ? items : [h('li', { class: 'msg step' },
+  preserveFocus(() => log.replaceChildren(...(items.length ? items : [h('li', { class: 'msg step chat-empty' },
     !S.project ? 'Open a project to chat about its moments.'
       : !S.project.highlights ? 'Analyze the footage first; the assistant works with its moments.'
         : 'Ask for moments to find, add, remove, reorder or trim. Each change is proposed first: apply it from its card, or preview it in the Sequence tab.')])));
@@ -5669,35 +5756,35 @@ const PROVIDER_TITLES = {
 const VISION_PROVIDERS = ['ollama', 'anthropic', 'openai', 'xai', 'claude-code', 'codex', 'antigravity'];
 
 const CHAT_HINTS = {
-  ollama: 'Runs with Ollama (local), at OLLAMA_HOST or the Ollama URL in config.json. On this machine nothing leaves it; an Ollama on another machine counts as hosted.',
-  anthropic: "Anthropic API (api.anthropic.com): uses your Anthropic API key. Requests go to Anthropic's hosted service. It asks once before it gets project data. Use at your own risk.",
-  'claude-code': "Claude Code subscription: uses your Claude subscription login (log in under Connected accounts below, no API key). Requests go to Anthropic's hosted service. It asks once before it gets project data. Use at your own risk.",
-  openai: "OpenAI API (api.openai.com): uses your OpenAI API key. Requests go to OpenAI's hosted service. It asks once before it gets project data. Use at your own risk.",
-  codex: "Codex subscription: uses your ChatGPT subscription login (log in under Connected accounts below, no API key). Requests go to OpenAI's hosted service. It asks once before it gets project data. Use at your own risk.",
-  antigravity: "Antigravity subscription: uses your Google/Antigravity subscription login (log in under Connected accounts below, no API key). Requests go to Google's hosted service. It asks once before it gets project data. Use at your own risk.",
-  xai: "xAI API (api.x.ai): uses your xAI API key. Requests go to xAI's hosted service. It asks once before it gets project data. Use at your own risk.",
-  custom: 'The provider and base URL set in config.json, which no preset has. It keeps working, and its model can be changed here; choose a preset and save to use that instead.',
+  ollama: 'Runs with Ollama on this machine; nothing leaves it. An Ollama on another machine counts as hosted.',
+  anthropic: 'Anthropic API (api.anthropic.com): your API key. Project data goes to Anthropic; it asks once first. Use at your own risk.',
+  'claude-code': 'Claude Code subscription: your Claude login (see Connected accounts). Project data goes to Anthropic; it asks once first. Use at your own risk.',
+  openai: 'OpenAI API (api.openai.com): your API key. Project data goes to OpenAI; it asks once first. Use at your own risk.',
+  codex: 'Codex subscription: your ChatGPT login (see Connected accounts). Project data goes to OpenAI; it asks once first. Use at your own risk.',
+  antigravity: 'Antigravity subscription: your Google login (see Connected accounts). Project data goes to Google; it asks once first. Use at your own risk.',
+  xai: 'xAI API (api.x.ai): your API key. Project data goes to xAI; it asks once first. Use at your own risk.',
+  custom: 'Set in config.json; no preset has it. Its model can be changed here; choose a preset and save to use that instead.',
 };
 
 const VISION_HINTS = {
-  ollama: 'Runs with Ollama (local) vision models (e.g. qwen3.5:9b, the default) to rate video frames on this machine.',
-  anthropic: "Anthropic API (api.anthropic.com): rates video frames via your Anthropic API key. Requests go to Anthropic's hosted service; each request sends frames and the words said in the moment, and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
-  'claude-code': "Claude Code subscription: rates video frames via your Claude subscription login (no API key). Requests go to Anthropic's hosted service. Use at your own risk.",
-  openai: "OpenAI API (api.openai.com): rates video frames via your OpenAI API key. Requests go to OpenAI's hosted service; each request sends frames and the words said in the moment, and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
-  codex: "Codex subscription: rates video frames via your ChatGPT subscription login (no API key). Requests go to OpenAI's hosted service. Use at your own risk.",
-  antigravity: "Antigravity subscription: rates video frames via your Google/Antigravity subscription login (no API key). Requests go to Google's hosted service. Use at your own risk.",
-  xai: "xAI API (api.x.ai): rates video frames via your xAI API key. Requests go to xAI's hosted service; each request sends frames and the words said in the moment, and is billed to your API key. Pick a model that accepts images. Use at your own risk.",
+  ollama: 'Rates video frames on this machine with an Ollama vision model (default qwen3.5:9b).',
+  anthropic: 'Anthropic API (api.anthropic.com): rates video frames; billed to your API key. Frames and the words said in each moment go to Anthropic. Pick a model that accepts images. Use at your own risk.',
+  'claude-code': 'Claude Code subscription: rates video frames with your Claude login. Frames and the words said in each moment go to Anthropic. Use at your own risk.',
+  openai: 'OpenAI API (api.openai.com): rates video frames; billed to your API key. Frames and the words said in each moment go to OpenAI. Pick a model that accepts images. Use at your own risk.',
+  codex: 'Codex subscription: rates video frames with your ChatGPT login. Frames and the words said in each moment go to OpenAI. Use at your own risk.',
+  antigravity: 'Antigravity subscription: rates video frames with your Google login. Frames and the words said in each moment go to Google. Use at your own risk.',
+  xai: 'xAI API (api.x.ai): rates video frames; billed to your API key. Frames and the words said in each moment go to xAI. Pick a model that accepts images. Use at your own risk.',
 };
 
 const AI_MODEL_HINTS = {
-  ollama: 'The name of a model Ollama has pulled. Default: the first Ollama has of qwen3.5:9b, the vision model and qwen3-vl:8b, else qwen3.5:9b.',
-  anthropic: 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger, slower and costs more.',
-  'claude-code': 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger, slower and costs more.',
-  openai: 'Needed: the name of an OpenAI model your key can use (e.g. gpt-4o, gpt-4o-mini).',
-  codex: 'ChatGPT subscription (Codex) backend models from your account catalog.',
-  antigravity: 'Models from your Antigravity subscription account catalog.',
-  xai: 'Needed: the name of an xAI model your key can use.',
-  custom: "The model of the custom provider, saved in config.json. Default: the server's model, when it serves only one.",
+  ollama: 'A model Ollama has pulled. Default: the first of qwen3.5:9b, the vision model and qwen3-vl:8b it has, else qwen3.5:9b.',
+  anthropic: 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger but slower and costs more.',
+  'claude-code': 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger but slower and costs more.',
+  openai: 'Needed: an OpenAI model your key can use (e.g. gpt-4o).',
+  codex: 'Models from your ChatGPT account.',
+  antigravity: 'Models from your Antigravity account.',
+  xai: 'Needed: an xAI model your key can use.',
+  custom: "The custom provider's model. Default: the server's model, when it serves only one.",
 };
 
 const AI_TYPE_ID = 'Choose Other model… to enter an id.';
@@ -5791,8 +5878,9 @@ function renderChatRoleFields(model) {
     : `API key${host ? ` for ${host}` : ''}: ${KEY_WHERE[where] ?? 'not set'}`;
   $('#chatRoleKeySave').disabled = $('#chatRoleKeyClear').disabled = unsaved;
   $('#chatRoleKeyHint').textContent = unsaved
-    ? "A key belongs to the base URL's host: the provider's own variable counts only for its official API host, and a key goes only over https:// unless the server is on this machine."
-    : `${aiKeyOrder(p.key_env || [])} Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown.`;
+    ? "A key belongs to the base URL's host; the provider's own variable counts only for its official API host."
+    : `${aiKeyOrder(p.key_env || [])} Sent only to ${host || 'the base URL'}; never saved in config.json or shown.`;
+  $('#chatRoleKeyMore').textContent = 'A key goes only over https:// unless the server is on this machine.';
 }
 
 function renderVisionRoleFields(model) {
@@ -5822,7 +5910,8 @@ function renderVisionRoleKey(p) {
   keyStatus.title = where === 'env' ? 'Analyses started from cutpoint ui use the key saved in the Models tab, not this environment variable.' : '';
   // jobs started here get no key variables (keys.child_env): only the keyring reaches them
   const env = (p.key_env || []).join(' or ');
-  $('#visionRoleKeyHint').textContent = `Analyses started here read it from the system keyring${env ? `; ${env} counts only for cutpoint commands run in a terminal` : ''}. Sent only to ${host || 'the base URL'}, over https:// unless the server is on this machine. Never saved in config.json and never shown. A key for the same host serves both roles.`;
+  $('#visionRoleKeyHint').textContent = `Analyses started here read it from the system keyring${env ? `; ${env} counts only in a terminal` : ''}. Sent only to ${host || 'the base URL'}; never saved in config.json or shown.`;
+  $('#visionRoleKeyMore').textContent = 'A key goes only over https:// unless the server is on this machine. A key for the same host serves both roles.';
 }
 
 function renderVisionConsent() {
@@ -5839,14 +5928,14 @@ function renderVisionConsent() {
 
   if (unsaved) {
     if (sel.value !== 'ollama') {
-      status.textContent = 'Save models first to review and grant permission for this provider.';
+      status.textContent = 'Save models first to review and allow this provider.';
     }
     return;
   }
 
   if (!consent || consent.key === null) {
     if (sel.value === 'ollama') {
-      status.textContent = 'Local model: frame ratings run on this machine; no frame data leaves it.';
+      status.textContent = 'Local model: no frame data leaves this machine.';
     }
     return;
   }
@@ -5857,8 +5946,10 @@ function renderVisionConsent() {
     box.hidden = false;
     const host = consent.host || 'the remote service';
     $('#visionConsentTitle').textContent = noKey ? (consent.missing_kind === 'login' ? 'Login needed' : 'API key needed') : `Send video frames to ${host}?`;
-    $('#visionConsentText').textContent = `Rating moments and describing event windows with this hosted vision provider sends video frames, transcript excerpts, file names and times, detected on-screen text (such as player names) and telemetry to ${host}. The AI Chat assistant gets other data (analysis results and whole transcripts; frames only when you allow them for a project); agreeing for one never covers the other. Nothing is sent until you explicitly grant permission. Permission is saved in config.json.`;
+    $('#visionConsentText').textContent = `Rating moments sends video frames, transcript excerpts, file names and times, on-screen text and telemetry to ${host}. Nothing is sent until you allow it.`;
+    $('#visionConsentMore').textContent = 'Describing event windows sends the same. The AI Chat gets other data (analysis results and whole transcripts; frames only when you allow them for a project); allowing one never covers the other. Permission is saved in config.json.';
     if (noKey) $('#visionConsentText').textContent = sentence(noKey);
+    $('#visionConsentMore').parentElement.hidden = !!noKey;
     $('#visionConsentOk').hidden = !!noKey;
     $('#visionConsentOk').disabled = false;
   } else {
@@ -5975,14 +6066,26 @@ async function loadRoleModels(role, refresh) {
 }
 
 const SUB_POLL_MS = 1500;
+const PROXY_START_FAILED = 'the subscription proxy did not start'; // ui.py proxy_error and Log in
 const subNote = (...parts) => $('#modelsSubsStatus')?.replaceChildren(...parts);
 
-async function loadLogins() {
+async function loadLogins({ started = false } = {}) {
+  let r;
   try {
-    S.logins = (await api('/api/assistant/logins')).logins;
+    r = await api('/api/assistant/logins');
   } catch (e) {
     return subNote(e.message);
   }
+  S.logins = r.logins;
+  S.proxyRunning = r.proxy_running;
+  if (r.proxy_running) { // it runs now: drop the errors of an earlier start, keep login errors
+    S.proxyError = '';
+    for (const [p, msg] of Object.entries(S.loginErrors ?? {})) {
+      if (msg.startsWith(PROXY_START_FAILED)) delete S.loginErrors[p];
+    }
+  }
+  // a login kept from an earlier run needs the proxy to show: the server starts it (#821)
+  if (!started && !S.proxyStarting && !r.proxy_running && r.saved_login) return startSubProxy();
   renderLogins();
   await enumerateSubCatalogs(false);
 
@@ -6040,19 +6143,39 @@ async function enumerateSubCatalogs(refresh) {
 }
 
 
+/** Start the proxy for a login kept from an earlier run, then list the logins again. */
+async function startSubProxy() {
+  S.proxyStarting = true;
+  S.proxyError = '';
+  renderLogins();
+  try {
+    await api('/api/assistant/proxy', { method: 'POST' });
+  } catch (e) {
+    S.proxyError = e.message;
+  }
+  S.proxyStarting = false;
+  await loadLogins({ started: true });
+}
+
 function renderLogins() {
   S.loginPending ??= new Set();
+  S.loginStarting ??= new Set();
+  S.loginErrors ??= {};
   const list = $('#modelsSubsList');
   if (!list || !S.logins) return;
 
   list.replaceChildren(...S.logins.map((l) => {
-    const wait = S.loginPending.has(l.provider);
+    const starting = S.proxyStarting || S.loginStarting.has(l.provider);
+    const wait = starting || S.loginPending.has(l.provider);
     const title = PROVIDER_TITLES[l.provider] ?? l.title;
     const cat = S.subCatalogs?.[l.provider];
+    const failed = S.loginErrors[l.provider] || S.proxyError;
 
     let badgeClass = 'disconnected';
     let badgeText = 'Not connected';
-    if (wait) {
+    if (starting) {
+      badgeText = 'Starting the proxy…';
+    } else if (wait) {
       badgeClass = 'disconnected';
       badgeText = 'Waiting for browser…';
     } else if (l.logged_in) {
@@ -6066,15 +6189,17 @@ function renderLogins() {
     }
 
     let detailText = '';
-    if (wait) {
+    if (starting) {
+      detailText = 'Starting the subscription proxy…';
+    } else if (wait) {
       detailText = 'Sign in in the browser window that opened.';
     } else if (l.logged_in) {
       const emailMasked = maskEmail(l.email);
       const org = (l.org ?? '').replace(/[^\s@]+@[^\s@]+/g, maskEmail); // an org may be named after the email
       const who = [emailMasked, org].filter(Boolean).join(' · ');
       detailText = who ? `${who}` : 'Subscription active';
-    } else if (l.error) {
-      detailText = l.error;
+    } else if (failed || l.error) {
+      detailText = failed || l.error;
     } else {
       detailText = 'Not logged in. Log in to use this subscription without an API key.';
     }
@@ -6090,7 +6215,7 @@ function renderLogins() {
         type: 'button',
         class: 'btn small',
         disabled: wait,
-        text: wait ? 'Waiting…' : 'Log in',
+        text: starting ? 'Starting…' : wait ? 'Waiting…' : 'Log in',
         onclick: () => subLogin(l.provider),
       }));
     } else {
@@ -6142,12 +6267,24 @@ async function subLogin(provider) {
     if (!ok) return;
   }
   subNote();
+  S.loginStarting ??= new Set();
+  S.loginErrors ??= {};
+  delete S.loginErrors[provider];
+  S.proxyError = '';
+  // with no proxy running, the server starts it first (#821): say so on the row
+  if (S.proxyRunning === false) S.loginStarting.add(provider);
+  renderLogins();
   let r;
   try {
     r = await api('/api/assistant/login', { method: 'POST', body: { provider } });
   } catch (e) {
+    S.loginStarting.delete(provider);
+    S.loginErrors[provider] = e.message;
+    renderLogins();
     return subNote(e.message);
   }
+  S.loginStarting.delete(provider);
+  S.proxyRunning = true;
   S.loginPending.add(provider);
   window.open(r.url, '_blank', 'noopener');
   subNote('Finish signing in in the browser tab that opened. ',
@@ -6314,7 +6451,7 @@ function fillVisionRoleSettings(v, enabled, defaultLocalModel, consent) {
   const box = $('#visionRoleEnabled');
   box.checked = enabled === true;
   box.dataset.saved = String(box.checked);
-  $('#visionRoleEnabledHint').textContent = `Off by default. Rates moments using video frames.${defaultLocalModel ? ` Default local model: ${defaultLocalModel}.` : ''}${S.project?.kind === '360' ? ' Vision rating is not used for 360 footage.' : ''}`;
+  $('#visionRoleEnabledHint').textContent = `Rates moments using video frames. Off by default.${defaultLocalModel ? ` Local model: ${defaultLocalModel}.` : ''}${S.project?.kind === '360' ? ' Vision rating is not used for 360 footage.' : ''}`;
 
   S.visionAi = v ?? {
     provider: 'ollama',

@@ -126,6 +126,7 @@ from cutpoint.assistant import cliproxy
 from cutpoint.assistant import context as ai_context
 from cutpoint.assistant import edges as ai_edges
 from cutpoint.assistant import keys as ai_keys
+from cutpoint.assistant import lookfor as ai_lookfor
 from cutpoint.assistant import ops as ai_ops
 from cutpoint.assistant import providers as ai_providers
 from cutpoint.assistant import session as ai_session
@@ -4349,6 +4350,8 @@ def create_app(port: int) -> FastAPI:
     token = secrets.token_urlsafe(32)
     jobs, media, picker, sources = Jobs(), Media(), Picker(), Sources()
     previews = PanoPreviews()
+    # the subscription proxy, started when a login or a subscription model needs it (#821)
+    proxies = cliproxy.ProxyLauncher()
     login_lock = threading.Lock()
     login_states: dict[str, dict[str, Any]] = {}
     ai_keys.redact_logs()  # an assistant API key never reaches a log line
@@ -4362,6 +4365,7 @@ def create_app(port: int) -> FastAPI:
         previews.shutdown()
         picker.shutdown()
         app.state.assistant.shutdown()
+        app.state.proxies.shutdown()
 
     app = FastAPI(
         title="Cutpoint", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
@@ -4370,6 +4374,7 @@ def create_app(port: int) -> FastAPI:
     app.state.token, app.state.jobs, app.state.media = token, jobs, media
     app.state.picker, app.state.sources = picker, sources
     app.state.previews = previews
+    app.state.proxies = proxies  # routes look it up here, so a test can swap it
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
@@ -4679,10 +4684,21 @@ def create_app(port: int) -> FastAPI:
                 raise bad(f"unknown provider {provider}")
         except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
             raise bad(str(err), 409) from err
+        if ai_providers.is_subscription(p) and (why := proxy_error(logged_in_only=True)):
+            return {"state": "error", "models": [], "message": why}
         keep = settings.model if provider in (settings.provider, "custom") else ""
         return ai_providers.model_list(p, settings.consent, role=role, refresh=refresh, keep=keep)
 
     # -- subscription logins (Claude Code, Codex, Antigravity): managed via CLIProxyAPI ----
+    def proxy_error(*, logged_in_only: bool) -> str | None:
+        """Start the subscription proxy unless one runs (:class:`cliproxy.ProxyLauncher`;
+        ``logged_in_only``: only when a login is saved); why it did not start, else None."""
+        try:
+            app.state.proxies.ensure(logged_in_only=logged_in_only)
+        except (cliproxy.ProxyError, OSError) as err:
+            return ai_keys.redact(f"the subscription proxy did not start: {err}")
+        return None
+
     def login_provider(value: Any) -> str:
         if value not in cliproxy.PROVIDERS:
             raise bad(f"provider must be one of {', '.join(cliproxy.PROVIDERS)}")
@@ -4691,7 +4707,10 @@ def create_app(port: int) -> FastAPI:
     @secure.get("/assistant/logins")
     def assistant_logins():
         """Each subscription's login (cliproxy.status: never a token) with its title and
-        whether the assistant can use it as a provider."""
+        whether the assistant can use it as a provider; ``proxy_running`` and ``saved_login``
+        (a login an earlier proxy run kept): the page starts the proxy when both say so."""
+        proxies = app.state.proxies
+        running = proxies.running()
         st_map = {}
         with contextlib.suppress(cliproxy.ProxyError, OSError):
             for s in cliproxy.statuses():
@@ -4713,6 +4732,8 @@ def create_app(port: int) -> FastAPI:
                         "expires_ms": None,
                         "error": str(err),
                     }
+            if st.get("error") == cliproxy.NOT_RUNNING:  # this server starts it when needed
+                st = {**st, "error": None}
             out.append(
                 {
                     "provider": p,
@@ -4720,7 +4741,16 @@ def create_app(port: int) -> FastAPI:
                     "title": cliproxy.TITLES.get(p, p),
                 }
             )
-        return {"logins": out}
+        saved = not running and proxies.saved_login()
+        return {"logins": out, "proxy_running": running, "saved_login": saved}
+
+    @secure.post("/assistant/proxy")
+    def start_proxy():
+        """Start the subscription proxy when a login is saved and none runs (#821); 503 with
+        the reason when it does not start. ``{running}``."""
+        if why := proxy_error(logged_in_only=True):
+            raise bad(why, 503)
+        return {"running": app.state.proxies.running()}
 
     @secure.post("/assistant/login")
     def start_login(body: dict[str, Any]):
@@ -4739,8 +4769,22 @@ def create_app(port: int) -> FastAPI:
         if old_state_to_cancel:
             with contextlib.suppress(Exception):
                 cliproxy.cancel_login(old_state_to_cancel)
+        app.state.proxies.wait_for_start()  # a start in flight answers only once it is done
         try:
-            res = cliproxy.start_login(name)
+            try:
+                res = cliproxy.start_login(name)
+            except cliproxy.ProxyConnectionError as first:
+                # no proxy ran: a login always starts one (#821); one that ran and failed stands
+                try:
+                    started = app.state.proxies.ensure()
+                except (cliproxy.ProxyError, OSError) as err:
+                    why = ai_keys.redact(f"the subscription proxy did not start: {err}")
+                    with login_lock:
+                        login_states[name] = {"state": "error", "error": why}
+                    raise bad(why, 503) from None
+                if not started and str(first) != cliproxy.NOT_RUNNING:
+                    raise
+                res = cliproxy.start_login(name)  # ours, or one another request just started
         except (cliproxy.ProxyError, OSError) as err:
             with login_lock:
                 login_states[name] = {
@@ -4762,7 +4806,7 @@ def create_app(port: int) -> FastAPI:
             login_states[name] = {
                 "state": "pending",
                 "proxy_state": proxy_state,
-                "started_at": now,
+                "started_at": time.monotonic(),  # the browser gets the whole time after a start
                 "error": "",
             }
         return {"url": url}
@@ -5908,8 +5952,17 @@ def create_app(port: int) -> FastAPI:
         # the events VLM windows: what the vision model saw, which find_moments searches
         windows = ai_context.vlm_windows(_load(p, "events.json"))
         project = ai_session.Project(
-            moments, segments, durations, transcript, key, windows, edge_planner(p)
+            moments,
+            segments,
+            durations,
+            transcript,
+            key,
+            windows,
+            edge_planner(p),
+            frame_index=ai_lookfor.indexed(list(durations)),  # no frames, no look_for
         )
+        if ai_providers.is_subscription(provider) and (why := proxy_error(logged_in_only=True)):
+            raise bad(why, 503)
         assistant_save(p, ai_store.CHAT)
         viewer = ai_watch.Viewer(p, provider, resolve=remap_source, consent=lambda: frames_given(p))
         turn = ai_session.Turn(provider, project, text.strip(), ai_store.turns(p), viewer=viewer)
@@ -6206,3 +6259,4 @@ def run(port: int = 8765) -> None:
         app.state.media.shutdown()
         app.state.picker.shutdown()
         app.state.assistant.shutdown()
+        app.state.proxies.shutdown()  # only the proxy this UI started; a user's stays

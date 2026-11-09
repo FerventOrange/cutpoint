@@ -37,7 +37,6 @@ LAUGHTER = {
     "hehe*": 0.8,
     "lol": 0.8,
     "lmao*": 1.0,
-    "laugh*": 1.0,
     "dying": 0.6,
     "i'm dead": 0.8,
 }

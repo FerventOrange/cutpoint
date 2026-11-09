@@ -504,7 +504,8 @@
 
         <!-- One-click presets: cutpoint edit --kind in the project's own style, with Vertical and Compress Audio Peaks above (#462) -->
         <fieldset class="panel opts presets" id="presetPanel">
-          <legend>One-Click Edit</legend>
+          <legend>One-Click Edit <span class="tag pool" id="presetExp">Experimental</span></legend>
+          <p id="presetNote" class="hint">Picks and joins moments without your review. Use the sequence for a finished edit.</p>
           <div class="opt-grid">
             <label for="optKind" title="What cutpoint edit makes from the analysis, in one run: the best moments as clips, then the final video (--kind). Highlights: up to 3 minutes, chronological, with fades. Montage: up to 60 seconds, best first, with fades. Clips: the 10 best, hard cuts. Funny moments: 8, chronological, with burned-in captions. Uses Vertical 9:16 and Compress Audio Peaks.">Preset</label>
             <select id="optKind" aria-describedby="dKind">
@@ -533,6 +534,7 @@
         <!-- Chat Role -->
         <fieldset class="panel models-section">
           <legend>Chat role</legend>
+          <p class="hint">Answers questions and proposes moments in the AI Chat, and reads transcripts for the dialogue step of analyze.</p>
           <label class="field">Provider
             <select id="chatRoleProvider" aria-describedby="chatRoleProviderHint"></select>
           </label>
@@ -562,6 +564,7 @@
               <button type="button" class="btn small" id="chatRoleKeyClear">Clear key</button>
             </span>
             <p id="chatRoleKeyHint" class="hint"></p>
+            <details class="more"><summary>More</summary><p id="chatRoleKeyMore" class="hint"></p></details>
           </div>
         </fieldset>
 
@@ -602,10 +605,12 @@
               <button type="button" class="btn small" id="visionRoleKeyClear">Clear key</button>
             </span>
             <p id="visionRoleKeyHint" class="hint"></p>
+            <details class="more"><summary>More</summary><p id="visionRoleKeyMore" class="hint"></p></details>
           </div>
           <div id="visionConsent" class="chat-consent" role="group" aria-labelledby="visionConsentTitle" hidden>
             <h3 id="visionConsentTitle">Send video frames to hosted model?</h3>
             <p id="visionConsentText"></p>
+            <details class="more"><summary>More</summary><p id="visionConsentMore"></p></details>
             <button type="button" id="visionConsentOk" class="btn primary small">Allow vision requests</button>
           </div>
           <p id="visionConsentStatus" class="hint" role="status"></p>
@@ -620,8 +625,8 @@
         <!-- Connected Accounts / Subscriptions -->
         <fieldset class="panel models-section">
           <legend>Connected accounts</legend>
-          <p class="hint">Subscriptions (Claude Code, ChatGPT Codex, Google Antigravity) are managed by CLIProxyAPI. Run <code>cutpoint proxy</code> in a terminal to authenticate or refresh sessions. Credentials use the OS keyring; the proxy needs private plaintext working files while running. A guardian handles CLI hard kills; keyring-write failures use encrypted recovery. A host crash or failed recovery write can leave private files. Use at your own risk.</p>
-          <p class="hint">Antigravity sign-in may provision a free-tier project if your account has none.</p>
+          <p class="hint">Subscriptions are managed by CLIProxyAPI. Cutpoint starts the proxy when needed and stops it when the UI closes. Use at your own risk.</p>
+          <details class="more"><summary>More</summary><p class="hint">Credentials use the OS keyring; the proxy needs private plaintext working files while running. A guardian handles CLI hard kills; keyring-write failures use encrypted recovery. A host crash or failed recovery write can leave private files. Antigravity sign-in may provision a free-tier project if your account has none.</p></details>
           <ul id="modelsSubsList" class="subs-list"></ul>
           <p id="modelsSubsStatus" class="hint" role="status"></p>
         </fieldset>
@@ -694,28 +699,28 @@
           <p id="setProjectsNote" class="hint"></p>
         </div>
       </fieldset>
+      <p class="hint">Preview, Export and Appearance show at once; Save keeps them, in this browser.</p>
       <fieldset class="panel">
         <legend>Preview</legend>
         <label class="check"><input type="checkbox" id="setNerdStats" aria-describedby="setNerdStatsHint"> Stats for Nerds</label>
-        <p id="setNerdStatsHint" class="hint">Shows each moment's score, rank and signals over the top-left corner of the preview. Off by default. Shows at once; Save keeps it, in this browser.</p>
+        <p id="setNerdStatsHint" class="hint">Shows each moment's score, rank and signals over the top-left corner of the preview. Off by default.</p>
       </fieldset>
       <fieldset class="panel">
         <legend>Export</legend>
         <label class="check"><input type="checkbox" id="setAdvExport" aria-describedby="setAdvExportHint"> Show advanced export options</label>
-        <p id="setAdvExportHint" class="hint">Shows Top moments, Candidate ids, the Cut Timing fields other than Event tails, Fade length, Assembly audio fade, Captions model, Output size, Clip audio fade, the latest export's status and Extend export in the Export panel. Off by default; hidden options keep their values and are still used. Shows at once; Save keeps it, in this browser.</p>
+        <p id="setAdvExportHint" class="hint">Shows Top moments, Candidate ids, the Cut Timing fields other than Event tails, Fade length, Assembly audio fade, Captions model, Output size, Clip audio fade, the latest export's status and Extend export in the Export panel. Off by default; hidden options keep their values and are still used.</p>
       </fieldset>
       <fieldset class="panel">
         <legend>Appearance</legend>
         <label class="field">Theme
-          <select id="setTheme" aria-describedby="setThemeHint">
+          <select id="setTheme">
             <option value="graphite">Graphite</option>
             <option value="light">Light</option>
             <option value="blue">Blue</option>
           </select>
         </label>
-        <p id="setThemeHint" class="hint">Graphite by default. Shows at once; Save keeps it, in this browser.</p>
         <label class="check"><input type="checkbox" id="setVerboseMoments" aria-describedby="setVerboseMomentsHint"> Verbose moment labels</label>
-        <p id="setVerboseMomentsHint" class="hint">Shows each moment's source video, id and start–end time in the Moments tab. Off by default. Shows at once; Save keeps it, in this browser.</p>
+        <p id="setVerboseMomentsHint" class="hint">Shows each moment's source video, id and start–end time in the Moments tab. Off by default.</p>
       </fieldset>
       <fieldset class="panel" id="setDeletePanel" hidden>
         <legend>Delete project</legend>

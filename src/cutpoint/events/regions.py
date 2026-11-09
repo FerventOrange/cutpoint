@@ -32,14 +32,19 @@ added to the phrases of JSON presets.
 Region entries take any :class:`Region` field (``min_change``, ``min_fill``,
 ...); missing ones use the defaults. Other keys are ignored: region discovery
 marks the extra notice regions it adds where text shows outside every other
-region with ``"origin": "outside"``, which changes neither the region nor its
+region with ``"origin": "outside"`` and the vision model's name for a discovered
+region as ``"label"`` (``kill_feed``, ``chat``, ...); neither changes the region or its
 cache key.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import re
+import unicodedata
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -308,28 +313,263 @@ def preset_for_path(
 
 _DATE_RE = re.compile(r"\s+\d{4}[.\-_]\d{2}[.\-_]\d{2}.*$")
 
+# folder names that say nothing about the game: footage of many games lands in them, so
+# their name would give unrelated games one preset (#822)
+GENERIC_FOLDERS = frozenset(
+    {
+        "videos",
+        "vods",
+        "captures",
+        "recordings",
+        "clips",
+        "gameplay",
+        "footage",
+        "desktop",
+        "downloads",
+        "src",
+        "replay",
+    }
+)
+_DIGITS_RE = re.compile(r"[0-9-]+")
+
+
+def _is_generic(slug: str) -> bool:
+    """Whether a slug names no game: one of :data:`GENERIC_FOLDERS`, "game" (also the slug
+    of a name without letters or digits, such as "🎮" or "___"), at most two characters
+    ("a", "b2") or only digits and dashes (a date or a number)."""
+    return (
+        slug in GENERIC_FOLDERS
+        or slug == "game"
+        or len(slug) <= 2
+        or bool(_DIGITS_RE.fullmatch(slug))
+    )
+
 
 def game_key_for_path(path: str, override: str | None = None, project: Path | None = None) -> str:
     """Like :func:`preset_for_path` but never None.
 
-    Falls back to a slug of the game name, taken from a recorder-style file name
-    ("Some Game 2024.11.14 - 19.01.53.09.DVR.mp4" -> "some-game") or else the
-    parent folder's name.
+    Order: ``override`` and the presets' ``match`` hints (:func:`preset_for_path`), then
+    the decision the HUD fit check of an earlier run recorded for this file in
+    ``<project>/discovery/game_keys.json`` (:func:`decided_entry`; only with ``project``),
+    then the first guess (:func:`first_guess`). Lookup only: the fit check runs in
+    :func:`cutpoint.events.pipeline._discover`.
     """
     known = preset_for_path(path, override, project)
     if known:
         return known
+    guess = first_guess(path, project)
+    entry = decided_entry(path, project, guess) if project is not None else None
+    return str(entry["key"]) if entry else guess
+
+
+def first_guess(path: str, project: Path | None = None) -> str:
+    """The game key a file's name and folder suggest.
+
+    A slug of the game name, taken from a recorder-style file name
+    ("Some Game 2024.11.14 - 19.01.53.09.DVR.mp4" -> "some-game") unless that name is
+    generic (see :func:`_is_generic`; "Desktop 2024.11.14 ... .DVR.mp4" of a desktop
+    capture), else the parent folder's name unless it is generic, else the file name
+    without extension. In a generic folder, files named by a date or number only (OBS:
+    "2026-11-08 19-01-53.mkv"), or by a generic recorder name and a date ("Replay
+    2026-11-08 19-01-53.mkv", "Desktop 2024.11.14 ... .DVR.mp4"), share the key of the first such video in the folder, by
+    name (:func:`date_group`), so one game recorded there gets one discovery; the
+    fit check splits other games off. A key that :func:`_legacy_slug` spells differently
+    (a non-ASCII name) and that has no preset yet while the legacy key has one gives the
+    legacy key, so presets written before keep matching; not the legacy "game", which
+    every name without ASCII letters or digits had.
+    """
     p = Path(path)
     stem = _DATE_RE.sub("", p.stem)
-    return _game_slug(stem if stem != p.stem else (p.parent.name or p.stem))
+    if stem != p.stem and not _is_generic(_game_slug(stem)):
+        name = stem
+    elif p.parent.name and not _is_generic(_game_slug(p.parent.name)):
+        name = p.parent.name
+    else:
+        name = date_group(path, project)[1] or p.stem
+    key, legacy = _game_slug(name), _legacy_slug(name)
+    if (
+        key != legacy
+        and legacy != "game"
+        and load_preset(key, project) is None
+        and load_preset(legacy, project) is not None
+    ):
+        return legacy
+    return key
+
+
+def _date_only(stem: str) -> bool:
+    """Whether a file name says only when it was recorded: digits and separators, or a
+    recorder-style name whose game part is generic ("Replay 2026-11-08 19-01-53",
+    "Desktop 2024.11.14 - 19.01.53.09.DVR")."""
+    if _DIGITS_RE.fullmatch(_game_slug(stem)):
+        return True
+    game = _DATE_RE.sub("", stem)
+    return game != stem and _is_generic(_game_slug(game))
+
+
+_listings: dict[tuple[str, int], list[str]] = {}  # (folder, mtime_ns) -> sorted date stems
+
+
+def _date_stems(folder: Path) -> list[str]:
+    """The names (without extension) of the date-named videos in ``folder``, sorted; cached
+    per folder and modification time. Raises OSError when it cannot be listed."""
+    from cutpoint.utils import VIDEO_EXTS  # noqa: PLC0415
+
+    key = (str(folder), folder.stat().st_mtime_ns)
+    if key not in _listings:
+        _listings[key] = sorted(
+            q.stem
+            for q in folder.iterdir()
+            if q.suffix.lower() in VIDEO_EXTS and _date_only(q.stem) and q.is_file()
+        )
+    return _listings[key]
+
+
+def date_group(path: str, project: Path | None = None) -> tuple[str, str | None]:
+    """For a file named by a date or number only, or by a generic recorder name and a date
+    (:func:`_date_only`), in a named folder: the folder's
+    :func:`source_id` and the name (without extension) of the first such video in it,
+    sorted by name. With ``project``, the name recorded in ``game_keys.json`` for the folder
+    wins (deleting the oldest recording, or a folder offline, changes no key); otherwise the
+    folder is listed, or the folder of its ``source_remap`` copy when it cannot be. The name
+    is None for other files and when no folder can be listed."""
+    p = Path(path)
+    folder = source_id(p.parent)
+    if not p.parent.name or not _date_only(p.stem):
+        return folder, None
+    if project is not None:
+        stored = load_game_groups(project).get(folder)
+        if isinstance(stored, str) and stored:
+            return folder, stored
+    try:
+        stems = _date_stems(p.parent)
+    except OSError:
+        from cutpoint.config import remap_source  # noqa: PLC0415
+
+        try:
+            stems = _date_stems(remap_source(path).parent)
+        except OSError:
+            return folder, None
+    return folder, stems[0] if stems else None
+
+
+# --------------------------------------------------------------------------- fit decisions
+# The HUD fit check (cutpoint.events.game_fit) records per source which key it decided in
+# <project>/discovery/game_keys.json, so later runs and every reader of the key agree:
+# {"version": 1, "sources": {"<path>": {"tag", "guess", "key", "fit"}}}
+GAME_KEYS_VERSION = 1
+
+
+def game_keys_path(project: Path) -> Path:
+    """The fit check's decisions of ``project``."""
+    return project / "discovery" / "game_keys.json"
+
+
+def source_id(path: str | Path) -> str:
+    """A source's entry name in ``game_keys.json``: its absolute path, case-folded where
+    the file system ignores case."""
+    return os.path.normcase(Path(path).absolute())
+
+
+def source_tag(path: str | Path, io_path: Path | None = None) -> str:
+    """Short digest of a source's path and the size and mtime of the file read for it
+    (``io_path``, by default its ``source_remap`` copy or the path itself), like the key of
+    :func:`cutpoint.cache.source_dir`."""
+    key = str(Path(path))
+    if io_path is None:
+        from cutpoint.config import remap_source  # noqa: PLC0415
+
+        io_path = remap_source(path)
+    try:
+        st = io_path.stat()
+        key += f"|{st.st_size}|{st.st_mtime_ns}"
+    except OSError:  # gone: the path alone still tells files apart
+        pass
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+
+
+def _game_keys_part(project: Path, part: str) -> dict[str, Any]:
+    data = cache.load_json(game_keys_path(project))
+    if not isinstance(data, dict) or data.get("version") != GAME_KEYS_VERSION:
+        return {}
+    got = data.get(part)
+    return {str(k): v for k, v in got.items()} if isinstance(got, dict) else {}
+
+
+def load_game_keys(project: Path) -> dict[str, dict[str, Any]]:
+    """The recorded decisions per :func:`source_id`; a missing or unreadable file, or one
+    of another version, gives none."""
+    return {k: v for k, v in _game_keys_part(project, "sources").items() if isinstance(v, dict)}
+
+
+def load_game_groups(project: Path) -> dict[str, str]:
+    """The recorded first file name per folder of date-named videos (:func:`date_group`)."""
+    return {k: v for k, v in _game_keys_part(project, "groups").items() if isinstance(v, str)}
+
+
+def save_game_keys(
+    project: Path, entries: dict[str, dict[str, Any]], groups: dict[str, str] | None = None
+) -> None:
+    """Write the decisions and the date groups (atomically); ``groups`` None keeps the
+    recorded ones."""
+    groups = load_game_groups(project) if groups is None else groups
+    game_keys_path(project).parent.mkdir(parents=True, exist_ok=True)
+    cache.save_json(
+        game_keys_path(project),
+        {"version": GAME_KEYS_VERSION, "sources": entries, "groups": groups},
+    )
+
+
+def decided_entry(path: str, project: Path, guess: str | None = None) -> dict[str, Any] | None:
+    """The recorded decision for ``path`` while it still holds: same file (its
+    :func:`source_tag`) and same first guess (``guess``, by default :func:`first_guess`).
+    None when there is none or it is stale."""
+    entry = load_game_keys(project).get(source_id(path))
+    if not entry or not isinstance(entry.get("key"), str) or not entry["key"]:
+        return None
+    if entry.get("guess") != (guess if guess is not None else first_guess(path, project)):
+        return None
+    return entry if entry.get("tag") == source_tag(path) else None
+
+
+def misfit_key(path: str, taken: Callable[[str], bool]) -> str:
+    """The key for a source that does not fit its first guess's HUD preset: a slug of its
+    file name (the recorder-style game name when there is one), or
+    ``<folder key>-<6 hex digits of its path>`` when that name is generic or ``taken``
+    (the key of another group or of a preset)."""
+    p = Path(path)
+    stem = _DATE_RE.sub("", p.stem)
+    name = stem if stem != p.stem and not _is_generic(_game_slug(stem)) else p.stem
+    key = _game_slug(name)
+    if _is_generic(key) or taken(key):
+        digest = hashlib.sha1(source_id(path).encode("utf-8")).hexdigest()[:6]
+        key = f"{_game_slug(p.parent.name)}-{digest}"
+    return key
 
 
 def _game_slug(name: str) -> str:
-    """Preset key for a game name ("Counter-strike 2" -> "counter-strike-2").
+    """Preset key for a game name ("Counter-strike 2" -> "counter-strike-2",
+    "vidéo ünï 日本" -> "vidéo-ünï-日本").
 
-    The key is persisted (preset file stem and OCR cache key), so keep these
-    exact semantics: no Unicode folding, non-ASCII characters become "-".
+    The key is persisted (preset file stem and OCR cache key). The name is NFC-normalised
+    and lower-cased; each character that is not a letter or digit (``str.isalnum``) or a
+    combining mark (Unicode category M, such as the vowel signs of "हिन्दी") becomes "-",
+    runs of "-" collapse to one and leading or trailing ones go; an empty result is
+    "game". For ASCII names this is exactly :func:`_legacy_slug`. Non-ASCII letters,
+    digits and marks stay as they are, without folding: "²" and "Ⅻ" stay (NFKC would
+    make them "2" and "xii", but also turn "™" into "tm").
     """
+    text = unicodedata.normalize("NFC", name).lower()
+    slug = "".join(
+        c if c.isalnum() or unicodedata.category(c).startswith("M") else "-" for c in text
+    )
+    return re.sub(r"-+", "-", slug).strip("-") or "game"
+
+
+def _legacy_slug(name: str) -> str:
+    """The key :func:`_game_slug` gave before non-ASCII letters were kept: lower-case
+    ASCII letters and digits, every other run of characters "-" ("Café Racer" ->
+    "caf-racer"). Only for finding presets written under it."""
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "game"
 
 

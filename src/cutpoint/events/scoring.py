@@ -41,6 +41,7 @@ from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_mat
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
 from cutpoint.styles import get_style
+from cutpoint.transcribe import flat_markers
 from cutpoint.utils import title_slug
 
 if TYPE_CHECKING:
@@ -59,6 +60,13 @@ REACTION_SOUNDS = ("Laughter", "Scream")
 # stretch over DIALOGUE_WIDEN_MAX_S has exactly this score, whatever its grids say.
 NOMINEE_FLOOR = 0.6
 LAUGH_SOUNDS = ("Laughter",)  # audio events that score laughter points
+# A heard laugh with a confidence below this (the detector's own absolute threshold,
+# ``audio_events.DEFAULT_GROUPS``: weaker peaks pass only its relative rule, and at 0.04-0.1 they
+# include speech and game sounds) makes no moment of its own and gives it no label unless something
+# nearby backs it (:func:`laugh_backed`); a stronger one does as before.
+LAUGH_STRONG = 0.12
+BACKUP_S = 5.0  # the backup of a weak laugh is this close to it
+LOUD_SPEECH = 0.6  # loudness (0-1 grid) that, with speech, backs a weak laugh
 SCREAM_SOUNDS = ("Scream", "Cheering")  # audio events that score scream points
 DIALOGUE_TYPE = "dialogue"  # ``type`` of the text events of the dialogue reader
 # Points of a dialogue event at confidence 1. Goals and funny situations score more: a kill 6
@@ -71,6 +79,9 @@ DIALOGUE_POINTS = 3.0
 # It is also the length above which a whole dialogue stretch is scored at the floor and its
 # laughter and on-screen events count per minute.
 DIALOGUE_WIDEN_MAX_S = 90.0
+# A widened candidate does not keep a silence this long (no transcript speech) next to its
+# original moment: it starts after the one before it and ends before the one after it.
+WIDEN_SILENCE_S = 8.0
 
 
 def has_reaction(
@@ -79,8 +90,9 @@ def has_reaction(
     """Whether a reaction follows an event at ``t`` (seconds, source time).
 
     A reaction is a Laughter or Scream audio event starting in
-    ``(t, t + REACTION_WINDOW_S]`` (speech or not), or a transcript segment
-    starting in that window while none overlaps ``[t - REACTION_PAUSE_S, t]``:
+    ``(t, t + REACTION_WINDOW_S]`` (speech or not), a laughing marker of the transcript
+    (``[laughter]``) there, or a transcript segment with text starting in that window while
+    none (a marker holder is no speech) overlaps ``[t - REACTION_PAUSE_S, t]``:
     a pause, then speech, so ongoing banter does not count. Without
     ``segments`` only the sounds count.
     """
@@ -90,9 +102,23 @@ def has_reaction(
             return True
     if not segments:
         return False
+    if any(t < m["start"] <= end for m in _laugh_markers(segments)):
+        return True
+    segments = [s for s in segments if s.get("text")]  # not a marker holder
     if any(s["end"] >= t - REACTION_PAUSE_S and s["start"] <= t for s in segments):
         return False
     return any(t < s["start"] <= end for s in segments)
+
+
+def _laugh_markers(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The laughing markers (``[laughter]``) of ``segments``, as :func:`analyze.laughter_hits`
+    takes them."""
+    from cutpoint import analyze  # noqa: PLC0415 - analyze imports this module
+
+    return [
+        {"start": t, "end": t, "text": phrase}
+        for t, _, phrase in analyze.laughter_hits([], flat_markers(segments))
+    ]
 
 
 def event_boost(
@@ -265,11 +291,13 @@ def seeds(
     types: tuple[EventType, ...],
     style: tuple[str, ...],
     menu: list[list[float]] | None = None,
+    backup: Callable[[dict[str, Any]], bool] | None = None,
 ) -> list[Seed]:
     """The events of one source that can score in a project of ``style`` (its name and base):
     those of an event type with a ``score`` that applies, and the laughter, scream and
     cheering sounds :func:`event_boost` counts, and the dialogue stretches (``whole`` seeds).
-    Events starting in a ``menu`` span are left out."""
+    Events starting in a ``menu`` span are left out, and so is a weak heard laugh nothing backs
+    (:func:`laugh_backed`, with ``backup``)."""
     out = []
     for e in events:
         if any(a <= e["start"] < b for a, b in menu or ()):
@@ -277,6 +305,8 @@ def seeds(
         length = max(0.0, e["end"] - e["start"])
         if e["kind"] == "audio":
             if (e["label"] in LAUGH_SOUNDS or e["label"] in SCREAM_SOUNDS) and e["confidence"]:
+                if e["label"] in LAUGH_SOUNDS and not laugh_backed(e, events, backup):
+                    continue
                 out.append(Seed(e["label"].lower(), e["start"], e["end"], length))
         elif e["kind"] == "ocr":
             t = first_match(types, e)
@@ -286,6 +316,42 @@ def seeds(
             # the whole stretch as the reader marked it, with no reaction kept after it
             out.append(Seed(f"dialogue-{e['label']}", e["start"], e["end"], length, 0.0, True))
     return out
+
+
+def sound_backed(e: dict[str, Any], events: list[dict[str, Any]]) -> bool:
+    """Whether another laughter, scream or cheering sound (with a confidence) of ``events`` is
+    within :data:`BACKUP_S` of the audio event ``e``."""
+    a, b = e["start"] - BACKUP_S, e["end"] + BACKUP_S
+    return any(
+        o is not e
+        and o["kind"] == "audio"
+        and o["label"] in (*LAUGH_SOUNDS, *SCREAM_SOUNDS)
+        and o["confidence"]
+        and o["end"] >= a
+        and o["start"] <= b
+        for o in events
+    )
+
+
+def laugh_backed(
+    e: dict[str, Any],
+    events: list[dict[str, Any]],
+    backup: Callable[[dict[str, Any]], bool] | None = None,
+) -> bool:
+    """Whether the heard laugh ``e`` may make a moment of its own: its confidence is at least
+    :data:`LAUGH_STRONG`, or another laughter, scream or cheering sound is near it
+    (:func:`sound_backed`), or ``backup(e)`` (the transcript has a laughter word or marker
+    near it, or loud speech covers it; asked last, as it reads the caches)."""
+    if (e["confidence"] or 0) >= LAUGH_STRONG or sound_backed(e, events):
+        return True
+    return bool(backup and backup(e))
+
+
+def heard_laughter(c: dict[str, Any]) -> bool:
+    """Whether laughter was heard in the candidate ``c``: its audio laughter evidence
+    (``signals.events.laughter``) is at least :data:`LAUGH_STRONG`."""
+    laughter = ((c.get("signals") or {}).get("events") or {}).get("laughter") or 0
+    return laughter >= LAUGH_STRONG
 
 
 def is_nominated(c: dict[str, Any]) -> bool:
@@ -372,11 +438,44 @@ def restore_widened(cands: list[dict[str, Any]]) -> int:
     return n
 
 
+def trim_silence(
+    spoken: list[tuple[float, float]],
+    start: float,
+    end: float,
+    core: tuple[float, float],
+    min_gap: float = WIDEN_SILENCE_S,
+) -> tuple[float, float]:
+    """``[start, end]`` without the long silences next to ``core`` (a ``(start, end)`` inside it).
+
+    A silence is a stretch of at least ``min_gap`` seconds with none of the ``spoken`` word
+    spans (``(start, end)``, in time order). The span starts after the last silence that
+    begins before ``core`` and ends before the first silence that ends after it; never inside
+    ``core``, so a silence under the moment itself changes nothing."""
+    gaps, edge = [], start
+    for a, b in spoken:
+        if b <= start or a >= end:
+            continue
+        gaps.append((edge, max(edge, a)))
+        edge = max(edge, b)
+    gaps.append((edge, end))
+    new_start, new_end = start, end
+    for a, b in gaps:
+        if b - a < min_gap:
+            continue
+        if a < core[0]:
+            new_start = max(new_start, min(b, core[0]))
+        if b > core[1]:
+            new_end = min(new_end, max(a, core[1]))
+    return new_start, new_end
+
+
 def widen_for_dialogue(
     cands: list[dict[str, Any]],
     by_src: dict[str, list[dict[str, Any]]],
     menu: dict[str, list[list[float]]] | None = None,
     snippet: Callable[[str, float, float], tuple[str, Any] | None] | None = None,
+    spoken: Callable[[str], list[tuple[float, float]]] | None = None,
+    handled: set[tuple[str, float, float]] | None = None,
 ) -> int:
     """Widen the candidates of ``cands`` (in place) that a dialogue stretch overlaps to cover
     the whole stretch, in place of a near-duplicate nominee: the union of the candidate's span
@@ -387,6 +486,11 @@ def widen_for_dialogue(
     widening) and :func:`nominate` makes the stretch a moment of its own. The earlier span
     is kept in ``widened_from`` (with the merged ones, ``absorbed``), so :func:`restore_widened`
     undoes it and a re-run widens from the same bounds. Visual pool candidates are left alone.
+    The widened span keeps only the part of the stretch that leads into the original moments:
+    with ``spoken(source)`` (the ``(start, end)`` of the transcript's words; none: no
+    trimming) it starts after a silence of :data:`WIDEN_SILENCE_S` or more before the moment
+    and ends before one after it (:func:`trim_silence`). The 90 s limit is checked before
+    trimming. The ``(source, start, end)`` of each stretch used is added to ``handled``.
     A stretch that starts in menu time, or no candidate overlaps, is left to :func:`nominate`.
     The widened candidate's transcript is rebuilt over its new span with ``snippet(source,
     start, end)`` (``(text, unsure)``, or None without a transcript); without one it gets the
@@ -420,6 +524,14 @@ def widen_for_dialogue(
             end = max(e["end"], *(c["end"] for c in hits))
             if end - start > DIALOGUE_WIDEN_MAX_S:
                 continue
+            if spoken and (words := spoken(src)):
+                core = (  # where the moments were before any widening
+                    min((c.get("widened_from") or c)["start"] for c in hits),
+                    max((c.get("widened_from") or c)["end"] for c in hits),
+                )
+                start, end = trim_silence(words, start, end, core)
+            if handled is not None:
+                handled.add((src, e["start"], e["end"]))
             if len(hits) == 1 and (start, end) == (best["start"], best["end"]):
                 continue
             kept = best.setdefault("widened_from", {"start": best["start"], "end": best["end"]})
@@ -515,16 +627,67 @@ def nominate(
     language = (hl.get("settings") or {}).get("language")
     heard: dict[str, list[dict[str, Any]]] = {}
 
-    def snippet(src: str, a: float, b: float) -> tuple[str, Any] | None:
-        """The transcript snippet of ``[a, b]`` as a candidate record has it (None: no transcript)."""
+    def segs(src: str) -> list[dict[str, Any]]:
         if src not in heard:
             heard[src] = _segments(src, language)
-        if not heard[src]:
+        return heard[src]
+
+    def snippet(src: str, a: float, b: float) -> tuple[str, Any] | None:
+        """The transcript snippet of ``[a, b]`` as a candidate record has it (None: no transcript)."""
+        if not segs(src):
             return None
-        said = [w for w in analyze.flat_words(heard[src]) if a <= w["start"] <= b]
+        said = [w for w in analyze.flat_words(segs(src)) if a <= w["start"] <= b]
         return analyze._transcript_snippet(said)
 
-    widen_for_dialogue(cands, by_src, menu, snippet)
+    grids = parts
+
+    def grid_parts() -> list[GridPart]:
+        nonlocal grids
+        if grids is None:
+            grids = analyze.cached_grid_parts(hl, style)
+        return grids
+
+    def backed_by_talk(src: str) -> Callable[[dict[str, Any]], bool]:
+        """Whether the transcript of ``src`` has a laughter word or marker near a weak laugh, or
+        speech under a loud stretch there (:func:`laugh_backed`)."""
+        words: list[float] | None = None
+
+        def backed(e: dict[str, Any]) -> bool:
+            nonlocal words
+            if words is None:
+                words = [
+                    t
+                    for t, _, _ in analyze.laughter_hits(
+                        analyze.flat_words(segs(src)), flat_markers(segs(src))
+                    )
+                ]
+            if any(e["start"] - BACKUP_S <= t <= e["end"] + BACKUP_S for t in words):
+                return True
+            a, b = e["start"] - 1.0, e["end"] + 1.0
+            if not any(s["end"] >= a and s["start"] <= b for s in segs(src) if s.get("text") != ""):
+                return False
+            for p in grid_parts():
+                if str(p.source) == src and p.offset <= e["start"] < p.offset + p.duration:
+                    lo = max(0, int((a - p.offset) / analyze.DT))
+                    loud = p.signals.sig["loudness"][lo : int((b - p.offset) / analyze.DT) + 1]
+                    return bool(loud.size and loud.max() >= LOUD_SPEECH)
+            return False
+
+        return backed
+
+    said: dict[str, list[tuple[float, float]]] = {}
+
+    def spoken(src: str) -> list[tuple[float, float]]:
+        """The ``(start, end)`` of the words of ``src``'s transcript."""
+        if src not in said:
+            said[src] = [
+                (float(w["start"]), float(w.get("end", w["start"])))
+                for w in analyze.flat_words(segs(src))
+            ]
+        return said[src]
+
+    handled: set[tuple[str, float, float]] = set()
+    widen_for_dialogue(cands, by_src, menu, snippet, spoken, handled)
     old = [c for c in cands if is_nominated(c)]
     kept = [c for c in cands if not is_nominated(c)]
     own = kept
@@ -532,13 +695,19 @@ def nominate(
     for src, evs in by_src.items():
         mine = [c for c in own if c["source"] == src]
         left = []
-        for s in seeds(evs, types.get(src, DEFAULT_EVENT_TYPES), names, menu.get(src)):
+        for s in seeds(
+            evs, types.get(src, DEFAULT_EVENT_TYPES), names, menu.get(src), backed_by_talk(src)
+        ):
             hit = [c for c in mine if s.end >= c["start"] and s.start <= c["end"]]
             if not hit:
                 left.append(s)
-            elif s.whole and not any(
-                is_pool(c) or (c["start"] <= s.start + 0.01 and c["end"] >= s.end - 0.01)
-                for c in hit
+            elif (
+                s.whole
+                and (src, s.start, s.end) not in handled
+                and not any(
+                    is_pool(c) or (c["start"] <= s.start + 0.01 and c["end"] >= s.end - 0.01)
+                    for c in hit
+                )
             ):  # too long to widen what it overlaps (and not inside one): a moment of its own
                 left.append(replace(s, over=True))
         if left:
@@ -547,7 +716,7 @@ def nominate(
     done: set[str] = set()
     if todo:
         explicit = (hl.get("settings") or {}).get("max_candidates")
-        for part in analyze.cached_grid_parts(hl, style) if parts is None else parts:
+        for part in grid_parts():
             src = str(part.source)
             lo, hi = part.offset, part.offset + part.duration
             here = [s for s in todo.get(src, []) if lo <= s.start < hi]
