@@ -240,28 +240,14 @@ class EdgePlanner:
         return planned, reasons, len(infos) == len(io_paths)
 
     # -- phrase ends -------------------------------------------------------------------
-    def _language(self) -> str | None:
-        """The transcription language the analysis forced (``settings.language``), or None."""
-        hl = cache.load_json(self.project / "highlights.json")
-        settings = hl.get("settings") if isinstance(hl, dict) else None
-        language = settings.get("language") if isinstance(settings, dict) else None
-        return language if isinstance(language, str) and language else None
-
     def _phrases(self, source: str) -> list[tuple[float, float]]:
         """The stretches of ``source`` where speech runs on (words closer than
         ``chain_gap``), as ``(start, end)``; [] without a transcript."""
         path = self.resolve(source)
-        language = self._language()
-        transcripts = []
-        for part in sources.parts(path):
-            found = sources._transcript_file(part.cdir, language)
-            try:
-                stamp = found.stat() if found is not None else None
-            except OSError:
-                stamp = None
-            transcripts.append(
-                (str(found), stamp.st_mtime_ns, stamp.st_size) if stamp is not None else None
-            )
+        language = sources.project_language(self.project)
+        transcripts = [
+            sources.transcript_stamp(part.cdir, language) for part in sources.parts(path)
+        ]
         key = (str(path), language, tuple(transcripts))
         if key not in self._chains:
             words = sources.source_words(path, language) or []
