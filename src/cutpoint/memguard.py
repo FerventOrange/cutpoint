@@ -292,6 +292,17 @@ def check(model: str, *, gpu: bool = False, label: str | None = None) -> None:
         _guard(what, ram_gb, None)
 
 
+def fits_gpu(model: str) -> bool:
+    """Whether ``model`` (a :data:`NEEDS` key) would load on the GPU now: what :func:`check`
+    lets through, freeing cached models and Ollama's first as it does when short, but never
+    stopping the run (True with the guard off or the memory unknown)."""
+    head = headroom_gb()
+    if head <= 0 or _shortfall(head, 0.0, NEEDS[model][1], False) is None:
+        return True
+    _free()  # as the load would: cached models and Ollama's out first
+    return _shortfall(head, 0.0, NEEDS[model][1], False) is None
+
+
 def device_for(
     model: str,
     device: str,
