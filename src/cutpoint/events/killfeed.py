@@ -118,7 +118,11 @@ class OcrParams:
 # 22: big-text lines that come back as short pop-ups all through a source are flagged
 # ``announce`` (:func:`learn_announcements`), short lines with digits included
 # 23: text-rule menu frames are further than STATIC_FEED_GUARD_S from feed activity (#858)
-GENERIC_VERSION = 23
+# 24: the rows a feed reads as notices are one line of new menu text at most, however many
+# are on screen (:func:`feed_stacks`, #891)
+# 25: ... but the rows a feed reads first in one frame are lines of their own (a screen's text in
+# the feed's area, #891)
+GENERIC_VERSION = 25
 
 # Chat overlays (Twitch VODs): a discovered "feed" region that shows this many distinct text
 # lines per hour of footage is chat, not a kill feed. Measured on real footage: chat 9000-40000
@@ -2310,6 +2314,21 @@ STATIC_LONG_S = 45.0
 # TEXT_TOGETHER of them first read together, for TEXT_MIN_S, but the kill feed goes on beside it;
 # a lobby or result screen has no feed sightings or kills. Measured on footage of four games, this
 # cleared a 3.3 s and a 28 s stretch of gameplay and kept every text-rule menu (two).
+# A feed's rows are one stack, not lines of a screen (#891): a discovered icon feed
+# (``row_notices``) reads the rows that are no kill line it can parse as notices, and a busy feed
+# shows five or more of them, arriving together and on screen for 10 s or more, with no fresh
+# read (so no feed sighting) while the feed holds still. Alone they passed as a text screen. The
+# rows of one feed region that stay as lines of their own (:func:`staying_spans`: no short row,
+# no HUD row) and overlap count as one line (:func:`feed_stacks`), so a menu whose text reaches
+# into the feed's area keeps that line, a full feed adds one at most, and short rows back to back
+# add none: a moment never has more lines than when each row counted alone. But a feed adds its
+# rows one at a time (two at most in one frame in the gameplay measured, a double kill), while
+# a screen whose text lies in the feed's area (a lobby list, a waiting dialog) opens with all of
+# it in one frame: of every group of TEXT_TOGETHER or more rows first read in the same frame,
+# the rows count each.
+# Measured on footage of two games (four clips): this cleared a 12 s and a 7 s stretch of
+# gameplay beside a busy feed, kept a lobby whose five lines sit in the feed's area (merged into
+# one, it lost 11 s of menu) and every other menu span, and lost no event.
 TEXT_LINES = 5
 TEXT_TOGETHER = 3
 TEXT_HUD_SHARE = 0.5
@@ -2466,6 +2485,32 @@ def static_frames(
         near = i < len(anchors) and anchors[i] <= part[-1]["t"] + STATIC_ANCHOR_S
         if near or part[-1]["t"] - part[0]["t"] >= STATIC_LONG_S:
             out.update(p["id"] for p in part)
+    return out
+
+
+def feed_stacks(rows: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """The lines of new menu text (see :data:`TEXT_LINES`) of one feed region's rows that
+    stay (spans (first read, end), see :func:`staying_spans`): those that overlap are one
+    stack, one line (first read to last end), and with it, of every group of
+    :data:`TEXT_TOGETHER` or more rows first read in the same frame, the other rows, each a
+    line of its own but the one that ends last. A feed adds its rows one at a time (two at
+    most in one frame, a double kill), a screen opens with its lines at once. A stack never
+    has more lines than rows on screen."""
+    stacks: list[list[tuple[float, float]]] = []
+    for a, b in sorted(rows):
+        if stacks and a <= max(e for _, e in stacks[-1]):
+            stacks[-1].append((a, b))
+        else:
+            stacks.append([(a, b)])
+    out: list[tuple[float, float]] = []
+    for stack in stacks:
+        out.append((stack[0][0], max(b for _, b in stack)))
+        groups: dict[float, list[float]] = {}
+        for a, b in stack:
+            groups.setdefault(a, []).append(b)
+        for a, ends in groups.items():
+            if len(ends) >= TEXT_TOGETHER:
+                out += [(a, b) for b in sorted(ends, reverse=True)[1:]]
     return out
 
 
@@ -3427,16 +3472,26 @@ class OcrInterpretation:
             # read interval
             step = {r.name: r.every / self.interp.params.fps for r in self.regions}
             unknown = [e for e in tracked if e.get("unknown")]
-            text_spans = [
-                (e["_times"][0], e["end"] + step.get(e.get("region"), 0.0)) for e in unknown
-            ]
-            text_keys = [(e.get("region"), e["_key"]) for e in unknown]  # a line's spans
-            max_gap = STATIC_MAX_GAP_S
+
+            def shown(e: dict[str, Any]) -> tuple[float, float]:
+                return e["_times"][0], e["end"] + step.get(e.get("region"), 0.0)
+
+            max_gap = STATIC_MAX_GAP_S if self.still_runs is None else self.still_runs.max_gap
+            frames = self.frame_boxes
+            lines = [e for e in unknown if e.get("region") not in feeds]
+            text_spans = [shown(e) for e in lines]
+            text_keys: list[Any] = [(e.get("region"), e["_key"]) for e in lines]  # a line's spans
+            for name in sorted(feeds):  # a feed's rows are one stack (see TEXT_LINES)
+                rows = [e for e in unknown if e.get("region") == name]
+                # the rows that stay as lines of their own, then those on screen together merged
+                staying = staying_spans(
+                    frames, [shown(e) for e in rows], [(name, e["_key"]) for e in rows], max_gap
+                )
+                for i, span in enumerate(feed_stacks(staying)):
+                    text_spans.append(span)
+                    text_keys.append((name, i))
             if self.still_runs is None:
                 feed_times, text_spans = None, None
-            else:
-                max_gap = self.still_runs.max_gap
-            frames = self.frame_boxes
             rules, menu_info = menu_rules(
                 frames,
                 feed_times=feed_times,
@@ -3485,6 +3540,18 @@ class OcrInterpretation:
         for e in events:
             e["kind"] = "ocr"
         return events
+
+
+def _log_score_slots(src_name: str, stats: dict[str, Any]) -> None:
+    """One INFO line naming the ``score`` spots of ``stats["score_slots"]`` that were turned
+    off as counters, if any (fresh and cached results alike)."""
+    off = [k for k, v in stats.get("score_slots", {}).items() if v.get("disabled")]
+    if off:
+        logger.info(
+            "%s: score readout off for %s (a counter, not a score)",
+            src_name,
+            ", ".join(sorted(off)),
+        )
 
 
 def _raw_region_keys(regions: list[Region]) -> list[dict[str, Any]]:
@@ -3590,6 +3657,7 @@ def detect_ocr_events(
     key["raw"] = cache.params_hash(raw.key)
     cpath = layer_cache_path(src.cdir, "ocr", key)
     if not force and (hit := cache.load_json(cpath)) is not None:
+        _log_score_slots(src.name, hit.get("stats", {}))
         return hit["events"], hit.get("stats", {})
     can_read = engine is not None or make_engine is not None
     if force and can_read:  # without an engine nothing would read it again
@@ -3823,6 +3891,7 @@ def detect_ocr_events(
             skipped,
             skipped + sum(stats["det_calls"].values()),
         )
+    _log_score_slots(src.name, stats)
     cache.save_json(
         cpath, {"source": str(src.path), "params": key, "stats": stats, "events": events}
     )
