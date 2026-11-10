@@ -79,7 +79,6 @@ with `_` are ignored.
   "video_encoder": "auto",
   "export_workers": "auto",
   "memory_guard": 2,
-  "vision": false,
   "visual_index": false,
   "ocr_det_skip": false,
   "compress_peaks": "off",
@@ -151,13 +150,13 @@ see [troubleshooting](troubleshooting/models.md)).
 
 ### vision
 
-`true` or `false` (default). With `true`, `analyze` and `edit` rate the top candidates with the
+`true`, `false`, or no key (the default). With no key, `--style auto` and `cutpoint detect` ask the vision model about unsure footage, and the frame rating is off; `false` also turns that check off. With `true`, `analyze` and `edit` rate the top candidates with the
 configured vision model
 ([getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) unless
 `--no-vision` is given; with `false` or no key, only `--vision` turns it on for one run. The UI's
 Models tab writes this key ("Rate frames with vision model"), and
 every analysis the UI starts ("Analyze footage" or "Analyze again") passes its value at that
-moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other values are rejected.
+moment as `--vision` or `--no-vision` (neither when there is no key); the UI has no per-run choice. Other values are rejected.
 A rating covers a moment's frames and, except for `action-cam`, the speech in it (the Vision
 consent already covers these transcript excerpts).
 
@@ -209,15 +208,15 @@ Without this section the frame rater uses Ollama. The Models tab of `cutpoint ui
 Catalogs and frames go to a hosted provider only after you allow it there
 (`vision_assistant.consent`, via "Allow vision requests"); choosing or saving a model never
 grants it. Once allowed, the provider receives video frames, transcript excerpts, file names and
-times, and detected on-screen text (such as player names) and telemetry (for frame ratings and
-the `events` window descriptions), never the video file. The AI Chat assistant gets other data
+times, and detected on-screen text (such as player names) and telemetry (for frame ratings, the
+`events` window descriptions and the footage check of `--style auto` and `cutpoint detect`, a few frames of an unsure source), never the video file. The AI Chat assistant gets other data
 (analysis results and whole transcripts; frames only when you allow them for a project), so this
 consent is separate from the assistant's: agreeing to one never covers the other. Entries are `vision-v2:<provider>@<host>` (for example
 `vision-v2:codex@chatgpt.com`, or `vision-v2:ollama@192.168.1.5:11434`: the host has its port
 when that is not the scheme's default); an entry without the `vision-v2:` prefix, saved by an earlier
 version under a narrower description, no longer counts, and the Models tab asks again.
 **Use at your own risk** when selecting a hosted provider.
-An explicit `--ollama-url` and/or `--ollama-model` on `analyze` or `edit` wins over a hosted provider here (VLM layer of events, feed labels, `analyze --vision`): that run uses the Ollama, with the usual default for a flag left out, and sends nothing to the hosted model; an Ollama on another machine needs this Vision consent, else the step is skipped with `vision_consent_needed`. Without the flags the provider is used, and ratings
+An explicit `--ollama-url` and/or `--ollama-model` on `analyze` or `edit` wins over a hosted provider here (VLM layer of events, feed labels, `analyze --vision`, the footage check of `--style auto` and `cutpoint detect`): that run uses the Ollama, with the usual default for a flag left out, and sends nothing to the hosted model; an Ollama on another machine needs this Vision consent, else the step is skipped with `vision_consent_needed`. Without the flags the provider is used, and ratings
 from hosted providers have no logprob-based score. Activity detection for `profile`, `crashes` and the crash step of
 `analyze` always uses Ollama, independently of this selection; an Ollama on another machine
 needs this Vision consent for its URL there too, else the profile falls back without the model.
