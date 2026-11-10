@@ -12,6 +12,7 @@ import contextlib
 import functools
 import itertools
 import logging
+import math
 import os
 import re
 import stat
@@ -41,6 +42,7 @@ ASSISTANT_PROVIDERS = (
     "antigravity",
 )
 MEMORY_GUARD_GB = 2.0  # memory_guard default: GB of RAM left free when a model loads (#109)
+VISION_TIME_SHARE = 0.3  # vision_time_share default: the vision rating's share of analyze (#909)
 MIN_CONTEXT_TOKENS = 2048  # room for the rules, a few moments and one reply
 
 
@@ -77,6 +79,7 @@ class Config:
     memory_guard: float = MEMORY_GUARD_GB  # GB of RAM left free when a model loads (0: off)
     visual_index: bool = False  # analyze writes frame embeddings for every style, not just action
     ocr_det_skip: bool = False  # HUD OCR skips the det gate of unchanged regions (#807)
+    vision_time_share: float = VISION_TIME_SHARE  # vision time cap, share of analyze (#909)
 
 
 def load_config_data(path: Path | None = None) -> dict:
@@ -236,6 +239,7 @@ def _load_config(path: Path) -> Config:
         _memory_guard(path, data),
         data.get("visual_index") is True,
         data.get("ocr_det_skip") is True,
+        _vision_time_share(path, data),
     )
 
 
@@ -247,6 +251,21 @@ def _memory_guard(path: Path, data: dict) -> float:
         return MEMORY_GUARD_GB
     if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
         raise ValueError(f"{path}: memory_guard is {value!r}; expected GB of RAM, 0 or more")
+    return float(value)
+
+
+def _vision_time_share(path: Path, data: dict) -> float:
+    """``vision_time_share``: the vision rating's time cap, a share of the analysis before it
+    (:func:`cutpoint.analyze.vision_budget`), 0 or more; 0 allows one model call. Default
+    :data:`VISION_TIME_SHARE`."""
+    value = data.get("vision_time_share")
+    if value is None:
+        return VISION_TIME_SHARE
+    bad = isinstance(value, bool) or not isinstance(value, int | float)
+    if bad or (isinstance(value, float) and not math.isfinite(value)) or value < 0:
+        raise ValueError(
+            f"{path}: vision_time_share is {value!r}; expected a share of the analyze time, 0 or more"
+        )
     return float(value)
 
 
@@ -440,6 +459,12 @@ def ocr_det_skip_default() -> bool:
     region that has not changed when neither ``--ocr-det-skip`` nor ``--no-ocr-det-skip`` is
     given (``ocr_det_skip`` in ``config.json``; default False)."""
     return get_config().ocr_det_skip
+
+
+def vision_time_share() -> float:
+    """The vision rating's time cap as a share of the analysis before it (``vision_time_share``
+    in ``config.json``; default :data:`VISION_TIME_SHARE`)."""
+    return get_config().vision_time_share
 
 
 def analysis_skip() -> tuple[str, ...]:

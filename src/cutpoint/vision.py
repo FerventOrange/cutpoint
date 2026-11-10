@@ -125,9 +125,12 @@ _SPEECH_BLOCK = (
 # Of a window's speech sent with its frames. Today a candidate's transcript is already cut to
 # analyze.SNIPPET_CHARS (240) from the window's start, so this limit is not reached.
 MAX_TRANSCRIPT_CHARS = 600
-# The speech prompt rates on a higher scale than the frames-only one: with speech a rating is
-# 1.9 higher on average. Measured on qwen3.5:9b on one stream; hosted models use the same number.
-SPEECH_PROMPT_LIFT = 1.9
+# The speech prompt rates on a higher scale than the frames-only one, so each prompt kind's
+# ratings are centred on their own mean (analyze.rating_centres, #909). With fewer than
+# PRIOR_N ratings of a kind the mean is shrunk toward this prior: the mean rating per kind,
+# fitted on qwen3.5:9b; every model uses the same numbers.
+RATING_PRIOR = {"frames": 3.2, "speech": 5.1}
+PRIOR_N = 5
 # (first prompt, retry prompt) per style; styles not listed use the default pair.
 _PROMPTS = {ACTION_CAM: (_PROMPT_ACTION_CAM, _RETRY_PROMPT_ACTION_CAM)}
 _DEFAULT_PROMPTS = (_PROMPT, _RETRY_PROMPT)

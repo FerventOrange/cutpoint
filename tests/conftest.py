@@ -198,6 +198,17 @@ def add_profile(raw: dict, name: str | None = None) -> dict:
     return activity.library()[name]
 
 
+@pytest.fixture
+def pinned_prior(monkeypatch: pytest.MonkeyPatch) -> dict[str, float]:
+    """The vision rating prior (``vision.RATING_PRIOR``, #909) fixed at 3.2 (frames) and 5.1
+    (speech), so a test's hand-computed centres hold when the shipped prior is re-fitted."""
+    from cutpoint import vision  # noqa: PLC0415
+
+    monkeypatch.setitem(vision.RATING_PRIOR, "frames", 3.2)
+    monkeypatch.setitem(vision.RATING_PRIOR, "speech", 5.1)
+    return vision.RATING_PRIOR
+
+
 def set_config(home: Path, **data) -> None:
     """Write ``config.json`` under ``home`` and drop the cached copy."""
     write(home / "config.json", json.dumps(data))

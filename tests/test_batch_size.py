@@ -153,10 +153,10 @@ def analyze_run(home, tmp_path, monkeypatch):
     def outputs() -> tuple[dict, bytes]:
         hl = cache.load_json(project / "highlights.json")
         hl = _without(hl, "created", "timings")
-        # the vision step's own seconds (#909) differ from run to run
+        # the vision step's own seconds (#909) and the time budget made of them differ per run
         if isinstance(hl["settings"].get("vision"), dict):
             hl["settings"] = hl["settings"] | {
-                "vision": _without(hl["settings"]["vision"], "vision_s", "pre_vision_s")
+                "vision": _without(hl["settings"]["vision"], "vision_s", "pre_vision_s", "budget_s")
             }
         return hl, (project / "transcript.txt").read_bytes()
 
@@ -827,11 +827,28 @@ class _Rater:
 
 @pytest.fixture
 def vision_run(analyze_run, monkeypatch):
-    """``analyze_run`` with ``--vision`` and the cached fake rater: one candidate per source,
-    all five rated."""
+    """``analyze_run`` with ``--vision`` and the cached fake rater: five rated moments, one per
+    source. The vision band (#909) is the moments just below the edit's cut, so each source
+    gets two stronger 3 s fillers that rank above its rated one, and the style is commentary
+    (its target keeps all 15 moments in the edit: k = 5, the five lowest are the band)."""
     _Rater.calls, _Rater.store, _Rater.stop = [], {}, None
     monkeypatch.setattr(cutpoint.analyze, "VisionRater", _Rater)
+    monkeypatch.setattr(config, "vision_time_share", lambda: 1000.0)  # no run is capped
+    base = cutpoint.analyze.analyze_source
+
+    def with_fillers(src, *a, **kw):
+        res = base(src, *a, **kw)
+        res.candidates[0].score = 10.0 + "abcde".index(src.stem)  # the rated one: 10 to 14
+        for j, start in enumerate((25.0, 35.0)):
+            filler = cutpoint.analyze.Candidate(
+                src, start, start + 3.0, start + 1.0, 1.0, {"loudness": 1.0}, score=90.0 + j
+            )
+            res.candidates.append(filler)
+        return res
+
+    monkeypatch.setattr(cutpoint.analyze, "analyze_source", with_fillers)
     analyze_run.argv = [a if a != "--no-vision" else "--vision" for a in analyze_run.argv]
+    analyze_run.argv[analyze_run.argv.index("funny")] = "commentary"
     return analyze_run
 
 

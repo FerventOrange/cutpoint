@@ -18,6 +18,11 @@ Per variant:
   them; otherwise "-". The ratio is comparable only between cold-cache runs: a re-rank
   (``rerank`` in ``settings.vision``) or a second analysis of the same footage has a much
   smaller ``pre_vision_s``. The row shows each variant's own ``vision_s`` too.
+- ``est``: the cold cost the variant would have on the reference's run, from the reference's
+  seconds per model call (``vision_s`` / ``calls``) and analyze time ``pre_vision_s``:
+  ``min(rated * s_per_call, max(s_per_call, share * pre_vision_s)) / pre_vision_s``, with the
+  variant's ``rated`` and ``share`` (``vision_time_share``, 0.3 when not recorded). A time cap
+  stops after the budget, at least one call. "-" without those numbers.
 - ``edit``: the default edit is :func:`cutpoint.default_fit.fit_target` of the scored moments
   (not the visual pool) against ``settings.target_total``, what ``clips`` takes without options.
   The share of the reference's picks that the variant also picks. Two moments are the same when
@@ -30,6 +35,9 @@ Per variant:
 - ``recovered`` (with ``--novision``): the reference's changes against the no-vision project are
   the picks it added and the picks it dropped in the default edit. The share the variant makes
   too.
+- ``flips`` (with ``--novision``): pairs of a moment the variant rated (``signals.vision`` set) and
+  one it did not rate (neither ``must_include``), both in the no-vision project too, whose order
+  by score the variant reverses against it. A tie in either is not a flip.
 
 ``--json FILE`` writes the results.
 """
@@ -51,6 +59,7 @@ SCHEMA = 1
 MIN_OVERLAP = 0.5
 TOPS = (5, 10)
 TAU_TOP = 20
+DEFAULT_SHARE = 0.3  # vision_time_share when a project does not record it
 
 Moment = dict[str, Any]
 
@@ -176,6 +185,47 @@ def cost(vision: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def est_ratio(ref_vision: dict[str, Any], vision: dict[str, Any]) -> float | None:
+    """The variant's cold cost on the reference's run: ``min(rated * s_per_call,
+    max(s_per_call, share * pre)) / pre``, ``s_per_call`` and ``pre`` the reference's seconds per
+    model call and ``pre_vision_s``, ``rated`` and ``share`` the variant's (``vision`` its
+    ``settings.vision``). None without those numbers."""
+    v, calls, pre = (ref_vision.get(k) for k in ("vision_s", "calls", "pre_vision_s"))
+    rated = vision.get("rated")
+    share_ = vision.get("share", DEFAULT_SHARE)
+    nums = (v, calls, pre, rated, share_)
+    if not all(isinstance(x, int | float) and not isinstance(x, bool) for x in nums):
+        return None
+    if calls <= 0 or pre <= 0:
+        return None
+    per_call = v / calls
+    return min(rated * per_call, max(per_call, share_ * pre)) / pre
+
+
+def _rated(m: Moment) -> bool:
+    return (m.get("signals") or {}).get("vision") is not None
+
+
+def flips(novision: Sequence[Moment], var: Sequence[Moment]) -> int:
+    """(rated, unrated) pairs of ``var`` whose order by score is the reverse of ``novision``'s:
+    ``var``'s moments with a vision rating against those without (neither ``must_include``),
+    each matched to a no-vision moment (:func:`same`). A tie in either is not a flip."""
+    pairs = []
+    for m in var:
+        if m.get("must_include"):
+            continue
+        match = next((n for n in novision if same(m, n)), None)
+        if match is not None:
+            pairs.append((_rated(m), float(m["score"]), float(match["score"])))
+    rated = [p for p in pairs if p[0]]
+    unrated = [p for p in pairs if not p[0]]
+    return sum(
+        (r_var - u_var) * (r_nv - u_nv) < 0
+        for _, r_var, r_nv in rated
+        for _, u_var, u_nv in unrated
+    )
+
+
 def evaluate(
     ref: dict[str, Any], var: dict[str, Any], novision: dict[str, Any] | None
 ) -> dict[str, Any]:
@@ -183,6 +233,7 @@ def evaluate(
     out: dict[str, Any] = {
         "project": var["project"],
         "cost": cost(var["vision"]),
+        "est_ratio": est_ratio(ref["vision"], var["vision"]),
         "edit": edit_overlap(ref["edit"], var["edit"]),
         "edit_clips": len(var["edit"]),
         **{f"top{k}": top_overlap(ref["ranked"], var["ranked"], k) for k in TOPS},
@@ -191,6 +242,7 @@ def evaluate(
     }
     if novision is not None:
         out["recovered"] = recovered(ref["edit"], novision["edit"], var["edit"])
+        out["flips"] = flips(novision["ranked"], var["ranked"])
     return out
 
 
@@ -215,16 +267,17 @@ def print_results(data: dict[str, Any]) -> None:
         f"cost {_num(c['ratio'], '.2f')}x"
     )
     has_nv = any("recovered" in v for v in data["variants"])
-    head = f"  {'vis_s':>6} {'cost':>6} {'edit':>6} {'top5':>6} {'top10':>6} {'tau20':>7} {'n':>3}"
-    print(head + (f" {'recovered':>10}" if has_nv else "") + "  project")
+    head = f"  {'vis_s':>6} {'cost':>6} {'est':>6} {'edit':>6} {'top5':>6} {'top10':>6} {'tau20':>7} {'n':>3}"
+    print(head + (f" {'recovered':>10} {'flips':>5}" if has_nv else "") + "  project")
     for v in data["variants"]:
         row = (
-            f"  {_num(v['cost']['vision_s'], '.0f'):>6} {_num(v['cost']['ratio'], '.2f'):>6} {_pct(v['edit']):>6} {_pct(v['top5']):>6} "
+            f"  {_num(v['cost']['vision_s'], '.0f'):>6} {_num(v['cost']['ratio'], '.2f'):>6} "
+            f"{_num(v['est_ratio'], '.2f'):>6} {_pct(v['edit']):>6} {_pct(v['top5']):>6} "
             f"{_pct(v['top10']):>6} {_num(v['tau20'], '.2f'):>7} {v['tau20_n']:>3}"
         )
         if has_nv:
             r = v.get("recovered")
-            row += f" {_pct(r['share']) if r else '-':>10}"
+            row += f" {_pct(r['share']) if r else '-':>10} {v.get('flips', '-'):>5}"
         print(f"{row}  {v['project']}")
     if data.get("novision"):
         nv = data["novision"]
