@@ -361,7 +361,7 @@ def ollama_context(url: str, model: str) -> int | None:
     return ctx if isinstance(ctx, int) and not isinstance(ctx, bool) and ctx > 0 else None
 
 
-def _ollama_loaded(url: str, model: str, num_ctx: int | None = None) -> bool:
+def ollama_loaded(url: str, model: str, num_ctx: int | None = None) -> bool:
     """Ollama at ``url`` has ``model`` in memory (``/api/ps``) and a request for ``num_ctx``
     keeps it there: Ollama reloads a model asked for another context (#732), so a model loaded
     with another ``context_length`` does not count. ``num_ctx`` None, or an Ollama that does not
@@ -402,6 +402,6 @@ def check_vision(rater: VisionRater) -> None:
         size,
         None,
         pooled=True,
-        loaded=lambda: _ollama_loaded(rater.url, rater.model, rater.num_ctx),
+        loaded=lambda: ollama_loaded(rater.url, rater.model, rater.num_ctx),
         url=rater.url,
     )

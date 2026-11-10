@@ -237,7 +237,7 @@ def _rater(url: str, *, via: bool = False, size: int | None = None) -> Any:
 
 
 def test_ollama_needs_the_size_it_reports_in_ram_and_vram(mem, monkeypatch):
-    monkeypatch.setattr(memguard, "_ollama_loaded", lambda url, model, num_ctx=None: False)
+    monkeypatch.setattr(memguard, "ollama_loaded", lambda url, model, num_ctx=None: False)
     mem.ram, mem.vram = 3.0, 4.0
     memguard.check_vision(_rater("http://127.0.0.1:11434", size=4 * GB))  # 7 >= 2 + 4
     with pytest.raises(LowMemoryError, match="RAM and VRAM free"):
@@ -250,7 +250,7 @@ def test_ollama_needs_the_size_it_reports_in_ram_and_vram(mem, monkeypatch):
 def test_a_loaded_ollama_model_needs_nothing(mem, monkeypatch):
     asked = []
     monkeypatch.setattr(
-        memguard, "_ollama_loaded", lambda url, model, num_ctx=None: asked.append(model) or True
+        memguard, "ollama_loaded", lambda url, model, num_ctx=None: asked.append(model) or True
     )
     mem.ram = 1.0
     memguard.check_vision(_rater("http://localhost:11434"))
@@ -267,8 +267,8 @@ def test_ollama_loaded_reads_api_ps(monkeypatch):
     monkeypatch.setattr(
         requests, "get", lambda url, **kw: _Resp({"models": [{"name": "qwen3.5:9b"}]})
     )
-    assert memguard._ollama_loaded("http://127.0.0.1:11434", "qwen3.5:9b")
-    assert not memguard._ollama_loaded("http://127.0.0.1:11434", "llava")
+    assert memguard.ollama_loaded("http://127.0.0.1:11434", "qwen3.5:9b")
+    assert not memguard.ollama_loaded("http://127.0.0.1:11434", "llava")
 
 
 def test_ollama_loaded_does_not_follow_a_redirect(monkeypatch):
@@ -284,7 +284,7 @@ def test_ollama_loaded_does_not_follow_a_redirect(monkeypatch):
         return resp
 
     monkeypatch.setattr(requests, "get", moved)
-    assert not memguard._ollama_loaded("http://127.0.0.1:11434", "qwen3.5:9b")
+    assert not memguard.ollama_loaded("http://127.0.0.1:11434", "qwen3.5:9b")
     assert sent == [("http://127.0.0.1:11434/api/ps", False)]
 
 
@@ -310,7 +310,7 @@ def test_the_subscription_proxy_is_not_a_server_here(mem, monkeypatch, caplog):
 def test_the_raters_ollama_is_the_one_unloaded(mem, monkeypatch):
     urls = []
     monkeypatch.setattr(common, "unload_ollama", lambda url=None: urls.append(url) or [])
-    monkeypatch.setattr(memguard, "_ollama_loaded", lambda url, model, num_ctx=None: False)
+    monkeypatch.setattr(memguard, "ollama_loaded", lambda url, model, num_ctx=None: False)
     mem.ram = 1.0
     with pytest.raises(LowMemoryError):
         memguard.check_vision(_rater("http://127.0.0.1:11500"))
