@@ -4095,19 +4095,29 @@ def _color_args(body: dict[str, Any]) -> list[str]:
 def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[Any, Any]:
     """The inputs and style a project's analysis runs on: the inputs the user picked, else (made
     on the command line) the recorded inputs; either may be missing. The style is the one the
-    user chose, else ``auto`` for an analysis run with ``--style auto``, else the recorded one."""
+    user chose, else ``auto`` for an analysis run with ``--style auto``, else the style asked
+    for when an action-cam one fell back for footage without telemetry (#939), else the
+    recorded one."""
     st = (hl or {}).get("settings") or {}
     inputs = picked_inputs(meta) or st.get("inputs")
     if meta.get("style"):
         return inputs, meta["style"]
-    return inputs, AUTO if st.get("style_requested") == AUTO else (hl or {}).get("style")
+    requested = st.get("style_requested")
+    if requested == AUTO or (isinstance(st.get("style_fallback"), dict) and requested):
+        return inputs, requested
+    return inputs, (hl or {}).get("style")
 
 
 def _resolved_style(meta: dict[str, Any], hl: dict[str, Any] | None) -> object:
     """The style the analysis ran as: the project's chosen style, or for ``auto`` the style the
-    footage was detected as (recorded in highlights.json), else the recorded style."""
+    footage was detected as (recorded in highlights.json), else the recorded style. An
+    action-cam style that fell back for footage without telemetry (#939,
+    ``settings.style_fallback``) resolves to the style that ran."""
     style = meta.get("style")
     if not style or style == AUTO:
+        return (hl or {}).get("style") or style
+    st = (hl or {}).get("settings") or {}
+    if isinstance(st.get("style_fallback"), dict) and st.get("style_requested") == style:
         return (hl or {}).get("style") or style
     return style
 

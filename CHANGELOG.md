@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **BREAKING:** `analyze` and `edit` with `--style action-cam` (or a style over it) on footage without camera telemetry no longer end with no moments and no warning: when no source has GoPro or Insta360 X3 telemetry the `action` style runs instead, recorded as `style` `action` with `settings.style_requested` and `settings.style_fallback` in `highlights.json`, and an `action_cam_no_telemetry` warning (WARNING line and `--json`). A project where only some sources have telemetry, or whose telemetry could not be read, stays action-cam and the warning names those sources. `360 analyze` never falls back (#939).
 - UI "Analyze again" on a project made on the command line with `--style auto` keeps `--style auto` instead of the style it picked.
 
 ### Changed
