@@ -2092,11 +2092,23 @@ other profile is in your library, `<CUTPOINT_HOME>/profiles` (see `cutpoint path
 from your footage, or made by you or your AI agent. A project named `list`, `show`, `create`,
 `validate` or `delete` is given as `projects/<name>`.
 
-Discovery: the vision model describes a few frames, the text model writes a profile, and it is
+Discovery: the vision model describes a few frames chosen to differ as much as possible, the
+text model writes a profile, named after the activity alone (crash words are dropped from its
+name and recognition captions), and Cutpoint drops each crash caption that fits much of the
+footage itself (more than 10% of its keyframes). The VLM prompts keep the generic wording, and
+the model's crash phrases are capped at 0.75, so a phrase of its own never makes a crash
+candidate without other evidence. The profile is
 saved to the library with `"source": "discovered"` (a file with the same content is reused),
 so the next similar video finds it. The profile is also cached per footage (the files, the
 model, `--context` and the prompts), so the same footage in a new project gets the same profile
-without asking the model again. In
+without asking the model again. A discovery the model answered unusably or that timed out is
+remembered the same way: the model is not asked again for that footage until
+`--refresh-profile`, another model or a new Cutpoint version (an INFO line says so); a
+connection error is not, so the next run asks again. `activity.json` records the time it took in
+`discovery` (`describe_s`, `attempts`, per attempt `synth_s`, `answered` (a JSON reply came
+back) and `timed_out`, `failed` with the reason when the failure is remembered; `cached: true` when an earlier
+result was reused), and `crashes.json` the profile step in `timings.profile_s`. The shorter
+retry is skipped when the first attempt took nearly the whole timeout. In
 `analyze` and `edit` it runs whenever a local Ollama answers, without `--vision`, and is quiet:
 a missing consent, a bad Ollama port, too little free memory or a fallback is one INFO line.
 `profile`, `crashes` and `events` still warn.
@@ -2105,16 +2117,16 @@ a missing consent, a bad Ollama port, too little free memory or a fallback is on
 |---|---|
 | `--activity NAME` | Use `generic` or a profile of your library (`cutpoint profile list`). An unknown name is `bad_args`. Default: found in your library or discovered from the footage |
 | `--context TEXT` | What the video is, in the user's words. The local LLM turns it into extra crash captions and slang on top of the profile. A changed text rebuilds the profile |
-| `--refresh-profile` | Ignore `activity.json` and the profile cached for this footage, and detect or build the profile again, and replace the cached one. Footage that matches a library profile keeps it unless you give `--context`; to start over, run `cutpoint profile delete NAME` first |
+| `--refresh-profile` | Ignore `activity.json` and the profile (or failed discovery) cached for this footage, and detect or build the profile again, and replace the cached one. Footage that matches a library profile keeps it unless you give `--context`; to start over, run `cutpoint profile delete NAME` first |
 | `--ollama-url`, `--ollama-model` | The Ollama server and model that build the profile, as on [`analyze`](#analyze) (a flag left out takes its default). A new profile needs no deleting of `activity.json` to use them: add `--refresh-profile` |
 | `--json` | One [result envelope](#json-output) on stdout; `outputs` holds the `activity.json` record (`name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `scores`, `description`, `profile`) and `activity_file`. Output of the local model never reaches stdout |
 
 Needs the visual layer of `events` for detection, and Ollama with a Qwen model
 (`CUTPOINT_VISION_MODEL`;
 [install](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) for discovery
-and `--context`. Without a model it uses the nearest library profile, else a profile of the
-best-matching term of CLIP's activity vocabulary (not saved), else `generic`
-(`source: fallback`), and tries again on the next run. A project that already has an
+and `--context`. Without a model it uses the nearest library profile, else `generic`
+(`source: fallback`; CLIP's three best activity-vocabulary terms with their shares go in
+`description`, `described_by: clip`), and tries again on the next run. A project that already has an
 `activity.json` keeps its recorded profile, also one no longer in the library. An Ollama on another machine (not `localhost` or a loopback
 address) gets frames and the `--context` text only once the Vision consent for it was given in
 the Models tab of `cutpoint ui`; until then it is not used, with a WARNING

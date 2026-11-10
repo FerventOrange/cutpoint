@@ -1242,6 +1242,7 @@ def detect_project(
         raise ValueError(f"No footage of {project.name} is reachable; reconnect it and rerun")
     p = params or CrashParams()
     prof = full_prof = None
+    t_profile = time.perf_counter()
     if not p.resolved:
         progress.start("profile")  # the steps of cutpoint crashes (progress.json only)
         prof = activity.resolve(
@@ -1258,7 +1259,8 @@ def detect_project(
         full_prof = activity.record_profile(prof)
         p = p.with_profile(full_prof)
     t_start = time.perf_counter()
-    timings: dict[str, float] = {}
+    # the profile (a discovery asks the local models: often the slowest part of a run)
+    timings: dict[str, float] = {"profile_s": round(t_start - t_profile, 1)}
     inputs: dict[str, SourceInputs] = {}
     language = _project_language(project)
     t0 = time.perf_counter()
