@@ -10,6 +10,7 @@ import math
 import re
 import socket
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -136,6 +137,7 @@ _SPEECH_PROMPTS = (_PROMPT_SPEECH, _RETRY_PROMPT_SPEECH)
 _ATTEMPTS = ((8192, 3072), (12288, 6144))
 _TEMPERATURES = (0.2, 0.4)  # sampling temperature per attempt
 FRAME_WIDTH = 640  # px of each frame sent to the model
+GRAB_WORKERS = 4  # frames of one moment grabbed at once (each is its own ffmpeg, #909)
 
 
 @dataclass(frozen=True)
@@ -815,7 +817,8 @@ class VisionRater:
         profile = rating_profile(self.model)
         t_grab = time.perf_counter()
         try:
-            frames = [grab_frame_jpeg(src, t, width=FRAME_WIDTH) for t in times]
+            with ThreadPoolExecutor(min(n_frames, GRAB_WORKERS)) as pool:
+                frames = list(pool.map(lambda t: grab_frame_jpeg(src, t, width=FRAME_WIDTH), times))
             if profile:
                 frames = [contact_sheet(frames, profile.cols)]
         except (FFmpegError, ValueError) as err:  # ValueError: a frame cv2 cannot decode
