@@ -232,8 +232,8 @@ def test_without_learning_the_digit_lines_leave_no_event() -> None:
 
 def test_generic_version_is_in_the_cache_key() -> None:
     preset = preset_from_dict({"game": "tilefall", "regions": []}, None)
-    assert GENERIC_VERSION == 23
-    assert OcrParams().key("tilefall", preset)["preset"]["interp"] == 23
+    assert GENERIC_VERSION == 25
+    assert OcrParams().key("tilefall", preset)["preset"]["interp"] == 25
 
 
 # --------------------------------------------------------------------------- scoring
