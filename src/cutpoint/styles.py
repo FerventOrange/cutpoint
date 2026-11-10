@@ -174,7 +174,12 @@ RENAMED = {"ski": ACTION_CAM}
 # ``--style auto`` (analyze, edit): the style follows the detected footage category
 # (:mod:`cutpoint.category`). A reserved name: a learned ``auto.json`` is ignored.
 AUTO = "auto"
-ANALYZE_STYLE = "gaming"  # analyze's default --style (and --style auto's fallback)
+ANALYZE_STYLE = "gaming"  # analyze's default --style
+# The category whose style --style auto uses when the detection is ambiguous, in analyze and
+# edit (#896): everyday footage's, not gaming's (kill feeds and loudness), unless the best
+# guess is one of AUTO_GUESSED (gameplay: some HUD evidence), whose own style is used then.
+AUTO_FALLBACK = "general"
+AUTO_GUESSED = ("gameplay",)
 # The style of each footage category per emphasis (analyze: hype; edit --kind
 # funny-moments: funny). sport is never chosen automatically.
 AUTO_STYLES: dict[str, dict[str, str]] = {
@@ -191,12 +196,10 @@ class AutoRequest:
 
     Attributes:
         emphasis: ``hype`` or ``funny``.
-        fallback: Style used when the detection is ambiguous (the command's default).
         must_include_crash: ``analyze --must-include-crash``, set on the style chosen.
     """
 
     emphasis: str
-    fallback: str
     must_include_crash: float | None = None
 
     def style(self, name: str) -> Style:
@@ -211,6 +214,19 @@ def resolve_auto(category: str, emphasis: str) -> str:
     """The style name for a footage ``category`` (:data:`cutpoint.category.CATEGORIES`) and
     ``emphasis`` (``hype`` or ``funny``)."""
     return AUTO_STYLES[category][emphasis]
+
+
+def auto_fallback_category(guess: str | None = None) -> str:
+    """The category whose style an ambiguous detection uses: its best ``guess`` when that is
+    one of :data:`AUTO_GUESSED`, else :data:`AUTO_FALLBACK`."""
+    return guess if guess in AUTO_GUESSED else AUTO_FALLBACK
+
+
+def auto_fallback(emphasis: str, guess: str | None = None) -> str:
+    """The style ``--style auto`` uses for ``emphasis`` when the detection is ambiguous: the
+    style of its best ``guess`` (the category it leans to) when that is one of
+    :data:`AUTO_GUESSED`, else of the :data:`AUTO_FALLBACK` category."""
+    return resolve_auto(auto_fallback_category(guess), emphasis)
 
 
 def renamed_error(name: object) -> str | None:

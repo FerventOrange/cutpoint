@@ -1820,7 +1820,7 @@ def probed(run, monkeypatch):
     """``run`` with the footage probe faked: ``run.probe`` is the SourceProbe fields."""
     run.probe, run.probes = dict(GAME_PROBE), []
 
-    def fake(src):
+    def fake(src, vision=None):
         run.probes.append(src)
         return category.SourceProbe(str(src), 60.0, False, **run.probe)
 
@@ -1847,15 +1847,26 @@ def test_style_auto_records_the_style_it_chose_and_why(probed, capsys):
     assert probed.cats == ["gameplay"]
 
 
-def test_an_ambiguous_detection_uses_the_default_style_and_warns(probed, capsys, monkeypatch):
-    band = (category.GAMEPLAY_MIN + category.GAMEPLAY_SURE) / 2  # gameplay, not sure
-    monkeypatch.setattr(category, "gameplay_score", lambda p: (band, ["screen recorder tags"]))
+@pytest.mark.parametrize(
+    ("score", "style", "named"),
+    [
+        # leans to gameplay (some HUD evidence): the best guess's style
+        ((category.GAMEPLAY_MIN + category.GAMEPLAY_SURE) / 2, "gaming", "Gameplay"),
+        # leans to nothing: the General style (#896)
+        ((category.GENERAL_SURE + category.GAMEPLAY_MIN) / 2, "action", "General"),
+    ],
+)
+def test_an_ambiguous_detection_follows_its_best_guess_and_warns(
+    probed, capsys, monkeypatch, score, style, named
+):
+    monkeypatch.setattr(category, "gameplay_score", lambda p: (score, ["screen recorder tags"]))
     code, doc = run_json(capsys, ["analyze", str(probed.video), "--style", "auto", "--out", "s"])
     assert code == 0
     det = doc["outputs"]["detection"]
-    assert det["ambiguous"] is True and det["fallback"] == "gaming" == doc["outputs"]["style"]
+    assert det["ambiguous"] is True and det["fallback"] == style == doc["outputs"]["style"]
     [warning] = doc["warnings"]
     assert warning["code"] == "style_ambiguous" and warning["files"] == [str(probed.video)]
+    assert f"using the {named} style ({style})" in warning["message"]
     assert probed.cats == [None]  # the fallback style plans its own layers
 
 
@@ -1871,7 +1882,7 @@ def test_talk_is_decided_after_transcription(probed, monkeypatch):
     monkeypatch.setattr(
         analyze, "analyze_source", lambda *a, **kw: seen.append(kw) or real(*a, **kw)
     )
-    probed.go(analyze.AutoRequest("hype", "gaming"))
+    probed.go(analyze.AutoRequest("hype"))
     hl = _hl(probed)
     assert hl["style"] == "commentary" and hl["detection"]["category"] == "talk"
     assert [(kw["pick"], kw["text"]) for kw in seen] == [(False, False)]
@@ -1880,7 +1891,7 @@ def test_talk_is_decided_after_transcription(probed, monkeypatch):
 
 def test_an_explicit_style_never_probes(run, capsys, monkeypatch):
     """No frame probe and no HUD text check (OCR) with an explicit style."""
-    monkeypatch.setattr(category, "probe_source", lambda src: pytest.fail("probed"))
+    monkeypatch.setattr(category, "probe_source", lambda src, vision=None: pytest.fail("probed"))
     monkeypatch.setattr(category, "text_probe", lambda *a: pytest.fail("OCR check"))
     run.go("gaming")
     code, doc = run_json(capsys, ["analyze", str(run.video), "--style", "gaming", "--out", "s"])
@@ -1893,7 +1904,7 @@ def test_sources_of_two_categories_warn_in_the_json_envelope(probed, capsys, mon
     monkeypatch.setattr(
         category,
         "probe_source",
-        lambda src: category.SourceProbe(str(src), 60.0, False, **fields[str(src)]),
+        lambda src, vision=None: category.SourceProbe(str(src), 60.0, False, **fields[str(src)]),
     )
     code, doc = run_json(
         capsys, ["analyze", str(probed.video.parent), "--style", "auto", "--out", "s"]
@@ -1905,9 +1916,11 @@ def test_sources_of_two_categories_warn_in_the_json_envelope(probed, capsys, mon
 
 
 def test_reanalyze_keeps_the_detection_and_never_probes_again(probed, monkeypatch):
-    probed.go(analyze.AutoRequest("hype", "gaming"))
+    probed.go(analyze.AutoRequest("hype"))
     before = _hl(probed)
-    monkeypatch.setattr(category, "probe_source", lambda src: pytest.fail("probed again"))
+    monkeypatch.setattr(
+        category, "probe_source", lambda src, vision=None: pytest.fail("probed again")
+    )
     analyze.reanalyze(probed.proj)
     after = _hl(probed)
     assert after["style"] == "gaming" and after["detection"] == before["detection"]

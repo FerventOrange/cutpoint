@@ -40,7 +40,8 @@ Trust boundaries:
   ``visual_index`` and the assistant's ``provider``, ``model`` and ``url`` in ``config.json``. The projects folder never changes while a job runs or when
   ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved. Every analysis the page
   starts (first or again) passes ``--vision`` or ``--no-vision`` as ``vision`` says when it
-  starts; the page has no per-run vision box. The same goes for ``--visual-index`` or
+  starts (neither while ``config.json`` has no ``vision`` key: the CLI default asks the vision
+  model about unsure sources); the page has no per-run vision box. The same goes for ``--visual-index`` or
   ``--no-visual-index`` as ``visual_index`` says.
   While ``config.json`` is unreadable or holds a value Cutpoint rejects, the project routes answer
   409 naming the file and the error; session, pick and settings keep working.
@@ -150,6 +151,7 @@ from cutpoint.config import (
     resolve_projects_dir,
     set_config_values,
     vision_assistant_settings,
+    vision_setting,
 )
 from cutpoint.edit import KINDS
 from cutpoint.encode import BT709_TAGS, TV_RANGE, preview_filter, still_filter
@@ -4074,7 +4076,10 @@ def _subscription_roles(args: list[str], style: object) -> bool:
     if any(a.startswith(("--ollama-url", "--ollama-model")) for a in args):
         return False
     try:
-        rating = "--vision" in args or ("--no-vision" not in args and get_config().vision)
+        setting = vision_setting()  # unset: only ``auto`` asks the vision model (unsure footage)
+        rating = "--vision" in args or (
+            "--no-vision" not in args and (setting is True or (setting is None and style == AUTO))
+        )
         if rating and ai_providers.is_subscription(vision_assistant_settings().provider):
             return True
         skipped = _values(args, "--skip") if "--skip" in args else analysis_skip()
@@ -4088,9 +4093,11 @@ def _subscription_roles(args: list[str], style: object) -> bool:
 def _vision_args(st: dict[str, Any]) -> list[str]:
     """Vision options for an analysis: the Settings values now (explicit, so the job and the page
     agree even if config.json changes before the CLI reads it), including the visual index, and
-    the recorded Ollama options."""
+    the recorded Ollama options. With no ``vision`` key in config.json no vision flag is passed:
+    the CLI default asks the vision model about unsure sources."""
     cfg = get_config()
-    args = ["--vision" if cfg.vision else "--no-vision"]
+    setting = vision_setting()
+    args = [] if setting is None else ["--vision" if setting else "--no-vision"]
     args.append("--visual-index" if cfg.visual_index else "--no-visual-index")
     vision_top = st.get("vision_top")
     if isinstance(vision_top, int) and not isinstance(vision_top, bool) and vision_top > 0:

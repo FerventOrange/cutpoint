@@ -94,7 +94,7 @@ So do these combinations:
 | `temporary_clips_left` | `assemble <project>`, `edit --no-keep-clips` | A temporary clips folder could not be removed (a file in it is open in another program); `files` names it. Delete it, or the next such run in the project removes it |
 | `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
 | `vision_unavailable` | `analyze` | Vision rating was requested (`--vision` or `"vision": true` in `config.json`) but Ollama or the model is not available, or the port of `OLLAMA_HOST` or `ollama_url` is invalid (the step is skipped, the rest of the run goes on); if some of the top candidates have cached ratings those are used (the message gives the counts), otherwise no vision rating ran |
-| `vision_consent_needed` | `analyze`, `events`, `360 director` (so `edit`, `360 analyze`), `profile`, `crashes` | The Vision role's provider needs the Vision consent and it was not given, so nothing was sent to it: a hosted provider (an API key or a subscription login), or an Ollama on another machine (`--ollama-url`, `vision_assistant.url`, `OLLAMA_HOST` or `ollama_url` is not `localhost` or a loopback address, or is on the Cutpoint proxy's port; `profile` and `crashes` use only that Ollama). Vision was skipped, or the activity profile fell back without the model; allow vision requests in the Models tab of `cutpoint ui` (Vision role), or add the key the message names (`vision-v2:<provider>@<host>[:port]`, such as `vision-v2:ollama@10.0.0.5:11434` or `vision-v2:openai@api.openai.com`) to the [`vision_assistant.consent`](configuration.md#vision_assistant) list in `config.json` |
+| `vision_consent_needed` | `analyze`, `detect`, `events`, `360 director` (so `edit`, `360 analyze`), `profile`, `crashes` | The Vision role's provider needs the Vision consent and it was not given, so nothing was sent to it: a hosted provider (an API key or a subscription login), or an Ollama on another machine (`--ollama-url`, `vision_assistant.url`, `OLLAMA_HOST` or `ollama_url` is not `localhost` or a loopback address, or is on the Cutpoint proxy's port; `profile` and `crashes` use only that Ollama). Vision was skipped, or the activity profile fell back without the model; allow vision requests in the Models tab of `cutpoint ui` (Vision role), or add the key the message names (`vision-v2:<provider>@<host>[:port]`, such as `vision-v2:ollama@10.0.0.5:11434` or `vision-v2:openai@api.openai.com`) to the [`vision_assistant.consent`](configuration.md#vision_assistant) list in `config.json`. For the footage check of `--style auto` and `detect`, only when vision was asked for (`--vision` or `"vision": true`); by default the check is skipped with an INFO line |
 | `chat_consent_needed` | `analyze` (so `edit`) | The dialogue step found no usable text model and the AI Chat model is hosted (an API key, a subscription login, or an Ollama on another machine) without the AI Chat consent, so no transcript was sent. The step was skipped; allow it in the AI Chat tab of `cutpoint ui`, or add the key the message names (`assistant-v3:<provider>@<host>`) to [`assistant.consent`](configuration.md#assistant) in `config.json`. The Vision consent does not count. It is not given when a local Ollama answers instead |
 | `vlm_unavailable` | `events` (so `edit --events`) | The VLM layer ran but the vision model (Ollama or the hosted Vision role) is not available, or the port of `OLLAMA_HOST` or `ollama_url` is invalid (only the VLM layer is skipped, with a WARNING); windows not described yet stayed undescribed and cached descriptions were used (the message gives the count) |
 | `grade_dropped` | `clips` (so `edit`) | `--force` replaced clips whose manifest recorded a grade (`lut` or `color`) and this run grades none; give `--lut` or `--color` again to keep it |
@@ -102,7 +102,7 @@ So do these combinations:
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
 | `loudness_below_target` | `assemble` (so `edit`) | `--loudnorm` left the final more than 1 LU below -14 LUFS: the limiter took the peaks the gain pushed over the ceiling; `--compress-peaks` leaves it more room |
 | `step_failed` | `analyze` (so `edit`) | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it. The dialogue step adds it too when there was not enough free memory for its text model (`Dialogue skipped: ...`). A failed HUD OCR (keyframes for `gaming` and `funny`) is a `WARNING` instead, whose message names the effect (menu filtering and HUD events skipped) and the source it failed on; `files` lists the sources it did not read. Out of memory says so, with what to try |
-| `style_ambiguous` | `analyze`, `detect` (so `edit`) | `--style auto` could not tell the footage category apart (the message gives the evidence), so the run used the default style: `gaming` for `analyze`, the kind's style for `edit`; `files` lists the sources that were not clear. Give `--style` to choose one |
+| `style_ambiguous` | `analyze`, `detect` (so `edit`) | `--style auto` could not tell the footage category apart (the message gives the evidence), so the run used its best guess's style when that is gameplay (`gaming`), else the General style (`action`), for `analyze` and `edit` alike (the message names the style used; `funny` for `funny-moments` either way); `files` lists the sources that were not clear. Give `--style` to choose one |
 | `unknown_profile` | `style create`, `style validate` | The style's `profile` or an `applies_to` profile is not in the [activity profile library](#profile); it is stored as written |
 | `feature_not_computed` | `style create`, `style validate` | A weight names a feature the style's base never measures (for example a telemetry feature over a generic base), so it has no effect |
 | `invalid_style` | `style list` | A file in the styles folder is not a usable style; the message gives the reason. Run `style validate NAME` |
@@ -135,7 +135,7 @@ So do these combinations:
 | `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
 | `resume` | `resume` (`argv`, `status_before`, `done_before`), `resumed`, and the replayed command's outputs |
 | `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set; the number of moments the default `clips` edit picks), `style`; with `--style auto`, `detection` (the `highlights.json` block, see [detect](#detect)) |
-| `detect` | `category` (`gameplay`, `action-cam`, `talk` or `general`), `ambiguous`, `reason`, `scores` (share of the footage per category), `suggest` (`commentary` for talky gameplay, else `null`), `sources` (each `path`, `duration`, `category`, `ambiguous`, `reason`, `gameplay` (score 0-1, `null` with telemetry) and `speech` (share of the source covered by words, `null` before transcription)), `pending` (talk not checked yet: a long source has no transcript), `styles` (`analyze` and `funny-moments`: the style each would use) |
+| `detect` | `category` (`gameplay`, `action-cam`, `talk` or `general`), `ambiguous`, `reason`, `scores` (share of the footage per category), `suggest` (`commentary` for talky gameplay, else `null`), `decided_by` (the evidence that decided the sure sources, most footage first: `telemetry`, `static HUD`, `HUD text`, `camera tags`, `360 frame`, `speech` or `vision`; empty when ambiguous), `sources` (each `path`, `duration`, `category`, `ambiguous`, `reason`, `decided_by` (`null` when ambiguous), `gameplay` (score 0-1, `null` with telemetry) and `speech` (share of the source covered by words, `null` before transcription)), `pending` (talk not checked yet: a long source has no transcript), `styles` (`analyze` and `funny-moments`: the style each would use) |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds`, `taken_over` (finished clips taken over from a stopped export's `.<folder>.cutpoint-resume`, not encoded again; 0 when none, missing for temporary clips) |
 | `extend` | As `clips` (`taken_over` included), and `seconds` (`{"start", "end"}`) |
 | `assemble` | `format` (`mp4`, `fcpxml` or `otio`); the file written: `final` (the video, `mp4`), or `fcpxml` or `otio` (the timeline); `srt` (`null` if none was written), `duration` (of the video or the timeline), `clip_count`, and `joins` with `--joins` (one `{from, to, transition}` per pair in the file that matched, with the transition used: `cut` or `fade`). From a project with `--format fcpxml\|otio`, also the outputs of `clips` for the kept clips; with `mp4`, no clip paths (warning `temporary_clips`) |
@@ -277,8 +277,9 @@ again); Other model… takes any id.
 The tab works without a project, and
 one Save models saves both roles. "Rate frames with vision model"
 (off by default; saved as [`vision`](configuration.md#vision) in `config.json`) is there too:
-every analysis the UI starts, a first one or "Analyze again", uses it (passed as `--vision` or
-`--no-vision`; 360 analyses never rate frames), and it is the default of `analyze` and `edit` on
+every analysis the UI starts, a first one or "Analyze again", uses it (passed as `--vision` for
+`true` and `--no-vision` for `false`; with no `vision` key in `config.json` it passes neither, so the
+footage check of `--style auto` runs by default; 360 analyses never rate frames), and it is the default of `analyze` and `edit` on
 the command line. A hosted Vision provider gets frames and the speech in each moment only after "Allow vision requests" in
 the tab; saving never grants it. The UI has no per-run vision checkbox. "Analyze again" keeps
 the Ollama model, URL and vision-top the last analysis recorded.
@@ -981,14 +982,14 @@ one of them is refused.
 
 | Option | Meaning |
 |---|---|
-| `--style`, `--top N`, `--max-total S` | Replace the kind's value; the others stay (`--kind montage --top 5`: the 5 best that fit in 60 s). `--style auto` picks the style from the footage as [`detect`](#detect) does (the funny style for `funny-moments`), before the `--events` check; unclear footage keeps the kind's style |
+| `--style`, `--top N`, `--max-total S` | Replace the kind's value; the others stay (`--kind montage --top 5`: the 5 best that fit in 60 s). `--style auto` picks the style from the footage as [`detect`](#detect) does (the funny style for `funny-moments`), before the `--events` check; unclear footage gets `gaming` when it leans to gameplay, else the General style (`action`; `funny` for `funny-moments` either way) |
 | `--out DIR` | Project folder. Default: `<projects>\<name>` (the first input's name, as above) |
 | `--vertical` | 9:16 clips in `clips_vertical`, `final_vertical.mp4`, `<name>-final_vertical.mp4` |
 | `--force` | Replace the clips of an earlier run, as `clips --force`. Without it a non-empty clips folder stops the run before the analysis |
 | `--keep-clips` / `--no-keep-clips` | Keep the clips in `clips` (default). `--no-keep-clips` exports them into a temporary folder in the project, as [`assemble <project>`](#assemble-from-a-project) does, and removes it after the join (after a failure or Ctrl+C too): the project gets `final.mp4`, `final.srt` and the `<name>-final` copies, and an existing clips folder is not touched. Refused (exit 2) with `--kind clips`, a timeline `--format` or `--force` |
 | `--format mp4\|fcpxml\|otio` | As on [`assemble`](#assemble): `mp4` (default) makes the final video; `fcpxml` or `otio` writes only that timeline, referencing the kept clips, and copies it to `<name>-final.fcpxml` or `.otio` |
 | `--events` | Also run [`events`](#events) with its defaults, without the layers of the `--skip` steps, to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
-| `--vision` / `--no-vision` | As on `analyze`: rate top candidates with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off |
+| `--vision` / `--no-vision` | As on `analyze`: rate top candidates with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off. With `--style auto` they also govern the footage check of unsure sources (see [detect](#detect)): on unless `--no-vision` or `"vision": false`; `--vision` also warns of a missing consent |
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): candidates sent to vision, and the Ollama server and model (also for the VLM layer of `--events`); an invalid port in `--ollama-url` exits 2 (`bad_args`) |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes`, `crashes` and/or `dialogue`. Give it after the input paths |
 | `--visual-index` / `--no-visual-index` | As on `analyze`: also write the frame embeddings of the AI Chat's visual search for `gaming`, `funny` and `commentary` footage, or not. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
@@ -1019,11 +1020,11 @@ an analysed set processes only the new file.
 
 | Option | Meaning |
 |---|---|
-| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `action-cam` (formerly `ski`, no longer accepted), one of your own styles ([`cutpoint style`](#style)) or a learned preset, or `auto`: pick one from the footage, as [`detect`](#detect) does. `auto` never picks `sport` or `funny`; unclear footage gets `gaming` with a `style_ambiguous` warning. `highlights.json` keeps the style it picked in `style`, `settings.style_requested` is `auto` and `detection` holds the evidence, so `events` and re-runs keep it without detecting again |
+| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `action-cam` (formerly `ski`, no longer accepted), one of your own styles ([`cutpoint style`](#style)) or a learned preset, or `auto`: pick one from the footage, as [`detect`](#detect) does. `auto` never picks `sport` or `funny`; unclear footage gets `gaming` when it leans to gameplay, else `action`, with a `style_ambiguous` warning. `highlights.json` keeps the style it picked in `style`, `settings.style_requested` is `auto` and `detection` holds the evidence, so `events` and re-runs keep it without detecting again |
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
-| `--vision` / `--no-vision` | Rate top candidates with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), on their frames and, except for `action-cam`, the speech in them, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. See **Vision rating** below |
+| `--vision` / `--no-vision` | Rate top candidates with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), on their frames and, except for `action-cam`, the speech in them, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. With `--style auto` they also govern the footage check of unsure sources (see [detect](#detect)): on unless `--no-vision` or `"vision": false`; `--vision` also warns of a missing consent. See **Vision rating** below |
 | `--vision-top N` | Candidates sent to vision. Default: one per 2 minutes of footage, between 10 and 60 |
 | `--ollama-url`, `--ollama-model` | Defaults: `vision_assistant.url` (Vision role `ollama`) / `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `vision_assistant.model` (Vision role `ollama`) / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a [`vision_assistant`](configuration.md#vision_assistant) of any provider other than `ollama` in `config.json`, the frames (here and for `360 director --vl-check`) go to that provider instead: an API (`anthropic`, `openai`, `xai`, with your API key) or a subscription (`claude-code`, `codex`, `antigravity`), once you agreed to it in the Models tab ("Allow vision requests"), unless you give `--ollama-url` and/or `--ollama-model`: then that Ollama is used instead (a flag left out takes its default) and nothing goes to the hosted provider. An Ollama URL that is not this machine (`localhost` or a loopback address, except on the Cutpoint proxy's port) needs that Vision consent too; without it vision is skipped with a WARNING (`vision_consent_needed`). An `--ollama-url` with an invalid port (such as `myhost:99999`) exits 2 with `bad_args`; a bad port in `OLLAMA_HOST`, `ollama_url`, the Models-tab Vision URL (`vision_assistant.url`) or the AI Chat Ollama URL only skips the step |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
@@ -1294,20 +1295,22 @@ on CUDA and `small` on CPU), so it is reused only when both runs use the same `-
 ## detect
 
 ```text
-cutpoint detect <file|folder> [<file|folder> ...] [--exclude GLOB] [--recursive] [--json]
+cutpoint detect <file|folder> [<file|folder> ...] [--exclude GLOB] [--recursive] [--vision | --no-vision] [--ollama-url URL] [--ollama-model NAME] [--json]
 ```
 
 Tells which category the footage is and which style `--style auto` would use, without analyzing
-it. It reads the container tags, the camera telemetry and 32 small grey frames per source (a few
-seconds each; cached as `category-v2.json` in the source's cache folder), plus the HUD text
-check (below) for unsure sources, and writes nothing to a project.
+it. It reads the container tags, the camera telemetry and 40 small frames per source (24 frames
+spread over the source, read at 640x360, plus 4 pairs of 4 consecutive frames; a few seconds each;
+cached as `category-v3.json` in the source's cache folder), plus the HUD text check and the vision
+check (below) for unsure sources, and writes nothing to a project. An older cache
+(`category-v2.json`) is not read: every source is probed once more after updating.
 
 | Category | Evidence | `analyze --style auto` | `edit --kind funny-moments --style auto` |
 |---|---|---|---|
 | Action cam | Camera telemetry (GoPro GPMF, Insta360 X3 IMU) in at least half of the footage | `action-cam` | `funny` |
 | Gameplay | A static HUD: overlay pixels that stay put while the picture moves, or HUD text that stays in place (the HUD text check below); screen-recorder tags help | `gaming` | `funny` |
 | Talk | Not gameplay, and speech covers at least 55% of a source of 8 minutes or more | `commentary` | `funny` |
-| General | Anything else. Sure only with camera tags (a phone or camera make) | `action` | `funny` |
+| General | Anything else. Sure only with camera tags (a phone or camera make), a 2:1 frame of a 360 camera, or the vision answer | `action` | `funny` |
 
 The other kinds of `edit` (`highlights`, `montage`, `clips`) use the `analyze` column.
 
@@ -1315,26 +1318,42 @@ The project gets one category, by the share of the footage duration; a source is
 it has a transcript (`detect` uses one from an earlier `analyze`; `analyze` decides talk after
 transcribing). A category with weak evidence (no HUD, only screen-recorder tags, which re-encoded
 camera footage also has, or speech coverage between 40% and 55%) is ambiguous: `--style auto`
-then uses the default style with a `style_ambiguous` warning. Gameplay with a lot of speech stays
+then asks the vision model (below); if that does not decide, it uses `gaming` when the best guess is gameplay, else the General style (`action`), with a `style_ambiguous` warning that names the style (`funny` for `funny-moments` either way). Talk is not followed yet: an unsure talk guess gets the General style (#914). Gameplay with a lot of speech stays
 gameplay; an INFO line suggests `--style commentary`. An opaque box across most of the bottom
 of the picture (a news lower third or ticker) is not a HUD: its text counts for neither the
 static HUD nor the HUD text check, so camera footage with one is not called gameplay. A game whose HUD is such a panel (a
 Doom-style status bar, an RTS console) is taken for a box too and can become ambiguous.
 
+**Vision check.** A source the frame probe, the recorder tags and the HUD text check leave unsure
+is shown to the vision model: 6 frames at 640 px, to Ollama with `qwen3.5:9b`, or to the hosted
+Vision provider the user allowed in the Models tab of `cutpoint ui` (a hosted provider, or an
+Ollama on another machine, needs the Vision consent). It is on by default and runs for unsure
+sources only; `--no-vision` or `"vision": false` in `config.json` skips it, and `--vision` (also
+on `analyze` and `edit`) asks for it explicitly (a missing consent is then a `vision_consent_needed` warning). `--ollama-url` and `--ollama-model` choose the Ollama and win
+over a hosted Vision provider, as for other vision use. It is skipped in Cutpoint lite, without
+Ollama running, and without consent: by default quietly (one INFO line), and the source stays
+unsure; with `--vision` or `"vision": true` given explicitly, a skip for lack of consent is a
+`vision_consent_needed` warning. An `other` answer leaves the source unsure. Answers are cached per
+model and host as `category-vision-v1.json`. `decided_by` in the result (and the `detect` output)
+names the evidence that decided: `vision` for these sources.
+
 **HUD text check.** A thin HUD (a few lines of text, as in War Thunder, Rainbow Six or
 Battlefield) is too small to show in the small frames. So a source those leave unsure between
 gameplay and general, with no camera tags and not a still picture, also gets the HUD text check:
 the HUD OCR engine of `analyze` finds the text on 8 frames at 1280 px and reads each text box that
-stays in the same place in most of them. At least 3 such boxes make the source sure gameplay;
-clocks, dates, speeds, GPS positions (a camera's or dashcam's burned-in overlay) and the subtitle
+stays in the same place in most of them. Text alone is not enough to make a source sure: at least 3 such boxes count as HUD text, and
+when the gameplay score without that text is below 0.4 the source stays unsure and goes to the
+vision check. Clocks, dates, speeds, GPS positions (a camera's or dashcam's burned-in overlay) and the subtitle
 band at the bottom centre do not count. It takes a few seconds per unsure source, is cached as
 `category-text-v1.json` (read again when the OCR engine changes) and runs only for `detect` and
 `--style auto`. In Cutpoint lite, which has no OCR engine, it is skipped and the source stays
 ambiguous.
 
+A 2:1 frame counts as 360 footage only at 3840 px wide or more; `decided_by` is then `360 frame`.
+
 `highlights.json` of an `auto` analysis has a `detection` block: `version`, `category`,
 `emphasis` (`hype`, or `funny` for `funny-moments`), `style`, `reason`, `ambiguous`, `scores`,
-`fallback` (the default style used when the category was unclear, else `null`), `suggest` and
+`fallback` (the style used when the category was unclear, else `null`), `suggest`, `decided_by` and
 `sources` (as in the [`--json` outputs](#json-output)).
 
 ## events

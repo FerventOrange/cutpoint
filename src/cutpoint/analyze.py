@@ -3021,6 +3021,7 @@ def analyze(
     visual_index: bool | None = None,
     ocr_det_skip: bool | None = None,
     crash_moments: bool = True,
+    footage: category.FootageVision | None = None,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -3048,7 +3049,10 @@ def analyze(
             used, ``settings.style_requested`` ``auto`` and the ``detection`` block.
         out_dir: Project directory.
         vision: True = rate the top candidates with Ollama (a warning if it is not
-            available); False or None = no vision (opt-in, never automatic).
+            available); False or None = no rating (opt-in, never automatic). For
+            ``--style auto`` it also steers the footage question to the vision model about
+            unsure sources: None asks quietly, True asks and warns of a missing consent,
+            False does not ask.
         model: faster-whisper model name (default: medium on CUDA, small on CPU).
         language: Force transcription language (e.g. "en"); None = autodetect.
         use_scenes: Run scene detection.
@@ -3084,6 +3088,8 @@ def analyze(
         crash_moments: Make the crashes of crashes.json moments (:func:`add_crash_candidates`,
             every style but action-cam); False (``360 analyze``) leaves them out and records
             ``settings.crash_moments`` false, which :func:`reanalyze` keeps.
+        footage: The caller's :class:`~cutpoint.category.FootageVision` for ``--style auto``
+            (shared with its own detection; not closed here). None: one of this run.
 
     Returns:
         Path of the written highlights.json.
@@ -3113,6 +3119,7 @@ def analyze(
             visual_index=bool(visual_index),
             ocr_det_skip=bool(ocr_det_skip),
             crash_moments=crash_moments,
+            footage=footage,
         )
 
 
@@ -3141,6 +3148,7 @@ def _analyze(
     visual_index: bool,
     ocr_det_skip: bool,
     crash_moments: bool,
+    footage: category.FootageVision | None,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
@@ -3152,8 +3160,8 @@ def _analyze(
     probes: list[category.SourceProbe] = []
     cat: str | None = None  # the category whose layers run (None: the style's own)
     if auto is not None:
-        probes, det = category.detect(sources)
-        name, fallback = category.choose_style(det, auto.emphasis, auto.fallback)
+        probes, det = category.detect(sources, vision, ollama_url, ollama_model, shared=footage)
+        name, fallback = category.choose_style(det, auto.emphasis)
         if det.pending:
             logger.info("Footage looks %s so far (%s)", category.label(det.category), det.reason)
         style = auto.style(name)
@@ -3294,7 +3302,7 @@ def _analyze(
             )
             if pending:  # talk or general: this style's transcript signals and candidates
                 # (otherwise the speech only adds the commentary hint: the style stays)
-                name, fallback = category.choose_style(det, auto.emphasis, auto.fallback)
+                name, fallback = category.choose_style(det, auto.emphasis)
                 cat = det.category if fallback is None else None
                 style = auto.style(name)
                 for r in results:

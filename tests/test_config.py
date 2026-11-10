@@ -40,7 +40,7 @@ def test_player_tags_normalised(home, value, want):
 )
 def test_vision_default_is_off_unless_true(home, data, want):
     set_config(home, **data)
-    assert config.vision_default() is want
+    assert config.get_config().vision is want
 
 
 @pytest.mark.parametrize("value", ["true", 1, [True]])
@@ -55,13 +55,13 @@ def test_vision_is_read_from_cutpoint_config(home, tmp_path, monkeypatch):
     write(home / "config.json", json.dumps({"vision": False}))
     monkeypatch.setenv("CUTPOINT_CONFIG", str(other))
     config.get_config.cache_clear()
-    assert config.vision_default() is True
+    assert config.get_config().vision is True
 
 
 @pytest.mark.parametrize(
     ("cfg", "argv", "vision"),
     [
-        (None, [], False),
+        (None, [], None),
         (False, ["--vision"], True),
         (True, [], True),
         (True, ["--no-vision"], False),

@@ -17,7 +17,7 @@ flowchart TD
     subgraph ANALYZE["cutpoint analyze  (steps 1-7)"]
         direction TB
         ANA["Find inputs"]
-        DET["--style auto: detect the category (tags, telemetry, 32 frames, HUD text when unsure)"]
+        DET["--style auto: detect the category (tags, telemetry, 40 frames, HUD text and vision check when unsure)"]
         AUD["1 Transcribe: extract audio, read check, loudness"]
         TR["1 Transcribe: Whisper"]
         SC["1 Transcribe: scene cuts"]
@@ -94,17 +94,20 @@ flowchart LR
 
 All kinds also set loudnorm on. `--style`, `--top` and `--max-total` override the kind.
 `--style auto` picks the style from the footage before the `--events` check (the funny style for
-`funny-moments`); unclear footage keeps the kind's style.
+`funny-moments`); unclear footage gets `gaming` when its best guess is gameplay, else the General style (`action`; `funny` for `funny-moments`).
 
 ## Style auto (`--style auto`, `cutpoint detect`)
 
 ```mermaid
 flowchart TD
-    P["Per source: container tags, telemetry, 32 grey frames (cached)"]
+    P["Per source: container tags, telemetry, 40 small frames (cached)"]
     P --> U{{"Unsure between gameplay and general, no camera tags, not a still?"}}
     U -->|yes| OCR["HUD text check: OCR of 8 frames, text that stays in place, less clocks, dates and subtitles (cached; skipped in lite)"]
-    U -->|no| T
-    OCR --> T
+    U -->|no| V
+    OCR --> V{{"Still unsure?"}}
+    V -->|yes| VIS["Vision check: 6 frames to the vision model (cached; skipped in lite, without consent, or with --no-vision)"]
+    V -->|no| T
+    VIS --> T
     T{{"Telemetry in at least half of the footage?"}}
     T -->|yes| AC["Action cam: action-cam"]
     T -->|no| G{{"Gameplay (static HUD or HUD text) the largest share?"}}
@@ -112,7 +115,7 @@ flowchart TD
     G -->|no| S{{"After transcription: speech covers 55% of a long source?"}}
     S -->|yes| TK["Talk: commentary"]
     S -->|no| GE["General: action"]
-    AMB["Weak evidence: ambiguous, default style and style_ambiguous warning"]
+    AMB["Still unsure: gaming if the best guess is gameplay, else action; style_ambiguous warning"]
     GP -.-> AMB
     GE -.-> AMB
     TK -.-> AMB

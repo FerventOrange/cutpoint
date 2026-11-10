@@ -2,8 +2,8 @@
 :mod:`cutpoint.category`) does on footage whose category is known, as the evidence for the
 owner's decision to make auto the default. Not part of the package; nothing here changes the
 default. It runs :func:`cutpoint.category.probe_source` and :func:`cutpoint.category.decide`
-as ``cutpoint detect`` does (the cached probes, the HUD text check for unsure sources, the
-cached transcripts for talk), never parses logs, and only reads the sources: it writes to
+as ``cutpoint detect`` does (the cached probes, the HUD text check and the vision model for
+unsure sources, the cached transcripts for talk), never parses logs, and only reads the sources: it writes to
 Cutpoint's caches and to ``--out``.
 
 Usage::
@@ -11,6 +11,7 @@ Usage::
     uv run --offline python scripts/style_auto_eval.py labels.json --out auto.json
     uv run --offline python scripts/style_auto_eval.py labels.json --compare auto-old.json
     uv run --offline python scripts/style_auto_eval.py labels.json --home H --cache-dir C
+    uv run --offline python scripts/style_auto_eval.py labels.json --no-vision --out a.json
 
 Labels are a JSON file (keep real ones out of the repository)::
 
@@ -40,8 +41,8 @@ Reported (printed, and as ``--out`` JSON):
 - ``projects``: the style ``--style auto`` uses for each project (detected, or the fallback
   when ambiguous) against the style of the project's label;
 - ``timing``: seconds per source for the probe (``probe_s``, which includes the HUD text
-  check) and for the HUD text check alone (``ocr_s``, only when it ran: a cached one costs
-  nothing);
+  check and the vision question) and for the HUD text check alone (``ocr_s``, only when it
+  ran: a cached one costs nothing);
 - ``flip_ready``: the criteria for making auto the default, all required: no sure-wrong
   source; every label's ambiguous share at most ``--max-ambiguous`` (default 0.25), by count
   and by minutes; every project's style right. Each failed criterion is printed with its
@@ -78,7 +79,6 @@ from cutpoint.styles import resolve_auto
 
 logger = logging.getLogger(__name__)
 
-ANALYZE_STYLE = "gaming"  # cutpoint.cli.ANALYZE_STYLE: analyze's default, auto's fallback
 DEFAULT_MAX_AMBIGUOUS = 0.25
 SCHEMA = 1
 SURE, UNSURE = "sure", "ambiguous"
@@ -99,6 +99,7 @@ class Row:
     ocr_s: float | None
     speech: float | None = None
     untranscribed: bool = False  # talk could apply (general, long) but there is no transcript
+    decided_by: str | None = None  # the evidence that decided (None: ambiguous)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -113,6 +114,7 @@ class Row:
             "ocr_s": None if self.ocr_s is None else round(self.ocr_s, 2),
             "speech": self.speech,
             "untranscribed": self.untranscribed,
+            "decided_by": self.decided_by,
         }
 
 
@@ -198,7 +200,7 @@ def check_out(out: Path, groups: dict[str, list[tuple[Path, str]]], entries: lis
 
 
 def evaluate(
-    entries: list[dict[str, Any]], out: Path | None = None
+    entries: list[dict[str, Any]], out: Path | None = None, vision: bool | None = None
 ) -> tuple[list[Row], list[dict[str, Any]], list[dict[str, Any]]]:
     """Probe and decide every project of ``entries``: ``(rows, projects, errors)``.
 
@@ -207,7 +209,8 @@ def evaluate(
     transcript has no speech: analyze transcribes first, so :attr:`Row.untranscribed` marks
     the ones where talk could still change the decision). A source ffprobe cannot read is
     recorded in ``errors`` and left out. ``out`` is checked before any probing
-    (:func:`check_out`).
+    (:func:`check_out`). ``vision``: as ``cutpoint detect --vision`` (None: ask about unsure
+    sources, False: do not).
     """
     groups: dict[str, list[tuple[Path, str]]] = {}
     for e in entries:
@@ -220,65 +223,70 @@ def evaluate(
     rows: list[Row] = []
     projects: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-    for name, all_items in groups.items():
-        items, probes, seconds, ocr = [], [], [], []
-        for src, lab in all_items:
-            spent: list[float] = []
-            t0 = time.perf_counter()
-            try:
-                with timed_ocr(spent):
-                    probes.append(category.probe_source(src))
-            except FFmpegError as err:
-                logger.error("%s: %s", src, err)
-                errors.append({"path": str(src), "project": name, "label": lab, "error": str(err)})
+    # one client of the vision model for the whole run, freed at its end
+    with category.footage_vision(vision) as fv:
+        for name, all_items in groups.items():
+            items, probes, seconds, ocr = [], [], [], []
+            for src, lab in all_items:
+                spent: list[float] = []
+                t0 = time.perf_counter()
+                try:
+                    with timed_ocr(spent):
+                        probes.append(category.probe_source(src, fv))
+                except FFmpegError as err:
+                    logger.error("%s: %s", src, err)
+                    errors.append(
+                        {"path": str(src), "project": name, "label": lab, "error": str(err)}
+                    )
+                    continue
+                items.append((src, lab))
+                seconds.append(time.perf_counter() - t0)
+                ocr.append(sum(spent) if spent else None)
+            if not items:
                 continue
-            items.append((src, lab))
-            seconds.append(time.perf_counter() - t0)
-            ocr.append(sum(spent) if spent else None)
-        if not items:
-            continue
-        speech: dict[str, float] = {}
-        for (src, _), p in zip(items, probes, strict=True):
-            segments = source_segments(src)
-            if segments is not None:
-                speech[p.path] = round(category.speech_coverage(segments, p.duration), 3)
-        det = category.decide(probes, speech)
-        mine = []
-        for (src, lab), s, secs, o in zip(items, det.sources, seconds, ocr, strict=True):
-            open_talk = s.speech is None and s.category == category.GENERAL
-            mine.append(
-                Row(
-                    str(src),
-                    name,
-                    lab,
-                    s.category,
-                    s.ambiguous,
-                    s.duration / 60,
-                    s.reason,
-                    secs,
-                    o,
-                    s.speech,
-                    open_talk and s.duration >= TALK_MIN_S,
+            speech: dict[str, float] = {}
+            for (src, _), p in zip(items, probes, strict=True):
+                segments = source_segments(src)
+                if segments is not None:
+                    speech[p.path] = round(category.speech_coverage(segments, p.duration), 3)
+            det = category.decide(probes, speech)
+            mine = []
+            for (src, lab), s, secs, o in zip(items, det.sources, seconds, ocr, strict=True):
+                open_talk = s.speech is None and s.category == category.GENERAL
+                mine.append(
+                    Row(
+                        str(src),
+                        name,
+                        lab,
+                        s.category,
+                        s.ambiguous,
+                        s.duration / 60,
+                        s.reason,
+                        secs,
+                        o,
+                        s.speech,
+                        open_talk and s.duration >= TALK_MIN_S,
+                        s.decided_by,
+                    )
                 )
+            rows.extend(mine)
+            label = project_label(mine)
+            style, fallback = category.choose_style(det, HYPE)
+            right = resolve_auto(label, HYPE)
+            projects.append(
+                {
+                    "project": name,
+                    "sources": len(mine),
+                    "minutes": round(sum(r.minutes for r in mine), 1),
+                    "label": label,
+                    "category": det.category,
+                    "ambiguous": det.ambiguous,
+                    "style": style,
+                    "fallback": fallback is not None,
+                    "right_style": right,
+                    "right": style == right,
+                }
             )
-        rows.extend(mine)
-        label = project_label(mine)
-        style, fallback = category.choose_style(det, HYPE, ANALYZE_STYLE)
-        right = resolve_auto(label, HYPE)
-        projects.append(
-            {
-                "project": name,
-                "sources": len(mine),
-                "minutes": round(sum(r.minutes for r in mine), 1),
-                "label": label,
-                "category": det.category,
-                "ambiguous": det.ambiguous,
-                "style": style,
-                "fallback": fallback is not None,
-                "right_style": right,
-                "right": style == right,
-            }
-        )
     return rows, projects, errors
 
 
@@ -585,6 +593,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--home", type=Path, help="CUTPOINT_HOME for this run (a scratch home)")
     ap.add_argument("--cache-dir", type=Path, help="CUTPOINT_CACHE_DIR for this run")
+    ap.add_argument(
+        "--vision",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="ask the vision model about unsure sources (default: yes); --no-vision: the "
+        "cheap detector alone; --vision also warns when the Vision provider lacks consent",
+    )
     ap.add_argument("-v", "--verbose", action="store_true", help="debug output")
     args = ap.parse_args(argv)
     logging.basicConfig(
@@ -601,7 +616,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         entries = load_labels(args.labels)
         old = load_old(args.compare) if args.compare else None
-        rows, projects, errors = evaluate(entries, args.out)  # --out checked before probing
+        # --out checked before probing
+        rows, projects, errors = evaluate(entries, args.out, args.vision)
     except (OSError, ValueError, FileNotFoundError) as err:  # JSONDecodeError is a ValueError
         logger.error("%s", err)
         return 1

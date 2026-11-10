@@ -417,10 +417,10 @@ def resolve_stage_dir(data: dict) -> Path:
     )
 
 
-def vision_default() -> bool:
-    """Whether ``analyze`` and ``edit`` rate frames with Ollama when neither ``--vision`` nor
-    ``--no-vision`` is given (``vision`` in ``config.json``; default False)."""
-    return get_config().vision
+def vision_setting() -> bool | None:
+    """``vision`` in ``config.json`` as written (True or False), None when it is not set."""
+    value = load_config_data().get("vision")
+    return value if isinstance(value, bool) else None
 
 
 def visual_index_default() -> bool:

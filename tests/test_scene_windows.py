@@ -366,14 +366,14 @@ def test_an_auto_switch_to_a_scene_weighted_style_drops_the_windows_mark(world, 
     it (the full pass runs); timings.sources then no longer says ``scene_windows``."""
     det = SimpleNamespace(pending=True, category="general", reason="test", record=lambda *a: {})
     picks = iter(["funny", "action"])
-    monkeypatch.setattr(analyze.category, "detect", lambda sources: ([], det))
+    monkeypatch.setattr(analyze.category, "detect", lambda sources, *a, **kw: ([], det))
     monkeypatch.setattr(analyze.category, "decide", lambda probes, speech: det)
     monkeypatch.setattr(analyze.category, "source_speech", lambda *a: {})
-    monkeypatch.setattr(analyze.category, "choose_style", lambda d, e, f: (next(picks), None))
+    monkeypatch.setattr(analyze.category, "choose_style", lambda d, e: (next(picks), None))
     monkeypatch.setattr(analyze.category, "warn", lambda *a: None)
     monkeypatch.setattr(analyze, "Transcriber", StubTranscriber)
     proj = world.src.parent.parent / "p-auto"
-    analyze.analyze(world.src, analyze.AutoRequest("hype", "gaming"), proj, vision=False,
+    analyze.analyze(world.src, analyze.AutoRequest("hype"), proj, vision=False,
                     use_scenes=True, layers=False)  # fmt: skip
     hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
     assert hl["style"] == "action" and len(world.full) == 1

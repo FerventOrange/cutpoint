@@ -46,7 +46,7 @@ from cutpoint.config import (
     path_key,
     projects_dir,
     resolve_project_path,
-    vision_default,
+    vision_setting,
     visual_index_default,
 )
 from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
@@ -61,6 +61,7 @@ from cutpoint.styles import (
     AUTO,
     AutoRequest,
     Style,
+    auto_fallback,
     get_style,
     style_arg,
     style_names,
@@ -82,9 +83,10 @@ MIX_EXCLUDE_FILE = "mix_exclude.json"  # cutpoint.mix.EXCLUDE_FILE
 PROXY_PROVIDERS = ("claude-code", "codex", "antigravity")  # cutpoint.assistant.cliproxy.PROVIDERS
 
 
-def _vision(a: argparse.Namespace) -> bool:
-    """``--vision`` / ``--no-vision`` as given, else ``vision`` in config.json (default off)."""
-    return vision_default() if a.vision is None else a.vision
+def _vision(a: argparse.Namespace) -> bool | None:
+    """``--vision`` / ``--no-vision`` as given, else ``vision`` in config.json; None when
+    neither says (rating is then off, the footage detection asks about unsure sources)."""
+    return vision_setting() if a.vision is None else a.vision
 
 
 def _visual_index(a: argparse.Namespace) -> bool:
@@ -248,8 +250,8 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
     targets = [Path(t) for t in a.inputs]
     out = _analyze_project(a)
     jsonout.set_project(out)
-    if a.style == AUTO:  # detected from the footage; ambiguous: today's default, gaming
-        style: Style | AutoRequest = AutoRequest(HYPE, ANALYZE_STYLE, a.must_include_crash)
+    if a.style == AUTO:  # detected; ambiguous: the best guess's style if gameplay, else General
+        style: Style | AutoRequest = AutoRequest(HYPE, must_include_crash=a.must_include_crash)
     else:
         style = get_style(a.style)
         if a.must_include_crash is not None:
@@ -280,25 +282,29 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
 
 def _cmd_detect(a: argparse.Namespace) -> None:
     """``cutpoint detect``: the footage category of the inputs and the style ``--style auto``
-    would pick; talk only for sources already transcribed (by an earlier analysis)."""
+    would pick; talk only for sources already transcribed (by an earlier analysis). The
+    vision model is asked about unsure sources, as for ``--style auto`` (``--no-vision`` or
+    ``"vision": false`` skips it)."""
     from cutpoint import category  # noqa: PLC0415
     from cutpoint.analyze import find_sources  # noqa: PLC0415
     from cutpoint.sources import source_segments  # noqa: PLC0415
 
     found = find_sources([Path(t) for t in a.inputs], a.exclude or [], a.recursive)
-    probes = [category.probe_source(s) for s in found]
+    with category.footage_vision(_vision(a), a.ollama_url, a.ollama_model) as vision:
+        probes = [category.probe_source(s, vision) for s in found]
     speech = {}
     for src, p in zip(found, probes, strict=True):
         segments = source_segments(src)
         if segments is not None:
             speech[p.path] = round(category.speech_coverage(segments, p.duration), 3)
     det = category.decide(probes, speech)
-    hype, fallback = category.choose_style(det, HYPE, ANALYZE_STYLE)
-    funny, _ = category.choose_style(det, FUNNY, KINDS["funny-moments"].style)
+    hype, fallback = category.choose_style(det, HYPE)
+    funny, _ = category.choose_style(det, FUNNY)
     category.warn(det, hype, fallback)
     if jsonout.active():
         rec = det.record(HYPE, hype, fallback)
-        for key in ("category", "ambiguous", "reason", "scores", "suggest", "sources"):
+        keys = ("category", "ambiguous", "reason", "decided_by", "scores", "suggest", "sources")
+        for key in keys:
             jsonout.output(key, rec[key])
         jsonout.output("pending", det.pending)
         jsonout.output("styles", {"analyze": hype, "funny-moments": funny})
@@ -308,7 +314,9 @@ def _cmd_detect(a: argparse.Namespace) -> None:
             f"{Path(s.path).name}: {category.label(s.category)}"
             f"{' (ambiguous)' if s.ambiguous else ''} - {s.reason}"
         )
-    note = " (ambiguous: the default)" if fallback else ""
+    note = f" (by {', '.join(det.decided_by)})" if det.decided_by else ""
+    if fallback:
+        note = f" (ambiguous: the {category.fallback_label(det)} style)"
     print(
         f"Footage: {category.label(det.category)}{note}; analyze --style auto uses {hype}, "
         f"edit --kind funny-moments {funny}"
@@ -1812,7 +1820,8 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
         type=style_arg,  # ski: an error naming action-cam
         choices=[AUTO, *style_names()],
         help="analysis preset (default: funny for funny-moments, else action); auto picks "
-        "one from the footage (gameplay, action cam, talk or general; ambiguous: the default)",
+        "one from the footage (gameplay, action cam, talk or general; ambiguous: gaming "
+        "when it leans to gameplay, else the default)",
     )
     ed.add_argument(
         "--out",
@@ -1867,6 +1876,15 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
         "inputs", nargs="+", metavar="input", help="one or more video files and/or folders"
     )
     _add_source_filter_arguments(dt)
+    dt.add_argument(
+        "--vision",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="ask the vision model about sources the rest leaves unsure: on by default; "
+        '--no-vision (or "vision": false in config.json) skips it; --vision (or "vision": true) '
+        "also warns when the Vision provider lacks consent",
+    )
+    _add_ollama_arguments(dt)
     _add_json_argument(dt)
     dt.set_defaults(func=_cmd_detect)
 
@@ -1883,7 +1901,8 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
         help=f"preset (default: {ANALYZE_STYLE}); learned presets in "
         "<CUTPOINT_HOME>/styles/*.json are listed too (action-cam: telemetry-driven "
         "action-cam footage, formerly ski); auto picks one from the footage (gameplay, "
-        f"action cam, talk or general, see cutpoint detect; ambiguous: {ANALYZE_STYLE})",
+        f"action cam, talk or general, see cutpoint detect; ambiguous: gaming when it leans "
+        f"to gameplay, else the General style, {auto_fallback(HYPE)})",
     )
     an.add_argument(
         "--out",

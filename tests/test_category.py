@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -42,9 +44,20 @@ def test_static_measures_find_a_hud_not_bars_or_a_still(make, hud, still):
     else:
         frames[:] = frames[0]
     m = category.static_measures(frames)
-    assert hud is None or (m["hud_static"] > 0.01) == hud
+    assert hud is None or (m["hud_static"] > category.HUD_FULL) == hud
     assert (m["static_share"] > category.STILL_SHARE) == still
     assert still or "box" not in m  # a HUD bar a third of the width is no lower-third box
+
+
+def test_still_edges_scattered_over_the_picture_are_no_hud():
+    """#513: fixed cameras cut between in a studio line up a background pattern by chance:
+    still edges spread thinly over the picture, not packed as a HUD's."""
+    frames = moving_frames()
+    mask = RNG.uniform(0, 1, (H, W)) < 0.03
+    frames[:, mask] = 230.0
+    frames[:, np.roll(mask, 1, axis=1)] = 30.0
+    m = category.static_measures(frames)
+    assert m["hud_static"] < category.HUD_FULL / 4
 
 
 def lower_third(frames: np.ndarray, width: int = W) -> np.ndarray:
@@ -96,9 +109,55 @@ def test_a_talky_box_source_stays_unsure():
     assert (det.category, det.ambiguous) == (TALK, True)
 
 
-def test_probes_cached_before_the_box_are_measured_again():
-    assert category.CACHE_FILE == "category-v2.json"
-    assert SourceProbe.from_json({**probe(**GAME).to_json(), "version": 1}) is None
+def test_probes_cached_before_the_windows_are_measured_again():
+    assert category.CACHE_FILE == "category-v3.json"
+    for old in (1, 2):
+        assert SourceProbe.from_json({**probe(**GAME).to_json(), "version": old}) is None
+
+
+@pytest.mark.parametrize(
+    ("rows", "cols"),
+    [
+        ((30, 330), (0, 640)),  # a letterbox
+        ((0, 360), (80, 560)),  # a pillarbox
+        ((40, 320), (60, 580)),  # a game window inside a larger black canvas
+        ((0, 360), (0, 640)),  # no bars
+    ],
+)
+def test_black_bars_are_cropped_before_the_hud_is_measured(rows, cols):
+    """#513: bars are steady and dark, so they are no HUD evidence and no picture: the frames
+    are cropped to the picture inside them before they are scaled to the grid."""
+    frames = np.zeros((8, 360, 640), np.float32)
+    frames[:, rows[0] : rows[1], cols[0] : cols[1]] = RNG.uniform(
+        40, 220, (8, rows[1] - rows[0], cols[1] - cols[0])
+    )
+    r, c = category._bars(frames)
+    assert (r.start, r.stop, c.start, c.stop) == (*rows, *cols)
+    grid = category._to_grid(frames)
+    assert grid.shape == (8, H, W)
+    assert float(grid[:, :2].mean()) > category.BAR_LUMA  # no bar left at the top
+
+
+def test_a_hud_in_part_of_the_footage_is_found_per_window():
+    """#513: a recording that is half gameplay (a HUD) and half menus or cutscenes (no
+    steady pixels) lost the HUD when its frames were pooled; per window it is found, and
+    dark frames (loading, fades) are left out of the windows."""
+    n = 4 * category.WINDOWS
+    frames = moving_frames(n)
+    corner_hud(frames[: n // 2])
+    frames[1] = 0.0  # a fade to black inside a HUD window
+    spread = list(frames)
+    pooled = category.static_measures(category._to_grid(frames))
+    assert pooled["hud_static"] < category.HUD_FULL
+    m = category.window_measures(spread)
+    assert m["hud_static"] > category.HUD_FULL
+    assert m["static_share"] < category.STILL_SHARE
+    assert category.window_measures(list(moving_frames(n)))["hud_static"] < category.HUD_FULL
+
+
+def test_an_all_dark_window_is_not_cropped_to_nothing():
+    grid = category._to_grid(np.zeros((6, 360, 640), np.float32))
+    assert grid.shape == (6, H, W)
 
 
 def test_noise_and_shift_measures():
@@ -159,10 +218,19 @@ def test_decide_majority_disagreement_and_the_commentary_hint():
 
 
 def test_an_ambiguous_detection_falls_back_and_sport_is_never_chosen():
-    unsure = category.Detection(GAMEPLAY, True, "", {}, [])
-    assert category.choose_style(unsure, category.HYPE, "gaming") == ("gaming", "gaming")
+    # an unsure detection that leans to gameplay (some HUD evidence) uses gaming; any other
+    # the General style (#896), not gaming
+    for cat, style in ((GAMEPLAY, "gaming"), (GENERAL, "action"), (TALK, "action")):
+        unsure = category.Detection(cat, True, "", {}, [])
+        assert category.choose_style(unsure, category.HYPE) == (style, style)
+        assert category.fallback_label(unsure) == ("Gameplay" if cat == GAMEPLAY else "General")
+    assert styles.auto_fallback(category.HYPE, GAMEPLAY) == "gaming"
+    assert styles.auto_fallback(category.HYPE, TALK) == "action"
+    assert styles.auto_fallback(category.HYPE) == styles.resolve_auto(GENERAL, category.HYPE)
+    assert styles.auto_fallback(category.HYPE) == "action"
+    assert styles.auto_fallback(category.FUNNY) == "funny"
     chosen = {
-        category.choose_style(category.Detection(c, False, "", {}, []), e, "x")[0]
+        category.choose_style(category.Detection(c, False, "", {}, []), e)[0]
         for c in category.CATEGORIES
         for e in (category.HYPE, category.FUNNY)
     }
@@ -179,6 +247,98 @@ def test_a_learned_auto_style_is_ignored_with_a_warning(home, caplog):
     assert "reserved for --style auto" in caplog.text
     with pytest.raises(ValueError, match="not a style itself"):
         styles.get_style("auto")
+
+
+def test_the_ambiguous_warning_names_the_general_style(caplog):
+    det = category.decide([probe(**{**GAME, "hud_static": 0.0})])
+    with caplog.at_level(logging.WARNING):
+        category.warn(det, "action", "action")
+    assert "using the General style (action)" in caplog.text
+
+
+def test_several_audio_tracks_are_no_screen_recorder_sign():
+    """#513 miss 8: an editor's multi-track export is not pushed toward gameplay; ShadowPlay's
+    own handler still is; camera tags win over both."""
+    edit = probe(audio_tracks=5, frames=16, hud_static=0.0, static_share=0.0)
+    assert not edit.screen_marks
+    assert category.gameplay_score(edit)[0] == category.BASE_SCORE
+    assert probe(handler="VideoHandle").screen_marks
+    cam = probe(audio_tracks=5, make="Apple", frames=16, hud_static=0.0, static_share=0.0)
+    det = category.decide([cam])
+    assert (det.category, det.ambiguous, det.decided_by) == (GENERAL, False, ["camera tags"])
+
+
+@pytest.mark.parametrize(
+    ("size", "sure"),
+    [
+        ((5760, 2880), True),  # a stitched 360 export, tags stripped
+        ((3840, 1920), True),
+        ((2160, 1080), False),  # a 2:1 phone screen recording
+        ((3840, 2160), False),
+    ],
+)
+def test_a_2_to_1_frame_of_360_video_is_camera_footage(size, sure):
+    w, h = size
+    p = probe(duration=30.0, width=w, height=h, frames=16, hud_static=0.0, static_share=0.0)
+    assert p.equirect is sure
+    det = category.decide([p])
+    assert (det.category, det.ambiguous) == (GENERAL, not sure)
+    assert det.decided_by == (["360 frame"] if sure else [])
+    assert ("360 frame" in det.reason) is sure
+
+
+UNSURE = {"frames": 16, "hud_static": 0.0, "static_share": 0.0}  # untagged, no HUD: 0.3
+
+
+@pytest.mark.parametrize(
+    ("fields", "answer", "speech", "expect"),
+    [
+        (UNSURE, "gameplay", None, (GAMEPLAY, False, ["vision"])),
+        (UNSURE, "camera", None, (GENERAL, False, ["vision"])),
+        (UNSURE, "screen", None, (GENERAL, False, ["vision"])),
+        (UNSURE, "other", None, (GENERAL, True, [])),  # the model cannot tell
+        (UNSURE, None, None, (GENERAL, True, [])),  # not asked
+        # unsure gameplay (0.55) the model sees as camera footage
+        ({**UNSURE, "hud_static": 0.002}, "camera", None, (GENERAL, False, ["vision"])),
+        # no game seen: speech decides talk, a thin HUD no longer keeps it unsure
+        ({**UNSURE, "hud_static": 0.0012}, "screen", {"a.mp4": 0.7}, (TALK, False, ["speech"])),
+        # a game seen: speech never makes it talk
+        (UNSURE, "gameplay", {"a.mp4": 0.9}, (GAMEPLAY, False, ["vision"])),
+    ],
+)
+def test_the_vision_answer_settles_an_unsure_source(fields, answer, speech, expect):
+    det = category.decide([probe(**fields, vision=answer)], speech)
+    assert (det.category, det.ambiguous, det.decided_by) == expect
+    assert (f"vision: {answer}" in det.reason) is (answer is not None)
+    assert det.sources[0].decided_by == (expect[2][0] if expect[2] else None)
+
+
+def test_decided_by_names_the_evidence_of_most_footage():
+    srcs = [
+        probe("hud.mp4", 600.0, **GAME),
+        probe("text.mp4", 100.0, **THIN_HUD, hud_text=category.TEXT_ANCHORS),
+        probe("seen.mp4", 300.0, **UNSURE, vision="gameplay"),
+    ]
+    det = category.decide(srcs)
+    assert det.decided_by == ["static HUD", "vision", "HUD text"]
+    assert det.record("hype", "gaming", None)["decided_by"] == det.decided_by
+    assert category.decide([probe(telemetry=True)]).decided_by == ["telemetry"]
+
+
+@pytest.mark.parametrize(
+    ("fields", "needs"),
+    [
+        (UNSURE, True),
+        ({**UNSURE, "static_share": 0.9}, True),  # a still: a menu or a desktop
+        (GAME, False),  # sure gameplay
+        (CAMERA, False),  # sure general
+        ({**UNSURE, "telemetry": True}, False),
+        ({**UNSURE, "frames": 2, "hud_static": None}, False),  # no frame measures
+        ({**GAME, "hud_static": 0.0, "hud_text": category.TEXT_ANCHORS}, False),  # the text
+    ],
+)
+def test_the_vision_model_is_asked_only_about_unsure_footage(fields, needs):
+    assert category.needs_vision(probe(**fields)) is needs
 
 
 def test_camera_tag_reason_names_the_maker():
@@ -502,3 +662,245 @@ def test_text_frames_decodes_eight_frames_at_the_ocr_width(video):
     frames = category._text_frames(video, 10.0, 160, 120)
     assert len(frames) == category.TEXT_FRAMES
     assert all(f.shape == (120, 160, 3) for f in frames)
+
+
+# --------------------------------------------------------------------------- vision (#898)
+class FakeVision:
+    """Stands in for :class:`category.FootageVision`: ``answer`` to every question."""
+
+    def __init__(self, answer: str | None = "gameplay", key: str = "qwen@local") -> None:
+        self.answer, self._key, self.asked = answer, key, 0
+
+    def key(self) -> str:
+        return self._key
+
+    def ready(self) -> bool:
+        return True
+
+    def ask(self, io, duration):
+        self.asked += 1
+        return self.answer
+
+
+def test_the_vision_answer_is_cached_per_source_and_model(faked_probe):
+    from cutpoint import cache  # noqa: PLC0415
+
+    src = faked_probe.src
+    assert category.probe_source(src).vision is None  # no vision: nothing asked
+    vision = FakeVision()
+    first = category.probe_source(src, vision)
+    assert first.vision == "gameplay" and vision.asked == 1
+    assert "vision" not in cache.load_json(cache.source_dir(src) / category.CACHE_FILE)
+    assert category.probe_source(src, vision) == first and vision.asked == 1  # cached
+    assert category.decide([first]).decided_by == ["vision"]
+    other = FakeVision("camera", key="llava@local")  # another model asks again
+    assert category.probe_source(src, other).vision == "camera" and other.asked == 1
+    assert category.probe_source(src, vision).vision == "gameplay"  # both kept
+
+
+def test_no_answer_is_not_cached(faked_probe):
+    vision = FakeVision(None)
+    assert category.probe_source(faked_probe.src, vision).vision is None
+    category.probe_source(faked_probe.src, vision)
+    assert vision.asked == 2
+
+
+def test_sure_footage_is_never_shown_to_the_vision_model(faked_probe, monkeypatch):
+    monkeypatch.setattr(category, "_metadata", lambda data: {"make": "Apple"})
+    vision = FakeVision()
+    assert category.probe_source(faked_probe.src, vision).vision is None
+    assert vision.asked == 0
+
+
+REAL_CLIENT = category.FootageVision.client  # conftest stubs it: no host model in tests
+
+
+class StubRater:
+    """A :class:`cutpoint.vision.VisionRater` that answers ``reply`` (or raises it)."""
+
+    instances: ClassVar[list[StubRater]] = []
+
+    def __init__(self, consent=None, available=True, reply=None) -> None:
+        self.model, self.host, self.consent_needed = "qwen3.5:9b", "127.0.0.1:11434", consent
+        self._available, self.reply, self.asks, self.unloaded = available, reply, [], 0
+        self.warned = 0
+
+    def warn_consent(self) -> str:
+        self.warned += 1
+        return "needs consent"
+
+    def available(self) -> bool:
+        return self._available
+
+    def ask_json(self, prompt, images, schema, **kw):
+        self.asks.append((prompt, len(images), schema))
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return self.reply
+
+    def unload(self) -> None:
+        self.unloaded += 1
+
+
+@pytest.fixture
+def stub_rater(monkeypatch):
+    """The real :meth:`FootageVision.client` with a :class:`StubRater` (``state.kw`` its
+    arguments) and frame grabs faked; full edition."""
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from cutpoint import extras, vision  # noqa: PLC0415
+
+    state = SimpleNamespace(kw={"reply": {"footage": "gameplay"}}, raters=[])
+
+    def make(url=None, model=None):
+        state.raters.append(StubRater(**state.kw))
+        state.raters[-1].args = (url, model)
+        return state.raters[-1]
+
+    monkeypatch.setattr(category.FootageVision, "client", REAL_CLIENT)
+    monkeypatch.setattr(vision, "VisionRater", make)
+    monkeypatch.setattr(extras, "edition", lambda: "full")
+    monkeypatch.setattr(category, "vision_frames", lambda io, d: [b"jpg"] * category.VISION_FRAMES)
+    return state
+
+
+def test_the_question_is_generic_and_the_model_freed(stub_rater):
+    with category.footage_vision() as vision:
+        assert vision.ask(Path("a.mp4"), 60.0) == "gameplay"
+        assert vision.ask(Path("b.mp4"), 60.0) == "gameplay"
+        assert vision.key() == "qwen3.5:9b@127.0.0.1:11434"
+    [rater] = stub_rater.raters  # one client, checked once, freed once
+    assert rater.unloaded == 1 and len(rater.asks) == 2
+    prompt, n, schema = rater.asks[0]
+    assert n == category.VISION_FRAMES and f"{n} frames" in prompt
+    assert schema["properties"]["footage"]["enum"] == list(category.VISION_ANSWERS)
+    with category.footage_vision(False) as vision:
+        assert vision is None
+
+
+@pytest.mark.parametrize(
+    ("kw", "edition", "says"),
+    [
+        ({"consent": "vision-v2:openai@api.openai.com"}, "full", "needs your consent"),
+        ({"available": False}, "full", None),  # the rater logs why (INFO)
+        ({}, "lite", "not in Cutpoint lite"),
+        ({"reply": category.LowMemoryError("Not enough memory")}, "full", "Not enough memory"),
+    ],
+)
+def test_without_a_model_the_question_is_skipped_quietly(
+    stub_rater, monkeypatch, caplog, kw, edition, says
+):
+    """#893's quiet: one INFO line, no WARNING, no consent warning, and no more tries."""
+    from cutpoint import extras  # noqa: PLC0415
+
+    stub_rater.kw = {"reply": {"footage": "gameplay"}, **kw}
+    monkeypatch.setattr(extras, "edition", lambda: edition)
+    with caplog.at_level(logging.INFO), category.footage_vision() as vision:
+        assert vision.ask(Path("a.mp4"), 60.0) is None
+        assert vision.ask(Path("b.mp4"), 60.0) is None
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    if says:
+        [line] = [r.getMessage() for r in caplog.records]
+        assert says in line
+    assert sum(len(r.asks) for r in stub_rater.raters) <= 1
+
+
+def test_an_explicit_vision_warns_once_of_a_missing_consent(stub_rater, caplog):
+    """--vision / "vision": true asked for it: the consent warning, once; no more tries."""
+    stub_rater.kw = {"reply": {"footage": "gameplay"}, "consent": "vision-v2:x@y"}
+    with caplog.at_level(logging.INFO), category.footage_vision(True) as vision:
+        assert vision.ask(Path("a.mp4"), 60.0) is None
+        assert vision.ask(Path("b.mp4"), 60.0) is None
+    [rater] = stub_rater.raters
+    assert rater.warned == 1 and rater.asks == []
+
+
+def test_the_run_s_ollama_options_reach_the_rater(stub_rater):
+    with category.footage_vision(None, "http://h:1", "llava:7b") as vision:
+        assert vision.ask(Path("a.mp4"), 60.0) == "gameplay"
+    assert stub_rater.raters[0].args == ("http://h:1", "llava:7b")
+
+
+def test_detect_hands_its_ollama_options_to_the_vision_client(faked_probe, stub_rater):
+    src = str(faked_probe.src)
+    argv = ["detect", src, "--ollama-url", "http://h:1", "--ollama-model", "llava:7b"]
+    assert cli.main(argv) == 0
+    assert stub_rater.raters[0].args == ("http://h:1", "llava:7b")
+
+
+def test_detect_rejects_an_invalid_ollama_port(faked_probe, stub_rater):
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["detect", str(faked_probe.src), "--ollama-url", "myhost:99999"])
+    assert exc.value.code == 2
+    assert stub_rater.raters == []
+
+
+def test_no_vision_asks_nothing_and_the_default_asks(faked_probe, stub_rater):
+    src = str(faked_probe.src)
+    assert cli.main(["detect", src, "--no-vision"]) == 0
+    assert stub_rater.raters == []
+    assert cli.main(["detect", src]) == 0
+    assert len(stub_rater.raters) == 1 and stub_rater.raters[0].asks
+
+
+def test_the_config_s_vision_false_asks_nothing(faked_probe, stub_rater, home):
+    from conftest import set_config  # noqa: PLC0415
+
+    set_config(home, vision=False)
+    assert cli.main(["detect", str(faked_probe.src)]) == 0
+    assert stub_rater.raters == []
+    assert cli.main(["detect", str(faked_probe.src), "--vision"]) == 0
+    assert len(stub_rater.raters) == 1
+
+
+def test_a_hosted_model_id_found_once_ready_is_looked_up_before_asking(faked_probe):
+    """A cache hit under the model id that only the readiness check resolves needs no
+    request (#898)."""
+    from cutpoint import cache  # noqa: PLC0415
+
+    class Hosted(FakeVision):
+        def __init__(self) -> None:
+            super().__init__("camera", key="@api")
+            self.checked = False
+
+        def ready(self) -> bool:
+            self.checked, self._key = True, "gpt-x@api"
+            return True
+
+    cache.save_json(
+        cache.source_dir(faked_probe.src) / category.VISION_FILE,
+        {"version": category.VISION_VERSION, "answers": {"gpt-x@api": "gameplay"}},
+    )
+    vision = Hosted()
+    assert category.probe_source(faked_probe.src, vision).vision == "gameplay"
+    assert vision.checked and vision.asked == 0
+
+
+def test_a_shared_vision_is_not_retried_by_the_second_detection(faked_probe, stub_rater):
+    stub_rater.kw = {"reply": None}  # the request fails
+    with category.footage_vision() as shared:
+        category.detect([faked_probe.src], shared=shared)
+        category.detect([faked_probe.src], shared=shared)
+    assert len(stub_rater.raters) == 1 and len(stub_rater.raters[0].asks) == 1
+
+
+def test_an_odd_answer_is_no_answer(stub_rater):
+    stub_rater.kw = {"reply": {"footage": "a racing game"}}
+    with category.footage_vision() as vision:
+        assert vision.ask(Path("a.mp4"), 60.0) is None
+
+
+def test_hud_text_alone_leaves_untagged_footage_unsure():
+    """#513: a podcast's fixed cameras show fixed signs and labels: text anchors with no static
+    HUD and no recorder tags. That alone is unsure gameplay, so the vision model is asked; a
+    recorder's tags or some static HUD with the text stay sure."""
+    many = category.TEXT_ANCHORS + 2
+    alone = probe(**{**GAME, "handler": "", "hud_static": 0.0, "hud_text": many})
+    det = category.decide([alone], {"a.mp4": 0.9})
+    assert (det.category, det.ambiguous) == (GAMEPLAY, True)
+    assert category.needs_vision(alone)
+    det = category.decide([replace(alone, vision=category.V_CAMERA)], {"a.mp4": 0.9})
+    assert (det.category, det.ambiguous) == (TALK, False)
+    for sure in (replace(alone, handler="VideoHandle"), replace(alone, hud_static=0.002)):
+        det = category.decide([sure])
+        assert (det.category, det.ambiguous, det.decided_by) == (GAMEPLAY, False, ["HUD text"])
