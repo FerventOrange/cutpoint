@@ -2986,6 +2986,49 @@ def _rate_vision(
     return used, n_failed
 
 
+def _vision_stats(
+    rater: VisionRater,
+    *,
+    rated: int,
+    vision_s: float,
+    pre_vision_s: float,
+    rerank: bool = False,
+) -> dict[str, Any]:
+    """The vision step's cost for ``settings.vision`` (#909): the ratings made and taken from
+    the cache, the step's seconds against the analysis before it, and the run's request
+    timings and tokens summed (:attr:`VisionRater.stats`). Logs the one INFO line. ``rerank``:
+    the run re-ranks an earlier analysis, so ``pre_vision_s`` is only the cached re-run and no
+    share is logged."""
+    st = rater.stats
+    if rerank:
+        logger.info("Vision: %d rated (%d cached) in %.0f s", rated, rater.hits, vision_s)
+    else:
+        share = 100 * vision_s / pre_vision_s if pre_vision_s > 0 else 0.0
+        logger.info(
+            "Vision: %d rated (%d cached) in %.0f s (%.0f%% of analyze before vision)",
+            rated,
+            rater.hits,
+            vision_s,
+            share,
+        )
+    return {
+        **({"rerank": True} if rerank else {}),
+        "rated": rated,
+        "cached": rater.hits,
+        "calls": int(st["calls"]),
+        "vision_s": round(vision_s, 2),
+        "pre_vision_s": round(pre_vision_s, 2),
+        "grab_s": round(st["grab_s"], 2),
+        "load_s": round(st["load_s"], 2),
+        "prompt_s": round(st["prompt_s"], 2),
+        "reply_s": round(st["reply_s"], 2),
+        "prompt_tokens": int(st["prompt_tokens"]),
+        "reply_tokens": int(st["reply_tokens"]),
+        "model": rater.model,
+        "provider": rater.provider_name,
+    }
+
+
 def _vision_batches(top: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
     """The candidates to rate in batches for ``--batch-size`` ``size``: those of ``size``
     sources each (sources in the order of their best candidate, each one's candidates in rank
@@ -3546,6 +3589,7 @@ def _analyze(
                     jsonout.warn("vision_unavailable", message)
                 with steps.step("vision"):
                     t0 = time.perf_counter()
+                    pre_vision_s = t0 - t_start
                     logger.info(
                         "Vision: rating top %d of %d candidates", min(n_top, len(cands)), len(cands)
                     )
@@ -3556,10 +3600,18 @@ def _analyze(
                         rescore(hl, ev, out_dir, grids)
                     timings["vision_s"] = round(time.perf_counter() - t0, 2)
                     hl["settings"]["vision_used"] = used
+                    requested = min(n_top, len(cands))
                     hl["settings"]["vision"] = {
-                        "requested": min(n_top, len(cands)),
+                        "requested": requested,
                         "failed": n_failed - rater.missed,
                         **({} if online else {"uncached": rater.missed}),
+                        **_vision_stats(
+                            rater,
+                            rated=requested - n_failed,
+                            vision_s=timings["vision_s"],
+                            pre_vision_s=pre_vision_s,
+                            rerank=earlier_total_s is not None,
+                        ),
                     }
             else:
                 message = (

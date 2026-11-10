@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -114,6 +116,11 @@ def run(home, tmp_path, monkeypatch):
 
     class FakeRater:
         hits = asked = missed = 0
+        stats = dict.fromkeys(
+            ("calls", "grab_s", "load_s", "prompt_s", "reply_s", "prompt_tokens", "reply_tokens"), 0
+        )
+        model = "m"
+        provider_name = "ollama"
         consent_needed = None
         cache_only = False
 
@@ -273,7 +280,7 @@ def test_vision_uses_the_cached_ratings_when_ollama_is_unreachable(run, capsys, 
     (cand,) = hl["candidates"]
     assert cand["signals"]["vision"] == 8.0
     assert hl["settings"]["vision_used"] is True
-    assert hl["settings"]["vision"] == {"requested": 1, "failed": 0, "uncached": 0}
+    assert hl["settings"]["vision"].items() >= {"requested": 1, "failed": 0, "uncached": 0}.items()
     assert "using 1 cached rating, 0 candidates had no cached rating" in caplog.text
 
 
@@ -294,6 +301,11 @@ def test_vision_counts_the_candidates_without_a_cached_rating(run, caplog, monke
     class Rater:
         cache_only = False
         hits = asked = missed = 0
+        stats = dict.fromkeys(
+            ("calls", "grab_s", "load_s", "prompt_s", "reply_s", "prompt_tokens", "reply_tokens"), 0
+        )
+        model = "m"
+        provider_name = "ollama"
         consent_needed = None
 
         def __init__(self, **_):
@@ -321,14 +333,130 @@ def test_vision_counts_the_candidates_without_a_cached_rating(run, caplog, monke
     run.go(vision=True, vision_top=2)
     hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
     assert hl["settings"]["vision_used"] is True
-    assert hl["settings"]["vision"] == {"requested": 2, "failed": 0, "uncached": 1}
+    assert hl["settings"]["vision"].items() >= {"requested": 2, "failed": 0, "uncached": 1}.items()
     warning = next(r.getMessage() for r in caplog.records if "using " in r.getMessage())
     assert "1 cached" in warning and "1 candidate" in warning
 
     run.vision_ok = True  # online: nothing is "uncached"
     run.go(vision=True, vision_top=2)
     hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
-    assert hl["settings"]["vision"] == {"requested": 2, "failed": 0}
+    assert hl["settings"]["vision"].items() >= {"requested": 2, "failed": 0}.items()
+
+
+def _two_candidates(src, style, tr, use_scenes, max_cand, timings, **kw):
+    info = MediaInfo(
+        src, 60.0, 60.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
+    )
+    cands = [
+        analyze.Candidate(src, 10.0, 20.0, 15.0, 1.0, {"loudness": 1.0}, score=60.0),
+        analyze.Candidate(src, 30.0, 40.0, 35.0, 1.0, {"loudness": 1.0}, score=50.0),
+    ]
+    return analyze.SourceResult(src, info, 0.0, 60.0, cands, [], None)
+
+
+def _timed_rater(timed: bool):
+    """A rater whose first candidate comes from the cache and whose second is asked (one call
+    of 3 s load, 1 s prompt, 2 s reply, 100 and 20 tokens); ``timed`` False leaves the stats 0."""
+
+    class Rater:
+        cache_only = False
+        asked = missed = 0
+        model = "qwen-test"
+        provider_name = "ollama"
+        consent_needed = None
+
+        def __init__(self, **_):
+            self.hits = 0
+            self.stats = dict.fromkeys(("calls", "grab_s", "load_s", "prompt_s", "reply_s"), 0) | {
+                "prompt_tokens": 0,
+                "reply_tokens": 0,
+            }
+
+        def available(self):
+            return True
+
+        def cached(self, *a, **k):
+            return None
+
+        def rate(self, src, start, end, base, **k):
+            if start == 10.0:
+                self.hits += 1
+                return SimpleNamespace(score=9.0, label="cached one")
+            if timed:
+                self.stats |= {
+                    "calls": 1, "grab_s": 0.25, "load_s": 3.0, "prompt_s": 1.0, "reply_s": 2.0,
+                    "prompt_tokens": 100, "reply_tokens": 20,
+                }  # fmt: skip
+            return SimpleNamespace(score=4.0, label="asked one")
+
+        def unload(self):
+            pass
+
+    return Rater
+
+
+def test_the_vision_settings_carry_the_run_stats(run, caplog, monkeypatch):
+    """#909: settings.vision has every stat key, the cached ratings are counted apart from the
+    calls, and one INFO line says what the step cost."""
+    monkeypatch.setattr(analyze, "analyze_source", _two_candidates)
+    monkeypatch.setattr(analyze, "VisionRater", _timed_rater(True))
+    with caplog.at_level(logging.INFO, logger="cutpoint.analyze"):
+        run.go(vision=True, vision_top=2)
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    v = hl["settings"]["vision"]
+    assert set(v) == {
+        "requested", "failed", "rated", "cached", "calls", "vision_s", "pre_vision_s", "grab_s",
+        "load_s", "prompt_s", "reply_s", "prompt_tokens", "reply_tokens", "model", "provider",
+    }  # fmt: skip
+    assert (v["requested"], v["failed"], v["rated"]) == (2, 0, 2)
+    assert (v["cached"], v["calls"]) == (1, 1)  # the hit is not a call
+    assert (v["grab_s"], v["load_s"], v["prompt_s"], v["reply_s"]) == (0.25, 3.0, 1.0, 2.0)
+    assert (v["prompt_tokens"], v["reply_tokens"]) == (100, 20)
+    assert (v["model"], v["provider"]) == ("qwen-test", "ollama")
+    assert v["vision_s"] >= 0 and v["pre_vision_s"] >= 0
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("Vision: 2 "))
+    assert re.fullmatch(
+        r"Vision: 2 rated \(1 cached\) in \d+ s \(\d+% of analyze before vision\)", line
+    )
+
+
+def test_a_rerank_is_marked_and_has_no_share_of_the_analysis(run, caplog, monkeypatch):
+    """#909: on a re-rank (earlier_total_s given) settings.vision says so and the INFO line leaves
+    out the share of analyze, which the re-rank did not spend; a first run is not marked."""
+    monkeypatch.setattr(analyze, "analyze_source", _two_candidates)
+    monkeypatch.setattr(analyze, "VisionRater", _timed_rater(True))
+
+    def vision_run(**kw):
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="cutpoint.analyze"):
+            run.go(vision=True, vision_top=2, **kw)
+        hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+        line = next(
+            r.getMessage() for r in caplog.records if r.getMessage().startswith("Vision: 2 ")
+        )
+        return hl, line
+
+    hl, line = vision_run()
+    assert "rerank" not in hl["settings"]["vision"] and "%" in line
+
+    hl, line = vision_run(earlier_total_s=12.0)
+    assert hl["settings"]["vision"]["rerank"] is True
+    assert re.fullmatch(r"Vision: 2 rated \(1 cached\) in \d+ s", line)
+    assert "%" not in line
+    assert hl["timings"]["total_s"] == 12.0 and "rerank_s" in hl["timings"]
+
+
+def test_the_vision_stats_do_not_change_the_ranking(run, monkeypatch):
+    """#909 is timing only: the scores, labels and order are the same whatever the stats say."""
+    monkeypatch.setattr(analyze, "analyze_source", _two_candidates)
+    out = {}
+    for timed in (False, True):
+        monkeypatch.setattr(analyze, "VisionRater", _timed_rater(timed))
+        run.go(vision=True, vision_top=2)
+        hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+        out[timed] = [(c["id"], c["start"], c["score"], c["label"]) for c in hl["candidates"]]
+    assert out[False] == out[True]
+    assert [c[1] for c in out[True]] == [10.0, 30.0]  # the 9.0 rated one stays first
 
 
 def test_without_layers_no_event_step_runs(run, capsys):
@@ -2013,6 +2141,11 @@ def _speech_run(run, monkeypatch, transcript, rating=8.0):
     class Rater:
         cache_only = False
         hits = asked = missed = 0
+        stats = dict.fromkeys(
+            ("calls", "grab_s", "load_s", "prompt_s", "reply_s", "prompt_tokens", "reply_tokens"), 0
+        )
+        model = "m"
+        provider_name = "ollama"
         consent_needed = None
 
         def __init__(self, **_):
@@ -2092,6 +2225,11 @@ def test_the_speech_lift_is_taken_off_only_when_there_are_words(style, said, rat
     class Rater:
         cache_only = True
         hits = asked = missed = 0
+        stats = dict.fromkeys(
+            ("calls", "grab_s", "load_s", "prompt_s", "reply_s", "prompt_tokens", "reply_tokens"), 0
+        )
+        model = "m"
+        provider_name = "ollama"
 
         def rate(self, *a, **k):
             return SimpleNamespace(score=rating, label="nice")

@@ -9,6 +9,7 @@ import logging
 import math
 import re
 import socket
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -422,6 +423,17 @@ class VisionRater:
         self.hits = 0  # ratings taken from the cache by rate()
         self.asked = 0  # ratings rate() asked the model for (failed ones included)
         self.missed = 0  # cache misses rate() gave no rating for (cache_only)
+        # seconds and tokens summed over the run's requests (#909): grab_s the frame grabs,
+        # load_s/prompt_s/reply_s Ollama's own timings, reply_s the wall time of a hosted call
+        self.stats: dict[str, float] = {
+            "calls": 0,
+            "grab_s": 0.0,
+            "load_s": 0.0,
+            "prompt_s": 0.0,
+            "reply_s": 0.0,
+            "prompt_tokens": 0,
+            "reply_tokens": 0,
+        }
         # the model's digest and size in bytes from /api/tags (set by available()); None: not
         # known. The size is the memory guard's need for the model (cutpoint.memguard)
         self.digest: str | None = None
@@ -705,11 +717,12 @@ class VisionRater:
         )
         if (hit := self._lookup(store, key)) is not None:
             self.hits += 1
+            logger.debug("vision %s %.1f-%.1f: cache hit", src.name, start, end)
             return hit
         if self.cache_only:
             self.missed += 1
             return None
-        result = self._rate_frames(src, times, style, activity, speech, laughter)
+        result = self._rate_frames(src, times, style, activity, speech, laughter, (start, end))
         if result is not None and store is not None:
             entry: dict[str, Any] = {"score": result.score, "label": result.label}
             store[1][key] = entry | ({"digest": self.digest} if self.digest else {})
@@ -790,15 +803,17 @@ class VisionRater:
         activity: Prompts | None = None,
         speech: str = "",
         laughter: bool = False,
+        span: tuple[float, float] | None = None,
     ) -> VisionResult | None:
         """Grab the frames at ``times`` and ask the model for a rating (no cache); ``speech``
         (already cut by :func:`speech_excerpt`) goes with them, and ``laughter`` is said in the
-        prompt."""
+        prompt. ``span``: the window, for the DEBUG timing line of each request (#909)."""
         if self.consent_needed:
             self.warn_consent()
             return None
         n_frames = len(times)
         profile = rating_profile(self.model)
+        t_grab = time.perf_counter()
         try:
             frames = [grab_frame_jpeg(src, t, width=FRAME_WIDTH) for t in times]
             if profile:
@@ -806,6 +821,9 @@ class VisionRater:
         except (FFmpegError, ValueError) as err:  # ValueError: a frame cv2 cannot decode
             logger.warning("Vision frame grab failed: %s", err)
             return None
+        grab_s = time.perf_counter() - t_grab
+        self.stats["grab_s"] += grab_s
+        where = f"{src.name} {span[0]:.1f}-{span[1]:.1f}" if span else src.name
         images = [base64.b64encode(b).decode("ascii") for b in frames]
         self.asked += 1
         content = ""
@@ -817,7 +835,19 @@ class VisionRater:
             if self.via:
                 body: dict[str, Any] = {}
                 self.check_memory()
+                t_call = time.perf_counter()
                 reply = self.via.ask(text, frames)
+                wall = time.perf_counter() - t_call
+                if self.via.available():  # else nothing was sent
+                    self.stats["calls"] += 1
+                    self.stats["reply_s"] += wall
+                logger.debug(
+                    "vision %s attempt %d: grab %.2fs, reply %.2fs (hosted, wall time), not cached",
+                    where,
+                    attempt,
+                    grab_s if attempt == 1 else 0.0,
+                    wall,
+                )
                 if reply is None:
                     return None
                 content = reply
@@ -839,6 +869,7 @@ class VisionRater:
                     payload |= {"logprobs": True, "top_logprobs": _TOP_LOGPROBS}
                 self.check_memory(num_ctx)
                 self.used = True
+                t_call = time.perf_counter()
                 try:
                     resp = requests.post(
                         f"{self.url}/api/chat", json=payload, timeout=300, allow_redirects=False
@@ -849,7 +880,10 @@ class VisionRater:
                     content = body["message"]["content"]
                 except (requests.RequestException, KeyError, ValueError) as err:
                     logger.warning("Vision request failed: %s", err)
+                    self.stats["calls"] += 1
+                    self.stats["reply_s"] += time.perf_counter() - t_call
                     return None
+                self._note_call(where, attempt, grab_s, body, time.perf_counter() - t_call)
             result = _parse(content)
             if result is not None and profile and profile.expected:
                 ev = _expected_score(body.get("logprobs"))
@@ -868,6 +902,48 @@ class VisionRater:
             )
         logger.warning("Vision reply not parseable: %.120s", content)
         return None
+
+    def _note_call(
+        self, where: str, attempt: int, grab_s: float, body: dict[str, Any], wall: float
+    ) -> None:
+        """Add one Ollama request to :attr:`stats` and log its timings (DEBUG, #909). The
+        durations are Ollama's (ns); a reply without them counts its wall time as the reply."""
+
+        def secs(name: str) -> float | None:
+            v = body.get(name)
+            return v / 1e9 if isinstance(v, int | float) and not isinstance(v, bool) else None
+
+        def count(name: str) -> int:
+            v = body.get(name)
+            return v if isinstance(v, int) and not isinstance(v, bool) else 0
+
+        load, prompt, reply = (
+            secs("load_duration"),
+            secs("prompt_eval_duration"),
+            secs("eval_duration"),
+        )
+        if load is None and prompt is None and reply is None:
+            reply = wall
+        st = self.stats
+        st["calls"] += 1
+        st["load_s"] += load or 0.0
+        st["prompt_s"] += prompt or 0.0
+        st["reply_s"] += reply or 0.0
+        st["prompt_tokens"] += count("prompt_eval_count")
+        st["reply_tokens"] += count("eval_count")
+        logger.debug(
+            "vision %s attempt %d: grab %.2fs, load %.2fs, prompt %.2fs (%d tokens), "
+            "reply %.2fs (%d tokens), wall %.2fs, not cached",
+            where,
+            attempt,
+            grab_s if attempt == 1 else 0.0,
+            load or 0.0,
+            prompt or 0.0,
+            count("prompt_eval_count"),
+            reply or 0.0,
+            count("eval_count"),
+            wall,
+        )
 
     def load(self, timeout: float, num_ctx: int | None = None) -> bool:
         """Load the Ollama model now (``/api/generate`` without a prompt), so that the next

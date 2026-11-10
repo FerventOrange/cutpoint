@@ -10,6 +10,7 @@ import json
 import logging
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import cv2
@@ -457,6 +458,11 @@ class _FakeRater:
     calls: ClassVar[list[str]] = []
     fail = False
     hits = asked = missed = 0
+    stats = dict.fromkeys(
+        ("calls", "grab_s", "load_s", "prompt_s", "reply_s", "prompt_tokens", "reply_tokens"), 0
+    )
+    model = "m"
+    provider_name = "ollama"
     consent_needed = None
     cache_only = False
 
@@ -1113,3 +1119,139 @@ def test_rate_vision_tells_the_model_about_laughter_heard_in_a_moment():
     rater = _LaughterRater()
     cutpoint.analyze._rate_vision(cands, rater, 3, get_style("gaming"))  # type: ignore[arg-type]
     assert rater.told == [True, False, False]
+
+
+# ---- #909: request timings and tokens in ``VisionRater.stats``
+
+STAT_KEYS = {"calls", "grab_s", "load_s", "prompt_s", "reply_s", "prompt_tokens", "reply_tokens"}
+
+
+def _timed_post(monkeypatch, body: dict) -> None:
+    """Chat answers with a good rating plus ``body`` (Ollama's duration and count fields)."""
+
+    def post(url, json, timeout, **_k):
+        if url.endswith("/api/chat"):
+            return _Resp({"message": {"content": '{"score": 7, "label": "big jump"}'}} | body)
+        return _Resp({"done": True})
+
+    monkeypatch.setattr(vision.requests, "post", post)
+    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
+
+
+def test_the_ollama_durations_and_counts_are_summed(monkeypatch, src):
+    """Ollama's nanosecond durations become seconds, its counts become tokens, per request."""
+    body = {
+        "load_duration": 2_000_000_000,
+        "prompt_eval_duration": 500_000_000,
+        "eval_duration": 1_250_000_000,
+        "prompt_eval_count": 900,
+        "eval_count": 30,
+    }
+    _timed_post(monkeypatch, body)
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    assert set(rater.stats) == STAT_KEYS and not any(rater.stats.values())
+    assert rater.rate(src, 0, 4, "action-cam") == vision.VisionResult(7.0, "big jump")
+    st = rater.stats
+    assert st["calls"] == 1
+    assert (st["load_s"], st["prompt_s"], st["reply_s"]) == (2.0, 0.5, 1.25)
+    assert (st["prompt_tokens"], st["reply_tokens"]) == (900, 30)
+    assert st["grab_s"] >= 0
+    rater.rate(src, 10, 14, "action-cam")  # a second request adds
+    assert rater.stats["calls"] == 2 and rater.stats["reply_tokens"] == 60
+    assert rater.stats["load_s"] == 4.0
+
+
+def test_a_reply_without_durations_counts_its_wall_time_as_the_reply():
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    rater._note_call("a.mp4 0.0-4.0", 1, 0.0, {}, 0.5)
+    st = rater.stats
+    assert st["calls"] == 1 and st["reply_s"] == 0.5
+    assert (st["load_s"], st["prompt_s"], st["prompt_tokens"], st["reply_tokens"]) == (0, 0, 0, 0)
+
+
+def test_the_stats_do_not_change_the_rating_or_its_cache_key(monkeypatch, src):
+    """#909 adds timings only: same result with or without durations, the key is unchanged."""
+    _timed_post(monkeypatch, {})
+    plain = vision.VisionRater(url="http://127.0.0.1:1", model="m").rate(src, 0, 4, "gaming")
+    cache.remove(cache.source_dir(src) / vision.RATINGS_FILE)
+    _timed_post(monkeypatch, {"eval_duration": 10**9, "eval_count": 5, "load_duration": 1})
+    timed = vision.VisionRater(url="http://127.0.0.1:1", model="m").rate(src, 0, 4, "gaming")
+    assert plain == timed == vision.VisionResult(7.0, "big jump")
+    key = vision.rating_key("m", "gaming", [1.0, 2.0], provider="ollama", host="h:1")
+    assert key == "4b396e663a@1.000,2.000"  # as before #909 (rating_key is not touched)
+
+
+def test_a_cache_hit_makes_no_call(monkeypatch, src):
+    _timed_post(monkeypatch, {"eval_duration": 10**9, "eval_count": 5})
+    vision.VisionRater(url="http://127.0.0.1:1", model="m").rate(src, 0, 4, "gaming")
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    assert rater.rate(src, 0, 4, "gaming") is not None
+    assert rater.hits == 1 and rater.stats["calls"] == 0 and rater.stats["reply_tokens"] == 0
+
+
+def test_a_hosted_call_records_wall_time_only(monkeypatch, src):
+    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    rater.via = type(
+        "Via",
+        (),
+        {
+            "ask": lambda self, text, frames: '{"score": 6, "label": "x"}',
+            "available": lambda self: True,
+        },
+    )()
+    rater.check_memory = lambda *a, **k: None
+    rater.cache_only = False
+    res = rater._rate_frames(src, [1.0, 2.0], "gaming")
+    assert res is not None and res.score == 6.0
+    st = rater.stats
+    assert st["calls"] == 1 and st["reply_s"] >= 0
+    assert (st["load_s"], st["prompt_s"], st["prompt_tokens"], st["reply_tokens"]) == (0, 0, 0, 0)
+
+
+def test_a_hosted_call_that_sent_nothing_is_not_counted(monkeypatch, src):
+    """The hosted provider is unavailable (no consent, no key): no request left, no call."""
+    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    rater.via = type(
+        "Via", (), {"ask": lambda self, text, frames: None, "available": lambda self: False}
+    )()
+    rater.check_memory = lambda *a, **k: None
+    rater.cache_only = False
+    assert rater._rate_frames(src, [1.0, 2.0], "gaming") is None
+    assert rater.stats["calls"] == 0 and rater.stats["reply_s"] == 0
+
+
+def test_a_failed_ollama_request_still_counts_as_a_call(monkeypatch, src):
+    """A timeout cost the wait: it is one call and its wall time is in reply_s."""
+    now = [100.0]
+
+    def tick() -> float:  # every reading is 2.5 s later: the failed wait measures > 0
+        now[0] += 2.5
+        return now[0]
+
+    monkeypatch.setattr(vision, "time", SimpleNamespace(perf_counter=tick))
+
+    def post(url, json, timeout, **_k):
+        if url.endswith("/api/chat"):
+            raise vision.requests.Timeout("read timed out")
+        return _Resp({"done": True})
+
+    monkeypatch.setattr(vision.requests, "post", post)
+    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    rater.check_memory = lambda *a, **k: None
+    assert rater._rate_frames(src, [1.0, 2.0], "gaming") is None
+    st = rater.stats
+    assert st["calls"] == 1 and st["reply_s"] > 0
+    assert (st["load_s"], st["prompt_s"], st["prompt_tokens"], st["reply_tokens"]) == (0, 0, 0, 0)
+
+
+def test_each_request_and_cache_hit_logs_a_debug_line(monkeypatch, src, caplog):
+    _timed_post(monkeypatch, {"eval_duration": 10**9, "eval_count": 5})
+    with caplog.at_level(logging.DEBUG, logger="cutpoint.vision"):
+        vision.VisionRater(url="http://127.0.0.1:1", model="m").rate(src, 0, 4, "gaming")
+        vision.VisionRater(url="http://127.0.0.1:1", model="m").rate(src, 0, 4, "gaming")
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("vision ")]
+    assert any("reply 1.00s (5 tokens)" in x and "not cached" in x for x in lines)
+    assert any("cache hit" in x for x in lines)
