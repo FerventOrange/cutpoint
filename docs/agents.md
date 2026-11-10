@@ -17,7 +17,7 @@ or the reverse. Both consents are versioned (`assistant-v3:<provider>@<host>` an
 default, such as `192.168.1.5:8080`): a consent saved by an earlier version, under a shorter
 description, no longer counts, so you are asked again (AI Chat consent is at version 3: `cutpoint analyze` now also sends whole transcripts to a hosted chat model for its dialogue reader, so users of one are asked again; Vision is unchanged). An Ollama on this machine (`localhost` or
 a loopback address, except on the port of the Cutpoint proxy, which forwards to hosted models)
-needs no consent; an Ollama on another machine is hosted and needs the same consents: until Vision is allowed for it, vision steps skip it with a WARNING.
+needs no consent; an Ollama on another machine is hosted and needs the same consents: until Vision is allowed for it, vision steps skip it (with `--vision` or `"vision": true`, a WARNING; by default one INFO line).
 
 The instructions the agent itself should follow are in [AGENTS.md](../AGENTS.md) at the
 repository root; `cutpoint guide` prints the same text, so an agent using the installed

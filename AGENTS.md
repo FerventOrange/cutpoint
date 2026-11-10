@@ -128,8 +128,8 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
   memory stops the run with `low_memory`. `--no-vision` or `"vision": false` turns it off. An explicit `--ollama-url` or `--ollama-model` wins over a hosted Vision
   provider and over the AI Chat model for dialogue reading, and also applies to the
   crash/profile step. An `--ollama-url` on another machine, or a hosted Vision provider in the
-  Models tab, needs the user's Vision consent (Models tab); without it vision is skipped with a
-  `vision_consent_needed` warning: tell the user. An invalid port in `--ollama-url` exits 2 (`bad_args`).
+  Models tab, needs the user's Vision consent (Models tab); without it vision is skipped (with `--vision` or
+  `"vision": true`, a `vision_consent_needed` warning: tell the user; by default one INFO line). An invalid port in `--ollama-url` exits 2 (`bad_args`).
   `--vision-top`, `--ollama-url`, `--ollama-model` and `--skip` work as on
   `analyze`; `--visual-index` and `--no-visual-index` as on `analyze` (the frame embeddings for
   the visual search of `cutpoint ui`, off by default; they change no ranking);
@@ -269,7 +269,7 @@ Variants:
 Read the `ERROR` line, then
 [docs/troubleshooting/README.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/troubleshooting/README.md).
 The usual causes: ffmpeg not on `PATH`, a missing optional extra, Ollama not reachable (only
-affects `--vision`), a non-empty output folder.
+matters with `--vision` or `"vision": true`; by default the frame rating is skipped with an INFO line), a non-empty output folder.
 
 Whisper runs on the CPU unless the `gpu` extra is installed; if the user has an NVIDIA GPU and
 `transcribe` logs an INFO line about missing CUDA libraries, add `gpu` with the install command

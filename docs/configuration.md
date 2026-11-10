@@ -202,7 +202,7 @@ which the Vision role's key field in the Models tab sets) or a subscription (`cl
 (`--ollama-model`, `CUTPOINT_VISION_MODEL` and `--ollama-url` still win); an Ollama URL on
 another machine (not `localhost` or a loopback address) or on the Cutpoint proxy's port is
 hosted and needs the Vision consent
-below, else vision is skipped with a WARNING. With an API provider, choose a `model`
+below, else vision is skipped (with `--vision` or `"vision": true`, a WARNING; by default one INFO line). With an API provider, choose a `model`
 that accepts images; each request sends frames and the words said in the moment, and is billed to your API key. Subscription
 providers use only their official host; a `url` for them is rejected. An API provider may have a
 `url` (an OpenAI-compatible or self-hosted server); one on this machine (`localhost` or a
