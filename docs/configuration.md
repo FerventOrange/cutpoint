@@ -154,7 +154,8 @@ see [troubleshooting](troubleshooting/models.md)).
 configured vision model
 ([getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) unless
 `--no-vision` is given; with `false` or no key, only `--vision` turns it on for one run. The UI's
-Models tab writes this key ("Rate frames with vision model"), and
+Models tab writes `true` when you tick "Rate frames with vision model" and removes the key when you untick it
+(the footage check of `--style auto` stays on; turn it off with `"vision": false` by hand or `--no-vision`), and
 every analysis the UI starts ("Analyze footage" or "Analyze again") passes its value at that
 moment as `--vision` or `--no-vision` (neither when there is no key); the UI has no per-run choice. Other values are rejected.
 A rating covers a moment's frames and, except for `action-cam`, the speech in it (the Vision
