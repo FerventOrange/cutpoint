@@ -540,6 +540,38 @@ def test_generic_itself_is_scored_once_and_keys_change_with_the_floor(captions):
     assert own.resolved and own.floor_pos is None  # prompts given: no profile, no floor
 
 
+def test_the_no_model_fallback_scores_exactly_like_generic(tmp_path, monkeypatch):
+    """#916: without a model the profile is generic (CLIP's guess only in its description),
+    so crash detection keys and scores it as ``--activity generic``."""
+    v = np.zeros((1, 768), np.float32)
+    v[0, 0] = 1.0
+    monkeypatch.setattr(activity, "keyframes", lambda project, **kw: (v, []))
+    monkeypatch.setattr(activity, "_text_emb", lambda p: np.eye(len(p), 768, dtype=np.float32))
+    rec = activity.resolve(tmp_path, llm=False)
+    got = crash.CrashParams().with_profile(activity.record_profile(rec))
+    generic = _generic_params()
+    assert rec["name"] == "generic" and rec["described_by"] == "clip"
+    assert (got.key(), got.dense_key()) == (generic.key(), generic.dense_key())
+
+
+def test_an_llm_crash_phrase_alone_makes_no_crash_candidate():
+    """#916: LLM phrases are capped below the 0.8 a spoken cue needs to be a candidate of
+    its own; the floor's phrases still are one."""
+    words = {"flipped the raft": 1.0, "took a swim": 0.95}
+    raw = {"name": "raft", "incident": {"pos": ["a flipped raft"], "words": words}}
+
+    def ask(prompt, images, schema):
+        return raw
+
+    prof = activity.synthesize("rafting", None, ask, [])
+    assert max(prof["incident"]["words"].values()) == activity.GEN_PHRASE_CAP < 0.8
+    inp = _inputs(spike=False)
+    inp.hits = [(30.0, w, k) for k, w in prof["incident"]["words"].items()]
+    assert crash.candidate_events(inp, crash.CrashParams()) == []
+    inp.hits = [(30.0, activity.base()["incident"]["words"]["wiped out"], "wiped out")]
+    assert [c["origin"] for c in crash.candidate_events(inp, crash.CrashParams())] == ["words"]
+
+
 def test_stale_dense_caches_are_not_read_and_do_not_break_the_check(tmp_path):
     """CRASH_VERSION 3: the dense store is a new file; an old one stays harmless."""
     src = tmp_path / "s.mp4"

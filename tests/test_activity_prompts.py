@@ -15,6 +15,7 @@ import pytest
 from conftest import HOP, SLED, add_profile
 from cutpoint import activity, crash, insta360
 from cutpoint.events import visual as V
+from cutpoint.events.vlm_windows import action_cam_wording as wording
 from cutpoint.pano import project as pano_project
 from cutpoint.pano import qa, views, vlcheck
 from cutpoint.styles import STYLES
@@ -198,9 +199,10 @@ def test_old_records_without_vlm_take_their_library_wording_else_the_floor(tmp_p
     assert p.vlm == activity.prompts(activity.base()).vlm
 
 
-def test_the_llm_flavours_the_base_vlm_wording_and_bad_values_fall_back(monkeypatch):
+def test_a_discovered_profile_keeps_the_base_vlm_wording(monkeypatch):
+    """#916: synthesis asks for no ``vlm`` wording and ignores one in the reply, so the VLM
+    prompts (and their window cache key) of a discovered profile are generic's."""
     asked: list[tuple[str, dict | None]] = []
-    floor = activity.prompts(activity.base())
     reply = {
         "name": "kayak",
         "description": "Whitewater kayaking.",
@@ -208,49 +210,24 @@ def test_the_llm_flavours_the_base_vlm_wording_and_bad_values_fall_back(monkeypa
         "incident": {"pos": ["a capsized kayak"], "neg": ["paddling"], "words": {"swim": 0.5}},
         "highlight": {"pos": ["a big rapid"], "neg": []},
         "low_info": [],
-        "vlm": {
-            "video": "first-person whitewater kayaking video",
-            "edit": "kayak edit",
-            "describe": "y" * 400,  # over the cap: the floor's
-            "rate_low": ["not", "a", "string"],  # invalid: the floor's
-            "tags": {"spray": "white water spraying over the bow", "rapids": "new"},
-        },
+        "vlm": {"video": "first-person whitewater kayaking video", "tags": {"spray": "x"}},
     }
 
     def ask(prompt, imgs, schema):
         asked.append((prompt, schema))
-        return reply
+        return reply if len(asked) > 1 else None  # the retry asks the same keys
 
     seeds = [activity.builtin(k) for k in activity.BUILTIN_NAMES]
     prof = activity.synthesize("whitewater kayaking", "my river trip", ask, seeds)
-    assert prof is not None and len(asked) == 1
-    prompt, schema = asked[0]
-    assert json.dumps(activity.base()["vlm"]) in prompt  # the base wording to flavour
-    assert "vlm" in schema["properties"] and "vlm" not in schema["required"]  # optional
-    assert set(schema["properties"]["vlm"]["properties"]["tags"]["properties"]) == set(
-        activity.ACTION_CAM_TAGS
-    )  # the tag keys are fixed
+    assert prof is not None and len(asked) == 2
+    for prompt, schema in asked:
+        assert "vlm" not in schema["properties"] and '"vlm"' not in prompt
+        assert json.dumps(activity.base()["vlm"]) not in prompt
+    assert "vlm" not in prof
+    generic = activity.prompts(activity.full(activity.builtin("generic")))
     p = activity.prompts(activity.full(prof))
-    vlm, tags = dict(p.vlm), dict(p.vlm_tags)
-    assert vlm["video"] == "first-person whitewater kayaking video" and vlm["edit"] == "kayak edit"
-    assert vlm["describe"] == dict(floor.vlm)["describe"]
-    assert vlm["rate_low"] == dict(floor.vlm)["rate_low"]
-    assert vlm["hype"] == dict(floor.vlm)["hype"]  # not written: the floor's
-    assert tags["spray"] == "white water spraying over the bow" and "rapids" not in tags
-    assert tags["trees"] == dict(floor.vlm_tags)["trees"]
-
-
-def test_the_shorter_retry_asks_for_no_vlm_wording():
-    asked: list[tuple[str, dict | None]] = []
-
-    def ask(prompt, imgs, schema):
-        asked.append((prompt, schema))
-        return None  # unusable: the retry follows
-
-    assert activity.synthesize("kayaking", None, ask, []) is None
-    (first, s1), (retry, s2) = asked
-    assert "vlm" in s1["properties"] and "vlm (optional" in first
-    assert "vlm" not in s2["properties"] and "vlm (optional" not in retry
+    assert (p.vlm, p.vlm_tags) == (generic.vlm, generic.vlm_tags)
+    assert wording(p).key() == wording(generic).key()
 
 
 def _fake_text(monkeypatch):

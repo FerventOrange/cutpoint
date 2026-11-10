@@ -74,7 +74,9 @@ def test_crashes_json(ski, capsys):
     assert out["crashes"] == str(project / "crashes.json")
     assert out["activity_file"] == str(project / "activity.json")
     assert out["profile_name"] == "generic"
-    saved = json.loads((project / "crashes.json").read_text(encoding="utf-8"))["crashes"]
+    data = json.loads((project / "crashes.json").read_text(encoding="utf-8"))
+    assert data["timings"]["profile_s"] >= 0  # the profile step's own time (#916)
+    saved = data["crashes"]
     assert out["count"] == len(saved) == len(out["candidates"]) == 1
     (c,) = out["candidates"]
     assert set(c) == {"id", "source", "t0", "t1", "confidence", "confirmed", "origin", "clip"}
