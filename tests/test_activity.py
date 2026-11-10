@@ -167,7 +167,10 @@ def test_without_a_model_a_clear_vocabulary_term_names_the_profile_not_saved(
     rec = activity.resolve(tmp_path, llm=False)
     assert (rec["name"], rec["source"], rec["described_by"]) == ("kayaking", "fallback", "clip")
     assert rec["profile"]["detect"] == ["a first-person video of kayaking"]
-    assert rec["profile"]["incident"] == activity.base()["incident"]  # the floor's captions
+    # the floor's captions, judged against generic's negatives (the floor has none, #932)
+    floor, generic = activity.base()["incident"], activity.builtin("generic")["incident"]
+    assert rec["profile"]["incident"] == {**floor, "neg": generic["neg"]}
+    assert rec["profile"]["incident"]["neg"]
     assert not activity.user_files()  # never saved
     # nothing clear: generic
     emb = fake_clip(*(_vocab(t) for t in activity.vocabulary()))
@@ -421,6 +424,156 @@ def test_resolve_hands_the_ollama_flags_to_default_ask(tmp_path, monkeypatch, fo
     activity.resolve(tmp_path, context="a lake", ollama_url="http://h:1", ollama_model="m")
     activity.resolve(tmp_path, context="a lake", refresh=True)
     assert got == [{"ollama_url": "http://h:1", "ollama_model": "m"}, {}]
+
+
+# ---------------------------------------------------------------- per-footage discovery cache
+def _synths(ask) -> int:
+    """How many synthesis prompts ``ask`` (a :func:`_stub`) was sent."""
+    return sum(p.startswith("You write detection profiles") for p in ask.calls)
+
+
+@pytest.fixture
+def same_footage(tmp_path: Path, footage, fake_clip):
+    """``make(name)``: a new project over the same source file; its keyframes match no
+    library profile clearly, so every resolve discovers."""
+    src = tmp_path / "ride.mp4"
+    src.write_bytes(b"footage")
+    footage["v"] = fake_clip("glacier-sled", "puddle-hop")
+
+    def make(name: str) -> Path:
+        project = tmp_path / name
+        project.mkdir()
+        hl = {"sources": [{"path": str(src), "duration": 60.0}]}
+        (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+        return project
+
+    return make
+
+
+def _cached_discoveries() -> list[Path]:
+    folder = paths.cache_dir() / activity.DISCOVERY_DIR
+    return sorted(folder.glob("*.json")) if folder.is_dir() else []
+
+
+def test_the_same_footage_is_synthesized_once_across_projects_and_runs(same_footage):
+    """#932: a re-made project over the same sources reuses the discovered profile."""
+    good = _stub(PACK_RAFTING)
+    first = activity.resolve(same_footage("a"), ask=good)
+    again = activity.resolve(same_footage("b"), ask=good)
+    third = activity.resolve(same_footage("c"), ask=good, context="  ")  # blank: no context
+    assert _synths(good) == 1
+    assert first["source"] == again["source"] == third["source"] == "synthesized"
+    assert first["profile"] == again["profile"] == third["profile"]
+    assert first["description"] == again["description"]
+    assert [n for n in activity.user_files() if n.startswith("pack")] == ["pack-rafting"]
+    assert len(_cached_discoveries()) == 1
+
+
+def test_a_context_run_over_the_same_footage_reuses_the_saved_discovery(
+    same_footage, footage, fake_clip
+):
+    """#932: project 2 matches the profile project 1 saved; with --context it must not
+    synthesize a second one (the seed would change the examples and the cache key)."""
+    good = _stub(PACK_RAFTING)
+    first = activity.resolve(same_footage("a"), ask=good, context="a river trip")
+    footage["v"] = fake_clip("pack-rafting")  # the library now holds the discovery: a match
+    again = activity.resolve(same_footage("b"), ask=good, context="a river trip")
+    assert _synths(good) == 1
+    assert first["source"] == again["source"] == "synthesized"
+    assert first["profile"] == again["profile"]
+    assert [n for n in activity.user_files() if n.startswith("pack")] == ["pack-rafting"]
+
+
+def test_a_changed_context_a_refresh_or_another_model_synthesizes_again(
+    same_footage, footage, fake_clip, monkeypatch: pytest.MonkeyPatch
+):
+    good = _stub(PACK_RAFTING)
+    activity.resolve(same_footage("a"), ask=good, context="a river trip")
+    activity.resolve(same_footage("b"), ask=good, context="a  river   trip")  # same words
+    assert _synths(good) == 1
+    activity.resolve(same_footage("c"), ask=good, context="a lake")
+    assert _synths(good) == 2
+    activity.resolve(same_footage("d"), ask=good, context="a lake")
+    assert _synths(good) == 2
+    # --refresh-profile: synthesized again, and the new profile replaces the cached one
+    # (also once the footage matches the profile the first run saved to the library)
+    footage["v"] = fake_clip("pack-rafting")
+    other = _stub({**PACK_RAFTING, "description": "Rafting, written again."})
+    rec = activity.resolve(same_footage("e"), ask=other, context="a lake", refresh=True)
+    assert _synths(other) == 1 and rec["profile"]["description"] == "Rafting, written again."
+    rec = activity.resolve(same_footage("f"), ask=good, context="a lake")
+    assert _synths(good) == 2 and rec["profile"]["description"] == "Rafting, written again."
+    # another model (or the same name with another digest) writes its own
+    models = iter(["m1", "m1", "m2"])
+    monkeypatch.setattr(activity, "default_ask", lambda **kw: (good, next(models)))
+    for name in ("g", "h", "i"):
+        activity.resolve(same_footage(name))
+    assert _synths(good) == 4  # m1 once, m2 once
+
+
+def test_a_fallback_is_never_cached(same_footage):
+    broken = _stub({})
+    rec = activity.resolve(same_footage("a"), ask=broken)
+    assert rec["source"] == "fallback" and _synths(broken) == 2  # the retry asks for less
+    assert not _cached_discoveries()
+    good = _stub(PACK_RAFTING)
+    assert activity.resolve(same_footage("b"), ask=good)["source"] == "synthesized"
+    assert _synths(good) == 1
+
+
+def test_footage_without_reachable_sources_is_not_cached(tmp_path: Path, footage, fake_clip):
+    footage["v"] = fake_clip("glacier-sled", "puddle-hop")
+    good = _stub(PACK_RAFTING)
+    activity.resolve(tmp_path, ask=good)  # no highlights.json: nothing to key it by
+    activity.resolve(tmp_path, ask=good, refresh=True)
+    assert _synths(good) == 2 and not _cached_discoveries()
+
+
+def test_a_broken_cached_discovery_is_synthesized_again(same_footage):
+    good = _stub(PACK_RAFTING)
+    activity.resolve(same_footage("a"), ask=good)
+    (entry,) = _cached_discoveries()
+    for junk in ("[1]", "{not json", json.dumps({"version": 1, "profile": {"name": "x"}})):
+        entry.write_text(junk, encoding="utf-8")
+        rec = activity.resolve(same_footage(f"p{len(good.calls)}"), ask=good)
+        assert rec["source"] == "synthesized"
+    assert _synths(good) == 4
+
+
+def test_the_discovery_key_follows_the_prompts_and_the_examples(same_footage, monkeypatch):
+    project = same_footage("a")
+    model = {"model": "m", "digest": "sha256:1"}
+    examples = [activity.builtin(k) for k in activity.BUILTIN_NAMES]
+    key = activity.discovery_key(project, model, None, examples)
+    assert key == activity.discovery_key(same_footage("b"), model, None, examples)
+    assert key != activity.discovery_key(project, {**model, "digest": "sha256:2"}, None, examples)
+    assert key != activity.discovery_key(project, model, None, [activity.library()["puddle-hop"]])
+    monkeypatch.setattr(activity, "SYNTH_SIZES", ((8, 20, 4, True),))
+    assert key != activity.discovery_key(project, model, None, examples)
+
+
+def test_identical_discoveries_share_one_library_file(home):
+    prof = activity.validate(PACK_RAFTING)
+    assert activity.save_to_library(prof) == activity.save_to_library(prof) == "pack-rafting"
+    other = activity.validate({**PACK_RAFTING, "description": "another one"})
+    second = activity.save_to_library(other)  # the name is taken by other content
+    assert second.startswith("pack-rafting-")
+    assert activity.save_to_library(other) == second
+    assert set(activity.user_files()) == {"pack-rafting", second}
+
+
+def test_a_profile_without_incident_negatives_gets_generics(home):
+    generic = activity.builtin("generic")["incident"]["neg"]
+    assert generic  # the floor has none of its own
+    bare = activity.full(activity.validate({"name": "x", "incident": {"pos": ["a fall"]}}))
+    assert bare["incident"]["neg"] == generic
+    assert activity.prompts(bare).incident_neg == tuple(generic)
+    own = activity.full(activity.validate(HOP))
+    assert own["incident"]["neg"] == HOP["incident"]["neg"]  # its own are kept as they are
+    # an activity.json written before: complete, but no negatives
+    old = {"version": 1, "name": "x", "source": "synthesized", "profile": {**bare}}
+    old["profile"]["incident"] = {**bare["incident"], "neg": []}
+    assert activity.record_profile(old)["incident"]["neg"] == generic
 
 
 # ---------------------------------------------------------------- the library commands
