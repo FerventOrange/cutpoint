@@ -25,12 +25,11 @@ it: it is the full reference.
 
 ## Choose the path
 
-Style (`--style` on `cutpoint edit` and `cutpoint analyze`): go by what the user says about the
-footage, not the file name alone. Pick `funny`, `gaming`, `action`, `sport`, `commentary` (long
-talk) or `action-cam` (action-cam footage, best with telemetry); anything else: `action` or
-`gaming`. If the user says nothing about the footage, `cutpoint detect <video> --json` names its
-category and the style `--style auto` would use (`outputs.styles`); a `style_ambiguous` warning
-means it could not tell, so ask the user or keep the default.
+Style (`--style` on `cutpoint edit` and `cutpoint analyze`): default to `--style auto`, which
+picks from the footage. `cutpoint detect <video> --json` shows its pick (`outputs.styles`); a
+`style_ambiguous` warning means the default style was used. Name a style only when the user says
+what the footage is. Pick `funny`, `gaming`, `action`, `sport`, `commentary` (long talk) or
+`action-cam` (action-cam footage, best with telemetry).
 
 One step ("edit this into a montage"):
 

@@ -99,6 +99,19 @@ ffmpeg skip themselves when it is not on `PATH`.
 - Never commit the Insta360 SDK or paste its output or documentation into issues, pull requests
   or docs. See [docs/insta360-sdk.md](docs/insta360-sdk.md).
 
+## Design principle
+
+Cutpoint is a universal AI footage editor: the user gives it footage and nothing else. It
+detects the kind of footage, the activity, the HUD layout and the moments, and scores from
+that. Style, activity and vision settings are overrides, never prerequisites. What the user
+asks for (funny moments, a length, a custom style from AI Chat or their agent) steers the
+scoring for that project.
+
+- The test for any change: does the user still have to say what the footage is?
+- New features should detect, not ask. A setting is an override.
+- Do not ship hand-made per-game or per-sport presets or rules. Layouts and profiles are
+  discovered from the footage, or made by the user or their agent.
+
 ## Agent docs
 
 `AGENTS.md` ships in the wheel and is what `cutpoint guide` prints. The Claude Code skill,
