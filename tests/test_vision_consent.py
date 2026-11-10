@@ -313,6 +313,28 @@ def test_analyze_vision_skips_a_remote_ollama_without_consent(
     assert (run.proj / "highlights.json").is_file()  # the run succeeds
 
 
+def test_analyze_vision_on_by_default_skips_a_remote_ollama_without_consent_quietly(
+    run,  # noqa: F811
+    home,
+    wire,
+    capsys,
+    caplog,
+    monkeypatch,
+) -> None:
+    """#893: on only by default, a provider without consent is an INFO line with the key, no
+    WARNING and no vision_consent_needed warning; still nothing goes out."""
+    monkeypatch.setattr(analyze, "VisionRater", vision.VisionRater)  # the run fixture fakes it
+    with caplog.at_level(logging.INFO), jsonout.run("analyze") as res:
+        run.go(vision="auto", ollama_url=REMOTE)
+    state = last_states(progress_lines(capsys))["vision"]
+    assert state["state"] == "skipped" and f'add "{KEY}" to' in state["detail"]
+    consent = [r for r in caplog.records if f'add "{KEY}" to' in r.getMessage()]
+    assert [r.levelno for r in consent] == [logging.INFO]
+    assert "vision_consent_needed" not in [w["code"] for w in res.warnings]
+    assert wire == []
+    assert (run.proj / "highlights.json").is_file()
+
+
 def test_events_vlm_layer_skips_a_remote_ollama_without_consent(
     extra_ok,  # noqa: F811
     home,
@@ -468,6 +490,20 @@ def test_a_hosted_provider_without_consent_warns_once_with_its_key(hosted, caplo
     assert HOSTED_WANT in caplog.text
     assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
     assert res.warnings[0]["message"] == HOSTED_WANT
+
+
+def test_a_quiet_consent_note_is_info_and_a_later_warning_still_comes(hosted, caplog) -> None:
+    """#893: vision on only by default notes the missing consent as INFO; a step of the same
+    run that asked for the provider still gets its one WARNING."""
+    rater = vision.VisionRater()
+    with caplog.at_level(logging.INFO), jsonout.run("x") as res:
+        assert rater.warn_consent(quiet=True) == HOSTED_WANT
+        assert res.warnings == []
+        assert [r.levelno for r in caplog.records] == [logging.INFO]
+        assert rater.warn_consent() == HOSTED_WANT
+    assert hosted == []
+    assert [r.levelno for r in caplog.records] == [logging.INFO, logging.WARNING]
+    assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
 
 
 @pytest.mark.parametrize("remote", [False, True], ids=["hosted", "remote-ollama"])

@@ -151,13 +151,18 @@ see [troubleshooting](troubleshooting/models.md)).
 
 ### vision
 
-`true` or `false` (default). With `true`, `analyze` and `edit` rate the top candidates with the
-configured vision model
+`true` or `false`; with no key, vision is on by default. `analyze` and `edit` rate the top
+candidates with the configured vision model
 ([getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) unless
-`--no-vision` is given; with `false` or no key, only `--vision` turns it on for one run. The UI's
-Models tab writes this key ("Rate frames with vision model"), and
-every analysis the UI starts ("Analyze footage" or "Analyze again") passes its value at that
-moment as `--vision` or `--no-vision`; the UI has no per-run choice. Other values are rejected.
+`--no-vision` is given. With no key, a model that does not answer (no Ollama, model not
+pulled, lite install), missing consent or low memory skips the step with one INFO line: no
+warning, and the run goes on. With `true` (or `--vision`) those cases give a WARNING and the
+`vision_unavailable` or `vision_consent_needed` warning, and low memory stops the run. With
+`false`, only `--vision` turns it on for one run. The UI's Models tab writes this key
+("Rate frames with vision model", on by default: turning it on removes the key, turning it
+off writes `false`), and every analysis the UI starts ("Analyze footage" or "Analyze again")
+passes `--no-vision` when it is off and no flag otherwise; the UI has no per-run choice.
+Other values are rejected.
 A rating covers a moment's frames and, except for `action-cam`, the speech in it (the Vision
 consent already covers these transcript excerpts).
 

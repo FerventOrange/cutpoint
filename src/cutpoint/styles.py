@@ -57,7 +57,7 @@ class Style:
             of time someone is talking.
         vision_weight: The most a vision model rating can raise or lower a
             candidate's score, as a fraction, when vision is requested
-            (``--vision``; opt-in for every style): 0.3 means +30% at 10/10,
+            (``--vision``; on by default for every style): 0.3 means +30% at 10/10,
             -30% at 0/10 and no change at 5/10.
         pre_roll: Seconds of context kept before a peak.
         post_roll: Seconds kept after a peak.

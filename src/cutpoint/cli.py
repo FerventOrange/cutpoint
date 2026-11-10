@@ -38,6 +38,7 @@ from cutpoint.clips import export_clips
 from cutpoint.config import (
     COLOR_MODES,
     COMPRESS_PEAKS,
+    Vision,
     analysis_skip,
     color_default,
     compress_peaks_default,
@@ -82,8 +83,9 @@ MIX_EXCLUDE_FILE = "mix_exclude.json"  # cutpoint.mix.EXCLUDE_FILE
 PROXY_PROVIDERS = ("claude-code", "codex", "antigravity")  # cutpoint.assistant.cliproxy.PROVIDERS
 
 
-def _vision(a: argparse.Namespace) -> bool:
-    """``--vision`` / ``--no-vision`` as given, else ``vision`` in config.json (default off)."""
+def _vision(a: argparse.Namespace) -> Vision:
+    """``--vision`` / ``--no-vision`` as given, else ``vision`` in config.json, else
+    :data:`~cutpoint.config.VISION_AUTO` (on; skipped quietly when no model answers, #893)."""
     return vision_default() if a.vision is None else a.vision
 
 
@@ -1407,8 +1409,8 @@ def _add_vision_arguments(p: argparse.ArgumentParser, lead: str) -> None:
         "--vision",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help=f"{lead}--no-vision skips it when config.json turns it on "
-        "(default: vision in config.json, else off)",
+        help=f"{lead}--no-vision skips it "
+        "(default: vision in config.json, else on when a vision model answers)",
     )
     p.add_argument(
         "--vision-top",

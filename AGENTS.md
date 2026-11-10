@@ -108,11 +108,14 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
 - Options: `--style`, `--top`, `--max-total`, `--vertical`, `--force` and `--events` override
   the kind. `--no-keep-clips` exports the clips into a temporary folder that is removed after
   the join (not with `--kind clips`). `--format fcpxml|otio` writes that timeline instead of
-  the final video (clips kept). `--vision` adds the optional frame rating, which also reads what was said in each moment
+  the final video (clips kept). The frame rating by the vision model, which also reads what was said in each moment
   except for `action-cam` (Ollama by default;
-  the Vision role in the `cutpoint ui` Models tab can route it to a hosted provider). It is off
-  for every style unless `"vision": true` in the user's `config.json` turns it on; `--no-vision`
-  then skips it. An explicit `--ollama-url` or `--ollama-model` wins over a hosted Vision
+  the Vision role in the `cutpoint ui` Models tab can route it to a hosted provider), is on
+  by default. With no `--vision` and no `"vision"` key in the user's `config.json`, a missing
+  model (no Ollama, model not pulled, lite install), missing consent or low memory skips it with
+  one INFO line: no warning, and the run goes on. `--vision` or `"vision": true` asks for it:
+  then the WARNING and `vision_unavailable` or `vision_consent_needed` warnings apply, and low
+  memory stops the run with `low_memory`. `--no-vision` or `"vision": false` turns it off. An explicit `--ollama-url` or `--ollama-model` wins over a hosted Vision
   provider and over the AI Chat model for dialogue reading, and also applies to the
   crash/profile step. An `--ollama-url` on another machine, or a hosted Vision provider in the
   Models tab, needs the user's Vision consent (Models tab); without it vision is skipped with a

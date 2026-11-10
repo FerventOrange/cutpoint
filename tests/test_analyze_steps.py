@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import signal
 import sys
@@ -34,7 +35,7 @@ from cutpoint import (
     transcribe,
     vision,
 )
-from cutpoint.errors import FFmpegError
+from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events import cli as events_cli
 from cutpoint.events import common, pipeline, report, scoring
 from cutpoint.events import paths as event_paths
@@ -273,6 +274,112 @@ def test_vision_uses_the_cached_ratings_when_ollama_is_unreachable(run, capsys, 
     assert hl["settings"]["vision_used"] is True
     assert hl["settings"]["vision"] == {"requested": 1, "failed": 0, "uncached": 0}
     assert "using 1 cached rating, 0 candidates had no cached rating" in caplog.text
+
+
+def _vision_logs(caplog: pytest.LogCaptureFixture, level: int) -> list[str]:
+    """The messages at ``level`` that mention vision or Ollama."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == level and ("vision" in r.getMessage() or "Ollama" in r.getMessage())
+    ]
+
+
+@pytest.mark.parametrize(
+    ("vision_arg", "warned"), [(config.VISION_AUTO, False), (True, True)], ids=["default", "asked"]
+)
+def test_vision_on_by_default_without_ollama_is_one_info_line(
+    run, capsys, caplog, monkeypatch, vision_arg, warned
+):
+    """#893: on only by default, no Ollama skips vision with the rater's one INFO line and no
+    vision_unavailable warning; asked for (--vision, "vision": true) it still warns."""
+    monkeypatch.setattr(analyze, "VisionRater", vision.VisionRater)
+
+    def refused(*_a, **_k):
+        raise vision.requests.ConnectionError("refused")
+
+    monkeypatch.setattr(vision.requests, "get", refused)
+    with caplog.at_level(logging.INFO), jsonout.run("analyze") as result:
+        run.go(vision=vision_arg)
+    got = last_states(progress_lines(capsys))["vision"]
+    assert got["state"] == "skipped" and "not reachable" in got["detail"]
+    codes = [w["code"] for w in result.warnings]
+    assert ("vision_unavailable" in codes) is warned
+    assert len(_vision_logs(caplog, logging.WARNING)) == int(warned)
+    info = _vision_logs(caplog, logging.INFO)
+    assert len([m for m in info if "skipping vision" in m]) == 1
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    assert hl["settings"]["vision_requested"] == vision_arg
+
+
+def test_vision_on_by_default_with_a_bad_ollama_port_is_an_info_line(
+    run, capsys, monkeypatch, caplog
+):
+    monkeypatch.setattr(analyze, "VisionRater", vision.VisionRater)
+    monkeypatch.setenv("OLLAMA_HOST", "myhost:99999")
+    with caplog.at_level(logging.INFO), jsonout.run("analyze") as result:
+        run.go(vision=config.VISION_AUTO)
+    got = last_states(progress_lines(capsys))["vision"]
+    assert got["state"] == "skipped" and "invalid port" in got["detail"]
+    assert "vision_unavailable" not in [w["code"] for w in result.warnings]
+    assert _vision_logs(caplog, logging.WARNING) == []
+    assert any("vision model not usable" in m for m in _vision_logs(caplog, logging.INFO))
+
+
+def test_vision_on_by_default_uses_cached_ratings_without_a_warning(run, capsys, caplog):
+    run.vision_ok, run.vision_cached = False, True
+    with caplog.at_level(logging.INFO), jsonout.run("analyze") as result:
+        run.go(vision=config.VISION_AUTO)
+    assert last_states(progress_lines(capsys))["vision"]["state"] == "done"
+    assert run.rated == 1
+    assert "vision_unavailable" not in [w["code"] for w in result.warnings]
+    assert _vision_logs(caplog, logging.WARNING) == []
+    assert any("using 1 cached rating" in m for m in _vision_logs(caplog, logging.INFO))
+
+
+def test_vision_on_by_default_rates_when_the_model_answers(run, capsys):
+    run.go(vision=config.VISION_AUTO)
+    assert last_states(progress_lines(capsys))["vision"]["state"] == "done"
+    assert run.rated == 1
+
+
+@pytest.mark.parametrize("vision_arg", [config.VISION_AUTO, True], ids=["default", "asked"])
+def test_vision_short_of_memory_stops_only_an_asked_for_run(
+    run, capsys, caplog, monkeypatch, vision_arg
+):
+    """#893 F1: on only by default, too little memory for the vision model skips the rating
+    with one INFO line and the run finishes; asked for, the run stops (low_memory, resume)."""
+
+    def short(*_a, **_k):
+        raise LowMemoryError(
+            "Not enough memory for m:1: 1.0 GB RAM free, 8.0 GB needed; close other programs, "
+            "then run cutpoint resume",
+            "1.0 GB RAM free, 8.0 GB needed",
+        )
+
+    monkeypatch.setattr(analyze.VisionRater, "rate", short)
+    monkeypatch.setattr(analyze.VisionRater, "model", "m:1", raising=False)
+    with caplog.at_level(logging.INFO), jsonout.run("analyze") as result:
+        if vision_arg is True:
+            with pytest.raises(LowMemoryError):
+                run.go(vision=vision_arg)
+            return
+        run.go(vision=vision_arg)
+    assert result.error is None
+    assert result.warnings == []
+    assert _vision_logs(caplog, logging.WARNING) == []
+    info = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.INFO and "not enough free memory" in r.getMessage()
+    ]
+    assert info == [
+        "Vision skipped: not enough free memory for m:1 (1.0 GB RAM free, 8.0 GB needed); "
+        "the run goes on without it"
+    ]
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    assert hl["settings"]["vision_used"] is False
+    assert not any("vision_rated" in c for c in hl["candidates"])
 
 
 def test_vision_counts_the_candidates_without_a_cached_rating(run, caplog, monkeypatch):

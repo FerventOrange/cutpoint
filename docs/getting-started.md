@@ -8,7 +8,7 @@
 | [uv](https://docs.astral.sh/uv/) | Manages the virtual environment and dependencies. |
 | ffmpeg and ffprobe 5.1 or newer | Decoding, loudness, encoding. Working NVIDIA/AMD encoders are probed; libx264 is the software fallback. |
 | NVIDIA GPU (recommended) | Whisper transcription uses CUDA when the `gpu` extra is installed and falls back to the CPU otherwise. The optional `events` layers pick the GPU automatically and run on the CPU otherwise, much more slowly. |
-| Ollama (optional) | Only for `analyze --vision`, `edit --vision`, `360 director --vl-check`, new activity profiles and the local AI Chat ([setup](#optional-ollama-for-frame-rating-and-ai-chat)). |
+| Ollama (optional) | For the default frame rating of `analyze` and `edit`, `360 director --vl-check`, new activity profiles and the local AI Chat ([setup](#optional-ollama-for-frame-rating-and-ai-chat)). |
 | Disk space | Caches and models live under the data folder. Models for `cutpoint setup` are large (see [Download models](#download-models-only-for-cutpoint-events)). Clips and finals are re-encoded, so budget for them in the project folder. |
 
 Windows and Linux are tested (CI runs the tests on both). Lite
@@ -381,10 +381,11 @@ packages; the `pip` step only checks them and prints the install command. The VL
 
 Ollama runs local models. Cutpoint works without it. Only these features use it:
 
-- `analyze --vision` and `edit --vision`: a vision model rates the top candidates. It is off
-  unless you ask for it per run or turn it on by default with "Rate frames with vision
-  model" in the UI's Models tab, which saves [`"vision": true`](configuration.md#vision)
-  in `config.json` (`--no-vision` then skips it for one run). In `cutpoint ui`, that setting is
+- `analyze` and `edit`: a vision model rates the top candidates. It is on by default; with
+  no Ollama or model, it is skipped with one INFO line. `--vision` asks for it (a missing
+  model is then a WARNING), `--no-vision` skips it for one run, and "Rate frames with vision
+  model" in the UI's Models tab saves [`"vision": false`](configuration.md#vision)
+  in `config.json` to turn it off. In `cutpoint ui`, that setting is
   the only switch: every analysis there follows it. The model is unloaded from GPU memory as soon
   as the rating is done.
 - The VLM layer of `cutpoint events` (and `edit --events`): the same vision model describes
@@ -441,7 +442,7 @@ it as hosted and asks for [consent](commands.md#ai-chat) before the first messag
 it frames only after "Allow vision requests" in the Models tab, and the Models tab
 refuses a URL with a user name or password.
 
-**Turn it on.** Run `analyze --vision` or `edit --vision`, or set `"vision": true`. For the chat,
+**Turn it on.** Frame rating is on by default once a vision model is pulled; `--vision` makes a missing model a WARNING. For the chat,
 open the AI Chat tab in `cutpoint ui` on an analyzed project. If it does not connect, see
 [Ollama is not reachable](troubleshooting/models.md#ollama-is-not-reachable).
 

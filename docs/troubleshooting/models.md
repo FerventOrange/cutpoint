@@ -2,11 +2,12 @@
 
 ## Ollama is not reachable
 
-`analyze` uses Ollama only for the optional `--vision` rating, which is off unless you pass
-`--vision` (or turn it on in the Models tab in `cutpoint ui`, which sets `"vision": true` in
-`config.json`; see [configuration](../configuration.md#vision)). If the server or model is not available
-then, it logs a WARNING (a `vision_unavailable` warning with `--json`) and continues without the
-rating; if some of the top candidates have cached ratings, it uses those instead. The local AI
+`analyze` uses Ollama for the vision rating, which is on unless you pass `--no-vision` (or turn
+it off in the Models tab in `cutpoint ui`, which sets `"vision": false` in
+`config.json`; see [configuration](../configuration.md#vision)). If the server or model is not
+available and you did not ask for it, it logs one INFO line and continues without the rating.
+With `--vision` or `"vision": true` it logs a WARNING (a `vision_unavailable` warning with
+`--json`) and continues without the rating; if some of the top candidates have cached ratings, it uses those instead. The local AI
 Chat, `360 director --vl-check` and building a new activity profile use it too. To install it, see
 [getting started](../getting-started.md#optional-ollama-for-frame-rating-and-ai-chat).
 

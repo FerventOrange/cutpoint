@@ -2131,10 +2131,12 @@ def test_reanalyze_passes_recorded_vision_and_ollama_options(
 @pytest.mark.parametrize(
     ("body", "saved", "cfg", "vision"),
     [
-        ({}, {}, None, False),  # opt-in: off by default
+        # unset: neither flag, the CLI's default (on; no model is no warning, #893)
+        ({}, {}, None, None),
         ({}, {}, False, False),
         ({}, {}, True, True),  # Analyze again: the Settings value
-        ({}, {"vision_requested": True}, None, False),  # not what the last run asked
+        ({}, {"vision_requested": False}, None, None),  # not what the last run asked
+        ({}, {"vision_requested": True}, False, False),
         ({}, {"vision_requested": False}, True, True),
         ({"vision": True}, {}, False, False),  # no per-run choice: a body flag is ignored
         ({"vision": False}, {}, True, True),
@@ -2148,9 +2150,9 @@ def test_analyze_job_passes_the_settings_vision_explicitly(
     body: dict,
     saved: dict,
     cfg: bool | None,
-    vision: bool,
+    vision: bool | None,
 ) -> None:
-    """--vision or --no-vision as Settings says when the job starts, never neither."""
+    """--vision or --no-vision as Settings says when the job starts; neither when unset."""
     if cfg is not None:
         set_config(home, vision=cfg)
     p = ui.projects_dir() / "cli-made"
@@ -2164,8 +2166,8 @@ def test_analyze_job_passes_the_settings_vision_explicitly(
     monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
     res = client.post("/api/projects/cli-made/jobs", json={"action": "analyze", **body})
     assert res.status_code == 200
-    assert ("--vision" in captured[0]) is vision
-    assert ("--no-vision" in captured[0]) is not vision
+    assert ("--vision" in captured[0]) is (vision is True)
+    assert ("--no-vision" in captured[0]) is (vision is False)
 
 
 def test_put_settings_saves_visual_index_and_jobs_pass_it_explicitly(
@@ -2204,10 +2206,11 @@ def test_analyze_follows_settings_saved_just_before(
         assert client.put("/api/settings", json={"vision": value}).status_code == 200
         res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
         assert res.status_code == 200
+    # on removes the key (the default, #893): neither flag; off passes --no-vision
     assert [("--vision" in a, "--no-vision" in a) for a in captured] == [
-        (True, False),
+        (False, False),
         (False, True),
-        (True, False),
+        (False, False),
     ]
 
 
@@ -3610,7 +3613,7 @@ def test_settings_report_the_folder_the_lock_and_the_config_file(
     assert got["projects_dir"] == str(config.projects_dir())
     assert got["projects_dir_locked"] is False
     assert got["config_file"] == str(home / "config.json")
-    assert got["vision"] is False and got["vision_model"]
+    assert got["vision"] is True and got["vision_model"]  # unset: on by default (#893)
     locked = tmp_path / "locked"
     monkeypatch.setenv("CUTPOINT_PROJECTS_DIR", str(locked))
     config.get_config.cache_clear()
@@ -3693,9 +3696,10 @@ def test_put_settings_saves_the_vision_default(
     res = client.put("/api/settings", json={"vision": True})
     assert res.status_code == 200, res.text
     assert res.json()["vision"] is True
-    assert json.loads(cfg.read_text("utf-8")) == {"player_tags": ["Me"], "vision": True}
+    # on is the default (#893): no key written
+    assert json.loads(cfg.read_text("utf-8")) == {"player_tags": ["Me"]}
     assert client.get("/api/settings").json()["vision"] is True
-    assert config.vision_default() is True  # the CLI default too
+    assert config.vision_default() == config.VISION_AUTO  # the CLI default too
 
     assert client.put("/api/settings", json={"vision": False}).json()["vision"] is False
     assert config.vision_default() is False
@@ -3704,14 +3708,40 @@ def test_put_settings_saves_the_vision_default(
     got = client.put("/api/settings", json=both).json()
     assert got["vision"] is True and got["projects_dir"] == str(tmp_path)
     data = json.loads(cfg.read_text("utf-8"))
-    assert data == {"player_tags": ["Me"], "vision": True, "projects_dir": str(tmp_path)}
+    assert data == {"player_tags": ["Me"], "projects_dir": str(tmp_path)}
 
     other = tmp_path / "other"  # a later folder replaces the old one in place; other keys stay
     other.mkdir()
     assert client.put("/api/settings", json={"projects_dir": str(other)}).status_code == 200
     data = json.loads(cfg.read_text("utf-8"))
-    assert list(data) == ["player_tags", "vision", "projects_dir"]
+    assert list(data) == ["player_tags", "projects_dir"]
     assert data["projects_dir"] == str(other)
+
+
+def test_put_settings_vision_off_then_on_leaves_the_key_out_and_jobs_pass_no_flag(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#893 F3: on is the default, so the toggle turned on removes the key (no model answering
+    stays quiet); off is written."""
+    cfg = home / "config.json"
+    set_config(home, player_tags=["Me"])
+    assert client.put("/api/settings", json={"vision": False}).json()["vision"] is False
+    assert json.loads(cfg.read_text("utf-8")) == {"player_tags": ["Me"], "vision": False}
+    assert client.put("/api/settings", json={"vision": True}).json()["vision"] is True
+    assert json.loads(cfg.read_text("utf-8")) == {"player_tags": ["Me"]}
+    assert config.vision_default() == config.VISION_AUTO
+    assert client.get("/api/settings").json()["vision"] is True
+
+    p = ui.projects_dir() / "cli-made"
+    p.mkdir(parents=True)
+    footage = tmp_path / "clip.mp4"
+    footage.write_bytes(b"x")
+    hl = {"style": "gaming", "settings": {"inputs": [str(footage)]}, "sources": []}
+    cache.save_json(p / "highlights.json", hl)
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    assert client.post("/api/projects/cli-made/jobs", json={"action": "analyze"}).status_code == 200
+    assert "--vision" not in captured[0] and "--no-vision" not in captured[0]
 
 
 def test_put_settings_vision_needs_a_boolean_and_no_folder_rules(
@@ -3724,19 +3754,20 @@ def test_put_settings_vision_needs_a_boolean_and_no_folder_rules(
     # Only the projects folder is locked by CUTPOINT_PROJECTS_DIR or a running job.
     monkeypatch.setenv("CUTPOINT_PROJECTS_DIR", str(tmp_path / "env"))
     client.app.state.jobs.jobs["j1"] = SimpleNamespace(status="running", proc=None, cancelled=False)
-    assert client.put("/api/settings", json={"vision": True}).status_code == 200
-    both = {"vision": False, "projects_dir": str(tmp_path)}
+    assert client.put("/api/settings", json={"vision": False}).status_code == 200
+    both = {"vision": True, "projects_dir": str(tmp_path)}
     assert client.put("/api/settings", json=both).status_code == 409
-    assert json.loads((home / "config.json").read_text("utf-8")) == {"vision": True}
+    assert json.loads((home / "config.json").read_text("utf-8")) == {"vision": False}
 
 
-def test_settings_show_a_wrongly_typed_vision_as_off_and_replace_it(
+def test_settings_show_a_wrongly_typed_vision_as_the_default_and_replace_it(
     client: TestClient, home: Path
 ) -> None:
     set_config(home, vision="yes")
     assert client.get("/api/projects").status_code == 409  # rejected by get_config
+    assert client.get("/api/settings").json()["vision"] is True  # the default: on (#893)
+    assert client.put("/api/settings", json={"vision": False}).status_code == 200
     assert client.get("/api/settings").json()["vision"] is False
-    assert client.put("/api/settings", json={"vision": True}).status_code == 200
     assert client.get("/api/projects").status_code == 200
 
 
@@ -3997,7 +4028,7 @@ def test_a_job_cannot_start_while_the_projects_folder_is_being_written(
     real_write = ui.set_config_values
     attempt: dict = {}
 
-    def write_while_another_tab_starts_a_job(values):
+    def write_while_another_tab_starts_a_job(values, **kw):
         def start() -> None:
             attempt["job"] = jobs.start("p", "analyze", SLEEP_JOB)
             attempt["wrote"] = wrote.is_set()
@@ -4007,7 +4038,7 @@ def test_a_job_cannot_start_while_the_projects_folder_is_being_written(
         attempt["wrote_event"] = wrote
         threading.Thread(target=start, daemon=True).start()
         attempt["overlapped"] = done.wait(0.5)  # True: the job started mid-write
-        real_write(values)
+        real_write(values, **kw)
         wrote.set()
 
     monkeypatch.setattr(ui, "set_config_values", write_while_another_tab_starts_a_job)
@@ -7819,8 +7850,9 @@ def test_a_preset_runs_edit_with_its_kind_in_the_projects_own_style(
     assert res.status_code == 200, res.text
     args = _cli_args(captured[0])
     src = str(tmp_path / "clip.mp4")
+    # vision unset in config.json: neither --vision nor --no-vision, on by default (#893)
     assert args == ["edit", src, "--kind", kind, "--style", "funny", "--out", str(p),
-                    "--compress-peaks", "off", "--no-vision", "--no-visual-index"]  # fmt: skip
+                    "--compress-peaks", "off", "--no-visual-index"]  # fmt: skip
 
 
 def test_a_preset_passes_vertical_compress_peaks_and_the_settings_vision(
@@ -10926,6 +10958,9 @@ CHAT = {"assistant": {"provider": "claude-code"}}
         ({"vision_assistant": {"provider": "codex"}}, ["--vision"], "funny", True),
         # neither --vision nor --no-vision: the vision setting of config.json
         ({"vision": True, "vision_assistant": {"provider": "codex"}}, [], "funny", True),
+        # unset: on by default (#893); "vision": false turns it off
+        ({"vision_assistant": {"provider": "codex"}}, [], "funny", True),
+        ({"vision": False, "vision_assistant": {"provider": "codex"}}, [], "funny", False),
         # an explicit Ollama option wins over a subscription Vision model and the chat model
         (
             {"vision_assistant": {"provider": "codex"}, **CHAT},

@@ -24,6 +24,7 @@ from cutpoint import cache, category, folders, jsonout, progress, runstate
 from cutpoint.assemble import assemble, temporary_clips
 from cutpoint.category import FUNNY, HYPE
 from cutpoint.clips import export_clips
+from cutpoint.config import Vision
 from cutpoint.encode import Lut
 from cutpoint.planning import report_clips
 from cutpoint.styles import ACTION_CAM, AUTO, AutoRequest, Style, get_style
@@ -136,7 +137,7 @@ def run_edit(
     vertical: bool = False,
     force: bool = False,
     events: bool = False,
-    vision: bool | None = None,
+    vision: Vision | None = None,
     vision_top: int | None = None,
     ollama_url: str | None = None,
     ollama_model: str | None = None,
@@ -155,7 +156,8 @@ def run_edit(
     Analysis is cached as with ``cutpoint analyze``. ``force`` has ``clips --force``
     semantics. ``events`` runs ``cutpoint events`` (default options) before the clips; its
     VLM layer reports as the ``keyframes`` step again. ``vision`` is ``analyze --vision``
-    (opt-in: None or False rates nothing with Ollama); ``vision_top``, ``ollama_url``,
+    (True, :data:`~cutpoint.config.VISION_AUTO` as the CLI's default; None or False rates
+    nothing); ``vision_top``, ``ollama_url``,
     ``ollama_model`` and ``skip`` are analyze's options of those names (the Ollama ones also
     for the events VLM layer; ``skip`` also leaves its steps' layers out of ``events``,
     :data:`~cutpoint.analyze.LAYER_STEP`); ``visual_index`` is ``analyze --visual-index``
@@ -220,7 +222,7 @@ def _run_edit(
     vertical: bool,
     force: bool,
     events: bool,
-    vision: bool | None,
+    vision: Vision | None,
     vision_top: int | None,
     ollama_url: str | None,
     ollama_model: str | None,

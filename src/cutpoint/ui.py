@@ -40,7 +40,8 @@ Trust boundaries:
   ``visual_index`` and the assistant's ``provider``, ``model`` and ``url`` in ``config.json``. The projects folder never changes while a job runs or when
   ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved. Every analysis the page
   starts (first or again) passes ``--vision`` or ``--no-vision`` as ``vision`` says when it
-  starts; the page has no per-run vision box. The same goes for ``--visual-index`` or
+  starts, neither while ``vision`` is unset (on by default: no model, no warning, #893); the
+  page has no per-run vision box. The same goes for ``--visual-index`` or
   ``--no-visual-index`` as ``visual_index`` says.
   While ``config.json`` is unreadable or holds a value Cutpoint rejects, the project routes answer
   409 naming the file and the error; session, pick and settings keep working.
@@ -139,6 +140,7 @@ from cutpoint.config import (
     ASSISTANT_PROVIDERS,
     COLOR_MODES,
     COMPRESS_PEAKS,
+    VISION_AUTO,
     VISION_PROVIDERS,
     AssistantSettings,
     analysis_skip,
@@ -618,7 +620,8 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
     """The settings for config ``data``: the projects folder, the vision default and the export
     defaults of Compress peaks and Color, so other invalid keys in ``config.json`` do not hide
     them; a wrongly typed ``projects_dir`` is shown as is, to replace, a ``vision`` that is not
-    ``true`` as off and an unknown ``compress_peaks`` or ``color`` as off."""
+    ``false`` as on (unset: on by default, #893) and an unknown ``compress_peaks`` or ``color``
+    as off."""
     peaks = data.get("compress_peaks")
     color = data.get("color")
     try:
@@ -643,7 +646,7 @@ def settings_view(data: dict[str, Any]) -> dict[str, Any]:
         "projects_dir": folder,
         "projects_dir_locked": paths.env("PROJECTS_DIR") is not None,
         "config_file": str(paths.config_file()),
-        "vision": data.get("vision") is True,
+        "vision": data.get("vision") is not False,
         "visual_index": data.get("visual_index") is True,
         "vision_model": default_model(),
         "compress_peaks": peaks if peaks in COMPRESS_PEAKS else "off",
@@ -4088,9 +4091,10 @@ def _subscription_roles(args: list[str], style: object) -> bool:
 def _vision_args(st: dict[str, Any]) -> list[str]:
     """Vision options for an analysis: the Settings values now (explicit, so the job and the page
     agree even if config.json changes before the CLI reads it), including the visual index, and
-    the recorded Ollama options."""
+    the recorded Ollama options. An unset ``vision`` passes neither ``--vision`` nor
+    ``--no-vision``: on by default, where no model is no warning (#893)."""
     cfg = get_config()
-    args = ["--vision" if cfg.vision else "--no-vision"]
+    args = [] if cfg.vision == VISION_AUTO else ["--vision" if cfg.vision else "--no-vision"]
     args.append("--visual-index" if cfg.visual_index else "--no-visual-index")
     vision_top = st.get("vision_top")
     if isinstance(vision_top, int) and not isinstance(vision_top, bool) and vision_top > 0:
@@ -4669,6 +4673,11 @@ def create_app(port: int) -> FastAPI:
         for flag in ("vision", "visual_index"):
             if flag in body:
                 updates[flag] = _flag(body, flag)
+        # vision on is the default (#893): the key goes, so no model answering is no warning;
+        # only off is written
+        remove = ("vision",) if updates.get("vision") is True else ()
+        if remove:
+            del updates["vision"]
         data = config_data()  # an unreadable config.json: refuse before creating the folder
         existing_ast = data.get("assistant")
         existing_ast_prov = existing_ast.get("provider") if isinstance(existing_ast, dict) else None
@@ -4718,7 +4727,8 @@ def create_app(port: int) -> FastAPI:
             with jobs.lock:
                 if moving and any(j.status == "running" for j in jobs.jobs.values()):
                     raise bad(busy, 409)
-                set_config_values(updates)
+                if updates or any(key in data for key in remove):
+                    set_config_values(updates, remove=remove)
         except (ValueError, OSError, HTTPException) as err:
             if created and folder is not None:
                 with contextlib.suppress(OSError):
@@ -4728,7 +4738,7 @@ def create_app(port: int) -> FastAPI:
             if isinstance(err, ValueError):  # config.json is not valid JSON: never overwrite it
                 raise bad(str(err), 409) from err
             raise bad(f"could not save the settings: {err.strerror or err}", 500) from err
-        out = settings_view({**data, **updates})
+        out = settings_view({k: v for k, v in {**data, **updates}.items() if k not in remove})
         if assistant is not None:
             out["assistant_note"] = None
             try:

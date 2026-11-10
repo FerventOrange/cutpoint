@@ -116,6 +116,9 @@ def test_edit_without_new_subtitles_does_not_copy_a_stale_final_srt(pipeline, ho
     ("config", "argv", "expect"),
     [
         ({"vision": True}, [], {"vision": True, "vision_top": None, "skip": ()}),
+        ({}, [], {"vision": "auto"}),  # on by default (#893)
+        ({}, ["--no-vision"], {"vision": False}),
+        ({"vision": False}, [], {"vision": False}),
         (
             {},
             ["--vision", "--vision-top", "12", "--ollama-url", "http://ollama.example:11434",
@@ -125,7 +128,8 @@ def test_edit_without_new_subtitles_does_not_copy_a_stale_final_srt(pipeline, ho
         ),
         ({}, ["--skip", "crashes", "reactions"], {"skip": ("crashes", "reactions")}),
     ],
-    ids=["config-vision", "vision-options", "skip"],
+    ids=["config-vision", "default-vision", "no-vision", "config-no-vision", "vision-options",
+         "skip"],
 )  # fmt: skip
 def test_edit_hands_its_analyze_options_on(pipeline, home, config, argv, expect):
     """The flag/config precedence is test_config's; edit only has to hand the result on."""

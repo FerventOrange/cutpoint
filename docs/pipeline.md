@@ -29,7 +29,7 @@ flowchart TD
         CR["4 Crashes: action-cam footage only"]
         DLG["5 Dialogue: text model marks funny or heated talk, gaming only"]
         RK["6 Ranking: signals plus events rescore"]
-        VIS["7 Vision rating: Ollama, opt-in"]
+        VIS["7 Vision rating: Ollama, on by default"]
         ANA --> DET --> AUD --> TR --> TALK --> SC --> PL --> RE --> KF --> CR --> DLG --> RK --> VIS
         DISC --> KF
     end

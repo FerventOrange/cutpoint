@@ -16,9 +16,10 @@ import os
 import re
 import stat
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
+from typing import Literal
 
 from cutpoint import cache, paths, state
 from cutpoint.utils import file_stamp, matches_glob
@@ -42,6 +43,10 @@ ASSISTANT_PROVIDERS = (
 )
 MEMORY_GUARD_GB = 2.0  # memory_guard default: GB of RAM left free when a model loads (#109)
 MIN_CONTEXT_TOKENS = 2048  # room for the rules, a few moments and one reply
+# vision when neither --vision, --no-vision nor ``vision`` in config.json says (#893): on, but
+# a model that does not answer (no Ollama, a lite install) skips it with an INFO line only
+VISION_AUTO = "auto"
+Vision = bool | Literal["auto"]  # True / False: asked for or turned off; or VISION_AUTO
 
 
 @dataclass(frozen=True)
@@ -67,7 +72,7 @@ class Config:
     player_tags: tuple[str, ...] = ()
     ollama_url: str = ""
     video_encoder: str = "auto"
-    vision: bool = False
+    vision: Vision = VISION_AUTO  # ``vision`` in config.json; unset: VISION_AUTO (#893)
     analysis_skip: tuple[str, ...] = ()
     compress_peaks: str = "off"
     export_workers: int | None = None  # None: auto
@@ -226,7 +231,7 @@ def _load_config(path: Path) -> Config:
         tuple(t for t in tags if t.strip()),
         str(data.get("ollama_url") or ""),
         encoder,
-        data.get("vision") is True,
+        vision if isinstance(vision := data.get("vision"), bool) else VISION_AUTO,
         skip,
         peaks,
         _export_workers(path, data),
@@ -379,9 +384,12 @@ def _analysis_skip(path: Path, data: dict) -> tuple[str, ...]:
     return skip
 
 
-def set_config_values(values: dict[str, object], path: Path | None = None) -> Path:
-    """Write ``values`` into ``config.json`` atomically, keeping the other keys, their order and
-    the file's indentation; the cached :func:`get_config` is dropped. Returns the file written.
+def set_config_values(
+    values: dict[str, object], path: Path | None = None, *, remove: Collection[str] = ()
+) -> Path:
+    """Write ``values`` into ``config.json`` atomically and drop the keys in ``remove``, keeping
+    the other keys, their order and the file's indentation; the cached :func:`get_config` is
+    dropped. Returns the file written.
 
     Raises:
         ValueError: If the file exists but is not valid JSON.
@@ -396,6 +404,8 @@ def set_config_values(values: dict[str, object], path: Path | None = None) -> Pa
         if lead:
             indent = len(lead) if lead.strip(" ") == "" else lead
     data.update(values)
+    for key in remove:
+        data.pop(key, None)
     path.parent.mkdir(parents=True, exist_ok=True)
     cache.save_json(path, data, indent=indent)  # type: ignore[arg-type]
     get_config.cache_clear()
@@ -417,9 +427,10 @@ def resolve_stage_dir(data: dict) -> Path:
     )
 
 
-def vision_default() -> bool:
-    """Whether ``analyze`` and ``edit`` rate frames with Ollama when neither ``--vision`` nor
-    ``--no-vision`` is given (``vision`` in ``config.json``; default False)."""
+def vision_default() -> Vision:
+    """Whether ``analyze`` and ``edit`` rate frames with the vision model when neither
+    ``--vision`` nor ``--no-vision`` is given: ``vision`` in ``config.json`` (True or False),
+    else :data:`VISION_AUTO` (on; skipped with an INFO line when no model answers, #893)."""
     return get_config().vision
 
 

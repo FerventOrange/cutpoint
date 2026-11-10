@@ -48,7 +48,7 @@ from cutpoint import (
     runstate,
     scorer,
 )
-from cutpoint.config import path_key, remap_source, unc_path
+from cutpoint.config import VISION_AUTO, Vision, path_key, remap_source, unc_path
 from cutpoint.dsp import conv_same
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events import paths as event_paths
@@ -2984,6 +2984,17 @@ def _rate_vision(
     return used, n_failed
 
 
+def _vision_unavailable(message: str, quiet: bool) -> None:
+    """Log why the vision step rates without the model or not at all: a WARNING and the
+    ``vision_unavailable`` warning of ``--json``, or with ``quiet`` (vision on only by default,
+    #893) an INFO line."""
+    if quiet:
+        logger.info("%s", message)
+        return
+    logger.warning("%s", message)
+    jsonout.warn("vision_unavailable", message)
+
+
 def _vision_batches(top: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
     """The candidates to rate in batches for ``--batch-size`` ``size``: those of ``size``
     sources each (sources in the order of their best candidate, each one's candidates in rank
@@ -3002,7 +3013,7 @@ def analyze(
     style: Style | AutoRequest,
     out_dir: Path,
     *,
-    vision: bool | None = None,
+    vision: Vision | None = None,
     model: str | None = None,
     language: str | None = None,
     use_scenes: bool = True,
@@ -3047,8 +3058,10 @@ def analyze(
             footage category (:mod:`cutpoint.category`); highlights.json records the style
             used, ``settings.style_requested`` ``auto`` and the ``detection`` block.
         out_dir: Project directory.
-        vision: True = rate the top candidates with Ollama (a warning if it is not
-            available); False or None = no vision (opt-in, never automatic).
+        vision: True = rate the top candidates with the vision model (a warning if it is
+            not available); :data:`~cutpoint.config.VISION_AUTO` = the same, but a model that
+            does not answer or needs consent skips it with an INFO line only (the default of
+            ``analyze`` and ``edit``, #893); False or None = no vision.
         model: faster-whisper model name (default: medium on CUDA, small on CPU).
         language: Force transcription language (e.g. "en"); None = autodetect.
         use_scenes: Run scene detection.
@@ -3122,7 +3135,7 @@ def _analyze(
     out_dir: Path,
     steps: progress.Run,
     *,
-    vision: bool | None,
+    vision: Vision | None,
     model: str | None,
     language: str | None,
     use_scenes: bool,
@@ -3333,7 +3346,8 @@ def _analyze(
                 "whisper_model": tr.model_name,
                 "whisper_device": tr.device,
                 "scenes": use_scenes,
-                "vision_requested": bool(vision),
+                # VISION_AUTO: on by default (#893), as a re-rank asks again
+                "vision_requested": VISION_AUTO if vision == VISION_AUTO else bool(vision),
                 "vision_used": False,
                 "vision": None,
                 "vision_top": vision_top,
@@ -3479,19 +3493,20 @@ def _analyze(
                 )
             except ValueError as err:  # a bad port in OLLAMA_HOST / ollama_url
                 bad_url = err
+        # on only by default (#893): a model that does not answer is no warning
+        quiet = vision == VISION_AUTO
         if not vision:
-            steps.skip("vision", "vision is off (Settings, config.json or --vision)")
+            steps.skip("vision", "vision is off (Settings, config.json or --no-vision)")
         elif not cands:
             steps.skip("vision", "no candidates to rate")
         elif rater is None:
             message = f"vision model not usable ({bad_url}); the vision step is skipped"
-            logger.warning("%s", message)
-            jsonout.warn("vision_unavailable", message)
+            _vision_unavailable(message, quiet)
             steps.skip("vision", message)
         elif rater.consent_needed:
             # a provider the user did not agree to (a hosted one, or an Ollama on another
             # machine): no request, no cached ratings either
-            steps.skip("vision", rater.warn_consent())
+            steps.skip("vision", rater.warn_consent(quiet=quiet))
         else:
             # vision_top itself stays None (auto) in the saved settings, for reanalyze
             n_top = (
@@ -3531,16 +3546,32 @@ def _analyze(
                         f"{n_cached} cached rating{'s' if n_cached != 1 else ''}, "
                         f"{n_none} candidate{'s' if n_none != 1 else ''} had no cached rating"
                     )
-                    logger.warning("%s", message)
-                    jsonout.warn("vision_unavailable", message)
+                    _vision_unavailable(message, quiet)
                 with steps.step("vision"):
                     t0 = time.perf_counter()
                     logger.info(
                         "Vision: rating top %d of %d candidates", min(n_top, len(cands)), len(cands)
                     )
-                    used, n_failed = _rate_vision(
-                        cands, rater, n_top, style, wording, batch_size=batch_size
-                    )
+                    try:
+                        used, n_failed = _rate_vision(
+                            cands, rater, n_top, style, wording, batch_size=batch_size
+                        )
+                    except LowMemoryError as err:
+                        if not quiet:  # asked for: resume once memory is free
+                            raise
+                        # on only by default (#893): the run goes on with the ratings it has;
+                        # memguard's args[1] is what is short (its message says to resume)
+                        short = err.args[1] if len(err.args) > 1 else str(err)
+                        logger.info(
+                            "Vision skipped: not enough free memory for %s (%s); the run goes "
+                            "on without it",
+                            rater.model,
+                            short,
+                        )
+                        used = any("vision_rated" in c for c in cands[:n_top])
+                        n_failed = min(n_top, len(cands)) - sum(
+                            "vision_rated" in c for c in cands[:n_top]
+                        )
                     if ev:  # the blended analysis scores plus the event boosts again
                         rescore(hl, ev, out_dir, grids)
                     timings["vision_s"] = round(time.perf_counter() - t0, 2)
@@ -3551,11 +3582,12 @@ def _analyze(
                         **({} if online else {"uncached": rater.missed}),
                     }
             else:
-                message = (
-                    "vision rating requested but Ollama/model unavailable; continuing without it"
-                )
-                logger.warning("%s", message)
-                jsonout.warn("vision_unavailable", message)
+                if not quiet:  # by default: available() logged the one INFO line
+                    message = (
+                        "vision rating requested but Ollama/model unavailable; continuing "
+                        "without it"
+                    )
+                    _vision_unavailable(message, quiet)
                 steps.skip("vision", "Ollama or its vision model is not reachable")
 
         cands = hl["candidates"]
@@ -3659,12 +3691,14 @@ def reanalyze(project: Path) -> Path:
     total = (hl.get("timings") or {}).get("total_s")
     # --style auto: the style it chose, and its decision kept (never detected again)
     detection = hl.get("detection") if st.get("style_requested") == AUTO else None
+    # vision as the earlier run asked: on by default (VISION_AUTO, #893), explicitly or off
+    # (older projects record no request: off)
+    asked = st.get("vision_requested")
     return analyze(
         [Path(p) for p in inputs],
         style,
         project,
-        # opt-in: only if the earlier run asked (older projects record no request: off)
-        vision=st.get("vision_requested") is True,
+        vision=VISION_AUTO if asked == VISION_AUTO else asked is True,
         vision_top=st.get("vision_top"),
         ollama_url=st.get("ollama_url"),
         ollama_model=st.get("ollama_model"),

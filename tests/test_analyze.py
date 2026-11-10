@@ -285,6 +285,7 @@ def test_reanalyze_of_an_analysis_without_a_total_passes_no_earlier_total(tmp_pa
     [
         ({"vision_requested": True, "vision_used": False}, True),  # asked; Ollama was down
         ({"vision_requested": False, "vision_used": False}, False),
+        ({"vision_requested": "auto", "vision_used": False}, "auto"),  # on by default (#893)
         # before vision was opt-in: an automatic run is no request, so no Ollama call now
         ({"vision_used": True}, False),
         ({}, False),
@@ -299,7 +300,7 @@ def test_reanalyze_uses_vision_only_when_the_earlier_run_asked_for_it(
     seen: dict = {}
     monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.update(kw) or proj)
     analyze.reanalyze(proj)
-    assert seen["vision"] is vision
+    assert seen["vision"] == vision and type(seen["vision"]) is type(vision)
 
 
 def _words(probs, texts=None):

@@ -6542,7 +6542,7 @@ function fillVisionRoleSettings(v, enabled, defaultLocalModel, consent) {
   const box = $('#visionRoleEnabled');
   box.checked = enabled === true;
   box.dataset.saved = String(box.checked);
-  $('#visionRoleEnabledHint').textContent = `Rates moments using video frames. Off by default.${defaultLocalModel ? ` Local model: ${defaultLocalModel}.` : ''}${S.project?.kind === '360' ? ' Vision rating is not used for 360 footage.' : ''}`;
+  $('#visionRoleEnabledHint').textContent = `Rates moments using video frames. On by default; skipped when no vision model answers.${defaultLocalModel ? ` Local model: ${defaultLocalModel}.` : ''}${S.project?.kind === '360' ? ' Vision rating is not used for 360 footage.' : ''}`;
 
   S.visionAi = v ?? {
     provider: 'ollama',

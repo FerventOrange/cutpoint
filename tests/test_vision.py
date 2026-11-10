@@ -18,7 +18,7 @@ import pytest
 import requests
 
 import cutpoint.analyze
-from conftest import needs_ffmpeg
+from conftest import needs_ffmpeg, set_config
 from cutpoint import activity, cache, cli, errors, vision
 from cutpoint.styles import get_style
 
@@ -477,8 +477,20 @@ def _argv(video: Path, *flags: str, style: str = "commentary") -> list[str]:
 
 
 @needs_ffmpeg
-def test_analyze_does_not_use_vision_by_default_even_when_ollama_is_reachable(video, home, rater):
+def test_analyze_uses_vision_by_default_when_ollama_is_reachable(video, home, rater):
+    """#893: on by default; the recorded request says so for a re-rank."""
     assert cli.main(_argv(video, style="gaming")) == 0
+    assert rater.calls[:3] == ["init", "available", "rate"]
+    st = json.loads((home / "projects" / "v" / "highlights.json").read_text("utf-8"))["settings"]
+    assert (st["vision_requested"], st["vision_used"]) == ("auto", True)
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("off", ["flag", "config"])
+def test_no_vision_or_vision_false_skips_it_even_when_ollama_is_reachable(video, home, rater, off):
+    if off == "config":
+        set_config(home, vision=False)
+    assert cli.main(_argv(video, *(["--no-vision"] if off == "flag" else []))) == 0
     assert rater.calls == []  # not even asked whether Ollama is there
     st = json.loads((home / "projects" / "v" / "highlights.json").read_text("utf-8"))["settings"]
     assert (st["vision_requested"], st["vision_used"]) == (False, False)

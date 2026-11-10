@@ -36,11 +36,17 @@ def test_player_tags_normalised(home, value, want):
 
 @pytest.mark.parametrize(
     ("data", "want"),
-    [({"vision": None}, False), ({"vision": True}, True)],
+    [
+        ({}, config.VISION_AUTO),  # on by default (#893)
+        ({"vision": None}, config.VISION_AUTO),
+        ({"vision": True}, True),
+        ({"vision": False}, False),
+    ],
 )
-def test_vision_default_is_off_unless_true(home, data, want):
+def test_vision_default_is_on_unless_false(home, data, want):
     set_config(home, **data)
-    assert config.vision_default() is want
+    assert config.vision_default() == want
+    assert type(config.vision_default()) is type(want)
 
 
 @pytest.mark.parametrize("value", ["true", 1, [True]])
@@ -61,7 +67,10 @@ def test_vision_is_read_from_cutpoint_config(home, tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     ("cfg", "argv", "vision"),
     [
-        (None, [], False),
+        (None, [], config.VISION_AUTO),  # on by default (#893)
+        (None, ["--no-vision"], False),
+        (None, ["--vision"], True),
+        (False, [], False),
         (False, ["--vision"], True),
         (True, [], True),
         (True, ["--no-vision"], False),
@@ -231,6 +240,12 @@ def test_set_config_values_writes_several_keys_at_once(home):
     config.set_config_values({"vision": True, "projects_dir": "x"})
     want = {"b": 1, "vision": True, "projects_dir": "x"}
     assert json.loads(path.read_text(encoding="utf-8")) == want
+
+
+def test_set_config_values_removes_keys(home):
+    path = write(home / "config.json", '{"b": 1, "vision": false}')
+    config.set_config_values({"c": 2}, remove=("vision", "absent"))
+    assert json.loads(path.read_text(encoding="utf-8")) == {"b": 1, "c": 2}
 
 
 def test_resolve_projects_dir_prefers_env_then_data_then_default(tmp_path, monkeypatch):

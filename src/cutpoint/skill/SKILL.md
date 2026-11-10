@@ -42,11 +42,12 @@ It writes the project with the clips, `final.mp4` and `<name>-final.mp4` plus `.
 subtitles; the last log lines name them. `--out NAME` names the project. `--no-keep-clips`
 removes the clips after the join when the user wants only the final video.
 
-`--vision` (on `edit` and `analyze`) adds an optional frame rating by the vision model (Ollama
-by default; the Vision role in the `cutpoint ui` Models tab can route it to a hosted
-provider). It is off by default: slower and uses several GB of GPU memory, so pass it only when the
-user asks for it. If the user's `config.json` has `"vision": true`, it is on by default and
-`--no-vision` skips it.
+`edit` and `analyze` rate the top candidates with the vision model by default (Ollama by
+default; the Vision role in the `cutpoint ui` Models tab can route it to a hosted provider). It
+is slower and uses several GB of GPU memory. If no model answers, consent is missing or memory
+is low, the step is skipped with one INFO line and the run goes on. `--vision` (or
+`"vision": true` in `config.json`) asks for it, so a missing model is a WARNING and low memory
+stops the run. `--no-vision` (or `"vision": false`) turns it off.
 
 Choosing the moments yourself:
 
