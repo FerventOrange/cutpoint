@@ -198,6 +198,7 @@ logger = logging.getLogger(__name__)
 
 WEB_DIR = Path(__file__).parent / "web"
 UI_DIR = "ui"  # per-project state: meta.json, review.json, exports.json, proxy/, frames/, pano/
+META_FILE = f"{UI_DIR}/meta.json"  # the project's name, sources and chosen style
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 MAX_SEGMENTS = ai_ops.MAX_SEGMENTS
 MAX_LOG_LINES = 300
@@ -1095,6 +1096,7 @@ class Jobs:
         cwd: Path | None = None,
         on_result: Callable[[Job], None] | None = None,
         on_end: Callable[[], None] | None = None,
+        on_refused: Callable[[], None] | None = None,
     ) -> Job:
         """Start ``args`` as a job; ``check`` runs under the lock first and may refuse it.
         ``plan``: the steps it will report, shown as waiting before their first update.
@@ -1103,7 +1105,9 @@ class Jobs:
         ``args`` runs. Cancel stops both. ``cwd``: the folder the commands run in.
         ``on_result``: runs after ``on_success``, given the job (its ``--json`` envelope in
         ``result``). ``on_end``: runs when the job ended, however it did (a failure is only
-        logged)."""
+        logged).
+        ``on_refused``: runs under the lock when the command could not be started, to put back
+        what ``check`` changed."""
         with self.lock:
             if any(j.status == "running" for j in self.jobs.values()):
                 raise bad("another job is already running", 409)
@@ -1114,6 +1118,9 @@ class Jobs:
                 try:
                     job.proc = self._popen(job, args)
                 except OSError as err:
+                    if on_refused:
+                        with contextlib.suppress(OSError):
+                            on_refused()
                     raise bad(f"could not start job: {err}", 500) from err
             for old in [k for k, j in self.jobs.items() if j.status != "running"][
                 : max(0, len(self.jobs) + 1 - MAX_JOBS)
@@ -3941,6 +3948,29 @@ def new_project(name: str, source: str, style: str, **extra: Any) -> dict[str, s
     return {"id": pid, "name": name}
 
 
+def set_style(p: Path, style: str, detection: dict[str, Any] | None = None) -> Callable[[], None]:
+    """Make ``style`` the project's chosen style in ``ui/meta.json`` (created with only it for a
+    project made on the command line), with ``detection`` (when given) as the copy of the last
+    detection the header shows after the user left Auto. Returns what puts the file back."""
+    meta_file = _own(p, META_FILE)
+    try:
+        before: bytes | None = meta_file.read_bytes()
+    except FileNotFoundError:
+        before = None
+    meta = {**read_meta(p), "style": style}
+    if detection is not None:
+        meta["detection"] = detection
+    cache.save_json(meta_file, meta)
+
+    def back() -> None:
+        if before is None:
+            meta_file.unlink(missing_ok=True)
+        else:
+            cache.save_bytes(meta_file, before)
+
+    return back
+
+
 def ui_styles() -> list[str]:
     """Styles for standard video, the telemetry-driven action-cam styles included (#633).
 
@@ -4064,9 +4094,13 @@ def _color_args(body: dict[str, Any]) -> list[str]:
 
 def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[Any, Any]:
     """The inputs and style a project's analysis runs on: the inputs the user picked, else (made
-    on the command line) the recorded inputs; either may be missing."""
-    inputs = picked_inputs(meta) or (hl or {}).get("settings", {}).get("inputs")
-    return inputs, meta.get("style") or (hl or {}).get("style")
+    on the command line) the recorded inputs; either may be missing. The style is the one the
+    user chose, else ``auto`` for an analysis run with ``--style auto``, else the recorded one."""
+    st = (hl or {}).get("settings") or {}
+    inputs = picked_inputs(meta) or st.get("inputs")
+    if meta.get("style"):
+        return inputs, meta["style"]
+    return inputs, AUTO if st.get("style_requested") == AUTO else (hl or {}).get("style")
 
 
 def _resolved_style(meta: dict[str, Any], hl: dict[str, Any] | None) -> object:
@@ -4076,6 +4110,92 @@ def _resolved_style(meta: dict[str, Any], hl: dict[str, Any] | None) -> object:
     if not style or style == AUTO:
         return (hl or {}).get("style") or style
     return style
+
+
+def detected_view(meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, Any] | None:
+    """What the header's style button shows (#897): the style the user chose (``chosen``,
+    ``auto`` for Auto) and the footage category the analysis detected, with its reason, whether
+    it was unsure (``ambiguous``, then ``fallback_label`` names the category whose style it used,
+    ``used_style``) and the sources of another category (:func:`cutpoint.category.disagreeing`).
+    The detection is the current analysis's (``--style auto``), else the copy saved when the
+    user left Auto (``stale``); ``category`` is null without either. ``choices`` are the
+    categories with their style, ``main`` false for Action cam unless the footage has camera
+    telemetry or the style is already action-cam (the page lists it under Other styles then).
+    None for 360 projects and before the first analysis."""
+    if meta.get("kind") == "360" or not hl:
+        return None
+    from cutpoint import category  # noqa: PLC0415
+    from cutpoint.styles import auto_fallback_category, resolve_auto  # noqa: PLC0415
+
+    chosen = _analysis_inputs(meta, hl)[1] or None
+    st = hl.get("settings") or {}
+    det = hl.get("detection") if chosen == AUTO and st.get("style_requested") == AUTO else None
+    stale = not isinstance(det, dict)
+    if stale:
+        det = meta.get("detection")
+    if not isinstance(det, dict) or det.get("category") not in category.CATEGORIES:
+        det = None
+    srcs = [s for s in (det or {}).get("sources") or [] if isinstance(s, dict)]
+    camera = (det or {}).get("category") == category.ACTION_CAM or any(
+        s.get("decided_by") == "telemetry" for s in srcs
+    )
+    choices = [
+        {
+            "category": c,
+            "label": category.label(c),
+            "style": resolve_auto(c, "hype"),
+            "main": c != category.ACTION_CAM or camera or ACTION_CAM in (chosen, hl.get("style")),
+        }
+        for c in (category.GAMEPLAY, category.ACTION_CAM, category.TALK, category.GENERAL)
+    ]
+    view: dict[str, Any] = {
+        "auto": chosen == AUTO,
+        "chosen": chosen,
+        "style": hl.get("style"),
+        "choices": choices,
+        "category": None,
+        "label": None,
+        "reason": None,
+        "ambiguous": False,
+        "fallback_label": None,
+        "used_style": None,
+        "suggest": None,
+        "stale": False,
+        "sources": [],
+    }
+    if det is None:
+        return view
+    cat = det["category"]
+    ambiguous = det.get("ambiguous") is True
+
+    def text(v: object) -> str | None:
+        return v if isinstance(v, str) and v else None
+
+    return {
+        **view,
+        "category": cat,
+        "label": category.label(cat),
+        "reason": text(det.get("reason")),
+        "ambiguous": ambiguous,
+        "fallback_label": category.label(auto_fallback_category(cat)) if ambiguous else None,
+        "used_style": text(det.get("style")),
+        "suggest": text(det.get("suggest")),
+        "stale": stale,
+        "sources": [
+            {
+                "name": Path(str(s.get("path") or "")).name,
+                "path": s.get("path"),
+                "category": s.get("category"),
+                "label": category.label(s["category"])
+                if s.get("category") in category.CATEGORIES
+                else None,
+                "reason": text(s.get("reason")),
+                "ambiguous": s.get("ambiguous") is True,
+            }
+            for s in category.disagreeing(det)
+            if isinstance(s, dict)
+        ],
+    }
 
 
 def _subscription_roles(args: list[str], style: object) -> bool:
@@ -4184,8 +4304,8 @@ def analyze_options(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
     model = st.get("whisper_model")
     mc = st.get("max_candidates")
     crash = st.get("must_include_crash")
-    style = _analysis_inputs(meta, hl)[1]
-    default_crash = _style_crash(style)
+    ran = (hl or {}).get("style") or _resolved_style(meta, hl)  # not meta's: it may be mid-switch
+    default_crash = _style_crash(ran)
     return {
         "model": model
         if isinstance(model, str) and model and model != _default_model(st)
@@ -4196,7 +4316,7 @@ def analyze_options(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
         "max_candidates": mc
         if isinstance(mc, int) and not isinstance(mc, bool) and mc > 0
         else None,
-        "no_scenes": _no_scenes(st, _resolved_style(meta, hl)),
+        "no_scenes": _no_scenes(st, ran),
         "skip": _saved_skip(p, hl),
         "must_include_crash": float(crash)
         if default_crash is not None
@@ -4363,7 +4483,8 @@ def preset_problem(meta: dict[str, Any], hl: dict[str, Any] | None) -> str | Non
             "model (analyze --model), which cutpoint edit does not take."
         )
     inputs, style = _analysis_inputs(meta, hl)
-    if _no_scenes(st, _resolved_style(meta, hl)):
+    ran = (hl or {}).get("style") or _resolved_style(meta, hl)  # as analyze_options
+    if _no_scenes(st, ran):
         return (
             "Presets are not available here: this project's analysis used --no-scenes, which "
             "cutpoint edit does not take."
@@ -4381,7 +4502,7 @@ def preset_problem(meta: dict[str, Any], hl: dict[str, Any] | None) -> str | Non
                 "cutpoint edit does not take."
             )
     # nor --must-include-crash: edit would analyze with the style's own confidence
-    crash, default_crash = st.get("must_include_crash"), _style_crash(style)
+    crash, default_crash = st.get("must_include_crash"), _style_crash(ran)
     if default_crash is not None and crash is not None and crash != default_crash:
         return (
             "Presets are not available here: this project's analysis used --must-include-crash, "
@@ -5226,6 +5347,8 @@ def create_app(port: int) -> FastAPI:
             "style": meta.get("style") or (hl or {}).get("style") or "",
             # the page's Color starts at Off for gaming footage, as config.json's color does
             "gaming": _gaming_style(_resolved_style(meta, hl)),
+            # the header's style button (#897): the detected category and the chosen style
+            "detected": detected_view(meta, hl),
             "kind": "360" if meta.get("kind") == "360" else "video",
             "source": meta.get("source"),
             "highlights": highlights,
@@ -5390,6 +5513,7 @@ def create_app(port: int) -> FastAPI:
         before: Callable[[Job], list[str] | None] | None = None  # a step ahead of ``args``
         on_result: Callable[[Job], None] | None = None  # after on_success, with the envelope
         written: list[Path] = []  # files ``prepare`` wrote, removed if the job does not start
+        undo: list[Callable[[], None]] = []  # what ``prepare`` changed, put back the same way
         plan: list[dict[str, str]] | None = None
         if action == "analyze" and meta.get("kind") == "360":
             # The CLI's 360 flow: scan, views, analysis of the .lrv, events (no vision rating)
@@ -5400,6 +5524,8 @@ def create_app(port: int) -> FastAPI:
                 body.get(k) not in (None, "", []) and body[k] is not False for k in ANALYZE_KEYS
             ):
                 raise bad("Analyze options are not available for 360 projects")
+            if body.get("style") is not None:
+                raise bad("the style of a 360 project cannot be changed")
             _own(p, "highlights.json")  # the analysis rewrites it
             _own(p, "pano.json")  # and the scan this
             args = cutpoint_cmd(
@@ -5413,6 +5539,17 @@ def create_app(port: int) -> FastAPI:
             inputs, style = _analysis_inputs(meta, hl)
             if not inputs or not style:
                 raise bad("project has no recorded source to analyze")
+            # The header's style button (#897): analyze again in another style (auto: detected)
+            new = body.get("style")
+            if new is not None and (
+                not isinstance(new, str)
+                or (new != AUTO and new not in ui_styles() and not _action_cam_style(new))
+            ):
+                raise bad(f"unknown style {new!r}")
+            # the options as the earlier analysis used them (inferred against its own style)
+            recorded = analyze_options(p, meta, hl)
+            leaving_auto = new is not None and style == AUTO and new != AUTO
+            style = new if new is not None else style
             _own(p, "highlights.json")  # the analysis rewrites it
             args = cutpoint_cmd(
                 "analyze", *map(str, inputs), "--style", str(style), "--out", str(p)
@@ -5430,7 +5567,7 @@ def create_app(port: int) -> FastAPI:
                 args.append("--recursive")
             # The Analyze options; a recorded --recover is kept unless the page turns it off, or
             # the parts past a read error drop out.
-            opts, skip = _analyze_args(body, analyze_options(p, meta, hl))
+            opts, skip = _analyze_args(body, recorded)
             args += opts + _vision_args(st)
             if skip:  # last: its steps follow it. Saved (an older file never matches the new
                 # analysis's created stamp, so without --skip there is nothing to save)
@@ -5442,6 +5579,32 @@ def create_app(port: int) -> FastAPI:
 
                 def on_success() -> None:
                     save_analysis_skip(p, skip)
+
+            if new is not None:
+                _own(p, META_FILE)  # refuse now, not when the job starts
+                # left Auto: the detection is kept as the "Detected earlier" copy
+                kept = (hl or {}).get("detection") if leaving_auto else None
+
+                def prepare() -> None:
+                    # once the job may start, so a refused one leaves the style as it was; not
+                    # while a run elsewhere holds the project (its analyze would stop at once)
+                    if project_busy(p, run_state(p, hl is not None)):
+                        raise bad(BUSY_TEXT, 409)
+                    made: list[Path] = []
+                    _ui_folder(
+                        p, made=made
+                    )  # a command-line project has no ui folder (nor meta.json) yet
+                    back = set_style(p, new, kept if isinstance(kept, dict) else None)
+
+                    def put_back() -> None:
+                        try:
+                            back()
+                        finally:
+                            for folder in made:  # the ui folder this created, if still empty
+                                with contextlib.suppress(OSError):
+                                    folder.rmdir()
+
+                    undo.append(put_back)
 
         elif action == "edit":
             # A one-click preset: analyze (cached), clips and assemble as `edit --kind` says, in
@@ -5821,6 +5984,12 @@ def create_app(port: int) -> FastAPI:
                 return None
 
         args = [*args, "--json"]
+
+        def put_back_all() -> None:  # under the jobs lock, so no newer write is overwritten
+            for back in undo:
+                with contextlib.suppress(OSError):
+                    back()
+
         try:
             return jobs.start(
                 pid,
@@ -5835,6 +6004,7 @@ def create_app(port: int) -> FastAPI:
                 on_end=(lambda: prune_resume_folders(p))
                 if action in ("clips", "extend", "resume")
                 else None,
+                on_refused=put_back_all,
             ).view()
         except HTTPException:  # for example the command could not be started
             for f in written:

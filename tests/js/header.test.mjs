@@ -394,3 +394,226 @@ test('the zero-moment text points at the project menu', async (t) => {
   const { $ } = await openRoutes(t, makeProject({ highlights: { style: 'funny', candidates: [] } }), {});
   assert.match($('#momentsEmpty').textContent, /choose Analyze again in the project menu/);
 });
+
+// ---------- the style button (#897) ----------
+
+const CHOICES = [
+  { category: 'gameplay', label: 'Gameplay', style: 'gaming', main: true },
+  { category: 'action-cam', label: 'Action cam', style: 'action-cam', main: false },
+  { category: 'talk', label: 'Talk', style: 'commentary', main: true },
+  { category: 'general', label: 'General', style: 'action', main: true },
+];
+
+/** A ``detected`` view as GET /api/projects/<id> returns it; ``over`` replaces fields. */
+function detected(over = {}) {
+  return {
+    auto: true, chosen: 'auto', style: 'gaming', choices: CHOICES, category: 'gameplay', label: 'Gameplay',
+    reason: 'static HUD 2%', ambiguous: false, fallback_label: null, used_style: 'gaming', suggest: null, stale: false, sources: [],
+    ...over,
+  };
+}
+
+const STYLES_SESSION = { styles: ['action', 'action-cam', 'commentary', 'funny', 'gaming', 'my-cut', 'sport'], can_reveal: false, can_pick: false };
+
+async function openStyle(t, det, routes = {}) {
+  const project = makeProject({ style: det?.chosen ?? 'gaming', highlights: { style: det?.style ?? 'gaming', candidates: makeProject().highlights.candidates }, detected: det });
+  const { page, $ } = await openRoutes(t, project, { 'GET /api/session': STYLES_SESSION, 'POST /api/projects/p1/jobs': { id: 'j9', status: 'running' }, ...routes });
+  const key = (target, k) => target.dispatchEvent(new page.window.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+  return { page, $, key };
+}
+
+const lines = ($) => [...($('#styleLines')?.children ?? [])].map((c) => c.textContent);
+const radios = ($) => [...$('#styleMenu').querySelectorAll('.style-item')];
+
+test('the style button is hidden before the first analysis and without a detected view (360 projects)', async (t) => {
+  const { $ } = await openStyle(t, null);
+  assert.equal($('#styleMenuWrap').hidden, true);
+});
+
+test('the style button reads the detected category, an unsure fallback, an override and an earlier detection', async (t) => {
+  const cases = [
+    [detected(), 'Detected: Gameplay'],
+    [detected({ ambiguous: true, fallback_label: 'Gameplay' }), 'Not sure: Gameplay style'],
+    [detected({ ambiguous: true, category: 'talk', label: 'Talk', fallback_label: 'General', used_style: 'action', style: 'action' }), 'Not sure: General style'],
+    [detected({ auto: false, chosen: 'commentary', style: 'commentary', stale: true }), 'Style: Talk (your choice)'],
+    [detected({ auto: false, chosen: 'my-cut', style: 'my-cut', category: null, label: null }), 'Style: my-cut (your choice)'],
+    [detected({ stale: true, style: 'commentary' }), 'Detected earlier: Gameplay'],
+    [detected({ category: null, label: null, reason: null }), 'Auto: analyze again to detect'],
+  ];
+  for (const [det, text] of cases) {
+    await t.test(text, async (st) => {
+      const { $ } = await openStyle(st, det);
+      assert.equal($('#styleMenuWrap').hidden, false);
+      assert.equal($('#styleName').textContent, text);
+      assert.equal($('#styleBtn').title, text, 'the full text where the chip ends in an ellipsis');
+      assert.equal($('#styleBtn').getAttribute('aria-haspopup'), 'menu');
+    });
+  }
+});
+
+test('the chip truncates in CSS and sits in the header after the project menu', async (t) => {
+  const css = readFileSync(join(WEB_DIR, 'app.css'), 'utf8');
+  assert.match(css, /\.style-name\s*\{[^}]*text-overflow: ellipsis/);
+  const html = readFileSync(join(WEB_DIR, 'index.html'), 'utf8');
+  assert.ok(html.indexOf('id="styleMenuWrap"') > html.indexOf('id="projectMenuWrap"'));
+  assert.ok(html.indexOf('id="styleMenuWrap"') < html.indexOf('id="exportBtn"'));
+});
+
+test('the menu gives the reason, the unsure fallback, the disagreeing sources and a suggestion as text lines', async (t) => {
+  const sources = [{ name: 'b.mp4', path: '/v/b.mp4', category: 'talk', label: 'Talk', reason: 'speech 80% of 30 min', ambiguous: false }];
+  const { $ } = await openStyle(t, detected({ ambiguous: true, fallback_label: 'Gameplay', sources, suggest: 'commentary' }));
+  $('#styleBtn').click();
+  assert.deepEqual(lines($), [
+    'Leans Gameplay (static HUD 2%); used the Gameplay style (gaming)',
+    'Disagree: b.mp4 looks like Talk (speech 80% of 30 min)',
+    'Suggested: Talk (commentary)',
+  ]);
+  assert.equal($('#styleLines').getAttribute('role'), 'none');
+  assert.equal($('#styleMenu').getAttribute('aria-describedby'), 'styleLines');
+});
+
+test('a sure detection gives its reason', async (t) => {
+  const { $ } = await openStyle(t, detected());
+  $('#styleBtn').click();
+  assert.deepEqual(lines($), ['Detected: Gameplay (static HUD 2%)']);
+});
+
+test('the menu points at no lines when there are none', async (t) => {
+  const { $ } = await openStyle(t, detected({ category: null, label: null, reason: null }));
+  $('#styleBtn').click();
+  assert.equal($('#styleLines'), null);
+  assert.equal($('#styleMenu').hasAttribute('aria-describedby'), false);
+});
+
+test('after an override the menu shows the earlier detection', async (t) => {
+  const { $ } = await openStyle(t, detected({ auto: false, chosen: 'commentary', style: 'commentary', stale: true }));
+  $('#styleBtn').click();
+  assert.deepEqual(lines($), ['Detected earlier: Gameplay (static HUD 2%)']);
+  assert.equal($('#styleMenu [aria-checked=true]').dataset.style, 'commentary');
+});
+
+test('the items: Auto, the categories with their style, then Other styles with the rest (a custom style too)', async (t) => {
+  const { $ } = await openStyle(t, detected());
+  $('#styleBtn').click();
+  const items = radios($);
+  assert.deepEqual(items.map((i) => i.textContent), [
+    'Auto (detect from footage)', 'Gameplay: gaming', 'Talk: commentary', 'General: action',
+    'Action cam', 'funny', 'my-cut', 'sport',
+  ]);
+  assert.ok(items.every((i) => i.getAttribute('role') === 'menuitemradio'));
+  assert.deepEqual(items.map((i) => i.getAttribute('aria-checked')), ['true', 'false', 'false', 'false', 'false', 'false', 'false', 'false']);
+  const group = $('#styleMenu [role=group]');
+  assert.equal(group.getAttribute('aria-labelledby'), 'styleOtherLabel');
+  assert.equal($('#styleOtherLabel').textContent, 'Other styles');
+  assert.deepEqual([...group.children].map((i) => i.dataset.style), ['action-cam', 'funny', 'my-cut', 'sport']);
+});
+
+test('Action cam is a main item when the footage has camera telemetry', async (t) => {
+  const choices = CHOICES.map((c) => ({ ...c, main: true }));
+  const { $ } = await openStyle(t, detected({ choices, category: 'action-cam', label: 'Action cam', style: 'action-cam' }));
+  $('#styleBtn').click();
+  assert.deepEqual(radios($).slice(0, 5).map((i) => i.textContent), ['Auto (detect from footage)', 'Gameplay: gaming', 'Action cam: action-cam', 'Talk: commentary', 'General: action']);
+  assert.ok(![...$('#styleMenu [role=group]').children].some((i) => i.dataset.style === 'action-cam'));
+});
+
+test('the style menu keys: focus starts on the chosen item; arrows, Home and End move; Escape closes and refocuses', async (t) => {
+  const { page, $, key } = await openStyle(t, detected({ auto: false, chosen: 'commentary', style: 'commentary' }));
+  const active = () => page.document.activeElement;
+  key($('#styleBtn'), 'ArrowDown');
+  assert.equal($('#styleMenu').hidden, false);
+  assert.equal($('#styleBtn').getAttribute('aria-expanded'), 'true');
+  const items = radios($);
+  assert.equal(active(), items[2], 'the chosen style');
+  key(active(), 'ArrowDown');
+  assert.equal(active(), items[3]);
+  key(active(), 'Home');
+  assert.equal(active(), items[0]);
+  key(active(), 'ArrowUp');
+  assert.equal(active(), items.at(-1), 'wraps');
+  key(active(), 'End');
+  assert.equal(active(), items.at(-1));
+  assert.equal($('#analyzeDialog').open, false, 'moving acts on nothing');
+  key(active(), 'Escape');
+  assert.equal($('#styleMenu').hidden, true);
+  assert.equal($('#styleBtn').getAttribute('aria-expanded'), 'false');
+  assert.equal(active(), $('#styleBtn'));
+});
+
+test('choosing a style asks in the Analyze dialog, filled in, and posts the analysis with the style', async (t) => {
+  const { page, $ } = await openStyle(t, detected());
+  $('#styleBtn').click();
+  $('#styleMenu [data-style=commentary]').click();
+  assert.equal($('#styleMenu').hidden, true);
+  const d = $('#analyzeDialog');
+  assert.equal(d.open, true);
+  assert.equal($('#analyzeTitle').textContent, 'Analyze again as Talk?');
+  assert.match($('#analyzeText').textContent, /in the commentary style/);
+  assert.equal($('#refine').hidden, true, 'Describe and vision keep the old style: not offered here');
+  const posts = () => page.requests.filter((r) => r.method === 'POST' && r.path === '/api/projects/p1/jobs');
+  assert.equal(posts().length, 0, 'nothing runs before the confirmation');
+  d.returnValue = 'ok';
+  d.removeAttribute('open');
+  d.dispatchEvent(new page.window.Event('close'));
+  await page.settle();
+  assert.equal(posts().length, 1);
+  const { body } = posts()[0];
+  assert.equal(body.action, 'analyze');
+  assert.equal(body.style, 'commentary');
+  assert.ok('skip' in body && 'model' in body, 'with the Analyze options');
+  assert.equal(page.document.activeElement, $('#styleBtn'));
+});
+
+test('the dialog is filled with the analysis options, and Auto and Other styles get their own titles', async (t) => {
+  const project = makeProject({ detected: detected({ auto: false, chosen: 'gaming' }), analyze_options: { model: 'large-v3', language: null, max_candidates: null, no_scenes: false, skip: ['dialogue'], must_include_crash: null, recover: false } });
+  const { page, $ } = await openRoutes(t, project, { 'GET /api/session': STYLES_SESSION });
+  $('#styleBtn').click();
+  $('#styleMenu [data-style=auto]').click();
+  assert.equal($('#analyzeTitle').textContent, 'Analyze again as Auto?');
+  assert.match($('#analyzeText').textContent, /in the style detected from it/);
+  assert.equal($('#anModel').value, 'large-v3');
+  assert.equal(page.document.querySelector('input[name=anSkip][value=dialogue]').checked, true);
+  const d = $('#analyzeDialog');
+  d.returnValue = '';
+  d.removeAttribute('open');
+  d.dispatchEvent(new page.window.Event('close'));
+  $('#styleBtn').click();
+  $('#styleMenu [data-style=my-cut]').click();
+  assert.equal($('#analyzeTitle').textContent, 'Analyze again as my-cut?');
+  d.returnValue = '';
+  d.removeAttribute('open');
+  d.dispatchEvent(new page.window.Event('close'));
+  $('#projectBtn').click();
+  $('#analyzeAgainItem').click();
+  assert.equal($('#analyzeTitle').textContent, 'Analyze again?', 'plain Analyze again keeps its title');
+  assert.equal($('#refine').hidden, false);
+});
+
+test('choosing the current style only closes the menu', async (t) => {
+  const { page, $ } = await openStyle(t, detected());
+  $('#styleBtn').click();
+  $('#styleMenu [data-style=auto]').click();
+  assert.equal($('#styleMenu').hidden, true);
+  assert.equal($('#analyzeDialog').open, false);
+  assert.equal(page.document.activeElement, $('#styleBtn'));
+});
+
+test('while a job runs the style items are aria-disabled (still focusable) and do nothing', async (t) => {
+  const { page, $ } = await openStyle(t, detected(), { 'GET /api/jobs': { jobs: [RUNNING] } });
+  $('#styleBtn').click();
+  const item = $('#styleMenu [data-style=commentary]');
+  assert.equal(item.getAttribute('aria-disabled'), 'true');
+  assert.equal(item.title, 'Another job is running.');
+  assert.equal(item.getAttribute('aria-describedby'), 'styleBusy');
+  assert.equal($('#styleBusy').textContent, 'Another job is running.');
+  assert.equal(item.disabled, false);
+  item.click();
+  assert.equal($('#analyzeDialog').open, false);
+  assert.equal($('#styleMenu').hidden, false, 'the menu stays open');
+  assert.equal(page.requests.filter((r) => r.method === 'POST' && r.path === '/api/projects/p1/jobs').length, 0);
+});
+
+test('the project facts name the style the analysis ran in, not auto', async (t) => {
+  const { $ } = await openStyle(t, detected());
+  $('#projectBtn').click();
+  assert.equal($('.proj-stats span').textContent, '3 found, gaming style');
+});

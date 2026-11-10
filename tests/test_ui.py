@@ -2130,7 +2130,13 @@ def test_a_ski_analysis_without_no_scenes_keeps_presets_and_scene_detection_on(
     meta = {"style": "action-cam", "source": str(tmp_path / "clip.mp4")}
     settings = {"scenes": False, "must_include_crash": 0.6}  # the action-cam style's own
     res, captured, _, _ = preset_job(
-        client, monkeypatch, tmp_path, {"kind": "clips"}, settings=settings, meta=meta
+        client,
+        monkeypatch,
+        tmp_path,
+        {"kind": "clips"},
+        settings=settings,
+        meta=meta,
+        style="action-cam",
     )
     assert res.status_code == 200, res.text
     _cli_args(captured[0])
@@ -7854,12 +7860,13 @@ def preset_job(
     *,
     settings: dict | None = None,
     meta: dict | None = None,
+    style: str = "funny",
 ) -> tuple[object, list[list[str]], list[Callable[[], None] | None], Path]:
-    """Start ``body``'s edit job on a command-line project analysed in the funny style (extra
+    """Start ``body``'s edit job on a command-line project analysed in the ``style`` (extra
     ``settings`` recorded, an optional ``ui/meta.json``). Returns as :func:`options_job`."""
     p, _ = cli_project(tmp_path)
     hl = cache.load_json(p / "highlights.json")
-    hl["style"] = "funny"
+    hl["style"] = style
     hl["settings"].update(settings or {})
     cache.save_json(p / "highlights.json", hl)
     if meta is not None:
@@ -11250,3 +11257,391 @@ def test_the_lite_message_names_the_missing_module_and_how_to_add_it(
     monkeypatch.setattr(ui.importlib.util, "find_spec", lambda name: None)
     message = ui.events_unavailable()
     assert message is not None and "not available in Cutpoint lite" in message
+
+
+# ---------- the header's style button (#897) ----------
+
+
+def detection(
+    cat: str = "gameplay",
+    *,
+    ambiguous: bool = False,
+    style: str = "gaming",
+    share: float = 1.0,
+    sources: list[dict[str, Any]] | None = None,
+    suggest: str | None = None,
+) -> dict[str, Any]:
+    """A highlights.json ``detection`` record (category.Detection.record) with invented sources."""
+    src = {
+        "path": "/v/a.mp4",
+        "duration": 60.0,
+        "category": cat,
+        "ambiguous": ambiguous,
+        "reason": "static HUD 2.0%",
+        "gameplay": 0.9,
+        "speech": 0.2,
+        "decided_by": None if ambiguous else "static HUD",
+    }
+    return {
+        "version": 3,
+        "category": cat,
+        "emphasis": "hype",
+        "style": style,
+        "reason": "static HUD 2.0%",
+        "ambiguous": ambiguous,
+        "scores": {cat: share},
+        "fallback": style if ambiguous else None,
+        "suggest": suggest,
+        "decided_by": [] if ambiguous else ["static HUD"],
+        "sources": sources or [src],
+    }
+
+
+def auto_project(
+    tmp_path: Path, det: dict[str, Any] | None, meta: dict[str, Any] | None = None
+) -> Path:
+    """The command-line project ``cli`` analyzed with ``--style auto`` (``det`` None: with the
+    style ``meta`` names, no detection), with ``meta`` as its ui/meta.json (None: none)."""
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    if det is not None:
+        hl.update(style=det["style"], detection=det)
+        hl["settings"]["style_requested"] = "auto"
+    else:
+        hl["style"] = (meta or {}).get("style", "gaming")
+    cache.save_json(p / "highlights.json", hl)
+    if meta is not None:
+        write(p / "ui" / "meta.json", json.dumps(meta))
+    return p
+
+
+def test_the_detected_view_of_a_sure_auto_project(client: TestClient, tmp_path: Path) -> None:
+    auto_project(tmp_path, detection(), {"style": "auto"})
+    d = client.get("/api/projects/cli").json()["detected"]
+    assert (d["auto"], d["chosen"], d["style"]) == (True, "auto", "gaming")
+    assert (d["category"], d["label"], d["reason"]) == ("gameplay", "Gameplay", "static HUD 2.0%")
+    assert (d["ambiguous"], d["fallback_label"], d["stale"], d["sources"]) == (
+        False,
+        None,
+        False,
+        [],
+    )
+    # the categories with their style, from styles.AUTO_STYLES (not spelled out in the page)
+    assert [(c["label"], c["style"], c["main"]) for c in d["choices"]] == [
+        ("Gameplay", "gaming", True),
+        ("Action cam", "action-cam", False),  # no camera telemetry: under Other styles
+        ("Talk", "commentary", True),
+        ("General", "action", True),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cat", "style", "fallback"),
+    [("gameplay", "gaming", "Gameplay"), ("talk", "action", "General")],
+    ids=["leans-gameplay", "leans-talk"],
+)
+def test_an_unsure_detection_names_the_category_whose_style_it_used(
+    client: TestClient, tmp_path: Path, cat: str, style: str, fallback: str
+) -> None:
+    auto_project(tmp_path, detection(cat, ambiguous=True, style=style), {"style": "auto"})
+    d = client.get("/api/projects/cli").json()["detected"]
+    assert (d["category"], d["ambiguous"], d["fallback_label"], d["used_style"]) == (
+        cat,
+        True,
+        fallback,
+        style,
+    )
+
+
+@pytest.mark.parametrize(("share", "named"), [(0.85, True), (0.9, False)], ids=["15pct", "10pct"])
+def test_the_detected_view_lists_the_sources_that_disagree_above_the_share(
+    client: TestClient, tmp_path: Path, share: float, named: bool
+) -> None:
+    srcs = [
+        {"path": "/v/a.mp4", "duration": 85.0, "category": "gameplay", "ambiguous": False,
+         "reason": "static HUD 2.0%", "decided_by": "static HUD"},
+        {"path": "/v/b.mp4", "duration": 15.0, "category": "talk", "ambiguous": True,
+         "reason": "speech 50% of 30 min", "decided_by": None},
+    ]  # fmt: skip
+    auto_project(tmp_path, detection(share=share, sources=srcs), {"style": "auto"})
+    d = client.get("/api/projects/cli").json()["detected"]
+    want = [
+        {"name": "b.mp4", "path": "/v/b.mp4", "category": "talk", "label": "Talk",
+         "reason": "speech 50% of 30 min", "ambiguous": True}
+    ]  # fmt: skip
+    assert d["sources"] == (want if named else [])
+
+
+def test_action_cam_is_a_main_choice_with_camera_telemetry_or_when_chosen(
+    client: TestClient, tmp_path: Path
+) -> None:
+    det = detection("action-cam", style="action-cam")
+    det["sources"][0]["decided_by"] = "telemetry"
+    p = auto_project(tmp_path, det, {"style": "auto"})
+
+    def main() -> dict[str, bool]:
+        view = client.get("/api/projects/cli").json()["detected"]
+        return {c["style"]: c["main"] for c in view["choices"]}
+
+    assert main()["action-cam"] is True
+    write(p / "ui" / "meta.json", json.dumps({"style": "action-cam"}))
+    hl = cache.load_json(p / "highlights.json")
+    hl.pop("detection")
+    hl["settings"].pop("style_requested")
+    cache.save_json(p / "highlights.json", hl)
+    assert main()["action-cam"] is True
+    write(p / "ui" / "meta.json", json.dumps({"style": "sport"}))
+    hl["style"] = "sport"
+    cache.save_json(p / "highlights.json", hl)
+    assert main()["action-cam"] is False
+
+
+def test_a_project_in_a_chosen_style_has_no_detection(client: TestClient, tmp_path: Path) -> None:
+    auto_project(tmp_path, None, {"style": "commentary"})
+    d = client.get("/api/projects/cli").json()["detected"]
+    assert (d["auto"], d["chosen"], d["style"], d["category"], d["stale"]) == (
+        False,
+        "commentary",
+        "commentary",
+        None,
+        False,
+    )
+
+
+def test_after_leaving_auto_the_view_shows_the_saved_copy_as_stale(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The copy in meta.json is shown once the user chose a style, also while the analysis in
+    it runs (highlights.json still holds the Auto run's detection)."""
+    old = detection()
+    p = auto_project(tmp_path, old, {"style": "commentary", "detection": old})
+    d = client.get("/api/projects/cli").json()["detected"]
+    assert (d["auto"], d["chosen"], d["category"], d["stale"]) == (
+        False,
+        "commentary",
+        "gameplay",
+        True,
+    )
+    hl = cache.load_json(p / "highlights.json")  # the analysis in commentary finished
+    hl.pop("detection")
+    hl["settings"].pop("style_requested")
+    hl["style"] = "commentary"
+    cache.save_json(p / "highlights.json", hl)
+    d = client.get("/api/projects/cli").json()["detected"]
+    assert (d["style"], d["category"], d["stale"]) == ("commentary", "gameplay", True)
+
+
+def test_no_detected_view_for_360_projects_or_before_the_first_analysis(
+    client: TestClient, tmp_path: Path
+) -> None:
+    assert ui.detected_view({"kind": "360", "style": "action-cam"}, {"style": "action-cam"}) is None
+    assert ui.detected_view({"style": "auto"}, None) is None
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    (folder / "a.mp4").write_bytes(b"x")
+    pid = client.post("/api/projects", json={"name": "T", "source": str(folder)}).json()["id"]
+    assert client.get(f"/api/projects/{pid}").json()["detected"] is None
+
+
+def test_a_command_line_auto_project_analyzes_again_with_style_auto(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without meta.json the recorded ``style_requested`` says the analysis was Auto: Analyze
+    again keeps --style auto (not the style auto picked)."""
+    auto_project(tmp_path, detection(), None)
+    assert client.get("/api/projects/cli").json()["detected"]["chosen"] == "auto"
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    assert client.post("/api/projects/cli/jobs", json={"action": "analyze"}).status_code == 200
+    assert _after(_cli_args(captured[0]), "--style") == "auto"
+
+
+def style_job(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    body: dict[str, Any],
+    *,
+    starts: bool = True,
+) -> tuple[Any, list[list[str]]]:
+    """Post an analyze job with ``body``; the job starts (its check runs) when ``starts``."""
+    captured: list[list[str]] = []
+
+    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
+        if not starts:
+            raise HTTPException(409, "another job is already running")
+        captured.append(job_args(args))
+        same_folder()
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    return client.post("/api/projects/cli/jobs", json={"action": "analyze", **body}), captured
+
+
+def test_choosing_a_style_analyzes_in_it_and_keeps_the_detection_as_a_copy(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    det = detection()
+    p = auto_project(tmp_path, det, {"name": "Trip", "style": "auto"})
+    res, captured = style_job(client, monkeypatch, {"style": "commentary"})
+    assert res.status_code == 200, res.text
+    assert _after(_cli_args(captured[0]), "--style") == "commentary"
+    meta = ui.read_meta(p)
+    assert (meta["name"], meta["style"], meta["detection"]) == ("Trip", "commentary", det)
+    d = client.get("/api/projects/cli").json()["detected"]
+    assert (d["chosen"], d["stale"], d["label"]) == ("commentary", True, "Gameplay")
+    # nothing is deleted
+    assert (p / "highlights.json").is_file()
+
+    res, captured = style_job(client, monkeypatch, {"style": "auto"})  # back to Auto
+    assert res.status_code == 200, res.text
+    assert _after(_cli_args(captured[0]), "--style") == "auto"
+    meta = ui.read_meta(p)
+    assert (meta["style"], meta["detection"]) == ("auto", det)
+
+
+def test_a_refused_style_job_leaves_the_style_as_it_was(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p = auto_project(tmp_path, detection(), {"style": "auto"})
+    before = (p / "ui" / "meta.json").read_bytes()
+    res, _ = style_job(client, monkeypatch, {"style": "commentary"}, starts=False)
+    assert res.status_code == 409
+    assert (p / "ui" / "meta.json").read_bytes() == before
+    # a run elsewhere holds the project: refused when the job would start
+    monkeypatch.setattr(ui, "project_busy", lambda *_a: True)
+    res, _ = style_job(client, monkeypatch, {"style": "commentary"})
+    assert res.status_code == 409 and res.json()["detail"] == ui.BUSY_TEXT
+    assert (p / "ui" / "meta.json").read_bytes() == before
+
+
+def test_a_style_job_that_cannot_start_puts_meta_back(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The command fails to start after the check wrote the style: the old meta.json returns,
+    and a command-line project gets none."""
+    p = auto_project(tmp_path, detection(), None)
+
+    def start(self, project_id, action, args, on_success, same_folder, *rest, **kw):
+        same_folder()
+        assert ui.read_meta(p)["style"] == "action"
+        kw["on_refused"]()  # as Jobs.start does, under its lock
+        raise HTTPException(500, "could not start job")
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    res = client.post("/api/projects/cli/jobs", json={"action": "analyze", "style": "action"})
+    assert res.status_code == 500
+    assert not (p / "ui" / "meta.json").exists()
+
+
+def test_a_real_start_failure_puts_meta_back_and_removes_the_ui_folder_it_made(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The command cannot be spawned: Jobs.start undoes the style change under its lock, the
+    old meta.json returns byte for byte and a command-line project keeps no empty ui folder."""
+
+    def no_spawn(*_a, **_kw):
+        raise OSError("no such program")
+
+    monkeypatch.setattr(ui, "spawn", no_spawn)
+    p = auto_project(tmp_path, None, None)
+    res = client.post("/api/projects/cli/jobs", json={"action": "analyze", "style": "action"})
+    assert res.status_code == 500
+    assert not (p / "ui").exists()
+
+    q = ui.projects_dir() / "cli"
+    write(q / "ui" / "meta.json", json.dumps({"style": "gaming"}))
+    before = (q / "ui" / "meta.json").read_bytes()
+    res = client.post("/api/projects/cli/jobs", json={"action": "analyze", "style": "funny"})
+    assert res.status_code == 500
+    assert (q / "ui" / "meta.json").read_bytes() == before
+
+
+def test_a_command_line_project_gets_a_meta_with_the_chosen_style(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p = auto_project(tmp_path, None, None)  # analyzed as gaming on the command line
+    assert not (p / "ui").exists()
+    res, captured = style_job(client, monkeypatch, {"style": "funny"})
+    assert res.status_code == 200, res.text
+    assert ui.read_meta(p) == {"style": "funny"}  # no Auto left: no copy
+    assert _after(_cli_args(captured[0]), "--style") == "funny"
+
+
+@pytest.mark.parametrize("style", ["nope", 3, ""], ids=["unknown", "number", "empty"])
+def test_an_unknown_style_is_refused(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, style: object
+) -> None:
+    p = auto_project(tmp_path, detection(), {"style": "auto"})
+    res, captured = style_job(client, monkeypatch, {"style": style})
+    assert res.status_code == 400 and "unknown style" in res.json()["detail"]
+    assert captured == [] and ui.read_meta(p)["style"] == "auto"
+
+
+def test_the_style_of_a_360_project_cannot_be_changed(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p = ui.projects_dir() / "cli"
+    write(
+        p / "ui" / "meta.json",
+        json.dumps({"kind": "360", "style": "action-cam", "source": str(tmp_path)}),
+    )
+    res, captured = style_job(client, monkeypatch, {"style": "action"})
+    assert res.status_code == 400 and "360" in res.json()["detail"]
+    assert captured == [] and ui.read_meta(p)["style"] == "action-cam"
+
+
+def test_a_style_change_repeats_the_options_the_earlier_analysis_used(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The recorded options are read against the earlier analysis's style: action-cam records
+    "scenes": false without --no-scenes, so the analysis in action detects scenes (#880), and
+    its own crash default is not passed on as an explicit --must-include-crash."""
+    # all built-in styles share one default, so give the earlier style its own to tell them apart
+    monkeypatch.setattr(ui, "_style_crash", lambda s: 0.3 if s == "action-cam" else 0.6)
+    p = auto_project(tmp_path, None, {"style": "action-cam"})
+    hl = cache.load_json(p / "highlights.json")
+    hl["settings"].update(scenes=False, must_include_crash=0.3)
+    cache.save_json(p / "highlights.json", hl)
+    res, captured = style_job(client, monkeypatch, {"style": "action"})
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    assert _after(args, "--style") == "action"
+    assert "--no-scenes" not in args
+    assert not any(a.startswith("--must-include-crash") for a in args)
+    # a --no-scenes the earlier analysis did use is kept
+    hl["style"] = "gaming"
+    cache.save_json(p / "highlights.json", hl)
+    write(p / "ui" / "meta.json", json.dumps({"style": "gaming"}))
+    res, captured = style_job(client, monkeypatch, {"style": "commentary"})
+    assert "--no-scenes" in _cli_args(captured[0])
+
+
+def test_a_style_switch_that_did_not_finish_does_not_change_the_recorded_options(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """meta.json changes when the job starts, highlights.json only when it succeeds: the options
+    are judged against the style highlights.json records, not the one meta.json now names."""
+    p = auto_project(tmp_path, None, {"style": "action-cam"})
+    hl = cache.load_json(p / "highlights.json")
+    hl["settings"].update(scenes=False)
+    cache.save_json(p / "highlights.json", hl)
+    write(p / "ui" / "meta.json", json.dumps({"style": "gaming"}))  # a failed switch
+    res, captured = style_job(client, monkeypatch, {})
+    assert res.status_code == 200, res.text
+    assert "--no-scenes" not in _cli_args(captured[0])
+    assert client.get("/api/projects/cli").json()["analyze_options"]["no_scenes"] is False
+
+
+def test_a_custom_styles_crash_value_survives_a_style_switch_that_did_not_finish(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(ui, "_style_crash", lambda s: 0.8 if s == "mine" else 0.6)
+    p = auto_project(tmp_path, None, {"style": "mine"})
+    hl = cache.load_json(p / "highlights.json")
+    hl["settings"].update(must_include_crash=0.8)
+    cache.save_json(p / "highlights.json", hl)
+    write(p / "ui" / "meta.json", json.dumps({"style": "action"}))  # a failed switch
+    res, captured = style_job(client, monkeypatch, {})
+    assert res.status_code == 200, res.text
+    assert not any(a.startswith("--must-include-crash") for a in _cli_args(captured[0]))
+    assert client.get("/api/projects/cli").json()["analyze_options"]["must_include_crash"] is None

@@ -217,6 +217,30 @@ def test_decide_majority_disagreement_and_the_commentary_hint():
     assert (det.category, det.suggest) == (GAMEPLAY, "commentary")
 
 
+@pytest.mark.parametrize(
+    ("game_s", "named"),
+    [(300.0, True), (120.0, True), (100.0, False), (50.0, False)],
+    ids=["half", "over-10pct", "exactly-10pct", "5pct"],
+)
+def test_disagreeing_names_the_sources_of_a_record_as_decide_does(game_s, named):
+    """``disagreeing`` reads a highlights.json ``detection`` record and names the same sources
+    as :attr:`Detection.disagree`: only a minority above DISAGREE_SHARE of the footage."""
+    probes = [probe("cam.mp4", 1000.0 - game_s, telemetry=True), probe("game.mp4", game_s, **GAME)]
+    det = category.decide(probes, {})
+    rec = json.loads(json.dumps(det.record("hype", "action-cam", None)))  # as read back
+    found = category.disagreeing(rec)
+    assert [s["path"] for s in found] == det.disagree == (["game.mp4"] if named else [])
+    if named:
+        assert found[0]["category"] == GAMEPLAY and found[0]["reason"]
+
+
+def test_disagreeing_takes_a_record_without_scores_or_sources():
+    assert category.disagreeing({}) == []
+    assert category.disagreeing({"category": GAMEPLAY, "scores": {GAMEPLAY: 0.5}}) == []
+    rec = {"category": GAMEPLAY, "scores": {GAMEPLAY: 0.5}, "sources": ["x", {"category": TALK}]}
+    assert category.disagreeing(rec) == [{"category": TALK}]
+
+
 def test_an_ambiguous_detection_falls_back_and_sport_is_never_chosen():
     # an unsure detection that leans to gameplay (some HUD evidence) uses gaming; any other
     # the General style (#896), not gaming

@@ -1169,6 +1169,25 @@ def decide(probes: Sequence[SourceProbe], speech: Mapping[str, float] | None = N
     )
 
 
+def disagreeing(record: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The sources of a ``detection`` record (:meth:`Detection.record`) whose category is not
+    the project's, when the others make up more than :data:`DISAGREE_SHARE` of the footage (as
+    :attr:`Detection.disagree`), else none."""
+    cat = record.get("category")
+    scores = record.get("scores")
+    share = scores.get(cat) if isinstance(scores, Mapping) else None
+    if (
+        not isinstance(share, (int, float))
+        or isinstance(share, bool)
+        or 1.0 - share <= DISAGREE_SHARE
+    ):
+        return []
+    srcs = record.get("sources")
+    if not isinstance(srcs, list):
+        return []
+    return [s for s in srcs if isinstance(s, dict) and s.get("category") != cat]
+
+
 def label(category: str) -> str:
     """Display name of a category (``Action cam``, ``Gameplay``, ``Talk``, ``General``)."""
     return category.replace("-", " ").capitalize()

@@ -23,6 +23,14 @@
       </button>
       <div id="projectMenu" class="proj-pop" role="menu" aria-label="Projects" hidden></div>
     </div>
+    <!-- The style button (#897): what the footage was detected as, or the style the user chose; its menu gives the
+         reason and changes the style (Analyze again in it). Hidden before the first analysis and for 360 projects -->
+    <div class="style-menu" id="styleMenuWrap" hidden>
+      <button type="button" id="styleBtn" class="style-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="styleMenu">
+        <span id="styleName" class="style-name"></span>
+      </button>
+      <div id="styleMenu" class="proj-pop style-pop" role="menu" aria-label="Footage style" hidden></div>
+    </div>
     <span class="spacer"></span>
     <span id="saveState" class="save" role="status"></span>
     <button type="button" id="exportBtn" class="btn outline" aria-expanded="false" aria-controls="panelExport">Export</button>
@@ -790,6 +798,7 @@
            an option field never starts one; a click closes the dialog with 'describe' or 'vision'
            and starts that job, not the analysis): Describe the footage is `crashes --context`,
            Look closer with vision is `events`. Shown for 360 projects too, as a note. -->
+      <!-- Hidden when the dialog changes the style (the style button): these jobs keep the analysis' style -->
       <div id="refine" class="refine">
         <div id="describeBox" class="refine-box">
           <label for="anDescribe">Describe the footage</label>
