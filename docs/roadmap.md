@@ -59,7 +59,7 @@ timeline
                            : One-click edit with a request and clip order chosen by a model
                            : llama.cpp provider, word-level trims, voice and attachments
                            : Editable transcript
-        More footage : Gaming beyond kills, goal and score banners, round score, explosions
+        More footage : Gaming beyond kills, goal banners, round score on long recordings, visual explosion signal
                      : 360 polish, GPU remap, manual framing, clean-up pass, mixed folders
                      : Color matching between clips
                      : Game profiles discovered from the footage
