@@ -122,6 +122,17 @@ MAX_VLM_CHARS = 300  # a vlm string longer than this is dropped (the floor's is 
 MATCH_SHARE = 0.5  # library match: mean zero-shot share of the best profile ...
 MATCH_MARGIN = 0.2  # ... and its lead over the runner-up
 DESCRIBE_FRAMES = 4
+# A describe frame this dark (mean luma, 0-255) or this flat (luma std) shows nothing to name
+# the activity by (a black lens cap, a cut to black, white-out snow); it is skipped. Dark
+# but textured footage (underwater, night) stays usable.
+BLANK_MEAN = 20
+BLANK_STD = 10
+# The describe pick stops skipping blank frames after this many frame reads (a few more at
+# most); the frames are then spread in time.
+DESCRIBE_READS = 3 * DESCRIBE_FRAMES
+# Keyframes this close (CLIP cosine) to a blank one are taken as blank too, unread: every
+# black frame of a recording looks alike to CLIP, so one read rules them all out.
+BLANK_LIKE = 0.95
 # Read timeout of one synthesis request: a CPU-only Ollama can take minutes per reply, and the
 # 600 s default of VisionRater.ask_json would stall `profile` and `crashes` that long (#608).
 PROFILE_TIMEOUT_S = 120
@@ -702,17 +713,56 @@ def _spread(emb: np.ndarray, n: int) -> list[int]:
     return sorted(picked)
 
 
+def _blank(jpeg: bytes) -> bool:
+    """The frame is too dark or too flat to show anything (:data:`BLANK_MEAN`,
+    :data:`BLANK_STD`), or cannot be decoded."""
+    import cv2  # noqa: PLC0415
+
+    img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_GRAYSCALE)
+    return img is None or img.mean() < BLANK_MEAN or img.std() < BLANK_STD
+
+
+def _describe_frames(emb: np.ndarray, refs: list[tuple[Path, float]]) -> list[bytes]:
+    """JPEG frames for :func:`describe`: :func:`_spread` over the keyframes without blank
+    ones (:func:`_blank`, :data:`BLANK_LIKE`), read only as they are picked. When the
+    embeddings do not match the keyframes, or blank frames leave too few or take
+    :data:`DESCRIBE_READS` reads, the frames are spread in time over the keyframes not
+    found blank (all of them when none is left), each frame read once."""
+
+    def grab(i: int) -> bytes:
+        if i not in read:
+            read[i] = grab_frame_jpeg(remap_source(refs[i][0]), refs[i][1], 512)
+        return read[i]
+
+    read: dict[int, bytes] = {}
+    usable = np.arange(len(refs))
+    if len(emb) == len(refs):
+        e = emb.astype(np.float32) / np.maximum(np.linalg.norm(emb, axis=1, keepdims=True), 1e-9)
+        want = min(DESCRIBE_FRAMES, len(refs))
+        while len(usable) >= want and len(read) < DESCRIBE_READS:
+            pick_i = [int(usable[k]) for k in _spread(emb[usable], DESCRIBE_FRAMES)]
+            blank = [i for i in pick_i if _blank(grab(i))]
+            if not blank:
+                return [read[i] for i in pick_i]
+            # The blank picks go (so every round shrinks ``usable``), and so do unread frames
+            # that look like one of them; a frame already read and found good stays.
+            like = (e[usable] @ e[blank].T).max(1) >= BLANK_LIKE
+            unread = ~np.isin(usable, list(read))
+            usable = usable[~np.isin(usable, blank) & ~(like & unread)]
+        logger.debug("activity: too many blank keyframes; describe frames spread in time")
+    cand = usable if len(usable) else np.arange(len(refs))
+    if len(cand) > DESCRIBE_FRAMES:
+        cand = cand[np.linspace(0, len(cand) - 1, DESCRIBE_FRAMES + 2)[1:-1].astype(int)]
+    return [grab(int(i)) for i in cand]
+
+
 def describe(emb: np.ndarray, refs: list[tuple[Path, float]], ask: Ask | None) -> tuple[str, str]:
     """``(description, how)``: the vision model on a few frames (``vl``; frames as different
-    as the keyframes allow, :func:`_spread`), else CLIP zero-shot over the open activity
-    vocabulary of ``base.json`` (``clip``)."""
+    as the keyframes allow without dark or flat ones, :func:`_describe_frames`), else CLIP
+    zero-shot over the open activity vocabulary of ``base.json`` (``clip``)."""
     if ask is not None and refs:
-        if len(emb) == len(refs):
-            pick_i = _spread(emb, DESCRIBE_FRAMES)
-        else:
-            pick_i = list(np.linspace(0, len(refs) - 1, DESCRIBE_FRAMES + 2)[1:-1].astype(int))
         try:
-            imgs = [grab_frame_jpeg(remap_source(refs[i][0]), refs[i][1], 512) for i in pick_i]
+            imgs = _describe_frames(emb, refs)
         except (OSError, FFmpegError) as err:
             logger.info("activity: frame grab failed (%s); describing with CLIP", err)
             imgs = []

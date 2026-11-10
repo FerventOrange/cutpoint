@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Discovered activity profiles are named after the activity alone: crash words of the floor and of the profile are dropped from the name and the `detect` captions (`ski-crash` is `ski`), and the prompts ask for the activity, never an incident. The vision model sees the most different keyframes, and crash captions that fit more than 10% of the footage's own keyframes are dropped (#916).
+- Discovered activity profiles are named after the activity alone: crash words of the floor and of the profile are dropped from the name and the `detect` captions (`ski-crash` is `ski`), and the prompts ask for the activity, never an incident. The vision model sees the most different keyframes, skipping dark or flat ones (a cut to black, white-out snow), and crash captions that fit more than 10% of the footage's own keyframes are dropped (#916).
 - `activity.json` records `discovery` (`describe_s`, `attempts`, per attempt `synth_s`, `answered` and `timed_out`, `failed` with the reason when a failure is remembered, and `cached`), and `crashes.json` `timings.profile_s`. The synthesis retry is skipped when the first attempt took nearly the whole timeout (#916).
 - **BREAKING:** without a model, the fallback profile is always `generic` (it was named after CLIP's best activity term); CLIP's three best terms are kept in `description` (#916).
 - **BREAKING:** discovered profiles no longer reword the VLM prompts: they keep the generic wording (and its VLM window cache) (#916).

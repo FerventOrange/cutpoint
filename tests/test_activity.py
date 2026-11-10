@@ -656,11 +656,140 @@ def test_describe_shows_the_most_different_frames(monkeypatch, fake_clip):
     assert activity._spread(emb, 3) == [0, 4, 7]  # from the frame nearest the mean
     assert len(activity._spread(emb, 8)) == 3  # copies are not shown twice
     refs = [(Path("v.mp4"), float(t)) for t in range(len(emb))]
-    grabbed: list[float] = []
-    monkeypatch.setattr(activity, "remap_source", lambda p: p)
-    monkeypatch.setattr(activity, "grab_frame_jpeg", lambda p, t, w: grabbed.append(t) or b"")
+    grabbed = _frames(monkeypatch, {})
     _desc, how = activity.describe(emb, refs, _stub({"activity": "x"}))
     assert how == "vl" and grabbed == [0.0, 4.0, 7.0]
+
+
+def _jpeg(kind: str) -> bytes:
+    """A JPEG frame: ``scene`` (textured), ``black`` (mean luma 2), ``flat`` (grey, std 6),
+    or ``dark`` (underwater-like: mean about 37, textured)."""
+    import cv2  # noqa: PLC0415
+
+    rng = np.random.default_rng(0)
+    img = {
+        "scene": lambda: rng.integers(0, 256, (72, 128)),
+        "black": lambda: np.full((72, 128), 2),
+        "flat": lambda: 200 + rng.normal(0, 6, (72, 128)),
+        "dark": lambda: rng.integers(5, 70, (72, 128)),
+    }[kind]()
+    return cv2.imencode(".jpg", np.clip(img, 0, 255).astype(np.uint8))[1].tobytes()
+
+
+def _frames(monkeypatch, kinds: dict[float, str]) -> list[float]:
+    """Frame grabs return ``kinds[t]`` (``scene`` by default); the grabbed times are logged."""
+    grabbed: list[float] = []
+    monkeypatch.setattr(activity, "remap_source", lambda p: p)
+
+    def grab(p, t, w):
+        grabbed.append(t)
+        return _jpeg(kinds.get(t, "scene"))
+
+    monkeypatch.setattr(activity, "grab_frame_jpeg", grab)
+    return grabbed
+
+
+def _shown() -> tuple[list[bytes], activity.Ask]:
+    """The images the vision model is shown, and the model."""
+    shown: list[bytes] = []
+
+    def spy(prompt, images, schema):
+        shown.extend(images)
+        return {"activity": "x"}
+
+    return shown, spy
+
+
+def test_describe_never_shows_black_or_flat_frames(monkeypatch, fake_clip):
+    """#916: a black frame (cut to black, lens cap) or a flat one (white-out snow) is as far
+    from every other keyframe as a frame gets, so the spread picked it; it names nothing."""
+    a, b, c, d, e, f = (fake_clip(f"caption:{k}") for k in "abcdef")
+    emb = np.concatenate([a, a, b, a, c, a, d, a, e, a, f])
+    refs = [(Path("v.mp4"), float(t)) for t in range(len(emb))]
+    kinds = {2.0: "black", 4.0: "flat", 6.0: "dark"}
+    _frames(monkeypatch, kinds)
+    shown, ask = _shown()
+    _desc, how = activity.describe(emb, refs, ask)
+    assert how == "vl" and len(shown) == activity.DESCRIBE_FRAMES
+    assert _jpeg("black") not in shown and _jpeg("flat") not in shown
+    assert _jpeg("dark") in shown  # dark but textured (underwater, night) is footage
+
+
+def test_describe_shows_the_usable_frames_when_too_few_are_left(monkeypatch, fake_clip):
+    emb = np.concatenate([fake_clip(f"caption:{k}") for k in "abcdefghi"])
+    refs = [(Path("v.mp4"), float(t)) for t in range(len(emb))]
+    grabbed = _frames(monkeypatch, {float(t): "black" for t in range(6)})  # 3 usable
+    shown, ask = _shown()
+    _desc, how = activity.describe(emb, refs, ask)
+    assert how == "vl" and shown == [_jpeg("scene")] * 3
+    assert grabbed[-3:] == [6.0, 7.0, 8.0] and len(grabbed) == len(set(grabbed))
+
+
+def test_describe_shows_two_keyframes_once_each(monkeypatch, fake_clip):
+    refs = [(Path("v.mp4"), 0.0), (Path("v.mp4"), 1.0)]
+    two = np.concatenate([fake_clip(f"caption:{k}") for k in "ab"])
+    no_emb = np.zeros((0, 768), np.float32)  # embeddings that do not match the keyframes
+    for emb, kinds in ((no_emb, {}), (two, {}), (two, {0.0: "black", 1.0: "black"})):
+        grabbed = _frames(monkeypatch, kinds)
+        shown, ask = _shown()
+        activity.describe(emb, refs, ask)
+        assert grabbed == [0.0, 1.0] and len(shown) == 2  # all black: still both, once each
+
+
+def test_describe_reads_a_bounded_number_of_frames(monkeypatch, fake_clip):
+    """A recording that starts with 30 s of black: every black keyframe looks alike to CLIP,
+    so one read rules them all out."""
+    black = fake_clip("caption:black")
+    rest = [fake_clip(f"caption:scene{k}") for k in range(10)]
+    emb = np.concatenate([black] * 30 + rest)
+    refs = [(Path("v.mp4"), float(t)) for t in range(len(emb))]
+    grabbed = _frames(monkeypatch, {float(t): "black" for t in range(30)})
+    shown, ask = _shown()
+    _desc, how = activity.describe(emb, refs, ask)
+    assert how == "vl" and len(shown) == activity.DESCRIBE_FRAMES
+    assert _jpeg("black") not in shown
+    assert len(grabbed) <= activity.DESCRIBE_READS + activity.DESCRIBE_FRAMES
+
+
+def test_describe_stops_reading_after_the_read_budget(monkeypatch, fake_clip):
+    """Black frames CLIP tells apart are ruled out one read at a time; the reads stop at
+    the budget and the frames are spread in time."""
+    emb = np.concatenate([fake_clip(f"caption:k{k}") for k in range(40)])
+    refs = [(Path("v.mp4"), float(t)) for t in range(len(emb))]
+    grabbed = _frames(monkeypatch, {float(t): "black" for t in range(30)})
+    shown, ask = _shown()
+    _desc, how = activity.describe(emb, refs, ask)
+    assert how == "vl" and len(shown) == activity.DESCRIBE_FRAMES
+    assert len(grabbed) <= activity.DESCRIBE_READS + activity.DESCRIBE_FRAMES
+    assert len(grabbed) < 30  # not every black keyframe read
+
+
+def _near(x: np.ndarray, y: np.ndarray, cos: float) -> np.ndarray:
+    """A unit vector at cosine ``cos`` to ``x``, towards ``y`` (orthogonal unit vectors)."""
+    return cos * x + np.sqrt(1 - cos**2) * y
+
+
+def test_a_good_frame_like_a_blank_one_is_still_shown(monkeypatch, fake_clip):
+    """A dark but detailed frame read in the same round as a flat one CLIP finds alike
+    (cosine 0.97) is not dropped with it."""
+    a, b, x, y = (fake_clip(f"caption:{k}") for k in "abxy")
+    emb = np.concatenate([a, x, _near(x, y, 0.97), b])
+    refs = [(Path("v.mp4"), float(t)) for t in range(len(emb))]
+    _frames(monkeypatch, {1.0: "dark", 2.0: "flat"})
+    shown, ask = _shown()
+    activity.describe(emb, refs, ask)
+    assert _jpeg("dark") in shown and _jpeg("flat") not in shown
+
+
+def test_describe_ends_whatever_the_likeness_threshold(monkeypatch, fake_clip):
+    monkeypatch.setattr(activity, "BLANK_LIKE", 1.5)  # no frame is like another
+    emb = np.concatenate([fake_clip(f"caption:{k}") for k in "abcdef"])
+    emb[5] = 0.0  # a keyframe without an embedding
+    refs = [(Path("v.mp4"), float(t)) for t in range(len(emb))]
+    _frames(monkeypatch, {0.0: "black", 5.0: "black"})
+    shown, ask = _shown()
+    _desc, how = activity.describe(emb, refs, ask)
+    assert how == "vl" and _jpeg("black") not in shown
 
 
 def test_incident_captions_that_fit_the_whole_footage_are_dropped(same_footage, footage, fake_clip):
