@@ -39,54 +39,75 @@ def _ids(order: list[dict]) -> list[int]:
     return [c["id"] for c in order]
 
 
-def test_the_band_is_k_each_side_of_the_cut_closest_first():
+def test_the_band_is_the_edit_and_k_below_the_cut_closest_first():
     ranked = _ranked(12)
     picks = ranked[:6]  # the edit takes the 6 best: k = 2, the cut is after rank 5
     order, cut, k = analyze.vision_band(ranked, picks, None)
     assert (cut, k) == (6, 2)
-    assert _ids(order) == [5, 6, 4, 7]  # cut-1, cut, cut-2, cut+1
+    # the last pick, the first below, the pick before, the second below, then the other picks
+    assert _ids(order) == [5, 6, 4, 7, 3, 2, 1, 0]
 
 
-def test_the_band_is_clipped_at_both_ends():
+def test_the_sides_interleave_and_the_longer_one_goes_on():
+    ranked = _ranked(30)
+    picks = ranked[:10]  # k = band_k(10) = 3
+    order, cut, k = analyze.vision_band(ranked, picks, None)
+    assert (cut, k) == (10, 3)
+    assert _ids(order) == [9, 10, 8, 11, 7, 12, 6, 5, 4, 3, 2, 1, 0]
+
+
+def test_k_comes_from_the_number_of_picks():
+    ranked = _ranked(40)
+    for n in (1, 7, 11):
+        _, cut, k = analyze.vision_band(ranked, ranked[:n], None)
+        assert (cut, k) == (n, analyze.band_k(n))
+
+
+def test_the_band_below_is_clipped_at_the_end():
     ranked = _ranked(3)
     order, cut, k = analyze.vision_band(ranked, ranked[:3], None)  # the edit takes everything
-    assert (cut, k) == (3, 2) and _ids(order) == [2, 1]
+    assert (cut, k) == (3, 2) and _ids(order) == [2, 1, 0]
 
-    order, cut, k = analyze.vision_band(_ranked(1), _ranked(1), None)
-    assert _ids(order) == [0]  # a single moment is its own band
+    ranked = _ranked(8)
+    order, cut, k = analyze.vision_band(ranked, ranked[:7], None)  # one moment below the cut
+    assert (cut, k) == (7, 3) and _ids(order) == [6, 7, 5, 4, 3, 2, 1, 0]
+
+
+def test_short_lists():
+    assert analyze.vision_band([], [], None)[0] == []
+    one = _ranked(1)
+    order, cut, _ = analyze.vision_band(one, one, None)
+    assert cut == 1 and _ids(order) == [0]  # a single moment is its own band
     ranked = _ranked(5)
     order, cut, _ = analyze.vision_band(ranked, ranked[:1], None)  # one pick: cut 1, k 2
-    assert cut == 1 and _ids(order) == [0, 1, 2]  # nothing above rank 0, two below the cut
+    assert cut == 1 and _ids(order) == [0, 1, 2]
 
 
-def test_the_band_is_empty_without_candidates():
-    assert analyze.vision_band([], [], None)[0] == []
-
-
-def test_picks_that_are_not_a_prefix_put_the_cut_after_the_last_one():
+def test_picks_that_are_not_a_prefix_skip_the_moments_left_out_for_their_length():
     ranked = _ranked(10)
-    picks = [ranked[i] for i in (0, 1, 3, 6)]  # a long one was skipped: k = band_k(4) = 2
+    picks = [ranked[i] for i in (0, 1, 3, 6)]  # 2, 4 and 5 were too long: k = band_k(4) = 2
     order, cut, k = analyze.vision_band(ranked, picks, None)
     assert (cut, k) == (7, 2)
-    assert _ids(order) == [6, 7, 5, 8]
+    assert _ids(order) == [6, 7, 3, 8, 1, 0]  # not 2, 4 or 5: they are not in the edit
 
 
-def test_a_must_include_pick_is_no_neighbour_and_not_the_cut():
+def test_a_must_include_pick_is_not_rated_and_not_the_cut():
     ranked = _ranked(10)  # the candidates a forced crash is not among
     forced = {"id": "crash", "must_include": True}
     picks = [forced, *ranked[:5]]  # 6 picks: k = 2; the cut follows the last ranked pick
     order, cut, k = analyze.vision_band(ranked, picks, None)
-    assert (cut, k) == (5, 2) and _ids(order) == [4, 5, 3, 6]
+    assert (cut, k) == (5, 2) and _ids(order) == [4, 5, 3, 6, 2, 1, 0]
 
     order, cut, _ = analyze.vision_band(ranked, [forced], None)  # only forced picks: cut 0
     assert cut == 0 and _ids(order) == [0, 1]
 
 
-def test_max_n_keeps_the_moments_closest_to_the_cut():
+def test_max_n_caps_the_whole_band_keeping_the_moments_closest_to_the_cut():
     ranked = _ranked(12)
     order, cut, _ = analyze.vision_band(ranked, ranked[:6], 3)
     assert cut == 6 and _ids(order) == [5, 6, 4]
-    assert _ids(analyze.vision_band(ranked, ranked[:6], 99)[0]) == [5, 6, 4, 7]
+    assert _ids(analyze.vision_band(ranked, ranked[:6], 5)[0]) == [5, 6, 4, 7, 3]
+    assert _ids(analyze.vision_band(ranked, ranked[:6], 99)[0]) == [5, 6, 4, 7, 3, 2, 1, 0]
 
 
 # ---- rating_centres and centred_rating

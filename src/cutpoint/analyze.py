@@ -120,8 +120,8 @@ LONG_FILE_S = 1800  # above this, scene detection decodes keyframes only
 PROFANE = {p.rstrip("*") for p in PROFANITY}  # names as keyword_hits reports them
 PROFANITY_CUE_S = 3.0  # a profane word counts only if another cue is this close
 PROFANITY_CUE_MIN = 0.8  # minimum weight of a keyword that counts as a cue
-# the vision band (#909): k = this share of the default edit's moments on each side of its cut,
-# at least VISION_BAND_MIN and at most VISION_BAND_MAX
+# the vision band (#909): the default edit plus k below its cut, k = this share of the edit's
+# moments, at least VISION_BAND_MIN and at most VISION_BAND_MAX
 VISION_BAND_SHARE, VISION_BAND_MIN, VISION_BAND_MAX = 0.3, 2, 24
 VISION_SPAN_EPS = 1e-3  # seconds: a candidate span this close to its rated one still matches
 PICK_FLOOR = 0.25  # a peak below this share of the strongest one is not a candidate ...
@@ -1175,6 +1175,19 @@ def sync_vision(c: dict[str, Any]) -> float | None:
         }
         sig["vision"] = None
     return rated["base"]
+
+
+def vision_skipped(c: dict[str, Any]) -> bool:
+    """Whether the candidate ``c`` is a moment the default edit skipped above its cut when the
+    vision step ran (too long or overlapping a pick; ``vision_skipped``, the span it had then)
+    and still has that span (within :data:`VISION_SPAN_EPS`). The vision clamp
+    (:func:`cutpoint.scorer.apply_vision_clamp`) does not count such a moment as a neighbour."""
+    span = c.get("vision_skipped")
+    return (
+        isinstance(span, list)
+        and abs(c["start"] - span[0]) <= VISION_SPAN_EPS
+        and abs(c["end"] - span[1]) <= VISION_SPAN_EPS
+    )
 
 
 def _label(c: Candidate, style: Style) -> str:
@@ -2233,7 +2246,7 @@ def rebuild_crash_moments(project: Path) -> bool:
 
 
 def band_k(suggested_top: int) -> int:
-    """How many moments the vision band takes on each side of the default edit's cut (#909):
+    """How many moments the vision band takes below the default edit's cut (#909):
     :data:`VISION_BAND_SHARE` of the edit's ``suggested_top`` moments, rounded up, within
     :data:`VISION_BAND_MIN` and :data:`VISION_BAND_MAX`."""
     k = math.ceil(round(VISION_BAND_SHARE * suggested_top, 9))  # no float error can add one
@@ -2243,25 +2256,30 @@ def band_k(suggested_top: int) -> int:
 def vision_band(
     ranked: list[dict[str, Any]], picks: list[dict[str, Any]], max_n: int | None
 ) -> tuple[list[dict[str, Any]], int, int]:
-    """The moments the vision model rates (#909): those around the default edit's cut.
+    """The moments the vision model rates (#909): the default edit and ``k`` below its cut.
 
     ``ranked``: the candidates that are neither ``must_include`` nor visual pool moments, in
     :func:`cutpoint.scorer.rank_key` order. ``picks``: the default edit
     (:func:`cutpoint.default_fit.fit_target` before vision). The cut is 1 + the index in
     ``ranked`` of the last pick that is not ``must_include`` (the picks need not be the first
-    ones; 0 without one). The band is ``ranked[cut - k : cut + k]`` with ``k`` =
-    :func:`band_k` of the number of picks, clipped at both ends, closest to the cut first
-    (``cut - 1``, ``cut``, ``cut - 2``, ``cut + 1``, ...), then cut to ``max_n``
+    ones; 0 without one). The band is every pick in ``ranked`` (a moment above the cut that the
+    edit skipped for its length or because it overlaps a pick is not one) plus ``ranked[cut : cut + k]``, ``k`` =
+    :func:`band_k` of the number of picks, clipped at the end. Closest to the cut first: the
+    last pick, the first moment below the cut, the pick before the last, the second below, and
+    so on, the rest of one side once the other runs out; then cut to ``max_n``
     (``--vision-top``; None: all). Returns ``(band, cut, k)``."""
     where = {id(c): i for i, c in enumerate(ranked)}
-    at = [where[id(c)] for c in picks if not c.get("must_include") and id(c) in where]
-    cut = max(at) + 1 if at else 0
+    at = sorted(
+        {where[id(c)] for c in picks if not c.get("must_include") and id(c) in where},
+        reverse=True,
+    )
+    cut = at[0] + 1 if at else 0
     k = band_k(len(picks))
+    above = [ranked[i] for i in at]
+    below = ranked[cut : cut + k]
     order: list[dict[str, Any]] = []
-    for d in range(k):
-        for i in (cut - 1 - d, cut + d):
-            if 0 <= i < len(ranked):
-                order.append(ranked[i])
+    for i in range(max(len(above), len(below))):
+        order.extend(side[i] for side in (above, below) if i < len(side))
     return (order if max_n is None else order[:max_n]), cut, k
 
 
@@ -3213,7 +3231,7 @@ def analyze(
             footage category (:mod:`cutpoint.category`); highlights.json records the style
             used, ``settings.style_requested`` ``auto`` and the ``detection`` block.
         out_dir: Project directory.
-        vision: True = rate the moments around the default edit's cut (a warning if it is not
+        vision: True = rate the default edit and the moments below its cut (a warning if it is not
             available); False or None = no rating (opt-in, never automatic). For
             ``--style auto`` it also steers the footage question to the vision model about
             unsure sources: None asks quietly, True asks and warns of a missing consent,
@@ -3222,8 +3240,8 @@ def analyze(
         language: Force transcription language (e.g. "en"); None = autodetect.
         use_scenes: Run scene detection.
         max_candidates: Max candidates per source before merging (None = auto).
-        vision_top: Most moments sent to the vision model: the band around the default
-            edit's cut (:func:`vision_band`) is cut to this many, closest to the cut first
+        vision_top: Most moments sent to the vision model: the default edit and the moments
+            below its cut (:func:`vision_band`) are cut to this many, closest to the cut first
             (None = the whole band).
         ollama_url: Ollama base URL.
         ollama_model: Ollama vision model name.
@@ -3647,7 +3665,8 @@ def _analyze(
                 "Rescored %d of %d candidates from events.json", changed, len(hl["candidates"])
             )
 
-        # ---- 6. vision: the rating of the moments around the cut, blended into their scores
+        # ---- 6. vision: the rating of the default edit and the moments below its cut, blended into
+        # their scores
         cands = hl["candidates"]
         rater: VisionRater | None = None
         bad_url: ValueError | None = None
@@ -3674,13 +3693,19 @@ def _analyze(
         else:
             from cutpoint.visual_pool import is_pool  # noqa: PLC0415
 
-            # the band around the default edit's cut, from the ranking before vision
+            # the default edit and the band below its cut, from the ranking before vision
             ranked = sorted(
                 (c for c in cands if not c.get("must_include") and not is_pool(c)),
                 key=scorer.rank_key,
             )
             picks = default_fit.fit_target([c for c in cands if not is_pool(c)], style.target_total)
             order, cut, k = vision_band(ranked, picks, vision_top)
+            in_edit = {id(c) for c in picks}
+            # the moments above the cut the edit skipped (too long or overlapping a pick): no
+            # one's neighbours in the clamp, as long as they keep this span
+            for c in ranked[:cut]:
+                if id(c) not in in_edit:
+                    c["vision_skipped"] = [c["start"], c["end"]]
             # action-cam: worded for the project's activity.json (the default without one)
             wording = None
             if style.base == ACTION_CAM:
@@ -3724,12 +3749,14 @@ def _analyze(
                         else vision_time_share
                     )
                     budget_s, budget_base = vision_budget(share, pre_vision_s, earlier_total_s)
+                    n_edit = sum(id(c) in in_edit for c in order)
                     logger.info(
-                        "Vision: rating %d moments around the cut at %d (\u00b1%d) of %d "
-                        "candidates",
+                        "Vision: rating %d moments (%d of the default edit, %d below the cut at "
+                        "%d) of %d candidates",
                         len(order),
+                        n_edit,
+                        len(order) - n_edit,
                         cut,
-                        k,
                         len(cands),
                     )
                     outcome = _rate_vision(

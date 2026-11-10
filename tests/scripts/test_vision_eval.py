@@ -183,3 +183,51 @@ def test_main_shows_est_and_flips_and_writes_them(tmp_path, capsys):
     assert "est" in text and "flips" in text
     row = next(x for x in text.splitlines() if x.rstrip().endswith(str(var)))
     assert "0.30" in row.split()
+
+
+def test_flips_match_moments_exactly_not_by_overlap():
+    """A long moment that contains shorter ones must not stand in for them (#909 measurement)."""
+
+    def m(start, end, score, rated=False):
+        return {"source": SRC, "start": start, "end": end, "score": score,
+                "signals": {"vision": 7.0 if rated else None}}  # fmt: skip
+
+    # no vision: the long 0-100, another moment at 200, then the short 1-6 inside the long one
+    nv = [m(0, 100, 95), m(200, 210, 85), m(1, 6, 70)]
+    # the variant rated 1-6 up to 75, still under the unrated 200: nothing is reversed. Matched
+    # by overlap, 1-6 would be taken for the long one (95) and count as passed by 200
+    var = [m(0, 100, 95), m(200, 210, 85), m(1, 6, 75, rated=True)]
+    assert ve.flips(nv, var) == 0
+    up = [m(0, 100, 95), m(1, 6, 90, rated=True), m(200, 210, 85)]
+    assert ve.flips(nv, up) == 1  # 1-6 passed 200
+    assert ve.flips(nv, [m(2, 7, 99, rated=True), *nv]) == 0  # not in the no-vision project
+
+
+def test_est_ratio_takes_a_cold_time_before_vision():
+    # warm reference: 100 s before vision; cold: 1000 s, so 4 calls of 10 s are 4%
+    assert ve.est_ratio(REF_COST, {"rated": 4, "share": 0.3}, 1000.0) == pytest.approx(0.04)
+    assert ve.est_ratio(REF_COST, {"rated": 4, "share": 0.3}, None) == pytest.approx(0.3)
+
+
+def test_cold_pre_reads_seconds_or_a_project(tmp_path):
+    assert ve.cold_pre("125.5") == 125.5
+    vis = project(tmp_path, "vis", [90, 80], vision={"pre_vision_s": 70.0})
+    assert ve.cold_pre(str(vis)) == 70.0
+    nv = project(tmp_path, "nv", [90, 80])  # a no-vision run: only timings.total_s
+    data = json.loads((nv / "highlights.json").read_text(encoding="utf-8"))
+    data["timings"] = {"total_s": 300.0}
+    (nv / "highlights.json").write_text(json.dumps(data), encoding="utf-8")
+    assert ve.cold_pre(str(nv)) == 300.0
+    with pytest.raises(ValueError, match=r"no settings\.vision\.pre_vision_s"):
+        ve.cold_pre(str(project(tmp_path, "bare", [90, 80])))
+
+
+def test_main_takes_cold_pre_for_est(tmp_path, capsys):
+    ref = project(tmp_path, "ref", [90, 80, 70, 60], vision=REF_COST)
+    var = project(tmp_path, "var", [90, 80, 70, 60], vision={"rated": 4, "share": 0.3})
+    out = tmp_path / "out.json"
+    assert ve.main([str(ref), str(var), "--cold-pre", "1000", "--json", str(out)]) == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["cold_pre_s"] == 1000.0
+    assert data["variants"][0]["est_ratio"] == pytest.approx(0.04)
+    assert ve.main([str(ref), str(var), "--cold-pre", str(tmp_path / "missing")]) == 1

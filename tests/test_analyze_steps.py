@@ -30,6 +30,7 @@ from cutpoint import (
     cli,
     config,
     crash,
+    default_fit,
     insta360,
     jsonout,
     progress,
@@ -2385,10 +2386,11 @@ def _start(rank: int) -> float:
 @pytest.fixture
 def band_run(run, monkeypatch):
     """``run`` over :func:`_twelve` with a fake model that rates every moment ``rating`` (10),
-    takes 10 s of the fake clock per call and answers the start times in ``cached`` for free.
+    or ``ratings[start]`` when given, takes 10 s of the fake clock per call and answers the
+    start times in ``cached`` for free.
     ``deadline`` replaces the real deadline with a point on the fake clock (None: the real
     clock and budget). ``asked`` lists, in order, the starts the model was asked about."""
-    state = SimpleNamespace(asked=[], cached=set(), rating=10.0, deadline=None)
+    state = SimpleNamespace(asked=[], cached=set(), rating=10.0, ratings={}, deadline=None)
     _Clock.now = 0.0
 
     class Rater:
@@ -2410,7 +2412,7 @@ def band_run(run, monkeypatch):
 
         def cached(self, src, start, *a, **k):
             if start in state.cached:
-                return SimpleNamespace(score=state.rating, label="nice")
+                return SimpleNamespace(score=state.ratings.get(start, state.rating), label="nice")
             return None
 
         def rate(self, src, start, *a, **k):
@@ -2420,7 +2422,7 @@ def band_run(run, monkeypatch):
                 state.asked.append(start)
                 self.stats["calls"] += 1
                 _Clock.now += 10.0
-            return SimpleNamespace(score=state.rating, label="nice")
+            return SimpleNamespace(score=state.ratings.get(start, state.rating), label="nice")
 
         def unload(self):
             pass
@@ -2455,21 +2457,30 @@ def _rated_starts(hl) -> list[float]:
     return sorted(c["start"] for c in hl["candidates"] if c["signals"].get("vision") is not None)
 
 
-def test_vision_rates_only_the_band_around_the_cut_closest_first(band_run, caplog):
+def test_vision_rates_the_edit_and_the_band_below_its_cut_closest_first(band_run, caplog):
     with caplog.at_level(logging.INFO, logger="cutpoint.analyze"):
         hl, v = band_run.go(vision_time_share=1000.0)
-    # the edit takes ranks 0-5 (6 x 9 s <= 60 s): cut 6, k = band_k(6) = 2, so ranks 4-7
-    assert (v["cut"], v["band_k"], v["requested"], v["rated"]) == (6, 2, 4, 4)
-    assert band_run.asked == [_start(5), _start(6), _start(4), _start(7)]  # cut-1, cut, cut-2, ...
-    assert _rated_starts(hl) == [_start(r) for r in (4, 5, 6, 7)]
-    assert "Vision: rating 4 moments around the cut at 6 (±2) of 12 candidates" in caplog.text
+    # the edit takes ranks 0-5 (6 x 9 s <= 60 s): cut 6, k = band_k(6) = 2, so ranks 0-7
+    assert (v["cut"], v["band_k"], v["requested"], v["rated"]) == (6, 2, 8, 8)
+    # the last pick, the first below, the pick before, the second below, then the other picks
+    assert band_run.asked == [_start(r) for r in (5, 6, 4, 7, 3, 2, 1, 0)]
+    assert _rated_starts(hl) == [_start(r) for r in range(8)]
+    assert (
+        "Vision: rating 8 moments (6 of the default edit, 2 below the cut at 6) of 12 candidates"
+        in caplog.text
+    )
     assert len(hl["candidates"]) == 12  # the rest stay as they were
 
 
-def test_vision_top_caps_the_band_keeping_the_moments_closest_to_the_cut(band_run):
-    _, v = band_run.go(vision_time_share=1000.0, vision_top=3)
+def test_vision_top_caps_the_band_keeping_the_moments_closest_to_the_cut(band_run, caplog):
+    with caplog.at_level(logging.INFO, logger="cutpoint.analyze"):
+        _, v = band_run.go(vision_time_share=1000.0, vision_top=3)
     assert band_run.asked == [_start(5), _start(6), _start(4)]
     assert (v["requested"], v["rated"]) == (3, 3)
+    assert (  # the picks actually rated
+        "Vision: rating 3 moments (2 of the default edit, 1 below the cut at 6) of 12 candidates"
+        in caplog.text
+    )
 
 
 def test_the_time_cap_leaves_the_far_moments_unrated(band_run, caplog):
@@ -2478,13 +2489,13 @@ def test_the_time_cap_leaves_the_far_moments_unrated(band_run, caplog):
         hl, v = band_run.go(vision_time_share=0.3)
     assert band_run.asked == [_start(5), _start(6)]  # the two closest to the cut
     assert _rated_starts(hl) == [_start(5), _start(6)]
-    assert (v["capped"], v["skipped_by_cap"], v["rated"], v["requested"]) == (True, 2, 2, 4)
+    assert (v["capped"], v["skipped_by_cap"], v["rated"], v["requested"]) == (True, 6, 2, 8)
     assert v["calls"] == 2 and v["share"] == 0.3
     lines = [m for m in caplog.messages if m.startswith("Vision: time cap reached")]
     assert len(lines) == 1  # once
     assert re.fullmatch(
         r"Vision: time cap reached after 2 calls \(\d+ s, budget \d+ s = 30% of \d+ s\); "
-        r"2 moments near the cut not rated",
+        r"6 moments near the cut not rated",
         lines[0],
     )
 
@@ -2495,7 +2506,7 @@ def test_a_cached_rating_is_still_taken_after_the_cap(band_run):
     hl, v = band_run.go(vision_time_share=0.3)
     assert band_run.asked == [_start(5), _start(6)]  # the model is not asked for the rest
     assert _rated_starts(hl) == [_start(4), _start(5), _start(6)]
-    assert (v["capped"], v["skipped_by_cap"], v["rated"]) == (True, 1, 3)
+    assert (v["capped"], v["skipped_by_cap"], v["rated"]) == (True, 5, 3)
     assert v["cached"] == 1 and v["calls"] == 2
 
 
@@ -2503,7 +2514,7 @@ def test_a_share_of_0_still_makes_one_call(band_run):
     _, v = band_run.go(vision_time_share=0.0)  # the real clock: the deadline is the step's start
     assert band_run.asked == [_start(5)]
     assert (v["share"], v["budget_s"]) == (0.0, 0.0)
-    assert (v["capped"], v["skipped_by_cap"], v["rated"]) == (True, 3, 1)
+    assert (v["capped"], v["skipped_by_cap"], v["rated"]) == (True, 7, 1)
 
 
 def test_a_rerank_takes_its_budget_from_the_first_analysis(band_run):
@@ -2522,23 +2533,85 @@ def test_the_share_comes_from_config_json_when_not_given(band_run, home):
     assert v["share"] == 0.0 and band_run.asked == [_start(5)]
 
 
-def test_a_rating_never_passes_an_unrated_neighbour_outside_the_band(band_run):
-    """#905: rank 3, just above the band, is not rated. A top rating on the whole band lifts
-    each of its moments (about 8%, 84-86 to 91-93) past the 87 of that one, but the order is
-    the one without vision and every rated moment ends at or under it."""
-    band_run.run.go(vision=False, vision_time_share=1000.0)  # no vision: the reference order
-    plain = band_run.load()
+def _twelve_long3(*args, **kw):
+    """:func:`_twelve` with rank 3 39 s long: the edit (60 s) skips it for its length and takes
+    ranks 0-2 and 4-6, so the cut is after rank 6 and rank 3 is not rated."""
+    res = _twelve(*args, **kw)
+    res.candidates[3].end = res.candidates[3].start + 39.0
+    return res
+
+
+def test_a_moment_the_edit_skipped_above_the_cut_is_no_neighbour(band_run, monkeypatch):
+    """#909: rank 3, skipped by the edit for its length, is not rated and is marked
+    ``vision_skipped``. The clamp does not count it: a top rating on the band below it (ranks
+    0-2 rated 0) lifts those moments past its 87 and the low-rated ones above it fall under
+    it. The unrated moment under the band (rank 9) still bounds every rated one."""
+    monkeypatch.setattr(analyze, "analyze_source", _twelve_long3)
+    band_run.ratings = {_start(r): 0.0 for r in (0, 1, 2)}  # so 10 is above the centre
     hl, v = band_run.go(vision_time_share=1000.0)
-    assert [c["start"] for c in hl["candidates"]] == [c["start"] for c in plain["candidates"]]
+    assert (v["cut"], v["band_k"], v["requested"]) == (7, 2, 8)
     by_start = {c["start"]: c for c in hl["candidates"]}
-    above = by_start[_start(3)]
-    assert above["signals"]["vision"] is None and above["score"] == 87.0
-    for rank in (4, 5, 6, 7):
+    skipped = by_start[_start(3)]
+    assert skipped["signals"]["vision"] is None and skipped["score"] == 87.0
+    assert skipped["vision_skipped"] == [skipped["start"], skipped["end"]]
+    assert [c["start"] for c in hl["candidates"] if "vision_skipped" in c] == [_start(3)]
+    for rank in (4, 5, 6, 7, 8):
         c = by_start[_start(rank)]
         assert c["signals"]["vision"] == 10.0
-        assert c["vision_rated"]["blended"] > above["score"]  # the blend alone would have passed it
-        assert c["score"] <= above["score"]  # the clamp holds it under
-    assert v["clamped"] == 4
-    below = by_start[_start(8)]  # unrated, under the band
+        assert c["score"] == c["vision_rated"]["blended"] > skipped["score"]  # passed it
+    for rank in (0, 1, 2):
+        assert by_start[_start(rank)]["score"] < skipped["score"]  # fell under it
+    below = by_start[_start(9)]  # unrated, under the band: still a neighbour
     assert below["signals"]["vision"] is None
-    assert all(by_start[_start(r)]["score"] >= below["score"] for r in (4, 5, 6, 7))
+    assert all(by_start[_start(r)]["score"] >= below["score"] for r in range(9) if r != 3)
+
+
+def test_a_weak_pick_above_a_skipped_moment_can_leave_the_edit(band_run, monkeypatch):
+    """#909: rank 0, a pick above rank 3 (skipped by the edit for its length), rated 0 while
+    the rest get 10: the skipped moment no longer holds it, so it falls below the cut and out
+    of the edit, held only by the first unrated moment under the band (rank 9)."""
+    monkeypatch.setattr(analyze, "analyze_source", _twelve_long3)
+    band_run.ratings = {_start(0): 0.0}
+    hl, _ = band_run.go(vision_time_share=1000.0)
+    by_start = {c["start"]: c for c in hl["candidates"]}
+    weak, skipped, floor = by_start[_start(0)], by_start[_start(3)], by_start[_start(9)]
+    assert weak["score"] < skipped["score"]
+    assert weak["score"] >= floor["score"]
+    picks = default_fit.fit_target(hl["candidates"], 60.0)
+    assert _start(0) not in [c["start"] for c in picks]
+
+
+def test_an_unrated_pick_is_still_a_neighbour(band_run, monkeypatch):
+    """With ``--vision-top 3`` only ranks 6, 7 and 5 are rated: the picks left unrated (ranks
+    0-2 and 4) bound them as before; only rank 3, which the edit skipped, does not count."""
+    monkeypatch.setattr(analyze, "analyze_source", _twelve_long3)
+    hl, _ = band_run.go(vision_time_share=1000.0, vision_top=3)
+    assert band_run.asked == [_start(6), _start(7), _start(5)]
+    by_start = {c["start"]: c for c in hl["candidates"]}
+    order = [c["start"] for c in hl["candidates"]]
+    pick = by_start[_start(4)]
+    assert pick["signals"]["vision"] is None and "vision_skipped" not in pick
+    for rank in (5, 6, 7):
+        c = by_start[_start(rank)]
+        assert c["vision_rated"]["blended"] > pick["score"]  # the blend alone would pass it
+        assert c["score"] <= pick["score"]  # the clamp holds it under
+        assert order.index(_start(rank)) > order.index(_start(4))
+    assert "vision_skipped" in by_start[_start(3)]
+
+
+def test_a_weak_pick_falls_below_the_cut(band_run):
+    """#909: the whole edit is rated, so a pick the model rates low can drop out of it. Rank 5,
+    the last pick but one, rated 0 while the rest get 10, falls under ranks 6 and 7 below the
+    cut, held only by the first unrated moment under the band (rank 8)."""
+    band_run.ratings = {_start(5): 0.0}
+    hl, v = band_run.go(vision_time_share=1000.0)
+    assert v["requested"] == 8
+    order = [c["start"] for c in hl["candidates"]]
+    by_start = {c["start"]: c for c in hl["candidates"]}
+    weak, floor = by_start[_start(5)], by_start[_start(8)]
+    assert floor["signals"]["vision"] is None
+    assert order.index(_start(5)) > order.index(_start(7))  # past the two below the cut
+    assert weak["score"] >= floor["score"]  # the unrated moment under the band bounds it
+    picks = default_fit.fit_target(hl["candidates"], 60.0)
+    assert _start(5) not in [c["start"] for c in picks]  # out of the edit
+    assert _start(6) in [c["start"] for c in picks]

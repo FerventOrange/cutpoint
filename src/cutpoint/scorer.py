@@ -123,8 +123,10 @@ def apply_vision_clamp(cands: list[dict[str, Any]], before: Sequence[float | Non
     how many changed. ``before[i]`` is ``cands[i]``'s score without its vision rating, None
     when it has no rating that counts (never rated, the rating failed or went stale): its
     score is then its own. The ranking before vision orders them by that score
-    (:func:`rank_key`; a tie keeps the order of ``cands``). ``must_include`` moments and visual
-    pool moments are left out: they are no one's neighbours.
+    (:func:`rank_key`; a tie keeps the order of ``cands``). ``must_include`` moments, visual
+    pool moments and unrated moments the default edit skipped above its cut when vision ran
+    (:func:`cutpoint.analyze.vision_skipped`; the edit cannot use them) are left out: they are
+    no one's neighbours.
 
     A rated moment whose score equals an unrated neighbour's, which the final sort
     (:func:`rank_key`, then the order of ``cands``) would put past that neighbour, is moved
@@ -134,13 +136,20 @@ def apply_vision_clamp(cands: list[dict[str, Any]], before: Sequence[float | Non
     the final sort places it by its ``grid_score`` and its place in ``cands``. A tie that
     would not reorder stays a tie. The result depends only on the inputs, so a rescore gives
     the same scores."""
+    from cutpoint.analyze import vision_skipped  # noqa: PLC0415 - imports this module
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports this
 
     def pre(i: int) -> float:
         b = before[i]
         return cands[i]["score"] if b is None else b
 
-    idx = [i for i, c in enumerate(cands) if not c.get("must_include") and not is_pool(c)]
+    idx = [
+        i
+        for i, c in enumerate(cands)
+        if not c.get("must_include")
+        and not is_pool(c)
+        and not (before[i] is None and vision_skipped(c))
+    ]
     idx.sort(key=lambda i: (-pre(i), -cands[i].get("grid_score", pre(i))))
     rows = [(pre(i), None if before[i] is None else cands[i]["score"]) for i in idx]
     scores = clamp_rated(rows)
@@ -199,7 +208,8 @@ def rescore_events(
     idempotent) and records the evidence in ``signals.events``. A vision rating blended into
     it counts only while the candidate keeps the span it was rated over
     (:func:`cutpoint.analyze.sync_vision`), and a rated candidate's score stays between those of
-    its unrated neighbours in the ranking without the ratings (:func:`apply_vision_clamp`; the
+    its unrated neighbours in the ranking without the ratings, the moments the default edit
+    skipped above its cut excepted (:func:`apply_vision_clamp`; the
     count goes to ``settings.vision.clamped`` when there is a ``settings.vision``). The
     candidates are re-sorted and ``suggested_top`` is recomputed. In styles with an open list (``gaming``), events that
     can score and that no candidate covers nominate candidates first

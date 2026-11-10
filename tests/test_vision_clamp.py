@@ -291,3 +291,74 @@ def test_a_stale_rating_counts_as_unrated_and_bounds_the_rated_below_it(tmp_path
     again = copy.deepcopy(hl)
     scorer.rescore_events(hl, ev, Path(tmp_path), [grid()])
     assert hl == again
+
+
+# ---- moments the default edit skipped above its cut (vision_skipped)
+
+
+def _skipped(cid: str, start: float, score: float) -> dict:
+    c = own(cid, start, score)
+    c["vision_skipped"] = [c["start"], c["end"]]
+    return c
+
+
+def test_a_moment_the_edit_skipped_is_no_neighbour():
+    """S, skipped by the edit above its cut, does not bound the rated R: R passes it. The
+    unrated U under them still bounds R."""
+    s, r, u = _skipped("s", 0.0, 80.0), _cand("r", 99.0), _cand("u", 30.0)  # r was 70
+    assert scorer.apply_vision_clamp([s, r, u], [None, 70.0, None]) == 0
+    assert (s["score"], r["score"], u["score"]) == (80.0, 99.0, 30.0)
+    r["score"] = 10.0  # rated low instead: held by U, not by S
+    assert scorer.apply_vision_clamp([s, r, u], [None, 70.0, None]) == 1
+    assert r["score"] == 30.0
+
+
+def test_a_skipped_moment_with_another_span_is_a_neighbour_again():
+    """Once its span changes (a menu trim, a dialogue stretch) the moment is no longer the one
+    the edit skipped, so it bounds the rated moments again."""
+    s, r = _skipped("s", 0.0, 80.0), _cand("r", 99.0)  # r was 70
+    s["end"] += 5.0
+    assert not analyze.vision_skipped(s)
+    assert scorer.apply_vision_clamp([s, r], [None, 70.0]) == 1
+    assert r["score"] == 80.0  # held at S (a tie that keeps S first)
+
+
+def test_rescore_lets_a_rating_pass_a_skipped_moment_and_is_idempotent(tmp_path):
+    """The rescore after the events' bonus reads the same mark: h002 rated 10 (67.5) passes
+    the skipped h001 (60) and stays under nothing; a second rescore changes nothing. Without
+    events the result is the clamp's own."""
+    cands = [_skipped("h001", 0.0, 60.0), own("h002", 100.0, 50.0), own("h003", 300.0, 40.0)]
+    _rate(cands[1])
+    direct = copy.deepcopy(cands)
+    scorer.apply_vision_clamp(direct, [None, direct[1]["vision_rated"]["base"], None])
+    hl = highlights(cands, vision={})
+    scorer.rescore_events(hl, events_of([]), tmp_path, [grid()])
+    assert [c["id"] for c in hl["candidates"]] == ["h002", "h001", "h003"]
+    assert {c["id"]: c["score"] for c in hl["candidates"]} == {c["id"]: c["score"] for c in direct}
+    assert hl["candidates"][0]["score"] == 67.5
+    assert hl["settings"]["vision"]["clamped"] == 0
+
+    again = copy.deepcopy(hl)
+    for _ in range(2):
+        scorer.rescore_events(hl, events_of([]), tmp_path, [grid()])
+        assert hl == again
+
+
+def test_a_stale_rating_still_bounds_with_a_skipped_moment_around(tmp_path):
+    """A dialogue stretch widens h002 over the span it was rated: its stale rating counts as
+    unrated, so it bounds the rated h004 below it; the skipped h001 above them does not."""
+    cands = [
+        _skipped("h001", 0.0, 70.0),
+        own("h002", 100.0, 50.0),
+        own("h004", 400.0, 45.0),
+    ]
+    _rate(cands[1])
+    _rate(cands[2])
+    hl = highlights(cands, vision={})
+    ev = events_of([talk(60.0, 140.0)])
+    scorer.rescore_events(hl, ev, tmp_path, [grid()])
+    by_id = {c["id"]: c for c in hl["candidates"]}
+    stale, rated = by_id["h002"], by_id["h004"]
+    assert "vision_stale" in stale and "vision_stale" not in rated
+    assert rated["score"] == stale["score"]  # held at the stale one above it
+    assert by_id["h001"]["score"] == 70.0

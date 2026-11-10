@@ -1007,7 +1007,7 @@ one of them is refused.
 | `--keep-clips` / `--no-keep-clips` | Keep the clips in `clips` (default). `--no-keep-clips` exports them into a temporary folder in the project, as [`assemble <project>`](#assemble-from-a-project) does, and removes it after the join (after a failure or Ctrl+C too): the project gets `final.mp4`, `final.srt` and the `<name>-final` copies, and an existing clips folder is not touched. Refused (exit 2) with `--kind clips`, a timeline `--format` or `--force` |
 | `--format mp4\|fcpxml\|otio` | As on [`assemble`](#assemble): `mp4` (default) makes the final video; `fcpxml` or `otio` writes only that timeline, referencing the kept clips, and copies it to `<name>-final.fcpxml` or `.otio` |
 | `--events` | Also run [`events`](#events) with its defaults, without the layers of the `--skip` steps, to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
-| `--vision` / `--no-vision` | As on `analyze`: rate the moments around the default edit's cut with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off. With `--style auto` they also govern the footage check of unsure sources (see [detect](#detect)): on unless `--no-vision` or `"vision": false`; `--vision` also warns of a missing consent |
+| `--vision` / `--no-vision` | As on `analyze`: rate the default edit and the moments below its cut with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off. With `--style auto` they also govern the footage check of unsure sources (see [detect](#detect)): on unless `--no-vision` or `"vision": false`; `--vision` also warns of a missing consent |
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): the most moments sent to vision, and the Ollama server and model (also for the VLM layer of `--events`); an invalid port in `--ollama-url` exits 2 (`bad_args`) |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes`, `crashes` and/or `dialogue`. Give it after the input paths |
 | `--visual-index` / `--no-visual-index` | As on `analyze`: also write the frame embeddings of the AI Chat's visual search for `gaming`, `funny` and `commentary` footage, or not. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
@@ -1042,8 +1042,8 @@ an analysed set processes only the new file.
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
-| `--vision` / `--no-vision` | Rate the moments around the default edit's cut with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), on their frames and, except for `action-cam`, the speech in them, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. With `--style auto` they also govern the footage check of unsure sources (see [detect](#detect)): on unless `--no-vision` or `"vision": false`; `--vision` also warns of a missing consent. See **Vision rating** below |
-| `--vision-top N` | The most moments sent to vision, those closest to the cut first. Default: the whole band around the default edit's cut, ±max(2, 30% of its moments) and at most 24 on each side |
+| `--vision` / `--no-vision` | Rate the default edit and the moments below its cut with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), on their frames and, except for `action-cam`, the speech in them, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. With `--style auto` they also govern the footage check of unsure sources (see [detect](#detect)): on unless `--no-vision` or `"vision": false`; `--vision` also warns of a missing consent. See **Vision rating** below |
+| `--vision-top N` | The most moments sent to vision, those closest to the cut first. Default: the edit's moments (not must-include ones) plus max(2, 30% of its moments) below its cut, at most 24 |
 | `--ollama-url`, `--ollama-model` | Defaults: `vision_assistant.url` (Vision role `ollama`) / `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `vision_assistant.model` (Vision role `ollama`) / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a [`vision_assistant`](configuration.md#vision_assistant) of any provider other than `ollama` in `config.json`, the frames (here and for `360 director --vl-check`) go to that provider instead: an API (`anthropic`, `openai`, `xai`, with your API key) or a subscription (`claude-code`, `codex`, `antigravity`), once you agreed to it in the Models tab ("Allow vision requests"), unless you give `--ollama-url` and/or `--ollama-model`: then that Ollama is used instead (a flag left out takes its default) and nothing goes to the hosted provider. An Ollama URL that is not this machine (`localhost` or a loopback address, except on the Cutpoint proxy's port) needs that Vision consent too; without it vision is skipped with a WARNING (`vision_consent_needed`). An `--ollama-url` with an invalid port (such as `myhost:99999`) exits 2 with `bad_args`; a bad port in `OLLAMA_HOST`, `ollama_url`, the Models-tab Vision URL (`vision_assistant.url`) or the AI Chat Ollama URL only skips the step |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
 | `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
@@ -1057,19 +1057,25 @@ an analysed set processes only the new file.
 | `--batch-size N` | Close each model (Whisper, the step models, the background HUD OCR engine and the `--vision` rating's Ollama model, which then rates the candidates of N sources at a time) after N sources and load it again for the next ones, to give memory back on long runs; the results are the same (once the vision time cap is reached, which moments near the cut get rated can differ). Default 0: keep it loaded. Also on `360 analyze` (its view layer, analysis and events) |
 | `--json` | Result as one [JSON envelope](#json-output) on stdout |
 
-**Vision rating.** The model rates only the moments near the cut of the default edit (what
-`clips` takes without options), where a rating can change what is picked. The band is k
-moments on each side of the cut in the ranking before vision, k = 30% of the edit's moments,
-rounded up, at least 2 and at most 24; must-include moments and visual candidates are not in
-it. The moments closest to the cut are rated first. The ratings of each prompt kind (with
+**Vision rating.** The model rates the moments of the default edit (what `clips` takes
+without options) and the k moments just below its cut in the ranking before vision, k = 30%
+of the edit's moments, rounded up, at least 2 and at most 24, so a rating can drop a weak pick
+from the edit or bring in one from below. A moment above the cut that the edit skipped for its
+length or because it overlaps a pick, must-include moments and visual candidates are not rated. The moments closest to the
+cut are rated first: the last pick, the first moment below the cut, the pick before it, the
+second below, and so on. The ratings of each prompt kind (with
 speech, frames only) are centred on their mean in this run, so a rating means better or worse
 than the other moments rated; with fewer than 5 ratings of a kind the mean is pulled toward a
 fixed prior. The centred 0-10 rating scales a candidate's score (5 leaves it as is, 10 lifts it
 and 0 lowers it by a share set per style, about 20-45%, capped at 100); candidates not rated keep
-theirs. A rated moment never passes an unrated one: its final score, event points included,
-stays between the scores of its nearest unrated neighbours in the ranking without vision (a
-tie that would sort it past the neighbour becomes 0.1 inside instead, unless the two neighbours
-tie), so rated moments can only change places among themselves. The step stops
+theirs. A rated moment never passes an unrated one, except moments the default edit skipped
+above its cut when vision ran (too long or overlapping a pick): its final score,
+event points included, stays between the scores of its nearest unrated neighbours in the
+ranking without vision (a tie that would sort it past the neighbour becomes 0.1 inside instead,
+unless the two neighbours tie), so rated moments can only change places among themselves and
+with those skipped moments; with the whole edit rated, a weak pick can fall to just above the
+first unrated moment under the band. A skipped moment is marked `vision_skipped` (its `start`
+and `end` then) and counts as a neighbour again once `events` widens or trims it. The step stops
 asking the model once it has taken [`vision_time_share`](configuration.md#vision_time_share)
 of the analyze time before it (default 30%; a re-rank measures against the first analysis).
 It makes at least one call, the call under way finishes (so it can run over by one call), and
@@ -1131,7 +1137,8 @@ and `blended`, the prompt `kind`, `speech` or `frames`, and its `centre`). Visio
 without `--vision` (the rating can still change which moments are picked and their order). The rating counts only
 while the candidate keeps that span: once `events` widens or a menu trim cuts it, the rating
 moves to `vision_stale` (`score`, `label`, `window`), `signals.vision` is `null` and `vision_label`
-goes; the span coming back restores them. A candidate the dialogue reader widened also has `widened_from` (its
+goes; the span coming back restores them. A moment the default edit skipped above its cut when
+vision ran has `vision_skipped` (its `start` and `end` then; see **Vision rating**). A candidate the dialogue reader widened also has `widened_from` (its
 earlier `start`, `end`, `transcript` and `transcript_unsure`, and `absorbed`, the full candidates
 merged into it), and `dialogue_description` (the stretch's description) when no transcript
 snippet could be rebuilt for its new span; where the reader ran, `signals.events.dialogue` is
@@ -1171,12 +1178,13 @@ analyze time before it), `grab_s` (frame grabs), `load_s`, `prompt_s` and `reply
 timings of model load, prompt reading and reply), `prompt_tokens`, `reply_tokens`, `model` and
 `provider`. A re-rank of an earlier analysis adds `"rerank": true`: its `pre_vision_s` is only
 the cached re-run, not the full analysis. The band and the cap add `cut` (the default edit's
-cut, 1 + the rank of its last pick before vision), `band_k` (moments on each side),
+cut, 1 + the rank of its last pick before vision), `band_k` (moments below the cut),
 `rated_by_kind` (`speech` and `frames` counts), `centre` (`speech` and `frames`, `null` for a
 kind not rated), `share` (`vision_time_share`), `budget_s`, `budget_base` (`pre_vision_s`, or
 `earlier_total_s` for a re-rank), `capped` (the cap stopped the calls), `skipped_by_cap`
 (moments it left unrated) and `clamped` (rated moments whose score the clamp changed; each
-`events` rescore updates it). `requested` is the band's size after `--vision-top`. A hosted provider reports no timings: its wall time is
+`events` rescore updates it). `requested` is the band's size (the edit's moments (not must-include ones) plus
+`band_k` below, fewer at the end of the list) after `--vision-top`. A hosted provider reports no timings: its wall time is
 in `reply_s`. `-v` logs one DEBUG line per request. `scripts/vision_eval.py` compares such projects (see the script's docstring).
 
 ### Analysis steps

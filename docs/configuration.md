@@ -151,7 +151,7 @@ see [troubleshooting](troubleshooting/models.md)).
 
 ### vision
 
-`true`, `false`, or no key (the default). With no key, `--style auto` and `cutpoint detect` ask the vision model about unsure footage, and the frame rating is off; `false` also turns that check off. With `true`, `analyze` and `edit` rate the moments around the default edit's cut with the
+`true`, `false`, or no key (the default). With no key, `--style auto` and `cutpoint detect` ask the vision model about unsure footage, and the frame rating is off; `false` also turns that check off. With `true`, `analyze` and `edit` rate the default edit and the moments below its cut with the
 configured vision model
 ([getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) unless
 `--no-vision` is given; with `false` or no key, only `--vision` turns it on for one run. The UI's

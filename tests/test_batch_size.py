@@ -828,9 +828,10 @@ class _Rater:
 @pytest.fixture
 def vision_run(analyze_run, monkeypatch):
     """``analyze_run`` with ``--vision`` and the cached fake rater: five rated moments, one per
-    source. The vision band (#909) is the moments just below the edit's cut, so each source
-    gets two stronger 3 s fillers that rank above its rated one, and the style is commentary
-    (its target keeps all 15 moments in the edit: k = 5, the five lowest are the band)."""
+    source. The vision band (#909) rates the edit closest to its cut first, so each source
+    gets two stronger 3 s fillers that rank above its rated one, the style is commentary (its
+    target keeps all 15 moments in the edit, nothing is below the cut) and ``--vision-top 5``
+    keeps the five closest to the cut: the five lowest."""
     _Rater.calls, _Rater.store, _Rater.stop = [], {}, None
     monkeypatch.setattr(cutpoint.analyze, "VisionRater", _Rater)
     monkeypatch.setattr(config, "vision_time_share", lambda: 1000.0)  # no run is capped
@@ -849,6 +850,7 @@ def vision_run(analyze_run, monkeypatch):
     monkeypatch.setattr(cutpoint.analyze, "analyze_source", with_fillers)
     analyze_run.argv = [a if a != "--no-vision" else "--vision" for a in analyze_run.argv]
     analyze_run.argv[analyze_run.argv.index("funny")] = "commentary"
+    analyze_run.argv += ["--vision-top", "5"]
     return analyze_run
 
 
