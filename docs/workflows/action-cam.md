@@ -58,26 +58,32 @@ Action-cam footage goes through discovery like any other:
 3. Otherwise the cached keyframes are compared with CLIP to every library profile and to an
    open vocabulary of activities. A clear winner among the profiles (at least half of the
    score and 0.2 ahead of the next) is used.
-4. Otherwise the local vision model describes a few frames (activity, setting, camera mount,
-   surface, hazards) and the local LLM writes a new profile from that description, with `base`
-   and `generic` as examples. It is checked and capped, then saved to
+4. Otherwise the local vision model describes a few frames, chosen to differ as much as
+   possible (activity, setting, camera mount, surface, hazards), and the local LLM writes a new
+   profile from that description, with `base` and `generic` as examples. Its name says the
+   activity alone (crash words are dropped from it and from its recognition captions, so
+   `ski-crash` is `ski`), crash captions that fit more than 10% of the footage's keyframes are
+   dropped, and the VLM prompts keep the generic wording. It is checked and capped, then saved to
    `<CUTPOINT_HOME>\profiles\` with `"source": "discovered"` (a library file with the same
    content is reused), so the next video of that kind matches it in step 3. The result is also
    cached per footage: a new project over the same files, with the same model, `--context` and
-   example profiles, gets the same profile without asking the model again. In `analyze` and
+   example profiles, gets the same profile without asking the model again. A discovery the
+   model answered unusably or that timed out is remembered too: that footage is not sent to the
+   model again until `--refresh-profile`; a connection error is not, so the next run asks again. In `analyze` and
    `edit` this runs whenever a local Ollama answers, without `--vision`, and is quiet (one INFO
    line when it is skipped).
-5. If no model answers, the nearest library profile is used, else a profile of the best term of
-   the vocabulary (not saved), else `generic` (`source: fallback`), and the next run tries
-   again. An Ollama on another machine is not asked until the Vision consent for it was given
+5. If no model answers, the nearest library profile is used, else `generic` (`source:
+   fallback`, with CLIP's three best vocabulary terms in its `description`), and the next run
+   tries again. An Ollama on another machine is not asked until the Vision consent for it was given
    in the Models tab of `cutpoint ui` (WARNING `vision_consent_needed`; INFO in `analyze` and
    `edit`).
 
 `--context "..."` passes the user's own words ("enduro race in the rain, mud on the lens"). The
 LLM adds crash captions, normal-riding captions and slang on top of the chosen profile; words
 the profile already has keep their weights, and generated words are capped (0.6 for single
-words and prefixes, 0.9 for phrases). A different `--context` rebuilds the profile once;
-`--refresh-profile` ignores `activity.json` and the profile cached for the footage and writes
+words and prefixes, 0.75 for phrases, below the 0.8 a spoken cue needs to be a crash candidate
+on its own). A different `--context` rebuilds the profile once;
+`--refresh-profile` ignores `activity.json` and the profile (or failed discovery) cached for the footage and writes
 it again, with `--context` or while the footage matches no library profile (otherwise delete
 that profile first: `cutpoint profile delete NAME`).
 
@@ -124,10 +130,10 @@ sport the footage is not. Its fields are `recording` (what the window shows), `v
 most 300 characters, and `tags`, a
 description for each window tag (at most 100 characters). The tag keys (`jump_air`,
 `spray`, `transit` and the others) are fixed: they are the names stored in
-`events.json` and read by the scorer (the older keys `powder_spray`, `fast_groomer`, `chairlift` and `lodge` are ignored: run `cutpoint events` again on an old project), so a profile, including one the LLM writes, can only
-reword their descriptions, not rename, add or drop a tag. A profile without its own wording uses
-the generic wording of `base.json`. The `--context` writer starts from that generic wording and may reword it for the
-activity. A value that is missing, not a string, empty or over its cap is replaced by the
+`events.json` and read by the scorer (the older keys `powder_spray`, `fast_groomer`, `chairlift` and `lodge` are ignored: run `cutpoint events` again on an old project), so a profile can only
+reword their descriptions, not rename, add or drop a tag. Only a profile made with
+`cutpoint profile create` can reword them: discovered and `--context` profiles keep the generic
+wording of `base.json`, as does a profile without its own wording. A value that is missing, not a string, empty or over its cap is replaced by the
 `base.json` text, field by field. The `vlm` section of an `activity.json` written before
 profiles had one is filled from the profile's library entry, else `base.json`.
 

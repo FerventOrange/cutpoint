@@ -54,19 +54,24 @@ and 360 layers (:func:`active_prompts`, else :func:`default_prompts`: ``generic`
    scored zero-shot against every library profile's ``detect`` captions and the open
    activity vocabulary of ``base.json`` (the terms no library profile covers); the best
    profile wins when its share and its lead over the runner-up are large enough;
-4. discovery: the local vision model describes a few frames (CLIP zero-shot
-   over the open activity vocabulary when it cannot), then the local LLM writes
-   a new profile from that description and the user's words (``context``),
-   with ``base`` and ``generic`` as examples. It is validated, capped and saved to
-   the library (a file with the same content is reused), so the next similar video
-   matches it in step 3. Each synthesis is cached per footage
+4. discovery: the local vision model describes a few frames as different as the
+   keyframes allow (CLIP zero-shot over the open activity vocabulary when it cannot), then
+   the local LLM writes a new profile from that description and the user's words
+   (``context``), with ``base`` and ``generic`` as examples. It is validated, capped (its
+   crash phrases stay below a words-only crash cue), named after the activity alone (crash
+   words dropped from the name and ``detect``), checked on the footage (an incident caption
+   that fits much of it is dropped, :func:`self_check`) and saved to the library (a file
+   with the same content is reused), so the next similar video matches it in step 3. Its
+   VLM wording is the floor's. Each synthesis, and each failed one (an unusable reply or a
+   timeout; not a quick request error), is cached per footage
    (``<cache>/activity/<key>.json``, :func:`discovery_key`: the sources, the model, the
-   prompts, ``context`` and the examples), so the same footage gets the same profile
+   prompts, ``context`` and the examples), so the same footage gets the same result
    in every project and run until ``refresh``;
 5. when the LLM is unavailable or its reply is unusable twice (the retry asks
-   for less): a library profile named in ``context``, else the nearest one, else a
-   profile of the best open-vocabulary term when CLIP is clear enough (not saved), else
-   ``generic``, recorded as ``source: fallback`` so the next run tries again; a WARNING
+   for less; no retry after a first attempt near the timeout): a library profile named in
+   ``context``, else the nearest one, else ``generic`` (with CLIP's best open-vocabulary
+   terms in the record's ``description``), recorded as ``source: fallback`` so the next run
+   tries again (a remembered failure of the same footage is not asked again); a WARNING
    says when ``context`` was not applied.
 
 ``context`` always goes through the LLM: with a profile from steps 1-3 its
@@ -81,6 +86,7 @@ import functools
 import json
 import logging
 import re
+import time
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
@@ -121,13 +127,18 @@ DESCRIBE_FRAMES = 4
 PROFILE_TIMEOUT_S = 120
 # Per-footage cache of discovered profiles (:func:`discovery_key`), under the cache folder.
 DISCOVERY_DIR = "activity"
-DISCOVERY_VERSION = 1
+DISCOVERY_VERSION = 2
 
 # (prompt, JPEG frames, JSON schema of the reply or None) -> the model's JSON reply, or None.
 Ask = Callable[[str, list[bytes], dict[str, Any] | None], dict[str, Any] | None]
-# Synthesis attempts: (incident captions, words, highlight captions, vlm wording) asked
-# for; the retry asks for less (no vlm wording) so a reply cut off by the token limit fits.
-SYNTH_SIZES = ((10, 20, 4, True), (6, 10, 3, False))
+# Synthesis attempts: (incident captions, words, highlight captions) asked for; the retry
+# asks for less so a reply cut off by the token limit fits. It is skipped when the first
+# attempt took SLOW_SHARE of PROFILE_TIMEOUT_S or more (a second one would take as long).
+SYNTH_SIZES = ((10, 20, 4), (6, 10, 3))
+SLOW_SHARE = 0.9
+# Footage self-check of the LLM's incident captions: one that is the best caption of more
+# than this share of the footage's keyframes describes the footage, not an incident.
+SELF_CHECK_SHARE = 0.10
 # Sections an LLM-written profile may have (extra sections only come from files).
 SCHEMA_KEYS = (
     "name",
@@ -137,7 +148,6 @@ SCHEMA_KEYS = (
     "highlight",
     "lift",
     "low_info",
-    "vlm",
 )
 # The profiles Cutpoint ships: the shared floor and ``generic``; every other profile is
 # in the user's library (discovered or made by the user or their agent).
@@ -146,8 +156,6 @@ BUILTIN_NAMES = ("base", "generic")
 # ``cutpoint profile create``.
 DISCOVERED = "discovered"
 HAND = "hand"
-# The no-LLM fallback (step 5): the best open-vocabulary term needs this share.
-VOCAB_SHARE = 0.2
 VOCAB_KEY = "vocabulary:"  # match_scores keys of the open vocabulary's terms
 # Caption sections of a profile: pairs of lists, plain lists, the vision check's wording.
 PAIR_SECTIONS = ("incident", "highlight", "group", "person", "selfie", "lift")
@@ -178,13 +186,14 @@ AUTO = "auto"
 # LLM-written crash words: weight caps (a single word or ``*`` prefix matches normal
 # talk more often than a phrase) and filler that says nothing about an incident.
 GEN_WORD_CAP = 0.6
-GEN_PHRASE_CAP = 0.9
+GEN_PHRASE_CAP = 0.75  # below the 0.8 of a words-only crash cue (crash.candidate_events)
 FILLER = {"down", "ride", "go", "run", "the", "a", "on", "in", "up", "it", "off", "to"}
 
 _DESCRIBE_PROMPT = (
     "These {n} frames come from one video. Describe the footage for a video editor. "
     "Respond with JSON only: "
-    '{{"activity": "...", "setting": "...", "camera": "mount / point of view", '
+    '{{"activity": "the activity the camera wearer is doing, never an incident or event", '
+    '"setting": "...", "camera": "mount / point of view", '
     '"surface": "terrain or surface", "hazards": "typical crashes, falls or failures"}}'
 )
 _SYNTH_PROMPT = """You write detection profiles for an automatic video editor. A profile tells a \
@@ -195,7 +204,8 @@ Footage: {description}
 What the user said about it: {context}
 
 Write one compact JSON profile with the keys of the examples:
-name (short lowercase slug of the activity), description (one sentence),
+name (short lowercase slug of the activity the camera wearer is doing, never an incident \
+or event), description (one sentence),
 detect (3 captions that recognise this kind of footage),
 incident.pos (at most {n} captions of frames during or right after an incident, as this \
 camera sees them),
@@ -209,20 +219,12 @@ highlight.pos / highlight.neg (at most {h} captions each: highlight-worthy vs du
 lift.pos / lift.neg (optional, at most 3 captions each: only when this footage has rides \
 on a lift, cable car, shuttle or other transport where the activity pauses; pos: riding \
 it, neg: the activity itself; otherwise two empty lists),
-low_info (at most 3 captions of frames with nothing to see).{vlm}
+low_info (at most 3 captions of frames with nothing to see).
 Captions are short visual descriptions (under 12 words). Where the user says what \
 matters, follow it. No other text.
 
 Examples:
 {examples}"""
-# Added to _SYNTH_PROMPT on the first attempt: the base wording of the VLM prompts, for the
-# LLM to flavour. The tag keys are fixed; only their descriptions may change.
-_SYNTH_VLM = """
-vlm (optional: the wording a vision model gets for this footage). Start from this generic \
-action-cam wording and reword it for this activity, keeping each value's role, length and \
-form (hype: a 0-10 rubric; tags: one short description per tag, the same tag keys, no new \
-ones; leave out any value that needs no change):
-{base_vlm}"""
 
 _FILES: dict[str, dict[str, Any] | None] = state.register_container(__name__, "_FILES", {})
 
@@ -660,7 +662,7 @@ def _profiles_only(scores: dict[str, float]) -> list[tuple[str, float]]:
 def nearest(scores: dict[str, float]) -> str:
     """Closest library profile when there is no clear match: the best one with at least
     a fifth of the share, else ``generic``; ``generic`` too when an open-vocabulary term is
-    nearer (the vocabulary fallback of :func:`resolve` then names it)."""
+    nearer."""
     best = max(_profiles_only(scores), key=lambda kv: kv[1], default=("generic", 0.0))
     term = max((s for k, s in scores.items() if k.startswith(VOCAB_KEY)), default=0.0)
     return best[0] if best[1] >= 0.2 and best[1] >= term else "generic"
@@ -685,11 +687,30 @@ def vocab_shares(emb: np.ndarray) -> list[tuple[str, float]]:
     return [(vocab[i], float(shares[i])) for i in np.argsort(-shares)]
 
 
+def _spread(emb: np.ndarray, n: int) -> list[int]:
+    """``n`` keyframes spread over what the footage shows: farthest-point sampling over the
+    CLIP embeddings, from the frame nearest their mean; in time order."""
+    e = emb.astype(np.float32) / np.maximum(np.linalg.norm(emb, axis=1, keepdims=True), 1e-9)
+    picked = [int(np.argmax(e @ e.mean(0)))]
+    dist = 1.0 - e @ e[picked[0]]
+    while len(picked) < min(n, len(e)):
+        i = int(np.argmax(dist))
+        if dist[i] <= 0:  # every other frame is a copy of one already picked
+            break
+        picked.append(i)
+        dist = np.minimum(dist, 1.0 - e @ e[i])
+    return sorted(picked)
+
+
 def describe(emb: np.ndarray, refs: list[tuple[Path, float]], ask: Ask | None) -> tuple[str, str]:
-    """``(description, how)``: the vision model on a few frames (``vl``), else CLIP
-    zero-shot over the open activity vocabulary of ``base.json`` (``clip``)."""
+    """``(description, how)``: the vision model on a few frames (``vl``; frames as different
+    as the keyframes allow, :func:`_spread`), else CLIP zero-shot over the open activity
+    vocabulary of ``base.json`` (``clip``)."""
     if ask is not None and refs:
-        pick_i = np.linspace(0, len(refs) - 1, DESCRIBE_FRAMES + 2)[1:-1].astype(int)
+        if len(emb) == len(refs):
+            pick_i = _spread(emb, DESCRIBE_FRAMES)
+        else:
+            pick_i = list(np.linspace(0, len(refs) - 1, DESCRIBE_FRAMES + 2)[1:-1].astype(int))
         try:
             imgs = [grab_frame_jpeg(remap_source(refs[i][0]), refs[i][1], 512) for i in pick_i]
         except (OSError, FFmpegError) as err:
@@ -706,26 +727,17 @@ def describe(emb: np.ndarray, refs: list[tuple[Path, float]], ask: Ask | None) -
     return "footage of " + ", ".join(f"{v} ({s:.2f})" for v, s in top), "clip"
 
 
-def vocab_profile(emb: np.ndarray) -> dict[str, Any] | None:
-    """The no-LLM fallback: a profile of the best open-vocabulary term (its name, a
-    description and a ``detect`` caption; every caption list the floor's), or None when no
-    term has :data:`VOCAB_SHARE`. Never saved to the library."""
-    top = vocab_shares(emb)[:1]
-    if not top or top[0][1] < VOCAB_SHARE:
-        return None
-    term = top[0][0]
-    return validate(
-        {
-            "name": term,
-            "description": f"footage of {term} (CLIP, {top[0][1]:.2f})",
-            "detect": [_vocab_caption(term)],
-        }
-    )
+def vocab_description(emb: np.ndarray) -> str | None:
+    """The no-LLM fallback's description: CLIP's top 3 open-vocabulary terms with their
+    shares (``"CLIP: surfing 0.41, ..."``), or None without keyframes. The profile itself
+    stays ``generic``: a guessed term names nothing it would detect better."""
+    top = vocab_shares(emb)[:3]
+    return "CLIP: " + ", ".join(f"{v} {s:.2f}" for v, s in top) if top else None
 
 
-def _schema(n: int, w: int, h: int, vlm: bool = False) -> dict[str, Any]:
+def _schema(n: int, w: int, h: int) -> dict[str, Any]:
     """JSON schema of a synthesized profile (Ollama structured output), with the optional
-    ``lift`` captions; ``vlm`` adds the optional ``vlm`` wording (its tag keys fixed)."""
+    ``lift`` captions."""
 
     def arr(k: int) -> dict[str, Any]:
         return {"type": "array", "items": {"type": "string"}, "maxItems": k}
@@ -746,20 +758,13 @@ def _schema(n: int, w: int, h: int, vlm: bool = False) -> dict[str, Any]:
     )
     # optional: not in "required", so a reply without it is still a profile
     schema["properties"]["lift"] = obj({"pos": arr(3), "neg": arr(3)})
-    if vlm:
-        text = {"type": "string"}
-        tags = {"type": "object", "properties": dict.fromkeys(ACTION_CAM_TAGS, text)}
-        schema["properties"]["vlm"] = {
-            "type": "object",
-            "properties": {**dict.fromkeys(VLM_KEYS, text), "tags": tags},
-        }
     return schema
 
 
 def _cap_words(words: dict[str, float], neg: list[str]) -> dict[str, float]:
-    """Generated words capped (single word / prefix 0.6, phrase 0.9); dropped: weight
-    0, filler-only phrases, prefixes shorter than 3 letters and single words of the
-    normal-activity captions."""
+    """Generated words capped (single word / prefix :data:`GEN_WORD_CAP`, phrase
+    :data:`GEN_PHRASE_CAP`); dropped: weight 0, filler-only phrases, prefixes shorter than 3
+    letters and single words of the normal-activity captions."""
     normal = {t for c in neg for t in c.lower().split()}
     out = {}
     for k, w in words.items():
@@ -775,20 +780,88 @@ def _cap_words(words: dict[str, float], neg: list[str]) -> dict[str, float]:
     return out
 
 
-def synthesize(
-    description: str, context: str | None, ask: Ask, seeds: list[dict[str, Any]]
-) -> dict[str, Any] | None:
-    """A new profile from the LLM (validated and capped), or None after one shorter retry.
+def _incident_spans(toks: list[str], words: list[str]) -> set[int]:
+    """Indexes of ``toks`` that spell one of the crash ``words`` (a phrase over consecutive
+    tokens, hyphens split like spaces; a trailing ``*`` matches a prefix of the last one)."""
+    hit: set[int] = set()
+    for k in words:
+        ks = k.replace("-", " ").split()
+        for i in range(len(toks) - len(ks) + 1):
+            if all(
+                toks[i + j] == q or (q.endswith("*") and toks[i + j].startswith(q[:-1]))
+                for j, q in enumerate(ks)
+            ):
+                hit.update(range(i, i + len(ks)))
+    return hit
 
-    ``seeds``: the example profiles, shown with the :data:`SCHEMA_KEYS` the LLM writes
-    (without ``vlm``, whose base text the first attempt shows itself). Its ``vlm`` wording
-    keeps the valid strings the LLM wrote; merged on the floor (:func:`full`,
-    :func:`merge`), every other one is the base text."""
-    examples = "\n".join(
-        json.dumps({k: s[k] for k in SCHEMA_KEYS if k != "vlm" and k in s}) for s in seeds
-    )
-    base_vlm = json.dumps(base()["vlm"])
-    for n, w, h, vlm in SYNTH_SIZES:
+
+def _tokens(captions: list[str]) -> set[str]:
+    return {t for c in captions for t in re.findall(r"[a-z0-9']+", c.lower())}
+
+
+def _crash_spans(toks: list[str], own: list[str], normal: set[str]) -> set[int]:
+    """Indexes of ``toks`` that spell a crash word: one of the floor's always, one of the
+    profile's ``own`` unless its token is a word of the ``normal``-activity captions (an LLM
+    word such as ``bump*`` is not a crash in ``bumper car``, as :func:`_cap_words`)."""
+    floor = _incident_spans(toks, list(base()["incident"]["words"]))
+    return floor | {i for i in _incident_spans(toks, own) if toks[i] not in normal}
+
+
+def _activity_name(prof: dict[str, Any], description: str) -> str:
+    """``prof``'s name without crash words (:func:`_crash_spans`; a name says what the
+    wearer does, not what goes wrong: ``ski-crash`` -> ``ski``), the profile's own kept where
+    its normal-activity or (crash-free) ``detect`` captions use them; when nothing but
+    :data:`FILLER` is left (or validate's ``custom`` placeholder), the activity the vision
+    model described, else :data:`DISCOVERED`."""
+    own = list(prof["incident"]["words"])
+    normal = _tokens([*prof["incident"]["neg"], *prof["detect"]])
+
+    def strip(slug: str) -> str:
+        toks = [] if slug == "custom" else slug.split("-")
+        drop = _crash_spans(toks, own, normal)
+        kept = [t for i, t in enumerate(toks) if t and i not in drop]
+        return "" if all(t in FILLER for t in kept) else "-".join(kept)
+
+    m = re.search(r"(?:^|; )activity: ([^;]+)", description)
+    for name in (prof["name"], slugify(m.group(1), 40, "") if m else ""):
+        if name := strip(name):
+            return name
+    return DISCOVERED
+
+
+def _without_incidents(captions: list[str], own: list[str], normal: set[str]) -> list[str]:
+    """``captions`` without the ones naming an incident (:func:`_crash_spans`)."""
+    return [
+        c for c in captions if not _crash_spans(re.findall(r"[a-z0-9']+", c.lower()), own, normal)
+    ]
+
+
+def synthesize(
+    description: str,
+    context: str | None,
+    ask: Ask,
+    seeds: list[dict[str, Any]],
+    stats: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """A new profile from the LLM (validated and capped), or None after one shorter retry
+    (none when the first attempt took :data:`SLOW_SHARE` of :data:`PROFILE_TIMEOUT_S`).
+
+    ``seeds``: the example profiles, shown with the :data:`SCHEMA_KEYS` the LLM writes. The
+    name and ``detect`` captions lose the crash words (:func:`_activity_name`); the VLM
+    wording is never the LLM's (merged on the floor, :func:`full`, it is the base text).
+    ``stats`` gets per attempt ``synth_s`` (seconds), ``answered`` (a JSON reply came back)
+    and ``timed_out`` (no reply after :data:`SLOW_SHARE` of the timeout), ``attempts`` and,
+    after a failure worth remembering (an unusable reply or a timeout, not a quick request
+    error), ``failed`` (why)."""
+    stats = {} if stats is None else stats
+    stats.update(synth_s=[], answered=[], timed_out=[], attempts=0)
+    slow = SLOW_SHARE * PROFILE_TIMEOUT_S
+    examples = "\n".join(json.dumps({k: s[k] for k in SCHEMA_KEYS if k in s}) for s in seeds)
+    for n, w, h in SYNTH_SIZES:
+        if stats["synth_s"] and stats["synth_s"][-1] >= slow:
+            stats["failed"] = f"no usable profile; the LLM took {stats['synth_s'][-1]} s"
+            logger.info("activity: the LLM is too slow for a retry; not asked again")
+            return None
         prompt = _SYNTH_PROMPT.format(
             description=description or "unknown",
             context=context or "nothing",
@@ -796,19 +869,64 @@ def synthesize(
             n=n,
             w=w,
             h=h,
-            vlm=_SYNTH_VLM.format(base_vlm=base_vlm) if vlm else "",
         )
-        prof = validate(ask(prompt, [], _schema(n, w, h, vlm)))
+        t0 = time.perf_counter()
+        reply = ask(prompt, [], _schema(n, w, h))
+        took = time.perf_counter() - t0
+        stats["synth_s"].append(round(took, 1))
+        stats["answered"].append(isinstance(reply, dict))
+        stats["timed_out"].append(reply is None and took >= slow)
+        stats["attempts"] += 1
+        prof = validate(reply)
         if prof["incident"]["pos"]:
             break
         logger.info("activity: no usable profile from the LLM (%d captions asked)", n)
     else:
+        if any(stats["answered"]) or any(stats["timed_out"]):
+            stats["failed"] = "no usable profile"
+        else:  # a request error (Ollama not reachable, loading): worth another try
+            logger.info("activity: the LLM gave no reply (request error); asked again next run")
         return None
     prof = {k: prof[k] for k in SCHEMA_KEYS} | {"exclude_base": []}
     prof["incident"]["words"] = _cap_words(prof["incident"]["words"], prof["incident"]["neg"])
-    if not prof["detect"] and prof["description"]:
-        prof["detect"] = [prof["description"][:MAX_PROMPT_CHARS]]
+    own, normal = list(prof["incident"]["words"]), _tokens(prof["incident"]["neg"])
+    prof["detect"] = _without_incidents(prof["detect"], own, normal)  # first: the name keeps
+    prof["name"] = _activity_name(prof, description or "")  # words of the captions left
+    if not prof["detect"]:
+        desc = [prof["description"][:MAX_PROMPT_CHARS]] if prof["description"] else []
+        # no caption of DISCOVERED (it names nothing): no detect, never a library match
+        named = (
+            [] if prof["name"] == DISCOVERED else [_vocab_caption(prof["name"].replace("-", " "))]
+        )
+        prof["detect"] = _without_incidents(desc, own, normal) or named
     return prof
+
+
+def self_check(new: dict[str, Any], around: dict[str, Any], emb: np.ndarray) -> dict[str, Any]:
+    """``new`` (an LLM profile) without the incident captions that describe this footage
+    rather than an incident: scored zero-shot over its keyframes among every incident caption
+    of ``around`` (the profile it joins) and ``new`` and generic's negatives, a caption that
+    is the best one on more than :data:`SELF_CHECK_SHARE` of the keyframes is dropped. The
+    floor's incident captions stay in the profile, so it never has none."""
+    pos = new["incident"]["pos"]
+    if not len(emb) or not pos:
+        return new
+    inc = around["incident"]
+    others = [*inc["pos"], *inc["neg"], *new["incident"]["neg"], *generic_incident()["neg"]]
+    captions = list(dict.fromkeys(others))
+    captions += [c for c in pos if c not in captions]  # last: a tie goes to an earlier one
+    best = np.argmax(emb.astype(np.float32) @ _text_emb(tuple(captions)).T, axis=1)
+    share = {c: float(np.mean(best == captions.index(c))) for c in pos}
+    drop = [c for c in pos if share[c] > SELF_CHECK_SHARE]
+    if not drop:
+        return new
+    logger.info(
+        "activity: %d incident caption(s) look like this whole footage; dropped: %s",
+        len(drop),
+        "; ".join(drop),
+    )
+    kept = [c for c in pos if c not in drop]
+    return {**new, "incident": {**new["incident"], "pos": kept}}
 
 
 def _named_profile(context: str, lib: dict[str, dict[str, Any]]) -> str | None:
@@ -889,12 +1007,11 @@ def discovery_key(
         "describe": _DESCRIBE_PROMPT,
         "frames": DESCRIBE_FRAMES,
         "synth": _SYNTH_PROMPT,
-        "vlm": _SYNTH_VLM,
-        "base_vlm": base()["vlm"],
         "sizes": SYNTH_SIZES,
         "caps": (GEN_WORD_CAP, GEN_PHRASE_CAP, sorted(FILLER)),
+        "self_check": SELF_CHECK_SHARE,
     }
-    shown = [{k: s[k] for k in SCHEMA_KEYS if k != "vlm" and k in s} for s in examples]
+    shown = [{k: s[k] for k in SCHEMA_KEYS if k in s} for s in examples]
     return cache.params_hash(
         {
             "v": DISCOVERY_VERSION,
@@ -913,19 +1030,22 @@ def _discovery_path(key: str) -> Path:
 
 
 def _load_discovery(key: str) -> dict[str, Any] | None:
-    """A cached discovery (``description``, ``described_by``, ``model``, ``profile``: the
-    synthesized profile), or None when there is none or it is not usable."""
+    """A cached discovery (``description``, ``described_by``, ``model`` and ``profile``: the
+    synthesized profile, or ``failed``: why the LLM gave none), or None when there is none or
+    it is not usable."""
     hit = cache.load_json(_discovery_path(key))
     if not isinstance(hit, dict) or hit.get("version") != DISCOVERY_VERSION:
         return None
+    if isinstance(hit.get("failed"), str) and "profile" not in hit:
+        return hit
     prof = hit.get("profile")
     if not isinstance(prof, dict) or not all(k in prof for k in SCHEMA_KEYS):
         return None
     inc = prof["incident"]
     if not isinstance(inc, dict) or not isinstance(inc.get("words"), dict):
         return None
-    if not inc.get("pos") or not all(isinstance(inc.get(k, []), list) for k in ("pos", "neg")):
-        return None
+    if not all(isinstance(inc.get(k, []), list) for k in ("pos", "neg")):
+        return None  # no LLM captions of its own is usable: the self-check may drop them all
     return hit
 
 
@@ -954,8 +1074,8 @@ def resolve(
         project: Project folder (highlights.json).
         activity: Library profile name (overrides detection).
         context: The user's own words about the video (fed to the LLM).
-        refresh: Ignore activity.json and the discovery cached for this footage (a new
-            synthesis replaces it).
+        refresh: Ignore activity.json and the discovery (or failed one) cached for this
+            footage (a new synthesis replaces it).
         ask: Vision / text model (default: local Ollama when ``llm``).
         llm: Allow the local models (False: library and generic only; :data:`AUTO`: allowed
             but not asked for, so a missing consent, a bad port or too little free memory
@@ -967,7 +1087,10 @@ def resolve(
             ``ask`` (None: from config.json and the environment).
 
     Returns:
-        The activity.json record; ``record["profile"]`` is the full profile.
+        The activity.json record; ``record["profile"]`` is the full profile. When the model
+        was asked, ``record["discovery"]``: ``cached`` (the footage's earlier result reused)
+        or ``describe_s``, ``attempts``, per attempt ``synth_s``, ``answered`` (a JSON reply)
+        and ``timed_out``, and ``failed`` (why) when the failure is remembered.
     """
     path = project / ACTIVITY_FILE
     old = None if refresh else cache.load_json(path)
@@ -1028,25 +1151,47 @@ def resolve(
                     # The seed may be this footage's own earlier discovery, saved to the library
                     # (the first project had no match): reuse that, the same profile as then.
                     first = discovery_key(project, _model_id(ask, model), context, floor)
-                    if first is not None and _load_discovery(first) is not None:
+                    hit = None if first is None else _load_discovery(first)
+                    if hit is not None and "profile" in hit:
                         seed = None
                 examples = [lib[seed]] if seed else floor
                 key = discovery_key(project, _model_id(ask, model), context, examples)
                 hit = None if refresh or key is None else _load_discovery(key)
-                if hit is not None:  # this footage's profile from an earlier run
-                    desc, how, new = hit.get("description"), hit.get("described_by"), hit["profile"]
+                if hit is not None:  # this footage's discovery from an earlier run
+                    desc, how, new = (
+                        hit.get("description"),
+                        hit.get("described_by"),
+                        hit.get("profile"),
+                    )
                     rec.update(description=desc, described_by=how, model=hit.get("model"))
-                    logger.info("activity: discovered profile of this footage reused (%s)", key)
+                    rec["discovery"] = {"cached": True}
+                    if new is None:
+                        why = f"the LLM gave no usable profile for this footage before ({hit['failed']})"
+                        logger.info(
+                            "activity: %s; not asked again (--refresh-profile asks it again)", why
+                        )
+                    else:
+                        logger.info("activity: discovered profile of this footage reused (%s)", key)
                 else:
+                    stats: dict[str, Any] = {"cached": False}
+                    t0 = time.perf_counter()
                     if seed:
                         desc, how = lib[seed]["description"], "profile"
                     else:
                         desc, how = describe(emb, refs, ask)
-                    new = synthesize(desc, context, ask, examples) if desc or context else None
+                    stats["describe_s"] = round(time.perf_counter() - t0, 1)
+                    new = None
+                    if desc or context:
+                        new = synthesize(desc, context, ask, examples, stats)
+                        if new is not None:
+                            new = self_check(new, profile if seed else base(), emb)
                     rec.update(description=desc, described_by=how, model=model)
-                    if new is not None and key is not None:  # never a fallback
-                        entry = {"description": desc, "described_by": how, "model": model}
+                    rec["discovery"] = stats
+                    entry = {"description": desc, "described_by": how, "model": model}
+                    if key is not None and new is not None:
                         _save_discovery(key, {**entry, "profile": new})
+                    elif key is not None and stats.get("failed"):  # asked, nothing usable
+                        _save_discovery(key, {**entry, "failed": stats["failed"]})
             except LowMemoryError as err:
                 if not quiet:
                     raise
@@ -1078,12 +1223,10 @@ def resolve(
         logger.warning("%s", message)
         jsonout.warn("context_not_applied", message)
     if seed is None and new is None and not named and profile["name"] == "generic":
-        # no model, nothing near in the library: the best open-vocabulary term, if clear
-        guess = vocab_profile(emb)
-        if guess is not None:
-            profile = full(guess)
-            rec.setdefault("description", guess["description"])
-            rec.setdefault("described_by", "clip")
+        # no model, nothing near in the library: generic, with what CLIP saw for the record
+        seen = vocab_description(emb)
+        if seen is not None and not rec.get("description"):
+            rec.update(description=seen, described_by="clip")
     rec["name"] = profile["name"]
     rec["profile"] = profile
     cache.save_json(path, rec)

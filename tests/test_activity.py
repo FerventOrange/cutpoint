@@ -159,20 +159,19 @@ def test_a_lone_library_profile_does_not_take_footage_of_another_activity(
     assert (rec["name"], rec["source"]) == ("glacier-sled", "library")
 
 
-def test_without_a_model_a_clear_vocabulary_term_names_the_profile_not_saved(
+def test_without_a_model_the_profile_is_generic_with_clips_guess_in_the_description(
     tmp_path: Path, fake_clip, monkeypatch: pytest.MonkeyPatch
 ):
+    """#916: a guessed vocabulary term no longer names the profile (a sidewalk walk was
+    ``driving-a-car``); CLIP's best three terms are kept in the description."""
     emb = fake_clip(_vocab("kayaking"))
     monkeypatch.setattr(activity, "keyframes", lambda project, **kw: (emb, []))
     rec = activity.resolve(tmp_path, llm=False)
-    assert (rec["name"], rec["source"], rec["described_by"]) == ("kayaking", "fallback", "clip")
-    assert rec["profile"]["detect"] == ["a first-person video of kayaking"]
-    # the floor's captions, judged against generic's negatives (the floor has none, #932)
-    floor, generic = activity.base()["incident"], activity.builtin("generic")["incident"]
-    assert rec["profile"]["incident"] == {**floor, "neg": generic["neg"]}
-    assert rec["profile"]["incident"]["neg"]
+    assert (rec["name"], rec["source"], rec["described_by"]) == ("generic", "fallback", "clip")
+    assert rec["profile"] == activity.full(activity.library()["generic"])
+    assert re.fullmatch(r"CLIP: kayaking 1\.00, [^,]+ 0\.00, [^,]+ 0\.00", rec["description"])
     assert not activity.user_files()  # never saved
-    # nothing clear: generic
+    # nothing clear: generic too
     emb = fake_clip(*(_vocab(t) for t in activity.vocabulary()))
     monkeypatch.setattr(activity, "keyframes", lambda project, **kw: (emb, []))
     rec = activity.resolve(tmp_path, refresh=True, llm=False)
@@ -192,7 +191,7 @@ def test_a_far_nearer_vocabulary_term_beats_a_weak_library_profile(
     scores = {"glacier-sled": 0.25, "vocabulary:kayaking": 0.75}
     monkeypatch.setattr(activity, "match_scores", lambda emb, lib: scores)
     rec = activity.resolve(tmp_path, llm=False)
-    assert rec["source"] == "fallback" and rec["name"] in ("kayaking", "generic")
+    assert (rec["source"], rec["name"]) == ("fallback", "generic")
 
 
 def test_a_record_of_a_removed_profile_is_kept_or_discovered_again(
@@ -511,14 +510,28 @@ def test_a_changed_context_a_refresh_or_another_model_synthesizes_again(
     assert _synths(good) == 4  # m1 once, m2 once
 
 
-def test_a_fallback_is_never_cached(same_footage):
+def test_a_failed_discovery_is_cached_until_a_refresh(same_footage, caplog, monkeypatch):
+    """#916: the LLM is not asked again for footage it gave nothing usable for."""
     broken = _stub({})
     rec = activity.resolve(same_footage("a"), ask=broken)
     assert rec["source"] == "fallback" and _synths(broken) == 2  # the retry asks for less
-    assert not _cached_discoveries()
+    assert rec["discovery"]["attempts"] == 2 and rec["discovery"]["cached"] is False
+    (entry,) = _cached_discoveries()
+    assert json.loads(entry.read_text(encoding="utf-8"))["failed"] == "no usable profile"
     good = _stub(PACK_RAFTING)
-    assert activity.resolve(same_footage("b"), ask=good)["source"] == "synthesized"
-    assert _synths(good) == 1
+    with caplog.at_level(logging.INFO, logger="cutpoint.activity"):
+        rec = activity.resolve(same_footage("b"), ask=good)
+    assert rec["source"] == "fallback" and rec["discovery"] == {"cached": True}
+    assert not good.calls  # not even the description
+    assert "--refresh-profile asks it again" in caplog.text
+    # another model is asked
+    monkeypatch.setattr(activity, "default_ask", lambda **kw: (good, "m2"))
+    assert activity.resolve(same_footage("c"))["source"] == "synthesized"
+    # --refresh-profile asks again, and the profile replaces the failure
+    rec = activity.resolve(same_footage("d"), ask=good, refresh=True)
+    assert rec["source"] == "synthesized" and _synths(good) == 2
+    assert activity.resolve(same_footage("e"), ask=good)["source"] == "synthesized"
+    assert _synths(good) == 2
 
 
 def test_footage_without_reachable_sources_is_not_cached(tmp_path: Path, footage, fake_clip):
@@ -533,11 +546,15 @@ def test_a_broken_cached_discovery_is_synthesized_again(same_footage):
     good = _stub(PACK_RAFTING)
     activity.resolve(same_footage("a"), ask=good)
     (entry,) = _cached_discoveries()
-    for junk in ("[1]", "{not json", json.dumps({"version": 1, "profile": {"name": "x"}})):
+    v = activity.DISCOVERY_VERSION
+    old = json.loads(entry.read_text(encoding="utf-8")) | {"version": v - 1}
+    for junk in ("[1]", "{not json", json.dumps({"version": v, "profile": {"name": "x"}})):
         entry.write_text(junk, encoding="utf-8")
         rec = activity.resolve(same_footage(f"p{len(good.calls)}"), ask=good)
         assert rec["source"] == "synthesized"
-    assert _synths(good) == 4
+    entry.write_text(json.dumps(old), encoding="utf-8")  # an older DISCOVERY_VERSION
+    assert activity.resolve(same_footage("old"), ask=good)["source"] == "synthesized"
+    assert _synths(good) == 5
 
 
 def test_the_discovery_key_follows_the_prompts_and_the_examples(same_footage, monkeypatch):
@@ -548,8 +565,126 @@ def test_the_discovery_key_follows_the_prompts_and_the_examples(same_footage, mo
     assert key == activity.discovery_key(same_footage("b"), model, None, examples)
     assert key != activity.discovery_key(project, {**model, "digest": "sha256:2"}, None, examples)
     assert key != activity.discovery_key(project, model, None, [activity.library()["puddle-hop"]])
-    monkeypatch.setattr(activity, "SYNTH_SIZES", ((8, 20, 4, True),))
+    monkeypatch.setattr(activity, "SYNTH_SIZES", ((8, 20, 4),))
     assert key != activity.discovery_key(project, model, None, examples)
+
+
+@pytest.mark.parametrize(
+    ("name", "description", "expected"),
+    [
+        ("ski-crash", "", "ski"),
+        ("mountain-bike-crash", "", "mountain-bike"),
+        ("wipe-out-surfing", "", "surfing"),
+        ("mtb-over-the-bars", "", "mtb"),  # the profile's own hyphenated phrase
+        ("tumbling", "activity: Trail Running; setting: woods", "trail-running"),
+        ("crash", "activity: a crash; setting: woods", activity.DISCOVERED),
+        ("", "activity: Trail Running", "trail-running"),  # validate's "custom" placeholder
+        ("", "", activity.DISCOVERED),
+        ("bumper-cars", "", "bumper-cars"),  # "bump*", but its normal captions say "bumper"
+        ("bumper-crash", "", "bumper"),
+        ("ski-crash", "", "ski"),  # a floor word, though a normal caption says "crash"
+    ],
+)
+def test_a_discovered_name_says_the_activity_not_the_incident(name, description, expected):
+    """#916: crash words of the floor and of the profile's own are no part of a name,
+    unless the profile's normal-activity captions use them."""
+    raw = {
+        "name": name,
+        "detect": ["a crash on a trail", "a first-person view of a trail"],
+        "incident": {
+            "pos": ["a fall"],
+            "neg": ["a bumper car gliding", "skiing without a crash"],
+            "words": {"bump*": 0.5, "over-the-bars": 0.7},
+        },
+    }
+    prof = activity.synthesize(description, None, _stub(raw), [])
+    assert prof["name"] == expected
+    assert prof["detect"] == ["a first-person view of a trail"]  # no incident captions
+
+
+def test_without_a_crash_free_detect_caption_the_name_is_one():
+    """#916: every ``detect`` caption and the description name a crash: neither is kept."""
+    raw = {
+        "name": "ski-crash",
+        "description": "Skiers who crash.",
+        "detect": ["a skier crashing"],
+        "incident": {"pos": ["a fall"]},
+    }
+    prof = activity.synthesize("", None, _stub(raw), [])
+    assert prof["detect"] == ["a first-person video of ski"]
+    nameless = {**raw, "name": "crash"}  # nothing names it: no detect caption at all
+    assert activity.synthesize("", None, _stub(nameless), [])["detect"] == []
+    raw = {**raw, "description": "Skiing in deep snow."}
+    assert activity.synthesize("", None, _stub(raw), [])["detect"] == ["Skiing in deep snow."]
+
+
+def test_only_unusable_replies_and_timeouts_are_remembered(same_footage, monkeypatch):
+    """A quick None is a request error (Ollama down or loading): the next run asks again. A
+    slow None (a timeout) or an unusable reply is cached."""
+    down = _stub(None)
+    rec = activity.resolve(same_footage("a"), ask=down)
+    assert rec["source"] == "fallback" and _synths(down) == 2
+    assert rec["discovery"]["answered"] == [False, False] and "failed" not in rec["discovery"]
+    assert not _cached_discoveries()
+    activity.resolve(same_footage("b"), ask=down)
+    assert _synths(down) == 4  # asked again
+    monkeypatch.setattr(activity, "PROFILE_TIMEOUT_S", 0)  # every attempt "took" the timeout
+    rec = activity.resolve(same_footage("c"), ask=down)
+    assert _synths(down) == 5 and rec["discovery"]["timed_out"] == [True]
+    assert len(_cached_discoveries()) == 1
+    activity.resolve(same_footage("d"), ask=down)
+    assert _synths(down) == 5  # remembered
+
+
+def test_the_retry_is_skipped_after_a_first_attempt_near_the_timeout(monkeypatch):
+    monkeypatch.setattr(activity, "PROFILE_TIMEOUT_S", 0)
+    broken, stats = _stub({}), {}
+    assert activity.synthesize("kayaking", None, broken, [], stats) is None
+    assert len(broken.calls) == 1 and stats["attempts"] == 1 and len(stats["synth_s"]) == 1
+    assert "took" in stats["failed"]
+
+
+def test_describe_shows_the_most_different_frames(monkeypatch, fake_clip):
+    a, b, c = (fake_clip(f"caption:{k}") for k in "abc")
+    emb = np.concatenate([a, a, a, a, b, b, a, c, a])  # mostly a, a little b and c
+    assert activity._spread(emb, 3) == [0, 4, 7]  # from the frame nearest the mean
+    assert len(activity._spread(emb, 8)) == 3  # copies are not shown twice
+    refs = [(Path("v.mp4"), float(t)) for t in range(len(emb))]
+    grabbed: list[float] = []
+    monkeypatch.setattr(activity, "remap_source", lambda p: p)
+    monkeypatch.setattr(activity, "grab_frame_jpeg", lambda p, t, w: grabbed.append(t) or b"")
+    _desc, how = activity.describe(emb, refs, _stub({"activity": "x"}))
+    assert how == "vl" and grabbed == [0.0, 4.0, 7.0]
+
+
+def test_incident_captions_that_fit_the_whole_footage_are_dropped(same_footage, footage, fake_clip):
+    """#916: an LLM crash caption that is the best caption of much of this footage
+    describes the footage, not a crash (confirmed crashes on ordinary rides)."""
+    calm = "a person paddling a packraft"
+    raw = {
+        **PACK_RAFTING,
+        "incident": {**PACK_RAFTING["incident"], "pos": [calm, "a flipped packraft"]},
+    }
+    footage["v"] = np.concatenate(
+        [fake_clip(f"caption:{calm}")] * 3
+        + [fake_clip("caption:a flipped packraft")]
+        + [fake_clip("glacier-sled", "puddle-hop")] * 16
+    )
+    rec = activity.resolve(same_footage("a"), ask=_stub(raw))
+    assert rec["source"] == "synthesized"
+    pos = rec["profile"]["incident"]["pos"]
+    assert "a flipped packraft" in pos and calm not in pos  # 1 of 20 kept, 3 of 20 dropped
+    assert set(activity.base()["incident"]["pos"]) <= set(pos)  # never empty
+    d = rec["discovery"]
+    assert d["cached"] is False and d["attempts"] == 1 and len(d["synth_s"]) == 1
+    assert d["describe_s"] >= 0
+    # every LLM caption dropped: the floor's stay, and the cached discovery is still usable
+    footage["v"] = np.concatenate([fake_clip(f"caption:{c}") for c in raw["incident"]["pos"]])
+    good = _stub(raw)
+    rec = activity.resolve(same_footage("b"), ask=good, context="river")
+    assert rec["profile"]["incident"]["pos"] == activity.base()["incident"]["pos"]
+    rec = activity.resolve(same_footage("c"), ask=good, context="river")
+    assert _synths(good) == 1 and rec["discovery"] == {"cached": True}
 
 
 def test_identical_discoveries_share_one_library_file(home):
