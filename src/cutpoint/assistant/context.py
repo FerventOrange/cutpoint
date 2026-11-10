@@ -692,26 +692,19 @@ _CHANGE_VERB = re.compile(
 # for a total of 90 s", "Trimmed m3, bringing it to 34 s")
 _CHANGE_TO = re.compile(rf"\b(?:for|to|into|bringing|making|so|now|it|{_VIDEO})\b", re.I)
 _PART = re.compile(r"[^.;:,!?\n()]*$")
-# Up to 30 characters after a length, before the next number or the end of its part
-_PART_AFTER = re.compile(r"[^.;:,!?\n()\d]{0,30}")
-# The next part after a length's that speaks of the user's ask ("60 s, which you asked for", "60 s
-# total, you would need more footage", "60 s, which was your target", "60 s, as requested")
-_ASKED_NEXT = re.compile(
-    r",\s*(?:(?:which|that|as)\s+)?(?:you\b|(?:is|was)\s+your\b|(?:requested|asked)\b)", re.I
-)
-# After a length: how much more it needs ("60 s overall needs about 26 s more footage", "60 s total
-# needs 26 more seconds")
-_NEED_MORE = re.compile(
-    r"[^.;:,!?\n()\d]{0,30}?\b(?:would\s+)?needs?\s+(?:about\s+|another\s+|roughly\s+|~\s*)?"
-    r"\d+(?:[.,]\d+)?\s*(?:(?:s|sec\w*|min\w*)\s+more|more\s+(?:s|sec\w*|min\w*))\b",
-    re.I,
-)
-# In a length's part of the sentence: the length the user asked for, not the sequence's ("You asked
-# for a total of 60 s", "below the target total of 60 s", "not the 60 s overall you wanted",
-# "reaching 60 s total", "short of 60 s total", "60 s in total would need more footage")
-_ASKED = re.compile(
-    r"\b(?:you|ask(?:ed)?|want(?:ed)?|request(?:ed)?|target|goal|reach(?:ed|es|ing)?"
-    r"|(?:short|shy)\s+of|would\s+need|needs?\s+more)\b",
+# After a length, up to the next number or the end of its part
+_PART_AFTER = re.compile(r"[^.;:,!?\n()\d]*")
+# The next part, when it is about the length ("60 s, which you asked for", "60 s total, you would
+# need more footage", "60 s, as requested")
+_NEXT_PART = re.compile(r",\s*((?:which|that|as|you\w*|requested|asked)\b[^.;:,!?\n()]*)", re.I)
+# In a length's part: a length asked for, negated or hypothetical, not the sequence's current one
+# ("You asked for a total of 60 s", "not the 60 s overall you wanted", "60 s in total would require
+# more footage", "there isn't enough footage for 60 s total", "closer to 60 s overall", "a total of
+# 60 s isn't reachable yet"). Unsure means no claim (#743).
+_HEDGE = re.compile(
+    r"\b(?:not|never|cannot|no\s+(?:more|further|way)|would|could|might|if|unless|enough"
+    r"|possible|impossible|you|ask(?:ed)?|want(?:ed)?|request(?:ed)?|target|goal|reach\w*"
+    r"|need\w*|requir\w*|toward|towards|closer|below|under|(?:short|shy)\s+of)\b|n['\u2019]t\b",
     re.I,
 )
 _THE = re.compile(r"\bthe\s+$", re.I)
@@ -786,8 +779,8 @@ def _other_length(m: re.Match[str]) -> bool:
     """Whether the length of a claim match is another one than the sequence's: in parentheses
     ("(12 s in all)"), a change or a clip's ("12 s longer", "5 s each"), a place in the source
     ("12:30 in the source"), the object of a change ("Cut 20 s in total", "Removed a total of
-    20 s") or the length the user asked for ("You asked for a total of 60 s", "not the 60 s
-    overall you wanted", "60 s, which you asked for", "reaching 60 s total")."""
+    20 s") or a length asked for, negated or hypothetical ("You asked for a total of 60 s", "not
+    the 60 s overall you wanted", "60 s, which you asked for", "60 s total isn't reachable")."""
     text = m.string
     at = m.start("n") if m.group("n") is not None else m.start("mm")
     head = text[max(0, at - _LOOKBACK) : at]
@@ -795,9 +788,8 @@ def _other_length(m: re.Match[str]) -> bool:
         return True
     part = _PART.search(head).group()  # type: ignore[union-attr]
     after = _PART_AFTER.match(text, m.end()).group()  # type: ignore[union-attr]
-    if _ASKED.search(part) or _THE.search(part) or _ASKED.search(after):
-        return True
-    if _ASKED_NEXT.match(text, m.end() + len(after)) or _NEED_MORE.match(text, m.end()):
+    nxt = _NEXT_PART.match(text, m.end() + len(after))
+    if _THE.search(part) or any(_HEDGE.search(s) for s in (part, after, nxt[1] if nxt else "")):
         return True
     if _BY.search(part):  # "Trimmed it by 20 s overall": a change
         return True
