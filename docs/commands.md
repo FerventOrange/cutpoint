@@ -364,7 +364,7 @@ kind is worked out in the page for display, as AI Chat names it. A moment a talk
 (`signals.events.nominated` holds `dialogue-<kind>`) is always Dialogue, titled or not. For any
 other moment, the words of its labels
 (not a generic `action-moment`) and its `kind` decide first (Scenic for a `view` or a word such as
-scenic or beauty, Funny for laugh or funny, Action for `crew`, `cruise` or a word such as ski, fast
+scenic or beauty, Funny for laugh or funny, Action for `crew`, `cruise` or a word such as ski, bike, surf or fast
 or crash, Dialogue for talk or banter), then the strongest signal of the moment that rates 5 or
 more out of 10 (crash, speed, airtime, wipeout or carve: Action; beauty or scenic: Scenic; laughter:
 Funny; the page does not have the cues of the events VLM windows), then a transcript of four words
@@ -710,17 +710,17 @@ propose an edit" (not for a question). A proposal that
 removes half or more of the clips when you did not ask to remove any is sent back and never used.
 
 Mixing kinds: when your message asks to break up, mix in or intersperse kinds ("an occasional
-funny moment to break up the skiing", "sprinkle in", "now and then", "alternate", "vary the
-pace"; an audio mix is none), Cutpoint reorders the final proposal in code. Each row is skiing
+funny moment to break up the riding", "sprinkle in", "now and then", "alternate", "vary the
+pace"; an audio mix is none), Cutpoint reorders the final proposal in code. Each row is riding
 (fast, speed, crash, cruise, crew), scenic (view, beauty), funny (laugh) or dialogue (spoken
-words over a clip that is not skiing); the scenic, funny and dialogue clips are spread evenly
-between the skiing runs, each kind keeps its order and a scenic first clip stays first. If you also
+words over a clip that is not riding); the scenic, funny and dialogue clips are spread evenly
+between the riding runs, each kind keeps its order and a scenic first clip stays first. If you also
 name dialogue (dialogue, conversation, banter, commentary, talk or chat moments) and the sequence has
 none, up to 3 dialogue moments are added (the assistant's searches first, then the best unused
 ones), within 15% of the length you asked for. When one does not fit, it replaces the
-lowest-scoring skiing clip of a similar length among those the auto-fill added this turn; clips you
+lowest-scoring riding clip of a similar length among those the auto-fill added this turn; clips you
 or the assistant picked are never removed, and with none to swap no dialogue is added. Negated
-wording ("don't break up the skiing", "no dialogue") and a fade or transition between clips do not
+wording ("don't break up the riding", "no dialogue") and a fade or transition between clips do not
 count. These are `move`, `add` and `remove` ops marked
 `auto` (one `order` op when a sequence needs more moves than the 100-op cap allows); the preview marks the rows "Auto-spread" and the summary says how many clips of each kind
 were spread. Without such wording the order is the assistant's. `move` and `add` positions
@@ -834,7 +834,7 @@ as in the Moments list), score, times, transcript snippet and, when analysis has
 `seen` (the vision rating label and the description of the `events` VLM window over the moment),
 `heard` (laughter, from `signals.events.laughter` of 0.12 or more, or screams detected) and `cues`: visual, telemetry and vision-tag strengths on
 one 0-10 scale (`beauty`, `people`, `group`, `speed`, `carve`, `airtime`, `crash`, `wipeout`,
-`stopped`, the action-cam tags such as `chairlift` or `scenic_vista`, and more; the strongest six
+`stopped`, the action-cam tags such as `transit` or `scenic_vista`, and more; the strongest six
 per moment in the list, all of them in `get_moment`). Its `find_moments` tool searches labels,
 transcripts, `seen` text, heard sounds and the names of cues of 5 or more (`air` finds `airtime`
 and `jump_air`). The instructions name only the cues the project has, and requests such as
@@ -1021,7 +1021,7 @@ an analysed set processes only the new file.
 
 | Option | Meaning |
 |---|---|
-| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `action-cam` (formerly `ski`, no longer accepted), one of your own styles ([`cutpoint style`](#style)) or a learned preset, or `auto`: pick one from the footage, as [`detect`](#detect) does. `auto` never picks `sport` or `funny`; unclear footage gets `gaming` when it leans to gameplay, else `action`, with a `style_ambiguous` warning. `highlights.json` keeps the style it picked in `style`, `settings.style_requested` is `auto` and `detection` holds the evidence, so `events` and re-runs keep it without detecting again |
+| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `action-cam` (`ski` is not a style), one of your own styles ([`cutpoint style`](#style)) or a learned preset, or `auto`: pick one from the footage, as [`detect`](#detect) does. `auto` never picks `sport` or `funny`; unclear footage gets `gaming` when it leans to gameplay, else `action`, with a `style_ambiguous` warning. `highlights.json` keeps the style it picked in `style`, `settings.style_requested` is `auto` and `detection` holds the evidence, so `events` and re-runs keep it without detecting again |
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |

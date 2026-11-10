@@ -153,7 +153,7 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
    it; `funny-moments` gets `funny` either way). Name a style only when
    the request clearly calls for it: `funny`, `gaming`, `action`, `sport`, `commentary`
    (long talk), `action-cam` (helmet-, chest- or bike-mounted action-cam footage, best with
-   GoPro or Insta360 X3 telemetry; formerly `ski`, which is no longer accepted). Without
+   GoPro or Insta360 X3 telemetry; `ski` is not a style). Without
    `--style`, `analyze` uses `gaming` and `edit` uses `action` (`funny` for `funny-moments`).
 2. **Analyze.**
 
@@ -296,8 +296,7 @@ command for theirs:
 - From a clone: `uv sync`. It installs every extra (a large download with torch and CUDA); a
   lite clone was synced with `--no-group full` or `UV_NO_GROUP=full`, so drop those.
 
-`ui`, `keyring` and `ski` are not extras any more: the browser workspace, the keyring and
-action-cam telemetry are in every install.
+`ui` and `keyring` are not extras any more: the browser workspace and the keyring are in every install.
 
 ## Rules
 
