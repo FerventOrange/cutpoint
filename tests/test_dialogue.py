@@ -933,9 +933,9 @@ def test_a_widening_stretch_without_a_title_leaves_the_label(tmp_path):
 def test_a_renamed_widened_candidate_keeps_its_new_label_when_widening_is_undone(tmp_path):
     hl = highlights([own("h001", 150.0, 60.0, end=160.0)])
     scoring.nominate(hl, events_of([titled_event(100.0, 180.0)]), tmp_path, [grid()])
-    hl["candidates"][0]["label"] = "rated-by-vision"  # the vision rating renamed it
+    hl["candidates"][0]["label"] = "renamed-by-hand"  # renamed by hand
     scoring.nominate(hl, events_of([]), tmp_path, [grid()])
-    assert hl["candidates"][0]["label"] == "rated-by-vision"
+    assert hl["candidates"][0]["label"] == "renamed-by-hand"
 
 
 @pytest.mark.parametrize(
