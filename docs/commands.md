@@ -829,7 +829,7 @@ that a small local model can miss moments or misread a request. Type a request a
 or Send (Shift+Enter starts a new line); the reply shows the steps the model took ("Searched
 for …") and can be stopped with Cancel. The chat needs an analyzed project.
 
-The model reads the moments as text: label (a generic one replaced by what the vision model saw,
+The model reads the moments as text: label (a generic one shown as what the vision model saw,
 as in the Moments list), score, times, transcript snippet and, when analysis has them, `kind`,
 `seen` (the vision rating label and the description of the `events` VLM window over the moment),
 `heard` (laughter, from `signals.events.laughter` of 0.12 or more, or screams detected) and `cues`: visual, telemetry and vision-tag strengths on
@@ -1042,7 +1042,7 @@ an analysed set processes only the new file.
 
 **Vision rating.** The 0-10 rating scales a candidate's score (5 leaves it as is, 10 lifts it
 and 0 lowers it by a share set per style, about 20-45%, capped at 100); candidates not rated keep
-theirs, and the model's label names the clip only from a rating of 7. A local model is unloaded
+theirs; the model's description goes to `vision_label` and never changes the label or the clip name. A local model is unloaded
 from GPU memory right after rating (with `--batch-size N` also after the candidates of every N
 sources). Ollama ratings are cached per source
 (`vision-ratings.json`), so a rerun asks only about candidates not rated and repeats the same
@@ -1092,12 +1092,13 @@ Each candidate in `highlights.json` has `id`, `source`, `start`, `end`, `score` 
 `signals`, `label` and a `transcript` snippet; `transcript_unsure` lists the snippet's words
 Whisper heard with confidence below 0.5 as `[index, confidence]`, the index counting words in
 `transcript.split(" ")` (omitted when none is unsure or the transcript has no confidences). With
-`--vision`, a rated candidate also has the model's own label in `vision_label` (`label` takes it
-only from a rating of 7) and `vision_rated` (the `start` and `end` it rated, the score before
-and after the rating, `base` and `blended`, and the label it replaced). The rating counts only
+`--vision`, a rated candidate also has the model's own description in `vision_label` and
+`vision_rated` (the `start` and `end` it rated, and the score before and after the rating, `base`
+and `blended`). Vision never changes a moment's `label`, so its clip gets the same name with and
+without `--vision` (the rating can still change which moments are picked and their order). The rating counts only
 while the candidate keeps that span: once `events` widens or a menu trim cuts it, the rating
-moves to `vision_stale` (`score`, `label`, `window`), `signals.vision` is `null`, `vision_label`
-goes and the label returns to the one before; the span coming back restores them. A candidate the dialogue reader widened also has `widened_from` (its
+moves to `vision_stale` (`score`, `label`, `window`), `signals.vision` is `null` and `vision_label`
+goes; the span coming back restores them. A candidate the dialogue reader widened also has `widened_from` (its
 earlier `start`, `end`, `transcript` and `transcript_unsure`, and `absorbed`, the full candidates
 merged into it), and `dialogue_description` (the stretch's description) when no transcript
 snippet could be rebuilt for its new span; where the reader ran, `signals.events.dialogue` is

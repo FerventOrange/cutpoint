@@ -755,7 +755,11 @@ def test_vision_blends_into_the_analysis_score_then_the_events_apply_again(run, 
     run.go(vision=True)
     (cand,) = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))["candidates"]
     w = get_style("funny").vision_weight
-    assert cand["signals"]["vision"] == 8.0 and cand["label"] == "nice"
+    assert (
+        cand["signals"]["vision"] == 8.0
+        and cand["label"] == plain["label"] == "loud-moment"
+        and cand["vision_label"] == "nice"
+    )
     assert cand["score_pre_events"] == pytest.approx(analyze.vision_blend(50.0, 8.0, w))
     assert cand["score_pre_events"] == 59.0  # funny: vision_weight 0.3, 8/10 -> x1.18
     assert cand["score"] == pytest.approx(cand["score_pre_events"] + boost, abs=0.15)

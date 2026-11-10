@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** Vision no longer renames moments or clips; its description is kept in `vision_label` (#913). Re-analyze a project to get the original labels back.
 - **BREAKING:** the action-cam vision tags are sport-neutral: `powder_spray` is `spray`, `fast_groomer` is `fast_open`, `chairlift` is `transit` and `lodge` is `indoor_break`. Old keys are ignored, so an existing project's tags read 0 until you run `cutpoint events` again.
 - **BREAKING:** the timing key `ski_s` is `action_cam_s`, and `skiing_s` in `telemetry.json` is `riding_s`.
 - The visual detector finds people only (the skis and snowboard classes are dropped), and the AI Chat action words include biking, surfing, skating and trail riding.

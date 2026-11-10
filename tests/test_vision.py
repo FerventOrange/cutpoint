@@ -354,15 +354,6 @@ def test_vision_blend_stays_within_0_100(score, rating, weight):
     assert 0.0 <= cutpoint.analyze.vision_blend(score, rating, weight) <= 100.0
 
 
-@pytest.mark.parametrize(
-    ("rating", "want"),
-    [(0.0, None), (2.0, None), (6.9, None), (7.0, "big-jump"), (10.0, "big-jump")],
-)
-def test_vision_label_only_from_a_good_rating(rating, want):
-    assert cutpoint.analyze.vision_label(rating, "Big jump") == want
-    assert cutpoint.analyze.vision_label(10.0, "") is None
-
-
 class _ByStartRater:
     """Rates each candidate by its start time; records nothing."""
 
@@ -400,7 +391,7 @@ def test_rate_vision_low_rating_no_longer_outranks_an_unrated_candidate():
     low, high, unrated = cands
     assert low["score"] == 19.4 and low["label"] == "ski-moment"  # ski: vision_weight 0.2
     assert low["signals"]["vision"] == 2.0
-    assert high["score"] == 24.0 and high["label"] == "big-jump"
+    assert high["score"] == 24.0 and high["label"] == "ski-moment"
     assert unrated["score"] == 26.0 and unrated["label"] == "fast-run"
     assert unrated["score"] > low["score"]
 
@@ -421,8 +412,8 @@ def test_rate_vision_mid_rating_does_not_lift_a_score_past_an_unrated_one():
 
 
 def test_rate_vision_keeps_the_model_label_apart_from_the_clip_label():
-    """The model's label is recorded as ``vision_label`` even for a low rating; ``label``
-    only takes it from a good rating."""
+    """The model's label is recorded as ``vision_label`` whatever the rating; ``label`` is
+    never replaced (#913)."""
     cands = [
         {"source": "a.mp4", "start": 0.0, "end": 5.0, "score": 22.0, "label": "ski-moment",
          "signals": {}},
@@ -433,7 +424,7 @@ def test_rate_vision_keeps_the_model_label_apart_from_the_clip_label():
     cutpoint.analyze._rate_vision(cands, rater, 2, get_style("action-cam"))  # type: ignore[arg-type]
     low, high = cands
     assert low["vision_label"] == "boring run" and low["label"] == "ski-moment"
-    assert high["vision_label"] == "big jump" and high["label"] == "big-jump"
+    assert high["vision_label"] == "big jump" and high["label"] == "ski-moment"
 
 
 @pytest.mark.parametrize(

@@ -68,10 +68,9 @@ def test_rating_records_the_span_and_both_scores():
         "end": 158.0,
         "base": 40.0,
         "blended": BLENDED,
-        "label_before": "gaming-moment",
-        "label": "big-jump",
     }
-    assert c["score"] == BLENDED != 40.0 and c["label"] == "big-jump"
+    assert c["score"] == BLENDED != 40.0 and c["label"] == "gaming-moment"
+    assert c["vision_label"] == "big jump"
 
 
 def test_a_widened_rated_candidate_ranks_without_the_rating_and_gets_it_back(tmp_path):
@@ -84,10 +83,9 @@ def test_a_widened_rated_candidate_ranks_without_the_rating_and_gets_it_back(tmp
         "score": 10.0,
         "label": "big jump",
         "window": [150.0, 158.0],
-        "renamed": True,
     }
     assert c["signals"]["vision"] is None and "vision_label" not in c
-    assert c["label"] == "gaming-moment"  # the label before the rating
+    assert c["label"] == "gaming-moment"  # the rating never touched it
     assert c["score_pre_events"] == 40.0
     assert c["score"] == pytest.approx(40.0 + scoring.DIALOGUE_POINTS)
 
@@ -96,7 +94,7 @@ def test_a_widened_rated_candidate_ranks_without_the_rating_and_gets_it_back(tmp
     assert (c["start"], c["end"]) == (150.0, 158.0)
     assert "vision_stale" not in c
     assert c["signals"]["vision"] == 10.0 and c["vision_label"] == "big jump"
-    assert c["label"] == "big-jump"
+    assert c["label"] == "gaming-moment"
     assert c["score_pre_events"] == c["score"] == BLENDED
 
 
@@ -124,7 +122,7 @@ def test_a_rating_under_a_dialogue_title_gives_back_the_own_label(tmp_path):
     scorer.rescore_events(hl, titled, tmp_path, [grid()])
     assert hl["candidates"][0]["label"] == "bob-and-the-door"
     rate(hl["candidates"][0])
-    assert hl["candidates"][0]["vision_rated"]["label_before"] == "gaming-moment"
+    assert hl["candidates"][0]["label"] == "bob-and-the-door"
     scorer.rescore_events(hl, titled, tmp_path, [grid()])
     scoring.restore_widened(hl["candidates"])
     scorer.rescore_events(hl, events_of([]), tmp_path, [grid()])
