@@ -583,6 +583,7 @@ def test_the_discovery_key_follows_the_prompts_and_the_examples(same_footage, mo
         ("bumper-cars", "", "bumper-cars"),  # "bump*", but its normal captions say "bumper"
         ("bumper-crash", "", "bumper"),
         ("ski-crash", "", "ski"),  # a floor word, though a normal caption says "crash"
+        ("trail-hit-the-deck", "", "trail"),  # own phrase: "the" of a normal caption
     ],
 )
 def test_a_discovered_name_says_the_activity_not_the_incident(name, description, expected):
@@ -593,8 +594,13 @@ def test_a_discovered_name_says_the_activity_not_the_incident(name, description,
         "detect": ["a crash on a trail", "a first-person view of a trail"],
         "incident": {
             "pos": ["a fall"],
-            "neg": ["a bumper car gliding", "skiing without a crash"],
-            "words": {"bump*": 0.5, "over-the-bars": 0.7},
+            "neg": ["a bumper car gliding", "skiing without a crash", "riding down the trail"],
+            "words": {
+                "bump*": 0.5,
+                "over-the-bars": 0.7,
+                "over the bars": 0.7,
+                "hit the deck": 0.7,
+            },
         },
     }
     prof = activity.synthesize(description, None, _stub(raw), [])

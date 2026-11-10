@@ -783,7 +783,12 @@ def _cap_words(words: dict[str, float], neg: list[str]) -> dict[str, float]:
 def _incident_spans(toks: list[str], words: list[str]) -> set[int]:
     """Indexes of ``toks`` that spell one of the crash ``words`` (a phrase over consecutive
     tokens, hyphens split like spaces; a trailing ``*`` matches a prefix of the last one)."""
-    hit: set[int] = set()
+    return {i for span in _matches(toks, words) for i in span}
+
+
+def _matches(toks: list[str], words: list[str]) -> list[range]:
+    """The spans of ``toks`` (index ranges) that spell one of the crash ``words``."""
+    out: list[range] = []
     for k in words:
         ks = k.replace("-", " ").split()
         for i in range(len(toks) - len(ks) + 1):
@@ -791,8 +796,8 @@ def _incident_spans(toks: list[str], words: list[str]) -> set[int]:
                 toks[i + j] == q or (q.endswith("*") and toks[i + j].startswith(q[:-1]))
                 for j, q in enumerate(ks)
             ):
-                hit.update(range(i, i + len(ks)))
-    return hit
+                out.append(range(i, i + len(ks)))
+    return out
 
 
 def _tokens(captions: list[str]) -> set[str]:
@@ -801,10 +806,12 @@ def _tokens(captions: list[str]) -> set[str]:
 
 def _crash_spans(toks: list[str], own: list[str], normal: set[str]) -> set[int]:
     """Indexes of ``toks`` that spell a crash word: one of the floor's always, one of the
-    profile's ``own`` unless its token is a word of the ``normal``-activity captions (an LLM
-    word such as ``bump*`` is not a crash in ``bumper car``, as :func:`_cap_words`)."""
+    profile's ``own`` unless every token of the match is a word of the ``normal``-activity
+    captions (an LLM word such as ``bump*`` is not a crash in ``bumper car``, as
+    :func:`_cap_words`; ``over the bars`` is one even if ``the`` is a normal word)."""
     floor = _incident_spans(toks, list(base()["incident"]["words"]))
-    return floor | {i for i in _incident_spans(toks, own) if toks[i] not in normal}
+    spans = [r for r in _matches(toks, own) if not all(toks[i] in normal for i in r)]
+    return floor | {i for r in spans for i in r}
 
 
 def _activity_name(prof: dict[str, Any], description: str) -> str:
