@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** discovered profiles no longer reword the VLM prompts: they keep the generic wording (and its VLM window cache) (#916).
 - **BREAKING:** crash phrases written by the LLM are capped at 0.75 (was 0.9), so one alone no longer makes a crash candidate (#916).
 - **BREAKING:** a discovery the model answered unusably or that timed out is remembered per footage: the model is not asked again until `--refresh-profile`, another model or a new discovery version; a connection error is not remembered, so the next run asks again (#916). Profiles discovered by earlier versions stay in the library and keep matching their footage, with their old name, VLM wording and 0.9 phrase caps; to discover one again, run `cutpoint profile delete NAME`, then the command with `--refresh-profile`.
+- The vision rating grabs the frames of a moment in parallel (up to 4 ffmpeg at once): the frame grab takes about a quarter less time on 4K footage, with the same frames (#909).
 - The UI New project dialog defaults to Auto (action-cam stays preselected with camera telemetry).
 - **BREAKING:** `POST /projects` without `style` creates an `auto` project (it was `gaming`).
 - **BREAKING:** Vision no longer renames moments or clips; its description is kept in `vision_label` (#913). Re-analyze a project to get the original labels back.
