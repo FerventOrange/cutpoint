@@ -504,6 +504,15 @@ def test_native_text_naming_a_moment_gets_one_nudge_and_may_then_propose() -> No
     assert fake.requests[1]["tools"] == session.TOOLS  # the nudged request can still propose
 
 
+def test_native_an_advice_question_answered_with_example_moment_ids_is_not_nudged() -> None:
+    text = "Select a moment, then press remove, for example m1."
+    fake = FakeProvider([answer(text)])
+    turn = run(fake, "how do I use the timeline?")
+    assert turn.status == "done", turn.error
+    assert len(fake.requests) == 1 and not nudges(fake)
+    assert turn.events[-1]["text"] == text
+
+
 def test_native_text_naming_a_moment_in_the_last_round_is_not_nudged_and_stands() -> None:
     script = [call("get_moment", id="m1") for _ in range(session.MAX_ROUNDS - 1)]
     fake = FakeProvider([*script, answer("Take m1.")])
@@ -532,7 +541,8 @@ def test_native_a_second_text_only_reply_is_final() -> None:
 
 def test_native_an_empty_second_answer_falls_back_to_the_first() -> None:
     fake = FakeProvider([answer(NAMES), answer("")])
-    turn = run(fake, "which are best?")
+    turn = run(fake, "build a montage")
+    assert len(fake.requests) == 2 and len(nudges(fake)) == 1
     assert turn.status == "done", turn.error
     assert [e["text"] for e in turn.events if e["kind"] == "reply"] == [NAMES]
 
@@ -589,7 +599,8 @@ def test_the_nudge_is_not_an_event_nor_in_the_saved_turn() -> None:
 def test_the_nudged_replys_text_is_what_a_failed_nudge_answer_leaves() -> None:
     """The turn that ends on the first text keeps it as its reply in chat.json."""
     fake = FakeProvider([answer(NAMES), answer("")])
-    turn = run(fake, "which?")
+    turn = run(fake, "build a montage")
+    assert len(fake.requests) == 2 and len(nudges(fake)) == 1
     assert turn.record()["reply"] == NAMES
 
 
@@ -603,7 +614,7 @@ def test_json_text_naming_a_moment_gets_one_nudge_and_may_then_propose() -> None
 
 def test_json_a_second_text_only_reply_is_final() -> None:
     fake = FakeProvider([as_reply(NAMES), as_reply("Those two, m1 and m2.")], JSON_ONLY)
-    turn = run(fake, "which?")
+    turn = run(fake, "build a montage")
     assert turn.status == "done"
     assert len(fake.requests) == 2 and len(nudges(fake)) == 1
     assert turn.events[-1]["text"] == "Those two, m1 and m2."
