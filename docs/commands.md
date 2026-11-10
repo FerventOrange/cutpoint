@@ -1130,6 +1130,16 @@ Their `score` is the peak times 10 (0-10, display only; the peak is `signals.pea
 they are not in `suggested_top`, not re-ranked by `events` and stay last.
 `settings.visual_pool` has their `count` and `kinds`.
 
+When the `vision` step ran, `settings.vision` holds `requested`, `failed` and `uncached` (when
+offline) and what it cost, summed over the run (no list per moment): `rated` (moments with a
+rating, `cached` of them from the cache), `calls` (model requests, retries included; a failed
+request counts as a call with its wall time), `vision_s` (the step's seconds), `pre_vision_s` (the
+analyze time before it), `grab_s` (frame grabs), `load_s`, `prompt_s` and `reply_s` (Ollama's own
+timings of model load, prompt reading and reply), `prompt_tokens`, `reply_tokens`, `model` and
+`provider`. A re-rank of an earlier analysis adds `"rerank": true`: its `pre_vision_s` is only
+the cached re-run, not the full analysis. A hosted provider reports no timings: its wall time is
+in `reply_s`. `-v` logs one DEBUG line per request. `scripts/vision_eval.py` compares such projects (see the script's docstring).
+
 ### Analysis steps
 
 The steps run one after another, and only one model is loaded at a time. One exception: with a

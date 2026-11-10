@@ -152,7 +152,13 @@ def analyze_run(home, tmp_path, monkeypatch):
 
     def outputs() -> tuple[dict, bytes]:
         hl = cache.load_json(project / "highlights.json")
-        return _without(hl, "created", "timings"), (project / "transcript.txt").read_bytes()
+        hl = _without(hl, "created", "timings")
+        # the vision step's own seconds (#909) differ from run to run
+        if isinstance(hl["settings"].get("vision"), dict):
+            hl["settings"] = hl["settings"] | {
+                "vision": _without(hl["settings"]["vision"], "vision_s", "pre_vision_s")
+            }
+        return hl, (project / "transcript.txt").read_bytes()
 
     project = home / "projects" / "p"
     argv = ["analyze", "videos", "--style", "funny", "--no-vision", "--out", "p"]
@@ -789,6 +795,11 @@ class _Rater:
     consent_needed = None
     cache_only = False
     hits = asked = missed = 0
+    stats = dict.fromkeys(
+        ("calls", "grab_s", "load_s", "prompt_s", "reply_s", "prompt_tokens", "reply_tokens"), 0
+    )
+    model = "m"
+    provider_name = "ollama"
 
     def __init__(self, **_kw: Any) -> None:
         pass

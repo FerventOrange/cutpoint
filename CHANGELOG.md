@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `settings.vision` in `highlights.json` records what the vision step cost (ratings, cache hits, seconds and tokens per phase, and the analyze time before it), with one DEBUG line per request and an INFO summary, and `scripts/vision_eval.py` compares projects by that cost and by the moments they keep (#909). Ranking is unchanged.
+
 ### Changed
 
 - **BREAKING:** Vision no longer renames moments or clips; its description is kept in `vision_label` (#913). Re-analyze a project to get the original labels back.
