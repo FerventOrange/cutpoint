@@ -418,7 +418,7 @@ def _set_title(c: dict[str, Any], kept: dict[str, Any], title: str) -> None:
 
 def _put_title(c: dict[str, Any], was: dict[str, Any]) -> None:
     """Take back the title :func:`_set_title` gave ``c``: its label returns unless something
-    else (the vision rating) has renamed it since."""
+    else has renamed it since."""
     c.pop("dialogue_title", None)
     if (
         "title_label" in was
