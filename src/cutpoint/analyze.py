@@ -120,7 +120,6 @@ PROFANE = {p.rstrip("*") for p in PROFANITY}  # names as keyword_hits reports th
 PROFANITY_CUE_S = 3.0  # a profane word counts only if another cue is this close
 PROFANITY_CUE_MIN = 0.8  # minimum weight of a keyword that counts as a cue
 VISION_TOP_MIN, VISION_TOP_MAX = 10, 60  # auto --vision-top: 1 per 2 min, clamped
-VISION_LABEL_MIN = 7.0  # --vision: from this rating, the model's label names the clip
 VISION_SPAN_EPS = 1e-3  # seconds: a candidate span this close to its rated one still matches
 PICK_FLOOR = 0.25  # a peak below this share of the strongest one is not a candidate ...
 LONG_LIST_FLOOR = 0.5  # ... and, past the usual count (:func:`usual_count`), not below this share
@@ -1119,13 +1118,6 @@ def vision_blend(score: float, rating: float | None, weight: float) -> float:
     return round(max(0.0, min(100.0, score * (1 + weight * (rating - 5) / 5))), 1)
 
 
-def vision_label(rating: float, label: str) -> str | None:
-    """The model's ``label`` as a clip label, only for a rating of at least
-    ``VISION_LABEL_MIN``; None keeps the clip's own label."""
-    slug = slugify(label, 30) if label and rating >= VISION_LABEL_MIN else ""
-    return slug or None
-
-
 def sync_vision(c: dict[str, Any]) -> float | None:
     """Keep the vision rating of the candidate ``c`` only while it describes the clip (#802).
 
@@ -1133,8 +1125,8 @@ def sync_vision(c: dict[str, Any]) -> float | None:
     over and the analysis score before and after the blend. While ``c`` has that span (within
     :data:`VISION_SPAN_EPS`) the rating counts; once the span changes (widened, trimmed, merged
     back) it moves to ``vision_stale`` (``score``, ``label``, ``window``): ``signals.vision``
-    becomes None, ``vision_label`` goes and a label the rating gave returns to the one before
-    it. The span coming back restores all of it. Returns the analysis score to rank by (the
+    becomes None and ``vision_label`` goes. The span coming back restores both. The clip's
+    ``label`` is never touched. Returns the analysis score to rank by (the
     blended one or the one before the blend); None for a candidate without ``vision_rated``
     (a project rated before this, or never rated), which is left as it is."""
     rated = c.get("vision_rated")
@@ -1150,8 +1142,6 @@ def sync_vision(c: dict[str, Any]) -> float | None:
             sig["vision"] = stale.get("score")
             if stale.get("label"):
                 c["vision_label"] = stale["label"]
-            if stale.get("renamed") and c.get("label") == rated.get("label_before"):
-                c["label"] = rated["label"]
             del c["vision_stale"]
         return rated["blended"]
     if not isinstance(stale, dict):
@@ -1161,9 +1151,6 @@ def sync_vision(c: dict[str, Any]) -> float | None:
             "window": [rated["start"], rated["end"]],
         }
         sig["vision"] = None
-    if rated.get("label") and c.get("label") == rated["label"]:
-        c["label"] = rated.get("label_before")
-        stale["renamed"] = True  # put back with the window
     return rated["base"]
 
 
@@ -2107,7 +2094,7 @@ def _crash_keys(recs: list[dict[str, Any]]) -> dict[tuple[Any, ...], dict[str, A
     """The crash moments ``recs`` by what names one across runs: its part and crash (id and
     impact span, not its confidence) and its place among that crash's windows in time order
     (0: its clip, 1: its reaction). Not its span, which menu time may have trimmed, nor its
-    label, which a vision rating may have renamed."""
+    label."""
     out: dict[tuple[Any, ...], dict[str, Any]] = {}
     for rec in sorted(recs, key=lambda r: (r["source_index"], r["start"])):
         crash = rec.get("crash") or {}
@@ -2931,9 +2918,10 @@ def _rate_vision(
 ) -> tuple[bool, int]:
     """Rate the first ``n_top`` candidates with Ollama and apply the rating to their
     analysis score (``score_pre_events`` once events rescored them) with
-    :func:`vision_blend` and the style's ``vision_weight``; the model's label replaces a candidate's from
-    ``VISION_LABEL_MIN``. Each rated candidate keeps ``vision_rated`` (the span rated, the
-    score before and after the blend, a label it renamed) for :func:`sync_vision`.
+    :func:`vision_blend` and the style's ``vision_weight``;
+    the model's label goes to ``vision_label``, never to ``label`` (#913). Each rated candidate
+    keeps ``vision_rated`` (the span rated, the score before and after the blend) for
+    :func:`sync_vision`.
     ``activity`` words the action-cam prompt (the project's activity
     prompt set). ``batch_size``: ``--batch-size`` (#713), the model is unloaded after the
     candidates of every this many sources (:func:`_vision_batches`); the ratings are the same.
@@ -2981,13 +2969,6 @@ def _rate_vision(
                 c["signals"]["vision"] = res.score
                 if res.label:
                     c["vision_label"] = res.label
-                if label := vision_label(res.score, res.label):
-                    # under a dialogue title: the candidate's own label, not the title's slug
-                    was = c.get("widened_from") or {}
-                    titled = "label" in was and was.get("title_label") == c.get("label")
-                    rated["label_before"] = was["label"] if titled else c.get("label")
-                    rated["label"] = label
-                    c["label"] = label
                 key = "score_pre_events" if "score_pre_events" in c else "score"
                 rating = res.score
                 if speech_excerpt(c.get("transcript"), style.base):
