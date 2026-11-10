@@ -2207,7 +2207,7 @@ def test_analyze_follows_settings_saved_just_before(
         assert res.status_code == 200
     assert [("--vision" in a, "--no-vision" in a) for a in captured] == [
         (True, False),
-        (False, True),
+        (False, False),  # unticked: the key is gone, so neither flag
         (True, False),
     ]
 
@@ -3698,8 +3698,11 @@ def test_put_settings_saves_the_vision_default(
     assert client.get("/api/settings").json()["vision"] is True
     assert config.vision_setting() is True
 
+    # Unticking removes the key (the default) instead of writing false (#919).
     assert client.put("/api/settings", json={"vision": False}).json()["vision"] is False
-    assert config.vision_setting() is False
+    assert config.vision_setting() is None
+    assert json.loads(cfg.read_text("utf-8")) == {"player_tags": ["Me"]}
+    assert client.put("/api/settings", json={"vision": True}).json()["vision"] is True
 
     both = {"projects_dir": str(tmp_path), "vision": True}
     got = client.put("/api/settings", json=both).json()
@@ -3998,7 +4001,7 @@ def test_a_job_cannot_start_while_the_projects_folder_is_being_written(
     real_write = ui.set_config_values
     attempt: dict = {}
 
-    def write_while_another_tab_starts_a_job(values):
+    def write_while_another_tab_starts_a_job(values, remove=()):
         def start() -> None:
             attempt["job"] = jobs.start("p", "analyze", SLEEP_JOB)
             attempt["wrote"] = wrote.is_set()
@@ -4008,7 +4011,7 @@ def test_a_job_cannot_start_while_the_projects_folder_is_being_written(
         attempt["wrote_event"] = wrote
         threading.Thread(target=start, daemon=True).start()
         attempt["overlapped"] = done.wait(0.5)  # True: the job started mid-write
-        real_write(values)
+        real_write(values, remove=remove)
         wrote.set()
 
     monkeypatch.setattr(ui, "set_config_values", write_while_another_tab_starts_a_job)

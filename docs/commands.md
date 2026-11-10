@@ -278,9 +278,9 @@ again); Other model… takes any id.
 The tab works without a project, and
 one Save models saves both roles. "Rate frames with vision model"
 (off by default; saved as [`vision`](configuration.md#vision) in `config.json`) is there too:
-every analysis the UI starts, a first one or "Analyze again", uses it (passed as `--vision` for
-`true` and `--no-vision` for `false`; with no `vision` key in `config.json` it passes neither, so the
-footage check of `--style auto` runs by default; 360 analyses never rate frames), and it is the default of `analyze` and `edit` on
+every analysis the UI starts, a first one or "Analyze again", uses it (ticked saves
+`vision: true`, passed as `--vision`; unticked removes the key, so no flag is passed and the
+footage check of `--style auto` runs; a hand-set `false` passes `--no-vision`; 360 analyses never rate frames), and it is the default of `analyze` and `edit` on
 the command line. A hosted Vision provider gets frames and the speech in each moment only after "Allow vision requests" in
 the tab; saving never grants it. The UI has no per-run vision checkbox. "Analyze again" keeps
 the Ollama model, URL and vision-top the last analysis recorded.

@@ -379,9 +379,12 @@ def _analysis_skip(path: Path, data: dict) -> tuple[str, ...]:
     return skip
 
 
-def set_config_values(values: dict[str, object], path: Path | None = None) -> Path:
-    """Write ``values`` into ``config.json`` atomically, keeping the other keys, their order and
-    the file's indentation; the cached :func:`get_config` is dropped. Returns the file written.
+def set_config_values(
+    values: dict[str, object], path: Path | None = None, remove: tuple[str, ...] = ()
+) -> Path:
+    """Write ``values`` into ``config.json`` atomically and drop the keys in ``remove``, keeping
+    the other keys, their order and the file's indentation; the cached :func:`get_config` is
+    dropped. Returns the file written.
 
     Raises:
         ValueError: If the file exists but is not valid JSON.
@@ -396,6 +399,8 @@ def set_config_values(values: dict[str, object], path: Path | None = None) -> Pa
         if lead:
             indent = len(lead) if lead.strip(" ") == "" else lead
     data.update(values)
+    for key in remove:
+        data.pop(key, None)
     path.parent.mkdir(parents=True, exist_ok=True)
     cache.save_json(path, data, indent=indent)  # type: ignore[arg-type]
     get_config.cache_clear()
