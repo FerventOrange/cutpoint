@@ -8,9 +8,9 @@ One decode pass per source feeds two GPU models:
   friends/group; captions of the activity profile) and the LAION "improved aesthetic
   predictor" head (trained on exactly these embeddings).
 * **Faster R-CNN ResNet50-FPN v2** (torchvision, COCO weights, BSD licence):
-  person, skis and snowboard boxes. Every confident person box is also
+  person boxes. Every confident person box is also
   cropped and embedded with CLIP, so zero-shot prompts can tell another
-  person from the wearer's own legs, arms, skis or shadow (which a COCO
+  person from the wearer's own legs, arms, gear or shadow (which a COCO
   detector happily calls "person" on a helmet camera looking down).
 
 Frames: GoPro HEVC has a keyframe every 1.001 s, so a keyframe-only decode
@@ -57,8 +57,8 @@ VISUAL_VERSION = 2
 CLIP_ARCH, CLIP_PRETRAINED = "ViT-L-14-quickgelu", "openai"
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
-COCO_PERSON, COCO_SKIS, COCO_SNOWBOARD = 1, 35, 36
-DET_LABELS = (COCO_PERSON, COCO_SKIS, COCO_SNOWBOARD)
+COCO_PERSON = 1
+DET_LABELS = (COCO_PERSON,)
 
 # Zero-shot prompts come from the activity profile (:class:`cutpoint.activity.Prompts`:
 # ``highlight`` for the beauty shot, ``group`` for friends, ``person`` for other people
@@ -719,8 +719,8 @@ class PeopleRules:
     """Which person boxes count, and how close they are.
 
     A helmet camera looking down sees the wearer's own legs, boots, arms and
-    skis, and a COCO detector calls them "person"; so does a shadow on the
-    snow. Each confident box's crop is classified zero-shot (the activity
+    gear, and a COCO detector calls them "person"; so does a shadow on the
+    ground. Each confident box's crop is classified zero-shot (the activity
     profile's ``person`` prompts: somebody else vs the wearer's own body, gear or
     shadow) and dropped as "self" when the other-person share is
     below ``other_min``. Boxes without a crop embedding fall back to
@@ -732,7 +732,7 @@ class PeopleRules:
     self_bottom: float = 0.93
     self_top: float = 0.40
     close_height: float = 0.55  # box height (share of the frame) that counts as "close"
-    min_height: float = 0.06  # smaller people are background skiers
+    min_height: float = 0.06  # smaller people are in the background
 
 
 def people_frames(
@@ -743,7 +743,7 @@ def people_frames(
     Returns:
         ``count`` (kept people), ``close`` (0-1 from the tallest kept box),
         ``area`` (largest kept box area share), ``self`` (1 when a dropped
-        "self" box or skis/snowboard at the bottom edge is visible).
+        "self" box is visible).
     """
     r = rules or PeopleRules()
     n = len(data.t)
@@ -757,10 +757,9 @@ def people_frames(
     hgt = y2 - y1
     area = (d[:, 5] - d[:, 3]) * hgt
     is_self = self_boxes(data, r, prompts)
-    gear = np.isin(lab, (COCO_SKIS, COCO_SNOWBOARD)) & (y2 >= r.self_bottom) & (sc >= 0.4)
     person = (lab == COCO_PERSON) & (sc >= r.min_score)
     keep = person & ~is_self & (hgt >= r.min_height)
-    np.maximum.at(out["self"], fi[(person & is_self) | gear], 1.0)
+    np.maximum.at(out["self"], fi[person & is_self], 1.0)
     np.add.at(out["count"], fi[keep], 1.0)
     np.maximum.at(out["close"], fi[keep], np.clip(hgt[keep] / r.close_height, 0, 1))
     np.maximum.at(out["area"], fi[keep], area[keep])

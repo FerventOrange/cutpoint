@@ -70,9 +70,9 @@ from cutpoint.vision import VisionRater
 
 logger = logging.getLogger(__name__)
 LAYERS = ("audio", "voice", "visual", "crash", "ocr", "vlm")
-# Layers run by default; voice/visual/crash feed ski features (other styles opt in).
+# Layers run by default; voice/visual/crash feed action-cam features (other styles opt in).
 DEFAULT_LAYERS = ("audio", "ocr", "vlm")
-SKI_LAYERS = ("audio", "voice", "visual", "crash", "vlm")
+ACTION_CAM_LAYERS = ("audio", "voice", "visual", "crash", "vlm")
 # Share (percent) of the OCR step's progress HUD discovery takes when it runs; the
 # per-source OCR takes the rest. Measured first runs: discovery was about 4 of 7 min of
 # OCR on a 7 min file and 7 of 14 min on two 10 min files.
@@ -185,7 +185,7 @@ def run_events(
     Args:
         project: Project folder containing highlights.json (and transcript.txt).
         layers: Layers to run; layers left out still contribute cached results.
-            None = audio, OCR and VLM; ski projects: audio, voice, visual and
+            None = audio, OCR and VLM; action-cam projects: audio, voice, visual and
             VLM (no HUD, so no OCR).
         only: Glob patterns; restrict to sources whose file name matches.
         audio, ocr, vlm: Layer parameters (defaults when None).
@@ -210,7 +210,7 @@ def run_events(
             progress run if it has one (``cutpoint events``, :data:`progress.EVENTS_STEPS`),
             the VLM layer too.
         cached_ocr: Read cached HUD OCR events when the OCR layer does not run
-            (None: unless ski, which has no HUD).
+            (None: unless action-cam, which has no HUD).
         llm: Let the crash layer's activity profile ask the local Ollama models
             (:data:`cutpoint.activity.AUTO`: not asked for, see :func:`cutpoint.activity.resolve`).
         prefetch: OCR read in the background by ``cutpoint analyze``: a source's result
@@ -243,11 +243,11 @@ def run_events(
     boom = explosions.ExplosionParams()
     stage = stage or _layer_step
     hl = load_highlights(project)
-    ski = project_kind(hl) == ACTION_CAM
+    is_cam = project_kind(hl) == ACTION_CAM
     if layers is None:
-        layers = SKI_LAYERS if ski else DEFAULT_LAYERS
+        layers = ACTION_CAM_LAYERS if is_cam else DEFAULT_LAYERS
     if cached_ocr is None:
-        cached_ocr = not ski
+        cached_ocr = not is_cam
     preflight(layers)
     try:
         rater: VisionRater | None = VisionRater(ollama_url, ollama_model)  # the shared client
@@ -468,7 +468,7 @@ def run_events(
         ocr_stats: dict[str, Any] = {}
         stats["ocr"] = ocr_stats  # the sources read before a failure keep their menu spans
         with VramMonitor() as vm:
-            ocr_sources = sources if "ocr" in layers or cached_ocr else []  # ski: no HUD
+            ocr_sources = sources if "ocr" in layers or cached_ocr else []  # action-cam: no HUD
             shown = [base]  # the step's pct never goes back
 
             def on_source(done: float, n: int = len(ocr_sources)) -> None:
@@ -589,32 +589,32 @@ def run_events(
         if sheets:  # under the activity.json the crash layer just wrote
             write_sheets(project_prompts(project))
 
-    # ---- telemetry (ski): airtime / crash seeds + coverage of the riding
-    if ski:
+    # ---- telemetry (action-cam): airtime / crash seeds + coverage of the riding
+    if is_cam:
         for src, evs in _telemetry_layer(project, sources, vlm).items():
             layer1.setdefault(src, []).extend(evs)
-    if ski and vlm.max_fill_windows == 0:
+    if is_cam and vlm.max_fill_windows == 0:
         vlm.max_fill_windows = 150
     if vlm.max_windows is None:
-        vlm.max_windows = _auto_max_windows(layer1) if ski else 60
+        vlm.max_windows = _auto_max_windows(layer1) if is_cam else 60
         if "vlm" in layers:
             logger.info("VLM: up to %d windows", vlm.max_windows)
 
     # ---- layer 2: VLM windows
     # action-cam: worded for the activity.json the crash layer above may have just written
-    cam_prompts = project_prompts(project) if ski else None
+    cam_prompts = project_prompts(project) if is_cam else None
     vlm.action_cam = action_cam_wording(cam_prompts) if cam_prompts is not None else None
     if "vlm" in layers:
         progress.start("vlm")  # cutpoint events: the step of progress.json
         free_torch()  # the CUDA memory torch still caches for the layers before
     t0 = time.perf_counter()
     games = {
-        str(s.path): ACTION_CAM if ski else game_key_for_path(str(s.path), ocr.game, project)
+        str(s.path): ACTION_CAM if is_cam else game_key_for_path(str(s.path), ocr.game, project)
         for s in sources
     }
-    # Game prompt and event types (custom seeds) from each source's HUD preset; ski has none.
+    # Game prompt and event types (custom seeds) from each source's HUD preset; action-cam has none.
     # The prompt asks about kills only for footage with kills (#596).
-    presets = {} if ski else {src: load_preset(g, project) for src, g in games.items()}
+    presets = {} if is_cam else {src: load_preset(g, project) for src, g in games.items()}
     prompts = {
         src: game_prompt(games[src], p, has_kills(p, layer1.get(src, [])))
         for src, p in presets.items()
@@ -632,7 +632,7 @@ def run_events(
     # a provider the user did not agree to (a hosted one, or an Ollama on another machine): no
     # request, no cached descriptions or windows either, as for analyze's vision ratings
     no_vision = rater is None or rater.consent_needed is not None
-    if ski and "vlm" not in force and not no_vision:
+    if is_cam and "vlm" not in force and not no_vision:
         # reuse described windows; only fill new footage
         prev = cached_windows(sources, vlm)
         if prev:
@@ -661,7 +661,7 @@ def run_events(
         if rater is not None and (
             "vlm" in layers
             or cached
-            or (ski and "vlm" not in force and cached_windows(sources, vlm))
+            or (is_cam and "vlm" not in force and cached_windows(sources, vlm))
         ):
             rater.warn_consent()
     elif "vlm" in layers:
@@ -911,7 +911,7 @@ def _telemetry_layer(
 
 
 def _auto_max_windows(layer1: dict[str, list[dict[str, Any]]]) -> int:
-    """Ski default: enough windows for every seed and most of the riding (60-150)."""
+    """Action-cam default: enough windows for every seed and most of the riding (60-150)."""
     n = sum(
         1
         for evs in layer1.values()

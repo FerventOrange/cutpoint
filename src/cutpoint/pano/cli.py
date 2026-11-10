@@ -272,7 +272,7 @@ def _scan(
 
 
 def cmd_analyze(a: argparse.Namespace) -> None:
-    """Proxy views, then the normal ski analysis + events on the .lrv files (``--scan``: the
+    """Proxy views, then the normal action-cam analysis + events on the .lrv files (``--scan``: the
     scan of :func:`cmd_scan` first). Steps: :data:`cutpoint.progress.PANO_STEPS`."""
     project = _project(a.project)
     jsonout.set_project(project)
@@ -1107,7 +1107,7 @@ def add_parser(sub: Any) -> None:
         _add_json_argument,
         add_batch_size_argument,
     )
-    from cutpoint.styles import style_arg, style_names  # noqa: PLC0415
+    from cutpoint.styles import style_names  # noqa: PLC0415
 
     p = sub.add_parser(
         "360", help="optional 360-camera module (Insta360 X3): scan, analyze, director, stitch"
@@ -1141,7 +1141,6 @@ def add_parser(sub: Any) -> None:
     )
     an.add_argument(
         "--style",
-        type=style_arg,  # ski: an error naming action-cam
         choices=style_names(),
         default=None,
         help="style preset (default: pano.default_style in config.json, else action-cam)",

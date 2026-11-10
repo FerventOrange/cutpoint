@@ -1,9 +1,9 @@
 """Spread the kinds of a proposal when the user asks for a mix, in code.
 
-A model piles up the clips of one kind: sixteen skiing clips in a row, the funny ones at the end.
+A model piles up the clips of one kind: sixteen riding clips in a row, the funny ones at the end.
 When the message asks to break up, mix in or intersperse kinds (:func:`asks_for_mix`), :func:`pace`
 reorders the final proposal with ``move`` ops marked ``"auto": true`` so the funny, dialogue and
-scenic clips ("breakers") sit between the skiing runs, and adds dialogue moments when the message
+scenic clips ("breakers") sit between the riding runs, and adds dialogue moments when the message
 names dialogue and the sequence has none. Without such wording nothing here runs: pacing is left
 to the model.
 
@@ -34,6 +34,8 @@ _NOT_AUDIO = (
     r"(?!\s+(?:(?:some|the|a|my|any|more|less|background|extra) )*"
     r"(?:music|audio|sound|songs?|tracks?|volume|voice|voiceover|sfx|levels?))"
 )
+# The sport words of "between the <X> runs": the same sports as _ACTION_WORDS.
+_RIDE_WORDS = r"ski\w*|snowboard\w*|bik(?:e|es|ing)|rid(?:e|es|er|ers|ing)|mtb|surf(?:s|ing|ers?)?|skat(?:e|es|ing)|trails?"
 _MIX = re.compile(
     r"(?<![\w-])(?:"
     r"break(?:s|ing)? (?:it )?up(?!(?:\W+\w+){0,4}?\W+into\b)|break(?:s|ing)? the (?:monotony|runs?)"
@@ -41,8 +43,8 @@ _MIX = re.compile(
     r"|inters(?:perse|persed|perses|persing)|sprinkl(?:e|es|ed|ing)|scatter(?:s|ed|ing)?"
     r"|occasional(?:ly)?(?! (?:stutter|glitch|flicker|jitter|artifact|noise|blur|drop))"
     r"|now and (?:then|again)|from time to time"
-    r"|in[- ]between (?:the |some |all |each )?(?:ski\w*|runs?)"
-    r"|between (?:the |each |every |some )?(?:ski\w*(?: (?:runs?|shots?|clips?))?|runs?)"
+    rf"|in[- ]between (?:the |some |all |each )?(?:{_RIDE_WORDS}|runs?)"
+    rf"|between (?:the |each |every |some )?(?:{_RIDE_WORDS}(?: (?:runs?|shots?|clips?))?|runs?)"
     r"|alternat(?:e|es|ed)(?! (?:take|version|cut|clip|shot|angle|ending|option))|alternating"
     r"|interleav(?:e|es|ed|ing)|vary(?:ing)? (?:up )?the pac(?:e|ing)"
     r"|change of pace|pepper(?:s|ed|ing)?|punctuat(?:e|es|ed|ing)"
@@ -83,9 +85,9 @@ def _wanted(pattern: re.Pattern[str], text: str, *, transitions: bool = False) -
 
 def asks_for_mix(text: str) -> bool:
     """Whether the message asks to break up, mix in, intersperse or alternate kinds ("an
-    occasional funny moment to break up the skiing"). An audio mix ("mix the audio", "no music
+    occasional funny moment to break up the riding"). An audio mix ("mix the audio", "no music
     mix"), a transition between clips, and a request that is negated ("don't break up the
-    skiing") are none."""
+    riding") are none."""
     return _wanted(_MIX, text, transitions=True)
 
 
@@ -155,6 +157,19 @@ _ACTION_WORDS = frozenset(
         "riding",
         "groomer",
         "trees",
+        "bike",
+        "biking",
+        "rider",
+        "riders",
+        "mtb",
+        "trail",
+        "trails",
+        "surf",
+        "surfing",
+        "skate",
+        "skating",
+        "snowboard",
+        "snowboarding",
     ]
 )
 _TALK_WORDS = frozenset(
@@ -179,7 +194,7 @@ _CUE_KIND = {
     **dict.fromkeys(
         (
             *("airtime", "crash", "wipeout", "speed", "carve"),
-            *("jump_air", "landing", "crash_fall", "powder_spray", "fast_groomer", "trees"),
+            *("jump_air", "landing", "crash_fall", "spray", "fast_open", "trees"),
         ),
         ACTION,
     ),
@@ -199,7 +214,7 @@ def moment_kind(
     analysis' must-include confidence). A moment a weaker crash only marked keeps its kind. The words of its labels and ``kind`` decide first (visual pool ``view`` is scenic, ``crew`` and
     ``cruise`` are action; ``beauty``/``view``/``scenic``; ``laugh``/``funny``; ``fast``, ``speed``,
     ``crash``, ``jump``, ...; ``talk``/``voice``). Then the strongest cue of a generic label
-    (``ski-moment``, ``loud-moment``) decides, then speech over it (``spoken``: dialogue), else it
+    (``action-cam-moment``, ``loud-moment``) decides, then speech over it (``spoken``: dialogue), else it
     is action. A moment a talk stretch nominated (``signals.events.nominated`` holds
     ``dialogue-*``) is dialogue; one a stretch only widened keeps its own type, from the label it
     had before it took the stretch's title.
@@ -213,7 +228,11 @@ def moment_kind(
     if any(str(n).startswith("dialogue-") for n in events.get("nominated") or []):
         return DIALOGUE  # made from a talk stretch, whatever its title says
     kind = cand.get("kind") if isinstance(cand.get("kind"), str) else ""
-    named = (label, cand.get("label"), cand.get("vision_label"))  # "ski-moment" names nothing
+    named = (
+        label,
+        cand.get("label"),
+        cand.get("vision_label"),
+    )  # "action-cam-moment" names nothing
     if cand.get(
         "dialogue_title"
     ):  # a moment a stretch widened keeps its own type: not the title's words

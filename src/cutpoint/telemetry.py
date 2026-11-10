@@ -18,7 +18,7 @@ Per source, :func:`extract` returns a :class:`Telemetry` with these 0.1 s grids:
     accel_g     peak |accel| per bin (g); the sensor saturates near 8 g
     yaw_dps     gyro rate around the gravity axis (deg/s); gravity = 1 s low-pass
                 of the accelerometer, so it is in the same frame as the gyro
-    vibration   std of |accel| over 1 s (g): ~0 standing/riding a lift, high skiing
+    vibration   std of |accel| over 1 s (g): ~0 standing/riding a lift, high riding
     carve       0-1: turn rhythm (std of yaw rate over 2 s) x speed factor
     airtime     0-1 plateau over each airtime event (take-off .. landing)
     crash       0-1 plateau over each crash event (impact followed by a stop)
@@ -26,7 +26,7 @@ Per source, :func:`extract` returns a :class:`Telemetry` with these 0.1 s grids:
     still_mask  1 when stopped (GPS < 3 km/h, or no GPS and vibration < 0.04 g)
     wind        GoPro WindProcessing meter / 100
     faces       GoPro FACE detections: largest face box area (fraction of frame)
-    indoor      SCEN "INDO" probability (lodge, gondola cabin)
+    indoor      SCEN "INDO" probability (indoors, gondola cabin)
     gps_ok      1 where speed_kmh is valid
 
 Events (``Telemetry.events``) are ``{"type": "airtime"|"crash", "t", "end", ...}``
@@ -430,7 +430,7 @@ def _crash_events(
 ) -> list[dict[str, Any]]:
     """Impacts (>= ``impact_g``) that end in a stop.
 
-    A high-g spike alone is common while skiing (bumps, pole plants, hard
+    A high-g spike alone is common while riding (bumps, pole plants, hard
     landings), and the camera orientation changes whenever a helmet-mounted
     rider looks around, so neither counts on its own. A crash needs a stop
     right after the impact: GPS speed from >= ``crash_min_kmh`` to <= 5 km/h
@@ -788,7 +788,7 @@ def extract(
 def join_runs(tels: list[Telemetry], max_gap_s: float = 240.0) -> dict[str, Any]:
     """Order clips by absolute start and split the day into runs.
 
-    A run is a stretch of skiing (not lift, not long stops) across clips. It
+    A run is a stretch of riding (not lift, not long stops) across clips. It
     ends at a lift segment inside a clip or at an unfilmed gap longer than
     ``max_gap_s`` (typically a lift ride with the camera off).
 
@@ -812,7 +812,7 @@ def join_runs(tels: list[Telemetry], max_gap_s: float = 240.0) -> dict[str, Any]
         range(len(tels)),
         key=lambda i: (clips[i]["start_epoch"] is None, clips[i]["start_epoch"] or 0, i),
     )
-    segs: list[dict[str, Any]] = []  # skiing segments in absolute time
+    segs: list[dict[str, Any]] = []  # riding segments in absolute time
     for i in order:
         tel, c = tels[i], clips[i]
         g = tel.grid
@@ -867,7 +867,7 @@ def join_runs(tels: list[Telemetry], max_gap_s: float = 240.0) -> dict[str, Any]
                 "start_local": next(
                     (c["start_local"] for c in clips if c["source"] == run[0]["source"]), None
                 ),
-                "skiing_s": round(dur, 1),
+                "riding_s": round(dur, 1),
                 "top_speed_kmh": round(float(sp_all.max()), 1) if sp_all.size else None,
                 "vertical_m": round(float(alt_all.max() - alt_all.min()), 0)
                 if alt_all.size

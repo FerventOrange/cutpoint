@@ -1124,7 +1124,7 @@ class Turn:
         return self._kinds[real]
 
     def _paced(self, summary: str, main: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        """``(summary, proposal)`` with the kinds spread between the skiing runs
+        """``(summary, proposal)`` with the kinds spread between the riding runs
         (:func:`pacing.pace`) when the message asks to break up or mix kinds: real ops marked
         ``auto``, their rows and the summary say so. Unchanged for any other message."""
         if not self.mix:
@@ -1164,10 +1164,10 @@ class Turn:
         if found.spread:
             names = [f"{n} {k}" for k, n in found.spread.items()]
             listed = ", ".join(names[:-1]) + (" and " if len(names) > 1 else "") + names[-1]
-            parts.append(f"Spread {listed} clips between the skiing runs.")
+            parts.append(f"Spread {listed} clips between the riding runs.")
         if found.added:
             n, r = len(found.added), len(found.replaced)
-            more = f", replacing {r} skiing clip{'s' * (r != 1)}" if r else ""
+            more = f", replacing {r} riding clip{'s' * (r != 1)}" if r else ""
             parts.append(f"Added {n} dialogue moment{'s' * (n != 1)} you asked for{more}.")
         text = summary.strip()
         if "auto" not in main:  # the fill capped it already; else leave room for the note

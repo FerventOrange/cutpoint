@@ -1438,7 +1438,7 @@ def analyze_source(
     timings: dict[str, float],
     offset: float = 0.0,
     recover: bool = False,
-    ski_ctx: Any = None,
+    cam_ctx: Any = None,
     pick: bool = True,
     report: Callable[[float], None] | None = None,
     read_checked: Callable[[MediaInfo, dict[str, Any] | None], Any] | None = None,
@@ -1448,8 +1448,8 @@ def analyze_source(
     """Compute signals for one source (or a recovered part starting at ``offset``).
 
     Internally everything runs in part-relative time; candidates and the
-    transcript are returned in absolute source time. With ``ski_ctx`` (a
-    :class:`cutpoint.ski.SkiContext`), candidates come from the ski
+    transcript are returned in absolute source time. With ``cam_ctx`` (a
+    :class:`cutpoint.actioncam.ActionCamContext`), candidates come from the action-cam
     feature grid instead of the generic signals. ``src`` is the original path
     (recorded everywhere); files are read through ``source_remap``. With ``pick``
     False no candidates are picked yet (:func:`pick_candidates` does it later); with
@@ -1604,7 +1604,7 @@ def analyze_source(
         stages=stages,
     )
     if pick:
-        res.candidates = pick_candidates(res, style, max_candidates, timings, ski_ctx)
+        res.candidates = pick_candidates(res, style, max_candidates, timings, cam_ctx)
     where = f" from {clock(offset)}" if offset else ""
     logger.info(
         "%s%s: %.0fs, %d words, %d scene cuts%s%s",
@@ -1624,7 +1624,7 @@ def pick_candidates(
     style: Style,
     max_candidates: int | None,
     timings: dict[str, float],
-    ski_ctx: Any = None,
+    cam_ctx: Any = None,
 ) -> list[Candidate]:
     """Candidates of one analysed part (:func:`analyze_source`), in absolute source time."""
     src, span, offset = res.source, res.duration, res.offset
@@ -1633,9 +1633,9 @@ def pick_candidates(
         raise ValueError(f"{src}: no signals to pick candidates from")
     n, sig = ps.n, ps.sig
     segments = ps.segments
-    if ski_ctx is not None:
-        cands = _ski_candidates(
-            src, n, span, sig, offset, style, ski_ctx, max_candidates, segments, timings
+    if cam_ctx is not None:
+        cands = _action_cam_candidates(
+            src, n, span, sig, offset, style, cam_ctx, max_candidates, segments, timings
         )
     else:
         usual = usual_count(style) if style.open_list and max_candidates is None else None
@@ -1693,7 +1693,7 @@ def describe_candidates(
         strong = [
             p for _, w, p in sorted(inside, key=lambda h: -h[1]) if w >= 0.5 and p not in PROFANE
         ]  # a bare swear is a useless label
-        if not c.label_hint:  # ski picks bring their own ("jump 0.6s", "crash 7g")
+        if not c.label_hint:  # action-cam picks bring their own ("jump 0.6s", "crash 7g")
             c.label_hint = strong[0] if strong else ""
         said = [w for w in words if c.start <= w["start"] <= c.end]
         c.transcript, c.transcript_unsure = _transcript_snippet(said)
@@ -1869,29 +1869,29 @@ def _transcript_snippet(
     return text, [(i, p) for i, p in enumerate(probs) if p < UNSURE_P] or None
 
 
-def _ski_candidates(
+def _action_cam_candidates(
     src: Path,
     n: int,
     span: float,
     sig: dict[str, np.ndarray],
     offset: float,
     style: Style,
-    ski_ctx: Any,
+    cam_ctx: Any,
     max_candidates: int | None,
     segments: list[Segment],
     timings: dict[str, float],
 ) -> list[Candidate]:
-    """Candidates from the ski feature grid (telemetry + audio + VLM tags)."""
-    from cutpoint import ski  # noqa: PLC0415
+    """Candidates from the action-cam feature grid (telemetry + audio + VLM tags)."""
+    from cutpoint import actioncam  # noqa: PLC0415
 
     t0 = time.perf_counter()
-    feats, mask, friends = ski.build_features(src, n, sig, ski_ctx, offset)
-    tel = ski_ctx.telemetry.get(str(src))
+    feats, mask, friends = actioncam.build_features(src, n, sig, cam_ctx, offset)
+    tel = cam_ctx.telemetry.get(str(src))
     events = tel.events if tel is not None else []
-    ski.save_features(ski_ctx.project, src, offset, span, feats, mask, friends, events)
+    actioncam.save_features(cam_ctx.project, src, offset, span, feats, mask, friends, events)
     if max_candidates is None:  # short clips: a few; long ones: one per ~20 s
         max_candidates = max(4, int(span / 20))
-    picks = ski.pick(
+    picks = actioncam.pick(
         feats,
         style.weights,
         mask,
@@ -1902,7 +1902,7 @@ def _ski_candidates(
         offset,
         friends_strong=style.mask_friends,
     )
-    forced = ski.must_include_picks(src, ski_ctx, style.must_include_crash, span, offset)
+    forced = actioncam.must_include_picks(src, cam_ctx, style.must_include_crash, span, offset)
     if forced:
         logger.info(
             "%s: %d must-include crash clip(s) (confidence >= %.2f)",
@@ -1910,7 +1910,7 @@ def _ski_candidates(
             len(forced),
             style.must_include_crash,
         )
-        picks = ski.merge_must_include(picks, forced)
+        picks = actioncam.merge_must_include(picks, forced)
     cands = []
     for p in picks:
         c = Candidate(
@@ -1928,15 +1928,17 @@ def _ski_candidates(
         # Word edges only (no scene snapping): never cut a word in half.
         _snap(c, [], segments, span, style)
         cands.append(c)
-    timings["ski_s"] = round(timings.get("ski_s", 0.0) + time.perf_counter() - t0, 2)
+    timings["action_cam_s"] = round(timings.get("action_cam_s", 0.0) + time.perf_counter() - t0, 2)
     return cands
 
 
-CRASH_KIND = "crash"  # the ``kind`` of a crash moment outside action-cam (ski's: ``wipeout``)
+CRASH_KIND = (
+    "crash"  # the ``kind`` of a crash moment outside action-cam (action-cam's: ``wipeout``)
+)
 
 
 def _crash_event(c: dict[str, Any]) -> dict[str, Any]:
-    """The ``crash`` record of a candidate for the crashes.json crash ``c`` (as ski's)."""
+    """The ``crash`` record of a candidate for the crashes.json crash ``c`` (as action-cam's)."""
     return {
         "type": "crash",
         "id": c.get("id"),
@@ -3173,7 +3175,7 @@ def _analyze(
     t_start = time.perf_counter()
     steps.start("transcribe")
     sources = find_sources(target, exclude, recursive)
-    # --style auto: probed before transcription, which needs the style's ski context, scene
+    # --style auto: probed before transcription, which needs the style's action-cam context, scene
     # setting and OCR prefetch; talk is told from general once the speech coverage is known.
     auto = style if isinstance(style, AutoRequest) else None
     probes: list[category.SourceProbe] = []
@@ -3199,17 +3201,17 @@ def _analyze(
     ):
         # ---- 1. transcribe: audio, loudness, Whisper and scene cuts per source
         use_scenes = use_scenes and style.use_scenes
-        ski_ctx = None
+        cam_ctx = None
         if style.kind == ACTION_CAM:
-            from cutpoint import ski  # noqa: PLC0415
+            from cutpoint import actioncam  # noqa: PLC0415
 
             t0 = time.perf_counter()
-            stale = out_dir / ski.FEATURES_DIR
+            stale = out_dir / actioncam.FEATURES_DIR
             if stale.is_dir():
                 for f in stale.glob("*.npz"):
                     cache.remove(f)  # held: removed only when the run completes
             durations = {str(s): probe(remap_source(s)).duration for s in sources}
-            ski_ctx = ski.prepare(sources, durations, out_dir)
+            cam_ctx = actioncam.prepare(sources, durations, out_dir)
             telemetry_s = round(time.perf_counter() - t0, 2)
         tr = Transcriber(model=model, language=language)
 
@@ -3231,7 +3233,7 @@ def _analyze(
             return offer
 
         timings: dict[str, float] = {}
-        if ski_ctx is not None:
+        if cam_ctx is not None:
             timings["telemetry_s"] = telemetry_s
         pending = auto is not None and det.pending  # the style's text signals wait for talk
         results: list[SourceResult] = []
@@ -3260,7 +3262,7 @@ def _analyze(
                     src,
                     f" from {clock(offset)} (recovered part)" if offset else "",
                 )
-                # Ski candidates come from the feature grid, after the event layers.
+                # Action-cam candidates come from the feature grid, after the event layers.
                 res = analyze_source(
                     src,
                     style,
@@ -3270,7 +3272,7 @@ def _analyze(
                     timings,
                     offset=offset,
                     recover=recover,
-                    pick=ski_ctx is None and not pending,
+                    pick=cam_ctx is None and not pending,
                     report=report if steps.active else None,
                     read_checked=read_checked(src, offset),
                     text=not pending,
@@ -3465,16 +3467,16 @@ def _analyze(
 
         # ---- 5. ranking: candidates rescored with the events
         steps.start("ranking")
-        if ski_ctx is not None:
+        if cam_ctx is not None:
             from cutpoint import activity  # noqa: PLC0415
 
             if events_new:  # with this run's events.json and crashes.json
-                ski_ctx = ski.prepare(sources, durations, out_dir)
+                cam_ctx = actioncam.prepare(sources, durations, out_dir)
             # the beauty / people features on the captions of the project's activity.json
-            # (written by the crash step above; ski without one)
+            # (written by the crash step above; action-cam without one)
             with activity.use_prompts(activity.project_prompts(out_dir)):
                 for r in results:
-                    r.candidates = pick_candidates(r, style, max_candidates, timings, ski_ctx)
+                    r.candidates = pick_candidates(r, style, max_candidates, timings, cam_ctx)
                     logger.info("%s: %d candidates", r.source.name, len(r.candidates))
         if crash_moments and style.kind != ACTION_CAM:  # this run's crash step, `cutpoint crashes`
             from cutpoint.crash import load_crashes  # noqa: PLC0415
@@ -3659,7 +3661,7 @@ def reanalyze(project: Path) -> Path:
     """Re-run ``analyze`` with the inputs and style recorded in highlights.json.
 
     Everything expensive is cached (audio, transcript, telemetry), so this is
-    quick. ``cutpoint events`` calls it for ski projects, whose events feed the
+    quick. ``cutpoint events`` calls it for action-cam projects, whose events feed the
     feature grid itself rather than a score boost. ``timings.total_s`` stays the earlier
     analysis's; the re-rank's own time is ``timings.rerank_s``.
 

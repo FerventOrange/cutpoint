@@ -384,7 +384,7 @@ Settings for the optional 360 module. Every key is optional.
 | `auto_stitch` | `true` (default) or `false`. When true, the SDK runs and an NVIDIA GPU is present, "Export clips" in `cutpoint ui` first stitches the recordings a 360 export needs (about 54 GB per hour of footage in `stitched_dir`). `false` exports from the dual-fisheye preview. The command-line `clips` never stitches. See [360 video](workflows/360.md#auto-stitch-on-export) |
 | `stitch_args` | SDK arguments placed after the input and output. Replaces the defaults. See [insta360-sdk.md](insta360-sdk.md) |
 | `studio_dirs` | Folders searched for Insta360 Studio equirect exports. Default `<CUTPOINT_HOME>\360-studio`; `_stitched\`, `export\` and `Export\` next to the camera files are always searched |
-| `default_style` | `--style` of `cutpoint 360 analyze` when none is given. Default `action-cam` (formerly `ski`, no longer accepted) |
+| `default_style` | `--style` of `cutpoint 360 analyze` when none is given. Default `action-cam` |
 | `cmd_every` | Frames between virtual-camera updates when rendering. Default 1. 2 renders faster but leaves camera shake on every other frame. `--pano-cmd-every` overrides it |
 | `level_strength` | Horizon lock of the stabilised view, 0 to 1. 1 keeps the horizon level; 0 lets the view lean with the camera's smoothed tilt. Default 0.7 |
 | `tilt_follow_s` | Smoothing in seconds of the tilt the view follows when `level_strength` is below 1. Default 0.5 |
@@ -406,7 +406,7 @@ A style tells `analyze` how to score and how long clips and the final cut should
 | `commentary` | 20-120 s | 12.5 min | Speech continuity, sentence-snapped, chronological |
 | `action-cam` | 2-10 s by moment type | 150 s | Action-cam telemetry, model tags and sound events; lifts and stops masked |
 
-`action-cam` is the telemetry-driven action-cam style (formerly `ski`; `ski` is no longer accepted: a `--style ski`, a `config.json` value, a project or a learned preset that says `ski` stops with an error naming `action-cam`). Speed, airtime and crash scoring need GoPro HERO 9-13 telemetry (or the Insta360 X3 IMU); other footage is scored from audio, speech and model features only.
+`action-cam` is the telemetry-driven action-cam style (`ski` is not a style: it is an unknown name like any other). Speed, airtime and crash scoring need GoPro HERO 9-13 telemetry (or the Insta360 X3 IMU); other footage is scored from audio, speech and model features only.
 
 ### Custom styles
 

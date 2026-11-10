@@ -3,8 +3,7 @@
 This module is part of every install; the full feature set needs the `events` extra, which
 Cutpoint lite leaves out, and `cutpoint setup`. It uses telemetry in GoPro HERO 9-13 files (accelerometer, gyro, GPS) to
 score moments by what happened: speed, airtime, carving, crashes. Lifts and stops are masked
-even with friends in view. The style is `action-cam` (formerly `ski`, which is no longer
-accepted); the signals apply to any riding or action footage that
+even with friends in view. The style is `action-cam`; the signals apply to any riding or action footage that
 carries telemetry.
 
 ```powershell
@@ -42,7 +41,7 @@ dense-frame, audio and transcript sub-scores and a confidence. Crashes at or abo
 `must_include_crash` threshold (0.6, as for every other style) are always exported with their
 lead-in, aftermath and a reaction clip. `analyze --must-include-crash CONF` overrides it; 0 forces none.
 Check `crash_check\` by eye: weights and thresholds are hand-set, and the detector misses
-tumbles when the camera points at the rider's own skis and can be fooled by shadows.
+tumbles when the camera points at the rider's own gear and can be fooled by shadows.
 
 ## Activity profiles
 
@@ -115,8 +114,8 @@ sport the footage is not. Its fields are `recording` (what the window shows), `v
 `retry_high` and `retry_low` (the shorter lists of its retry prompt), each a single line of at
 most 300 characters, and `tags`, a
 description for each window tag (at most 100 characters). The tag keys (`jump_air`,
-`powder_spray`, `chairlift` and the others) are fixed: they are the names stored in
-`events.json` and read by the scorer, so a profile, including one the LLM writes, can only
+`spray`, `transit` and the others) are fixed: they are the names stored in
+`events.json` and read by the scorer (the older keys `powder_spray`, `fast_groomer`, `chairlift` and `lodge` are ignored: run `cutpoint events` again on an old project), so a profile, including one the LLM writes, can only
 reword their descriptions, not rename, add or drop a tag. A profile without its own wording uses
 the generic wording of `base.json`. The `--context` writer starts from that generic wording and may reword it for the
 activity. A value that is missing, not a string, empty or over its cap is replaced by the

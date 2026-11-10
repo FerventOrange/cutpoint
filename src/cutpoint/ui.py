@@ -180,7 +180,6 @@ from cutpoint.styles import (
     Style,
     get_style,
     learned_styles,
-    renamed_error,
     style_names,
 )
 from cutpoint.utils import (
@@ -3993,7 +3992,7 @@ def suggest_style(
     return "action-cam" if any(has_telemetry(f, TELEMETRY_PROBE_TIMEOUT) for f in files) else None
 
 
-def _ski_style(name: str) -> bool:
+def _action_cam_style(name: str) -> bool:
     """``name`` is a telemetry-driven action-cam style (``kind`` action-cam): kept as given for 360 sources."""
     try:
         return get_style(name).kind == ACTION_CAM
@@ -5117,14 +5116,12 @@ def create_app(port: int) -> FastAPI:
     @owned.post("/projects")
     def create_project(body: dict[str, Any]):
         name, style = body.get("name"), body.get("style", "gaming")
-        if msg := renamed_error(style):  # ski: an error naming action-cam
-            raise bad(msg)
         if not isinstance(name, str) or not name.strip() or len(name) > 100:
             raise bad("name must be 1-100 characters")
         inputs = _body_inputs(body)
         recursive, exclude = _flag(body, "recursive"), _exclude_globs(body)
-        ski = isinstance(style, str) and _ski_style(style)
-        if style not in ui_styles() and not ski:
+        is_cam = isinstance(style, str) and _action_cam_style(style)
+        if style not in ui_styles() and not is_cam:
             raise bad(f"unknown style {style!r}")
         if len(inputs) > 1 or recursive or exclude:  # analyze's inputs, --recursive, --exclude
             try:
@@ -5152,7 +5149,7 @@ def create_app(port: int) -> FastAPI:
             return new_project(name.strip(), os.path.abspath(source), style)  # noqa: PTH100
         # 360: the action-cam styles as given, any other the 360 default (pano.default_style)
         try:
-            style = style if ski else pano_style()
+            style = style if is_cam else pano_style()
         except ValueError as err:  # config.json's pano section is not an object
             raise bad(str(err), 409) from err
         clips = {"clips": usable} if src.is_file() else {}  # one file: just that clip

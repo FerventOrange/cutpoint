@@ -45,7 +45,7 @@ in the spirit of Pano2Vid and AutoCam.
 - Within a shot, yaw is smoothed and limited in speed and acceleration. Pitch follows the framed
   person, clamped to -25..+5 degrees. Field of view is wide by default and fitted to a tracked
   friend's size.
-- The wearer may be in frame when arms, poles or skis enter from the bottom edge or cover at
+- The wearer may be in frame when arms, poles, handlebars or a board enter from the bottom edge or cover at
   most a fifth of the frame. A larger box elsewhere is treated as a person too close and framed
   out.
 - Other people at least 15 degrees tall (`near_min_h_deg`, detected with a score of at least

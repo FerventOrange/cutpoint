@@ -221,7 +221,7 @@ def test_join_runs_joins_clips_across_short_gaps_and_splits_at_lifts_and_long_ga
 
     assert [c["source"] for c in out["clips"]] == ["a.mp4", "b.mp4", "d.mp4", "c.mp4"]
     assert [r["clips"] for r in out["runs"]] == [["a.mp4", "b.mp4"], ["d.mp4"], ["c.mp4"]]
-    assert out["runs"][0]["skiing_s"] == pytest.approx(120 + 90)
+    assert out["runs"][0]["riding_s"] == pytest.approx(120 + 90)
     assert out["runs"][0]["top_speed_kmh"] == 40.0
     assert out["day"]["clips"] == 4 and out["day"]["runs"] == 3
     assert out["day"]["lift_s"] == pytest.approx(30)

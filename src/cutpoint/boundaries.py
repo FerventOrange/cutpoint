@@ -42,7 +42,7 @@ between the two picks, and every move is bounded by the neighbouring clips.
 
 Per-clip limits: a segment / manifest entry may carry ``"speech_max_extend"``
 and ``"speech_max_lead"`` (seconds, see :data:`LIMIT_KEYS`); they replace
-``max_extend`` / ``max_lead`` for that clip only (e.g. a chairlift
+``max_extend`` / ``max_lead`` for that clip only (e.g. a lift or boat ride
 conversation that runs 30 s past the cut). The neighbour bounds still apply.
 """
 

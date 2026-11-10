@@ -1,6 +1,6 @@
 """``look_for``: rank the whole timeline by a text query with local CLIP (#529).
 
-``find_moments`` only reads words analysis already wrote down. ``look_for("powder spray")``
+``find_moments`` only reads words analysis already wrote down. ``look_for("spray")``
 compares the query with the cached frame embeddings of every source of the project (the
 ``events`` visual layer, about one frame per second, the same ones the visual pool and the
 action-cam features read: :func:`cutpoint.events.visual.load_visual`), so it also finds footage
@@ -40,7 +40,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import extras, ski
+from cutpoint import actioncam, extras
 from cutpoint.config import path_key
 from cutpoint.events import visual as V
 from cutpoint.visual_pool import _fit, _overlap
@@ -53,7 +53,7 @@ DEFAULT_LIMIT, MAX_LIMIT = 5, 10
 MAX_QUERY = 200  # characters
 # CLIP ViT-L/14 image-text cosines, calibrated on Whistler day 3 (35 GoPro sources, 10k frames)
 # and the scuba clips of #529: how high a query's best frame scores depends on the words as much
-# as on the footage (a clear "friends on the chairlift" 0.28-0.30, a "snowboarder" 0.27, "a scuba
+# as on the footage (a clear "friends on the lift" 0.28-0.30, a "surfer" 0.27, "a scuba
 # diver" 0.226, but "fish" in a reef 0.204 and "a car on a road" over snow 0.220), so the bars
 # are absolute and cautious. Queries about things the footage does not show peak at 0.20-0.22.
 WEAK_MIN = 0.202  # the floor of the list: "fish" in a reef is 0.204, a dog over snow 0.201
@@ -92,8 +92,8 @@ RULES = f"""
 
 {NAME}(query) compares the query with the footage itself (CLIP on the cached frames of every \
 source) and lists the best windows with match 0-10 and confidence strong or weak. Use it when \
-find_moments, labels, seen, cues and transcripts do not match what the user wants to see (powder \
-spray, a sunset, a red jacket), with a short English description of the picture. A clear window \
+find_moments, labels, seen, cues and transcripts do not match what the user wants to see (spray \
+from a wave, a sunset, a red jacket), with a short English description of the picture. A clear window \
 nobody covered comes back as a new moment (new: true) that you can add; one that is weak or \
 unconfirmed is a guess. Similarity is not certainty: say a match is likely or possible, never \
 sure, and name the moment so the user can check it. If {NAME} says it is not available, tell the \
@@ -219,7 +219,7 @@ def new_moment(hit: Hit, query: str) -> dict[str, Any]:
 def _windows(source: str, t: np.ndarray, sims: np.ndarray, duration: float | None) -> list[Hit]:
     """The windows of one source: peaks of ``sims`` (at frame times ``t``) from the best on,
     :data:`SPACING_S` apart, each cut to :data:`MIN_LEN_S`-:data:`MAX_LEN_S`."""
-    sims = ski.smooth3(sims)
+    sims = actioncam.smooth3(sims)
     end_of = duration or float(t[-1]) + 1.0
     out: list[Hit] = []
     peaks: list[float] = []

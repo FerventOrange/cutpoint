@@ -64,15 +64,16 @@ def _chat_prompts(posts: list[tuple[str, dict]]) -> list[str]:
 FLOOR_PROMPT = (
     "These are {n} frames, in order, from one short moment of a first-person action-cam "
     "video. Rate how highlight-worthy it is for a highlight edit (0 = boring, 10 = must "
-    "include). High: jumps, crashes, spray from a hard turn, fast riding, tight trees, "
-    "friends doing something funny, a stunning view. Low (0-2): riding a lift, standing "
-    "around, indoors, the ground or the sky only. Respond with JSON only: "
+    "include). High: jumps, crashes, spray of snow, water, dirt or sand, fast riding, tight "
+    "obstacles or trees, friends doing something funny, a stunning view. Low (0-2): in "
+    "transit between rides, standing around, indoors, the ground or the sky only. Respond "
+    "with JSON only: "
     '{{"score": <0-10 number>, "label": "<2-4 word description>"}}'
 )
 FLOOR_RETRY = (
     "{n} frames from a first-person action-cam video moment. Answer immediately, no "
     "reasoning. Score 0-10 for a highlight edit; jumps, crashes and fast riding score high, "
-    "lifts, standing around and indoor scenes score 0-2. "
+    "rides between runs, standing around and indoor scenes score 0-2. "
     'Output only JSON: {{"score": <number>, "label": "<2-4 words>"}}'
 )
 # The same with the qwen3.5 contact sheet.
@@ -838,7 +839,7 @@ def test_the_keys_of_models_without_a_profile_are_unchanged():
     # follows the default activity's wording: generic's since the built-in sport profiles
     # were removed).
     times = vision._frame_times(0, 4, 3)
-    assert vision.rating_key("qwen3-vl:8b", "action-cam", times) == "fd3198b9ac@1.000,2.000,3.000"
+    assert vision.rating_key("qwen3-vl:8b", "action-cam", times) == "f6fb7825d9@1.000,2.000,3.000"
     assert vision.rating_key("qwen3-vl:8b", "gaming", times) == (
         "5c3d81f65e@1.000,2.000,3.000"  # other styles keep theirs
     )

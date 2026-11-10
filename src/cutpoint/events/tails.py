@@ -98,7 +98,7 @@ def is_payoff(e: dict[str, Any], settings: EventTailSettings) -> bool:
         return e.get("type") == "multikill"
     if kind == "vlm":
         return max(e.get("funny") or 0, e.get("hype") or 0) >= settings.vlm_min
-    if kind == "telemetry":  # ski: a jump or crash right after the talk
+    if kind == "telemetry":  # action-cam: a jump or crash right after the talk
         return e.get("type") in ("airtime", "crash")
     return False
 

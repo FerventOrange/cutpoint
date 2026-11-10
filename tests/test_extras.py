@@ -13,7 +13,7 @@ from cutpoint import cli, extras
 
 
 def test_missing_module_message():
-    # core dependencies since the ui, keyring and ski extras became empty aliases
+    # core dependencies since the ui and keyring extras became empty aliases
     for core in ("telemetry_parser", "fastapi", "uvicorn", "keyring"):
         assert extras.missing_module_message(core) is None
     msg = extras.missing_module_message("torch.nn.functional")  # top-level package decides

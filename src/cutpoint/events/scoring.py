@@ -536,7 +536,7 @@ def widen_for_dialogue(
     stretch's description in ``dialogue_description``. The widened candidate takes the title of
     the most confident stretch that widened it (``dialogue_title``, and its slug as the label;
     :func:`restore_widened` gives the label back). Returns how many candidates were widened."""
-    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports ski, which imports us
+    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports us
 
     widened: set[int] = set()
     for src, evs in by_src.items():
@@ -657,7 +657,7 @@ def nominate(
     A new one has no id (:func:`number_candidates`).
     """
     from cutpoint import analyze  # noqa: PLC0415 - imports this module
-    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports ski, which imports us
+    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports us
 
     try:
         style = get_style(hl.get("style") or "")

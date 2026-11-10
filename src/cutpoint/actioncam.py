@@ -1,4 +1,4 @@
-"""Ski / snowboard scoring: telemetry + audio + VLM features, masks and clip picking.
+"""Action-cam scoring: telemetry + audio + VLM features, masks and clip picking.
 
 Used by ``cutpoint analyze --style action-cam`` (and learned presets based on it) and by
 ``scripts/refmatch.py`` to evaluate and fit weights. Every feature is 0-1 on the 0.1 s
@@ -6,10 +6,10 @@ analysis grid of one source:
 
     airtime  telemetry airtime events (strength by duration and confidence)
     crash    telemetry crash events (impact g followed by a stop; head tilt raises it)
-    vlm      ``cutpoint events`` window tags: max of jump_air, landing, powder_spray
+    vlm      ``cutpoint events`` window tags: max of jump_air, landing, spray
              and friends_faces (0-10 -> 0-1); friends only outside the lift/still
-             mask, scaled down by the window's chairlift / standing_talking /
-             lodge tags; 0 before ``cutpoint events`` has run
+             mask, scaled down by the window's transit / standing_talking /
+             indoor_break tags; 0 before ``cutpoint events`` has run
     speed    GPS speed percentile within the day (above-median part, 0-1); the
              GoPro wind meter stands in where there is no GPS fix
     social   PANNs Laughter / Scream / Cheering (after ``cutpoint events``) and
@@ -30,7 +30,7 @@ Features from the ``cutpoint events`` voice and visual layers (0 until they ran)
              aesthetic head x steadiness (telemetry speed; embedding change
              without GPS)
     people   friends close to the camera: Faster R-CNN person boxes (the
-             wearer's own legs/skis dropped) by closeness and count, boosted by
+             wearer's own legs and gear dropped) by closeness and count, boosted by
              the zero-shot group prompt
     group    the zero-shot "friends / group of people" prompt alone
     (360 clips: the same three from :mod:`cutpoint.pano.views`, taking the
@@ -50,7 +50,7 @@ From ``cutpoint crashes`` (``<project>/crashes.json``, 0 until it ran):
              (:func:`must_include_picks`), whatever the weights say.
 
 Every feature is registered in :mod:`cutpoint.features` (:data:`FEATURES` is its
-:data:`~cutpoint.features.SKI_FEATURES`); :func:`cutpoint.scorer.ski_combined` weighs them.
+:data:`~cutpoint.features.ACTION_CAM_FEATURES`); :func:`cutpoint.scorer.action_cam_combined` weighs them.
 The weighted sum is hard-masked on lifts and stops (``lift_mask | still_mask``);
 friends in view do not lift the mask. Peaks are
 turned into clips whose length depends on the dominant feature: jumps 3-6 s
@@ -78,12 +78,12 @@ from cutpoint.telemetry import DT, Telemetry, extract, join_runs, paint_spans
 
 logger = logging.getLogger(__name__)
 
-FEATURES = features.SKI_FEATURES
+FEATURES = features.ACTION_CAM_FEATURES
 # Features computed from the voice / visual layers.
 NEW_FEATURES = tuple(f for f in FEATURES if features.get(f).layer in ("audio", "visual"))
 SHORT_CLIP_S = 30.0  # a clip this short was recorded on purpose for one moment
-VLM_ACTION_TAGS = ("jump_air", "landing", "powder_spray")
-VLM_IDLE_TAGS = ("chairlift", "standing_talking", "lodge")  # friends do not count there
+VLM_ACTION_TAGS = ("jump_air", "landing", "spray")
+VLM_IDLE_TAGS = ("transit", "standing_talking", "indoor_break")  # friends do not count there
 FRIENDS_STRONG = 7  # default mask_friends: > 0 = hard lift/still mask, 0 = soft
 STRETCH = 0.7  # a pick takes the run around its peak that stays above this share of it
 FEATURES_DIR = "action_cam_features"
@@ -129,8 +129,8 @@ KIND_LABEL = {
 
 
 @dataclass
-class SkiContext:
-    """Day-level inputs shared by every source of a ski analysis."""
+class ActionCamContext:
+    """Day-level inputs shared by every source of an action-cam analysis."""
 
     project: Path
     telemetry: dict[str, Telemetry | None]
@@ -145,7 +145,7 @@ def _key(path: str | Path) -> str:
     return path_key(str(Path(path)))
 
 
-def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> SkiContext:
+def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> ActionCamContext:
     """Extract telemetry for every source, load events.json, write telemetry.json.
 
     Args:
@@ -164,7 +164,7 @@ def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> 
         speeds.append(g["speed_kmh"][moving & (g["speed_kmh"] > 5)])
     speed_ref = np.sort(np.concatenate(speeds)) if speeds else np.zeros(0)
     runs = join_runs(good) if good else {}
-    ctx = SkiContext(project=project, telemetry=tels, speed_ref=speed_ref, runs=runs)
+    ctx = ActionCamContext(project=project, telemetry=tels, speed_ref=speed_ref, runs=runs)
     ev = cache.load_json(project / "events.json")
     if ev:
         for e in ev.get("events", []):
@@ -193,7 +193,7 @@ def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> 
     return ctx
 
 
-def write_telemetry_json(project: Path, ctx: SkiContext) -> Path:
+def write_telemetry_json(project: Path, ctx: ActionCamContext) -> Path:
     """``<project>/telemetry.json``: day summary, runs, per-source summary and events."""
     data = {
         "version": 1,
@@ -232,7 +232,7 @@ def _resize(x: np.ndarray, n: int, fill: float = 0.0) -> np.ndarray:
 
 
 def build_features(
-    src: Path, n: int, sig: dict[str, np.ndarray], ctx: SkiContext, offset: float = 0.0
+    src: Path, n: int, sig: dict[str, np.ndarray], ctx: ActionCamContext, offset: float = 0.0
 ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
     """Feature grids, the hard mask and the friends-exception grid for one source.
 
@@ -292,7 +292,7 @@ def build_features(
             act.append((a, b, max(tags.get(t, 0) for t in VLM_ACTION_TAGS) / 10))
             scen.append((a, b, tags.get("scenic_vista", 0) / 10))
             fr.append((a, b, tags.get("friends_faces", 0) / 10))
-            # Friends raise a riding moment, not lift, standing or lodge time, where
+            # Friends raise a riding moment, not transit, standing or break time, where
             # they are in view for minutes: scaled down by the window's idle tags.
             idle = max(tags.get(t, 0) for t in VLM_IDLE_TAGS) / 10
             fr_ride.append((a, b, tags.get("friends_faces", 0) / 10 * (1 - idle)))
@@ -389,7 +389,7 @@ def effective_mask(
     ``friends_strong`` (a style's ``mask_friends``) above 0 keeps the mask
     hard; 0 or less means a *soft* mask (nothing is forbidden; the
     ``stopped`` weight decides). Friends no longer lift the mask: people
-    standing and chatting, or on the chairlift, are in view for minutes, so
+    standing and chatting, or in transit, are in view for minutes, so
     ``friends`` is accepted for the callers but not used.
     """
     if friends_strong <= 0:
@@ -404,8 +404,10 @@ def combine(
     friends: np.ndarray,
     friends_strong: float = FRIENDS_STRONG,
 ) -> np.ndarray:
-    """Weighted feature sum with the hard mask applied (:func:`cutpoint.scorer.ski_combined`)."""
-    return scorer.ski_combined(features, weights, 1 - effective_mask(mask, friends, friends_strong))
+    """Weighted feature sum with the hard mask applied (:func:`cutpoint.scorer.action_cam_combined`)."""
+    return scorer.action_cam_combined(
+        features, weights, 1 - effective_mask(mask, friends, friends_strong)
+    )
 
 
 # --------------------------------------------------------------------------- picking
@@ -583,7 +585,7 @@ def _deoverlap(picks: list[Pick], duration: float = float("inf")) -> list[Pick]:
 
 
 def must_include_picks(
-    src: Path, ctx: SkiContext, threshold: float, duration: float, offset: float = 0.0
+    src: Path, ctx: ActionCamContext, threshold: float, duration: float, offset: float = 0.0
 ) -> list[Pick]:
     """Clips for crashes at or above ``threshold`` confidence (``crashes.json``).
 
@@ -679,7 +681,7 @@ def save_features(
 
 def load_features(path: Path, data: bytes | None = None) -> dict[str, Any]:
     """Inverse of :func:`save_features` (of the file ``path``, or of its bytes ``data``).
-    A grid saved under its old name (:data:`cutpoint.features.SKI_ALIASES`) is read under
+    A grid saved under its old name (:data:`cutpoint.features.ACTION_CAM_ALIASES`) is read under
     the new one, in its place."""
     with np.load(path if data is None else io.BytesIO(data)) as z:
         meta = json.loads(str(z["meta"]))
@@ -688,7 +690,7 @@ def load_features(path: Path, data: bytes | None = None) -> dict[str, Any]:
             **meta,
             "mask": z["mask"].astype(float),
             "friends": z["friends"].astype(float),
-            "features": features.ski_names(grids, str(path)),
+            "features": features.action_cam_names(grids, str(path)),
         }
 
 
@@ -702,7 +704,7 @@ def load_part(project: Path, src: Path, offset: float = 0.0) -> dict[str, Any] |
 
 
 def load_project_features(project: Path) -> list[dict[str, Any]]:
-    """Every saved source of a ski project (offset-0 parts first)."""
+    """Every saved source of an action-cam project (offset-0 parts first)."""
     folder = project / FEATURES_DIR
     if not folder.is_dir():
         raise FileNotFoundError(

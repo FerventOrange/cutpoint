@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from cutpoint import features, scorer, ski
+from cutpoint import actioncam, features, scorer
 from cutpoint.styles import get_style
 from cutpoint.telemetry import DT, Telemetry, paint_spans
 
@@ -25,9 +25,9 @@ def _bump(t: float, height: float, width: float = 1.0) -> np.ndarray:
     return height * np.exp(-(((x - t) / width) ** 2))
 
 
-def _pick(vlm: np.ndarray, mask: np.ndarray | None = None) -> list[ski.Pick]:
+def _pick(vlm: np.ndarray, mask: np.ndarray | None = None) -> list[actioncam.Pick]:
     zero = np.zeros(N)
-    return ski.pick(
+    return actioncam.pick(
         {"vlm": vlm}, {"vlm": 1.0}, zero if mask is None else mask, zero, [], N * DT, 10
     )
 
@@ -35,16 +35,16 @@ def _pick(vlm: np.ndarray, mask: np.ndarray | None = None) -> list[ski.Pick]:
 def test_flat_stretch_gives_one_pick() -> None:
     picks = _pick(_grid([(10.0, 40.0, 1.0)]))  # one 30 s VLM window at one value
     assert len(picks) == 1
-    lo, hi = ski.GEOMETRY["vlm"][:2]
+    lo, hi = actioncam.GEOMETRY["vlm"][:2]
     assert lo <= picks[0].end - picks[0].start <= hi
     assert picks[0].start >= 10.0 and picks[0].end <= 40.0
 
 
 @pytest.mark.parametrize("kind", ["beauty", "scenic"])
 def test_scenic_picks_are_five_to_seven_seconds(kind: str) -> None:
-    assert ski.GEOMETRY[kind] == (5.0, 7.0, 2.5, 2.5)
+    assert actioncam.GEOMETRY[kind] == (5.0, 7.0, 2.5, 2.5)
     zero = np.zeros(N)
-    picks = ski.pick({kind: _bump(40.0, 1.0)}, {kind: 1.0}, zero, zero, [], N * DT, 10)
+    picks = actioncam.pick({kind: _bump(40.0, 1.0)}, {kind: 1.0}, zero, zero, [], N * DT, 10)
     assert len(picks) == 1 and picks[0].kind == kind
     assert 5.0 <= picks[0].end - picks[0].start <= 7.0
     assert picks[0].start <= 40.0 <= picks[0].end
@@ -56,7 +56,7 @@ def test_scenic_pick_near_a_source_edge_keeps_its_length(kind: str, t: float) ->
     n = 1200  # 120 s
     peak = np.exp(-(((np.arange(n) * DT - t) / 1.0) ** 2))
     zero = np.zeros(n)
-    picks = ski.pick({kind: peak}, {kind: 1.0}, zero, zero, [], n * DT, 10)
+    picks = actioncam.pick({kind: peak}, {kind: 1.0}, zero, zero, [], n * DT, 10)
     assert len(picks) == 1
     assert 5.0 <= picks[0].end - picks[0].start <= 7.0
     assert picks[0].start >= 0.0 and picks[0].end <= n * DT
@@ -65,7 +65,7 @@ def test_scenic_pick_near_a_source_edge_keeps_its_length(kind: str, t: float) ->
 def test_scenic_pick_trimmed_by_a_stronger_pick_grows_back_to_five_seconds() -> None:
     zero = np.zeros(N)
     feats = {"scenic": _bump(40.0, 0.6), "speed": _bump(35.0, 1.0)}
-    picks = ski.pick(feats, {"scenic": 1.0, "speed": 1.0}, zero, zero, [], N * DT, 10)
+    picks = actioncam.pick(feats, {"scenic": 1.0, "speed": 1.0}, zero, zero, [], N * DT, 10)
     scenic = next(p for p in picks if p.kind == "scenic")
     other = next(p for p in picks if p.kind != "scenic")
     assert scenic.end - scenic.start >= 5.0
@@ -76,7 +76,9 @@ def test_scenic_pick_in_a_source_shorter_than_five_seconds_still_works() -> None
     n = 40  # 4 s
     x = np.arange(n) * DT
     peak = np.exp(-(((x - 2.0) / 0.5) ** 2))
-    picks = ski.pick({"beauty": peak}, {"beauty": 1.0}, np.zeros(n), np.zeros(n), [], n * DT, 10)
+    picks = actioncam.pick(
+        {"beauty": peak}, {"beauty": 1.0}, np.zeros(n), np.zeros(n), [], n * DT, 10
+    )
     assert [(p.start, p.end) for p in picks] == [(0.0, 4.0)]
 
 
@@ -112,15 +114,15 @@ def _tel(lift: tuple[float, float], still: tuple[float, float]) -> Telemetry:
 
 
 def _features(monkeypatch: pytest.MonkeyPatch, windows: list[dict]) -> tuple:
-    monkeypatch.setattr(ski, "layer_features", lambda *_a, **_k: {})
+    monkeypatch.setattr(actioncam, "layer_features", lambda *_a, **_k: {})
     src = Path("a.mp4")
-    ctx = ski.SkiContext(
+    ctx = actioncam.ActionCamContext(
         project=Path("p"),
         telemetry={str(src): _tel(lift=(0.0, 30.0), still=(30.0, 45.0))},
         speed_ref=np.linspace(0.0, 60.0, 100),
-        windows={ski._key(src): [{"source": str(src), **w} for w in windows]},
+        windows={actioncam._key(src): [{"source": str(src), **w} for w in windows]},
     )
-    return ski.build_features(src, N, {}, ctx)
+    return actioncam.build_features(src, N, {}, ctx)
 
 
 def _win(start: float, end: float, **tags: int) -> dict:
@@ -131,9 +133,9 @@ def test_friends_never_lift_the_lift_or_still_mask(monkeypatch: pytest.MonkeyPat
     f, mask, friends = _features(monkeypatch, [_win(0.0, 45.0, friends_faces=10)])
     assert friends[: int(45 / DT)].min() == pytest.approx(1.0)  # friends seen strongly
     assert f["vlm"][: int(45 / DT)].max() == 0.0  # but they add nothing on the lift / stop
-    combined = ski.combine(f, {"vlm": 1.0}, mask, friends)
+    combined = actioncam.combine(f, {"vlm": 1.0}, mask, friends)
     assert combined[: int(45 / DT)].max() == 0.0
-    assert ski.effective_mask(mask, friends)[: int(45 / DT)].min() == 1.0
+    assert actioncam.effective_mask(mask, friends)[: int(45 / DT)].min() == 1.0
 
 
 def test_friends_do_not_count_in_standing_or_lift_windows(
@@ -150,7 +152,7 @@ def test_friends_raise_a_moving_moment(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert f["vlm"][int(65 / DT)] == pytest.approx(0.8)
     weights = {"vlm": 0.2, "speed": 0.15}
-    picks = ski.pick(f, weights, mask, friends, [], N * DT, 10)
+    picks = actioncam.pick(f, weights, mask, friends, [], N * DT, 10)
     assert 60.0 <= picks[0].peak_t <= 75.0  # the friends window outranks plain riding
 
 
@@ -175,8 +177,8 @@ def test_old_learned_presets_still_load(home: Path) -> None:
     style = get_style("old")
     assert style.mask_friends == 5.0
     mask, friends = np.array([1.0, 1.0, 0.0]), np.array([1.0, 0.0, 1.0])
-    assert ski.effective_mask(mask, friends, style.mask_friends).tolist() == [1.0, 1.0, 0.0]
-    assert ski.effective_mask(mask, friends, 0).tolist() == [0.0, 0.0, 0.0]  # soft
+    assert actioncam.effective_mask(mask, friends, style.mask_friends).tolist() == [1.0, 1.0, 0.0]
+    assert actioncam.effective_mask(mask, friends, 0).tolist() == [0.0, 0.0, 0.0]  # soft
 
 
 def test_a_removed_taste_weight_scores_as_without_it(
@@ -201,7 +203,7 @@ def test_a_removed_taste_weight_scores_as_without_it(
 
 
 def test_features_live_under_the_action_cam_folder(tmp_path: Path) -> None:
-    assert ski.FEATURES_DIR == "action_cam_features"
+    assert actioncam.FEATURES_DIR == "action_cam_features"
     src = tmp_path / "ride.mp4"
-    got = ski.features_path(tmp_path, src)
+    got = actioncam.features_path(tmp_path, src)
     assert got.parent == tmp_path / "action_cam_features" and got.name.startswith("ride-")

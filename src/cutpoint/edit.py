@@ -274,10 +274,10 @@ def _run_edit(
     with category.footage_vision(vision, ollama_url, ollama_model) as footage:
         if events:
             from cutpoint.analyze import LAYER_STEP  # noqa: PLC0415
-            from cutpoint.events.pipeline import DEFAULT_LAYERS, SKI_LAYERS, preflight  # noqa: PLC0415
+            from cutpoint.events.pipeline import ACTION_CAM_LAYERS, DEFAULT_LAYERS, preflight  # noqa: PLC0415
 
-            ski = _action_cam(style, videos, footage)
-            defaults = SKI_LAYERS if ski else DEFAULT_LAYERS
+            is_cam = _action_cam(style, videos, footage)
+            defaults = ACTION_CAM_LAYERS if is_cam else DEFAULT_LAYERS
             # --skip leaves out the layers of its steps here too (keyframes: no HUD discovery).
             kept = tuple(x for x in defaults if LAYER_STEP.get(x) not in skip)
             event_layers = kept if kept != defaults else None

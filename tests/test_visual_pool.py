@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from conftest import StubTranscriber, media_info, write
-from cutpoint import analyze, cache, jsonout, scorer, ski, telemetry, visual_pool
+from cutpoint import actioncam, analyze, cache, jsonout, scorer, telemetry, visual_pool
 from cutpoint.events import visual as V
 from cutpoint.events import voice as VO
 from cutpoint.pano import director as D
@@ -209,14 +209,14 @@ def test_select_drops_windows_overlapping_a_scored_candidate():
 # --------------------------------------------------------------------------- build
 def _save_part(project: Path, src: Path, feats: dict[str, np.ndarray], mask=None) -> None:
     mask = np.zeros(N) if mask is None else mask
-    ski.save_features(project, src, 0.0, N * DT, feats, mask, np.zeros(N), [])
+    actioncam.save_features(project, src, 0.0, N * DT, feats, mask, np.zeros(N), [])
 
 
 def test_build_action_cam_reads_the_saved_grids(tmp_path, monkeypatch, no_decode):
     src = tmp_path / "GX01.mp4"
     _save_part(tmp_path, src, grids(beauty=bump(N, 40, 0.8), people=bump(N, 200, 0.8, 4)))
     monkeypatch.setattr(telemetry, "cached_speed", lambda _s: steady_speed(N, [(100, 120)]))
-    monkeypatch.setattr(ski, "layer_features", pytest.fail)  # action-cam: saved grids only
+    monkeypatch.setattr(actioncam, "layer_features", pytest.fail)  # action-cam: saved grids only
     crashes = {"crashes": [{"source": str(src), "t0": 195.0, "t1": 197.0, "confidence": 0.2}]}
     got = visual_pool.build(tmp_path, [Part(src, 0, 0.0, N * DT, N)], get_style("action-cam"),
                             [], crashes)  # fmt: skip
@@ -231,7 +231,7 @@ def test_build_action_style_uses_the_visual_layer_and_still_speed(monkeypatch, n
         calls.append((src, n, offset, speed is not None))
         return {"beauty": bump(n, 40, 0.8), "people": np.zeros(n), "group": np.zeros(n)}
 
-    monkeypatch.setattr(ski, "layer_features", layer)
+    monkeypatch.setattr(actioncam, "layer_features", layer)
     monkeypatch.setattr(telemetry, "cached_speed", lambda _s: None)
     got = visual_pool.build(Path("p"), [part()], get_style("sport"), [], None)
     assert [w.kind for w in got] == ["view"] and calls == [(Path("a.mp4"), N, 0.0, False)]
@@ -241,7 +241,7 @@ def test_build_action_style_uses_the_visual_layer_and_still_speed(monkeypatch, n
 
 def test_action_style_nan_speed_keeps_the_real_layer_views(monkeypatch, no_decode):
     """F1: GPS gaps (NaN) and a track shorter than the analysis must not turn the real
-    layer_features grids NaN (ski.pick then finds nothing)."""
+    layer_features grids NaN (actioncam.pick then finds nothing)."""
     t = np.arange(0.0, N * DT, 0.5)
     beauty = np.where(np.abs(t - 40) <= 2, 0.9, 0.0)
     scores = {"beauty_zs": beauty, "group_zs": np.zeros(len(t)), "aesthetic": np.full(len(t), 6.0),
@@ -510,9 +510,9 @@ def test_a_failing_pool_never_fails_the_analysis(home, tmp_path, monkeypatch, ca
 
 def test_load_part_reads_this_runs_grids_while_analyze_holds_them(tmp_path):
     src = tmp_path / "GX01.mp4"
-    with cache.hold_outputs(tmp_path, [ski.FEATURES_DIR]):
+    with cache.hold_outputs(tmp_path, [actioncam.FEATURES_DIR]):
         _save_part(tmp_path, src, grids(beauty=bump(N, 40, 0.8)))
-        assert not ski.features_path(tmp_path, src).exists()  # held back
-        d = ski.load_part(tmp_path, src)
+        assert not actioncam.features_path(tmp_path, src).exists()  # held back
+        d = actioncam.load_part(tmp_path, src)
         assert d is not None and d["features"]["beauty"].max() == pytest.approx(0.8)
-    assert ski.load_part(tmp_path, src) is None  # never committed
+    assert actioncam.load_part(tmp_path, src) is None  # never committed

@@ -148,7 +148,7 @@ class QAThresholds:
     safe_top: float = 0.03
     self_area: float = 0.20
     # the wearer coming in from the bottom only (box reaching the bottom edge, top edge
-    # this low) may be any size: wider framing shows the wearer's arms and skis there
+    # this low) may be any size: wider framing shows the wearer's arms and gear there
     wearer_bottom_y2: float = 0.98
     wearer_bottom_y1: float = 0.60
     occl_zs: float = 0.8
@@ -161,7 +161,7 @@ class QAThresholds:
     # measured from the emitted v360 commands (falls back to the render's model, see tilt)
     tilt_deg: float = 12.0
     # a hand over the lens: grey mean 0.04 with 86 % of the pixels below 0.1 (its edge
-    # frames 0.19 / 61 %, clip median 0.44); the darkest clean frame of a ski day, on a
+    # frames 0.19 / 61 %, clip median 0.44); the darkest clean frame of a snow day, on a
     # dim lift ride (median 0.29), is 0.266 / 48 %: absolute limits alone are too close
     dark_mean: float = 0.22
     dark_px: float = 0.10

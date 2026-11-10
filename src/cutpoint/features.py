@@ -4,7 +4,7 @@ Every style weighs features registered here (:mod:`cutpoint.styles` checks each 
 A ``grid`` feature is a 0-1 signal on the 0.1 s analysis grid; the weighted sum of the grids is
 peak-picked into candidates (:mod:`cutpoint.scorer`). A ``bonus`` feature adds points to a
 candidate's score afterwards (the events rescore). A ``part`` records what a grid feature is
-built from (ski's ``social``: ``social_said`` and ``social_heard``); it cannot be weighted, is
+built from (action-cam's ``social``: ``social_said`` and ``social_heard``); it cannot be weighted, is
 not listed as available and adds no grid of its own.
 
 A feature is *available* when the extra it needs is installed. On Cutpoint lite (no ``events``
@@ -147,7 +147,7 @@ def combine(
     order gives the same bytes. Zero-weight terms are added too, as before.
 
     ``start`` is what the terms are added to. None is ``sum()``'s int 0, as the generic styles
-    summed before the registry: the sum keeps the grids' dtype. Ski passes float64 zeros, as it
+    summed before the registry: the sum keeps the grids' dtype. Action-cam passes float64 zeros, as it
     did: its cached telemetry grids are float32, and each float32 term is then added in float64.
     """
     total: np.ndarray = 0 if start is None else start  # type: ignore[assignment]  # 0 + array
@@ -171,7 +171,7 @@ def to_score(peak: float, weights: Mapping[str, float], avail: Collection[str] |
 
     A renormalised score is capped at 100. A built-in style analysed on lite stays within it:
     every grid is 0-1 and the grids of left-out features are 0, so the peak is at most the
-    divisor. Ski's ``social`` counts in that divisor: it is core, as its ``social_said`` part
+    divisor. Action-cam's ``social`` counts in that divisor: it is core, as its ``social_said`` part
     (transcript laughter) runs on lite, and only its ``social_heard`` part (sound events) is 0
     there. The cap guards what can still pass it: grids and events a full install cached in
     a shared project (the voice and visual layers, ``events.json``) and learned presets. With
@@ -192,8 +192,8 @@ for _f in (
 ):
     register(_f)
 
-# --------------------------------------------------------------------------- ski features
-# The parts of ski's social grid (#556): cutpoint.ski takes the larger of the two. social is
+# --------------------------------------------------------------------------- action-cam features
+# The parts of action-cam's social grid (#556): cutpoint.actioncam takes the larger of the two. social is
 # core, so it counts in the lite divisor: there only social_said runs.
 for _f in (
     Feature("social_said", "transcript", "Laughter written in the transcript", kind="part"),
@@ -206,7 +206,7 @@ for _f in (
     ),
 ):
     register(_f)
-# cutpoint.ski builds these grids; the scorer weighs them like the generic ones (#514 phase 1b).
+# cutpoint.actioncam builds these grids; the scorer weighs them like the generic ones (#514 phase 1b).
 for _f in (
     Feature("airtime", "telemetry", "Time in the air on a jump, from the camera's motion sensors"),
     Feature("crash", "telemetry", "A hard impact followed by a stop, from the motion sensors"),
@@ -233,9 +233,9 @@ for _f in (
     Feature("group", "visual", "A group of people in view", "events"),
 ):
     register(_f)
-# The ski grids in cutpoint.ski's order: the order of the saved action_cam_features arrays and of a
+# The action-cam grids in cutpoint.actioncam's order: the order of the saved action_cam_features arrays and of a
 # candidate's signals, and the first of equal contributions is a pick's kind.
-SKI_FEATURES = (
+ACTION_CAM_FEATURES = (
     "airtime",
     "crash",
     "vlm",
@@ -254,10 +254,10 @@ SKI_FEATURES = (
     "voice",
     "wipeout",
 )
-# Before #514 phase 1b the ski feature voice_laughter was called "laughter", which is the
-# transcript feature for the generic styles. Learned ski presets and saved feature files of
-# that time say "laughter"; ski_names() reads it as voice_laughter.
-SKI_ALIASES = {"laughter": "voice_laughter"}
+# Before #514 phase 1b the action-cam feature voice_laughter was called "laughter", which is the
+# transcript feature for the generic styles. Learned action-cam presets and saved feature files of
+# that time say "laughter"; action_cam_names() reads it as voice_laughter.
+ACTION_CAM_ALIASES = {"laughter": "voice_laughter"}
 # Features that no longer exist. A learned preset saved while they did may still weigh them;
 # styles.load_learned() drops those weights, so they are not counted in the divisor and the
 # preset scores as one without them. ``taste`` was the personal taste head
@@ -265,17 +265,17 @@ SKI_ALIASES = {"laughter": "voice_laughter"}
 REMOVED = frozenset({"taste"})
 
 
-def ski_names[T](named: Mapping[str, T], where: str = "") -> dict[str, T]:
-    """``named`` (ski weights or grids) with the old names (:data:`SKI_ALIASES`) renamed, in
+def action_cam_names[T](named: Mapping[str, T], where: str = "") -> dict[str, T]:
+    """``named`` (action-cam weights or grids) with the old names (:data:`ACTION_CAM_ALIASES`) renamed, in
     place of the old key (the order, and so a score's sum, stay the same). A name given both
     ways keeps the new name's value. ``where`` names the file in the DEBUG line."""
     out: dict[str, T] = {}
     for k, w in named.items():
-        new = SKI_ALIASES.get(k)
+        new = ACTION_CAM_ALIASES.get(k)
         if new is None:
             out[k] = w
             continue
-        logger.debug("%s: ski feature %r is now called %r", where or "weights", k, new)
+        logger.debug("%s: action-cam feature %r is now called %r", where or "weights", k, new)
         if new not in named:
             out[new] = w
     return out

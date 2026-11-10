@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from conftest import messages
-from cutpoint import analyze, extras, features, reset_state, scorer, ski, styles
+from cutpoint import actioncam, analyze, extras, features, reset_state, scorer, styles
 from cutpoint.events import scoring
 from cutpoint.features import Feature
 from cutpoint.styles import STYLES, get_style, load_learned
@@ -33,15 +33,15 @@ def test_builtin_style_weights_are_registered(name):
 
 
 def test_every_ski_feature_is_registered():
-    """refmatch fits weights over ski.FEATURES, so a learned ski preset may name any of them."""
-    assert set(ski.FEATURES) <= set(features.REGISTRY)
-    assert features.SKI_ALIASES["laughter"] in features.REGISTRY
+    """refmatch fits weights over actioncam.FEATURES, so a learned ski preset may name any of them."""
+    assert set(actioncam.FEATURES) <= set(features.REGISTRY)
+    assert features.ACTION_CAM_ALIASES["laughter"] in features.REGISTRY
 
 
 def test_learned_style_with_ski_features_loads(tmp_path):
     path = write_style(
         tmp_path,
-        {"name": "mine", "base": "action-cam", "weights": dict.fromkeys(ski.FEATURES, 0.1)},
+        {"name": "mine", "base": "action-cam", "weights": dict.fromkeys(actioncam.FEATURES, 0.1)},
     )
     assert load_learned(path).weights["wipeout"] == 0.1
 
@@ -200,22 +200,24 @@ def test_ski_score_is_renormalised_like_the_other_styles():
 
 
 def test_ski_features_come_from_the_registry_in_the_grid_order():
-    assert ski.FEATURES == features.SKI_FEATURES
-    assert all(features.get(f).kind == "grid" for f in ski.FEATURES)
+    assert actioncam.FEATURES == features.ACTION_CAM_FEATURES
+    assert all(features.get(f).kind == "grid" for f in actioncam.FEATURES)
     assert not features.REMOVED & set(features.REGISTRY)
-    assert "laughter" not in ski.FEATURES and "laughter" not in STYLES["action-cam"].weights
+    assert "laughter" not in actioncam.FEATURES and "laughter" not in STYLES["action-cam"].weights
 
 
-def test_ski_names_renames_in_place_and_prefers_the_new_name(caplog):
+def test_action_cam_names_renames_in_place_and_prefers_the_new_name(caplog):
     with caplog.at_level(logging.DEBUG, logger="cutpoint.features"):
-        got = features.ski_names({"airtime": 0.1, "laughter": 0.2, "voice": 0.3}, "mine.json")
+        got = features.action_cam_names(
+            {"airtime": 0.1, "laughter": 0.2, "voice": 0.3}, "mine.json"
+        )
     assert list(got.items()) == [("airtime", 0.1), ("voice_laughter", 0.2), ("voice", 0.3)]
-    assert "mine.json: ski feature 'laughter' is now called 'voice_laughter'" in caplog.text
-    both = features.ski_names({"laughter": 0.2, "voice_laughter": 0.4})
+    assert "mine.json: action-cam feature 'laughter' is now called 'voice_laughter'" in caplog.text
+    both = features.action_cam_names({"laughter": 0.2, "voice_laughter": 0.4})
     assert both == {"voice_laughter": 0.4}
 
 
-def test_learned_ski_preset_with_the_old_laughter_name_scores_as_before(tmp_path, caplog):
+def test_learned_action_cam_preset_with_the_old_laughter_name_scores_as_before(tmp_path, caplog):
     """An older preset says "laughter": it is voice_laughter, in its place, without a warning."""
     path = write_style(
         tmp_path, {"name": "mine", "base": "action-cam", "weights": {"laughter": 0.6}}
@@ -240,8 +242,8 @@ def test_old_ski_features_file_reads_laughter_as_voice_laughter(tmp_path):
     """ski_features saved before the rename load under the new name (refmatch, mix)."""
     grids = {k: np.full(4, i / 4) for i, k in enumerate(("airtime", "laughter", "voice"))}
     src = tmp_path / "a.mp4"
-    ski.save_features(tmp_path, src, 0.0, 0.4, grids, np.zeros(4), np.zeros(4), [])
-    (d,) = ski.load_project_features(tmp_path)
+    actioncam.save_features(tmp_path, src, 0.0, 0.4, grids, np.zeros(4), np.zeros(4), [])
+    (d,) = actioncam.load_project_features(tmp_path)
     assert list(d["features"]) == ["airtime", "voice_laughter", "voice"]
     assert d["features"]["voice_laughter"].tolist() == [0.25] * 4
 
@@ -260,7 +262,7 @@ def test_social_is_core_and_records_its_two_parts():
 def test_parts_are_not_available_weighted_or_ski_grids(installed):
     parts = set(features.names("part"))
     assert not parts & features.available(installed)
-    assert not parts & set(features.names("grid")) and not parts & set(ski.FEATURES)
+    assert not parts & set(features.names("grid")) and not parts & set(actioncam.FEATURES)
     with pytest.raises(ValueError, match="'social_said'"):
         styles.validate("x", {"social_said": 0.1})
     w = {"airtime": 0.5, "social_heard": 0.5}  # a hand-edited preset: an unknown weight
@@ -283,8 +285,8 @@ def test_lite_ski_peak_tops_out_at_exactly_100():
     assert "social" in lite and "social" not in features.dropped(w, lite)
     assert features.divisor(w, lite) == pytest.approx(0.72)
     n = 10
-    grids = {k: np.full(n, 1.0 if k in lite else 0.0) for k in ski.FEATURES}
-    peak = float(scorer.ski_combined(grids, w, np.ones(n)).max())
+    grids = {k: np.full(n, 1.0 if k in lite else 0.0) for k in actioncam.FEATURES}
+    peak = float(scorer.action_cam_combined(grids, w, np.ones(n)).max())
     # to_score's quotient before its cap; the grid sum and the divisor differ by one ulp
     # (sequential float64 sum, Python's compensated sum()), which the rounding drops.
     assert peak / features.divisor(w, lite) == pytest.approx(1.0, rel=1e-12, abs=0)
@@ -334,8 +336,8 @@ def _social_ski_run(tmp_path: Path, monkeypatch) -> tuple[list[analyze.Candidate
         "people": _bump(72.0, 0.9),
         "group": _bump(72.0, 0.4),
     }
-    monkeypatch.setattr(ski, "layer_features", lambda *_a, **_k: dict(layers))
-    key = ski._key(src)
+    monkeypatch.setattr(actioncam, "layer_features", lambda *_a, **_k: dict(layers))
+    key = actioncam._key(src)
     heard = [
         {"source": str(src), "start": 80.0, "end": 81.5, "label": "Laughter", "confidence": 0.09},
         {"source": str(src), "start": 92.0, "end": 93.0, "label": "Cheering", "confidence": 0.2},
@@ -343,7 +345,7 @@ def _social_ski_run(tmp_path: Path, monkeypatch) -> tuple[list[analyze.Candidate
     tags = {"jump_air": 6, "scenic_vista": 8, "friends_faces": 7}
     window = {"source": str(src), "start": 64.0, "end": 76.0, "tags": tags}
     crash = {"source": str(src), "id": "c1", "t0": 50.0, "t1": 51.0, "confidence": 0.4}
-    ctx = ski.SkiContext(
+    ctx = actioncam.ActionCamContext(
         project=tmp_path / "proj",
         telemetry={str(src): tel},
         speed_ref=np.linspace(0.0, 40.0, 100),
@@ -356,7 +358,7 @@ def _social_ski_run(tmp_path: Path, monkeypatch) -> tuple[list[analyze.Candidate
     ps = analyze.PartSignals(n, sig, [], [], [], [], [])
     res = analyze.SourceResult(src, None, 0.0, n / 10, [], [], None, ps)
     cands = analyze.pick_candidates(res, STYLES["action-cam"], None, {}, ctx)
-    saved = ski.load_part(ctx.project, src)
+    saved = actioncam.load_part(ctx.project, src)
     assert saved is not None
     return cands, saved
 
@@ -401,10 +403,10 @@ def test_full_install_action_cam_output_is_pinned(tmp_path, monkeypatch):
             (22.5, 27.5, 25.0),
         ],
         "signals": "c616d5845e825a19b535bf0c759a3c59f975e42127a4af176b6307651062ae1e",
-        "npz_keys": [*ski.FEATURES, "friends_vlm"],
+        "npz_keys": [*actioncam.FEATURES, "friends_vlm"],
         "npz": "ee9c92a531d59a301912d09dd7645416fb29433f61857e621989ba5209f1f4d9",
     }
-    assert ski.features_path(tmp_path, Path("ride.mp4")).name == "ride-919e6a6c.npz"
+    assert actioncam.features_path(tmp_path, Path("ride.mp4")).name == "ride-919e6a6c.npz"
     assert sorted(features.available()) == [  # settings.features_available
         "airtime", "beauty", "carve", "continuity", "crash", "event_laughter",
         "event_reactions", "event_scream", "event_types", "faces", "group", "laughter",

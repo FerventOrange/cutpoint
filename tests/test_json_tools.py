@@ -64,7 +64,7 @@ def mix_project(home, tmp_path, monkeypatch) -> Path:
         out.write_bytes(b"jpg")
         return out
 
-    monkeypatch.setattr(mix.ski, "load_project_features", lambda _p: [{}])
+    monkeypatch.setattr(mix.actioncam, "load_project_features", lambda _p: [{}])
     monkeypatch.setattr(mix, "part_candidates", cands)
     monkeypatch.setattr(mix, "load_crashes", lambda _p: None)
     monkeypatch.setattr(mix, "_runs_index", lambda _p, _k: ([], {}))

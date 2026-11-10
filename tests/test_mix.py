@@ -270,7 +270,7 @@ def test_content_qa_flags_each_failed_check() -> None:
 @pytest.fixture
 def one_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
     """run_mix on a project whose only candidate is a 6 s run in a.mp4 (features faked)."""
-    monkeypatch.setattr(mix.ski, "load_project_features", lambda _p: [{}])
+    monkeypatch.setattr(mix.actioncam, "load_project_features", lambda _p: [{}])
     monkeypatch.setattr(mix, "part_candidates", lambda _d: [_c("run", 50, 0.9)])
     monkeypatch.setattr(mix, "_runs_index", lambda _p, _k: ([], {}))
     monkeypatch.setattr(mix, "_embed", lambda _c: None)
@@ -345,7 +345,7 @@ def test_run_mix_matches_previous_and_telemetry_sources_spelt_differently(
     a.write_bytes(b"")
     b.write_bytes(b"")
     cands = [_c("run", 50, 0.9, src=str(a)), _c("run", 50, 0.8, src=str(b))]
-    monkeypatch.setattr(mix.ski, "load_project_features", lambda _p: [{}])
+    monkeypatch.setattr(mix.actioncam, "load_project_features", lambda _p: [{}])
     monkeypatch.setattr(mix, "part_candidates", lambda _d: cands)
     monkeypatch.setattr(mix, "_embed", lambda _c: None)
     alias_a, alias_b = str(_alias(a, spelling)), str(_alias(b, spelling))
@@ -371,7 +371,7 @@ def test_run_mix_rerun_reads_relative_sources_of_the_segments_file_against_its_f
     (tmp_path / "sub").mkdir()
     (tmp_path / "elsewhere").mkdir()
     (tmp_path / "sub" / "a.mp4").write_bytes(b"")
-    monkeypatch.setattr(mix.ski, "load_project_features", lambda _p: [{}])
+    monkeypatch.setattr(mix.actioncam, "load_project_features", lambda _p: [{}])
     monkeypatch.setattr(
         mix, "part_candidates", lambda _d: [_c("run", 50, 0.9, src=str(tmp_path / "sub" / "a.mp4"))]
     )

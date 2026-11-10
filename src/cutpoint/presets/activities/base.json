@@ -120,7 +120,7 @@
   ],
   "vl": {
     "video": "action",
-    "gear": "pole or handlebar",
+    "gear": "a pole, selfie stick, handlebar or board",
     "scenery": "the ground, water, sky and trees",
     "low_info": "only ground, water or sky"
   },
@@ -128,26 +128,26 @@
     "recording": "first-person action-cam recording (helmet, chest or handlebar mount)",
     "video": "first-person action-cam video",
     "audio": "wind noise at speed, the rider and friends nearby",
-    "describe": "the terrain, jumps (take-off, air, landing), falls, friends on camera and what they do, lift or shuttle rides, standing around or talking, indoor scenes and views",
-    "hype": "0-1 standing around, riding a lift, indoors; 3-4 ordinary cruising; 6-7 fast riding, spray from a hard turn, tight trees, a small jump; 8-10 a big jump, a crash or fall, a spectacular line, a near miss.",
+    "describe": "the terrain, jumps (take-off, air, landing), falls, friends on camera and what they do, rides between runs (lift, gondola, car, boat), standing around or talking, indoor scenes and views",
+    "hype": "0-1 standing around, in transit between rides (a lift, gondola, car or boat), indoors; 3-4 ordinary cruising; 6-7 fast riding, spray of snow, water, dirt or sand, tight obstacles or trees, a small jump; 8-10 a big jump, a crash or fall, a spectacular line, a near miss.",
     "edit": "highlight edit",
-    "idle": "lifts, standing around and indoor scenes",
+    "idle": "rides between runs, standing around and indoor scenes",
     "rate_edit": "highlight edit",
-    "rate_high": "jumps, crashes, spray from a hard turn, fast riding, tight trees, friends doing something funny, a stunning view",
-    "rate_low": "riding a lift, standing around, indoors, the ground or the sky only",
+    "rate_high": "jumps, crashes, spray of snow, water, dirt or sand, fast riding, tight obstacles or trees, friends doing something funny, a stunning view",
+    "rate_low": "in transit between rides, standing around, indoors, the ground or the sky only",
     "retry_high": "jumps, crashes and fast riding",
-    "retry_low": "lifts, standing around and indoor scenes",
+    "retry_low": "rides between runs, standing around and indoor scenes",
     "tags": {
       "jump_air": "the rider is airborne",
       "crash_fall": "someone falls or crashes",
-      "powder_spray": "snow, dirt or water spraying from a hard turn",
-      "fast_groomer": "fast riding on smooth, open ground",
-      "trees": "riding between trees",
+      "spray": "spray of snow, water, dirt or sand thrown up by a hard turn or landing",
+      "fast_open": "fast riding on smooth, open ground or water",
+      "trees": "riding through tight obstacles or trees",
       "scenic_vista": "a wide view worth showing",
       "friends_faces": "other people clearly visible, faces, interacting with the camera",
-      "chairlift": "riding a lift, gondola or shuttle",
+      "transit": "in transit between runs: a lift, gondola, car, boat or any ride",
       "standing_talking": "stopped, standing around or talking",
-      "lodge": "indoors, a building, a restaurant"
+      "indoor_break": "indoors during a break: a building, a restaurant, a cabin"
     }
   },
   "vocabulary": [

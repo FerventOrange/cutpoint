@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 import pytest
 
-import cutpoint.ski as ski
+import cutpoint.actioncam as actioncam
 from conftest import HOP, StubTranscriber, add_profile, run_json, set_config, write
 from cutpoint import (
     activity,
@@ -865,7 +865,7 @@ def test_ski_features_are_prepared_again_after_the_layers(run, monkeypatch, laye
     """F5b: ski candidates come from the feature grid; it is built again once this run's
     layers wrote events.json, and only once without layers."""
     calls = []
-    monkeypatch.setattr(ski, "prepare", lambda *a, **k: calls.append(a) or SimpleNamespace())
+    monkeypatch.setattr(actioncam, "prepare", lambda *a, **k: calls.append(a) or SimpleNamespace())
     monkeypatch.setattr(analyze, "probe", lambda path: SimpleNamespace(duration=60.0))
     picked = []
 
@@ -1319,9 +1319,9 @@ def test_a_cancel_during_the_final_commit_leaves_every_result_file_new(run, monk
 def test_action_cam_candidates_are_picked_with_the_projects_activity_prompts(
     run, monkeypatch, crashes, want
 ):
-    """F3: the ranking step scores the beauty / people features (``ski.layer_features``,
+    """F3: the ranking step scores the beauty / people features (``actioncam.layer_features``,
     ``frame_scores``) with the captions of the activity.json the crash step wrote."""
-    monkeypatch.setattr(ski, "prepare", lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr(actioncam, "prepare", lambda *a, **k: SimpleNamespace())
     monkeypatch.setattr(analyze, "probe", lambda path: SimpleNamespace(duration=60.0))
     seen = []
 
@@ -1339,18 +1339,18 @@ def test_action_cam_candidates_are_picked_with_the_projects_activity_prompts(
 @pytest.mark.parametrize("cancel", [False, True])
 def test_ski_features_and_telemetry_json_are_written_at_the_end(run, monkeypatch, cancel):
     """The stale features go and the new ones and telemetry.json come only when the run
-    completes; the second ski.prepare reads this run's crashes.json from memory."""
+    completes; the second actioncam.prepare reads this run's crashes.json from memory."""
     for name in ("telemetry.json", "action_cam_features/old-0123abcd.npz"):
         write(run.proj / name, OLD_FILES[name])
     monkeypatch.setattr(analyze, "probe", lambda path: SimpleNamespace(duration=60.0))
-    monkeypatch.setattr(ski, "extract", lambda src, duration: None)  # no telemetry
+    monkeypatch.setattr(actioncam, "extract", lambda src, duration: None)  # no telemetry
     seen = []
 
     def pick(r, style, max_candidates, timings, ctx):
         seen.append((len(ctx.crashes), (run.proj / "crashes.json").exists()))
         grid = np.zeros(5, np.float32)
-        ski.save_features(ctx.project, r.source, 0.0, 60.0, {"speed": grid}, grid, grid, [])
-        assert not ski.features_path(run.proj, r.source).exists()
+        actioncam.save_features(ctx.project, r.source, 0.0, 60.0, {"speed": grid}, grid, grid, [])
+        assert not actioncam.features_path(run.proj, r.source).exists()
         return r.candidates
 
     monkeypatch.setattr(analyze, "pick_candidates", pick)
@@ -1365,9 +1365,9 @@ def test_ski_features_and_telemetry_json_are_written_at_the_end(run, monkeypatch
             k: OLD_FILES[k] for k in ("telemetry.json", "action_cam_features/old-0123abcd.npz")
         }
         return
-    new = ski.features_path(run.proj, run.video)
+    new = actioncam.features_path(run.proj, run.video)
     assert "action_cam_features/old-0123abcd.npz" not in got
-    assert ski.load_features(new)["features"]["speed"].tolist() == [0.0] * 5
+    assert actioncam.load_features(new)["features"]["speed"].tolist() == [0.0] * 5
     assert json.loads(got["telemetry.json"])["sources"] == {str(run.video): None}
 
 

@@ -130,19 +130,21 @@ def test_the_default_wording_is_the_floors_with_the_same_tags(tmp_path: Path):
     )
     text = "\n".join(texts)
     words = re.sub(rf"\b({'|'.join(vw.ACTION_CAM_TAGS)})\b", "", text)  # but the tag keys
-    for word in ("ski", "powder", "groomed", "chairlift", "lodge", "GoPro"):
+    for word in ("ski", "powder", "groomed", "transit", "lodge", "GoPro"):
         assert word not in words, word
     for tag in vw.ACTION_CAM_TAGS:  # the stored tag keys stay the same for every activity
         assert re.search(rf"\b{tag}\b", text), tag
     assert "a highlight edit" in text
-    assert "powder_spray (snow, dirt or water spraying from a hard turn)" in text
+    assert "spray (spray of snow, water, dirt or sand thrown up by a hard turn or landing)" in text
     assert _action_cam_texts(tmp_path, _wording(HOP)) == texts
 
 
 def test_a_profile_words_the_window_prompt(tmp_path: Path):
     text = "\n".join(_action_cam_texts(tmp_path, _wording(SLED)))
-    assert "a sledding highlight edit" in text and "chairlift (on a cable car)" in text
-    assert "powder_spray (snow, dirt or water spraying from a hard turn)" in text  # the floor's
+    assert "a sledding highlight edit" in text and "transit (on a cable car)" in text
+    assert (
+        "spray (spray of snow, water, dirt or sand thrown up by a hard turn or landing)" in text
+    )  # the floor's
 
 
 # -- #596: the generic prompt asks about kills only for footage with kills --

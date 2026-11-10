@@ -531,7 +531,7 @@ test('rows the code filled in to reach the asked length are marked Auto-filled',
 
 test('rows the code moved or added to spread the kinds are marked Auto-spread', async (t) => {
   const rows = diff(AFTER).map((r, i) => ({ ...r, auto: i === 0 ? 'spread' : i === 1 }));
-  const m = await chatPage(t, { routes: turnRoutes([proposal({ n: 0, diff: rows, summary: 'Add two. Spread 2 funny clips between the skiing runs.' })]) });
+  const m = await chatPage(t, { routes: turnRoutes([proposal({ n: 0, diff: rows, summary: 'Add two. Spread 2 funny clips between the riding runs.' })]) });
   await m.send('mix in some funny moments');
   await m.tick(1000);
   const marks = [...m.d.querySelectorAll('#propList .prop-mark.auto')].map((e) => e.textContent);

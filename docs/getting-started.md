@@ -117,7 +117,7 @@ uv tool install "cutpoint[events,gpu] @ URL" --torch-backend cu126 --python 3.12
 ```
 
 Without `--torch-backend`, uv picks a torch build that may not match the machine. The `--lite`
-equivalent is `"cutpoint[ui,keyring,ski] @ URL"` (no `--torch-backend`). The runtime hints print
+equivalent is `"cutpoint[ui,keyring] @ URL"` (no `--torch-backend`). The runtime hints print
 this form with the extras in use.
 
 To install into your own virtual environment instead, use `uv pip` or `pip`. For CUDA torch add
@@ -224,7 +224,7 @@ cleaned up: [`proxy`](commands.md#proxy) and [`login`](commands.md#login).
 
 | Extra | Adds |
 |---|---|
-| `ui`, `ski`, `keyring` | Aliases that add nothing: the browser workspace (`cutpoint ui`), action-cam telemetry (GoPro GPS/IMU, Insta360 X3 IMU, the 360 module) and saving an AI Chat API key in the system keyring are part of the core install. The names stay so `cutpoint[ui]` and `--extra ski` keep working. |
+| `ui`, `keyring` | Aliases that add nothing: the browser workspace (`cutpoint ui`), action-cam telemetry (GoPro GPS/IMU, Insta360 X3 IMU, the 360 module) and saving an AI Chat API key in the system keyring are part of the core install. The names stay so `cutpoint[ui]` keeps working. |
 | `events` | `cutpoint events` and crash detection: torch and torchvision (CUDA 12.6 builds on Windows and Linux), PANNs, RapidOCR, open_clip. The venv grows to about 7 GB, including about 3.6 GB of CUDA wheels even without a GPU. |
 | `gpu` | CUDA libraries (cuBLAS, cuDNN, about 3.6 GB) so Whisper transcribes on an NVIDIA GPU. Without it Whisper uses the CPU. |
 | `all` | `events` and `gpu`. |
@@ -471,7 +471,7 @@ On Linux: `uv run cutpoint analyze ~/Videos/clip.mp4 --style gaming --out my-edi
 4. `assemble` joins what is left, in filename order, into `final.mp4` with `final.srt`
    subtitles (`--format fcpxml` or `otio` writes that timeline for an editor instead).
 
-Styles are `gaming`, `action`, `sport`, `funny`, `commentary` and `action-cam` (formerly `ski`); see
+Styles are `gaming`, `action`, `sport`, `funny`, `commentary` and `action-cam`; see
 [Configuration](configuration.md#styles). More recipes: [Workflows](workflows/README.md).
 
 Next: [Using Cutpoint from an agent](agents.md), or [Troubleshooting](troubleshooting/README.md)

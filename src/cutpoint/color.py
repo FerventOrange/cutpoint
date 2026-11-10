@@ -91,7 +91,7 @@ GOOD_LEVELS = 0.03
 # A clip that looks underwater (the gate of ``underwater``, and plain ``auto``'s hint): the
 # frames' mean red below UNDERWATER_RG of their mean green and UNDERWATER_RB of their mean blue,
 # and the green above UNDERWATER_GB of the blue. On the #489 windows the six scuba clips had
-# R/G 0.60-0.73, the others 0.80 and up but for a blue-sky ski clip (R/G 0.66), which the G/B
+# R/G 0.60-0.73, the others 0.80 and up but for a blue-sky snow clip (R/G 0.66), which the G/B
 # rule leaves out (G/B 0.72; scuba 0.86 and up). Water bluer than that (open ocean) does not
 # pass either.
 UNDERWATER_RG = 0.77
