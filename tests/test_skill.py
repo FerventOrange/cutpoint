@@ -158,7 +158,7 @@ def test_skill_lists_every_kind():
 
 def test_skill_style_list_matches_styles():
     text = " ".join(_skill_text().split())
-    m = re.search(r"Style \(`--style`.*?Pick (.*?); anything else", text)
+    m = re.search(r"Style \(`--style`.*?Pick (.*?)\.", text)
     assert m, "the skill's style sentence is missing"
     assert set(re.findall(r"`([^`]+)`", m.group(1))) == set(STYLES)
 

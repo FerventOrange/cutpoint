@@ -10,6 +10,12 @@ from the browser workspace or from the command line. All analysis runs on your o
 no API credits are spent on video, and your original files are never changed. Hosted models are
 optional and off by default.
 
+Cutpoint aims to need nothing but your footage. It is meant to detect what is in the video
+(the kind of footage, the activity and the moments) and score from that, so you do not have to
+say what you recorded. Settings such as the style are overrides, not requirements. Today
+`--style auto` is opt-in and the vision rating is off by default; the goal is to make both
+automatic. What you ask for, such as funny moments or a length, steers the scoring.
+
 [Are you an AI agent? Start here](https://github.com/FerventOrange/cutpoint/blob/main/AGENTS.md)
 
 (Installed from PyPI? Run `cutpoint guide`.)
