@@ -350,6 +350,7 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
                 use_scenes=False,
                 batch_size=a.batch_size,
                 crash_moments=False,  # 360 projects: crashes are no moments (#486)
+                telemetry_fallback=False,  # 360 footage stays action-cam (#939)
             )
         timings["analyze_s"] = round(time.perf_counter() - t1, 1)
         if a.no_events:

@@ -2412,6 +2412,43 @@ def has_telemetry(src: Path, timeout: float = 60) -> bool:
     return any(s.get("codec_tag_string") == "gpmd" for s in info.get("streams") or [])
 
 
+# The --json warning of action-cam sources without camera telemetry (#939).
+NO_TELEMETRY_WARNING = "action_cam_no_telemetry"
+
+
+def _no_telemetry_fallback(style: Style, sources: Sequence[Path]) -> tuple[Style, dict[str, str]]:
+    """The ``action`` style an action-cam ``style`` falls back to when no source has camera
+    telemetry (with the ``--must-include-crash`` of ``style``), and the
+    ``settings.style_fallback`` record; logs a WARNING and the ``--json`` warning
+    :data:`NO_TELEMETRY_WARNING` naming every source."""
+    from cutpoint.styles import get_style  # noqa: PLC0415
+
+    used = replace(get_style("action"), must_include_crash=style.must_include_crash)
+    named = "action-cam" if style.name == ACTION_CAM else f"{style.name} (an action-cam style)"
+    message = (
+        f"No camera telemetry in any source; {named} needs GoPro or Insta360 X3 telemetry, "
+        f"so the {used.name} style was used. Give --style {used.name} (or auto) to choose it"
+    )
+    logger.warning("%s", message)
+    jsonout.warn(NO_TELEMETRY_WARNING, message, sources)
+    return used, {"from": style.name, "reason": "no telemetry"}
+
+
+def _warn_missing_telemetry(missing: Sequence[Path]) -> None:
+    """Warn (WARNING and the ``--json`` warning :data:`NO_TELEMETRY_WARNING`) of the sources
+    of an action-cam analysis without camera telemetry, or whose telemetry could not be read:
+    their candidates come from sound, speech and the visual features alone. Given once per
+    ``--json`` command: its re-rank (``360 analyze``, ``edit --events``) adds no second one."""
+    if not missing or jsonout.has_warning(NO_TELEMETRY_WARNING, missing):
+        return
+    message = (
+        f"{len(missing)} source(s) have no camera telemetry (or it could not be read) and "
+        "are scored from sound, speech and visual features only"
+    )
+    logger.warning("%s", message)
+    jsonout.warn(NO_TELEMETRY_WARNING, message, missing)
+
+
 def _cuda() -> bool:
     """Whether torch sees a CUDA GPU; False when torch itself fails to load (a broken
     install, a missing DLL), so the analysis goes on without the GPU-only steps."""
@@ -3205,6 +3242,7 @@ def analyze(
     crash_moments: bool = True,
     footage: category.FootageVision | None = None,
     vision_time_share: float | None = None,
+    telemetry_fallback: bool = True,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -3276,6 +3314,11 @@ def analyze(
             (shared with its own detection; not closed here). None: one of this run.
         vision_time_share: The vision step's time cap, a share of the analysis before it
             (:func:`vision_budget`); None = ``vision_time_share`` in config.json.
+        telemetry_fallback: An action-cam ``style`` (built-in or a style file over it) whose
+            sources all lack camera telemetry (:func:`has_telemetry`) runs as ``action``
+            instead, recorded as ``settings.style_requested`` and ``settings.style_fallback``
+            with an ``action_cam_no_telemetry`` warning (#939). False (``360 analyze``): the
+            style runs as given.
 
     Returns:
         Path of the written highlights.json.
@@ -3307,6 +3350,7 @@ def analyze(
             crash_moments=crash_moments,
             footage=footage,
             vision_time_share=vision_time_share,
+            telemetry_fallback=telemetry_fallback,
         )
 
 
@@ -3337,6 +3381,7 @@ def _analyze(
     crash_moments: bool,
     footage: category.FootageVision | None,
     vision_time_share: float | None,
+    telemetry_fallback: bool,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
@@ -3357,6 +3402,17 @@ def _analyze(
     elif detection is not None and not detection.get("fallback"):  # a re-run: as decided
         stored = detection.get("category")
         cat = stored if stored in category.CATEGORIES else None
+    # action-cam without any telemetry: the action style, decided before the OCR prefetch, the
+    # scene setting and the layer plan, which all follow the style
+    style_fallback: dict[str, str] | None = None
+    if (
+        auto is None
+        and detection is None
+        and telemetry_fallback
+        and style.kind == ACTION_CAM
+        and not any(has_telemetry(s) for s in sources)
+    ):
+        style, style_fallback = _no_telemetry_fallback(style, sources)
     with (
         folders.output_dir(out_dir),  # a failed run leaves no empty project folder behind
         runstate.project_ready(out_dir),  # the run lock of a new project, now it exists
@@ -3380,6 +3436,7 @@ def _analyze(
             durations = {str(s): probe(remap_source(s)).duration for s in sources}
             cam_ctx = actioncam.prepare(sources, durations, out_dir)
             telemetry_s = round(time.perf_counter() - t0, 2)
+            _warn_missing_telemetry([s for s in sources if cam_ctx.telemetry[str(s)] is None])
         tr = Transcriber(model=model, language=language)
 
         def read_checked(src: Path, offset: float) -> Callable[..., Any] | None:
@@ -3557,6 +3614,12 @@ def _analyze(
                 "recover": recover,
                 **({} if crash_moments else {"crash_moments": False}),  # 360 analyze
                 **({"style_requested": AUTO} if detection_rec is not None else {}),
+                # #939: an action-cam style without telemetry ran as `style` (action)
+                **(
+                    {"style_requested": style_fallback["from"], "style_fallback": style_fallback}
+                    if style_fallback is not None
+                    else {}
+                ),
                 # --ocr-det-skip: `cutpoint events` reads HUD text as this run did (only when on)
                 **({"ocr_det_skip": True} if ocr_det_skip else {}),
             },
@@ -3919,7 +3982,15 @@ def reanalyze(project: Path) -> Path:
         )
     st = hl.get("settings", {})
     inputs = st.get("inputs") or [s["path"] for s in hl["sources"]]
+    pano = (project / PANO_FILE).is_file()
     style = _recorded_style(hl)
+    requested = st.get("style_requested")
+    if isinstance(st.get("style_fallback"), dict) and isinstance(requested, str):
+        # an action-cam style that fell back to action (#939): asked for again, so the
+        # telemetry probe decides as it did (or picks it up once the sources have it)
+        from cutpoint.styles import get_style  # noqa: PLC0415
+
+        style = replace(get_style(requested), must_include_crash=style.must_include_crash)
     total = (hl.get("timings") or {}).get("total_s")
     # --style auto: the style it chose, and its decision kept (never detected again)
     detection = hl.get("detection") if st.get("style_requested") == AUTO else None
@@ -3944,7 +4015,8 @@ def reanalyze(project: Path) -> Path:
         detection=detection if isinstance(detection, dict) else None,
         ocr_det_skip=st.get("ocr_det_skip") is True,
         # off for 360 projects (pano.json: also one analysed before crash_moments was recorded)
-        crash_moments=st.get("crash_moments") is not False and not (project / PANO_FILE).is_file(),
+        crash_moments=st.get("crash_moments") is not False and not pano,
+        telemetry_fallback=not pano,  # 360 projects stay action-cam
     )
 
 

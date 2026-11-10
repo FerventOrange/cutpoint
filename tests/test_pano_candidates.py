@@ -335,7 +335,10 @@ def test_360_analyze_plans_paths_into_the_envelope_and_timings(
     monkeypatch.setattr(pipeline, "run_events", lambda *a, **k: order.append("events"))
     monkeypatch.setattr("cutpoint.crash.dense_needs_run", lambda sources: False)
     monkeypatch.setattr(VW, "run_layer", lambda clips, force=False, handoff=None: {})
-    monkeypatch.setattr(analyze_mod, "analyze", lambda *a, **k: order.append("analyze"))
+    given: list[dict] = []
+    monkeypatch.setattr(
+        analyze_mod, "analyze", lambda *a, **k: order.append("analyze") or given.append(k)
+    )
     monkeypatch.setattr(analyze_mod, "reanalyze_if_reachable", lambda project: None)
     monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "action-cam")
     monkeypatch.setattr("cutpoint.styles.get_style", lambda name: name)
@@ -362,6 +365,7 @@ def test_360_analyze_plans_paths_into_the_envelope_and_timings(
         cli.cmd_analyze(args)
     assert order == (["analyze", "paths"] if no_events else ["analyze", "events", "paths"])
     assert res.outputs["candidate_paths"] == stats
+    assert given[0]["telemetry_fallback"] is False  # 360 stays action-cam (#939)
     timings = json.loads((tmp_path / "pano_timings.json").read_text(encoding="utf-8"))
     assert timings["paths_s"] == 1.5
 

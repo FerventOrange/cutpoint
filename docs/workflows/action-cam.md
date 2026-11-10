@@ -26,8 +26,14 @@ cutpoint assemble projects/trip/clips --loudnorm
 - orders clips by start time (GPS time, else the camera clock) and splits the day into runs at
   lift segments and gaps over 4 minutes.
 
-Footage without telemetry (phones, other cameras) is analysed from audio, speech and model
-features only: no speed, airtime or masking.
+Action-cam needs GoPro or Insta360 X3 telemetry. When no source has any (phones, other
+cameras), `analyze` and `edit` use the `action` style instead, with a WARNING and an
+`action_cam_no_telemetry` warning; `highlights.json` records `style` `action`,
+`settings.style_requested` (the style you gave) and `settings.style_fallback`. Give
+`--style action` (or `auto`) to choose it yourself. A project where only some sources have
+telemetry stays action-cam: the sources without it (or whose telemetry could not be read) are
+scored from audio, speech and model features only, with no speed, airtime or masking, and the
+same warning names them. `360 analyze` never falls back.
 
 ## Crashes
 
