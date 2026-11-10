@@ -96,9 +96,11 @@ from cutpoint.transcribe import (
     Segment,
     Transcriber,
     cached_transcript,
+    default_model,
     filter_hallucinations,
     flat_markers,
     flat_words,
+    is_fallback,
     record_transcript,
     split_markers,
     transcript_name,
@@ -348,19 +350,17 @@ def _loudness(wav: Path, cdir: Path) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _transcript(
-    wav: Path, cdir: Path, tr: Transcriber, on_progress: Callable[[float], None] | None = None
+    wav: Path,
+    cdir: Path,
+    tr: Transcriber,
+    on_progress: Callable[[float], None] | None = None,
+    src: Path | None = None,
 ) -> list[Segment]:
+    """The transcript of the WAV ``wav`` (cached in ``cdir``); a CPU fallback's, made or reused,
+    adds ``src`` (default ``cdir``) to ``tr.fallbacks`` (#892)."""
     path = cached_transcript(tr, cdir)  # without --model also a marked CPU fallback's
     data = cache.load_json(path) if path is not None else None
-    if (
-        data is not None
-        and path is not None
-        and path.name
-        not in {
-            transcript_name(m, tr.language)
-            for m in (tr.model_name, getattr(tr, "default_name", ""))
-        }
-    ):
+    if data is not None and path is not None and is_fallback(tr, path):
         logger.info(
             "Reusing %s, made by a CPU fallback of an earlier run without --model "
             "(--model %s transcribes it again)",
@@ -373,7 +373,26 @@ def _transcript(
         path = cdir / transcript_name(tr.model_name, tr.language)
         cache.save_json(path, data)
         record_transcript(tr, path)
+    if is_fallback(tr, path):
+        tr.fallbacks.append(src or cdir)
     return data
+
+
+def _warn_transcript_fallback(tr: Transcriber) -> None:
+    """The WARNING and ``--json`` ``transcript_fallback`` warning naming the sources whose
+    transcript this run is a CPU fallback's (#892)."""
+    found = list(dict.fromkeys(getattr(tr, "fallbacks", ())))
+    if not found:
+        return
+    message = (
+        f"{len(found)} source(s) transcribed with Whisper {default_model('cpu')} on the CPU "
+        f"instead of Whisper {tr.default_name}, as the GPU was short of memory or failed: "
+        f"{', '.join(p.name for p in found)}. The speech-based moments can be weaker; after a "
+        f"memory shortage, a run with Whisper {tr.default_name} fitting on the GPU (close the "
+        "programs using it) transcribes them again"
+    )
+    logger.warning("%s", message)
+    jsonout.warn("transcript_fallback", message, found)
 
 
 def _mixed_tracks(cdir: Path, streams: int) -> list[int] | None:
@@ -1511,7 +1530,7 @@ def analyze_source(
             ):
                 tr.load()  # the memory guard runs before the scene thread takes any VRAM
                 overlap = _SceneJob(io, cdir, span, offset, span if read_error else None, shared)
-            segments = _transcript(wav, cdir, tr, transcribed if report else None)
+            segments = _transcript(wav, cdir, tr, transcribed if report else None, src)
             tick("transcribe_s", t0)
             if on_transcript is not None:
                 on_transcript()
@@ -3292,6 +3311,7 @@ def _analyze(
         transcript = "\n".join(transcript_lines)
         tr.close()  # Whisper out of memory before the next step loads a model
         free_models()
+        _warn_transcript_fallback(tr)
         detection_rec = detection  # highlights.json's record of an auto run (a re-run: as given)
         if auto is not None:  # the final decision, with the speech coverage
             det = category.decide(

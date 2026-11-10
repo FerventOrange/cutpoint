@@ -14,10 +14,11 @@ from typing import Any
 import pytest
 
 import cutpoint.analyze
-from conftest import set_config
-from cutpoint import config, memguard, progress
+from conftest import envelope, set_config
+from cutpoint import cli, config, memguard, progress
 from cutpoint.errors import LowMemoryError, LowVramError
 from cutpoint.events import common
+from test_batch_size import _Whisper, analyze_run  # noqa: F401  (a fixture)
 from test_resume import _Resp
 
 GB = memguard.GIB
@@ -527,33 +528,141 @@ def test_without_small_downloaded_the_cpu_fallback_keeps_medium(mem, monkeypatch
     assert not any("the CPU default without --model" in m for m in caplog.messages)
 
 
-def test_a_cpu_fallback_transcript_is_found_by_the_next_run(mem, monkeypatch, tmp_path):
-    """Review F3: the small transcript of a CPU fallback is not transcribed again."""
-    from cutpoint import analyze, transcribe  # noqa: PLC0415
-
-    runs = []
+def _fake_run(monkeypatch, runs: list[str]) -> Any:
+    from cutpoint import transcribe  # noqa: PLC0415
 
     def run(self, wav, on_progress=None):
         self._load()
         runs.append(self.model_name)
-        return [{"start": 0.0, "end": 1.0, "text": "hi"}]
+        return [{"start": 0.0, "end": 1.0, "text": self.model_name}]
 
     monkeypatch.setattr(transcribe.Transcriber, "_run", run)
+    return run
+
+
+def _fallback_cache(mem, monkeypatch, tmp_path, runs: list[str]) -> Path:
+    """A source cache holding a marked CPU fallback's transcript-small.json (GPU short)."""
+    from cutpoint import analyze  # noqa: PLC0415
+
+    _fake_run(monkeypatch, runs)
     cdir = tmp_path / "cache"
     cdir.mkdir()
     mem.vram = 0.1
     first = _transcriber(monkeypatch, None)
-    assert analyze._transcript(tmp_path / "a.wav", cdir, first) == run(first, None)
-    assert runs == ["small", "small"] and (cdir / "transcript-small.json").is_file()
-    mem.vram = 8.0  # the GPU free again: a new run without --model keeps the small one
+    assert analyze._transcript(tmp_path / "a.wav", cdir, first)[0]["text"] == "small"
+    assert runs == ["small"] and (cdir / "fallback-transcript-small.json").is_file()
+    assert first.fallbacks == [cdir]  # the fallback run itself names the source (#892)
+    monkeypatch.setattr(analyze.cache, "source_dir", lambda _src: cdir)
+    return cdir
+
+
+def test_a_cpu_fallback_transcript_is_reused_while_the_gpu_is_still_short(
+    mem, monkeypatch, tmp_path, capsys
+):
+    """Review F3, #892: a later run without --model keeps the small transcript while
+    Whisper medium still does not fit on the GPU, and warns (transcript_fallback)."""
+    from cutpoint import analyze, jsonout  # noqa: PLC0415
+
+    runs: list[str] = []
+    cdir = _fallback_cache(mem, monkeypatch, tmp_path, runs)
     later = _transcriber(monkeypatch, None)
     assert later.model_name == "medium"
-    assert analyze._transcript(tmp_path / "a.wav", cdir, later)[0]["text"] == "hi"
-    assert len(runs) == 2
-    monkeypatch.setattr(analyze.cache, "source_dir", lambda _src: cdir)
-    assert analyze._cached_transcripts([tmp_path / "a.wav"], later) == 1
+    freed = mem.freed
+    assert analyze._cached_transcripts([tmp_path / "a.mp4"], later) == 1
+    assert mem.freed == freed + 1  # cached models freed once before giving up, as a load does
+    src = tmp_path / "a.mp4"
+    assert analyze._transcript(tmp_path / "a.wav", cdir, later, src=src)[0]["text"] == "small"
+    assert runs == ["small"] and later.fallbacks == [src]
+    with jsonout.run("analyze") as res:
+        analyze._warn_transcript_fallback(later)
+    (warning,) = res.warnings
+    assert warning["code"] == "transcript_fallback"
+    assert "Whisper small" in warning["message"] and "Whisper medium" in warning["message"]
+    assert "a.mp4" in warning["message"] and warning["files"] == [str(src)]
     explicit = _transcriber(monkeypatch, "medium")
-    assert analyze._cached_transcripts([tmp_path / "a.wav"], explicit) == 0
+    assert analyze._cached_transcripts([tmp_path / "a.mp4"], explicit) == 0
+
+
+def test_a_cpu_fallback_transcript_is_made_again_once_the_default_fits(mem, monkeypatch, tmp_path):
+    """#892: with Whisper medium fitting on the GPU again (one guard check per run), the
+    fallback is not cached: it is transcribed again, replaced and no longer warned about."""
+    from cutpoint import analyze  # noqa: PLC0415
+
+    runs: list[str] = []
+    cdir = _fallback_cache(mem, monkeypatch, tmp_path, runs)
+    checks = []
+    fits = memguard.fits_gpu
+    monkeypatch.setattr(memguard, "fits_gpu", lambda m: checks.append(m) or fits(m))
+    mem.vram = 8.0
+    later = _transcriber(monkeypatch, None)
+    assert analyze._cached_transcripts([tmp_path / "a.mp4", tmp_path / "b.mp4"], later) == 0
+    assert analyze._transcript(tmp_path / "a.wav", cdir, later)[0]["text"] == "medium"
+    assert runs == ["small", "medium"] and checks == ["whisper-medium"]
+    assert later.fallbacks == []
+    assert sorted(f.name for f in cdir.iterdir()) == ["transcript-medium.json"]
+    mem.vram = 0.1  # the GPU short again: the medium transcript stays
+    again = _transcriber(monkeypatch, None)
+    assert analyze._transcript(tmp_path / "a.wav", cdir, again)[0]["text"] == "medium"
+    assert runs == ["small", "medium"] and again.fallbacks == []
+
+
+def test_a_cuda_error_fallback_is_kept_when_the_default_fits(mem, monkeypatch, tmp_path):
+    """#892: only a memory fallback is made again; a CUDA failure's would fail the same way."""
+    from cutpoint import analyze  # noqa: PLC0415
+
+    runs: list[str] = []
+    _fake_run(monkeypatch, runs)
+    cdir = tmp_path / "cache"
+    cdir.mkdir()
+    mem.vram = 8.0  # the guard says medium fits, before and after
+    first = _transcriber(monkeypatch, None)
+    first._fallback_to_cpu(RuntimeError("CUDA failed"))
+    analyze._transcript(tmp_path / "a.wav", cdir, first)
+    assert runs == ["small"]
+    assert (
+        analyze.cache.load_json(cdir / "fallback-transcript-small.json")["reason"] == "cuda_error"
+    )
+    later = _transcriber(monkeypatch, None)
+    assert analyze._transcript(tmp_path / "a.wav", cdir, later)[0]["text"] == "small"
+    assert runs == ["small"] and later.fallbacks == [cdir]
+
+
+def test_a_cpu_only_run_makes_no_fallback(mem, monkeypatch, tmp_path):
+    """#892: small is the CPU-only default: no marker, no warning, no guard check."""
+    from cutpoint import analyze, transcribe  # noqa: PLC0415
+
+    runs: list[str] = []
+    _fake_run(monkeypatch, runs)
+    monkeypatch.setattr(memguard, "fits_gpu", lambda m: pytest.fail("no GPU to check"))
+    _transcriber(monkeypatch, None)  # the model fakes
+    monkeypatch.setattr(transcribe, "cuda_available", lambda: False)
+    tr = transcribe.Transcriber()
+    for _ in range(2):  # made, then reused
+        assert analyze._transcript(tmp_path / "a.wav", tmp_path, tr)[0]["text"] == "small"
+    assert runs == ["small"] and tr.fallbacks == []
+    assert sorted(f.name for f in tmp_path.iterdir()) == ["transcript-small.json"]
+
+
+def test_analyze_warns_of_a_transcript_fallback_in_its_envelope(
+    analyze_run,  # noqa: F811
+    monkeypatch,
+    capsys,
+):
+    """#892: the run that falls back gives one transcript_fallback warning naming the sources."""
+
+    class Fallback(_Whisper):
+        model_name, default_name, explicit = "small", "medium", False
+
+        def __init__(self, **kw: Any) -> None:
+            super().__init__(**kw)
+            self.fallbacks: list[Path] = []
+
+    monkeypatch.setattr(cutpoint.analyze, "Transcriber", Fallback)
+    assert cli.main([*analyze_run.argv, "--json"]) == 0
+    doc = envelope(capsys.readouterr().out)
+    (warning,) = [w for w in doc["warnings"] if w["code"] == "transcript_fallback"]
+    assert warning["message"].startswith("5 source(s) transcribed with Whisper small on the CPU")
+    assert len(warning["files"]) == 5
 
 
 def test_after_a_fallback_a_cached_medium_transcript_is_still_used(mem, monkeypatch, tmp_path):
@@ -605,7 +714,7 @@ def test_a_gpu_run_reuses_only_a_small_transcript_of_a_fallback(
     analyze._transcript(tmp_path / "a.wav", cdir, first)
     assert runs == ["small"]
     assert (cdir / "fallback-transcript-small.json").is_file() is marked
-    mem.vram = 8.0
+    mem.vram = 0.1 if marked else 8.0  # marked: the GPU still short (else it is made again)
     later = _transcriber(monkeypatch, None)
     with caplog.at_level(logging.INFO):
         text = analyze._transcript(tmp_path / "a.wav", cdir, later)[0]["text"]
@@ -614,3 +723,4 @@ def test_a_gpu_run_reuses_only_a_small_transcript_of_a_fallback(
         assert any("Reusing transcript-small.json" in m for m in caplog.messages)
     else:
         assert text == "medium" and runs == ["small", "medium"]
+        assert (cdir / "transcript-small.json").is_file()  # an explicit --model small's: kept
