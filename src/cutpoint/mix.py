@@ -1,7 +1,7 @@
-"""Variety selection (``cutpoint mix``): a balanced set of moments from a ski day.
+"""Variety selection (``cutpoint mix``): a balanced set of moments from an action-cam day.
 
 The ``cutpoint analyze --style action-cam`` features (``<project>/action_cam_features``) are
-peak-picked once per *category* with :func:`cutpoint.ski.pick` and
+peak-picked once per *category* with :func:`cutpoint.actioncam.pick` and
 category-specific weights, so a day of 360 footage does not collapse to the
 one signal that happens to be strong (laughs, group shots):
 
@@ -45,7 +45,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import activity, cache, jsonout, ski
+from cutpoint import actioncam, activity, cache, jsonout
 from cutpoint.clips import (
     REACTION_LABEL,
     drive_relative,
@@ -371,9 +371,11 @@ def part_candidates(d: dict[str, Any], max_picks: int = 30) -> list[Cand]:
     out: list[Cand] = []
 
     def picks(w: dict[str, float], mask: np.ndarray, events: list | None = None, k: int = 0):
-        return ski.pick(f, w, mask, zero, events or [], dur, k or max_picks, off)
+        return actioncam.pick(f, w, mask, zero, events or [], dur, k or max_picks, off)
 
-    def cand(cat: str, p: ski.Pick, kind: str, label: str, score: float | None = None) -> Cand:
+    def cand(
+        cat: str, p: actioncam.Pick, kind: str, label: str, score: float | None = None
+    ) -> Cand:
         c = Cand(
             cat, src, p.start, p.end, p.peak_t, p.peak if score is None else score, kind, label
         )
@@ -659,7 +661,7 @@ def run_mix(
     """
     r = rules or MixRules()
     q = quotas or DEFAULT_QUOTAS
-    parts = ski.load_project_features(project)
+    parts = actioncam.load_project_features(project)
     with activity.use_prompts(activity.project_prompts(project)):  # the 360 lift rides
         cands = [c for d in parts for c in part_candidates(d)]
     cands += crash_candidates((load_crashes(project) or {}).get("crashes", []))

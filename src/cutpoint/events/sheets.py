@@ -4,9 +4,9 @@ Writes JPEG grids to ``<project>/visual_check/``:
 
 * ``beauty_top.jpg``: highest beauty-shot scores (one per 20 s of a source)
 * ``friends_top.jpg``: highest friends scores, with person boxes (green =
-  counted, red = dropped as the wearer's own body / skis)
+  counted, red = dropped as the wearer's own body / gear)
 * ``lift_people.jpg``: lift and stopped footage with detections, to check
-  that the wearer's boots and skis do not count as friends
+  that the wearer's boots and gear do not count as friends
 * ``beauty_bottom.jpg``: lowest beauty scores (boots, lift bar, phone, dark)
 """
 

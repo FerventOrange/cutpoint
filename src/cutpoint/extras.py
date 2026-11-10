@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 # Top-level import name -> extra that provides it. fastapi, uvicorn, keyring and telemetry_parser
-# are core dependencies (the ui, keyring and ski extras are empty aliases), so they are not here.
+# are core dependencies (the ui and keyring extras are empty aliases), so they are not here.
 MODULE_EXTRA: dict[str, str] = {
     "torch": "events",
     "torchvision": "events",
@@ -376,7 +376,7 @@ def extras_in_use() -> list[str]:
     """cutpoint's extras whose requirements for this platform are all installed.
 
     ``all`` is left out (it is the others together), as are the empty alias extras (``ui``,
-    ``keyring``, ``ski``: their packages are core dependencies); empty when cutpoint is not
+    ``keyring``: their packages are core dependencies); empty when cutpoint is not
     installed.
     """
     try:

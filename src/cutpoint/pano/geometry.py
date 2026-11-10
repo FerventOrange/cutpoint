@@ -6,11 +6,11 @@ Frames (all right-handed, x right, y down, z forward, as in ``v360``):
     ``v360``'s own frame for ``input=dfisheye``: the *right* half of a
     dual-fisheye picture is the lens looking along +z, the left half the lens
     looking along -z (mirrored in x). For the X3 that means +z = the ``_10_``
-    lens (down at the skier on the user's mount) and -z = ``_00_`` (sky).
+    lens (down at the wearer on the user's mount) and -z = ``_00_`` (sky).
     Measured with a coordinate-encoded test image (ffmpeg 9.0.2).
 ``W`` (display world)
     Horizon-levelled: -y is up (from the fused IMU), yaw 0 is the camera's
-    forward direction (``FORWARD_V``, where the skis point), smoothed over
+    forward direction (``FORWARD_V``, where the wearer faces), smoothed over
     ``heading_smooth_s`` so the view does not swing with every turn. A clip
     filmed upright (lenses horizontal: handheld, on a pole) has ``FORWARD_V``
     near vertical; its yaw 0 is the ``_10_`` lens axis ``LENS_V`` instead
@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 ORIENT_VERSION = 2
 LEVEL_VERSION = 1  # the up / heading part of the track (unchanged since v1; views cache key)
 M_IMU_TO_V = np.array([[0.0, 0.0, -1.0], [0.0, -1.0, 0.0], [-1.0, 0.0, 0.0]])
-FORWARD_V = np.array([0.0, -1.0, 0.0])  # where the skis point (camera "front")
+FORWARD_V = np.array([0.0, -1.0, 0.0])  # where the wearer faces (camera "front")
 LENS_V = np.array([0.0, 0.0, 1.0])  # the _10_ lens: yaw 0 of an upright clip (forward_axis)
 FORWARD_MIN_HORIZONTAL = 0.5  # forward_axis keeps FORWARD_V while its median |horizontal| >= this
 # The wearer seen from the downward lens: helmet near the +y edge of the
@@ -455,7 +455,7 @@ def fuse(
 
     The up vector in camera coordinates follows ``du/dt = -w x u`` (gyro, rad/s)
     and is nudged toward the accelerometer direction with ``gain`` per second,
-    weighted down when ``|a|`` is far from 1 g (skiing accelerations). The
+    weighted down when ``|a|`` is far from 1 g (riding accelerations). The
     heading integrates the gyro component about the vertical. The full
     rotation (``q``) comes from :func:`quat_track` at the IMU rate.
 
@@ -710,7 +710,7 @@ def project_box_visible(
     width is set by its most stretched (most polar) part, so the full rectangle
     inflates the box. Measured against the detector on 16 rendered clips (~860
     matched boxes): rectangle 1.20x too wide; centre line unbiased below 0.5 of
-    the frame but 1.20x wide above it (close friends on a chairlift);
+    the frame but 1.20x wide above it (close friends in a lift);
     ``polar_shift`` 0.5 gives 0.89-1.02x wide and 1.00-1.03x tall at every size
     and the best per-clip QA agreement.
 

@@ -16,7 +16,7 @@ highlights, manifests); the ``.insv`` files are only read for the IMU (trailer,
 cheap) and for rendering.
 
 On the user's mount the ``_00_`` lens looks at the sky and ``_10_`` down at the
-skier, so the lens seam lies on the horizon (see ``docs/insta360-sdk.md``).
+rider, so the lens seam lies on the horizon (see ``docs/insta360-sdk.md``).
 """
 
 from __future__ import annotations

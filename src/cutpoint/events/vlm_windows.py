@@ -94,7 +94,7 @@ RESPONSE_SCHEMA: dict[str, Any] = {
 }
 
 # Action-cam (``style_kind == "action-cam"``): per-window tag strengths for the action-cam
-# scorer (cutpoint.ski). The tag keys are stored (events.json, the VLM cache) and read by
+# scorer (cutpoint.actioncam). The tag keys are stored (events.json, the VLM cache) and read by
 # name, so they are the same for every activity; the profile's ``vlm`` section words them.
 # The wording comes from the project's activity profile (``generic``'s without one); its
 # hash (``aw``) is part of the cache key, so windows are described again for another wording.
@@ -103,14 +103,14 @@ ACTION_CAM_TAGS = (
     "jump_air",
     "landing",
     "crash_fall",
-    "powder_spray",
-    "fast_groomer",
+    "spray",
+    "fast_open",
     "trees",
     "scenic_vista",
     "friends_faces",
-    "chairlift",
+    "transit",
     "standing_talking",
-    "lodge",
+    "indoor_break",
 )
 RESPONSE_SCHEMA_ACTION_CAM: dict[str, Any] = {
     "type": "object",

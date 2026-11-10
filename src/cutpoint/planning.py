@@ -119,7 +119,7 @@ def select_moments(
                 if c.get("must_include") or not default_fit.clashes(c, chosen):
                     chosen.append(c)
         picks = len(chosen)
-        # Confident crashes (ski analyze, crashes.json) are never left out.
+        # Confident crashes (action-cam analyze, crashes.json) are never left out.
         forced = [c for c in ranked if c.get("must_include") and c not in chosen]
         if forced:
             logger.info(

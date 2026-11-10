@@ -144,7 +144,7 @@ def test_vlm_wording_of_a_profile_replaces_the_floor_value_by_value():
     vlm, tags = dict(sled.vlm), dict(sled.vlm_tags)
     assert vlm["video"] == "first-person glacier sledding video"
     assert vlm["edit"] == "sledding highlight edit" and vlm["hype"] == dict(floor.vlm)["hype"]
-    assert tags["chairlift"] == "on a cable car" and tags["trees"] == dict(floor.vlm_tags)["trees"]
+    assert tags["transit"] == "on a cable car" and tags["trees"] == dict(floor.vlm_tags)["trees"]
     for p in (_p(HOP), _generic()):  # no wording of their own
         assert dict(p.vlm) == dict(floor.vlm) and p.vlm_tags == floor.vlm_tags
 
@@ -163,7 +163,7 @@ def test_invalid_or_too_long_vlm_values_fall_back_to_the_floor_one_by_one():
             "edit": "x" * (activity.MAX_VLM_CHARS + 1),  # over the cap: the floor's
             "hype": 7,  # not a string: the floor's
             "bogus": "an unknown key",
-            "tags": {"trees": "paddling past trees", "rapids": "a new tag", "lodge": ""},
+            "tags": {"trees": "paddling past trees", "rapids": "a new tag", "indoor_break": ""},
         },
     }
     prof = activity.validate(raw)
@@ -175,7 +175,10 @@ def test_invalid_or_too_long_vlm_values_fall_back_to_the_floor_one_by_one():
     vlm, tags = dict(p.vlm), dict(p.vlm_tags)
     assert vlm["video"] == "first-person kayak video"
     assert vlm["edit"] == dict(floor.vlm)["edit"] and vlm["hype"] == dict(floor.vlm)["hype"]
-    assert tags["trees"] == "paddling past trees" and tags["lodge"] == dict(floor.vlm_tags)["lodge"]
+    assert (
+        tags["trees"] == "paddling past trees"
+        and tags["indoor_break"] == dict(floor.vlm_tags)["indoor_break"]
+    )
     assert "rapids" not in tags and "bogus" not in vlm
     # a hand-edited activity.json record is read the same way (not validated on load)
     rec_prof = {**activity.full(activity.validate(HOP)), "vlm": {"edit": 3, "video": "a"}}
@@ -210,7 +213,7 @@ def test_the_llm_flavours_the_base_vlm_wording_and_bad_values_fall_back(monkeypa
             "edit": "kayak edit",
             "describe": "y" * 400,  # over the cap: the floor's
             "rate_low": ["not", "a", "string"],  # invalid: the floor's
-            "tags": {"powder_spray": "white water spraying over the bow", "rapids": "new"},
+            "tags": {"spray": "white water spraying over the bow", "rapids": "new"},
         },
     }
 
@@ -233,7 +236,7 @@ def test_the_llm_flavours_the_base_vlm_wording_and_bad_values_fall_back(monkeypa
     assert vlm["describe"] == dict(floor.vlm)["describe"]
     assert vlm["rate_low"] == dict(floor.vlm)["rate_low"]
     assert vlm["hype"] == dict(floor.vlm)["hype"]  # not written: the floor's
-    assert tags["powder_spray"] == "white water spraying over the bow" and "rapids" not in tags
+    assert tags["spray"] == "white water spraying over the bow" and "rapids" not in tags
     assert tags["trees"] == dict(floor.vlm_tags)["trees"]
 
 

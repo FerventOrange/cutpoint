@@ -1,12 +1,9 @@
-"""The ``ski`` style is now ``action-cam``, with no alias: ``ski`` is refused with an error
-naming ``action-cam``."""
-
-import json
+"""``action-cam`` is the style; ``ski`` is just an unknown name (no alias, no rename message)."""
 
 import pytest
 
 from cutpoint import cli
-from cutpoint.styles import ACTION_CAM, STYLES, get_style, load_learned, project_kind, style_names
+from cutpoint.styles import ACTION_CAM, STYLES, get_style, style_names
 
 
 def test_action_cam_is_the_style_and_its_kind():
@@ -16,14 +13,19 @@ def test_action_cam_is_the_style_and_its_kind():
 
 
 @pytest.mark.parametrize("command", [["analyze", "a.mp4"], ["edit", "a.mp4"]])
-def test_style_ski_is_refused_naming_action_cam(capsys, command):
+def test_style_ski_is_an_ordinary_unknown_style(capsys, command):
     parser = cli.build_parser()
     assert parser.parse_args([*command, "--style", "action-cam"]).style == "action-cam"
     with pytest.raises(SystemExit) as exc:
         parser.parse_args([*command, "--style", "ski"])
     assert exc.value.code == 2
-    err = capsys.readouterr().err
-    assert "'ski' was renamed to 'action-cam'" in err and "--style action-cam" in err
+    assert "renamed" not in capsys.readouterr().err
+
+
+def test_get_style_ski_is_unknown():
+    with pytest.raises(ValueError) as exc:
+        get_style("ski")
+    assert "renamed" not in str(exc.value)
 
 
 def test_style_auto_is_offered_by_analyze_and_edit_only():
@@ -42,21 +44,11 @@ def test_analyze_help_lists_action_cam_not_ski(capsys):
     assert "action-cam" in choices and "ski" not in choices
 
 
-def test_get_style_ski_names_action_cam():
-    with pytest.raises(ValueError, match="renamed to 'action-cam'"):
-        get_style("ski")
-
-
-def test_a_project_analysed_as_ski_is_refused_naming_action_cam():
-    assert project_kind({"style": "action-cam", "style_kind": "action-cam"}) == "action-cam"
-    assert project_kind({"style": "gaming", "style_kind": "generic"}) == "generic"
-    for hl in ({"style": "ski", "style_kind": "ski"}, {"style": "mine", "style_kind": "ski"}):
-        with pytest.raises(ValueError, match="renamed to 'action-cam'"):
-            project_kind(hl)
-
-
-def test_a_learned_preset_based_on_ski_is_refused_naming_action_cam(tmp_path):
-    path = tmp_path / "old.json"
-    path.write_text(json.dumps({"name": "old", "base": "ski", "weights": {"speed": 0.5}}))
-    with pytest.raises(ValueError, match="renamed to 'action-cam'"):
-        load_learned(path)
+@pytest.mark.parametrize("command", [["analyze", "a.mp4"], ["edit", "a.mp4"]])
+def test_a_custom_style_is_accepted_by_style_arg(home, monkeypatch, capsys, command):
+    """With the rename helper gone, ``--style NAME`` still takes a style made by ``style create``."""
+    monkeypatch.setenv("CUTPOINT_STYLES_DIR", str(home / "my-styles"))
+    assert cli.main(["style", "create", "mine", "--base", "action", "--weight", "scene=0.4"]) == 0
+    capsys.readouterr()
+    assert "mine" in style_names()
+    assert cli.build_parser().parse_args([*command, "--style", "mine"]).style == "mine"

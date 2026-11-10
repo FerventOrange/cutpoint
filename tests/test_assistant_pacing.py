@@ -1,5 +1,5 @@
 """AI Chat pacing: when the message asks to break up or mix kinds, code spreads the funny,
-dialogue and scenic clips between the skiing runs (labelled auto ops), and adds dialogue moments
+dialogue and scenic clips between the riding runs (labelled auto ops), and adds dialogue moments
 when the message names dialogue and the proposal has none.
 
 The model is the scripted ``FakeProvider`` of ``test_assistant``.
@@ -7,6 +7,8 @@ The model is the scripted ``FakeProvider`` of ``test_assistant``.
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -138,6 +140,43 @@ def test_wording_that_asks_for_a_mix_is_found(text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
+        "put a view in between the biking clips",
+        "break up the surfing with some dialogue",
+        "alternate surf and scenery",
+        "between the mtb runs add a funny moment",
+        "add dialogue between the snowboard runs",
+        "put a view in between the skiing clips",
+    ],
+)
+def test_mix_wording_names_any_ride_sport_not_only_skiing(text: str) -> None:
+    assert pacing.asks_for_mix(text)
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["biking", "mtb-trail", "surfing", "skateboard-skating", "snowboarding", "skiing"],
+)
+def test_ride_sport_labels_are_action(label: str) -> None:
+    assert pacing.moment_kind(label, None, {}, lambda: False) == "action"
+
+
+@pytest.mark.parametrize("label", ["drop-the-mic", "wave-hello"])
+def test_everyday_verb_labels_are_not_action_words(label: str) -> None:
+    """A moment falls back to action, so check these labels no longer name an action word."""
+    assert not set(label.split("-")) & pacing._ACTION_WORDS
+
+
+def test_python_and_web_action_words_stay_in_sync() -> None:
+    """``pacing._ACTION_WORDS`` and ``ACTION_WORDS`` in web/util.js name the same words."""
+    js = (Path(pacing.__file__).parents[1] / "web" / "util.js").read_text(encoding="utf-8")
+    found = re.search(r"const ACTION_WORDS = \[(.*?)\];", js, re.S)
+    assert found, "ACTION_WORDS not found in web/util.js"
+    assert set(re.findall(r"'([^']+)'", found.group(1))) == set(pacing._ACTION_WORDS)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "mix the audio",
         "no music mix",
         "mix in some music",
@@ -159,6 +198,8 @@ def test_wording_that_asks_for_a_mix_is_found(text: str) -> None:
         "use an alternate take of clip 3",
         "the occasional stutter in clip 4",
         "break up the long clip into two",
+        "between the trailer and the intro",
+        "between the surface shots",
         "Make it ~4 minutes; don't break up the skiing with dialogue, keep the runs together",
     ],
 )
@@ -331,7 +372,7 @@ def test_the_real_turn_comes_out_with_no_long_action_streak() -> None:
     assert kinds[0] == "scenic"  # the opener stays
     assert longest_run(kinds) <= 4  # was 10+ in a row
     assert kinds.count("funny") == 4 and kinds.count("scenic") == 4
-    assert "Spread 4 funny and 3 scenic clips between the skiing runs." in event["summary"]
+    assert "Spread 4 funny and 3 scenic clips between the riding runs." in event["summary"]
     assert event["pace"]["moved"] and all(
         op.get("auto") for op in event["ops"] if op["op"] == "move"
     )
@@ -375,7 +416,7 @@ def test_a_sequence_that_was_there_is_spread_with_move_ops_that_mark_the_rows() 
         summary="Trim the last clip",
         ops=[{"op": "trim", "id": short("k7"), "end_delta": -1}],
     )
-    turn = play("mix in the laughs between the skiing runs", proj, tidy)
+    turn = play("mix in the laughs between the riding runs", proj, tidy)
     event = proposal(turn)
     kinds = [("funny" if r["label"] == LAUGH else "action") for r in event["after"]]
     assert longest_run(kinds) <= 3
@@ -554,7 +595,7 @@ def test_past_the_op_cap_the_spread_is_one_order_op() -> None:
     kinds = [FAST] * 40 + [LAUGH] * 40  # 80 adds + 40 moves would pass the 100-op cap
     cands = [moment(i, label, length=3.0) for i, label in enumerate(kinds)]
     proj = session.Project(cands, [], durations(), "", "key0")
-    turn = play("mix in the laughs between the skiing runs", proj, add_all(cands))
+    turn = play("mix in the laughs between the riding runs", proj, add_all(cands))
     event = proposal(turn)
     last = event["ops"][-1]
     assert last["op"] == "order" and last["auto"] is True and len(event["ops"]) == 81
@@ -576,5 +617,5 @@ def test_the_pace_note_survives_a_long_summary_and_fill_note() -> None:
     main["auto"] = {"target": 240.0, "lengthened": [], "added": [], "reached": True}
     summary, _ = turn._paced("Long summary. " * 40, main)
     assert len(summary) <= session.MAX_SUMMARY
-    assert summary.endswith("clips between the skiing runs.")
+    assert summary.endswith("clips between the riding runs.")
     assert "Spread 4 funny and 3 scenic" in summary

@@ -45,7 +45,7 @@ PROBLEMS = [
     ({"schema": True}, "schema"),
     ({"schema": "1"}, "schema"),
     ({"name": "other"}, "must match"),
-    ({"base": "ski"}, "renamed"),
+    ({"base": "ski"}, "not a built-in"),
     ({"base": "nope"}, "not a built-in"),
     ({"base": "usr"}, "your own styles"),
     ({"base": None}, "missing"),
@@ -170,7 +170,7 @@ def test_create_writes_ordered_keys_and_show_marks_origin(styles_dir, capsys):
     assert doc["outputs"]["hash"] == content_hash(on_disk)
 
 
-@pytest.mark.parametrize("name", ["funny", "ski", "auto", "AUTO", "../x", "a b", "con"])
+@pytest.mark.parametrize("name", ["funny", "auto", "AUTO", "../x", "a b", "con"])
 def test_create_refuses_unusable_names(styles_dir, capsys, name):
     code, doc = style(capsys, "create", name, "--base", "action")
     assert code == 1 and doc["error"]["code"] == "bad_args"

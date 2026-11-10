@@ -125,7 +125,7 @@ def test_run_mix_finds_candidates_with_the_projects_prompts(tmp_path, monkeypatc
         seen.append(activity.active_prompts().name)
         return [mix.Cand("run", "a", 47.0, 53.0, 50.0, 0.9, "run", "run")]
 
-    monkeypatch.setattr(mix.ski, "load_project_features", lambda _p: [{}])
+    monkeypatch.setattr(mix.actioncam, "load_project_features", lambda _p: [{}])
     monkeypatch.setattr(mix, "part_candidates", part_candidates)
     monkeypatch.setattr(mix, "_runs_index", lambda _p, _k: ([], {}))
     monkeypatch.setattr(mix, "_embed", lambda _c: None)

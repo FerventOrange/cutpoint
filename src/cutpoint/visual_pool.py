@@ -6,9 +6,9 @@ candidates, for the styles ``action-cam``, ``action`` and ``sport`` (and learned
 based on them) only, from cached layers alone (no video decode):
 
 * ``action-cam``: the grids ``analyze`` saved in ``action_cam_features`` (beauty, people,
-  group, airtime, crash, wipeout, carve and the lift/still mask; :func:`cutpoint.ski.
+  group, airtime, crash, wipeout, carve and the lift/still mask; :func:`cutpoint.actioncam.
   load_part`);
-* ``action`` / ``sport``: the cached visual layer through :func:`cutpoint.ski.
+* ``action`` / ``sport``: the cached visual layer through :func:`cutpoint.actioncam.
   layer_features` (beauty, people, group); the lift/still mask is the cached GPS speed
   below :data:`STILL_KMH`, when there is one;
 * the cached GPS speed (:func:`cutpoint.telemetry.cached_speed`) for ``cruise``;
@@ -40,7 +40,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import ski, telemetry
+from cutpoint import actioncam, telemetry
 from cutpoint.config import path_key
 from cutpoint.dsp import clean_mask, mask_runs
 from cutpoint.styles import ACTION_CAM, Style
@@ -55,19 +55,19 @@ LABELS = {
     "crew": "group / friends shot",
     "cruise": "casual cruising run",
 }
-DT = ski.DT
+DT = actioncam.DT
 # view: beauty is 0-1 (zero-shot contrast x aesthetic x steadiness); mix keeps scenery from
 # 0.55, the pool lists a little more, so the assistant can find it.
 VIEW_MIN = 0.5
 VIEW_LEN = (5.0, 7.0)
 # crew: 0.6 people + 0.4 group; people needs a person close to the camera, so a crowd-like
 # scene with nobody close cannot pass on the group prompt alone (CREW_PEOPLE_MIN: distant
-# skiers score about 0.45-0.5 there, real crew shots 0.8 and more).
+# other riders score about 0.45-0.5 there, real crew shots 0.8 and more).
 CREW_W = {"people": 0.6, "group": 0.4}
 CREW_MIN = 0.5
 CREW_PEOPLE_MIN = 0.6
 CREW_LEN = (4.0, 6.0)
-# cruise: GPS km/h; casual skiing / riding is ~15-35 km/h, walking under 8.
+# cruise: GPS km/h; casual riding is ~15-35 km/h, walking under 8.
 CRUISE_MIN_KMH = 8.0
 STILL_KMH = 3.0  # action / sport: slower than this counts as still (the mask)
 CRUISE_RUN_S = 8.0
@@ -178,7 +178,7 @@ def reserved_slots(picks: int) -> int:
 
 # --------------------------------------------------------------------------- inputs
 def _resize(x: np.ndarray, n: int, fill: float = 0.0) -> np.ndarray:
-    return ski._resize(np.asarray(x, dtype=float), n, fill)
+    return actioncam._resize(np.asarray(x, dtype=float), n, fill)
 
 
 def _speed(src: Path, offset: float, n: int) -> np.ndarray | None:
@@ -198,7 +198,7 @@ def _inputs(
     """``(grids, mask, speed)`` of a part, or None without visual data."""
     speed = None
     if action_cam:
-        d = ski.load_part(project, part.source, part.offset)
+        d = actioncam.load_part(project, part.source, part.offset)
         if d is None:
             return None
         mask = np.asarray(d["mask"], dtype=float)
@@ -209,9 +209,9 @@ def _inputs(
         n = part.n
         speed = _speed(part.source, part.offset, n)
         # NaN (no fix, or past the track's end) is 0 km/h for the layer, as in
-        # ski.build_features: a NaN there turns beauty, people and group NaN. The raw speed
+        # actioncam.build_features: a NaN there turns beauty, people and group NaN. The raw speed
         # stays for the still mask and cruise.
-        grids = ski.layer_features(
+        grids = actioncam.layer_features(
             part.source, n, part.offset, None if speed is None else np.nan_to_num(speed, nan=0.0)
         )
         mask = np.zeros(n)
@@ -260,14 +260,14 @@ def _peaks(
     weights: dict[str, float],
     mask: np.ndarray,
     duration: float,
-) -> list[ski.Pick]:
-    """Peaks of the weighted ``grids`` outside ``mask`` (:func:`cutpoint.ski.pick`)."""
+) -> list[actioncam.Pick]:
+    """Peaks of the weighted ``grids`` outside ``mask`` (:func:`cutpoint.actioncam.pick`)."""
     if not all(k in grids for k in weights):
         return []
     n = len(mask)
-    # a NaN anywhere would make ski.pick's maximum NaN, and then it picks nothing
+    # a NaN anywhere would make actioncam.pick's maximum NaN, and then it picks nothing
     feats = {k: np.nan_to_num(grids[k][:n], nan=0.0) for k in weights}
-    return ski.pick(feats, weights, mask, np.zeros(n), [], duration, MAX_PICKS)
+    return actioncam.pick(feats, weights, mask, np.zeros(n), [], duration, MAX_PICKS)
 
 
 def _views(grids: dict[str, np.ndarray], mask: np.ndarray, duration: float) -> list[Window]:

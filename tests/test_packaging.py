@@ -17,12 +17,13 @@ _REAL_ENV = {k: v for k, v in os.environ.items() if not k.startswith("CUTPOINT_"
 
 
 def test_old_extra_names_still_install_with_the_ui_in_core():
-    """``cutpoint[ui]``, ``[keyring]`` and ``[ski]`` in old install commands keep working: the
+    """``cutpoint[ui]`` and ``[keyring]`` in old install commands keep working: the
     names stay as empty extras, their packages are core dependencies."""
     project = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     extras = project["optional-dependencies"]
-    for alias in ("ui", "keyring", "ski"):
+    for alias in ("ui", "keyring"):
         assert extras[alias] == []
+    assert "ski" not in extras
     core = {r.split(";")[0].split("[")[0].split(">")[0].split("=")[0].strip()
             for r in project["dependencies"]}  # fmt: skip
     assert {"fastapi", "uvicorn", "keyring", "telemetry-parser"} <= core
@@ -55,4 +56,5 @@ def test_the_wheel_ships_the_web_page_skill_guide_and_activity_profiles(tmp_path
     assert {f"cutpoint/presets/activities/{n}" for n in profiles} <= names
     assert {"cutpoint/skill/SKILL.md", "cutpoint/AGENTS.md"} <= names
     assert "base.json" in profiles and "index.html" in web  # the globs found the real folders
-    assert {"ui", "keyring", "ski", "events", "gpu"} <= set(meta.get_all("Provides-Extra"))
+    assert {"ui", "keyring", "events", "gpu"} <= set(meta.get_all("Provides-Extra"))
+    assert "ski" not in set(meta.get_all("Provides-Extra"))

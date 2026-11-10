@@ -125,7 +125,7 @@ export const KINDS = Object.freeze({ action: 'Action', scenic: 'Scenic', funny: 
 const GENERIC = /^(?:[\w-]+-moment|vlm)?$/;
 const SCENIC_WORDS = ['view', 'views', 'scenic', 'scenery', 'beauty', 'beautiful', 'vista', 'vistas', 'landscape', 'panorama', 'panoramic'];
 const FUNNY_WORDS = ['laugh', 'laughs', 'laughing', 'laughter', 'funny', 'joke', 'jokes', 'hilarious', 'giggle', 'giggles', 'comedy'];
-const ACTION_WORDS = ['ski', 'skis', 'skiing', 'skier', 'skiers', 'fast', 'speed', 'speeding', 'crash', 'crashes', 'wipeout', 'cruise', 'cruising', 'crew', 'jump', 'jumps', 'airtime', 'air', 'carve', 'carving', 'run', 'runs', 'descent', 'powder', 'ride', 'riding', 'groomer', 'trees'];
+const ACTION_WORDS = ['ski', 'skis', 'skiing', 'skier', 'skiers', 'fast', 'speed', 'speeding', 'crash', 'crashes', 'wipeout', 'cruise', 'cruising', 'crew', 'jump', 'jumps', 'airtime', 'air', 'carve', 'carving', 'run', 'runs', 'descent', 'powder', 'ride', 'riding', 'groomer', 'trees', 'bike', 'biking', 'rider', 'riders', 'mtb', 'trail', 'trails', 'surf', 'surfing', 'skate', 'skating', 'snowboard', 'snowboarding'];
 // The strongest signal cue of a generic label decides next (pacing.moment_kind). The cues of the
 // events VLM windows (funny, action-cam tags) are not in the payload, so a moment only they name
 // falls through to its transcript here; that gap is accepted.

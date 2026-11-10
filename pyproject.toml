@@ -30,11 +30,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# `ui`, `keyring` and `ski` used to be extras; their packages are core dependencies now.
-# The names stay as empty aliases so `cutpoint[ui]`, `--extra ski` etc. keep working.
+# `ui` and `keyring` used to be extras; their packages are core dependencies now.
+# The names stay as empty aliases so `cutpoint[ui]` etc. keep working.
 ui = []
 keyring = []
-ski = []
 # CUDA 12 runtime libs so faster-whisper / ctranslate2 transcribe on an NVIDIA GPU
 # (cuBLAS + cuDNN 9, about 3.6 GB). Without them whisper runs on the CPU. Linux gets
 # looser floors because the cu126 torch wheels (events extra) pin their own
@@ -46,7 +45,7 @@ gpu = [
     "nvidia-cudnn-cu12>=9.1; sys_platform == 'linux'",
 ]
 # `cutpoint events` layers (PANNs audio, HUD OCR, CLIP visual, Silero voice).
-# Also needed by ski crash detection (`cutpoint crashes`, torch + open_clip for the visual check).
+# Also needed by action-cam crash detection (`cutpoint crashes`, torch + open_clip for the visual check).
 # torch/torchvision come from the PyTorch cu126 index on Windows/Linux (see [tool.uv]).
 # Model weights are downloaded separately: `cutpoint setup`.
 events = [

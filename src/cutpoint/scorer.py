@@ -1,13 +1,13 @@
 """How highlight candidates are scored: weighted feature grids, then the events' bonus points.
 
 Grid stage: the style's weights times the feature grids (:mod:`cutpoint.features`), summed in
-the analysis signals' order (:func:`combined`; ski: :func:`ski_combined`, in its weights' order
+the analysis signals' order (:func:`combined`; action-cam: :func:`action_cam_combined`, in its weights' order
 and masked on lifts and stops). Candidates are picked on this raw sum (``analyze._pick_windows``,
-``ski.pick``), so its cut-offs and the candidate set do not depend on which features are
+``actioncam.pick``), so its cut-offs and the candidate set do not depend on which features are
 available. A candidate's 0-100 score is its peak divided by the weights of the available
 features (:func:`cutpoint.features.to_score`): on Cutpoint lite the ``events`` features are left
 out of the divisor and the score is capped at 100; with every feature available it is the sum
-of all weights. Ski's ``social`` stays in the lite divisor: it is core, built from transcript
+of all weights. Action-cam's ``social`` stays in the lite divisor: it is core, built from transcript
 laughter (``social_said``, which runs on lite) and sound events (``social_heard``, ``events``
 only), so a lite peak reaches at most 100 and the cap guards only grids cached by a full
 install and learned presets.
@@ -16,8 +16,8 @@ Bonus stage: :func:`rescore_events` adds the ``events.json`` points (sound event
 types, reactions) to each candidate's analysis score and blends in the best overlapping VLM
 window, boost-only (see :mod:`cutpoint.events.scoring` for the evidence).
 
-The ski grids (:mod:`cutpoint.ski`) are registered features too (:data:`cutpoint.features.
-SKI_FEATURES`); ski keeps its own clip geometry and picking.
+The action-cam grids (:mod:`cutpoint.actioncam`) are registered features too (:data:`cutpoint.features.
+ACTION_CAM_FEATURES`); action-cam keeps its own clip geometry and picking.
 """
 
 from __future__ import annotations
@@ -48,10 +48,10 @@ def combined(sig: Mapping[str, np.ndarray], style: Style) -> np.ndarray:
     return features.combine(sig, style.weights, tuple(sig))
 
 
-def ski_combined(
+def action_cam_combined(
     grids: Mapping[str, np.ndarray], weights: Mapping[str, float], keep: np.ndarray
 ) -> np.ndarray:
-    """A ski weighted sum: ``weights`` times ``grids`` in ``weights`` order, over the non-zero
+    """An action-cam weighted sum: ``weights`` times ``grids`` in ``weights`` order, over the non-zero
     weights of grids that exist, each grid cut to ``len(keep)``; times ``keep`` (0 where the
     mask forbids clips). As before the registry, zero weights and names without a grid add
     nothing, and the sum starts from float64 zeros (cached telemetry grids are float32), so
@@ -67,7 +67,7 @@ def score(
 ) -> float:
     """A candidate's 0-100 score from its combined-grid ``peak``.
 
-    A must-include crash (ski) scores its confidence, so it also ranks first.
+    A must-include crash (action-cam) scores its confidence, so it also ranks first.
     """
     if must_include:
         return round(100 * peak, 1)
@@ -113,7 +113,7 @@ def rescore_events(
     from cutpoint import analyze  # noqa: PLC0415 - imports this module
     from cutpoint.events import scoring  # noqa: PLC0415 - the evidence; imports this module
     from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, resolve  # noqa: PLC0415
-    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports ski, which imports this
+    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports this
 
     scoring.nominate(hl, ev, project, parts)
     by_src: dict[str, list[dict[str, Any]]] = {}

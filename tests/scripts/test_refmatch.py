@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from conftest import load_script, write
-from cutpoint import cache, reset_state, ski
+from cutpoint import actioncam, cache, reset_state
 from cutpoint import ffmpeg_utils as fu
 from cutpoint.errors import FFmpegError
 from cutpoint.styles import get_style
@@ -29,7 +29,7 @@ def test_mask_modes_collapse_old_threshold_lists() -> None:
     assert refmatch.mask_modes((0, 5, 6, 7, 8, 11), 7.0) == (0.0, 7.0)
     assert refmatch.mask_modes((0, 7, 11), 7.0) == (0.0, 7.0)
     assert refmatch.mask_modes((11,), 7.0) == (7.0,)  # cross-validation refits one mode
-    assert refmatch.mask_modes((5, 0), 0.0) == (float(ski.FRIENDS_STRONG), 0.0)
+    assert refmatch.mask_modes((5, 0), 0.0) == (float(actioncam.FRIENDS_STRONG), 0.0)
 
 
 def test_fit_weights_fits_each_mask_once(monkeypatch: pytest.MonkeyPatch) -> None:

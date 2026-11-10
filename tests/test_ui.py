@@ -264,14 +264,12 @@ def test_suggest_style_probes_streams_of_every_input(
     assert res.status_code == 400
 
 
-def test_create_project_refuses_the_old_ski_style_naming_action_cam(
-    client: TestClient, tmp_path: Path
-) -> None:
+def test_create_project_refuses_ski_as_an_unknown_style(client: TestClient, tmp_path: Path) -> None:
     folder = tmp_path / "footage"
     folder.mkdir()
     (folder / "a.mp4").write_bytes(b"x")
     res = client.post("/api/projects", json={"name": "T", "source": str(folder), "style": "ski"})
-    assert res.status_code == 400 and "renamed to 'action-cam'" in res.json()["detail"]
+    assert res.status_code == 400 and res.json()["detail"] == "unknown style 'ski'"
     assert client.get("/api/projects").json() == {"projects": []}
 
 

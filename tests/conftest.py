@@ -170,7 +170,7 @@ SLED = {  # every feature: lift captions, a replaced floor entry, its own wordin
         "video": "first-person glacier sledding video",
         "edit": "sledding highlight edit",
         "rate_edit": "sledding highlight edit",
-        "tags": {"chairlift": "on a cable car"},
+        "tags": {"transit": "on a cable car"},
     },
 }
 HOP = {  # captions only: the floor's wording, no lifts

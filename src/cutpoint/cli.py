@@ -63,7 +63,6 @@ from cutpoint.styles import (
     Style,
     auto_fallback,
     get_style,
-    style_arg,
     style_names,
 )
 from cutpoint.utils import (
@@ -1817,7 +1816,6 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     )
     ed.add_argument(
         "--style",
-        type=style_arg,  # ski: an error naming action-cam
         choices=[AUTO, *style_names()],
         help="analysis preset (default: funny for funny-moments, else action); auto picks "
         "one from the footage (gameplay, action cam, talk or general; ambiguous: gaming "
@@ -1895,12 +1893,11 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_source_filter_arguments(an)
     an.add_argument(
         "--style",
-        type=style_arg,
         choices=[AUTO, *style_names()],
         default=ANALYZE_STYLE,
         help=f"preset (default: {ANALYZE_STYLE}); learned presets in "
         "<CUTPOINT_HOME>/styles/*.json are listed too (action-cam: telemetry-driven "
-        "action-cam footage, formerly ski); auto picks one from the footage (gameplay, "
+        "action-cam footage); auto picks one from the footage (gameplay, "
         f"action cam, talk or general, see cutpoint detect; ambiguous: gaming when it leans "
         f"to gameplay, else the General style, {auto_fallback(HYPE)})",
     )

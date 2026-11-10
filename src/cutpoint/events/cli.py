@@ -19,7 +19,7 @@ from cutpoint import cache, jsonout
 from cutpoint.events import pipeline
 from cutpoint.events.audio_events import DEFAULT_GROUPS, AudioParams
 from cutpoint.events.killfeed import OcrParams
-from cutpoint.events.pipeline import DEFAULT_LAYERS, LAYERS, SKI_LAYERS
+from cutpoint.events.pipeline import ACTION_CAM_LAYERS, DEFAULT_LAYERS, LAYERS
 from cutpoint.events.vlm_windows import VlmParams
 from cutpoint.styles import ACTION_CAM, project_kind
 
@@ -239,8 +239,8 @@ def run_args(
     if args.layers is not None or args.no_vlm:
         from cutpoint.events.common import load_highlights  # noqa: PLC0415
 
-        ski = project_kind(load_highlights(args.project)) == ACTION_CAM
-        chosen = args.layers or list(SKI_LAYERS if ski else DEFAULT_LAYERS)
+        is_cam = project_kind(load_highlights(args.project)) == ACTION_CAM
+        chosen = args.layers or list(ACTION_CAM_LAYERS if is_cam else DEFAULT_LAYERS)
         layers = tuple(x for x in chosen if not (args.no_vlm and x == "vlm"))
     # looked up at call time (#727): a name bound at import would keep a test's patch
     jpath, tpath = pipeline.run_events(
@@ -272,7 +272,7 @@ def run_args(
         backup = args.project / "highlights.pre-events.json"
         had_backup = backup.exists()
         if project_kind(load_highlights(args.project)) == ACTION_CAM:
-            # Ski: events are features of the scorer, so re-run the (cached) analysis.
+            # Action-cam: events are features of the scorer, so re-run the (cached) analysis.
             from cutpoint.analyze import reanalyze_if_reachable  # noqa: PLC0415
 
             if reanalyze_if_reachable(args.project) is None:

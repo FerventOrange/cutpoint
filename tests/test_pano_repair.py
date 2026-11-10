@@ -28,7 +28,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             Cand("run", src, 500, 506, 503, 1.0, "carve", "run"),
         ]
 
-    monkeypatch.setattr(mix.ski, "load_project_features", lambda _p: [{}])
+    monkeypatch.setattr(mix.actioncam, "load_project_features", lambda _p: [{}])
     monkeypatch.setattr(mix, "part_candidates", cands)
     monkeypatch.setattr(mix, "load_crashes", lambda _p: None)
     monkeypatch.setattr(mix, "_runs_index", lambda _p, _k: ([], {}))

@@ -416,7 +416,7 @@ requires-dist = [
     { name = "urllib3", specifier = ">=1.26" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
-provides-extras = ["ui", "keyring", "ski", "gpu", "events", "all"]
+provides-extras = ["ui", "keyring", "gpu", "events", "all"]
 
 [package.metadata.requires-dev]
 dev = [

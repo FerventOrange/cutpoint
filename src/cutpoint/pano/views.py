@@ -24,8 +24,8 @@ folder): ``pano-views-<hash>.npz/.json``. A standard visual-layer cache
 (``visual-<hash>.npz``) is written too, with the left / forward / right views
 as its three crops and the non-wearer people as detections, so ``cutpoint events``
 skips its fisheye decode and ``cutpoint crashes`` / taste / contact sheets work
-unchanged. :func:`layer_grids` gives the ski features (``beauty``, ``people``,
-``group``) as the *best direction* per second, used by ``ski.layer_features``.
+unchanged. :func:`layer_grids` gives the action-cam features (``beauty``, ``people``,
+``group``) as the *best direction* per second, used by ``actioncam.layer_features``.
 
 Every zero-shot caption comes from the activity profile: the scores below take
 ``prompts`` (:class:`cutpoint.activity.Prompts`) or use the active set
@@ -646,7 +646,7 @@ LIFT_MEDIAN = 5  # frames (~6 s): a lift ride is long, single-frame hits are not
 
 
 def lift_scores(pv: PanoViews, prompts: Prompts | None = None) -> np.ndarray:
-    """Per-frame chairlift / gondola score (0-1): the best horizon view's ``lift``
+    """Per-frame lift / gondola score (0-1): the best horizon view's ``lift``
     prompts of ``prompts`` (default the active set), median-filtered over
     :data:`LIFT_MEDIAN` frames; all 0 when the activity has no lift captions."""
     from cutpoint.events.visual import prompt_score  # noqa: PLC0415
@@ -683,7 +683,7 @@ def frame_people(pv: PanoViews, rules: PeopleRules360 | None = None) -> dict[str
 
 
 def frame_features(pv: PanoViews) -> dict[str, np.ndarray]:
-    """Per-frame ski features over all directions: the best direction wins.
+    """Per-frame action-cam features over all directions: the best direction wins.
 
     ``beauty``: max over the 8 horizon views; ``group``: max over the horizon
     views (the selfie view always shows the wearer, so it is left out);
@@ -817,7 +817,7 @@ def occlusion_bins(
     body (the cone around :func:`wearer_axis`), ``close_area`` (or the full-frame
     height and width rule) for anyone else; a wearer box the QA allows
     (:func:`cutpoint.pano.qa.wearer_allowed`) scores 0. The raw equirect extent is not
-    used: near the nadir it spans 100-200 deg of yaw, and seated chairlift
+    used: near the nadir it spans 100-200 deg of yaw, and seated lift
     friends 70 deg tall frame fine. Cached per clip and view in this process
     (every segment of a clip reuses it; one clip kept).
     """

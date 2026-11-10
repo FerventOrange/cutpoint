@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from conftest import messages, write
-from cutpoint import ski
+from cutpoint import actioncam
 from cutpoint.crash import ClipEncoder
 from cutpoint.events import paths, setup, visual
 
@@ -243,7 +243,7 @@ def test_ski_layer_features_skip_visual_without_clip_weights(monkeypatch, caplog
     monkeypatch.setattr(views, "layer_grids", lambda *a: None)
     monkeypatch.setattr(visual, "load_visual", lambda src: types.SimpleNamespace(t=np.arange(3.0)))
     monkeypatch.setattr(visual, "frame_scores", no_weights)
-    out = ski.layer_features(tmp_path / "a.mp4", 10)
+    out = actioncam.layer_features(tmp_path / "a.mp4", 10)
     assert out == {}
     assert messages(caplog) == [
         "a.mp4: visual features skipped: CLIP weights not found in x; run: cutpoint setup"

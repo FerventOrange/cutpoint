@@ -40,7 +40,6 @@ from cutpoint import cache, features, jsonout, paths
 from cutpoint.category import ACTION_CAM, CATEGORIES
 from cutpoint.styles import (
     AUTO,
-    RENAMED,
     STYLES,
     Style,
     load_learned,
@@ -80,11 +79,11 @@ class Check:
 
 def computed_features(base: Style) -> frozenset[str]:
     """The grid features the scorer of ``base`` measures: the action-cam grids of
-    :mod:`cutpoint.ski` (:data:`cutpoint.features.SKI_FEATURES`) or, for the generic scorer,
+    :mod:`cutpoint.actioncam` (:data:`cutpoint.features.ACTION_CAM_FEATURES`) or, for the generic scorer,
     the other grid features plus ``speech``, which both measure."""
     grid = set(features.names("grid"))
-    ski = set(features.SKI_FEATURES) & grid
-    return frozenset(ski if base.kind == ACTION_CAM else (grid - ski) | {"speech"})
+    cam = set(features.ACTION_CAM_FEATURES) & grid
+    return frozenset(cam if base.kind == ACTION_CAM else (grid - cam) | {"speech"})
 
 
 def is_legacy(data: dict[str, Any]) -> bool:
@@ -102,7 +101,7 @@ def _names(items: Iterable[str]) -> str:
 
 def name_problem(name: object) -> str | None:
     """Why ``name`` cannot name a user style, or None: it must be a safe file name and not a
-    built-in, renamed or reserved style name (compared ignoring case)."""
+    built-in or reserved style name (compared ignoring case)."""
     if not isinstance(name, str) or not NAME_RE.fullmatch(name):
         return (
             f"{name!r} is not a usable style name: use up to 64 letters, digits, '-' and '_', "
@@ -111,8 +110,6 @@ def name_problem(name: object) -> str | None:
     low = name.lower()
     if low == AUTO:
         return f"{name!r} is reserved for --style {AUTO}"
-    if low in RENAMED:
-        return f"{name!r} is an old style name (now {RENAMED[low]!r}) and cannot be used"
     if low in STYLES:
         return f"{name!r} is a built-in style name; choose another name"
     if low in _RESERVED_STEMS:
@@ -171,8 +168,6 @@ def check(data: object, stem: str, profiles: Collection[str] | None = None) -> C
         p.append(f'"base" is missing; name a built-in style: {built_in}')
     elif not isinstance(base, str):
         p.append(f'"base" is {base!r}; name a built-in style: {built_in}')
-    elif base in RENAMED:
-        p.append(f'"base" {base!r} was renamed to {RENAMED[base]!r}')
     elif base in STYLES:
         base_style = STYLES[base]
     elif base in user_files():
@@ -365,8 +360,6 @@ def _file_problems(
         return [f"{AUTO!r} is reserved for --style {AUTO}; the file is ignored"], []
     if stem in STYLES:
         return [f"the built-in style {stem!r} has this name; the file is ignored"], []
-    if stem in RENAMED:
-        return [f"{stem!r} is an old style name (now {RENAMED[stem]!r}); the file is ignored"], []
     if not is_legacy(data):
         res = check(data, stem, profiles)
         return res.problems, res.warnings
@@ -427,7 +420,7 @@ def show(name: str) -> dict[str, Any]:
 
     Raises:
         FileNotFoundError: For an unknown style.
-        jsonout.ArgumentError: For ``auto``, a renamed name, or a style file that cannot
+        jsonout.ArgumentError: For ``auto`` or a style file that cannot
             be used (naming every problem).
     """
     if name == AUTO:
@@ -439,10 +432,6 @@ def show(name: str) -> dict[str, Any]:
         entry = _builtin_entry(name)
         own: dict[str, float] = {}
     else:
-        if name in RENAMED and name not in user_files():
-            raise jsonout.ArgumentError(
-                f"style {name!r} was renamed to {RENAMED[name]!r}; use {RENAMED[name]!r}"
-            )
         path = _find(name)
         entry = _file_entry(name, path, None)
         if not entry["valid"]:
@@ -608,8 +597,7 @@ def validate(target: str) -> dict[str, Any]:
     ``.json``).
 
     Returns:
-        ``name``, ``path`` (None for a built-in), ``type`` (``built-in``, ``user``; None for a
-        renamed name), ``legacy``, ``valid``,
+        ``name``, ``path`` (None for a built-in), ``type`` (``built-in``, ``user``), ``legacy``, ``valid``,
         ``problems``, ``warnings`` and ``notes``. The caller fails the command when
         ``valid`` is false.
 
@@ -627,18 +615,6 @@ def validate(target: str) -> dict[str, Any]:
                 "problems": [],
                 "warnings": [],
                 "notes": [f"{target!r} is a built-in style"],
-            }
-        if target in RENAMED and target not in user_files():
-            problem = f"style {target!r} was renamed to {RENAMED[target]!r}"
-            return {
-                "name": target,
-                "path": None,
-                "type": None,
-                "legacy": False,
-                "valid": False,
-                "problems": [problem],
-                "warnings": [],
-                "notes": [],
             }
         path = _find(target)
     else:

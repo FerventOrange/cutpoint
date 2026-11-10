@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint import analyze, features, scorer, ski
+from cutpoint import actioncam, analyze, features, scorer
 from cutpoint.events import scoring
 from cutpoint.styles import STYLES, Style, load_learned
 from cutpoint.telemetry import DT, Telemetry, paint_spans
@@ -187,8 +187,8 @@ def test_a_vlm_window_raises_a_moment_but_never_lowers_one(style, no_transcript)
 
 # --------------------------------------------------------------------------- ski
 SKI_N = 1800  # 180 s
-SRC = Path("ski.mp4")
-LIFT = (150.0, 175.0)  # the chairlift, where the hard mask forbids clips
+SRC = Path("actioncam.mp4")
+LIFT = (150.0, 175.0)  # the transit, where the hard mask forbids clips
 
 
 def ski_telemetry(**bumps: float) -> Telemetry:
@@ -258,13 +258,13 @@ def ski_picks(
     windows: list[dict[str, Any]] = (),  # type: ignore[assignment]
     audio_events: list[dict[str, Any]] = (),  # type: ignore[assignment]
 ) -> list[analyze.Candidate]:
-    ctx = ski.SkiContext(
+    ctx = actioncam.ActionCamContext(
         project=tmp / "proj",
         telemetry={str(SRC): tel},
         speed_ref=np.linspace(0.0, 40.0, 100),
-        crashes={ski._key(SRC): list(crashes)},
-        audio_events={ski._key(SRC): list(audio_events)},
-        windows={ski._key(SRC): list(windows)},
+        crashes={actioncam._key(SRC): list(crashes)},
+        audio_events={actioncam._key(SRC): list(audio_events)},
+        windows={actioncam._key(SRC): list(windows)},
     )
     sig = {k: np.zeros(SKI_N) for k in SIGNALS}
     return analyze.pick_candidates(part(sig, SKI_N, str(SRC)), style, max_candidates, {}, ctx)
@@ -283,7 +283,7 @@ def at(cands: list[analyze.Candidate], t: float) -> analyze.Candidate | None:
 @pytest.fixture
 def no_layers(monkeypatch):
     """No cached voice / visual layers (the 360 and voice grids stay empty)."""
-    monkeypatch.setattr(ski, "layer_features", lambda *_a, **_k: {})
+    monkeypatch.setattr(actioncam, "layer_features", lambda *_a, **_k: {})
 
 
 def test_ski_keeps_a_confident_crash_as_must_include(tmp_path, no_layers):
@@ -396,7 +396,7 @@ def test_ski_picks_a_vlm_window_only_for_an_action_tag(tmp_path, no_layers):
 @pytest.mark.parametrize("layer", ["beauty", "voice_laughter"])
 def test_ski_scores_a_moment_the_cached_layers_mark(tmp_path, monkeypatch, layer):
     """A beauty / wind-gated voice laughter bump from the cached layers is a candidate."""
-    monkeypatch.setattr(ski, "layer_features", lambda *_a, **_k: {layer: bump(90.0, SKI_N)})
+    monkeypatch.setattr(actioncam, "layer_features", lambda *_a, **_k: {layer: bump(90.0, SKI_N)})
     cands = ski_picks(tmp_path, STYLES["action-cam"], ski_telemetry())
     assert at(cands, 90.0) is not None and at(cands, 90.0).kind == layer
 
@@ -408,7 +408,7 @@ def test_ski_labels_jumps_and_crashes_from_their_telemetry_events(tmp_path, no_l
 
 
 def test_ski_never_clips_the_lift_unless_the_mask_is_soft(tmp_path, no_layers):
-    tel = ski_telemetry(airtime=160.0)  # a "jump" on the chairlift: camera handling
+    tel = ski_telemetry(airtime=160.0)  # a "jump" on the transit: camera handling
     assert at(ski_picks(tmp_path, STYLES["action-cam"], tel), 160.0) is None
     soft = learned_ski(tmp_path, mask_friends=0)
     assert at(ski_picks(tmp_path, soft, tel), 160.0) is not None

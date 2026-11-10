@@ -1,4 +1,4 @@
-"""Development harness for the ski scorer: find a reference edit's shots in a project's
+"""Development harness for the action-cam scorer: find a reference edit's shots in a project's
 sources and fit action-cam style weights to them. Not part of the package (formerly ``cutpoint refmatch``
 and ``cutpoint fit``); presets it saves load as before (``--style <name>``).
 
@@ -35,8 +35,8 @@ How it works:
    clips (with a 1 s guard) and whole unused clips are negatives. Everything
    goes to ``<project>/refmatch.json``; ``coverage`` is the share of the
    edit's duration that was matched.
-5. **Fitting** (ski projects): ``fit_weights`` fits non-negative logistic
-   regression weights for the ski features on 1 s bins of unmasked footage,
+5. **Fitting** (action-cam projects): ``fit_weights`` fits non-negative logistic
+   regression weights for the action-cam features on 1 s bins of unmasked footage,
    reports per-feature rank correlation / AUC, evaluates precision and recall
    at the edit's duration before and after (in-sample and grouped by source
    with cross-validation), and saves a learned preset to
@@ -453,14 +453,14 @@ def check_frames(result: dict[str, Any], out_dir: Path, n: int = 6) -> list[Path
         return frames
 
 
-# --------------------------------------------------------------------------- fitting (ski)
+# --------------------------------------------------------------------------- fitting (action-cam)
 BIN_S = 1.0
 Key = tuple[int, int]  # (dataset index, index into that dataset's saved features)
 
 
 @dataclass
 class FitData:
-    """One project's saved ski feature grids plus its refmatch labels, loaded once."""
+    """One project's saved action-cam feature grids plus its refmatch labels, loaded once."""
 
     project: Path
     result: dict[str, Any]
@@ -476,9 +476,9 @@ def load_fit_data(project: Path, result: dict[str, Any] | None = None) -> FitDat
     """Load ``refmatch.json`` (unless given) and the project's ``action_cam_features``.
 
     Raises:
-        FileNotFoundError: If the project has no refmatch.json / ski features.
+        FileNotFoundError: If the project has no refmatch.json / action-cam features.
     """
-    from cutpoint import ski  # noqa: PLC0415
+    from cutpoint import actioncam  # noqa: PLC0415
 
     result = result or cache.load_json(project / "refmatch.json")
     if not result:
@@ -486,7 +486,7 @@ def load_fit_data(project: Path, result: dict[str, Any] | None = None) -> FitDat
             f"{project / 'refmatch.json'} not found; run `scripts/refmatch.py match` on this "
             "project first"
         )
-    return FitData(project, result, ski.load_project_features(project))
+    return FitData(project, result, actioncam.load_project_features(project))
 
 
 def _positives(result: dict[str, Any]) -> dict[str, list[tuple[float, float]]]:
@@ -505,7 +505,7 @@ def _bins(
     friends_strong: float = 7.0,
 ) -> dict[str, Any]:
     """1 s bins of the given saved sources: features, eligibility, labels, groups."""
-    from cutpoint import ski  # noqa: PLC0415
+    from cutpoint import actioncam  # noqa: PLC0415
 
     X, y, elig, grp, srcs, friends_b, rawmask_b = [], [], [], [], [], [], []
     per = int(BIN_S * 10)
@@ -519,7 +519,7 @@ def _bins(
         lab = np.zeros(n)
         for a, b in pos_of[k[0]].get(path_key(str(Path(d["source"]))), []):
             lab[max(0, int((a - d["offset"]) * 10)) : max(0, int((b - d["offset"]) * 10))] = 1
-        em = ski.effective_mask(d["mask"], d["friends"], friends_strong)
+        em = actioncam.effective_mask(d["mask"], d["friends"], friends_strong)
         friends_b.append(d["friends"][: nb * per].reshape(nb, per).max(1))
         rawmask_b.append(d["mask"][: nb * per].reshape(nb, per).mean(1) >= 0.5)
         X.append(
@@ -606,21 +606,21 @@ def evaluate(
 ) -> dict[str, Any]:
     """Rank auto-picked clips with ``weights``; precision/recall at the edit's duration.
 
-    Clips are picked per source exactly as ``analyze`` would (ski geometry and
+    Clips are picked per source exactly as ``analyze`` would (action-cam geometry and
     masks), ranked by score and taken until their total reaches ``budget``
     (default: the reference duration, scaled to the share of positives in
     ``only_sources``). ``moments`` counts matched reference shots whose
     source span overlaps a selected clip. ``feats`` replaces the saved
     feature grids (e.g. with a held-out taste score).
     """
-    from cutpoint import ski  # noqa: PLC0415
+    from cutpoint import actioncam  # noqa: PLC0415
 
     picks = []
-    for d in feats if feats is not None else ski.load_project_features(project):
+    for d in feats if feats is not None else actioncam.load_project_features(project):
         if only_sources is not None and path_key(d["source"]) not in only_sources:
             continue
         evs = d["events"]
-        for pk in ski.pick(
+        for pk in actioncam.pick(
             d["features"],
             weights,
             d["mask"],
@@ -769,9 +769,9 @@ def mask_modes(thresholds: tuple[float, ...], default: float) -> tuple[float, ..
     Friends no longer lift the lift/stop mask, so every value above 0 is the
     same hard mask; an older list such as ``(0, 5, 6, 7, 8, 11)`` fits each mask
     once. The hard mask takes ``default`` (the base style's value), or
-    :data:`cutpoint.ski.FRIENDS_STRONG` when that is the soft mask.
+    :data:`cutpoint.actioncam.FRIENDS_STRONG` when that is the soft mask.
     """
-    from cutpoint.ski import FRIENDS_STRONG  # noqa: PLC0415
+    from cutpoint.actioncam import FRIENDS_STRONG  # noqa: PLC0415
 
     hard = default if default > 0 else float(FRIENDS_STRONG)
     return tuple(dict.fromkeys(0.0 if t <= 0 else hard for t in thresholds))
@@ -789,7 +789,7 @@ def fit_weights(
     cross: bool = True,
     vlm_friends_only: bool = False,
 ) -> dict[str, Any]:
-    """Fit ski weights to one or more reference edits and save a learned preset.
+    """Fit action-cam weights to one or more reference edits and save a learned preset.
 
     For each ``mask_friends`` mode (above 0 = hard lift/stop mask; 0 = soft
     mask, the ``stopped`` feature weight decides; see :func:`mask_modes`) the
@@ -824,7 +824,7 @@ def fit_weights(
     datasets = project if isinstance(project, list) else [load_fit_data(project, result)]
     base_style = get_style(base)
     if features is not None:  # registry names; an older name is read as its new one
-        features = list(registry.ski_names(dict.fromkeys(features, 0.0)))
+        features = list(registry.action_cam_names(dict.fromkeys(features, 0.0)))
     keys_w = [k for k in (features or list(base_style.weights)) if k != "taste"]
     default = base_style.weights
     th_default = base_style.mask_friends
@@ -1003,8 +1003,8 @@ def ablate(
     VLM tags enter through ``vlm`` / ``scenic``; "no_vlm" drops those
     features. ``thresholds`` are ``mask_friends`` modes, as for :func:`fit_weights`.
     """
-    from cutpoint.features import SKI_FEATURES as FEATURES  # noqa: PLC0415
-    from cutpoint.ski import NEW_FEATURES  # noqa: PLC0415
+    from cutpoint.actioncam import NEW_FEATURES  # noqa: PLC0415
+    from cutpoint.features import ACTION_CAM_FEATURES as FEATURES  # noqa: PLC0415
 
     old = [f for f in FEATURES if f not in NEW_FEATURES]
     rows = []
@@ -1255,7 +1255,7 @@ def main(argv: list[str] | None = None) -> int:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="fit weights and save <CUTPOINT_HOME>/styles/<name>.json (default: on for "
-        "ski projects)",
+        "action-cam projects)",
     )
     m.add_argument("--name", help="learned preset name (default: <base>_learned)")
     p = MatchParams()

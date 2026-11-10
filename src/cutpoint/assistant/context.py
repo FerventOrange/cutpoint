@@ -112,8 +112,8 @@ SIGNAL_CUES = (
     *("people", "group", "faces", "social", "voice_laughter", "laughter", "loudness"),
 )
 TAG_CUES = (
-    *("jump_air", "landing", "crash_fall", "powder_spray", "fast_groomer", "trees"),
-    *("scenic_vista", "friends_faces", "chairlift", "standing_talking", "lodge"),
+    *("jump_air", "landing", "crash_fall", "spray", "fast_open", "trees"),
+    *("scenic_vista", "friends_faces", "transit", "standing_talking", "indoor_break"),
 )
 CUES = (*SIGNAL_CUES, "vision", "funny", *TAG_CUES)
 HEARD = ("laughter", "scream")  # signals.events: the strongest detected sound of each, 0-1
@@ -125,16 +125,23 @@ CUE_HELP = {
     "wipeout": "crash confidence",
     "laughter": "said",
     "voice_laughter": "heard",
-    "chairlift": "on a lift",
+    "transit": "between runs: lift, gondola, car or boat",
+}
+# Words a search may use for a cue besides its name (see _names).
+CUE_WORDS = {
+    "transit": ("lift", "chair", "gondola", "shuttle", "boat"),
+    "indoor_break": ("indoor", "inside", "lodge", "cabin"),
+    "spray": ("powder", "splash"),
+    "fast_open": ("groomer", "open"),
 }
 # Searches the rules spell out: (name, any of these cues is high, with one of these, without
 # these). Each is sent only when the project has one of its first cues, naming only the cues it
 # has (the rest of the rules stay short for a small local model).
 RECIPES = (
-    ("beauty shots", ("beauty", "scenic_vista"), ("stopped", "chairlift"), ()),
+    ("beauty shots", ("beauty", "scenic_vista"), ("stopped", "transit"), ()),
     (
         "casual riding",
-        ("speed", "carve", "fast_groomer"),
+        ("speed", "carve", "fast_open"),
         (),
         ("airtime", "jump_air", "crash", "wipeout", "crash_fall"),
     ),
@@ -345,8 +352,11 @@ def _look(cand: dict[str, Any], windows: list[dict[str, Any]]) -> Look:
 def _names(word: str, cue: str) -> bool:
     """Whether search ``word`` names ``cue``: a part of the cue name (split at ``_``) starts
     with it, or ends with it for words of 4+ letters, so ``air`` names airtime and jump_air
-    but not chairlift, while ``lift`` names chairlift."""
-    return any(p.startswith(word) or (len(word) >= 4 and p.endswith(word)) for p in cue.split("_"))
+    but not transit, while ``trans`` names transit."""
+    parts = cue.split("_")
+    return any(p.startswith(word) or (len(word) >= 4 and p.endswith(word)) for p in parts) or any(
+        w.startswith(word) for w in CUE_WORDS.get(cue, ())
+    )
 
 
 def _jsonl(rows: list[dict[str, Any]]) -> str:
