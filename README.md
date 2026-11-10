@@ -101,6 +101,7 @@ irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | 
 - [Architecture](https://github.com/FerventOrange/cutpoint/blob/main/docs/architecture.md), [Contributing](https://github.com/FerventOrange/cutpoint/blob/main/CONTRIBUTING.md), [Security](https://github.com/FerventOrange/cutpoint/blob/main/SECURITY.md)
 - [Pipeline](https://github.com/FerventOrange/cutpoint/blob/main/docs/pipeline.md): diagrams of the analyze, clips and assemble flow
 - [Insta360 SDK](https://github.com/FerventOrange/cutpoint/blob/main/docs/insta360-sdk.md): optional, for high-quality 360 stitching
+- [Roadmap](https://github.com/FerventOrange/cutpoint/blob/main/docs/roadmap.md): where Cutpoint has been and where it is going
 
 ## License
 
