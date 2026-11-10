@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The UI header shows what the footage was detected as ("Detected: Gameplay", or "Not sure: General style"), with the reason and the sources that disagree, and changes the style in one step: choosing one analyzes the project again in it (#897, #880).
+
+### Fixed
+
+- UI "Analyze again" on a project made on the command line with `--style auto` keeps `--style auto` instead of the style it picked.
+
 ### Changed
 
 - The UI New project dialog defaults to Auto (action-cam stays preselected with camera telemetry).

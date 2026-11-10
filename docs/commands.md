@@ -239,6 +239,22 @@ stream-list probe of the first 12 files `analyze` would find) unless you chose a
 The header reads "cutpoint / <project name>": the name opens the project menu, which lists the projects
 (the open one marked) and ends, after a divider, with "New project…". The browser tab shows the same title.
 
+After the first analysis a style button follows the project name (not for 360 projects). For an
+Auto project it reads "Detected: Gameplay" (the category `highlights.json` records in
+`detection`), or "Not sure: General style" when the detection was unsure and fell back
+(`gaming` when it leaned to gameplay, else `action`); a project in a style you chose reads
+"Style: Talk (your choice)". Its menu gives the recorded reason, why an unsure detection used its
+style, one "Disagree: b.mp4 looks like Talk (…)" line per source of another category when they are
+more than 10% of the footage, and a suggested style. Below are Auto (detect from footage), the
+categories with their style (Gameplay: gaming, Talk: commentary, General: action, and Action cam:
+action-cam when a source has camera telemetry or the project already uses it) and Other styles
+(the rest, your custom styles included). Choosing one opens the "Analyze again as Talk?" dialog
+with the Analysis options filled in; confirming runs `analyze --style <style>` (cached
+transcripts and per-source results are reused) and makes it the project's style. Nothing is
+deleted: the sequence, clips, final videos and AI Chat stay. After you leave Auto, the menu keeps
+showing "Detected earlier: Gameplay" from a copy in `ui/meta.json`. The choices wait while a job
+runs, as "Analyze again" does.
+
 New Project's Source field takes the full paths of one or more videos and folders, one per line,
 that you type or paste; it always accepts them. A leading `~` is the home folder of the computer
 running `cutpoint ui` (`~/Videos`), here and in the Settings projects folder. They are the project's `analyze` inputs, as on the

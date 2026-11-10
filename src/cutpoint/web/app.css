@@ -324,6 +324,21 @@ select { max-width: 100%; }
 /* the open project's facts under its actions: text only, no role */
 .proj-stats { display: grid; gap: var(--space-1); padding: var(--space-1) var(--space-2); font-size: var(--fs-small); color: var(--muted); overflow-wrap: anywhere; }
 .proj-sep { height: 1px; margin: var(--space-1) 0; background: var(--divider); }
+/* style button (#897): a small chip after the project name; long text ends in an ellipsis (the full text is its title)
+   and it shrinks before Export and Save do. Its menu reuses the project menu's look */
+.style-menu { position: relative; min-width: 0; flex: 0 1 auto; }
+.style-btn {
+  display: flex; align-items: center; gap: var(--space-1); max-width: 100%; min-height: var(--control-h-sm);
+  font: inherit; font-size: var(--fs-small); color: var(--text); background: var(--raise);
+  border: 1px solid var(--line); border-radius: 999px; padding: 2px var(--space-2); cursor: pointer;
+}
+.style-btn:hover, .style-btn[aria-expanded="true"] { background: var(--hover); }
+.style-btn::after { content: ""; flex: none; width: 0.35em; height: 0.35em; margin-left: var(--space-1); border: solid currentColor; border-width: 0 2px 2px 0; transform: translateY(-25%) rotate(45deg); }
+.style-btn[aria-expanded="true"]::after { transform: translateY(25%) rotate(-135deg); }
+.style-name { min-width: 0; max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.style-pop { min-width: 18em; }
+.style-pop .proj-stats { padding-block: var(--space-1); }
+.style-group-label { padding: var(--space-1) var(--space-2) 0; font-size: var(--fs-small); color: var(--muted); }
 .save { color: var(--muted); }
 .save.unsaved { color: var(--amber-text); }
 /* gear: square, icon only */
@@ -1353,8 +1368,9 @@ fieldset.models-section .hint, fieldset.models-section p { overflow-wrap: anywhe
   #panelSequence > .col-head { top: 0; } /* the Sequence header (with the selection actions) sticks to the window top: the bars above are static */
   .top { flex-wrap: wrap; }
   .top { position: relative; }
-  .proj-menu { position: static; }
+  .proj-menu, .style-menu { position: static; }
   .proj-pop { left: var(--space-2); right: var(--space-2); width: auto; max-width: none; }
+  .style-name { max-width: 20ch; }
   .screen { flex: none; aspect-ratio: 16 / 9; min-height: 0; }
   /* the two-line bar would cover most of a 16:9 picture: the panel grows by the bar, the video stays above it */
   @container stage (width < 520px) {
