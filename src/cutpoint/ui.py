@@ -4069,6 +4069,15 @@ def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[A
     return inputs, meta.get("style") or (hl or {}).get("style")
 
 
+def _resolved_style(meta: dict[str, Any], hl: dict[str, Any] | None) -> object:
+    """The style the analysis ran as: the project's chosen style, or for ``auto`` the style the
+    footage was detected as (recorded in highlights.json), else the recorded style."""
+    style = meta.get("style")
+    if not style or style == AUTO:
+        return (hl or {}).get("style") or style
+    return style
+
+
 def _subscription_roles(args: list[str], style: object) -> bool:
     """Whether an analyze/edit job with ``args`` on ``style`` has a role on a subscription
     provider (#832): Vision (rating on) or the AI Chat model of the ``dialogue`` step (open-list
@@ -4187,7 +4196,7 @@ def analyze_options(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
         "max_candidates": mc
         if isinstance(mc, int) and not isinstance(mc, bool) and mc > 0
         else None,
-        "no_scenes": _no_scenes(st, style),
+        "no_scenes": _no_scenes(st, _resolved_style(meta, hl)),
         "skip": _saved_skip(p, hl),
         "must_include_crash": float(crash)
         if default_crash is not None
@@ -4354,7 +4363,7 @@ def preset_problem(meta: dict[str, Any], hl: dict[str, Any] | None) -> str | Non
             "model (analyze --model), which cutpoint edit does not take."
         )
     inputs, style = _analysis_inputs(meta, hl)
-    if _no_scenes(st, style):
+    if _no_scenes(st, _resolved_style(meta, hl)):
         return (
             "Presets are not available here: this project's analysis used --no-scenes, which "
             "cutpoint edit does not take."
@@ -5115,13 +5124,13 @@ def create_app(port: int) -> FastAPI:
 
     @owned.post("/projects")
     def create_project(body: dict[str, Any]):
-        name, style = body.get("name"), body.get("style", "gaming")
+        name, style = body.get("name"), body.get("style", AUTO)
         if not isinstance(name, str) or not name.strip() or len(name) > 100:
             raise bad("name must be 1-100 characters")
         inputs = _body_inputs(body)
         recursive, exclude = _flag(body, "recursive"), _exclude_globs(body)
         is_cam = isinstance(style, str) and _action_cam_style(style)
-        if style not in ui_styles() and not is_cam:
+        if style != AUTO and style not in ui_styles() and not is_cam:
             raise bad(f"unknown style {style!r}")
         if len(inputs) > 1 or recursive or exclude:  # analyze's inputs, --recursive, --exclude
             try:
@@ -5216,7 +5225,7 @@ def create_app(port: int) -> FastAPI:
             "name": meta.get("name") or pid,
             "style": meta.get("style") or (hl or {}).get("style") or "",
             # the page's Color starts at Off for gaming footage, as config.json's color does
-            "gaming": _gaming_style(meta.get("style") or (hl or {}).get("style")),
+            "gaming": _gaming_style(_resolved_style(meta, hl)),
             "kind": "360" if meta.get("kind") == "360" else "video",
             "source": meta.get("source"),
             "highlights": highlights,

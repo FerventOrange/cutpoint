@@ -212,6 +212,41 @@ def test_create_project_accepts_an_action_cam_style_on_flat_footage(
         assert meta["style"] == "action-cam" and meta.get("kind") != "360"
 
 
+def test_create_project_accepts_auto_and_defaults_to_it(
+    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An omitted style is Auto; the analyze job runs --style auto and the vision flags follow
+    Settings (#919): --no-vision when it is off, --vision when on, neither when unset."""
+    footage = tmp_path / "footage"
+    footage.mkdir()
+    (footage / "a.mp4").write_bytes(b"x")
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    for extra in ({}, {"style": "auto"}):
+        res = client.post("/api/projects", json={"name": "T", "source": str(footage), **extra})
+        assert res.status_code == 200, res.text
+        pid = res.json()["id"]
+        assert ui.read_meta(ui.project_dir(pid))["style"] == "auto"
+        assert client.get(f"/api/projects/{pid}").json()["style"] == "auto"
+    for cfg, want in ((None, (False, False)), (True, (True, False)), (False, (False, True))):
+        set_config(home, **({} if cfg is None else {"vision": cfg}))
+        captured.clear()
+        job = {"action": "analyze"}
+        assert client.post(f"/api/projects/{pid}/jobs", json=job).status_code == 200
+        args = captured[0]
+        assert args[args.index("--style") + 1] == "auto"
+        assert ("--vision" in args, "--no-vision" in args) == want
+
+
+def test_create_project_still_refuses_an_unknown_style_next_to_auto(
+    client: TestClient, tmp_path: Path
+) -> None:
+    footage = tmp_path / "a.mp4"
+    footage.write_bytes(b"x")
+    res = client.post("/api/projects", json={"name": "T", "source": str(footage), "style": "nope"})
+    assert res.status_code == 400 and "unknown style" in res.json()["detail"]
+
+
 def test_create_project_accepts_an_action_cam_style_for_several_inputs(
     client: TestClient, tmp_path: Path
 ) -> None:
@@ -2103,6 +2138,22 @@ def test_a_ski_analysis_without_no_scenes_keeps_presets_and_scene_detection_on(
     assert view["preset_problem"] is None and view["must_include_crash_default"] == 0.6
     opts = view["analyze_options"]
     assert (opts["no_scenes"], opts["must_include_crash"]) == (False, None)
+
+
+def test_an_auto_project_detected_as_action_cam_keeps_presets_and_scene_detection_on(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """An Auto project's detected style (not "auto") decides whether "scenes": false means
+    --no-scenes."""
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl["style"] = "action-cam"
+    hl["settings"]["scenes"] = False
+    cache.save_json(p / "highlights.json", hl)
+    write(p / "ui" / "meta.json", json.dumps({"style": "auto", "source": str(tmp_path / "c.mp4")}))
+    view = client.get("/api/projects/cli").json()
+    assert view["preset_problem"] is None
+    assert view["analyze_options"]["no_scenes"] is False
 
 
 @pytest.mark.parametrize(
@@ -8669,6 +8720,17 @@ def test_settings_show_the_color_default(
     if cfg is not None:
         set_config(home, color=cfg)
     assert client.get("/api/settings").json()["color"] == shown
+
+
+def test_the_project_view_says_an_auto_project_detected_as_gaming_is_gaming(
+    client: TestClient, tmp_path: Path
+) -> None:
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl["style"] = "gaming"
+    cache.save_json(p / "highlights.json", hl)
+    write(p / "ui" / "meta.json", json.dumps({"style": "auto", "source": str(tmp_path / "c.mp4")}))
+    assert client.get("/api/projects/cli").json()["gaming"] is True
 
 
 @pytest.mark.parametrize(("style", "gaming"), [("gaming", True), ("funny", False), (None, False)])
