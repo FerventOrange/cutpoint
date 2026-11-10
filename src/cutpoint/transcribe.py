@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import gc
 import importlib.util
@@ -301,6 +302,11 @@ class Transcriber:
         self._model: Any = None
         self._suppress: list[int] | None = None  # tokens left out of the text (:func:`suppressed`)
         self._warned_kept = False
+        self._upgrade: bool | None = None  # :meth:`upgrades_fallback`, asked once per run
+        # why the model runs on the CPU: "memory" (the GPU short of VRAM) or "cuda_error"
+        self.fallback_reason: str | None = None
+        # sources whose transcript this run is a CPU fallback's (made or reused, #892)
+        self.fallbacks: list[Path] = []
 
     def _cpu_model(self, name: str) -> str:
         """The model to run on the CPU instead of ``name``: ``--model`` as given; without it
@@ -328,6 +334,27 @@ class Transcriber:
             setup_command(cpu),
         )
 
+    def upgrades_fallback(self) -> bool:
+        """Whether a CPU fallback's transcript of an earlier run, made as the GPU was short of
+        memory, is transcribed again with the default (#892): without ``--model``, on CUDA, when
+        the memory guard says the default fits on the GPU now. Asked once (the first such
+        fallback found), no model loaded."""
+        if self._upgrade is None:
+            loaded = self._model is not None and self.device == "cuda"
+            self._upgrade = (
+                not self.explicit
+                and self._want == "cuda"
+                and (loaded or memguard.fits_gpu(memguard.whisper_need(self.default_name)))
+            )
+            if self._upgrade:
+                logger.info(
+                    "Whisper %s fits on the GPU now: transcribing again what a CPU fallback "
+                    "of an earlier run transcribed with Whisper %s",
+                    self.default_name,
+                    default_model("cpu"),
+                )
+        return self._upgrade
+
     def load(self) -> Any:
         """Load the model now (the memory guard runs here), instead of at the first transcribe."""
         return self._load()
@@ -347,8 +374,10 @@ class Transcriber:
                 cpu_model=memguard.whisper_need(cpu),
                 cpu_label=None if cpu == name else f"Whisper {cpu}{_CPU_DEFAULT}",
             )
-            if self.device != self._want and cpu == name:
-                self._kept_on_cpu(name)
+            if self.device != self._want:
+                self.fallback_reason = "memory"
+                if cpu == name:
+                    self._kept_on_cpu(name)
             self.model_name = name if self.device == self._want else cpu
             compute = "float16" if self.device == "cuda" else "int8"
             logger.info("Loading whisper %s on %s (%s)", self.model_name, self.device, compute)
@@ -373,6 +402,7 @@ class Transcriber:
                 "CUDA transcription failed (%s); falling back to CPU int8%s", err, switch
             )
         self.device = self._want = "cpu"  # a CUDA failure: on the CPU from now on
+        self.fallback_reason = "cuda_error"
         if cpu == self.model_name:
             self._kept_on_cpu(cpu)
         self.model_name = cpu
@@ -466,7 +496,10 @@ def cached_transcript(tr: Any, cdir: Path) -> Path | None:
     """The cached transcript in ``cdir`` the transcriber ``tr`` uses, or None: its model's and,
     without ``--model``, its first default's (sources cached before a CPU fallback); else the
     CPU default's only when :func:`record_transcript` marked it as a CPU fallback of that
-    default (not one of an explicit ``--model small``, nor an unmarked older one)."""
+    default (not one of an explicit ``--model small``, nor an unmarked older one), unless the
+    GPU was short of memory then and the default fits on it now
+    (:meth:`Transcriber.upgrades_fallback`, #892; a CUDA error's is kept, as is a marker
+    without a reason)."""
     own = [transcript_name(tr.model_name, tr.language)]
     if _no_model(tr):
         own.append(transcript_name(tr.default_name, tr.language))
@@ -482,17 +515,37 @@ def cached_transcript(tr: Any, cdir: Path) -> Path | None:
     except OSError:
         return None
     ok = isinstance(mark, dict) and mark.get("fallback_of") == tr.default_name
-    return path if ok and mark.get("size") == size else None
+    if not ok or mark.get("size") != size:
+        return None
+    return None if mark.get("reason") == "memory" and tr.upgrades_fallback() else path
+
+
+def is_fallback(tr: Any, path: Path) -> bool:
+    """Whether the transcript ``path`` that ``tr`` (without ``--model``) uses is a CPU
+    fallback's (:func:`record_transcript` marked it)."""
+    if not _no_model(tr):
+        return False
+    mark = cache.load_json(fallback_marker(path))
+    return isinstance(mark, dict) and mark.get("fallback_of") == tr.default_name
 
 
 def record_transcript(tr: Any, path: Path) -> None:
     """``tr`` just saved the transcript ``path``: mark it as a CPU fallback of its default
-    (no ``--model``, another model ran), else drop a mark an earlier run left."""
+    (no ``--model``, another model ran), else drop a mark an earlier run left; the default
+    without ``--model`` also removes the CPU fallback's transcript it replaces (#892)."""
     marker = fallback_marker(path)
     if _no_model(tr) and tr.model_name != tr.default_name:
-        cache.save_json(marker, {"fallback_of": tr.default_name, "size": path.stat().st_size})
-    else:
-        marker.unlink(missing_ok=True)
+        mark = {"fallback_of": tr.default_name, "size": path.stat().st_size}
+        cache.save_json(marker, {**mark, "reason": getattr(tr, "fallback_reason", None)})
+        return
+    marker.unlink(missing_ok=True)
+    if not _no_model(tr):
+        return
+    old = path.with_name(transcript_name(default_model("cpu"), tr.language))
+    if old != path and fallback_marker(old).is_file():
+        with contextlib.suppress(OSError):  # open elsewhere: unmarked, it is never reused
+            fallback_marker(old).unlink()
+            old.unlink()
 
 
 def transcript_name(model: str, language: str | None = None) -> str:
