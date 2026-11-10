@@ -23,6 +23,7 @@ from cutpoint.events import (
     tails,
     vlm_windows,
 )
+from cutpoint.events.common import Source
 from cutpoint.events.discover import (
     DiscoverParams,
     cluster_regions,
@@ -249,6 +250,40 @@ def test_score_regions_make_score_events() -> None:
     normal = report.normalize("rec.mp4", events[0])
     assert normal["label"] == "5 > 4" and normal["details"]["before"] == 5
     assert report._event_line("rec.mp4", normal).endswith("OCR score: 5 > 4")
+
+
+def test_a_disabled_slot_is_logged_once_per_source(caplog: pytest.LogCaptureFixture) -> None:
+    fast = [part for k in range(20) for part in [(4 * k, 4 * k + 3, str(k))]]
+    with caplog.at_level("INFO", logger=killfeed.logger.name):
+        events, stats = _interpret(_reads(*fast))
+        assert not caplog.records  # logged by detect_ocr_events, fresh or cached, not here
+        killfeed._log_score_slots("rec.mp4", stats)
+    assert events == [] and stats["score_slots"]["score@135"]["disabled"] is True
+    lines = [r.getMessage() for r in caplog.records if "score readout off" in r.getMessage()]
+    assert lines == ["rec.mp4: score readout off for score@135 (a counter, not a score)"]
+    caplog.clear()
+    with caplog.at_level("INFO", logger=killfeed.logger.name):
+        killfeed._log_score_slots("rec.mp4", _interpret(_reads((0, 40, "5"), (41, 80, "4")))[1])
+    assert not [r for r in caplog.records if "score readout off" in r.getMessage()]
+
+
+def test_a_cached_result_logs_its_disabled_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    region = {"name": "score", "x": 100, "y": 20, "w": 80, "h": 60, "kind": "score"}
+    preset = preset_from_dict({"game": "tilefall", "regions": [region | {"gate": "read"}]}, None)
+    monkeypatch.setattr(killfeed, "load_preset", lambda *_a, **_k: preset)
+    slots = {"score@135": {"disabled": True}, "score@300": {"disabled": False}}
+    hit = {"events": [], "stats": {"score_slots": slots}}
+    monkeypatch.setattr(killfeed.cache, "load_json", lambda _p: hit)
+    src = Source(tmp_path / "rec.mp4", 60.0, tmp_path, [])
+    with caplog.at_level("INFO", logger=killfeed.logger.name):
+        assert killfeed.detect_ocr_events(src, OcrParams(game="tilefall", fps=1.0), None) == (
+            [],
+            hit["stats"],
+        )
+    lines = [r.getMessage() for r in caplog.records if "score readout off" in r.getMessage()]
+    assert lines == ["rec.mp4: score readout off for score@135 (a counter, not a score)"]
 
 
 def test_score_region_reads_make_no_text_event_and_are_not_learned() -> None:

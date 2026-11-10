@@ -3522,6 +3522,18 @@ class OcrInterpretation:
         return events
 
 
+def _log_score_slots(src_name: str, stats: dict[str, Any]) -> None:
+    """One INFO line naming the ``score`` spots of ``stats["score_slots"]`` that were turned
+    off as counters, if any (fresh and cached results alike)."""
+    off = [k for k, v in stats.get("score_slots", {}).items() if v.get("disabled")]
+    if off:
+        logger.info(
+            "%s: score readout off for %s (a counter, not a score)",
+            src_name,
+            ", ".join(sorted(off)),
+        )
+
+
 def _raw_region_keys(regions: list[Region]) -> list[dict[str, Any]]:
     """Region keys for :func:`ocr_raw.raw_key`.
 
@@ -3625,6 +3637,7 @@ def detect_ocr_events(
     key["raw"] = cache.params_hash(raw.key)
     cpath = layer_cache_path(src.cdir, "ocr", key)
     if not force and (hit := cache.load_json(cpath)) is not None:
+        _log_score_slots(src.name, hit.get("stats", {}))
         return hit["events"], hit.get("stats", {})
     can_read = engine is not None or make_engine is not None
     if force and can_read:  # without an engine nothing would read it again
@@ -3858,6 +3871,7 @@ def detect_ocr_events(
             skipped,
             skipped + sum(stats["det_calls"].values()),
         )
+    _log_score_slots(src.name, stats)
     cache.save_json(
         cpath, {"source": str(src.path), "params": key, "stats": stats, "events": events}
     )

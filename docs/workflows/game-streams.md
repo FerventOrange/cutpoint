@@ -263,7 +263,7 @@ centre x in reference pixels) in `details`; `events.txt` shows it as `OCR score:
 vision model gets the hint `on-screen score: 4 > 3`. It counts as the `score_changes` event type
 (see [Event types and prompt keys](../configuration.md#event-types-and-prompt-keys)).
 `stats.ocr.<source>.score_slots` in `events.json` lists per spot its reads, values, changes
-and whether it was disabled. A `score` region is left out of the HUD area the static-screen
+and whether it was disabled; the log has one INFO line per source naming the disabled spots. A `score` region is left out of the HUD area the static-screen
 test compares, so adding one does not change the other regions' events.
 
 ## Kill feed rows without a preset
