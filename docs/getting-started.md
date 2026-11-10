@@ -173,7 +173,7 @@ uv run cutpoint ui
 Open the complete URL printed in the terminal, including `#t=…`. Create a project from one or
 more local videos or folders (one full path per line; "Choose video…" and "Choose folder…" add a
 line, or type or paste the paths; the
-buttons are hidden where the computer has no file dialog, such as Docker) and choose a highlight style (`action-cam` is best with GoPro or Insta360 telemetry and is preselected when an input has some). Run analysis, preview candidates, adjust their
+buttons are hidden where the computer has no file dialog, such as Docker) and leave the highlight style on "Auto (detect from footage)", the default, or choose one (`action-cam` is best with GoPro or Insta360 telemetry and is preselected instead of Auto when an input has some). Run analysis, preview candidates, adjust their
 start/end times, and add them
 to the sequence. Reorder and save the sequence, export clips, then assemble a final video.
 The final preview includes download links for the final video or, with a timeline output format,

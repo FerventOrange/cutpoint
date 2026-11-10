@@ -42,7 +42,9 @@ test('the New project dialog shows the telemetry hint only for the action-cam st
   const style = doc.querySelector('#newStyle');
   doc.querySelector('#projectBtn').click();
   doc.querySelector('#newProjectItem').click();
-  assert.deepEqual([...style.options].map((o) => o.value), ['funny', 'action-cam']);
+  assert.deepEqual([...style.options].map((o) => o.value), ['auto', 'funny', 'action-cam']);
+  assert.equal(style.value, 'auto'); // Auto is the default
+  assert.equal(style.options[0].textContent, 'Auto (detect from footage)');
   assert.equal(hint.hidden, true);
   style.value = 'action-cam';
   style.dispatchEvent(new page.window.Event('change'));
@@ -81,7 +83,7 @@ test('sources with telemetry preselect action-cam unless the user already chose 
 
   doc.querySelector('#projectBtn').click();
   doc.querySelector('#newProjectItem').click(); // reopening starts over
-  assert.equal(style.value, 'funny');
+  assert.equal(style.value, 'auto');
   style.value = 'funny';
   style.dispatchEvent(new page.window.Event('change')); // the user's choice
   await typeSource('/v/gopro.mp4');
@@ -112,7 +114,7 @@ test('the preselect is undone when the sources change to footage without telemet
   await fire(doc.querySelector('#newSource'), '/v/gopro.mp4');
   assert.equal(style.value, 'action-cam');
   await fire(doc.querySelector('#newSource'), '/v/plain.mp4');
-  assert.equal(style.value, 'funny');
+  assert.equal(style.value, 'auto');
   assert.equal(doc.querySelector('#newStyleHint').hidden, true);
   assert.equal(doc.querySelector('#newStyleStatus').textContent, '');
   await fire(doc.querySelector('#newExclude'), '*DVR*');
@@ -147,7 +149,7 @@ test('a late reply for earlier sources does not change the style', async (t) => 
   release();
   await new Promise((r) => setImmediate(r));
   assert.equal(calls, 2);
-  assert.equal(doc.querySelector('#newStyle').value, 'funny');
+  assert.equal(doc.querySelector('#newStyle').value, 'auto');
   page.assertNoUnhandled();
 });
 

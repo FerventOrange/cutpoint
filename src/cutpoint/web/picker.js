@@ -137,7 +137,6 @@ export function initNewProject(onCreated, canPick) {
     };
     if (!body.sources.length) return setError('Choose a video file or a folder of footage.');
     if (!body.name) return setError('Give the project a name.');
-    if (!body.style) return setError('No highlight style is available from the server.');
     setError('');
     $('#newCreate').disabled = true;
     try {
@@ -160,7 +159,11 @@ export function initNewProject(onCreated, canPick) {
     recursive.checked = false;
     $('#newSourceHint').textContent = hint;
     setError('');
-    style.replaceChildren(...styles.map((s) => h('option', { value: s, text: s })));
+    // Auto (detect from the footage) first and preselected; action-cam replaces it when the sources have telemetry
+    style.replaceChildren(
+      h('option', { value: 'auto', text: 'Auto (detect from footage)' }),
+      ...styles.filter((s) => s !== 'auto').map((s) => h('option', { value: s, text: s })));
+    style.value = 'auto';
     showStyleHint();
     dlg.showModal();
     source.focus();
