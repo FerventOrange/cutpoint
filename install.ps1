@@ -94,8 +94,8 @@ do not use `uv tool upgrade`, it drops the torch build).
 
 Modes:
   (default)         Full: every feature. With an NVIDIA GPU: CUDA torch and GPU libraries
-                    ("cutpoint[all]", several GB). Without: CPU torch ("cutpoint[events,ui,keyring,ski]").
-  -Lite             Lite: no torch, no events/GPU extras ("cutpoint[ui,keyring,ski]"). Analyze, clips,
+                    ("cutpoint[all]", several GB). Without: CPU torch ("cutpoint[events,ui,keyring]").
+  -Lite             Lite: no torch, no events/GPU extras ("cutpoint[ui,keyring]"). Analyze, clips,
                     assemble and edit work on the CPU. Lite has no Ollama: it does not offer, install
                     or start it (the AI assistant can use a third-party provider instead).
 
@@ -485,12 +485,13 @@ Optional prompts (default No; with no interactive console the answer is No unles
 
     # Sets Req (the requirement) and NoSources.
     function Resolve-Source {
-        # ui and ski are extras before the packaging change and empty aliases after it, so spelling
+        # ui and keyring are extras before the packaging change and empty aliases after it, so spelling
         # them out is correct on both layouts. keyring is an extra only in releases after 0.3.0
         # (0.3.0 has none: uv warns and skips it), so stamp a release that has it. Keep in step with
         # install.sh. ("all" includes them.)
-        if ($S.Backend -eq "none") { $extra = "[ui,keyring,ski]" }
-        elseif ($S.Backend -eq "cpu") { $extra = "[events,ui,keyring,ski]" }
+        # Releases before 0.4.0 had a real `ski` extra (action-cam telemetry); this script no longer requests it.
+        if ($S.Backend -eq "none") { $extra = "[ui,keyring]" }
+        elseif ($S.Backend -eq "cpu") { $extra = "[events,ui,keyring]" }
         else { $extra = "[all]" }
         $S.NoSources = $false
         $src = $S.Source

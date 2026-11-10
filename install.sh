@@ -36,8 +36,8 @@ Installs uv and ffmpeg when missing, then Cutpoint as a uv tool (run again to up
 
 Modes:
   (default)         Full: every feature. With an NVIDIA GPU: CUDA torch and GPU libraries
-                    ("cutpoint[all]", several GB). Without: CPU torch ("cutpoint[events,ui,keyring,ski]").
-  --lite            Lite: no torch, no events/GPU extras ("cutpoint[ui,keyring,ski]"). Analyze, clips,
+                    ("cutpoint[all]", several GB). Without: CPU torch ("cutpoint[events,ui,keyring]").
+  --lite            Lite: no torch, no events/GPU extras ("cutpoint[ui,keyring]"). Analyze, clips,
                     assemble and edit work on the CPU. Lite has no Ollama: it does not offer, install
                     or start it (the AI assistant can use a third-party provider instead).
 
@@ -683,14 +683,15 @@ offer_ollama() {
 
 # Sets REQ (the requirement) and NO_SOURCES.
 resolve_source() {
-  # ui and ski are extras before the packaging change and empty aliases after it, so spelling
+  # ui and keyring are extras before the packaging change and empty aliases after it, so spelling
   # them out is correct on both layouts. keyring is an extra only in releases after 0.3.0
   # (0.3.0 has none: uv warns and skips it), so stamp a release that has it. Drop these extras
   # once the minimum supported release is past the packaging change. ("all" includes them.)
+  # Releases before 0.4.0 had a real `ski` extra (action-cam telemetry); this script no longer requests it.
   if [ "$BACKEND" = none ]; then
-    extra="[ui,keyring,ski]"
+    extra="[ui,keyring]"
   elif [ "$BACKEND" = cpu ]; then
-    extra="[events,ui,keyring,ski]"
+    extra="[events,ui,keyring]"
   else
     extra="[all]"
   fi
