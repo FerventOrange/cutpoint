@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from cutpoint import config, crash, insta360, stage, telemetry
+from cutpoint import activity, config, crash, insta360, stage, telemetry
 
 N = 600  # 60 s on the 0.1 s grid
 
@@ -447,6 +447,109 @@ def test_no_dense_check_records_no_counts(dense_run, monkeypatch):
 
 
 # -- IMU parse shared with telemetry ----------------------------------------------------------
+
+
+# ---------------------------------------------------------------- the generic floor (#932)
+@pytest.fixture
+def captions(monkeypatch):
+    """Fake CLIP text tower: one embedding axis per caption. ``frame(*captions)`` is a
+    ``(1, 3, 768)`` keyframe embedding (three equal crops) between those captions."""
+    axes: dict[str, int] = {}
+
+    def text_embeddings(prompts, models=None, *, save=True):
+        e = np.zeros((len(prompts), 768), np.float32)
+        for k, s in enumerate(prompts):
+            e[k, axes.setdefault(s, len(axes))] = 1.0
+        return e
+
+    def frame(*names: str, weights: tuple[float, ...] | None = None) -> np.ndarray:
+        v = np.zeros(768, np.float32)
+        for n, w in zip(names, weights or (1.0,) * len(names), strict=True):
+            v[axes.setdefault(n, len(axes))] = w
+        v /= np.linalg.norm(v)
+        return np.tile(v, (1, 3, 1))
+
+    monkeypatch.setattr("cutpoint.events.visual.text_embeddings", text_embeddings)
+    return frame
+
+
+def _profile_params(raw: dict) -> crash.CrashParams:
+    return crash.CrashParams().with_profile(activity.full(activity.validate(raw)))
+
+
+def _generic_params() -> crash.CrashParams:
+    return crash.CrashParams().with_profile(activity.full(activity.library()["generic"]))
+
+
+def test_a_profile_without_negatives_no_longer_saturates(captions):
+    """The no-model fallback (the floor's captions, no negatives) scored every frame 1.0."""
+    floor = activity.base()["incident"]
+    assert floor["pos"] and not floor["neg"]
+    calm = captions(activity.builtin("generic")["incident"]["neg"][0])
+    old = replace(crash.CrashParams(), pos=tuple(floor["pos"]), neg=(), words=())
+    assert crash.crash_prompt_scores(calm, old)[0] == pytest.approx(1.0)  # the saturation
+    bare = _profile_params({"name": "bare", "incident": {"pos": floor["pos"]}})
+    assert bare.neg == bare.floor_neg and bare.neg
+    assert crash.crash_prompt_scores(calm, bare)[0] < 0.1
+    # an activity.json written before the fix: its stored profile has no negatives
+    stored = activity.full(activity.validate({"name": "bare"}))
+    stored["incident"] = {**stored["incident"], "neg": []}
+    rec = {"version": 1, "name": "bare", "source": "synthesized", "profile": stored}
+    old_rec = crash.CrashParams().with_profile(activity.record_profile(rec))
+    assert crash.crash_prompt_scores(calm, old_rec)[0] < 0.1
+
+
+def test_a_profile_with_on_domain_negatives_never_scores_below_generic(captions, monkeypatch):
+    """Synthesized negatives (normal footage of the same activity) sit close to the crash
+    frames: alone they score a fall low; with the floor it is at least generic's share."""
+    tumble = activity.base()["incident"]["pos"][1]  # "a blurry tumbling view"
+    near = "a blurry fast ride down a rough trail"  # an on-domain negative
+    raw = {"name": "rough-ride", "incident": {"pos": ["a rider falling off"], "neg": [near]}}
+    prof, generic = _profile_params(raw), _generic_params()
+    assert prof.floor_pos == generic.pos and prof.floor_neg == generic.neg
+    frames = np.concatenate(
+        [
+            captions(tumble, near, weights=(1.0, 1.0)),  # a fall: like the negative too
+            captions(near),  # normal riding
+            captions("a rider falling off", tumble),
+        ]
+    )
+    alone = replace(prof, floor_pos=None, floor_neg=None)
+    got = crash.crash_prompt_scores(frames, prof)
+    ref = crash.crash_prompt_scores(frames, generic)
+    assert crash.crash_prompt_scores(frames, alone)[0] < ref[0]  # the problem of #932
+    assert (got >= ref - 1e-6).all() and (got >= crash.crash_prompt_scores(frames, alone)).all()
+    # the dense confirm reads the same share per frame
+    monkeypatch.setattr(crash, "decode_window", lambda *a: (np.arange(len(frames)) + 9.0, frames))
+    enc = SimpleNamespace(embed=lambda f: f)
+    c = {"t0": 10.0, "t1": 11.0}
+    inp = _inputs(spike=False)
+    dense = {
+        k: crash.dense_feature(enc, inp, c, p, {})["crash_topq"]
+        for k, p in (("prof", prof), ("generic", generic))
+    }
+    assert dense["prof"] >= dense["generic"]
+
+
+def test_generic_itself_is_scored_once_and_keys_change_with_the_floor(captions):
+    generic = _generic_params()
+    assert (generic.pos, generic.neg) == (generic.floor_pos, generic.floor_neg)
+    other = _profile_params({"name": "x", "incident": {"pos": ["a"], "neg": ["b"]}})
+    assert other.dense_key() != replace(other, floor_pos=None, floor_neg=None).dense_key()
+    own = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())
+    assert own.resolved and own.floor_pos is None  # prompts given: no profile, no floor
+
+
+def test_stale_dense_caches_are_not_read_and_do_not_break_the_check(tmp_path):
+    """CRASH_VERSION 3: the dense store is a new file; an old one stays harmless."""
+    src = tmp_path / "s.mp4"
+    src.write_bytes(b"x")
+    p = _generic_params()
+    stale = crash.cache.source_dir(src) / "crashdense-01769b39a2.json"  # a version 2 key
+    stale.write_text(json.dumps({"1.0-11.0": {"t": [1.0], "crash": [1.0], "change": [0.0]}}))
+    assert crash._dense_cache(src, p) != stale
+    assert not crash._dense_cache(src, p).exists()
+    assert crash.dense_needs_run([src]) is False  # any store counts: only a hint
 
 
 def test_gravity_is_the_unit_low_passed_accelerometer() -> None:

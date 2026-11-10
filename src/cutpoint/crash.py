@@ -43,7 +43,9 @@ Nothing here is specific to one activity: the visual prompts and the transcript
 words come from the project's activity profile (:mod:`cutpoint.activity`:
 ``--activity``, ``--context`` or detected from the footage); impacts, rotation,
 gravity and stops work for any GoPro HERO 9-13 sport. Prompts passed through
-:class:`CrashParams` override the profile.
+:class:`CrashParams` override the profile. With a profile, each frame's crash share is
+the larger of the profile's and that of ``generic`` (``floor_pos`` / ``floor_neg``), so
+a discovered profile never sees less of a crash than ``--activity generic`` does.
 """
 
 from __future__ import annotations
@@ -81,7 +83,9 @@ def no_visual_reason(reason: str | None) -> Iterator[None]:
 
 DT = 0.1
 G = 9.80665
-CRASH_VERSION = 2  # 2: CLIP built with QuickGELU (dense scores and crash keys changed)
+# 2: CLIP built with QuickGELU (dense scores and crash keys changed); 3: the crash share is
+# at least generic's (floor prompts), a profile without negatives takes generic's (#932)
+CRASH_VERSION = 3
 IMU_VERSION = 1
 CRASHES_FILE = "crashes.json"
 CHECK_DIR = "crash_check"
@@ -126,9 +130,13 @@ class CrashParams:
         weights: Fusion weights of the sub-scores.
         pos, neg: Zero-shot prompts (CLIP ViT-L/14, the visual layer's model).
         words: Transcript cues (phrase -> weight, prefix match with a trailing ``*``).
+        floor_pos, floor_neg: The incident prompts of ``generic``
+            (:func:`cutpoint.activity.generic_incident`): a frame's crash share is the larger
+            of the ``pos`` / ``neg`` one and this one. None: ``pos`` / ``neg`` alone.
 
     ``pos``, ``neg`` and ``words`` left None come from the project's activity profile
-    (:func:`detect_project` resolves it, :meth:`with_profile`); given ones override it.
+    (:func:`detect_project` resolves it, :meth:`with_profile`, which also sets the floor);
+    given ones override it.
     """
 
     impact_g: float = 4.0
@@ -156,15 +164,23 @@ class CrashParams:
     pos: tuple[str, ...] | None = None
     neg: tuple[str, ...] | None = None
     words: tuple[tuple[str, float], ...] | None = None
+    floor_pos: tuple[str, ...] | None = None
+    floor_neg: tuple[str, ...] | None = None
 
     def key(self) -> str:
         """Short hash of everything that changes results (+ code version)."""
         return cache.params_hash({**asdict(self), "v": CRASH_VERSION})
 
     def dense_key(self) -> str:
-        """Hash of what the dense decode depends on (prompts, fps)."""
+        """Hash of what the dense decode depends on (prompts, floor prompts, fps)."""
         return cache.params_hash(
-            {"fps": self.dense_fps, "pos": self.pos, "neg": self.neg, "v": CRASH_VERSION}
+            {
+                "fps": self.dense_fps,
+                "pos": self.pos,
+                "neg": self.neg,
+                "floor": (self.floor_pos, self.floor_neg),
+                "v": CRASH_VERSION,
+            }
         )
 
     @property
@@ -174,13 +190,16 @@ class CrashParams:
 
     def with_profile(self, profile: dict[str, Any]) -> CrashParams:
         """These params with an activity profile's incident prompts and words where
-        they are None."""
+        they are None, and the floor prompts of ``generic`` where those are None."""
         inc = profile["incident"]
+        floor = activity.generic_incident() if None in (self.floor_pos, self.floor_neg) else {}
         return replace(
             self,
             pos=tuple(inc["pos"]) if self.pos is None else self.pos,
             neg=tuple(inc["neg"]) if self.neg is None else self.neg,
             words=tuple(inc["words"].items()) if self.words is None else self.words,
+            floor_pos=tuple(floor["pos"]) if self.floor_pos is None else self.floor_pos,
+            floor_neg=tuple(floor["neg"]) if self.floor_neg is None else self.floor_neg,
         )
 
 
@@ -494,12 +513,17 @@ class ClipEncoder:
 
 
 def crash_prompt_scores(emb: np.ndarray, params: CrashParams) -> np.ndarray:
-    """Zero-shot crash share per frame (mean over the crops), ``emb`` (N, 3, 768)."""
+    """Zero-shot crash share per frame (mean over the crops), ``emb`` (N, 3, 768): the
+    larger of the ``pos`` / ``neg`` share and the floor's (:class:`CrashParams`)."""
     from cutpoint.events.visual import prompt_score  # noqa: PLC0415
 
     if not len(emb):
         return np.zeros(0)
-    return prompt_score(emb, params.pos, params.neg).mean(1)
+    share = prompt_score(emb, params.pos, params.neg).mean(1)
+    floor = (params.floor_pos, params.floor_neg)
+    if None in floor or floor == (params.pos, params.neg):
+        return share
+    return np.maximum(share, prompt_score(emb, *floor).mean(1))
 
 
 def view_change(emb: np.ndarray) -> np.ndarray:
@@ -1217,7 +1241,7 @@ def detect_project(
     if not sources:
         raise ValueError(f"No footage of {project.name} is reachable; reconnect it and rerun")
     p = params or CrashParams()
-    prof = None
+    prof = full_prof = None
     if not p.resolved:
         progress.start("profile")  # the steps of cutpoint crashes (progress.json only)
         prof = activity.resolve(
@@ -1230,14 +1254,16 @@ def detect_project(
             ollama_url=ollama_url,
             ollama_model=ollama_model,
         )
-        p = p.with_profile(prof["profile"])
+        # as the visual layers read it (an old record gets generic's negatives if it has none)
+        full_prof = activity.record_profile(prof)
+        p = p.with_profile(full_prof)
     t_start = time.perf_counter()
     timings: dict[str, float] = {}
     inputs: dict[str, SourceInputs] = {}
     language = _project_language(project)
     t0 = time.perf_counter()
     # The 360 lift rides of load_inputs are found with this profile's lift captions.
-    prompts = activity.prompts(activity.record_profile(prof)) if prof else None
+    prompts = activity.prompts(full_prof) if full_prof else None
     progress.start("inputs")
     with activity.use_prompts(prompts or activity.project_prompts(project)):
         for src, dur in sources:

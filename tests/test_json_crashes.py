@@ -216,6 +216,23 @@ def test_profile_text_unchanged_without_json(ski, capsys):
     assert capsys.readouterr().out.startswith("activity  generic (flag)\n")
 
 
+def test_profile_shows_the_negatives_crashes_uses_for_an_old_record(ski, capsys):
+    """An activity.json from before profiles had incident negatives shows generic's, as
+    ``crashes`` reads it (record_profile), in the text and in --json."""
+    project, _ = ski
+    generic = activity.full(activity.library()["generic"])
+    old = {**generic, "incident": {**generic["incident"], "neg": []}}
+    request = {"activity": "generic", "context": None}
+    rec = {"version": activity.PROFILE_VERSION, "request": request, "source": "flag"}
+    cache.save_json(project / activity.ACTIVITY_FILE, {**rec, "name": "generic", "profile": old})
+    want = activity.record_profile(cache.load_json(project / activity.ACTIVITY_FILE))
+    assert want["incident"]["neg"]
+    code, doc = run_json(capsys, ["profile", "ski"])
+    assert code == 0 and doc["outputs"]["profile"]["incident"]["neg"] == want["incident"]["neg"]
+    assert cli.main(["profile", "ski"]) == 0
+    assert f"{len(want['incident']['neg'])} negatives" in capsys.readouterr().out
+
+
 def test_profile_warns_once_for_an_unreachable_source(ski, tmp_path, monkeypatch, capsys, caplog):
     """The profile detected from the footage: one WARNING line per unreachable source and,
     with --json, one ``footage_unreachable`` warning, as on ``crashes``."""

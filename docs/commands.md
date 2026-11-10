@@ -1147,6 +1147,16 @@ Their `score` is the peak times 10 (0-10, display only; the peak is `signals.pea
 they are not in `suggested_top`, not re-ranked by `events` and stay last.
 `settings.visual_pool` has their `count` and `kinds`.
 
+When the `vision` step ran, `settings.vision` holds `requested`, `failed` and `uncached` (when
+offline) and what it cost, summed over the run (no list per moment): `rated` (moments with a
+rating, `cached` of them from the cache), `calls` (model requests, retries included; a failed
+request counts as a call with its wall time), `vision_s` (the step's seconds), `pre_vision_s` (the
+analyze time before it), `grab_s` (frame grabs), `load_s`, `prompt_s` and `reply_s` (Ollama's own
+timings of model load, prompt reading and reply), `prompt_tokens`, `reply_tokens`, `model` and
+`provider`. A re-rank of an earlier analysis adds `"rerank": true`: its `pre_vision_s` is only
+the cached re-run, not the full analysis. A hosted provider reports no timings: its wall time is
+in `reply_s`. `-v` logs one DEBUG line per request. `scripts/vision_eval.py` compares such projects (see the script's docstring).
+
 ### Analysis steps
 
 The steps run one after another, and only one model is loaded at a time. One exception: with a
@@ -1925,7 +1935,8 @@ Action-cam module (its visual check needs the `events` extra, which Cutpoint lit
 Finds crashes and wipeouts in an analysed
 project from full-rate IMU data, visual, audio and transcript evidence, and writes
 `crashes.json` plus contact sheets in `crash_check\`. Confident crashes are always exported by
-`clips`. The visual prompts and crash words come from the project's activity profile (see
+`clips`. The visual prompts and crash words come from the project's activity profile; a frame's
+crash score is never below that of `--activity generic` (see
 `profile <project>`; `--activity`, `--context`, `--refresh-profile`, `--ollama-url` and `--ollama-model` work as on [`profile`](#profile)). See
 [action-cam workflow](workflows/action-cam.md). `--batch-size N` closes the dense confirm's
 CLIP model after N dense windows and loads it again for the next ones, to give memory back on
@@ -2052,7 +2063,10 @@ from your footage, or made by you or your AI agent. A project named `list`, `sho
 `validate` or `delete` is given as `projects/<name>`.
 
 Discovery: the vision model describes a few frames, the text model writes a profile, and it is
-saved to the library with `"source": "discovered"`, so the next similar video finds it. In
+saved to the library with `"source": "discovered"` (a file with the same content is reused),
+so the next similar video finds it. The profile is also cached per footage (the files, the
+model, `--context` and the prompts), so the same footage in a new project gets the same profile
+without asking the model again. In
 `analyze` and `edit` it runs whenever a local Ollama answers, without `--vision`, and is quiet:
 a missing consent, a bad Ollama port, too little free memory or a fallback is one INFO line.
 `profile`, `crashes` and `events` still warn.
@@ -2061,7 +2075,7 @@ a missing consent, a bad Ollama port, too little free memory or a fallback is on
 |---|---|
 | `--activity NAME` | Use `generic` or a profile of your library (`cutpoint profile list`). An unknown name is `bad_args`. Default: found in your library or discovered from the footage |
 | `--context TEXT` | What the video is, in the user's words. The local LLM turns it into extra crash captions and slang on top of the profile. A changed text rebuilds the profile |
-| `--refresh-profile` | Ignore `activity.json` and detect or build the profile again |
+| `--refresh-profile` | Ignore `activity.json` and the profile cached for this footage, and detect or build the profile again, and replace the cached one. Footage that matches a library profile keeps it unless you give `--context`; to start over, run `cutpoint profile delete NAME` first |
 | `--ollama-url`, `--ollama-model` | The Ollama server and model that build the profile, as on [`analyze`](#analyze) (a flag left out takes its default). A new profile needs no deleting of `activity.json` to use them: add `--refresh-profile` |
 | `--json` | One [result envelope](#json-output) on stdout; `outputs` holds the `activity.json` record (`name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `scores`, `description`, `profile`) and `activity_file`. Output of the local model never reaches stdout |
 

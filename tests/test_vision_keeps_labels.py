@@ -31,6 +31,11 @@ class _HighRater:
     """A reachable Ollama that rates every span 9/10 and describes it."""
 
     hits = asked = missed = 0
+    stats = dict.fromkeys(
+        ("calls", "grab_s", "load_s", "prompt_s", "reply_s", "prompt_tokens", "reply_tokens"), 0
+    )
+    model = "m"
+    provider_name = "ollama"
     consent_needed = None
     cache_only = False
 
