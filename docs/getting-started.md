@@ -384,7 +384,7 @@ Ollama runs local models. Cutpoint works without it. Only these features use it:
 - `analyze --vision` and `edit --vision`: a vision model rates the top candidates. It is off
   unless you ask for it per run or turn it on by default with "Rate frames with vision
   model" in the UI's Models tab, which saves [`"vision": true`](configuration.md#vision)
-  in `config.json` (`--no-vision` then skips it for one run). In `cutpoint ui`, that setting is
+  in `config.json` (unticking removes the key) (`--no-vision` then skips it for one run). In `cutpoint ui`, that setting is
   the only switch: every analysis there follows it. The model is unloaded from GPU memory as soon
   as the rating is done.
 - The VLM layer of `cutpoint events` (and `edit --events`): the same vision model describes

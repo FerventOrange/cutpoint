@@ -41,8 +41,10 @@ Trust boundaries:
   ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved. Every analysis the page
   starts (first or again) passes ``--vision`` or ``--no-vision`` as ``vision`` says when it
   starts (neither while ``config.json`` has no ``vision`` key: the CLI default asks the vision
-  model about unsure sources); the page has no per-run vision box. The same goes for ``--visual-index`` or
-  ``--no-visual-index`` as ``visual_index`` says.
+  model about unsure sources); the page has no per-run vision box. The same goes for
+  ``--visual-index`` or ``--no-visual-index`` as ``visual_index`` says. The vision box rates
+  frames only: ``vision: false`` in a PUT removes the key (the default) and never writes false;
+  a hand-set ``"vision": false`` stays until then.
   While ``config.json`` is unreadable or holds a value Cutpoint rejects, the project routes answer
   409 naming the file and the error; session, pick and settings keep working.
 * The assistant (``/api/projects/<id>/assistant/...``) takes the token header only, never
@@ -4672,9 +4674,13 @@ def create_app(port: int) -> FastAPI:
         ):
             raise bad("send projects_dir, vision, visual_index, assistant and/or vision_assistant")
         updates: dict[str, Any] = {}
+        removals: tuple[str, ...] = ()
         for flag in ("vision", "visual_index"):
             if flag in body:
                 updates[flag] = _flag(body, flag)
+        if updates.get("vision") is False:  # unticked: back to the default, not "vision": false
+            del updates["vision"]
+            removals = ("vision",)
         data = config_data()  # an unreadable config.json: refuse before creating the folder
         existing_ast = data.get("assistant")
         existing_ast_prov = existing_ast.get("provider") if isinstance(existing_ast, dict) else None
@@ -4724,7 +4730,7 @@ def create_app(port: int) -> FastAPI:
             with jobs.lock:
                 if moving and any(j.status == "running" for j in jobs.jobs.values()):
                     raise bad(busy, 409)
-                set_config_values(updates)
+                set_config_values(updates, remove=removals)
         except (ValueError, OSError, HTTPException) as err:
             if created and folder is not None:
                 with contextlib.suppress(OSError):
@@ -4734,7 +4740,7 @@ def create_app(port: int) -> FastAPI:
             if isinstance(err, ValueError):  # config.json is not valid JSON: never overwrite it
                 raise bad(str(err), 409) from err
             raise bad(f"could not save the settings: {err.strerror or err}", 500) from err
-        out = settings_view({**data, **updates})
+        out = settings_view({**{k: v for k, v in data.items() if k not in removals}, **updates})
         if assistant is not None:
             out["assistant_note"] = None
             try:
