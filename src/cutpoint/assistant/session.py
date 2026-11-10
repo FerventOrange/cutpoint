@@ -566,11 +566,14 @@ class Turn:
                     self._nudged is None
                     and rnd < MAX_ROUNDS - 1  # a nudge in the last round would leave no answer
                     and (
-                        self._names_moments(text) or self._announces_work(text) or self._asks_edit()
+                        (self._names_moments(text) and not _asks_advice(self.text))
+                        or self._announces_work(text)
+                        or self._asks_edit()
                     )
                 ):
-                    # moments chosen in text, more work announced, or an edit asked for and
-                    # answered in text: ask once more (the nudge stays in this conversation; the page and chat.json
+                    # moments chosen in text (not for an advice question: its examples name
+                    # moments), more work announced, or an edit asked for and answered in
+                    # text: ask once more (the nudge stays in this conversation; the page and chat.json
                     # never get it)
                     self._nudged = text
                     messages.append({"role": "user", "content": NUDGE})
@@ -624,7 +627,8 @@ class Turn:
         return bool(self.target or _edits(self.text))
 
     def _names_moments(self, text: str) -> bool:
-        """Whether ``text`` names a moment of the table (``m3``)."""
+        """Whether ``text`` names a moment of the table (``m3``). The nudge skips this for an
+        advice question, whose answer cites moments as examples."""
         return any(self.table.real(m) is not None for m in _MOMENT_ID.findall(text))
 
     def _fit(self, messages: list[dict[str, Any]], json_mode: bool, *, tight: bool = False) -> bool:
