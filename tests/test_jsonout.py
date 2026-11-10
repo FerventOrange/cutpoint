@@ -47,6 +47,18 @@ def test_collectors_do_nothing_without_json(tmp_path, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_has_warning_matches_the_code_and_the_exact_files(tmp_path, capsys):
+    a = tmp_path / "a.mp4"
+    assert jsonout.has_warning("x", [a]) is False  # no --json command
+    with jsonout.run("analyze"):
+        jsonout.warn("x", "m", [a])
+        assert jsonout.has_warning("x", [a]) and jsonout.has_warning("x", [str(a)])
+        assert not jsonout.has_warning("y", [a])
+        assert not jsonout.has_warning("x", [a, tmp_path / "b.mp4"])
+        assert not jsonout.has_warning("x")
+    capsys.readouterr()
+
+
 def test_relative_paths_become_absolute(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     with jsonout.run("x"):

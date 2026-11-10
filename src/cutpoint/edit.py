@@ -115,12 +115,17 @@ def _action_cam(
     """Whether the analysis will use an action-cam style (``cutpoint events`` then runs its
     layers); for ``--style auto`` the sources are probed (:func:`cutpoint.category.detect`,
     cached for the analysis; ``footage``: the run's vision client), talk aside: it never makes
-    the style an action-cam one."""
+    the style an action-cam one. An explicit action-cam style on footage without any camera
+    telemetry is not one: the analysis runs it as ``action`` (#939)."""
     if isinstance(style, AutoRequest):
         _probes, det = category.detect(videos, False, shared=footage)  # None: vision is off
         name, _fallback = category.choose_style(det, style.emphasis)
-        style = get_style(name)
-    return style.kind == ACTION_CAM
+        return get_style(name).kind == ACTION_CAM
+    if style.kind != ACTION_CAM:
+        return False
+    from cutpoint.analyze import has_telemetry  # noqa: PLC0415
+
+    return any(has_telemetry(v) for v in videos)
 
 
 def _link_or_copy(src: Path, dst: Path) -> None:

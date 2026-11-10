@@ -280,6 +280,31 @@ def test_reanalyze_of_an_analysis_without_a_total_passes_no_earlier_total(tmp_pa
     assert seen["earlier_total_s"] is None
 
 
+@pytest.mark.parametrize("pano", [False, True])
+def test_reanalyze_asks_again_for_an_action_cam_style_that_fell_back(tmp_path, monkeypatch, pano):
+    """#939: a project whose action-cam request ran as action re-runs with the request (the
+    telemetry probe decides again); 360 projects never fall back."""
+    proj = tmp_path / "proj"
+    settings = {
+        "inputs": [str(tmp_path / "a.mp4")],
+        "must_include_crash": 0.8,
+        "style_requested": "action-cam",
+        "style_fallback": {"from": "action-cam", "reason": "no telemetry"},
+    }
+    write(
+        proj / "highlights.json",
+        json.dumps({"style": "action", "sources": [], "settings": settings}),
+    )
+    if pano:
+        write(proj / "pano.json", json.dumps({"clips": []}))
+    seen: list = []
+    monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.append((a[1], kw)) or proj)
+    analyze.reanalyze(proj)
+    [(style, kw)] = seen
+    assert (style.name, style.must_include_crash) == ("action-cam", 0.8)
+    assert kw["telemetry_fallback"] is not pano
+
+
 @pytest.mark.parametrize(
     ("settings", "vision"),
     [

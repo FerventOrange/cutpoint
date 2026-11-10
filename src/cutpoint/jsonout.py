@@ -115,6 +115,16 @@ def warn(code: str, message: str, files: Iterable[Path | str] = ()) -> None:
             )
 
 
+def has_warning(code: str, files: Iterable[Path | str] = ()) -> bool:
+    """Whether the running ``--json`` command already has a warning ``code`` naming exactly
+    ``files`` (False without one)."""
+    want = [_value(f) for f in files]
+    with _lock:
+        return _active is not None and any(
+            w["code"] == code and w["files"] == want for w in _active.warnings
+        )
+
+
 def fail(code: str, message: str) -> None:
     """Record the error (the first one wins); the envelope then has ``ok`` false."""
     with _lock:

@@ -11431,6 +11431,42 @@ def test_after_leaving_auto_the_view_shows_the_saved_copy_as_stale(
     assert (d["style"], d["category"], d["stale"]) == ("commentary", "gameplay", True)
 
 
+def test_an_action_cam_project_that_fell_back_shows_the_style_that_ran() -> None:
+    """#939: action-cam on footage without telemetry ran as action; the page shows action
+    (a later switch to another style shows that one)."""
+    hl = {
+        "style": "action",
+        "settings": {
+            "style_requested": "action-cam",
+            "style_fallback": {"from": "action-cam", "reason": "no telemetry"},
+        },
+    }
+    assert ui._resolved_style({"style": "action-cam"}, hl) == "action"
+    assert ui._resolved_style({"style": "gaming"}, hl) == "gaming"
+    assert ui._resolved_style({"style": "action-cam"}, {"style": "action-cam"}) == "action-cam"
+    d = ui.detected_view({"style": "action-cam"}, hl)
+    assert d is not None and (d["chosen"], d["style"]) == ("action-cam", "action")
+
+
+def test_a_command_line_project_that_fell_back_analyzes_again_with_its_request(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#939: Analyze again of an action-cam project that ran as action asks for action-cam
+    again (as reanalyze does), so the request stays recorded."""
+    p = auto_project(tmp_path, None, None)
+    hl = cache.load_json(p / "highlights.json")
+    hl["style"] = "action"
+    hl["settings"].update(
+        style_requested="action-cam",
+        style_fallback={"from": "action-cam", "reason": "no telemetry"},
+    )
+    cache.save_json(p / "highlights.json", hl)
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    assert client.post("/api/projects/cli/jobs", json={"action": "analyze"}).status_code == 200
+    assert _after(_cli_args(captured[0]), "--style") == "action-cam"
+
+
 def test_no_detected_view_for_360_projects_or_before_the_first_analysis(
     client: TestClient, tmp_path: Path
 ) -> None:
