@@ -230,7 +230,9 @@ def test_soft_interrupt_gives_ffmpeg_the_soft_stop_time_then_kills_it(
         render([plan(0), plan(1), plan(2)], tmp_path, workers=3)
     assert err.value is main_thread_interrupt.exc
     assert time.monotonic() - t0 >= soft_stop  # they were given the time first
-    assert len(kids.killed) == 2
+    # Each child is killed; the stop loop kills what is still registered every poll, so a child
+    # slow to die under load (its pipes still open) can be killed more than once.
+    assert {id(p) for p in kids.killed} == {id(p) for p in kids.procs}
     assert all(p.poll() not in (None, 7) for p in kids.procs)
     assert {type(e) for e in seen.values()} == {KeyboardInterrupt}
     assert sorted(p.name for p in (tmp_path / "out").iterdir()) == ["000_c.mp4"]  # no .part files
@@ -344,11 +346,23 @@ def test_child_that_ends_after_cancel_is_a_stop_so_the_gpu_is_not_blamed(monkeyp
 @pytest.mark.slow
 def test_child_that_fails_just_before_the_cancel_is_a_stop_not_an_nvenc_failure(monkeypatch, kids):
     """ffmpeg gets the Ctrl+C with Python and can exit before the main thread cancels the scope
-    (#464 F1): the failed exit waits STOP_GRACE_S for the cancel, so no retry on libx264."""
+    (#464 F1): the failed exit waits STOP_GRACE_S for the cancel, so no retry on libx264.
+
+    The cancel is sent once the worker waits for it, and the grace is WAIT_S: with the real
+    0.3 s, a loaded machine that runs the cancelling thread late fails the test, not the code."""
     nvenc = VideoEncoder("nvenc")
     monkeypatch.setattr(ffmpeg_utils, "video_encoder", lambda: nvenc)
     monkeypatch.setattr(ffmpeg_utils, "_GPU_ENCODE_FAILED", set())
+    monkeypatch.setattr(ffmpeg_utils, "STOP_GRACE_S", float(WAIT_S))
     scope = ChildScope()
+    grace = threading.Event()  # the failed exit waits for a cancel
+    real_wait_cancelled = scope.wait_cancelled
+
+    def wait_cancelled(timeout: float) -> bool:
+        grace.set()
+        return real_wait_cancelled(timeout)
+
+    monkeypatch.setattr(scope, "wait_cancelled", wait_cancelled)
     attempts: list[str] = []
     outcome: list[BaseException] = []
 
@@ -367,8 +381,9 @@ def test_child_that_fails_just_before_the_cancel_is_a_stop_not_an_nvenc_failure(
     t.start()
     until(lambda: kids.procs, "ffmpeg to start")
     kids.release()  # ffmpeg exits non-zero first ...
-    until(lambda: kids.procs[0].poll() is not None, "ffmpeg to exit")
-    threading.Timer(0.1, scope.cancel).start()  # ... and the cancel follows
+    until(grace.is_set, "the failed exit to wait for a cancel")
+    assert kids.procs[0].poll() == 7
+    scope.cancel()  # ... and the cancel follows
     t.join(WAIT_S)
     assert [type(e) for e in outcome] == [KeyboardInterrupt]
     assert attempts == ["nvenc"]

@@ -1336,7 +1336,33 @@ def lock_file(project: Path) -> Path:
     return project / ".clips.cutpoint-lock"
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows reuses process ids quickly")
+@pytest.fixture
+def win_pid_alive(monkeypatch):
+    """:func:`procs.pid_alive` takes its Windows branch: on Windows as it is; elsewhere with a
+    stand-in kernel32 that has every process running (STILL_ACTIVE), so the creation-time
+    comparison runs on POSIX too. The tests patch ``procs._win_created``."""
+    if sys.platform == "win32":
+        return
+    import ctypes  # noqa: PLC0415
+
+    class Kernel32:
+        """The calls pid_alive makes; ``argtypes``/``restype`` are set on these as attributes."""
+
+        def __init__(self, *_a, **_kw) -> None:
+            self.OpenProcess = lambda access, inherit, pid: 1
+            self.GetExitCodeProcess = self._exit_code
+            self.CloseHandle = lambda handle: 1
+
+        @staticmethod
+        def _exit_code(handle, code) -> int:
+            code._obj.value = 259  # STILL_ACTIVE; ``code`` is ctypes.byref(DWORD)
+            return 1
+
+    monkeypatch.setattr(procs, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(ctypes, "WinDLL", Kernel32, raising=False)
+
+
+@pytest.mark.usefixtures("win_pid_alive")
 @pytest.mark.parametrize(("offset", "alive"), [(-60.0, True), (60.0, False)])
 def test_pid_alive_takes_a_process_created_after_the_lock_for_another_one(
     monkeypatch, offset, alive
@@ -1349,7 +1375,7 @@ def test_pid_alive_takes_a_process_created_after_the_lock_for_another_one(
     assert procs.pid_alive(os.getpid())  # no time to compare: running
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows reuses process ids quickly")
+@pytest.mark.usefixtures("win_pid_alive")
 @pytest.mark.parametrize(
     ("offset", "alive"),
     [(0.005, True), (procs._CREATED_SLACK, True), (procs._CREATED_SLACK + 0.5, False)],
