@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The vision rating grabs the frames of a moment in parallel (up to 4 ffmpeg at once): the frame grab takes about a quarter less time on 4K footage, with the same frames (#909).
 - The UI New project dialog defaults to Auto (action-cam stays preselected with camera telemetry).
 - **BREAKING:** `POST /projects` without `style` creates an `auto` project (it was `gaming`).
 - **BREAKING:** Vision no longer renames moments or clips; its description is kept in `vision_label` (#913). Re-analyze a project to get the original labels back.

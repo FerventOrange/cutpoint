@@ -9,6 +9,8 @@ import ast
 import json
 import logging
 import math
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -874,7 +876,7 @@ def test_a_profiled_model_gets_one_sheet_of_six_frames_and_the_expected_score(mo
         Path("a"), 0, 7, "action-cam"
     )
     assert res == vision.VisionResult(7.1, "jump")  # 0.5*7 + 0.3*8 + 0.2*6
-    assert grabs == pytest.approx([1, 2, 3, 4, 5, 6])
+    assert sorted(grabs) == pytest.approx([1, 2, 3, 4, 5, 6])  # grabs run in parallel
     (payload,) = seen
     msg = payload["messages"][0]
     assert len(msg["images"]) == 1
@@ -1255,3 +1257,69 @@ def test_each_request_and_cache_hit_logs_a_debug_line(monkeypatch, src, caplog):
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("vision ")]
     assert any("reply 1.00s (5 tokens)" in x and "not cached" in x for x in lines)
     assert any("cache hit" in x for x in lines)
+
+
+def _hosted_rater(sent: list) -> vision.VisionRater:
+    """A rater whose hosted model records the frames it is sent."""
+
+    def ask(_self, _text, frames):
+        sent.append(list(frames))
+        return '{"score": 6, "label": "x"}'
+
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    rater.via = type("Via", (), {"ask": ask, "available": lambda self: True})()
+    rater.check_memory = lambda *a, **k: None
+    rater.cache_only = False
+    return rater
+
+
+def test_frames_reach_the_model_in_time_order_when_grabs_finish_out_of_order(monkeypatch, src):
+    times = [1.0, 2.0, 3.0, 4.0]
+
+    def grab(_src, t, **_k):
+        time.sleep(0.05 - 0.01 * t)  # the earlier the frame, the later it finishes
+        return f"frame{int(t)}".encode()
+
+    monkeypatch.setattr(vision, "grab_frame_jpeg", grab)
+    sent: list = []
+    res = _hosted_rater(sent)._rate_frames(src, times, "gaming")
+    assert res is not None
+    assert sent == [[f"frame{int(t)}".encode() for t in times]]
+
+
+def test_no_more_than_grab_workers_grabs_run_at_once(monkeypatch, src):
+    lock = threading.Lock()
+    running = peak = 0
+
+    def grab(_src, _t, **_k):
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        time.sleep(0.02)
+        with lock:
+            running -= 1
+        return b"jpeg"
+
+    monkeypatch.setattr(vision, "grab_frame_jpeg", grab)
+    times = [float(i) for i in range(vision.GRAB_WORKERS * 2 + 1)]
+    sent: list = []
+    assert _hosted_rater(sent)._rate_frames(src, times, "gaming") is not None
+    assert len(sent[0]) == len(times)
+    assert 1 < peak <= vision.GRAB_WORKERS
+
+
+@pytest.mark.parametrize("exc", [errors.FFmpegError("no frame"), ValueError("undecodable")])
+def test_a_failed_grab_returns_none_with_a_warning_and_sends_nothing(monkeypatch, src, caplog, exc):
+    def grab(_src, t, **_k):
+        if t == 3.0:
+            raise exc
+        return b"jpeg"
+
+    monkeypatch.setattr(vision, "grab_frame_jpeg", grab)
+    sent: list = []
+    rater = _hosted_rater(sent)
+    with caplog.at_level(logging.WARNING, logger="cutpoint.vision"):
+        assert rater._rate_frames(src, [1.0, 2.0, 3.0, 4.0, 5.0], "gaming") is None
+    assert "Vision frame grab failed" in caplog.text
+    assert sent == []
