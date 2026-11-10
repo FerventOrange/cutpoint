@@ -6,6 +6,7 @@ The vision model is mocked; no network.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +79,9 @@ def test_a_server_that_stops_answering_is_not_asked_again(monkeypatch: pytest.Mo
     assert chk.ask(b"jpeg") is None and len(posts) == 1
 
 
-def test_unload_frees_the_model_only_after_a_check(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_unload_frees_the_model_only_after_a_check(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     chk = V.VLChecker(url="http://127.0.0.1:1", model="m")
     posts: list[tuple[str, dict]] = []
 
@@ -94,11 +97,73 @@ def test_unload_frees_the_model_only_after_a_check(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(
         requests, "post", lambda url, json, **kw: posts.append((url, json)) or Resp()
     )
-    chk.unload()
+    with caplog.at_level(logging.INFO, logger=V.__name__):
+        chk.unload()
     assert posts == []  # nothing asked yet: nothing to unload
+    assert any("left as it was (no request this run)" in m for m in caplog.messages)
     chk.ask(b"jpeg")
     chk.unload()
     assert posts[-1] == ("http://127.0.0.1:1/api/generate", {"model": "m", "keep_alive": 0})
+
+
+@pytest.mark.parametrize("preloaded", [True, False], ids=["loaded-before", "loaded-by-run"])
+def test_unload_frees_only_a_model_this_run_loaded(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, preloaded: bool
+) -> None:
+    """#888: a model the AI Chat or another job had loaded stays loaded; a line either way."""
+    chk = V.VLChecker(url="http://127.0.0.1:1", model="m")
+    monkeypatch.setattr(memguard, "ollama_loaded", lambda u, m, num_ctx=None: preloaded)
+    monkeypatch.setattr(memguard, "check_vision", lambda rater: None)
+    posts: list[str] = []
+
+    def post(url: str, json: dict, **kw: Any) -> Any:
+        posts.append(url)
+        resp = requests.Response()
+        resp.status_code = 200
+        resp._content = b'{"message": {"content": "{\\"blocked\\": false}"}}'
+        return resp
+
+    monkeypatch.setattr(requests, "post", post)
+    chk.ask(b"jpeg")
+    with caplog.at_level(logging.INFO, logger=V.__name__):
+        chk.unload()
+    unloaded = posts[-1].endswith("/api/generate")
+    assert unloaded is not preloaded
+    want = "left loaded (not loaded by this run)" if preloaded else "Unloaded vision model m"
+    assert any(want in m for m in caplog.messages)
+
+
+def test_a_model_the_memory_guard_freed_counts_as_loaded_by_this_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#888 F2: loaded before the run, freed by the memory guard, reloaded by this run."""
+    chk = V.VLChecker(url="http://127.0.0.1:1", model="m")
+    loaded = [True]
+    monkeypatch.setattr(memguard, "ollama_loaded", lambda u, m, num_ctx=None: loaded[0])
+    monkeypatch.setattr(memguard, "check_vision", lambda rater: loaded.__setitem__(0, False))
+    resp = requests.Response()
+    resp.status_code, resp._content = 200, b"{}"
+    monkeypatch.setattr(requests, "post", lambda url, **kw: resp)
+    chk._post("p", "aW1n", 10)
+    assert chk.preloaded is False
+
+
+def test_a_local_vision_server_gets_the_memory_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#887: a llama-server on this machine as the Vision provider: the RAM floor first."""
+    chk = V.VLChecker(url="http://127.0.0.1:1", model="m")
+
+    order: list[str] = []
+
+    class Via:
+        def ask(self, prompt: str, jpegs: list[bytes]) -> str:
+            order.append("ask")
+            return '{"blocked": false}'
+
+    chk.rater.via = Via()
+    chk.rater.url, chk.rater.provider_name = "http://127.0.0.1:8080/v1", "llama-server"
+    monkeypatch.setattr(memguard, "check_vision", lambda rater: order.append(rater.url))
+    assert chk.ask(b"jpeg") is not None
+    assert order == ["http://127.0.0.1:8080/v1", "ask"]
 
 
 def path_of(suspect: list[float]) -> dict[str, Any]:
@@ -184,6 +249,7 @@ def _ctx_sent(monkeypatch: pytest.MonkeyPatch, url: str, loaded: int | None) -> 
     guarded: list[int | None] = []
     monkeypatch.setattr(memguard, "ollama_context", lambda u, m: probed.append((u, m)) or loaded)
     monkeypatch.setattr(memguard, "check_vision", lambda rater: guarded.append(rater.num_ctx))
+    monkeypatch.setattr(memguard, "ollama_loaded", lambda u, m, num_ctx=None: False)
     sent: list[int] = []
 
     def post(url: str, json: dict, timeout: Any, allow_redirects: bool = True) -> Any:

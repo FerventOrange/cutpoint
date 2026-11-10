@@ -170,8 +170,8 @@ def test_ollama_context_reads_context_length(monkeypatch):
 
 def test_a_pending_context_change_is_not_loaded(monkeypatch):
     _ps(monkeypatch, [{"model": MODEL, "context_length": 8192}])
-    assert memguard._ollama_loaded(URL, MODEL, 8192)
-    assert not memguard._ollama_loaded(URL, MODEL, 50000)  # Ollama would reload it
-    assert memguard._ollama_loaded(URL, MODEL)  # no context named: the name alone
+    assert memguard.ollama_loaded(URL, MODEL, 8192)
+    assert not memguard.ollama_loaded(URL, MODEL, 50000)  # Ollama would reload it
+    assert memguard.ollama_loaded(URL, MODEL)  # no context named: the name alone
     _ps(monkeypatch, [{"name": f"{MODEL}:latest"}])  # no context_length: the name alone
-    assert memguard._ollama_loaded(URL, MODEL, 50000)
+    assert memguard.ollama_loaded(URL, MODEL, 50000)
