@@ -159,6 +159,10 @@ every analysis the UI starts ("Analyze footage" or "Analyze again") passes its v
 moment as `--vision` or `--no-vision` (neither when there is no key); the UI has no per-run choice. Other values are rejected.
 A rating covers a moment's frames and, except for `action-cam`, the speech in it (the Vision
 consent already covers these transcript excerpts).
+`false` turns off only these vision uses: activity profile discovery (`analyze`, `edit`,
+`events`, `crashes`, `profile`) still asks a local Ollama model to describe a few frames when no
+library profile matches, and without one uses the nearest library profile, the best CLIP
+activity term or the `generic` profile.
 
 ### visual_index
 
