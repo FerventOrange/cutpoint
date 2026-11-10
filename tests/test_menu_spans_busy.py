@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cutpoint.events.killfeed import menu_rules
+from cutpoint.events.killfeed import feed_stacks, menu_rules
 from test_ocr_menus import FEED, NOTICE, _Engine, _feed_preset, _lobby, _moving_records, _run
 
 KILL = [("Orrin", 1410, 60), ("destroyed", 1500, 60), ("Pell", 1640, 60)]
@@ -92,3 +92,86 @@ def test_lobby_between_kills_is_still_a_menu(tmp_path: Path, monkeypatch) -> Non
     assert not [e for e in events if 20 <= e["t"] < 32 and e["type"] != "kill"]
     kills = [e["t"] for e in events if e["type"] == "kill"]
     assert kills == [8.0, 40.0]
+
+
+# #891: a busy feed whose rows read as no kill. In a discovered icon feed (``row_notices``) a
+# row that is no kill line is a notice; it is still a feed line, not a menu's text.
+FEED_ROWS = (
+    "Orrin Vale [Kestrel Mk2] Pell Abernathy",
+    "Sable Quintero-Hart (Heron) Tamsin",
+    "Ivo 77 Lark (Wren) Odessa Marchbanks",
+    "Brannock_the_Second (Gull IV) Mire",
+    "Quill (Osprey) Harrow Vandersloot",
+)
+
+
+def _feed_rows(t: float) -> list[tuple[str, float, float]]:
+    """Gameplay; from 20 s the feed fills: three rows at once, one more at 22 s and 23 s,
+    all on screen until 34 s (5 lines that stay, 3 first read together, for 11 s)."""
+    out = [("Hold", 900, 820)]
+    for i, (row, start) in enumerate(zip(FEED_ROWS, (20, 20, 20, 22, 23), strict=True)):
+        if start <= t < 34:
+            out.append((row, 1410, 60 + 40 * i))
+    return out
+
+
+def _row_preset() -> dict:
+    return _feed_preset() | {"feed": {"row_notices": True}}
+
+
+def test_feed_rows_that_are_no_kills_are_no_text_screen(tmp_path: Path, monkeypatch) -> None:
+    events, stats = _run(tmp_path, monkeypatch, _Engine(_feed_rows, (NOTICE, FEED)), _row_preset())
+    rows = [e for e in events if e.get("region") == "feed"]
+    assert {e["type"] for e in rows} == {"notice"}  # no row reads as a kill
+    # the last row is read once (nothing changes after it): an unknown line read once is dropped
+    assert sorted(e["text"] for e in rows) == sorted(FEED_ROWS[:4])
+    assert stats["text_frames"] == 0 and stats["menu_spans"] == []
+
+
+def test_the_same_lines_outside_the_feed_are_a_text_screen(tmp_path: Path, monkeypatch) -> None:
+    """The rows of :func:`_feed_rows` in the notice region (a lobby list) stay a menu."""
+
+    def lobby(t: float) -> list[tuple[str, float, float]]:
+        return [(text, 600 if x == 1410 else x, y + 200) for text, x, y in _feed_rows(t)]
+
+    _, stats = _run(tmp_path, monkeypatch, _Engine(lobby, (NOTICE, FEED)), _row_preset())
+    assert stats["text_frames"] > 0
+    assert len(stats["menu_spans"]) == 1
+    start, end = stats["menu_spans"][0]
+    assert 22.0 <= start <= 23.0 and 33.0 <= end <= 34.5
+
+
+def test_a_lobby_beside_feed_rows_is_still_a_text_screen(tmp_path: Path, monkeypatch) -> None:
+    """A lobby's lines (:func:`test_ocr_menus._lobby`, 20-32 s) while feed rows that are no
+    kills stay in the feed's area: the rows neither add to nor guard the menu."""
+
+    def screen(t: float) -> list[tuple[str, float, float]]:
+        return [*_lobby(t), *(r for r in _feed_rows(t) if r[1] == 1410)]
+
+    _, stats = _run(tmp_path, monkeypatch, _Engine(screen, (NOTICE, FEED)), _row_preset())
+    assert stats["text_frames"] > 0 and len(stats["menu_spans"]) == 1
+    start, end = stats["menu_spans"][0]
+    assert 20.0 <= start < 23.0 and 29.0 < end <= 32.5
+
+
+def test_overlapping_feed_rows_are_one_stack() -> None:
+    rows = [(23.0, 34.0), (20.0, 30.0), (20.0, 34.0), (22.0, 31.0), (40.0, 44.0), (34.0, 36.0)]
+    assert feed_stacks(rows) == [(20.0, 36.0), (40.0, 44.0)]
+    assert feed_stacks([]) == []
+
+
+def test_short_feed_rows_back_to_back_add_no_line(tmp_path: Path, monkeypatch) -> None:
+    """Four lines of a screen (one short of a text screen) while three feed rows that are no
+    kills follow each other, 5 s each: no row stays long enough to be a line, so their stack
+    adds none and the screen stays gameplay (merged first, they made a 15 s line)."""
+
+    def screen(t: float) -> list[tuple[str, float, float]]:
+        out = [line for line in _lobby(t) if line[1] != 600 or line[2] < 230 + 75 * 4]
+        for i, start in enumerate((20, 25, 30)):
+            if start <= t < start + 5:
+                out.append((FEED_ROWS[i], 1410, 60 + 40 * i))
+        return out
+
+    _, stats = _run(tmp_path, monkeypatch, _Engine(screen, (NOTICE, FEED)), _row_preset())
+    assert stats["feed_regions"]["feed"]["lines"] == 3  # each row was read
+    assert stats["text_frames"] == 0 and stats["menu_spans"] == []

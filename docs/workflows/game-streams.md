@@ -132,7 +132,9 @@ animated backgrounds) are found by their text: a frame is a text screen when at 
 of new menu text are on screen at once, each staying 6 to 60 s, at least 3 of them first read
 within 2 s of each other (a menu opens at once; gameplay labels arrive one by one), for at
 least 3 s, with no feed sighting or kill within 2 s (a busy gameplay moment, with name tags,
-labels and notices piling up, goes on beside the kill feed; a lobby does not). A line on screen
+labels and notices piling up, goes on beside the kill feed; a lobby does not). The rows a
+discovered icon feed reads as no kill count as one line together, however many are on screen
+at once, so a full feed whose rows the parser cannot read as kills is no text screen. A line on screen
 for over 60 s, or from within 6 s of the start of the read to within 6 s of its end for at least half of it (also when a scoreboard hides it for a while), is part of
 the HUD and does not count. A gap of up to 15 s between two menu or text screens, with no feed
 sighting or kill in between (a loading or matchmaking screen), is menu time too; a still screen
