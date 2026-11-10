@@ -8,7 +8,7 @@
 | [uv](https://docs.astral.sh/uv/) | Manages the virtual environment and dependencies. |
 | ffmpeg and ffprobe 5.1 or newer | Decoding, loudness, encoding. Working NVIDIA/AMD encoders are probed; libx264 is the software fallback. |
 | NVIDIA GPU (recommended) | Whisper transcription uses CUDA when the `gpu` extra is installed and falls back to the CPU otherwise. The optional `events` layers pick the GPU automatically and run on the CPU otherwise, much more slowly. |
-| Ollama (optional) | Only for `analyze --vision`, `edit --vision`, `360 director --vl-check`, new activity profiles and the local AI Chat ([setup](#optional-ollama-for-frame-rating-and-ai-chat)). |
+| Ollama (optional) | Only for `analyze --vision`, `edit --vision`, `360 director --vl-check`, discovering activity profiles (also without `--vision`) and the local AI Chat ([setup](#optional-ollama-for-frame-rating-and-ai-chat)). |
 | Disk space | Caches and models live under the data folder. Models for `cutpoint setup` are large (see [Download models](#download-models-only-for-cutpoint-events)). Clips and finals are re-encoded, so budget for them in the project folder. |
 
 Windows and Linux are tested (CI runs the tests on both). Lite
@@ -392,7 +392,8 @@ Ollama runs local models. Cutpoint works without it. Only these features use it:
   can use a hosted (API or subscription) Vision model chosen in the Models tab once you allowed vision requests
   there ([`vision_assistant`](configuration.md#vision_assistant)); with neither, the layer is
   skipped with a WARNING and earlier descriptions are kept.
-- `360 director --vl-check` and building a new activity profile (see
+- `360 director --vl-check` and discovering an activity profile (`analyze` and `edit` do it
+  without `--vision` whenever a local Ollama answers; see
   [action-cam](workflows/action-cam.md#activity-profiles)).
 - The [AI Chat](commands.md#ai-chat) tab in `cutpoint ui`, when its provider is `ollama` (the
   default). The hosted providers (OpenAI-compatible, Anthropic) do not need Ollama.

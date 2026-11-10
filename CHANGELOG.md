@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `cutpoint profile list|show|create|validate|delete` manage the activity profile library
+  (`<CUTPOINT_HOME>/profiles`). `create NAME --from FILE` (`-` reads standard input; `--force`
+  replaces) saves a profile written by the user or their AI agent with `source: hand`; names are
+  checked and `base` and `generic` are refused. `list` marks each profile built-in, discovered or
+  hand. All have `--json` envelopes. `profile <project>` is unchanged; a project named like a
+  verb is given as `projects/<name>`.
+- Discovery of the activity profile also runs for action-cam footage. In `analyze` and `edit` it
+  runs whenever a local Ollama answers, without `--vision`, and is quiet: a missing consent, a bad
+  port, too little memory or a fallback is one INFO line (`profile`, `crashes` and `events` still
+  warn). Without a model, a profile of the best CLIP activity term is used (not saved), else
+  `generic`. Discovery fills the optional `lift` captions.
 - `--style auto` and `cutpoint detect` (#513, #896, #898) read the HUD per window (packed edges, bars cropped) and use recorder tags, narrowed so that several audio tracks no longer count as a screen recorder. A 2:1 frame counts as 360 only at 3840 px wide or more. HUD text alone stays unsure. Unsure sources are shown to the vision model (Ollama `qwen3.5:9b`, or the hosted Vision provider with consent); `--no-vision` or `"vision": false` turns that off, and `cutpoint detect` takes `--vision/--no-vision`. Results and `detect --json` gain `decided_by`. Every source is probed once more after updating (`category-v3.json`). `scripts/style_auto_eval.py` has `--no-vision`.
 - Explosions (#801): the audio event layer also keeps PANNs "Explosion" sounds (the Explosion, Boom and Eruption classes). A boom is `confirmed` when the loudness jumps at least 6 LU over the 3 s before it and those 3 s are not near-silent (at least -50 LUFS); a loud boom is not confirmed when the 3 s before it (or the moment at it) hold at least 0.4 s of near-black, such as a loading screen ending, and its row gets `after_black: true`. Rows in `events.json` carry `loud_jump`, `backing` (a scene cut or OCR text nearby; recorded only) and `confirmed`, and the thresholds are written to `settings.explosions`. Confirmed booms count as the built-in event type `explosions`: 4 points, at most 2 per candidate, for the gaming, action and sport styles. In `gaming` a boom can also nominate a moment of its own. Preset event-type matchers accept `"kind": "audio"` (default `"ocr"`). Own gunfire can pass, and quiet or microphone-heavy mixes get no explosions. The first run after updating re-runs the audio model once per source (new class group).
 - Settings in `cutpoint ui` has a "Single-key shortcuts" switch under Keyboard, on by default. Off, the single-character keys M, [, ], I and O do nothing and their shortcut hints go; Space, Escape, arrow keys and Ctrl or Cmd shortcuts stay (WCAG 2.1.4, #748).
@@ -618,6 +629,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and Windows; a local non-Ollama vision server gets the RAM check and a `WARNING`.
 
 ### Changed
+
+- **BREAKING:** Cutpoint ships only the `base` and `generic` activity profiles. The `hike`,
+  `moto`, `mtb`, `skate`, `ski`, `snowboard` and `surf` profiles are removed; profiles come from
+  the user's library, discovered from the footage (`source: discovered`) or made by the user or
+  their agent. `--activity NAME` takes a library name and an unknown name is `bad_args`. Projects
+  keep their recorded profile. The first run after updating recomputes the 360 plans and the VLM
+  window descriptions.
 
 - When `--style auto` is still unsure (#896, #898), it uses `gaming` if its best guess is gameplay, else the General style (`action`), in `analyze` and `edit`. The `style_ambiguous` warning and the `detect` note name the style used.
 - `analyze` with a style whose `scene` weight is 0 (`funny`, `commentary`, or a style of yours that sets it to 0) no longer decodes the whole video for scene cuts: those cuts only snap candidate edges, so it detects them in windows of 2.5 s either side of each candidate edge, once the candidates are picked, and caches them as `scenes-windows.json` per source (later runs decode only the windows not covered). The windows always decode on the CPU, also with a GPU video decoder: each is a short ffmpeg run, and a GPU decoder's start-up costs more than it saves there. Sources over 30 minutes keep the full pass, which reads keyframes only there and is faster than the windows. A cached full `scenes.json` is used instead, and styles with a scene weight run the full pass as before. On 10-minute clips the scene time drops to about a third to a half; the snapped edges matched the full pass at 59 of 59 edges. Such candidates record `signals.scene` 0, and `timings.sources` marks the source `scene_windows` (#730).

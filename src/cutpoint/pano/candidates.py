@@ -227,19 +227,16 @@ def path_key(
         "params": asdict(effective_params(kind, overrides)),
         "inputs": _inputs(Path(clip.source)),
     }
-    prompts = prompts_key()  # the activity's captions the views are scored with
-    if prompts is not None:
-        key["prompts"] = prompts
+    key["prompts"] = prompts_key()  # the activity's captions the views are scored with
     return json.loads(json.dumps(key))
 
 
-def prompts_key() -> str | None:
-    """The active activity captions' key, None when they are the default (ski) ones, so the
-    keys of :func:`path_key` and of ``cutpoint 360 render`` plans stay as before."""
-    from cutpoint.activity import active_prompts, default_prompts  # noqa: PLC0415
+def prompts_key() -> str:
+    """The active activity captions' key (part of the keys of :func:`path_key` and of
+    ``cutpoint 360 render`` plans)."""
+    from cutpoint.activity import active_prompts  # noqa: PLC0415
 
-    key = active_prompts().key()
-    return None if key == default_prompts().key() else key
+    return active_prompts().key()
 
 
 def slot_name(clip: Any, start: float, end: float, vertical: bool = False) -> str:

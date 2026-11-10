@@ -25,6 +25,7 @@ from cutpoint.pano import geometry as G
 from cutpoint.pano import project as P
 from cutpoint.pano import qa_paths as QP
 from cutpoint.pano import views as VW
+from cutpoint.pano.candidates import prompts_key
 from cutpoint.pano.qa import QAThresholds
 from pano_helpers import make_views
 
@@ -584,6 +585,7 @@ def test_cmd_director_renumbered_path_taken_over_by_another_segment_is_not_backe
         "kind": None,
         "vertical": False,
         "params": asdict(D.params_for(None)),
+        "prompts": prompts_key(),  # the default (generic) profile's captions
         "keys": ["kept"],
     }
     (out / "002_x.json").write_text(json.dumps(old))  # was segment B, now 003_x
@@ -614,6 +616,7 @@ def test_cmd_director_replans_a_path_of_another_forward_axis(
         "kind": None,
         "vertical": False,
         "params": asdict(D.params_for(None)),
+        "prompts": prompts_key(),  # the default (generic) profile's captions
         "keys": ["kept"],
     }
     (out / "001_laugh.json").write_text(json.dumps(old))

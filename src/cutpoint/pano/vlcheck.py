@@ -20,8 +20,7 @@ was measured on 36 segments and fixed too few of the problem frames for its cost
 
 The prompt names the activity, its gear, scenery and low-information frames from
 the activity profile's ``vl`` wording (:func:`prompts_for`; the active prompt set when
-the checker is made). Replies to the ski wording keep the cache keys they always had;
-any other wording adds its hash to the key.
+the checker is made); its hash is part of the cache key.
 
 One frame per request: qwen3-vl:8b (a thinking variant, the default vision
 model when this was measured) reasons even with ``think=false``; a multi-image
@@ -96,12 +95,8 @@ def prompts_for(p: Prompts) -> tuple[str, str]:
 
 
 def wording_id(p: Prompts) -> str:
-    """Cache-key part of a prompt set's wording: empty for the default (ski) wording,
-    so replies cached before profiles held it stay valid, else a short hash."""
-    from cutpoint.activity import default_prompts  # noqa: PLC0415
-
-    texts = prompts_for(p)
-    return "" if texts == prompts_for(default_prompts()) else cache.params_hash(texts, 8)
+    """Cache-key part of a prompt set's wording: a short hash of it."""
+    return cache.params_hash(prompts_for(p), 8)
 
 
 # clip id -> {cache key: reply}; the on-disk cache is the source of truth

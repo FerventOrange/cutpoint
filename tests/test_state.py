@@ -115,6 +115,9 @@ CACHE_FILLERS: dict[str, Callable[[Path, pytest.MonkeyPatch], None]] = {
     "cutpoint.activity.default_prompts": lambda t, m: importlib.import_module(
         "cutpoint.activity"
     ).default_prompts(),
+    "cutpoint.activity.vocabulary": lambda t, m: importlib.import_module(
+        "cutpoint.activity"
+    ).vocabulary(),
     "cutpoint.pano.candidates.code_id": lambda t, m: importlib.import_module(
         "cutpoint.pano.candidates"
     ).code_id(),

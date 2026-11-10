@@ -80,6 +80,9 @@ Choosing the moments yourself:
   `files`) and `error` (`code`, `message`, or `null`). It works on `paths`, `analyze`, `detect`, `clips`,
   `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `events`, `crashes`,
   `profile`, `resume` and every `360` subcommand.
+- Cutpoint ships only the `base` and `generic` activity profiles. Others are discovered or made by
+  the user or you: `cutpoint profile list|show|create|validate|delete` (`create NAME --from FILE`).
+  `--activity NAME` takes a name from `profile list`.
 - After an interrupted or failed `analyze`, `edit`, `events`, `crashes`, `profile`,
   `360 analyze` or `clips`, `cutpoint resume <project>` replays the recorded command (`--dry-run` shows it).
   On `low_memory` (too little free memory for a model), ask the user to close other programs,

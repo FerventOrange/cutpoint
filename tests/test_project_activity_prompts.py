@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from conftest import HOP, SLED, add_profile
 from cutpoint import activity, crash, ffmpeg_utils, mix
 from cutpoint.events import pipeline
 from cutpoint.pano import candidates as C
@@ -23,26 +24,30 @@ from cutpoint.pano import cli, qa, views, vlcheck
 from cutpoint.pano import director as D
 from cutpoint.pano import project as P
 
+# Invented library profiles (Cutpoint ships only base and generic): HOP has no lift
+# captions, SLED has them.
+PROFILES = {"puddle-hop": HOP, "glacier-sled": SLED}
+
 
 def _write(project: Path, name: str) -> None:
     rec = {
         "version": activity.PROFILE_VERSION,
         "name": name,
         "source": "library",
-        "profile": activity.full(activity.builtin(name)),
+        "profile": activity.full(activity.validate(PROFILES[name])),
     }
     project.mkdir(parents=True, exist_ok=True)
     (project / activity.ACTIVITY_FILE).write_text(json.dumps(rec), encoding="utf-8")
 
 
-def _mtb() -> activity.Prompts:
-    return activity.prompts(activity.full(activity.builtin("mtb")))
+def _hop() -> activity.Prompts:
+    return activity.prompts(activity.full(activity.validate(HOP)))
 
 
-def _mtb_key() -> str:
-    with activity.use_prompts(_mtb()):
+def _hop_key() -> str:
+    with activity.use_prompts(_hop()):
         key = C.prompts_key()
-    assert key
+    assert key and key != C.prompts_key()
     return key
 
 
@@ -77,7 +82,7 @@ def _stub_load_inputs(monkeypatch) -> list[tuple[str, bool]]:
     return seen
 
 
-@pytest.mark.parametrize(("name", "lift"), [("mtb", False), ("ski", True)])
+@pytest.mark.parametrize(("name", "lift"), [("puddle-hop", False), ("glacier-sled", True)])
 def test_detect_project_loads_inputs_with_the_projects_prompts(tmp_path, monkeypatch, name, lift):
     project = _crash_project(tmp_path)
     _write(project, name)
@@ -89,29 +94,28 @@ def test_detect_project_loads_inputs_with_the_projects_prompts(tmp_path, monkeyp
 
 
 def test_detect_project_uses_the_profile_it_resolved_for_this_run(tmp_path, monkeypatch):
-    project = _crash_project(tmp_path)  # no activity.json yet: --activity mtb writes it
+    project = _crash_project(tmp_path)  # no activity.json yet: --activity puddle-hop writes it
+    add_profile(HOP)
     seen = _stub_load_inputs(monkeypatch)
-    crash.detect_project(project, activity_name="mtb", llm=False, dense=False, sheets=0)
-    assert seen == [("mtb", False)]
+    crash.detect_project(project, activity_name="puddle-hop", llm=False, dense=False, sheets=0)
+    assert seen == [("puddle-hop", False)]
 
 
 def test_lift_grid_is_none_for_a_profile_without_lift_captions(monkeypatch):
     called = []
     monkeypatch.setattr(views, "_grid_views", lambda src: called.append(src))
-    with activity.use_prompts(_mtb()):
+    with activity.use_prompts(_hop()):
         assert views.lift_grid(Path("x.lrv"), 10) is None
     assert called == []  # not even the view layer is read
-    views.lift_grid(Path("x.lrv"), 10)  # ski (default) looks for the lifts
+    views.lift_grid(Path("x.lrv"), 10)  # the default (generic) has no lifts either
+    assert called == []
+    with activity.use_prompts(activity.prompts(activity.full(activity.validate(SLED)))):
+        views.lift_grid(Path("x.lrv"), 10)  # a profile with lift captions looks for them
     assert called == [Path("x.lrv")]
 
 
-def test_the_snowboard_profile_has_lift_captions():
-    p = activity.prompts(activity.full(activity.builtin("snowboard")))
-    assert p.lift and p.lift_pos and p.lift_neg
-
-
 # ----------------------------------------------------------------- mix.run_mix
-@pytest.mark.parametrize(("name", "want"), [("mtb", "mtb"), (None, "ski")])
+@pytest.mark.parametrize(("name", "want"), [("puddle-hop", "puddle-hop"), (None, "generic")])
 def test_run_mix_finds_candidates_with_the_projects_prompts(tmp_path, monkeypatch, name, want):
     if name:
         _write(tmp_path, name)
@@ -141,7 +145,7 @@ class _Mon:
         return {}
 
 
-@pytest.mark.parametrize(("name", "want"), [("mtb", "mtb"), (None, "ski")])
+@pytest.mark.parametrize(("name", "want"), [("puddle-hop", "puddle-hop"), (None, "generic")])
 def test_run_events_visual_layer_and_sheets_use_the_projects_prompts(
     home, tmp_path, monkeypatch, name, want
 ):
@@ -215,7 +219,7 @@ def test_run_events_writes_sheets_after_the_crash_layer_under_the_profile_it_wro
 
     def detect(project, **kw):
         seen.append(("crash", activity.active_prompts().name))
-        _write(project, "mtb")  # the profile this run resolved
+        _write(project, "puddle-hop")  # the profile this run resolved
         return {}
 
     def write_sheets(project, sources):
@@ -227,7 +231,7 @@ def test_run_events_writes_sheets_after_the_crash_layer_under_the_profile_it_wro
     monkeypatch.setattr(sheets, "write_visual_sheets", write_sheets)
     with pytest.raises(_Stop):
         pipeline.run_events(tmp_path, layers=("visual", "crash"), sheets=True, cached_ocr=False)
-    assert seen == [("crash", "ski"), ("sheets", "mtb")]
+    assert seen == [("crash", "generic"), ("sheets", "puddle-hop")]
 
 
 # ----------------------------------------------------------------- activity.record_profile
@@ -235,19 +239,19 @@ def test_run_events_writes_sheets_after_the_crash_layer_under_the_profile_it_wro
 def test_an_old_llm_record_keeps_incident_and_identity_and_takes_the_rest_from_the_library(
     source,
 ):
-    mtb = activity.full(activity.builtin("mtb"))
+    hop = activity.full(add_profile(HOP))
     old = {
-        "name": "mtb",
+        "name": "puddle-hop",
         "description": "my words",
         "detect": ["x"],
         "incident": {"pos": ["a rider crashing hard"], "neg": ["a calm trail"]},
-        "highlight": {"pos": ["an old ski-era highlight"], "neg": []},
+        "highlight": {"pos": ["an old highlight"], "neg": []},
         "low_info": ["an old low-info caption"],
     }
-    got = activity.record_profile({"name": "mtb", "source": source, "profile": old})
+    got = activity.record_profile({"name": "puddle-hop", "source": source, "profile": old})
     assert got["incident"] == old["incident"] and got["description"] == "my words"
     assert got["detect"] == ["x"]
-    assert got["highlight"] == mtb["highlight"] and got["low_info"] == mtb["low_info"]
+    assert got["highlight"] == hop["highlight"] and got["low_info"] == hop["low_info"]
     assert all(k in got for k in (*activity.PAIR_SECTIONS, *activity.LIST_SECTIONS, "vl"))
 
 
@@ -263,12 +267,14 @@ def test_an_old_record_of_an_unknown_name_takes_the_floor():
 SEG = ("001", 1.0, 5.0, "people", False, {"a": 1})
 
 
-def test_plan_key_is_unchanged_for_the_default_prompts_and_differs_for_another():
+def test_plan_key_has_the_prompts_of_every_profile_the_default_one_too():
+    """The default prompts changed (ski -> generic): plans saved without a key re-plan."""
     old = json.dumps([["001", 1.0, 5.0, "people", False], {"a": 1}], sort_keys=True)
-    assert C.prompts_key() is None
-    assert cli._plan_key(*SEG, None, C.prompts_key()) == old == cli._plan_key(*SEG)
-    key = _mtb_key()
-    assert cli._plan_key(*SEG, None, key) != old
+    default = C.prompts_key()
+    assert default == activity.default_prompts().key()
+    assert cli._plan_key(*SEG, None, default) != old == cli._plan_key(*SEG)
+    key = _hop_key()
+    assert cli._plan_key(*SEG, None, key) not in (old, cli._plan_key(*SEG, None, default))
 
 
 def test_reusable_does_not_reuse_a_path_saved_with_other_prompts(tmp_path):
@@ -281,13 +287,13 @@ def test_reusable_does_not_reuse_a_path_saved_with_other_prompts(tmp_path):
         "params": {"a": 1},
     }
     (tmp_path / "001_a.json").write_text(json.dumps(base), encoding="utf-8")
-    key = _mtb_key()
+    key = _hop_key()
     other = base | {"clip": "002", "prompts": key}
     (tmp_path / "002_b.json").write_text(json.dumps(other), encoding="utf-8")
     found = cli._reusable(tmp_path)
-    assert cli._plan_key(*SEG) in found  # saved with the default prompts
+    assert cli._plan_key(*SEG) in found  # saved without prompts (before every plan had them)
     assert cli._plan_key("002", *SEG[1:], None, key) in found
-    assert cli._plan_key("002", *SEG[1:]) not in found  # now ski: re-plan
+    assert cli._plan_key("002", *SEG[1:]) not in found
 
 
 # ----------------------------------------------------------------- 360 qa
@@ -296,7 +302,7 @@ def test_project_of_is_the_project_of_a_clips_or_a_director_folder(tmp_path):
     assert qa._project_of(tmp_path / "pano_paths" / "mix") == tmp_path
 
 
-@pytest.mark.parametrize(("name", "want"), [("mtb", "mtb"), (None, "ski")])
+@pytest.mark.parametrize(("name", "want"), [("puddle-hop", "puddle-hop"), (None, "generic")])
 @pytest.mark.parametrize("sub", ["clips", "pano_paths/director"])
 def test_run_qa_scores_with_the_projects_prompts(tmp_path, monkeypatch, name, want, sub):
     from cutpoint.events import visual as V  # noqa: PLC0415
@@ -354,18 +360,20 @@ def _director(tmp_path: Path, monkeypatch) -> tuple[Path, dict[str, Any]]:
 
 
 def test_cmd_director_plans_and_checks_with_the_projects_prompts(tmp_path, monkeypatch):
-    _write(tmp_path / "proj", "mtb")
+    _write(tmp_path / "proj", "puddle-hop")
     out, seen = _director(tmp_path, monkeypatch)
-    assert seen["compute"] == ["mtb"]
-    assert seen["wording"] == [vlcheck.wording_id(_mtb())] and seen["wording"][0]
+    assert seen["compute"] == ["puddle-hop"]
+    assert seen["wording"] == [vlcheck.wording_id(_hop())] and seen["wording"][0]
     saved = json.loads((out / "001_a.json").read_text(encoding="utf-8"))
-    assert saved["prompts"] == _mtb_key()  # read back by _reusable
+    assert saved["prompts"] == _hop_key()  # read back by _reusable
 
 
-def test_cmd_director_with_the_default_prompts_saves_the_paths_as_before(tmp_path, monkeypatch):
+def test_cmd_director_with_the_default_prompts_keys_the_paths_with_them(tmp_path, monkeypatch):
     out, seen = _director(tmp_path, monkeypatch)
-    assert seen["compute"] == ["ski"] and seen["wording"] == [""]
-    assert "prompts" not in json.loads((out / "001_a.json").read_text(encoding="utf-8"))
+    default = activity.default_prompts()
+    assert seen["compute"] == ["generic"] and seen["wording"] == [vlcheck.wording_id(default)]
+    saved = json.loads((out / "001_a.json").read_text(encoding="utf-8"))
+    assert saved["prompts"] == default.key()
 
 
 def test_check_preview_does_not_reuse_replies_given_to_another_wording(tmp_path, monkeypatch):
@@ -387,12 +395,12 @@ def test_check_preview_does_not_reuse_replies_given_to_another_wording(tmp_path,
         vlcheck._MEMO.clear()  # read from the disk cache
         vlcheck.check_preview(checker, tmp_path / "p.mp4", path)  # type: ignore[arg-type]
 
-    ski = Fake("")
-    check(ski)
-    again = Fake("")
+    first = Fake(vlcheck.wording_id(activity.default_prompts()))
+    check(first)
+    again = Fake(first.wording)
     check(again)
-    assert ski.calls > 0 and again.calls == 0  # same wording: all from the cache
-    other = Fake(vlcheck.wording_id(_mtb()))
+    assert first.calls > 0 and again.calls == 0  # same wording: all from the cache
+    other = Fake(vlcheck.wording_id(activity.prompts(activity.full(activity.validate(SLED)))))
     check(other)
-    assert other.calls == ski.calls  # another wording: asked again
+    assert other.calls == first.calls  # another wording: asked again
     vlcheck._MEMO.clear()

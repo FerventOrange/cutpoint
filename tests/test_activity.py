@@ -1,19 +1,27 @@
-"""Activity profiles: ski regression, resolution order, LLM output validation."""
+"""Activity profiles: resolution order over the user's library, discovery, the fallbacks,
+LLM output validation. The library profiles are invented ones (Cutpoint ships only base
+and generic)."""
 
 from __future__ import annotations
 
+import io
+import json
+import logging
+import re
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from conftest import set_config
-from cutpoint import activity, paths, vision
+from conftest import HOP, SLED, add_profile, set_config
+from cutpoint import activity, jsonout, paths, vision
+from cutpoint.errors import LowMemoryError
 
 
 @pytest.fixture
 def fake_clip(monkeypatch: pytest.MonkeyPatch):
-    """One embedding axis per library profile (its detect captions); others elsewhere."""
+    """One embedding axis per library profile (its detect captions) and one per other
+    caption (``frames_like("caption:<text>")`` points at it)."""
     axes: dict[str, int] = {}
 
     def text_emb(prompts: tuple[str, ...]) -> np.ndarray:
@@ -21,7 +29,7 @@ def fake_clip(monkeypatch: pytest.MonkeyPatch):
         e = np.zeros((len(prompts), 768), np.float32)
         for k, s in enumerate(prompts):
             owner = next((n for n, p in lib.items() if s in p["detect"]), None)
-            e[k, axes.setdefault(owner, len(axes)) if owner else 700 + len(s) % 60] = 1.0
+            e[k, axes.setdefault(owner or f"caption:{s}", len(axes))] = 1.0
         return e
 
     def frames_like(*names: str) -> np.ndarray:
@@ -47,10 +55,17 @@ def _stub(reply: dict) -> activity.Ask:
 
 @pytest.fixture
 def footage(tmp_path: Path, fake_clip, monkeypatch: pytest.MonkeyPatch):
-    """Keyframes of the project: a clear ski match until the test sets ``emb["v"]``."""
-    emb = {"v": fake_clip("ski")}
+    """Two invented library profiles; keyframes of the project: a clear glacier-sled match
+    until the test sets ``emb["v"]``."""
+    add_profile(SLED)
+    add_profile(HOP)
+    emb = {"v": fake_clip("glacier-sled")}
     monkeypatch.setattr(activity, "keyframes", lambda project, **kw: (emb["v"], []))
     return emb
+
+
+def _vocab(term: str) -> str:
+    return f"caption:a first-person video of {term}"
 
 
 PACK_RAFTING = {
@@ -62,8 +77,8 @@ PACK_RAFTING = {
 
 def test_resolve_takes_a_clear_library_match(tmp_path: Path, footage):
     rec = activity.resolve(tmp_path, llm=False)
-    assert (rec["name"], rec["source"]) == ("ski", "library")
-    assert rec["profile"] == activity.full(activity.library()["ski"])
+    assert (rec["name"], rec["source"]) == ("glacier-sled", "library")
+    assert rec["profile"] == activity.full(activity.library()["glacier-sled"])
 
 
 def test_resolve_reuses_the_cached_choice_and_the_flag_overrides_it(tmp_path: Path, footage):
@@ -71,12 +86,12 @@ def test_resolve_reuses_the_cached_choice_and_the_flag_overrides_it(tmp_path: Pa
     never = _stub({})
     assert activity.resolve(tmp_path, ask=never)["source"] == "library"  # cached
     assert not never.calls
-    assert activity.resolve(tmp_path, activity="mtb")["source"] == "flag"
+    assert activity.resolve(tmp_path, activity="puddle-hop")["source"] == "flag"
 
 
 def _ambiguous_and_failing(tmp_path: Path, footage, fake_clip):
     """Ambiguous footage, the LLM fails (one retry): the nearest profile, retried next run."""
-    footage["v"] = fake_clip("ski", "mtb")
+    footage["v"] = fake_clip("glacier-sled", "puddle-hop")
     broken = _stub({})
     rec = activity.resolve(tmp_path, refresh=True, context="packrafting trip", ask=broken)
     return rec, broken
@@ -84,10 +99,10 @@ def _ambiguous_and_failing(tmp_path: Path, footage, fake_clip):
 
 def test_failed_synthesis_falls_back_to_the_nearest_profile(tmp_path: Path, footage, fake_clip):
     rec, broken = _ambiguous_and_failing(tmp_path, footage, fake_clip)
-    assert (rec["name"], rec["source"], len(broken.calls)) == ("ski", "fallback", 2)
+    assert (rec["name"], rec["source"], len(broken.calls)) == ("glacier-sled", "fallback", 2)
 
 
-def test_fallback_is_retried_by_a_plain_call_and_the_synthesized_profile_is_saved(
+def test_fallback_is_retried_by_a_plain_call_and_the_discovered_profile_is_saved(
     tmp_path: Path, footage, fake_clip
 ):
     _ambiguous_and_failing(tmp_path, footage, fake_clip)
@@ -97,33 +112,132 @@ def test_fallback_is_retried_by_a_plain_call_and_the_synthesized_profile_is_save
     assert "packrafting trip" in good.calls[-1]
     assert "a flipped packraft" in rec["profile"]["incident"]["pos"]
     assert "you okay" in rec["profile"]["incident"]["words"]  # base floor
-    assert (paths.profiles_dir() / "pack-rafting.json").exists()
+    saved = json.loads((paths.profiles_dir() / "pack-rafting.json").read_text(encoding="utf-8"))
+    assert saved["source"] == "discovered"
 
 
-def test_synthesized_profile_is_reused_by_the_next_similar_video(
-    tmp_path: Path, footage, fake_clip
-):
-    footage["v"] = fake_clip("ski", "mtb")
+def test_discovered_profile_is_reused_by_the_next_similar_video(tmp_path: Path, footage, fake_clip):
+    footage["v"] = fake_clip("glacier-sled", "puddle-hop")
     activity.resolve(tmp_path, refresh=True, context="packrafting trip", ask=_stub(PACK_RAFTING))
     footage["v"] = fake_clip("pack-rafting")
     rec = activity.resolve(tmp_path, refresh=True, llm=False)
     assert (rec["name"], rec["source"]) == ("pack-rafting", "library")
 
 
+def test_discovery_shows_only_the_floor_and_generic_as_examples(tmp_path: Path, footage, fake_clip):
+    """No library profile's captions or slang leak into a new profile."""
+    footage["v"] = fake_clip(_vocab("kayaking"))
+    good = _stub(PACK_RAFTING)
+    activity.resolve(tmp_path, refresh=True, ask=good)
+    prompt = good.calls[-1]
+    examples = prompt.split("Examples:\n", 1)[1]
+    assert "sled" not in examples and "puddle" not in examples
+    assert '"name": "base"' in examples and '"name": "generic"' in examples
+    assert '"vocabulary"' not in examples and '"vlm"' not in examples
+
+
+def test_the_synthesis_prompt_is_universal():
+    words = set(re.findall(r"[a-z]+", activity._SYNTH_PROMPT.lower()))
+    assert not words & {"ski", "skis", "mtb", "bike", "bars", "trail", "snow", "surf"}
+    schema = activity._schema(10, 20, 4)
+    assert "lift" in schema["properties"] and "lift" not in schema["required"]  # optional
+
+
+def test_a_lone_library_profile_does_not_take_footage_of_another_activity(
+    tmp_path: Path, fake_clip, monkeypatch: pytest.MonkeyPatch
+):
+    """The open vocabulary competes with the library: one discovered profile is not the
+    match of every later video."""
+    add_profile(SLED)
+    monkeypatch.setattr(activity, "keyframes", lambda project, **kw: (emb, []))
+    emb = fake_clip(_vocab("kayaking"))
+    rec = activity.resolve(tmp_path, llm=False)
+    assert rec["source"] == "fallback" and rec["name"] != "glacier-sled"
+    assert rec["scores"]["vocabulary:kayaking"] > rec["scores"]["glacier-sled"]
+    emb = fake_clip("glacier-sled")
+    rec = activity.resolve(tmp_path, refresh=True, llm=False)
+    assert (rec["name"], rec["source"]) == ("glacier-sled", "library")
+
+
+def test_without_a_model_a_clear_vocabulary_term_names_the_profile_not_saved(
+    tmp_path: Path, fake_clip, monkeypatch: pytest.MonkeyPatch
+):
+    emb = fake_clip(_vocab("kayaking"))
+    monkeypatch.setattr(activity, "keyframes", lambda project, **kw: (emb, []))
+    rec = activity.resolve(tmp_path, llm=False)
+    assert (rec["name"], rec["source"], rec["described_by"]) == ("kayaking", "fallback", "clip")
+    assert rec["profile"]["detect"] == ["a first-person video of kayaking"]
+    assert rec["profile"]["incident"] == activity.base()["incident"]  # the floor's captions
+    assert not activity.user_files()  # never saved
+    # nothing clear: generic
+    emb = fake_clip(*(_vocab(t) for t in activity.vocabulary()))
+    monkeypatch.setattr(activity, "keyframes", lambda project, **kw: (emb, []))
+    rec = activity.resolve(tmp_path, refresh=True, llm=False)
+    assert (rec["name"], rec["source"]) == ("generic", "fallback")
+
+
+def test_a_far_nearer_vocabulary_term_beats_a_weak_library_profile(
+    tmp_path: Path, fake_clip, monkeypatch: pytest.MonkeyPatch
+):
+    """Without a model, a library profile with a fifth of the share is not taken over a
+    vocabulary term with far more: the fallback names the term (or is generic)."""
+    assert activity.nearest({"glacier-sled": 0.25, "vocabulary:kayaking": 0.75}) == "generic"
+    assert activity.nearest({"glacier-sled": 0.75, "vocabulary:kayaking": 0.25}) == "glacier-sled"
+    add_profile(SLED)
+    emb = fake_clip(_vocab("kayaking"))
+    monkeypatch.setattr(activity, "keyframes", lambda project, **kw: (emb, []))
+    scores = {"glacier-sled": 0.25, "vocabulary:kayaking": 0.75}
+    monkeypatch.setattr(activity, "match_scores", lambda emb, lib: scores)
+    rec = activity.resolve(tmp_path, llm=False)
+    assert rec["source"] == "fallback" and rec["name"] in ("kayaking", "generic")
+
+
+def test_a_record_of_a_removed_profile_is_kept_or_discovered_again(
+    tmp_path: Path, footage, caplog: pytest.LogCaptureFixture
+):
+    """Projects of the built-in sport profiles Cutpoint no longer ships keep working."""
+    stored = activity.full(activity.validate({**SLED, "name": "ski"}))
+    rec = {"version": 1, "request": {"activity": None, "context": None}, "source": "library"}
+    rec |= {"name": "ski", "profile": stored}
+    (tmp_path / activity.ACTIVITY_FILE).write_text(json.dumps(rec), encoding="utf-8")
+    assert activity.resolve(tmp_path, llm=False) == rec  # its full profile is stored
+    flagged = rec | {"source": "flag", "request": {"activity": "ski", "context": None}}
+    (tmp_path / activity.ACTIVITY_FILE).write_text(json.dumps(flagged), encoding="utf-8")
+    assert activity.resolve(tmp_path, activity="ski", llm=False) == flagged  # e.g. resume
+    # a failed run asked for it: retried without it, from the footage
+    failed = flagged | {"source": "fallback"}
+    (tmp_path / activity.ACTIVITY_FILE).write_text(json.dumps(failed), encoding="utf-8")
+    with caplog.at_level(logging.INFO, logger="cutpoint.activity"):
+        got = activity.resolve(tmp_path, llm=False)
+    assert (got["name"], got["source"]) == ("glacier-sled", "library")
+    assert got["request"] == {"activity": None, "context": None}
+    assert sum("'ski' no longer exists" in r.getMessage() for r in caplog.records) == 1
+    with pytest.raises(jsonout.ArgumentError, match="unknown activity 'ski'"):
+        activity.resolve(tmp_path, activity="ski", refresh=True)  # a new request: an error
+
+
+def test_a_context_naming_a_library_profile_picks_it_when_the_llm_fails(
+    tmp_path: Path, footage, fake_clip
+):
+    footage["v"] = fake_clip(_vocab("kayaking"))
+    rec = activity.resolve(tmp_path, refresh=True, context="race day on puddle-hop", llm=False)
+    assert (rec["name"], rec["source"]) == ("puddle-hop", "fallback")
+
+
 def test_context_on_a_named_profile_adds_the_llm_additions(tmp_path: Path, footage):
     """The profile plus the LLM's additions."""
-    ski = activity.full(activity.library()["ski"])
+    sled = activity.full(activity.library()["glacier-sled"])
     extra = {
         "name": "x",
-        "incident": {"pos": ["a skier hitting a race gate"], "words": {"yard sale": 0.3}},
+        "incident": {"pos": ["a sled hitting a gate"], "words": {"tipped the sled": 0.3}},
     }
-    rec = activity.resolve(tmp_path, activity="ski", context="slalom race", ask=_stub(extra))
-    assert (rec["name"], rec["source"]) == ("ski", "context")
+    rec = activity.resolve(tmp_path, activity="glacier-sled", context="race", ask=_stub(extra))
+    assert (rec["name"], rec["source"]) == ("glacier-sled", "context")
     assert rec["profile"]["incident"]["pos"] == [
-        *ski["incident"]["pos"],
+        *sled["incident"]["pos"],
         extra["incident"]["pos"][0],
     ]
-    assert rec["profile"]["incident"]["words"]["yard sale"] == 1.0  # never re-weighted
+    assert rec["profile"]["incident"]["words"]["tipped the sled"] == 1.0  # never re-weighted
 
 
 def test_synthesis_validates_and_caps():
@@ -137,7 +251,7 @@ def test_synthesis_validates_and_caps():
                 "Dab": 5,
                 "foot down": -1,
                 "dabbed my foot": 2,
-                "down the trail": 1,  # filler only: dropped
+                "down the run": 1,  # filler only: dropped
                 "rider": 1,  # a word of the normal-activity captions: dropped
                 "b*": 0.5,  # prefix too short: dropped
                 "huh": "x",
@@ -158,7 +272,7 @@ def test_synthesis_validates_and_caps():
     # single words are capped at GEN_WORD_CAP, phrases at GEN_PHRASE_CAP, lower weights are kept
     assert (w["dab"], w["dabbed my foot"]) == (activity.GEN_WORD_CAP, activity.GEN_PHRASE_CAP)
     assert w["w0"] == 0.5
-    assert not {"huh", "foot down", "down the trail", "rider", "b*"} & set(w)
+    assert not {"huh", "foot down", "down the run", "rider", "b*"} & set(w)
     assert "game" not in prof and "junk" not in prof  # LLM output: schema keys only
     assert activity.synthesize("x", None, _stub({"incident": {"pos": []}}), []) is None
 
@@ -208,11 +322,12 @@ def test_resolve_unloads_the_default_ask_model_after_synthesis(
     tmp_path: Path, home, monkeypatch: pytest.MonkeyPatch
 ):
     """default_ask() returns a functools.partial: resolve must still free the model (VRAM)."""
+    add_profile(HOP)
     unloads: list[int] = []
     monkeypatch.setattr(vision.VisionRater, "available", lambda self: True)
     monkeypatch.setattr(vision.VisionRater, "unload", lambda self: unloads.append(1))
     monkeypatch.setattr(activity, "synthesize", lambda *a, **k: None)
-    activity.resolve(tmp_path, activity="ski", context="slalom race", refresh=True)
+    activity.resolve(tmp_path, activity="puddle-hop", context="race day", refresh=True)
     assert unloads == [1]
 
 
@@ -247,6 +362,54 @@ def test_default_ask_survives_a_bad_port(home, monkeypatch, caplog):
     assert "--ollama-url 'myhost:99999'" in caplog.text
 
 
+def test_default_ask_nobody_asked_for_logs_a_bad_port_at_info(home, monkeypatch, caplog):
+    monkeypatch.setenv("OLLAMA_HOST", "myhost:99999")
+    with caplog.at_level("INFO"), jsonout.run("analyze") as res:
+        assert activity.default_ask(quiet=True) == (None, None)
+    (rec,) = [r for r in caplog.records if "Ollama not usable" in r.getMessage()]
+    assert rec.levelname == "INFO" and res.warnings == []
+
+
+def test_resolve_quiet_only_when_nobody_asked_for_the_model(
+    tmp_path, monkeypatch, footage, fake_clip
+):
+    got: list[dict] = []
+
+    def fake(**kw):
+        got.append(kw)
+        return None, None
+
+    monkeypatch.setattr(activity, "default_ask", fake)
+    footage["v"] = fake_clip("glacier-sled", "puddle-hop")  # no clear match: discovery
+    activity.resolve(tmp_path, llm=activity.AUTO)  # analyze: discovery nobody asked for
+    activity.resolve(tmp_path, llm=activity.AUTO, refresh=True, ollama_url="http://h:1")
+    activity.resolve(tmp_path, llm=activity.AUTO, refresh=True, context="a lake")
+    activity.resolve(tmp_path, refresh=True)  # cutpoint profile / crashes
+    assert got == [{"quiet": True}, {"ollama_url": "http://h:1"}, {}, {}]
+
+
+def test_low_memory_during_quiet_discovery_falls_back(
+    tmp_path, monkeypatch, footage, fake_clip, caplog
+):
+    """Too little free memory for the vision model must not stop analyze: the profile is
+    found as without a model (source fallback), with one INFO line."""
+
+    def ask(*_a, **_k):
+        raise LowMemoryError("not enough memory", "1.2 GB RAM free, 3.5 GB needed")
+
+    footage["v"] = fake_clip("glacier-sled", "puddle-hop")  # no clear match: discovery
+    without = activity.resolve(tmp_path, llm=False)
+    monkeypatch.setattr(activity, "default_ask", lambda **kw: (ask, "m"))
+    with caplog.at_level("INFO"):
+        rec = activity.resolve(tmp_path, llm=activity.AUTO, refresh=True)
+    assert rec["source"] == "fallback" and rec["profile"] == without["profile"]
+    assert "description" not in rec
+    lines = [r for r in caplog.records if "without the vision model" in r.getMessage()]
+    assert [r.levelname for r in lines] == ["INFO"]
+    with pytest.raises(LowMemoryError):  # asked for (profile, crashes): the run stops
+        activity.resolve(tmp_path, refresh=True)
+
+
 def test_resolve_hands_the_ollama_flags_to_default_ask(tmp_path, monkeypatch, footage):
     got: list[dict] = []
 
@@ -258,3 +421,133 @@ def test_resolve_hands_the_ollama_flags_to_default_ask(tmp_path, monkeypatch, fo
     activity.resolve(tmp_path, context="a lake", ollama_url="http://h:1", ollama_model="m")
     activity.resolve(tmp_path, context="a lake", refresh=True)
     assert got == [{"ollama_url": "http://h:1", "ollama_model": "m"}, {}]
+
+
+# ---------------------------------------------------------------- the library commands
+def test_create_validates_saves_by_hand_and_refuses_to_overwrite(home):
+    path, warnings = activity.create_profile("torch-juggle", {**HOP, "junk": 1})
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert path == paths.profiles_dir() / "torch-juggle.json"
+    assert saved["name"] == "torch-juggle" and saved["source"] == "hand"  # NAME wins
+    assert warnings == ["unknown keys ignored: junk"]
+    assert activity.library()["torch-juggle"]["incident"]["pos"] == HOP["incident"]["pos"]
+    with pytest.raises(FileExistsError, match="--force"):
+        activity.create_profile("torch-juggle", HOP)
+    activity.create_profile("torch-juggle", SLED, force=True)
+    assert activity.library()["torch-juggle"]["lift"]["pos"] == SLED["lift"]["pos"]
+
+
+@pytest.mark.parametrize(
+    ("name", "data", "match"),
+    [
+        ("generic", HOP, "built-in profile name"),
+        ("Base", HOP, "built-in profile name"),
+        ("a b", HOP, "not a usable profile name"),
+        ("con", HOP, "Windows"),
+        ("x", ["not", "an", "object"], "not a JSON object"),
+        ("x", {"incident": {"pos": "a fall"}}, "incident.pos must be a list"),
+        ("x", {"name": "empty"}, "no captions and no incident words"),
+    ],
+)
+def test_create_refuses_bad_names_and_content(home, name, data, match):
+    with pytest.raises(jsonout.ArgumentError, match=match):
+        activity.create_profile(name, data)
+    assert not activity.user_files()
+
+
+def test_create_refuses_a_name_that_differs_only_in_case(home):
+    activity.create_profile("Puddle-Hop", HOP)
+    with pytest.raises(jsonout.ArgumentError, match="differ only in case"):
+        activity.create_profile("puddle-hop", HOP)
+    assert list(activity.user_files()) == ["Puddle-Hop"]
+
+
+@pytest.mark.parametrize("name", ["con", "generic", "Glacier-Sled"])
+def test_a_discovered_name_that_is_unusable_or_taken_gets_a_hash_suffix(home, name):
+    add_profile(SLED)
+    saved = activity.save_to_library(activity.validate({**HOP, "name": name}))
+    assert saved.startswith(f"{name.lower()}-") and len(saved) == len(name) + 7
+    assert activity.name_problem(saved) is None
+
+
+def test_list_show_validate_and_delete(home, tmp_path):
+    add_profile(HOP)
+    activity.save_to_library(activity.validate(SLED))
+    (paths.profiles_dir() / "broken.json").write_text("[1]", encoding="utf-8")
+    entries = {e["name"]: e for e in activity.list_profiles()}
+    assert list(entries) == ["base", "generic", "broken", "glacier-sled", "puddle-hop"]
+    assert entries["base"]["floor"] and entries["base"]["source"] == "built-in"
+    assert entries["glacier-sled"]["source"] == "discovered"
+    assert entries["puddle-hop"]["source"] is None  # a file without one
+    assert not entries["broken"]["valid"]
+    shown = activity.show_profile("glacier-sled")
+    assert shown["profile"]["lift"]["pos"] == SLED["lift"]["pos"]
+    assert activity.show_profile("generic")["type"] == "built-in"
+    with pytest.raises(FileNotFoundError):
+        activity.show_profile("ski")
+    outside = tmp_path / "mine.json"
+    outside.write_text(json.dumps({**HOP, "vlm": {"tags": {"rapids": "x"}}}), encoding="utf-8")
+    res = activity.validate_profile(str(outside))
+    assert res["valid"] and res["type"] == "file"
+    assert [w["code"] for w in res["warnings"]] == ["profile_entry_ignored"]
+    assert not activity.validate_profile("broken")["valid"]
+    assert activity.validate_profile("generic")["type"] == "built-in"
+    with pytest.raises(jsonout.ArgumentError, match="cannot be deleted"):
+        activity.delete_profile("base")
+    assert activity.delete_profile("puddle-hop") == paths.profiles_dir() / "puddle-hop.json"
+    assert "puddle-hop" not in activity.library()
+    with pytest.raises(FileNotFoundError):
+        activity.delete_profile("puddle-hop")
+
+
+# -- the profile verbs on the command line --
+
+
+@pytest.mark.parametrize(
+    ("argv", "verb"),
+    [
+        (["profile", "list"], True),
+        (["-v", "profile", "show", "x"], True),
+        (["profile", "--json", "list"], False),  # a verb comes right after ``profile``
+        (["profile", "myproject"], False),
+        (["profile", "projects/list"], False),  # a project named like a verb
+        (["profile"], False),
+        (["crashes", "list"], False),
+    ],
+)
+def test_profile_verbs_are_told_from_projects(argv, verb) -> None:
+    from cutpoint import cli  # noqa: PLC0415
+
+    assert cli._profile_verb(argv) is verb
+
+
+def test_profile_verbs_on_the_command_line(home, tmp_path, capsys, monkeypatch) -> None:
+    from conftest import run_json  # noqa: PLC0415
+    from cutpoint import cli  # noqa: PLC0415
+
+    doc_file = tmp_path / "sled.json"
+    doc_file.write_text(json.dumps(SLED), encoding="utf-8")
+    code, doc = run_json(capsys, ["profile", "create", "my-sled", "--from", str(doc_file)])
+    assert code == 0 and doc["command"] == "profile create", doc
+    assert doc["outputs"]["name"] == "my-sled" and doc["outputs"]["replaced"] is False
+    code, doc = run_json(capsys, ["profile", "list"])
+    assert code == 0 and doc["command"] == "profile list"
+    rows = {p["name"]: p for p in doc["outputs"]["profiles"]}
+    assert set(rows) == {"base", "generic", "my-sled"}
+    assert rows["my-sled"]["source"] == activity.HAND
+    code, doc = run_json(capsys, ["profile", "create", "my-sled", "--from", str(doc_file)])
+    assert code == 1 and doc["ok"] is False  # exists: --force replaces it
+    assert cli.main(["profile", "show", "my-sled"]) == 0
+    assert capsys.readouterr().out.startswith("name: my-sled (your profile, source hand)\n")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(HOP)))  # --from -: stdin
+    code, doc = run_json(capsys, ["profile", "create", "from-stdin", "--from", "-"])
+    assert code == 0 and doc["outputs"]["name"] == "from-stdin"
+    assert activity.library()["from-stdin"]["detect"] == HOP["detect"]
+    monkeypatch.setattr("sys.stdin", io.StringIO("{not json"))
+    code, doc = run_json(capsys, ["profile", "create", "bad", "--from", "-"])
+    assert code == 1 and "standard input" in doc["error"]["message"]
+    code, doc = run_json(capsys, ["profile", "delete", "my-sled"])
+    assert code == 0 and doc["command"] == "profile delete"
+    assert "my-sled" not in activity.library()
+    code, doc = run_json(capsys, ["profile", "delete", "generic"])  # the built-ins stay
+    assert code != 0 and doc["ok"] is False

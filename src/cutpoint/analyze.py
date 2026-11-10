@@ -3427,7 +3427,7 @@ def _analyze(
                     plan,
                     hl,
                     steps,
-                    llm=bool(vision),
+                    llm="auto",  # profile discovery (activity.AUTO): any local Ollama, quietly
                     prefetch=prefetch,
                     transcript=transcript,
                     ollama_url=ollama_url,

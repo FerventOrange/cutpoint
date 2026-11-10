@@ -59,7 +59,7 @@ unavailable) is judged without it.
 
 Zero-shot captions (occluders, low information, the beauty and own-body prompts)
 come from the project's activity profile (:func:`cutpoint.activity.project_prompts`:
-its ``activity.json``, else the ski lists); :func:`qa_negatives` are the negatives
+its ``activity.json``, else the ``generic`` lists); :func:`qa_negatives` are the negatives
 shared by the occluder and low-information prompts.
 
 Inputs: a clips folder (``manifest.json`` entries with ``pano.path_file`` and

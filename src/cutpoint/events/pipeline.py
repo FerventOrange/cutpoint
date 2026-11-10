@@ -171,7 +171,7 @@ def run_events(
     sheets: bool = False,
     stage: Callable[[str], AbstractContextManager[Any]] | None = None,
     cached_ocr: bool | None = None,
-    llm: bool = True,
+    llm: bool | str = True,
     prefetch: OcrPrefetch | None = None,
     encoder: Any = None,
     ollama_url: str | None = None,
@@ -211,7 +211,8 @@ def run_events(
             the VLM layer too.
         cached_ocr: Read cached HUD OCR events when the OCR layer does not run
             (None: unless ski, which has no HUD).
-        llm: Let the crash layer's activity profile ask the local Ollama models.
+        llm: Let the crash layer's activity profile ask the local Ollama models
+            (:data:`cutpoint.activity.AUTO`: not asked for, see :func:`cutpoint.activity.resolve`).
         prefetch: OCR read in the background by ``cutpoint analyze``: a source's result
             is taken from it in its turn (same events, caches and log lines); what it did
             not read is read here, after it is stopped, with its engine.
@@ -385,7 +386,7 @@ def run_events(
     crash_run = "crash" in layers and not only  # project-wide ranking: all sources
     kept: list[Any] = []  # the visual layer's CLIP, reused by the crash dense confirm
     # The visual layer's caption embeddings use the captions of the project's activity.json
-    # (ski until the crash layer below writes one); the contact sheets are written after the
+    # (generic until the crash layer below writes one); the contact sheets are written after the
     # crash layer when it runs, so a first run's sheets use the profile it resolves.
     from cutpoint.activity import project_prompts, use_prompts  # noqa: PLC0415
 

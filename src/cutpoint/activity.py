@@ -3,15 +3,15 @@ and the zero-shot CLIP captions the visual and 360 layers judge this footage wit
 
 A profile is a small JSON document (any sport, game or kind of video)::
 
-    {"name": "mtb", "description": "...",
+    {"name": "<slug>", "description": "...",
      "detect": [CLIP captions that recognise this kind of footage],
      "incident": {"pos": [incident captions], "neg": [normal-activity captions],
-                  "words": {"over the bars": 1.0, "bail*": 0.8}},
+                  "words": {"<crash phrase>": 1.0, "<prefix>*": 0.8}},
      "highlight": {"pos": [highlight-worthy views], "neg": [dull ones]},
      "group": {"pos": [friends close to the camera], "neg": [nobody near]},
      "person": {"pos": [another person], "neg": [the wearer's own body, gear, shadow]},
      "selfie": {"pos": [a usable selfie view], "neg": [more captions against it]},
-     "lift": {"pos": [riding a lift], "neg": [the activity itself]},
+     "lift": {"pos": [riding a lift or shuttle], "neg": [the activity itself]},
      "occluder": [things at the lens], "low_info": [frames with nothing to see],
      "scene": [ordinary footage: negatives of occluder and low_info],
      "vl": {"video": "...", "gear": "...", "scenery": "...", "low_info": "..."},
@@ -23,19 +23,24 @@ A profile is a small JSON document (any sport, game or kind of video)::
 
 Every profile inherits the shared floor ``presets/activities/base.json`` (generic
 incident captions and crash words, neutral captions of every list); ``exclude_base``
-drops floor entries the profile replaces with its own (the ski profile has snowy
-versions of all of them). ``vl`` is the wording of the 360 vision check
-(:mod:`cutpoint.pano.vlcheck`); ``vlm`` is the wording of the action-cam VLM window
-prompt (:mod:`cutpoint.events.vlm_windows`) and of the action-cam vision rating
+drops floor entries the profile replaces with its own. ``vl`` is the wording of the 360
+vision check (:mod:`cutpoint.pano.vlcheck`); ``vlm`` is the wording of the action-cam VLM
+window prompt (:mod:`cutpoint.events.vlm_windows`) and of the action-cam vision rating
 (:mod:`cutpoint.vision`), its ``tags`` the descriptions of the fixed window tags
 (:data:`cutpoint.events.vlm_windows.ACTION_CAM_TAGS`). A profile's ``vl`` and ``vlm``
 strings replace the floor's one by one. ``lift``
 is empty in the floor: activities without lifts never look for one. Extra object
 sections (e.g. a future ``game`` HUD vocabulary) are kept.
 
+Cutpoint ships no activity profiles of its own: only the floor (``base``) and ``generic``
+(the floor plus generic negatives). Every other profile is in the user's library
+(``<CUTPOINT_HOME>/profiles``): discovered from footage (step 4 below, ``"source":
+"discovered"``) or written by the user or their AI agent (``cutpoint profile create``,
+``"source": "hand"``).
+
 :class:`Prompts` holds a profile's caption lists as the CLIP consumers use them
 (:func:`prompts`); :func:`use_prompts` makes a set the active one for the visual
-and 360 layers (:func:`active_prompts`, else :func:`default_prompts`) and
+and 360 layers (:func:`active_prompts`, else :func:`default_prompts`: ``generic``) and
 :func:`project_prompts` reads a project's set from its ``activity.json``.
 
 :func:`resolve` picks the profile of a project, in this order:
@@ -44,22 +49,23 @@ and 360 layers (:func:`active_prompts`, else :func:`default_prompts`) and
 2. the cached ``<project>/activity.json`` (unless the request changed or
    ``refresh``);
 3. a library match: the cached keyframe CLIP embeddings of the visual layer
-   scored zero-shot against every profile's ``detect`` captions; the best
+   scored zero-shot against every library profile's ``detect`` captions and the open
+   activity vocabulary of ``base.json`` (the terms no library profile covers); the best
    profile wins when its share and its lead over the runner-up are large enough;
-4. synthesis: the local vision model describes a few frames (CLIP zero-shot
-   over an open activity vocabulary when it cannot), then the local LLM writes
+4. discovery: the local vision model describes a few frames (CLIP zero-shot
+   over the open activity vocabulary when it cannot), then the local LLM writes
    a new profile from that description and the user's words (``context``),
-   with the built-in profiles as examples. It is validated, capped and saved to
-   the library (``<CUTPOINT_HOME>/profiles``), so the next similar video
-   matches it in step 3;
+   with ``base`` and ``generic`` as examples. It is validated, capped and saved to
+   the library, so the next similar video matches it in step 3;
 5. when the LLM is unavailable or its reply is unusable twice (the retry asks
-   for less): a library profile named in ``context`` (``"downhill mtb"`` -> mtb),
-   else the nearest one, else ``generic``, recorded as ``source: fallback`` so the
-   next run tries again; a WARNING says that ``context`` was not applied.
+   for less): a library profile named in ``context``, else the nearest one, else a
+   profile of the best open-vocabulary term when CLIP is clear enough (not saved), else
+   ``generic``, recorded as ``source: fallback`` so the next run tries again; a WARNING
+   says when ``context`` was not applied.
 
 ``context`` always goes through the LLM: with a profile from steps 1-3 its
-output is added on top of that profile. Built-in profiles live in
-``presets/activities``; library files of the same name override them.
+output is added on top of that profile. Library files named ``generic`` override the
+built-in one.
 """
 
 from __future__ import annotations
@@ -79,7 +85,7 @@ import numpy as np
 
 from cutpoint import cache, jsonout, paths, state
 from cutpoint.config import remap_source
-from cutpoint.errors import FFmpegError
+from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events.common import load_highlights
 from cutpoint.events.visual import load_visual, text_embeddings
 from cutpoint.events.vlm_windows import ACTION_CAM_TAGS
@@ -98,7 +104,7 @@ MAX_PROMPT_CHARS = 100
 MAX_WORD_CHARS = 40
 MAX_CONTEXT_CHARS = 500
 MAX_LIST = 8  # occluder / low_info / scene captions
-MAX_EXCLUDE = 80  # exclude_base entries (the ski profile replaces every floor caption)
+MAX_EXCLUDE = 80  # exclude_base entries (a profile may replace every floor caption)
 MAX_VL_CHARS = 80
 MAX_VLM_CHARS = 300  # a vlm string longer than this is dropped (the floor's is used)
 MATCH_SHARE = 0.5  # library match: mean zero-shot share of the best profile ...
@@ -113,10 +119,27 @@ Ask = Callable[[str, list[bytes], dict[str, Any] | None], dict[str, Any] | None]
 # Synthesis attempts: (incident captions, words, highlight captions, vlm wording) asked
 # for; the retry asks for less (no vlm wording) so a reply cut off by the token limit fits.
 SYNTH_SIZES = ((10, 20, 4, True), (6, 10, 3, False))
-# LLM-written crash words: weight caps (a single word or ``*`` prefix matches normal
-# talk more often than a phrase) and filler that says nothing about an incident.
 # Sections an LLM-written profile may have (extra sections only come from files).
-SCHEMA_KEYS = ("name", "description", "detect", "incident", "highlight", "low_info", "vlm")
+SCHEMA_KEYS = (
+    "name",
+    "description",
+    "detect",
+    "incident",
+    "highlight",
+    "lift",
+    "low_info",
+    "vlm",
+)
+# The profiles Cutpoint ships: the shared floor and ``generic``; every other profile is
+# in the user's library (discovered or made by the user or their agent).
+BUILTIN_NAMES = ("base", "generic")
+# ``source`` of a library file: written by discovery (:func:`save_to_library`) or by
+# ``cutpoint profile create``.
+DISCOVERED = "discovered"
+HAND = "hand"
+# The no-LLM fallback (step 5): the best open-vocabulary term needs this share.
+VOCAB_SHARE = 0.2
+VOCAB_KEY = "vocabulary:"  # match_scores keys of the open vocabulary's terms
 # Caption sections of a profile: pairs of lists, plain lists, the vision check's wording.
 PAIR_SECTIONS = ("incident", "highlight", "group", "person", "selfie", "lift")
 LIST_SECTIONS = ("low_info", "occluder", "scene")
@@ -137,12 +160,17 @@ VLM_KEYS = (
     "retry_high",  # the shorter retry prompt's lists
     "retry_low",
 )
-# The prompt set outside a use_prompts block and for a project without activity.json:
-# the ski lists they always used.
-DEFAULT_ACTIVITY = "ski"
+# The prompt set outside a use_prompts block and for a project without activity.json.
+DEFAULT_ACTIVITY = "generic"
+# ``llm`` of :func:`resolve` when discovery runs only because a local model may answer (analyze,
+# edit): the user did not ask for it, so a missing consent, a bad Ollama port and too little
+# free memory are INFO lines and the run goes on as without a model
+AUTO = "auto"
+# LLM-written crash words: weight caps (a single word or ``*`` prefix matches normal
+# talk more often than a phrase) and filler that says nothing about an incident.
 GEN_WORD_CAP = 0.6
 GEN_PHRASE_CAP = 0.9
-FILLER = {"down", "trail", "ride", "go", "run", "the", "a", "on", "in", "up", "it", "off", "to"}
+FILLER = {"down", "ride", "go", "run", "the", "a", "on", "in", "up", "it", "off", "to"}
 
 _DESCRIBE_PROMPT = (
     "These {n} frames come from one video. Describe the footage for a video editor. "
@@ -164,11 +192,14 @@ incident.pos (at most {n} captions of frames during or right after an incident, 
 camera sees them),
 incident.neg (at most {n} captions of normal footage of the same activity),
 incident.words (at most {w} phrases people say right after an incident in this activity -> \
-weight 0-1: its crash slang and reactions, e.g. "over the bars", "lost my ski"; a trailing \
-* matches word prefixes. Never plain words of the activity or of normal talk such as \
-"bike", "down", "air", "rocks" or "trail"; 1.0 only when the phrase means a crash; skip \
-generic ones like "you okay" or "crashed", which every profile has),
+weight 0-1: its own crash slang and reactions, phrases that name how an incident happens \
+here; a trailing * matches word prefixes. Never plain words of the activity or of normal \
+talk, such as the names of its gear, its surface or its moves; 1.0 only when the phrase \
+means a crash; skip generic ones like "you okay" or "crashed", which every profile has),
 highlight.pos / highlight.neg (at most {h} captions each: highlight-worthy vs dull moments),
+lift.pos / lift.neg (optional, at most 3 captions each: only when this footage has rides \
+on a lift, cable car, shuttle or other transport where the activity pauses; pos: riding \
+it, neg: the activity itself; otherwise two empty lists),
 low_info (at most 3 captions of frames with nothing to see).{vlm}
 Captions are short visual descriptions (under 12 words). Where the user says what \
 matters, follow it. No other text.
@@ -293,7 +324,9 @@ def _load(path: Path) -> dict[str, Any] | None:
 
 
 def builtin(name: str) -> dict[str, Any]:
-    """A built-in profile (``presets/activities/<name>.json``); ``base`` is the floor."""
+    """A built-in profile (:data:`BUILTIN_NAMES`: ``base``, the floor, or ``generic``)."""
+    if name not in BUILTIN_NAMES:
+        raise KeyError(f"no built-in activity profile {name!r}")
     return _load(BUILTIN_DIR / f"{name}.json")  # type: ignore[return-value]
 
 
@@ -307,25 +340,34 @@ def full(profile: dict[str, Any]) -> dict[str, Any]:
     return merge(base(), profile)
 
 
+def user_files() -> dict[str, Path]:
+    """The user library's files (``<CUTPOINT_HOME>/profiles/*.json``, name -> file), sorted;
+    a file named ``base`` is never a profile."""
+    d = paths.profiles_dir()
+    files = sorted(d.glob("*.json")) if d.is_dir() else []
+    return {f.stem: f for f in files if f.is_file() and f.stem != "base"}
+
+
 def library() -> dict[str, dict[str, Any]]:
-    """Built-in profiles, then ``<CUTPOINT_HOME>/profiles/*.json`` (same name overrides)."""
-    out: dict[str, dict[str, Any]] = {}
-    for d in (BUILTIN_DIR, paths.profiles_dir()):
-        for f in sorted(d.glob("*.json")) if d.is_dir() else ():
-            prof = _load(f) if f.stem != "base" else None
-            if prof is not None:
-                out[f.stem] = prof
+    """``generic``, then the user library's profiles (a file named ``generic`` overrides it)."""
+    out: dict[str, dict[str, Any]] = {"generic": builtin("generic")}
+    for stem, f in user_files().items():
+        prof = _load(f)
+        if prof is not None:
+            out[stem] = prof
     return out
 
 
 def save_to_library(profile: dict[str, Any]) -> str:
-    """Store a synthesized profile in the library; returns its (unique) name."""
+    """Store a discovered profile in the library (``"source": "discovered"``); returns its
+    (unique) name."""
     name = profile["name"]
-    if name == "base" or name in library():
+    taken = {k.lower() for k in library()}  # names that differ only in case clash on Windows
+    if name_problem(name) or name.lower() in taken:  # a built-in or a Windows device name
         name = f"{name}-{cache.params_hash(profile, 6)}"
     path = paths.profiles_dir() / f"{name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    cache.save_json(path, {**profile, "name": name})
+    cache.save_json(path, {**profile, "name": name, "source": DISCOVERED})
     _FILES.pop(str(path), None)
     return name
 
@@ -421,7 +463,8 @@ def prompts(profile: dict[str, Any]) -> Prompts:
 @state.register_cache
 @functools.cache
 def default_prompts() -> Prompts:
-    """The prompt set when none is active: the built-in :data:`DEFAULT_ACTIVITY` profile."""
+    """The prompt set when none is active: the built-in :data:`DEFAULT_ACTIVITY` profile
+    (``generic``: the floor and generic negatives)."""
     return prompts(full(builtin(DEFAULT_ACTIVITY)))
 
 
@@ -523,29 +566,76 @@ def _shares(emb: np.ndarray, groups: list[list[str]]) -> np.ndarray:
     return np.array([p[:, owner == i].sum(1).mean() for i in range(len(groups))])
 
 
+@state.register_cache
+@functools.cache
+def vocabulary() -> tuple[str, ...]:
+    """The open activity vocabulary of ``base.json`` (CLIP describes footage with it)."""
+    raw = cache.load_json(BUILTIN_DIR / "base.json") or {}
+    return tuple(str(v) for v in raw.get("vocabulary") or ())
+
+
+def _vocab_caption(term: str) -> str:
+    return f"a first-person video of {term}"
+
+
+def _covered(lib: dict[str, dict[str, Any]], vocab: tuple[str, ...]) -> set[str]:
+    """The vocabulary terms the library profiles cover: per profile (not ``generic``), the
+    term whose caption is closest to its ``detect`` captions."""
+    names = [k for k, p in lib.items() if p["detect"] and k != "generic"]
+    if not names or not vocab:
+        return set()
+    v = _text_emb(tuple(_vocab_caption(t) for t in vocab))
+    return {
+        vocab[int(np.argmax((_text_emb(tuple(lib[k]["detect"])) @ v.T).mean(0)))] for k in names
+    }
+
+
 def match_scores(emb: np.ndarray, lib: dict[str, dict[str, Any]]) -> dict[str, float]:
-    """Zero-shot share of every library profile with ``detect`` captions."""
+    """Zero-shot share of every library profile with ``detect`` captions, against each other
+    and against the open vocabulary's terms no profile covers (keys ``vocabulary:<term>``),
+    so the only profile in a library does not win footage of another activity."""
     names = [k for k, p in lib.items() if p["detect"]]
     if not len(emb) or not names:
         return {}
-    shares = _shares(emb, [lib[k]["detect"] for k in names])
-    return {k: round(float(s), 3) for k, s in zip(names, shares, strict=True)}
+    vocab = vocabulary()
+    covered = _covered(lib, vocab)
+    terms = [t for t in vocab if t not in covered]
+    groups = [lib[k]["detect"] for k in names] + [[_vocab_caption(t)] for t in terms]
+    shares = _shares(emb, groups)
+    keys = names + [VOCAB_KEY + t for t in terms]
+    return {k: round(float(s), 3) for k, s in zip(keys, shares, strict=True)}
+
+
+def _profiles_only(scores: dict[str, float]) -> list[tuple[str, float]]:
+    return [kv for kv in scores.items() if not kv[0].startswith(VOCAB_KEY)]
 
 
 def nearest(scores: dict[str, float]) -> str:
     """Closest library profile when there is no clear match: the best one with at least
-    a fifth of the share, else ``generic``."""
-    best = max(scores.items(), key=lambda kv: kv[1], default=("generic", 0.0))
-    return best[0] if best[1] >= 0.2 else "generic"
+    a fifth of the share, else ``generic``; ``generic`` too when an open-vocabulary term is
+    nearer (the vocabulary fallback of :func:`resolve` then names it)."""
+    best = max(_profiles_only(scores), key=lambda kv: kv[1], default=("generic", 0.0))
+    term = max((s for k, s in scores.items() if k.startswith(VOCAB_KEY)), default=0.0)
+    return best[0] if best[1] >= 0.2 and best[1] >= term else "generic"
 
 
 def pick(scores: dict[str, float]) -> str | None:
-    """Best profile if it is clear (share and margin), else None; ``generic`` is no match."""
+    """Best profile if it is clear (share and margin), else None; ``generic`` and an
+    open-vocabulary term are no match."""
     ranked = sorted(scores.items(), key=lambda kv: -kv[1])
-    if not ranked or ranked[0][0] == "generic":
+    if not ranked or ranked[0][0] == "generic" or ranked[0][0].startswith(VOCAB_KEY):
         return None
     lead = ranked[0][1] - (ranked[1][1] if len(ranked) > 1 else 0.0)
     return ranked[0][0] if ranked[0][1] >= MATCH_SHARE and lead >= MATCH_MARGIN else None
+
+
+def vocab_shares(emb: np.ndarray) -> list[tuple[str, float]]:
+    """The open vocabulary's terms by zero-shot share over the keyframes, best first."""
+    vocab = vocabulary()
+    if not len(emb) or not vocab:
+        return []
+    shares = _shares(emb, [[_vocab_caption(v)] for v in vocab])
+    return [(vocab[i], float(shares[i])) for i in np.argsort(-shares)]
 
 
 def describe(emb: np.ndarray, refs: list[tuple[Path, float]], ask: Ask | None) -> tuple[str, str]:
@@ -563,17 +653,32 @@ def describe(emb: np.ndarray, refs: list[tuple[Path, float]], ask: Ask | None) -
             text = "; ".join(f"{k}: {reply[k]}" for k in reply if isinstance(reply[k], str))
             if text:
                 return text[:400], "vl"
-    vocab = [str(v) for v in json.loads((BUILTIN_DIR / "base.json").read_text())["vocabulary"]]
-    if not len(emb):
+    top = vocab_shares(emb)[:3]
+    if not top:
         return "", "none"
-    shares = _shares(emb, [[f"a first-person video of {v}"] for v in vocab])
-    top = np.argsort(-shares)[:3]
-    return "footage of " + ", ".join(f"{vocab[i]} ({shares[i]:.2f})" for i in top), "clip"
+    return "footage of " + ", ".join(f"{v} ({s:.2f})" for v, s in top), "clip"
+
+
+def vocab_profile(emb: np.ndarray) -> dict[str, Any] | None:
+    """The no-LLM fallback: a profile of the best open-vocabulary term (its name, a
+    description and a ``detect`` caption; every caption list the floor's), or None when no
+    term has :data:`VOCAB_SHARE`. Never saved to the library."""
+    top = vocab_shares(emb)[:1]
+    if not top or top[0][1] < VOCAB_SHARE:
+        return None
+    term = top[0][0]
+    return validate(
+        {
+            "name": term,
+            "description": f"footage of {term} (CLIP, {top[0][1]:.2f})",
+            "detect": [_vocab_caption(term)],
+        }
+    )
 
 
 def _schema(n: int, w: int, h: int, vlm: bool = False) -> dict[str, Any]:
-    """JSON schema of a synthesized profile (Ollama structured output); ``vlm`` adds the
-    optional ``vlm`` wording (its tag keys fixed)."""
+    """JSON schema of a synthesized profile (Ollama structured output), with the optional
+    ``lift`` captions; ``vlm`` adds the optional ``vlm`` wording (its tag keys fixed)."""
 
     def arr(k: int) -> dict[str, Any]:
         return {"type": "array", "items": {"type": "string"}, "maxItems": k}
@@ -592,7 +697,9 @@ def _schema(n: int, w: int, h: int, vlm: bool = False) -> dict[str, Any]:
             "low_info": arr(3),
         }
     )
-    if vlm:  # optional: not in "required", so a reply without it is still a profile
+    # optional: not in "required", so a reply without it is still a profile
+    schema["properties"]["lift"] = obj({"pos": arr(3), "neg": arr(3)})
+    if vlm:
         text = {"type": "string"}
         tags = {"type": "object", "properties": dict.fromkeys(ACTION_CAM_TAGS, text)}
         schema["properties"]["vlm"] = {
@@ -626,10 +733,12 @@ def synthesize(
 ) -> dict[str, Any] | None:
     """A new profile from the LLM (validated and capped), or None after one shorter retry.
 
-    Its ``vlm`` wording keeps the valid strings the LLM wrote; merged on the floor
-    (:func:`full`, :func:`merge`), every other one is the base text."""
+    ``seeds``: the example profiles, shown with the :data:`SCHEMA_KEYS` the LLM writes
+    (without ``vlm``, whose base text the first attempt shows itself). Its ``vlm`` wording
+    keeps the valid strings the LLM wrote; merged on the floor (:func:`full`,
+    :func:`merge`), every other one is the base text."""
     examples = "\n".join(
-        json.dumps({k: v for k, v in s.items() if k not in ("exclude_base", "vlm")}) for s in seeds
+        json.dumps({k: s[k] for k in SCHEMA_KEYS if k != "vlm" and k in s}) for s in seeds
     )
     base_vlm = json.dumps(base()["vlm"])
     for n, w, h, vlm in SYNTH_SIZES:
@@ -656,9 +765,10 @@ def synthesize(
 
 
 def _named_profile(context: str, lib: dict[str, dict[str, Any]]) -> str | None:
-    """The library profile named as a word of ``context`` (``"downhill mtb"`` -> mtb).
+    """The library profile named as a word of ``context`` (``"race on my-trails"`` ->
+    the user's ``my-trails`` profile).
 
-    None when the context names no profile or several (``"ski after a hike"``).
+    None when the context names no profile or several.
     """
     words = re.findall(r"[a-z0-9-]+", context.lower())
     named = {w for w in words if w in lib and w != "generic"}
@@ -666,7 +776,7 @@ def _named_profile(context: str, lib: dict[str, dict[str, Any]]) -> str | None:
 
 
 def default_ask(
-    ollama_url: str | None = None, ollama_model: str | None = None
+    ollama_url: str | None = None, ollama_model: str | None = None, quiet: bool = False
 ) -> tuple[Ask | None, str | None]:
     """The local Ollama vision model as an :data:`Ask` (``(None, None)`` if unavailable, or
     if that Ollama is on another machine without the user's Vision consent: nothing is sent,
@@ -674,11 +784,16 @@ def default_ask(
 
     ``ollama_url``, ``ollama_model``: ``--ollama-url`` / ``--ollama-model``, which win over
     ``config.json`` and the environment (#816). ``(None, None)`` too, with a WARNING, when the
-    Ollama URL has a bad port."""
+    Ollama URL has a bad port. ``quiet`` (discovery the user did not ask for, :data:`AUTO`):
+    the missing consent and the bad port are INFO lines, with no ``--json`` warning."""
+    log = logger.info if quiet else logger.warning
     try:
         rater = VisionRater(ollama_url, ollama_model, local_only=True)
     except ValueError as err:  # a bad port in OLLAMA_HOST / ollama_url
-        logger.warning("Activity detection: Ollama not usable (%s)", err)
+        log("Activity detection: Ollama not usable (%s)", err)
+        return None, None
+    if rater.consent_needed:  # nothing is asked of it, not even /api/tags
+        rater.warn_consent(quiet=quiet)
         return None, None
     if not rater.available():
         return None, None
@@ -693,7 +808,7 @@ def resolve(
     context: str | None = None,
     refresh: bool = False,
     ask: Ask | None = None,
-    llm: bool = True,
+    llm: bool | str = True,
     warn_unreachable: bool = True,
     ollama_url: str | None = None,
     ollama_model: str | None = None,
@@ -706,7 +821,10 @@ def resolve(
         context: The user's own words about the video (fed to the LLM).
         refresh: Ignore activity.json.
         ask: Vision / text model (default: local Ollama when ``llm``).
-        llm: Allow the local models (False: library and generic only).
+        llm: Allow the local models (False: library and generic only; :data:`AUTO`: allowed
+            but not asked for, so a missing consent, a bad port or too little free memory
+            is an INFO line and the profile is found as without a model, unless
+            ``context`` or ``ollama_url`` asks for the model).
         warn_unreachable: Warn about each unreachable source when the footage is read
             (:func:`keyframes`); False when the caller already did.
         ollama_url, ollama_model: ``--ollama-url`` / ``--ollama-model`` for the default
@@ -723,11 +841,6 @@ def resolve(
         # A failed synthesis is retried with the request that asked for it.
         req = old.get("request") or {}
         activity, context = req.get("activity"), req.get("context")
-    lib = library()
-    if activity and activity not in lib:
-        raise jsonout.ArgumentError(
-            f"unknown activity {activity!r}; known: {', '.join(sorted(lib))}"
-        )
     context = " ".join(context.split())[:MAX_CONTEXT_CHARS] if context else None
     request = {"activity": activity, "context": context}
     if (
@@ -735,7 +848,19 @@ def resolve(
         and old.get("source") != "fallback"
         and (old.get("request") == request or not (activity or context))
     ):
-        return old
+        return old  # it holds the full profile, also of one no longer in the library
+    lib = library()
+    if activity and activity not in lib:
+        if old is None or activity != (old.get("request") or {}).get("activity"):
+            raise jsonout.ArgumentError(
+                f"unknown activity {activity!r}; known: {', '.join(sorted(lib))}"
+            )
+        # asked for by an earlier run, the profile is gone (a removed built-in, a deleted file)
+        logger.info(
+            "activity: profile %r no longer exists; detecting it from the footage", activity
+        )
+        activity = None
+        request = {"activity": None, "context": context}
     rec: dict[str, Any] = {"version": PROFILE_VERSION, "request": request}
     seed, emb, refs = None, np.zeros((0, 768), np.float32), []
     if activity:
@@ -748,30 +873,34 @@ def resolve(
     profile = full(lib[seed or nearest(rec["scores"])])
     new = None
     why = "the local models are disabled"  # why ``context`` was not applied
+    quiet = llm == AUTO and not (context or ollama_url)  # nobody asked for the model
     if (seed is None or context) and llm:
         rec["source"] = "fallback"  # until the LLM delivers (retried on the next run)
         model = None
         if ask is None:
             # the flags only when given (a stand-in for default_ask takes none)
-            flags = {"ollama_url": ollama_url, "ollama_model": ollama_model}
+            flags = {"ollama_url": ollama_url, "ollama_model": ollama_model, "quiet": quiet}
             ask, model = default_ask(**{k: v for k, v in flags.items() if v})
             why = "the Ollama model is unavailable (see the line above)"
         if ask is not None:
             why = "the LLM gave no usable profile"
-            if seed:
-                desc, how = lib[seed]["description"], "profile"
-            else:
-                desc, how = describe(emb, refs, ask)
-            # Examples: the seed, else the two closest library profiles (the model copies
-            # from them, so unrelated ones leak their slang).
-            near = sorted(rec.get("scores", {}).items(), key=lambda kv: -kv[1])
-            near = [k for k, _ in near if k != "generic"] + ["mtb", "ski"]
-            examples = [lib[seed]] if seed else [lib[k] for k in dict.fromkeys(near[:2])]
-            new = synthesize(desc, context, ask, examples) if desc or context else None
-            rec.update(description=desc, described_by=how, model=model)
-            target = getattr(ask, "func", ask)  # default_ask() wraps the method in a partial
-            if isinstance(rater := getattr(target, "__self__", None), VisionRater):
-                rater.unload()  # done with it: VRAM for the CLIP steps, other models stay
+            try:
+                if seed:
+                    desc, how = lib[seed]["description"], "profile"
+                else:
+                    desc, how = describe(emb, refs, ask)
+                # Examples: the seed, else the floor and generic (no activity's slang to copy).
+                examples = [lib[seed]] if seed else [builtin(k) for k in BUILTIN_NAMES]
+                new = synthesize(desc, context, ask, examples) if desc or context else None
+                rec.update(description=desc, described_by=how, model=model)
+            except LowMemoryError as err:
+                if not quiet:
+                    raise
+                logger.info("activity: %s; detecting it without the vision model", err)
+            finally:
+                target = getattr(ask, "func", ask)  # default_ask() wraps it in a partial
+                if isinstance(rater := getattr(target, "__self__", None), VisionRater):
+                    rater.unload()  # done with it: VRAM for the CLIP steps, other models stay
             if new is not None:  # LLM words add phrases, never re-weight known ones
                 known = (profile if seed else base())["incident"]["words"]
                 new["incident"]["words"] = {
@@ -786,16 +915,327 @@ def resolve(
                 seed = save_to_library(new)
                 profile = full({**new, "name": seed})
                 rec["source"] = "synthesized"
+    named = _named_profile(context, lib) if context and new is None and seed is None else None
+    if named:
+        profile = full(lib[named])
     if context and new is None:
-        named = _named_profile(context, lib) if seed is None else None
-        if named:
-            profile = full(lib[named])
         used = f"; using the library profile {named!r} named in it" if named else ""
         message = f"activity: --context not applied: {why}{used}"
         logger.warning("%s", message)
         jsonout.warn("context_not_applied", message)
+    if seed is None and new is None and not named and profile["name"] == "generic":
+        # no model, nothing near in the library: the best open-vocabulary term, if clear
+        guess = vocab_profile(emb)
+        if guess is not None:
+            profile = full(guess)
+            rec.setdefault("description", guess["description"])
+            rec.setdefault("described_by", "clip")
     rec["name"] = profile["name"]
     rec["profile"] = profile
     cache.save_json(path, rec)
     logger.info("activity: %s (%s)", rec["name"], rec["source"])
     return rec
+
+
+# --------------------------------------------------------------------------- library commands
+# ``cutpoint profile list | show | create | validate | delete`` (the user library).
+def name_problem(name: object) -> str | None:
+    """Why ``name`` cannot name a library profile, or None: a safe file name (as a style
+    name) that is not ``base`` or ``generic`` (compared ignoring case)."""
+    from cutpoint.stylefiles import _RESERVED_STEMS, NAME_RE  # noqa: PLC0415
+
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
+        return (
+            f"{name!r} is not a usable profile name: use up to 64 letters, digits, '-' and "
+            "'_', starting with a letter or digit"
+        )
+    if name.lower() in BUILTIN_NAMES:
+        return f"{name!r} is a built-in profile name; choose another name"
+    if name.lower() in _RESERVED_STEMS:
+        return f"{name!r} cannot be a file name on Windows; choose another name"
+    return None
+
+
+def _file_source(raw: Any) -> str | None:
+    """A library file's ``source`` (:data:`DISCOVERED`, :data:`HAND`), None when it has none
+    (written before files had one)."""
+    src = raw.get("source") if isinstance(raw, dict) else None
+    return src if src in (DISCOVERED, HAND) else None
+
+
+def _check_list(raw: Any, key: str, cap: int, problems: list[str], warnings: list[str]) -> None:
+    """Check one caption list ``raw`` (named ``key``) as :func:`validate` reads it."""
+    if raw is None:
+        return
+    if not isinstance(raw, list):
+        problems.append(f"{key} must be a list of captions")
+        return
+    kept = _texts(raw, cap)
+    if len(kept) < len(raw):
+        warnings.append(
+            f"{key}: {len(raw) - len(kept)} of {len(raw)} entries ignored (not text, empty, "
+            f"longer than {MAX_PROMPT_CHARS} characters, repeated or over the {cap} kept)"
+        )
+
+
+def _check_words(inc: dict[str, Any], problems: list[str], warnings: list[str]) -> None:
+    words = inc.get("words")
+    if words is not None and not isinstance(words, dict):
+        problems.append('incident.words must be an object of "phrase": weight (0-1)')
+        return
+    if not words:
+        return
+    kept = _words(words)
+    if len(kept) < len(words):
+        warnings.append(
+            f"incident.words: {len(words) - len(kept)} of {len(words)} entries ignored "
+            f"(weight not a number, phrase longer than {MAX_WORD_CHARS} characters or over "
+            f"the {MAX_WORDS} kept)"
+        )
+    out = [k for k, w in words.items() if isinstance(w, int | float) and not 0 <= w <= 1]
+    if out:
+        warnings.append(f"incident.words: weights outside 0-1 clamped: {', '.join(out)}")
+
+
+def _check_texts(raw: dict[str, Any], problems: list[str], warnings: list[str]) -> None:
+    """The ``vl`` and ``vlm`` wording."""
+    for sec, keys, cap in (("vl", VL_KEYS, MAX_VL_CHARS), ("vlm", VLM_KEYS, MAX_VLM_CHARS)):
+        val = raw.get(sec)
+        if val is None:
+            continue
+        if not isinstance(val, dict):
+            problems.append(f"{sec} must be an object of texts")
+            continue
+        unknown = sorted(set(val) - set(keys) - ({"tags"} if sec == "vlm" else set()))
+        if unknown:
+            warnings.append(f"{sec}: unknown keys ignored: {', '.join(unknown)}")
+        bad = [k for k in keys if k in val and not (isinstance(val[k], str) and val[k].strip())]
+        if bad:
+            warnings.append(f"{sec}: not text, ignored: {', '.join(bad)}")
+        long = [
+            k for k in keys if isinstance(val.get(k), str) and len(" ".join(val[k].split())) > cap
+        ]
+        if long:
+            what = "cut to" if sec == "vl" else "ignored, longer than"
+            warnings.append(f"{sec}: {what} {cap} characters: {', '.join(long)}")
+        tags = val.get("tags") if sec == "vlm" else None
+        if tags is not None and not isinstance(tags, dict):
+            problems.append("vlm.tags must be an object of tag descriptions")
+        elif tags and (unknown := sorted(set(tags) - set(ACTION_CAM_TAGS))):
+            warnings.append(
+                f"vlm.tags: unknown tags ignored: {', '.join(unknown)} (the tags are "
+                f"{', '.join(ACTION_CAM_TAGS)})"
+            )
+
+
+def check_profile(raw: Any) -> tuple[list[str], list[str]]:
+    """``(problems, warnings)`` of a profile document, in plain words: a problem makes it
+    unusable; a warning names what :func:`validate` ignores, cuts or caps when it loads it."""
+    if not isinstance(raw, dict):
+        return ["the file is not a JSON object"], []
+    problems: list[str] = []
+    warnings: list[str] = []
+    _check_list(raw.get("detect"), "detect", 6, problems, warnings)
+    _check_list(raw.get("exclude_base"), "exclude_base", MAX_EXCLUDE, problems, warnings)
+    for sec in PAIR_SECTIONS:
+        val = raw.get(sec)
+        if val is None:
+            continue
+        if not isinstance(val, dict):
+            problems.append(f'{sec} must be an object with "pos" and "neg" lists')
+            continue
+        for k in ("pos", "neg"):
+            _check_list(val.get(k), f"{sec}.{k}", MAX_PROMPTS, problems, warnings)
+        unknown = sorted(set(val) - {"pos", "neg", *(["words"] if sec == "incident" else [])})
+        if unknown:
+            warnings.append(f"{sec}: unknown keys ignored: {', '.join(unknown)}")
+    for sec in LIST_SECTIONS:
+        _check_list(raw.get(sec), sec, MAX_LIST, problems, warnings)
+    _check_words(
+        raw["incident"] if isinstance(raw.get("incident"), dict) else {}, problems, warnings
+    )
+    _check_texts(raw, problems, warnings)
+    known = {"name", "description", "source", "detect", "exclude_base", "vl", "vlm"}
+    known |= {*PAIR_SECTIONS, *LIST_SECTIONS}
+    dropped = sorted(k for k, v in raw.items() if k not in known and not isinstance(v, dict))
+    if dropped:
+        warnings.append(f"unknown keys ignored: {', '.join(dropped)}")
+    if not problems:
+        prof = validate(raw)
+        captions = [prof["detect"], *(prof[s][k] for s in PAIR_SECTIONS for k in ("pos", "neg"))]
+        if not any(captions) and not prof["incident"]["words"]:
+            problems.append("the profile has no captions and no incident words")
+    return problems, warnings
+
+
+def _entry(name: str, path: Path | None) -> dict[str, Any]:
+    """One :func:`list_profiles` entry."""
+    if path is None:
+        return {
+            "name": name,
+            "type": "built-in",
+            "source": "built-in",
+            "floor": name == "base",
+            "valid": True,
+            "problems": [],
+            "description": builtin(name)["description"],
+            "path": None,
+        }
+    raw = cache.load_json(path)
+    problems, _ = check_profile(raw)
+    return {
+        "name": name,
+        "type": "user",
+        "source": _file_source(raw),
+        "floor": False,
+        "valid": not problems,
+        "problems": problems,
+        "description": validate(raw)["description"],
+        "path": path,
+    }
+
+
+def list_profiles() -> list[dict[str, Any]]:
+    """The built-in ``base`` (the floor every profile inherits, not a choice for
+    ``--activity``) and ``generic``, then the user library's files (sorted).
+
+    Each entry: ``name``, ``type`` (``built-in`` or ``user``), ``source`` (``built-in``,
+    :data:`DISCOVERED`, :data:`HAND`, or None for a file without one), ``floor``, ``valid``,
+    ``problems``, ``description`` and ``path`` (None for a built-in). A broken file is
+    listed as not valid, never raised.
+    """
+    return [_entry(n, None) for n in BUILTIN_NAMES] + [
+        _entry(stem, path) for stem, path in user_files().items()
+    ]
+
+
+def _find(name: str) -> Path:
+    """The library file of the profile ``name``.
+
+    Raises:
+        FileNotFoundError: If the library has no such file.
+    """
+    path = user_files().get(name)
+    if path is None:
+        raise FileNotFoundError(
+            f"no profile named {name!r} in your library ({paths.profiles_dir()}); "
+            "`cutpoint profile list` shows the profiles"
+        )
+    return path
+
+
+def show_profile(name: str) -> dict[str, Any]:
+    """The profile ``name``: a file of the user library, else ``base`` or ``generic``.
+
+    Returns:
+        ``name``, ``type``, ``source``, ``floor``, ``path``, ``description`` and ``profile``
+        (its own content as detection reads it, before the floor is added).
+
+    Raises:
+        FileNotFoundError: For an unknown name.
+        jsonout.ArgumentError: For a library file that cannot be used.
+    """
+    path = user_files().get(name)
+    if path is None and name not in BUILTIN_NAMES:
+        path = _find(name)
+    entry = _entry(name, path)
+    if not entry["valid"]:
+        raise jsonout.ArgumentError(f"{path} cannot be used: {'; '.join(entry['problems'])}")
+    prof = builtin(name) if path is None else _load(path)
+    keys = ("name", "type", "source", "floor", "path", "description")
+    return {k: entry[k] for k in keys} | {"profile": prof}
+
+
+def create_profile(name: str, data: Any, *, force: bool = False) -> tuple[Path, list[str]]:
+    """Save ``data`` as the library profile ``<profiles>/<name>.json`` (``"source":
+    "hand"``), as :func:`validate` reads it; ``name`` replaces the document's own.
+
+    Returns:
+        The file written and the warnings of :func:`check_profile`.
+
+    Raises:
+        jsonout.ArgumentError: For an unusable name or content (naming every problem).
+        FileExistsError: If the profile exists and ``force`` is not given.
+    """
+    if msg := name_problem(name):
+        raise jsonout.ArgumentError(msg)
+    problems, warnings = check_profile(data)
+    if problems:
+        raise jsonout.ArgumentError(f"profile {name!r} not saved: {'; '.join(problems)}")
+    files = user_files()
+    clash = next((s for s in files if s.lower() == name.lower() and s != name), None)
+    if clash is not None:
+        raise jsonout.ArgumentError(
+            f"a profile named {clash!r} exists; names that differ only in case clash on "
+            "Windows and macOS"
+        )
+    path = paths.profiles_dir() / f"{name}.json"
+    if name in files and not force:
+        raise FileExistsError(
+            f"profile {name!r} already exists ({path}); add --force to replace it"
+        )
+    prof = validate({**data, "name": name})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cache.save_json(path, {"name": name, "source": HAND} | prof)
+    _FILES.pop(str(path), None)
+    return path, warnings
+
+
+def validate_profile(target: str) -> dict[str, Any]:
+    """Check the profile ``target``: a profile name, or a file (a path, or a name ending in
+    ``.json``).
+
+    Returns:
+        ``name``, ``path`` (None for a built-in), ``type`` (``built-in``, ``user`` for a
+        library file, ``file`` for another), ``valid``, ``problems``, ``warnings`` (``code``,
+        ``message``) and ``notes``. The caller fails the command when ``valid`` is false.
+
+    Raises:
+        FileNotFoundError: For an unknown profile name or a missing file.
+    """
+    as_file = target.endswith(".json") or "/" in target or "\\" in target
+    if not as_file and target in BUILTIN_NAMES and target not in user_files():
+        return {
+            "name": target,
+            "path": None,
+            "type": "built-in",
+            "valid": True,
+            "problems": [],
+            "warnings": [],
+            "notes": [f"{target!r} is a built-in profile"],
+        }
+    if as_file or Path(target).is_file():
+        path = Path(target)
+        if not path.is_file():
+            raise FileNotFoundError(f"{target}: file not found")
+    else:
+        path = _find(target)
+    problems, warnings = check_profile(cache.load_json(path))
+    in_library = path.parent.resolve() == paths.profiles_dir().resolve()
+    notes = []
+    if not in_library and not problems:
+        notes.append(f"`cutpoint profile create NAME --from {path}` saves it to your library")
+    return {
+        "name": path.stem,
+        "path": path,
+        "type": "user" if in_library else "file",
+        "valid": not problems,
+        "problems": problems,
+        "warnings": [{"code": "profile_entry_ignored", "message": w} for w in warnings],
+        "notes": notes,
+    }
+
+
+def delete_profile(name: str) -> Path:
+    """Delete the library profile ``name`` (its file in the profiles folder).
+
+    Raises:
+        jsonout.ArgumentError: For ``base`` or ``generic`` without a library file.
+        FileNotFoundError: If there is no such file.
+    """
+    if name in BUILTIN_NAMES and name not in user_files():
+        raise jsonout.ArgumentError(f"{name!r} is a built-in profile and cannot be deleted")
+    path = _find(name)
+    path.unlink()
+    _FILES.pop(str(path), None)
+    return path

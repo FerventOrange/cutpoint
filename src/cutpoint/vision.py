@@ -64,8 +64,7 @@ _PROMPT = (
 )
 # Action-cam: {video}, {rate_edit}, {rate_high}, {rate_low}, {retry_high} and {retry_low}
 # are the activity profile's ``vlm`` wording (cutpoint.activity.VLM_KEYS), filled in by
-# _prompts. The ski profile's renders the ski prompts from before profiles byte for byte,
-# so its cached ratings stay valid.
+# _prompts (the generic profile's without a project profile).
 _PROMPT_ACTION_CAM = (
     "These are {n} frames, in order, from one short moment of a {video}. Rate how "
     "highlight-worthy it is for a {rate_edit} (0 = boring, 10 = must include). High: "
@@ -213,12 +212,15 @@ def _consent_message(lead: str, key: str, skipping: str = "skipping vision") -> 
 _consent_warned: set[str] = state.register_container(__name__, "_consent_warned", set())
 
 
-def _warn_consent(message: str) -> str:
+def _warn_consent(message: str, quiet: bool = False) -> str:
     """Log ``message`` as a WARNING and add it as the ``vision_consent_needed`` warning of
-    ``--json``, once per run (:data:`_consent_warned`); returns ``message``."""
+    ``--json``, once per run (:data:`_consent_warned`); returns ``message``. ``quiet`` (vision
+    on only by default, #893): an INFO line, and a later WARNING of the run still comes."""
     from cutpoint import jsonout  # noqa: PLC0415
 
-    if message not in _consent_warned:
+    if quiet:
+        logger.info("%s", message)
+    elif message not in _consent_warned:
         _consent_warned.add(message)
         logger.warning("%s", message)
         jsonout.warn("vision_consent_needed", message)
@@ -279,9 +281,10 @@ class AssistantVision:
         self.model = p.model
         return True
 
-    def warn_consent(self) -> str:
-        """Log (once, a WARNING and the ``vision_consent_needed`` warning of ``--json``) and
-        return why no frame goes to the provider: :attr:`consent_needed`."""
+    def warn_consent(self, *, quiet: bool = False) -> str:
+        """Log (once, a WARNING and the ``vision_consent_needed`` warning of ``--json``; with
+        ``quiet`` an INFO line) and return why no frame goes to the provider:
+        :attr:`consent_needed`."""
         from cutpoint.assistant import providers  # noqa: PLC0415 (it imports this module)
 
         p = self.provider
@@ -289,7 +292,7 @@ class AssistantVision:
             f"Vision provider {p.name} ({providers.endpoint(p)}) needs your consent before "
             "frames are sent to it: allow it in the Models tab of `cutpoint ui` (Vision role)"
         )
-        return _warn_consent(_consent_message(lead, str(self.consent_needed)))
+        return _warn_consent(_consent_message(lead, str(self.consent_needed)), quiet)
 
     def ask(self, prompt: str, jpegs: list[bytes], schema: dict | None = None) -> str | None:
         """The provider's reply to ``prompt`` with the JPEG frames (constrained to ``schema``
@@ -463,14 +466,14 @@ class VisionRater:
         loaded = memguard.ollama_context(self.url, self.model)
         return loaded if loaded is not None and loaded > need else need
 
-    def warn_consent(self) -> str:
-        """Log (once, a WARNING and the ``vision_consent_needed`` warning of ``--json``) and
-        return why nothing goes to the Ollama on another machine or the hosted provider:
-        :attr:`consent_needed`."""
+    def warn_consent(self, *, quiet: bool = False) -> str:
+        """Log (once, a WARNING and the ``vision_consent_needed`` warning of ``--json``; with
+        ``quiet``, vision on only by default (#893), an INFO line) and return why nothing goes
+        to the Ollama on another machine or the hosted provider: :attr:`consent_needed`."""
         from cutpoint.assistant import providers  # noqa: PLC0415 (it imports this module)
 
         if self.via:
-            return self.via.warn_consent()
+            return self.via.warn_consent(quiet=quiet)
         skipping = (
             "activity detection goes on without the vision model"
             if self.local_only
@@ -481,7 +484,7 @@ class VisionRater:
             "requests to it in the Models tab of `cutpoint ui` (Vision role, Ollama with this "
             "URL)"
         )
-        return _warn_consent(_consent_message(lead, str(self.consent_needed), skipping))
+        return _warn_consent(_consent_message(lead, str(self.consent_needed), skipping), quiet)
 
     def ask_json(
         self,
@@ -990,7 +993,7 @@ def _prompts(
 ) -> tuple[str, str]:
     """(first prompt, retry prompt) of ``style``, worded for one contact sheet when the
     profile sends one; the action-cam pair in the ``vlm`` wording of ``activity`` (None: the
-    default activity's); with ``speech`` the default pair that also rates the transcript
+    default (``generic``) activity's); with ``speech`` the default pair that also rates the transcript
     (not for action-cam); with ``laughter`` both default prompts say that laughter was heard
     (not for action-cam)."""
     first, retry = _PROMPTS.get(style, _SPEECH_PROMPTS if speech else _DEFAULT_PROMPTS)

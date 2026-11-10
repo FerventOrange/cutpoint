@@ -549,8 +549,7 @@ def _plan_key(
 ) -> str:
     """What a director path depends on (besides the clip's cached layers); ``fwd``: the
     clip's forward axis when not the default (an upright clip); ``prompts``: the activity
-    captions' key when not the default ones
-    (:func:`cutpoint.pano.candidates.prompts_key`)."""
+    captions' key (:func:`cutpoint.pano.candidates.prompts_key`)."""
     seg = [clip_id, round(start, 3), round(end, 3), kind, vertical]
     extra = ([fwd] if fwd is not None else []) + ([{"prompts": prompts}] if prompts else [])
     return json.dumps([seg, p, *extra], sort_keys=True)
