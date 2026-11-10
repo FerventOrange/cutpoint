@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-10
+
 ### Highlights
 
 - Footage detection: `cutpoint detect` and `--style auto` tell gameplay, action cam, talk and general footage apart, ask the vision model about unsure footage and use `gaming` for a gameplay guess (#513, #896, #898).
@@ -277,7 +279,8 @@ Planned and not yet available: an agent skill, `cutpoint edit` (one-command edit
 `cutpoint init` (first-run setup), JSON output on stdout for every command, SRT transcripts,
 and activity profiles for layers other than crash detection.
 
-[Unreleased]: https://github.com/FerventOrange/cutpoint/compare/0.4.0...HEAD
+[Unreleased]: https://github.com/FerventOrange/cutpoint/compare/0.5.0...HEAD
+[0.5.0]: https://github.com/FerventOrange/cutpoint/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/FerventOrange/cutpoint/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/FerventOrange/cutpoint/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/FerventOrange/cutpoint/compare/0.1.0...0.2.0

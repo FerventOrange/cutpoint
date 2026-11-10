@@ -31,7 +31,7 @@ function Invoke-CutpointInstaller {
         [string]$Source, [bool]$NoFfmpeg, [bool]$Ollama, [bool]$NoOllama, [bool]$Help, [object[]]$Extra
     )
 
-    $CUTPOINT_VERSION_DEFAULT = "0.4.0"
+    $CUTPOINT_VERSION_DEFAULT = "0.5.0"
 
     # uv is installed from this pinned installer when missing (keep in step with install.sh and the Dockerfile pin).
     $UV_VERSION = "0.13.7"
