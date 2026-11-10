@@ -279,6 +279,30 @@ def test_available_does_not_follow_a_redirect(monkeypatch, caplog):
     assert "redirect (HTTP 307); not followed" in caplog.text
 
 
+def test_available_unreachable_logs_a_short_reason(monkeypatch, caplog):
+    """#921: host:port and a short reason, not urllib3's text; a short connect timeout."""
+    timeouts = []
+
+    def get(url, timeout=None, allow_redirects=True):
+        timeouts.append(timeout)
+        try:
+            raise ConnectionRefusedError(111, "Connection refused")
+        except ConnectionRefusedError as sock_err:
+            raise requests.ConnectionError(
+                "HTTPConnectionPool(host='127.0.0.1', port=7): Max retries exceeded with url: "
+                "/api/tags (Caused by NewConnectionError('Failed to establish a new connection'))"
+            ) from sock_err
+
+    monkeypatch.setattr(vision.requests, "get", get)
+    with caplog.at_level(logging.INFO, logger="cutpoint.vision"):
+        assert vision.VisionRater(url="http://127.0.0.1:7", model="m").available() is False
+    assert timeouts == [(1, 3)]
+    assert "Ollama not reachable at 127.0.0.1:7 (connection refused); skipping vision" in (
+        caplog.text
+    )
+    assert "Max retries" not in caplog.text
+
+
 def test_no_direct_requests_call_follows_redirects():
     """#719: every direct ``requests.<verb>(...)`` call in src/cutpoint passes
     ``allow_redirects=False`` (Ollama requests never follow redirects). cliproxy's session and

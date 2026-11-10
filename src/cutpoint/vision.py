@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import re
+import socket
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -233,6 +234,38 @@ def ollama_allowed(url: str) -> bool:
     return want is None or want in get_config().vision_assistant.consent
 
 
+def _unreachable_reason(err: Exception) -> str:
+    """Why :meth:`VisionRater.available` got no model list, in a few words ("connection
+    refused", "timed out", "name not resolved", "HTTP 404", "not JSON") instead of urllib3's
+    full text (#921)."""
+    if isinstance(err, requests.Timeout):
+        return "timed out"
+    if isinstance(err, requests.ConnectionError):
+        # requests -> urllib3 (MaxRetryError.reason, NewConnectionError) -> the socket error
+        todo: list[BaseException] = [err]
+        seen: set[int] = set()
+        while todo:
+            e = todo.pop()
+            if id(e) in seen:
+                continue
+            seen.add(id(e))
+            if isinstance(e, socket.gaierror):
+                return "name not resolved"
+            if isinstance(e, ConnectionRefusedError):
+                return "connection refused"
+            links = [*e.args, getattr(e, "reason", None), e.__cause__, e.__context__]
+            todo += [x for x in links if isinstance(x, BaseException)]
+        return "connection failed"
+    if isinstance(err, requests.HTTPError):
+        resp = err.response
+        return f"HTTP {resp.status_code}" if resp is not None else str(err)  # a redirect
+    if isinstance(err, requests.JSONDecodeError):
+        return "not JSON"
+    if isinstance(err, ValueError):
+        return "not a JSON object"
+    return type(err).__name__
+
+
 class AssistantVision:
     """Frames are sent to the configured hosted vision provider (an API key or a subscription
     login) once the user agreed to it for Vision."""
@@ -412,7 +445,9 @@ class VisionRater:
             self.warn_consent()
             return False
         try:
-            resp = requests.get(f"{self.url}/api/tags", timeout=3, allow_redirects=False)
+            # a short connect timeout (per address of the host): an Ollama that answers
+            # accepts at once; a down one costs 1 s, not 3 (#921)
+            resp = requests.get(f"{self.url}/api/tags", timeout=(1, 3), allow_redirects=False)
             refuse_redirect(resp)
             resp.raise_for_status()
             data = resp.json()
@@ -420,7 +455,8 @@ class VisionRater:
                 raise ValueError(f"/api/tags returned {type(data).__name__}, not an object")
             models = data.get("models", [])
         except (requests.RequestException, ValueError) as err:  # ValueError: not JSON
-            logger.info("Ollama not reachable at %s (%s); skipping vision", self.url, err)
+            why = _unreachable_reason(err)
+            logger.info("Ollama not reachable at %s (%s); skipping vision", self.host, why)
             return False
         names = {m.get("name", "") for m in models}
         if self.model not in names and f"{self.model}:latest" not in names:
