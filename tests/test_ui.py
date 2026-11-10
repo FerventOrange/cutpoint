@@ -1205,8 +1205,8 @@ def test_find_videos_never_returns_raw_360_files(tmp_path: Path) -> None:
 
 
 def wait_job(client: TestClient, timeout: float = 600) -> dict:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         jobs = client.get("/api/jobs").json()["jobs"]
         if jobs and jobs[-1]["status"] != "running":
             return jobs[-1]
@@ -1215,6 +1215,15 @@ def wait_job(client: TestClient, timeout: float = 600) -> dict:
         if job["status"] == "running":
             client.post(f"/api/jobs/{job['id']}/cancel")  # do not leave it running past the test
     raise AssertionError("job did not finish")
+
+
+def job_failure(job: dict) -> str:
+    """What a job that did not complete said: its status, error and last log lines."""
+    logs = "\n".join(job.get("logs", [])[-30:])
+    return (
+        f"job {job['status']}: {job.get('error')} ({job.get('error_code')})\n"
+        f"steps: {job.get('progress')}\nlog:\n{logs}"
+    )
 
 
 def test_requests_must_be_loopback_and_carry_the_token(
@@ -1831,11 +1840,14 @@ def test_proxy_is_built_only_for_the_chosen_source_and_keeps_every_audio_track(
     assert client.get(opened["a.mp4"]["url"]).status_code == 409
 
     client.post(f"/api/projects/{pid}/sources/{opened['a.mp4']['id']}/prepare")
-    deadline = time.time() + 120
-    while sources()["a.mp4"]["status"] == "preparing" and time.time() < deadline:
+    # The proxy encodes at low priority (below normal on Windows, nice 10 elsewhere): on a loaded
+    # machine its 3 s encode can wait minutes for the CPU, so the deadline is wait_job's.
+    deadline = time.monotonic() + 600
+    while (status := sources()["a.mp4"]["status"]) == "preparing":
+        assert time.monotonic() < deadline, "the proxy was still preparing after 600 s"
         time.sleep(0.3)
     after = sources()
-    assert (after["a.mp4"]["status"], after["b.mkv"]["status"]) == ("ready", "unknown")
+    assert (after["a.mp4"]["status"], after["b.mkv"]["status"]) == ("ready", "unknown"), status
 
     url = after["a.mp4"]["url"]
     assert client.get(url, headers={"Range": "bytes=0-99"}).status_code == 206
@@ -1899,7 +1911,8 @@ def test_reanalyze_keeps_recorded_excludes_and_recursion(
     cache.save_json(p / "highlights.json", {"style": style, "settings": settings, "sources": []})
 
     assert client.post("/api/projects/cli-made/jobs", json={"action": "analyze"}).status_code == 200
-    assert wait_job(client)["status"] == "completed"
+    job = wait_job(client)
+    assert job["status"] == "completed", job_failure(job)
     names = {s["name"] for s in client.get("/api/projects/cli-made").json()["sources"]}
     assert names == {"keep.mp4", "nested.mp4"}
 
