@@ -1,6 +1,6 @@
 [project]
 name = "cutpoint"
-version = "0.4.0"
+version = "0.5.0"
 description = "Local AI clip creator: finds the best moments in any footage, cuts clips and builds montages from an agent, the browser or the CLI."
 license = "MIT"
 license-files = ["LICENSE"]
