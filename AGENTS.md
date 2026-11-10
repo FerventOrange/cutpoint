@@ -8,6 +8,16 @@ Cutpoint finds the best moments in long recordings, exports them as numbered cli
 assembles a finished video. It runs locally, never modifies source videos, and writes
 everything into a project folder.
 
+## Goal
+
+Cutpoint is a universal AI footage editor: it takes footage and nothing else, detects what is
+in it and scores from that. Do not ask the user what the footage is or which style to use. Let
+Cutpoint detect it (`--style auto`). Today auto picks only gameplay, action-cam, talk or general
+footage; for sport or a funny edit, use the user's words (`--style sport`, `--kind
+funny-moments`). Name a style only when the user asks for something specific. `--activity` is an
+option of `profile` and `crashes`, not of `analyze` or `edit`. Steer the result with `--kind`,
+`--max-total`, a custom style (`cutpoint style`) or `--segments` for the user's own picks.
+
 ## Status: what you can rely on
 
 | Available now | Planned (do not call; it does not exist yet) |
@@ -138,17 +148,20 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
 
 Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
 
-1. **Pick a style** from the request: `funny`, `gaming`, `action`, `sport`, `commentary`
+1. **Pick a style.** Prefer `--style auto`: it picks one from the footage (see
+   `cutpoint detect`) and uses the default style when it cannot tell. Name a style only when
+   the request clearly calls for it: `funny`, `gaming`, `action`, `sport`, `commentary`
    (long talk), `action-cam` (helmet-, chest- or bike-mounted action-cam footage, best with
-   GoPro or Insta360 X3 telemetry; formerly `ski`, which is no longer accepted).
-   Footage that is not any of these: use `action` or `gaming`.
+   GoPro or Insta360 X3 telemetry; formerly `ski`, which is no longer accepted). Without
+   `--style`, `analyze` uses `gaming` and `edit` uses `action` (`funny` for `funny-moments`).
 2. **Analyze.**
 
    ```powershell
-   uv run cutpoint analyze D:\Videos\clip.mp4 --style funny --out clip-edit
+   uv run cutpoint analyze D:\Videos\clip.mp4 --style auto --out clip-edit
    ```
 
-   On Linux: `uv run cutpoint analyze ~/Videos/clip.mp4 --style funny --out clip-edit`.
+   On Linux: `uv run cutpoint analyze ~/Videos/clip.mp4 --style auto --out clip-edit`.
+   `edit` takes `--style auto` too.
 
    Writes `highlights.json` and `transcript.txt` into the project folder
    (`<projects>/clip-edit`, see `cutpoint paths`). It also runs the reaction, keyframe and crash
