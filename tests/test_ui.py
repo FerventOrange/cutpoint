@@ -2131,10 +2131,10 @@ def test_reanalyze_passes_recorded_vision_and_ollama_options(
 @pytest.mark.parametrize(
     ("body", "saved", "cfg", "vision"),
     [
-        ({}, {}, None, False),  # opt-in: off by default
+        ({}, {}, None, None),  # no key in config.json: no flag, the CLI asks unsure sources
         ({}, {}, False, False),
         ({}, {}, True, True),  # Analyze again: the Settings value
-        ({}, {"vision_requested": True}, None, False),  # not what the last run asked
+        ({}, {"vision_requested": True}, None, None),  # not what the last run asked
         ({}, {"vision_requested": False}, True, True),
         ({"vision": True}, {}, False, False),  # no per-run choice: a body flag is ignored
         ({"vision": False}, {}, True, True),
@@ -2148,9 +2148,10 @@ def test_analyze_job_passes_the_settings_vision_explicitly(
     body: dict,
     saved: dict,
     cfg: bool | None,
-    vision: bool,
+    vision: bool | None,
 ) -> None:
-    """--vision or --no-vision as Settings says when the job starts, never neither."""
+    """--vision or --no-vision as Settings says when the job starts; neither when config.json
+    has no ``vision`` key."""
     if cfg is not None:
         set_config(home, vision=cfg)
     p = ui.projects_dir() / "cli-made"
@@ -2164,8 +2165,8 @@ def test_analyze_job_passes_the_settings_vision_explicitly(
     monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
     res = client.post("/api/projects/cli-made/jobs", json={"action": "analyze", **body})
     assert res.status_code == 200
-    assert ("--vision" in captured[0]) is vision
-    assert ("--no-vision" in captured[0]) is not vision
+    assert ("--vision" in captured[0]) is (vision is True)
+    assert ("--no-vision" in captured[0]) is (vision is False)
 
 
 def test_put_settings_saves_visual_index_and_jobs_pass_it_explicitly(
@@ -3695,10 +3696,10 @@ def test_put_settings_saves_the_vision_default(
     assert res.json()["vision"] is True
     assert json.loads(cfg.read_text("utf-8")) == {"player_tags": ["Me"], "vision": True}
     assert client.get("/api/settings").json()["vision"] is True
-    assert config.vision_default() is True  # the CLI default too
+    assert config.vision_setting() is True
 
     assert client.put("/api/settings", json={"vision": False}).json()["vision"] is False
-    assert config.vision_default() is False
+    assert config.vision_setting() is False
 
     both = {"projects_dir": str(tmp_path), "vision": True}
     got = client.put("/api/settings", json=both).json()
@@ -7820,7 +7821,7 @@ def test_a_preset_runs_edit_with_its_kind_in_the_projects_own_style(
     args = _cli_args(captured[0])
     src = str(tmp_path / "clip.mp4")
     assert args == ["edit", src, "--kind", kind, "--style", "funny", "--out", str(p),
-                    "--compress-peaks", "off", "--no-vision", "--no-visual-index"]  # fmt: skip
+                    "--compress-peaks", "off", "--no-visual-index"]  # fmt: skip
 
 
 def test_a_preset_passes_vertical_compress_peaks_and_the_settings_vision(
@@ -10926,6 +10927,9 @@ CHAT = {"assistant": {"provider": "claude-code"}}
         ({"vision_assistant": {"provider": "codex"}}, ["--vision"], "funny", True),
         # neither --vision nor --no-vision: the vision setting of config.json
         ({"vision": True, "vision_assistant": {"provider": "codex"}}, [], "funny", True),
+        # vision unset: only auto asks the vision model (the unsure-source check)
+        ({"vision_assistant": {"provider": "codex"}}, [], "auto", True),
+        ({"vision_assistant": {"provider": "codex"}}, [], "gaming", False),
         # an explicit Ollama option wins over a subscription Vision model and the chat model
         (
             {"vision_assistant": {"provider": "codex"}, **CHAT},

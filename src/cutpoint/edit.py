@@ -46,8 +46,9 @@ class Kind:
         captions: ``assemble --captions`` (burned in; whisper runs on the final).
         emphasis: ``--style auto``'s emphasis (:class:`~cutpoint.styles.AutoRequest`):
             ``funny`` for funny-moments, else ``hype``.
-        auto: ``--style auto``: the style is detected from the footage; ``style`` is then
-            the fallback for an ambiguous detection.
+        auto: ``--style auto``: the style is detected from the footage; an ambiguous
+            detection uses its best guess's style if that is gameplay, else the General
+            style (:func:`~cutpoint.styles.auto_fallback`).
     """
 
     style: str
@@ -79,8 +80,7 @@ def resolve_kind(
     max_total: float | None = None,
 ) -> Kind:
     """The :data:`KINDS` entry ``kind`` with the options the user gave replacing its own
-    (``style`` :data:`~cutpoint.styles.AUTO` sets ``auto`` and keeps the kind's style as the
-    fallback)."""
+    (``style`` :data:`~cutpoint.styles.AUTO` sets ``auto``)."""
     given = {"style": style, "top": top, "max_total": max_total}
     if style == AUTO:
         given = {"auto": True, "top": top, "max_total": max_total}
@@ -107,13 +107,18 @@ def _events_namespace(
     return parser.parse_args([str(project), *(["--layers", *layers] if layers else []), det_skip])
 
 
-def _action_cam(style: Style | AutoRequest, videos: list[Path]) -> bool:
+def _action_cam(
+    style: Style | AutoRequest,
+    videos: list[Path],
+    footage: category.FootageVision | None = None,
+) -> bool:
     """Whether the analysis will use an action-cam style (``cutpoint events`` then runs its
     layers); for ``--style auto`` the sources are probed (:func:`cutpoint.category.detect`,
-    cached for the analysis), talk aside: it never makes the style an action-cam one."""
+    cached for the analysis; ``footage``: the run's vision client), talk aside: it never makes
+    the style an action-cam one."""
     if isinstance(style, AutoRequest):
-        _probes, det = category.detect(videos)
-        name, _fallback = category.choose_style(det, style.emphasis, style.fallback)
+        _probes, det = category.detect(videos, False, shared=footage)  # None: vision is off
+        name, _fallback = category.choose_style(det, style.emphasis)
         style = get_style(name)
     return style.kind == ACTION_CAM
 
@@ -259,33 +264,40 @@ def _run_edit(
     kept = keep_clips and runstate.clips_kept(project, clips_dir)
     if keep_clips and clips_dir.exists() and any(clips_dir.iterdir()) and not (force or kept):
         raise FileExistsError(f"{clips_dir} is not empty; use --force to replace its clips")
-    style = AutoRequest(kind.emphasis, kind.style) if kind.auto else get_style(kind.style)
+    if kind.auto:
+        style: Style | AutoRequest = AutoRequest(kind.emphasis)
+    else:
+        style = get_style(kind.style)
     event_layers = None  # the events defaults
-    if events:
-        from cutpoint.analyze import LAYER_STEP  # noqa: PLC0415
-        from cutpoint.events.pipeline import DEFAULT_LAYERS, SKI_LAYERS, preflight  # noqa: PLC0415
+    # one client of the vision model for both detections (here and in analyze): a failed
+    # request is not tried again; None with --no-vision / "vision": false
+    with category.footage_vision(vision, ollama_url, ollama_model) as footage:
+        if events:
+            from cutpoint.analyze import LAYER_STEP  # noqa: PLC0415
+            from cutpoint.events.pipeline import DEFAULT_LAYERS, SKI_LAYERS, preflight  # noqa: PLC0415
 
-        ski = _action_cam(style, videos)
-        defaults = SKI_LAYERS if ski else DEFAULT_LAYERS
-        # --skip leaves out the layers of its steps here too (keyframes: no HUD discovery).
-        kept = tuple(x for x in defaults if LAYER_STEP.get(x) not in skip)
-        event_layers = kept if kept != defaults else None
-        preflight(kept)
+            ski = _action_cam(style, videos, footage)
+            defaults = SKI_LAYERS if ski else DEFAULT_LAYERS
+            # --skip leaves out the layers of its steps here too (keyframes: no HUD discovery).
+            kept = tuple(x for x in defaults if LAYER_STEP.get(x) not in skip)
+            event_layers = kept if kept != defaults else None
+            preflight(kept)
 
-    # A failed or interrupted analyze removes the (still empty) folders it created.
-    analyze(
-        inputs,
-        style,
-        project,
-        vision=vision,
-        vision_top=vision_top,
-        ollama_url=ollama_url,
-        ollama_model=ollama_model,
-        layers=True,
-        skip=skip,
-        visual_index=visual_index,
-        ocr_det_skip=bool(ocr_det_skip),
-    )
+        # A failed or interrupted analyze removes the (still empty) folders it created.
+        analyze(
+            inputs,
+            style,
+            project,
+            vision=vision,
+            vision_top=vision_top,
+            ollama_url=ollama_url,
+            ollama_model=ollama_model,
+            layers=True,
+            skip=skip,
+            visual_index=visual_index,
+            ocr_det_skip=bool(ocr_det_skip),
+            footage=footage,
+        )
     if events:
         from cutpoint.events.cli import run_args  # noqa: PLC0415
 
