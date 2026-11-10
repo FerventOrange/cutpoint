@@ -12,7 +12,7 @@ import pytest
 
 import cutpoint.analyze
 from conftest import envelope, set_config
-from cutpoint import cli, edit, progress
+from cutpoint import cli, edit, progress, styles
 
 
 def test_kind_overrides_replace_the_kind_defaults():
@@ -225,13 +225,68 @@ def test_edit_style_auto_probes_before_the_events_preflight(
     monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: None)
     monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
     monkeypatch.setattr(
-        category, "probe_source", lambda src: category.SourceProbe(str(src), 60.0, telemetry)
+        category,
+        "probe_source",
+        lambda src, vision=None: category.SourceProbe(str(src), 60.0, telemetry),
     )
     argv = ["edit", str(pipeline.video), "--kind", kind, "--style", "auto", "--events"]
     assert cli.main(argv) == 0
     assert checked == [layers]
     request = pipeline.calls[0][1][1]
-    assert (request.emphasis, request.fallback) == (emphasis, edit.KINDS[kind].style)
+    assert request.emphasis == emphasis
+
+
+@pytest.mark.parametrize(("flag", "shared"), [([], True), (["--no-vision"], False)])
+def test_edit_style_auto_shares_one_vision_client_with_its_analysis(
+    pipeline, monkeypatch, flag, shared
+):
+    """The events preflight and analyze detect with one client (a failed request is not asked
+    twice); --no-vision hands none on and asks nothing."""
+    from cutpoint import category  # noqa: PLC0415
+    from cutpoint.events import cli as events_cli  # noqa: PLC0415
+    from cutpoint.events import pipeline as events_pipeline  # noqa: PLC0415
+
+    seen = []
+    monkeypatch.setattr(events_pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: None)
+    monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
+    monkeypatch.setattr(
+        category,
+        "probe_source",
+        lambda src, vision=None: seen.append(vision) or category.SourceProbe(str(src), 60.0, False),
+    )
+    argv = ["edit", str(pipeline.video), "--style", "auto", "--events", *flag]
+    assert cli.main(argv) == 0
+    footage = pipeline.calls[0][2]["footage"]
+    assert seen == [footage]
+    assert (footage is not None) is shared
+
+
+def test_analyze_hands_vision_and_ollama_options_to_the_detection(tmp_path, monkeypatch):
+    from cutpoint import analyze, category  # noqa: PLC0415
+
+    class Stop(Exception):
+        pass
+
+    got = []
+
+    def detect(sources, *a, **kw):
+        got.append((a, kw))
+        raise Stop
+
+    video = tmp_path / "a.mp4"
+    video.write_bytes(b"x")
+    monkeypatch.setattr(category, "detect", detect)
+    with pytest.raises(Stop):
+        analyze.analyze(
+            video,
+            styles.AutoRequest("hype"),
+            tmp_path / "p",
+            vision=False,
+            ollama_url="http://h:1",
+            ollama_model="m",
+        )
+    assert got == [((False, "http://h:1", "m"), {"shared": None})]
 
 
 def test_edit_with_an_explicit_style_never_probes(pipeline, monkeypatch):
@@ -242,7 +297,7 @@ def test_edit_with_an_explicit_style_never_probes(pipeline, monkeypatch):
     monkeypatch.setattr(events_pipeline, "preflight", lambda layers: None)
     monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: None)
     monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
-    monkeypatch.setattr(category, "probe_source", lambda src: pytest.fail("probed"))
+    monkeypatch.setattr(category, "probe_source", lambda src, vision=None: pytest.fail("probed"))
     monkeypatch.setattr(category, "text_probe", lambda *a: pytest.fail("OCR check"))
     assert cli.main(["edit", str(pipeline.video), "--style", "gaming", "--events"]) == 0
 

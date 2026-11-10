@@ -28,7 +28,7 @@ option of `profile` and `crashes`, not of `analyze` or `edit`. Steer the result 
 | `cutpoint analyze` includes the reaction, keyframe and crash steps, and for `gaming` a `dialogue` step (a text model marks funny or heated talk); crashes in `crashes.json` become moments (not for 360) | |
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for the other layers and for games |
 | Activity profiles for crash detection: `cutpoint profile`, `--context` on `profile` and `crashes` | |
-| Footage category detection: `cutpoint detect`, and `--style auto` on `analyze` and `edit` (opt-in; unclear footage gets the default style) | |
+| Footage category detection: `cutpoint detect`, and `--style auto` on `analyze` and `edit` (opt-in; unsure footage is shown to the vision model unless `--no-vision`, and if it is still unsure Auto uses `gaming` when it leans to gameplay, else `action`; `detect` shows `decided_by`) | |
 | Frame index for the AI Chat's visual search: `--visual-index` on `analyze` and `edit` (off by default; `"visual_index": true` in `config.json`) also writes the CLIP frame embeddings for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` always have them | |
 | VLM layer of `cutpoint events` through the shared vision model: Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the Models tab of `cutpoint ui` | |
 | `--json` result envelope on stdout: `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `style ...`, `events`, `resume`, `360 ...` | |
@@ -146,7 +146,10 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
 Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
 
 1. **Pick a style.** Prefer `--style auto`: it picks one from the footage (see
-   `cutpoint detect`) and uses the default style when it cannot tell. Name a style only when
+   `cutpoint detect`) and, when it cannot tell, uses `gaming` if its best guess is gameplay, else `action` (a
+   `style_ambiguous` warning names the style used). Unsure footage is shown to the vision model
+   first (on by default; Ollama, or the hosted Vision model the user allowed; `--no-vision` skips
+   it; `funny-moments` gets `funny` either way). Name a style only when
    the request clearly calls for it: `funny`, `gaming`, `action`, `sport`, `commentary`
    (long talk), `action-cam` (helmet-, chest- or bike-mounted action-cam footage, best with
    GoPro or Insta360 X3 telemetry; formerly `ski`, which is no longer accepted). Without
@@ -266,7 +269,7 @@ Variants:
 Read the `ERROR` line, then
 [docs/troubleshooting/README.md](https://github.com/FerventOrange/cutpoint/blob/main/docs/troubleshooting/README.md).
 The usual causes: ffmpeg not on `PATH`, a missing optional extra, Ollama not reachable (only
-affects `--vision`), a non-empty output folder.
+affects `--vision` and the vision check of `--style auto`), a non-empty output folder.
 
 Whisper runs on the CPU unless the `gpu` extra is installed; if the user has an NVIDIA GPU and
 `transcribe` logs an INFO line about missing CUDA libraries, add `gpu` with the install command

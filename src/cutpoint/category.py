@@ -20,13 +20,14 @@ over a few frames, as a thin game HUD has; without the extra it is skipped.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import itertools
 import logging
 import math
 import re
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ from cutpoint.errors import FFmpegError, LowMemoryError
 
 logger = logging.getLogger(__name__)
 
-VERSION = 2  # 2: the lower-third box (box, hud_box)
+VERSION = 3  # 2: the lower-third box (box, hud_box); 3: per window, bars cropped, size
 CACHE_FILE = f"category-v{VERSION}.json"  # in the source's cache folder
 
 ACTION_CAM = "action-cam"
@@ -51,7 +52,11 @@ HYPE, FUNNY = "hype", "funny"  # emphasis: analyze is hype, edit --kind funny-mo
 
 # ---- the frame probe
 GRID = (320, 180)  # (width, height) of every probe frame
-SPREAD = 16  # frames spread over 10-90% of the source, scaled to GRID
+SPREAD = 24  # frames spread over 10-90% of the source, read at READ_SCALE x GRID
+READ_SCALE = 2  # spread frames are read this much finer than GRID, cropped, then scaled
+WINDOWS = 4  # consecutive groups of the spread frames, each judged on its own (#513)
+WINDOW_MIN = 4  # fewer lit frames in a window: not judged
+DARK_LUMA = 12.0  # a spread frame darker than this (mean luma: black, a fade) is left out
 PAIRS = 4  # pairs of consecutive frames, a native-resolution GRID crop of the centre
 PAIR_FRAMES = 4  # frames read per pair, for one that is not a repeat (first_change)
 SPAN = (0.1, 0.9)
@@ -59,6 +64,12 @@ FRAME_TIMEOUT_S = 60.0
 MIN_FRAMES = 6  # fewer spread frames decoded: no frame measures
 STATIC_STD = 3.0  # luma levels: a pixel this steady over the spread frames is static
 EDGE = 24.0  # luma gradient of the mean frame that counts as an edge
+# A HUD's still edges are packed (text, icons, bars); still edges scattered over the picture
+# are not one (a repeated pattern such as a grid in the background of several fixed cameras
+# lines up between cuts by chance). Only still edges in cells of HUD_CELL x HUD_CELL grid
+# pixels with at least HUD_DENSE of them count (#513).
+HUD_CELL = 8
+HUD_DENSE = 0.2
 FLAT = 6.0  # luma gradient below which a pair pixel is flat (noise is measured there)
 BAR_LUMA, BAR_STD = 24.0, 3.0  # a letterbox / pillarbox row or column
 MARGIN = 2  # pixels left out next to the content's edge
@@ -74,9 +85,12 @@ BOX_ROWS = 0.04  # a box: a run of box rows at least this share of the picture's
 # Gameplay score, calibrated on 69 labelled recordings (#513): only a static HUD separates
 # gameplay from camera footage. Screen-recorder tags are weak (OBS re-encodes of camera
 # footage carry them too); the noise floor and the shake are measured and cached but not
-# scored, as fast gameplay shakes and re-encoded camera footage has no sensor noise.
+# scored, as fast gameplay shakes and re-encoded camera footage has no sensor noise (checked
+# again on 54 labelled files, 2026-11-09: neither separates). A 2:1 frame of 360 video
+# counts as camera tags: a re-encode keeps its geometry, not its tags.
 BASE_SCORE = 0.3  # no evidence either way
 CAMERA_TAGS, SCREEN_TAGS, HUD_WEIGHT = -0.3, 0.1, 0.5
+EQUIRECT_MIN_W = 3840  # px: the narrowest 2:1 frame taken as 360 video
 HUD_FULL = 0.004  # static HUD share at which the HUD term is full
 STILL_SHARE = 0.6  # above this static share the footage is a still or a tripod shot: no HUD
 GENERAL_SURE = 0.25  # gameplay score below which general is sure (camera tags)
@@ -86,6 +100,8 @@ TALK_MIN_S = 480.0  # a talk recording is at least this long
 SPEECH_BRIDGE_S = 1.0  # pauses up to this long between words count as speech
 TELEMETRY_SHARE = 0.5  # action cam wins with telemetry in at least this share of the footage
 DISAGREE_SHARE = 0.10  # minorities above this share of the footage: style_sources_disagree
+# what can decide a source (SourceDecision.decided_by, Detection.decided_by)
+EVIDENCE = ("telemetry", "static HUD", "HUD text", "camera tags", "360 frame", "speech", "vision")
 
 # ---- the HUD text check (OCR), for a source the frame probe leaves unsure
 # A thin HUD (a few lines of text) is too small to stay static at GRID; the HUD OCR engine
@@ -101,6 +117,9 @@ TEXT_KEEP = 0.6  # a text anchor: a box in the same place in this share of the f
 TEXT_MIN_SCORE = 0.7  # recognition score below which an anchor's text does not count (noise)
 TEXT_ANCHORS = 3  # kept anchors from which the text is a HUD's
 TEXT_WEIGHT = 0.3  # gameplay score of a HUD's text
+# gameplay score without the HUD text below which the text alone leaves a source unsure: fixed
+# text in a fixed camera's shot (a studio's signs and labels) has anchors as a HUD has (#513)
+TEXT_SUPPORT = 0.4
 SUBTITLE_BAND = (0.3, 0.7, 0.75)  # x from, x to, y from (share of the frame): subtitles
 CLOCK_RE = re.compile(
     r"\d{1,2}\s*[:.]\s*\d{2}(\s*[:.]\s*\d{2})?|\d{4}\s*[-/.]\s*\d{1,2}\s*[-/.]\s*\d{1,2}|"
@@ -113,6 +132,34 @@ CLOCK_RE = re.compile(
 )
 
 _TEXT_FAILED: set[Path] = set()  # cache folders whose text check failed in this process
+
+# ---- the vision question, for a source the rest leaves unsure (#898)
+# The shared vision model (local Ollama, or a hosted Vision provider with the user's consent)
+# gets a few frames and one generic question. Its answer is cached per source and model.
+VISION_VERSION = 1
+VISION_FILE = f"category-vision-v{VISION_VERSION}.json"  # in the source's cache folder
+VISION_FRAMES = 6  # frames spread over SPAN
+VISION_WIDTH = 640  # px of each frame sent
+VISION_TIMEOUT_S = 120.0  # a cold model load included
+V_GAMEPLAY, V_CAMERA, V_SCREEN, V_OTHER = "gameplay", "camera", "screen", "other"
+VISION_ANSWERS = (V_GAMEPLAY, V_CAMERA, V_SCREEN, V_OTHER)
+VISION_PROMPT = (
+    "These are {n} frames spread over one video, in order. What kind of footage is it?\n"
+    "gameplay: a recording of a video game being played. Rendered graphics, a game's "
+    "interface, menus, maps, loading screens and cutscenes, with or without a webcam, chat "
+    "or other stream overlays.\n"
+    "camera: real-world scenes filmed with a camera (a phone, an action camera, a drone, a "
+    "360 camera, a dashcam), also when edited with captions, titles or cuts.\n"
+    "screen: people talking (a podcast, an interview, a talk to the camera), or a recording "
+    "of a computer screen that is not a game (a desktop, apps, a browser, slides).\n"
+    "other: none of these, or you cannot tell.\n"
+    'Reply with JSON only: {{"footage": "gameplay" | "camera" | "screen" | "other"}}'
+)
+VISION_SCHEMA = {
+    "type": "object",
+    "properties": {"footage": {"type": "string", "enum": list(VISION_ANSWERS)}},
+    "required": ["footage"],
+}
 
 SCREEN_HANDLERS = ("videohandle",)  # NVIDIA ShadowPlay / the NVIDIA app
 CAMERA_RE = re.compile(
@@ -134,7 +181,8 @@ class SourceProbe:
         handler, encoder: The video stream's ``handler_name`` and ``encoder`` tags, or the
             container's encoder ("" when untagged).
         make, model: The camera's make and model tags ("" when untagged).
-        audio_tracks: Audio streams (screen recorders such as OBS write several).
+        audio_tracks: Audio streams (OBS and editors write several; not scored).
+        width, height: The video's display size (0: unknown, a probe cached before it).
         frames: Spread frames decoded (0: no frame measures, such as with telemetry).
         hud_static: Share of the picture that never changes and has edges (a HUD, a logo).
         static_share: Share of the picture that never changes at all.
@@ -146,6 +194,8 @@ class SourceProbe:
         shake: Median shift (px) between consecutive frames of the crops.
         hud_text: HUD text anchors the HUD text check kept (None: not checked). Cached
             apart, in :data:`TEXT_FILE`, so not in :meth:`to_json`.
+        vision: The vision model's answer (one of :data:`VISION_ANSWERS`; None: not asked).
+            Cached apart, in :data:`VISION_FILE`, so not in :meth:`to_json`.
     """
 
     path: str
@@ -156,6 +206,8 @@ class SourceProbe:
     make: str = ""
     model: str = ""
     audio_tracks: int = 0
+    width: int = 0
+    height: int = 0
     frames: int = 0
     hud_static: float | None = None
     static_share: float | None = None
@@ -164,10 +216,11 @@ class SourceProbe:
     noise_floor: float | None = None
     shake: float | None = None
     hud_text: int | None = None
+    vision: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
-        del data["hud_text"]
+        del data["hud_text"], data["vision"]
         return {"version": VERSION, **data}
 
     @classmethod
@@ -197,11 +250,15 @@ class SourceProbe:
 
     @property
     def screen_marks(self) -> bool:
-        """The container looks like a screen recorder's (ShadowPlay's handler, or several
-        audio tracks and no camera marks, as OBS writes)."""
-        if self.camera_marks:
-            return False
-        return self.handler.lower() in SCREEN_HANDLERS or self.audio_tracks >= 2
+        """The container carries a screen recorder's own signature (ShadowPlay's handler) and
+        no camera marks. Several audio tracks are no sign: editors export them too."""
+        return not self.camera_marks and self.handler.lower() in SCREEN_HANDLERS
+
+    @property
+    def equirect(self) -> bool:
+        """The picture is a 2:1 frame of at least :data:`EQUIRECT_MIN_W` pixels: a stitched
+        360 video (a 2:1 phone screen recording is narrower)."""
+        return self.width >= EQUIRECT_MIN_W and abs(self.width - 2 * self.height) <= 2
 
 
 # --------------------------------------------------------------------------- probing
@@ -233,15 +290,18 @@ def _metadata(data: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _grab(io: Path, t: float, vf: str, count: int) -> list[np.ndarray]:
-    """Up to ``count`` consecutive grey GRID frames of ``io`` from ``t`` ([] on a failure)."""
+def _grab(
+    io: Path, t: float, vf: str, count: int, size: tuple[int, int] = GRID
+) -> list[np.ndarray]:
+    """Up to ``count`` consecutive grey ``size`` frames of ``io`` from ``t`` ([] on a
+    failure)."""
     from cutpoint.ffmpeg_utils import decode_raw  # noqa: PLC0415
 
     out: list[np.ndarray] = []
     try:
         for _t, frame in decode_raw(
             io,
-            size=GRID,
+            size=size,
             vf=vf,
             pix_fmt="gray",
             start=max(0.0, t),
@@ -300,18 +360,33 @@ def lower_box(std: np.ndarray) -> tuple[int, int] | None:
     return best if best[1] - best[0] >= max(1, round(BOX_ROWS * h)) else None
 
 
+def _packed(mask: np.ndarray) -> np.ndarray:
+    """``mask`` with only its pixels in cells (:data:`HUD_CELL`) where at least
+    :data:`HUD_DENSE` of the pixels are set; a partial cell at the right or bottom edge is
+    judged on its own pixels."""
+    h, w = mask.shape
+    out = np.zeros_like(mask)
+    for y in range(0, h, HUD_CELL):
+        for x in range(0, w, HUD_CELL):
+            cell = mask[y : y + HUD_CELL, x : x + HUD_CELL]
+            if cell.mean() >= HUD_DENSE:
+                out[y : y + HUD_CELL, x : x + HUD_CELL] = cell
+    return out
+
+
 def static_measures(frames: np.ndarray) -> dict[str, Any]:
     """``hud_static``, ``static_share`` and, with a lower-third box (:func:`lower_box`),
     ``box`` and ``hud_box`` of spread frames ``(n, h, w)``: the share of the picture (bars
-    left out) that stays still and has edges, that stays still at all, the box's rows as
-    shares of the frame's height, and the still-and-edgy share of the picture inside it."""
+    left out) that stays still and has packed edges (:func:`_packed`), that stays still at
+    all, the box's rows as shares of the frame's height, and the still, packed edges' share
+    of the picture inside it."""
     mean, std = frames.mean(axis=0), frames.std(axis=0)
     rows, cols = _content_box(mean, std)
     static = std[rows, cols] < STATIC_STD
     edgy = _gradient(mean)[rows, cols] > EDGE
     if not static.size:
         return {"hud_static": 0.0, "static_share": 0.0}
-    hud = static & edgy
+    hud = _packed(static & edgy)
     out: dict[str, Any] = {"hud_static": float(hud.mean()), "static_share": float(static.mean())}
     box = lower_box(std[rows, cols])
     if box is not None:
@@ -355,11 +430,75 @@ def first_change(frames: list[np.ndarray]) -> list[np.ndarray]:
     return frames[:2]
 
 
+def _bars(frames: np.ndarray) -> tuple[slice, slice]:
+    """The picture inside black bars that stay over ``frames`` ``(n, h, w)``: rows and
+    columns whose every pixel is dark (:data:`BAR_LUMA`) and steady (:data:`BAR_STD`), as a
+    letterbox, a pillarbox or a game window inside a larger canvas has."""
+    mean, std = frames.mean(axis=0), frames.std(axis=0)
+    bar = (mean < BAR_LUMA) & (std < BAR_STD)
+
+    def inner(lines: np.ndarray) -> tuple[int, int]:
+        lo, hi = 0, len(lines)
+        while lo < hi and lines[lo]:
+            lo += 1
+        while hi > lo and lines[hi - 1]:
+            hi -= 1
+        return lo, hi
+
+    r0, r1 = inner(bar.all(axis=1))
+    c0, c1 = inner(bar.all(axis=0))
+    return slice(r0, r1), slice(c0, c1)
+
+
+def _to_grid(frames: np.ndarray) -> np.ndarray:
+    """``frames`` ``(n, h, w)`` cropped to the picture inside their black bars (:func:`_bars`)
+    and scaled to :data:`GRID`."""
+    import cv2  # noqa: PLC0415
+
+    rows, cols = _bars(frames)
+    if rows.stop - rows.start < GRID[1] // 4 or cols.stop - cols.start < GRID[0] // 4:
+        rows, cols = slice(None), slice(None)  # all dark: nothing to crop to
+    return np.stack(
+        [
+            cv2.resize(f[rows, cols], GRID, interpolation=cv2.INTER_AREA).astype(np.float32)
+            for f in frames
+        ]
+    )
+
+
+def window_measures(spread: list[np.ndarray]) -> dict[str, Any]:
+    """:func:`static_measures` of the spread frames (in time order) judged per window: the
+    frames in :data:`WINDOWS` consecutive groups, dark frames left out (:data:`DARK_LUMA`), each
+    group cropped to the picture inside its black bars and scaled to :data:`GRID`. The HUD
+    measures (``hud_static``, ``box``, ``hud_box``) are those of the window with the most HUD
+    evidence that is no still picture, so menus, loading, dark scenes and cutscenes in other
+    windows do not dilute it; ``static_share`` is that of all the lit frames (a still picture
+    overall)."""
+    lit = [f for f in spread if float(f.mean()) >= DARK_LUMA]
+    pooled = static_measures(_to_grid(np.stack(lit if len(lit) >= WINDOW_MIN else spread)))
+    size = math.ceil(len(spread) / WINDOWS)
+    best: dict[str, Any] | None = None
+    for i in range(0, len(spread), size):
+        part = [f for f in spread[i : i + size] if float(f.mean()) >= DARK_LUMA]
+        if len(part) < WINDOW_MIN:
+            continue
+        m = static_measures(_to_grid(np.stack(part)))
+        if m["static_share"] > STILL_SHARE:
+            continue
+        hud = m["hud_static"] - m.get("hud_box", 0.0)
+        if best is None or hud > best["hud_static"] - best.get("hud_box", 0.0):
+            best = m
+    if best is None:  # every window a still or dark: the frames as a whole
+        return pooled
+    return {**best, "static_share": pooled["static_share"]}
+
+
 def frame_measures(spread: list[np.ndarray], pairs: list[list[np.ndarray]]) -> dict[str, Any]:
-    """The frame fields of :class:`SourceProbe` from decoded frames."""
+    """The frame fields of :class:`SourceProbe` from decoded frames (``spread`` at any size:
+    :func:`window_measures` scales them to :data:`GRID`)."""
     out: dict[str, Any] = {"frames": len(spread)}
     if len(spread) >= MIN_FRAMES:
-        out.update(static_measures(np.stack(spread)))
+        out.update(window_measures(spread))
     full = [p for p in pairs if len(p) == 2]
     noise = [s for p in full for f in p if (s := noise_sigma(f)) is not None]
     if noise:
@@ -373,8 +512,9 @@ def frame_measures(spread: list[np.ndarray], pairs: list[list[np.ndarray]]) -> d
 def _frame_probe(io: Path, duration: float, width: int, height: int) -> dict[str, Any]:
     lo, hi = SPAN
     times = [duration * (lo + (hi - lo) * i / (SPREAD - 1)) for i in range(SPREAD)]
+    read = (GRID[0] * READ_SCALE, GRID[1] * READ_SCALE)  # finer: bars are cropped off later
+    spread = [f[0] for t in times if (f := _grab(io, t, f"scale={read[0]}:{read[1]}", 1, read))]
     scale = f"scale={GRID[0]}:{GRID[1]}"
-    spread = [f[0] for t in times if (f := _grab(io, t, scale, 1))]
     crop = f"crop={GRID[0]}:{GRID[1]}" if width >= GRID[0] and height >= GRID[1] else scale
     pair_t = [duration * (lo + (hi - lo) * (i + 0.5) / PAIRS) for i in range(PAIRS)]
     pairs = [first_change(_grab(io, t, crop, PAIR_FRAMES)) for t in pair_t]
@@ -565,12 +705,192 @@ def _with_text(found: SourceProbe, cdir: Path, io: Path | None = None) -> Source
     return replace(found, hud_text=hud_anchors(rec["anchors"], found.box))
 
 
-def probe_source(src: Path) -> SourceProbe:
+# --------------------------------------------------------------------------- vision (#898)
+def vision_frames(io: Path, duration: float) -> list[bytes]:
+    """:data:`VISION_FRAMES` JPEG frames of ``io`` spread over :data:`SPAN`,
+    :data:`VISION_WIDTH` wide (a failed grab is left out)."""
+    from cutpoint.ffmpeg_utils import grab_frame_jpeg  # noqa: PLC0415
+
+    lo, hi = SPAN
+    out = []
+    for i in range(VISION_FRAMES):
+        t = duration * (lo + (hi - lo) * i / (VISION_FRAMES - 1))
+        try:
+            out.append(grab_frame_jpeg(io, t, VISION_WIDTH))
+        except FFmpegError as err:
+            logger.debug("vision frame of %s at %.1fs failed: %s", io, t, err)
+    return out
+
+
+class FootageVision:
+    """The vision question for the unsure sources of one detection: one client of the shared
+    vision model (:class:`cutpoint.vision.VisionRater`: the local Ollama, or the hosted Vision
+    provider the user agreed to), checked once and freed by :meth:`close`.
+
+    ``ollama_url`` and ``ollama_model`` are the run's ``--ollama-url`` and ``--ollama-model``
+    (they pick the Ollama over a hosted Vision role, as for the rating). ``explicit``: the
+    user asked for vision (``--vision``, ``"vision": true``).
+
+    Quiet: in Cutpoint lite, when no model answers or memory is short, one INFO line, and the
+    sources stay as the rest decided them. Without the user's Vision consent the same, unless
+    ``explicit``: then the ``vision_consent_needed`` WARNING (once per run).
+    """
+
+    def __init__(
+        self,
+        ollama_url: str | None = None,
+        ollama_model: str | None = None,
+        explicit: bool = False,
+    ) -> None:
+        self._url, self._model, self._explicit = ollama_url, ollama_model, explicit
+        self._client: Any = None
+        self._made = False
+        self._ready: bool | None = None  # None: not checked yet
+
+    def _skip(self, why: str) -> None:
+        self._ready = False
+        logger.info("Footage category: the vision model is not asked (%s)", why)
+
+    def client(self) -> Any:
+        """The :class:`~cutpoint.vision.VisionRater`, not checked yet (None in Cutpoint lite
+        or with a bad Ollama URL; the reason is logged once)."""
+        if not self._made:
+            self._made = True
+            from cutpoint.extras import edition  # noqa: PLC0415
+            from cutpoint.vision import VisionRater  # noqa: PLC0415
+
+            if edition() == "lite":
+                self._skip("not in Cutpoint lite")
+                return None
+            try:
+                self._client = VisionRater(self._url, self._model)
+            except ValueError as err:  # a bad port in OLLAMA_HOST / config.json
+                self._skip(str(err))
+        return self._client
+
+    def key(self) -> str | None:
+        """The cache key of the model's answers, ``<model>@<host>`` (None without a client)."""
+        rater = self.client()
+        return None if rater is None else f"{rater.model}@{rater.host}"
+
+    def _rater(self) -> Any:
+        """The client once it is checked (consent, then the model answering), else None."""
+        rater = self.client()
+        if self._ready is None and rater is not None:
+            if rater.consent_needed:
+                if self._explicit:
+                    rater.warn_consent()
+                    self._ready = False
+                else:
+                    self._skip(
+                        "the Vision provider needs your consent in the Models tab of cutpoint ui"
+                    )
+            else:
+                self._ready = rater.available()  # it logs why not (INFO)
+        return rater if self._ready else None
+
+    def ready(self) -> bool:
+        """Whether the model can be asked: the client is checked (consent, answering) and its
+        model id is known (:meth:`key`)."""
+        return self._rater() is not None
+
+    def ask(self, io: Path, duration: float) -> str | None:
+        """The model's answer (one of :data:`VISION_ANSWERS`) about :func:`vision_frames` of
+        ``io``; None when it is not asked, fails or answers something else."""
+        rater = self._rater()
+        if rater is None:
+            return None
+        frames = vision_frames(io, duration)
+        if len(frames) < 2:
+            return None
+        try:
+            reply = rater.ask_json(
+                VISION_PROMPT.format(n=len(frames)),
+                frames,
+                VISION_SCHEMA,
+                num_predict=256,
+                timeout=VISION_TIMEOUT_S,
+            )
+        except LowMemoryError as err:
+            self._skip(str(err))
+            return None
+        if reply is None:  # the request failed (logged): no more requests in this detection
+            self._ready = False
+            return None
+        answer = reply.get("footage")
+        return answer if answer in VISION_ANSWERS else None
+
+    def close(self) -> None:
+        """Free the model's memory for what runs next (only if a request went to it)."""
+        if self._client is not None:
+            self._client.unload()
+
+
+@contextlib.contextmanager
+def footage_vision(
+    vision: bool | None = None, ollama_url: str | None = None, ollama_model: str | None = None
+) -> Iterator[FootageVision | None]:
+    """A :class:`FootageVision` for one detection, closed at the end. ``vision``: True = asked
+    for (a missing consent is a WARNING), None = the default (asked quietly), False = off (None
+    is yielded). ``ollama_url``, ``ollama_model``: see :class:`FootageVision`."""
+    vision = None if vision is False else FootageVision(ollama_url, ollama_model, vision is True)
+    try:
+        yield vision
+    finally:
+        if vision is not None:
+            vision.close()
+
+
+def needs_vision(p: SourceProbe) -> bool:
+    """Whether to ask the vision model about ``p``: no telemetry, a frame probe, and the rest
+    (the HUD text check included) leaves it unsure."""
+    if p.telemetry or p.frames < MIN_FRAMES:
+        return False
+    return _source(replace(p, vision=None), None).ambiguous
+
+
+def _with_vision(
+    found: SourceProbe, cdir: Path, vision: FootageVision | None, io: Path | None = None
+) -> SourceProbe:
+    """``found`` with :attr:`SourceProbe.vision` when :func:`needs_vision`: from
+    :data:`VISION_FILE` (per model), else asked and cached; unchanged without ``vision`` or
+    an answer."""
+    if vision is None or not needs_vision(found):
+        return found
+    rec = cache.load_json(cdir / VISION_FILE)
+    answers = rec.get("answers") if isinstance(rec, dict) else None
+    if not isinstance(answers, dict) or rec.get("version") != VISION_VERSION:
+        answers = {}
+    key = vision.key()
+    if key is None:
+        return found
+    if answers.get(key) not in VISION_ANSWERS:
+        if vision.ready():  # a hosted model's id is known once it is checked: look again
+            key = vision.key() or key
+        if answers.get(key) in VISION_ANSWERS:
+            return replace(found, vision=answers[key])
+        t0 = time.perf_counter()
+        answer = vision.ask(io or remap_source(Path(found.path)), found.duration)
+        if answer is None:
+            return found
+        logger.info(
+            "The footage of %s is unclear; the vision model sees %s (%.1fs)",
+            Path(found.path).name,
+            answer,
+            time.perf_counter() - t0,
+        )
+        answers = {**answers, key: answer}
+        cache.save_json(cdir / VISION_FILE, {"version": VISION_VERSION, "answers": answers})
+    return replace(found, vision=answers[key])
+
+
+def probe_source(src: Path, vision: FootageVision | None = None) -> SourceProbe:
     """Measure ``src`` for :func:`decide`; cached in its cache folder as :data:`CACHE_FILE`.
 
     The telemetry check and the container tags are always read; the frame probe
     (:data:`SPREAD` scaled frames and :data:`PAIRS` pairs of crops) only without telemetry,
-    and the HUD text check only when the rest leaves the source unsure (:func:`needs_text`).
+    the HUD text check only when the rest leaves the source unsure (:func:`needs_text`), and
+    with ``vision`` the vision model only when it is still unsure (:func:`needs_vision`).
 
     Raises:
         FFmpegError: If ffprobe cannot read the file.
@@ -581,17 +901,24 @@ def probe_source(src: Path) -> SourceProbe:
     cdir = cache.source_dir(src)
     cached = SourceProbe.from_json(cache.load_json(cdir / CACHE_FILE))
     if cached is not None:  # saved under the path of its first run, maybe another remap
-        return _with_text(replace(cached, path=str(src)), cdir)
+        return _with_vision(_with_text(replace(cached, path=str(src)), cdir), cdir, vision)
     io = remap_source(src)
     info = probe(io)
     meta = _metadata(ffprobe_json(io, show_format=True, show_streams=True, timeout=60))
-    found = SourceProbe(str(src), round(info.duration, 3), has_telemetry(src), **meta)
+    found = SourceProbe(
+        str(src),
+        round(info.duration, 3),
+        has_telemetry(src),
+        **meta,
+        width=info.width,
+        height=info.height,
+    )
     if not found.telemetry:
         for key, value in _frame_probe(io, info.duration, info.width, info.height).items():
             setattr(found, key, round(value, 5) if isinstance(value, float) else value)
     if found.telemetry or found.frames >= MIN_FRAMES:  # else a read failure that may pass
         cache.save_json(cdir / CACHE_FILE, found.to_json())
-    return _with_text(found, cdir, io)
+    return _with_vision(_with_text(found, cdir, io), cdir, vision, io)
 
 
 # --------------------------------------------------------------------------- speech
@@ -626,6 +953,8 @@ class SourceDecision:
     reason: str
     gameplay: float | None = None  # gameplay score 0-1 (None with telemetry)
     speech: float | None = None  # speech coverage 0-1 (None: not transcribed yet)
+    # the evidence that decided (:data:`EVIDENCE`); None when ambiguous
+    decided_by: str | None = None
 
 
 @dataclass
@@ -645,6 +974,8 @@ class Detection:
             :data:`DISAGREE_SHARE` of the footage (else empty).
         suggest: A style to suggest (``commentary`` for gameplay that is mostly speech),
             or None.
+        decided_by: The evidence (:data:`EVIDENCE`) that decided the sure sources of the
+            category, most footage first; empty when the detection is ambiguous.
     """
 
     category: str
@@ -655,6 +986,7 @@ class Detection:
     pending: bool = False
     disagree: list[str] = field(default_factory=list)
     suggest: str | None = None
+    decided_by: list[str] = field(default_factory=list)
 
     def record(self, emphasis: str, style: str, fallback: str | None) -> dict[str, Any]:
         """The ``detection`` block of highlights.json and of ``--json``."""
@@ -668,6 +1000,7 @@ class Detection:
             "scores": self.scores,
             "fallback": fallback,
             "suggest": self.suggest,
+            "decided_by": self.decided_by,
             "sources": [asdict(s) for s in self.sources],
         }
 
@@ -682,6 +1015,9 @@ def gameplay_score(p: SourceProbe) -> tuple[float, list[str]]:
     if p.camera_marks:
         score += CAMERA_TAGS
         why.append(f"camera tags ({p.make or p.handler or p.encoder})".replace("  ", " "))
+    elif p.equirect:
+        score += CAMERA_TAGS
+        why.append(f"360 frame ({p.width}x{p.height})")
     elif p.screen_marks:
         score += SCREEN_TAGS
         why.append("screen recorder tags")
@@ -703,31 +1039,70 @@ def gameplay_score(p: SourceProbe) -> tuple[float, list[str]]:
     return round(max(0.0, min(1.0, score)), 3), why
 
 
+def _text_alone(p: SourceProbe) -> bool:
+    """``p``'s gameplay score rests on its HUD text alone (:data:`TEXT_SUPPORT`)."""
+    lifted = (p.hud_text or 0) >= TEXT_ANCHORS
+    return lifted and gameplay_score(replace(p, hud_text=None))[0] < TEXT_SUPPORT
+
+
+def _gameplay_evidence(p: SourceProbe) -> str:
+    """What made ``p`` sure gameplay without the vision model: ``HUD text`` when the source
+    is sure only with it, else ``static HUD``."""
+    lifted = (p.hud_text or 0) >= TEXT_ANCHORS
+    if lifted and gameplay_score(replace(p, hud_text=None))[0] < GAMEPLAY_SURE:
+        return "HUD text"
+    return "static HUD"
+
+
+def _general_evidence(p: SourceProbe) -> str:
+    """What made ``p`` sure general: ``camera tags`` or ``360 frame``."""
+    return "camera tags" if p.camera_marks else "360 frame"
+
+
 def _source(p: SourceProbe, speech: float | None) -> SourceDecision:
+    """The category of one source. The vision model's answer (:attr:`SourceProbe.vision`,
+    only asked when the rest is unsure) settles gameplay or not; ``other`` leaves it open."""
     if p.telemetry:
         return SourceDecision(
-            p.path, p.duration, ACTION_CAM, False, "camera telemetry", None, speech
+            p.path, p.duration, ACTION_CAM, False, "camera telemetry", None, speech, "telemetry"
         )
     score, why = gameplay_score(p)
-    if score >= GAMEPLAY_MIN:
-        ambiguous = score < GAMEPLAY_SURE
+    seen = p.vision if p.vision in (V_GAMEPLAY, V_CAMERA, V_SCREEN) else None
+    if p.vision in VISION_ANSWERS:
+        why.append(f"vision: {p.vision}")
+    if (score >= GAMEPLAY_MIN) if seen is None else seen == V_GAMEPLAY:
+        ambiguous = seen is None and (score < GAMEPLAY_SURE or _text_alone(p))
+        decided = None if ambiguous else "vision" if seen else _gameplay_evidence(p)
         return SourceDecision(
-            p.path, p.duration, GAMEPLAY, ambiguous, ", ".join(why), score, speech
+            p.path, p.duration, GAMEPLAY, ambiguous, ", ".join(why), score, speech, decided
         )
     if speech is not None and speech >= TALK_BAND and p.duration >= TALK_MIN_S:
         why = [f"speech {_pct(speech)} of {p.duration / 60:.0f} min", *why]
-        # partial HUD evidence (not a still picture) keeps a talky game stream unsure
+        # partial HUD evidence (not a still picture) keeps a talky game stream unsure, unless
+        # the vision model saw no game
         part_hud = (
-            p.hud_static is not None
+            seen is None
+            and p.hud_static is not None
             and p.hud_static >= HUD_FULL / 4
             and not (p.static_share is not None and p.static_share > STILL_SHARE)
         )
         ambiguous = speech < TALK_SPEECH or part_hud
-        return SourceDecision(p.path, p.duration, TALK, ambiguous, ", ".join(why), score, speech)
+        return SourceDecision(
+            p.path,
+            p.duration,
+            TALK,
+            ambiguous,
+            ", ".join(why),
+            score,
+            speech,
+            None if ambiguous else "speech",
+        )
     if speech is not None:
         why.append(f"speech {_pct(speech)}")
     reason = ", ".join(why) or "no gameplay signs"
-    return SourceDecision(p.path, p.duration, GENERAL, score >= GENERAL_SURE, reason, score, speech)
+    ambiguous = seen is None and score >= GENERAL_SURE
+    decided = None if ambiguous else "vision" if seen else _general_evidence(p)
+    return SourceDecision(p.path, p.duration, GENERAL, ambiguous, reason, score, speech, decided)
 
 
 def decide(probes: Sequence[SourceProbe], speech: Mapping[str, float] | None = None) -> Detection:
@@ -777,6 +1152,10 @@ def decide(probes: Sequence[SourceProbe], speech: Mapping[str, float] | None = N
         talk_s = sum(s.duration for s in spoken if (s.speech or 0) >= TALK_SPEECH)
         if spoken and talk_s >= sum(s.duration for s in winners) / 2:
             suggest = "commentary"
+    weight: dict[str, float] = {}
+    for s in winners:
+        if s.decided_by and not ambiguous:
+            weight[s.decided_by] = weight.get(s.decided_by, 0.0) + max(s.duration, 1e-3)
     return Detection(
         cat,
         ambiguous,
@@ -786,6 +1165,7 @@ def decide(probes: Sequence[SourceProbe], speech: Mapping[str, float] | None = N
         pending=pending,
         disagree=disagree,
         suggest=suggest,
+        decided_by=sorted(weight, key=lambda k: -weight[k]),
     )
 
 
@@ -794,22 +1174,48 @@ def label(category: str) -> str:
     return category.replace("-", " ").capitalize()
 
 
-def detect(sources: Sequence[Path]) -> tuple[list[SourceProbe], Detection]:
+def fallback_label(det: Detection) -> str:
+    """Display name of the category whose style an ambiguous ``det`` uses
+    (:func:`choose_style`): its best guess's, or General's."""
+    from cutpoint.styles import auto_fallback_category  # noqa: PLC0415
+
+    return label(auto_fallback_category(det.category))
+
+
+def detect(
+    sources: Sequence[Path],
+    vision: bool | None = None,
+    ollama_url: str | None = None,
+    ollama_model: str | None = None,
+    *,
+    shared: FootageVision | None = None,
+) -> tuple[list[SourceProbe], Detection]:
     """Probe ``sources`` (:func:`probe_source`, cached) and decide without the speech
-    coverage (talk is then pending, see :attr:`Detection.pending`)."""
+    coverage (talk is then pending, see :attr:`Detection.pending`).
+
+    ``vision``, ``ollama_url`` and ``ollama_model`` as for :func:`footage_vision`; ``shared``
+    is a :class:`FootageVision` of the caller (the other arguments are ignored) so that two
+    detections of a run ask one client; the model is freed after each detection.
+    """
     logger.info("Detecting the footage category of %d source(s)", len(sources))
-    probes = [probe_source(s) for s in sources]
+    if shared is not None:
+        probes = [probe_source(s, shared) for s in sources]
+        shared.close()
+    else:
+        with footage_vision(vision, ollama_url, ollama_model) as fv:
+            probes = [probe_source(s, fv) for s in sources]
     return probes, decide(probes)
 
 
-def choose_style(det: Detection, emphasis: str, fallback: str) -> tuple[str, str | None]:
+def choose_style(det: Detection, emphasis: str) -> tuple[str, str | None]:
     """``(style, fallback used)``: the style of ``det``'s category and ``emphasis``
-    (:func:`cutpoint.styles.resolve_auto`), or ``fallback`` (also returned as the second
-    item) when the detection is ambiguous."""
-    from cutpoint.styles import resolve_auto  # noqa: PLC0415
+    (:func:`cutpoint.styles.resolve_auto`); when the detection is ambiguous, the style of
+    :func:`cutpoint.styles.auto_fallback` (also returned as the second item)."""
+    from cutpoint.styles import auto_fallback, resolve_auto  # noqa: PLC0415
 
     if det.ambiguous:
-        return fallback, fallback
+        name = auto_fallback(emphasis, det.category)
+        return name, name
     return resolve_auto(det.category, emphasis), None
 
 
@@ -836,7 +1242,7 @@ def warn(det: Detection, style: str, fallback: str | None) -> None:
         unsure = [s.path for s in det.sources if s.ambiguous]
         message = (
             f"The footage category is not clear ({label(det.category)}?: {det.reason}); "
-            f"using the default style {fallback}. Give --style to choose one"
+            f"using the {fallback_label(det)} style ({fallback}). Give --style to choose one"
         )
         logger.warning("%s", message)
         jsonout.warn("style_ambiguous", message, unsure)

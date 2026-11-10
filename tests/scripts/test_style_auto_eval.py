@@ -36,7 +36,7 @@ def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     for name in CANNED:
         (tmp_path / name).write_bytes(b"")
 
-    def probe(src: Path) -> SourceProbe:
+    def probe(src: Path, vision=None) -> SourceProbe:
         if Path(src).name.startswith("bad"):
             raise FFmpegError("cannot read")
         return SourceProbe(str(src), float(CANNED[Path(src).name][1]), False)
@@ -116,11 +116,13 @@ def test_project_majority_style_and_fallback(run, tmp_path):
     assert len(projects) == 4 and by["Other"]["sources"] == 2
     cam = by["Cam"]
     assert (cam["style"], cam["fallback"], cam["right"]) == ("action-cam", False, True)
-    game = by["Game"]  # general (ambiguous) wins by duration: the default style, which is right
+    game = by["Game"]  # general (ambiguous) wins by duration: the General style (#896), wrong
     assert (game["category"], game["ambiguous"]) == ("general", True)
     assert (game["style"], game["fallback"], game["right_style"], game["right"]) == (
-        "gaming", True, "gaming", True,
+        "action", True, "gaming", False,
     )  # fmt: skip
+    other = by["Other"]  # ambiguous general footage: the General fallback is right
+    assert (other["style"], other["fallback"], other["right"]) == ("action", True, True)
     assert by["Talk"]["style"] == "gaming" and by["Talk"]["right_style"] == "commentary"
     assert not by["Talk"]["right"]
     # the label of a project is that of most of its footage: x1 is 10 min, x2 1 min, both general
@@ -208,8 +210,8 @@ def test_flip_ready_needs_every_project_right(run, tmp_path):
     _rows, projects = run(entries(tmp_path))
     res = se.flip_ready(good_rows(), [], projects, 0.25)
     assert [f.split(":")[0] for f in res["failed"]] == [
+        "project Game (gameplay)",
         "project Talk (talk)",
-        "project Other (general)",
     ]
     assert not res["ready"]
 
@@ -229,7 +231,7 @@ def test_evaluate_marks_untranscribed_and_records_unreadable(run, tmp_path):
 
 
 def test_evaluate_refuses_out_before_probing(run, tmp_path, monkeypatch):
-    monkeypatch.setattr(category, "probe_source", lambda src: pytest.fail("probed"))
+    monkeypatch.setattr(category, "probe_source", lambda src, vision=None: pytest.fail("probed"))
     with pytest.raises(ValueError, match="source's folder"):
         se.evaluate(entries(tmp_path), tmp_path / "result.json")
     inside = [{"label": "talk", "inputs": [str(tmp_path)]}]
@@ -241,7 +243,7 @@ def test_evaluate_refuses_out_next_to_a_remapped_source(run, tmp_path, monkeypat
     other = tmp_path / "mirror"
     other.mkdir()
     monkeypatch.setattr(se, "remap_source", lambda p: other / Path(p).name)
-    monkeypatch.setattr(category, "probe_source", lambda src: pytest.fail("probed"))
+    monkeypatch.setattr(category, "probe_source", lambda src, vision=None: pytest.fail("probed"))
     with pytest.raises(ValueError, match="source's folder"):
         se.evaluate(entries(tmp_path), other / "r.json")
 
@@ -261,7 +263,7 @@ def test_real_decide_on_canned_probes(monkeypatch):
         static_share=0.0,
     )
     probes = {p.path: p for p in (cam, obs)}
-    monkeypatch.setattr(category, "probe_source", lambda src: probes[str(src)])
+    monkeypatch.setattr(category, "probe_source", lambda src, vision=None: probes[str(src)])
     monkeypatch.setattr(se, "find_sources", lambda inputs, exclude, recursive: list(inputs))
     monkeypatch.setattr(se, "remap_source", lambda p: p)
     monkeypatch.setattr(se, "source_segments", lambda src: None)
@@ -276,7 +278,7 @@ def test_real_decide_on_canned_probes(monkeypatch):
     assert obs_row.untranscribed and not cam_row.untranscribed
     assert [(p["project"], p["style"], p["fallback"], p["right"]) for p in projects] == [
         ("C", "action-cam", False, True),
-        ("O", "gaming", True, True),
+        ("O", "action", True, False),  # unsure gameplay gets the General style (#896)
     ]
     assert se.sure_wrong(rows) == [] and errors == []
 
@@ -315,7 +317,7 @@ def test_compare_shows_changes(run, tmp_path):
             "new": "gameplay sure",
         }
     ]
-    assert diff["styles"] == [{"project": "Game", "old": "gaming", "new": "gaming-x"}]
+    assert diff["styles"] == [{"project": "Game", "old": "action", "new": "gaming-x"}]
     assert diff["sure_wrong"] == [2, 2]
     assert diff["ambiguous_rate"] == [0.375, 0.25]
     assert diff["added"] == [] and diff["removed"] == []

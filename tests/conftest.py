@@ -101,6 +101,11 @@ def no_host_probes(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(memguard, "subprocess", _NoNvidiaSmi())  # every nvidia-smi query
     monkeypatch.setattr(ctypes.util, "find_library", lambda name: None)
+    # no footage question to a vision model the host runs (#898): the detection of unsure
+    # footage stays as the frames decide it; tests of the question put the client back
+    from cutpoint import category  # noqa: PLC0415
+
+    monkeypatch.setattr(category.FootageVision, "client", lambda self: None)
 
 
 @pytest.fixture
