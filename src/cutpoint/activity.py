@@ -1024,7 +1024,7 @@ def resolve(
             try:
                 # Examples: the seed, else the floor and generic (no activity's slang to copy).
                 floor = [builtin(k) for k in BUILTIN_NAMES]
-                if seed and context and not activity and not refresh:
+                if seed and context and not activity:
                     # The seed may be this footage's own earlier discovery, saved to the library
                     # (the first project had no match): reuse that, the same profile as then.
                     first = discovery_key(project, _model_id(ask, model), context, floor)

@@ -2048,7 +2048,7 @@ a missing consent, a bad Ollama port, too little free memory or a fallback is on
 |---|---|
 | `--activity NAME` | Use `generic` or a profile of your library (`cutpoint profile list`). An unknown name is `bad_args`. Default: found in your library or discovered from the footage |
 | `--context TEXT` | What the video is, in the user's words. The local LLM turns it into extra crash captions and slang on top of the profile. A changed text rebuilds the profile |
-| `--refresh-profile` | Ignore `activity.json` and the profile cached for this footage, and detect or build the profile again (a new one replaces the cached one) |
+| `--refresh-profile` | Ignore `activity.json` and the profile cached for this footage, and detect or build the profile again, and replace the cached one. Footage that matches a library profile keeps it unless you give `--context`; to start over, run `cutpoint profile delete NAME` first |
 | `--ollama-url`, `--ollama-model` | The Ollama server and model that build the profile, as on [`analyze`](#analyze) (a flag left out takes its default). A new profile needs no deleting of `activity.json` to use them: add `--refresh-profile` |
 | `--json` | One [result envelope](#json-output) on stdout; `outputs` holds the `activity.json` record (`name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `scores`, `description`, `profile`) and `activity_file`. Output of the local model never reaches stdout |
 

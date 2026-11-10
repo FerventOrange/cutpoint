@@ -485,7 +485,7 @@ def test_a_context_run_over_the_same_footage_reuses_the_saved_discovery(
 
 
 def test_a_changed_context_a_refresh_or_another_model_synthesizes_again(
-    same_footage, monkeypatch: pytest.MonkeyPatch
+    same_footage, footage, fake_clip, monkeypatch: pytest.MonkeyPatch
 ):
     good = _stub(PACK_RAFTING)
     activity.resolve(same_footage("a"), ask=good, context="a river trip")
@@ -496,6 +496,8 @@ def test_a_changed_context_a_refresh_or_another_model_synthesizes_again(
     activity.resolve(same_footage("d"), ask=good, context="a lake")
     assert _synths(good) == 2
     # --refresh-profile: synthesized again, and the new profile replaces the cached one
+    # (also once the footage matches the profile the first run saved to the library)
+    footage["v"] = fake_clip("pack-rafting")
     other = _stub({**PACK_RAFTING, "description": "Rafting, written again."})
     rec = activity.resolve(same_footage("e"), ask=other, context="a lake", refresh=True)
     assert _synths(other) == 1 and rec["profile"]["description"] == "Rafting, written again."

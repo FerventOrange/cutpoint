@@ -78,7 +78,8 @@ LLM adds crash captions, normal-riding captions and slang on top of the chosen p
 the profile already has keep their weights, and generated words are capped (0.6 for single
 words and prefixes, 0.9 for phrases). A different `--context` rebuilds the profile once;
 `--refresh-profile` ignores `activity.json` and the profile cached for the footage and writes
-it again.
+it again, with `--context` or while the footage matches no library profile (otherwise delete
+that profile first: `cutpoint profile delete NAME`).
 
 ```powershell
 cutpoint profile trip --json                                  # what was chosen, and why

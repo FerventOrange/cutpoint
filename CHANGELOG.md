@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The visual detector finds people only (the skis and snowboard classes are dropped), and the AI Chat action words include biking, surfing, skating and trail riding.
 - **BREAKING:** crash detection without a model no longer saturates: a profile without normal-footage captions (`incident.neg`, such as the no-model fallback) takes those of `generic`, so its visual and dense crash scores, and the confidences in `crashes.json`, drop from the old 1.0 visual score. Crash dense caches are rebuilt once (#932).
 - `crashes` with a discovered profile never scores a frame below `--activity generic`: the visual and dense checks take the larger of the profile's crash score and that of `generic` (#932).
-- Discovered activity profiles are cached per footage (the files, the model, `--context` and the prompts): the same footage in a new project or run gets the same profile without a new synthesis, and an identical discovered profile reuses its library file instead of adding a `<name>-<hash>` copy. `--refresh-profile` also ignores that cache and replaces it (#932).
+- Discovered activity profiles are cached per footage (the files, the model, `--context` and the prompts): the same footage in a new project or run gets the same profile without a new synthesis, and an identical discovered profile reuses its library file instead of adding a `<name>-<hash>` copy. `--refresh-profile` also ignores that cache and replaces it (with `--context`, or while the footage matches no library profile; delete a matching one with `cutpoint profile delete NAME` to start over) (#932).
 
 ### Removed
 

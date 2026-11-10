@@ -820,7 +820,8 @@ def _add_activity_arguments(p: argparse.ArgumentParser) -> None:
         "--refresh-profile",
         action="store_true",
         help="re-detect / re-synthesize the profile (ignore <project>/activity.json and the "
-        "profile discovered earlier for this footage, which a new one replaces)",
+        "profile discovered earlier for this footage, which a new one replaces; footage matching "
+        "a library profile keeps it unless --context is given: cutpoint profile delete NAME)",
     )
 
 
