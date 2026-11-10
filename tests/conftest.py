@@ -145,6 +145,54 @@ def write(path: Path, text: str | bytes = "x") -> Path:
     return path
 
 
+# Invented activity profiles: Cutpoint ships only ``base`` and ``generic``, so the tests put
+# these into the isolated user library (add_profile) or use them directly.
+SLED = {  # every feature: lift captions, a replaced floor entry, its own wording
+    "name": "glacier-sled",
+    "description": "An invented test activity: sledding on a glacier.",
+    "detect": ["a first-person view of a sled on a glacier"],
+    "incident": {
+        "pos": ["a sled tipped over on the ice", "a blurry spinning view of ice"],
+        "neg": ["a sled gliding on smooth ice"],
+        "words": {"tipped the sled": 1.0, "ice in my face": 0.8},
+    },
+    "highlight": {"pos": ["a wide glacier under a blue sky"], "neg": ["sled runners close up"]},
+    "lift": {"pos": ["riding a cable car above a glacier"], "neg": ["sledding down the ice"]},
+    "low_info": ["a flat white image"],
+    "exclude_base": ["a dark blurry image"],
+    "vl": {"video": "sledding", "gear": "sled rope"},
+    "vlm": {
+        "video": "first-person glacier sledding video",
+        "edit": "sledding highlight edit",
+        "rate_edit": "sledding highlight edit",
+        "tags": {"chairlift": "on a cable car"},
+    },
+}
+HOP = {  # captions only: the floor's wording, no lifts
+    "name": "puddle-hop",
+    "description": "An invented test activity: hopping over puddles.",
+    "detect": ["a first-person view of jumping over a puddle"],
+    "incident": {
+        "pos": ["a boot splashing into a puddle"],
+        "neg": ["walking on a dry path"],
+        "words": {"soaked my boot": 0.9},
+    },
+    "highlight": {"pos": ["a person in mid-air over a puddle"], "neg": []},
+    "low_info": ["a close-up of wet pavement"],
+}
+
+
+def add_profile(raw: dict, name: str | None = None) -> dict:
+    """Write ``raw`` into the user's profile library (as ``name``, default its own); returns
+    the library profile."""
+    from cutpoint import activity  # noqa: PLC0415
+
+    name = name or raw["name"]
+    path = write(paths.profiles_dir() / f"{name}.json", json.dumps({**raw, "name": name}))
+    activity._FILES.pop(str(path), None)
+    return activity.library()[name]
+
+
 def set_config(home: Path, **data) -> None:
     """Write ``config.json`` under ``home`` and drop the cached copy."""
     write(home / "config.json", json.dumps(data))

@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 import cutpoint.ski as ski
-from conftest import StubTranscriber, run_json, set_config, write
+from conftest import HOP, StubTranscriber, add_profile, run_json, set_config, write
 from cutpoint import (
     activity,
     analyze,
@@ -104,7 +104,8 @@ def run(home, tmp_path, monkeypatch):
 
     def fake_crash_outputs(project):
         """activity.json, the crash_check sheets and crashes.json with the real writers."""
-        activity.resolve(project, activity="generic", llm=False)
+        add_profile(HOP)  # a library profile, apart from the default (generic)
+        activity.resolve(project, activity="puddle-hop", llm=False)
         for f in (project / crash.CHECK_DIR).glob("*.jpg"):
             cache.remove(f)
         c = {"source": str(video), "t0": 10.0, "t1": 11.0, "confidence": 0.9}
@@ -192,7 +193,8 @@ def test_events_run_once_with_all_planned_layers_before_highlights_exist(run):
     run.go()
     ((project, layers, kw),) = run.events_calls
     assert project == run.proj and layers == ("audio", "ocr")
-    assert kw["cached_ocr"] is False and kw["llm"] is False
+    assert kw["cached_ocr"] is False
+    assert kw["llm"] == activity.AUTO  # profile discovery: any local Ollama, quietly
     assert kw["discover_hint"] == analyze.DISCOVER_HINT  # no --no-discover on analyze
     assert (run.proj / "events.json").is_file()
     hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
@@ -1192,7 +1194,7 @@ def test_result_files_are_written_at_the_end_and_read_from_memory_meanwhile(run,
     ]  # fmt: skip
     assert json.loads(got["events.json"])["events"] == run.events
     assert json.loads(got["crashes.json"])["crashes"][0]["t0"] == 10.0
-    assert json.loads(got["activity.json"])["name"] == "generic"
+    assert json.loads(got["activity.json"])["name"] == "puddle-hop"
     assert got["crash_check/c001_a_10.jpg"][:2] == b"\xff\xd8"  # a JPEG
     # events.txt as write_text gave it: the transcript and the event, text mode's endings
     want = [
@@ -1313,7 +1315,7 @@ def test_a_cancel_during_the_final_commit_leaves_every_result_file_new(run, monk
     assert b"Here we go." in got["transcript.txt"]
 
 
-@pytest.mark.parametrize(("crashes", "want"), [(True, "generic"), (False, "ski")])
+@pytest.mark.parametrize(("crashes", "want"), [(True, "puddle-hop"), (False, "generic")])
 def test_action_cam_candidates_are_picked_with_the_projects_activity_prompts(
     run, monkeypatch, crashes, want
 ):

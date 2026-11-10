@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 import pano_helpers as helpers
-from conftest import set_config
+from conftest import HOP, set_config
 from cutpoint import activity, cache, jsonout
 from cutpoint import analyze as analyze_mod
 from cutpoint.events import pipeline
@@ -125,43 +125,43 @@ def test_analyze_plans_caches_and_clips_reuses_an_equal_path(project, monkeypatc
     assert pfile2.parent != pfile.parent and pfile.read_bytes() == pfile2.read_bytes()
 
 
-def _mtb() -> activity.Prompts:
-    return activity.prompts(activity.full(activity.builtin("mtb")))
+def _hop() -> activity.Prompts:
+    return activity.prompts(activity.full(activity.validate(HOP)))
 
 
-def _write_mtb(proj: Path) -> None:
+def _write_hop(proj: Path) -> None:
     rec = {
         "version": activity.PROFILE_VERSION,
-        "name": "mtb",
+        "name": "puddle-hop",
         "source": "library",
-        "profile": activity.full(activity.builtin("mtb")),
+        "profile": activity.full(activity.validate(HOP)),
     }
     (proj / activity.ACTIVITY_FILE).write_text(json.dumps(rec), encoding="utf-8")
 
 
-def test_path_key_has_prompts_only_for_a_non_default_profile(project) -> None:
+def test_path_key_has_the_prompts_of_every_profile(project) -> None:
     _, clip = project
-    assert "prompts" not in C.path_key(clip, 4.0, 12.5, "people", None)  # ski: key as before
-    assert C.prompts_key() is None
-    with activity.use_prompts(_mtb()):
+    key = C.path_key(clip, 4.0, 12.5, "people", None)
+    assert key["prompts"] == activity.default_prompts().key() == C.prompts_key()  # generic
+    with activity.use_prompts(_hop()):
         key = C.path_key(clip, 4.0, 12.5, "people", None)
-        assert key["prompts"] == _mtb().key() == C.prompts_key()
+        assert key["prompts"] == _hop().key() == C.prompts_key()
 
 
 def test_miss_reason_names_changed_activity_captions(project) -> None:
     _, clip = project
-    ski = C.path_key(clip, 4.0, 12.5, "people", None)
-    with activity.use_prompts(_mtb()):
-        mtb = C.path_key(clip, 4.0, 12.5, "people", None)
-    assert C._miss_reason(ski, mtb) == "activity captions changed"
-    assert C._miss_reason(mtb, ski) == "activity captions changed"
+    default = C.path_key(clip, 4.0, 12.5, "people", None)
+    with activity.use_prompts(_hop()):
+        hop = C.path_key(clip, 4.0, 12.5, "people", None)
+    assert C._miss_reason(default, hop) == "activity captions changed"
+    assert C._miss_reason(hop, default) == "activity captions changed"
 
 
 def test_candidate_paths_are_planned_and_matched_with_the_projects_prompts(
     project, monkeypatch
 ) -> None:
     proj, clip = project
-    _write_mtb(proj)
+    _write_hop(proj)
     seen: list[str] = []
     real = D.compute_path
 
@@ -171,8 +171,8 @@ def test_candidate_paths_are_planned_and_matched_with_the_projects_prompts(
 
     monkeypatch.setattr(D, "compute_path", spy)
     st = C.cache_candidate_paths(proj)  # cache_candidate_paths: the project's prompts
-    assert st["computed"] == 2 and set(seen) == {"mtb"}
-    # outside the project's prompts (ski) the cached path is a miss, with the reason
+    assert st["computed"] == 2 and set(seen) == {"puddle-hop"}
+    # outside the project's prompts (generic) the cached path is a miss, with the reason
     path, why = C.cached_path(proj, clip, 4.0, 12.5, "people", None)
     assert path is None and why == "activity captions changed"
     # plan_path uses the project's prompts: a hit, nothing re-planned
@@ -181,7 +181,7 @@ def test_candidate_paths_are_planned_and_matched_with_the_projects_prompts(
     assert cached and why is None and path is not None and seen == []
     # a span that is not cached is planned under the project's prompts
     _, cached, _ = C.plan_path(proj, clip, 4.0, 13.1, "people", None)
-    assert not cached and seen == ["mtb"]
+    assert not cached and seen == ["puddle-hop"]
 
 
 def test_clips_recomputes_on_any_mismatch(project, home, monkeypatch) -> None:

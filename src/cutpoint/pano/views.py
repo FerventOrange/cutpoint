@@ -30,7 +30,7 @@ unchanged. :func:`layer_grids` gives the ski features (``beauty``, ``people``,
 Every zero-shot caption comes from the activity profile: the scores below take
 ``prompts`` (:class:`cutpoint.activity.Prompts`) or use the active set
 (:func:`cutpoint.activity.active_prompts`: the project's, where the command set it
-with :func:`cutpoint.activity.use_prompts`; else the ski lists). Lift rides are only
+with :func:`cutpoint.activity.use_prompts`; else the ``generic`` lists). Lift rides are only
 looked for when the profile has ``lift`` captions (:func:`lift_scores`).
 """
 

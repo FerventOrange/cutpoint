@@ -692,13 +692,115 @@ def _cmd_profile(a: argparse.Namespace) -> None:
     print(f"{len(inc['words'])} words")
 
 
+def _cmd_profile_list(a: argparse.Namespace) -> None:
+    from cutpoint import activity  # noqa: PLC0415 - numpy and the profile files
+
+    entries = activity.list_profiles()
+    for e in entries:
+        if not e["valid"]:
+            message = f"profile {e['name']!r} cannot be used: {'; '.join(e['problems'])}"
+            jsonout.warn("invalid_profile", message, [e["path"]])
+    if jsonout.active():
+        jsonout.output("profiles_dir", paths.profiles_dir())
+        jsonout.output("profiles", entries)
+        return
+    rows = [("name", "type", "source", "status", "description")]
+    for e in entries:
+        status = "floor (every profile inherits it)" if e["floor"] else "ok"
+        if not e["valid"]:
+            status = "invalid: " + "; ".join(e["problems"])
+        rows.append((e["name"], e["type"], e["source"] or "-", status, e["description"] or "-"))
+    _table(rows)
+
+
+def _cmd_profile_show(a: argparse.Namespace) -> None:
+    import json  # noqa: PLC0415
+
+    from cutpoint import activity  # noqa: PLC0415
+
+    info = activity.show_profile(a.name)
+    if jsonout.active():
+        for key, value in info.items():
+            jsonout.output(key, value)
+        return
+    kind = "built-in profile" if info["type"] == "built-in" else "your profile"
+    extra = ", the floor every profile inherits" if info["floor"] else ""
+    print(f"name: {info['name']} ({kind}, source {info['source'] or '-'}{extra})")
+    if info["path"]:
+        print(f"file: {info['path']}")
+    if info["description"]:
+        print(f"description: {info['description']}")
+    print(json.dumps(info["profile"], indent=2, ensure_ascii=False))
+
+
+def _read_profile_document(source: str) -> object:
+    """The JSON of ``--from FILE`` (``-``: standard input)."""
+    import json  # noqa: PLC0415
+
+    if source == "-":
+        text, where = sys.stdin.read(), "standard input"
+    else:
+        path = Path(source).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(f"--from {source}: file not found")
+        text, where = path.read_text(encoding="utf-8-sig"), str(path)
+    try:
+        return json.loads(text)
+    except ValueError as err:
+        raise jsonout.ArgumentError(f"--from {where}: not valid JSON ({err})") from None
+
+
+def _cmd_profile_create(a: argparse.Namespace) -> None:
+    from cutpoint import activity  # noqa: PLC0415
+
+    existed = a.name in activity.user_files()
+    path, warnings = activity.create_profile(
+        a.name, _read_profile_document(a.from_file), force=a.force
+    )
+    for message in warnings:
+        logger.warning("%s: %s", path, message)
+        jsonout.warn("profile_entry_ignored", message, [path])
+    logger.info("%s profile %r: %s", "replaced" if existed else "saved", a.name, path)
+    jsonout.output("name", a.name)
+    jsonout.output("path", path)
+    jsonout.output("replaced", existed)
+    jsonout.output("profile", activity.show_profile(a.name))
+
+
+def _cmd_profile_validate(a: argparse.Namespace) -> None:
+    from cutpoint import activity  # noqa: PLC0415
+
+    res = activity.validate_profile(a.target)
+    where = res["path"] or res["name"]
+    for w in res["warnings"]:
+        logger.warning("%s: %s", where, w["message"])
+        jsonout.warn(w["code"], w["message"], [res["path"]] if res["path"] else [])
+    for key, value in res.items():
+        if key != "warnings":
+            jsonout.output(key, value)
+    if not res["valid"]:
+        raise jsonout.ArgumentError(f"{where} is not a valid profile: {'; '.join(res['problems'])}")
+    for note in res["notes"]:
+        logger.info("%s: %s", where, note)
+    logger.info("%s is a valid profile", where)
+
+
+def _cmd_profile_delete(a: argparse.Namespace) -> None:
+    from cutpoint import activity  # noqa: PLC0415
+
+    path = activity.delete_profile(a.name)
+    logger.info("deleted profile %r: %s", a.name, path)
+    jsonout.output("name", a.name)
+    jsonout.output("path", path)
+
+
 def _add_activity_arguments(p: argparse.ArgumentParser) -> None:
     """``--activity``, ``--context``, ``--refresh-profile``."""
     p.add_argument(
         "--activity",
         metavar="NAME",
-        help="activity profile (ski, snowboard, mtb, moto, skate, surf, hike, generic or a "
-        "learned one in <CUTPOINT_HOME>/profiles); default: detected from the footage",
+        help="activity profile of your library (cutpoint profile list) or generic; "
+        "default: found in your library or discovered from the footage",
     )
     p.add_argument(
         "--context",
@@ -1602,8 +1704,78 @@ def _add_style_parsers(sub: argparse._SubParsersAction) -> None:
     fe.set_defaults(func=_cmd_style_features)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser."""
+# ``cutpoint profile VERB ...``; any other word after ``profile`` is a project.
+PROFILE_VERBS = ("list", "show", "create", "validate", "delete")
+
+
+def _profile_verb(tokens: Sequence[str]) -> bool:
+    """Whether ``tokens`` (the command line) run ``cutpoint profile <verb>``: the first word
+    that is not an option is ``profile`` and the next one a :data:`PROFILE_VERBS` verb. A
+    project named like a verb is given as ``projects/<name>``."""
+    words = list(tokens)
+    i = next((k for k, t in enumerate(words) if not t.startswith("-")), None)
+    return (
+        i is not None
+        and words[i] == "profile"
+        and words[i + 1 : i + 2] in ([v] for v in PROFILE_VERBS)
+    )
+
+
+def _add_profile_verb_parsers(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint profile list | show | create | validate | delete`` (the profile library)."""
+    pf = sub.add_parser(
+        "profile",
+        help="list, show, create, check and delete activity profiles (your profiles are "
+        "saved in the profiles folder, see cutpoint paths)",
+    )
+    verbs = pf.add_subparsers(dest="profile_command", required=True)
+    ls = verbs.add_parser(
+        "list", help="the built-in base (the floor) and generic, then your profiles, with source"
+    )
+    _add_json_argument(ls)
+    ls.set_defaults(func=_cmd_profile_list)
+
+    sh = verbs.add_parser("show", help="a profile's captions, words and wording")
+    sh.add_argument("name", help="profile name")
+    _add_json_argument(sh)
+    sh.set_defaults(func=_cmd_profile_show)
+
+    cr = verbs.add_parser(
+        "create", help="save a profile of your own from a JSON file (source: hand)"
+    )
+    cr.add_argument(
+        "name",
+        help="profile name: letters, digits, - and _ (not base or generic); it replaces the "
+        "file's own name",
+    )
+    cr.add_argument(
+        "--from",
+        dest="from_file",
+        metavar="FILE",
+        required=True,
+        help="the profile JSON (- reads standard input); see cutpoint profile show generic",
+    )
+    cr.add_argument("--force", action="store_true", help="replace your profile of this name")
+    _add_json_argument(cr)
+    cr.set_defaults(func=_cmd_profile_create)
+
+    va = verbs.add_parser(
+        "validate",
+        help="check a profile or profile file and say what is wrong (exit 1 if invalid)",
+    )
+    va.add_argument("target", metavar="NAME|FILE", help="profile name or path to a .json file")
+    _add_json_argument(va)
+    va.set_defaults(func=_cmd_profile_validate)
+
+    de = verbs.add_parser("delete", help="delete one of your profiles (base and generic cannot be)")
+    de.add_argument("name", help="profile name")
+    _add_json_argument(de)
+    de.set_defaults(func=_cmd_profile_delete)
+
+
+def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
+    """Build the argument parser; ``profile_verbs``: ``profile`` takes the library verbs
+    (:func:`_profile_verb`) instead of a project."""
     p = _Parser(
         prog="cutpoint",
         description="Cutpoint: local AI highlight finding, clipping and assembly",
@@ -1928,16 +2100,28 @@ def build_parser() -> argparse.ArgumentParser:
     _add_json_argument(cr)
     cr.set_defaults(func=_cmd_crashes)
 
-    pf = sub.add_parser(
-        "profile",
-        help="pick or build the project's activity profile (crash prompts and words; "
-        "detected from the footage, refined by --context) and write activity.json",
-    )
-    pf.add_argument("project", help="analysed project (bare name = projects folder)")
-    _add_activity_arguments(pf)
-    _add_ollama_arguments(pf)
-    _add_json_argument(pf)
-    pf.set_defaults(func=_cmd_profile)
+    if profile_verbs:
+        _add_profile_verb_parsers(sub)
+    else:
+        pf = sub.add_parser(
+            "profile",
+            help="pick or discover the project's activity profile (crash prompts and words; "
+            "found in your library or discovered from the footage, refined by --context) and "
+            "write activity.json; cutpoint profile list|show|create|validate|delete manage "
+            "the profile library",
+            description="Pick or discover a project's activity profile and write its "
+            "activity.json. The profile library has its own commands: cutpoint profile "
+            "list | show NAME | create NAME --from FILE | validate NAME|FILE | delete NAME.",
+        )
+        pf.add_argument(
+            "project",
+            help="analysed project (bare name = projects folder; a project named list, show, "
+            "create, validate or delete: projects/<name>)",
+        )
+        _add_activity_arguments(pf)
+        _add_ollama_arguments(pf)
+        _add_json_argument(pf)
+        pf.set_defaults(func=_cmd_profile)
 
     rs = sub.add_parser(
         "resume",
@@ -2236,7 +2420,8 @@ def _parse(parser: argparse.ArgumentParser, argv: Sequence[str] | None) -> argpa
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point. Returns a process exit code."""
-    args = _parse(build_parser(), argv)
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    args = _parse(build_parser(profile_verbs=_profile_verb(tokens)), argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(message)s",
@@ -2254,7 +2439,6 @@ def main(argv: list[str] | None = None) -> int:
         "numba",
     ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
-    tokens = list(sys.argv[1:] if argv is None else argv)
     if not getattr(args, "json_result", False):
         return _run(args, tokens)
     with jsonout.run(_resume_command(args)):

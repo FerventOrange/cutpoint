@@ -17,7 +17,7 @@ CUTPOINT_HOME/
   stage/           local copies made by `cutpoint stage`; disposable
   styles/          your styles (`cutpoint style`) and learned styles from `scripts/refmatch.py` (JSON, editable)
   presets/         HUD presets written by region discovery
-  profiles/        activity profiles built by `cutpoint profile` / `crashes` (JSON)
+  profiles/        activity profiles: discovered by `analyze`, `edit`, `profile` or `crashes`, or made with `cutpoint profile create` (JSON)
   projects/        project folders, unless `projects_dir` says otherwise
   sdk/insta360/    optional: your own Insta360 Media SDK (see docs/insta360-sdk.md)
   360-stitched/    optional: SDK stitch output (large)
@@ -417,8 +417,8 @@ edit the file by hand; `cutpoint style validate NAME` checks it. Schema 1:
   "base": "action",
   "source": "hand",
   "description": "BMX park sessions",
-  "profile": "mtb",
-  "applies_to": {"categories": ["action-cam"], "profiles": ["mtb"]},
+  "profile": "my-park",
+  "applies_to": {"categories": ["action-cam"], "profiles": ["my-park"]},
   "weights": {"scene": 0.4}
 }
 ```
@@ -454,14 +454,15 @@ learned styles call it `laughter`, which still works.
 
 Crash detection, the action-cam ranking, `mix`, the visual layer's contact sheets and the 360
 views, QA, vision check and director use an activity profile per project
-(`<project>\activity.json`, written by the crash step): built-in
-profiles in `src/cutpoint/presets/activities/`, plus the ones Cutpoint builds with the local LLM,
-saved as `<CUTPOINT_HOME>\profiles\<name>.json`. A file there with a built-in's name replaces
-that built-in for profile selection. The files are readable JSON, but nothing has to be edited:
-see [action-cam workflow](workflows/action-cam.md#activity-profiles). When the crash layer runs
+(`<project>\activity.json`, written by the crash step). Cutpoint ships only `base` (the
+floor) and `generic`, in `src/cutpoint/presets/activities/`. Every other profile is in
+`<CUTPOINT_HOME>\profiles\<name>.json`: discovered with the local models (`"source":
+"discovered"`) or made by you or your AI agent with `cutpoint profile create` (`"source":
+"hand"`). A file there named `generic` replaces the built-in one for profile selection. Manage
+them with `cutpoint profile list|show|create|validate|delete`. Nothing has to be edited: see [action-cam workflow](workflows/action-cam.md#activity-profiles). When the crash layer runs
 in an `events` run, the contact sheets are written after it and use the profile it chose; a run
 without the crash layer (for example `--layers visual`) on a project with no `activity.json` uses
-the default (ski) captions. Scorer weights from
+the `generic` captions. Scorer weights from
 profiles and profiles for games are planned.
 
 ## HUD presets

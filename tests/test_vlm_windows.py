@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
+from conftest import HOP, SLED
 from cutpoint import activity, paths
 from cutpoint.events import vlm_windows as vw
 from cutpoint.events.common import WAV_SR, AudioPart, Source
@@ -96,58 +97,21 @@ def test_gp_reference_is_bundled_without_user_preset(tmp_path, home, monkeypatch
     assert "gp" in _gp("verbfeed", load_preset("verbfeed", proj))
 
 
-def _wording(name: str) -> vw.ActionCamWording:
-    return vw.action_cam_wording(activity.prompts(activity.full(activity.builtin(name))))
+def _wording(raw: dict) -> vw.ActionCamWording:
+    return vw.action_cam_wording(activity.prompts(activity.full(activity.validate(raw))))
 
 
 def test_action_cam_windows_cache_under_the_action_cam_key():
     key = vw.VlmParams(action_cam=vw.default_wording()).key()
-    assert "ski" not in key and "aw" not in key  # the default (ski) wording: no hash
     assert key["action_cam"] == vw.ACTION_CAM_PROMPT_VERSION == 1
+    assert key["aw"] == vw.default_wording().key() and len(key["aw"]) == 8  # always hashed
     assert "action_cam" not in vw.VlmParams().key()
-    assert vw.VlmParams(action_cam=_wording("ski")).key() == key
-    mtb = vw.VlmParams(action_cam=_wording("mtb")).key()
-    board = vw.VlmParams(action_cam=_wording("snowboard")).key()
-    assert mtb["aw"] != board["aw"]  # each wording describes its windows apart
-    assert {k: v for k, v in mtb.items() if k != "aw"} == key
-
-
-# The action-cam window prompt before the activity profile worded it (ACTION_CAM_PROMPT_VERSION
-# 1): the ski profile gives it byte for byte.
-OLD_INTRO = (
-    "This is a 15-second window of a first-person GoPro skiing / snowboarding recording "
-    "(helmet or chest mount), starting at 00:00:05.0 in game.mp4. The audio is the camera "
-    "microphone: wind noise at speed, the rider and friends nearby. 0 frames follow, each "
-    "labelled with seconds from the window start."
-)
-OLD_RUBRIC = (
-    "Describe what actually happens in this window, in time order: the terrain "
-    "(groomed run, trees, powder, park), jumps (take-off, air, landing), falls, "
-    "friends on camera and what they do, lift rides, standing around or talking, "
-    "indoor scenes and views. Camera telemetry hints (accelerometer) are reliable "
-    "for airtime and impacts. Listen for laughter, cheering and screams.\n"
-    "Tags (integers 0-10, how clearly each is present in this window; 0 = absent): "
-    "jump_air (the rider is airborne), landing, crash_fall (someone falls or crashes), "
-    "powder_spray (snow spraying from turns in deep snow), fast_groomer (fast riding "
-    "on a smooth groomed run), trees (riding between trees), scenic_vista (a wide "
-    "mountain view worth showing), friends_faces (other people clearly visible, "
-    "faces, interacting with the camera), chairlift (on a chairlift or gondola), "
-    "standing_talking (stopped, standing around or talking), lodge (indoors, lodge, "
-    "restaurant).\n"
-    "Scoring rubric (integers 0-10):\n"
-    "  hype: 0-1 standing around, riding a lift, indoors; 3-4 ordinary cruising; "
-    "6-7 fast riding, powder spray, tight trees, a small jump; 8-10 a big jump, "
-    "a crash or fall, a spectacular line, a near miss.\n"
-    "  funny: 0-1 nothing funny; 3-4 light banter; 6-7 a clear joke or people "
-    "laughing; 8-10 everyone laughing hard, a ridiculous fall.\n"
-    "  highlight_score: how much this window deserves a place in a ski highlight "
-    "edit (lifts, standing around and lodge scenes score low unless friends do "
-    "something funny).\n"
-    "Event 't' is seconds from the window start. Reply with JSON only: "
-    '{"events": [{"t": number, "what": str, "funny": int, '
-    '"hype": int}], "summary": str, "tags": {<tag>: int, ...}, '
-    '"funny_score": int, "highlight_score": int, "label": "2-4 word slug"}'
-)
+    assert vw.VlmParams(action_cam=_wording(HOP)).key() == key  # the floor's wording too
+    sled = vw.VlmParams(action_cam=_wording(SLED)).key()
+    assert sled["aw"] != key["aw"]  # each wording describes its windows apart
+    assert {k: v for k, v in sled.items() if k != "aw"} == {
+        k: v for k, v in key.items() if k != "aw"
+    }
 
 
 def _action_cam_texts(tmp_path: Path, wording: vw.ActionCamWording | None) -> list[str]:
@@ -158,25 +122,27 @@ def _action_cam_texts(tmp_path: Path, wording: vw.ActionCamWording | None) -> li
     return [c["text"] for c in msgs[0]["content"] if c["type"] == "text"]
 
 
-def test_ski_wording_keeps_the_old_action_cam_prompt(tmp_path: Path):
+def test_the_default_wording_is_the_floors_with_the_same_tags(tmp_path: Path):
     texts = _action_cam_texts(tmp_path, None)
-    assert texts[0] == OLD_INTRO
-    assert texts[-1] == OLD_RUBRIC
-    assert _action_cam_texts(tmp_path, _wording("ski")) == texts
-
-
-def test_other_activities_get_the_base_wording_and_the_same_tags(tmp_path: Path):
-    text = "\n".join(_action_cam_texts(tmp_path, _wording("mtb")))
+    assert texts[0].startswith(
+        "This is a 15-second window of a first-person action-cam recording (helmet, chest "
+        "or handlebar mount), starting at 00:00:05.0 in game.mp4."
+    )
+    text = "\n".join(texts)
     words = re.sub(rf"\b({'|'.join(vw.ACTION_CAM_TAGS)})\b", "", text)  # but the tag keys
     for word in ("ski", "powder", "groomed", "chairlift", "lodge", "GoPro"):
         assert word not in words, word
     for tag in vw.ACTION_CAM_TAGS:  # the stored tag keys stay the same for every activity
         assert re.search(rf"\b{tag}\b", text), tag
-    assert "first-person action-cam recording" in text and "a highlight edit" in text
+    assert "a highlight edit" in text
     assert "powder_spray (snow, dirt or water spraying from a hard turn)" in text
-    board = "\n".join(_action_cam_texts(tmp_path, _wording("snowboard")))
-    assert "GoPro snowboarding recording" in board and "a snowboard highlight edit" in board
-    assert "skiing" not in board
+    assert _action_cam_texts(tmp_path, _wording(HOP)) == texts
+
+
+def test_a_profile_words_the_window_prompt(tmp_path: Path):
+    text = "\n".join(_action_cam_texts(tmp_path, _wording(SLED)))
+    assert "a sledding highlight edit" in text and "chairlift (on a cable car)" in text
+    assert "powder_spray (snow, dirt or water spraying from a hard turn)" in text  # the floor's
 
 
 # -- #596: the generic prompt asks about kills only for footage with kills --
@@ -241,7 +207,8 @@ def test_only_the_neutral_prompt_is_re_keyed():
 def test_action_cam_keys_keep_the_generic_version_they_were_cached_with():
     params = vw.VlmParams(action_cam=vw.default_wording())
     assert params.key()["prompt"] == vw.ACTION_CAM_BASE_PROMPT == 5
-    assert params.key() == {**V5_KEY, "action_cam": vw.ACTION_CAM_PROMPT_VERSION}
+    aw = vw.default_wording().key()
+    assert params.key() == {**V5_KEY, "action_cam": vw.ACTION_CAM_PROMPT_VERSION, "aw": aw}
     assert params.key(vw.game_prompt(None, None, combat=True)) == params.key()
 
 

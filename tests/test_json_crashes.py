@@ -52,7 +52,16 @@ def ski(home, tmp_path, monkeypatch) -> tuple[Path, Path]:
     return project, src
 
 
-CRASHES = ["crashes", "ski", "--activity", "ski", "--no-dense", "--sheets", "0", "--no-reanalyze"]
+CRASHES = [
+    "crashes",
+    "ski",
+    "--activity",
+    "generic",
+    "--no-dense",
+    "--sheets",
+    "0",
+    "--no-reanalyze",
+]
 
 
 # --------------------------------------------------------------------------------- crashes
@@ -64,7 +73,7 @@ def test_crashes_json(ski, capsys):
     out = doc["outputs"]
     assert out["crashes"] == str(project / "crashes.json")
     assert out["activity_file"] == str(project / "activity.json")
-    assert out["profile_name"] == "ski"
+    assert out["profile_name"] == "generic"
     saved = json.loads((project / "crashes.json").read_text(encoding="utf-8"))["crashes"]
     assert out["count"] == len(saved) == len(out["candidates"]) == 1
     (c,) = out["candidates"]
@@ -174,14 +183,14 @@ def test_crashes_json_unknown_activity_is_bad_args(ski, capsys):
 # --------------------------------------------------------------------------------- profile
 def test_profile_json_keeps_the_record_keys(ski, capsys):
     project, _ = ski
-    code, doc = run_json(capsys, ["profile", "ski", "--activity", "ski"])
+    code, doc = run_json(capsys, ["profile", "ski", "--activity", "generic"])
     assert code == 0 and doc["ok"] is True and doc["command"] == "profile"
     assert doc["project"] == str(project) and doc["warnings"] == []
     rec = json.loads((project / "activity.json").read_text(encoding="utf-8"))
     # The old --json printed the activity.json record; its keys stay, plus the file's path.
     assert doc["outputs"] == rec | {"activity_file": str(project / "activity.json")}
     assert {"version", "request", "source", "name", "profile"} <= set(doc["outputs"])
-    assert (doc["outputs"]["name"], doc["outputs"]["source"]) == ("ski", "flag")
+    assert (doc["outputs"]["name"], doc["outputs"]["source"]) == ("generic", "flag")
     assert doc["outputs"]["profile"]["incident"]["pos"]
 
 
@@ -191,18 +200,20 @@ def test_profile_json_context_never_prints_to_stdout(ski, monkeypatch, capsys):
         return {}  # unusable, twice: --context is not applied
 
     monkeypatch.setattr(activity, "default_ask", lambda: (chatty, None))
-    code = cli.main(["profile", "ski", "--activity", "ski", "--context", "icy groomer", "--json"])
+    code = cli.main(
+        ["profile", "ski", "--activity", "generic", "--context", "icy groomer", "--json"]
+    )
     captured = capsys.readouterr()
     doc = envelope(captured.out)
     assert code == 0 and doc["ok"] is True
     assert "model says hi" in captured.err
     assert warning_codes(doc) == ["context_not_applied"]
-    assert doc["outputs"]["request"] == {"activity": "ski", "context": "icy groomer"}
+    assert doc["outputs"]["request"] == {"activity": "generic", "context": "icy groomer"}
 
 
 def test_profile_text_unchanged_without_json(ski, capsys):
-    assert cli.main(["profile", "ski", "--activity", "ski"]) == 0
-    assert capsys.readouterr().out.startswith("activity  ski (flag)\n")
+    assert cli.main(["profile", "ski", "--activity", "generic"]) == 0
+    assert capsys.readouterr().out.startswith("activity  generic (flag)\n")
 
 
 def test_profile_warns_once_for_an_unreachable_source(ski, tmp_path, monkeypatch, capsys, caplog):
@@ -236,6 +247,6 @@ def test_no_visual_layer_says_why_inside_analyze(ski, monkeypatch, reason, expec
     project, src = ski
     monkeypatch.setattr(crash, "load_inputs", lambda s, dur, p, tmp, lang: _inputs(s, visual=False))
     with jsonout.run("crashes") as result, crash.no_visual_reason(reason):
-        crash.detect_project(project, dense=False, sheets=0, activity_name="ski")
+        crash.detect_project(project, dense=False, sheets=0, activity_name="generic")
     (w,) = [w for w in result.warnings if w["code"] == "no_visual_layer"]
     assert expected in w["message"] and w["files"] == [str(src)]

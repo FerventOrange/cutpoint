@@ -96,10 +96,8 @@ RESPONSE_SCHEMA: dict[str, Any] = {
 # Action-cam (``style_kind == "action-cam"``): per-window tag strengths for the action-cam
 # scorer (cutpoint.ski). The tag keys are stored (events.json, the VLM cache) and read by
 # name, so they are the same for every activity; the profile's ``vlm`` section words them.
-# The wording comes from the project's activity profile. The ski profile's (the default) is
-# the text of 1 byte for byte, so ski windows keep this version and their cache entries
-# (the precedent of COMBAT_PROMPT_VERSION); any other wording adds its hash (``aw``) to the
-# key, so its windows are described again.
+# The wording comes from the project's activity profile (``generic``'s without one); its
+# hash (``aw``) is part of the cache key, so windows are described again for another wording.
 ACTION_CAM_PROMPT_VERSION = 1
 ACTION_CAM_TAGS = (
     "jump_air",
@@ -156,9 +154,7 @@ class ActionCamWording:
         )
 
     def key(self) -> str:
-        """Cache-key part: empty for the default (ski) wording, else a short hash."""
-        if self == default_wording():
-            return ""
+        """Cache-key part: a short hash of the wording."""
         return cache.params_hash([self.vlm, self.tags], 8)
 
 
@@ -168,7 +164,7 @@ def action_cam_wording(prompts: Prompts) -> ActionCamWording:
 
 
 def default_wording() -> ActionCamWording:
-    """The wording without a project profile: the default (ski) activity's."""
+    """The wording without a project profile: the default (``generic``) activity's."""
     from cutpoint.activity import default_prompts  # noqa: PLC0415  (activity imports us)
 
     return action_cam_wording(default_prompts())
@@ -329,8 +325,8 @@ class VlmParams:
         ``prompt`` is the generic version of the text in use: ``ACTION_CAM_BASE_PROMPT``
         for action-cam windows, ``COMBAT_PROMPT_VERSION`` for a combat ``prompt`` (the
         same key as before #596), else ``PROMPT_VERSION``. A ``prompt`` from a custom
-        project preset adds its hash as ``gp``; an action-cam wording other than the
-        default (ski) one adds its hash as ``aw``.
+        project preset adds its hash as ``gp``; an action-cam wording adds its hash as
+        ``aw``.
         """
         cam = self.action_cam
         if cam is not None:

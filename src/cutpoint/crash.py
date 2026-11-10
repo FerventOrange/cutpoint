@@ -13,9 +13,9 @@ combines four independent kinds of evidence per candidate window:
   roll; looking around is yaw), the camera's gravity vector turning away from
   its riding orientation (upside down, sideways), a speed collapse and lying
   still afterwards;
-* **visual**: CLIP ViT-L/14 zero-shot crash prompts ("tumbling view of sky and
-  snow", "camera buried in snow", "skier lying in the snow after a fall", ...)
-  against normal riding, on the cached ~1 fps keyframe embeddings of the visual
+* **visual**: CLIP ViT-L/14 zero-shot crash prompts of the activity profile ("a
+  blurry tumbling view", "a person lying on the ground after a fall", ...)
+  against normal footage of the activity, on the cached ~1 fps keyframe embeddings of the visual
   layer (``cutpoint events``);
 * **audio**: PANNs yell / scream and loudness from the cached voice layer, and
   laughter in the aftermath;
@@ -39,8 +39,8 @@ is moving again, the talk about it ends or ``max_after_s``). ``cutpoint analyze
 always exports (rare events are underweighted by learned taste weights), and
 the ``wipeout`` feature carries the confidence on the grid.
 
-Nothing here is ski-specific except the visual prompts and the transcript
-words, which come from the project's activity profile (:mod:`cutpoint.activity`:
+Nothing here is specific to one activity: the visual prompts and the transcript
+words come from the project's activity profile (:mod:`cutpoint.activity`:
 ``--activity``, ``--context`` or detected from the footage); impacts, rotation,
 gravity and stops work for any GoPro HERO 9-13 sport. Prompts passed through
 :class:`CrashParams` override the profile.
@@ -873,7 +873,7 @@ def _chain(words: list[dict[str, Any]], i: int, gap: float = 0.8) -> tuple[int, 
 
 def _normal_view(inp: SourceInputs, t0: float, t1: float) -> bool:
     """True when the keyframes of ``[t0, t1]`` no longer look like a crash (the
-    rider is up: not lying in the snow looking at the sky)."""
+    rider is up: not lying on the ground looking at the sky)."""
     if inp.kf_crash is None:
         return True
     t = inp.visual.t.astype(float)
@@ -890,7 +890,7 @@ def plan_clip(inp: SourceInputs, c: dict[str, Any], p: CrashParams) -> dict[str,
     ``max_after_s`` after the last shock and ``max_clip_s`` in total. A
     ``reaction`` is planned too: one utterance (at most 12 s) with the
     strongest crash words of the next 4 minutes, preferring one said once the
-    view is back to normal (a rider lying in the snow films the sky for
+    view is back to normal (a rider lying on the ground films the sky for
     minutes while talking).
     """
     t0, t1 = c["t0"], c["t1"]
@@ -1112,7 +1112,7 @@ def _confidence(c: dict[str, Any], w: dict[str, float]) -> float:
 def _absorb(cands: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop candidates inside a stronger candidate's clip (same source).
 
-    The lead-in and the aftermath of a crash (lying in the snow, getting up)
+    The lead-in and the aftermath of a crash (lying on the ground, getting up)
     trigger their own weaker candidates; they are listed under ``absorbed``.
     """
     kept: list[dict[str, Any]] = []
@@ -1159,7 +1159,7 @@ def detect_project(
     refresh_profile: bool = False,
     encoder: ClipEncoder | None = None,
     warn_unreachable: bool = True,
-    llm: bool = True,
+    llm: bool | str = True,
     batch_size: int = 0,
     ollama_url: str | None = None,
     ollama_model: str | None = None,
@@ -1190,7 +1190,8 @@ def detect_project(
             warning per unreachable source; False when the caller already did
             both (the line is then logged at DEBUG).
         llm: Let the profile detection ask the local Ollama models
-            (:func:`cutpoint.activity.resolve`); False: library and generic profiles only.
+            (:func:`cutpoint.activity.resolve`; :data:`~cutpoint.activity.AUTO`: not asked for);
+            False: library and generic profiles only.
         batch_size: ``--batch-size`` (#109): the CLIP model is closed after every this many
             dense windows and loaded again for the next ones (0: kept for all of them).
         ollama_url, ollama_model: ``--ollama-url`` / ``--ollama-model``: the Ollama of the

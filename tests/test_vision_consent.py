@@ -847,6 +847,24 @@ def test_run_events_with_an_ollama_model_flag_describes_with_the_ollama_not_the_
     assert hosted == []
 
 
+def test_activity_detection_nobody_asked_for_stays_quiet_without_consent(
+    home, wire, monkeypatch, caplog
+) -> None:
+    """Discovery that runs only because a model may answer (analyze, activity.AUTO): an INFO
+    line, no vision_consent_needed warning, and a later run that asks still warns."""
+    monkeypatch.setenv("OLLAMA_HOST", REMOTE)
+    with caplog.at_level(logging.INFO), jsonout.run("analyze") as res:
+        assert activity.default_ask(quiet=True) == (None, None)
+    assert wire == []
+    infos = [r for r in caplog.records if "not on this machine" in r.getMessage()]
+    assert [r.levelno for r in infos] == [logging.INFO]
+    assert res.warnings == []
+    caplog.clear()
+    with caplog.at_level(logging.WARNING), jsonout.run("profile") as res:
+        assert activity.default_ask() == (None, None)  # asked for: the WARNING still comes
+    assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
+
+
 def test_activity_detection_flags_to_a_remote_ollama_need_consent(
     home, wire, monkeypatch, caplog
 ) -> None:

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from conftest import HOP, SLED, add_profile
 from cutpoint import activity, crash
 from cutpoint import analyze as analyze_mod
 from cutpoint.events import common, paths, pipeline, visual
@@ -343,16 +344,18 @@ def test_profile_unloads_only_the_model_it_used(monkeypatch, tmp_path: Path, amb
 @pytest.mark.parametrize(
     ("context", "llm", "ask", "reason", "profile"),
     [
-        ("downhill mtb chest mount", True, (None, None), "unavailable", "mtb"),
-        ("downhill mtb chest mount", False, None, "disabled", "mtb"),
-        ("downhill mtb chest mount", True, (lambda p, i, s: {}, "m"), "no usable", "mtb"),
+        ("fast puddle-hop chest mount", True, (None, None), "unavailable", "puddle-hop"),
+        ("fast puddle-hop chest mount", False, None, "disabled", "puddle-hop"),
+        ("fast puddle-hop chest mount", True, (lambda p, i, s: {}, "m"), "no usable", "puddle-hop"),
         # names two profiles: ambiguous, so the nearest profile stays
-        ("ski touring after a hike", True, (None, None), "unavailable", None),
+        ("glacier-sled after a puddle-hop", True, (None, None), "unavailable", None),
     ],
 )
 def test_context_not_applied_warns_and_uses_named_profile(
     monkeypatch, tmp_path: Path, caplog, ambiguous, context, llm, ask, reason, profile
 ):
+    add_profile(HOP)  # invented library profiles: Cutpoint ships none of its own
+    add_profile(SLED)
     if ask is not None:
         monkeypatch.setattr(activity, "default_ask", lambda: ask)
     with caplog.at_level(logging.WARNING, logger=activity.logger.name):
@@ -364,7 +367,7 @@ def test_context_not_applied_warns_and_uses_named_profile(
         assert rec["name"] == profile
         assert rec["profile"]["name"] == profile
     else:
-        assert rec["name"] not in ("ski", "hike")
+        assert rec["name"] not in ("glacier-sled", "puddle-hop")
 
 
 def test_no_context_no_warning(tmp_path: Path, caplog, ambiguous):

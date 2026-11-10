@@ -25,7 +25,7 @@ prints tracebacks of errors.
 | [`stage`](#stage) | Copy slow-storage sources to a local disk |
 | [`crashes`](#crashes), [`mix`](#mix) | Action-cam module |
 | [`resume`](#resume) | Re-run an interrupted or failed run from its `progress.json` |
-| [`profile`](#profile) | Pick or build the project's activity profile for crash detection |
+| [`profile`](#profile) | Pick or discover the project's activity profile; list, show, create, validate and delete the profiles of your library |
 | [`style`](#style) | List, show, create, validate and delete your own scoring styles |
 | [`360 ...`](workflows/360.md) | Insta360 X3 module |
 | [`setup`](#setup), [`paths`](#paths), [`guide`](#guide), [`skill`](#skill) | Setup, data, the agent guide and skill |
@@ -61,7 +61,7 @@ codes are unchanged.
 With a failure, `ok` is `false` and `outputs` holds whatever was recorded before it. An
 argument error (`bad_args` from the parser) also writes an envelope, then exits 2. A command that
 checks an option itself (a bad `--crop`, an odd or non-positive `--size`, `--clip-override`, `--ids`, a `--lut` file that is not `.cube`/`.3dl`, unreadable or that ffmpeg cannot load, `--lut-strength` without `--lut`, `--color` or `--color-strength` with `--lut`, `--color-strength` when no `--color` correction runs, `mix --quotas`,
-`360 director --out-name`, `stage` with no inputs, an unknown `--activity`) reports `bad_args` and exits 1.
+`360 director --out-name`, `stage` with no inputs, an unknown `--activity`, a `profile create` file that is not valid JSON) reports `bad_args` and exits 1.
 So do these combinations:
 
 - `extend` with no padding and `--no-speech-aware`
@@ -153,7 +153,8 @@ So do these combinations:
 | `360 repair` | The repair report's own keys, and `exclude_file` (`null` if there are no exclusions) |
 | `crashes` | `crashes` (the `crashes.json` path), `count`, `candidates` (strongest first, each with the `crashes.json` keys `id`, `source`, `t0` and `t1` (impact span, s), `confidence` (0-1), `confirmed` (dense check ran), `origin` (`telemetry` or `words`), `clip` (`start`, `end`, `until`, and `reaction` when planned) and `sheet` (when one was written)), `activity_file` (the `activity.json` path), `profile_name` |
 | `events` | See [events outputs](#events-outputs) below |
-| `profile` | The `activity.json` record's own keys (as the older `profile --json` printed them: `version`, `request`, `name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `profile`, and when set `scores`, `description`, `described_by`, `model`), and `activity_file` (its path) |
+| `profile` | For `profile <project>`: the `activity.json` record's own keys (as the older `profile --json` printed them: `version`, `request`, `name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `profile`, and when set `scores`, `description`, `described_by`, `model`), and `activity_file` (its path) |
+| `profile list\|show\|create\|validate\|delete` | `list`: `profiles_dir`, `profiles` (each `name`, `type` (`built-in` or `user`), `source`, `floor`, `valid`, `problems`, `path`, `description`; an unusable file also gives an `invalid_profile` warning). `show`: `name`, `type`, `source`, `floor`, `path`, `description`, `profile`. `create`: `name`, `path`, `replaced`, `profile` (a `profile_entry_ignored` warning per entry dropped). `validate`: the check result (`valid`, `problems`, `notes`) and its warnings. `delete`: `name`, `path`. The command names are `profile list` and so on |
 | `style` | `style list`: `styles_dir`, `styles` (each `name`, `type` (`built-in` or `user`), `legacy`, `valid`, `problems`, `warnings` (each `code`, `message`), `source`, `base`, `description`, `profile`, `applies_to` (`categories`, `profiles`), `path`). `style show`: `name`, `type`, `legacy`, `source`, `base`, `kind`, `description`, `profile`, `applies_to`, `path`, `hash`, `mask_friends`, `must_include_crash`, `weights` (each `feature`, `weight`, `from`: `base` or `style`). `style create`: `name`, `path`, `replaced`, `style` (as `style show`). `style validate`: `name`, `path`, `type`, `legacy`, `valid`, `problems`, `notes`. `style delete`: `name`, `path`. `style features`: `features` (each `name`, `layer`, `description`, `extra`, `available`) |
 
 ### events outputs
@@ -1887,7 +1888,7 @@ Finds crashes and wipeouts in an analysed
 project from full-rate IMU data, visual, audio and transcript evidence, and writes
 `crashes.json` plus contact sheets in `crash_check\`. Confident crashes are always exported by
 `clips`. The visual prompts and crash words come from the project's activity profile (see
-`profile`; `--activity`, `--context`, `--refresh-profile`, `--ollama-url` and `--ollama-model` work as on [`profile`](#profile)). See
+`profile <project>`; `--activity`, `--context`, `--refresh-profile`, `--ollama-url` and `--ollama-model` work as on [`profile`](#profile)). See
 [action-cam workflow](workflows/action-cam.md). `--batch-size N` closes the dense confirm's
 CLIP model after N dense windows and loads it again for the next ones, to give memory back on
 long runs (as the crash layer of [`events`](#events) does); `crashes.json` is the same. Default
@@ -1998,15 +1999,29 @@ process is gone on this computer, as `interrupted`.
 ```text
 cutpoint profile <project> [--activity NAME] [--context TEXT] [--refresh-profile]
                  [--ollama-url URL] [--ollama-model NAME] [--json]
+cutpoint profile list [--json]
+cutpoint profile show NAME [--json]
+cutpoint profile create NAME --from FILE [--force] [--json]
+cutpoint profile validate NAME|FILE [--json]
+cutpoint profile delete NAME [--json]
 ```
 
-Picks or builds the project's activity profile (what a crash looks and sounds like in this
+Picks or discovers the project's activity profile (what a crash looks and sounds like in this
 footage) and writes `activity.json` in the project. `crashes` and the `crash` layer of `events`
-reuse it.
+reuse it. Cutpoint ships only `base` (the floor every profile inherits) and `generic`. Every
+other profile is in your library, `<CUTPOINT_HOME>/profiles` (see `cutpoint paths`): discovered
+from your footage, or made by you or your AI agent. A project named `list`, `show`, `create`,
+`validate` or `delete` is given as `projects/<name>`.
+
+Discovery: the vision model describes a few frames, the text model writes a profile, and it is
+saved to the library with `"source": "discovered"`, so the next similar video finds it. In
+`analyze` and `edit` it runs whenever a local Ollama answers, without `--vision`, and is quiet:
+a missing consent, a bad Ollama port, too little free memory or a fallback is one INFO line.
+`profile`, `crashes` and `events` still warn.
 
 | Option | Meaning |
 |---|---|
-| `--activity NAME` | Use a library profile: `ski`, `snowboard`, `mtb`, `moto`, `skate`, `surf`, `hike`, `generic`, or one learned earlier. Default: detected from the footage |
+| `--activity NAME` | Use `generic` or a profile of your library (`cutpoint profile list`). An unknown name is `bad_args`. Default: found in your library or discovered from the footage |
 | `--context TEXT` | What the video is, in the user's words. The local LLM turns it into extra crash captions and slang on top of the profile. A changed text rebuilds the profile |
 | `--refresh-profile` | Ignore `activity.json` and detect or build the profile again |
 | `--ollama-url`, `--ollama-model` | The Ollama server and model that build the profile, as on [`analyze`](#analyze) (a flag left out takes its default). A new profile needs no deleting of `activity.json` to use them: add `--refresh-profile` |
@@ -2014,12 +2029,26 @@ reuse it.
 
 Needs the visual layer of `events` for detection, and Ollama with a Qwen model
 (`CUTPOINT_VISION_MODEL`;
-[install](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) for new profiles
-and `--context`. Without them it falls back to the nearest library profile or `generic`, and
-tries again on the next run. An Ollama on another machine (not `localhost` or a loopback
+[install](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) for discovery
+and `--context`. Without a model it uses the nearest library profile, else a profile of the
+best-matching term of CLIP's activity vocabulary (not saved), else `generic`
+(`source: fallback`), and tries again on the next run. A project that already has an
+`activity.json` keeps its recorded profile, also one no longer in the library. An Ollama on another machine (not `localhost` or a loopback
 address) gets frames and the `--context` text only once the Vision consent for it was given in
 the Models tab of `cutpoint ui`; until then it is not used, with a WARNING
 (`vision_consent_needed`).
+
+Profile library verbs (they read no project):
+
+| Verb | Meaning |
+|---|---|
+| `list` | `base` and `generic`, then your profiles, each marked built-in, discovered or hand, with `source` and whether it is valid. A file that is not usable is listed with a warning (`invalid_profile`) |
+| `show NAME` | A profile's captions, words and wording, and its file |
+| `create NAME` | Save a profile of your own (`source: hand`) from the JSON of `--from FILE` (`-` reads standard input). `NAME` replaces the file's own name. Letters, digits, `-` and `_`; `base` and `generic` are refused. An existing name needs `--force` |
+| `validate NAME\|FILE` | Check a profile by name or a `.json` file by path and list every problem; exit 1 if invalid |
+| `delete NAME` | Delete one of your profiles. `base` and `generic` cannot be deleted. There is no confirmation |
+
+`cutpoint profile show generic` prints the format.
 
 ## style
 

@@ -46,22 +46,30 @@ tumbles when the camera points at the rider's own skis and can be fooled by shad
 
 ## Activity profiles
 
-What a crash looks and sounds like depends on the sport: snow on the lens and "yard sale" when
-skiing, a bike on its side and "over the bars" on a trail. `crashes` takes its visual prompts and
-crash words from the project's activity profile, chosen or built without manual editing:
+What a crash looks and sounds like depends on the sport: snow on the lens and a lost ski, a
+bike on its side, a board in the water. `crashes` takes its visual prompts and crash words from
+the project's activity profile. Cutpoint ships only `base` (the shared floor) and `generic`; it
+makes no sport profiles for you. Every other profile is in your library
+(`<CUTPOINT_HOME>\profiles\`): discovered from your footage, or written by you or your AI agent.
+Action-cam footage goes through discovery like any other:
 
-1. `--activity NAME` picks a profile by name.
+1. `--activity NAME` picks `generic` or a profile of your library (`cutpoint profile list`). An
+   unknown name is an error.
 2. Otherwise `activity.json` from an earlier run is reused.
-3. Otherwise the cached keyframes are compared with CLIP to every library profile. A clear
-   winner (at least half of the score and 0.2 ahead of the next) is used.
+3. Otherwise the cached keyframes are compared with CLIP to every library profile and to an
+   open vocabulary of activities. A clear winner among the profiles (at least half of the
+   score and 0.2 ahead of the next) is used.
 4. Otherwise the local vision model describes a few frames (activity, setting, camera mount,
-   surface, hazards) and the local LLM writes a new profile from that description, with the
-   built-in profiles as examples. It is checked and capped, then saved to
-   `<CUTPOINT_HOME>\profiles\`, so the next video of that kind matches it in step 3.
-5. If no model answers, the nearest library profile or `generic` is used (`source: fallback`),
-   and the next run tries again. An Ollama on another machine is not asked until the Vision
-   consent for it was given in the Models tab of `cutpoint ui` (WARNING
-   `vision_consent_needed`).
+   surface, hazards) and the local LLM writes a new profile from that description, with `base`
+   and `generic` as examples. It is checked and capped, then saved to
+   `<CUTPOINT_HOME>\profiles\` with `"source": "discovered"`, so the next video of that kind
+   matches it in step 3. In `analyze` and `edit` this runs whenever a local Ollama answers,
+   without `--vision`, and is quiet (one INFO line when it is skipped).
+5. If no model answers, the nearest library profile is used, else a profile of the best term of
+   the vocabulary (not saved), else `generic` (`source: fallback`), and the next run tries
+   again. An Ollama on another machine is not asked until the Vision consent for it was given
+   in the Models tab of `cutpoint ui` (WARNING `vision_consent_needed`; INFO in `analyze` and
+   `edit`).
 
 `--context "..."` passes the user's own words ("enduro race in the rain, mud on the lens"). The
 LLM adds crash captions, normal-riding captions and slang on top of the chosen profile; words
@@ -72,21 +80,32 @@ words and prefixes, 0.9 for phrases). A different `--context` rebuilds the profi
 cutpoint profile trip --json                                  # what was chosen, and why
 cutpoint profile bike-park --context "downhill mtb, chest mount, muddy"
 cutpoint crashes bike-park                                    # reuses bike-park\activity.json
-cutpoint crashes trip --activity ski
+cutpoint profile list                                         # discovered and hand-made ones
+cutpoint crashes trip --activity my-trails                    # a profile from the list
 ```
 
-Built-in profiles: `ski`, `snowboard`, `mtb`, `moto`, `skate`, `surf`, `hike` and `generic`
-(`src/cutpoint/presets/activities`). All of them inherit a shared base: dirt, mud, water or
-debris on the lens, a tumbling or upside-down view, a person lying on the ground, and generic
-words such as "you okay" and "fell". `ski` replaces the base captions with snowy versions.
+To make a profile yourself, or have your AI agent make one, start from the format of
+`cutpoint profile show generic`, then check and save it:
+
+```powershell
+cutpoint profile validate my-trails.json
+cutpoint profile create my-trails --from my-trails.json
+```
+
+`profile show`, `validate` and `delete` work on a name; `list` marks each profile as built-in,
+discovered or hand. A project that already has an `activity.json` keeps its recorded profile.
+
+Every profile inherits the shared base: dirt, mud, water or debris on the lens, a tumbling or
+upside-down view, a person lying on the ground, and generic words such as "you okay" and
+"fell". A profile can replace base captions with its own (`exclude_base`).
 Profiles also hold the captions of the other visual layers: `highlight` (scenic or striking
 views), `group` and `person` (other people versus the filmer), `selfie`, `occluder` (a hand or
 debris on the lens), `low_info` (frames with nothing to see), `scene` and `lift`, plus the
 wording of the 360 vision check (`vl`). The action-cam ranking, the lift rides of `crashes`
 and `mix`, the visual layer's contact sheets and the 360 views, QA, vision check and director
 read them from the project's `activity.json` (the crash step writes it; until then they use
-the ski captions). Only `ski` and `snowboard` have `lift` captions, so chairlift detection is
-off for other activities. `ski` reproduces the earlier built-in ski captions exactly.
+the `generic` captions). `lift` captions are optional: discovery fills them when the footage has
+lift or shuttle rides, and chairlift detection is off for a profile without them.
 
 Profiles also have a `vlm` section: the wording of the prompts of the action-cam VLM layer of
 `cutpoint events` (the window prompt) and of the `--vision` frame rating, so neither names a
@@ -98,18 +117,17 @@ most 300 characters, and `tags`, a
 description for each window tag (at most 100 characters). The tag keys (`jump_air`,
 `powder_spray`, `chairlift` and the others) are fixed: they are the names stored in
 `events.json` and read by the scorer, so a profile, including one the LLM writes, can only
-reword their descriptions, not rename, add or drop a tag. `ski` and `snowboard` have their own
-wording; every other profile, library or built with `--context`, uses the generic wording of
-`base.json`. The `--context` writer starts from that generic wording and may reword it for the
+reword their descriptions, not rename, add or drop a tag. A profile without its own wording uses
+the generic wording of `base.json`. The `--context` writer starts from that generic wording and may reword it for the
 activity. A value that is missing, not a string, empty or over its cap is replaced by the
 `base.json` text, field by field. The `vlm` section of an `activity.json` written before
 profiles had one is filled from the profile's library entry, else `base.json`.
 
 The first run after this wording was added describes the windows and rates the frames again
-for action-cam projects whose profile is not `ski` (the wording is part of the cache keys).
-Ski projects keep both caches: the `ski` wording gives the earlier prompts byte for byte.
+for action-cam projects (the wording is part of the cache keys). The 360 plans are recomputed
+once too.
 
-New profiles need Ollama with a Qwen model (`CUTPOINT_VISION_MODEL`, default `qwen3.5:9b`).
+Discovery needs Ollama with a Qwen model (`CUTPOINT_VISION_MODEL`, default `qwen3.5:9b`).
 Text-only requests to a model whose name starts with `qwen` skip its reasoning step; other
 models are asked through the normal chat endpoint. The model is unloaded after use, so the GPU
 is free for the CLIP steps.
