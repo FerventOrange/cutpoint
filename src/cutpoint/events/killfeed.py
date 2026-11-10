@@ -120,7 +120,9 @@ class OcrParams:
 # 23: text-rule menu frames are further than STATIC_FEED_GUARD_S from feed activity (#858)
 # 24: the rows a feed reads as notices are one line of new menu text at most, however many
 # are on screen (:func:`feed_stacks`, #891)
-GENERIC_VERSION = 24
+# 25: ... but the rows a feed reads first in one frame are lines of their own (a screen's text in
+# the feed's area, #891)
+GENERIC_VERSION = 25
 
 # Chat overlays (Twitch VODs): a discovered "feed" region that shows this many distinct text
 # lines per hour of footage is chat, not a kill feed. Measured on real footage: chat 9000-40000
@@ -2319,9 +2321,14 @@ STATIC_LONG_S = 45.0
 # rows of one feed region that stay as lines of their own (:func:`staying_spans`: no short row,
 # no HUD row) and overlap count as one line (:func:`feed_stacks`), so a menu whose text reaches
 # into the feed's area keeps that line, a full feed adds one at most, and short rows back to back
-# add none: a moment never has more lines than when each row counted alone.
-# Measured on footage of two games (three clips): this cleared a 12 s stretch of gameplay beside
-# a busy feed and kept every menu span (a round and an end screen) and every event.
+# add none: a moment never has more lines than when each row counted alone. But a feed adds its
+# rows one at a time (two at most in one frame in the gameplay measured, a double kill), while
+# a screen whose text lies in the feed's area (a lobby list, a waiting dialog) opens with all of
+# it in one frame: of every group of TEXT_TOGETHER or more rows first read in the same frame,
+# the rows count each.
+# Measured on footage of two games (four clips): this cleared a 12 s and a 7 s stretch of
+# gameplay beside a busy feed, kept a lobby whose five lines sit in the feed's area (merged into
+# one, it lost 11 s of menu) and every other menu span, and lost no event.
 TEXT_LINES = 5
 TEXT_TOGETHER = 3
 TEXT_HUD_SHARE = 0.5
@@ -2482,15 +2489,28 @@ def static_frames(
 
 
 def feed_stacks(rows: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    """The spans (first read, end) of one feed region's rows that stay (see
-    :func:`staying_spans`), those that overlap merged into one: a feed's rows are one line of
-    new menu text at most at any time (see :data:`TEXT_LINES`)."""
-    out: list[tuple[float, float]] = []
+    """The lines of new menu text (see :data:`TEXT_LINES`) of one feed region's rows that
+    stay (spans (first read, end), see :func:`staying_spans`): those that overlap are one
+    stack, one line (first read to last end), and with it, of every group of
+    :data:`TEXT_TOGETHER` or more rows first read in the same frame, the other rows, each a
+    line of its own but the one that ends last. A feed adds its rows one at a time (two at
+    most in one frame, a double kill), a screen opens with its lines at once. A stack never
+    has more lines than rows on screen."""
+    stacks: list[list[tuple[float, float]]] = []
     for a, b in sorted(rows):
-        if out and a <= out[-1][1]:
-            out[-1] = (out[-1][0], max(out[-1][1], b))
+        if stacks and a <= max(e for _, e in stacks[-1]):
+            stacks[-1].append((a, b))
         else:
-            out.append((a, b))
+            stacks.append([(a, b)])
+    out: list[tuple[float, float]] = []
+    for stack in stacks:
+        out.append((stack[0][0], max(b for _, b in stack)))
+        groups: dict[float, list[float]] = {}
+        for a, b in stack:
+            groups.setdefault(a, []).append(b)
+        for a, ends in groups.items():
+            if len(ends) >= TEXT_TOGETHER:
+                out += [(a, b) for b in sorted(ends, reverse=True)[1:]]
     return out
 
 
@@ -3467,9 +3487,9 @@ class OcrInterpretation:
                 staying = staying_spans(
                     frames, [shown(e) for e in rows], [(name, e["_key"]) for e in rows], max_gap
                 )
-                for span in feed_stacks(staying):
+                for i, span in enumerate(feed_stacks(staying)):
                     text_spans.append(span)
-                    text_keys.append((name, span[0]))
+                    text_keys.append((name, i))
             if self.still_runs is None:
                 feed_times, text_spans = None, None
             rules, menu_info = menu_rules(

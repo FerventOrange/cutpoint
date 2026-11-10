@@ -155,9 +155,41 @@ def test_a_lobby_beside_feed_rows_is_still_a_text_screen(tmp_path: Path, monkeyp
 
 
 def test_overlapping_feed_rows_are_one_stack() -> None:
-    rows = [(23.0, 34.0), (20.0, 30.0), (20.0, 34.0), (22.0, 31.0), (40.0, 44.0), (34.0, 36.0)]
-    assert feed_stacks(rows) == [(20.0, 36.0), (40.0, 44.0)]
+    rows = [(23.0, 34.0), (22.0, 31.0), (40.0, 44.0), (34.0, 36.0), (41.0, 43.0)]
+    assert feed_stacks(rows) == [(22.0, 36.0), (40.0, 44.0)]
     assert feed_stacks([]) == []
+
+
+def test_feed_rows_first_read_together_are_lines_of_their_own() -> None:
+    """Every group of TEXT_TOGETHER or more rows first read in one frame adds its rows but
+    the one that ends last (it is the stack's own line); rows that arrive one by one, or two
+    at once (a double kill), add none."""
+    rows = [(20.0, 30.0), (20.0, 34.0), (22.0, 31.0), (23.0, 34.0), (24.0, 33.0), (24.0, 32.0)]
+    assert feed_stacks(rows) == [(20.0, 34.0)]  # pairs at 20 s and 24 s
+    rows = [(20.0, 30.0), (20.0, 34.0), (20.0, 31.0), (23.0, 34.0)]
+    assert feed_stacks(rows) == [(20.0, 34.0), (20.0, 31.0), (20.0, 30.0)]
+    screen = [(10.0, 18.0)] * 5 + [(12.0, 16.0)]  # five rows that open at once
+    assert feed_stacks(screen) == [(10.0, 18.0)] * 5
+
+
+def test_a_double_kill_and_rows_one_by_one_are_no_text_screen() -> None:
+    """Two feed rows at 20 s, one more at 22, 23 and 24 s, and three labels from 21 s, all
+    until 34 s, with no feed sighting: the feed is one line, so four lines at most."""
+    times = [n / 3 for n in range(150)]
+    records = _moving_records(times)
+    feed = feed_stacks([(20.0, 34.0)] * 2 + [(22.0, 34.0), (23.0, 34.0), (24.0, 34.0)])
+    assert feed == [(20.0, 34.0)]
+    assert _text(records, [*feed, *[(21.0, 34.0)] * 3], set()) == []
+
+
+def test_two_screens_in_one_stack_each_keep_their_lines() -> None:
+    """A screen's five rows at 20-32 s and the next one's at 32-44 s overlap into one stack;
+    each opens at once, so each keeps its lines and the span covers both."""
+    times = [n / 3 for n in range(150)]
+    records = _moving_records(times)
+    lines = feed_stacks([(20.0, 32.0)] * 5 + [(32.0, 44.0)] * 5)
+    assert lines == [(20.0, 44.0), *[(20.0, 32.0)] * 4, *[(32.0, 44.0)] * 4]
+    assert _text(records, lines, set()) == [t for t in times if 20.0 <= t <= 44.0]
 
 
 def test_short_feed_rows_back_to_back_add_no_line(tmp_path: Path, monkeypatch) -> None:
@@ -175,3 +207,29 @@ def test_short_feed_rows_back_to_back_add_no_line(tmp_path: Path, monkeypatch) -
     _, stats = _run(tmp_path, monkeypatch, _Engine(screen, (NOTICE, FEED)), _row_preset())
     assert stats["feed_regions"]["feed"]["lines"] == 3  # each row was read
     assert stats["text_frames"] == 0 and stats["menu_spans"] == []
+
+
+def _screen_in_feed(t: float) -> list[tuple[str, float, float]]:
+    """Gameplay, and at 20-32 s a screen (a lobby with a waiting dialog) that opens at once:
+    five of its lines and a countdown lie in the feed's area, one line in the notice region."""
+    out = [("Hold", 900, 820)]
+    if 20 <= t < 32:
+        words = ("Armory Hall", "Barracks Yard", "Courtyard Gate", "Dockyard Crane", "Embassy Row")
+        out = [(w, 1650, 60 + 40 * i) for i, w in enumerate(words)]
+        out += [(f"0:{32 - int(t):02d}", 1650, 260), ("Waiting for squad", 600, 400)]
+    return out
+
+
+def test_a_screen_whose_lines_sit_in_the_feed_stays_a_text_screen(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Lines of a screen in the feed's area are first read in one frame, unlike a feed's rows
+    (:func:`_feed_rows`, which come one by one or two at once): each stays a line, so the
+    screen stays a text screen and gives no events."""
+    events, stats = _run(
+        tmp_path, monkeypatch, _Engine(_screen_in_feed, (NOTICE, FEED)), _row_preset()
+    )
+    assert stats["text_frames"] > 0 and len(stats["menu_spans"]) == 1
+    start, end = stats["menu_spans"][0]
+    assert 20.0 <= start < 23.0 and 29.0 < end <= 32.5
+    assert not [e for e in events if 20 <= e["t"] < 32]
