@@ -673,7 +673,7 @@ def _resume_command(args: argparse.Namespace) -> str:
 
 
 def _cmd_profile(a: argparse.Namespace) -> None:
-    from cutpoint.activity import ACTIVITY_FILE  # noqa: PLC0415 - action-cam module
+    from cutpoint.activity import ACTIVITY_FILE, record_profile  # noqa: PLC0415 - action-cam
     from cutpoint.activity import resolve as resolve_activity  # noqa: PLC0415
 
     project = resolve_project_path(a.project)
@@ -686,12 +686,13 @@ def _cmd_profile(a: argparse.Namespace) -> None:
         ollama_url=a.ollama_url,
         ollama_model=a.ollama_model,
     )
+    shown = {**rec, "profile": record_profile(rec)}  # what `crashes` uses, not the stored file
     if jsonout.active():
-        for key, value in rec.items():  # the record's own keys, as the old --json printed them
+        for key, value in shown.items():  # the record's own keys, as the old --json printed them
             jsonout.output(key, value)
         jsonout.output("activity_file", project / ACTIVITY_FILE)
         return
-    inc = rec["profile"]["incident"]
+    inc = shown["profile"]["incident"]
     print(f"activity  {rec['name']} ({rec['source']})")
     if rec.get("description"):
         print(f"footage   {rec['description']}")
@@ -818,7 +819,8 @@ def _add_activity_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--refresh-profile",
         action="store_true",
-        help="re-detect / re-synthesize the profile (ignore <project>/activity.json)",
+        help="re-detect / re-synthesize the profile (ignore <project>/activity.json and the "
+        "profile discovered earlier for this footage, which a new one replaces)",
     )
 
 

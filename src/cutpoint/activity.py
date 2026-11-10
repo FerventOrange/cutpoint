@@ -23,7 +23,9 @@ A profile is a small JSON document (any sport, game or kind of video)::
 
 Every profile inherits the shared floor ``presets/activities/base.json`` (generic
 incident captions and crash words, neutral captions of every list); ``exclude_base``
-drops floor entries the profile replaces with its own. ``vl`` is the wording of the 360
+drops floor entries the profile replaces with its own. The floor has no incident
+negatives: a full profile without any takes those of ``generic`` (:func:`full`), so its
+crash captions are never judged against nothing. ``vl`` is the wording of the 360
 vision check (:mod:`cutpoint.pano.vlcheck`); ``vlm`` is the wording of the action-cam VLM
 window prompt (:mod:`cutpoint.events.vlm_windows`) and of the action-cam vision rating
 (:mod:`cutpoint.vision`), its ``tags`` the descriptions of the fixed window tags
@@ -56,7 +58,11 @@ and 360 layers (:func:`active_prompts`, else :func:`default_prompts`: ``generic`
    over the open activity vocabulary when it cannot), then the local LLM writes
    a new profile from that description and the user's words (``context``),
    with ``base`` and ``generic`` as examples. It is validated, capped and saved to
-   the library, so the next similar video matches it in step 3;
+   the library (a file with the same content is reused), so the next similar video
+   matches it in step 3. Each synthesis is cached per footage
+   (``<cache>/activity/<key>.json``, :func:`discovery_key`: the sources, the model, the
+   prompts, ``context`` and the examples), so the same footage gets the same profile
+   in every project and run until ``refresh``;
 5. when the LLM is unavailable or its reply is unusable twice (the retry asks
    for less): a library profile named in ``context``, else the nearest one, else a
    profile of the best open-vocabulary term when CLIP is clear enough (not saved), else
@@ -113,6 +119,9 @@ DESCRIBE_FRAMES = 4
 # Read timeout of one synthesis request: a CPU-only Ollama can take minutes per reply, and the
 # 600 s default of VisionRater.ask_json would stall `profile` and `crashes` that long (#608).
 PROFILE_TIMEOUT_S = 120
+# Per-footage cache of discovered profiles (:func:`discovery_key`), under the cache folder.
+DISCOVERY_DIR = "activity"
+DISCOVERY_VERSION = 1
 
 # (prompt, JPEG frames, JSON schema of the reply or None) -> the model's JSON reply, or None.
 Ask = Callable[[str, list[bytes], dict[str, Any] | None], dict[str, Any] | None]
@@ -336,8 +345,27 @@ def base() -> dict[str, Any]:
 
 
 def full(profile: dict[str, Any]) -> dict[str, Any]:
-    """A library profile with the shared floor applied (what detection uses)."""
-    return merge(base(), profile)
+    """A library profile with the shared floor applied (what detection uses); incident
+    captions without negatives get those of ``generic`` (:func:`_neg_floor`)."""
+    return _neg_floor(merge(base(), profile))
+
+
+def _neg_floor(profile: dict[str, Any]) -> dict[str, Any]:
+    """``profile`` with the incident negatives of ``generic`` (a library file named so
+    first) when it has none. The floor has none of its own: a zero-shot crash share
+    judged against no negatives is 1.0 on every frame."""
+    inc = profile.get("incident")
+    if not isinstance(inc, dict) or inc.get("neg"):
+        return profile
+    lib = library()["generic"]["incident"]["neg"]
+    neg = list(lib or builtin("generic")["incident"]["neg"])
+    return {**profile, "incident": {**inc, "neg": neg}}
+
+
+def generic_incident() -> dict[str, Any]:
+    """The ``incident`` section of ``--activity generic`` (``pos``, ``neg``, ``words``):
+    the floor crash detection never scores below (:class:`cutpoint.crash.CrashParams`)."""
+    return full(library()["generic"])["incident"]
 
 
 def user_files() -> dict[str, Path]:
@@ -358,9 +386,20 @@ def library() -> dict[str, dict[str, Any]]:
     return out
 
 
+def _content(profile: dict[str, Any]) -> dict[str, Any]:
+    """A profile as :func:`validate` reads it, without its name."""
+    return {k: v for k, v in validate(profile).items() if k != "name"}
+
+
 def save_to_library(profile: dict[str, Any]) -> str:
     """Store a discovered profile in the library (``"source": "discovered"``); returns its
-    (unique) name."""
+    (unique) name. A library file with the same content (whatever its name) is reused, so
+    the same discovery run twice adds no ``<name>-<hash>`` copy."""
+    want = _content(profile)
+    for stem, f in user_files().items():
+        have = _load(f)
+        if have is not None and _content(have) == want:
+            return stem
     name = profile["name"]
     taken = {k.lower() for k in library()}  # names that differ only in case clash on Windows
     if name_problem(name) or name.lower() in taken:  # a built-in or a Windows device name
@@ -487,7 +526,10 @@ def use_prompts(p: Prompts) -> Iterator[Prompts]:
 
 
 def record_profile(rec: dict[str, Any]) -> dict[str, Any]:
-    """The full profile of an ``activity.json`` record. A record written before profiles had
+    """The full profile of an ``activity.json`` record, with the incident negatives of
+    ``generic`` when it has none (a record written before :func:`full` added them).
+
+    A record written before profiles had
     every caption section gets them: a library profile chosen as is (``flag``, ``library``,
     ``fallback``) is rebuilt from the library; one the LLM wrote or refined (``context``,
     ``synthesized``) keeps its identity and ``incident`` and takes every other caption
@@ -495,6 +537,11 @@ def record_profile(rec: dict[str, Any]) -> dict[str, Any]:
     lists predate the per-activity floor); any other keeps its own sections and takes the
     missing ones from there. A record with every caption section but no ``vlm`` wording
     (written before profiles had one) takes that of its library profile, else the floor's."""
+    return _neg_floor(_record_profile(rec))
+
+
+def _record_profile(rec: dict[str, Any]) -> dict[str, Any]:
+    """:func:`record_profile` before the negatives floor."""
     prof = rec.get("profile") if isinstance(rec.get("profile"), dict) else {}
     lib = library()
     name = rec.get("name")
@@ -800,6 +847,94 @@ def default_ask(
     return functools.partial(rater.ask_json, timeout=PROFILE_TIMEOUT_S), rater.model
 
 
+# --------------------------------------------------------------------------- discovery cache
+def _footage_id(project: Path) -> list[str]:
+    """The project's reachable sources as their cache folder names (path, size and
+    modification time, :func:`cutpoint.cache.source_dir`), sorted; [] without any."""
+    try:
+        srcs = load_highlights(project)["sources"]
+    except (OSError, ValueError):
+        return []
+    out = set()
+    for s in srcs:
+        try:
+            out.add(cache.source_dir(Path(s["path"])).name)
+        except (OSError, KeyError, TypeError):
+            continue  # unreachable: keyframes() warned
+    return sorted(out)
+
+
+def _model_id(ask: Ask, model: str | None) -> dict[str, str | None]:
+    """The model behind ``ask``: its name and, from a :class:`VisionRater` that checked it,
+    its digest (a model updated under the same name writes the profile again)."""
+    rater = getattr(getattr(ask, "func", ask), "__self__", None)
+    digest = rater.digest if isinstance(rater, VisionRater) else None
+    return {"model": model, "digest": digest}
+
+
+def discovery_key(
+    project: Path,
+    model: dict[str, str | None],
+    context: str | None,
+    examples: list[dict[str, Any]],
+) -> str | None:
+    """Key of a discovery in the per-footage cache: the project's sources
+    (:func:`_footage_id`), the model (:func:`_model_id`), the prompts and attempt sizes
+    of the description and the synthesis, the normalised ``context`` and the example
+    profiles shown to the LLM. None when no source is reachable (nothing to key it by)."""
+    footage = _footage_id(project)
+    if not footage:
+        return None
+    prompts = {
+        "describe": _DESCRIBE_PROMPT,
+        "frames": DESCRIBE_FRAMES,
+        "synth": _SYNTH_PROMPT,
+        "vlm": _SYNTH_VLM,
+        "base_vlm": base()["vlm"],
+        "sizes": SYNTH_SIZES,
+        "caps": (GEN_WORD_CAP, GEN_PHRASE_CAP, sorted(FILLER)),
+    }
+    shown = [{k: s[k] for k in SCHEMA_KEYS if k != "vlm" and k in s} for s in examples]
+    return cache.params_hash(
+        {
+            "v": DISCOVERY_VERSION,
+            "footage": footage,
+            "model": model,
+            "prompts": prompts,
+            "context": context,
+            "examples": shown,
+        },
+        16,
+    )
+
+
+def _discovery_path(key: str) -> Path:
+    return cache.cache_root() / DISCOVERY_DIR / f"{key}.json"
+
+
+def _load_discovery(key: str) -> dict[str, Any] | None:
+    """A cached discovery (``description``, ``described_by``, ``model``, ``profile``: the
+    synthesized profile), or None when there is none or it is not usable."""
+    hit = cache.load_json(_discovery_path(key))
+    if not isinstance(hit, dict) or hit.get("version") != DISCOVERY_VERSION:
+        return None
+    prof = hit.get("profile")
+    if not isinstance(prof, dict) or not all(k in prof for k in SCHEMA_KEYS):
+        return None
+    inc = prof["incident"]
+    if not isinstance(inc, dict) or not isinstance(inc.get("words"), dict):
+        return None
+    if not inc.get("pos") or not all(isinstance(inc.get(k, []), list) for k in ("pos", "neg")):
+        return None
+    return hit
+
+
+def _save_discovery(key: str, entry: dict[str, Any]) -> None:
+    path = _discovery_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cache.save_json(path, {"version": DISCOVERY_VERSION, **entry})
+
+
 # --------------------------------------------------------------------------- resolve
 def resolve(
     project: Path,
@@ -819,7 +954,8 @@ def resolve(
         project: Project folder (highlights.json).
         activity: Library profile name (overrides detection).
         context: The user's own words about the video (fed to the LLM).
-        refresh: Ignore activity.json.
+        refresh: Ignore activity.json and the discovery cached for this footage (a new
+            synthesis replaces it).
         ask: Vision / text model (default: local Ollama when ``llm``).
         llm: Allow the local models (False: library and generic only; :data:`AUTO`: allowed
             but not asked for, so a missing consent, a bad port or too little free memory
@@ -842,6 +978,7 @@ def resolve(
         req = old.get("request") or {}
         activity, context = req.get("activity"), req.get("context")
     context = " ".join(context.split())[:MAX_CONTEXT_CHARS] if context else None
+    context = context or None  # blank words are no context
     request = {"activity": activity, "context": context}
     if (
         old is not None
@@ -885,14 +1022,31 @@ def resolve(
         if ask is not None:
             why = "the LLM gave no usable profile"
             try:
-                if seed:
-                    desc, how = lib[seed]["description"], "profile"
-                else:
-                    desc, how = describe(emb, refs, ask)
                 # Examples: the seed, else the floor and generic (no activity's slang to copy).
-                examples = [lib[seed]] if seed else [builtin(k) for k in BUILTIN_NAMES]
-                new = synthesize(desc, context, ask, examples) if desc or context else None
-                rec.update(description=desc, described_by=how, model=model)
+                floor = [builtin(k) for k in BUILTIN_NAMES]
+                if seed and context and not activity and not refresh:
+                    # The seed may be this footage's own earlier discovery, saved to the library
+                    # (the first project had no match): reuse that, the same profile as then.
+                    first = discovery_key(project, _model_id(ask, model), context, floor)
+                    if first is not None and _load_discovery(first) is not None:
+                        seed = None
+                examples = [lib[seed]] if seed else floor
+                key = discovery_key(project, _model_id(ask, model), context, examples)
+                hit = None if refresh or key is None else _load_discovery(key)
+                if hit is not None:  # this footage's profile from an earlier run
+                    desc, how, new = hit.get("description"), hit.get("described_by"), hit["profile"]
+                    rec.update(description=desc, described_by=how, model=hit.get("model"))
+                    logger.info("activity: discovered profile of this footage reused (%s)", key)
+                else:
+                    if seed:
+                        desc, how = lib[seed]["description"], "profile"
+                    else:
+                        desc, how = describe(emb, refs, ask)
+                    new = synthesize(desc, context, ask, examples) if desc or context else None
+                    rec.update(description=desc, described_by=how, model=model)
+                    if new is not None and key is not None:  # never a fallback
+                        entry = {"description": desc, "described_by": how, "model": model}
+                        _save_discovery(key, {**entry, "profile": new})
             except LowMemoryError as err:
                 if not quiet:
                     raise

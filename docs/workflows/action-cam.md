@@ -61,9 +61,12 @@ Action-cam footage goes through discovery like any other:
 4. Otherwise the local vision model describes a few frames (activity, setting, camera mount,
    surface, hazards) and the local LLM writes a new profile from that description, with `base`
    and `generic` as examples. It is checked and capped, then saved to
-   `<CUTPOINT_HOME>\profiles\` with `"source": "discovered"`, so the next video of that kind
-   matches it in step 3. In `analyze` and `edit` this runs whenever a local Ollama answers,
-   without `--vision`, and is quiet (one INFO line when it is skipped).
+   `<CUTPOINT_HOME>\profiles\` with `"source": "discovered"` (a library file with the same
+   content is reused), so the next video of that kind matches it in step 3. The result is also
+   cached per footage: a new project over the same files, with the same model, `--context` and
+   example profiles, gets the same profile without asking the model again. In `analyze` and
+   `edit` this runs whenever a local Ollama answers, without `--vision`, and is quiet (one INFO
+   line when it is skipped).
 5. If no model answers, the nearest library profile is used, else a profile of the best term of
    the vocabulary (not saved), else `generic` (`source: fallback`), and the next run tries
    again. An Ollama on another machine is not asked until the Vision consent for it was given
@@ -73,7 +76,9 @@ Action-cam footage goes through discovery like any other:
 `--context "..."` passes the user's own words ("enduro race in the rain, mud on the lens"). The
 LLM adds crash captions, normal-riding captions and slang on top of the chosen profile; words
 the profile already has keep their weights, and generated words are capped (0.6 for single
-words and prefixes, 0.9 for phrases). A different `--context` rebuilds the profile.
+words and prefixes, 0.9 for phrases). A different `--context` rebuilds the profile once;
+`--refresh-profile` ignores `activity.json` and the profile cached for the footage and writes
+it again.
 
 ```powershell
 cutpoint profile trip --json                                  # what was chosen, and why
@@ -96,7 +101,10 @@ discovered or hand. A project that already has an `activity.json` keeps its reco
 
 Every profile inherits the shared base: dirt, mud, water or debris on the lens, a tumbling or
 upside-down view, a person lying on the ground, and generic words such as "you okay" and
-"fell". A profile can replace base captions with its own (`exclude_base`).
+"fell". A profile can replace base captions with its own (`exclude_base`). A profile without
+normal-footage captions (`incident.neg`) takes those of `generic`. `crashes` never sees less
+of a crash than `--activity generic` does: per frame, the visual and dense checks use the
+larger of the profile's crash score and that of `generic`.
 Profiles also hold the captions of the other visual layers: `highlight` (scenic or striking
 views), `group` and `person` (other people versus the filmer), `selfie`, `occluder` (a hand or
 debris on the lens), `low_info` (frames with nothing to see), `scene` and `lift`, plus the

@@ -34,8 +34,8 @@ def test_params_hash_is_pinned(params, digest10, digest16):
 @pytest.mark.parametrize(
     ("key", "digest"),
     [
-        (crash.CrashParams().with_profile(_GENERIC).key(), "6a76baba91"),  # the default profile
-        (crash.CrashParams().with_profile(_GENERIC).dense_key(), "01769b39a2"),
+        (crash.CrashParams().with_profile(_GENERIC).key(), "94bd9ff1d6"),  # the default profile
+        (crash.CrashParams().with_profile(_GENERIC).dense_key(), "ccbc2d50ef"),
         (telemetry.TelemetryParams().key(), "f60a858f09"),
         (common.params_key({"fps": 3.0, "game": "boxfeed", "tags": ["x"]}), "4183f1e1b3"),
     ],
