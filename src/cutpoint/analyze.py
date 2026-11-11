@@ -1181,7 +1181,9 @@ def vision_skipped(c: dict[str, Any]) -> bool:
     """Whether the candidate ``c`` is a moment the default edit skipped above its cut when the
     vision step ran (too long or overlapping a pick; ``vision_skipped``, the span it had then)
     and still has that span (within :data:`VISION_SPAN_EPS`). The vision clamp
-    (:func:`cutpoint.scorer.apply_vision_clamp`) does not count such a moment as a neighbour."""
+    (:func:`cutpoint.scorer.apply_vision_clamp`) does not count such a moment as a neighbour.
+    A re-rank (:func:`cutpoint.scorer.rescore_events`) also removes the mark once the default
+    edit of the ranking without the ratings takes the moment (#949)."""
     span = c.get("vision_skipped")
     return (
         isinstance(span, list)
@@ -1656,9 +1658,10 @@ def pick_candidates(
         raise ValueError(f"{src}: no signals to pick candidates from")
     n, sig = ps.n, ps.sig
     segments = ps.segments
+    avail = scorer.available_for(style)
     if cam_ctx is not None:
-        cands = _action_cam_candidates(
-            src, n, span, sig, offset, style, cam_ctx, max_candidates, segments, timings
+        cands, avail = _action_cam_candidates(
+            src, n, span, sig, offset, style, cam_ctx, max_candidates, segments, timings, avail
         )
     else:
         usual = usual_count(style) if style.open_list and max_candidates is None else None
@@ -1678,7 +1681,7 @@ def pick_candidates(
         taken = [(c.start, c.end) for c in cands]
         tail = [c for c in tail if not any(a <= c.peak_t <= b for a, b in taken)]
         cands += _place_free(tail, taken, ps, span, style)
-    return describe_candidates(cands, style, ps, offset)
+    return describe_candidates(cands, style, ps, offset, avail)
 
 
 DIALOGUE_PRE_ROLL_S = 1.0  # a dialogue candidate starts this long before its stretch
@@ -1702,12 +1705,19 @@ def candidate_cap(style: Style, explicit: int | None = None) -> int:
 
 
 def describe_candidates(
-    cands: list[Candidate], style: Style, ps: PartSignals, offset: float
+    cands: list[Candidate],
+    style: Style,
+    ps: PartSignals,
+    offset: float,
+    avail: frozenset[str] | None = None,
 ) -> list[Candidate]:
     """Score ``cands`` from their peak and fill their keywords, label hint and transcript
-    snippet from the part's transcript; then move them to absolute source time (``offset``)."""
+    snippet from the part's transcript; then move them to absolute source time (``offset``).
+    ``avail``: the features the score is renormalised over (default
+    :func:`cutpoint.scorer.available_for`; an action-cam source's own, #950)."""
     words, kw_hits, laugh_hits = ps.words, ps.kw_hits, ps.laugh_hits
-    avail = scorer.available_for(style)
+    if avail is None:
+        avail = scorer.available_for(style)
     for c in cands:
         c.score = scorer.score(c.peak, style, avail, c.must_include)
         inside = [(t, w, p) for t, w, p in kw_hits + laugh_hits if c.start <= t <= c.end]
@@ -1903,14 +1913,18 @@ def _action_cam_candidates(
     max_candidates: int | None,
     segments: list[Segment],
     timings: dict[str, float],
-) -> list[Candidate]:
-    """Candidates from the action-cam feature grid (telemetry + audio + VLM tags)."""
+    avail: frozenset[str] | None,
+) -> tuple[list[Candidate], frozenset[str] | None]:
+    """Candidates from the action-cam feature grid (telemetry + audio + VLM tags), and the
+    features their score is renormalised over: the project's ``avail``, without the telemetry
+    features for a source without telemetry, whose pick floor is scaled to match (#950)."""
     from cutpoint import actioncam  # noqa: PLC0415
 
     t0 = time.perf_counter()
     feats, mask, friends = actioncam.build_features(src, n, sig, cam_ctx, offset)
     tel = cam_ctx.telemetry.get(str(src))
     events = tel.events if tel is not None else []
+    src_avail = actioncam.source_available(avail, tel is not None)
     actioncam.save_features(cam_ctx.project, src, offset, span, feats, mask, friends, events)
     if max_candidates is None:  # short clips: a few; long ones: one per ~20 s
         max_candidates = max(4, int(span / 20))
@@ -1924,6 +1938,7 @@ def _action_cam_candidates(
         max_candidates,
         offset,
         friends_strong=style.mask_friends,
+        floor=actioncam.source_floor(style.weights, avail, src_avail),
     )
     forced = actioncam.must_include_picks(src, cam_ctx, style.must_include_crash, span, offset)
     if forced:
@@ -1952,7 +1967,7 @@ def _action_cam_candidates(
         _snap(c, [], segments, span, style)
         cands.append(c)
     timings["action_cam_s"] = round(timings.get("action_cam_s", 0.0) + time.perf_counter() - t0, 2)
-    return cands
+    return cands, src_avail
 
 
 CRASH_KIND = (
@@ -2437,13 +2452,15 @@ def _no_telemetry_fallback(style: Style, sources: Sequence[Path]) -> tuple[Style
 def _warn_missing_telemetry(missing: Sequence[Path]) -> None:
     """Warn (WARNING and the ``--json`` warning :data:`NO_TELEMETRY_WARNING`) of the sources
     of an action-cam analysis without camera telemetry, or whose telemetry could not be read:
-    their candidates come from sound, speech and the visual features alone. Given once per
-    ``--json`` command: its re-rank (``360 analyze``, ``edit --events``) adds no second one."""
+    their candidates come from sound, speech and the visual features alone, scored over those
+    so they rank with the others (#950). Given once per ``--json`` command: its re-rank
+    (``360 analyze``, ``edit --events``) adds no second one."""
     if not missing or jsonout.has_warning(NO_TELEMETRY_WARNING, missing):
         return
     message = (
-        f"{len(missing)} source(s) have no camera telemetry (or it could not be read) and "
-        "are scored from sound, speech and visual features only"
+        f"{len(missing)} source(s) have no camera telemetry (or it could not be read); their "
+        "moments come from sound, speech and visual features, scored over those so they "
+        "rank with the moments of the sources that have it"
     )
     logger.warning("%s", message)
     jsonout.warn(NO_TELEMETRY_WARNING, message, missing)
@@ -3890,7 +3907,7 @@ def _analyze(
 
         cands = hl["candidates"]
         cands.sort(
-            key=lambda c: (not c.get("must_include"), *scorer.rank_key(c))
+            key=lambda c: (not c.get("must_include"), *scorer.rank_key(c), *scorer.tie_key(c))
         )  # must-include first
         suggested = len(default_fit.fit_target(cands, style.target_total))
         hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]

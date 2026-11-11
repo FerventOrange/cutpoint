@@ -2005,9 +2005,11 @@ class SplitDecode:
 
     # ---- consumer
     def frames(self, exit_codes: list[int] | None = None) -> Iterator[tuple[float, np.ndarray]]:
-        """The raw frames, as :func:`decode_raw` yields them (``t = k / stamp_fps``). Stops
-        early when ``cancel`` is set; ``exit_codes`` gets a non-zero exit of ffmpeg that was
-        not caused here.
+        """The raw frames, as :func:`decode_raw` yields them (``t = k / stamp_fps``). A set
+        ``cancel`` stops ffmpeg and ends the frames once those already in the spool are
+        yielded: it is checked only while waiting for more, so a consumer that must stop at
+        once checks it before each frame. ``exit_codes`` gets a non-zero exit of ffmpeg that
+        was not caused here.
 
         Raises:
             FFmpegError: If a spool write failed (after the frames before it) or ffmpeg

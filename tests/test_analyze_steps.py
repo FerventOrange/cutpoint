@@ -31,6 +31,7 @@ from cutpoint import (
     config,
     crash,
     default_fit,
+    features,
     insta360,
     jsonout,
     progress,
@@ -1630,6 +1631,88 @@ def test_a_project_with_some_telemetry_stays_action_cam_and_names_the_rest(run, 
     [warning] = _no_telemetry_warnings(res)
     assert warning["files"] == [str(videos[1])]
     assert warning["message"].startswith("1 source(s) have no camera telemetry")
+    assert "rank with the moments of the sources that have it" in warning["message"]
+
+
+def _mixed_part(tmp_path, monkeypatch, src: Path, telemetry: bool):
+    """Candidates of one 60 s action-cam source of a project where ``a.mp4`` has telemetry
+    (a jump) and ``b.mp4`` none (light laughter and talk, under the fixed pick floor)."""
+    from cutpoint.telemetry import DT, Telemetry, paint_spans  # noqa: PLC0415
+
+    n = 600
+    z = np.zeros(n)
+    grid = {k: z.copy() for k in ("crash", "carve", "wind", "vibration", "indoor", "faces")}
+    grid |= {"gps_ok": np.ones(n), "speed_kmh": np.full(n, 30.0)}
+    grid |= {"still_mask": z.copy(), "lift_mask": z.copy()}
+    grid["airtime"] = paint_spans(n, [(20.0, 21.0, 1.0)])
+    events = [{"type": "airtime", "t": 20.0, "end": 21.0, "air_s": 1.0}]
+    a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    tel = Telemetry(source=str(a), duration=n * DT, grid=grid, events=events)
+    monkeypatch.setattr(actioncam, "layer_features", lambda *_a, **_k: {})
+    ctx = actioncam.ActionCamContext(
+        project=tmp_path / "proj",
+        telemetry={str(a): tel, str(b): None} if telemetry else {str(a): tel},
+        speed_ref=np.array([]),
+    )
+    sig = {k: z.copy() for k in ("loudness", "speech", "laughter", "scene", "continuity")}
+    if src == b:
+        sig["laughter"] = paint_spans(n, [(30.0, 31.0, 0.3)])  # 0.015 weighted
+        sig["speech"] = paint_spans(n, [(50.0, 51.0, 0.5)])  # 0.01 weighted
+    ps = analyze.PartSignals(n, sig, [], [], [], [], [])
+    res = analyze.SourceResult(src, None, 0.0, n * DT, [], [], None, ps)
+    return analyze.pick_candidates(res, get_style("action-cam"), None, {}, ctx)
+
+
+def _as_before(monkeypatch):
+    """The scoring before #950: every source over the project's features, the fixed floor."""
+    monkeypatch.setattr(actioncam, "source_available", lambda avail, has: avail)
+
+
+def _digest(cands) -> list[tuple]:
+    return [(c.start, c.end, c.peak_t, c.peak, c.kind, c.score, c.signals) for c in cands]
+
+
+def test_a_telemetry_source_of_a_mixed_project_scores_as_before(tmp_path, monkeypatch):
+    """#950: the source with telemetry gets exactly the picks and scores it got before,
+    with or without a sibling without telemetry, and the unscaled pick floor."""
+    a = tmp_path / "a.mp4"
+    floors = []
+    real_pick = actioncam.pick
+
+    def spy(*args, **kwargs):
+        floors.append(kwargs.get("floor", actioncam.PICK_FLOOR))
+        return real_pick(*args, **kwargs)
+
+    monkeypatch.setattr(actioncam, "pick", spy)
+    now = _digest(_mixed_part(tmp_path, monkeypatch, a, telemetry=True))
+    assert floors == [0.02] and floors == [actioncam.PICK_FLOOR]
+    alone = _digest(_mixed_part(tmp_path, monkeypatch, a, telemetry=False))
+    assert now == alone and now
+    w, avail = get_style("action-cam").weights, scorer.available_for(get_style("action-cam"))
+    assert [d[5] for d in now] == [features.to_score(d[3], w, avail) for d in now]
+
+
+def test_a_source_without_telemetry_gives_moments_that_reach_the_default_edit(
+    tmp_path, monkeypatch
+):
+    """#950: the no-telemetry source of a mixed project picked nothing (the fixed floor);
+    now it gives candidates, scored over its own features (at most 100), and some of them
+    are in the default edit (``suggested_top``)."""
+    a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    style = get_style("action-cam")
+    jump = _mixed_part(tmp_path, monkeypatch, a, telemetry=True)
+    talk = _mixed_part(tmp_path, monkeypatch, b, telemetry=True)
+    assert {c.kind for c in talk} == {"social", "speech"}
+    own = actioncam.source_available(scorer.available_for(style), False)
+    for c in talk:
+        assert 0.0 < c.score <= 100.0
+        assert c.score == features.to_score(c.peak, style.weights, own)
+    records = [{"source": str(c.source), "start": c.start, "end": c.end, "score": c.score}
+               for c in jump + talk]  # fmt: skip
+    edit = default_fit.fit_target(records, style.target_total)
+    assert any(r["source"] == str(b) for r in edit)
+    _as_before(monkeypatch)
+    assert _mixed_part(tmp_path, monkeypatch, b, telemetry=True) == []
 
 
 def test_telemetry_that_cannot_be_read_warns_without_falling_back(run, monkeypatch):

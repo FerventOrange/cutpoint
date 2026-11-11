@@ -417,7 +417,7 @@ A style tells `analyze` how to score and how long clips and the final cut should
 | `commentary` | 20-120 s | 12.5 min | Speech continuity, sentence-snapped, chronological |
 | `action-cam` | 2-10 s by moment type | 150 s | Action-cam telemetry, model tags and sound events; lifts and stops masked |
 
-`action-cam` is the telemetry-driven action-cam style (`ski` is not a style: it is an unknown name like any other). Speed, airtime and crash scoring need GoPro HERO 9-13 telemetry (or the Insta360 X3 IMU); a source without it is scored from audio, speech and model features only; when no source has any, `analyze` and `edit` use the `action` style instead with an `action_cam_no_telemetry` warning (see [workflows/action-cam.md](workflows/action-cam.md)).
+`action-cam` is the telemetry-driven action-cam style (`ski` is not a style: it is an unknown name like any other). Speed, airtime and crash scoring need GoPro HERO 9-13 telemetry (or the Insta360 X3 IMU); a source without it is scored from audio, speech and model features only, over those features alone, so its moments rank with the others; when no source has any, `analyze` and `edit` use the `action` style instead with an `action_cam_no_telemetry` warning (see [workflows/action-cam.md](workflows/action-cam.md)).
 
 ### Custom styles
 

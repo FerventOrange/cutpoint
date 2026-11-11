@@ -7,7 +7,10 @@ and masked on lifts and stops). Candidates are picked on this raw sum (``analyze
 available. A candidate's 0-100 score is its peak divided by the weights of the available
 features (:func:`cutpoint.features.to_score`): on Cutpoint lite the ``events`` features are left
 out of the divisor and the score is capped at 100; with every feature available it is the sum
-of all weights. Action-cam's ``social`` stays in the lite divisor: it is core, built from transcript
+of all weights. One exception (#950): an action-cam source without camera telemetry also leaves
+the telemetry features out of its divisor, and its pick floor is scaled by the same ratio
+(:func:`cutpoint.actioncam.source_available`, :func:`cutpoint.actioncam.source_floor`), so its
+moments rank with those of the sources that have telemetry. Action-cam's ``social`` stays in the lite divisor: it is core, built from transcript
 laughter (``social_said``, which runs on lite) and sound events (``social_heard``, ``events``
 only), so a lite peak reaches at most 100 and the cap guards only grids cached by a full
 install and learned presets.
@@ -81,12 +84,20 @@ def rank_key(c: dict[str, Any]) -> tuple[float, float]:
     return -c["score"], -c.get("grid_score", c["score"])
 
 
-def edit_rank_key(c: dict[str, Any]) -> tuple[float, float, int, str, float]:
+def tie_key(c: dict[str, Any]) -> tuple[int, str, float, float]:
+    """The last tie-break of the rankings, for records equal on :func:`rank_key`: source order
+    (``source_index``; 0 in a record without one), source, start and end. It depends only on
+    the record, not on its id or its place in the list, so every sort gives the same order
+    (#949)."""
+    return c.get("source_index", 0), c["source"], c["start"], c["end"]
+
+
+def edit_rank_key(c: dict[str, Any]) -> tuple[float, float, int, str, float, float]:
     """Sort key of the ranking the default edit before vision is taken from, best first:
-    :func:`rank_key`, then source order (``source_index``; 0 in a record without one), source
-    and start. Analyze (before it gives ids) and :func:`rescore_events` (on the saved order,
-    which the ratings set) sort with it, so records that tie are taken in the same order."""
-    return (*rank_key(c), c.get("source_index", 0), c["source"], c["start"])
+    :func:`rank_key`, then :func:`tie_key`. Analyze (before it gives ids) and
+    :func:`rescore_events` (on the saved order, which the ratings set) sort with it, so records
+    that tie are taken in the same order."""
+    return (*rank_key(c), *tie_key(c))
 
 
 def with_bonus(base: float, boost: float, vlm: float | None) -> float:
@@ -131,19 +142,21 @@ def apply_vision_clamp(cands: list[dict[str, Any]], before: Sequence[float | Non
     how many changed. ``before[i]`` is ``cands[i]``'s score without its vision rating, None
     when it has no rating that counts (never rated, the rating failed or went stale): its
     score is then its own. The ranking before vision orders them by that score
-    (:func:`rank_key`; a tie keeps the order of ``cands``). ``must_include`` moments, visual
+    (:func:`rank_key`, then :func:`tie_key`). ``must_include`` moments, visual
     pool moments and unrated moments the default edit skipped above its cut when vision ran
     (:func:`cutpoint.analyze.vision_skipped`; the edit cannot use them) are left out: they are
-    no one's neighbours.
+    no one's neighbours; a skipped moment stops counting as skipped once its span changes, or
+    once a re-rank (:func:`rescore_events`) finds the default edit of the ranking without the
+    ratings takes it (#949).
 
     A rated moment whose score equals an unrated neighbour's, which the final sort
-    (:func:`rank_key`, then the order of ``cands``) would put past that neighbour, is moved
+    (:func:`rank_key`, then :func:`tie_key`) would put past that neighbour, is moved
     0.1 inside its bounds: below the neighbour above, above the neighbour below, if that
     stays within the other bound and does not put it past the other neighbour instead. When
     the two bounds are equal, or 0.1 apart with no room on either side, it keeps the tie and
-    the final sort places it by its ``grid_score`` and its place in ``cands``. A tie that
-    would not reorder stays a tie. The result depends only on the inputs, so a rescore gives
-    the same scores."""
+    the final sort places it by its ``grid_score`` and :func:`tie_key`. A tie that would not
+    reorder stays a tie. The result depends only on the records, not on their order in
+    ``cands``, so a rescore gives the same scores."""
     from cutpoint.analyze import vision_skipped  # noqa: PLC0415 - imports this module
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports this
 
@@ -158,13 +171,13 @@ def apply_vision_clamp(cands: list[dict[str, Any]], before: Sequence[float | Non
         and not is_pool(c)
         and not (before[i] is None and vision_skipped(c))
     ]
-    idx.sort(key=lambda i: (-pre(i), -cands[i].get("grid_score", pre(i))))
+    idx.sort(key=lambda i: (-pre(i), -cands[i].get("grid_score", pre(i)), tie_key(cands[i])))
     rows = [(pre(i), None if before[i] is None else cands[i]["score"]) for i in idx]
     scores = clamp_rated(rows)
 
-    def key(k: int, score: float) -> tuple[float, float, int]:  # the final sort's, row k at score
-        i = idx[k]
-        return -score, -cands[i].get("grid_score", score), i
+    def key(k: int, score: float) -> tuple[float, float, tuple[int, str, float, float], int]:
+        i = idx[k]  # the final sort's, row k at score (a stable sort: same span, list order)
+        return -score, -cands[i].get("grid_score", score), tie_key(cands[i]), i
 
     above: list[int | None] = []  # the nearest unrated row above each row
     near: int | None = None
@@ -300,7 +313,8 @@ def rescore_events(
     if isinstance(vision, dict):
         vision["clamped"] = clamped
     changed = sum(c["score"] != o for c, o in zip(cands, old, strict=True))
-    cands.sort(key=lambda c: (not c.get("must_include"), *rank_key(c)))  # forced crashes first
+    # forced crashes first; a tie by tie_key, as the clamp expects
+    cands.sort(key=lambda c: (not c.get("must_include"), *rank_key(c), *tie_key(c)))
     hl["candidates"][:] = cands + pool  # in place, as the sort was
     if target:
         n = len(default_fit.fit_target(cands, target))

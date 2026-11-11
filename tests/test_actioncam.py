@@ -207,3 +207,71 @@ def test_features_live_under_the_action_cam_folder(tmp_path: Path) -> None:
     src = tmp_path / "ride.mp4"
     got = actioncam.features_path(tmp_path, src)
     assert got.parent == tmp_path / "action_cam_features" and got.name.startswith("ride-")
+
+
+# --------------------------------------------------------------------------- no telemetry (#950)
+CAM = get_style("action-cam")
+FULL = features.available(("events",))
+LITE = features.available(())
+TEL = frozenset(actioncam.TELEMETRY_FEATURES)
+
+
+def test_the_telemetry_features_are_registered_telemetry_grids_but_not_wipeout() -> None:
+    by_layer = {n for n, f in features.REGISTRY.items() if f.layer == "telemetry"}
+    assert TEL.issubset(by_layer) and TEL.issubset(actioncam.FEATURES)
+    assert by_layer - TEL == {"wipeout"}  # crashes.json can list one without telemetry
+
+
+@pytest.mark.parametrize("avail", [None, FULL, LITE])
+def test_a_source_with_telemetry_keeps_the_project_features_and_floor(avail) -> None:
+    assert actioncam.source_available(avail, True) is avail
+    assert actioncam.source_floor(CAM.weights, avail, avail) == actioncam.PICK_FLOOR == 0.02
+
+
+@pytest.mark.parametrize("avail", [None, FULL, LITE])
+def test_a_source_without_telemetry_leaves_out_the_telemetry_features(avail) -> None:
+    own = actioncam.source_available(avail, False)
+    assert own is not None and not own & TEL and "wipeout" in own
+    assert own == (frozenset(features.REGISTRY) if avail is None else avail) - TEL
+    w = CAM.weights
+    full_div, own_div = features.divisor(w, avail), features.divisor(w, own)
+    assert own_div == pytest.approx(full_div - sum(w.get(k, 0.0) for k in TEL))
+    floor = actioncam.source_floor(w, avail, own)
+    # the same score points as the fixed floor gives a source with telemetry
+    assert 100 * floor / own_div == pytest.approx(100 * actioncam.PICK_FLOOR / full_div)
+
+
+@pytest.mark.parametrize("height, picked", [(0.02, False), (0.0201, True)])
+def test_the_default_floor_picks_as_before(height: float, picked: bool) -> None:
+    """visual_pool, mix and refmatch call pick without a floor: 0.02, as it always was."""
+    zero = np.zeros(N)
+    args = ({"social": _bump(40.0, height)}, {"social": 1.0}, zero, zero, [], N * DT, 10)
+    got = actioncam.pick(*args)
+    assert bool(got) is picked
+    assert actioncam.pick(*args, floor=0.02) == got
+
+
+def test_a_source_without_telemetry_passes_its_floor_and_its_score_is_capped() -> None:
+    own = actioncam.source_available(FULL, False)
+    w, zero = CAM.weights, np.zeros(N)
+    feats = {k: np.zeros(N) for k in actioncam.FEATURES}
+    feats["social"] = _bump(40.0, 0.3)  # 0.015 weighted: under the fixed floor
+    assert actioncam.pick(feats, w, zero, zero, [], N * DT, 10) == []
+    floor = actioncam.source_floor(w, FULL, own)
+    [p] = actioncam.pick(feats, w, zero, zero, [], N * DT, 10, floor=floor)
+    assert p.kind == "social" and p.peak == pytest.approx(0.015)
+    assert features.to_score(p.peak, w, own) == round(100 * p.peak / features.divisor(w, own), 1)
+    assert features.to_score(p.peak, w, own) > features.to_score(p.peak, w, FULL)
+    every = sum(w.values())  # every grid at 1, the telemetry ones too: still 100
+    assert features.to_score(every, w, own) == 100.0
+
+
+@pytest.mark.parametrize("avail", [LITE, FULL])
+def test_scores_without_telemetry_stay_within_0_to_100(avail) -> None:
+    """No minimum divisor: on lite only ``social`` and ``speech`` are left, and the cap holds."""
+    own = actioncam.source_available(avail, False)
+    w = CAM.weights
+    own_top = sum(v for k, v in w.items() if k in own)
+    for peak in (0.0, 0.01, own_top, own_top + w["vlm"], sum(w.values())):
+        assert 0.0 <= features.to_score(peak, w, own) <= 100.0
+    assert features.to_score(own_top, w, own) == 100.0
