@@ -3116,6 +3116,15 @@ def test_features_by_source_names_each_sources_divisor_set(tmp_path, monkeypatch
         return real(cands, style, ps, offset, avail)
 
     monkeypatch.setattr(analyze, "describe_candidates", spy)
+    picked: list[analyze.SourceResult] = []
+    real_pick = analyze.pick_candidates
+
+    def wrap(res, *args, **kwargs):
+        out = real_pick(res, *args, **kwargs)
+        picked.append(res)
+        return out
+
+    monkeypatch.setattr(analyze, "pick_candidates", wrap)
     _mixed_part(tmp_path, monkeypatch, a, telemetry=True)
     _mixed_part(tmp_path, monkeypatch, b, telemetry=True)
     _imu_only_part(tmp_path, monkeypatch)
@@ -3124,11 +3133,7 @@ def test_features_by_source_names_each_sources_divisor_set(tmp_path, monkeypatch
     assert full_set == install
     assert imu_set == install - {"speed"} and "speed" in install
     assert none_set == install - frozenset(actioncam.TELEMETRY_FEATURES)
-    results = [
-        analyze.SourceResult(p, None, 0.0, 60.0, [], [], None, avail=s)
-        for p, s in ((a, full_set), (b, none_set), (c, imu_set))
-    ]
-    got = analyze._features_by_source(results)
+    got = analyze._features_by_source(picked)
     assert got == {
         str(a): sorted(install),
         str(b): sorted(none_set),
