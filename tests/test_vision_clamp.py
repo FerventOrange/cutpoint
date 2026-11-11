@@ -452,3 +452,16 @@ def test_a_re_rank_ties_the_edit_before_vision_as_analyze_did(tmp_path):
         assert hl["candidates"][0]["score"] == 67.5
         assert "vision_skipped" in hl["candidates"][1]
         assert hl == analyzed
+
+
+def test_the_edit_rank_key_ties_by_source_order_then_source_and_start():
+    """Ties on :func:`cutpoint.scorer.rank_key` go by ``source_index`` (the order of the
+    inputs, not the name: b.mp4 came first here), then source and start; a record without
+    ``source_index`` counts as the first source."""
+    late = {"source": "a.mp4", "source_index": 1, "start": 0.0, "score": 60.0}
+    early = {"source": "b.mp4", "source_index": 0, "start": 50.0, "score": 60.0}
+    first = {"source": "b.mp4", "source_index": 0, "start": 10.0, "score": 60.0}
+    best = {"source": "a.mp4", "source_index": 1, "start": 90.0, "score": 70.0}
+    old = {"source": "a.mp4", "start": 5.0, "score": 60.0}  # no source_index: 0
+    got = sorted([late, early, first, best, old], key=scorer.edit_rank_key)
+    assert got == [best, old, first, early, late]

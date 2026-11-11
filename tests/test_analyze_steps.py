@@ -34,6 +34,7 @@ from cutpoint import (
     insta360,
     jsonout,
     progress,
+    scorer,
     transcribe,
     vision,
 )
@@ -2790,6 +2791,60 @@ def test_the_rescore_after_vision_keeps_the_skipped_mark_of_a_moment_the_edit_sk
         c = by_start[_start(rank)]
         assert c["signals"]["vision"] == 10.0
         assert c["score"] > skipped["score"]  # passed it
+
+
+def _tied(src, style, tr, use_scenes, max_cand, timings, **kw):
+    """A 40 s moment (90), S at 100-112 s and T at 20-32 s tied at 60 (S first in the list),
+    P (58, 5 s), U (57) and four more below (40 ... 37). The funny edit (60 s) takes the 40 s
+    moment, one of S and T (both do not fit), and P: the other one is above the cut, skipped."""
+    info = MediaInfo(
+        src, 600.0, 600.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
+    )
+    spans = [
+        (200.0, 40.0, 90.0),
+        (100.0, 12.0, 60.0),
+        (20.0, 12.0, 60.0),
+        (300.0, 5.0, 58.0),
+        (400.0, 9.0, 57.0),
+    ] + [(450.0 + 30.0 * i, 9.0, 40.0 - i) for i in range(4)]
+    cands = [
+        analyze.Candidate(src, a, a + n, a + n / 2, 1.0, {"loudness": 1.0}, score=s)
+        for a, n, s in spans
+    ]  # fmt: skip
+    return analyze.SourceResult(src, info, 0.0, 600.0, cands, [], None)
+
+
+def test_moments_that_tie_before_vision_are_taken_alike_by_analyze_and_its_rescore(
+    band_run, monkeypatch
+):
+    """#949: S and T tie at 60 and the list has S first. Analyze and the rescore after vision
+    both take the edit in :func:`cutpoint.scorer.edit_rank_key` order: T (earlier start) is
+    taken, S skipped and marked, and the rescore keeps the mark, so U, rated up, passes S
+    instead of being held under T's 60. A re-rank changes nothing."""
+    monkeypatch.setattr(analyze, "analyze_source", _tied)
+    band_run.ratings = dict.fromkeys((200.0, 100.0, 20.0, 300.0), 0.0)  # U and the rest: 10
+    kill = {
+        "source": str(band_run.run.video), "start": 590.0, "end": 593.0, "kind": "ocr",
+        "type": "kill", "label": "Ash > Bob", "player": True, "player_kill": True,
+        "player_death": False, "teamkill": False,
+    }  # fmt: skip
+    write(band_run.run.proj / "events.json", json.dumps({"created": "t", "events": [kill]}))
+    hl, _ = band_run.go(vision_time_share=1000.0)
+    assert hl["settings"]["events_rescored"] == "t"  # the rescore ran, not the plain clamp
+    by_start = {c["start"]: c for c in hl["candidates"]}
+    skipped = by_start[100.0]
+    assert skipped["signals"]["vision"] is None and skipped["score"] == 60.0
+    assert [c["start"] for c in hl["candidates"] if "vision_skipped" in c] == [100.0]
+    assert by_start[20.0]["signals"]["vision"] == 0.0  # T was in the edit, so rated
+    u = by_start[400.0]
+    assert u["signals"]["vision"] == 10.0
+    assert u["score"] == u["vision_rated"]["blended"] > skipped["score"]  # passed S
+
+    analyzed = json.loads(json.dumps(hl))
+    ev = json.loads((band_run.run.proj / "events.json").read_text(encoding="utf-8"))
+    for _ in range(2):
+        scorer.rescore_events(hl, ev, band_run.run.proj)
+        assert hl == analyzed
 
 
 def test_a_weak_pick_above_a_skipped_moment_can_leave_the_edit(band_run, monkeypatch):
