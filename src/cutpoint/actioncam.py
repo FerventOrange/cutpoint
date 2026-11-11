@@ -58,6 +58,12 @@ turned into clips whose length depends on the dominant feature: jumps 3-6 s
 4-10 s, scenic 5-7 s, social/VLM 4-8 s. Each pick takes its whole stretch
 (the run around the peak above ``STRETCH`` of it), so a flat stretch gives
 one clip, not several back to back.
+
+A source without camera telemetry (a phone or DJI clip in a GoPro project, #950) has the
+telemetry features (:data:`TELEMETRY_FEATURES`) at 0: its score is renormalised over the
+features it has (:func:`source_available`) and its pick floor scaled to match
+(:func:`source_floor`), so its moments rank with those of the sources that have telemetry.
+A source with telemetry scores and picks exactly as before.
 """
 
 from __future__ import annotations
@@ -87,6 +93,10 @@ VLM_IDLE_TAGS = ("transit", "standing_talking", "indoor_break")  # friends do no
 FRIENDS_STRONG = 7  # default mask_friends: > 0 = hard lift/still mask, 0 = soft
 STRETCH = 0.7  # a pick takes the run around its peak that stays above this share of it
 FEATURES_DIR = "action_cam_features"
+PICK_FLOOR = 0.02  # a peak of the weighted sum at or below this gives no clip (:func:`pick`)
+# The features only camera telemetry fills (:func:`build_features`). Not ``wipeout``:
+# crashes.json can list a crash on a source without telemetry (spoken cues, the visual check).
+TELEMETRY_FEATURES = ("airtime", "crash", "speed", "carve", "faces", "stopped", "short_clip")
 # Clip geometry per dominant feature: (min_len, max_len, pre, post) around the peak.
 GEOMETRY: dict[str, tuple[float, float, float, float]] = {
     "airtime": (3.0, 6.0, 1.5, 1.5),  # pre/post relative to take-off / landing
@@ -373,6 +383,28 @@ def layer_features(
     return out
 
 
+def source_available(avail: frozenset[str] | None, has_telemetry: bool) -> frozenset[str] | None:
+    """The features a source's score is renormalised over (#950): the project's ``avail``
+    (:func:`cutpoint.scorer.available_for`; None counts every weight), without
+    :data:`TELEMETRY_FEATURES` for a source without camera telemetry. ``avail`` itself, the
+    same object, for a source with telemetry."""
+    if has_telemetry:
+        return avail
+    have = frozenset(features.REGISTRY) if avail is None else avail
+    return have - frozenset(TELEMETRY_FEATURES)
+
+
+def source_floor(
+    weights: dict[str, float], avail: frozenset[str] | None, src_avail: frozenset[str] | None
+) -> float:
+    """The :func:`pick` floor of a source scored over ``src_avail`` (:func:`source_available`):
+    :data:`PICK_FLOOR` scaled by its divisor over the project's (``avail``), so it is the same
+    score points for every source. Exactly :data:`PICK_FLOOR` for a source with telemetry."""
+    if src_avail == avail:
+        return PICK_FLOOR
+    return PICK_FLOOR * (features.divisor(weights, src_avail) / features.divisor(weights, avail))
+
+
 def smooth3(x: np.ndarray) -> np.ndarray:
     """Median of each frame and its neighbours (drops one-frame flickers)."""
     if len(x) < 3:
@@ -449,6 +481,7 @@ def pick(
     max_picks: int,
     offset: float = 0.0,
     friends_strong: float = FRIENDS_STRONG,
+    floor: float = PICK_FLOOR,
 ) -> list[Pick]:
     """Peak-pick clips with feature-specific geometry; results do not overlap.
 
@@ -459,6 +492,8 @@ def pick(
         max_picks: Upper bound on clips.
         offset: Start of a recovered part.
         friends_strong: A style's ``mask_friends`` (see :func:`effective_mask`).
+        floor: No clip from a peak at or below this (:func:`source_floor` for a source
+            without telemetry).
     """
     combined = combine(features, weights, mask, friends, friends_strong)
     n = len(combined)
@@ -470,7 +505,7 @@ def pick(
     while len(picks) < max_picks and gmax > 0:
         i = int(score.argmax())
         peak = float(score[i])
-        if peak <= 0.02 or peak < 0.08 * gmax:
+        if peak <= floor or peak < 0.08 * gmax:
             break
         # The stretch: the run around the peak that stays above STRETCH of it (a
         # flat VLM window, a long fast section) is one moment and gives one clip.
