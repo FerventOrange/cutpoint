@@ -110,7 +110,7 @@ def _tel(lift: tuple[float, float], still: tuple[float, float]) -> Telemetry:
     grid["gps_ok"][:] = 1.0
     grid["speed_kmh"] = np.full(N, 40.0)  # above the day's median: some speed score
     grid["lift_mask"], grid["still_mask"] = _grid([(*lift, 1.0)]), _grid([(*still, 1.0)])
-    return Telemetry(source="a.mp4", duration=N * DT, grid=grid)
+    return Telemetry(source="a.mp4", duration=N * DT, grid=grid, meta={"gps_samples": N})
 
 
 def _features(monkeypatch: pytest.MonkeyPatch, windows: list[dict]) -> tuple:
@@ -222,15 +222,40 @@ def test_the_telemetry_features_are_registered_telemetry_grids_but_not_wipeout()
     assert by_layer - TEL == {"wipeout"}  # crashes.json can list one without telemetry
 
 
+def _cam_tel(gps_samples: int, wind: float) -> Telemetry:
+    """Telemetry with ``gps_samples`` GPS rows and the wind meter at ``wind`` from 10 to 20 s."""
+    tel = _tel((0.0, 0.0), (0.0, 0.0))
+    tel.meta = {"gps_samples": gps_samples}
+    tel.grid["wind"] = _grid([(10.0, 20.0, wind)])
+    return tel
+
+
 @pytest.mark.parametrize("avail", [None, FULL, LITE])
-def test_a_source_with_telemetry_keeps_the_project_features_and_floor(avail) -> None:
-    assert actioncam.source_available(avail, True) is avail
+@pytest.mark.parametrize("gps, wind", [(N, 0.0), (N, 0.4), (0, 0.4)])
+def test_a_source_with_gps_or_wind_keeps_the_project_features_and_floor(avail, gps, wind):
+    """#959: GPS rows, or a GoPro with GPS off whose wind meter stands in for speed."""
+    assert actioncam.source_available(avail, _cam_tel(gps, wind)) is avail
     assert actioncam.source_floor(CAM.weights, avail, avail) == actioncam.PICK_FLOOR == 0.02
 
 
 @pytest.mark.parametrize("avail", [None, FULL, LITE])
+def test_an_imu_only_source_leaves_out_only_speed(avail) -> None:
+    """#959: telemetry without GPS rows or a wind reading (an Insta360 X3 file) drops only
+    ``speed`` from its divisor; its floor scales by the same ratio."""
+    own = actioncam.source_available(avail, _cam_tel(0, 0.0))
+    assert own == (frozenset(features.REGISTRY) if avail is None else avail) - {"speed"}
+    w = CAM.weights
+    full_div, own_div = features.divisor(w, avail), features.divisor(w, own)
+    assert own_div == pytest.approx(full_div - w["speed"])
+    floor = actioncam.source_floor(w, avail, own)
+    assert 0 < floor < actioncam.PICK_FLOOR
+    assert floor == pytest.approx(actioncam.PICK_FLOOR * own_div / full_div)
+    assert 100 * floor / own_div == pytest.approx(100 * actioncam.PICK_FLOOR / full_div)
+
+
+@pytest.mark.parametrize("avail", [None, FULL, LITE])
 def test_a_source_without_telemetry_leaves_out_the_telemetry_features(avail) -> None:
-    own = actioncam.source_available(avail, False)
+    own = actioncam.source_available(avail, None)
     assert own is not None and not own & TEL and "wipeout" in own
     assert own == (frozenset(features.REGISTRY) if avail is None else avail) - TEL
     w = CAM.weights
@@ -252,7 +277,7 @@ def test_the_default_floor_picks_as_before(height: float, picked: bool) -> None:
 
 
 def test_a_source_without_telemetry_passes_its_floor_and_its_score_is_capped() -> None:
-    own = actioncam.source_available(FULL, False)
+    own = actioncam.source_available(FULL, None)
     w, zero = CAM.weights, np.zeros(N)
     feats = {k: np.zeros(N) for k in actioncam.FEATURES}
     feats["social"] = _bump(40.0, 0.3)  # 0.015 weighted: under the fixed floor
@@ -269,7 +294,7 @@ def test_a_source_without_telemetry_passes_its_floor_and_its_score_is_capped() -
 @pytest.mark.parametrize("avail", [LITE, FULL])
 def test_scores_without_telemetry_stay_within_0_to_100(avail) -> None:
     """No minimum divisor: on lite only ``social`` and ``speech`` are left, and the cap holds."""
-    own = actioncam.source_available(avail, False)
+    own = actioncam.source_available(avail, None)
     w = CAM.weights
     own_top = sum(v for k, v in w.items() if k in own)
     for peak in (0.0, 0.01, own_top, own_top + w["vlm"], sum(w.values())):

@@ -8,7 +8,8 @@ available. A candidate's 0-100 score is its peak divided by the weights of the a
 features (:func:`cutpoint.features.to_score`): on Cutpoint lite the ``events`` features are left
 out of the divisor and the score is capped at 100; with every feature available it is the sum
 of all weights. One exception (#950): an action-cam source without camera telemetry also leaves
-the telemetry features out of its divisor, and its pick floor is scaled by the same ratio
+the telemetry features out of its divisor, or without `speed` for one whose telemetry has
+no GPS rows and no wind reading (#959), and its pick floor is scaled by the same ratio
 (:func:`cutpoint.actioncam.source_available`, :func:`cutpoint.actioncam.source_floor`), so its
 moments rank with those of the sources that have telemetry. Action-cam's ``social`` stays in the lite divisor: it is core, built from transcript
 laughter (``social_said``, which runs on lite) and sound events (``social_heard``, ``events``

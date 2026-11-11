@@ -1917,14 +1917,15 @@ def _action_cam_candidates(
 ) -> tuple[list[Candidate], frozenset[str] | None]:
     """Candidates from the action-cam feature grid (telemetry + audio + VLM tags), and the
     features their score is renormalised over: the project's ``avail``, without the telemetry
-    features for a source without telemetry, whose pick floor is scaled to match (#950)."""
+    features for a source without telemetry, or without ``speed`` for one whose telemetry has
+    no GPS rows and no wind reading (#959); the pick floor of either is scaled to match (#950)."""
     from cutpoint import actioncam  # noqa: PLC0415
 
     t0 = time.perf_counter()
     feats, mask, friends = actioncam.build_features(src, n, sig, cam_ctx, offset)
     tel = cam_ctx.telemetry.get(str(src))
     events = tel.events if tel is not None else []
-    src_avail = actioncam.source_available(avail, tel is not None)
+    src_avail = actioncam.source_available(avail, tel)
     actioncam.save_features(cam_ctx.project, src, offset, span, feats, mask, friends, events)
     if max_candidates is None:  # short clips: a few; long ones: one per ~20 s
         max_candidates = max(4, int(span / 20))

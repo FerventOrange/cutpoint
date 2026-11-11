@@ -1647,7 +1647,9 @@ def _mixed_part(tmp_path, monkeypatch, src: Path, telemetry: bool):
     grid["airtime"] = paint_spans(n, [(20.0, 21.0, 1.0)])
     events = [{"type": "airtime", "t": 20.0, "end": 21.0, "air_s": 1.0}]
     a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
-    tel = Telemetry(source=str(a), duration=n * DT, grid=grid, events=events)
+    tel = Telemetry(
+        source=str(a), duration=n * DT, grid=grid, events=events, meta={"gps_samples": n}
+    )
     monkeypatch.setattr(actioncam, "layer_features", lambda *_a, **_k: {})
     ctx = actioncam.ActionCamContext(
         project=tmp_path / "proj",
@@ -1665,7 +1667,73 @@ def _mixed_part(tmp_path, monkeypatch, src: Path, telemetry: bool):
 
 def _as_before(monkeypatch):
     """The scoring before #950: every source over the project's features, the fixed floor."""
-    monkeypatch.setattr(actioncam, "source_available", lambda avail, has: avail)
+    monkeypatch.setattr(actioncam, "source_available", lambda avail, tel: avail)
+
+
+def _imu_only_part(tmp_path, monkeypatch):
+    """Candidates of ``c.mp4``, a 60 s source with IMU telemetry only (no GPS rows, no wind
+    meter, as an Insta360 X3 file), in a project with a full-telemetry ``a.mp4`` and a
+    ``b.mp4`` without telemetry: a jump and light laughter just under the fixed pick floor."""
+    from cutpoint.telemetry import DT, Telemetry, paint_spans  # noqa: PLC0415
+
+    n = 600
+    z = np.zeros(n)
+    grid = {k: z.copy() for k in ("crash", "carve", "wind", "vibration", "indoor", "faces")}
+    grid |= {"gps_ok": z.copy(), "speed_kmh": np.full(n, np.nan)}
+    grid |= {"still_mask": z.copy(), "lift_mask": z.copy()}
+    grid["airtime"] = paint_spans(n, [(20.0, 21.0, 0.5)])
+    events = [{"type": "airtime", "t": 20.0, "end": 21.0, "air_s": 0.5}]
+    a, b, c = (tmp_path / f"{x}.mp4" for x in "abc")
+    full = Telemetry(str(a), n * DT, dict(grid), meta={"gps_samples": n})
+    imu = Telemetry(str(c), n * DT, grid, events=events, meta={"gps_samples": 0})
+    monkeypatch.setattr(actioncam, "layer_features", lambda *_a, **_k: {})
+    ctx = actioncam.ActionCamContext(
+        project=tmp_path / "proj",
+        telemetry={str(a): full, str(b): None, str(c): imu},
+        speed_ref=np.array([]),
+    )
+    sig = {k: z.copy() for k in ("loudness", "speech", "laughter", "scene", "continuity")}
+    sig["laughter"] = paint_spans(n, [(40.0, 41.0, 0.38)])  # 0.019 weighted
+    ps = analyze.PartSignals(n, sig, [], [], [], [], [])
+    res = analyze.SourceResult(c, None, 0.0, n * DT, [], [], None, ps)
+    return analyze.pick_candidates(res, get_style("action-cam"), None, {}, ctx)
+
+
+def test_an_imu_only_source_is_scored_over_its_own_features(tmp_path, monkeypatch):
+    """#959: a source with telemetry but no GPS rows and no wind reading leaves only
+    ``speed`` out of its divisor, and its pick floor scales by the same ratio, so its
+    laughter under the fixed floor is a candidate and its jump scores higher than before."""
+    style = get_style("action-cam")
+    w, avail = style.weights, scorer.available_for(style)
+    own = (frozenset(features.REGISTRY) if avail is None else avail) - {"speed"}
+    now = _imu_only_part(tmp_path, monkeypatch)
+    assert sorted(c.kind for c in now) == ["airtime", "social"]
+    for c in now:
+        assert 0.0 < c.score <= 100.0
+        assert c.score == features.to_score(c.peak, w, own)
+    _as_before(monkeypatch)
+    [before] = _imu_only_part(tmp_path, monkeypatch)
+    jump = next(c for c in now if c.kind == "airtime")
+    assert before.kind == "airtime" and before.peak == jump.peak
+    assert jump.score > before.score == features.to_score(before.peak, w, avail)
+
+
+def test_full_and_no_telemetry_sources_score_as_on_main(tmp_path, monkeypatch):
+    """#959: the full-telemetry and the no-telemetry source of a mixed project keep the
+    picks and scores they had on main (e8cad80): the scoring is rebuilt here from main's
+    ``source_available`` (telemetry or not), so the check holds in every edition."""
+    a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    now = {s: _digest(_mixed_part(tmp_path, monkeypatch, s, telemetry=True)) for s in (a, b)}
+    assert now[a] and now[b]
+
+    real = actioncam.source_available
+
+    def on_main(avail, tel):
+        return avail if tel is not None else real(avail, None)
+
+    monkeypatch.setattr(actioncam, "source_available", on_main)
+    then = {s: _digest(_mixed_part(tmp_path, monkeypatch, s, telemetry=True)) for s in (a, b)}
+    assert now == then
 
 
 def _digest(cands) -> list[tuple]:
@@ -1703,7 +1771,7 @@ def test_a_source_without_telemetry_gives_moments_that_reach_the_default_edit(
     jump = _mixed_part(tmp_path, monkeypatch, a, telemetry=True)
     talk = _mixed_part(tmp_path, monkeypatch, b, telemetry=True)
     assert {c.kind for c in talk} == {"social", "speech"}
-    own = actioncam.source_available(scorer.available_for(style), False)
+    own = actioncam.source_available(scorer.available_for(style), None)
     for c in talk:
         assert 0.0 < c.score <= 100.0
         assert c.score == features.to_score(c.peak, style.weights, own)
