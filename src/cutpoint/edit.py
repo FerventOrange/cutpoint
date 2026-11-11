@@ -159,6 +159,7 @@ def run_edit(
     color_strength: float = 1.0,
     keep_clips: bool = True,
     output_format: str = "mp4",
+    vision_time_share: float | None = None,
 ) -> Path:
     """Analyze ``inputs`` into ``project``, export clips and assemble them as ``kind`` says.
 
@@ -176,6 +177,7 @@ def run_edit(
     without compressing twice. ``lut`` (:func:`~cutpoint.encode.check_lut`) grades the clips
     as ``clips --lut`` does, ``color`` and ``color_strength`` as ``clips --color`` and
     ``--color-strength`` (None: config.json's ``color``); the final keeps the grade.
+    ``vision_time_share`` is analyze's (None: config.json's ``vision_time_share``).
 
     ``keep_clips`` False exports the clips into a temporary folder in ``project``, removed
     after the join (also on a failure or Ctrl+C), and leaves the clips folder alone.
@@ -218,6 +220,7 @@ def run_edit(
             color_strength=color_strength,
             keep_clips=keep_clips,
             output_format=output_format,
+            vision_time_share=vision_time_share,
         )
 
 
@@ -243,6 +246,7 @@ def _run_edit(
     color_strength: float,
     keep_clips: bool,
     output_format: str,
+    vision_time_share: float | None,
 ) -> Path:
     """:func:`run_edit`, reporting to ``steps``."""
     from cutpoint.analyze import analyze, report_highlights  # noqa: PLC0415
@@ -302,6 +306,7 @@ def _run_edit(
             visual_index=visual_index,
             ocr_det_skip=bool(ocr_det_skip),
             footage=footage,
+            vision_time_share=vision_time_share,
         )
     if events:
         from cutpoint.events.cli import run_args  # noqa: PLC0415

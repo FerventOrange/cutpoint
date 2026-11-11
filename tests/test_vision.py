@@ -357,6 +357,14 @@ def test_vision_blend_stays_within_0_100(score, rating, weight):
     assert 0.0 <= cutpoint.analyze.vision_blend(score, rating, weight) <= 100.0
 
 
+NO_CAP = float("inf")  # a deadline that never passes: these tests are not about the time cap
+
+
+def rate_all(cands, rater, style, activity=None, batch_size=0):
+    """``_rate_vision`` over ``cands`` in the order given, with no time cap."""
+    return cutpoint.analyze._rate_vision(cands, rater, style, activity, batch_size, deadline=NO_CAP)
+
+
 class _ByStartRater:
     """Rates each candidate by its start time; records nothing."""
 
@@ -376,6 +384,7 @@ class _ByStartRater:
         pass
 
 
+@pytest.mark.usefixtures("pinned_prior")
 def test_rate_vision_low_rating_no_longer_outranks_an_unrated_candidate():
     """#284: the rating (0-10) is a multiplier on the score, not a 0-100 term mixed into a
     ~15-27 style score: 2/10 lowers it and keeps the clip's label, unrated scores stay put."""
@@ -389,19 +398,29 @@ def test_rate_vision_low_rating_no_longer_outranks_an_unrated_candidate():
          "signals": {}},
     ]  # fmt: skip
     rater = _ByStartRater({0.0: (2.0, "boring run no action"), 10.0: (10.0, "big jump")})
-    used, failed = cutpoint.analyze._rate_vision(cands, rater, 2, style)  # type: ignore[arg-type]
-    assert (used, failed) == (True, 0)
+    out = rate_all(cands[:2], rater, style)  # type: ignore[arg-type]
+    assert (out.used, out.failed) == (True, 0)
     low, high, unrated = cands
-    assert low["score"] == 19.4 and low["label"] == "ski-moment"  # ski: vision_weight 0.2
-    assert low["signals"]["vision"] == 2.0
-    assert high["score"] == 24.0 and high["label"] == "ski-moment"
+    # #909: both ratings are frames-only, so they are centred on their mean shrunk toward the
+    # prior (2 ratings of 5 needed): (2 + 10 + 3 * prior) / 5, and that centre becomes 5/10
+    centre = (2.0 + 10.0 + 3 * vision.RATING_PRIOR["frames"]) / 5
+    assert centre == pytest.approx(4.32)
+    centred = 5 + 2.0 - centre  # 2.68
+    want = round(22.0 * (1 + style.vision_weight * (centred - 5) / 5), 1)
+    assert style.vision_weight == 0.2
+    assert low["score"] == want == 20.0 and low["label"] == "ski-moment"
+    assert low["signals"]["vision"] == 2.0  # the raw rating, not the centred one
+    assert low["vision_rated"]["centre"] == 4.32
+    assert high["score"] == 24.0 and high["label"] == "ski-moment"  # 10.68 clips to 10
     assert unrated["score"] == 26.0 and unrated["label"] == "fast-run"
     assert unrated["score"] > low["score"]
 
 
+@pytest.mark.usefixtures("pinned_prior")
 def test_rate_vision_mid_rating_does_not_lift_a_score_past_an_unrated_one():
-    """#284: a middling 5/10 leaves the score as it was (the old 0-100 blend gave 22.0 -> 27.6,
-    above an unrated 26.0)."""
+    """#284: the rating is a small multiplier, not a 0-100 term (the old blend gave 22.0 -> 27.6,
+    above an unrated 26.0). #909: a lone 5/10 is centred on the shrunk mean (5 + 4 * 3.2) / 5,
+    so it lifts a little: 22.0 -> 23.3, still below the unrated one."""
     cands = [
         {"source": "a.mp4", "start": 30.0, "end": 35.0, "score": 22.0, "label": "ski-moment",
          "signals": {}},
@@ -409,9 +428,11 @@ def test_rate_vision_mid_rating_does_not_lift_a_score_past_an_unrated_one():
          "signals": {}},
     ]  # fmt: skip
     rater = _ByStartRater({30.0: (5.0, "ok run")})
-    cutpoint.analyze._rate_vision(cands, rater, 1, get_style("action-cam"))  # type: ignore[arg-type]
+    rate_all(cands[:1], rater, get_style("action-cam"))  # type: ignore[arg-type]
     mid, unrated = cands
-    assert mid["score"] == 22.0 < unrated["score"] == 26.0
+    centre = (5.0 + 4 * vision.RATING_PRIOR["frames"]) / 5
+    assert mid["score"] == round(22.0 * (1 + 0.2 * (5.0 - centre) / 5), 1) == 23.3
+    assert mid["score"] < unrated["score"] == 26.0
 
 
 def test_rate_vision_keeps_the_model_label_apart_from_the_clip_label():
@@ -424,7 +445,7 @@ def test_rate_vision_keeps_the_model_label_apart_from_the_clip_label():
          "signals": {}},
     ]  # fmt: skip
     rater = _ByStartRater({0.0: (2.0, "boring run"), 10.0: (9.0, "big jump")})
-    cutpoint.analyze._rate_vision(cands, rater, 2, get_style("action-cam"))  # type: ignore[arg-type]
+    rate_all(cands, rater, get_style("action-cam"))  # type: ignore[arg-type]
     low, high = cands
     assert low["vision_label"] == "boring run" and low["label"] == "ski-moment"
     assert high["vision_label"] == "big jump" and high["label"] == "ski-moment"
@@ -443,6 +464,7 @@ def test_parse_treats_a_non_finite_score_as_no_rating(content, want):
     assert (res.score if res else None) == want
 
 
+@pytest.mark.usefixtures("pinned_prior")
 @pytest.mark.parametrize(("style_name", "want"), [("commentary", 24.0), ("action", 29.0)])
 def test_rate_vision_uses_the_style_vision_weight(style_name, want):
     """The style's vision_weight sets the multiplier strength: 10/10 on 20.0 gives
@@ -450,7 +472,7 @@ def test_rate_vision_uses_the_style_vision_weight(style_name, want):
     style = get_style(style_name)
     cand = {"source": "a.mp4", "start": 0.0, "end": 5.0, "score": 20.0, "label": "x",
             "signals": {}}  # fmt: skip
-    cutpoint.analyze._rate_vision([cand], _ByStartRater({0.0: (10.0, "")}), 1, style)  # type: ignore[arg-type]
+    rate_all([cand], _ByStartRater({0.0: (10.0, "")}), style)  # type: ignore[arg-type]
     assert cand["score"] == want == round(20.0 * (1 + style.vision_weight), 1)
 
 
@@ -492,6 +514,7 @@ class _FakeRater:
 def rater(monkeypatch) -> type[_FakeRater]:
     monkeypatch.setattr(cutpoint.analyze, "VisionRater", _FakeRater)
     monkeypatch.setattr(_FakeRater, "calls", [])
+    monkeypatch.setattr(cutpoint.config, "vision_time_share", lambda: 1000.0)  # never capped
     return _FakeRater
 
 
@@ -549,13 +572,15 @@ def test_rerun_asks_the_model_nothing_and_gives_the_same_ratings(posts, src, cap
     style = get_style("gaming")
     first = cands()
     rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
-    assert cutpoint.analyze._rate_vision(first, rater, 3, style) == (True, 0)
+    out = rate_all(first, rater, style)
+    assert (out.used, out.failed, out.capped) == (True, 0, False)
     assert (rater.hits, rater.asked) == (0, 3) and _chats(posts) == 6
     posts.clear()
     again = cands()
     rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
     with caplog.at_level(logging.INFO, logger="cutpoint.analyze"):
-        assert cutpoint.analyze._rate_vision(again, rater, 3, style) == (True, 0)
+        out = rate_all(again, rater, style)
+    assert (out.used, out.failed) == (True, 0)
     assert posts == []
     assert again == first
     assert (rater.hits, rater.asked) == (3, 0)
@@ -1119,7 +1144,7 @@ def test_rate_vision_tells_the_model_about_laughter_heard_in_a_moment():
         moment(20.0, {"boost": 0.0}),  # no laughter evidence at all
     ]
     rater = _LaughterRater()
-    cutpoint.analyze._rate_vision(cands, rater, 3, get_style("gaming"))  # type: ignore[arg-type]
+    rate_all(cands, rater, get_style("gaming"))  # type: ignore[arg-type]
     assert rater.told == [True, False, False]
 
 

@@ -17,12 +17,18 @@ SRC = r"D:\Videos\Clip-A.mp4"
 
 
 def project(
-    tmp_path: Path, name: str, scores: list[float], vision: dict | None = None, target: float = 30
+    tmp_path: Path,
+    name: str,
+    scores: list[float],
+    vision: dict | None = None,
+    target: float = 30,
+    rated: tuple[int, ...] = (),
 ) -> Path:
-    """Candidate i covers [i*100, i*100+10] with ``scores[i]``; the default edit fits 30 s."""
+    """Candidate i covers [i*100, i*100+10] with ``scores[i]``; the default edit fits 30 s.
+    The candidates in ``rated`` carry a vision rating."""
     cands = [
         {"id": f"h{i:03d}", "source": SRC, "start": i * 100.0, "end": i * 100.0 + 10,
-         "score": sc, "label": "x"}
+         "score": sc, "label": "x", "signals": {"vision": 7.0 if i in rated else None}}
         for i, sc in enumerate(scores)
     ]  # fmt: skip
     settings: dict = {"target_total": target}
@@ -124,3 +130,104 @@ def test_main_reports_a_project_without_scored_moments(tmp_path, caplog):
     assert ve.main([str(ref), str(empty)]) == 1
     assert "no scored candidates" in caplog.text
     assert ve.main([str(ref), str(tmp_path / "missing")]) == 1
+
+
+REF_COST = {"vision_s": 50.0, "calls": 5, "pre_vision_s": 100.0}  # 10 s per call, 100 s before
+
+
+@pytest.mark.parametrize(
+    ("variant", "want"),
+    [
+        ({"rated": 4, "share": 0.3}, 0.30),  # 40 s of calls, the cap is 30 s
+        ({"rated": 2, "share": 0.3}, 0.20),  # under the cap
+        ({"rated": 4, "share": 0.0}, 0.10),  # one call at least
+        ({"rated": 4}, 0.30),  # no share recorded: the 0.3 default
+        ({"share": 0.3}, None),  # nothing rated recorded
+    ],
+)
+def test_est_ratio_is_the_cost_on_the_references_run_with_the_cap(variant, want):
+    got = ve.est_ratio(REF_COST, variant)
+    assert got == pytest.approx(want) if want is not None else got is None
+
+
+def test_est_ratio_needs_the_references_timings():
+    assert ve.est_ratio({"vision_s": 50.0, "pre_vision_s": 100.0}, {"rated": 3}) is None
+    assert ve.est_ratio({}, {"rated": 3}) is None
+
+
+def test_flips_count_rated_and_unrated_pairs_the_variant_reorders(tmp_path):
+    nv = ve.load_project(project(tmp_path, "nv", [90, 80, 70, 60]))
+    # h002 rated up to 95: it now passes the unrated h000 and h001, not h003 (as before)
+    up = ve.load_project(project(tmp_path, "up", [90, 80, 95, 60], rated=(2,)))
+    assert ve.flips(nv["ranked"], up["ranked"]) == 2
+    # rated, but kept at or under the unrated above it (a tie is not a flip): none
+    held = ve.load_project(project(tmp_path, "held", [90, 80, 80, 60], rated=(2,)))
+    assert ve.flips(nv["ranked"], held["ranked"]) == 0
+    # two rated moments reordering between themselves is free
+    free = ve.load_project(project(tmp_path, "free", [90, 80, 65, 75], rated=(2, 3)))
+    assert ve.flips(nv["ranked"], free["ranked"]) == 0
+
+
+def test_main_shows_est_and_flips_and_writes_them(tmp_path, capsys):
+    ref = project(tmp_path, "ref", [90, 80, 70, 60], vision=REF_COST)
+    var = project(
+        tmp_path, "var", [90, 80, 95, 60], rated=(2,),
+        vision={"vision_s": 10.0, "pre_vision_s": 100.0, "rated": 4, "share": 0.3},
+    )  # fmt: skip
+    nv = project(tmp_path, "nv", [90, 80, 70, 60])
+    out = tmp_path / "out.json"
+    assert ve.main([str(ref), str(var), "--novision", str(nv), "--json", str(out)]) == 0
+    (v,) = json.loads(out.read_text(encoding="utf-8"))["variants"]
+    assert v["est_ratio"] == pytest.approx(0.3) and v["flips"] == 2
+    text = capsys.readouterr().out
+    assert "est" in text and "flips" in text
+    row = next(x for x in text.splitlines() if x.rstrip().endswith(str(var)))
+    assert "0.30" in row.split()
+
+
+def test_flips_match_moments_exactly_not_by_overlap():
+    """A long moment that contains shorter ones must not stand in for them (#909 measurement)."""
+
+    def m(start, end, score, rated=False):
+        return {"source": SRC, "start": start, "end": end, "score": score,
+                "signals": {"vision": 7.0 if rated else None}}  # fmt: skip
+
+    # no vision: the long 0-100, another moment at 200, then the short 1-6 inside the long one
+    nv = [m(0, 100, 95), m(200, 210, 85), m(1, 6, 70)]
+    # the variant rated 1-6 up to 75, still under the unrated 200: nothing is reversed. Matched
+    # by overlap, 1-6 would be taken for the long one (95) and count as passed by 200
+    var = [m(0, 100, 95), m(200, 210, 85), m(1, 6, 75, rated=True)]
+    assert ve.flips(nv, var) == 0
+    up = [m(0, 100, 95), m(1, 6, 90, rated=True), m(200, 210, 85)]
+    assert ve.flips(nv, up) == 1  # 1-6 passed 200
+    assert ve.flips(nv, [m(2, 7, 99, rated=True), *nv]) == 0  # not in the no-vision project
+
+
+def test_est_ratio_takes_a_cold_time_before_vision():
+    # warm reference: 100 s before vision; cold: 1000 s, so 4 calls of 10 s are 4%
+    assert ve.est_ratio(REF_COST, {"rated": 4, "share": 0.3}, 1000.0) == pytest.approx(0.04)
+    assert ve.est_ratio(REF_COST, {"rated": 4, "share": 0.3}, None) == pytest.approx(0.3)
+
+
+def test_cold_pre_reads_seconds_or_a_project(tmp_path):
+    assert ve.cold_pre("125.5") == 125.5
+    vis = project(tmp_path, "vis", [90, 80], vision={"pre_vision_s": 70.0})
+    assert ve.cold_pre(str(vis)) == 70.0
+    nv = project(tmp_path, "nv", [90, 80])  # a no-vision run: only timings.total_s
+    data = json.loads((nv / "highlights.json").read_text(encoding="utf-8"))
+    data["timings"] = {"total_s": 300.0}
+    (nv / "highlights.json").write_text(json.dumps(data), encoding="utf-8")
+    assert ve.cold_pre(str(nv)) == 300.0
+    with pytest.raises(ValueError, match=r"no settings\.vision\.pre_vision_s"):
+        ve.cold_pre(str(project(tmp_path, "bare", [90, 80])))
+
+
+def test_main_takes_cold_pre_for_est(tmp_path, capsys):
+    ref = project(tmp_path, "ref", [90, 80, 70, 60], vision=REF_COST)
+    var = project(tmp_path, "var", [90, 80, 70, 60], vision={"rated": 4, "share": 0.3})
+    out = tmp_path / "out.json"
+    assert ve.main([str(ref), str(var), "--cold-pre", "1000", "--json", str(out)]) == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["cold_pre_s"] == 1000.0
+    assert data["variants"][0]["est_ratio"] == pytest.approx(0.04)
+    assert ve.main([str(ref), str(var), "--cold-pre", str(tmp_path / "missing")]) == 1

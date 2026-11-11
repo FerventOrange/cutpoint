@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `settings.vision` in `highlights.json` records what the vision step cost (ratings, cache hits, seconds and tokens per phase, and the analyze time before it), with one DEBUG line per request and an INFO summary, and `scripts/vision_eval.py` compares projects by that cost and by the moments they keep (#909). Ranking is unchanged.
+- `settings.vision` in `highlights.json` records what the vision step cost (ratings, cache hits, seconds and tokens per phase, and the analyze time before it), with one DEBUG line per request and an INFO summary, and `scripts/vision_eval.py` compares projects by that cost (`--cold-pre` for a cold analyze time) and by the moments they keep (#909). Ranking is unchanged.
+- `vision_time_share` in `config.json` caps the vision rating at a share of the analyze time before it (default 0.3). It rates the moments nearest the cut first, takes cached ratings after the cap, makes at least one call and can run over by one call (#909).
 - The UI header shows what the footage was detected as ("Detected: Gameplay", or "Not sure: General style"), with the reason and the sources that disagree, and changes the style in one step: choosing one analyzes the project again in it (#897, #880).
 
 ### Fixed
@@ -27,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** a discovery the model answered unusably or that timed out is remembered per footage: the model is not asked again until `--refresh-profile`, another model or a new discovery version; a connection error is not remembered, so the next run asks again (#916). Profiles discovered by earlier versions stay in the library and keep matching their footage, with their old name, VLM wording and 0.9 phrase caps; to discover one again, run `cutpoint profile delete NAME`, then the command with `--refresh-profile`.
 - The vision rating grabs the frames of a moment in parallel (up to 4 ffmpeg at once): the frame grab takes about a quarter less time on 4K footage, with the same frames (#909).
 - The UI New project dialog defaults to Auto (action-cam stays preselected with camera telemetry).
+- **BREAKING:** `--vision-top N` caps the total number of moments rated, closest to the cut first. By default the vision rating rates the default edit's moments (not must-include ones) plus max(2, 30% of the edit's moments), at most 24, below its cut, instead of one moment per 2 minutes of footage (10-60) from the top, so a rating can drop a weak pick from the edit (#909).
+- **BREAKING:** the vision ratings of each prompt kind (with speech, frames only) are centred on their mean in the run, with a prior when fewer than 5 are rated, in place of the fixed 1.9 taken off a rating with speech. A rated moment's score stays between those of its nearest unrated neighbours, so a rating never moves it past an unrated moment, except moments the default edit skipped above its cut when vision ran (too long or overlapping a pick); they are marked `vision_skipped`. Scores change when a project is analyzed again; `cutpoint events` on an existing project applies the clamp to its ratings as they are (#909).
 - **BREAKING:** `POST /projects` without `style` creates an `auto` project (it was `gaming`).
 - **BREAKING:** Vision no longer renames moments or clips; its description is kept in `vision_label` (#913). Re-analyze a project to get the original labels back.
 - **BREAKING:** the action-cam vision tags are sport-neutral: `powder_spray` is `spray`, `fast_groomer` is `fast_open`, `chairlift` is `transit` and `lodge` is `indoor_break`. Old keys are ignored, so an existing project's tags read 0 until you run `cutpoint events` again.

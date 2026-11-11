@@ -6,6 +6,7 @@ Usage::
 
     uv run --offline python scripts/vision_eval.py REFERENCE VARIANT [VARIANT ...]
     uv run --offline python scripts/vision_eval.py REFERENCE VARIANT --novision NOVISION --json out.json
+    uv run --offline python scripts/vision_eval.py REFERENCE VARIANT --cold-pre NOVISION
 
 ``REFERENCE`` is the project analyzed with the full vision rating, each ``VARIANT`` the same
 footage analyzed another way (for example a cheaper rating). ``--novision`` is the same footage
@@ -18,6 +19,14 @@ Per variant:
   them; otherwise "-". The ratio is comparable only between cold-cache runs: a re-rank
   (``rerank`` in ``settings.vision``) or a second analysis of the same footage has a much
   smaller ``pre_vision_s``. The row shows each variant's own ``vision_s`` too.
+- ``est``: the cold cost the variant would have on the reference's run, from the reference's
+  seconds per model call (``vision_s`` / ``calls``) and analyze time ``pre_vision_s``:
+  ``min(rated * s_per_call, max(s_per_call, share * pre_vision_s)) / pre_vision_s``, with the
+  variant's ``rated`` and ``share`` (``vision_time_share``, 0.3 when not recorded). A time cap
+  stops after the budget, at least one call. "-" without those numbers. A reference analyzed on
+  a warm cache has a small ``pre_vision_s`` that inflates ``est``; ``--cold-pre`` gives a cold
+  one instead: a number of seconds, or a project analyzed on a cold cache (its
+  ``settings.vision.pre_vision_s``, else its ``timings.total_s``, as a no-vision run has).
 - ``edit``: the default edit is :func:`cutpoint.default_fit.fit_target` of the scored moments
   (not the visual pool) against ``settings.target_total``, what ``clips`` takes without options.
   The share of the reference's picks that the variant also picks. Two moments are the same when
@@ -30,6 +39,10 @@ Per variant:
 - ``recovered`` (with ``--novision``): the reference's changes against the no-vision project are
   the picks it added and the picks it dropped in the default edit. The share the variant makes
   too.
+- ``flips`` (with ``--novision``): pairs of a moment the variant rated (``signals.vision`` set) and
+  one it did not rate (neither ``must_include``), both in the no-vision project too (the same
+  file name, start and end), whose order by score the variant reverses against it. A tie in
+  either is not a flip.
 
 ``--json FILE`` writes the results.
 """
@@ -51,6 +64,7 @@ SCHEMA = 1
 MIN_OVERLAP = 0.5
 TOPS = (5, 10)
 TAU_TOP = 20
+DEFAULT_SHARE = 0.3  # vision_time_share when a project does not record it
 
 Moment = dict[str, Any]
 
@@ -176,13 +190,90 @@ def cost(vision: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def est_ratio(
+    ref_vision: dict[str, Any], vision: dict[str, Any], pre_s: float | None = None
+) -> float | None:
+    """The variant's cold cost on the reference's run: ``min(rated * s_per_call,
+    max(s_per_call, share * pre)) / pre``, ``s_per_call`` the reference's seconds per model call,
+    ``pre`` ``pre_s`` (a cold analyze time before vision, :func:`cold_pre`) or else the
+    reference's ``pre_vision_s``, ``rated`` and ``share`` the variant's (``vision`` its
+    ``settings.vision``). None without those numbers."""
+    v, calls, pre = (ref_vision.get(k) for k in ("vision_s", "calls", "pre_vision_s"))
+    if pre_s is not None:
+        pre = pre_s
+    rated = vision.get("rated")
+    share_ = vision.get("share", DEFAULT_SHARE)
+    nums = (v, calls, pre, rated, share_)
+    if not all(isinstance(x, int | float) and not isinstance(x, bool) for x in nums):
+        return None
+    if calls <= 0 or pre <= 0:
+        return None
+    per_call = v / calls
+    return min(rated * per_call, max(per_call, share_ * pre)) / pre
+
+
+def cold_pre(value: str) -> float:
+    """``--cold-pre``: seconds, or a project folder analyzed on a cold cache, its
+    ``settings.vision.pre_vision_s`` or else its ``timings.total_s``."""
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    path = Path(value) / "highlights.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    vision = (data.get("settings") or {}).get("vision")
+    for got in (
+        vision.get("pre_vision_s") if isinstance(vision, dict) else None,
+        (data.get("timings") or {}).get("total_s"),
+    ):
+        if isinstance(got, int | float) and not isinstance(got, bool) and got > 0:
+            return float(got)
+    raise ValueError(f"{path}: no settings.vision.pre_vision_s or timings.total_s")
+
+
+def _key(m: Moment) -> tuple[str, float, float]:
+    return source_name(str(m["source"])), float(m["start"]), float(m["end"])
+
+
+def _rated(m: Moment) -> bool:
+    return (m.get("signals") or {}).get("vision") is not None
+
+
+def flips(novision: Sequence[Moment], var: Sequence[Moment]) -> int:
+    """(rated, unrated) pairs of ``var`` whose order by score is the reverse of ``novision``'s:
+    ``var``'s moments with a vision rating against those without (neither ``must_include``),
+    each matched to the no-vision moment with the same file name, start and end (an overlap
+    would match a long moment to a shorter one inside it). A tie in either is not a flip."""
+    by_key: dict[tuple[str, float, float], Moment] = {}
+    for n in novision:
+        by_key.setdefault(_key(n), n)
+    pairs = []
+    for m in var:
+        if m.get("must_include"):
+            continue
+        match = by_key.get(_key(m))
+        if match is not None:
+            pairs.append((_rated(m), float(m["score"]), float(match["score"])))
+    rated = [p for p in pairs if p[0]]
+    unrated = [p for p in pairs if not p[0]]
+    return sum(
+        (r_var - u_var) * (r_nv - u_nv) < 0
+        for _, r_var, r_nv in rated
+        for _, u_var, u_nv in unrated
+    )
+
+
 def evaluate(
-    ref: dict[str, Any], var: dict[str, Any], novision: dict[str, Any] | None
+    ref: dict[str, Any],
+    var: dict[str, Any],
+    novision: dict[str, Any] | None,
+    pre_s: float | None = None,
 ) -> dict[str, Any]:
     tau, n = tau_top(ref["ranked"], var["ranked"])
     out: dict[str, Any] = {
         "project": var["project"],
         "cost": cost(var["vision"]),
+        "est_ratio": est_ratio(ref["vision"], var["vision"], pre_s),
         "edit": edit_overlap(ref["edit"], var["edit"]),
         "edit_clips": len(var["edit"]),
         **{f"top{k}": top_overlap(ref["ranked"], var["ranked"], k) for k in TOPS},
@@ -191,6 +282,7 @@ def evaluate(
     }
     if novision is not None:
         out["recovered"] = recovered(ref["edit"], novision["edit"], var["edit"])
+        out["flips"] = flips(novision["ranked"], var["ranked"])
     return out
 
 
@@ -215,16 +307,17 @@ def print_results(data: dict[str, Any]) -> None:
         f"cost {_num(c['ratio'], '.2f')}x"
     )
     has_nv = any("recovered" in v for v in data["variants"])
-    head = f"  {'vis_s':>6} {'cost':>6} {'edit':>6} {'top5':>6} {'top10':>6} {'tau20':>7} {'n':>3}"
-    print(head + (f" {'recovered':>10}" if has_nv else "") + "  project")
+    head = f"  {'vis_s':>6} {'cost':>6} {'est':>6} {'edit':>6} {'top5':>6} {'top10':>6} {'tau20':>7} {'n':>3}"
+    print(head + (f" {'recovered':>10} {'flips':>5}" if has_nv else "") + "  project")
     for v in data["variants"]:
         row = (
-            f"  {_num(v['cost']['vision_s'], '.0f'):>6} {_num(v['cost']['ratio'], '.2f'):>6} {_pct(v['edit']):>6} {_pct(v['top5']):>6} "
+            f"  {_num(v['cost']['vision_s'], '.0f'):>6} {_num(v['cost']['ratio'], '.2f'):>6} "
+            f"{_num(v['est_ratio'], '.2f'):>6} {_pct(v['edit']):>6} {_pct(v['top5']):>6} "
             f"{_pct(v['top10']):>6} {_num(v['tau20'], '.2f'):>7} {v['tau20_n']:>3}"
         )
         if has_nv:
             r = v.get("recovered")
-            row += f" {_pct(r['share']) if r else '-':>10}"
+            row += f" {_pct(r['share']) if r else '-':>10} {v.get('flips', '-'):>5}"
         print(f"{row}  {v['project']}")
     if data.get("novision"):
         nv = data["novision"]
@@ -239,6 +332,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("reference", type=Path, help="project analyzed with the full vision rating")
     ap.add_argument("variants", type=Path, nargs="+", help="projects to compare with it")
     ap.add_argument("--novision", type=Path, metavar="DIR", help="the same footage, vision off")
+    ap.add_argument(
+        "--cold-pre",
+        metavar="SECONDS|DIR",
+        help="cold analyze time before vision for est, instead of the reference's: seconds, or a "
+        "project analyzed on a cold cache (its pre_vision_s, else timings.total_s)",
+    )
     ap.add_argument("--json", type=Path, metavar="FILE", help="write the results as JSON here")
     ap.add_argument("-v", "--verbose", action="store_true", help="debug output")
     args = ap.parse_args(argv)
@@ -250,7 +349,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         ref = load_project(args.reference)
         novision = load_project(args.novision) if args.novision else None
-        variants = [evaluate(ref, load_project(p), novision) for p in args.variants]
+        pre_s = cold_pre(args.cold_pre) if args.cold_pre else None
+        variants = [evaluate(ref, load_project(p), novision, pre_s) for p in args.variants]
     except (OSError, ValueError, KeyError) as err:  # JSONDecodeError is a ValueError
         logger.error("%s: %s", type(err).__name__, err)
         return 1
@@ -262,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
             "cost": cost(ref["vision"]),
             "edit": [[m["source"], m["start"], m["end"]] for m in ref["edit"]],
         },
+        "cold_pre_s": pre_s,
         "variants": variants,
     }
     if novision is not None:
