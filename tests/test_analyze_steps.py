@@ -915,7 +915,7 @@ def test_vision_blends_into_the_analysis_score_then_the_events_apply_again(run, 
     )
     # #909: the lone frames rating is centred: (8 + 4 * 3.2) / 5 = 4.16, so 8 becomes
     # 5 + 8 - 4.16 = 8.84 and the blend is 50 * (1 + 0.3 * (8.84 - 5) / 5) = 61.52
-    centre = (8.0 + 4 * vision.RATING_PRIOR["frames"]) / 5
+    centre = (8.0 + 4 * vision.RATING_PRIOR["other", "frames"]) / 5
     assert centre == pytest.approx(4.16)
     assert cand["vision_rated"]["centre"] == 4.16 and cand["vision_rated"]["kind"] == "frames"
     assert cand["score_pre_events"] == pytest.approx(
@@ -2607,7 +2607,7 @@ def test_a_rating_with_speech_is_centred_on_its_own_kind_not_lifted(run, monkeyp
     _speech_run(run, monkeypatch, "Wow, look at that", rating=5.9)
     run.go(vision=True, vision_top=1)
     cand = _only_candidate(run)
-    centre = (5.9 + 4 * vision.RATING_PRIOR["speech"]) / 5  # 5.26
+    centre = (5.9 + 4 * vision.RATING_PRIOR["other", "speech"]) / 5  # 5.26
     assert centre == pytest.approx(5.26)
     assert cand["vision_rated"]["kind"] == "speech" and cand["vision_rated"]["centre"] == 5.26
     assert cand["score"] == analyze.vision_blend(50.0, 5 + 5.9 - centre, weight)  # 5.64 -> 51.92

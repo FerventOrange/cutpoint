@@ -114,25 +114,75 @@ def test_max_n_caps_the_whole_band_keeping_the_moments_closest_to_the_cut():
 
 
 def test_a_kind_with_five_ratings_is_centred_on_their_mean(pinned_prior):
-    got = analyze.rating_centres([("frames", r) for r in (2.0, 4.0, 6.0, 8.0, 10.0)])
+    got = analyze.rating_centres([("frames", r) for r in (2.0, 4.0, 6.0, 8.0, 10.0)], "other")
     assert got == {"frames": 6.0}  # no shrinking from PRIOR_N on
 
 
 def test_a_kind_with_few_ratings_is_shrunk_toward_its_prior(pinned_prior):
     # (sum + (5 - n) * prior) / 5, prior 3.2 for frames, 5.1 for speech
-    got = analyze.rating_centres([("frames", 2.0), ("frames", 4.0), ("speech", 7.0)])
+    got = analyze.rating_centres([("frames", 2.0), ("frames", 4.0), ("speech", 7.0)], "other")
     assert got["frames"] == pytest.approx((2 + 4 + 3 * 3.2) / 5)  # 3.12
     assert got["speech"] == pytest.approx((7 + 4 * 5.1) / 5)  # 5.48
 
 
 def test_only_the_kinds_rated_have_a_centre_and_each_is_apart(pinned_prior):
-    assert analyze.rating_centres([]) == {}
-    got = analyze.rating_centres([("speech", 9.0)] * 6 + [("frames", 1.0)] * 5)
+    assert analyze.rating_centres([], "action") == {}
+    got = analyze.rating_centres([("speech", 9.0)] * 6 + [("frames", 1.0)] * 5, "action")
     assert got == {"speech": 9.0, "frames": 1.0}
 
 
-def test_the_prior_is_one_constant_per_kind_for_every_model():
-    assert set(vision.RATING_PRIOR) == {"frames", "speech"}
+@pytest.fixture
+def split_prior(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each (group, kind) cell its own prior, so a test sees which group's was taken."""
+    for (group, kind), v in {
+        ("action", "frames"): 7.0,
+        ("action", "speech"): 6.0,
+        ("other", "frames"): 3.5,
+        ("other", "speech"): 4.5,
+    }.items():
+        monkeypatch.setitem(vision.RATING_PRIOR, (group, kind), v)
+
+
+@pytest.mark.parametrize(
+    ("group", "frames_prior", "speech_prior"), [("action", 7.0, 6.0), ("other", 3.5, 4.5)]
+)
+def test_few_ratings_shrink_toward_their_groups_prior(
+    split_prior, group, frames_prior, speech_prior
+):
+    got = analyze.rating_centres([("frames", 5.0), ("frames", 6.0), ("speech", 8.0)], group)
+    assert got["frames"] == pytest.approx((5 + 6 + 3 * frames_prior) / 5)
+    assert got["speech"] == pytest.approx((8 + 4 * speech_prior) / 5)
+
+
+def test_five_ratings_need_no_prior_in_either_group(split_prior):
+    ratings = [("frames", r) for r in (2.0, 4.0, 6.0, 8.0, 10.0)]
+    assert analyze.rating_centres(ratings, "action") == analyze.rating_centres(ratings, "other")
+
+
+@pytest.mark.parametrize(
+    ("base", "group"),
+    [
+        ("action", "action"),
+        ("sport", "action"),
+        ("action-cam", "action"),
+        ("gaming", "other"),
+        ("funny", "other"),
+        ("commentary", "other"),
+    ],
+)
+def test_the_prior_group_follows_the_style_base(base, group):
+    assert analyze.prior_group(base) == group
+
+
+def test_the_prior_is_one_constant_per_group_and_kind_for_every_model():
+    assert vision.PRIOR_GROUPS == ("action", "other")
+    assert set(vision.RATING_PRIOR) == {
+        (g, k) for g in vision.PRIOR_GROUPS for k in ("frames", "speech")
+    }
+    # #948: until the measurement every group keeps the #909 fit
+    for g in vision.PRIOR_GROUPS:
+        assert vision.RATING_PRIOR[g, "frames"] == 5.6
+        assert vision.RATING_PRIOR[g, "speech"] == 4.1
     assert vision.PRIOR_N == 5
     assert not hasattr(vision, "SPEECH_PROMPT_LIFT")  # replaced by the centring
 

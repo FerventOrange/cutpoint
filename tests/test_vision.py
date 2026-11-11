@@ -403,7 +403,7 @@ def test_rate_vision_low_rating_no_longer_outranks_an_unrated_candidate():
     low, high, unrated = cands
     # #909: both ratings are frames-only, so they are centred on their mean shrunk toward the
     # prior (2 ratings of 5 needed): (2 + 10 + 3 * prior) / 5, and that centre becomes 5/10
-    centre = (2.0 + 10.0 + 3 * vision.RATING_PRIOR["frames"]) / 5
+    centre = (2.0 + 10.0 + 3 * vision.RATING_PRIOR["action", "frames"]) / 5
     assert centre == pytest.approx(4.32)
     centred = 5 + 2.0 - centre  # 2.68
     want = round(22.0 * (1 + style.vision_weight * (centred - 5) / 5), 1)
@@ -430,9 +430,36 @@ def test_rate_vision_mid_rating_does_not_lift_a_score_past_an_unrated_one():
     rater = _ByStartRater({30.0: (5.0, "ok run")})
     rate_all(cands[:1], rater, get_style("action-cam"))  # type: ignore[arg-type]
     mid, unrated = cands
-    centre = (5.0 + 4 * vision.RATING_PRIOR["frames"]) / 5
+    centre = (5.0 + 4 * vision.RATING_PRIOR["action", "frames"]) / 5
     assert mid["score"] == round(22.0 * (1 + 0.2 * (5.0 - centre) / 5), 1) == 23.3
     assert mid["score"] < unrated["score"] == 26.0
+
+
+@pytest.mark.parametrize(
+    ("style", "learned", "centre"),
+    [
+        ("action-cam", None, (5.0 + 4 * 7.0) / 5),  # 6.6: the action group's prior
+        ("sport", {"base": "sport"}, (5.0 + 4 * 7.0) / 5),  # a user style over sport
+        ("gaming", None, (5.0 + 4 * 3.5) / 5),  # 3.8: the other group's prior
+        ("funny", {"base": "funny"}, (5.0 + 4 * 3.5) / 5),
+    ],
+)
+def test_rate_vision_shrinks_toward_the_prior_of_the_styles_group(
+    monkeypatch, style, learned, centre
+):
+    """#948: the rating centres take the prior of the style's group (its built-in base)."""
+    from dataclasses import replace  # noqa: PLC0415
+
+    monkeypatch.setitem(vision.RATING_PRIOR, ("action", "frames"), 7.0)
+    monkeypatch.setitem(vision.RATING_PRIOR, ("other", "frames"), 3.5)
+    st = get_style(style)
+    if learned is not None:
+        st = replace(st, name="mine", learned=learned)
+    cand = {"source": "a.mp4", "start": 0.0, "end": 5.0, "score": 20.0, "label": "x",
+            "signals": {}}  # fmt: skip
+    out = rate_all([cand], _ByStartRater({0.0: (5.0, "ok")}), st)  # type: ignore[arg-type]
+    assert out.centres == {"frames": pytest.approx(centre)}
+    assert cand["vision_rated"]["centre"] == round(centre, 2)
 
 
 def test_rate_vision_keeps_the_model_label_apart_from_the_clip_label():

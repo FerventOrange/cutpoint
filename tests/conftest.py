@@ -199,13 +199,15 @@ def add_profile(raw: dict, name: str | None = None) -> dict:
 
 
 @pytest.fixture
-def pinned_prior(monkeypatch: pytest.MonkeyPatch) -> dict[str, float]:
-    """The vision rating prior (``vision.RATING_PRIOR``, #909) fixed at 3.2 (frames) and 5.1
-    (speech), so a test's hand-computed centres hold when the shipped prior is re-fitted."""
+def pinned_prior(monkeypatch: pytest.MonkeyPatch) -> dict[tuple[str, str], float]:
+    """The vision rating prior (``vision.RATING_PRIOR``, #909, #948) fixed at 3.2 (frames) and
+    5.1 (speech) in every style group, so a test's hand-computed centres hold when the shipped
+    prior is re-fitted."""
     from cutpoint import vision  # noqa: PLC0415
 
-    monkeypatch.setitem(vision.RATING_PRIOR, "frames", 3.2)
-    monkeypatch.setitem(vision.RATING_PRIOR, "speech", 5.1)
+    for group in vision.PRIOR_GROUPS:
+        monkeypatch.setitem(vision.RATING_PRIOR, (group, "frames"), 3.2)
+        monkeypatch.setitem(vision.RATING_PRIOR, (group, "speech"), 5.1)
     return vision.RATING_PRIOR
 
 

@@ -71,7 +71,7 @@ def test_rating_records_the_span_and_both_scores():
         "base": 40.0,
         "blended": BLENDED,
         "kind": "frames",  # no transcript: the frames-only prompt
-        "centre": round((10.0 + 4 * vision.RATING_PRIOR["frames"]) / 5, 2),  # 4.56
+        "centre": round((10.0 + 4 * vision.RATING_PRIOR["other", "frames"]) / 5, 2),  # 4.56
     }
     assert c["score"] == BLENDED != 40.0 and c["label"] == "gaming-moment"
     assert c["vision_label"] == "big jump"

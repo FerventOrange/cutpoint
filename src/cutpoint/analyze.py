@@ -1121,17 +1121,25 @@ def vision_blend(score: float, rating: float | None, weight: float) -> float:
     return round(max(0.0, min(100.0, score * (1 + weight * (rating - 5) / 5))), 1)
 
 
-def rating_centres(ratings: Iterable[tuple[str, float]]) -> dict[str, float]:
+def prior_group(base: str) -> str:
+    """The style group of the vision rating prior (#948) for a style whose built-in base is
+    ``base``: ``"action"`` for :data:`ACTION_STYLES`, ``"other"`` for every other style."""
+    return "action" if base in ACTION_STYLES else "other"
+
+
+def rating_centres(ratings: Iterable[tuple[str, float]], group: str) -> dict[str, float]:
     """The centre of each prompt kind's ratings (#909): ``ratings`` are ``(kind, rating)``
     pairs, the kind ``"speech"`` or ``"frames"``. A kind's centre is the mean of its ratings,
-    shrunk toward :data:`cutpoint.vision.RATING_PRIOR` while it has fewer than
+    shrunk toward the ``group``'s (:func:`prior_group`) prior in
+    :data:`cutpoint.vision.RATING_PRIOR` while it has fewer than
     :data:`cutpoint.vision.PRIOR_N`: ``(sum + max(0, PRIOR_N - n) * prior) / max(n, PRIOR_N)``.
     Only the kinds rated are in the result."""
     sums: dict[str, list[float]] = {}
     for kind, r in ratings:
         sums.setdefault(kind, []).append(r)
     return {
-        kind: (sum(rs) + max(0, PRIOR_N - len(rs)) * RATING_PRIOR[kind]) / max(len(rs), PRIOR_N)
+        kind: (sum(rs) + max(0, PRIOR_N - len(rs)) * RATING_PRIOR[group, kind])
+        / max(len(rs), PRIOR_N)
         for kind, rs in sums.items()
     }
 
@@ -3098,7 +3106,8 @@ def _rate_vision(
 
     Then each prompt kind's ratings (``"speech"`` when the moment has speech to send with its
     frames, :func:`~cutpoint.vision.speech_excerpt`, else ``"frames"``) are centred on their
-    mean (:func:`rating_centres`, :func:`centred_rating`) and blended in with
+    mean (:func:`rating_centres` with the prior of the style's :func:`prior_group`,
+    :func:`centred_rating`) and blended in with
     :func:`vision_blend` and the style's ``vision_weight``. ``signals.vision`` keeps the
     model's rating as given; its label goes to ``vision_label``, never to ``label`` (#913).
     Each rated candidate keeps ``vision_rated`` (the span rated, the score before and after the
@@ -3165,7 +3174,9 @@ def _rate_vision(
     kinds = [
         "speech" if speech_excerpt(c.get("transcript"), style.base) else "frames" for c, _, _ in got
     ]
-    out.centres = rating_centres((kind, r) for kind, (_, r, _) in zip(kinds, got, strict=True))
+    out.centres = rating_centres(
+        ((kind, r) for kind, (_, r, _) in zip(kinds, got, strict=True)), prior_group(style.base)
+    )
     for kind, (c, score, label) in zip(kinds, got, strict=True):
         out.used = True
         out.by_kind[kind] = out.by_kind.get(kind, 0) + 1
