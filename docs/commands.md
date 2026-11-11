@@ -1076,7 +1076,8 @@ ranking without vision (a tie that would sort it past the neighbour becomes 0.1 
 unless the two neighbours tie), so rated moments can only change places among themselves and
 with those skipped moments; with the whole edit rated, a weak pick can fall to just above the
 first unrated moment under the band. A skipped moment is marked `vision_skipped` (its `start`
-and `end` then) and counts as a neighbour again once `events` widens or trims it. The step stops
+and `end` then) and counts as a neighbour again once `events` widens or trims it, or once a
+re-rank puts it in the default edit of the ranking without vision (the mark is then removed). The step stops
 asking the model once it has taken [`vision_time_share`](configuration.md#vision_time_share)
 of the analyze time before it (default 30%; a re-rank measures against the first analysis).
 It makes at least one call, the call under way finishes (so it can run over by one call), and
@@ -1139,7 +1140,8 @@ without `--vision` (the rating can still change which moments are picked and the
 while the candidate keeps that span: once `events` widens or a menu trim cuts it, the rating
 moves to `vision_stale` (`score`, `label`, `window`), `signals.vision` is `null` and `vision_label`
 goes; the span coming back restores them. A moment the default edit skipped above its cut when
-vision ran has `vision_skipped` (its `start` and `end` then; see **Vision rating**). A candidate the dialogue reader widened also has `widened_from` (its
+vision ran has `vision_skipped` (its `start` and `end` then; see **Vision rating**) until a
+re-rank puts it in the default edit of the ranking without vision. A candidate the dialogue reader widened also has `widened_from` (its
 earlier `start`, `end`, `transcript` and `transcript_unsure`, and `absorbed`, the full candidates
 merged into it), and `dialogue_description` (the stretch's description) when no transcript
 snippet could be rebuilt for its new span; where the reader ran, `signals.events.dialogue` is

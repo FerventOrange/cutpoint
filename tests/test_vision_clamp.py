@@ -362,3 +362,61 @@ def test_a_stale_rating_still_bounds_with_a_skipped_moment_around(tmp_path):
     assert "vision_stale" in stale and "vision_stale" not in rated
     assert rated["score"] == stale["score"]  # held at the stale one above it
     assert by_id["h001"]["score"] == 70.0
+
+
+# ---- #949: the mark goes once the default edit before vision takes the moment
+
+
+def _skip_set(pick_score: float) -> list[dict]:
+    """h000 (``pick_score``) overlaps the skipped h001 (60) by 6 of their 8 s; h002 (50) is
+    rated 10 (67.5); h003 (40) does not fit in the 16 s edit."""
+    cands = [
+        own("h000", 2.0, pick_score),
+        _skipped("h001", 0.0, 60.0),
+        own("h002", 100.0, 50.0),
+        own("h003", 300.0, 40.0),
+    ]
+    _rate(cands[2])
+    return cands
+
+
+def test_a_moment_still_skipped_keeps_its_mark(tmp_path):
+    """The pick h000 (70) still overlaps h001 in the edit before vision: h001 keeps its mark
+    and the rated h002 passes it, held only by h000."""
+    hl = highlights(_skip_set(70.0), vision={}, target_total=16.0)
+    scorer.rescore_events(hl, events_of([]), tmp_path, [grid()])
+    by_id = {c["id"]: c for c in hl["candidates"]}
+    assert by_id["h001"]["vision_skipped"] == [0.0, 8.0]
+    assert by_id["h002"]["score"] == 67.5
+    assert [c["id"] for c in hl["candidates"]] == ["h000", "h002", "h001", "h003"]
+
+
+def test_a_skipped_moment_the_edit_now_takes_loses_its_mark(tmp_path):
+    """A re-rank drops the pick h000 to 45, under h001 and h002: the edit before vision now
+    takes h001 and h002, so the mark goes and h001 bounds the rated h002 again (0.1 under it,
+    as h002 is listed first after the first rescore); a second rescore does not mark it
+    again and h002 stays under or level with it."""
+    hl = highlights(_skip_set(70.0), vision={}, target_total=16.0)
+    scorer.rescore_events(hl, events_of([]), tmp_path, [grid()])
+    pick = next(c for c in hl["candidates"] if c["id"] == "h000")
+    pick["score_pre_events"] = 45.0  # the re-rank's analysis score
+    scorer.rescore_events(hl, events_of([]), tmp_path, [grid()])
+    by_id = {c["id"]: c for c in hl["candidates"]}
+    assert "vision_skipped" not in by_id["h001"]
+    assert by_id["h002"]["score"] == 59.9  # held under h001
+    assert hl["settings"]["vision"]["clamped"] == 1
+    assert [c["id"] for c in hl["candidates"]] == ["h001", "h002", "h000", "h003"]
+    scorer.rescore_events(hl, events_of([]), tmp_path, [grid()])
+    by_id = {c["id"]: c for c in hl["candidates"]}
+    assert "vision_skipped" not in by_id["h001"]
+    assert [c["id"] for c in hl["candidates"]][:2] == ["h001", "h002"]
+    assert by_id["h002"]["score"] <= by_id["h001"]["score"] == 60.0
+
+
+def test_no_vision_project_is_left_as_it_is(tmp_path):
+    """Without vision there is no mark to drop and none is added."""
+    cands = [own("h000", 2.0, 70.0), own("h001", 0.0, 60.0), own("h002", 100.0, 50.0)]
+    hl = highlights(cands, target_total=16.0)
+    scorer.rescore_events(hl, events_of([]), tmp_path, [grid()])
+    assert not any("vision_skipped" in c for c in hl["candidates"])
+    assert [c["score"] for c in hl["candidates"]] == [70.0, 60.0, 50.0]
