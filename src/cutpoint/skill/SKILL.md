@@ -27,7 +27,7 @@ it: it is the full reference.
 
 Style (`--style` on `cutpoint edit` and `cutpoint analyze`): default to `--style auto`, which
 picks from the footage. `cutpoint detect <video> --json` shows its pick (`outputs.styles`); a
-`style_ambiguous` warning means it could not tell and used `gaming` (best guess gameplay) or `action`; the warning names the style, and `detect` shows `decided_by`. Unsure footage is shown to the vision model first (`--no-vision` skips it). Name a style only when the user says
+`style_ambiguous` warning means it could not tell and used `gaming` (best guess gameplay) or `action`; the warning names the style, and `detect` shows `decided_by`. Unsure footage, and camera footage without telemetry, is shown to the vision model first (`--no-vision` skips it). Name a style only when the user says
 what the footage is. Pick `funny`, `gaming`, `action`, `sport`, `commentary` (long talk) or
 `action-cam` (action-cam footage with GoPro or Insta360 X3 telemetry). Without any telemetry
 `action-cam` runs as `action` with an `action_cam_no_telemetry` warning: tell the user.

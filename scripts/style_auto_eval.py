@@ -3,7 +3,7 @@
 owner's decision to make auto the default. Not part of the package; nothing here changes the
 default. It runs :func:`cutpoint.category.probe_source` and :func:`cutpoint.category.decide`
 as ``cutpoint detect`` does (the cached probes, the HUD text check and the vision model for
-unsure sources, the cached transcripts for talk), never parses logs, and only reads the sources: it writes to
+unsure and camera-tagged sources, the cached transcripts for talk), never parses logs, and only reads the sources: it writes to
 Cutpoint's caches and to ``--out``.
 
 Usage::
@@ -212,8 +212,8 @@ def evaluate(
     transcript has no speech: analyze transcribes first, so :attr:`Row.untranscribed` marks
     the ones where talk could still change the decision). A source ffprobe cannot read is
     recorded in ``errors`` and left out. ``out`` is checked before any probing
-    (:func:`check_out`). ``vision``: as ``cutpoint detect --vision`` (None: ask about unsure
-    sources, False: do not).
+    (:func:`check_out`). ``vision``: as ``cutpoint detect --vision`` (None: ask about unsure and
+    camera-tagged sources without telemetry, False: do not).
     """
     groups: dict[str, list[tuple[Path, str]]] = {}
     for e in entries:
@@ -600,7 +600,8 @@ def main(argv: list[str] | None = None) -> int:
         "--vision",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="ask the vision model about unsure sources (default: yes); --no-vision: the "
+        help="ask the vision model about unsure sources and camera-tagged sources without "
+        "telemetry (default: yes); --no-vision: the "
         "cheap detector alone; --vision also warns when the Vision provider lacks consent",
     )
     ap.add_argument("-v", "--verbose", action="store_true", help="debug output")

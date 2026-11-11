@@ -17,7 +17,9 @@ I/O. The project gets one category by duration-weighted majority; :func:`resolve
 frame probe is 32 small grey frames and numpy. A source the frames leave unsure between
 gameplay and general also gets the HUD text check (:func:`text_probe`, cached as
 :data:`TEXT_FILE`): the HUD OCR engine of the events extra looks for text that stays in place
-over a few frames, as a thin game HUD has; without the extra it is skipped.
+over a few frames, as a thin game HUD has; without the extra it is skipped. A source still
+unsure after that, or one that camera tags alone make general, is shown to the vision model
+(:func:`needs_vision`); for a camera-tagged source only an ``action`` answer counts (#958).
 """
 
 from __future__ import annotations
@@ -137,10 +139,11 @@ CLOCK_RE = re.compile(
 
 _TEXT_FAILED: set[Path] = set()  # cache folders whose text check failed in this process
 
-# ---- the vision question, for a source the rest leaves unsure (#898)
+# ---- the vision question, for a source the rest leaves unsure (#898), or that camera tags
+# alone make general (#958: an action camera without telemetry has the tags of a phone clip)
 # The shared vision model (local Ollama, or a hosted Vision provider with the user's consent)
 # gets a few frames and one generic question. Its answer is cached per source and model.
-VISION_VERSION = 2  # 2: the answer action (a camera answer is asked again)
+VISION_VERSION = 3  # 2: the answer action; 3: fast first-person motion is action (#958)
 VISION_FILE = f"category-vision-v{VISION_VERSION}.json"  # in the source's cache folder
 VISION_FRAMES = 6  # frames spread over SPAN
 VISION_WIDTH = 640  # px of each frame sent
@@ -159,10 +162,12 @@ VISION_PROMPT = (
     "interface, menus, maps, loading screens and cutscenes, with or without a webcam, chat "
     "or other stream overlays.\n"
     "action: a sport or other fast physical activity filmed by a camera that rides along "
-    "(worn on the body or helmet, mounted on a board) or that follows the person (for "
-    "example a drone).\n"
-    "camera: other real-world scenes filmed with a camera (a phone, a vlog, a walk, a "
-    "dashcam, an event), also when edited with captions, titles or cuts.\n"
+    "(worn on the body or helmet, mounted on a board) or that follows the person, or a "
+    "drone flying fast through the scene (also first-person FPV flight). Fast first-person "
+    "motion, where the view rushes past close to the ground, water or obstacles, is action.\n"
+    "camera: other real-world scenes filmed with a camera at an everyday pace (a phone, a "
+    "vlog, a walk, a dashcam, an event, a slow drone shot), also when edited with captions, "
+    "titles or cuts.\n"
     "screen: people talking (a podcast, an interview, a talk to the camera), or a recording "
     "of a computer screen that is not a game (a desktop, apps, a browser, slides).\n"
     "other: none of these, or you cannot tell.\n"
@@ -736,9 +741,9 @@ def vision_frames(io: Path, duration: float) -> list[bytes]:
 
 
 class FootageVision:
-    """The vision question for the unsure sources of one detection: one client of the shared
-    vision model (:class:`cutpoint.vision.VisionRater`: the local Ollama, or the hosted Vision
-    provider the user agreed to), checked once and freed by :meth:`close`.
+    """The vision question for the sources of one detection that :func:`needs_vision`: one
+    client of the shared vision model (:class:`cutpoint.vision.VisionRater`: the local Ollama,
+    or the hosted Vision provider the user agreed to), checked once and freed by :meth:`close`.
 
     ``ollama_url`` and ``ollama_model`` are the run's ``--ollama-url`` and ``--ollama-model``
     (they pick the Ollama over a hosted Vision role, as for the rating). ``explicit``: the
@@ -856,10 +861,14 @@ def footage_vision(
 
 def needs_vision(p: SourceProbe) -> bool:
     """Whether to ask the vision model about ``p``: no telemetry, a frame probe, and the rest
-    (the HUD text check included) leaves it unsure."""
+    (the HUD text check included) leaves it unsure, or camera tags alone make it sure general
+    (an action camera without telemetry has the tags of a phone clip; only an ``action``
+    answer counts for it, see :func:`_source`). A 360 source (a 2:1 frame) is never asked,
+    whatever its tags."""
     if p.telemetry or p.frames < MIN_FRAMES:
         return False
-    return _source(replace(p, vision=None), None).ambiguous
+    found = _source(replace(p, vision=None), None)
+    return found.ambiguous or (found.decided_by == "camera tags" and not p.equirect)
 
 
 def _with_vision(
@@ -887,9 +896,9 @@ def _with_vision(
         if answer is None:
             return found
         logger.info(
-            "The footage of %s is unclear; the vision model sees %s (%.1fs)",
-            Path(found.path).name,
+            "The vision model sees %s in the footage of %s (%.1fs)",
             answer,
+            Path(found.path).name,
             time.perf_counter() - t0,
         )
         answers = {**answers, key: answer}
@@ -903,7 +912,8 @@ def probe_source(src: Path, vision: FootageVision | None = None) -> SourceProbe:
     The telemetry check and the container tags are always read; the frame probe
     (:data:`SPREAD` scaled frames and :data:`PAIRS` pairs of crops) only without telemetry,
     the HUD text check only when the rest leaves the source unsure (:func:`needs_text`), and
-    with ``vision`` the vision model only when it is still unsure (:func:`needs_vision`).
+    with ``vision`` the vision model only when it is still unsure or camera tags alone make
+    it general (:func:`needs_vision`).
 
     Raises:
         FFmpegError: If ffprobe cannot read the file.
@@ -1074,11 +1084,22 @@ def _general_evidence(p: SourceProbe) -> str:
 
 def _source(p: SourceProbe, speech: float | None) -> SourceDecision:
     """The category of one source. The vision model's answer (:attr:`SourceProbe.vision`,
-    only asked when the rest is unsure) settles gameplay or not; ``other`` leaves it open."""
+    only asked when the rest is unsure or camera tags alone decide, :func:`needs_vision`)
+    settles gameplay or not; ``other`` leaves it open. A source the camera tags make sure
+    general without it stays so unless the answer is ``action`` (re-exports and phone clips
+    carry the tags too, #958)."""
     if p.telemetry:
         return SourceDecision(
             p.path, p.duration, ACTION_CAM, False, "camera telemetry", None, speech, "telemetry"
         )
+    if p.vision is not None and p.camera_marks:
+        # asked only because the tags decide (needs_vision): the answer can make it action,
+        # nothing else; the speech (talk) is weighed as without it
+        plain = _source(replace(p, vision=None), speech)
+        by_tags = _source(replace(p, vision=None), None).decided_by == "camera tags"
+        action = p.vision == V_ACTION and plain.decided_by == "camera tags" and not p.equirect
+        if by_tags and not action:
+            return plain
     score, why = gameplay_score(p)
     seen = p.vision if p.vision in (V_GAMEPLAY, V_ACTION, V_CAMERA, V_SCREEN) else None
     if p.vision in VISION_ANSWERS:

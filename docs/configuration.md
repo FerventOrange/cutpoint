@@ -151,7 +151,7 @@ see [troubleshooting](troubleshooting/models.md)).
 
 ### vision
 
-`true`, `false`, or no key (the default). With no key, `--style auto` and `cutpoint detect` ask the vision model about unsure footage, and the frame rating is off; `false` also turns that check off. With `true`, `analyze` and `edit` rate the default edit and the moments below its cut with the
+`true`, `false`, or no key (the default). With no key, `--style auto` and `cutpoint detect` ask the vision model about unsure footage and camera footage without telemetry, and the frame rating is off; `false` also turns that check off. With `true`, `analyze` and `edit` rate the default edit and the moments below its cut with the
 configured vision model
 ([getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) unless
 `--no-vision` is given; with `false` or no key, only `--vision` turns it on for one run. The UI's
@@ -225,7 +225,7 @@ Catalogs and frames go to a hosted provider only after you allow it there
 (`vision_assistant.consent`, via "Allow vision requests"); choosing or saving a model never
 grants it. Once allowed, the provider receives video frames, transcript excerpts, file names and
 times, and detected on-screen text (such as player names) and telemetry (for frame ratings, the
-`events` window descriptions and the footage check of `--style auto` and `cutpoint detect`, a few frames of an unsure source), never the video file. The AI Chat assistant gets other data
+`events` window descriptions and the footage check of `--style auto` and `cutpoint detect`, a few frames of an unsure source or of camera footage without telemetry), never the video file. The AI Chat assistant gets other data
 (analysis results and whole transcripts; frames only when you allow them for a project), so this
 consent is separate from the assistant's: agreeing to one never covers the other. Entries are `vision-v2:<provider>@<host>` (for example
 `vision-v2:codex@chatgpt.com`, or `vision-v2:ollama@192.168.1.5:11434`: the host has its port

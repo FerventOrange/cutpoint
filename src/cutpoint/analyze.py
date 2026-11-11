@@ -3289,7 +3289,7 @@ def analyze(
         vision: True = rate the default edit and the moments below its cut (a warning if it is not
             available); False or None = no rating (opt-in, never automatic). For
             ``--style auto`` it also steers the footage question to the vision model about
-            unsure sources: None asks quietly, True asks and warns of a missing consent,
+            unsure sources and camera-tagged sources without telemetry: None asks quietly, True asks and warns of a missing consent,
             False does not ask.
         model: faster-whisper model name (default: medium on CUDA, small on CPU).
         language: Force transcription language (e.g. "en"); None = autodetect.

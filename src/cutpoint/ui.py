@@ -41,7 +41,7 @@ Trust boundaries:
   ``CUTPOINT_PROJECTS_DIR`` sets it; existing projects are not moved. Every analysis the page
   starts (first or again) passes ``--vision`` or ``--no-vision`` as ``vision`` says when it
   starts (neither while ``config.json`` has no ``vision`` key: the CLI default asks the vision
-  model about unsure sources); the page has no per-run vision box. The same goes for
+  model about unsure sources and camera-tagged sources without telemetry); the page has no per-run vision box. The same goes for
   ``--visual-index`` or ``--no-visual-index`` as ``visual_index`` says. The vision box rates
   frames only: ``vision: false`` in a PUT removes the key (the default) and never writes false;
   a hand-set ``"vision": false`` stays until then.
@@ -4222,7 +4222,7 @@ def _subscription_roles(args: list[str], style: object) -> bool:
     if any(a.startswith(("--ollama-url", "--ollama-model")) for a in args):
         return False
     try:
-        setting = vision_setting()  # unset: only ``auto`` asks the vision model (unsure footage)
+        setting = vision_setting()  # unset: only ``auto`` asks the vision model (unsure footage and camera footage without telemetry)
         rating = "--vision" in args or (
             "--no-vision" not in args and (setting is True or (setting is None and style == AUTO))
         )
@@ -4240,7 +4240,8 @@ def _vision_args(st: dict[str, Any]) -> list[str]:
     """Vision options for an analysis: the Settings values now (explicit, so the job and the page
     agree even if config.json changes before the CLI reads it), including the visual index, and
     the recorded Ollama options. With no ``vision`` key in config.json no vision flag is passed:
-    the CLI default asks the vision model about unsure sources."""
+    the CLI default asks the vision model about unsure sources and camera-tagged sources without
+    telemetry."""
     cfg = get_config()
     setting = vision_setting()
     args = [] if setting is None else ["--vision" if setting else "--no-vision"]

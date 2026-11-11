@@ -84,7 +84,8 @@ PROXY_PROVIDERS = ("claude-code", "codex", "antigravity")  # cutpoint.assistant.
 
 def _vision(a: argparse.Namespace) -> bool | None:
     """``--vision`` / ``--no-vision`` as given, else ``vision`` in config.json; None when
-    neither says (rating is then off, the footage detection asks about unsure sources)."""
+    neither says (rating is then off, the footage detection asks about unsure sources and camera-tagged ones
+    without telemetry)."""
     return vision_setting() if a.vision is None else a.vision
 
 
@@ -282,7 +283,7 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
 def _cmd_detect(a: argparse.Namespace) -> None:
     """``cutpoint detect``: the footage category of the inputs and the style ``--style auto``
     would pick; talk only for sources already transcribed (by an earlier analysis). The
-    vision model is asked about unsure sources, as for ``--style auto`` (``--no-vision`` or
+    vision model is asked about unsure sources and camera-tagged ones without telemetry, as for ``--style auto`` (``--no-vision`` or
     ``"vision": false`` skips it)."""
     from cutpoint import category  # noqa: PLC0415
     from cutpoint.analyze import find_sources  # noqa: PLC0415
@@ -1888,7 +1889,8 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
         "--vision",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="ask the vision model about sources the rest leaves unsure: on by default; "
+        help="ask the vision model about unsure sources and camera-tagged sources without "
+        "telemetry: on by default; "
         '--no-vision (or "vision": false in config.json) skips it; --vision (or "vision": true) '
         "also warns when the Vision provider lacks consent",
     )
