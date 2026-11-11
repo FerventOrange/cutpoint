@@ -773,3 +773,46 @@ def test_a_guess_viewed_by_a_model_that_then_refuses_images_is_not_confirmed(
     refused = fake.requests[4]["messages"][-1]["content"]
     assert refused.startswith("error: proposal rejected: op 1: m5 is an unconfirmed look_for")
     assert not any(e["kind"] == "proposal" for e in turn.events)
+
+
+def test_a_sheets_frames_are_grabbed_at_once_in_time_order(proj_dir: Path, src: Path) -> None:
+    """#946: the frames of one sheet are grabbed GRAB_WORKERS at a time; the sheet is the
+    one the sequential grabs built, and a failed grab still raises."""
+    import threading  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    from cutpoint.errors import FFmpegError  # noqa: PLC0415
+
+    lock = threading.Lock()
+    live = {"now": 0, "max": 0}
+    fail: list[float] = []
+
+    def grab(_src: Path, t: float) -> bytes:
+        with lock:
+            live["now"] += 1
+            live["max"] = max(live["max"], live["now"])
+        time.sleep(0.05)
+        with lock:
+            live["now"] -= 1
+        if t in fail:
+            raise FFmpegError("boom")
+        return jpeg(640, 360 + 2 * int(t))  # a size per time: the order shows in the sheet
+
+    sheets = {}
+    for workers in (1, watch.GRAB_WORKERS):
+        watch.GRAB_WORKERS, was = workers, watch.GRAB_WORKERS
+        try:
+            live.update(now=0, max=0)
+            sheets[workers] = (
+                viewer(proj_dir, FakeProvider([]), src, grab).sheet(
+                    f"w{workers}", "/v/a.mp4", 10.0, 20.0
+                )[0],
+                live["max"],
+            )
+        finally:
+            watch.GRAB_WORKERS = was
+    assert sheets[1][1] == 1 and sheets[watch.GRAB_WORKERS][1] > 1
+    assert sheets[1][0] == sheets[watch.GRAB_WORKERS][0]
+    fail.append(watch.frame_times(10.0, 20.0)[2])
+    with pytest.raises(FFmpegError):
+        viewer(proj_dir, FakeProvider([]), src, grab).sheet("w9", "/v/a.mp4", 10.0, 20.0)

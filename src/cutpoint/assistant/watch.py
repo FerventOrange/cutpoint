@@ -38,6 +38,7 @@ import math
 import re
 import threading
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,7 +49,7 @@ from cutpoint import cache
 from cutpoint.assistant import context
 from cutpoint.assistant.providers import Capabilities, Provider, accepts_images, endpoint
 from cutpoint.errors import FFmpegError
-from cutpoint.ffmpeg_utils import grab_frame_jpeg
+from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
 from cutpoint.utils import clock
 from cutpoint.vision import _frame_times
 
@@ -403,7 +404,9 @@ class Viewer:
             except OSError as err:
                 logger.debug("unreadable cached sheet %s: %s", path, err)
         times = frame_times(start, end)
-        jpeg = timeline_sheet([self.grab(src, t) for t in times], times, pixels)
+        with ThreadPoolExecutor(min(len(times), GRAB_WORKERS)) as pool:  # #946
+            frames = list(pool.map(lambda t: self.grab(src, t), times))
+        jpeg = timeline_sheet(frames, times, pixels)
         if path is not None and folder is not None:
             try:
                 for old in folder.glob(f"{name}-*.jpg"):  # an older window or source file

@@ -706,6 +706,7 @@ def _frames(monkeypatch, kinds: dict[float, str]) -> list[float]:
     """Frame grabs return ``kinds[t]`` (``scene`` by default); the grabbed times are logged."""
     grabbed: list[float] = []
     monkeypatch.setattr(activity, "remap_source", lambda p: p)
+    monkeypatch.setattr(activity, "GRAB_WORKERS", 1)  # the order of the grabs is the test's
 
     def grab(p, t, w):
         grabbed.append(t)
@@ -1036,3 +1037,55 @@ def test_profile_verbs_on_the_command_line(home, tmp_path, capsys, monkeypatch) 
     assert "my-sled" not in activity.library()
     code, doc = run_json(capsys, ["profile", "delete", "generic"])  # the built-ins stay
     assert code != 0 and doc["ok"] is False
+
+
+def test_describe_grabs_the_frames_of_a_round_at_once_in_the_same_order(monkeypatch, fake_clip):
+    """#946: the picks of a round are grabbed GRAB_WORKERS at a time; the frames, their order
+    and the blank-skip are those of the one-at-a-time loop."""
+    import threading  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    emb = np.concatenate([fake_clip(f"caption:{k}") for k in "abcdefghijkl"])
+    refs = [(Path("v.mp4"), float(t)) for t in range(len(emb))]
+    monkeypatch.setattr(activity, "remap_source", lambda p: p)
+    lock = threading.Lock()
+    live = {"now": 0, "max": 0}
+
+    def grab(p, t, w):
+        with lock:
+            live["now"] += 1
+            live["max"] = max(live["max"], live["now"])
+        time.sleep(0.05)
+        with lock:
+            live["now"] -= 1
+        kind = "black" if t in (1.0, 5.0) else "scene"
+        return _jpeg(kind) + int(t).to_bytes(2, "big")  # a trailing marker: JPEG ignores it
+
+    monkeypatch.setattr(activity, "grab_frame_jpeg", grab)
+    runs = {}
+    for workers in (1, activity.GRAB_WORKERS):
+        monkeypatch.setattr(activity, "GRAB_WORKERS", workers)
+        live.update(now=0, max=0)
+        shown, ask = _shown()
+        activity.describe(emb, refs, ask)
+        runs[workers] = (list(shown), live["max"])
+    assert runs[1][1] == 1 and runs[activity.GRAB_WORKERS][1] > 1
+    assert runs[1][0] == runs[activity.GRAB_WORKERS][0] and len(runs[1][0]) == 4
+
+
+def test_describe_surfaces_a_failed_grab_from_the_pool(monkeypatch, fake_clip):
+    from cutpoint.errors import FFmpegError  # noqa: PLC0415
+
+    emb = np.concatenate([fake_clip(f"caption:{k}") for k in "abcdef"])
+    refs = [(Path("v.mp4"), float(t)) for t in range(len(emb))]
+    monkeypatch.setattr(activity, "remap_source", lambda p: p)
+
+    def grab(p, t, w):
+        if t == 3.0:
+            raise FFmpegError("boom")
+        return _jpeg("scene")
+
+    monkeypatch.setattr(activity, "grab_frame_jpeg", grab)
+    shown, ask = _shown()
+    activity.describe(emb, refs, ask)  # the grab error falls back to CLIP, as before
+    assert shown == []
