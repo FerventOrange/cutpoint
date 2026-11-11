@@ -63,7 +63,9 @@ A source without camera telemetry (a phone or DJI clip in a GoPro project, #950)
 telemetry features (:data:`TELEMETRY_FEATURES`) at 0: its score is renormalised over the
 features it has (:func:`source_available`) and its pick floor scaled to match
 (:func:`source_floor`), so its moments rank with those of the sources that have telemetry.
-A source with telemetry scores and picks exactly as before.
+A source whose telemetry has no GPS rows and no wind-meter reading (IMU only, #959) leaves
+out ``speed`` the same way. A source with GPS rows or wind readings scores and picks exactly
+as before.
 """
 
 from __future__ import annotations
@@ -383,15 +385,18 @@ def layer_features(
     return out
 
 
-def source_available(avail: frozenset[str] | None, has_telemetry: bool) -> frozenset[str] | None:
-    """The features a source's score is renormalised over (#950): the project's ``avail``
-    (:func:`cutpoint.scorer.available_for`; None counts every weight), without
-    :data:`TELEMETRY_FEATURES` for a source without camera telemetry. ``avail`` itself, the
-    same object, for a source with telemetry."""
-    if has_telemetry:
+def source_available(avail: frozenset[str] | None, tel: Telemetry | None) -> frozenset[str] | None:
+    """The features a source's score is renormalised over (#950, #959): the project's
+    ``avail`` (:func:`cutpoint.scorer.available_for`; None counts every weight), without
+    :data:`TELEMETRY_FEATURES` for a source without camera telemetry, and without ``speed``
+    for one whose telemetry has no GPS rows and no wind-meter reading (an Insta360 X3 file:
+    IMU only). ``avail`` itself, the same object, for a source with GPS rows or wind."""
+    if tel is not None and (tel.meta.get("gps_samples", 0) > 0 or tel.grid["wind"].any()):
         return avail
     have = frozenset(features.REGISTRY) if avail is None else avail
-    return have - frozenset(TELEMETRY_FEATURES)
+    if tel is None:
+        return have - frozenset(TELEMETRY_FEATURES)
+    return have - {"speed"}
 
 
 def source_floor(
@@ -399,7 +404,7 @@ def source_floor(
 ) -> float:
     """The :func:`pick` floor of a source scored over ``src_avail`` (:func:`source_available`):
     :data:`PICK_FLOOR` scaled by its divisor over the project's (``avail``), so it is the same
-    score points for every source. Exactly :data:`PICK_FLOOR` for a source with telemetry."""
+    score points for every source. Exactly :data:`PICK_FLOOR` for a source scored over ``avail``."""
     if src_avail == avail:
         return PICK_FLOOR
     return PICK_FLOOR * (features.divisor(weights, src_avail) / features.divisor(weights, avail))

@@ -328,7 +328,9 @@ def _social_ski_run(tmp_path: Path, monkeypatch) -> tuple[list[analyze.Candidate
         {"type": "airtime", "t": 14.5, "end": 15.5, "air_s": 1.0},
         {"type": "crash", "t": 39.8, "end": 40.8, "impact_t": 40.0, "peak_g": 7.4},
     ]
-    tel = Telemetry(source=str(src), duration=n * DT, grid=grid, events=events)
+    tel = Telemetry(
+        source=str(src), duration=n * DT, grid=grid, events=events, meta={"gps_samples": n}
+    )
     layers = {
         "voice_laughter": _bump(85.0, 0.7),
         "voice": _bump(86.0, 0.5),

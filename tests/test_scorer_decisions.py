@@ -207,7 +207,9 @@ def ski_telemetry(**bumps: float) -> Telemetry:
             events.append({"type": "airtime", "t": t - 0.5, "end": t + 0.5, "air_s": 1.0})
         if name == "crash":
             events.append({"type": "crash", "t": t - 0.2, "end": t + 0.8, "impact_t": t, "peak_g": 7.4})  # fmt: skip
-    return Telemetry(source=str(SRC), duration=SKI_N * DT, grid=grid, events=events)
+    return Telemetry(
+        source=str(SRC), duration=SKI_N * DT, grid=grid, events=events, meta={"gps_samples": SKI_N}
+    )
 
 
 def crash_record(cid: str, t: float, confidence: float) -> dict[str, Any]:
