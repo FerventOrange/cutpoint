@@ -420,3 +420,35 @@ def test_no_vision_project_is_left_as_it_is(tmp_path):
     scorer.rescore_events(hl, events_of([]), tmp_path, [grid()])
     assert not any("vision_skipped" in c for c in hl["candidates"])
     assert [c["score"] for c in hl["candidates"]] == [70.0, 60.0, 50.0]
+
+
+def test_a_re_rank_ties_the_edit_before_vision_as_analyze_did(tmp_path):
+    """Analyze ranks T and the skipped S level at 60 before vision and, with no ids yet, takes T
+    (first by source and start) into the 8 s edit, so S keeps its mark and R, rated up from 50
+    to 67.5, passes it. Its final sort lists S above the rated-down T. A re-rank must tie them
+    the same way, not by that saved order (which would take S, drop its mark and hold R under
+    it): S keeps its mark, R its 67.5 and the order stays, every time."""
+    t, s, r = own("t", 0.0, 60.0), _skipped("s", 100.0, 60.0), own("r", 300.0, 50.0)
+    _rate(t, 0.0)
+    _rate(r)
+    for c in (t, s, r):
+        del c["id"]  # analyze rescores before it gives ids
+    hl = highlights([t, s, r], vision={}, target_total=8.0)
+    ev = events_of([])
+    scorer.rescore_events(hl, ev, tmp_path, [grid()])
+    # analyze's final sort and ids
+    hl["candidates"].sort(key=lambda c: (not c.get("must_include"), *scorer.rank_key(c)))
+    hl["candidates"] = [{"id": f"h{k:03d}", **c} for k, c in enumerate(hl["candidates"], 1)]
+    by_start = {c["start"]: c for c in hl["candidates"]}
+    assert [c["start"] for c in hl["candidates"]] == [300.0, 100.0, 0.0]  # R, S, T
+    assert by_start[300.0]["score"] == 67.5
+    assert by_start[0.0]["score"] < 60.0
+    assert by_start[100.0]["vision_skipped"] == [100.0, 108.0]
+
+    analyzed = copy.deepcopy(hl)
+    for _ in range(2):
+        scorer.rescore_events(hl, ev, tmp_path, [grid()])
+        assert [c["id"] for c in hl["candidates"]] == ["h001", "h002", "h003"]
+        assert hl["candidates"][0]["score"] == 67.5
+        assert "vision_skipped" in hl["candidates"][1]
+        assert hl == analyzed

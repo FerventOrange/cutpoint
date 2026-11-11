@@ -212,8 +212,9 @@ def rescore_events(
     skipped above its cut excepted (:func:`apply_vision_clamp`; the
     count goes to ``settings.vision.clamped`` when there is a ``settings.vision``). A moment
     marked ``vision_skipped`` that the default edit of the ranking without the ratings
-    (:func:`cutpoint.default_fit.fit_target` over ``settings.target_total``) now takes loses
-    the mark first, so it bounds the rated moments again. The
+    (:func:`cutpoint.default_fit.fit_target` over ``settings.target_total``; moments that tie
+    there in source and start order, not in the saved one) now takes loses the mark first, so
+    it bounds the rated moments again. The
     candidates are re-sorted and ``suggested_top`` is recomputed. In styles with an open list (``gaming``), events that
     can score and that no candidate covers nominate candidates first
     (:func:`cutpoint.events.scoring.nominate`, scored from the grids ``parts`` or, without,
@@ -280,7 +281,11 @@ def rescore_events(
             {**c, "score": c["score"] if b is None else b}
             for c, b in zip(cands, unrated, strict=True)
         ]
-        order = sorted(range(len(pre)), key=lambda i: rank_key(pre[i]))
+        # ties by source and start, as analyze ranked them before it gave ids, not by the
+        # saved order (which the ratings set)
+        order = sorted(
+            range(len(pre)), key=lambda i: (*rank_key(pre[i]), pre[i]["source"], pre[i]["start"])
+        )
         in_edit = {id(p) for p in default_fit.fit_target([pre[i] for i in order], target)}
         for c, p in zip(cands, pre, strict=True):
             if id(p) in in_edit:
