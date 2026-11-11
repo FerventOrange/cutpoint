@@ -57,6 +57,7 @@ import logging
 import os
 import re
 import shlex
+import signal
 import statistics
 import subprocess
 import sys
@@ -438,8 +439,13 @@ def bench_lock(lock: Path) -> Iterator[Path]:
             with contextlib.suppress(FileNotFoundError):
                 lock.unlink()
             continue
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(str(os.getpid()))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(str(os.getpid()))
+        except BaseException:  # a Ctrl+C or Ctrl+Break while writing: leave no lock
+            with contextlib.suppress(OSError):
+                lock.unlink()
+            raise
         break
     else:
         raise BenchBusyError(f"could not take {lock}")
@@ -449,6 +455,27 @@ def bench_lock(lock: Path) -> Iterator[Path]:
         with contextlib.suppress(OSError):
             if lock.read_text(encoding="utf-8").strip() == str(os.getpid()):
                 lock.unlink()
+
+
+def _raise_interrupt(signum: int, frame: object) -> None:
+    raise KeyboardInterrupt
+
+
+@contextlib.contextmanager
+def break_as_interrupt() -> Iterator[None]:
+    """On Windows, treat Ctrl+Break (``CTRL_BREAK_EVENT`` to the process group) like Ctrl+C
+    while the bench runs, so the same cleanup runs (analyze stopped, lock removed, exit 130);
+    by default it ends Python with 0xC000013A. The previous handler is restored afterwards.
+    As ``cutpoint``'s own handler (``cli._stop_signal_as_interrupt``, private), nothing is
+    installed outside the main thread."""
+    if sys.platform != "win32" or threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.signal(signal.SIGBREAK, _raise_interrupt)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGBREAK, previous)
 
 
 # -- samples -----------------------------------------------------------------------------------
@@ -1543,7 +1570,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("%s", err)
         return 2
     try:
-        with bench_lock(machine_lock()):
+        with break_as_interrupt(), bench_lock(machine_lock()):
             os.environ.update(bench_env(bench, args.home, args.cache))
             reset_state()  # the config of the bench home from here on
             results = run_bench(

@@ -127,8 +127,12 @@ Per source and variant, one job at a time:
   stops with an error, whatever its bench folder. A lock whose process is gone is replaced (on
   Windows the check opens the process; it never signals it). Delete the file only if no bench
   is running.
-- Ctrl+C stops the running analyze and gives it 30 s to clean up before it is killed; the bench
-  exits 130. Finished runs keep their stamps, so the next run reuses them. A `cutpoint` command
+- Ctrl+C, and on Windows Ctrl+Break (or `CTRL_BREAK_EVENT` sent to a bench started with
+  `CREATE_NEW_PROCESS_GROUP`), stops the running analyze and gives it 30 s to clean up before it
+  is killed; the bench removes its lock and exits 130. Under `uv run` on Windows the bench still
+  cleans up but uv exits `0xC000013A`; run `.venv\Scripts\python.exe scripts\bench.py` to get
+  130 (see [Stopping a run](../commands.md#stopping-a-run)). Finished runs keep their stamps, so
+  the next run reuses them. A `cutpoint` command
   that cannot start (a wrong path) is a failed job with the message, and the bench goes on.
 - While each job runs, a background thread samples every 5 s (`--sample-interval`, 0 for none)
   Ollama's loaded models (`/api/ps` at `OLLAMA_HOST`, the bench home's `ollama_url` or the

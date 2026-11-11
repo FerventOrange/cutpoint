@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -725,3 +726,44 @@ def test_config_and_cache_are_part_of_the_stamp(tmp_path, fake_run):
     assert bench.main([*argv, "--cache", str(tmp_path / "elsewhere")]) == 0
     assert len(fake_run.calls) == 5  # base has another cache now; own keeps its own
     assert fake_run.calls[-1][1]["CUTPOINT_CACHE_DIR"] == str(tmp_path / "elsewhere")
+
+
+def test_ctrl_break_is_a_ctrl_c_on_windows_only(monkeypatch):
+    fake_break = signal.SIGINT  # stands in for signal.SIGBREAK, which only Windows has
+    monkeypatch.setattr(bench.signal, "SIGBREAK", fake_break, raising=False)
+    before = signal.getsignal(fake_break)
+    monkeypatch.setattr(bench.sys, "platform", "linux")
+    with bench.break_as_interrupt():
+        assert signal.getsignal(fake_break) is before
+    monkeypatch.setattr(bench.sys, "platform", "win32")
+    with bench.break_as_interrupt():
+        handler = signal.getsignal(fake_break)
+        assert handler is bench._raise_interrupt
+        with pytest.raises(KeyboardInterrupt):
+            handler(fake_break, None)
+    assert signal.getsignal(fake_break) is before  # restored
+
+
+def test_interrupt_while_taking_the_lock_or_writing_the_report_frees_it(
+    tmp_path, monkeypatch, fake_run
+):
+    lock = tmp_path / "x.lock"
+
+    def broken_fdopen(fd, *a, **kw):
+        os.close(fd)
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as m:
+        m.setattr(bench.os, "fdopen", broken_fdopen)
+        with pytest.raises(KeyboardInterrupt), bench.bench_lock(lock):
+            pass
+    assert not lock.exists()
+
+    manifest = write_manifest(tmp_path, [source("a")])
+
+    def interrupted(*a, **kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(bench, "render_report", interrupted)
+    assert bench.main([str(manifest), "--sample-interval", "0"]) == 130
+    assert not bench.machine_lock().exists()
