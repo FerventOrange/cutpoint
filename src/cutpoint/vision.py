@@ -127,11 +127,21 @@ _SPEECH_BLOCK = (
 MAX_TRANSCRIPT_CHARS = 600
 # The speech prompt and the frames-only one rate on different scales, so each prompt kind's
 # ratings are centred on their own mean (analyze.rating_centres, #909). With fewer than
-# PRIOR_N ratings of a kind the mean is shrunk toward this prior: the mean rating per kind,
+# PRIOR_N ratings of a kind the mean is shrunk toward this prior, per (style group, prompt
+# kind): group "action" for styles over analyze.ACTION_STYLES (action, sport, action-cam),
+# "other" for the rest (analyze.prior_group). Today every group has the one mean per kind
 # fitted on qwen3.5:9b ratings of the top 60 moments over 8 footage, 2026-11-10 (frames n=30,
 # bimodal: action about 6.5-7.1, gameplay without speech about 3.7; speech n=205); every model
-# uses the same numbers.
-RATING_PRIOR = {"frames": 5.6, "speech": 4.1}
+# uses the same numbers. The values per group are pending the #948 measurement
+# (scripts/vision_prior_eval.py): a (group, kind) cell gets its own prior only when it has
+# n >= 15 ratings and |mean - today's constant| >= 0.5.
+PRIOR_GROUPS = ("action", "other")
+RATING_PRIOR = {
+    ("action", "frames"): 5.6,
+    ("action", "speech"): 4.1,
+    ("other", "frames"): 5.6,
+    ("other", "speech"): 4.1,
+}
 PRIOR_N = 5
 # (first prompt, retry prompt) per style; styles not listed use the default pair.
 _PROMPTS = {ACTION_CAM: (_PROMPT_ACTION_CAM, _RETRY_PROMPT_ACTION_CAM)}
