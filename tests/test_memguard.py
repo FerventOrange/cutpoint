@@ -273,6 +273,20 @@ def test_ollama_loaded_reads_api_ps(monkeypatch):
     assert not memguard.ollama_loaded("http://127.0.0.1:11434", "llava")
 
 
+def test_ollama_loaded_probe_has_a_short_connect_timeout(monkeypatch):
+    import requests  # noqa: PLC0415
+
+    seen = []
+
+    def get(url, **kw):
+        seen.append(kw.get("timeout"))
+        return _Resp({"models": []})
+
+    monkeypatch.setattr(requests, "get", get)
+    memguard.ollama_loaded("http://127.0.0.1:11434", "qwen3.5:9b")
+    assert seen == [(1, 3)]
+
+
 def test_ollama_loaded_does_not_follow_a_redirect(monkeypatch):
     import requests  # noqa: PLC0415
 

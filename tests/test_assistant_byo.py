@@ -876,6 +876,31 @@ def test_messages_never_show_the_password_of_a_url(monkeypatch) -> None:
         assert "box:11434" in str(err.value)
 
 
+def test_the_models_probe_is_short_and_names_host_and_short_reason_only(monkeypatch) -> None:
+    long_text = (
+        "HTTPConnectionPool(host='box', port=11434): Max retries exceeded with url: /api/tags"
+    )
+    try:
+        raise ConnectionRefusedError(111, "Connection refused")
+    except ConnectionRefusedError as sock_err:
+        err = requests.ConnectionError(long_text)
+        err.__cause__ = sock_err
+    wire = Wire(monkeypatch, err)
+    p = OllamaProvider("http://user:pw@box:11434/", "m", 0)
+    with pytest.raises(ProviderError) as got:
+        p.list_models()
+    assert wire.sent[0]["timeout"] == (1, 3)
+    assert str(got.value) == "Ollama is not reachable at box:11434 (connection refused)"
+
+
+def test_a_url_with_userinfo_logs_host_and_port_only(monkeypatch) -> None:
+    Wire(monkeypatch, requests.ConnectionError("refused"))
+    with pytest.raises(ProviderError) as got:
+        OllamaProvider("http://user:pw@box:11434", "m", 0).list_models()
+    assert "user" not in str(got.value) and "pw" not in str(got.value)
+    assert "box:11434" in str(got.value)
+
+
 # -- spawning: jobs and dialogs ------------------------------------------------------------
 
 

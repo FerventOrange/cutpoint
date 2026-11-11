@@ -340,7 +340,7 @@ def _ollama_entry(url: str, model: str) -> dict | None:
     from cutpoint.vision import refuse_redirect  # noqa: PLC0415
 
     try:
-        resp = requests.get(f"{url}/api/ps", timeout=3, allow_redirects=False)
+        resp = requests.get(f"{url}/api/ps", timeout=(1, 3), allow_redirects=False)
         refuse_redirect(resp)
         loaded = resp.json().get("models", [])
     except (requests.RequestException, ValueError, AttributeError):
