@@ -9,6 +9,7 @@ All examples use `cutpoint` for `uv run cutpoint`. Paths are examples; use your 
 | [Action-cam](action-cam.md) | GoPro-style footage with telemetry: jumps, crashes, a varied mix |
 | [360 video](360.md) | Insta360 X3: mix, director, QA, repair, clips, assemble |
 | [360 director](360-director.md) | How the 360 virtual-camera director works |
+| [Benchmark](benchmark.md) | Development: measure detection and ranking on labelled footage (`scripts/bench.py`) |
 
 ## Montage or highlights from one or more videos
 

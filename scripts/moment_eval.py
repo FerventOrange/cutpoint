@@ -40,7 +40,7 @@ Metrics, per video. Candidates are ranked best score first (ties keep the file o
 pool candidates (``pool: "visual"``) are not ranked, as in :func:`select_moments`.
 
 - Overlap rule: a candidate hits a label range when the overlap is at least ``--min-overlap``
-  (default 0.5) of the shorter of the two, as ``planning.CLASH_SHARE`` does. So a short
+  (default 0.5) of the shorter of the two, as ``default_fit.CLASH_SHARE`` does. So a short
   candidate inside a long range hits it, a long candidate that holds a short range hits it, and
   a candidate that only grazes a range does not.
 - ``keep_top10``, ``keep_top20``, ``skip_top10``, ``skip_top20``: how many keep (skip) ranges a
@@ -131,8 +131,11 @@ def _ranges(raw: Any, field: str, where: str) -> list[Range]:
 
 def load_labels(path: Path) -> dict[str, Any]:
     """Read and check one labels file."""
-    where = str(path)
-    data = json.loads(path.read_text(encoding="utf-8"))
+    return parse_labels(json.loads(path.read_text(encoding="utf-8")), str(path))
+
+
+def parse_labels(data: Any, where: str) -> dict[str, Any]:
+    """Check the already-read JSON ``data`` of a labels file (``where`` names it in errors)."""
     if not isinstance(data, dict):
         raise ValueError(f"{where}: expected a JSON object")
     video = data.get("video")

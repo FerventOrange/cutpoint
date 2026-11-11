@@ -90,6 +90,9 @@ ffmpeg skip themselves when it is not on `PATH`.
   this repository include `feat`, `fix`, `docs`, `chore`, `refactor`, `test`.
 - Keep a pull request to one topic. Describe what changed and how you checked it.
 - Update the docs in `docs/` when behaviour changes. Only document what the code does.
+- A pull request that changes scoring, ranking or footage detection reports its delta on the
+  cross-category benchmark (`scripts/bench.py`, see [docs/workflows/benchmark.md](docs/workflows/benchmark.md)):
+  the per-bucket deltas and the gate verdict against a baseline of the same edition.
 
 ## Code conventions
 
