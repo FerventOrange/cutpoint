@@ -2764,6 +2764,34 @@ def test_a_moment_the_edit_skipped_above_the_cut_is_no_neighbour(band_run, monke
     assert all(by_start[_start(r)]["score"] >= below["score"] for r in range(9) if r != 3)
 
 
+def test_the_rescore_after_vision_keeps_the_skipped_mark_of_a_moment_the_edit_skipped(
+    band_run, monkeypatch
+):
+    """#909: with an events.json the vision step ends in ``rescore_events``, not the plain
+    clamp. Rank 3, skipped by the edit for its length, keeps its ``vision_skipped`` span through
+    it (the ranking without the ratings does not take it), and the rated ranks 4-8 pass it."""
+    monkeypatch.setattr(analyze, "analyze_source", _twelve_long3)
+    band_run.ratings = {_start(r): 0.0 for r in (0, 1, 2)}
+    kill = {
+        "source": str(band_run.run.video), "start": 590.0, "end": 593.0, "kind": "ocr",
+        "type": "kill", "label": "Ash > Bob", "player": True, "player_kill": True,
+        "player_death": False, "teamkill": False,
+    }  # fmt: skip
+    write(band_run.run.proj / "events.json", json.dumps({"created": "t", "events": [kill]}))
+    hl, v = band_run.go(vision_time_share=1000.0)
+    assert hl["settings"]["events_rescored"] == "t"  # the rescore ran, not the plain clamp
+    assert (v["cut"], v["requested"]) == (7, 8)
+    by_start = {c["start"]: c for c in hl["candidates"]}
+    skipped = by_start[_start(3)]
+    assert skipped["signals"]["vision"] is None
+    assert skipped["vision_skipped"] == [skipped["start"], skipped["end"]]
+    assert [c["start"] for c in hl["candidates"] if "vision_skipped" in c] == [_start(3)]
+    for rank in (4, 5, 6, 7, 8):
+        c = by_start[_start(rank)]
+        assert c["signals"]["vision"] == 10.0
+        assert c["score"] > skipped["score"]  # passed it
+
+
 def test_a_weak_pick_above_a_skipped_moment_can_leave_the_edit(band_run, monkeypatch):
     """#909: rank 0, a pick above rank 3 (skipped by the edit for its length), rated 0 while
     the rest get 10: the skipped moment no longer holds it, so it falls below the cut and out
