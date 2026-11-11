@@ -576,6 +576,21 @@ test('tool steps are grouped into counted lines; a failed tool keeps its own nam
   assert.ok(full.some((l) => /Watched Big laugh \(6 frames\)/.test(l)));
 });
 
+test('find_words steps read as word searches with the places found', async (t) => {
+  const m = await chatPage(t, {
+    routes: turnRoutes([
+      { kind: 'tool', n: 0, name: 'find_words', query: 'I am', found: 1 },
+      { kind: 'tool', n: 1, name: 'find_words', query: 'shit', found: 2 },
+      { kind: 'reply', n: 2, text: 'Done.' },
+    ]),
+  });
+  await m.send('make her say I am shit');
+  await m.tick(1000);
+  assert.deepEqual(summary(m), ['Looked for words 2 times · 3 places found']);
+  const full = [...m.d.querySelectorAll('#chatLog .tool-details li')].map((li) => li.textContent);
+  assert.deepEqual(full, ['Looked for the words “I am”: said once', 'Looked for the words “shit”: said 2 times']);
+});
+
 test('a single search reads "once"; look_for possible matches keep their Add buttons and open details survive the redraw', async (t) => {
   const possible = [
     { id: 'lf1', source: '/videos/a.mp4', start: 50, end: 55, label: 'powder spray', confidence: 'strong' },

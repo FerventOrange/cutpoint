@@ -22,6 +22,10 @@ Cut join is an audio cut, a Fade join takes ``audio_transition`` (a crossfade un
 Joins that all come out the same take the plain cut or fade join. Mixed joins follow the video,
 as crossfades do (:func:`clip_offsets`).
 
+Exact clips (manifest ``exact``: a word splice of the AI Chat, cut at its own edges) are joined
+with hard cuts whatever ``transition`` or ``joins`` say (:func:`hard_cuts`), and get at most
+:data:`cutpoint.planning.EXACT_AUDIO_FADE_S` of edge fade, so a short word keeps its sound.
+
 Peak compression (``compress_peaks``, see :data:`cutpoint.encode.PEAK_PRESETS`) works the
 same way: clips exported with it (manifest ``compress_peaks``) are left alone, the others
 are measured and get the compressor and leveling gain in the join, before the edge fade.
@@ -1211,10 +1215,46 @@ def normalize_with_ceiling(
     return lufs, tp
 
 
+def exact_clips(clips_dir: Path, files: list[Path]) -> list[bool]:
+    """Whether each file is an exact clip (its manifest entry has ``"exact": true``; renamed
+    clips included, see :func:`~cutpoint.planning.manifest_entries`)."""
+    from cutpoint.planning import manifest_entries  # noqa: PLC0415
+
+    by_file = manifest_entries(clips_dir, files)
+    return [(by_file.get(f.name) or {}).get("exact") is True for f in files]
+
+
+def hard_cuts(
+    clips_dir: Path, files: list[Path], transition: str, kinds: list[str] | None
+) -> list[str] | None:
+    """``kinds`` (:func:`join_kinds`) with every join into or out of an exact clip
+    (:func:`exact_clips`) a cut; ``kinds`` as it is when no join changes."""
+    if len(files) < 2:
+        return kinds
+    exact = exact_clips(clips_dir, files)
+    out = list(kinds) if kinds is not None else [transition] * (len(files) - 1)
+    changed = 0
+    for n, (a, b) in enumerate(pairwise(exact)):
+        if (a or b) and out[n] != "cut":
+            out[n] = "cut"
+            changed += 1
+    if not changed:
+        return kinds
+    logger.info("%d join(s) next to exact clips (word splices) are hard cuts", changed)
+    return out
+
+
 def _edge_fades(clips_dir: Path, files: list[Path], audio_fade: float) -> list[float]:
-    """The audio edge fade to add to each clip: ``audio_fade`` where none is baked in, else 0."""
+    """The audio edge fade to add to each clip: ``audio_fade`` where none is baked in, else 0;
+    at most :data:`~cutpoint.planning.EXACT_AUDIO_FADE_S` for an exact clip."""
+    from cutpoint.planning import EXACT_AUDIO_FADE_S  # noqa: PLC0415
+
     baked = baked_fades(clips_dir, files)
-    fades = [0.0 if b > 0 else max(0.0, audio_fade) for b in baked]
+    exact = exact_clips(clips_dir, files)
+    fades = [
+        0.0 if b > 0 else max(0.0, min(audio_fade, EXACT_AUDIO_FADE_S) if x else audio_fade)
+        for b, x in zip(baked, exact, strict=True)
+    ]
     n_add = sum(f > 0 for f in fades)
     logger.info(
         "Audio edge fades: %d clip(s) already faded (baked), %s",
@@ -1524,7 +1564,7 @@ def _assemble(
         return _write_timeline(
             clips_dir, files, out, output_format, transition, fade_dur, audio_transition, joins
         )
-    kinds = join_kinds(files, transition, joins)
+    kinds = hard_cuts(clips_dir, files, transition, join_kinds(files, transition, joins))
     # A run that fails before writing anything leaves no empty output folder behind.
     with folders.output_dir(out.parent):
         infos = [probe(f) for f in files]
@@ -1597,7 +1637,8 @@ def _write_timeline(
     """The ``kind`` timeline (``fcpxml`` or ``otio``) of :func:`assemble`, and ``<out>.srt``:
     the clips are only probed, nothing is joined or encoded."""
     infos = [probe(f) for f in files]
-    fade = join_fade(infos, transition, fade_dur, join_kinds(files, transition, joins))
+    kinds = hard_cuts(clips_dir, files, transition, join_kinds(files, transition, joins))
+    fade = join_fade(infos, transition, fade_dur, kinds)
     logger.info(
         "Writing the %s timeline of %d clips (%s): %s",
         kind,

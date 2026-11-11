@@ -653,6 +653,31 @@ test('a button sits between every two blocks, with the letter of what the join p
   assert.equal(m.$('#saveState').textContent, 'Sequence saved');
 });
 
+test('a join next to a word splice is always a Cut and its button cannot change it', async (t) => {
+  const project = withSegments('h001', 'h002', 'h003');
+  project.review.segments[1].exact = true; // h002: a word splice
+  project.review.joins = [pair('h001', 'h002', 'fade')]; // a choice saved before: still a cut
+  const m = await saving(t, undefined, { project });
+  await m.click('#cutTransition button[data-value=fade]');
+  assert.deepEqual(letters(m), ['C', 'C'], 'both joins touch the splice: cuts under a Fade default');
+  const [first, second] = m.joins();
+  assert.equal(first.getAttribute('aria-disabled'), 'true');
+  assert.equal(first.getAttribute('aria-label'), 'Cut 1: always a cut next to a word splice');
+  assert.equal(second.title, 'Cut 2: always a cut next to a word splice');
+  await m.click(first);
+  assert.deepEqual(letters(m), ['C', 'C'], 'a click changes nothing');
+  assert.equal(m.$('#sideLive').textContent.includes('Transition of cut 1'), false);
+});
+
+test('a join between two clips that are no word splices keeps its button', async (t) => {
+  const project = withSegments('h001', 'h002', 'h003');
+  project.review.segments[0].exact = true;
+  const m = await saving(t, undefined, { project });
+  await m.click('#cutTransition button[data-value=fade]');
+  assert.deepEqual(letters(m), ['C', 'F']);
+  assert.equal(m.joins()[1].getAttribute('aria-disabled'), null);
+});
+
 test('Default removes the entry, so a join back on Default is no unsaved change', async (t) => {
   const m = await saving(t);
   await m.click(m.joins()[1]); // Cut

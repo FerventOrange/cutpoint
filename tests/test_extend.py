@@ -283,3 +283,39 @@ def test_extend_subtitles_from_the_transcript_of_the_analysis_language(
     write(clips.parent / "highlights.json", json.dumps({"settings": {"language": language}}))
     _run(clips, out_dir=tmp_path / "proj" / "ext")
     assert word in (tmp_path / "proj" / "ext" / "001_a.srt").read_text(encoding="utf-8")
+
+
+def test_extend_keeps_an_exact_clip_at_its_own_edges_and_short_fade(tmp_path, monkeypatch):
+    """A word splice (manifest ``exact``) gets no padding, not from ``--extend`` nor from
+    ``--clip-override``, and keeps its 10 ms fade; a normal clip next to it is padded."""
+    fades: dict[str, float] = {}
+
+    def fake_export(src, info, start, end, out, fmt, vertical, crop, audio_fade, *args):
+        fades[out.name] = audio_fade
+        write(out, "encoded")
+
+    monkeypatch.setattr(extend, "probe", media_info)
+    monkeypatch.setattr(extend, "export_clip_checked", fake_export)
+    monkeypatch.setattr(planning.sources, "readable_range", lambda src, t, d: (0.0, d))
+    monkeypatch.setattr(sources, "source_words", lambda *_a: None)
+    src = str(write(tmp_path / "a.mp4"))
+    clips = tmp_path / "proj" / "clips"
+    write(clips / "001_a.mp4")
+    write(clips / "002_word.mp4")
+    entries = [
+        {"file": "001_a.mp4", "source": src, "start": 10.0, "end": 20.0, "audio_fade": 0.25},
+        {"file": "002_word.mp4", "source": src, "start": 30.0, "end": 30.12, "exact": True}
+        | {"audio_fade": 0.01, "speech_aware": False, "smart_tail": False},
+    ]
+    write(clips / "manifest.json", json.dumps({"format": FMT, "clips": entries}))
+    out = extend.extend_clips(
+        clips,
+        Padding(1.0, 1.0),
+        speech=SpeechSettings(enabled=False),
+        clip_overrides={"002_*": {"extend": 2.0}},
+    )
+    plain, word = json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"]
+    assert (plain["start"], plain["end"], plain["audio_fade"]) == (9.0, 21.0, 0.25)
+    assert (word["start"], word["end"], word["exact"]) == (30.0, 30.12, True)
+    assert word["audio_fade"] == 0.01
+    assert fades == {"001_a.mp4": 0.25, "002_word.mp4": 0.01}

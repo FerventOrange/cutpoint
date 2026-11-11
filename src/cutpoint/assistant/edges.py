@@ -1,6 +1,7 @@
 """Where the sequence's clips start and end once exported, and where a phrase ends.
 
-A sequence row is the user's raw range. The export moves its ends: the smart tail lets a
+A sequence row is the user's raw range. The export moves its ends (not those of an exact row,
+``"exact": true``, a word splice): the smart tail lets a
 clip finish a sentence or a reaction and the speech-aware pass moves cuts that fall mid-word
 (:func:`cutpoint.clips.plan_edges`, the planning step of ``cutpoint clips``). :class:`EdgePlanner`
 runs that step for a sequence so that the page's preview and totals, and the lengths the model
@@ -24,7 +25,7 @@ from typing import Any
 
 from cutpoint import cache, sources
 from cutpoint.boundaries import SpeechSettings
-from cutpoint.clips import plan_edges
+from cutpoint.clips import EXACT_KEYS, plan_edges
 from cutpoint.config import remap_source
 from cutpoint.events.tails import EventTailSettings, load_events
 from cutpoint.ffmpeg_utils import probe
@@ -84,7 +85,11 @@ class EdgePlanner:
         self.resolve = resolve
         self._lock = threading.Lock()
         self._plans: OrderedDict[tuple[Any, ...], tuple[Edges, Reasons]] = OrderedDict()
-        self._chains: dict[tuple[Any, ...], list[tuple[float, float]]] = {}
+        # one entry per source file each: (_key, its phrase chains or words), replaced when the
+        # transcript changes (sources.source_words reads the files each time; nothing else
+        # caches them)
+        self._chains: dict[str, tuple[tuple[Any, ...], list[tuple[float, float]]]] = {}
+        self._words: dict[str, tuple[tuple[Any, ...], list[dict[str, Any]]]] = {}
 
     # -- exported edges ----------------------------------------------------------------
     def _stamp(self) -> tuple[int, ...]:
@@ -135,7 +140,14 @@ class EdgePlanner:
             self._stamp(),
             tuple(self._version(s) for s in sorted({r["source"] for r in rows})),
             tuple(
-                (r["id"], r["source"], raw[r["id"]], r.get("smart_tail"), r.get("speech_aware"))
+                (
+                    r["id"],
+                    r["source"],
+                    raw[r["id"]],
+                    r.get("smart_tail"),
+                    r.get("speech_aware"),
+                    r.get("exact"),
+                )
                 for r in rows
             ),
         )
@@ -193,6 +205,7 @@ class EdgePlanner:
                 "label": str(r.get("label", "segment")),
                 **{k: r[k] for k in ("smart_tail", "speech_aware") if r.get(k) is False},
                 **off,
+                **(EXACT_KEYS if r.get("exact") is True else {}),  # cut at its own edges
             }
             for r in rows
         ]
@@ -239,18 +252,35 @@ class EdgePlanner:
         }
         return planned, reasons, len(infos) == len(io_paths)
 
-    # -- phrase ends -------------------------------------------------------------------
-    def _phrases(self, source: str) -> list[tuple[float, float]]:
-        """The stretches of ``source`` where speech runs on (words closer than
-        ``chain_gap``), as ``(start, end)``; [] without a transcript."""
+    # -- words and phrase ends ---------------------------------------------------------
+    def _key(self, source: str) -> tuple[Any, ...]:
+        """What the words of ``source`` depend on: its file, the project's language and the
+        cached transcripts."""
         path = self.resolve(source)
         language = sources.project_language(self.project)
         transcripts = [
             sources.transcript_stamp(part.cdir, language) for part in sources.parts(path)
         ]
-        key = (str(path), language, tuple(transcripts))
-        if key not in self._chains:
-            words = sources.source_words(path, language) or []
+        return (str(path), language, tuple(transcripts))
+
+    def words(self, source: str) -> list[dict[str, Any]]:
+        """The cached transcript words of ``source`` (``word``, ``start``, ``end`` in source
+        seconds, in time order), as analysis wrote them; [] without a transcript. Nothing is
+        transcribed."""
+        key = self._key(source)
+        held = self._words.get(key[0])
+        if held is None or held[0] != key:
+            held = (key, sources.source_words(self.resolve(source), key[1]) or [])
+            self._words[key[0]] = held
+        return held[1]
+
+    def _phrases(self, source: str) -> list[tuple[float, float]]:
+        """The stretches of ``source`` where speech runs on (words closer than
+        ``chain_gap``), as ``(start, end)``; [] without a transcript."""
+        key = self._key(source)
+        held = self._chains.get(key[0])
+        if held is None or held[0] != key:
+            words = self.words(source)
             chains: list[tuple[float, float]] = []
             for w in words:
                 start, end = float(w["start"]), float(w["end"])
@@ -258,8 +288,8 @@ class EdgePlanner:
                     chains[-1] = (chains[-1][0], max(chains[-1][1], end))
                 else:
                     chains.append((start, end))
-            self._chains[key] = chains
-        return self._chains[key]
+            held = self._chains[key[0]] = (key, chains)
+        return held[1]
 
     def phrase_end(self, source: str, t: float) -> float:
         """Where the phrase spoken at ``t`` of ``source`` ends (its last word and a breath);

@@ -9,11 +9,18 @@ Ops (positions count from 1):
 
 * ``{"op": "add", "id", "at"?, "start"?, "end"?}``: a moment into the sequence (default: last,
   the moment's own range).
+* ``{"op": "add_range", "source", "start", "end", "at"?, "label"?}``: an exact source range
+  (a word splice), not tied to a moment: any range of a project source, as often as asked. Its
+  row has ``"exact": true``: the export cuts it at exactly ``start`` and ``end`` (no tails,
+  padding or speech-aware move) and ``assemble`` joins it with hard cuts. Its id is ``r`` and a
+  hash of the range (a suffix for a repeat), so the same ops give the same ids again.
 * ``{"op": "remove", "id"}``.
 * ``{"op": "move", "id", "to"}``.
-* ``{"op": "trim", "id", "start"?, "end"?}`` in source seconds, or ``start_delta``/``end_delta``
-  in seconds added to the current edge (negative: earlier). An end moved later is snapped to
-  the end of the utterance it lands in (:data:`Snap`), never past the source's end.
+* ``{"op": "trim", "id", "start"?, "end"?, "exact"?}`` in source seconds, or
+  ``start_delta``/``end_delta`` in seconds added to the current edge (negative: earlier). An end
+  moved later is snapped to the end of the utterance it lands in (:data:`Snap`), never past the
+  source's end; not that of an exact row. ``"exact": true`` (the chat sets it on a trim to a
+  find_words edge) makes the row exact, as an ``add_range`` row.
 * ``{"op": "order", "ids"}``: every sequence id once, in the new order.
 * ``{"op": "sort", "by": "time" | "score" | "length", "desc"?}``.
 * ``{"op": "color", "mode": "off" | "auto" | "underwater", "strength"?}``: the project's Color
@@ -31,13 +38,13 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from cutpoint.clips import MIN_EXPORT_S
-from cutpoint.config import COLOR_MODES
+from cutpoint.clips import MIN_EXPORT_S, too_short
+from cutpoint.config import COLOR_MODES, source_path
 
 MAX_SEGMENTS = 500  # as cutpoint.ui.MAX_SEGMENTS (ui needs the optional fastapi)
 MAX_OPS = 100  # ops in one proposal
 LABEL_MAX = 200
-OPS = ("add", "remove", "move", "trim", "order", "sort", "color")
+OPS = ("add", "add_range", "remove", "move", "trim", "order", "sort", "color")
 SORT_KEYS = ("time", "score", "length")
 LENGTH_EPS = 0.05  # a clip's length must change by more than this to be lengthened/shortened
 # Where an end moved later to ``t`` (source path, seconds) ends instead: the end of the phrase it
@@ -203,13 +210,13 @@ def _apply(
     cands = {c["id"]: c for c in candidates}
     order = {path: i for i, path in enumerate(durations)}
 
-    def index(sid: Any, where: str) -> int:
+    def index(sid: Any, where: str, kind: str) -> int:
         if not isinstance(sid, str):
             raise OpsError(f"{where}: id must be a moment id")
         for i, row in enumerate(rows):
             if row["id"] == sid:
                 return i
-        raise OpsError(f"{where}: {name(sid)} is not in the sequence")
+        raise OpsError(f"{where}: {name(sid)} is not in the sequence; {_ABSENT[kind]}")
 
     for n, op in enumerate(ops, 1):
         if not isinstance(op, dict) or op.get("op") not in OPS:
@@ -229,7 +236,7 @@ def _apply(
                 raise OpsError(f"{where}: already in the sequence; use move or trim")
             at = _whole(op.get("at"))
             if at is not None and (isinstance(at, bool) or not isinstance(at, int) or at < 0):
-                raise OpsError(f"{where}: at must be a position from 1 to {len(rows) + 1}")
+                raise OpsError(f"{where}: {_at_error(len(rows))}")
             at = at if at and at <= len(rows) + 1 else len(rows) + 1  # 0 or too far: append
             start, end = _number(op, "start", where), _number(op, "end", where)
             own = f"{cand['start']:g}-{cand['end']:g}"
@@ -243,7 +250,7 @@ def _apply(
                     start, end = (None, end) if edge == "start" else (start, None)
             first = float(cand["start"]) if start is None else start
             last = float(cand["end"]) if end is None else end
-            if (start, end) != (None, None) and (first < 0 or last - first < MIN_EXPORT_S):
+            if (start, end) != (None, None) and (first < 0 or too_short(first, last)):
                 given = " and ".join(
                     f"{e} {v:g}" for e, v in (("start", start), ("end", end)) if v is not None
                 )
@@ -263,17 +270,24 @@ def _apply(
                     "label": label[:LABEL_MAX],
                 },
             )
+        elif kind == "add_range":
+            rows.insert(*_range_row(op, rows, durations, where))
         elif kind == "remove":
-            rows.pop(index(sid, where))
+            rows.pop(index(sid, where, kind))
         elif kind == "move":
-            i = index(sid, where)
+            i = index(sid, where, kind)
             to = _position(op, "to", len(rows) + 1, where)  # one past the end: last
             to = None if to is None else min(to, len(rows))
             if to is None:
                 raise OpsError(f"{where}: needs to, a position from 1 to {len(rows)}")
             rows.insert(to - 1, rows.pop(i))
         elif kind == "trim":
-            row = rows[index(sid, where)]
+            row = rows[index(sid, where, kind)]
+            exact = op.get("exact")
+            if exact is not None and not isinstance(exact, bool):
+                raise OpsError(f"{where}: exact must be true or false")
+            if exact:
+                row["exact"] = True  # cut where asked, as an add_range row
             edges = 0
             for edge in ("start", "end"):
                 absolute = _number(op, edge, where)
@@ -293,7 +307,13 @@ def _apply(
                                 f"{where}: {edge} may move outward by at most +{MAX_GROW_S:g} s "
                                 f"per edge in a proposal (asked {grew:+g} s)"
                             )
-                    if edge == "end" and snap is not None and row[edge] > was:
+                    # an exact row ends where it was asked: a word splice is never snapped
+                    if (
+                        edge == "end"
+                        and snap is not None
+                        and row[edge] > was
+                        and not row.get("exact")
+                    ):
                         asked = row[edge]
                         row[edge] = _snapped(row, snap, durations)
                         if first is not None:  # the snap stays within the cap too
@@ -328,6 +348,78 @@ def _apply(
             # sort(reverse=...) keeps tied rows in their order: no false "moved" rows
             rows.sort(key=keys[by], reverse=desc if desc is not None else by == "score")
     return rows
+
+
+# What an op on a row that is not in the sequence should have been
+_ABSENT = {
+    "trim": "add it first (add, then trim, in one proposal), or add_range a find_words hit",
+    "move": "add it with add (at puts it in place)",
+    "remove": "there is nothing to remove",
+}
+
+
+def _at_error(count: int) -> str:
+    """The error of a bad ``at`` in a sequence of ``count`` rows."""
+    return f"at must be a position from 1 to {count + 1}, or left out to add it last"
+
+
+def _range_row(
+    op: dict[str, Any],
+    rows: list[dict[str, Any]],
+    durations: Mapping[str, float | None],
+    where: str,
+) -> tuple[int, dict[str, Any]]:
+    """``(index, row)`` of an ``add_range`` op: an exact row of ``source`` from ``start`` to
+    ``end`` with a new id, to insert at ``at`` (last by default). A range shorter than
+    :data:`MIN_EXPORT_S` (Whisper times a short word such as "a" at 0.05 s) is widened to it
+    around its middle, within the source."""
+    source = op.get("source")
+    if not isinstance(source, str) or source not in durations:
+        raise OpsError(f"{where}: source is not a file of this project")
+    where = f"{where[:-1]} {source_path(source).name})"
+    start, end = _number(op, "start", where), _number(op, "end", where)
+    if start is None or end is None:
+        raise OpsError(f"{where}: needs start and end, in seconds of the source")
+    if start < 0 or end < start:
+        raise OpsError(f"{where}: needs 0 <= start <= end (got {start:g}-{end:g})")
+    if too_short(start, end):
+        start, end = _widened(start, end, durations[source])
+    at = _whole(op.get("at"))
+    if at is not None and (isinstance(at, bool) or not isinstance(at, int) or at < 0):
+        raise OpsError(f"{where}: {_at_error(len(rows))}")
+    at = at if at and at <= len(rows) + 1 else len(rows) + 1  # 0 or too far: append
+    label = op.get("label")
+    if label is not None and not isinstance(label, str):
+        raise OpsError(f"{where}: label must be text")
+    stamp = f"{source}|{round(start, 3)}|{round(end, 3)}"
+    base = "r" + hashlib.sha256(stamp.encode("utf-8")).hexdigest()[:10]
+    taken = {row["id"] for row in rows}
+    sid, n = base, 1
+    while sid in taken:  # the same range again: a repeat
+        n += 1
+        sid = f"{base}-{n}"
+    row = {
+        "id": sid,
+        "source": source,
+        "start": start,
+        "end": end,
+        "label": (label or "").strip()[:LABEL_MAX] or "words",
+        "exact": True,
+    }
+    return at - 1, row
+
+
+def _widened(start: float, end: float, duration: float | None) -> tuple[float, float]:
+    """``start``-``end`` widened to :data:`MIN_EXPORT_S` around its middle, kept within 0 and
+    ``duration`` (when known; a source shorter than that keeps what it has)."""
+    # the end from the rounded start, so the range is MIN_EXPORT_S to the millisecond
+    start = round((start + end) / 2 - MIN_EXPORT_S / 2, 3)
+    end = round(start + MIN_EXPORT_S, 3)
+    if start < 0:
+        start, end = 0.0, MIN_EXPORT_S
+    if duration is not None and end > duration:
+        start, end = max(0.0, round(duration - MIN_EXPORT_S, 3)), duration
+    return start, end
 
 
 def _snapped(row: dict[str, Any], snap: Snap, durations: Mapping[str, float | None]) -> float:
@@ -404,7 +496,7 @@ def _check(
         start, end = row.get("start"), row.get("end")
         if not all(isinstance(t, (int, float)) and math.isfinite(t) for t in (start, end)):
             raise OpsError(f"{who}: start and end must be numbers")
-        if start < 0 or end - start < MIN_EXPORT_S:
+        if start < 0 or too_short(start, end):
             raise OpsError(
                 f"{who}: needs 0 <= start and end at least {MIN_EXPORT_S}s after start "
                 f"(got {start:g}-{end:g})"
@@ -416,6 +508,9 @@ def _check(
             raise OpsError(f"{who}: end {end:g}s is past the source's {duration:g}s")
         if not isinstance(label, str) or len(label) > LABEL_MAX:
             raise OpsError(f"{who}: label must be text of at most {LABEL_MAX} characters")
+        exact = row.get("exact", False)
+        if not isinstance(exact, bool):
+            raise OpsError(f"{who}: exact must be true or false")
         out.append(
             {
                 "id": sid,
@@ -423,6 +518,7 @@ def _check(
                 "start": round(float(start), 3),
                 "end": round(float(end), 3),
                 "label": "".join(c for c in label if c.isprintable()).strip() or "segment",
+                **({"exact": True} if exact else {}),
             }
         )
     return out

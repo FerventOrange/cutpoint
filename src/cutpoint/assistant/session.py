@@ -1,7 +1,8 @@
 """One chat turn, run in a thread: the model looks moments up and ends with a proposal or a reply.
 
 The loop offers the read tools (``find_moments``, ``look_for`` (CLIP search of the whole
-timeline, :mod:`cutpoint.assistant.lookfor`), ``get_moment``, ``get_transcript``,
+timeline, :mod:`cutpoint.assistant.lookfor`), ``find_words`` (where words are said, to the
+word, :mod:`cutpoint.assistant.words`), ``get_moment``, ``get_transcript``,
 ``show_moments``, and ``view_moment`` for a model that takes images, :mod:`cutpoint.assistant.watch`)
 and the final ``propose_edit``, for at most :data:`MAX_ROUNDS` model replies.
 A proposal is checked with :func:`cutpoint.assistant.ops.apply_ops`; a rejected one goes back to
@@ -24,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from cutpoint.assistant import context, lookfor, pacing, watch
+from cutpoint.assistant import context, lookfor, pacing, watch, words
 from cutpoint.assistant.edges import EdgePlanner, length
 from cutpoint.assistant.ops import apply_ops, change_counts, summary_gap
 from cutpoint.assistant.providers import (
@@ -39,6 +40,7 @@ from cutpoint.assistant.providers import (
     describe,
 )
 from cutpoint.assistant.topup import kind_groups, top_up
+from cutpoint.config import source_path
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,14 @@ MAX_PAD_S = 60.0  # get_transcript's pad
 NUDGE = (
     "If the user asked for a change to the sequence, call propose_edit now with the ops; "
     "otherwise give your answer again."
+)
+WORD_EDGE_S = 0.02  # a trim edge this close to a find_words hit's edge is cut at the word
+# The nudge after find_words found words: a small model answers "make him say X" with "the words
+# are never said together" (they never are: that is what a splice is for)
+SPLICE_NUDGE = (
+    "If the user asked for a change to the sequence, call propose_edit now with the ops; to make "
+    "someone say words, add_range one find_words hit of each word, in order, even though they "
+    "were never said together. Otherwise give your answer again."
 )
 _MOMENT_ID = re.compile(r"\bm\d+\b")
 TOLERANCE = 0.15  # a proposal this far over or under the asked length is sent back
@@ -78,7 +88,8 @@ _ADVICE = re.compile(
 )
 _EDIT_ASK = re.compile(
     r"\b(?:make|build|add|put|place|change|extend|lengthen|trim|shorten|remove|delete|move|reorder"
-    r"|sort|create|assemble|cut|fix|longer|shorter|arrange|include|insert|swap|replace|color|grade)\b",
+    r"|sort|create|assemble|cut|fix|longer|shorter|arrange|include|insert|swap|replace|color|grade"
+    r"|stitch|splice)\b",
     re.I,
 )
 # Edit words that are common in help questions too ("how do I use the timeline?", "can it use my
@@ -154,7 +165,7 @@ _ID = {"type": "string", "description": "short moment id such as m3"}
 _OPS = {
     "type": "array",
     "items": {"type": "object"},
-    "description": "edits in order: add, remove, move, trim, order, sort or color ops",
+    "description": "edits in order: add, add_range, remove, move, trim, order, sort or color ops",
 }
 TOOLS = [
     _tool(
@@ -165,6 +176,7 @@ TOOLS = [
         ["query"],
     ),
     lookfor.TOOL,
+    words.TOOL,
     _tool("get_moment", "One moment with its whole transcript snippet.", {"id": _ID}, ["id"]),
     _tool(
         "get_transcript",
@@ -210,6 +222,7 @@ JSON_SCHEMA = {
 _JSON_TOOLS = [
     "find_moments {query, limit?}",
     lookfor.JSON_TOOL,
+    words.JSON_TOOL,
     "get_moment {id}",
     "get_transcript {id, pad?}",
     "show_moments {ids, note?}",
@@ -235,6 +248,8 @@ class Project:
     edges: EdgePlanner | None = None
     # some source has cached frame embeddings (lookfor.indexed): without any, look_for is not offered
     frame_index: bool = True
+    # a source's cached transcript words (edges.EdgePlanner.words); None: find_words finds none
+    words: Callable[[str], list[dict[str, Any]] | None] | None = None
 
 
 def _now() -> str:
@@ -295,6 +310,9 @@ class Turn:
         # to the asked length is offered when the retries do not get there
         self._candidates: list[tuple[str, dict[str, Any]]] = []
         self._nudged: str | None = None  # the text-only reply that got the nudge (this turn's one)
+        self._found_words = False  # find_words found the words this turn (SPLICE_NUDGE)
+        # the edges of this turn's find_words hits: a trim to one makes its row exact
+        self._word_edges: list[tuple[str, str, float]] = []  # (source, "start" | "end", s)
         self._results: list[dict[str, Any]] = []  # tool result messages of the conversation
         self._saved = False
         # view_moment: offered (decided in _loop), moments viewed, sheets waiting to be sent and
@@ -427,10 +445,12 @@ class Turn:
         )
         tools = None
         if json_mode:
-            listed = [t for t in _JSON_TOOLS if self.project.frame_index or t != lookfor.JSON_TOOL]
+            listed = [t for t, n in zip(_JSON_TOOLS, TOOL_NAMES, strict=True) if self._offered(n)]
             tools = [*listed, *([watch.JSON_TOOL] if self._watch else [])]
-        # look_for's rules, then how and when to watch, after the others and measured with them
-        late = lookfor.rules(bool(self._watch)) if self.project.frame_index else ""
+        # find_words' and look_for's rules, then how and when to watch, after the others and
+        # measured with them
+        late = words.RULES
+        late += lookfor.rules(bool(self._watch)) if self.project.frame_index else ""
         if self._watch:
             late += watch.RULES.replace("{cap}", watch.views(sheets))
         out = context.build_messages(
@@ -445,16 +465,20 @@ class Turn:
         )
         return out
 
+    def _offered(self, name: str) -> bool:
+        """Whether the tool ``name`` is offered: ``look_for`` only with cached frame embeddings."""
+        return self.project.frame_index or name != lookfor.NAME
+
     def _names(self) -> list[str]:
-        """The names of the tools offered: ``look_for`` only with cached frame embeddings."""
-        return [n for n in TOOL_NAMES if self.project.frame_index or n != lookfor.NAME]
+        """The names of the tools offered (:meth:`_offered`)."""
+        return [n for n in TOOL_NAMES if self._offered(n)]
 
     def _tools(self) -> list[dict[str, Any]]:
-        base = TOOLS if self.project.frame_index else [t for t in TOOLS if t is not lookfor.TOOL]
+        base = [t for t in TOOLS if self._offered(t["function"]["name"])]
         return [*base, watch.TOOL] if self._watch else base
 
     def _schema(self) -> dict[str, Any]:
-        if not self._watch and self.project.frame_index:
+        if not self._watch and self._names() == TOOL_NAMES:
             return JSON_SCHEMA
         names = [*self._names(), *([watch.NAME] if self._watch else []), "reply"]
         props = {**JSON_SCHEMA["properties"], "tool": {"type": "string", "enum": names}}
@@ -576,7 +600,8 @@ class Turn:
                     # text: ask once more (the nudge stays in this conversation; the page and chat.json
                     # never get it)
                     self._nudged = text
-                    messages.append({"role": "user", "content": NUDGE})
+                    nudge = SPLICE_NUDGE if self._found_words else NUDGE
+                    messages.append({"role": "user", "content": nudge})
                     continue
                 if self._offer_fallback():  # the earlier proposal beats an answer in text
                     self._finish("done")
@@ -772,6 +797,75 @@ class Turn:
             "look_for", chr(10).join(json.dumps(r, ensure_ascii=False) for r in rows)
         ) + note, False
 
+    def _tool_find_words(self, args: dict[str, Any]) -> tuple[str, bool]:
+        query = args.get("query")
+        if not isinstance(query, str) or not query.strip():
+            return "error: query must be the word or phrase to find", False
+        query = " ".join(query.split())[:200]
+        limit = args.get("limit")
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            limit = words.DEFAULT_LIMIT
+        limit = max(1, min(limit, words.MAX_LIMIT))
+        p = self.project
+        got = words.find(list(p.durations), p.words or _no_words, query, limit)
+        self._emit({"kind": "tool", "name": words.NAME, "query": query, "found": got.total})
+        if not got.with_words:
+            return (
+                "no source of this project has transcript words (analyze transcribes them); "
+                "what is said cannot be searched"
+            ), False
+        note = ""
+        if got.with_words < got.sources:
+            note = f" ({got.sources - got.with_words} of {got.sources} sources have no words)"
+        self._found_words = self._found_words or bool(got.hits)
+        if not got.hits:
+            apart = self._apart(query)
+            where = "in one place" if apart else "in the transcripts"
+            return f"nobody says {query!r} {where}{note}{apart}", False
+        shown = _file_names(list(p.durations))
+        rows = [
+            {
+                "file": shown[h["source"]],
+                "start": h["start"],
+                "end": h["end"],
+                "said": h["said"],
+            }
+            for h in got.hits
+        ]
+        for h in got.hits:
+            self._word_edges += [(h["source"], "start", h["start"]), (h["source"], "end", h["end"])]
+        if got.total > len(rows):
+            note = f" ({len(rows)} of {got.total} shown; limit up to {words.MAX_LIMIT}){note}"
+        body = chr(10).join(json.dumps(r, ensure_ascii=False) for r in rows)
+        # a small model takes hits that are no moment for something it cannot add, and refuses
+        # to join words said apart as "not said together"
+        use = (
+            "\nAdd a hit with an add_range op (its file, start and end); no moment id needed. "
+            "Hits of different words, added in order, make a person say what they never said "
+            "in one go: that is a splice, so do it when asked. To cut a moment right after a "
+            "word, use the hit's end; right before it, the hit's start."
+        )
+        return context.data_block("words", body) + note + use, False
+
+    def _apart(self, query: str) -> str:
+        """For a phrase nobody says in one place: how often each of its words is said, so the
+        model joins them with add_range instead of giving up."""
+        tokens = list(dict.fromkeys(w for w in query.split() if words.norm(w)))
+        if len(tokens) < 2:
+            return ""
+        p = self.project
+        counts = [
+            (t, words.find(list(p.durations), p.words or _no_words, t, 1).total) for t in tokens
+        ]
+        said = ", ".join(f"{t!r} {n} times" for t, n in counts)
+        if any(n == 0 for _, n in counts):
+            return f". Its words alone: {said}."
+        self._found_words = True  # every word is said somewhere: a refusal gets SPLICE_NUDGE
+        return (
+            f". Its words are said apart: {said}. To make someone say it, find_words each word "
+            "and add_range one hit of each, in order (a splice; never say it cannot be done)."
+        )
+
     def _tool_get_moment(self, args: dict[str, Any]) -> tuple[str, bool]:
         real, problem = self._moment(args.get("id"))
         if real is None:
@@ -863,6 +957,7 @@ class Turn:
                 )
         p = self.project
         known = [c for c in self.found if c["id"] not in blocked]
+        mapped = self._at_words(mapped, [*p.segments, *p.candidates, *known])
         out = apply_ops(
             p.segments,
             mapped,
@@ -907,6 +1002,31 @@ class Turn:
         if moments := [c for c in known if c["id"] in used]:
             checked["moments"] = moments  # look_for finds: the page's analysis does not have them
         return checked, ""
+
+    def _at_words(self, ops: Any, rows: list[dict[str, Any]]) -> Any:
+        """``ops`` with ``"exact": true`` on each trim that puts an edge on the same edge of a
+        find_words hit of this turn (within :data:`WORD_EDGE_S`): the cut the user asked for at
+        a word stays there at export, as an add_range row's. The proposal keeps the flag, so a
+        rebase on save marks the row again."""
+        if not self._word_edges or not isinstance(ops, list):
+            return ops
+        source = {}
+        for row in reversed(rows):  # the sequence's row first
+            source[row["id"]] = row["source"]
+        out = []
+        for op in ops:
+            if isinstance(op, dict) and op.get("op") == "trim" and "exact" not in op:
+                src = source.get(op.get("id"))
+                if any(
+                    src == hit_src
+                    and isinstance(op.get(edge), (int, float))
+                    and not isinstance(op.get(edge), bool)
+                    and abs(op[edge] - t) <= WORD_EDGE_S
+                    for hit_src, edge, t in self._word_edges
+                ):
+                    op = {**op, "exact": True}
+            out.append(op)
+        return out
 
     def _tool_propose_edit(self, args: dict[str, Any]) -> tuple[str, bool]:
         summary = args.get("summary")
@@ -1271,6 +1391,12 @@ def _real_ops(ops: Any, table: context.MomentTable) -> tuple[list[Any] | None, s
             out.append(op)
             continue
         op = dict(op)
+        if op.get("op") == "add_range":  # a file name, not a moment: no id to map
+            op.pop("id", None)
+            source, problem = _source_of(op.pop("file", op.get("source")), table, n)
+            if source is None:
+                return None, problem
+            op["source"] = source
         if "id" in op:
             real = table.real(op["id"])
             if real is None:
@@ -1284,6 +1410,40 @@ def _real_ops(ops: Any, table: context.MomentTable) -> tuple[list[Any] | None, s
             op["ids"] = reals
         out.append(op)
     return out, ""
+
+
+def _file_names(paths: list[str]) -> dict[str, str]:
+    """How find_words and add_range name each source: its file name, or ``folder/name`` when
+    two sources share the file name."""
+    names = [context.file_name(p) for p in paths]
+    twice = {f for f in names if names.count(f) > 1}
+    return {
+        p: f"{source_path(p).parent.name}/{f}" if f in twice else f
+        for p, f in zip(paths, names, strict=True)
+    }
+
+
+def _source_of(name: Any, table: context.MomentTable, n: int) -> tuple[str | None, str]:
+    """``(source path, "")`` of the file ``name`` an ``add_range`` op gives (a name as
+    :func:`_file_names` shows it, a bare file name when it is unique, or the path itself), else
+    ``(None, why)``."""
+    paths = list(table.durations)
+    if isinstance(name, str) and name in paths:
+        return name, ""
+    shown = _file_names(paths)
+    given = name.replace("\\", "/").strip("/") if isinstance(name, str) else None
+    hits = [p for p in paths if given is not None and given == shown[p]]
+    hits = hits or [p for p in paths if given is not None and given == context.file_name(p)]
+    if len(hits) == 1:
+        return hits[0], ""
+    listed = ", ".join(shown.values())
+    if hits:
+        return None, f"op {n}: several sources are named {name!r}: use one of {listed}"
+    return None, f"op {n}: add_range needs file, one of the project's files ({listed})"
+
+
+def _no_words(_source: str) -> None:
+    return None
 
 
 def _leave_out(msg: dict[str, Any]) -> None:
