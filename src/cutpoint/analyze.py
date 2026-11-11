@@ -1323,6 +1323,7 @@ class SourceResult:
         segments: Transcript in absolute source time.
         read_error: The ``read_errors.json`` record if reading was cut short.
         signals: The signals the candidates are picked from.
+        avail: The features the candidates' scores were divided by (None until picked).
     """
 
     source: Path
@@ -1334,6 +1335,7 @@ class SourceResult:
     read_error: dict[str, Any] | None
     signals: PartSignals | None = None
     stages: dict[str, Any] = field(default_factory=dict)  # seconds per stage, timings.sources
+    avail: frozenset[str] | None = None
 
 
 def _shortfall_limit(expected: float) -> float:
@@ -1689,6 +1691,7 @@ def pick_candidates(
         taken = [(c.start, c.end) for c in cands]
         tail = [c for c in tail if not any(a <= c.peak_t <= b for a, b in taken)]
         cands += _place_free(tail, taken, ps, span, style)
+    res.avail = avail
     return describe_candidates(cands, style, ps, offset, avail)
 
 
@@ -2948,6 +2951,15 @@ def free_models() -> None:
                 torch.cuda.empty_cache()
 
 
+def _features_by_source(results: list[SourceResult]) -> dict[str, list[str]]:
+    """``settings.features_by_source``: per source path (as in the candidates' ``source``), the
+    sorted features its scores were divided by. A source not picked from gets the install's set."""
+    out: dict[str, list[str]] = {}
+    for r in results:
+        out[str(r.source)] = sorted(features.available() if r.avail is None else r.avail)
+    return out
+
+
 def _candidate_record(c: Candidate, source_index: int, style: Style) -> dict[str, Any]:
     """A highlights.json candidate without its ``id`` (given by the final rank)."""
     return {
@@ -3627,8 +3639,13 @@ def _analyze(
                 # Which version of the style scored this (styles.style_hash): the file's
                 # content hash for a user style. Recorded only; a re-rank does not compare it.
                 "style_hash": style_hash(style),
-                # The features this install can compute; scores divide by their weights.
+                # The features this install can compute (install level; a source's own set,
+                # which the scores divide by, is in ``features_by_source``).
                 "features_available": sorted(features.available()),
+                # Per source: the features its scores were divided by (#960). Differs from
+                # features_available for an action-cam source without telemetry, or with
+                # IMU-only telemetry (no GPS rows, no wind reading). Refilled after ranking.
+                "features_by_source": _features_by_source(results),
                 # Enough to re-run the same analysis (``reanalyze``, used by cutpoint events).
                 # Absolute (not resolved: keeps drive letters, symlinks and the user's spelling)
                 # so later commands find them from any working directory.
@@ -3737,6 +3754,8 @@ def _analyze(
                 for r in results:
                     r.candidates = pick_candidates(r, style, max_candidates, timings, cam_ctx)
                     logger.info("%s: %d candidates", r.source.name, len(r.candidates))
+            # a source's own set is known only once it is picked from
+            hl["settings"]["features_by_source"] = _features_by_source(results)
         if crash_moments and style.kind != ACTION_CAM:  # this run's crash step, `cutpoint crashes`
             from cutpoint.crash import load_crashes  # noqa: PLC0415
 
