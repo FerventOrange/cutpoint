@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from pathlib import Path
 
@@ -367,3 +368,64 @@ def test_anthropic_sends_frames_as_base64_sources_and_ignores_the_schema(monkeyp
         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": B64}},
     ]
     assert not {"response_format", "schema", "text"} & set(sent)
+
+
+# -- ask_json holds hosted replies to the answer schema (#920) ---------------------------------
+
+ANSWER = {
+    "type": "object",
+    "properties": {"footage": {"type": "string", "enum": ["camera", "screen"]}},
+    "required": ["footage"],
+}
+
+
+@pytest.mark.parametrize(
+    ("name", "reply", "sent_schema"),
+    [
+        ("openai", lambda t: rs_reply(rs_text(t)), lambda j: j["text"]["format"]["schema"]),
+        ("xai", oa_reply, lambda j: j["response_format"]["json_schema"]["schema"]),
+        ("anthropic", lambda t: an_reply({"type": "text", "text": t}), None),
+    ],
+)
+def test_ask_json_sends_the_schema_to_a_hosted_provider_that_takes_one(
+    name, reply, sent_schema, home, no_keys, monkeypatch
+) -> None:
+    """Anthropic's request has no schema field: the prompt asks for JSON and the reply is
+    checked against the schema like every other."""
+    host, env, _ = API[name]
+    monkeypatch.setenv(env, KEY)
+    check = _Resp({"id": "m"} if name == "anthropic" else {"data": [{"id": "m"}]})
+    wire = Wire(monkeypatch, check, reply('{"footage": "camera"}'))
+    set_config(
+        home,
+        vision_assistant={"provider": name, "model": "m", "consent": [f"vision-v2:{name}@{host}"]},
+    )
+    assert vision.VisionRater().ask_json("q", [JPEG], ANSWER) == {"footage": "camera"}
+    sent = wire.sent[-1]["json"]
+    if sent_schema is None:
+        assert not {"response_format", "text", "output_format", "output_config"} & set(sent)
+    else:
+        assert sent_schema(sent) == ANSWER
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"answer": "screen"}',
+        "{}",
+        '["screen"]',
+        "not json",
+    ],  # wrong key, empty, no object, no JSON
+)
+def test_ask_json_rejects_a_hosted_reply_without_the_required_keys(fake, text) -> None:
+    fake.text = text
+    assert vision.VisionRater().ask_json("q", [JPEG], ANSWER) is None
+
+
+@pytest.mark.parametrize(
+    "text", ['{"footage": "screen"}', '{"footage": "sport"}', '{"footage": 3}']
+)
+def test_ask_json_leaves_enums_and_types_to_the_caller(fake, text) -> None:
+    """#920: only the top level is checked (an object with the required keys)."""
+    fake.text = text
+    assert vision.VisionRater().ask_json("q", [JPEG], ANSWER) == json.loads(text)

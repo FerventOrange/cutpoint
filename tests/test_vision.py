@@ -1348,3 +1348,59 @@ def test_a_failed_grab_returns_none_with_a_warning_and_sends_nothing(monkeypatch
         assert rater._rate_frames(src, [1.0, 2.0, 3.0, 4.0, 5.0], "gaming") is None
     assert "Vision frame grab failed" in caplog.text
     assert sent == []
+
+
+MOMENTS = {  # the shape of the dialogue reader's schema (#920)
+    "type": "object",
+    "properties": {
+        "moments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["funny", "story"]},
+                    "rating": {"type": "integer"},
+                },
+                "required": ["kind", "rating"],
+            },
+        }
+    },
+    "required": ["moments"],
+}
+
+
+def _ollama_says(monkeypatch, content: str) -> vision.VisionRater:
+    monkeypatch.setattr(
+        vision.requests, "post", lambda *_a, **_k: _Resp({"message": {"content": content}})
+    )
+    return vision.VisionRater(url="http://127.0.0.1:1", model="m")
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["{}", '{"other": []}', '{"answer": "screen"}', '["moments"]', "3", "not json"],
+)
+def test_ask_json_rejects_an_ollama_reply_without_the_required_keys(monkeypatch, content):
+    """#920: a reply that is no object, or lacks a key the schema requires, is None."""
+    assert _ollama_says(monkeypatch, content).ask_json("q", schema=MOMENTS) is None
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"moments": [{"kind": "funny", "rating": 7}, {"kind": "story", "rating": 4.0}]}',
+        '{"moments": []}',
+        '{"moments": [{"kind": "rant", "rating": 7}]}',  # not in the enum
+        '{"moments": [{"kind": "funny"}]}',  # an item without a required key
+        '{"moments": [{"kind": "funny", "rating": 7.5}, "junk"]}',  # wrong type, not an object
+        '{"moments": {"kind": "funny", "rating": 7}}',  # not an array
+    ],
+)
+def test_ask_json_leaves_items_types_and_enums_to_the_caller(monkeypatch, content):
+    """#920: only the top level is checked; the caller's own parsing takes the rest."""
+    got = _ollama_says(monkeypatch, content).ask_json("q", schema=MOMENTS)
+    assert got == json.loads(content)
+
+
+def test_ask_json_without_a_schema_takes_any_object(monkeypatch):
+    assert _ollama_says(monkeypatch, '{"a": 1}').ask_json("q") == {"a": 1}

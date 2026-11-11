@@ -299,6 +299,45 @@ def test_the_schema_and_the_prompt_ask_for_a_title():
     assert "title" in dialogue.PROMPT and '"title"' in dialogue.JSON_ONLY
 
 
+class _OllamaBody:
+    is_redirect = False
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self) -> dict:
+        return {"message": {"content": self.content}, "response": self.content}
+
+
+def test_a_partial_moment_list_reaches_the_reader_which_drops_only_the_bad_items(monkeypatch):
+    """#920: the reply is checked for its top level only; items are the reader's to judge."""
+    reply = {
+        "moments": [
+            {"first_line": 0},  # most keys missing
+            {**moment(1, 2, rating="high")},  # wrong type
+            moment(3, 4, kind="rant"),  # off the enum
+            moment(5, 6),
+            "junk",
+        ]
+    }
+    monkeypatch.setattr(vision.requests, "post", lambda *_a, **_k: _OllamaBody(json.dumps(reply)))
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    got = rater.ask_json("read this", schema=dialogue.SCHEMA)
+    assert got == reply  # not rejected for its items
+    stretches, dropped = dialogue.parse_reply(got, talk_lines(8), list(range(8)))
+    assert dropped == 4
+    assert [(s["first_line"], s["last_line"]) for s in stretches] == [(5, 6)]
+
+
+def test_a_dialogue_reply_without_moments_is_rejected_before_the_reader(monkeypatch):
+    monkeypatch.setattr(vision.requests, "post", lambda *_a, **_k: _OllamaBody('{"stretches": []}'))
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    assert rater.ask_json("read this", schema=dialogue.SCHEMA) is None
+
+
 # --------------------------------------------------------------------------- cache key
 def test_the_cache_key_follows_the_transcript_the_model_and_the_prompt(monkeypatch):
     lines = talk_lines(5)
