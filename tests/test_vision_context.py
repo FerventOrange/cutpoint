@@ -175,3 +175,38 @@ def test_a_pending_context_change_is_not_loaded(monkeypatch):
     assert memguard.ollama_loaded(URL, MODEL)  # no context named: the name alone
     _ps(monkeypatch, [{"name": f"{MODEL}:latest"}])  # no context_length: the name alone
     assert memguard.ollama_loaded(URL, MODEL, 50000)
+
+
+def _bodies(ollama, monkeypatch) -> list[dict]:
+    """The JSON bodies posted to the fake Ollama."""
+    bodies: list[dict] = []
+    post = ollama.post
+
+    def record(url: str, json: dict, **kw: Any):
+        bodies.append(json)
+        return post(url, json, **kw)
+
+    monkeypatch.setattr(requests, "post", record)
+    return bodies
+
+
+def test_ask_json_sampling_defaults_and_overrides(ollama, guarded, monkeypatch):
+    bodies = _bodies(ollama, monkeypatch)
+    rater = vision.VisionRater(URL, MODEL)
+    rater.ask_json("q")
+    rater.ask_json("q", temperature=0.0, seed=7)
+    assert bodies[0]["options"]["temperature"] == 0.2 and "seed" not in bodies[0]["options"]
+    assert bodies[1]["options"]["temperature"] == 0.0 and bodies[1]["options"]["seed"] == 7
+
+
+def test_discovery_asks_greedy_and_seeded(ollama, guarded, monkeypatch):
+    """#947: the same footage must get the same describe/synthesis reply in every run."""
+    from cutpoint import activity  # noqa: PLC0415
+
+    bodies = _bodies(ollama, monkeypatch)
+    monkeypatch.setattr(vision.VisionRater, "available", lambda self: True)
+    ask, model = activity.default_ask(URL, MODEL)
+    assert ask is not None and model == MODEL
+    assert ask("q", [], None) == {"score": 7, "label": "x"}
+    opts = bodies[0]["options"]
+    assert opts["temperature"] == 0.0 and opts["seed"] == 42

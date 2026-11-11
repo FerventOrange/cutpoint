@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Activity profile discovery gives the same profile for the same footage: the describe and synthesis calls to local Ollama use temperature 0 and seed 42 (discovery only), and the describe call has an answer schema. Discovering the same footage again, also with `--refresh-profile`, overwrites that footage's own discovered library profile instead of adding a `<name>-<hash>` copy, and renames the file when the new answer names a different activity; the file stores a `footage` field. After upgrading, discoveries cached by earlier versions are not reused, and footage whose old discovered file has no `footage` field gets one more new file once (#947).
 - **BREAKING:** the `detection` block of `highlights.json` is version 4 (it adds the category `action`). The frame probe cache stays `category-v3.json`, so sources are not probed again. `scripts/style_auto_eval.py` label files now need `action` entries (its flip gate requires every category to be labelled), so footage without telemetry that was labelled `general` (sport, for example) should be relabelled `action`.
 - **BREAKING:** the vision footage answers are cached in `category-vision-v2.json`; unsure sources are asked again once.
 - The UI header style menu lists Auto, Gameplay, Action, Action cam (only with telemetry) and Talk. General is no longer a menu item but is still a detection label. The crash step runs for Action footage.

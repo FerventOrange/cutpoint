@@ -550,6 +550,8 @@ class VisionRater:
         *,
         timeout: float = 600,
         num_ctx: int = 8192,
+        temperature: float = 0.2,
+        seed: int | None = None,
     ) -> dict | None:
         """One turn (text, optionally with JPEG frames); the reply's JSON object or None.
 
@@ -559,7 +561,9 @@ class VisionRater:
         through ``/api/generate`` in raw mode with the ChatML turn and an empty
         ``<think></think>`` block already written; other models use ``/api/chat``.
         ``num_ctx``: the context window the turn needs; Ollama is asked for more when the model
-        is loaded with more already (:meth:`_context`).
+        is loaded with more already (:meth:`_context`). ``temperature`` and ``seed`` (None: none
+        sent) are Ollama's sampling options; temperature 0 and a seed make the reply repeatable
+        (profile discovery, #947). A hosted Vision role ignores them.
         """
         if self.via:
             self.check_memory()
@@ -574,7 +578,9 @@ class VisionRater:
             self.warn_consent()
             return None
         num_ctx = self._context(num_ctx)
-        options = {"temperature": 0.2, "num_ctx": num_ctx, "num_predict": num_predict}
+        options = {"temperature": temperature, "num_ctx": num_ctx, "num_predict": num_predict}
+        if seed is not None:
+            options["seed"] = seed
         payload: dict = {"model": self.model, "stream": False, "format": schema or "json"}
         raw = not images and self.model.lower().startswith("qwen")
         if not raw:

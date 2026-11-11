@@ -60,8 +60,10 @@ and 360 layers (:func:`active_prompts`, else :func:`default_prompts`: ``generic`
    (``context``), with ``base`` and ``generic`` as examples. It is validated, capped (its
    crash phrases stay below a words-only crash cue), named after the activity alone (crash
    words dropped from the name and ``detect``), checked on the footage (an incident caption
-   that fits much of it is dropped, :func:`self_check`) and saved to the library (a file
-   with the same content is reused), so the next similar video matches it in step 3. Its
+   that fits much of it is dropped, :func:`self_check`) and saved to the library (with the
+   footage's id: a re-discovery of the same footage overwrites it; else a file with the same
+   content is reused), so the next similar video matches it in step 3. The describe and
+   synthesis requests are greedy and seeded (:data:`DISCOVERY_SEED`). Its
    VLM wording is the floor's. Each synthesis, and each failed one (an unusable reply or a
    timeout; not a quick request error), is cached per footage
    (``<cache>/activity/<key>.json``, :func:`discovery_key`: the sources, the model, the
@@ -139,6 +141,11 @@ PROFILE_TIMEOUT_S = 120
 # Per-footage cache of discovered profiles (:func:`discovery_key`), under the cache folder.
 DISCOVERY_DIR = "activity"
 DISCOVERY_VERSION = 2
+# Sampling of the discovery requests (describe and synthesis, :func:`default_ask`): greedy and
+# seeded, so the same footage gets the same reply in every run (#947); a hosted model may
+# ignore the seed.
+DISCOVERY_TEMPERATURE = 0.0
+DISCOVERY_SEED = 42
 
 # (prompt, JPEG frames, JSON schema of the reply or None) -> the model's JSON reply, or None.
 Ask = Callable[[str, list[bytes], dict[str, Any] | None], dict[str, Any] | None]
@@ -207,6 +214,16 @@ _DESCRIBE_PROMPT = (
     '"setting": "...", "camera": "mount / point of view", '
     '"surface": "terrain or surface", "hazards": "typical crashes, falls or failures"}}'
 )
+# The describe reply's JSON schema (Ollama structured output): the prompt's keys, each a short
+# string, so a greedy reply cannot run on.
+_DESCRIBE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        k: {"type": "string", "maxLength": 200}
+        for k in ("activity", "setting", "camera", "surface", "hazards")
+    },
+    "required": ["activity", "setting", "camera", "surface", "hazards"],
+}
 _SYNTH_PROMPT = """You write detection profiles for an automatic video editor. A profile tells a \
 CLIP image model and a transcript matcher what an incident (a crash, wipeout, fall, fail or \
 death: whatever counts as one in this footage) looks and sounds like.
@@ -404,12 +421,37 @@ def _content(profile: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in validate(profile).items() if k != "name"}
 
 
-def save_to_library(profile: dict[str, Any]) -> str:
+def save_to_library(profile: dict[str, Any], footage: list[str] | None = None) -> str:
     """Store a discovered profile in the library (``"source": "discovered"``); returns its
-    (unique) name. A library file with the same content (whatever its name) is reused, so
-    the same discovery run twice adds no ``<name>-<hash>`` copy."""
+    (unique) name. ``footage``: the footage it was discovered from (:func:`_footage_id`),
+    stored in the file; the discovered file of the same footage is overwritten under its own
+    name (a re-discovery, ``--refresh-profile``), so one footage keeps one library profile
+    (#947). Else a library file with the same content (whatever its name) is reused, so the
+    same discovery run twice adds no ``<name>-<hash>`` copy."""
+    files = user_files()
+    for stem, f in files.items() if footage else ():
+        raw = cache.load_json(f)
+        if (
+            isinstance(raw, dict)
+            and raw.get("source") == DISCOVERED
+            and raw.get("footage") == footage
+        ):
+            new = profile["name"]
+            taken = {k.lower() for k in library()}
+            if new != stem and not name_problem(new) and new.lower() not in taken:
+                path = paths.profiles_dir() / f"{new}.json"
+                cache.save_json(
+                    path, {**profile, "name": new, "source": DISCOVERED, "footage": footage}
+                )
+                f.unlink()
+                _FILES.pop(str(path), None)
+                _FILES.pop(str(f), None)
+                return new
+            cache.save_json(f, {**profile, "name": stem, "source": DISCOVERED, "footage": footage})
+            _FILES.pop(str(f), None)
+            return stem
     want = _content(profile)
-    for stem, f in user_files().items():
+    for stem, f in files.items():
         have = _load(f)
         if have is not None and _content(have) == want:
             return stem
@@ -419,7 +461,8 @@ def save_to_library(profile: dict[str, Any]) -> str:
         name = f"{name}-{cache.params_hash(profile, 6)}"
     path = paths.profiles_dir() / f"{name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    cache.save_json(path, {**profile, "name": name, "source": DISCOVERED})
+    own = {"footage": footage} if footage else {}
+    cache.save_json(path, {**profile, "name": name, "source": DISCOVERED, **own})
     _FILES.pop(str(path), None)
     return name
 
@@ -766,7 +809,7 @@ def describe(emb: np.ndarray, refs: list[tuple[Path, float]], ask: Ask | None) -
         except (OSError, FFmpegError) as err:
             logger.info("activity: frame grab failed (%s); describing with CLIP", err)
             imgs = []
-        reply = ask(_DESCRIBE_PROMPT.format(n=len(imgs)), imgs, None) if imgs else None
+        reply = ask(_DESCRIBE_PROMPT.format(n=len(imgs)), imgs, _DESCRIBE_SCHEMA) if imgs else None
         if reply:
             text = "; ".join(f"{k}: {reply[k]}" for k in reply if isinstance(reply[k], str))
             if text:
@@ -1019,7 +1062,13 @@ def default_ask(
         return None, None
     if not rater.available():
         return None, None
-    return functools.partial(rater.ask_json, timeout=PROFILE_TIMEOUT_S), rater.model
+    ask = functools.partial(
+        rater.ask_json,
+        timeout=PROFILE_TIMEOUT_S,
+        temperature=DISCOVERY_TEMPERATURE,
+        seed=DISCOVERY_SEED,
+    )
+    return ask, rater.model
 
 
 # --------------------------------------------------------------------------- discovery cache
@@ -1056,12 +1105,16 @@ def discovery_key(
     """Key of a discovery in the per-footage cache: the project's sources
     (:func:`_footage_id`), the model (:func:`_model_id`), the prompts and attempt sizes
     of the description and the synthesis, the normalised ``context`` and the example
-    profiles shown to the LLM. None when no source is reachable (nothing to key it by)."""
+    profiles shown to the LLM. None when no source is reachable (nothing to key it by).
+    The describe schema and the sampling are part of the prompts: a discovery cached before
+    them (#947) is not reused."""
     footage = _footage_id(project)
     if not footage:
         return None
     prompts = {
         "describe": _DESCRIBE_PROMPT,
+        "describe_schema": _DESCRIBE_SCHEMA,
+        "sampling": {"temperature": DISCOVERY_TEMPERATURE, "seed": DISCOVERY_SEED},
         "frames": DESCRIBE_FRAMES,
         "synth": _SYNTH_PROMPT,
         "sizes": SYNTH_SIZES,
@@ -1268,7 +1321,7 @@ def resolve(
                 )
                 rec["source"] = "context"
             elif new is not None:
-                seed = save_to_library(new)
+                seed = save_to_library(new, _footage_id(project))
                 profile = full({**new, "name": seed})
                 rec["source"] = "synthesized"
     named = _named_profile(context, lib) if context and new is None and seed is None else None
@@ -1409,7 +1462,7 @@ def check_profile(raw: Any) -> tuple[list[str], list[str]]:
         raw["incident"] if isinstance(raw.get("incident"), dict) else {}, problems, warnings
     )
     _check_texts(raw, problems, warnings)
-    known = {"name", "description", "source", "detect", "exclude_base", "vl", "vlm"}
+    known = {"name", "description", "source", "footage", "detect", "exclude_base", "vl", "vlm"}
     known |= {*PAIR_SECTIONS, *LIST_SECTIONS}
     dropped = sorted(k for k, v in raw.items() if k not in known and not isinstance(v, dict))
     if dropped:

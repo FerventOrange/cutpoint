@@ -502,12 +502,16 @@ def test_a_changed_context_a_refresh_or_another_model_synthesizes_again(
     assert _synths(other) == 1 and rec["profile"]["description"] == "Rafting, written again."
     rec = activity.resolve(same_footage("f"), ask=good, context="a lake")
     assert _synths(good) == 2 and rec["profile"]["description"] == "Rafting, written again."
-    # another model (or the same name with another digest) writes its own
+    # another model (or the same name with another digest) writes its own (footage that matches
+    # no library profile clearly, so each run discovers again)
+    footage["v"] = fake_clip("glacier-sled", "puddle-hop")
     models = iter(["m1", "m1", "m2"])
     monkeypatch.setattr(activity, "default_ask", lambda **kw: (good, next(models)))
     for name in ("g", "h", "i"):
         activity.resolve(same_footage(name))
     assert _synths(good) == 4  # m1 once, m2 once
+    # one footage keeps one library profile: the refresh and the models rewrote the same file
+    assert [n for n in activity.user_files() if n.startswith("pack")] == ["pack-rafting"]
 
 
 def test_a_failed_discovery_is_cached_until_a_refresh(same_footage, caplog, monkeypatch):
@@ -567,6 +571,12 @@ def test_the_discovery_key_follows_the_prompts_and_the_examples(same_footage, mo
     assert key != activity.discovery_key(project, model, None, [activity.library()["puddle-hop"]])
     monkeypatch.setattr(activity, "SYNTH_SIZES", ((8, 20, 4),))
     assert key != activity.discovery_key(project, model, None, examples)
+    monkeypatch.undo()
+    monkeypatch.setattr(activity, "DISCOVERY_SEED", activity.DISCOVERY_SEED + 1)
+    assert key != activity.discovery_key(project, model, None, examples)  # #947: sampling
+    monkeypatch.undo()
+    monkeypatch.setattr(activity, "_DESCRIBE_SCHEMA", {"type": "object"})
+    assert key != activity.discovery_key(project, model, None, examples)  # #947: schema
 
 
 @pytest.mark.parametrize(
@@ -659,6 +669,22 @@ def test_describe_shows_the_most_different_frames(monkeypatch, fake_clip):
     grabbed = _frames(monkeypatch, {})
     _desc, how = activity.describe(emb, refs, _stub({"activity": "x"}))
     assert how == "vl" and grabbed == [0.0, 4.0, 7.0]
+
+
+def test_describe_asks_for_the_describe_schema(monkeypatch, fake_clip):
+    """#947: a structured reply of short strings, so a greedy reply cannot run on."""
+    a, b = fake_clip("caption:a"), fake_clip("caption:b")
+    refs = [(Path("v.mp4"), float(t)) for t in range(4)]
+    _frames(monkeypatch, {})
+    seen: list[dict | None] = []
+
+    def ask(prompt, images, schema):
+        seen.append(schema)
+        return {"activity": "x"}
+
+    activity.describe(np.concatenate([a, a, b, b]), refs, ask)
+    assert seen == [activity._DESCRIBE_SCHEMA]
+    assert set(seen[0]["required"]) == {"activity", "setting", "camera", "surface", "hazards"}
 
 
 def _jpeg(kind: str) -> bytes:
@@ -830,6 +856,42 @@ def test_identical_discoveries_share_one_library_file(home):
     assert second.startswith("pack-rafting-")
     assert activity.save_to_library(other) == second
     assert set(activity.user_files()) == {"pack-rafting", second}
+
+
+def test_a_rediscovery_of_the_same_footage_overwrites_its_library_file(home):
+    """#947: --refresh-profile rewrites the footage's profile, no ``<name>-<hash>`` copy."""
+    prof = activity.validate(PACK_RAFTING)
+    assert activity.save_to_library(prof, ["ride.mp4:1"]) == "pack-rafting"
+    newer = activity.validate({**PACK_RAFTING, "description": "written again"})
+    assert activity.save_to_library(newer, ["ride.mp4:1"]) == "pack-rafting"
+    assert set(activity.user_files()) == {"pack-rafting"}
+    saved = json.loads((paths.profiles_dir() / "pack-rafting.json").read_text(encoding="utf-8"))
+    assert saved["description"] == "written again" and saved["footage"] == ["ride.mp4:1"]
+    assert saved["source"] == "discovered" and saved["name"] == "pack-rafting"
+    # other footage, or none: the name is taken by other content, so a copy is made
+    other = activity.save_to_library(activity.validate({**PACK_RAFTING, "description": "c"}), ["x"])
+    bare = activity.save_to_library(activity.validate({**PACK_RAFTING, "description": "d"}))
+    assert other.startswith("pack-rafting-") and bare.startswith("pack-rafting-")
+    assert other != bare and len(activity.user_files()) == 3
+
+
+def test_a_rediscovery_under_a_new_name_renames_the_footages_library_file(home):
+    """F1: one footage keeps one library profile, also when the new discovery names it differently."""
+    assert (
+        activity.save_to_library(activity.validate(PACK_RAFTING), ["ride.mp4:1"]) == "pack-rafting"
+    )
+    renamed = activity.validate({**PACK_RAFTING, "name": "kayak"})
+    assert activity.save_to_library(renamed, ["ride.mp4:1"]) == "kayak"
+    assert set(activity.user_files()) == {"kayak"}
+    saved = json.loads((paths.profiles_dir() / "kayak.json").read_text(encoding="utf-8"))
+    assert saved["name"] == "kayak" and saved["footage"] == ["ride.mp4:1"]
+    assert saved["source"] == "discovered"
+    # the new name belongs to another library profile: the file stays under its own stem
+    activity.create_profile("canoe", HOP)
+    taken = activity.validate({**PACK_RAFTING, "name": "canoe", "description": "again"})
+    assert activity.save_to_library(taken, ["ride.mp4:1"]) == "kayak"
+    assert set(activity.user_files()) == {"kayak", "canoe"}
+    assert activity.library()["canoe"]["incident"]["pos"] == HOP["incident"]["pos"]
 
 
 def test_a_profile_without_incident_negatives_gets_generics(home):
