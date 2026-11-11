@@ -42,7 +42,7 @@ import numpy as np
 from cutpoint import cache
 from cutpoint.config import remap_source
 from cutpoint.errors import FFmpegError, LowMemoryError
-from cutpoint.vision import GRAB_WORKERS
+from cutpoint.ffmpeg_utils import GRAB_WORKERS
 
 logger = logging.getLogger(__name__)
 
@@ -311,7 +311,7 @@ def _metadata(data: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _parallel[T, R](fn: Callable[[T], R], items: Sequence[T]) -> list[R]:
-    """``[fn(x) for x in items]`` with :data:`~cutpoint.vision.GRAB_WORKERS` calls at once, in
+    """``[fn(x) for x in items]`` with :data:`~cutpoint.ffmpeg_utils.GRAB_WORKERS` calls at once, in
     ``items`` order (each grab is its own ffmpeg, #946); an exception surfaces as in the loop."""
     if not items:
         return []

@@ -104,9 +104,9 @@ from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events.common import load_highlights
 from cutpoint.events.visual import load_visual, text_embeddings
 from cutpoint.events.vlm_windows import ACTION_CAM_TAGS
-from cutpoint.ffmpeg_utils import grab_frame_jpeg
+from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
 from cutpoint.utils import slugify
-from cutpoint.vision import GRAB_WORKERS, VisionRater
+from cutpoint.vision import VisionRater
 
 logger = logging.getLogger(__name__)
 

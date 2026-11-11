@@ -49,9 +49,9 @@ from cutpoint import cache
 from cutpoint.assistant import context
 from cutpoint.assistant.providers import Capabilities, Provider, accepts_images, endpoint
 from cutpoint.errors import FFmpegError
-from cutpoint.ffmpeg_utils import grab_frame_jpeg
+from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
 from cutpoint.utils import clock
-from cutpoint.vision import GRAB_WORKERS, _frame_times
+from cutpoint.vision import _frame_times
 
 logger = logging.getLogger(__name__)
 

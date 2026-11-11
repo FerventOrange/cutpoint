@@ -22,7 +22,7 @@ from cutpoint import cache, memguard, paths, state
 from cutpoint.backends import normalize_ollama_url, ollama_url
 from cutpoint.config import get_config
 from cutpoint.errors import FFmpegError
-from cutpoint.ffmpeg_utils import grab_frame_jpeg
+from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
 from cutpoint.styles import ACTION_CAM
 
 if TYPE_CHECKING:
@@ -142,7 +142,6 @@ _SPEECH_PROMPTS = (_PROMPT_SPEECH, _RETRY_PROMPT_SPEECH)
 _ATTEMPTS = ((8192, 3072), (12288, 6144))
 _TEMPERATURES = (0.2, 0.4)  # sampling temperature per attempt
 FRAME_WIDTH = 640  # px of each frame sent to the model
-GRAB_WORKERS = 4  # frames of one moment grabbed at once (each is its own ffmpeg, #909)
 
 
 @dataclass(frozen=True)
