@@ -137,7 +137,7 @@ So do these combinations:
 | `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
 | `resume` | `resume` (`argv`, `status_before`, `done_before`), `resumed`, and the replayed command's outputs |
 | `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set; the number of moments the default `clips` edit picks), `style`; with `--style auto`, `detection` (the `highlights.json` block, see [detect](#detect)) |
-| `detect` | `category` (`gameplay`, `action-cam`, `talk` or `general`), `ambiguous`, `reason`, `scores` (share of the footage per category), `suggest` (`commentary` for talky gameplay, else `null`), `decided_by` (the evidence that decided the sure sources, most footage first: `telemetry`, `static HUD`, `HUD text`, `camera tags`, `360 frame`, `speech` or `vision`; empty when ambiguous), `sources` (each `path`, `duration`, `category`, `ambiguous`, `reason`, `decided_by` (`null` when ambiguous), `gameplay` (score 0-1, `null` with telemetry) and `speech` (share of the source covered by words, `null` before transcription)), `pending` (talk not checked yet: a long source has no transcript), `styles` (`analyze` and `funny-moments`: the style each would use) |
+| `detect` | `category` (`gameplay`, `action-cam`, `action`, `talk` or `general`), `ambiguous`, `reason`, `scores` (share of the footage per category), `suggest` (`commentary` for talky gameplay, else `null`), `decided_by` (the evidence that decided the sure sources, most footage first: `telemetry`, `static HUD`, `HUD text`, `camera tags`, `360 frame`, `speech` or `vision`; empty when ambiguous), `sources` (each `path`, `duration`, `category`, `ambiguous`, `reason`, `decided_by` (`null` when ambiguous), `gameplay` (score 0-1, `null` with telemetry) and `speech` (share of the source covered by words, `null` before transcription)), `pending` (talk not checked yet: a long source has no transcript), `styles` (`analyze` and `funny-moments`: the style each would use) |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds`, `taken_over` (finished clips taken over from a stopped export's `.<folder>.cutpoint-resume`, not encoded again; 0 when none, missing for temporary clips) |
 | `extend` | As `clips` (`taken_over` included), and `seconds` (`{"start", "end"}`) |
 | `assemble` | `format` (`mp4`, `fcpxml` or `otio`); the file written: `final` (the video, `mp4`), or `fcpxml` or `otio` (the timeline); `srt` (`null` if none was written), `duration` (of the video or the timeline), `clip_count`, and `joins` with `--joins` (one `{from, to, transition}` per pair in the file that matched, with the transition used: `cut` or `fade`). From a project with `--format fcpxml\|otio`, also the outputs of `clips` for the kept clips; with `mp4`, no clip paths (warning `temporary_clips`) |
@@ -247,7 +247,7 @@ Auto project it reads "Detected: Gameplay" (the category `highlights.json` recor
 "Style: Talk (your choice)". Its menu gives the recorded reason, why an unsure detection used its
 style, one "Disagree: b.mp4 looks like Talk (…)" line per source of another category when they are
 more than 10% of the footage, and a suggested style. Below are Auto (detect from footage), the
-categories with their style (Gameplay: gaming, Talk: commentary, General: action, and Action cam:
+categories with their style (Gameplay: gaming, Action: action, Talk: commentary, and Action cam:
 action-cam when a source has camera telemetry or the project already uses it) and Other styles
 (the rest, your custom styles included). Choosing one opens the "Analyze again as Talk?" dialog
 with the Analysis options filled in; confirming runs `analyze --style <style>` (cached
@@ -536,7 +536,7 @@ not an analysis:
 
 Both are off until the project has been analyzed, and in Cutpoint lite (the reason is shown).
 Describe the footage shows only where the analysis runs the crash step: an action, sport or
-action-cam style, footage that Auto detection chose as action-cam or general, or sources with
+action-cam style, footage that Auto detection chose as action-cam, action or general, or sources with
 camera telemetry (the analysis wrote `crashes.json`); before the first analysis, no style or
 Auto. It is filled with the
 description `activity.json` holds and needs text to apply (there is no reset). Look closer with
@@ -1370,6 +1370,7 @@ check (below) for unsure sources, and writes nothing to a project. An older cach
 | Action cam | Camera telemetry (GoPro GPMF, Insta360 X3 IMU) in at least half of the footage | `action-cam` | `funny` |
 | Gameplay | A static HUD: overlay pixels that stay put while the picture moves, or HUD text that stays in place (the HUD text check below); screen-recorder tags help | `gaming` | `funny` |
 | Talk | Not gameplay, and speech covers at least 55% of a source of 8 minutes or more | `commentary` | `funny` |
+| Action | A sport or fast physical activity filmed by a camera that rides along or follows the person, without telemetry. Only the vision answer `action` tells | `action` | `funny` |
 | General | Anything else. Sure only with camera tags (a phone or camera make), a 2:1 frame of a 360 camera, or the vision answer | `action` | `funny` |
 
 The other kinds of `edit` (`highlights`, `montage`, `clips`) use the `analyze` column.
@@ -1393,8 +1394,8 @@ on `analyze` and `edit`) asks for it explicitly (a missing consent is then a `vi
 over a hosted Vision provider, as for other vision use. It is skipped in Cutpoint lite, without
 Ollama running, and without consent: by default quietly (one INFO line), and the source stays
 unsure; with `--vision` or `"vision": true` given explicitly, a skip for lack of consent is a
-`vision_consent_needed` warning. An `other` answer leaves the source unsure. Answers are cached per
-model and host as `category-vision-v1.json`. `decided_by` in the result (and the `detect` output)
+`vision_consent_needed` warning. An `other` answer leaves the source unsure; a `camera` answer is General, an `action` answer is Action. Answers are cached per
+model and host as `category-vision-v2.json` (an older `category-vision-v1.json` is not read: unsure sources are asked once more). `decided_by` in the result (and the `detect` output)
 names the evidence that decided: `vision` for these sources.
 
 **HUD text check.** A thin HUD (a few lines of text, as in War Thunder, Rainbow Six or
@@ -1411,7 +1412,7 @@ ambiguous.
 
 A 2:1 frame counts as 360 footage only at 3840 px wide or more; `decided_by` is then `360 frame`.
 
-`highlights.json` of an `auto` analysis has a `detection` block: `version`, `category`,
+`highlights.json` of an `auto` analysis has a `detection` block: `version` (4), `category`,
 `emphasis` (`hype`, or `funny` for `funny-moments`), `style`, `reason`, `ambiguous`, `scores`,
 `fallback` (the style used when the category was unclear, else `null`), `suggest`, `decided_by` and
 `sources` (as in the [`--json` outputs](#json-output)).
@@ -2180,7 +2181,7 @@ footage or a project.
 | `--from FILE` | Start from this style JSON (a legacy preset also works). The other options replace its values and `--weight` adds to its weights; its `source` is kept. `create NAME --from FILE --force` converts a legacy preset to schema 1 |
 | `--weight FEATURE=W ...` | A feature weight, 0 or more, over the base's. Names are those of `style features` |
 | `--description TEXT` | What the style is for |
-| `--applies-to KIND:NAME ...` | `category:NAME` (`action-cam`, `gameplay`, `talk`, `general`) or `profile:NAME`. Stored only: `--style auto` does not use it yet |
+| `--applies-to KIND:NAME ...` | `category:NAME` (`action-cam`, `gameplay`, `action`, `talk`, `general`) or `profile:NAME`. Stored only: `--style auto` does not use it yet |
 | `--profile NAME` | An activity profile name. Stored only |
 | `--force` | Replace your style of this name |
 | `--json` | One [result envelope](#json-output) on stdout; `outputs` per verb in [the table above](#json-output). The command names are `style list`, `style show` and so on |
