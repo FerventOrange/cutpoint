@@ -1125,10 +1125,10 @@ on lite their `events` features (`vlm`, `voice_laughter`, `beauty`, `scenic`, `p
 `voice`) are left out, and a renormalised score is capped at 100. `social` counts on lite too:
 there it takes the laughter written in the transcript; full installs also take the laughter,
 screams and cheering heard (`events`).
-The features it could compute are in `settings.features_available`. In an action-cam project
+The features this install could compute are in `settings.features_available` (install level). `settings.features_by_source` maps each source path (as in the candidates' `source`) to the sorted features its scores were divided by (#960); older files lack it. In an action-cam project
 where only some sources have camera telemetry, a source without it also leaves the telemetry
 features (`airtime`, `crash`, `speed`, `carve`, `faces`, `stopped`, `short_clip`) out of its
-divisor (#950), and a source whose telemetry has no GPS rows and no wind-meter reading (an Insta360 X3 file: IMU only) leaves out `speed`, its pick floor scaled to match (#959); `settings.features_available` stays the project's list. Action-cam candidates' `signals`
+divisor (#950), and a source whose telemetry has no GPS rows and no wind-meter reading (an Insta360 X3 file: IMU only) leaves out `speed`, its pick floor scaled to match (#959); `settings.features_available` stays the install's list. Action-cam candidates' `signals`
 name the action-cam features; `voice_laughter` (laughter heard over the wind noise) was `laughter`
 before #514 phase 1b.
 

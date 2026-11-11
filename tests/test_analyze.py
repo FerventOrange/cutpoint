@@ -488,3 +488,15 @@ def test_the_laughter_signal_comes_from_the_markers_only_for_the_word():
     ps.words = _said("so", "[laughter]")
     analyze.text_signals(ps, get_style("gaming"), "a.mp4")
     assert [p for *_, p in ps.laugh_hits] == ["laughter"] and ps.sig["laughter"].max() > 0.3
+
+
+def test_analyze_records_features_by_source(home, tmp_path, monkeypatch):
+    write(tmp_path / "a.mp4")
+    _stub_probe_and_transcriber(monkeypatch)
+    reset_state()
+    proj = tmp_path / "proj"
+    analyze.analyze(tmp_path / "a.mp4", get_style("funny"), proj, vision=False, use_scenes=False)
+    hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
+    st = hl["settings"]
+    assert {c["source"] for c in hl["candidates"]} <= set(st["features_by_source"])
+    assert all(v == st["features_available"] for v in st["features_by_source"].values())

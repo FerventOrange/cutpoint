@@ -36,7 +36,7 @@ scored from audio, speech and model features only, with no speed, airtime or mas
 same warning names them. Their scores are taken over those features alone (the telemetry
 weights leave the divisor), so their best moments rank with the telemetry sources' moments
 and reach the default edit; the sources with telemetry score as they would alone. A source whose telemetry has no GPS rows and no wind-meter reading (an
-Insta360 X3 file: IMU only) leaves out `speed` the same way, its pick floor scaled to match.
+Insta360 X3 file: IMU only) leaves out `speed` the same way, its pick floor scaled to match. `settings.features_by_source` in `highlights.json` lists the features each source was scored over.
 `360 analyze` never falls back.
 
 ## Crashes
