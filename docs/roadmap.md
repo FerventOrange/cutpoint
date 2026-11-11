@@ -43,15 +43,20 @@ timeline
                    : Activity profiles discovered from the footage
                    : Resume for interrupted runs
                    : Timeline format choice, FCPXML or OTIO
+        2026-11-11 : Since 0.5.0 (unreleased)
+                   : Action footage category
+                   : Vision rates the edit and its cut at lower cost
+                   : Labelled cross-category benchmark
+                   : Mixed action-cam projects score every source
+                   : Action-cam without telemetry falls back to action
+                   : UI header shows the detected category and changes the style in one step
     section Next
         Auto by default : Detection and scoring need no settings
-                        : Auto becomes the default style
-                        : Detected category shown, override in the UI
+                        : Auto becomes the CLI and agent default
                         : Agents and lite on auto
-        Vision and speed : Vision on by default at lower cost
+        Vision and speed : Vision on by default
                          : Faster scene detection on game footage
                          : Intel QSV and Apple VideoToolbox encode and decode
-                         : Re-run analysis with overrides
         Requests steer scoring : Re-rank from a request
                                : Assistant-made styles
         AI Chat and agents : Chat runs commands you approve
@@ -73,8 +78,8 @@ timeline
 
 Issues behind the Next bands:
 
-- Auto by default: [#897](https://github.com/FerventOrange/cutpoint/issues/897) (detected category shown, one-click override), [#901](https://github.com/FerventOrange/cutpoint/issues/901) (agents and CLI on auto), [#904](https://github.com/FerventOrange/cutpoint/issues/904) (lite), [#899](https://github.com/FerventOrange/cutpoint/issues/899) (zero-config acceptance test), [#900](https://github.com/FerventOrange/cutpoint/issues/900) (cross-category benchmark).
-- Vision and speed: [#909](https://github.com/FerventOrange/cutpoint/issues/909), [#907](https://github.com/FerventOrange/cutpoint/issues/907), [#893](https://github.com/FerventOrange/cutpoint/issues/893) (vision on by default at lower cost), [#730](https://github.com/FerventOrange/cutpoint/issues/730) (scene detection), [#448](https://github.com/FerventOrange/cutpoint/issues/448) (QSV and VideoToolbox), [#880](https://github.com/FerventOrange/cutpoint/issues/880) (re-run analysis with overrides).
+- Auto by default: [#901](https://github.com/FerventOrange/cutpoint/issues/901) (agents and CLI on auto), [#904](https://github.com/FerventOrange/cutpoint/issues/904) (lite), [#899](https://github.com/FerventOrange/cutpoint/issues/899) (zero-config acceptance test).
+- Vision and speed: [#907](https://github.com/FerventOrange/cutpoint/issues/907), [#893](https://github.com/FerventOrange/cutpoint/issues/893) (vision on by default), [#730](https://github.com/FerventOrange/cutpoint/issues/730) (scene detection), [#448](https://github.com/FerventOrange/cutpoint/issues/448) (QSV and VideoToolbox).
 - AI Chat and agents: [#706](https://github.com/FerventOrange/cutpoint/issues/706) (Chat runs commands, controls the UI), [#708](https://github.com/FerventOrange/cutpoint/issues/708) (llama.cpp provider, word-level trims, voice, attachments), [#260](https://github.com/FerventOrange/cutpoint/issues/260) (editable transcript), [#2](https://github.com/FerventOrange/cutpoint/issues/2) (one-click edit: `edit --context`, model-chosen clip order).
 - More footage: [#800](https://github.com/FerventOrange/cutpoint/issues/800), [#872](https://github.com/FerventOrange/cutpoint/issues/872), [#874](https://github.com/FerventOrange/cutpoint/issues/874) (gaming), [#10](https://github.com/FerventOrange/cutpoint/issues/10), [#345](https://github.com/FerventOrange/cutpoint/issues/345), [#344](https://github.com/FerventOrange/cutpoint/issues/344), [#341](https://github.com/FerventOrange/cutpoint/issues/341) (360), [#290](https://github.com/FerventOrange/cutpoint/issues/290) (color matching), [#8](https://github.com/FerventOrange/cutpoint/issues/8) (game profiles discovered from the footage).
 
