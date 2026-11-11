@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/bench.py`, a development benchmark across footage categories: runs `analyze --style auto` on labelled footage listed in a manifest, scores the detection per bucket (right, ambiguous, sure-wrong) and the ranking with `moment_eval.py`, keeps holdout footage hidden unless `--holdout` (pinned by a hash), compares variants or two results files with an advisory gate, samples Ollama and GPU use per run, and writes a results JSON and `report.md` (#900). See [docs/workflows/benchmark.md](docs/workflows/benchmark.md).
 - `settings.vision` in `highlights.json` records what the vision step cost (ratings, cache hits, seconds and tokens per phase, and the analyze time before it), with one DEBUG line per request and an INFO summary, and `scripts/vision_eval.py` compares projects by that cost (`--cold-pre` for a cold analyze time) and by the moments they keep (#909). Ranking is unchanged.
 - `vision_time_share` in `config.json` caps the vision rating at a share of the analyze time before it (default 0.3). It rates the moments nearest the cut first, takes cached ratings after the cap, makes at least one call and can run over by one call (#909).
 - The UI header shows what the footage was detected as ("Detected: Gameplay", or "Not sure: General style"), with the reason and the sources that disagree, and changes the style in one step: choosing one analyzes the project again in it (#897, #880).
