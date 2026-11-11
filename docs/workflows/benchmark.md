@@ -131,8 +131,10 @@ Per source and variant, one job at a time:
   `CREATE_NEW_PROCESS_GROUP`), and on Linux and macOS SIGTERM to the bench stop it: the running
   analyze gets 30 s to clean up before it is killed, the bench removes its lock and exits 130,
   as `cutpoint` does. Ctrl+C and Ctrl+Break reach analyze too, so the bench waits for it; a
-  SIGTERM reaches only the bench, so the bench passes it on (terminates analyze, which
-  `cutpoint` handles like Ctrl+C). Under `uv run` on Windows the bench still
+  SIGTERM to the bench alone (`kill <pid>`) does not reach analyze, so the bench passes it on
+  (terminates analyze, which `cutpoint` handles like Ctrl+C). Send it to the bench's pid, not
+  its process group (`kill -- -PGID`, GNU `timeout`, a systemd stop): analyze would then get it
+  twice, which can cut its cleanup short. Under `uv run` on Windows the bench still
   cleans up but uv exits `0xC000013A`; run `.venv\Scripts\python.exe scripts\bench.py` to get
   130 (see [Stopping a run](../commands.md#stopping-a-run)). Finished runs keep their stamps, so
   the next run reuses them. A `cutpoint` command
