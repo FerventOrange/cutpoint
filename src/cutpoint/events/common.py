@@ -248,7 +248,7 @@ def unload_ollama(url: str | None = None) -> list[str]:
         url = url or ollama_url()
         if not ollama_allowed(url):  # an Ollama on another machine the user did not agree to
             return []
-        resp = requests.get(f"{url}/api/ps", timeout=3, allow_redirects=False)
+        resp = requests.get(f"{url}/api/ps", timeout=(1, 3), allow_redirects=False)
         refuse_redirect(resp)
         loaded = resp.json().get("models", [])
     except (requests.RequestException, ValueError):
@@ -274,7 +274,7 @@ def unload_ollama(url: str | None = None) -> list[str]:
     deadline = time.time() + 15
     while time.time() < deadline:
         try:
-            resp = requests.get(f"{url}/api/ps", timeout=3, allow_redirects=False)
+            resp = requests.get(f"{url}/api/ps", timeout=(1, 3), allow_redirects=False)
             refuse_redirect(resp)
             if not resp.json().get("models"):
                 break

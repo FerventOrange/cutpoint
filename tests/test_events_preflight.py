@@ -133,6 +133,22 @@ def test_unload_ollama_all_unloads_fail_returns_without_waiting(monkeypatch):
     assert len(gets) == 1
 
 
+def test_unload_ollama_probes_use_a_short_connect_timeout(monkeypatch):
+    """#928: both /api/ps probes (the listing and the wait loop) give up fast on a dead host."""
+    monkeypatch.setattr(common.time, "sleep", lambda s: None)
+    timeouts = []
+    answers = iter([{"models": [{"name": "m"}]}, {"models": []}])
+
+    def get(url, **k):
+        timeouts.append(k["timeout"])
+        return _Resp(next(answers))
+
+    monkeypatch.setattr(common.requests, "get", get)
+    monkeypatch.setattr(common.requests, "post", lambda *a, **k: _Resp({}))
+    assert common.unload_ollama("http://127.0.0.1:11434") == ["m"]
+    assert timeouts == [(1, 3), (1, 3)]
+
+
 def _moved(sent):
     def call(url, **k):
         sent.append((url, k.get("allow_redirects", True)))
