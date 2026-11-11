@@ -1050,11 +1050,12 @@ def test_a_style_without_an_open_list_gets_no_nominee_and_keeps_its_suggested_to
 
 
 @pytest.mark.parametrize("order", [("c", "a", "b"), ("a", "b", "c"), ("b", "c", "a")])
-def test_records_that_tie_keep_their_input_order_on_a_rescore(order):
-    # not nominated, equal score: neither the id nor anything else reorders them
-    hl = highlights([own(k, 100.0 * i, 50.0) for i, k in enumerate(order)])
+def test_records_that_tie_are_ordered_by_start_on_a_rescore(order):
+    # not nominated, equal score: their start orders them, not the id or the list (#949)
+    starts = {"a": 200.0, "b": 0.0, "c": 100.0}
+    hl = highlights([own(k, starts[k], 50.0) for k in order])
     scorer.rescore_events(hl, events_of([]), Path(), [grid()])
-    assert [c["id"] for c in hl["candidates"]] == list(order)
+    assert [c["id"] for c in hl["candidates"]] == ["b", "c", "a"]
 
 
 # --------------------------------------------------------------------------- weak heard laughs

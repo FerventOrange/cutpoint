@@ -1181,7 +1181,9 @@ def vision_skipped(c: dict[str, Any]) -> bool:
     """Whether the candidate ``c`` is a moment the default edit skipped above its cut when the
     vision step ran (too long or overlapping a pick; ``vision_skipped``, the span it had then)
     and still has that span (within :data:`VISION_SPAN_EPS`). The vision clamp
-    (:func:`cutpoint.scorer.apply_vision_clamp`) does not count such a moment as a neighbour."""
+    (:func:`cutpoint.scorer.apply_vision_clamp`) does not count such a moment as a neighbour.
+    A re-rank (:func:`cutpoint.scorer.rescore_events`) also removes the mark once the default
+    edit of the ranking without the ratings takes the moment (#949)."""
     span = c.get("vision_skipped")
     return (
         isinstance(span, list)
@@ -3905,7 +3907,7 @@ def _analyze(
 
         cands = hl["candidates"]
         cands.sort(
-            key=lambda c: (not c.get("must_include"), *scorer.rank_key(c))
+            key=lambda c: (not c.get("must_include"), *scorer.rank_key(c), *scorer.tie_key(c))
         )  # must-include first
         suggested = len(default_fit.fit_target(cands, style.target_total))
         hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]

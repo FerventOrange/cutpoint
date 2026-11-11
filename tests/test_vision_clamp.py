@@ -164,13 +164,15 @@ def test_a_tie_that_would_not_reorder_stays_a_tie():
 
 
 def test_the_final_order_never_puts_a_rated_moment_past_a_neighbour_it_was_held_by():
-    """Property over the records: random scores on a coarse grid (many ties) and random grid
-    scores; after ``rank_key`` no (rated, unrated) pair is reordered, unless the rated moment's
-    bounds were equal (no room), and a second apply changes nothing."""
+    """Property over the records: random scores on a coarse grid (many ties), random grid
+    scores and starts in a random order; after ``rank_key`` and ``tie_key`` no (rated, unrated)
+    pair is reordered, unless the rated moment's bounds were equal (no room), and a second
+    apply changes nothing."""
     rng = random.Random(909)
     for _ in range(500):
         n = rng.randint(2, 12)
         cands, before = [], []
+        starts = rng.sample(range(n), n)  # a tie goes by start, not by the place in the list
         for k in range(n):
             pre = float(rng.randint(0, 10) * 10)
             grid = float(rng.randint(0, 10) * 10) if rng.random() < 0.5 else None
@@ -178,14 +180,16 @@ def test_the_final_order_never_puts_a_rated_moment_past_a_neighbour_it_was_held_
             after = float(rng.randint(0, 10) * 10)
             extra = {} if grid is None else {"grid_score": grid}
             cands.append(_cand(f"c{k}", after if rated else pre, **extra))
+            cands[-1]["start"] = 100.0 * starts[k]
             before.append(pre if rated else None)
         pre = [b if b is not None else c["score"] for b, c in zip(before, cands, strict=True)]
         ranked = sorted(
-            range(n), key=lambda i: (-pre[i], -cands[i].get("grid_score", pre[i]), i)
+            range(n),
+            key=lambda i: (-pre[i], -cands[i].get("grid_score", pre[i]), scorer.tie_key(cands[i])),
         )  # the ranking before vision
         copy_before = copy.deepcopy(cands)
         scorer.apply_vision_clamp(cands, before)
-        final = {c["id"]: p for p, c in enumerate(sorted(cands, key=scorer.rank_key))}
+        final = {c["id"]: p for p, c in enumerate(sorted(cands, key=scorer.edit_rank_key))}
         for pos, i in enumerate(ranked):
             if before[i] is None:
                 assert cands[i]["score"] == copy_before[i]["score"]
@@ -240,6 +244,28 @@ def test_a_tie_before_vision_is_ranked_by_grid_score():
     assert rated["score"] == 95.0
 
 
+@pytest.mark.parametrize("rated_first", [True, False])
+@pytest.mark.parametrize(("u_start", "want"), [(0.0, 60.0), (200.0, 59.9)])
+def test_a_full_tie_is_broken_by_the_start_not_by_the_place_in_the_list(rated_first, u_start, want):
+    """R (at 100 s) is held at U's 60 and ties it on the grid score too: the start decides,
+    whatever the list order. U earlier: U ranks first, so R keeps 60. U later: R would sort
+    first, so it is moved 0.1 under U (#949)."""
+    u = own("u", u_start, 60.0)
+    r = own("r", 100.0, 70.0)  # 50 before its rating
+    cands, before = ([r, u], [50.0, None]) if rated_first else ([u, r], [None, 50.0])
+    scorer.apply_vision_clamp(cands, before)
+    assert (u["score"], r["score"]) == (60.0, want)
+    assert [c["id"] for c in sorted(cands, key=scorer.edit_rank_key)] == ["u", "r"]
+
+
+def test_the_tie_key_is_the_position_of_the_moment():
+    """Source order, source, start, then end; never the id."""
+    a = own("h009", 10.0, end=14.0)
+    b = own("h001", 10.0, end=18.0)
+    c = {**own("h002", 0.0), "source": "z.mp4", "source_index": 1}
+    assert sorted([c, b, a], key=scorer.tie_key) == [a, b, c]
+
+
 # ---- rescore_events: the bonus and the clamp
 
 
@@ -268,6 +294,49 @@ def test_a_rated_moment_with_a_bonus_stays_under_the_unrated_one_above_it(tmp_pa
     for _ in range(2):
         scorer.rescore_events(hl, ev, tmp_path, [grid()])
         assert hl == again  # idempotent
+
+
+@pytest.mark.parametrize("rated_first", [True, False])
+def test_a_tie_gives_the_same_score_on_every_rescore(tmp_path, rated_first):
+    """#949: h002 (rated, 73.5 with its bonus, 56 without) is held at the unrated h001's 70 and
+    ties it on the grid score too. Listed first, it used to be moved to 69.9 by the first
+    rescore and back to 70.0 by the second, once the sort had put h001 first. The start now
+    breaks the tie: 70.0 and h001 (at 0 s) first on every rescore, in either list order."""
+    rated, held = own("h002", 100.0, 50.0), own("h001", 0.0, 70.0)
+    _rate(rated)
+    first = [rated, held] if rated_first else [held, rated]
+    hl = highlights([*first, own("h003", 300.0, 40.0)], vision={})
+    ev = events_of([feed(100.0)])
+    scorer.rescore_events(hl, ev, tmp_path, [grid()])
+    assert [c["id"] for c in hl["candidates"]] == ["h001", "h002", "h003"]
+    assert hl["candidates"][1]["score"] == 70.0
+
+    again = copy.deepcopy(hl)
+    for _ in range(2):
+        scorer.rescore_events(hl, ev, tmp_path, [grid()])
+        assert hl == again
+
+
+@pytest.mark.parametrize("rated", [False, True])
+def test_a_new_nominee_keeps_its_place_once_it_is_numbered(tmp_path, rated):
+    """A record without an id (a nominee before ``number_candidates``) at 0 s ties h005 at
+    100 s: it ranks first before and after it is numbered, the same order and scores on the
+    next re-rank. Rated, h005 (73.5 with its bonus, 56 without) is held at the new record's
+    70 both times."""
+    old = own("h005", 100.0, 50.0 if rated else 70.0)
+    new = own("x", 0.0, 70.0)
+    del new["id"]
+    if rated:
+        _rate(old)
+    hl = highlights([old, new], vision={})
+    ev = events_of([feed(100.0)] if rated else [])
+    scorer.rescore_events(hl, ev, tmp_path, [grid()])
+    first = [(c.get("id"), c["score"]) for c in hl["candidates"]]
+    assert first == [(None, 70.0), ("h005", 70.0)]
+    scoring.number_candidates(hl)
+    scorer.rescore_events(hl, ev, tmp_path, [grid()])
+    second = [(c["id"], c["score"]) for c in hl["candidates"]]
+    assert second == [(cid or "h006", score) for cid, score in first]
 
 
 def test_a_stale_rating_counts_as_unrated_and_bounds_the_rated_below_it(tmp_path):
@@ -320,7 +389,7 @@ def test_a_skipped_moment_with_another_span_is_a_neighbour_again():
     s["end"] += 5.0
     assert not analyze.vision_skipped(s)
     assert scorer.apply_vision_clamp([s, r], [None, 70.0]) == 1
-    assert r["score"] == 80.0  # held at S (a tie that keeps S first)
+    assert r["score"] == 79.9  # held under S: level, R's span (0-8) would sort before S's (0-13)
 
 
 def test_rescore_lets_a_rating_pass_a_skipped_moment_and_is_idempotent(tmp_path):
@@ -393,9 +462,9 @@ def test_a_moment_still_skipped_keeps_its_mark(tmp_path):
 
 def test_a_skipped_moment_the_edit_now_takes_loses_its_mark(tmp_path):
     """A re-rank drops the pick h000 to 45, under h001 and h002: the edit before vision now
-    takes h001 and h002, so the mark goes and h001 bounds the rated h002 again (0.1 under it,
-    as h002 is listed first after the first rescore); a second rescore does not mark it
-    again and h002 stays under or level with it."""
+    takes h001 and h002, so the mark goes and h001 bounds the rated h002 again (level with
+    it, h001 first by its start); a second rescore does not mark it again and gives the same
+    score."""
     hl = highlights(_skip_set(70.0), vision={}, target_total=16.0)
     scorer.rescore_events(hl, events_of([]), tmp_path, [grid()])
     pick = next(c for c in hl["candidates"] if c["id"] == "h000")
@@ -403,14 +472,14 @@ def test_a_skipped_moment_the_edit_now_takes_loses_its_mark(tmp_path):
     scorer.rescore_events(hl, events_of([]), tmp_path, [grid()])
     by_id = {c["id"]: c for c in hl["candidates"]}
     assert "vision_skipped" not in by_id["h001"]
-    assert by_id["h002"]["score"] == 59.9  # held under h001
+    assert by_id["h002"]["score"] == 60.0  # held at h001
     assert hl["settings"]["vision"]["clamped"] == 1
     assert [c["id"] for c in hl["candidates"]] == ["h001", "h002", "h000", "h003"]
     scorer.rescore_events(hl, events_of([]), tmp_path, [grid()])
     by_id = {c["id"]: c for c in hl["candidates"]}
     assert "vision_skipped" not in by_id["h001"]
     assert [c["id"] for c in hl["candidates"]][:2] == ["h001", "h002"]
-    assert by_id["h002"]["score"] <= by_id["h001"]["score"] == 60.0
+    assert by_id["h002"]["score"] == by_id["h001"]["score"] == 60.0
 
 
 def test_no_vision_project_is_left_as_it_is(tmp_path):
@@ -437,7 +506,9 @@ def test_a_re_rank_ties_the_edit_before_vision_as_analyze_did(tmp_path):
     ev = events_of([])
     scorer.rescore_events(hl, ev, tmp_path, [grid()])
     # analyze's final sort and ids
-    hl["candidates"].sort(key=lambda c: (not c.get("must_include"), *scorer.rank_key(c)))
+    hl["candidates"].sort(
+        key=lambda c: (not c.get("must_include"), *scorer.rank_key(c), *scorer.tie_key(c))
+    )
     hl["candidates"] = [{"id": f"h{k:03d}", **c} for k, c in enumerate(hl["candidates"], 1)]
     by_start = {c["start"]: c for c in hl["candidates"]}
     assert [c["start"] for c in hl["candidates"]] == [300.0, 100.0, 0.0]  # R, S, T
@@ -458,10 +529,10 @@ def test_the_edit_rank_key_ties_by_source_order_then_source_and_start():
     """Ties on :func:`cutpoint.scorer.rank_key` go by ``source_index`` (the order of the
     inputs, not the name: b.mp4 came first here), then source and start; a record without
     ``source_index`` counts as the first source."""
-    late = {"source": "a.mp4", "source_index": 1, "start": 0.0, "score": 60.0}
-    early = {"source": "b.mp4", "source_index": 0, "start": 50.0, "score": 60.0}
-    first = {"source": "b.mp4", "source_index": 0, "start": 10.0, "score": 60.0}
-    best = {"source": "a.mp4", "source_index": 1, "start": 90.0, "score": 70.0}
-    old = {"source": "a.mp4", "start": 5.0, "score": 60.0}  # no source_index: 0
+    late = {"source": "a.mp4", "source_index": 1, "start": 0.0, "end": 8.0, "score": 60.0}
+    early = {"source": "b.mp4", "source_index": 0, "start": 50.0, "end": 58.0, "score": 60.0}
+    first = {"source": "b.mp4", "source_index": 0, "start": 10.0, "end": 18.0, "score": 60.0}
+    best = {"source": "a.mp4", "source_index": 1, "start": 90.0, "end": 98.0, "score": 70.0}
+    old = {"source": "a.mp4", "start": 5.0, "end": 13.0, "score": 60.0}  # no source_index: 0
     got = sorted([late, early, first, best, old], key=scorer.edit_rank_key)
     assert got == [best, old, first, early, late]
