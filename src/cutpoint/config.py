@@ -249,7 +249,8 @@ def _memory_guard(path: Path, data: dict) -> float:
     value = data.get("memory_guard")
     if value is None:
         return MEMORY_GUARD_GB
-    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+    bad = isinstance(value, bool) or not isinstance(value, int | float)
+    if bad or (isinstance(value, float) and not math.isfinite(value)) or value < 0:
         raise ValueError(f"{path}: memory_guard is {value!r}; expected GB of RAM, 0 or more")
     return float(value)
 
