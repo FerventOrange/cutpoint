@@ -2105,7 +2105,9 @@ name and recognition captions), and Cutpoint drops each crash caption that fits 
 footage itself (more than 10% of its keyframes). The VLM prompts keep the generic wording, and
 the model's crash phrases are capped at 0.75, so a phrase of its own never makes a crash
 candidate without other evidence. The profile is
-saved to the library with `"source": "discovered"` (a file with the same content is reused),
+saved to the library with `"source": "discovered"` (a file with the same content is reused; a re-discovery of the same footage, also with
+`--refresh-profile`, overwrites that footage's own discovered file, which stores a `footage` field,
+and renames it when the answer names a different activity),
 so the next similar video finds it. The profile is also cached per footage (the files, the
 model, `--context` and the prompts), so the same footage in a new project gets the same profile
 without asking the model again. A discovery the model answered unusably or that timed out is
@@ -2124,7 +2126,7 @@ a missing consent, a bad Ollama port, too little free memory or a fallback is on
 |---|---|
 | `--activity NAME` | Use `generic` or a profile of your library (`cutpoint profile list`). An unknown name is `bad_args`. Default: found in your library or discovered from the footage |
 | `--context TEXT` | What the video is, in the user's words. The local LLM turns it into extra crash captions and slang on top of the profile. A changed text rebuilds the profile |
-| `--refresh-profile` | Ignore `activity.json` and the profile (or failed discovery) cached for this footage, and detect or build the profile again, and replace the cached one. Footage that matches a library profile keeps it unless you give `--context`; to start over, run `cutpoint profile delete NAME` first |
+| `--refresh-profile` | Ignore `activity.json` and the profile (or failed discovery) cached for this footage, and detect or build the profile again, and replace the cached one, also in your library. Footage that matches a library profile keeps it unless you give `--context`; to start over, run `cutpoint profile delete NAME` first |
 | `--ollama-url`, `--ollama-model` | The Ollama server and model that build the profile, as on [`analyze`](#analyze) (a flag left out takes its default). A new profile needs no deleting of `activity.json` to use them: add `--refresh-profile` |
 | `--json` | One [result envelope](#json-output) on stdout; `outputs` holds the `activity.json` record (`name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `scores`, `description`, `profile`) and `activity_file`. Output of the local model never reaches stdout |
 
