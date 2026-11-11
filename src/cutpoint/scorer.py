@@ -22,7 +22,7 @@ ACTION_CAM_FEATURES`); action-cam keeps its own clip geometry and picking.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -93,6 +93,111 @@ def with_bonus(base: float, boost: float, vlm: float | None) -> float:
     return round(min(100.0, score), 1)
 
 
+def clamp_rated(rows: Sequence[tuple[float, float | None]]) -> list[float]:
+    """The final scores of ``rows`` after the vision clamp (#909): ``(before, after)`` per
+    moment in the ranking before vision, ``before`` its score without a vision rating and
+    ``after`` its score with it (None: not rated). A rated moment's score stays between those
+    of its nearest unrated neighbours, the one above it as the upper bound (100 without one)
+    and the one below as the lower bound (0 without one), both inclusive; rated moments
+    between the same neighbours may change places. An unrated moment keeps ``before``; a rated
+    one is rounded to one decimal."""
+    out = [before if after is None else after for before, after in rows]
+    upper: list[float] = []
+    hi = 100.0
+    for before, after in rows:
+        if after is None:
+            hi = before
+        upper.append(hi)
+    lo = 0.0
+    for i in range(len(rows) - 1, -1, -1):
+        before, after = rows[i]
+        if after is None:
+            lo = before
+        else:
+            out[i] = round(min(max(after, lo), upper[i]), 1)
+    return out
+
+
+def apply_vision_clamp(cands: list[dict[str, Any]], before: Sequence[float | None]) -> int:
+    """Clamp the scores of the candidate records ``cands`` with :func:`clamp_rated`; returns
+    how many changed. ``before[i]`` is ``cands[i]``'s score without its vision rating, None
+    when it has no rating that counts (never rated, the rating failed or went stale): its
+    score is then its own. The ranking before vision orders them by that score
+    (:func:`rank_key`; a tie keeps the order of ``cands``). ``must_include`` moments, visual
+    pool moments and unrated moments the default edit skipped above its cut when vision ran
+    (:func:`cutpoint.analyze.vision_skipped`; the edit cannot use them) are left out: they are
+    no one's neighbours.
+
+    A rated moment whose score equals an unrated neighbour's, which the final sort
+    (:func:`rank_key`, then the order of ``cands``) would put past that neighbour, is moved
+    0.1 inside its bounds: below the neighbour above, above the neighbour below, if that
+    stays within the other bound and does not put it past the other neighbour instead. When
+    the two bounds are equal, or 0.1 apart with no room on either side, it keeps the tie and
+    the final sort places it by its ``grid_score`` and its place in ``cands``. A tie that
+    would not reorder stays a tie. The result depends only on the inputs, so a rescore gives
+    the same scores."""
+    from cutpoint.analyze import vision_skipped  # noqa: PLC0415 - imports this module
+    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports this
+
+    def pre(i: int) -> float:
+        b = before[i]
+        return cands[i]["score"] if b is None else b
+
+    idx = [
+        i
+        for i, c in enumerate(cands)
+        if not c.get("must_include")
+        and not is_pool(c)
+        and not (before[i] is None and vision_skipped(c))
+    ]
+    idx.sort(key=lambda i: (-pre(i), -cands[i].get("grid_score", pre(i))))
+    rows = [(pre(i), None if before[i] is None else cands[i]["score"]) for i in idx]
+    scores = clamp_rated(rows)
+
+    def key(k: int, score: float) -> tuple[float, float, int]:  # the final sort's, row k at score
+        i = idx[k]
+        return -score, -cands[i].get("grid_score", score), i
+
+    above: list[int | None] = []  # the nearest unrated row above each row
+    near: int | None = None
+    for k, (_, after) in enumerate(rows):
+        if after is None:
+            near = k
+        above.append(near)
+    below: list[int | None] = [None] * len(rows)  # and below
+    near = None
+    for k in range(len(rows) - 1, -1, -1):
+        if rows[k][1] is None:
+            near = k
+        below[k] = near
+
+    def past(k: int, score: float, n: int | None) -> bool:  # row k at score sorts past row n
+        if n is None or score != scores[n]:
+            return False
+        return key(k, score) < key(n, scores[n]) if n < k else key(k, score) > key(n, scores[n])
+
+    for k, (_, after) in enumerate(rows):
+        if after is None:
+            continue
+        up, down = above[k], below[k]
+        hi = 100.0 if up is None else scores[up]
+        lo = 0.0 if down is None else scores[down]
+        if past(k, scores[k], up):
+            nudged = round(scores[k] - 0.1, 1)
+        elif past(k, scores[k], down):
+            nudged = round(scores[k] + 0.1, 1)
+        else:
+            continue
+        if lo <= nudged <= hi and not past(k, nudged, up) and not past(k, nudged, down):
+            scores[k] = nudged
+    changed = 0
+    for i, score in zip(idx, scores, strict=True):
+        if score != cands[i]["score"]:
+            cands[i]["score"] = score
+            changed += 1
+    return changed
+
+
 def rescore_events(
     hl: dict[str, Any], ev: dict[str, Any], project: Path, parts: list[GridPart] | None = None
 ) -> int:
@@ -102,8 +207,11 @@ def rescore_events(
     Each candidate keeps its analysis score as ``score_pre_events`` (so re-running is
     idempotent) and records the evidence in ``signals.events``. A vision rating blended into
     it counts only while the candidate keeps the span it was rated over
-    (:func:`cutpoint.analyze.sync_vision`). The candidates are re-sorted
-    and ``suggested_top`` is recomputed. In styles with an open list (``gaming``), events that
+    (:func:`cutpoint.analyze.sync_vision`), and a rated candidate's score stays between those of
+    its unrated neighbours in the ranking without the ratings, the moments the default edit
+    skipped above its cut excepted (:func:`apply_vision_clamp`; the
+    count goes to ``settings.vision.clamped`` when there is a ``settings.vision``). The
+    candidates are re-sorted and ``suggested_top`` is recomputed. In styles with an open list (``gaming``), events that
     can score and that no candidate covers nominate candidates first
     (:func:`cutpoint.events.scoring.nominate`, scored from the grids ``parts`` or, without,
     from their caches); a nominee is rescored like the others. Visual pool moments
@@ -124,9 +232,10 @@ def rescore_events(
     style = scoring.style_and_base(hl.get("style"))
     language = (hl.get("settings") or {}).get("language")
     segments: dict[str, list[dict[str, Any]] | None] = {}
-    changed = 0
     cands = [c for c in hl.get("candidates", []) if not is_pool(c)]
     pool = [c for c in hl.get("candidates", []) if is_pool(c)]
+    old = [c["score"] for c in cands]
+    unrated: list[float | None] = []  # the score without the vision rating, for the clamp
     for c in cands:
         base = c.get("score_pre_events", c["score"])
         rated = analyze.sync_vision(c)  # the vision blend only while the span is the one rated
@@ -152,15 +261,20 @@ def rescore_events(
                 "window": [win["start"], win["end"]],
             }
         score = with_bonus(base, boost, vlm)
+        active = rated is not None and "vision_stale" not in c  # a stale rating: unrated
+        unrated.append(with_bonus(c["vision_rated"]["base"], boost, vlm) if active else None)
         c["score_pre_events"] = base
         c.setdefault("signals", {})["events"] = {
             "boost": round(boost, 1),
             **evidence,
             **({"nominated": nominated} if nominated else {}),
         }
-        if score != c["score"]:
-            changed += 1
         c["score"] = score
+    clamped = apply_vision_clamp(cands, unrated)
+    vision = (hl.get("settings") or {}).get("vision")
+    if isinstance(vision, dict):
+        vision["clamped"] = clamped
+    changed = sum(c["score"] != o for c, o in zip(cands, old, strict=True))
     cands.sort(key=lambda c: (not c.get("must_include"), *rank_key(c)))  # forced crashes first
     hl["candidates"][:] = cands + pool  # in place, as the sort was
     target = (hl.get("settings") or {}).get("target_total")

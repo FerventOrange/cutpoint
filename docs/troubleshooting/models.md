@@ -6,7 +6,7 @@
 `--vision` (or turn it on in the Models tab in `cutpoint ui`, which sets `"vision": true` in
 `config.json`; see [configuration](../configuration.md#vision)). If the server or model is not available
 then, it logs a WARNING (a `vision_unavailable` warning with `--json`) and continues without the
-rating; if some of the top candidates have cached ratings, it uses those instead. The local AI
+rating; if some of the moments to rate have cached ratings, it uses those instead. The local AI
 Chat and `360 director --vl-check` use it too, and so does discovering an activity profile:
 `analyze` and `edit` do that whenever a local Ollama answers, without `--vision`, and only log an
 INFO line when it is not usable. To install it, see

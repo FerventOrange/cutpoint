@@ -39,6 +39,7 @@ import numpy as np
 from cutpoint import (
     cache,
     category,
+    config,
     default_fit,
     features,
     folders,
@@ -106,7 +107,7 @@ from cutpoint.transcribe import (
     transcript_name,
 )
 from cutpoint.utils import clock, find_videos, matches_glob, slugify
-from cutpoint.vision import SPEECH_PROMPT_LIFT, VisionRater, speech_excerpt
+from cutpoint.vision import PRIOR_N, RATING_PRIOR, VisionRater, speech_excerpt
 
 if TYPE_CHECKING:
     from cutpoint.activity import Prompts
@@ -119,7 +120,9 @@ LONG_FILE_S = 1800  # above this, scene detection decodes keyframes only
 PROFANE = {p.rstrip("*") for p in PROFANITY}  # names as keyword_hits reports them
 PROFANITY_CUE_S = 3.0  # a profane word counts only if another cue is this close
 PROFANITY_CUE_MIN = 0.8  # minimum weight of a keyword that counts as a cue
-VISION_TOP_MIN, VISION_TOP_MAX = 10, 60  # auto --vision-top: 1 per 2 min, clamped
+# the vision band (#909): the default edit plus k below its cut, k = this share of the edit's
+# moments, at least VISION_BAND_MIN and at most VISION_BAND_MAX
+VISION_BAND_SHARE, VISION_BAND_MIN, VISION_BAND_MAX = 0.3, 2, 24
 VISION_SPAN_EPS = 1e-3  # seconds: a candidate span this close to its rated one still matches
 PICK_FLOOR = 0.25  # a peak below this share of the strongest one is not a candidate ...
 LONG_LIST_FLOOR = 0.5  # ... and, past the usual count (:func:`usual_count`), not below this share
@@ -1118,6 +1121,26 @@ def vision_blend(score: float, rating: float | None, weight: float) -> float:
     return round(max(0.0, min(100.0, score * (1 + weight * (rating - 5) / 5))), 1)
 
 
+def rating_centres(ratings: Iterable[tuple[str, float]]) -> dict[str, float]:
+    """The centre of each prompt kind's ratings (#909): ``ratings`` are ``(kind, rating)``
+    pairs, the kind ``"speech"`` or ``"frames"``. A kind's centre is the mean of its ratings,
+    shrunk toward :data:`cutpoint.vision.RATING_PRIOR` while it has fewer than
+    :data:`cutpoint.vision.PRIOR_N`: ``(sum + max(0, PRIOR_N - n) * prior) / max(n, PRIOR_N)``.
+    Only the kinds rated are in the result."""
+    sums: dict[str, list[float]] = {}
+    for kind, r in ratings:
+        sums.setdefault(kind, []).append(r)
+    return {
+        kind: (sum(rs) + max(0, PRIOR_N - len(rs)) * RATING_PRIOR[kind]) / max(len(rs), PRIOR_N)
+        for kind, rs in sums.items()
+    }
+
+
+def centred_rating(rating: float, centre: float) -> float:
+    """``rating`` moved so its kind's ``centre`` (:func:`rating_centres`) is 5, within 0-10."""
+    return max(0.0, min(10.0, 5 + rating - centre))
+
+
 def sync_vision(c: dict[str, Any]) -> float | None:
     """Keep the vision rating of the candidate ``c`` only while it describes the clip (#802).
 
@@ -1152,6 +1175,19 @@ def sync_vision(c: dict[str, Any]) -> float | None:
         }
         sig["vision"] = None
     return rated["base"]
+
+
+def vision_skipped(c: dict[str, Any]) -> bool:
+    """Whether the candidate ``c`` is a moment the default edit skipped above its cut when the
+    vision step ran (too long or overlapping a pick; ``vision_skipped``, the span it had then)
+    and still has that span (within :data:`VISION_SPAN_EPS`). The vision clamp
+    (:func:`cutpoint.scorer.apply_vision_clamp`) does not count such a moment as a neighbour."""
+    span = c.get("vision_skipped")
+    return (
+        isinstance(span, list)
+        and abs(c["start"] - span[0]) <= VISION_SPAN_EPS
+        and abs(c["end"] - span[1]) <= VISION_SPAN_EPS
+    )
 
 
 def _label(c: Candidate, style: Style) -> str:
@@ -2209,9 +2245,42 @@ def rebuild_crash_moments(project: Path) -> bool:
     return True
 
 
-def auto_vision_top(total_duration_s: float) -> int:
-    """Default ``--vision-top``: one candidate per 2 minutes of footage, 10-60."""
-    return max(VISION_TOP_MIN, min(VISION_TOP_MAX, math.ceil(total_duration_s / 120)))
+def band_k(suggested_top: int) -> int:
+    """How many moments the vision band takes below the default edit's cut (#909):
+    :data:`VISION_BAND_SHARE` of the edit's ``suggested_top`` moments, rounded up, within
+    :data:`VISION_BAND_MIN` and :data:`VISION_BAND_MAX`."""
+    k = math.ceil(round(VISION_BAND_SHARE * suggested_top, 9))  # no float error can add one
+    return min(VISION_BAND_MAX, max(VISION_BAND_MIN, k))
+
+
+def vision_band(
+    ranked: list[dict[str, Any]], picks: list[dict[str, Any]], max_n: int | None
+) -> tuple[list[dict[str, Any]], int, int]:
+    """The moments the vision model rates (#909): the default edit and ``k`` below its cut.
+
+    ``ranked``: the candidates that are neither ``must_include`` nor visual pool moments, in
+    :func:`cutpoint.scorer.rank_key` order. ``picks``: the default edit
+    (:func:`cutpoint.default_fit.fit_target` before vision). The cut is 1 + the index in
+    ``ranked`` of the last pick that is not ``must_include`` (the picks need not be the first
+    ones; 0 without one). The band is every pick in ``ranked`` (a moment above the cut that the
+    edit skipped for its length or because it overlaps a pick is not one) plus ``ranked[cut : cut + k]``, ``k`` =
+    :func:`band_k` of the number of picks, clipped at the end. Closest to the cut first: the
+    last pick, the first moment below the cut, the pick before the last, the second below, and
+    so on, the rest of one side once the other runs out; then cut to ``max_n``
+    (``--vision-top``; None: all). Returns ``(band, cut, k)``."""
+    where = {id(c): i for i, c in enumerate(ranked)}
+    at = sorted(
+        {where[id(c)] for c in picks if not c.get("must_include") and id(c) in where},
+        reverse=True,
+    )
+    cut = at[0] + 1 if at else 0
+    k = band_k(len(picks))
+    above = [ranked[i] for i in at]
+    below = ranked[cut : cut + k]
+    order: list[dict[str, Any]] = []
+    for i in range(max(len(above), len(below))):
+        order.extend(side[i] for side in (above, below) if i < len(side))
+    return (order if max_n is None else order[:max_n]), cut, k
 
 
 def _find_input(target: Path, exclude: Sequence[str], recursive: bool) -> list[Path]:
@@ -2945,28 +3014,73 @@ def _visual_pool(
     return out
 
 
+def vision_budget(
+    share: float, pre_vision_s: float, earlier_total_s: float | None
+) -> tuple[float, str]:
+    """The vision step's time budget (#909): ``share`` (``vision_time_share``) of the analysis
+    before it. A re-rank measures against the first analysis (``earlier_total_s``, its
+    ``timings.total_s``), as its own run before vision is mostly cached. Returns
+    ``(budget_s, the name of the base)``."""
+    if earlier_total_s is not None:
+        return share * earlier_total_s, "earlier_total_s"
+    return share * pre_vision_s, "pre_vision_s"
+
+
+def cap_reached(now: float, deadline: float, calls: int) -> bool:
+    """Whether the vision time cap stops further model calls: at least one call was made and
+    the clock ``now`` is at or past the ``deadline``."""
+    return calls >= 1 and now >= deadline
+
+
+@dataclass
+class VisionOutcome:
+    """What :func:`_rate_vision` did: ``used`` any rating applied; ``failed`` moments without a
+    rating (cache misses of a ``cache_only`` rater included); ``capped`` the time cap stopped
+    the model calls and ``skipped_by_cap`` moments were left unrated for it; ``centres`` per
+    prompt kind (:func:`rating_centres`); ``by_kind`` the moments rated per prompt kind."""
+
+    used: bool = False
+    failed: int = 0
+    capped: bool = False
+    skipped_by_cap: int = 0
+    centres: dict[str, float] = field(default_factory=dict)
+    by_kind: dict[str, int] = field(default_factory=dict)
+
+
 def _rate_vision(
-    cands: list[dict[str, Any]],
+    order: list[dict[str, Any]],
     rater: VisionRater,
-    n_top: int,
     style: Style,
     activity: Prompts | None = None,
     batch_size: int = 0,
-) -> tuple[bool, int]:
-    """Rate the first ``n_top`` candidates with Ollama and apply the rating to their
-    analysis score (``score_pre_events`` once events rescored them) with
-    :func:`vision_blend` and the style's ``vision_weight``;
-    the model's label goes to ``vision_label``, never to ``label`` (#913). Each rated candidate
-    keeps ``vision_rated`` (the span rated, the score before and after the blend) for
-    :func:`sync_vision`.
+    *,
+    deadline: float,
+    clock: Callable[[], float] = time.perf_counter,
+) -> VisionOutcome:
+    """Rate the candidates of ``order`` (the vision band, closest to the cut first,
+    :func:`vision_band`) with the vision model and apply the ratings to their analysis score
+    (``score_pre_events`` once events rescored them).
+
+    The model is asked in ``order`` until the time cap: once a call was made and ``clock()``
+    reached ``deadline`` (:func:`cap_reached`), a moment without a cached rating is skipped; a
+    cached one is still taken (it costs nothing). A call under way when the deadline passes
+    finishes, so the step can overrun its budget by one call.
+
+    Then each prompt kind's ratings (``"speech"`` when the moment has speech to send with its
+    frames, :func:`~cutpoint.vision.speech_excerpt`, else ``"frames"``) are centred on their
+    mean (:func:`rating_centres`, :func:`centred_rating`) and blended in with
+    :func:`vision_blend` and the style's ``vision_weight``. ``signals.vision`` keeps the
+    model's rating as given; its label goes to ``vision_label``, never to ``label`` (#913).
+    Each rated candidate keeps ``vision_rated`` (the span rated, the score before and after the
+    blend, the prompt kind and its centre) for :func:`sync_vision`.
     ``activity`` words the action-cam prompt (the project's activity
     prompt set). ``batch_size``: ``--batch-size`` (#713), the model is unloaded after the
-    candidates of every this many sources (:func:`_vision_batches`); the ratings are the same.
-    Returns ``(any rated, failures)``."""
-    used, n_failed = False, 0
-    top = cands[:n_top]
-    if not rater.cache_only:  # a resumed run: the ratings made before are cached
-        n_cached = sum(
+    candidates of every this many sources (:func:`_vision_batches`); the ratings are the same,
+    but once the time cap is reached, which moments near the cut get rated can differ."""
+    out = VisionOutcome()
+
+    def cached(c: dict[str, Any]) -> bool:
+        return (
             rater.cached(
                 remap_source(Path(c["source"])),
                 c["start"],
@@ -2977,18 +3091,24 @@ def _rate_vision(
                 laughter=heard_laughter(c),
             )
             is not None
-            for c in top
         )
-        progress.continuing("vision", n_cached, len(top))
-    done = 0
+
+    if not rater.cache_only:  # a resumed run: the ratings made before are cached
+        progress.continuing("vision", sum(cached(c) for c in order), len(order))
+    got: list[tuple[dict[str, Any], float, str | None]] = []
+    done = calls = 0
     try:
-        for k, part in enumerate(_vision_batches(top, batch_size)):
+        for k, part in enumerate(_vision_batches(order, batch_size)):
             if k:  # a batch boundary: memory back until the next request loads the model
                 rater.unload()
-                progress.continuing("vision", done, len(top))
+                progress.continuing("vision", done, len(order))
             for c in part:
-                progress.update(progress.fraction(done, len(top)))
+                progress.update(progress.fraction(done, len(order)))
                 done += 1
+                if cap_reached(clock(), deadline, calls) and not cached(c):
+                    out.skipped_by_cap += 1
+                    continue
+                hits = rater.hits
                 res = rater.rate(
                     remap_source(Path(c["source"])),
                     c["start"],
@@ -2998,29 +3118,45 @@ def _rate_vision(
                     transcript=c.get("transcript"),
                     laughter=heard_laughter(c),
                 )
+                if rater.hits == hits and not rater.cache_only:
+                    calls += 1
                 if res is None:
-                    n_failed += 1
+                    out.failed += 1
                     continue
-                used = True
-                rated: dict[str, Any] = {"start": c["start"], "end": c["end"]}
-                c["signals"]["vision"] = res.score
-                if res.label:
-                    c["vision_label"] = res.label
-                key = "score_pre_events" if "score_pre_events" in c else "score"
-                rating = res.score
-                if speech_excerpt(c.get("transcript"), style.base):
-                    rating = max(0.0, rating - SPEECH_PROMPT_LIFT)  # same scale as no speech
-                rated["base"] = c[key]
-                c[key] = rated["blended"] = vision_blend(c[key], rating, style.vision_weight)
-                c["vision_rated"] = rated  # for sync_vision: the rating holds for this span only
-                c.pop("vision_stale", None)
+                got.append((c, res.score, res.label))
                 logger.info(
                     "vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c["start"], c["end"]
                 )
     finally:  # free the VRAM now, not after Ollama's default 5 min keep_alive
         rater.unload()
+    out.capped = out.skipped_by_cap > 0
     logger.info("Vision: %d ratings from the cache, %d asked the model", rater.hits, rater.asked)
-    return used, n_failed
+    # each prompt kind centred on this run's ratings of it
+    kinds = [
+        "speech" if speech_excerpt(c.get("transcript"), style.base) else "frames" for c, _, _ in got
+    ]
+    out.centres = rating_centres((kind, r) for kind, (_, r, _) in zip(kinds, got, strict=True))
+    for kind, (c, score, label) in zip(kinds, got, strict=True):
+        out.used = True
+        out.by_kind[kind] = out.by_kind.get(kind, 0) + 1
+        c["signals"]["vision"] = score
+        if label:
+            c["vision_label"] = label
+        key = "score_pre_events" if "score_pre_events" in c else "score"
+        centre = out.centres[kind]
+        base = c[key]
+        c[key] = vision_blend(base, centred_rating(score, centre), style.vision_weight)
+        # for sync_vision: the rating holds for this span only
+        c["vision_rated"] = {
+            "start": c["start"],
+            "end": c["end"],
+            "base": base,
+            "blended": c[key],
+            "kind": kind,
+            "centre": round(centre, 2),
+        }
+        c.pop("vision_stale", None)
+    return out
 
 
 def _vision_stats(
@@ -3068,8 +3204,9 @@ def _vision_stats(
 
 def _vision_batches(top: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
     """The candidates to rate in batches for ``--batch-size`` ``size``: those of ``size``
-    sources each (sources in the order of their best candidate, each one's candidates in rank
-    order). One batch, in rank order, for ``size`` 0 or ``size`` sources or fewer."""
+    sources each (sources in the order of their first candidate in ``top``, each one's
+    candidates in band order, closest to the cut first). One batch, ``top`` in band order, for
+    ``size`` 0 or ``size`` sources or fewer."""
     groups: dict[str, list[dict[str, Any]]] = {}
     for c in top:
         groups.setdefault(c["source"], []).append(c)
@@ -3104,6 +3241,7 @@ def analyze(
     ocr_det_skip: bool | None = None,
     crash_moments: bool = True,
     footage: category.FootageVision | None = None,
+    vision_time_share: float | None = None,
     telemetry_fallback: bool = True,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
@@ -3131,7 +3269,7 @@ def analyze(
             footage category (:mod:`cutpoint.category`); highlights.json records the style
             used, ``settings.style_requested`` ``auto`` and the ``detection`` block.
         out_dir: Project directory.
-        vision: True = rate the top candidates with Ollama (a warning if it is not
+        vision: True = rate the default edit and the moments below its cut (a warning if it is not
             available); False or None = no rating (opt-in, never automatic). For
             ``--style auto`` it also steers the footage question to the vision model about
             unsure sources: None asks quietly, True asks and warns of a missing consent,
@@ -3140,8 +3278,9 @@ def analyze(
         language: Force transcription language (e.g. "en"); None = autodetect.
         use_scenes: Run scene detection.
         max_candidates: Max candidates per source before merging (None = auto).
-        vision_top: Number of top candidates to send to the vision model
-            (None = ``auto_vision_top`` of the total source duration).
+        vision_top: Most moments sent to the vision model: the default edit and the moments
+            below its cut (:func:`vision_band`) are cut to this many, closest to the cut first
+            (None = the whole band).
         ollama_url: Ollama base URL.
         ollama_model: Ollama vision model name.
         exclude: Glob patterns (file name or full path) to skip.
@@ -3173,6 +3312,8 @@ def analyze(
             ``settings.crash_moments`` false, which :func:`reanalyze` keeps.
         footage: The caller's :class:`~cutpoint.category.FootageVision` for ``--style auto``
             (shared with its own detection; not closed here). None: one of this run.
+        vision_time_share: The vision step's time cap, a share of the analysis before it
+            (:func:`vision_budget`); None = ``vision_time_share`` in config.json.
         telemetry_fallback: An action-cam ``style`` (built-in or a style file over it) whose
             sources all lack camera telemetry (:func:`has_telemetry`) runs as ``action``
             instead, recorded as ``settings.style_requested`` and ``settings.style_fallback``
@@ -3208,6 +3349,7 @@ def analyze(
             ocr_det_skip=bool(ocr_det_skip),
             crash_moments=crash_moments,
             footage=footage,
+            vision_time_share=vision_time_share,
             telemetry_fallback=telemetry_fallback,
         )
 
@@ -3238,6 +3380,7 @@ def _analyze(
     ocr_det_skip: bool,
     crash_moments: bool,
     footage: category.FootageVision | None,
+    vision_time_share: float | None,
     telemetry_fallback: bool,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
@@ -3585,7 +3728,8 @@ def _analyze(
                 "Rescored %d of %d candidates from events.json", changed, len(hl["candidates"])
             )
 
-        # ---- 6. vision: the Ollama rating, blended into the top candidates
+        # ---- 6. vision: the rating of the default edit and the moments below its cut, blended into
+        # their scores
         cands = hl["candidates"]
         rater: VisionRater | None = None
         bad_url: ValueError | None = None
@@ -3610,12 +3754,21 @@ def _analyze(
             # machine): no request, no cached ratings either
             steps.skip("vision", rater.warn_consent())
         else:
-            # vision_top itself stays None (auto) in the saved settings, for reanalyze
-            n_top = (
-                auto_vision_top(sum(r.duration for r in results))
-                if vision_top is None
-                else vision_top
+            from cutpoint.visual_pool import is_pool  # noqa: PLC0415
+
+            # the default edit and the band below its cut, from the ranking before vision
+            ranked = sorted(
+                (c for c in cands if not c.get("must_include") and not is_pool(c)),
+                key=scorer.rank_key,
             )
+            picks = default_fit.fit_target([c for c in cands if not is_pool(c)], style.target_total)
+            order, cut, k = vision_band(ranked, picks, vision_top)
+            in_edit = {id(c) for c in picks}
+            # the moments above the cut the edit skipped (too long or overlapping a pick): no
+            # one's neighbours in the clamp, as long as they keep this span
+            for c in ranked[:cut]:
+                if id(c) not in in_edit:
+                    c["vision_skipped"] = [c["start"], c["end"]]
             # action-cam: worded for the project's activity.json (the default without one)
             wording = None
             if style.base == ACTION_CAM:
@@ -3638,11 +3791,11 @@ def _analyze(
                         laughter=heard_laughter(c),
                     )
                     is not None
-                    for c in cands[:n_top]
+                    for c in order
                 )
             if online or n_cached:
                 if not online:
-                    n_none = min(n_top, len(cands)) - n_cached
+                    n_none = len(order) - n_cached
                     message = (
                         "vision rating requested but Ollama/model unavailable; using "
                         f"{n_cached} cached rating{'s' if n_cached != 1 else ''}, "
@@ -3653,28 +3806,76 @@ def _analyze(
                 with steps.step("vision"):
                     t0 = time.perf_counter()
                     pre_vision_s = t0 - t_start
-                    logger.info(
-                        "Vision: rating top %d of %d candidates", min(n_top, len(cands)), len(cands)
+                    share = (
+                        config.vision_time_share()
+                        if vision_time_share is None
+                        else vision_time_share
                     )
-                    used, n_failed = _rate_vision(
-                        cands, rater, n_top, style, wording, batch_size=batch_size
+                    budget_s, budget_base = vision_budget(share, pre_vision_s, earlier_total_s)
+                    n_edit = sum(id(c) in in_edit for c in order)
+                    logger.info(
+                        "Vision: rating %d moments (%d of the default edit, %d below the cut at "
+                        "%d) of %d candidates",
+                        len(order),
+                        n_edit,
+                        len(order) - n_edit,
+                        cut,
+                        len(cands),
+                    )
+                    outcome = _rate_vision(
+                        order, rater, style, wording, batch_size, deadline=t0 + budget_s
                     )
                     if ev:  # the blended analysis scores plus the event boosts again
+                        hl["settings"]["vision"] = {}  # rescore_events records the clamp here
                         rescore(hl, ev, out_dir, grids)
+                        n_clamped = hl["settings"]["vision"].get("clamped", 0)
+                    else:  # a rated moment stays between its unrated neighbours
+                        n_clamped = scorer.apply_vision_clamp(
+                            cands,
+                            [
+                                c["vision_rated"]["base"] if "vision_rated" in c else None
+                                for c in cands
+                            ],
+                        )
                     timings["vision_s"] = round(time.perf_counter() - t0, 2)
-                    hl["settings"]["vision_used"] = used
-                    requested = min(n_top, len(cands))
+                    if outcome.capped:
+                        logger.info(
+                            "Vision: time cap reached after %d calls (%.0f s, budget %.0f s = "
+                            "%d%% of %.0f s); %d moments near the cut not rated",
+                            int(rater.stats["calls"]),
+                            timings["vision_s"],
+                            budget_s,
+                            round(100 * share),
+                            pre_vision_s if earlier_total_s is None else earlier_total_s,
+                            outcome.skipped_by_cap,
+                        )
+                    hl["settings"]["vision_used"] = outcome.used
                     hl["settings"]["vision"] = {
-                        "requested": requested,
-                        "failed": n_failed - rater.missed,
+                        "requested": len(order),
+                        "failed": outcome.failed - rater.missed,
                         **({} if online else {"uncached": rater.missed}),
                         **_vision_stats(
                             rater,
-                            rated=requested - n_failed,
+                            rated=len(order) - outcome.failed - outcome.skipped_by_cap,
                             vision_s=timings["vision_s"],
                             pre_vision_s=pre_vision_s,
                             rerank=earlier_total_s is not None,
                         ),
+                        "cut": cut,
+                        "band_k": k,
+                        "rated_by_kind": outcome.by_kind,
+                        "centre": {
+                            kind: (
+                                round(outcome.centres[kind], 2) if kind in outcome.centres else None
+                            )
+                            for kind in ("speech", "frames")
+                        },
+                        "share": share,
+                        "budget_s": round(budget_s, 2),
+                        "budget_base": budget_base,
+                        "capped": outcome.capped,
+                        "skipped_by_cap": outcome.skipped_by_cap,
+                        "clamped": n_clamped,
                     }
             else:
                 message = (

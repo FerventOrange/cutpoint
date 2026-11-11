@@ -79,6 +79,7 @@ with `_` are ignored.
   "video_encoder": "auto",
   "export_workers": "auto",
   "memory_guard": 2,
+  "vision_time_share": 0.3,
   "visual_index": false,
   "ocr_det_skip": false,
   "compress_peaks": "off",
@@ -150,7 +151,7 @@ see [troubleshooting](troubleshooting/models.md)).
 
 ### vision
 
-`true`, `false`, or no key (the default). With no key, `--style auto` and `cutpoint detect` ask the vision model about unsure footage, and the frame rating is off; `false` also turns that check off. With `true`, `analyze` and `edit` rate the top candidates with the
+`true`, `false`, or no key (the default). With no key, `--style auto` and `cutpoint detect` ask the vision model about unsure footage, and the frame rating is off; `false` also turns that check off. With `true`, `analyze` and `edit` rate the default edit and the moments below its cut with the
 configured vision model
 ([getting started](getting-started.md#optional-ollama-for-frame-rating-and-ai-chat)) unless
 `--no-vision` is given; with `false` or no key, only `--vision` turns it on for one run. The UI's
@@ -164,6 +165,16 @@ consent already covers these transcript excerpts).
 `events`, `crashes`, `profile`) still asks a local Ollama model to describe a few frames when no
 library profile matches, and without one uses the nearest library profile, the best CLIP
 activity term or the `generic` profile.
+
+### vision_time_share
+
+The time cap of the vision rating, as a share of the analyze time before it (default `0.3`).
+`analyze` and `edit` rate the moments near the cut first and stop asking the model once the
+step has taken this share; moments with a cached rating still get it. The call under way
+finishes, so the step can run over by one call. `0` allows one call; there is no value that
+turns the cap off. A re-rank of an earlier analysis measures against that analysis's
+`timings.total_s`. A number, 0 or more; other values are rejected. Not in the UI. See
+[docs/commands.md](commands.md#analyze), **Vision rating**.
 
 ### visual_index
 

@@ -24,6 +24,8 @@ from test_event_candidates import (  # noqa: F401  (no_transcript is autouse the
     own,
 )
 
+pytestmark = pytest.mark.usefixtures("pinned_prior")  # the rating centres on the prior
+
 STYLE = get_style("gaming")
 
 
@@ -54,7 +56,7 @@ def talk(start: float, end: float) -> dict[str, Any]:
 
 
 def rate(c: dict[str, Any]) -> None:
-    analyze._rate_vision([c], _Rater(), 1, STYLE)  # type: ignore[arg-type]
+    analyze._rate_vision([c], _Rater(), STYLE, None, 0, deadline=float("inf"))  # type: ignore[arg-type]
 
 
 BLENDED = analyze.vision_blend(40.0, 10.0, STYLE.vision_weight)
@@ -68,6 +70,8 @@ def test_rating_records_the_span_and_both_scores():
         "end": 158.0,
         "base": 40.0,
         "blended": BLENDED,
+        "kind": "frames",  # no transcript: the frames-only prompt
+        "centre": round((10.0 + 4 * vision.RATING_PRIOR["frames"]) / 5, 2),  # 4.56
     }
     assert c["score"] == BLENDED != 40.0 and c["label"] == "gaming-moment"
     assert c["vision_label"] == "big jump"

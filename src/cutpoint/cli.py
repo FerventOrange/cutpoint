@@ -1529,7 +1529,8 @@ def _add_vision_arguments(p: argparse.ArgumentParser, lead: str) -> None:
         type=positive_int,
         default=None,
         metavar="N",
-        help="top candidates sent to vision (default: 1 per 2 min of footage, min 10, max 60)",
+        help="most moments sent to vision (default: the edit's moments (not must-include ones) "
+        "plus max(2, 30%% of the edit's moments) below its cut, at most 24)",
     )
 
 
@@ -1859,7 +1860,11 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
         help="also run `cutpoint events` to re-rank the moments (needs the events extra and "
         "cutpoint setup)",
     )
-    _add_vision_arguments(ed, "rate top candidates with the vision model, as analyze --vision; ")
+    _add_vision_arguments(
+        ed,
+        "rate the default edit and the moments below its cut with the vision model, as analyze "
+        "--vision; ",
+    )
     _add_ollama_arguments(ed)
     _add_skip_argument(ed)
     _add_visual_index_argument(ed)
@@ -1915,8 +1920,8 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     )
     _add_vision_arguments(
         an,
-        "rate top candidates with the vision model (Ollama, or the vision_assistant provider in "
-        "config.json); ",
+        "rate the default edit and the moments below its cut with the vision model (Ollama, or "
+        "the vision_assistant provider in config.json); ",
     )
     an.add_argument("--model", help="whisper model (default: medium on CUDA, small on CPU)")
     an.add_argument("--language", help="force transcription language, e.g. en")
