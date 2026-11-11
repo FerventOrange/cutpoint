@@ -21,11 +21,14 @@ Labels are a JSON file (keep real ones out of the repository)::
        "exclude": []}
     ]}
 
-``label`` is the true category (``action-cam``, ``gameplay``, ``talk`` or ``general``);
+``label`` is the true category (``action-cam``, ``action``, ``gameplay``, ``talk`` or ``general``);
 ``inputs`` are files or folders, expanded as ``cutpoint detect`` does. ``project`` groups the
 sources that one ``analyze`` would take together (entries of the same name are one project;
 without it an entry is a project named after its first input). A project's true label is the
 label of most of its footage (by duration).
+
+The flip gate needs every category labelled, so the label files need ``action`` entries too.
+Footage without telemetry that was ``general`` before (sport, say) is ``action`` now: relabel it.
 
 ``--home`` and ``--cache-dir`` set ``CUTPOINT_HOME`` and ``CUTPOINT_CACHE_DIR`` for the run, so
 a scratch home keeps the user's config, models and caches out of it; a re-run with the same
@@ -252,7 +255,7 @@ def evaluate(
             det = category.decide(probes, speech)
             mine = []
             for (src, lab), s, secs, o in zip(items, det.sources, seconds, ocr, strict=True):
-                open_talk = s.speech is None and s.category == category.GENERAL
+                open_talk = s.speech is None and s.category in (category.GENERAL, category.ACTION)
                 mine.append(
                     Row(
                         str(src),

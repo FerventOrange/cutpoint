@@ -11180,6 +11180,7 @@ def test_a_refining_job_waits_for_the_subscription_proxy_of_the_vision_model(
         ("funny", {}, False, False),
         ("funny", {}, True, True),  # sources with telemetry: the analysis wrote crashes.json
         ("funny", {"detection": {"category": "general"}}, False, True),  # --style auto
+        ("funny", {"detection": {"category": "action"}}, False, True),  # --style auto
         ("funny", {"detection": {"category": "general", "fallback": True}}, False, False),
         ("funny", {"detection": {"category": "talk"}}, False, False),
     ],
@@ -11329,15 +11330,37 @@ def test_the_detected_view_of_a_sure_auto_project(client: TestClient, tmp_path: 
     # the categories with their style, from styles.AUTO_STYLES (not spelled out in the page)
     assert [(c["label"], c["style"], c["main"]) for c in d["choices"]] == [
         ("Gameplay", "gaming", True),
+        ("Action", "action", True),
         ("Action cam", "action-cam", False),  # no camera telemetry: under Other styles
         ("Talk", "commentary", True),
-        ("General", "action", True),
     ]
+
+
+def test_the_detected_view_of_action_footage(client: TestClient, tmp_path: Path) -> None:
+    auto_project(tmp_path, detection("action", style="action"), {"style": "auto"})
+    d = client.get("/api/projects/cli").json()["detected"]
+    assert (d["category"], d["label"], d["style"]) == ("action", "Action", "action")
+    labels = [c["label"] for c in d["choices"]]
+    assert labels.count("Action") == 1 and "General" not in labels
+    assert len({c["category"] for c in d["choices"]}) == len(d["choices"])
+    assert len({c["style"] for c in d["choices"] if c["main"]}) == len(
+        [c for c in d["choices"] if c["main"]]
+    )  # no duplicate data-style items in the menu
+
+
+def test_an_old_version_3_detection_of_general_footage_still_shows(
+    client: TestClient, tmp_path: Path
+) -> None:
+    det = {**detection("general", style="action"), "version": 3}
+    auto_project(tmp_path, det, {"style": "auto"})
+    d = client.get("/api/projects/cli").json()["detected"]
+    assert (d["category"], d["label"], d["stale"]) == ("general", "General", False)
+    assert "General" not in [c["label"] for c in d["choices"]]
 
 
 @pytest.mark.parametrize(
     ("cat", "style", "fallback"),
-    [("gameplay", "gaming", "Gameplay"), ("talk", "action", "General")],
+    [("gameplay", "gaming", "Gameplay"), ("talk", "action", "Action")],
     ids=["leans-gameplay", "leans-talk"],
 )
 def test_an_unsure_detection_names_the_category_whose_style_it_used(

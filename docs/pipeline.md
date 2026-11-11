@@ -114,7 +114,9 @@ flowchart TD
     G -->|yes| GP["Gameplay: gaming"]
     G -->|no| S{{"After transcription: speech covers 55% of a long source?"}}
     S -->|yes| TK["Talk: commentary"]
-    S -->|no| GE["General: action"]
+    S -->|no| AX{{"Did the vision check answer action?"}}
+    AX -->|yes| ACT["Action: action"]
+    AX -->|no| GE["General: action"]
     AMB["Still unsure: gaming if the best guess is gameplay, else action; style_ambiguous warning"]
     GP -.-> AMB
     GE -.-> AMB

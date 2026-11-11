@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -448,27 +449,48 @@ def test_a_corrupt_packet_still_gives_every_frame_and_the_proxy(tmp_path):
 
 
 @needs_ffmpeg
+@pytest.mark.parametrize("exited", [False, True])
 @pytest.mark.parametrize("how", ["cancel", "close"])
-def test_a_stopped_split_keeps_a_proxy_only_when_complete(tmp_path, monkeypatch, how):
+def test_a_stopped_split_keeps_a_proxy_only_when_complete(tmp_path, monkeypatch, how, exited):
     """A cancel or a consumer that stops early kills a running ffmpeg: no proxy then, no
-    exit code reported; ffmpeg may have finished first, and then its proxy is whole."""
+    exit code reported, and a cancel gives only the frames already in the pipe; ffmpeg that
+    finished first keeps its whole proxy. Each case is forced (#945): past the first frame
+    the spool thread holds ffmpeg on its full pipe until the stop kills it, or the stop comes
+    once ffmpeg exited and all of its frames are spooled."""
     monkeypatch.setattr(ffmpeg_utils, "SPOOL_READ", FB)  # all 2.6 MB would be one read
+    if not exited:
+        room = SplitDecode._room
+
+        def held(self: SplitDecode, n: int) -> bool:
+            if self._written:  # the first frame is spooled: no more until ffmpeg is killed
+                with suppress(subprocess.TimeoutExpired):  # never killed: it then finishes
+                    self._proc.wait(30)
+            return room(self, n)
+
+        monkeypatch.setattr(SplitDecode, "_room", held)
     clip = _clip(tmp_path / "clip.mp4", seconds=20)
     cdir = tmp_path / "c"
     cdir.mkdir()
     outs: list = []
     codes: list[int] = []
     cancel = threading.Event()
-    frames = _split(clip, cdir, outs, cancel).frames(codes)
+    split = _split(clip, cdir, outs, cancel)
+    frames = split.frames(codes)
     next(frames)
+    if exited:
+        split._thread.join(30)  # ffmpeg exited by itself, all 120 frames spooled
+        assert not split._thread.is_alive()
     if how == "cancel":
         cancel.set()
+        if not exited:
+            split._proc.wait(10)  # killed by the cancel itself, not by close()
         rest = list(frames)
-        assert len(rest) < 119
+        if not exited:
+            assert len(rest) < 10  # the frames ffmpeg had in its pipe, not the 119 left
     else:
         frames.close()
     ((ok, _peak),) = outs
-    assert codes == []
+    assert ok is exited and codes == []
     assert _left(cdir) == ({"proxy.mp4"} if ok else set())
     if ok:
         assert _framemd5(cdir / "proxy.mp4").count("\n") > 100

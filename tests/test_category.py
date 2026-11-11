@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar
@@ -14,7 +15,7 @@ import pytest
 
 from conftest import envelope, needs_ffmpeg
 from cutpoint import category, cli, paths, styles
-from cutpoint.category import ACTION_CAM, GAMEPLAY, GENERAL, TALK, SourceProbe
+from cutpoint.category import ACTION, ACTION_CAM, GAMEPLAY, GENERAL, TALK, SourceProbe
 from cutpoint.events import ocr_raw
 
 RNG = np.random.default_rng(7)
@@ -319,6 +320,9 @@ UNSURE = {"frames": 16, "hud_static": 0.0, "static_share": 0.0}  # untagged, no 
     [
         (UNSURE, "gameplay", None, (GAMEPLAY, False, ["vision"])),
         (UNSURE, "camera", None, (GENERAL, False, ["vision"])),
+        (UNSURE, "action", None, (ACTION, False, ["vision"])),
+        # a sport the model sees on footage with camera tags: vision still decides
+        ({**CAMERA}, "action", None, (ACTION, False, ["vision"])),
         (UNSURE, "screen", None, (GENERAL, False, ["vision"])),
         (UNSURE, "other", None, (GENERAL, True, [])),  # the model cannot tell
         (UNSURE, None, None, (GENERAL, True, [])),  # not asked
@@ -928,3 +932,146 @@ def test_hud_text_alone_leaves_untagged_footage_unsure():
     for sure in (replace(alone, handler="VideoHandle"), replace(alone, hud_static=0.002)):
         det = category.decide([sure])
         assert (det.category, det.ambiguous, det.decided_by) == (GAMEPLAY, False, ["HUD text"])
+
+
+# ---- the Action category: a sport filmed by a riding or following camera, no telemetry
+
+
+def test_a_long_narrated_source_the_model_calls_action_is_still_talk():
+    """Talk is checked first: speech over the talk threshold wins over the vision answer."""
+    det = category.decide([probe(**UNSURE, vision="action")], {"a.mp4": 0.7})
+    assert (det.category, det.ambiguous, det.decided_by) == (TALK, False, ["speech"])
+    quiet = category.decide([probe(**UNSURE, vision="action")], {"a.mp4": 0.1})
+    assert (quiet.category, quiet.pending) == (ACTION, False)
+
+
+def test_action_and_general_footage_of_equal_length_is_general():
+    probes = [probe("a.mp4", 300.0, **UNSURE, vision="action"), probe("b.mp4", 300.0, **CAMERA)]
+    det = category.decide(probes, {})
+    assert det.category == GENERAL
+    bigger = [probe("a.mp4", 400.0, **UNSURE, vision="action"), probe("b.mp4", 300.0, **CAMERA)]
+    assert category.decide(bigger, {}).category == ACTION
+
+
+@pytest.mark.parametrize(
+    ("talk_s", "general_s", "action_s", "expect"),
+    [
+        (1000.0, 800.0, 800.0, GENERAL),  # talk is weighed against general + action pooled
+        (1000.0, 300.0, 300.0, TALK),
+        (500.0, 300.0, 400.0, ACTION),
+        (500.0, 400.0, 400.0, GENERAL),  # action must beat general; a tie goes to general
+    ],
+)
+def test_talk_is_weighed_against_general_and_action_pooled(talk_s, general_s, action_s, expect):
+    probes = [
+        probe("talk.mp4", talk_s, **CAMERA),
+        probe("gen.mp4", general_s, **CAMERA),
+        probe("act.mp4", action_s, **UNSURE, vision="action"),
+    ]
+    det = category.decide(probes, {"talk.mp4": 0.7, "gen.mp4": 0.1, "act.mp4": 0.1})
+    assert det.category == expect
+
+
+def test_action_and_general_footage_is_one_style_with_no_disagreement():
+    probes = [probe("run.mp4", 600.0, **UNSURE, vision="action"), probe("b.mp4", 400.0, **CAMERA)]
+    det = category.decide(probes, {})
+    assert det.category == ACTION and det.disagree == []
+    rec = json.loads(json.dumps(det.record("hype", "action", None)))
+    assert category.disagreeing(rec) == []
+    # the same holds when general is the project's category
+    flipped = [probe("run.mp4", 400.0, **UNSURE, vision="action"), probe("b.mp4", 600.0, **CAMERA)]
+    det = category.decide(flipped, {})
+    assert det.category == GENERAL and det.disagree == []
+    assert category.disagreeing(json.loads(json.dumps(det.record("hype", "general", None)))) == []
+
+
+def test_a_gameplay_minority_beside_action_footage_is_still_named():
+    probes = [
+        probe("run.mp4", 800.0, **UNSURE, vision="action"),
+        probe("game.mp4", 200.0, **GAME),
+    ]
+    det = category.decide(probes, {})
+    assert det.category == ACTION and det.disagree == ["game.mp4"]
+    rec = json.loads(json.dumps(det.record("hype", "action", None)))
+    found = category.disagreeing(rec)
+    assert [s["path"] for s in found] == ["game.mp4"] and found[0]["category"] == GAMEPLAY
+
+
+def test_disagreeing_counts_a_missing_partner_score_as_zero():
+    srcs = [{"path": "g.mp4", "category": GAMEPLAY}, {"path": "a.mp4", "category": ACTION}]
+    rec = {"category": ACTION, "scores": {ACTION: 0.5}, "sources": srcs}  # no general score
+    assert [s["path"] for s in category.disagreeing(rec)] == ["g.mp4"]
+    rec["scores"] = {ACTION: 0.5, GENERAL: 0.0}
+    assert [s["path"] for s in category.disagreeing(rec)] == ["g.mp4"]
+    # the project's own category score missing: nothing is named
+    rec["scores"] = {GENERAL: 0.5}
+    assert category.disagreeing(rec) == []
+
+
+def test_disagreeing_on_an_old_general_record_without_an_action_score():
+    srcs = [{"path": "g.mp4", "category": GAMEPLAY}, {"path": "b.mp4", "category": GENERAL}]
+    scores = {GENERAL: 0.6, GAMEPLAY: 0.4}  # version 3: no ``action`` key
+    rec = {"category": GENERAL, "scores": scores, "sources": srcs}
+    assert [s["path"] for s in category.disagreeing(rec)] == ["g.mp4"]
+
+
+def test_telemetry_in_under_half_the_footage_is_not_pooled_into_action():
+    probes = [
+        probe("cam.mp4", 200.0, telemetry=True),
+        probe("run.mp4", 400.0, **UNSURE, vision="action"),
+    ]
+    det = category.decide(probes, {})
+    assert det.category == ACTION  # not action cam: telemetry is a third of the footage
+    assert det.disagree == ["cam.mp4"]  # the telemetry source is the minority named
+    assert det.scores[ACTION] == pytest.approx(400 / 600, abs=1e-3)
+    assert det.scores[ACTION_CAM] == pytest.approx(200 / 600, abs=1e-3)
+
+
+@pytest.mark.parametrize(
+    ("duration", "speech", "pending"),
+    [
+        (600.0, None, True),  # long enough for talk, not transcribed yet
+        (600.0, {"a.mp4": 0.1}, False),
+        (60.0, None, False),  # too short for talk
+    ],
+)
+def test_a_long_untranscribed_action_source_leaves_talk_pending(duration, speech, pending):
+    det = category.decide([probe(duration=duration, **UNSURE, vision="action")], speech)
+    assert (det.category, det.pending) == (ACTION, pending)
+    assert ("talk is checked after transcription" in det.reason) is pending
+
+
+def test_the_detection_record_has_its_own_version_apart_from_the_probe_cache():
+    det = category.decide([probe(**UNSURE, vision="action")], {"a.mp4": 0.1})
+    rec = det.record("hype", "action", None)
+    assert rec["version"] == category.DETECTION_VERSION == 4
+    assert category.VERSION == 3 and category.CACHE_FILE == "category-v3.json"
+    assert rec["category"] == "action"
+
+
+def test_the_vision_cache_is_a_new_file_so_camera_answers_are_asked_again():
+    assert category.VISION_VERSION == 2
+    assert category.VISION_FILE == "category-vision-v2.json"
+    assert "action" in category.VISION_ANSWERS
+
+
+def test_the_vision_answer_action_is_cached(faked_probe):
+    vision = FakeVision("action")
+    first = category.probe_source(faked_probe.src, vision)
+    assert first.vision == "action" and vision.asked == 1
+    assert category.probe_source(faked_probe.src, vision).vision == "action" and vision.asked == 1
+
+
+def test_the_vision_question_names_no_sport():
+    """No hand-made per-activity presets: the question describes the kind of camera work."""
+    prompt = category.VISION_PROMPT.lower()
+    for word in ("ski", "bike", "biking", "cycling", "surf", "snowboard", "skate", "mtb", "climb"):
+        assert not re.search(rf"\b{word}", prompt), word
+    assert "action:" in prompt
+
+
+def test_auto_resolves_the_action_category_to_the_action_style():
+    assert styles.resolve_auto(ACTION, category.HYPE) == "action"
+    assert styles.resolve_auto(ACTION, category.FUNNY) == "funny"
+    assert set(styles.AUTO_STYLES) == set(category.CATEGORIES)
+    assert category.label(ACTION) == "Action"

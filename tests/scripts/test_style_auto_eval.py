@@ -184,6 +184,20 @@ def test_flip_ready_fails_for_untranscribed_long_general_sources():
     assert len(res["failed"]) == 1 and res["failed"][0].startswith("untranscribed: 1 general")
 
 
+def test_a_long_action_source_without_a_transcript_is_open_for_talk(run, tmp_path, monkeypatch):
+    monkeypatch.setitem(CANNED, "r1.mp4", ("action", 600, "action", False))
+    (tmp_path / "r1.mp4").write_bytes(b"")
+    rows, _ = run([{"project": "Run", "label": "action", "inputs": [str(tmp_path / "r1.mp4")]}])
+    assert [(r.category, r.untranscribed) for r in rows] == [("action", True)]
+
+
+def test_flip_ready_fails_for_untranscribed_long_action_sources():
+    rows = good_rows()
+    rows.append(row("action", "action", False, 20.0, untranscribed=True))
+    res = se.flip_ready(rows, [], [], 0.25)
+    assert len(res["failed"]) == 1 and res["failed"][0].startswith("untranscribed: 1 ")
+
+
 def test_flip_ready_fails_for_unreadable_sources_and_missing_ocr():
     errors = [{"path": "x", "error": "e"}]
     res = se.flip_ready(good_rows(), [], [], 0.25, errors=errors, ocr=False)
