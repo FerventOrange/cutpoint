@@ -183,6 +183,7 @@ AUTO_STYLES: dict[str, dict[str, str]] = {
     "gameplay": {"hype": "gaming", "funny": "funny"},
     "action-cam": {"hype": ACTION_CAM, "funny": "funny"},
     "talk": {"hype": "commentary", "funny": "funny"},
+    "action": {"hype": "action", "funny": "funny"},
     "general": {"hype": "action", "funny": "funny"},
 }
 

@@ -1683,7 +1683,7 @@ def _add_style_parsers(sub: argparse._SubParsersAction) -> None:
         nargs="+",
         action="extend",
         metavar="KIND:NAME",
-        help="category:NAME (action-cam, gameplay, talk, general) or profile:NAME; stored "
+        help="category:NAME (action-cam, gameplay, action, talk, general) or profile:NAME; stored "
         "for later automatic use, a style is used by --style NAME",
     )
     cr.add_argument("--profile", metavar="NAME", help="activity profile name (stored)")
@@ -1824,7 +1824,7 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
         "--style",
         choices=[AUTO, *style_names()],
         help="analysis preset (default: funny for funny-moments, else action); auto picks "
-        "one from the footage (gameplay, action cam, talk or general; ambiguous: gaming "
+        "one from the footage (gameplay, action cam, action, talk or general; ambiguous: gaming "
         "when it leans to gameplay, else the default)",
     )
     ed.add_argument(
@@ -1877,7 +1877,7 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
 
     dt = sub.add_parser(
         "detect",
-        help="detect the footage category (gameplay, action cam, talk, general) and the "
+        help="detect the footage category (gameplay, action cam, action, talk, general) and the "
         "style --style auto picks; reads only a few frames and the container tags",
     )
     dt.add_argument(
@@ -1908,7 +1908,7 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
         help=f"preset (default: {ANALYZE_STYLE}); learned presets in "
         "<CUTPOINT_HOME>/styles/*.json are listed too (action-cam: telemetry-driven "
         "action-cam footage); auto picks one from the footage (gameplay, "
-        f"action cam, talk or general, see cutpoint detect; ambiguous: gaming when it leans "
+        f"action cam, action, talk or general, see cutpoint detect; ambiguous: gaming when it leans "
         f"to gameplay, else the General style, {auto_fallback(HYPE)})",
     )
     an.add_argument(

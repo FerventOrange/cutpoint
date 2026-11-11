@@ -32,7 +32,7 @@ One JSON file. Paths in it are relative to the manifest's folder.
 |---|---|
 | `id` | Unique name: letters, digits, `.`, `_`, `-`. It names the run folder |
 | `input` | A file or a folder, as `analyze` takes it |
-| `category` | The true footage category: `action-cam`, `gameplay`, `talk` or `general` |
+| `category` | The true footage category: `action-cam`, `gameplay`, `action`, `talk` or `general` |
 | `bucket` | The group it is reported in (next table) |
 | `labels` | Optional moment label file. Without it the source is scored for detection only |
 | `holdout` | `true` keeps the source out of tuning (see [Holdout](#holdout)) |
@@ -52,7 +52,7 @@ The labeller sets the bucket; the script does not derive it.
 | `gameplay-kills` | Gameplay with a kill feed or other HUD events |
 | `gameplay-nokills` | Gameplay without them (racing, building, cleaning games) |
 | `actioncam-telemetry` | Action-cam footage with GoPro or Insta360 X3 telemetry |
-| `actioncam-notelemetry` | Action-cam footage without telemetry |
+| `actioncam-notelemetry` | Action-cam footage without telemetry (category `action`) |
 | `talk` | Podcasts, talking heads, commentary |
 | `vlog` | Vlogs and other general footage |
 | `mixed` | A source of several categories. Its `category` is the category of most of the footage by duration, set by the labeller |

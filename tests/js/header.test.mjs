@@ -399,9 +399,9 @@ test('the zero-moment text points at the project menu', async (t) => {
 
 const CHOICES = [
   { category: 'gameplay', label: 'Gameplay', style: 'gaming', main: true },
+  { category: 'action', label: 'Action', style: 'action', main: true },
   { category: 'action-cam', label: 'Action cam', style: 'action-cam', main: false },
   { category: 'talk', label: 'Talk', style: 'commentary', main: true },
-  { category: 'general', label: 'General', style: 'action', main: true },
 ];
 
 /** A ``detected`` view as GET /api/projects/<id> returns it; ``over`` replaces fields. */
@@ -434,11 +434,15 @@ test('the style button reads the detected category, an unsure fallback, an overr
   const cases = [
     [detected(), 'Detected: Gameplay'],
     [detected({ ambiguous: true, fallback_label: 'Gameplay' }), 'Not sure: Gameplay style'],
-    [detected({ ambiguous: true, category: 'talk', label: 'Talk', fallback_label: 'General', used_style: 'action', style: 'action' }), 'Not sure: General style'],
+    [detected({ ambiguous: true, category: 'talk', label: 'Talk', fallback_label: 'Action', used_style: 'action', style: 'action' }), 'Not sure: Action style'],
     [detected({ auto: false, chosen: 'commentary', style: 'commentary', stale: true }), 'Style: Talk (your choice)'],
     [detected({ auto: false, chosen: 'my-cut', style: 'my-cut', category: null, label: null }), 'Style: my-cut (your choice)'],
     [detected({ stale: true, style: 'commentary' }), 'Detected earlier: Gameplay'],
     [detected({ category: null, label: null, reason: null }), 'Auto: analyze again to detect'],
+    [detected({ category: 'action', label: 'Action', style: 'action', used_style: 'action' }), 'Detected: Action'],
+    // an old (version 3) detection of General: a label only, not a menu choice
+    [detected({ category: 'general', label: 'General', style: 'action', used_style: 'action' }), 'Detected: General'],
+    [detected({ auto: false, chosen: 'action', style: 'action', stale: true }), 'Style: Action (your choice)'],
   ];
   for (const [det, text] of cases) {
     await t.test(text, async (st) => {
@@ -497,7 +501,7 @@ test('the items: Auto, the categories with their style, then Other styles with t
   $('#styleBtn').click();
   const items = radios($);
   assert.deepEqual(items.map((i) => i.textContent), [
-    'Auto (detect from footage)', 'Gameplay: gaming', 'Talk: commentary', 'General: action',
+    'Auto (detect from footage)', 'Gameplay: gaming', 'Action: action', 'Talk: commentary',
     'Action cam', 'funny', 'my-cut', 'sport',
   ]);
   assert.ok(items.every((i) => i.getAttribute('role') === 'menuitemradio'));
@@ -508,11 +512,28 @@ test('the items: Auto, the categories with their style, then Other styles with t
   assert.deepEqual([...group.children].map((i) => i.dataset.style), ['action-cam', 'funny', 'my-cut', 'sport']);
 });
 
+test('an Action detection and an old General one list each style once and offer no General', async (t) => {
+  for (const det of [
+    detected({ category: 'action', label: 'Action', style: 'action', used_style: 'action' }),
+    detected({ category: 'general', label: 'General', style: 'action', used_style: 'action' }),
+  ]) {
+    await t.test(det.label, async (st) => {
+      const { $ } = await openStyle(st, det);
+      $('#styleBtn').click();
+      const items = radios($);
+      const styles = items.map((i) => i.dataset.style).filter(Boolean);
+      assert.equal(new Set(styles).size, styles.length, 'no duplicate data-style items');
+      assert.ok(!items.some((i) => /^General/.test(i.textContent)));
+      assert.equal(items.filter((i) => /^Action:/.test(i.textContent)).length, 1);
+    });
+  }
+});
+
 test('Action cam is a main item when the footage has camera telemetry', async (t) => {
   const choices = CHOICES.map((c) => ({ ...c, main: true }));
   const { $ } = await openStyle(t, detected({ choices, category: 'action-cam', label: 'Action cam', style: 'action-cam' }));
   $('#styleBtn').click();
-  assert.deepEqual(radios($).slice(0, 5).map((i) => i.textContent), ['Auto (detect from footage)', 'Gameplay: gaming', 'Action cam: action-cam', 'Talk: commentary', 'General: action']);
+  assert.deepEqual(radios($).slice(0, 5).map((i) => i.textContent), ['Auto (detect from footage)', 'Gameplay: gaming', 'Action: action', 'Action cam: action-cam', 'Talk: commentary']);
   assert.ok(![...$('#styleMenu [role=group]').children].some((i) => i.dataset.style === 'action-cam'));
 });
 
@@ -523,9 +544,9 @@ test('the style menu keys: focus starts on the chosen item; arrows, Home and End
   assert.equal($('#styleMenu').hidden, false);
   assert.equal($('#styleBtn').getAttribute('aria-expanded'), 'true');
   const items = radios($);
-  assert.equal(active(), items[2], 'the chosen style');
+  assert.equal(active(), items[3], 'the chosen style');
   key(active(), 'ArrowDown');
-  assert.equal(active(), items[3]);
+  assert.equal(active(), items[4]);
   key(active(), 'Home');
   assert.equal(active(), items[0]);
   key(active(), 'ArrowUp');

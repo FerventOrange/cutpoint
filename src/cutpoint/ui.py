@@ -4125,11 +4125,11 @@ def _resolved_style(meta: dict[str, Any], hl: dict[str, Any] | None) -> object:
 def detected_view(meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, Any] | None:
     """What the header's style button shows (#897): the style the user chose (``chosen``,
     ``auto`` for Auto) and the footage category the analysis detected, with its reason, whether
-    it was unsure (``ambiguous``, then ``fallback_label`` names the category whose style it used,
+    it was unsure (``ambiguous``, then ``fallback_label`` names the menu choice whose style it used,
     ``used_style``) and the sources of another category (:func:`cutpoint.category.disagreeing`).
     The detection is the current analysis's (``--style auto``), else the copy saved when the
     user left Auto (``stale``); ``category`` is null without either. ``choices`` are the
-    categories with their style, ``main`` false for Action cam unless the footage has camera
+    categories with their style (General is a detection label only, not a choice), ``main`` false for Action cam unless the footage has camera
     telemetry or the style is already action-cam (the page lists it under Other styles then).
     None for 360 projects and before the first analysis."""
     if meta.get("kind") == "360" or not hl:
@@ -4156,7 +4156,7 @@ def detected_view(meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, 
             "style": resolve_auto(c, "hype"),
             "main": c != category.ACTION_CAM or camera or ACTION_CAM in (chosen, hl.get("style")),
         }
-        for c in (category.GAMEPLAY, category.ACTION_CAM, category.TALK, category.GENERAL)
+        for c in (category.GAMEPLAY, category.ACTION, category.ACTION_CAM, category.TALK)
     ]
     view: dict[str, Any] = {
         "auto": chosen == AUTO,
@@ -4181,13 +4181,19 @@ def detected_view(meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, 
     def text(v: object) -> str | None:
         return v if isinstance(v, str) and v else None
 
+    def fallback_label(c: str) -> str:
+        # the menu's name for the style the fallback ran (General's style is Action's)
+        fb = auto_fallback_category(c)
+        style = resolve_auto(fb, "hype")
+        return next((ch["label"] for ch in choices if ch["style"] == style), category.label(fb))
+
     return {
         **view,
         "category": cat,
         "label": category.label(cat),
         "reason": text(det.get("reason")),
         "ambiguous": ambiguous,
-        "fallback_label": category.label(auto_fallback_category(cat)) if ambiguous else None,
+        "fallback_label": fallback_label(cat) if ambiguous else None,
         "used_style": text(det.get("style")),
         "suggest": text(det.get("suggest")),
         "stale": stale,
@@ -4370,7 +4376,7 @@ def events_unavailable() -> str | None:
 
 def crash_step_runs(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> bool:
     """The project's analysis ran (or would run) the crash step (``plan_layers``): not a 360
-    project; an action, sport or action-cam style, footage detected as action-cam or general
+    project; an action, sport or action-cam style, footage detected as action-cam, action or general
     (``--style auto``), or sources with camera telemetry (the analysis then wrote crashes.json).
     Before the first analysis (``hl`` None) the project's chosen style answers: yes for those
     styles, ``auto`` or none (the footage decides), no for any other."""
@@ -4391,7 +4397,7 @@ def crash_step_runs(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
     if (
         isinstance(det, dict)
         and not det.get("fallback")
-        and det.get("category") in (category.ACTION_CAM, category.GENERAL)
+        and det.get("category") in (category.ACTION_CAM, category.ACTION, category.GENERAL)
     ):
         return True
     return _inside(p, "crashes.json") and (p / "crashes.json").is_file()

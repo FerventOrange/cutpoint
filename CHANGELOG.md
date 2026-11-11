@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Footage category Action: a sport or fast physical activity filmed by a camera that rides along or follows the person. `--style auto` finds it when the vision footage question answers `action` (asked only for unsure sources, as before) and uses the `action` style (`funny` for `funny-moments`). A `camera` answer stays General. The action-cam style still needs camera telemetry. Old projects with category `general` still load.
 - `scripts/bench.py`, a development benchmark across footage categories: runs `analyze --style auto` on labelled footage listed in a manifest, scores the detection per bucket (right, ambiguous, sure-wrong) and the ranking with `moment_eval.py`, keeps holdout footage hidden unless `--holdout` (pinned by a hash), compares variants or two results files with an advisory gate, samples Ollama and GPU use per run, and writes a results JSON and `report.md` (#900). See [docs/workflows/benchmark.md](docs/workflows/benchmark.md).
 - `settings.vision` in `highlights.json` records what the vision step cost (ratings, cache hits, seconds and tokens per phase, and the analyze time before it), with one DEBUG line per request and an INFO summary, and `scripts/vision_eval.py` compares projects by that cost (`--cold-pre` for a cold analyze time) and by the moments they keep (#909). Ranking is unchanged.
 - `vision_time_share` in `config.json` caps the vision rating at a share of the analyze time before it (default 0.3). It rates the moments nearest the cut first, takes cached ratings after the cap, makes at least one call and can run over by one call (#909).
@@ -23,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING:** the `detection` block of `highlights.json` is version 4 (it adds the category `action`). The frame probe cache stays `category-v3.json`, so sources are not probed again. `scripts/style_auto_eval.py` label files now need `action` entries (its flip gate requires every category to be labelled), so footage without telemetry that was labelled `general` (sport, for example) should be relabelled `action`.
+- **BREAKING:** the vision footage answers are cached in `category-vision-v2.json`; unsure sources are asked again once.
+- The UI header style menu lists Auto, Gameplay, Action, Action cam (only with telemetry) and Talk. General is no longer a menu item but is still a detection label. The crash step runs for Action footage.
 - Discovered activity profiles are named after the activity alone: crash words of the floor and of the profile are dropped from the name and the `detect` captions (`ski-crash` is `ski`), and the prompts ask for the activity, never an incident. The vision model sees the most different keyframes, skipping dark or flat ones (a cut to black, white-out snow), and crash captions that fit more than 10% of the footage's own keyframes are dropped (#916).
 - `activity.json` records `discovery` (`describe_s`, `attempts`, per attempt `synth_s`, `answered` and `timed_out`, `failed` with the reason when a failure is remembered, and `cached`), and `crashes.json` `timings.profile_s`. The synthesis retry is skipped when the first attempt took nearly the whole timeout (#916).
 - **BREAKING:** without a model, the fallback profile is always `generic` (it was named after CLIP's best activity term); CLIP's three best terms are kept in `description` (#916).

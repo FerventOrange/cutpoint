@@ -513,7 +513,7 @@ function styleLines(d) {
 
 /**
  * The header's style button: hidden before the first analysis and for 360 projects (``detected`` null).
- * Its menu: the lines of ``styleLines``, then radio items Auto, the categories with their style
+ * Its menu: the lines of ``styleLines``, then radio items Auto, the categories with their style (Gameplay, Action, Action cam, Talk; General is only a detection label)
  * (Action cam only with camera telemetry or when chosen, else under Other styles) and Other styles
  * (the rest of the session's styles). Choosing one asks first in the Analyze dialog; while a job runs
  * or another run holds the project the items are aria-disabled (still focusable), as Analyze again.

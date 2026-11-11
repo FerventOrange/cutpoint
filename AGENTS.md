@@ -12,7 +12,7 @@ everything into a project folder.
 
 Cutpoint is a universal AI footage editor: it takes footage and nothing else, detects what is
 in it and scores from that. Do not ask the user what the footage is or which style to use. Let
-Cutpoint detect it (`--style auto`). Today auto picks only gameplay, action-cam, talk or general
+Cutpoint detect it (`--style auto`). Today auto picks only gameplay, action-cam, action, talk or general
 footage; for sport or a funny edit, use the user's words (`--style sport`, `--kind
 funny-moments`). Name a style only when the user asks for something specific. `--activity` is an
 option of `profile` and `crashes`, not of `analyze` or `edit`. Steer the result with `--kind`,

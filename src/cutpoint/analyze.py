@@ -2464,13 +2464,13 @@ def _cuda() -> bool:
 def layer_category(style: Style) -> str:
     """The footage category (:data:`cutpoint.category.CATEGORIES`) whose layers an explicit
     ``style`` runs, from today's style sets: :data:`GAME_STYLES` gameplay, the action-cam
-    kind action cam, the other :data:`ACTION_STYLES` general, any other style talk."""
+    kind action cam, the other :data:`ACTION_STYLES` action, any other style talk."""
     if style.kind == ACTION_CAM:
         return category.ACTION_CAM
     if style.base in GAME_STYLES:
         return category.GAMEPLAY
     if style.base in ACTION_STYLES:
-        return category.GENERAL
+        return category.ACTION
     return category.TALK
 
 
@@ -2486,16 +2486,16 @@ def plan_layers(
     ``cat``: the footage category (:mod:`cutpoint.category`; None: :func:`layer_category`
     of ``style``). Reactions: the PANNs audio events (plus the voice layer for action-cam
     footage, whose crash audio score reads it). Keyframes: HUD OCR for gameplay, the CLIP
-    visual layer for action-cam and general footage (only with a CUDA GPU); ``visual_index``
+    visual layer for action-cam, action and general footage (only with a CUDA GPU); ``visual_index``
     (``--visual-index``) adds the CLIP visual layer to the keyframes of gameplay (before the
     HUD text) and talk too, for the assistant's visual search only. Crashes:
-    action-cam and general footage, or any source with telemetry. A step whose events extra
+    action-cam, action and general footage, or any source with telemetry. A step whose events extra
     or model files are missing is left out with one INFO line naming the fix; nothing is
     downloaded.
     """
     cat = cat or layer_category(style)
     plan = LayerPlan(game=cat == category.GAMEPLAY)
-    action = cat in (category.ACTION_CAM, category.GENERAL)
+    action = cat in (category.ACTION_CAM, category.ACTION, category.GENERAL)
     for step in SKIPPABLE:
         if step in skip:
             plan.skipped[step] = SKIP_OPTION
