@@ -11360,7 +11360,7 @@ def test_an_old_version_3_detection_of_general_footage_still_shows(
 
 @pytest.mark.parametrize(
     ("cat", "style", "fallback"),
-    [("gameplay", "gaming", "Gameplay"), ("talk", "action", "General")],
+    [("gameplay", "gaming", "Gameplay"), ("talk", "action", "Action")],
     ids=["leans-gameplay", "leans-talk"],
 )
 def test_an_unsure_detection_names_the_category_whose_style_it_used(

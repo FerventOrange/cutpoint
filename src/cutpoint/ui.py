@@ -4125,7 +4125,7 @@ def _resolved_style(meta: dict[str, Any], hl: dict[str, Any] | None) -> object:
 def detected_view(meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, Any] | None:
     """What the header's style button shows (#897): the style the user chose (``chosen``,
     ``auto`` for Auto) and the footage category the analysis detected, with its reason, whether
-    it was unsure (``ambiguous``, then ``fallback_label`` names the category whose style it used,
+    it was unsure (``ambiguous``, then ``fallback_label`` names the menu choice whose style it used,
     ``used_style``) and the sources of another category (:func:`cutpoint.category.disagreeing`).
     The detection is the current analysis's (``--style auto``), else the copy saved when the
     user left Auto (``stale``); ``category`` is null without either. ``choices`` are the
@@ -4181,13 +4181,19 @@ def detected_view(meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, 
     def text(v: object) -> str | None:
         return v if isinstance(v, str) and v else None
 
+    def fallback_label(c: str) -> str:
+        # the menu's name for the style the fallback ran (General's style is Action's)
+        fb = auto_fallback_category(c)
+        style = resolve_auto(fb, "hype")
+        return next((ch["label"] for ch in choices if ch["style"] == style), category.label(fb))
+
     return {
         **view,
         "category": cat,
         "label": category.label(cat),
         "reason": text(det.get("reason")),
         "ambiguous": ambiguous,
-        "fallback_label": category.label(auto_fallback_category(cat)) if ambiguous else None,
+        "fallback_label": fallback_label(cat) if ambiguous else None,
         "used_style": text(det.get("style")),
         "suggest": text(det.get("suggest")),
         "stale": stale,

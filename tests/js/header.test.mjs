@@ -434,7 +434,7 @@ test('the style button reads the detected category, an unsure fallback, an overr
   const cases = [
     [detected(), 'Detected: Gameplay'],
     [detected({ ambiguous: true, fallback_label: 'Gameplay' }), 'Not sure: Gameplay style'],
-    [detected({ ambiguous: true, category: 'talk', label: 'Talk', fallback_label: 'General', used_style: 'action', style: 'action' }), 'Not sure: General style'],
+    [detected({ ambiguous: true, category: 'talk', label: 'Talk', fallback_label: 'Action', used_style: 'action', style: 'action' }), 'Not sure: Action style'],
     [detected({ auto: false, chosen: 'commentary', style: 'commentary', stale: true }), 'Style: Talk (your choice)'],
     [detected({ auto: false, chosen: 'my-cut', style: 'my-cut', category: null, label: null }), 'Style: my-cut (your choice)'],
     [detected({ stale: true, style: 'commentary' }), 'Detected earlier: Gameplay'],

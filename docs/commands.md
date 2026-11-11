@@ -242,7 +242,7 @@ The header reads "cutpoint / <project name>": the name opens the project menu, w
 
 After the first analysis a style button follows the project name (not for 360 projects). For an
 Auto project it reads "Detected: Gameplay" (the category `highlights.json` records in
-`detection`), or "Not sure: General style" when the detection was unsure and fell back
+`detection`), or "Not sure: Action style" when the detection was unsure and fell back
 (`gaming` when it leaned to gameplay, else `action`); a project in a style you chose reads
 "Style: Talk (your choice)". Its menu gives the recorded reason, why an unsure detection used its
 style, one "Disagree: b.mp4 looks like Talk (…)" line per source of another category when they are
