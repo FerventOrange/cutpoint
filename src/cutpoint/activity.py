@@ -89,7 +89,8 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -103,7 +104,7 @@ from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events.common import load_highlights
 from cutpoint.events.visual import load_visual, text_embeddings
 from cutpoint.events.vlm_windows import ACTION_CAM_TAGS
-from cutpoint.ffmpeg_utils import grab_frame_jpeg
+from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
 from cutpoint.utils import slugify
 from cutpoint.vision import VisionRater
 
@@ -772,10 +773,16 @@ def _describe_frames(emb: np.ndarray, refs: list[tuple[Path, float]]) -> list[by
     :data:`DESCRIBE_READS` reads, the frames are spread in time over the keyframes not
     found blank (all of them when none is left), each frame read once."""
 
-    def grab(i: int) -> bytes:
-        if i not in read:
-            read[i] = grab_frame_jpeg(remap_source(refs[i][0]), refs[i][1], 512)
-        return read[i]
+    def grab(idx: Sequence[int]) -> list[bytes]:
+        # The frames not read yet, GRAB_WORKERS at a time (#946); the result is in ``idx`` order.
+        todo = [i for i in dict.fromkeys(idx) if i not in read]
+        if todo:
+            with ThreadPoolExecutor(min(len(todo), GRAB_WORKERS)) as pool:
+                got = pool.map(
+                    lambda i: grab_frame_jpeg(remap_source(refs[i][0]), refs[i][1], 512), todo
+                )
+                read.update(zip(todo, got, strict=True))
+        return [read[i] for i in idx]
 
     read: dict[int, bytes] = {}
     usable = np.arange(len(refs))
@@ -784,7 +791,7 @@ def _describe_frames(emb: np.ndarray, refs: list[tuple[Path, float]]) -> list[by
         want = min(DESCRIBE_FRAMES, len(refs))
         while len(usable) >= want and len(read) < DESCRIBE_READS:
             pick_i = [int(usable[k]) for k in _spread(emb[usable], DESCRIBE_FRAMES)]
-            blank = [i for i in pick_i if _blank(grab(i))]
+            blank = [i for i, jpeg in zip(pick_i, grab(pick_i), strict=True) if _blank(jpeg)]
             if not blank:
                 return [read[i] for i in pick_i]
             # The blank picks go (so every round shrinks ``usable``), and so do unread frames
@@ -796,7 +803,7 @@ def _describe_frames(emb: np.ndarray, refs: list[tuple[Path, float]]) -> list[by
     cand = usable if len(usable) else np.arange(len(refs))
     if len(cand) > DESCRIBE_FRAMES:
         cand = cand[np.linspace(0, len(cand) - 1, DESCRIBE_FRAMES + 2)[1:-1].astype(int)]
-    return [grab(int(i)) for i in cand]
+    return grab([int(i) for i in cand])
 
 
 def describe(emb: np.ndarray, refs: list[tuple[Path, float]], ask: Ask | None) -> tuple[str, str]:

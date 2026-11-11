@@ -58,6 +58,7 @@ PROGRESS_DRAIN_S = 5.0  # run_progress reads the rest of the progress pipe this 
 # a failed child in a ChildScope waits this long for the cancel of a Ctrl+C (3 polls of the
 # controlling thread, clips.POLL_S) before its exit counts as an ffmpeg failure
 STOP_GRACE_S = 0.3
+GRAB_WORKERS = 4  # frames of one moment grabbed at once (each is its own ffmpeg, #909, #946)
 
 
 def exit_code(rc: int) -> str:

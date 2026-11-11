@@ -31,7 +31,8 @@ import logging
 import math
 import re
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,7 @@ import numpy as np
 from cutpoint import cache
 from cutpoint.config import remap_source
 from cutpoint.errors import FFmpegError, LowMemoryError
+from cutpoint.ffmpeg_utils import GRAB_WORKERS
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +310,15 @@ def _metadata(data: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _parallel[T, R](fn: Callable[[T], R], items: Sequence[T]) -> list[R]:
+    """``[fn(x) for x in items]`` with :data:`~cutpoint.ffmpeg_utils.GRAB_WORKERS` calls at once, in
+    ``items`` order (each grab is its own ffmpeg, #946); an exception surfaces as in the loop."""
+    if not items:
+        return []
+    with ThreadPoolExecutor(min(len(items), GRAB_WORKERS)) as pool:
+        return list(pool.map(fn, items))
+
+
 def _grab(
     io: Path, t: float, vf: str, count: int, size: tuple[int, int] = GRID
 ) -> list[np.ndarray]:
@@ -531,11 +542,12 @@ def _frame_probe(io: Path, duration: float, width: int, height: int) -> dict[str
     lo, hi = SPAN
     times = [duration * (lo + (hi - lo) * i / (SPREAD - 1)) for i in range(SPREAD)]
     read = (GRID[0] * READ_SCALE, GRID[1] * READ_SCALE)  # finer: bars are cropped off later
-    spread = [f[0] for t in times if (f := _grab(io, t, f"scale={read[0]}:{read[1]}", 1, read))]
+    scale_read = f"scale={read[0]}:{read[1]}"
+    spread = [f[0] for f in _parallel(lambda t: _grab(io, t, scale_read, 1, read), times) if f]
     scale = f"scale={GRID[0]}:{GRID[1]}"
     crop = f"crop={GRID[0]}:{GRID[1]}" if width >= GRID[0] and height >= GRID[1] else scale
     pair_t = [duration * (lo + (hi - lo) * (i + 0.5) / PAIRS) for i in range(PAIRS)]
-    pairs = [first_change(_grab(io, t, crop, PAIR_FRAMES)) for t in pair_t]
+    pairs = [first_change(f) for f in _parallel(lambda t: _grab(io, t, crop, PAIR_FRAMES), pair_t)]
     return frame_measures(spread, pairs)
 
 
@@ -599,8 +611,8 @@ def _text_frames(io: Path, duration: float, width: int, height: int) -> list[np.
     w = min(TEXT_WIDTH, width) // 2 * 2
     size = (w, max(2, round(w * height / width / 2) * 2))
     lo, hi = SPAN
-    out = []
-    for i in range(TEXT_FRAMES):
+
+    def one(i: int) -> list[np.ndarray]:
         t = duration * (lo + (hi - lo) * i / (TEXT_FRAMES - 1))
         try:
             for _t, frame in decode_raw(
@@ -613,11 +625,12 @@ def _text_frames(io: Path, duration: float, width: int, height: int) -> list[np.
                 hwaccel=None,
                 timeout=FRAME_TIMEOUT_S,
             ):
-                out.append(frame)
-                break
+                return [frame]
         except FFmpegError as err:
             logger.debug("text probe of %s at %.1fs failed: %s", io, t, err)
-    return out
+        return []
+
+    return [f for got in _parallel(one, range(TEXT_FRAMES)) for f in got]
 
 
 def text_probe(io: Path, duration: float, width: int, height: int) -> dict[str, Any] | None:
@@ -730,14 +743,16 @@ def vision_frames(io: Path, duration: float) -> list[bytes]:
     from cutpoint.ffmpeg_utils import grab_frame_jpeg  # noqa: PLC0415
 
     lo, hi = SPAN
-    out = []
-    for i in range(VISION_FRAMES):
+
+    def one(i: int) -> list[bytes]:
         t = duration * (lo + (hi - lo) * i / (VISION_FRAMES - 1))
         try:
-            out.append(grab_frame_jpeg(io, t, VISION_WIDTH))
+            return [grab_frame_jpeg(io, t, VISION_WIDTH)]
         except FFmpegError as err:
             logger.debug("vision frame of %s at %.1fs failed: %s", io, t, err)
-    return out
+        return []
+
+    return [f for got in _parallel(one, range(VISION_FRAMES)) for f in got]
 
 
 class FootageVision:

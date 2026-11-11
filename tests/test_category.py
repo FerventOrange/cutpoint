@@ -1158,3 +1158,96 @@ def test_a_camera_tagged_source_without_telemetry_is_shown_to_the_vision_model(
     assert (det.category, det.ambiguous, det.decided_by) == (expect[0], False, expect[1])
     without = category.decide([category.probe_source(faked_probe.src)], {})
     assert (without.category, without.decided_by) == (GENERAL, ["camera tags"])
+
+
+# --------------------------------------------------------------------------- parallel grabs (#946)
+class _Live:
+    """Counts the calls in flight; ``hit()`` holds each a moment so overlapping ones show."""
+
+    def __init__(self) -> None:
+        import threading  # noqa: PLC0415
+
+        self.lock, self.now, self.max = threading.Lock(), 0, 0
+
+    def hit(self) -> None:
+        import time  # noqa: PLC0415
+
+        with self.lock:
+            self.now += 1
+            self.max = max(self.max, self.now)
+        time.sleep(0.05)
+        with self.lock:
+            self.now -= 1
+
+
+def _both_worker_counts(monkeypatch, run, live):
+    """``run()`` with one worker and with GRAB_WORKERS: ``{workers: (result, max in flight)}``."""
+    out = {}
+    for workers in (1, category.GRAB_WORKERS):
+        monkeypatch.setattr(category, "GRAB_WORKERS", workers)
+        live.now = live.max = 0
+        out[workers] = (run(), live.max)
+    return out
+
+
+def test_frame_probe_grabs_in_parallel_with_the_sequential_result(monkeypatch):
+    from cutpoint import ffmpeg_utils  # noqa: PLC0415
+
+    live = _Live()
+
+    def decode_raw(io, size, vf, start, **kw):
+        live.hit()
+        if round(start) % 7 == 3:  # some grabs fail
+            raise category.FFmpegError("boom")
+        yield start, np.full((size[1], size[0]), start, np.uint8)
+        yield start + 1, np.full((size[1], size[0]), start + 1, np.uint8)
+
+    seen = {}
+    monkeypatch.setattr(ffmpeg_utils, "decode_raw", decode_raw)
+    monkeypatch.setattr(
+        category, "frame_measures", lambda s, p: seen.update(s=s, p=p) or {"s": len(s)}
+    )
+
+    def run():
+        category._frame_probe(Path("v.mp4"), 100.0, 640, 360)
+        return [float(f.mean()) for f in seen["s"]], [
+            [float(f.mean()) for f in p] for p in seen["p"]
+        ]
+
+    runs = _both_worker_counts(monkeypatch, run, live)
+    assert runs[1][1] == 1 and runs[category.GRAB_WORKERS][1] > 1
+    assert runs[1][0] == runs[category.GRAB_WORKERS][0]
+    assert 0 < len(runs[1][0][0]) < category.SPREAD  # the failed grabs were left out
+
+
+def test_text_and_vision_frames_grab_in_parallel_with_the_sequential_result(monkeypatch):
+    from cutpoint import ffmpeg_utils  # noqa: PLC0415
+
+    live = _Live()
+
+    def decode_raw(io, size, start, **kw):
+        live.hit()
+        if 25 <= start < 40:
+            raise category.FFmpegError("boom")
+        yield start, np.full((size[1], size[0], 3), start, np.uint8)
+
+    def grab_jpeg(io, t, width):
+        live.hit()
+        if 25 <= t < 40:
+            raise category.FFmpegError("boom")
+        return f"{t:.2f}".encode()
+
+    monkeypatch.setattr(ffmpeg_utils, "decode_raw", decode_raw)
+    monkeypatch.setattr(ffmpeg_utils, "grab_frame_jpeg", grab_jpeg)
+    for name, run, count in (
+        (
+            "text",
+            lambda: [float(f.mean()) for f in category._text_frames(Path("v"), 100.0, 64, 48)],
+            7,
+        ),
+        ("vision", lambda: category.vision_frames(Path("v"), 100.0), 5),
+    ):
+        runs = _both_worker_counts(monkeypatch, run, live)
+        assert runs[1][1] == 1 and runs[category.GRAB_WORKERS][1] > 1, name
+        assert runs[1][0] == runs[category.GRAB_WORKERS][0], name
+        assert len(runs[1][0]) == count, name  # one failed grab each
