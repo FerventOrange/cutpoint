@@ -29,6 +29,7 @@ import importlib.util
 import itertools
 import logging
 import math
+import os
 import re
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -158,8 +159,7 @@ V_GAMEPLAY, V_ACTION, V_CAMERA, V_SCREEN, V_OTHER = (
     "other",
 )
 VISION_ANSWERS = (V_GAMEPLAY, V_ACTION, V_CAMERA, V_SCREEN, V_OTHER)
-VISION_PROMPT = (
-    "These are {n} frames spread over one video, in order. What kind of footage is it?\n"
+_VISION_KINDS = (
     "gameplay: a recording of a video game being played. Rendered graphics, a game's "
     "interface, menus, maps, loading screens and cutscenes, with or without a webcam, chat "
     "or other stream overlays.\n"
@@ -173,12 +173,73 @@ VISION_PROMPT = (
     "screen: people talking (a podcast, an interview, a talk to the camera), or a recording "
     "of a computer screen that is not a game (a desktop, apps, a browser, slides).\n"
     "other: none of these, or you cannot tell.\n"
-    'Reply with JSON only: {{"footage": "gameplay" | "action" | "camera" | "screen" | "other"}}'
+)
+_VISION_FOOTAGE = '"footage": "gameplay" | "action" | "camera" | "screen" | "other"'
+VISION_PROMPT = (
+    "These are {n} frames spread over one video, in order. What kind of footage is it?\n"
+    + _VISION_KINDS
+    + f"Reply with JSON only: {{{{{_VISION_FOOTAGE}}}}}"
 )
 VISION_SCHEMA = {
     "type": "object",
     "properties": {"footage": {"type": "string", "enum": list(VISION_ANSWERS)}},
     "required": ["footage"],
+}
+
+# ---- TEMPORARY, for the #958 measurement only: variants of the vision question, so that the
+# owner's labelled footage can show which one lets fast FPV flight (no telemetry) read as action
+# without making a phone, vlog, podcast or desktop clip action. CUTPOINT_CATEGORY_VISION_VARIANT
+# picks one per process (default base: the question above, unchanged). A development switch,
+# not a user option: once a variant is chosen, make it the question, remove the env variable,
+# VISION_VARIANTS and the per-variant cache names, and bump VISION_VERSION if the question
+# changed.
+#   base          VISION_FRAMES frames spread over SPAN, VISION_PROMPT, VISION_SCHEMA
+#   pairs         VISION_PAIRS moments spread over SPAN, each two frames VISION_PAIR_GAP_S
+#                 apart: the change within a pair shows how fast the view moves
+#   motion        the base frames; the reply first gives the camera motion (MOTIONS), then the
+#                 footage. Only the footage answer decides; the motion is logged.
+#   pairs+motion  both
+VISION_VARIANT_ENV = "CUTPOINT_CATEGORY_VISION_VARIANT"
+VV_BASE, VV_PAIRS, VV_MOTION, VV_PAIRS_MOTION = "base", "pairs", "motion", "pairs+motion"
+VISION_VARIANTS = (VV_BASE, VV_PAIRS, VV_MOTION, VV_PAIRS_MOTION)
+VISION_PAIRS = 3  # pairs: 2 frames each, so VISION_FRAMES in all (the same cost as base)
+# Seconds between the two frames of a pair: about 10 frames at 30 fps. Fast flight low over the
+# ground (20-30 m/s) moves 7-10 m in that time, so most of the view is new; a walk (1.5 m/s)
+# moves half a metre and a hand-held pan a few degrees, so the view stays nearly the same. One
+# frame apart even fast flight changes little at 640 px; a second apart a walk or a pan
+# changes a lot too and a cut to another shot falls inside a pair more often.
+VISION_PAIR_GAP_S = 0.33
+MOTIONS = ("still", "everyday", "fast")
+_VISION_PAIRS_INTRO = (
+    "These are {n} frames of one video in {pairs} pairs, in order: frames 1 and 2 are the "
+    "first pair, frames 3 and 4 the second, and so on. The pairs are spread over the video, "
+    "and the second frame of each pair is taken {gap:g} s after the first. A large change "
+    "within a pair (the scene shifted far, new ground or objects in view) means the camera "
+    "moves fast; a small change means it is still or moves at an everyday pace. A cut to "
+    "another shot within a pair is not motion.\n"
+)
+_VISION_MOTION = (
+    "motion: how fast the camera moves, judged from {judge}.\n"
+    "still: the camera does not move or barely moves (a tripod, a fixed camera, a desk, a "
+    "screen recording).\n"
+    "everyday: the camera moves at an everyday pace (held in the hand, walking, a car on a "
+    "road, a slow pan, a slow drone shot).\n"
+    "fast: the view rushes past close to the ground, water or obstacles, or swings and tilts "
+    "sharply, much faster than walking.\n"
+    "footage: what kind of footage it is.\n"
+)
+_VISION_MOTION_JUDGE = {
+    VV_MOTION: "motion blur and the view in each frame",
+    VV_PAIRS_MOTION: "the change within each pair and motion blur",
+}
+_VISION_MOTION_REPLY = '"motion": "still" | "everyday" | "fast", '
+VISION_MOTION_SCHEMA = {  # motion first: Ollama's structured output keeps the property order
+    "type": "object",
+    "properties": {
+        "motion": {"type": "string", "enum": list(MOTIONS)},
+        "footage": {"type": "string", "enum": list(VISION_ANSWERS)},
+    },
+    "required": ["motion", "footage"],
 }
 
 SCREEN_HANDLERS = ("videohandle",)  # NVIDIA ShadowPlay / the NVIDIA app
@@ -737,22 +798,94 @@ def _with_text(found: SourceProbe, cdir: Path, io: Path | None = None) -> Source
 
 
 # --------------------------------------------------------------------------- vision (#898)
-def vision_frames(io: Path, duration: float) -> list[bytes]:
-    """:data:`VISION_FRAMES` JPEG frames of ``io`` spread over :data:`SPAN`,
-    :data:`VISION_WIDTH` wide (a failed grab is left out)."""
+def vision_variant() -> str:
+    """The vision question variant of this process (TEMPORARY, #958): the value of
+    :data:`VISION_VARIANT_ENV`, :data:`VV_BASE` when unset; an unknown value is a WARNING and
+    base."""
+    value = os.environ.get(VISION_VARIANT_ENV, "").strip().lower() or VV_BASE
+    if value not in VISION_VARIANTS:
+        logger.warning(
+            "%s=%s is not one of %s: the base vision question is asked",
+            VISION_VARIANT_ENV,
+            value,
+            ", ".join(VISION_VARIANTS),
+        )
+        return VV_BASE
+    return value
+
+
+def vision_file(variant: str = VV_BASE) -> str:
+    """The vision answers' cache file of ``variant``: :data:`VISION_FILE` for base (today's
+    answers stay valid), its own file for every other variant, so answers never mix."""
+    return (
+        VISION_FILE if variant == VV_BASE else f"category-vision-v{VISION_VERSION}-{variant}.json"
+    )
+
+
+def vision_prompt(variant: str = VV_BASE) -> str:
+    """The question's template of ``variant`` (fields ``n``, ``pairs``, ``gap``)."""
+    if variant == VV_BASE:
+        return VISION_PROMPT
+    pairs = variant in (VV_PAIRS, VV_PAIRS_MOTION)
+    intro = (
+        _VISION_PAIRS_INTRO if pairs else "These are {n} frames spread over one video, in order. "
+    )
+    if variant == VV_PAIRS:
+        return (
+            intro
+            + "What kind of footage is it?\n"
+            + _VISION_KINDS
+            + f"Reply with JSON only: {{{{{_VISION_FOOTAGE}}}}}"
+        )
+    judge = _VISION_MOTION_JUDGE[variant]
+    return (
+        intro
+        + "Say how the camera moves, then what kind of footage it is.\n"
+        + _VISION_MOTION.replace("{judge}", judge)
+        + _VISION_KINDS
+        + f"Reply with JSON only: {{{{{_VISION_MOTION_REPLY}{_VISION_FOOTAGE}}}}}"
+    )
+
+
+def vision_schema(variant: str = VV_BASE) -> dict[str, Any]:
+    """The answer schema of ``variant``."""
+    return VISION_MOTION_SCHEMA if variant in (VV_MOTION, VV_PAIRS_MOTION) else VISION_SCHEMA
+
+
+def vision_times(duration: float, variant: str = VV_BASE) -> list[tuple[float, ...]]:
+    """The seconds of the frames shown for ``variant``, grouped: base, :data:`VISION_FRAMES`
+    single frames spread over :data:`SPAN`; pairs, :data:`VISION_PAIRS` moments spread over
+    :data:`SPAN`, each with a second frame :data:`VISION_PAIR_GAP_S` later."""
+    lo, hi = SPAN
+    if variant in (VV_PAIRS, VV_PAIRS_MOTION):
+        last = max(0.0, duration - VISION_PAIR_GAP_S - 0.05)  # the second frame stays inside
+        return [
+            (s, s + VISION_PAIR_GAP_S)
+            for s in (
+                min(duration * (lo + (hi - lo) * i / (VISION_PAIRS - 1)), last)
+                for i in range(VISION_PAIRS)
+            )
+        ]
+    return [(duration * (lo + (hi - lo) * i / (VISION_FRAMES - 1)),) for i in range(VISION_FRAMES)]
+
+
+def vision_frames(io: Path, duration: float, variant: str = VV_BASE) -> list[bytes]:
+    """JPEG frames of ``io`` at :func:`vision_times`, in order, :data:`VISION_WIDTH` wide; a
+    group with a failed grab is left out (a pair is shown whole or not at all)."""
     from cutpoint.ffmpeg_utils import grab_frame_jpeg  # noqa: PLC0415
 
-    lo, hi = SPAN
+    groups = vision_times(duration, variant)
 
-    def one(i: int) -> list[bytes]:
-        t = duration * (lo + (hi - lo) * i / (VISION_FRAMES - 1))
+    def one(t: float) -> bytes | None:
         try:
-            return [grab_frame_jpeg(io, t, VISION_WIDTH)]
+            return grab_frame_jpeg(io, t, VISION_WIDTH)
         except FFmpegError as err:
             logger.debug("vision frame of %s at %.1fs failed: %s", io, t, err)
-        return []
+        return None
 
-    return [f for got in _parallel(one, range(VISION_FRAMES)) for f in got]
+    got = iter(_parallel(one, [t for g in groups for t in g]))
+    grabbed = [[next(got) for _ in g] for g in groups]
+    return [f for g in grabbed if all(f is not None for f in g) for f in g if f is not None]
 
 
 class FootageVision:
@@ -762,7 +895,8 @@ class FootageVision:
 
     ``ollama_url`` and ``ollama_model`` are the run's ``--ollama-url`` and ``--ollama-model``
     (they pick the Ollama over a hosted Vision role, as for the rating). ``explicit``: the
-    user asked for vision (``--vision``, ``"vision": true``).
+    user asked for vision (``--vision``, ``"vision": true``). ``variant``: the question asked
+    (:func:`vision_variant`, read once here; TEMPORARY, #958).
 
     Quiet: in Cutpoint lite, when no model answers or memory is short, one INFO line, and the
     sources stay as the rest decided them. Without the user's Vision consent the same, unless
@@ -779,6 +913,7 @@ class FootageVision:
         self._client: Any = None
         self._made = False
         self._ready: bool | None = None  # None: not checked yet
+        self.variant = vision_variant()
 
     def _skip(self, why: str) -> None:
         self._ready = False
@@ -833,14 +968,17 @@ class FootageVision:
         rater = self._rater()
         if rater is None:
             return None
-        frames = vision_frames(io, duration)
+        frames = vision_frames(io, duration, self.variant)
         if len(frames) < 2:
             return None
+        prompt = vision_prompt(self.variant).format(
+            n=len(frames), pairs=len(frames) // 2, gap=VISION_PAIR_GAP_S
+        )
         try:
             reply = rater.ask_json(
-                VISION_PROMPT.format(n=len(frames)),
+                prompt,
                 frames,
-                VISION_SCHEMA,
+                vision_schema(self.variant),
                 num_predict=256,
                 timeout=VISION_TIMEOUT_S,
             )
@@ -850,6 +988,8 @@ class FootageVision:
         if reply is None:  # the request failed (logged): no more requests in this detection
             self._ready = False
             return None
+        if "motion" in vision_schema(self.variant)["properties"]:  # logged, never decides
+            logger.info("The vision model sees %s camera motion in %s", reply["motion"], io.name)
         answer = reply.get("footage")
         return answer if answer in VISION_ANSWERS else None
 
@@ -890,11 +1030,12 @@ def _with_vision(
     found: SourceProbe, cdir: Path, vision: FootageVision | None, io: Path | None = None
 ) -> SourceProbe:
     """``found`` with :attr:`SourceProbe.vision` when :func:`needs_vision`: from
-    :data:`VISION_FILE` (per model), else asked and cached; unchanged without ``vision`` or
-    an answer."""
+    :data:`VISION_FILE` (per model; :func:`vision_file` of the question's variant), else asked
+    and cached; unchanged without ``vision`` or an answer."""
     if vision is None or not needs_vision(found):
         return found
-    rec = cache.load_json(cdir / VISION_FILE)
+    file = vision_file(vision.variant)
+    rec = cache.load_json(cdir / file)
     answers = rec.get("answers") if isinstance(rec, dict) else None
     if not isinstance(answers, dict) or rec.get("version") != VISION_VERSION:
         answers = {}
@@ -917,7 +1058,7 @@ def _with_vision(
             time.perf_counter() - t0,
         )
         answers = {**answers, key: answer}
-        cache.save_json(cdir / VISION_FILE, {"version": VISION_VERSION, "answers": answers})
+        cache.save_json(cdir / file, {"version": VISION_VERSION, "answers": answers})
     return replace(found, vision=answers[key])
 
 

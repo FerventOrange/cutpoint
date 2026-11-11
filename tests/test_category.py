@@ -731,8 +731,10 @@ def test_text_frames_decodes_eight_frames_at_the_ocr_width(video):
 class FakeVision:
     """Stands in for :class:`category.FootageVision`: ``answer`` to every question."""
 
-    def __init__(self, answer: str | None = "gameplay", key: str = "qwen@local") -> None:
-        self.answer, self._key, self.asked = answer, key, 0
+    def __init__(
+        self, answer: str | None = "gameplay", key: str = "qwen@local", variant: str = "base"
+    ) -> None:
+        self.answer, self._key, self.asked, self.variant = answer, key, 0, variant
 
     def key(self) -> str:
         return self._key
@@ -830,7 +832,9 @@ def stub_rater(monkeypatch):
     monkeypatch.setattr(category.FootageVision, "client", REAL_CLIENT)
     monkeypatch.setattr(vision, "VisionRater", make)
     monkeypatch.setattr(extras, "edition", lambda: "full")
-    monkeypatch.setattr(category, "vision_frames", lambda io, d: [b"jpg"] * category.VISION_FRAMES)
+    monkeypatch.setattr(
+        category, "vision_frames", lambda io, d, variant="base": [b"jpg"] * category.VISION_FRAMES
+    )
     return state
 
 
@@ -843,6 +847,8 @@ def test_the_question_is_generic_and_the_model_freed(stub_rater):
     assert rater.unloaded == 1 and len(rater.asks) == 2
     prompt, n, schema = rater.asks[0]
     assert n == category.VISION_FRAMES and f"{n} frames" in prompt
+    assert prompt == category.VISION_PROMPT.format(n=n)  # the base question (#958 variants)
+    assert schema is category.VISION_SCHEMA
     assert schema["properties"]["footage"]["enum"] == list(category.VISION_ANSWERS)
     with category.footage_vision(False) as vision:
         assert vision is None
@@ -1118,9 +1124,11 @@ def test_the_vision_answer_action_is_cached(faked_probe):
     assert category.probe_source(faked_probe.src, vision).vision == "action" and vision.asked == 1
 
 
-def test_the_vision_question_names_no_sport():
-    """No hand-made per-activity presets: the question describes the kind of camera work."""
-    prompt = category.VISION_PROMPT.lower()
+@pytest.mark.parametrize("variant", category.VISION_VARIANTS)
+def test_the_vision_question_names_no_sport(variant):
+    """No hand-made per-activity presets: the question describes the kind of camera work, in
+    every variant of #958."""
+    prompt = category.vision_prompt(variant).lower()
     for word in ("ski", "bike", "biking", "cycling", "surf", "snowboard", "skate", "mtb", "climb"):
         assert not re.search(rf"\b{word}", prompt), word
     assert "action:" in prompt
@@ -1251,3 +1259,168 @@ def test_text_and_vision_frames_grab_in_parallel_with_the_sequential_result(monk
         assert runs[1][1] == 1 and runs[category.GRAB_WORKERS][1] > 1, name
         assert runs[1][0] == runs[category.GRAB_WORKERS][0], name
         assert len(runs[1][0]) == count, name  # one failed grab each
+
+
+# --------------------------------------------------------------------------- vision variants
+# TEMPORARY (#958): the variants of the vision question measured on labelled footage; remove
+# these tests with the variants once one is chosen.
+BASE_PROMPT = (  # the question before the variants, word for word
+    "These are {n} frames spread over one video, in order. What kind of footage is it?\n"
+    "gameplay: a recording of a video game being played. Rendered graphics, a game's "
+    "interface, menus, maps, loading screens and cutscenes, with or without a webcam, chat "
+    "or other stream overlays.\n"
+    "action: a sport or other fast physical activity filmed by a camera that rides along "
+    "(worn on the body or helmet, mounted on a board) or that follows the person, or a "
+    "drone flying fast through the scene (also first-person FPV flight). Fast first-person "
+    "motion, where the view rushes past close to the ground, water or obstacles, is action.\n"
+    "camera: other real-world scenes filmed with a camera at an everyday pace (a phone, a "
+    "vlog, a walk, a dashcam, an event, a slow drone shot), also when edited with captions, "
+    "titles or cuts.\n"
+    "screen: people talking (a podcast, an interview, a talk to the camera), or a recording "
+    "of a computer screen that is not a game (a desktop, apps, a browser, slides).\n"
+    "other: none of these, or you cannot tell.\n"
+    'Reply with JSON only: {{"footage": "gameplay" | "action" | "camera" | "screen" | "other"}}'
+)
+
+
+def test_the_base_variant_is_the_question_of_before():
+    assert category.VISION_PROMPT == category.vision_prompt("base") == BASE_PROMPT
+    assert category.vision_schema("base") == {
+        "type": "object",
+        "properties": {"footage": {"type": "string", "enum": list(category.VISION_ANSWERS)}},
+        "required": ["footage"],
+    }
+    assert category.vision_file("base") == category.VISION_FILE == "category-vision-v3.json"
+    lo, hi = category.SPAN
+    want = [(100.0 * (lo + (hi - lo) * i / 5),) for i in range(6)]
+    assert category.VISION_FRAMES == 6 and category.vision_times(100.0) == want
+    assert category.vision_times(100.0, "motion") == want
+
+
+def _record_grabs(monkeypatch, fail=()):
+    from cutpoint import ffmpeg_utils  # noqa: PLC0415
+
+    seen: list[float] = []
+
+    def grab_jpeg(io, t, width):
+        seen.append(round(t, 3))
+        if round(t, 3) in fail:
+            raise category.FFmpegError("boom")
+        return f"{t:.2f}".encode()
+
+    monkeypatch.setattr(ffmpeg_utils, "grab_frame_jpeg", grab_jpeg)
+    return seen
+
+
+@pytest.mark.parametrize("variant", ["pairs", "pairs+motion"])
+def test_the_pairs_variants_show_moments_as_pairs_a_short_gap_apart(monkeypatch, variant):
+    gap = category.VISION_PAIR_GAP_S
+    assert category.vision_times(100.0, variant) == [
+        (10.0, 10.0 + gap),
+        (50.0, 50.0 + gap),
+        (90.0, 90.0 + gap),
+    ]
+    assert category.VISION_PAIRS * 2 <= category.VISION_FRAMES  # no more frames than base
+    seen = _record_grabs(monkeypatch)
+    frames = category.vision_frames(Path("v"), 100.0, variant)
+    assert frames == [b"10.00", b"10.33", b"50.00", b"50.33", b"90.00", b"90.33"]
+    assert sorted(seen) == [10.0, 10.33, 50.0, 50.33, 90.0, 90.33]
+
+
+@pytest.mark.parametrize("variant", ["pairs", "pairs+motion"])
+def test_the_pairs_of_a_short_video_stay_inside_it(variant):
+    assert category.vision_times(2.0, variant)[-1][1] < 2.0
+    for d in (2.0, 0.3, 0.0):
+        times = category.vision_times(d, variant)
+        assert times == category.vision_times(d, variant)
+        starts = [g[0] for g in times]
+        assert starts == sorted(starts) and all(t >= 0.0 for g in times for t in g)
+
+
+def test_a_pair_with_a_failed_grab_is_left_out_whole(monkeypatch):
+    _record_grabs(monkeypatch, fail={50.33})
+    frames = category.vision_frames(Path("v"), 100.0, "pairs")
+    assert frames == [b"10.00", b"10.33", b"90.00", b"90.33"]
+
+
+def test_the_pairs_question_says_the_frames_come_in_pairs():
+    prompt = category.vision_prompt("pairs").format(n=4, pairs=2, gap=category.VISION_PAIR_GAP_S)
+    assert "4 frames of one video in 2 pairs" in prompt and "0.33 s after the first" in prompt
+    assert "large change within a pair" in prompt and "cut to another shot" in prompt
+    base = BASE_PROMPT.format(n=4)
+    assert prompt.endswith("?\n" + base[base.index("gameplay:") :])  # the same answers
+    assert category.vision_schema("pairs") is category.VISION_SCHEMA
+
+
+@pytest.mark.parametrize("variant", ["motion", "pairs+motion"])
+def test_the_motion_variants_ask_for_the_motion_first(variant):
+    schema = category.vision_schema(variant)
+    assert list(schema["properties"]) == ["motion", "footage"]  # the order the model writes
+    assert schema["required"] == ["motion", "footage"]
+    assert schema["properties"]["motion"]["enum"] == ["still", "everyday", "fast"]
+    assert schema["properties"]["footage"]["enum"] == list(category.VISION_ANSWERS)
+    prompt = category.vision_prompt(variant).format(n=6, pairs=3, gap=0.33)
+    for line in ("motion: ", "still: ", "everyday: ", "fast: ", "footage: ", "action: "):
+        assert f"\n{line}" in prompt, line
+    assert prompt.endswith(
+        'Reply with JSON only: {"motion": "still" | "everyday" | "fast", '
+        '"footage": "gameplay" | "action" | "camera" | "screen" | "other"}'
+    )
+    assert ("in 3 pairs" in prompt) is (variant == "pairs+motion")
+
+
+@pytest.mark.parametrize(
+    ("reply", "answer"),
+    [
+        ({"motion": "fast", "footage": "camera"}, "camera"),  # fast motion alone is not action
+        ({"motion": "still", "footage": "action"}, "action"),
+        ({"motion": "fast", "footage": "a drone"}, None),
+    ],
+)
+def test_only_the_footage_answer_decides(stub_rater, monkeypatch, caplog, reply, answer):
+    monkeypatch.setenv(category.VISION_VARIANT_ENV, "motion")
+    stub_rater.kw = {"reply": reply}
+    with caplog.at_level(logging.INFO), category.footage_vision() as vision:
+        assert vision.variant == "motion"
+        assert vision.ask(Path("a.mp4"), 60.0) == answer
+    [(prompt, _n, schema)] = stub_rater.raters[0].asks
+    assert schema is category.VISION_MOTION_SCHEMA and '"motion": "still"' in prompt
+    assert f"sees {reply['motion']} camera motion in a.mp4" in caplog.text
+
+
+def test_each_variant_keeps_its_answers_in_its_own_cache_file(faked_probe):
+    from cutpoint import cache  # noqa: PLC0415
+
+    names = {category.vision_file(v) for v in category.VISION_VARIANTS}
+    assert len(names) == len(category.VISION_VARIANTS)
+    cdir = cache.source_dir(faked_probe.src)
+    base = FakeVision("camera")
+    assert category.probe_source(faked_probe.src, base).vision == "camera"
+    pairs = FakeVision("action", variant="pairs")  # the base answer is not read: asked again
+    assert category.probe_source(faked_probe.src, pairs).vision == "action" and pairs.asked == 1
+    assert category.probe_source(faked_probe.src, pairs).vision == "action" and pairs.asked == 1
+    assert category.probe_source(faked_probe.src, base).vision == "camera" and base.asked == 1
+    saved = cache.load_json(cdir / "category-vision-v3-pairs.json")
+    assert saved == {"version": 3, "answers": {"qwen@local": "action"}}
+    assert cache.load_json(cdir / category.VISION_FILE)["answers"] == {"qwen@local": "camera"}
+
+
+@pytest.mark.parametrize(
+    ("value", "variant", "warned"),
+    [
+        (None, "base", False),
+        ("", "base", False),
+        ("pairs", "pairs", False),
+        (" Pairs+Motion ", "pairs+motion", False),
+        ("fast", "base", True),
+    ],
+)
+def test_the_variant_comes_from_the_environment(monkeypatch, caplog, value, variant, warned):
+    if value is not None:
+        monkeypatch.setenv(category.VISION_VARIANT_ENV, value)
+    with caplog.at_level(logging.WARNING):
+        assert category.vision_variant() == variant
+        assert category.FootageVision().variant == variant
+    assert bool(caplog.records) is warned
+    if warned:
+        assert category.VISION_VARIANT_ENV in caplog.text and "base" in caplog.text
