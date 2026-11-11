@@ -163,7 +163,9 @@ def test_memory_guard_setting(home, value, want):
     assert config.get_config().memory_guard == want
 
 
-@pytest.mark.parametrize("value", [-1, "2", True])
+@pytest.mark.parametrize(
+    "value", [-1, "2", True, float("nan"), float("inf"), float("-inf")], ids=repr
+)
 def test_a_bad_memory_guard_setting_is_an_error(home, value):
     set_config(home, memory_guard=value)
     with pytest.raises(ValueError, match="memory_guard"):
