@@ -1674,13 +1674,20 @@ def _digest(cands) -> list[tuple]:
 
 def test_a_telemetry_source_of_a_mixed_project_scores_as_before(tmp_path, monkeypatch):
     """#950: the source with telemetry gets exactly the picks and scores it got before,
-    with or without a sibling without telemetry."""
+    with or without a sibling without telemetry, and the unscaled pick floor."""
     a = tmp_path / "a.mp4"
+    floors = []
+    real_pick = actioncam.pick
+
+    def spy(*args, **kwargs):
+        floors.append(kwargs.get("floor", actioncam.PICK_FLOOR))
+        return real_pick(*args, **kwargs)
+
+    monkeypatch.setattr(actioncam, "pick", spy)
     now = _digest(_mixed_part(tmp_path, monkeypatch, a, telemetry=True))
+    assert floors == [0.02] and floors == [actioncam.PICK_FLOOR]
     alone = _digest(_mixed_part(tmp_path, monkeypatch, a, telemetry=False))
-    _as_before(monkeypatch)
-    before = _digest(_mixed_part(tmp_path, monkeypatch, a, telemetry=True))
-    assert now == alone == before and now
+    assert now == alone and now
     w, avail = get_style("action-cam").weights, scorer.available_for(get_style("action-cam"))
     assert [d[5] for d in now] == [features.to_score(d[3], w, avail) for d in now]
 

@@ -1124,7 +1124,10 @@ on lite their `events` features (`vlm`, `voice_laughter`, `beauty`, `scenic`, `p
 `voice`) are left out, and a renormalised score is capped at 100. `social` counts on lite too:
 there it takes the laughter written in the transcript; full installs also take the laughter,
 screams and cheering heard (`events`).
-The features it could compute are in `settings.features_available`. Action-cam candidates' `signals`
+The features it could compute are in `settings.features_available`. In an action-cam project
+where only some sources have camera telemetry, a source without it also leaves the telemetry
+features (`airtime`, `crash`, `speed`, `carve`, `faces`, `stopped`, `short_clip`) out of its
+divisor (#950); `settings.features_available` stays the project's list. Action-cam candidates' `signals`
 name the action-cam features; `voice_laughter` (laughter heard over the wind noise) was `laughter`
 before #514 phase 1b.
 
