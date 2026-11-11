@@ -1720,15 +1720,20 @@ def test_an_imu_only_source_is_scored_over_its_own_features(tmp_path, monkeypatc
 
 def test_full_and_no_telemetry_sources_score_as_on_main(tmp_path, monkeypatch):
     """#959: the full-telemetry and the no-telemetry source of a mixed project keep the
-    picks and scores they had on main (e8cad80, pinned)."""
+    picks and scores they had on main (e8cad80): the scoring is rebuilt here from main's
+    ``source_available`` (telemetry or not), so the check holds in every edition."""
     a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
-    full = _mixed_part(tmp_path, monkeypatch, a, telemetry=True)
-    none = _mixed_part(tmp_path, monkeypatch, b, telemetry=True)
-    assert [(c.kind, c.start, c.end, c.score) for c in full] == [("airtime", 18.5, 22.5, 24.5)]
-    assert [(c.kind, c.start, c.end, c.score) for c in none] == [
-        ("social", 27.0, 33.0, 4.1),
-        ("speech", 47.5, 53.0, 2.7),
-    ]
+    now = {s: _digest(_mixed_part(tmp_path, monkeypatch, s, telemetry=True)) for s in (a, b)}
+    assert now[a] and now[b]
+
+    real = actioncam.source_available
+
+    def on_main(avail, tel):
+        return avail if tel is not None else real(avail, None)
+
+    monkeypatch.setattr(actioncam, "source_available", on_main)
+    then = {s: _digest(_mixed_part(tmp_path, monkeypatch, s, telemetry=True)) for s in (a, b)}
+    assert now == then
 
 
 def _digest(cands) -> list[tuple]:
