@@ -555,7 +555,10 @@ class VisionRater:
     ) -> dict | None:
         """One turn (text, optionally with JPEG frames); the reply's JSON object or None.
 
-        ``schema`` constrains the reply (Ollama structured output; default: any JSON).
+        ``schema`` constrains the reply (Ollama's structured output, a hosted provider's where
+        it has one; default: any JSON), and a reply missing a required key is None (logged), as
+        one that is not JSON (:func:`_matching`; only the top-level object and its ``required``
+        keys are checked, not the types or values inside).
         Thinking builds of Qwen3 reason even with ``think: false`` until ``num_predict``
         runs out, so text-only turns to a Qwen model (name starting with ``qwen``) go
         through ``/api/generate`` in raw mode with the ChatML turn and an empty
@@ -567,13 +570,13 @@ class VisionRater:
         """
         if self.via:
             self.check_memory()
-            reply = self.via.ask(prompt, images or [])
+            reply = self.via.ask(prompt, images or [], schema=schema)
             try:
                 data = _json_object(reply) if reply else None
             except ValueError as err:
                 logger.warning("Assistant reply is not JSON: %s", err)
                 return None
-            return data if isinstance(data, dict) else None
+            return _matching(data, schema)
         if self.consent_needed:
             self.warn_consent()
             return None
@@ -611,7 +614,7 @@ class VisionRater:
         except (requests.RequestException, KeyError, ValueError) as err:
             logger.warning("Ollama request failed: %s", err)
             return None
-        return data if isinstance(data, dict) else None
+        return _matching(data, schema)
 
     def describe(
         self,
@@ -1259,6 +1262,19 @@ def _json_object(content: str) -> object:
     """A reply's JSON from its first ``{`` to its last ``}``; None if it has none."""
     match = re.search(r"\{.*\}", content, re.S)
     return json.loads(match.group(0)) if match else None
+
+
+def _matching(data: object, schema: dict | None) -> dict | None:
+    """``data`` when it is a JSON object with the ``required`` keys of ``schema`` (any object
+    when None), else None (a missing key is logged, as a reply that is not JSON). Only the top
+    level is checked; item, type and enum checks stay with each caller's own parsing."""
+    if not isinstance(data, dict):
+        return None
+    for key in (schema or {}).get("required", ()):
+        if key not in data:
+            logger.warning("Vision reply has no %r, which the answer schema requires", key)
+            return None
+    return data
 
 
 def _parse(content: str) -> VisionResult | None:
