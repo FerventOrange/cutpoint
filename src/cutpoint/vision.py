@@ -1005,7 +1005,7 @@ class VisionRater:
         if self.via:
             return None
         try:
-            resp = requests.get(f"{self.url}/api/ps", timeout=3, allow_redirects=False)
+            resp = requests.get(f"{self.url}/api/ps", timeout=(1, 3), allow_redirects=False)
             refuse_redirect(resp)
             resp.raise_for_status()
             models = resp.json().get("models", [])

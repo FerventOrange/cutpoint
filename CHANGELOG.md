@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The other Ollama probes (`/api/ps` of the vision rater and the memory guard, the AI Chat model list) wait 1 s to connect, not 3 or 5, and the AI Chat's "not reachable" message gives the host and port and a short reason ("connection refused") instead of the full URL and exception text, so no `user:password@` reaches a log line (#928).
 - A moment marked `vision_skipped` loses the mark when a re-rank (`cutpoint events`, or the rescore after the vision step) puts it in the default edit of the ranking without vision, so rated moments can no longer pass a moment the edit now uses (#949).
 - A vision-rated moment held at an unrated neighbour's score gets the same score on every re-rank instead of moving by 0.1 between the first and the second; candidates tied on score and grid score are listed by source order and time in `highlights.json` (#949).
 - **BREAKING:** `analyze` and `edit` with `--style action-cam` (or a style over it) on footage without camera telemetry no longer end with no moments and no warning: when no source has GoPro or Insta360 X3 telemetry the `action` style runs instead, recorded as `style` `action` with `settings.style_requested` and `settings.style_fallback` in `highlights.json`, and an `action_cam_no_telemetry` warning (WARNING line and `--json`). A project where only some sources have telemetry, or whose telemetry could not be read, stays action-cam and the warning names those sources. `360 analyze` never falls back (#939).

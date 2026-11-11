@@ -49,6 +49,7 @@ from urllib3.util import parse_url
 from cutpoint.assistant import cliproxy, keys
 from cutpoint.backends import normalize_ollama_url, ollama_url
 from cutpoint.config import AssistantSettings, assistant_settings
+from cutpoint.vision import _unreachable_reason
 from cutpoint.vision import default_model as vision_model
 
 DEFAULT_OLLAMA_MODEL = "qwen3.5:9b"  # tools, vision and thinking; about 6.6 GB
@@ -607,14 +608,13 @@ class OllamaProvider:
     def _tags(self) -> list[str]:
         """The names of the pulled models (``/api/tags``); [] for an error answer."""
         try:
-            resp = requests.get(
-                f"{self.url}/api/tags", timeout=SHOW_TIMEOUT_S, allow_redirects=False
-            )
+            # a short connect timeout, as VisionRater.available() (#921, #928)
+            resp = requests.get(f"{self.url}/api/tags", timeout=(1, 3), allow_redirects=False)
             if moved := _redirect("Ollama", resp, "URL"):
                 raise moved
             data = resp.json() if resp.status_code < 400 else None
         except requests.RequestException as err:
-            why = public(f"Ollama is not reachable at {self.url} ({err})")
+            why = f"Ollama is not reachable at {host_port(self.url)} ({_unreachable_reason(err)})"
             raise ProviderError(why) from err
         except ValueError:  # not JSON
             data = None
@@ -641,7 +641,7 @@ class OllamaProvider:
                 **kw,
             )
         except requests.RequestException as err:
-            why = public(f"Ollama is not reachable at {self.url} ({err})")
+            why = f"Ollama is not reachable at {host_port(self.url)} ({_unreachable_reason(err)})"
             raise ProviderError(why) from err
         if moved := _redirect("Ollama", resp, "URL"):
             resp.close()
@@ -906,7 +906,9 @@ class _HttpProvider:
         except requests.Timeout as err:
             raise ProviderError(f"{self.title} did not answer within {timeout:g} s") from err
         except requests.RequestException as err:
-            why = keys.redact(public(f"{self.title} is not reachable at {self.url} ({err})"))
+            why = keys.redact(
+                public(f"{self.title} is not reachable at {host_port(self.url)} ({err})")
+            )
             raise ProviderError(why) from err
         if moved := _redirect(self.title, resp, "base URL", "the Models tab"):
             raise moved

@@ -173,6 +173,18 @@ def test_on_gpu_from_api_ps(monkeypatch, rater, models, expected):
     assert rater.on_gpu() is expected
 
 
+def test_on_gpu_probe_has_a_short_connect_timeout(monkeypatch, rater):
+    seen = []
+
+    def get(url, timeout=None, allow_redirects=True):
+        seen.append(timeout)
+        return _Resp({"models": []})
+
+    monkeypatch.setattr(vision.requests, "get", get)
+    rater.on_gpu()
+    assert seen == [(1, 3)]
+
+
 @pytest.mark.parametrize(
     "reply",
     [
