@@ -336,6 +336,24 @@ def test_an_events_rerun_changes_nothing_the_second_time(home, tmp_path, monkeyp
     assert len(ids) == len(set(ids))
 
 
+def test_an_events_rerun_lists_equal_scores_in_tie_key_order(home, tmp_path, monkeypatch):
+    proj, hl = _analyzed(tmp_path, monkeypatch)
+    base = hl["candidates"][0]
+    late, early = ({**base, "id": i, "start": s, "end": s + 5, "score": 50.0} for i, s in
+                   (("h001", 30.0), ("h002", 10.0)))  # fmt: skip
+    for c in (late, early):
+        c.pop("must_include", None)
+        for k in analyze.CRASH_MARKS:
+            c.pop(k, None)
+        c["kind"] = "moment"
+    hl["candidates"] = [late, early]
+    cache.save_json(proj / "highlights.json", hl)
+    _set_crashes(proj, record("c2", 45.0, 0.5, tmp_path / "a.mp4"))  # a change, so it writes
+    assert analyze.rebuild_crash_moments(proj) is True
+    tied = [(m["start"], m["end"]) for m in _moments(proj) if m["kind"] != analyze.CRASH_KIND]
+    assert tied == [(10.0, 15.0), (30.0, 35.0)]
+
+
 def test_new_crash_moments_continue_from_last_candidate_id(home, tmp_path, monkeypatch):
     proj, hl = _analyzed(tmp_path, monkeypatch)
     src = tmp_path / "a.mp4"
