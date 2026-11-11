@@ -81,6 +81,14 @@ def rank_key(c: dict[str, Any]) -> tuple[float, float]:
     return -c["score"], -c.get("grid_score", c["score"])
 
 
+def edit_rank_key(c: dict[str, Any]) -> tuple[float, float, int, str, float]:
+    """Sort key of the ranking the default edit before vision is taken from, best first:
+    :func:`rank_key`, then source order (``source_index``; 0 in a record without one), source
+    and start. Analyze (before it gives ids) and :func:`rescore_events` (on the saved order,
+    which the ratings set) sort with it, so records that tie are taken in the same order."""
+    return (*rank_key(c), c.get("source_index", 0), c["source"], c["start"])
+
+
 def with_bonus(base: float, boost: float, vlm: float | None) -> float:
     """The bonus stage of one candidate: its analysis score ``base`` plus the event ``boost``
     points, raised toward the VLM window score ``vlm`` (0-100; None without a window) by
@@ -210,7 +218,11 @@ def rescore_events(
     (:func:`cutpoint.analyze.sync_vision`), and a rated candidate's score stays between those of
     its unrated neighbours in the ranking without the ratings, the moments the default edit
     skipped above its cut excepted (:func:`apply_vision_clamp`; the
-    count goes to ``settings.vision.clamped`` when there is a ``settings.vision``). The
+    count goes to ``settings.vision.clamped`` when there is a ``settings.vision``). A moment
+    marked ``vision_skipped`` that the default edit of the ranking without the ratings
+    (:func:`cutpoint.default_fit.fit_target` over ``settings.target_total``, in
+    :func:`edit_rank_key` order as analyze took it, not the saved one) now takes loses the
+    mark first, so it bounds the rated moments again. The
     candidates are re-sorted and ``suggested_top`` is recomputed. In styles with an open list (``gaming``), events that
     can score and that no candidate covers nominate candidates first
     (:func:`cutpoint.events.scoring.nominate`, scored from the grids ``parts`` or, without,
@@ -270,6 +282,19 @@ def rescore_events(
             **({"nominated": nominated} if nominated else {}),
         }
         c["score"] = score
+    target = (hl.get("settings") or {}).get("target_total")
+    if target and any("vision_skipped" in c for c in cands):
+        # a skipped moment the default edit before vision now uses is a neighbour again
+        pre = [
+            {**c, "score": c["score"] if b is None else b}
+            for c, b in zip(cands, unrated, strict=True)
+        ]
+        # the edit_rank_key order analyze took the edit in, not the saved one (the ratings set it)
+        ranked = sorted(pre, key=edit_rank_key)
+        in_edit = {id(p) for p in default_fit.fit_target(ranked, target)}
+        for c, p in zip(cands, pre, strict=True):
+            if id(p) in in_edit:
+                c.pop("vision_skipped", None)
     clamped = apply_vision_clamp(cands, unrated)
     vision = (hl.get("settings") or {}).get("vision")
     if isinstance(vision, dict):
@@ -277,7 +302,6 @@ def rescore_events(
     changed = sum(c["score"] != o for c, o in zip(cands, old, strict=True))
     cands.sort(key=lambda c: (not c.get("must_include"), *rank_key(c)))  # forced crashes first
     hl["candidates"][:] = cands + pool  # in place, as the sort was
-    target = (hl.get("settings") or {}).get("target_total")
     if target:
         n = len(default_fit.fit_target(cands, target))
         hl["suggested_top"] = n

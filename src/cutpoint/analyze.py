@@ -3759,9 +3759,12 @@ def _analyze(
             # the default edit and the band below its cut, from the ranking before vision
             ranked = sorted(
                 (c for c in cands if not c.get("must_include") and not is_pool(c)),
-                key=scorer.rank_key,
+                key=scorer.edit_rank_key,
             )
-            picks = default_fit.fit_target([c for c in cands if not is_pool(c)], style.target_total)
+            picks = default_fit.fit_target(
+                sorted((c for c in cands if not is_pool(c)), key=scorer.edit_rank_key),
+                style.target_total,
+            )
             order, cut, k = vision_band(ranked, picks, vision_top)
             in_edit = {id(c) for c in picks}
             # the moments above the cut the edit skipped (too long or overlapping a pick): no
