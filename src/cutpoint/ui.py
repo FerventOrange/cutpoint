@@ -4129,7 +4129,7 @@ def detected_view(meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, 
     ``used_style``) and the sources of another category (:func:`cutpoint.category.disagreeing`).
     The detection is the current analysis's (``--style auto``), else the copy saved when the
     user left Auto (``stale``); ``category`` is null without either. ``choices`` are the
-    categories with their style, ``main`` false for Action cam unless the footage has camera
+    categories with their style (General is a detection label only, not a choice), ``main`` false for Action cam unless the footage has camera
     telemetry or the style is already action-cam (the page lists it under Other styles then).
     None for 360 projects and before the first analysis."""
     if meta.get("kind") == "360" or not hl:
@@ -4156,7 +4156,7 @@ def detected_view(meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, 
             "style": resolve_auto(c, "hype"),
             "main": c != category.ACTION_CAM or camera or ACTION_CAM in (chosen, hl.get("style")),
         }
-        for c in (category.GAMEPLAY, category.ACTION_CAM, category.TALK, category.GENERAL)
+        for c in (category.GAMEPLAY, category.ACTION, category.ACTION_CAM, category.TALK)
     ]
     view: dict[str, Any] = {
         "auto": chosen == AUTO,
@@ -4370,7 +4370,7 @@ def events_unavailable() -> str | None:
 
 def crash_step_runs(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> bool:
     """The project's analysis ran (or would run) the crash step (``plan_layers``): not a 360
-    project; an action, sport or action-cam style, footage detected as action-cam or general
+    project; an action, sport or action-cam style, footage detected as action-cam, action or general
     (``--style auto``), or sources with camera telemetry (the analysis then wrote crashes.json).
     Before the first analysis (``hl`` None) the project's chosen style answers: yes for those
     styles, ``auto`` or none (the footage decides), no for any other."""
@@ -4391,7 +4391,7 @@ def crash_step_runs(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
     if (
         isinstance(det, dict)
         and not det.get("fallback")
-        and det.get("category") in (category.ACTION_CAM, category.GENERAL)
+        and det.get("category") in (category.ACTION_CAM, category.ACTION, category.GENERAL)
     ):
         return True
     return _inside(p, "crashes.json") and (p / "crashes.json").is_file()

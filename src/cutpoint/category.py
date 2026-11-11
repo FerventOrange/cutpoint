@@ -1,10 +1,12 @@
 """Footage category detection: ``--style auto`` on ``analyze`` and ``edit``, and ``cutpoint detect``.
 
-A source is one of four categories (#513):
+A source is one of five categories (#513):
 
     action-cam  camera telemetry in the file (a GoPro GPMF track, an Insta360 X3 IMU trailer)
     gameplay    a screen recording: overlay pixels that never change (the HUD), helped by
                 screen-recorder marks in the container
+    action      a sport or other fast physical activity filmed by a camera that rides along or
+                follows the person, without telemetry (only the vision model tells)
     talk        speech covers most of a long recording (known after transcription)
     general     everything else
 
@@ -44,10 +46,12 @@ VERSION = 3  # 2: the lower-third box (box, hud_box); 3: per window, bars croppe
 CACHE_FILE = f"category-v{VERSION}.json"  # in the source's cache folder
 
 ACTION_CAM = "action-cam"
+ACTION = "action"
 GAMEPLAY = "gameplay"
 TALK = "talk"
 GENERAL = "general"
-CATEGORIES = (ACTION_CAM, GAMEPLAY, TALK, GENERAL)
+CATEGORIES = (ACTION_CAM, ACTION, GAMEPLAY, TALK, GENERAL)
+DETECTION_VERSION = 4  # of the detection record (4: action); apart from the probe's VERSION
 HYPE, FUNNY = "hype", "funny"  # emphasis: analyze is hype, edit --kind funny-moments funny
 
 # ---- the frame probe
@@ -136,24 +140,33 @@ _TEXT_FAILED: set[Path] = set()  # cache folders whose text check failed in this
 # ---- the vision question, for a source the rest leaves unsure (#898)
 # The shared vision model (local Ollama, or a hosted Vision provider with the user's consent)
 # gets a few frames and one generic question. Its answer is cached per source and model.
-VISION_VERSION = 1
+VISION_VERSION = 2  # 2: the answer action (a camera answer is asked again)
 VISION_FILE = f"category-vision-v{VISION_VERSION}.json"  # in the source's cache folder
 VISION_FRAMES = 6  # frames spread over SPAN
 VISION_WIDTH = 640  # px of each frame sent
 VISION_TIMEOUT_S = 120.0  # a cold model load included
-V_GAMEPLAY, V_CAMERA, V_SCREEN, V_OTHER = "gameplay", "camera", "screen", "other"
-VISION_ANSWERS = (V_GAMEPLAY, V_CAMERA, V_SCREEN, V_OTHER)
+V_GAMEPLAY, V_ACTION, V_CAMERA, V_SCREEN, V_OTHER = (
+    "gameplay",
+    "action",
+    "camera",
+    "screen",
+    "other",
+)
+VISION_ANSWERS = (V_GAMEPLAY, V_ACTION, V_CAMERA, V_SCREEN, V_OTHER)
 VISION_PROMPT = (
     "These are {n} frames spread over one video, in order. What kind of footage is it?\n"
     "gameplay: a recording of a video game being played. Rendered graphics, a game's "
     "interface, menus, maps, loading screens and cutscenes, with or without a webcam, chat "
     "or other stream overlays.\n"
-    "camera: real-world scenes filmed with a camera (a phone, an action camera, a drone, a "
-    "360 camera, a dashcam), also when edited with captions, titles or cuts.\n"
+    "action: a sport or other fast physical activity filmed by a camera that rides along "
+    "(worn on the body or helmet, mounted on a board) or that follows the person (for "
+    "example a drone).\n"
+    "camera: other real-world scenes filmed with a camera (a phone, a vlog, a walk, a "
+    "dashcam, an event), also when edited with captions, titles or cuts.\n"
     "screen: people talking (a podcast, an interview, a talk to the camera), or a recording "
     "of a computer screen that is not a game (a desktop, apps, a browser, slides).\n"
     "other: none of these, or you cannot tell.\n"
-    'Reply with JSON only: {{"footage": "gameplay" | "camera" | "screen" | "other"}}'
+    'Reply with JSON only: {{"footage": "gameplay" | "action" | "camera" | "screen" | "other"}}'
 )
 VISION_SCHEMA = {
     "type": "object",
@@ -967,8 +980,8 @@ class Detection:
         reason: Short text for the log line, such as ``screen recorder tags, static HUD 0.9%``.
         scores: Share of the footage's duration per category.
         sources: Per-source decisions, in input order.
-        pending: The talk check needs the speech coverage of a general source of at least
-            :data:`TALK_MIN_S` (not given yet); ``category`` is general until
+        pending: The talk check needs the speech coverage of a general or action source of at least
+            :data:`TALK_MIN_S` (not given yet); ``category`` is general or action until
             :func:`decide` gets it.
         disagree: Sources of another category than the project's, when they are more than
             :data:`DISAGREE_SHARE` of the footage (else empty).
@@ -991,7 +1004,7 @@ class Detection:
     def record(self, emphasis: str, style: str, fallback: str | None) -> dict[str, Any]:
         """The ``detection`` block of highlights.json and of ``--json``."""
         return {
-            "version": VERSION,
+            "version": DETECTION_VERSION,
             "category": self.category,
             "emphasis": emphasis,
             "style": style,
@@ -1067,7 +1080,7 @@ def _source(p: SourceProbe, speech: float | None) -> SourceDecision:
             p.path, p.duration, ACTION_CAM, False, "camera telemetry", None, speech, "telemetry"
         )
     score, why = gameplay_score(p)
-    seen = p.vision if p.vision in (V_GAMEPLAY, V_CAMERA, V_SCREEN) else None
+    seen = p.vision if p.vision in (V_GAMEPLAY, V_ACTION, V_CAMERA, V_SCREEN) else None
     if p.vision in VISION_ANSWERS:
         why.append(f"vision: {p.vision}")
     if (score >= GAMEPLAY_MIN) if seen is None else seen == V_GAMEPLAY:
@@ -1100,6 +1113,8 @@ def _source(p: SourceProbe, speech: float | None) -> SourceDecision:
     if speech is not None:
         why.append(f"speech {_pct(speech)}")
     reason = ", ".join(why) or "no gameplay signs"
+    if seen == V_ACTION:
+        return SourceDecision(p.path, p.duration, ACTION, False, reason, score, speech, "vision")
     ambiguous = seen is None and score >= GENERAL_SURE
     decided = None if ambiguous else "vision" if seen else _general_evidence(p)
     return SourceDecision(p.path, p.duration, GENERAL, ambiguous, reason, score, speech, decided)
@@ -1108,9 +1123,9 @@ def _source(p: SourceProbe, speech: float | None) -> SourceDecision:
 def decide(probes: Sequence[SourceProbe], speech: Mapping[str, float] | None = None) -> Detection:
     """The project category of ``probes`` (``speech``: coverage per source path, None before
     transcription), by duration-weighted majority in two stages, so the speech coverage can
-    only turn general into talk: first action cam (telemetry in at least
-    :data:`TELEMETRY_SHARE` of the footage), gameplay or other; then, for other, talk or
-    general. The project is ambiguous when ambiguous sources make up at least half of the
+    only turn general or action into talk: first action cam (telemetry in at least
+    :data:`TELEMETRY_SHARE` of the footage), gameplay or other; then, for other, talk,
+    action or general. The project is ambiguous when ambiguous sources make up at least half of the
     winning category.
     """
     if not probes:
@@ -1125,24 +1140,30 @@ def decide(probes: Sequence[SourceProbe], speech: Mapping[str, float] | None = N
     if tel >= TELEMETRY_SHARE:
         cat = ACTION_CAM
     else:  # the largest group; a tie goes to other, then gameplay
-        groups = [(share((TALK, GENERAL)), 2, GENERAL), (share((GAMEPLAY,)), 1, GAMEPLAY)]
+        groups = [(share((TALK, GENERAL, ACTION)), 2, GENERAL), (share((GAMEPLAY,)), 1, GAMEPLAY)]
         cat = max([*groups, (tel, 0, ACTION_CAM)])[2]
-        if cat == GENERAL and share((TALK,)) > share((GENERAL,)):
-            cat = TALK
+        # talk against the rest, then action against general; a tie goes to general
+        if cat == GENERAL:
+            if share((TALK,)) > share((GENERAL, ACTION)):
+                cat = TALK
+            elif share((ACTION,)) > share((GENERAL,)):
+                cat = ACTION
     winners = [s for s in srcs if s.category == cat]
     won = sum(max(s.duration, 1e-3) for s in winners)
     unsure = sum(max(s.duration, 1e-3) for s in winners if s.ambiguous)
     ambiguous = bool(won) and unsure >= won / 2
     scores = {c: round(share((c,)), 3) for c in CATEGORIES}
-    minority = 1.0 - share((cat,))
-    disagree = [s.path for s in srcs if s.category != cat] if minority > DISAGREE_SHARE else []
+    same = (GENERAL, ACTION) if cat in (GENERAL, ACTION) else (cat,)  # one style: no disagreement
+    minority = 1.0 - share(same)
+    disagree = [s.path for s in srcs if s.category not in same] if minority > DISAGREE_SHARE else []
     best = max(winners, key=lambda s: s.duration)
     reason = best.reason
     if len(srcs) > 1:
         reason = f"{_pct(share((cat,)))} of the footage; {reason}"
-    # a general source long enough for talk and not transcribed yet: talk is still open
-    pending = cat == GENERAL and any(
-        s.category == GENERAL and s.speech is None and s.duration >= TALK_MIN_S for s in srcs
+    # a general or action source long enough for talk and not transcribed yet: talk is still open
+    pending = cat in (GENERAL, ACTION) and any(
+        s.category in (GENERAL, ACTION) and s.speech is None and s.duration >= TALK_MIN_S
+        for s in srcs
     )
     if pending:
         reason += "; talk is checked after transcription"
@@ -1175,7 +1196,13 @@ def disagreeing(record: Mapping[str, Any]) -> list[dict[str, Any]]:
     :attr:`Detection.disagree`), else none."""
     cat = record.get("category")
     scores = record.get("scores")
-    share = scores.get(cat) if isinstance(scores, Mapping) else None
+    same = (GENERAL, ACTION) if cat in (GENERAL, ACTION) else (cat,)
+    share = None
+    if isinstance(scores, Mapping):
+        # an old record has no ``action`` score: a missing partner counts as 0
+        vals = [scores.get(c, None if c == cat else 0.0) for c in same]
+        if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals):
+            share = sum(vals)
     if (
         not isinstance(share, (int, float))
         or isinstance(share, bool)
@@ -1185,11 +1212,11 @@ def disagreeing(record: Mapping[str, Any]) -> list[dict[str, Any]]:
     srcs = record.get("sources")
     if not isinstance(srcs, list):
         return []
-    return [s for s in srcs if isinstance(s, dict) and s.get("category") != cat]
+    return [s for s in srcs if isinstance(s, dict) and s.get("category") not in same]
 
 
 def label(category: str) -> str:
-    """Display name of a category (``Action cam``, ``Gameplay``, ``Talk``, ``General``)."""
+    """Display name of a category (``Action cam``, ``Action``, ``Gameplay``, ``Talk``, ``General``)."""
     return category.replace("-", " ").capitalize()
 
 

@@ -1894,6 +1894,7 @@ def test_plan_by_style(env, style, layers, skipped):
         ("funny", category.GENERAL, ("visual",), True),  # funny on camera footage: no HUD OCR
         ("action", category.GAMEPLAY, ("ocr",), False),
         ("commentary", category.TALK, None, False),
+        ("funny", category.ACTION, ("visual",), True),  # action footage: visual layer and crashes
     ],
 )
 def test_plan_follows_the_detected_category_not_the_style(env, style, cat, keyframes, crashes):
@@ -2813,3 +2814,27 @@ def test_a_weak_pick_falls_below_the_cut(band_run):
     picks = default_fit.fit_target(hl["candidates"], 60.0)
     assert _start(5) not in [c["start"] for c in picks]  # out of the edit
     assert _start(6) in [c["start"] for c in picks]
+
+
+@pytest.mark.parametrize(
+    ("style", "cat"),
+    [
+        ("action", category.ACTION),
+        ("sport", category.ACTION),
+        ("action-cam", category.ACTION_CAM),
+        ("gaming", category.GAMEPLAY),
+        ("commentary", category.TALK),
+    ],
+)
+def test_an_explicit_style_runs_the_layers_of_its_category(env, style, cat):
+    assert analyze.layer_category(get_style(style)) == cat
+
+
+def test_action_footage_plans_the_layers_of_action_footage(env):
+    p = analyze.plan_layers(get_style("commentary"), [Path("a.mp4")], (), category.ACTION)
+    assert p.layers == {
+        "reactions": ("audio", "voice"),
+        "keyframes": ("visual",),
+        "crashes": ("crash",),
+    }
+    assert not p.game
