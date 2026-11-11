@@ -43,7 +43,7 @@ while each run goes. Results go to ``<bench>/results/<timestamp>-<variant>.json`
 ``<timestamp>-report.md`` (also printed). One bench runs at a time on the machine (a lock in the
 temporary folder). Exit codes: 0 done (the gate is advice), 1 error, 2 bad arguments, a refused
 manifest or a file ``--compare`` cannot read, 3 a failed gate with ``--strict-gate``, 130
-interrupted.
+interrupted (Ctrl+C, Ctrl+Break or SIGTERM).
 """
 
 from __future__ import annotations
@@ -457,25 +457,38 @@ def bench_lock(lock: Path) -> Iterator[Path]:
                 lock.unlink()
 
 
+class StopRequested(KeyboardInterrupt):
+    """SIGTERM to the bench (POSIX): handled like Ctrl+C, but only the bench got the signal,
+    so the running analyze must be stopped actively (:func:`stop_analyze`)."""
+
+
 def _raise_interrupt(signum: int, frame: object) -> None:
     raise KeyboardInterrupt
 
 
+def _raise_stop(signum: int, frame: object) -> None:
+    raise StopRequested
+
+
 @contextlib.contextmanager
-def break_as_interrupt() -> Iterator[None]:
-    """On Windows, treat Ctrl+Break (``CTRL_BREAK_EVENT`` to the process group) like Ctrl+C
-    while the bench runs, so the same cleanup runs (analyze stopped, lock removed, exit 130);
-    by default it ends Python with 0xC000013A. The previous handler is restored afterwards.
-    As ``cutpoint``'s own handler (``cli._stop_signal_as_interrupt``, private), nothing is
-    installed outside the main thread."""
-    if sys.platform != "win32" or threading.current_thread() is not threading.main_thread():
+def stop_signals_as_interrupt() -> Iterator[None]:
+    """While the bench runs, treat Ctrl+Break (Windows: ``CTRL_BREAK_EVENT`` to the process
+    group, which by default ends Python with 0xC000013A) or SIGTERM (POSIX, which by default
+    ends it at once) like Ctrl+C, so the same cleanup runs: analyze stopped, lock removed,
+    exit 130, as ``cutpoint`` does (``cli._stop_signal_as_interrupt``, private). The previous
+    handler is restored afterwards; nothing is installed outside the main thread."""
+    if threading.current_thread() is not threading.main_thread():
         yield
         return
-    previous = signal.signal(signal.SIGBREAK, _raise_interrupt)
+    if sys.platform == "win32":
+        signum, handler = signal.SIGBREAK, _raise_interrupt  # the child got the event too
+    else:
+        signum, handler = signal.SIGTERM, _raise_stop
+    previous = signal.signal(signum, handler)
     try:
         yield
     finally:
-        signal.signal(signal.SIGBREAK, previous)
+        signal.signal(signum, previous)
 
 
 # -- samples -----------------------------------------------------------------------------------
@@ -813,11 +826,12 @@ def run_job(
 
 def stop_analyze(proc: subprocess.Popen[str], err: BaseException) -> None:
     """Let a stopped analyze clean up (its lock, ``progress.json``, its own ffmpeg): after a
-    Ctrl+C the child got the same signal, so it is waited for; after anything else it is asked
-    to stop (terminate). If it is still running after :data:`STOP_S` it is killed. A second
-    Ctrl+C during the wait kills it at once."""
+    Ctrl+C or Ctrl+Break the child got the same signal, so it is waited for; after a SIGTERM to
+    the bench (:class:`StopRequested`) or anything else it is asked to stop (terminate: SIGTERM,
+    which ``cutpoint`` handles like Ctrl+C). If it is still running after :data:`STOP_S` it is
+    killed. A second interrupt during the wait kills it at once."""
     try:
-        if not isinstance(err, KeyboardInterrupt):
+        if not isinstance(err, KeyboardInterrupt) or isinstance(err, StopRequested):
             proc.terminate()
         with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(STOP_S)
@@ -1570,7 +1584,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("%s", err)
         return 2
     try:
-        with break_as_interrupt(), bench_lock(machine_lock()):
+        with stop_signals_as_interrupt(), bench_lock(machine_lock()):
             os.environ.update(bench_env(bench, args.home, args.cache))
             reset_state()  # the config of the bench home from here on
             results = run_bench(

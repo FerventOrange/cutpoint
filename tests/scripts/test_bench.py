@@ -128,13 +128,15 @@ class FakeProc:
 class FakeRun:
     """``subprocess.Popen`` for ``analyze``: writes the project's highlights.json with the
     detection ``results`` gives the input's stem (default: gameplay, sure). Stems in ``fail``
-    exit 1, in ``missing`` cannot start, in ``interrupt`` get a Ctrl+C."""
+    exit 1, in ``missing`` cannot start, in ``interrupt`` get a Ctrl+C, in ``stop`` a SIGTERM to the
+    bench."""
 
     def __init__(self) -> None:
         self.results: dict = {}
         self.fail: set = set()
         self.missing: set = set()
         self.interrupt: set = set()
+        self.stop: set = set()
         self.calls: list[tuple[list[str], dict]] = []
         self.procs: list[FakeProc] = []
 
@@ -145,6 +147,8 @@ class FakeRun:
             raise FileNotFoundError(2, "No such file or directory", argv[0])
         if stem in self.interrupt:
             proc = FakeProc(0, "", KeyboardInterrupt())
+        elif stem in self.stop:
+            proc = FakeProc(0, "", bench.StopRequested())
         elif stem in self.fail:
             err = {"ok": False, "error": {"code": "error", "message": "boom"}, "warnings": []}
             proc = FakeProc(1, json.dumps(err) + "\n")
@@ -728,20 +732,39 @@ def test_config_and_cache_are_part_of_the_stamp(tmp_path, fake_run):
     assert fake_run.calls[-1][1]["CUTPOINT_CACHE_DIR"] == str(tmp_path / "elsewhere")
 
 
-def test_ctrl_break_is_a_ctrl_c_on_windows_only(monkeypatch):
+@pytest.mark.parametrize(
+    ("platform", "hooked", "raised"),
+    [("win32", "break", KeyboardInterrupt), ("linux", "term", "stop")],
+)
+def test_stop_signals_are_a_ctrl_c_while_the_bench_runs(monkeypatch, platform, hooked, raised):
     fake_break = signal.SIGINT  # stands in for signal.SIGBREAK, which only Windows has
     monkeypatch.setattr(bench.signal, "SIGBREAK", fake_break, raising=False)
-    before = signal.getsignal(fake_break)
-    monkeypatch.setattr(bench.sys, "platform", "linux")
-    with bench.break_as_interrupt():
-        assert signal.getsignal(fake_break) is before
-    monkeypatch.setattr(bench.sys, "platform", "win32")
-    with bench.break_as_interrupt():
-        handler = signal.getsignal(fake_break)
-        assert handler is bench._raise_interrupt
-        with pytest.raises(KeyboardInterrupt):
-            handler(fake_break, None)
-    assert signal.getsignal(fake_break) is before  # restored
+    monkeypatch.setattr(bench.sys, "platform", platform)
+    sigs = {"break": fake_break, "term": signal.SIGTERM}
+    before = {k: signal.getsignal(v) for k, v in sigs.items()}
+    raised = bench.StopRequested if raised == "stop" else raised
+    with bench.stop_signals_as_interrupt():
+        for name, sig in sigs.items():
+            handler = signal.getsignal(sig)
+            if name != hooked:
+                assert handler is before[name]  # the other platform's signal is left alone
+                continue
+            with pytest.raises(raised) as caught:
+                handler(sig, None)
+            assert isinstance(caught.value, KeyboardInterrupt)
+            # Ctrl+Break reached the child too; a SIGTERM to the bench did not
+            assert isinstance(caught.value, bench.StopRequested) is (name == "term")
+    assert {k: signal.getsignal(v) for k, v in sigs.items()} == before  # restored
+
+
+def test_sigterm_stops_the_child_actively_and_frees_the_lock(tmp_path, fake_run):
+    manifest = write_manifest(tmp_path, [source("a"), source("b")])
+    fake_run.stop = {"a"}
+    assert bench.main([str(manifest), "--sample-interval", "0"]) == 130  # as cutpoint's CLI
+    (proc,) = fake_run.procs
+    assert proc.actions[0] == "terminate"  # not only a wait for a child that got nothing
+    assert fake_run.analyzed() == ["a"]
+    assert not bench.machine_lock().exists()
 
 
 def test_interrupt_while_taking_the_lock_or_writing_the_report_frees_it(
