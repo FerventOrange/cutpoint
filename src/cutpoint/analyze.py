@@ -2249,7 +2249,7 @@ def rebuild_crash_moments(project: Path) -> bool:
     pool = [c for c in rest if is_pool(c)]
     kept = sorted(
         [c for c in rest if not is_pool(c)] + kept + fresh,
-        key=lambda c: (not c.get("must_include"), *scorer.rank_key(c)),
+        key=lambda c: (not c.get("must_include"), *scorer.rank_key(c), *scorer.tie_key(c)),
     )
     hl["candidates"] = kept + pool
     number_candidates(hl)
@@ -2274,7 +2274,7 @@ def vision_band(
     """The moments the vision model rates (#909): the default edit and ``k`` below its cut.
 
     ``ranked``: the candidates that are neither ``must_include`` nor visual pool moments, in
-    :func:`cutpoint.scorer.rank_key` order. ``picks``: the default edit
+    :func:`cutpoint.scorer.edit_rank_key` order. ``picks``: the default edit
     (:func:`cutpoint.default_fit.fit_target` before vision). The cut is 1 + the index in
     ``ranked`` of the last pick that is not ``must_include`` (the picks need not be the first
     ones; 0 without one). The band is every pick in ``ranked`` (a moment above the cut that the
