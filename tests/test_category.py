@@ -315,6 +315,36 @@ def test_a_2_to_1_frame_of_360_video_is_camera_footage(size, sure):
 UNSURE = {"frames": 16, "hud_static": 0.0, "static_share": 0.0}  # untagged, no HUD: 0.3
 
 
+@pytest.mark.parametrize("answer", ["gameplay", "camera", "screen", "other"])
+@pytest.mark.parametrize("speech", [None, {"a.mp4": 0.1}, {"a.mp4": 0.7}, {"a.mp4": 0.45}])
+def test_only_an_action_answer_changes_footage_the_camera_tags_decide(answer, speech):
+    """#958: camera tags alone no longer keep the vision model away (an action camera without
+    telemetry has a phone's tags), but re-exports and phone clips carry them too: any other
+    answer leaves the decision as without vision, talk included."""
+    plain = category.decide([probe(**CAMERA)], speech)
+    seen = category.decide([probe(**CAMERA, vision=answer)], speech)
+    assert seen == plain
+    assert "vision" not in seen.reason
+
+
+@pytest.mark.parametrize("answer", ["action", "gameplay", "camera", "screen", "other"])
+def test_a_tagged_360_source_stays_as_without_vision(answer):
+    """360 is never asked; an answer on file (an older cache) cannot make it action either."""
+    tagged = {**CAMERA, "width": 5760, "height": 2880}
+    plain = category.decide([probe(**tagged)])
+    assert category.decide([probe(**tagged, vision=answer)]) == plain
+    assert (plain.category, plain.ambiguous) == (GENERAL, False)
+
+
+def test_a_partial_hud_keeps_talky_tagged_footage_unsure_whatever_the_model_saw():
+    """Talk is weighed as without vision for a source asked only because of its tags."""
+    tagged = {**CAMERA, "hud_static": category.HUD_FULL / 3}  # still sure general
+    plain = category.decide([probe(**tagged)], {"a.mp4": 0.7})
+    assert (plain.category, plain.ambiguous) == (TALK, True)
+    for answer in ("action", "camera"):
+        assert category.decide([probe(**tagged, vision=answer)], {"a.mp4": 0.7}) == plain
+
+
 @pytest.mark.parametrize(
     ("fields", "answer", "speech", "expect"),
     [
@@ -323,6 +353,7 @@ UNSURE = {"frames": 16, "hud_static": 0.0, "static_share": 0.0}  # untagged, no 
         (UNSURE, "action", None, (ACTION, False, ["vision"])),
         # a sport the model sees on footage with camera tags: vision still decides
         ({**CAMERA}, "action", None, (ACTION, False, ["vision"])),
+        ({**CAMERA}, "action", {"a.mp4": 0.1}, (ACTION, False, ["vision"])),
         (UNSURE, "screen", None, (GENERAL, False, ["vision"])),
         (UNSURE, "other", None, (GENERAL, True, [])),  # the model cannot tell
         (UNSURE, None, None, (GENERAL, True, [])),  # not asked
@@ -359,7 +390,11 @@ def test_decided_by_names_the_evidence_of_most_footage():
         (UNSURE, True),
         ({**UNSURE, "static_share": 0.9}, True),  # a still: a menu or a desktop
         (GAME, False),  # sure gameplay
-        (CAMERA, False),  # sure general
+        (CAMERA, True),  # sure general by camera tags alone: an action camera has them (#958)
+        ({**CAMERA, "frames": 2, "hud_static": None}, False),  # tagged, no frame measures
+        ({**UNSURE, "width": 5760, "height": 2880}, False),  # sure general by a 360 frame
+        ({**CAMERA, "width": 5760, "height": 2880}, False),  # 360 with camera tags: never asked
+        ({**CAMERA, "telemetry": True}, False),
         ({**UNSURE, "telemetry": True}, False),
         ({**UNSURE, "frames": 2, "hud_static": None}, False),  # no frame measures
         ({**GAME, "hud_static": 0.0, "hud_text": category.TEXT_ANCHORS}, False),  # the text
@@ -734,9 +769,16 @@ def test_no_answer_is_not_cached(faked_probe):
 
 
 def test_sure_footage_is_never_shown_to_the_vision_model(faked_probe, monkeypatch):
-    monkeypatch.setattr(category, "_metadata", lambda data: {"make": "Apple"})
+    """A 2:1 frame of 360 video is sure general and is not asked (camera tags are, #958)."""
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from cutpoint import ffmpeg_utils  # noqa: PLC0415
+
+    size = SimpleNamespace(duration=60.0, width=5760, height=2880)
+    monkeypatch.setattr(ffmpeg_utils, "probe", lambda p: size)
     vision = FakeVision()
-    assert category.probe_source(faked_probe.src, vision).vision is None
+    found = category.probe_source(faked_probe.src, vision)
+    assert found.equirect and found.vision is None
     assert vision.asked == 0
 
 
@@ -1050,9 +1092,23 @@ def test_the_detection_record_has_its_own_version_apart_from_the_probe_cache():
 
 
 def test_the_vision_cache_is_a_new_file_so_camera_answers_are_asked_again():
-    assert category.VISION_VERSION == 2
-    assert category.VISION_FILE == "category-vision-v2.json"
+    """3 (#958): the question calls fast first-person motion action; v2 answers are not read."""
+    assert category.VISION_VERSION == 3
+    assert category.VISION_FILE == "category-vision-v3.json"
     assert "action" in category.VISION_ANSWERS
+    assert "first-person" in category.VISION_PROMPT and "FPV" in category.VISION_PROMPT
+
+
+def test_a_v2_answer_is_asked_again(faked_probe):
+    from cutpoint import cache  # noqa: PLC0415
+
+    cdir = cache.source_dir(faked_probe.src)
+    cache.save_json(
+        cdir / "category-vision-v2.json", {"version": 2, "answers": {"qwen@local": "camera"}}
+    )
+    vision = FakeVision("action")
+    assert category.probe_source(faked_probe.src, vision).vision == "action"
+    assert vision.asked == 1
 
 
 def test_the_vision_answer_action_is_cached(faked_probe):
@@ -1075,3 +1131,30 @@ def test_auto_resolves_the_action_category_to_the_action_style():
     assert styles.resolve_auto(ACTION, category.FUNNY) == "funny"
     assert set(styles.AUTO_STYLES) == set(category.CATEGORIES)
     assert category.label(ACTION) == "Action"
+
+
+@pytest.mark.parametrize(
+    ("answer", "expect"),
+    [
+        ("action", (ACTION, ["vision"])),
+        ("camera", (GENERAL, ["camera tags"])),
+        ("gameplay", (GENERAL, ["camera tags"])),
+        (None, (GENERAL, ["camera tags"])),  # no answer
+    ],
+)
+def test_a_camera_tagged_source_without_telemetry_is_shown_to_the_vision_model(
+    faked_probe, monkeypatch, answer, expect
+):
+    """#958: a DJI or other camera original without telemetry has only its tags, as a phone
+    clip or a re-export has; the vision model can still tell it is action."""
+    from cutpoint import ffmpeg_utils  # noqa: PLC0415
+
+    tags = {"streams": [{"codec_type": "video", "tags": {"handler_name": "DJI.AVC"}}]}
+    monkeypatch.setattr(ffmpeg_utils, "ffprobe_json", lambda *a, **k: tags)
+    vision = FakeVision(answer)
+    found = category.probe_source(faked_probe.src, vision)
+    assert found.camera_marks and vision.asked == 1
+    det = category.decide([found], {})
+    assert (det.category, det.ambiguous, det.decided_by) == (expect[0], False, expect[1])
+    without = category.decide([category.probe_source(faked_probe.src)], {})
+    assert (without.category, without.decided_by) == (GENERAL, ["camera tags"])

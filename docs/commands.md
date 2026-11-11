@@ -1008,7 +1008,7 @@ one of them is refused.
 | `--keep-clips` / `--no-keep-clips` | Keep the clips in `clips` (default). `--no-keep-clips` exports them into a temporary folder in the project, as [`assemble <project>`](#assemble-from-a-project) does, and removes it after the join (after a failure or Ctrl+C too): the project gets `final.mp4`, `final.srt` and the `<name>-final` copies, and an existing clips folder is not touched. Refused (exit 2) with `--kind clips`, a timeline `--format` or `--force` |
 | `--format mp4\|fcpxml\|otio` | As on [`assemble`](#assemble): `mp4` (default) makes the final video; `fcpxml` or `otio` writes only that timeline, referencing the kept clips, and copies it to `<name>-final.fcpxml` or `.otio` |
 | `--events` | Also run [`events`](#events) with its defaults, without the layers of the `--skip` steps, to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
-| `--vision` / `--no-vision` | As on `analyze`: rate the default edit and the moments below its cut with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off. With `--style auto` they also govern the footage check of unsure sources (see [detect](#detect)): on unless `--no-vision` or `"vision": false`; `--vision` also warns of a missing consent |
+| `--vision` / `--no-vision` | As on `analyze`: rate the default edit and the moments below its cut with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off. With `--style auto` they also govern the footage check of unsure sources and camera footage without telemetry (see [detect](#detect)): on unless `--no-vision` or `"vision": false`; `--vision` also warns of a missing consent |
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): the most moments sent to vision, and the Ollama server and model (also for the VLM layer of `--events`); an invalid port in `--ollama-url` exits 2 (`bad_args`) |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes`, `crashes` and/or `dialogue`. Give it after the input paths |
 | `--visual-index` / `--no-visual-index` | As on `analyze`: also write the frame embeddings of the AI Chat's visual search for `gaming`, `funny` and `commentary` footage, or not. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
@@ -1043,7 +1043,7 @@ an analysed set processes only the new file.
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
-| `--vision` / `--no-vision` | Rate the default edit and the moments below its cut with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), on their frames and, except for `action-cam`, the speech in them, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. With `--style auto` they also govern the footage check of unsure sources (see [detect](#detect)): on unless `--no-vision` or `"vision": false`; `--vision` also warns of a missing consent. See **Vision rating** below |
+| `--vision` / `--no-vision` | Rate the default edit and the moments below its cut with the [`vision_assistant`](configuration.md#vision_assistant) model (Ollama by default), on their frames and, except for `action-cam`, the speech in them, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off for every style; `--no-vision` skips it when `config.json` turns it on. With `--style auto` they also govern the footage check of unsure sources and camera footage without telemetry (see [detect](#detect)): on unless `--no-vision` or `"vision": false`; `--vision` also warns of a missing consent. See **Vision rating** below |
 | `--vision-top N` | The most moments sent to vision, those closest to the cut first. Default: the edit's moments (not must-include ones) plus max(2, 30% of its moments) below its cut, at most 24 |
 | `--ollama-url`, `--ollama-model` | Defaults: `vision_assistant.url` (Vision role `ollama`) / `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `vision_assistant.model` (Vision role `ollama`) / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a [`vision_assistant`](configuration.md#vision_assistant) of any provider other than `ollama` in `config.json`, the frames (here and for `360 director --vl-check`) go to that provider instead: an API (`anthropic`, `openai`, `xai`, with your API key) or a subscription (`claude-code`, `codex`, `antigravity`), once you agreed to it in the Models tab ("Allow vision requests"), unless you give `--ollama-url` and/or `--ollama-model`: then that Ollama is used instead (a flag left out takes its default) and nothing goes to the hosted provider. An Ollama URL that is not this machine (`localhost` or a loopback address, except on the Cutpoint proxy's port) needs that Vision consent too; without it vision is skipped with a WARNING (`vision_consent_needed`). An `--ollama-url` with an invalid port (such as `myhost:99999`) exits 2 with `bad_args`; a bad port in `OLLAMA_HOST`, `ollama_url`, the Models-tab Vision URL (`vision_assistant.url`) or the AI Chat Ollama URL only skips the step |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
@@ -1367,7 +1367,7 @@ Tells which category the footage is and which style `--style auto` would use, wi
 it. It reads the container tags, the camera telemetry and 40 small frames per source (24 frames
 spread over the source, read at 640x360, plus 4 pairs of 4 consecutive frames; a few seconds each;
 cached as `category-v3.json` in the source's cache folder), plus the HUD text check and the vision
-check (below) for unsure sources, and writes nothing to a project. An older cache
+check (below) for unsure sources (the vision check also for camera-tagged sources without telemetry), and writes nothing to a project. An older cache
 (`category-v2.json`) is not read: every source is probed once more after updating.
 
 | Category | Evidence | `analyze --style auto` | `edit --kind funny-moments --style auto` |
@@ -1376,7 +1376,7 @@ check (below) for unsure sources, and writes nothing to a project. An older cach
 | Gameplay | A static HUD: overlay pixels that stay put while the picture moves, or HUD text that stays in place (the HUD text check below); screen-recorder tags help | `gaming` | `funny` |
 | Talk | Not gameplay, and speech covers at least 55% of a source of 8 minutes or more | `commentary` | `funny` |
 | Action | A sport or fast physical activity filmed by a camera that rides along or follows the person, without telemetry. Only the vision answer `action` tells | `action` | `funny` |
-| General | Anything else. Sure only with camera tags (a phone or camera make), a 2:1 frame of a 360 camera, or the vision answer | `action` | `funny` |
+| General | Anything else. Sure only with camera tags (a phone or camera make; the vision answer `action` still makes such a source Action), a 2:1 frame of a 360 camera, or the vision answer | `action` | `funny` |
 
 The other kinds of `edit` (`highlights`, `montage`, `clips`) use the `analyze` column.
 
@@ -1390,17 +1390,20 @@ of the picture (a news lower third or ticker) is not a HUD: its text counts for 
 static HUD nor the HUD text check, so camera footage with one is not called gameplay. A game whose HUD is such a panel (a
 Doom-style status bar, an RTS console) is taken for a box too and can become ambiguous.
 
-**Vision check.** A source the frame probe, the recorder tags and the HUD text check leave unsure
-is shown to the vision model: 6 frames at 640 px, to Ollama with `qwen3.5:9b`, or to the hosted
+**Vision check.** A source the frame probe, the recorder tags and the HUD text check leave unsure,
+and a source without telemetry that only its camera tags make General (a DJI or phone file), is
+shown to the vision model: 6 frames at 640 px, to Ollama with `qwen3.5:9b`, or to the hosted
 Vision provider the user allowed in the Models tab of `cutpoint ui` (a hosted provider, or an
-Ollama on another machine, needs the Vision consent). It is on by default and runs for unsure
+Ollama on another machine, needs the Vision consent). It is on by default and runs for these
 sources only; `--no-vision` or `"vision": false` in `config.json` skips it, and `--vision` (also
 on `analyze` and `edit`) asks for it explicitly (a missing consent is then a `vision_consent_needed` warning). `--ollama-url` and `--ollama-model` choose the Ollama and win
 over a hosted Vision provider, as for other vision use. It is skipped in Cutpoint lite, without
 Ollama running, and without consent: by default quietly (one INFO line), and the source stays
 unsure; with `--vision` or `"vision": true` given explicitly, a skip for lack of consent is a
-`vision_consent_needed` warning. An `other` answer leaves the source unsure; a `camera` answer is General, an `action` answer is Action. Answers are cached per
-model and host as `category-vision-v2.json` (an older `category-vision-v1.json` is not read: unsure sources are asked once more). `decided_by` in the result (and the `detect` output)
+`vision_consent_needed` warning. An `other` answer leaves the source unsure; a `camera` answer is General, an `action` answer is Action. For a camera-tagged
+source only `action` counts: any other answer leaves it General by its camera tags, as re-exports and phone clips carry them
+too. Fast first-person footage (worn or mounted cameras, FPV drone flight) is meant to be `action`. Answers are cached per
+model and host as `category-vision-v3.json` (an older `category-vision-v2.json` is not read: these sources are asked once more). `decided_by` in the result (and the `detect` output)
 names the evidence that decided: `vision` for these sources.
 
 **HUD text check.** A thin HUD (a few lines of text, as in War Thunder, Rainbow Six or
