@@ -1634,6 +1634,35 @@ def test_a_project_with_some_telemetry_stays_action_cam_and_names_the_rest(run, 
     assert "rank with the moments of the sources that have it" in warning["message"]
 
 
+def test_features_by_source_of_an_action_cam_run_follows_each_sources_telemetry(run, monkeypatch):
+    """#960 end to end: the sources' own sets are known only after the ranking step picks from
+    them, so ``settings.features_by_source`` names the telemetry-less source's smaller set."""
+    videos, _ = _cam_run(run, monkeypatch, {"a.mp4": True, "b.mp4": False}, {"a.mp4": True})
+    full = SimpleNamespace(meta={"gps_samples": 10}, grid={"wind": np.zeros(1)})
+    monkeypatch.setattr(
+        actioncam,
+        "prepare",
+        lambda sources, durations, project: SimpleNamespace(
+            telemetry={str(s): full if s.name == "a.mp4" else None for s in sources}
+        ),
+    )
+
+    def pick(r, style, max_candidates, timings, cam_ctx):
+        r.avail = actioncam.source_available(features.available(), cam_ctx.telemetry[str(r.source)])
+        return r.candidates
+
+    monkeypatch.setattr(analyze, "pick_candidates", pick)
+    analyze.analyze(videos, get_style("action-cam"), run.proj, vision=False, use_scenes=False)
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    assert hl["style"] == "action-cam"
+    install = features.available()
+    assert hl["settings"]["features_by_source"] == {
+        str(videos[0]): sorted(install),
+        str(videos[1]): sorted(install - frozenset(actioncam.TELEMETRY_FEATURES)),
+    }
+    assert hl["settings"]["features_available"] == sorted(install)
+
+
 def _mixed_part(tmp_path, monkeypatch, src: Path, telemetry: bool):
     """Candidates of one 60 s action-cam source of a project where ``a.mp4`` has telemetry
     (a jump) and ``b.mp4`` none (light laughter and talk, under the fixed pick floor)."""
@@ -3072,3 +3101,42 @@ def test_action_footage_plans_the_layers_of_action_footage(env):
         "crashes": ("crash",),
     }
     assert not p.game
+
+
+def test_features_by_source_names_each_sources_divisor_set(tmp_path, monkeypatch):
+    """#960: full-telemetry, IMU-only and no-telemetry sources of one project record three
+    different sets in ``settings.features_by_source``; ``features_available`` stays the
+    install's. Built from the install's set, so it holds in every edition."""
+    a, b, c = (tmp_path / f"{x}.mp4" for x in "abc")
+    seen: list[frozenset | None] = []
+    real = analyze.describe_candidates
+
+    def spy(cands, style, ps, offset, avail=None):
+        seen.append(avail)
+        return real(cands, style, ps, offset, avail)
+
+    monkeypatch.setattr(analyze, "describe_candidates", spy)
+    _mixed_part(tmp_path, monkeypatch, a, telemetry=True)
+    _mixed_part(tmp_path, monkeypatch, b, telemetry=True)
+    _imu_only_part(tmp_path, monkeypatch)
+    install = features.available()
+    full_set, none_set, imu_set = seen
+    assert full_set == install
+    assert imu_set == install - {"speed"} and "speed" in install
+    assert none_set == install - frozenset(actioncam.TELEMETRY_FEATURES)
+    results = [
+        analyze.SourceResult(p, None, 0.0, 60.0, [], [], None, avail=s)
+        for p, s in ((a, full_set), (b, none_set), (c, imu_set))
+    ]
+    got = analyze._features_by_source(results)
+    assert got == {
+        str(a): sorted(install),
+        str(b): sorted(none_set),
+        str(c): sorted(imu_set),
+    }
+    assert len({tuple(v) for v in got.values()}) == 3
+
+
+def test_a_source_not_picked_from_records_the_install_features(tmp_path):
+    res = analyze.SourceResult(tmp_path / "a.mp4", None, 0.0, 60.0, [], [], None)
+    assert analyze._features_by_source([res]) == {str(res.source): sorted(features.available())}
