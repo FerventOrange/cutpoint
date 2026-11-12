@@ -28,6 +28,7 @@ from cutpoint.errors import (
     FolderBusyError,
     LowMemoryError,
     NeedsAnalyzeError,
+    StaleRankingError,
 )
 
 SCHEMA = 1
@@ -42,6 +43,7 @@ OUTPUT_NOT_EMPTY = "output_not_empty"  # FileExistsError: an output is in the wa
 FOLDER_BUSY = "folder_busy"  # FolderBusyError: another run holds the folder's lock
 LOW_MEMORY = "low_memory"  # LowMemoryError: the memory guard stopped the run (exit 1)
 NEEDS_ANALYZE = "needs_analyze"  # NeedsAnalyzeError: rerank needs analyze with the style (exit 1)
+STALE = "stale"  # StaleRankingError: highlights.json changed since the preview (cutpoint ui only)
 INTERRUPTED = "interrupted"  # Ctrl+C, Ctrl+Break, SIGTERM (exit 130)
 ERROR = "error"  # anything else
 
@@ -148,6 +150,8 @@ def error_code(err: BaseException) -> str:
         return LOW_MEMORY
     if isinstance(err, NeedsAnalyzeError):
         return NEEDS_ANALYZE
+    if isinstance(err, StaleRankingError):
+        return STALE
     if isinstance(err, FFmpegNotFoundError):
         return FFMPEG_MISSING
     if isinstance(err, FileExistsError):

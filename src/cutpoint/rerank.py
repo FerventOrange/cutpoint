@@ -21,16 +21,18 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import hashlib
 import importlib.util
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from cutpoint import analyze, cache, category, features, folders, progress, runstate
 from cutpoint.config import projects_dir, remap_source
-from cutpoint.errors import NeedsAnalyzeError
+from cutpoint.errors import NeedsAnalyzeError, StaleRankingError
 from cutpoint.ffmpeg_utils import probe
 from cutpoint.styles import ACTION_CAM, Style, style_hash
 from cutpoint.utils import command_line
@@ -121,6 +123,12 @@ def load(project: Path) -> tuple[bytes, dict[str, Any]]:
     return raw, hl
 
 
+def key(raw: bytes) -> str:
+    """The ranking key of the highlights.json bytes ``raw`` (sha256, its first 16 hex digits):
+    it changes whenever an analysis or a re-rank rewrites the file."""
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
 def _has_audio(src: Path) -> bool:
     """Whether ``src`` has an audio stream (True when it cannot be probed: then its missing
     caches count as missing)."""
@@ -146,19 +154,24 @@ def _events_extra() -> bool:
     return all(importlib.util.find_spec(m) is not None for m in analyze.EVENTS_MODULES)
 
 
-def _missing_layers(style: Style, ran: set[str]) -> list[str]:
+def _missing_layers(
+    style: Style, ran: set[str], cuda: Callable[[], bool] | None = None
+) -> list[str]:
     """The event layers ``analyze`` with ``style`` plans on this install that are not in
-    ``ran`` (the layers of the project's events.json), in the order they run."""
+    ``ran`` (the layers of the project's events.json), in the order they run. ``cuda``: the
+    plan's CUDA check (:func:`cutpoint.analyze.plan_layers`)."""
     cat = analyze.layer_category(style)
     if _CATEGORY_LAYERS.get(cat, frozenset()) <= ran:
         return []  # all there: no plan needed (it may load torch for its CUDA check)
     if not _events_extra():
         return []  # lite: analyze would run none of them either
-    plan = analyze.plan_layers(style, [], (), cat)  # no sources: no telemetry probe
+    plan = analyze.plan_layers(style, [], (), cat, cuda=cuda)  # no sources: no telemetry probe
     return [x for x in plan.all_layers() if x not in ran]
 
 
-def readiness(project: Path, hl: dict[str, Any], style: Style) -> Readiness:
+def readiness(
+    project: Path, hl: dict[str, Any], style: Style, cuda: Callable[[], bool] | None = None
+) -> Readiness:
     """Whether the analysis ``hl`` of ``project`` can be re-ranked with ``style`` from its
     caches alone, as ``analyze`` with ``style`` would rank it.
 
@@ -170,7 +183,9 @@ def readiness(project: Path, hl: dict[str, Any], style: Style) -> Readiness:
     edge windows (:func:`~cutpoint.analyze.edge_windows`); a source with nothing cached to
     build its grid from (no audio and no scene cuts); an event layer ``style``'s category
     plans that events.json lacks. Dialogue never read (``style`` reads it, the project's did
-    not) is a note only. Reads only: no cache folder is made.
+    not) is a note only. Reads only: no cache folder is made. ``cuda``: whether a CUDA GPU is
+    there, for the layer plan (None: torch's own check in :func:`cutpoint.analyze.plan_layers`;
+    ``cutpoint ui`` asks a child process, never importing torch itself).
     """
     out = Readiness()
     miss = out.missing.append
@@ -219,7 +234,7 @@ def readiness(project: Path, hl: dict[str, Any], style: Style) -> Readiness:
         if not (loud or heard or found or windowed):
             miss(Missing("caches", f"{name} has nothing cached", path))
     ran, events = _events_layers(project)
-    for layer in _missing_layers(style, ran):
+    for layer in _missing_layers(style, ran, cuda):
         miss(Missing(f"layer:{layer}", f"the {layer} layer has not run for this project"))
     timings = hl.get("timings") or {}
     if (
@@ -348,7 +363,13 @@ def ranked(
 
 
 def rerank(
-    project: Path, style: Style, *, dry_run: bool = False, analyze_missing: bool = False
+    project: Path,
+    style: Style,
+    *,
+    dry_run: bool = False,
+    analyze_missing: bool = False,
+    expect: str | None = None,
+    cuda: Callable[[], bool] | None = None,
 ) -> Result:
     """Re-rank ``project`` with ``style`` (:func:`ranked`) and, unless ``dry_run``, save it:
     highlights.json replaced and the one before kept as :data:`BACKUP`, in one commit under the
@@ -359,7 +380,12 @@ def rerank(
     instead (the backup written before it; unchanged spans keep their ids there too); else
     :class:`~cutpoint.errors.NeedsAnalyzeError`, naming :func:`analyze_command`.
 
+    ``expect``: the :func:`key` of the highlights.json the caller previewed (``cutpoint ui``'s
+    apply); when the file under the lock has another, nothing is written. ``cuda``: as
+    :func:`readiness` takes it.
+
     Raises:
+        StaleRankingError: If highlights.json no longer has the key ``expect``.
         NeedsAnalyzeError: If the caches lack what ``style`` needs (see above).
         FileNotFoundError: If the project has no highlights.json.
         ValueError: If highlights.json records no analysis.
@@ -373,7 +399,11 @@ def rerank(
     )
     with lock:
         raw, hl = load(project)
-        ready = readiness(project, hl, style)
+        if expect is not None and key(raw) != expect:
+            raise StaleRankingError(
+                f"{project / HIGHLIGHTS} changed since the ranking was previewed; preview it again"
+            )
+        ready = readiness(project, hl, style, cuda)
         for note in ready.notes:
             logger.info("%s", note)
         if not ready.ready:

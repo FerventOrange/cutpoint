@@ -45,3 +45,8 @@ class NeedsAnalyzeError(RuntimeError):
         super().__init__(message)
         self.missing = missing
         self.command = command
+
+
+class StaleRankingError(RuntimeError):
+    """A re-rank was to replace a ``highlights.json`` that changed since it was previewed (an
+    analysis or another re-rank ran meanwhile): ``cutpoint ui``'s apply, nothing written."""
