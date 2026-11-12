@@ -37,6 +37,7 @@ import functools
 import logging
 import math
 import queue
+import re
 import shutil
 import threading
 import time
@@ -94,6 +95,19 @@ def sweep(cdir: Path) -> None:
     shutil.rmtree(cdir / SPOOL_DIR, ignore_errors=True)
     with contextlib.suppress(OSError):
         (cdir / PROXY_TMP).unlink(missing_ok=True)
+
+
+PROXY_BYTES_PER_PIXEL_S = 8  # lossless proxy: 0.34 MB/s at 320x180, 1.28 MB/s at 320x568
+
+
+def proxy_bytes(plan: ScenePlan, src_size: tuple[int, int] | None) -> int:
+    """Disk the lossless scene proxy of ``plan`` takes, a little over what was measured
+    (about 6-7 bytes per pixel and second): its width from ``plan.vf``, its height from the
+    source's ``src_size`` (16:9 when unknown)."""
+    found = re.search(r"scale=(\d+)", plan.vf)
+    width = int(found.group(1)) if found else 320
+    height = width * src_size[1] / src_size[0] if src_size and src_size[0] else width * 9 / 16
+    return int(PROXY_BYTES_PER_PIXEL_S * width * height * plan.duration)
 
 
 @dataclass(frozen=True)
@@ -477,8 +491,14 @@ class OcrPrefetch:
             if plan.io != job.source.io_path or not self.params.hwaccel:
                 share.decline("another file or decoder than the OCR read")
                 return None
+            try:
+                info = probe(plan.io)
+                size = (info.width, info.height)
+            except Exception:  # noqa: BLE001 - only sizes the estimate; the start probes again
+                info, size = None, None
+            need += proxy_bytes(plan, size)  # the scene proxy is written beside the spool
             if not spool_fits(plan.cdir, need):
-                why = f"less than {need / 2**30:.1f} GiB + 1 GiB free for the spool"
+                why = f"less than {need / 2**30:.1f} GiB + 1 GiB free for the spool and proxy"
                 share.decline(why)
                 # said now, not held for the OCR turn (REPLAY lets it through _Hold)
                 logger.info("%s: shared decode off: %s", job.source.name, why, extra={REPLAY: True})
@@ -486,7 +506,7 @@ class OcrPrefetch:
             if not share.claim():
                 return None
             try:
-                info = probe(plan.io)
+                info = info or probe(plan.io)
                 self._split = SplitDecode(
                     plan.io,
                     size=(width, height),
