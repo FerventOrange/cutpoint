@@ -373,6 +373,149 @@ def test_unchanged_spans_keep_their_id_and_new_ones_come_after_the_last(home, tm
     assert len(set(ids(after))) == len(after["candidates"])
 
 
+def _by_span(hl: dict[str, Any]) -> dict[tuple[str, float, float], str]:
+    return {analyze.span_key(c): c["id"] for c in hl["candidates"]}
+
+
+def _a_to_b(home: Path, tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+    """A gaming project re-ranked to funny: the project, the gaming ranking and the funny one
+    (which drops gaming spans and adds spans of its own)."""
+    project = make_project(home, tmp_path)
+    a = read(project)
+    b = rerank.rerank(project, get_style("funny")).after
+    assert set(_by_span(a)) - set(_by_span(b)), "funny drops no gaming span"
+    assert b["settings"]["last_candidate_id"] > a["settings"]["last_candidate_id"]
+    return project, a, b
+
+
+def test_switching_style_and_back_restores_the_ids(home, tmp_path):
+    """#1005: gaming -> funny -> gaming gives every gaming span its gaming id back, from the
+    backup for the spans funny dropped; last_candidate_id stays where funny took it."""
+    project, a, b = _a_to_b(home, tmp_path)
+    preview = rerank.rerank(project, get_style("gaming"), dry_run=True).after
+    back = rerank.rerank(project, get_style("gaming")).after
+    assert back["candidates"] == preview["candidates"]  # the preview gives the ids back too
+    assert back["settings"]["last_candidate_id"] == preview["settings"]["last_candidate_id"]
+    assert back["settings"]["rerank_backup"] == preview["settings"]["rerank_backup"]
+    assert back["settings"]["rerank_backup"] == analyze.backup_digest(
+        (project / rerank.BACKUP).read_bytes()
+    )
+    assert _by_span(back) == _by_span(a)
+    assert back["settings"]["last_candidate_id"] == b["settings"]["last_candidate_id"]
+    assert json.loads((project / rerank.BACKUP).read_bytes())["style"] == "funny"
+
+
+def test_a_backup_id_another_span_has_is_not_given_again(home, tmp_path):
+    """#1005: the current ranking's ids come first; a backup id it gives to another span is
+    not reused, and the span that had it there gets a new id."""
+    project, a, b = _a_to_b(home, tmp_path)
+    dropped = next(k for k in _by_span(a) if k not in _by_span(b))
+    taken = _by_span(a)[dropped]
+    other = next(c for c in a["candidates"] if analyze.span_key(c) != dropped)
+    kept = b["candidates"][0]  # the funny ranking names another gaming span with that id
+    kept.update(id=taken, source=other["source"], start=other["start"], end=other["end"])
+    (project / "highlights.json").write_text(json.dumps(b), encoding="utf-8")
+    back = rerank.rerank(project, get_style("gaming")).after
+    got = _by_span(back)
+    assert got[analyze.span_key(kept)] == taken
+    assert int(got[dropped][1:]) > b["settings"]["last_candidate_id"]
+    assert len(set(got.values())) == len(back["candidates"])
+
+
+@pytest.mark.parametrize("backup", [b"{not json", b'{"candidates": [{"id": "h001"}]}', b"[]"])
+def test_a_backup_that_cannot_be_read_is_ignored(home, tmp_path, backup):
+    project, _, b = _a_to_b(home, tmp_path)
+    (project / rerank.BACKUP).write_bytes(backup)
+    back = rerank.rerank(project, get_style("gaming")).after
+    got, was, last = _by_span(back), _by_span(b), b["settings"]["last_candidate_id"]
+    for key, i in got.items():  # funny's ids kept, the spans only gaming had are new
+        assert i == was[key] if key in was else int(i[1:]) > last
+    assert len(set(got.values())) == len(back["candidates"])
+
+
+def test_a_linked_backup_with_other_ids_for_a_shared_span_is_ignored(home, tmp_path):
+    """#1005 review F2: highlights.json numbered anew by hand, its link to the backup kept: a
+    span both files have has another id in each, so the backup is stale and gives no id
+    back."""
+    project, a, b = _a_to_b(home, tmp_path)
+    shared = a["candidates"][0]
+    b["candidates"].append(
+        {**b["candidates"][-1], **{k: shared[k] for k in ("source", "start", "end")}}
+    )
+    for n, c in enumerate(b["candidates"], 1):  # renumbered from h001, the shared span too
+        c["id"] = f"h{n:03d}"
+    assert _by_span(b)[analyze.span_key(shared)] != shared["id"]
+    (project / "highlights.json").write_text(json.dumps(b), encoding="utf-8")
+    back = rerank.rerank(project, get_style("gaming")).after
+    got, was = _by_span(back), _by_span(b)
+    last = max(b["settings"]["last_candidate_id"], a["settings"]["last_candidate_id"])
+    for key, i in got.items():  # no id from the backup: kept from b, or new
+        assert i == was[key] if key in was else int(i[1:]) > last
+    assert len(set(got.values())) == len(back["candidates"])
+
+
+def _renumbered(b: dict[str, Any], *, linked: bool) -> dict[str, Any]:
+    """``b`` as a fresh analysis would leave it: numbered from h001, one moment dropped since
+    (its id free again) and, unless ``linked``, no link to the backup."""
+    fresh = json.loads(json.dumps(b))
+    fresh["candidates"] = fresh["candidates"][:-1]
+    for n, c in enumerate(fresh["candidates"], 1):
+        c["id"] = f"h{n:03d}"
+    fresh["settings"]["last_candidate_id"] = len(fresh["candidates"]) + 1
+    if not linked:
+        fresh["settings"].pop("rerank_backup")
+    return fresh
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_a_backup_the_ranking_is_not_linked_to_gives_no_id(home, tmp_path, linked):
+    """#1005 review F5: after a fresh analysis (no settings.rerank_backup) that shares no span
+    with the backup, the backup gives no id back, even an id that is free again. The same
+    file still linked to it (the control) does."""
+    project, a, b = _a_to_b(home, tmp_path)
+    fresh = _renumbered(b, linked=linked)
+    (project / "highlights.json").write_text(json.dumps(fresh), encoding="utf-8")
+    back = rerank.rerank(project, get_style("gaming")).after
+    got, was = _by_span(back), _by_span(fresh)
+    restored = {k: i for k, i in got.items() if k not in was and _by_span(a).get(k) == i}
+    assert bool(restored) is linked
+    if not linked:
+        last = fresh["settings"]["last_candidate_id"]
+        assert all(i == was[k] if k in was else int(i[1:]) > last for k, i in got.items())
+    assert len(set(got.values())) == len(back["candidates"])
+
+
+def test_a_plain_reanalyze_keeps_the_link_to_the_backup(home, tmp_path, monkeypatch):
+    """#1005 review F5: the re-analysis of cutpoint events between two reranks records the
+    link again, so the backup still gives ids back; rerank --analyze links its own backup."""
+    project, _, b = _a_to_b(home, tmp_path)
+    got = _captured_analyze(monkeypatch)
+    analyze.reanalyze(project)
+    assert got["rerank_backup"] == b["settings"]["rerank_backup"]
+    monkeypatch.setattr(
+        rerank, "readiness", lambda *x: rerank.Readiness([rerank.Missing("x", "y")])
+    )
+    raw = (project / "highlights.json").read_bytes()
+    rerank.rerank(project, get_style("gaming"), analyze_missing=True)
+    assert got["rerank_backup"] == analyze.backup_digest(raw)
+    assert (project / rerank.BACKUP).read_bytes() == raw
+
+
+def test_rerank_analyze_restores_the_ids_from_the_backup_it_replaces(home, tmp_path, monkeypatch):
+    """#1005 with --analyze: the backup before this rerank's own (gaming) gives the ids back;
+    last_candidate_id stays where funny took it."""
+    project, a, b = _a_to_b(home, tmp_path)
+    monkeypatch.setattr(
+        rerank, "readiness", lambda *x: rerank.Readiness([rerank.Missing("x", "y")])
+    )
+    got = _captured_analyze(monkeypatch)
+    rerank.rerank(project, get_style("gaming"), analyze_missing=True)
+    assert json.loads((project / rerank.BACKUP).read_bytes())["style"] == "funny"
+    assert got["last_candidate_id"] == b["settings"]["last_candidate_id"]
+    assert {k: i for k, i in got["ids"].items() if k in _by_span(a)} == _by_span(a)
+    assert {k: i for k, i in got["ids"].items() if k in _by_span(b)} == _by_span(b)
+
+
 def test_the_new_style_replaces_the_style_fields(home, tmp_path):
     project = make_project(home, tmp_path)
     after = rerank.rerank(project, get_style("commentary")).after
@@ -440,7 +583,7 @@ def test_analyze_runs_reanalyze_with_the_style_when_refused(home, tmp_path, monk
     before = (project / "highlights.json").read_bytes()
     called: list[Any] = []
 
-    def fake_reanalyze(p: Path, style=None) -> Path:
+    def fake_reanalyze(p: Path, style=None, *, backup=None, rerank_backup=None) -> Path:
         called.append((p, style.name))
         assert (p / rerank.BACKUP).read_bytes() == before  # written before analyze replaces it
         hl = read(p)
@@ -515,8 +658,9 @@ def test_reanalyze_with_a_style_passes_the_earlier_ids(home, tmp_path, monkeypat
     assert got["ids"] == {analyze.span_key(c): c["id"] for c in hl["candidates"]}
     assert got["last_candidate_id"] == 300
     got.clear()
-    analyze.reanalyze(project)  # e.g. cutpoint events: numbered from h001 as before
-    assert got["ids"] is None
+    analyze.reanalyze(project)  # e.g. cutpoint events: the ids kept too (#1006)
+    assert got["ids"] == {analyze.span_key(c): c["id"] for c in hl["candidates"]}
+    assert got["last_candidate_id"] == 300
 
 
 def test_rerank_analyze_keeps_the_ids_of_unchanged_spans(run, monkeypatch):  # noqa: F811
@@ -550,6 +694,37 @@ def test_rerank_analyze_keeps_the_ids_of_unchanged_spans(run, monkeypatch):  # n
     assert by_start == {10.0: "h007", 30.0: "h041"}
     assert after["settings"]["last_candidate_id"] == 41
     assert rerank.changes(res.before, res.after) == (["h041"], [])
+
+
+def test_a_plain_reanalyze_keeps_the_ids_and_never_lowers_the_last(run, monkeypatch):  # noqa: F811
+    """#1006: the re-analysis of cutpoint events keeps the id of an unchanged span, gives a
+    new span the next id after settings.last_candidate_id and never lowers it."""
+    run.go("funny")  # one candidate, 10-20 s
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    (only,) = hl["candidates"]
+    only["id"] = "h007"
+    hl["settings"]["last_candidate_id"] = 40
+    (run.proj / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    analyze.reanalyze(run.proj)
+    after = read(run.proj)
+    assert [c["id"] for c in after["candidates"]] == ["h007"]
+    assert after["settings"]["last_candidate_id"] == 40
+
+    def two(src, style, tr, use_scenes, max_cand, timings, **kw):
+        info = MediaInfo(
+            src, 60.0, 60.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
+        )
+        cands = [
+            analyze.Candidate(src, 10.0, 20.0, 15.0, 1.0, {"loudness": 1.0}, score=50.0),
+            analyze.Candidate(src, 30.0, 40.0, 35.0, 1.0, {"loudness": 1.0}, score=60.0),
+        ]
+        return analyze.SourceResult(src, info, 0.0, 60.0, cands, [], None)
+
+    monkeypatch.setattr(analyze, "analyze_source", two)
+    analyze.reanalyze(run.proj)
+    after = read(run.proj)
+    assert {c["start"]: c["id"] for c in after["candidates"]} == {10.0: "h007", 30.0: "h041"}
+    assert after["settings"]["last_candidate_id"] == 41
 
 
 def test_reanalyze_of_a_reranked_project_keeps_the_users_style(home, tmp_path, monkeypatch):

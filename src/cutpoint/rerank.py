@@ -12,8 +12,9 @@ re-rank is refused (:class:`~cutpoint.errors.NeedsAnalyzeError`, ``needs_analyze
 
 The preview (``--dry-run``) is the re-rank itself, written nowhere: the save writes the same
 ranking. Saving replaces ``highlights.json`` and keeps the one before as
-:data:`BACKUP` (one Undo). Candidates whose span is unchanged keep their ids; new spans get
-ids above ``settings.last_candidate_id``.
+:data:`BACKUP` (one Undo). Candidates whose span is unchanged keep their ids, a span only the
+backup has gets its id there (#1005: a switch of style and back restores the ids), and new
+spans get ids above ``settings.last_candidate_id``.
 """
 
 from __future__ import annotations
@@ -93,6 +94,13 @@ class Result:
     analyzed: bool = False
     backup: Path | None = None
     seconds: float = 0.0
+
+
+def _backup(project: Path) -> bytes | None:
+    """The bytes of the project's :data:`BACKUP` (the ranking before the last re-rank), or
+    None without one: :func:`cutpoint.analyze.earlier_ids` uses it only when highlights.json
+    is linked to it (``settings.rerank_backup``)."""
+    return cache.load_bytes(project / BACKUP)
 
 
 def load(project: Path) -> tuple[bytes, dict[str, Any]]:
@@ -261,7 +269,9 @@ def _refused(project: Path, style: Style, missing: list[Missing]) -> NeedsAnalyz
     return NeedsAnalyzeError(message, [m.record() for m in missing], command)
 
 
-def ranked(project: Path, hl: dict[str, Any], style: Style) -> dict[str, Any]:
+def ranked(
+    project: Path, hl: dict[str, Any], style: Style, raw: bytes | None = None
+) -> dict[str, Any]:
     """The analysis ``hl`` of ``project`` re-ranked with ``style`` from its caches (see
     :func:`readiness`), as a new highlights.json object; writes nothing to the project.
 
@@ -269,7 +279,9 @@ def ranked(project: Path, hl: dict[str, Any], style: Style) -> dict[str, Any]:
     override kept, :func:`~cutpoint.analyze.restyled`); another style is the user's choice
     (``settings.style_requested``, ``settings.reranked``; an auto analysis's ``detection``
     stays). Vision takes cached ratings only. ``timings`` keep the analysis's, with this
-    re-rank's ``rerank_s``.
+    re-rank's ``rerank_s``. ``settings.rerank_backup`` links it to the backup a save keeps:
+    :func:`~cutpoint.analyze.backup_digest` of ``raw``, the bytes of the project's
+    highlights.json (read when None).
     """
     t0 = time.perf_counter()
     style = analyze.restyled(hl, style)
@@ -290,7 +302,11 @@ def ranked(project: Path, hl: dict[str, Any], style: Style) -> dict[str, Any]:
         vision_used=False,
         vision=None,
     )
-    ids, st["last_candidate_id"] = analyze.earlier_ids(hl)
+    # read before a save replaces the backup: a span only it has gets its id back (#1005)
+    ids, st["last_candidate_id"] = analyze.earlier_ids(hl, _backup(project))
+    if raw is None:
+        raw = (project / HIGHLIGHTS).read_bytes()
+    st["rerank_backup"] = analyze.backup_digest(raw)  # the backup a save writes
     timings = new.setdefault("timings", {})
     timings.pop("vision_s", None)
     grids = {p.index: p for p in analyze.cached_grid_parts(new, style)}
@@ -369,9 +385,13 @@ def rerank(
                 style.name,
                 "; ".join(m.detail for m in ready.missing),
             )
-            # the backup first: reanalyze replaces highlights.json when it ends
+            # the backup first: reanalyze replaces highlights.json when it ends; the one it
+            # replaces still gives ids back (#1005)
+            earlier = _backup(project)
             cache.save_bytes(project / BACKUP, raw)
-            analyze.reanalyze(project, style)
+            analyze.reanalyze(
+                project, style, backup=earlier, rerank_backup=analyze.backup_digest(raw)
+            )
             _, after = load(project)
             return Result(
                 project,
@@ -383,7 +403,7 @@ def rerank(
                 backup=project / BACKUP,
                 seconds=round(time.perf_counter() - t0, 2),
             )
-        after = ranked(project, hl, style)
+        after = ranked(project, hl, style, raw)
         result = Result(project, hl, after, ready.notes)
         if not dry_run:
             with cache.hold_outputs(project, (HIGHLIGHTS, BACKUP)) as held:
