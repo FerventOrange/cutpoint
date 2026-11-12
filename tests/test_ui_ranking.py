@@ -4,7 +4,9 @@ write, apply it after a click, the refusals, and no torch in the UI process."""
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -224,6 +226,44 @@ def test_the_marker_is_released_when_the_ranking_is_refused(home, tmp_path, clie
     assert not ui.RERANKING
 
 
+def test_apply_with_a_ui_file_is_refused_before_the_ranking_is_saved(home, tmp_path, client):
+    project = make_project(home, tmp_path)
+    base = preview(client).json()["base"]
+    (project / "ui").write_text("not a folder", encoding="utf-8")
+    before = snapshot(project)
+    res = apply(client, base)
+    assert res.status_code == 409 and "not a folder" in res.json()["detail"]
+    assert snapshot(project) == before
+    assert not (project / rerank.BACKUP).exists() and not ui.RERANKING
+
+
+def test_a_refused_apply_leaves_no_ui_folder(home, tmp_path, client):
+    project = make_project(home, tmp_path)
+    assert apply(client, "not-the-key").status_code == 409
+    assert not (project / "ui").exists()
+
+
+def test_apply_records_the_rerank_the_style_was_chosen_after(home, tmp_path, client):
+    """The chosen style is the re-rank's own (F4): a later re-rank on the command line wins."""
+    project = make_project(home, tmp_path)
+    assert apply(client, preview(client).json()["base"]).status_code == 200
+    meta = ui.read_meta(project)
+    assert meta[ui.STYLE_FOR] == read(project)["settings"]["rerank_backup"]
+    assert ui._analysis_inputs(meta, read(project))[1] == "funny"
+
+
+def test_a_project_is_not_deleted_while_its_ranking_is_applied(home, tmp_path, client):
+    project = make_project(home, tmp_path)
+    ui.RERANKING.add(project)
+    try:
+        res = client.request("DELETE", "/api/projects/p", json={})
+    finally:
+        ui.RERANKING.discard(project)
+    assert res.status_code == 409
+    assert res.json()["detail"] == "A ranking is being applied to this project; wait a moment"
+    assert (project / "highlights.json").is_file()
+
+
 # --------------------------------------------------------------------------- no torch
 def test_the_ui_process_never_imports_torch_to_rank(home, tmp_path, client, monkeypatch):
     project = make_project(home, tmp_path)
@@ -244,3 +284,80 @@ def test_the_ui_process_never_imports_torch_to_rank(home, tmp_path, client, monk
     assert apply(client, base).status_code == 200
     assert ("torch" in sys.modules) == had_torch
     assert read(project)["style"] == "funny"
+
+
+# --- CudaProbe: the CUDA check runs in a child process, once ---------------------------------
+
+
+class FakeRun:
+    """Stands in for ``subprocess.run``: records the calls, answers or raises as told."""
+
+    def __init__(self, returncode: int = 0, raises: BaseException | None = None) -> None:
+        self.returncode = returncode
+        self.raises = raises
+        self.calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def __call__(self, cmd: list[str], **kwargs: Any) -> Any:
+        self.calls.append((cmd, kwargs))
+        if self.raises is not None:
+            raise self.raises
+        return SimpleNamespace(returncode=self.returncode, stdout=b"", stderr=b"")
+
+
+@pytest.mark.parametrize(
+    ("returncode", "raises", "expected"),
+    [
+        (0, None, True),
+        (1, None, False),  # no CUDA, or torch missing or broken (the child exits non-zero)
+        (3, None, False),
+        (0, subprocess.TimeoutExpired("python", 1), False),
+        (0, FileNotFoundError("no python"), False),
+        (0, OSError("cannot start"), False),
+    ],
+)
+def test_the_cuda_probe_answers_from_the_child(monkeypatch, returncode, raises, expected):
+    fake = FakeRun(returncode, raises)
+    monkeypatch.setattr(ui.subprocess, "run", fake)
+    probe = ui.CudaProbe()
+    assert probe() is expected
+    assert probe() is expected
+    assert len(fake.calls) == 1  # the answer, a failure too, is kept for the session
+
+
+def test_the_cuda_probe_runs_this_python_with_a_timeout_and_never_imports_torch(monkeypatch):
+    had_torch = "torch" in sys.modules
+    fake = FakeRun(0)
+    monkeypatch.setattr(ui.subprocess, "run", fake)
+    assert ui.CudaProbe()() is True
+    cmd, kwargs = fake.calls[0]
+    assert cmd[0] == sys.executable
+    assert cmd[1] == "-c"
+    assert "torch.cuda.is_available" in cmd[2]
+    assert kwargs["timeout"] == ui.CUDA_PROBE_S
+    assert ("torch" in sys.modules) == had_torch
+
+
+def test_concurrent_cuda_probes_run_one_child(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    count = 0
+
+    def slow_run(cmd, **kwargs):
+        nonlocal count
+        count += 1
+        started.set()
+        release.wait(5)
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(ui.subprocess, "run", slow_run)
+    probe = ui.CudaProbe()
+    answers: list[bool] = []
+    threads = [threading.Thread(target=lambda: answers.append(probe())) for _ in range(5)]
+    for t in threads:
+        t.start()
+    assert started.wait(5)
+    release.set()
+    for t in threads:
+        t.join(5)
+    assert answers == [True] * 5
+    assert count == 1

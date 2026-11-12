@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import contextlib
 import copy
-import hashlib
 import importlib.util
 import logging
 import time
@@ -125,8 +124,9 @@ def load(project: Path) -> tuple[bytes, dict[str, Any]]:
 
 def key(raw: bytes) -> str:
     """The ranking key of the highlights.json bytes ``raw`` (sha256, its first 16 hex digits):
-    it changes whenever an analysis or a re-rank rewrites the file."""
-    return hashlib.sha256(raw).hexdigest()[:16]
+    it changes whenever an analysis or a re-rank rewrites the file. Same digest as
+    :func:`analyze.backup_digest`."""
+    return analyze.backup_digest(raw)
 
 
 def _has_audio(src: Path) -> bool:

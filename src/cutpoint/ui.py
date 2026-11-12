@@ -4009,13 +4009,18 @@ def new_project(name: str, source: str, style: str, **extra: Any) -> dict[str, s
 def set_style(p: Path, style: str, detection: dict[str, Any] | None = None) -> Callable[[], None]:
     """Make ``style`` the project's chosen style in ``ui/meta.json`` (created with only it for a
     project made on the command line), with ``detection`` (when given) as the copy of the last
-    detection the header shows after the user left Auto. Returns what puts the file back."""
+    detection the header shows after the user left Auto, and :data:`STYLE_FOR`, the re-rank the
+    choice was made after (:func:`_rerank_mark` of the current highlights.json; left out when it
+    is not re-ranked). Returns what puts the file back."""
     meta_file = _own(p, META_FILE)
     try:
         before: bytes | None = meta_file.read_bytes()
     except FileNotFoundError:
         before = None
     meta = {**read_meta(p), "style": style}
+    meta.pop(STYLE_FOR, None)  # chosen after no re-rank: any later one wins
+    if (mark := _rerank_mark(_highlights(p))) is not None:
+        meta[STYLE_FOR] = mark
     if detection is not None:
         meta["detection"] = detection
     cache.save_json(meta_file, meta)
@@ -4089,6 +4094,7 @@ def _action_cam_style(name: str) -> bool:
 
 # --------------------------------------------------------------------------- ranking (#902)
 PREVIEW_TOP = 10  # moments a ranking preview lists, before and after
+STYLE_FOR = "style_for"  # meta.json: the re-rank (_rerank_mark) the chosen style was picked after
 RERANK_BACKUP = "highlights.before-rerank.json"  # cutpoint.rerank.BACKUP (not imported at start)
 STALE_TEXT = (
     "The moments changed since this preview (an analysis or another ranking ran); preview it again"
@@ -4239,7 +4245,7 @@ def ranking_preview(p: Path, style_name: object) -> dict[str, Any]:
     after: dict[str, Any] = {}
     if not missing:
         try:
-            after = rerank.ranked(p, hl, style)
+            after = rerank.ranked(p, hl, style, raw)
         except NeedsAnalyzeError as err:  # a source with nothing cached after all
             missing = err.missing
     if missing:
@@ -4320,11 +4326,25 @@ def _color_args(body: dict[str, Any]) -> list[str]:
     return ["--color", color, "--color-strength", f"{float(strength):g}"]
 
 
-def _reranked_style(hl: dict[str, Any] | None) -> Any:
-    """The style a re-ranked analysis (``settings.reranked``, #902) runs on, else None."""
-    if isinstance(((hl or {}).get("settings") or {}).get("reranked"), dict):
-        return (hl or {}).get("style") or None
-    return None
+def _rerank_mark(hl: dict[str, Any] | None) -> str | None:
+    """What tells the re-rank of ``hl`` from any other: its ``settings.rerank_backup`` (the key of
+    the file it was re-ranked from, #902); None when ``hl`` is not re-ranked (or records none)."""
+    st = (hl or {}).get("settings") or {}
+    mark = st.get("rerank_backup")
+    return mark if isinstance(st.get("reranked"), dict) and isinstance(mark, str) else None
+
+
+def _reranked_style(hl: dict[str, Any] | None, meta: dict[str, Any] | None = None) -> Any:
+    """The style a re-ranked analysis (``settings.reranked``, #902) runs on, else None. None too
+    when ``meta``'s chosen style was picked after that re-rank (:data:`STYLE_FOR` names it): the
+    user's last pick wins, even when its analysis did not finish, until the next re-rank."""
+    if not isinstance(((hl or {}).get("settings") or {}).get("reranked"), dict):
+        return None
+    meta = meta or {}
+    mark = _rerank_mark(hl)
+    if meta.get("style") and mark is not None and meta.get(STYLE_FOR) == mark:
+        return None
+    return (hl or {}).get("style") or None
 
 
 def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[Any, Any]:
@@ -4333,11 +4353,11 @@ def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[A
     user chose, else ``auto`` for an analysis run with ``--style auto``, else the style asked
     for when an action-cam one fell back for footage without telemetry (#939), else the
     recorded one. A re-ranked analysis (``settings.reranked``, #902) runs on the style it was
-    re-ranked to, ahead of the chosen one: a re-rank on the command line leaves ``ui/meta.json``
-    as it was, and an analysis in the style the header picks later records no re-rank."""
+    re-ranked to, ahead of a style chosen before that re-rank (:func:`_reranked_style`): a
+    re-rank on the command line leaves ``ui/meta.json`` as it was."""
     st = (hl or {}).get("settings") or {}
     inputs = picked_inputs(meta) or st.get("inputs")
-    if reranked := _reranked_style(hl):
+    if reranked := _reranked_style(hl, meta):
         return inputs, reranked
     if meta.get("style"):
         return inputs, meta["style"]
@@ -4382,12 +4402,18 @@ def _deleted_style(name: object) -> bool:
     return False
 
 
-def _keep_style(p: Path, style: str, undo: list[Callable[[], None]]) -> None:
+def _keep_style(
+    p: Path,
+    style: str,
+    undo: list[Callable[[], None]],
+    detection: dict[str, Any] | None = None,
+) -> None:
     """In a job's ``prepare``: make ``style`` the project's chosen style (``ui/meta.json``, as
-    :func:`set_style`), and have ``undo`` put it back, with the ui folder this created."""
+    :func:`set_style`, with ``detection``), and have ``undo`` put it back, with the ui folder
+    this created."""
     made: list[Path] = []
     _ui_folder(p, made=made)  # a command-line project has no ui folder (nor meta.json) yet
-    back = set_style(p, style)
+    back = set_style(p, style, detection)
 
     def put_back() -> None:
         try:
@@ -4405,7 +4431,7 @@ def _resolved_style(meta: dict[str, Any], hl: dict[str, Any] | None) -> object:
     footage was detected as (recorded in highlights.json), else the recorded style. An
     action-cam style that fell back for footage without telemetry (#939,
     ``settings.style_fallback``) resolves to the style that ran."""
-    if reranked := _reranked_style(hl):
+    if reranked := _reranked_style(hl, meta):
         return reranked
     style = meta.get("style")
     if not style or style == AUTO:
@@ -5701,7 +5727,7 @@ def create_app(port: int) -> FastAPI:
             "must_include_crash_default": None
             if meta.get("kind") == "360"
             else _style_crash(
-                _reranked_style(hl) or meta.get("style") or (hl or {}).get("style"), hl
+                _reranked_style(hl, meta) or meta.get("style") or (hl or {}).get("style"), hl
             ),
             # "Describe the footage" (crashes --context) and "Look closer with vision" (events)
             "refine": refine_state(p, meta, hl),
@@ -5891,6 +5917,10 @@ def create_app(port: int) -> FastAPI:
                 raise bad(f"unknown style {new!r}")
             if new is None and (live := _library_style(style, hl)) != style:
                 new = str(live)  # a deleted style: analyze again in its base, and keep that
+            if new is None and style == _reranked_style(hl, meta) != meta.get("style"):
+                # a re-rank's style: kept in meta.json, as the analysis records no re-rank and
+                # the next one would go back to the chosen style (#902)
+                new = str(style)
             # the options as the earlier analysis used them (inferred against its own style)
             recorded = analyze_options(p, meta, hl)
             # a re-rank (on the command line) left Auto too: its detection is kept as well
@@ -5991,13 +6021,18 @@ def create_app(port: int) -> FastAPI:
                 args += ["--skip", *skip]
                 _own(p, ANALYSIS_FILE)
 
-            if live != style:
+            # a re-rank's style is kept in meta.json too: the edit's analysis records no
+            # re-rank, and the next job would go back to the chosen style (#902)
+            from_rerank = style == _reranked_style(hl, meta) != meta.get("style")
+            keep = live != style or from_rerank
+            if keep:
                 _own(p, META_FILE)  # refuse now, not when the job starts
 
             def prepare() -> None:
                 _ui_folder(p)  # a command-line project has no ui folder for exports.json yet
-                if live != style:  # the edit records the base: so does the project's style
-                    _keep_style(p, str(live), undo)
+                if keep:  # the style (a deleted one: the base the edit records) is kept
+                    det = (hl or {}).get("detection") if from_rerank else None
+                    _keep_style(p, str(live), undo, det if isinstance(det, dict) else None)
 
             def on_success() -> None:
                 if (
@@ -6614,8 +6649,12 @@ def create_app(port: int) -> FastAPI:
             if any(j.status == "running" and j.project_id == pid for j in jobs.jobs.values()):
                 return RankingRefused(BUSY_TEXT, jsonout.FOLDER_BUSY).response()
             RERANKING.add(p)
+        made: list[Path] = []
         try:
             meta = read_meta(p)
+            # a command-line project has no ui folder (nor meta.json) yet; 409 for a ui that is
+            # no folder, before the ranking is saved
+            _ui_folder(p, made=made)
             try:
                 result = rerank.rerank(p, style, expect=base, cuda=cuda_probe)
             except StaleRankingError:
@@ -6635,8 +6674,8 @@ def create_app(port: int) -> FastAPI:
             reranked = isinstance((before.get("settings") or {}).get("reranked"), dict)
             auto = _analysis_inputs(meta, before)[1] == AUTO or reranked
             kept = before.get("detection") if auto else None
-            _ui_folder(p)  # a command-line project has no ui folder (nor meta.json) yet
             set_style(p, style.name, kept if isinstance(kept, dict) else None)
+            made.clear()  # the ui folder holds meta.json now
             new_ids, dropped = rerank.changes(before, result.after)
             return {
                 "style": style.name,
@@ -6648,6 +6687,9 @@ def create_app(port: int) -> FastAPI:
                 "seconds": result.seconds,
             }
         finally:
+            for folder in made:  # the ui folder this created for a ranking it did not save
+                with contextlib.suppress(OSError):
+                    folder.rmdir()
             with jobs.lock:
                 RERANKING.discard(p)
 
@@ -6955,6 +6997,8 @@ def create_app(port: int) -> FastAPI:
             return "A job is running on this project; wait for it to finish or cancel it"
         if project_busy(p, run_state(p, True)) or projectdelete.locked(p):
             return "A Cutpoint run holds this project; wait for it to finish"
+        if p in RERANKING:
+            return "A ranking is being applied to this project; wait a moment"
         with previews.lock:
             if any(v is not None and v.project == p for v in (previews.running, *previews.queue)):
                 return "A 360 preview is rendering for this project; wait for it to finish"

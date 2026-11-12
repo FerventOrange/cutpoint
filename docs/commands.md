@@ -257,7 +257,11 @@ action-cam when a source has camera telemetry or the project already uses it) an
 with the Analysis options filled in; confirming runs `analyze --style <style>` (cached
 transcripts and per-source results are reused) and makes it the project's style. Nothing is
 deleted: the sequence, clips, final videos and AI Chat stay. After you leave Auto, the menu keeps
-showing "Detected earlier: Gameplay" from a copy in `ui/meta.json`. The choices wait while a job
+showing "Detected earlier: Gameplay" from a copy in `ui/meta.json`. After a re-rank (the
+[`rerank`](#rerank) command, or the UI's ranking routes) Analyze again and One-Click Edit keep
+the re-ranked style instead of sending `auto` and save it as the project's style, and the header
+shows "Detected earlier". A style you choose in the header after a re-rank wins, even when its
+analysis did not finish, until the project is re-ranked again. The choices wait while a job
 runs, as "Analyze again" does.
 
 New Project's Source field takes the full paths of one or more videos and folders, one per line,
@@ -978,6 +982,24 @@ comes from (`keys`) and the host it is for (`key_hosts`). `GET /api/assistant/mo
 (`ollama`, `anthropic`, `openai`, `xai` or `custom`; `&refresh=1` skips the cache) returns
 `state` (`ok`, `key_needed`, `consent_needed`, `unsupported` or `error`), `models` (`id`,
 `name`) and `message`; never a key.
+
+Ranking in another library style (the same re-rank as [`rerank`](#rerank)):
+`POST /api/projects/<id>/ranking/preview` with `{style}` re-ranks from the caches and writes
+nothing. It returns `ready: true` with `base` (the ranking key of `highlights.json`), `from`,
+the first 10 moments before and after (`top`, `before`; file names, never paths),
+`new_ids_count`, `dropped_count`, `suggested_top`, `notes` and `seconds`, or `ready: false`
+with `missing`, `can_analyze` and `message` when a feature the style needs is missing.
+`POST /api/projects/<id>/ranking/apply` with `{style, base}` is what the page sends when the
+user clicks to use the preview: it saves the ranking (`highlights.json` replaced, the one before
+kept as `highlights.before-rerank.json`) and makes the style the project's, keeping the
+detection as "Detected earlier" when it leaves Auto. Both answer 400 for `auto` or a style not in
+the library. They answer 409 with a `code`: `folder_busy` (a run or another ranking holds the
+project; no job starts on it while a ranking is applied), `needs_analyze` (apply; with `missing`
+and `can_analyze`) and, on apply only, `stale` (`highlights.json` is not the one previewed any
+more: preview again). A 360 project, or one without an analysis, is refused with 409 and no
+`code`. `GET /api/projects/<id>` has `ranking_key`, the `base` a preview of the current
+`highlights.json` gets (null without one), and `rerank_backup`, whether
+`highlights.before-rerank.json` is there (a ranking applied here or by `rerank` kept one).
 
 ## capabilities
 
@@ -2065,7 +2087,9 @@ list`), not `auto`. It prints the new top `--top` moments (default 10) with thei
   then, such as `auto`, else `null`). An auto project keeps its `detection` block. A
   re-analysis (`rerank --analyze`, or the one `cutpoint events` runs) keeps the style.
   Running `analyze` or `edit` again without `--style` detects the footage again; pass
-  `--style NAME` to keep the re-ranked style.
+  `--style NAME` to keep the re-ranked style. `cutpoint ui` keeps a re-rank done here: its
+  Analyze again and One-Click Edit use the re-ranked style, and its header shows "Detected
+  earlier".
 - Vision takes cached ratings only (the rating is per style, so moments of another style are
   often unrated) and asks no model. With a style that does not weigh scene cuts, the cuts
   around new moment edges are decoded from the footage when no earlier run cached them.
