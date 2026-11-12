@@ -5,7 +5,7 @@
 | What | Where | Size |
 |---|---|---|
 | Models for `events` | `<CUTPOINT_HOME>\models` | about 2 GB (the Ollama vision model is stored by Ollama) |
-| Analysis cache | `<CUTPOINT_HOME>\cache` | grows with footage; safe to delete |
+| Analysis cache | `<CUTPOINT_HOME>\cache` | grows with footage; safe to delete; while scene cuts are detected, a temporary proxy of about 0.45 MB per source second (16:9, more for portrait), removed after the scan |
 | Staged copies | `<CUTPOINT_HOME>\stage` | a full copy of each staged source; `cutpoint stage --clear` frees it |
 | Projects | `projects_dir` | clips and finals are re-encoded video |
 | 360 stitches | `pano.stitched_dir` | about 54 GB per hour of footage |
