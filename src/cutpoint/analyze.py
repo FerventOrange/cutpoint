@@ -635,6 +635,7 @@ def scene_cuts(
     limit: float | None = None,
     shared: Any = None,
     cancel: threading.Event | None = None,
+    cpu_free: bool = False,
 ) -> list[float]:
     """Scene-cut times (s) via PySceneDetect AdaptiveDetector on a tiny proxy.
 
@@ -654,6 +655,9 @@ def scene_cuts(
         cancel: For a run in a background thread (:class:`_SceneJob`): once set, ffmpeg is
             killed or the detection stopped, the proxy removed and :class:`~cutpoint.ffmpeg_utils.RunCancelled` raised,
             before any ``scenes.json`` is written.
+        cpu_free: The caller knows no CPU-heavy step (the background HUD OCR, Whisper on the
+            CPU) runs meanwhile, so the decode may be split between NVDEC and the CPU
+            (:func:`_hybrid_plan`, #730). False (the default): one decode, as before.
     """
     path = cdir / "scenes.json"
     cached = cache.load_json(path)
@@ -664,9 +668,233 @@ def scene_cuts(
     dopts = {"cancel": cancel} if cancel is not None else {}  # plain call when not overlapped
     if shared is not None and (made := shared.result()) is not None:
         return _detect(made, path, **dopts)
+    plan = _hybrid_plan(src, duration, offset, limit, cpu_free)
+    if plan is not None and (cuts := _hybrid_cuts(src, cdir, duration, *plan, cancel)) is not None:
+        cache.save_json(path, cuts)
+        return cuts
     proxy = cdir / "proxy.mp4"
-    _make_proxy(src, proxy, _proxy_args(duration, offset, limit), duration, cancel)
+    gpu = scene_decode_mode() != "cpu"
+    _make_proxy(src, proxy, _proxy_args(duration, offset, limit), duration, cancel, gpu=gpu)
     return _detect(proxy, path, **dopts)
+
+
+# The scene pass split between NVDEC and the CPU (#730 PR 2). Measured on an RTX 3080 and an
+# 8-core i7-9700K (1080p60 H.264, 600 s): NVDEC alone 57 s, the CPU alone 74 s, both at once
+# 38 s with the same cuts (P/R 0.98-1.00 against the single decode), at the cost of every core.
+SCENE_DECODE_ENV = "SCENE_DECODE"  # CUTPOINT_SCENE_DECODE=auto (default) | hybrid | gpu | cpu
+SCENE_DECODE_MODES = ("auto", "hybrid", "gpu", "cpu")
+# Below this a source decodes on NVDEC in about 10 s (1080p60, about 685 frames/s): a split
+# saves 3 s or less, not worth a second ffmpeg start, seek and scan plus every core.
+HYBRID_MIN_S = 120.0
+HYBRID_HEADROOM_CPUS = 2  # left to the NVDEC half's ffmpeg (download, scale, x264) and the scans
+HYBRID_MIN_THREADS = 4  # fewer CPU decode threads give too little to pay for the split
+# Codecs the CPU decodes fast enough next to NVDEC: H.264 1080p60 and 4K60 halve or better the
+# pass; 4K120 HEVC decodes about 3x slower per CPU thread, so its CPU half took twice as long
+# as NVDEC alone (113 s vs 57 s for 218 s).
+HYBRID_CODECS = frozenset({"h264"})
+# 8-bit 4:2:0 only: NVDEC here decodes no 10-bit or 4:2:2 H.264 (the NVDEC half fails, or decodes
+# on the CPU without saying so)
+HYBRID_PIX_FMTS = frozenset({"yuv420p", "yuvj420p"})
+# Containers whose input seek is frame-accurate; MPEG-TS seeks inexactly and moves the CPU half's
+# cuts (up to 0.6 s, or loses them)
+HYBRID_SUFFIXES = frozenset({".mp4", ".mov", ".m4v", ".mkv"})
+# The CPU decodes at about this share of NVDEC's rate per decode thread (74 s on 8 threads vs
+# 57 s); the split puts each half's end at about the same time: 8 threads 0.57, 6 0.63.
+CPU_RATE_PER_THREAD = 0.096
+# Each half decodes this far past the split. The CPU half's detector gives no cut in its first
+# 0.6 s (a frame score needs the frame before, min_scene_len 5 frames after the first scored
+# frame), and must see a cut up to 0.5 s (min_scene_len) before the split to drop one just
+# after it as one pass would: 1.1 s needed, 3 s leaves room for a chain of close cuts. The
+# NVDEC half needs 2 frames (the detector's window) past the split to decide a cut before it.
+SEAM_S = 3.0
+# One pass never gives two cuts closer than min_scene_len (5 frames at 10 fps = 0.5 s): a CPU
+# cut this close after the last NVDEC cut is the same cut, a frame off at the seam.
+SEAM_DEDUP_S = 0.45
+
+
+def scene_decode_mode() -> str:
+    """``CUTPOINT_SCENE_DECODE``: ``auto`` (default, and any unknown value), ``hybrid``,
+    ``gpu`` or ``cpu``."""
+    mode = (paths.env(SCENE_DECODE_ENV) or "").strip().lower()
+    return mode if mode in SCENE_DECODE_MODES else "auto"
+
+
+def _hybrid_threads() -> int:
+    """CPU decode threads of the split's CPU half: every logical CPU but the headroom."""
+    return (os.cpu_count() or 1) - HYBRID_HEADROOM_CPUS
+
+
+def _hybrid_split(duration: float, threads: int) -> float:
+    """Where the NVDEC half ends and the CPU half takes over, on the proxy's frame grid
+    (:data:`SCENE_GRID_S`), so both halves' frames are those of one pass: the share of NVDEC
+    is its rate over both rates (:data:`CPU_RATE_PER_THREAD`)."""
+    share = 1.0 / (1.0 + CPU_RATE_PER_THREAD * threads)
+    return round(round(duration * share / SCENE_GRID_S) * SCENE_GRID_S, 3)
+
+
+def _hybrid_plan(
+    src: Path, duration: float, offset: float, limit: float | None, cpu_free: bool
+) -> tuple[HwDecoder, float, int] | None:
+    """The NVDEC decoder, split point and CPU threads of a split scene pass of ``src``, or None
+    for one decode. ``CUTPOINT_SCENE_DECODE``: ``gpu`` and ``cpu`` never split; ``hybrid``
+    splits whenever NVDEC decodes ``src``; ``auto`` only when ``cpu_free`` (no CPU-heavy step
+    runs meanwhile), the source is at least :data:`HYBRID_MIN_S` long, in one of
+    :data:`HYBRID_CODECS` and :data:`HYBRID_PIX_FMTS`, in one of :data:`HYBRID_SUFFIXES`, its
+    video starts with the container (``vstart`` 0), and :data:`HYBRID_MIN_THREADS` CPU threads
+    are left after the headroom. Only a whole, clean source of up to :data:`LONG_FILE_S` (a longer one decodes
+    keyframes only)."""
+    mode = scene_decode_mode()
+    if mode in ("gpu", "cpu") or offset or limit or duration > LONG_FILE_S:
+        return None
+    threads = _hybrid_threads()
+    if mode == "auto" and (
+        not cpu_free
+        or duration < HYBRID_MIN_S
+        or threads < HYBRID_MIN_THREADS
+        or not _hybrid_source_ok(src)
+    ):
+        return None
+    hw = decoder_for(src)
+    if hw is None or hw.kind != "cuda":  # VAAPI or the CPU: one decode, as before
+        return None
+    threads = max(1, threads)
+    return hw, _hybrid_split(duration, threads), threads
+
+
+def _hybrid_source_ok(src: Path) -> bool:
+    """``src`` is a source ``auto`` splits: see :func:`_hybrid_plan`."""
+    info = probe(src)
+    return (
+        info.vcodec in HYBRID_CODECS
+        and info.pix_fmt in HYBRID_PIX_FMTS
+        and abs(info.vstart) < 1e-3
+        and src.suffix.lower() in HYBRID_SUFFIXES
+    )
+
+
+def _merge_seam(
+    gpu: Sequence[float], cpu: Sequence[float], split: float, cstart: float
+) -> list[float]:
+    """The cuts of a split pass: the NVDEC half's before ``split``, the CPU half's (times from
+    its start ``cstart``) from ``split`` on; a CPU cut closer than :data:`SEAM_DEDUP_S` after
+    the last NVDEC cut is that cut seen a frame off and dropped."""
+    eps = 1e-6
+    out = [round(c, 3) for c in gpu if c < split - eps]
+    for x in cpu:
+        t = round(cstart + x, 3)
+        if t < split - eps or (out and t - out[-1] < SEAM_DEDUP_S):
+            continue
+        out.append(t)
+    return out
+
+
+def _hybrid_cuts(
+    src: Path,
+    cdir: Path,
+    duration: float,
+    hw: HwDecoder | None,
+    split: float,
+    threads: int,
+    cancel: threading.Event | None = None,
+) -> list[float] | None:
+    """Scene cuts of ``src`` from two proxies made and scanned at once: NVDEC decodes
+    ``[0, split + SEAM_S]``, the CPU (``threads`` decode threads) ``[split - SEAM_S, end]``;
+    merged by :func:`_merge_seam` (``hw`` None decodes both halves on the CPU). None when a
+    half failed (a WARNING; the caller decodes in one pass). Both proxies are removed, also on
+    Ctrl+C or ``cancel`` (then :class:`~cutpoint.ffmpeg_utils.RunCancelled`)."""
+    _pre, _post, vf, enc = _proxy_args(duration)
+    vstart = probe(src).vstart
+    cstart = round(max(0.0, split - SEAM_S), 3)
+    gend = min(duration, split + SEAM_S)
+    tag = f"{os.getpid()}-{threading.get_ident()}"  # another run may share the cache folder
+    dec_args, chain = _scene_decode(hw, vf, src)
+    # the CPU half converts to the format NVDEC downloads before it scales, as that half does,
+    # so the same frames give the same proxy pixels
+    cpu_vf = chain.replace("hwdownload,", "", 1) if "hwdownload," in chain else vf
+    out = ["-an", "-vf"]
+    halves = {
+        "gpu": (
+            cdir / f"proxy-gpu-{tag}.mp4",
+            [*dec_args, "-i", str(src), "-t", f"{gend:.3f}", *out, chain],
+            gend,
+        ),
+        "cpu": (
+            cdir / f"proxy-cpu-{tag}.mp4",
+            # one decode's time 0 is the first video frame: the seek counts from the container
+            [
+                "-ss",
+                f"{cstart + vstart:.3f}",
+                "-threads",
+                str(threads),
+                "-i",
+                str(src),
+                *out,
+                cpu_vf,
+            ],
+            duration - cstart,
+        ),
+    }
+    stop = threading.Event()  # one half failed or the run is stopped: the other stops too
+    found: dict[str, list[float]] = {}
+    errors: dict[str, BaseException] = {}
+
+    def half(name: str) -> None:
+        proxy, args, seconds = halves[name]
+        try:
+            cmd = ["ffmpeg", "-y", "-v", "error", *args, *enc, str(proxy)]
+            run_progress(cmd, seconds, f"scene proxy {src.name} ({name} part)", cancel=stop)
+            found[name] = _scan(proxy, stop)
+        except BaseException as exc:  # noqa: BLE001 - reported by the caller's thread
+            errors[name] = exc
+            stop.set()
+        finally:
+            with contextlib.suppress(OSError):
+                proxy.unlink(missing_ok=True)
+
+    logger.info(
+        "%s: scene decode split at %s: NVDEC before, the CPU (%d threads) after",
+        src.name,
+        clock(split),
+        threads,
+    )
+    workers = [
+        threading.Thread(target=half, args=(n,), name=f"scene-{n}", daemon=True) for n in halves
+    ]
+    try:
+        for w in workers:
+            w.start()
+        while any(w.is_alive() for w in workers):
+            for w in workers:
+                w.join(SCENE_POLL_S)  # in steps: Ctrl+C gets through on Windows
+            if cancel is not None and cancel.is_set():
+                stop.set()
+    except BaseException:
+        stop.set()
+        for w in workers:
+            w.join(SCENE_JOIN_S)
+        raise
+    finally:
+        for proxy, _args, _s in halves.values():  # a half still busy after the join
+            with contextlib.suppress(OSError):
+                proxy.unlink(missing_ok=True)
+    if cancel is not None and cancel.is_set():
+        raise RunCancelled(f"scene detection {src.name}")
+    if errors:
+        if cancel is not None and cancel.wait(STOP_GRACE_S):  # Ctrl+C reached ffmpeg first
+            raise RunCancelled(f"scene detection {src.name}") from None
+        if cancel is None:
+            time.sleep(STOP_GRACE_S)  # a Ctrl+C that reached ffmpeg first is raised here
+        # the half that failed first; the other one was stopped (RunCancelled) because of it
+        real = [e for e in errors.values() if not isinstance(e, RunCancelled)]
+        first = (real or list(errors.values()))[0]
+        reason = str(first).strip().splitlines()[-1:] or [type(first).__name__]
+        logger.warning(
+            "%s: the split scene decode failed (%s); decoding it in one pass",
+            src.name,
+            reason[0],
+        )
+        return None
+    return _merge_seam(found["gpu"], found["cpu"], split, cstart)
 
 
 def _make_proxy(
@@ -722,19 +950,22 @@ class _SceneJob:
         offset: float,
         limit: float | None,
         shared: Any,
+        cpu_free: bool = False,
     ) -> None:
         self.cancel = threading.Event()
         self.cuts: list[float] = []
         self.took = 0.0  # seconds the thread ran
         self._error: BaseException | None = None
         self._args = (src, cdir, duration, offset, limit, shared)
+        # the split decode (scene_cuts' cpu_free): a plain call when Whisper is on the CPU
+        self._opts = {"cpu_free": True} if cpu_free else {}
         self._thread = threading.Thread(target=self._main, name="scene-overlap", daemon=True)
         self._thread.start()
 
     def _main(self) -> None:
         t0 = time.perf_counter()
         try:
-            self.cuts = scene_cuts(*self._args, cancel=self.cancel)
+            self.cuts = scene_cuts(*self._args, cancel=self.cancel, **self._opts)
         except BaseException as exc:  # noqa: BLE001 - re-raised by result()
             self._error = exc
         self.took = round(time.perf_counter() - t0, 2)
@@ -1479,6 +1710,7 @@ def analyze_source(
     read_checked: Callable[[MediaInfo, dict[str, Any] | None], Any] | None = None,
     text: bool = True,
     on_transcript: Callable[[], None] | None = None,
+    cpu_busy: Callable[[], bool] | None = None,
 ) -> SourceResult:
     """Compute signals for one source (or a recovered part starting at ``offset``).
 
@@ -1496,7 +1728,9 @@ def analyze_source(
     before loudness, Whisper and the scene cuts; what it returns goes to
     :func:`scene_cuts` as ``shared`` (a scene proxy made in the background, or None).
     ``on_transcript`` is called once the transcript is there (made or cached), before the
-    scene cuts.
+    scene cuts. ``cpu_busy`` says whether a CPU-heavy step of the caller (the background HUD
+    OCR) runs right now (None: none does); the scene cuts split their decode between NVDEC and
+    the CPU only when it does not, nor Whisper on the CPU (:func:`_hybrid_plan`).
     """
 
     stages: dict[str, Any] = {}
@@ -1564,7 +1798,10 @@ def analyze_source(
                 and cached_transcript(tr, cdir) is None
             ):
                 tr.load()  # the memory guard runs before the scene thread takes any VRAM
-                overlap = _SceneJob(io, cdir, span, offset, span if read_error else None, shared)
+                # Whisper runs meanwhile: the split decode only while it is on the GPU
+                free = getattr(tr, "device", None) == "cuda" and not (cpu_busy and cpu_busy())
+                limit = span if read_error else None
+                overlap = _SceneJob(io, cdir, span, offset, limit, shared, free)
             segments = _transcript(wav, cdir, tr, transcribed if report else None, src)
             tick("transcribe_s", t0)
             if on_transcript is not None:
@@ -1609,8 +1846,9 @@ def analyze_source(
             took = overlap.took  # the thread's own time, mostly inside the transcription
             stages["overlap"] = True
         else:
+            free = {} if cpu_busy is not None and cpu_busy() else {"cpu_free": True}
             cuts = scene_cuts(
-                io, cdir, span, offset, limit=span if read_error else None, shared=shared
+                io, cdir, span, offset, limit=span if read_error else None, shared=shared, **free
             )
             took = time.perf_counter() - t0
         add("scenes_s", took)
@@ -3497,6 +3735,11 @@ def _analyze(
 
             return offer
 
+        def cpu_busy() -> bool:
+            """The background HUD OCR (CPU-heavy) reads or is about to read a source: a source
+            offered and not read yet (:attr:`~cutpoint.events.ocr_prefetch.OcrPrefetch.busy`)."""
+            return prefetch is not None and prefetch.busy
+
         timings: dict[str, float] = {}
         if cam_ctx is not None:
             timings["telemetry_s"] = telemetry_s
@@ -3543,6 +3786,7 @@ def _analyze(
                     text=not pending,
                     # progress.json from the first transcript on, before the scene cuts
                     on_transcript=lambda: runstate.transcribed(out_dir, sources),
+                    cpu_busy=cpu_busy,
                 )
                 results.append(res)
                 name = f"{src.name}@{offset:.0f}" if offset else src.name

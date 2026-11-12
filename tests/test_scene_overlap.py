@@ -86,7 +86,9 @@ def world(home, tmp_path, monkeypatch):
     w.scene_calls, w.scene_threads, w.scene_error = [], [], None
     w.started = threading.Event()  # the fake scene work has begun
 
-    def scene(src_, cdir, duration, offset=0.0, limit=None, shared=None, cancel=None):
+    def scene(
+        src_, cdir, duration, offset=0.0, limit=None, shared=None, cancel=None, cpu_free=False
+    ):
         w.scene_calls.append(cancel)
         w.scene_threads.append(threading.current_thread())
         w.started.set()
