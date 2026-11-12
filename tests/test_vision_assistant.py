@@ -10,10 +10,11 @@ from pathlib import Path
 import pytest
 
 from conftest import set_config
-from cutpoint import vision
+from cutpoint import analyze, jsonout, vision
 from cutpoint.assistant import keys, providers
 from cutpoint.assistant.providers import AnthropicProvider, OpenAIProvider, Reply, XAIProvider
 from cutpoint.pano import vlcheck
+from cutpoint.styles import get_style
 from test_assistant import _Resp
 from test_assistant_byo import NoRing, Wire, an_reply, oa_reply, rs_reply, rs_text
 
@@ -429,3 +430,172 @@ def test_ask_json_leaves_enums_and_types_to_the_caller(fake, text) -> None:
     """#920: only the top level is checked (an object with the required keys)."""
     fake.text = text
     assert vision.VisionRater().ask_json("q", [JPEG], ANSWER) == json.loads(text)
+
+
+# -- empty replies stop the rating (#986) -------------------------------------------------------
+
+EMPTY = ""
+GOOD = '{"score": 8, "label": "big jump"}'
+
+
+class ScriptedProvider(FakeSubscription):
+    """Gives ``texts`` in order, one per request; a request past the end fails the test."""
+
+    def __init__(self, texts: list[str]) -> None:
+        super().__init__("")
+        self.texts = list(texts)
+
+    def chat(self, messages, **_kw) -> Reply:
+        self.sent.append(messages)
+        assert self.texts, "the provider was asked after the rating stopped"
+        return Reply(self.texts.pop(0))
+
+    def unload(self) -> bool:
+        return False
+
+
+def scripted(fake, monkeypatch, texts: list[str]) -> ScriptedProvider:
+    """The ``fake`` fixture's setup with a provider that answers ``texts``."""
+    del fake
+    provider = ScriptedProvider(texts)
+    monkeypatch.setattr(providers, "make", lambda *_a, **_k: provider)
+    return provider
+
+
+def moments(n: int) -> list[dict]:
+    return [
+        {"source": "a.mp4", "start": 10.0 * k, "end": 10.0 * k + 4, "score": 50.0, "signals": {}}
+        for k in range(n)
+    ]
+
+
+def test_three_moments_of_empty_replies_stop_the_rating_with_one_warning(
+    fake, monkeypatch, caplog
+) -> None:
+    """Each empty moment costs its 2 attempts; after the third the provider is asked nothing
+    more. The moment rated before keeps its rating; the rest stay unrated."""
+    provider = scripted(fake, monkeypatch, [GOOD] + [EMPTY] * 6)
+    rater = vision.VisionRater()
+    assert rater.available()
+    cands = moments(6)
+    with caplog.at_level(logging.WARNING, logger="cutpoint.vision"), jsonout.run("x") as res:
+        out = analyze._rate_vision(
+            cands, rater, get_style("gaming"), None, 0, deadline=float("inf")
+        )
+    assert len(provider.sent) == 7 and provider.texts == []
+    assert rater.stopped and rater.asked == 4
+    assert cands[0]["signals"]["vision"] == 8.0 and out.used
+    assert all("vision" not in c["signals"] for c in cands[1:])
+    assert out.failed == 5
+    stops = [r.getMessage() for r in caplog.records if "vision rating stopped" in r.getMessage()]
+    assert stops == [
+        "codex gpt-x returned empty or unparseable replies for 3 moments in a row; vision "
+        "rating stopped, check the Vision model in the Models tab of `cutpoint ui`"
+    ]
+    assert [(w["code"], w["message"]) for w in res.warnings] == [("vision_unavailable", stops[0])]
+
+
+def test_a_usable_reply_resets_the_count(fake, monkeypatch) -> None:
+    # moments: empty, empty, good, empty, empty (not stopped), empty (third in a row: stopped)
+    texts = [EMPTY] * 4 + [GOOD] + [EMPTY] * 6
+    provider = scripted(fake, monkeypatch, texts)
+    rater = vision.VisionRater()
+    got = [rater.rate(Path("a.mp4"), 10.0 * k, 10.0 * k + 4, "gaming") for k in range(5)]
+    assert [g is not None for g in got] == [False, False, True, False, False]
+    assert not rater.stopped and rater.empty_in_row == 2
+    assert rater.rate(Path("a.mp4"), 60, 64, "gaming") is None and rater.stopped
+    assert rater.rate(Path("a.mp4"), 70, 74, "gaming") is None
+    assert len(provider.sent) == 11 and provider.texts == []
+
+
+def test_a_failed_request_neither_counts_nor_resets(fake, monkeypatch) -> None:
+    """Only replies count: a request that failed (logged) says nothing about the model."""
+    provider = scripted(fake, monkeypatch, [EMPTY] * 4 + [EMPTY] * 2)
+    calls = {"n": 0}
+    chat = provider.chat
+
+    def flaky(messages, **kw) -> Reply:
+        calls["n"] += 1
+        if calls["n"] == 5:
+            raise providers.ProviderError("HTTP 502")
+        return chat(messages, **kw)
+
+    provider.chat = flaky
+    rater = vision.VisionRater()
+    for k in range(3):  # empty, empty, failed request
+        assert rater.rate(Path("a.mp4"), 10.0 * k, 10.0 * k + 4, "gaming") is None
+    assert rater.empty_in_row == 2 and not rater.stopped
+    assert rater.rate(Path("a.mp4"), 40, 44, "gaming") is None
+    assert rater.stopped
+
+
+def test_a_cached_rating_is_still_taken_after_the_rating_stopped(
+    fake, monkeypatch, tmp_path
+) -> None:
+    provider = scripted(fake, monkeypatch, [GOOD] + [EMPTY] * 6)
+    rater = vision.VisionRater()
+    src = tmp_path / "a.mp4"  # a file to key the rating cache by (frames are faked)
+    src.write_bytes(b"not a video")
+    assert rater.rate(src, 0, 4, "gaming") == vision.VisionResult(8.0, "big jump")
+    for k in range(1, 4):
+        assert rater.rate(src, 10.0 * k, 10.0 * k + 4, "gaming") is None
+    assert rater.stopped
+    assert rater.rate(src, 0, 4, "gaming") == vision.VisionResult(8.0, "big jump")  # cached
+    assert rater.hits == 1 and len(provider.sent) == 7
+
+
+# -- a thinking model's answer in reasoning_content (#986) --------------------------------------
+
+LOCAL = "http://localhost:1234/v1"
+
+
+def oa_thinking(content: str | None, **reasoning: str) -> _Resp:
+    msg = {"role": "assistant", "content": content, **reasoning}
+    return _Resp({"choices": [{"message": msg, "finish_reason": "stop"}]})
+
+
+def local_rater(home, monkeypatch, *answers) -> tuple[vision.VisionRater, Wire]:
+    """A rater on an OpenAI-compatible server on this machine (no consent, no key)."""
+    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: JPEG)
+    wire = Wire(monkeypatch, _Resp({"data": [{"id": "m"}]}), *answers)
+    set_config(home, vision_assistant={"provider": "openai", "model": "m", "url": LOCAL})
+    rater = vision.VisionRater()
+    rater.check_memory = lambda *a, **k: None
+    assert rater.available()
+    return rater, wire
+
+
+@pytest.mark.parametrize("field", ["reasoning_content", "reasoning"])
+def test_an_empty_content_takes_the_rating_from_the_reasoning(
+    field, home, no_keys, monkeypatch
+) -> None:
+    thought = f"The rider lands the jump. {GOOD}"
+    rater, wire = local_rater(home, monkeypatch, oa_thinking("", **{field: thought}))
+    assert rater.rate(Path("a.mp4"), 0, 4, "gaming") == vision.VisionResult(8.0, "big jump")
+    assert len(wire.sent) == 2 and rater.empty_in_row == 0
+
+
+def test_a_reasoning_without_the_answer_is_not_used(home, no_keys, monkeypatch) -> None:
+    thinking = "Let me look at the frames. A rider, some snow; maybe a 6 or a 7."
+    rater, wire = local_rater(
+        home,
+        monkeypatch,
+        oa_thinking("", reasoning_content=thinking),
+        oa_thinking(None, reasoning=thinking),
+    )
+    assert rater.rate(Path("a.mp4"), 0, 4, "gaming") is None
+    assert len(wire.sent) == 3 and rater.empty_in_row == 1
+
+
+def test_the_content_wins_over_the_reasoning(home, no_keys, monkeypatch) -> None:
+    other = '{"score": 2, "label": "draft"}'
+    rater, _ = local_rater(home, monkeypatch, oa_thinking(GOOD, reasoning_content=other))
+    assert rater.rate(Path("a.mp4"), 0, 4, "gaming") == vision.VisionResult(8.0, "big jump")
+
+
+def test_other_vision_asks_do_not_read_the_reasoning(home, no_keys, monkeypatch) -> None:
+    """Only the rating passes ``accept``: ask_json and describe keep the empty content."""
+    rater, _ = local_rater(
+        home, monkeypatch, oa_thinking("", reasoning_content='{"footage": "camera"}')
+    )
+    assert rater.ask_json("q", [JPEG], ANSWER) is None

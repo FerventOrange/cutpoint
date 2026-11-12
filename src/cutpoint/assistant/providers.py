@@ -210,6 +210,9 @@ class Reply:
     tool_calls: list[ToolCall] = field(default_factory=list)
     # the assistant message to add to the conversation as is (with its tool calls)
     message: dict[str, Any] = field(default_factory=dict)
+    # an OpenAI-compatible reply's reasoning_content or reasoning when its content is empty (a
+    # thinking model's answer can end up there, #986); only the Vision rating reads it
+    reasoning: str = ""
 
 
 class Provider(Protocol):
@@ -1100,6 +1103,10 @@ class OpenAIProvider(_HttpProvider):
         if isinstance(content, list):  # content parts
             content = "".join(str(p.get("text") or "") for p in content if isinstance(p, dict))
         text = content if isinstance(content, str) else ""
+        reasoning = ""
+        if not text.strip():  # a thinking model's answer may be in its reasoning field (#986)
+            found = (msg.get(k) for k in ("reasoning_content", "reasoning"))
+            reasoning = next((r for r in found if isinstance(r, str) and r.strip()), "")
         if isinstance(first, dict) and first.get("finish_reason") == "length":
             raise TruncatedError(f"{self.title}'s reply was cut off; try a simpler request")
         calls: list[ToolCall] = []
@@ -1125,7 +1132,7 @@ class OpenAIProvider(_HttpProvider):
         message: dict[str, Any] = {"role": "assistant", "content": text}
         if raw_calls:
             message["tool_calls"] = raw_calls
-        return Reply(text, calls, message)
+        return Reply(text, calls, message, reasoning)
 
     def _responses_payload(
         self,

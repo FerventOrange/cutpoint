@@ -1250,7 +1250,7 @@ def test_a_hosted_call_records_wall_time_only(monkeypatch, src):
         "Via",
         (),
         {
-            "ask": lambda self, text, frames: '{"score": 6, "label": "x"}',
+            "ask": lambda self, text, frames, **_k: '{"score": 6, "label": "x"}',
             "available": lambda self: True,
         },
     )()
@@ -1268,7 +1268,7 @@ def test_a_hosted_call_that_sent_nothing_is_not_counted(monkeypatch, src):
     monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
     rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
     rater.via = type(
-        "Via", (), {"ask": lambda self, text, frames: None, "available": lambda self: False}
+        "Via", (), {"ask": lambda self, text, frames, **_k: None, "available": lambda self: False}
     )()
     rater.check_memory = lambda *a, **k: None
     rater.cache_only = False
@@ -1314,7 +1314,7 @@ def test_each_request_and_cache_hit_logs_a_debug_line(monkeypatch, src, caplog):
 def _hosted_rater(sent: list) -> vision.VisionRater:
     """A rater whose hosted model records the frames it is sent."""
 
-    def ask(_self, _text, frames):
+    def ask(_self, _text, frames, **_k):
         sent.append(list(frames))
         return '{"score": 6, "label": "x"}'
 
@@ -1445,3 +1445,27 @@ def test_ask_json_leaves_items_types_and_enums_to_the_caller(monkeypatch, conten
 
 def test_ask_json_without_a_schema_takes_any_object(monkeypatch):
     assert _ollama_says(monkeypatch, '{"a": 1}').ask_json("q") == {"a": 1}
+
+
+def test_ollama_s_empty_replies_stop_the_rating_too(monkeypatch, src, caplog):
+    """#986: the breaker sits in the rating loop both paths share."""
+    chats: list[str] = []
+
+    def post(url, json, timeout, **_k):
+        chats.append(url)
+        return _Resp({"message": {"content": ""}, "done_reason": "stop", "eval_count": 0})
+
+    monkeypatch.setattr(vision.requests, "post", post)
+    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="tiny-vl")
+    rater.check_memory = lambda *a, **k: None
+    with caplog.at_level(logging.WARNING, logger="cutpoint.vision"):
+        for k in range(5):
+            assert rater.rate(src, 10.0 * k, 10.0 * k + 4, "gaming") is None
+    assert len(chats) == 6 and rater.stopped and rater.asked == 3
+    stops = [r.getMessage() for r in caplog.records if "vision rating stopped" in r.getMessage()]
+    assert stops == [
+        "ollama tiny-vl returned empty or unparseable replies for 3 moments in a row; vision "
+        "rating stopped, check --ollama-model or the Vision model in the Models tab of "
+        "`cutpoint ui`"
+    ]

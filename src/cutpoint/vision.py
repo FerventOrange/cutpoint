@@ -26,6 +26,8 @@ from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
 from cutpoint.styles import ACTION_CAM
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from cutpoint.activity import Prompts
 
 logger = logging.getLogger(__name__)
@@ -153,6 +155,9 @@ _SPEECH_PROMPTS = (_PROMPT_SPEECH, _RETRY_PROMPT_SPEECH)
 # tokens, so num_ctx must leave room for the reasoning plus the JSON.
 _ATTEMPTS = ((8192, 3072), (12288, 6144))
 _TEMPERATURES = (0.2, 0.4)  # sampling temperature per attempt
+# moments in a row whose replies were all empty or unparseable that stop the rating (#986): a
+# provider that answers nothing usable is not asked about every moment
+EMPTY_REPLY_LIMIT = 3
 FRAME_WIDTH = 640  # px of each frame sent to the model
 
 
@@ -346,10 +351,19 @@ class AssistantVision:
         )
         return _warn_consent(_consent_message(lead, str(self.consent_needed)), quiet)
 
-    def ask(self, prompt: str, jpegs: list[bytes], schema: dict | None = None) -> str | None:
+    def ask(
+        self,
+        prompt: str,
+        jpegs: list[bytes],
+        schema: dict | None = None,
+        *,
+        accept: Callable[[str], bool] | None = None,
+    ) -> str | None:
         """The provider's reply to ``prompt`` with the JPEG frames (constrained to ``schema``
         where the provider supports it); None (logged) when it is not :meth:`available` or
-        fails."""
+        fails. ``accept``: a reply whose text is empty gives its reasoning field instead
+        (:attr:`Reply.reasoning <cutpoint.assistant.providers.Reply.reasoning>`, an
+        OpenAI-compatible thinking model's) when ``accept`` finds the answer in it (#986)."""
         from cutpoint.assistant import keys, providers  # noqa: PLC0415
 
         if not self.available():
@@ -361,13 +375,19 @@ class AssistantVision:
         ]
         self.sent = True
         try:
-            return self.provider.chat([{"role": "user", "content": parts}], schema=schema).text
+            reply = self.provider.chat([{"role": "user", "content": parts}], schema=schema)
         except (
             providers.ProviderError,
             keys.KeyringError,
         ) as err:
             logger.warning("Vision request failed: %s", keys.redact(str(err)))
             return None
+        if not reply.text.strip() and reply.reasoning and accept and accept(reply.reasoning):
+            logger.debug(
+                "Vision reply of %s %s taken from its reasoning", self.provider.name, self.model
+            )
+            return reply.reasoning
+        return reply.text
 
     def unload(self) -> None:
         """Ask the provider to free the model's memory (:meth:`Provider.unload
@@ -460,6 +480,10 @@ class VisionRater:
         self.cache_only = False
         self.last_prompt_tokens: int | None = None  # of the last describe() (Ollama only)
         self.timed_out = False  # the last describe() to Ollama ran out of its timeout
+        # moments in a row whose replies were empty or unparseable; at EMPTY_REPLY_LIMIT the
+        # rating stops (:attr:`stopped`, #986); a usable reply resets it
+        self.empty_in_row = 0
+        self.stopped = False  # True: rate() gives only cached ratings and asks nothing more
         # per source: (cache file, its ratings), or None when the source cannot be keyed
         self._ratings: dict[Path, tuple[Path, dict[str, Any]] | None] = {}
 
@@ -749,6 +773,8 @@ class VisionRater:
         if self.cache_only:
             self.missed += 1
             return None
+        if self.stopped:  # empty replies stopped the rating (#986): unrated, as when skipped
+            return None
         result = self._rate_frames(src, times, style, activity, speech, laughter, (start, end))
         if result is not None and store is not None:
             entry: dict[str, Any] = {"score": result.score, "label": result.label}
@@ -864,7 +890,7 @@ class VisionRater:
                 body: dict[str, Any] = {}
                 self.check_memory()
                 t_call = time.perf_counter()
-                reply = self.via.ask(text, frames)
+                reply = self.via.ask(text, frames, accept=lambda t: _parse(t) is not None)
                 wall = time.perf_counter() - t_call
                 if self.via.available():  # else nothing was sent
                     self.stats["calls"] += 1
@@ -920,6 +946,7 @@ class VisionRater:
             if result is not None:
                 if attempt > 1:
                     logger.info("Vision retry %d succeeded", attempt)
+                self.empty_in_row = 0
                 return result
             logger.info(
                 "Vision reply %d empty/unparseable (done_reason=%s, %s tokens); %s",
@@ -929,7 +956,27 @@ class VisionRater:
                 "retrying" if attempt < len(_ATTEMPTS) else "giving up",
             )
         logger.warning("Vision reply not parseable: %.120s", content)
+        self.empty_in_row += 1
+        if self.empty_in_row >= EMPTY_REPLY_LIMIT:
+            self._stop_empty()
         return None
+
+    def _stop_empty(self) -> None:
+        """Stop the rating after :data:`EMPTY_REPLY_LIMIT` moments in a row without a usable
+        reply (#986): one WARNING naming the provider and model, also the ``vision_unavailable``
+        warning of ``--json``. Ratings made so far stay; the moments left get only cached ones."""
+        from cutpoint import jsonout  # noqa: PLC0415
+
+        self.stopped = True
+        where = "the Vision model in the Models tab of `cutpoint ui`"
+        if not self.via:
+            where = f"--ollama-model or {where}"
+        message = (
+            f"{self.provider_name} {self.model} returned empty or unparseable replies for "
+            f"{self.empty_in_row} moments in a row; vision rating stopped, check {where}"
+        )
+        logger.warning("%s", message)
+        jsonout.warn("vision_unavailable", message)
 
     def _note_call(
         self, where: str, attempt: int, grab_s: float, body: dict[str, Any], wall: float

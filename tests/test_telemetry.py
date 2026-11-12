@@ -183,6 +183,87 @@ def test_faces_report_the_largest_box_per_payload():
     assert list(area) == pytest.approx([0.25, 0.0], abs=0.001)
 
 
+def _nested(raw: bytes, cut: int = 5) -> list[list[int]]:
+    """``raw`` as telemetry-parser can hand it over (#985): a list of lists of ints."""
+    return [list(raw[i : i + cut]) for i in range(0, len(raw), cut)]
+
+
+def test_nested_list_payloads_parse_as_if_flat():
+    rec = _gps_rec(46.5, 7.25, 1200.0, 3.0, 9100, 7200.0, 1.2, 3)
+    gps = _gps_group(0, rec, rec)
+    gps["GPS9"]["0x47505339"] = _nested(gps["GPS9"]["0x47505339"])
+    probs = [b"INDO" + struct.pack(">f", 0.4), b"URBA" + struct.pack(">f", 0.2)]
+    scen = _klv("SCEN", 8, probs)
+    face = _klv("FACE", 14, [struct.pack(">BBHHHHHBB", 1, 80, 3, 0, 0, 32767, 13107, 0, 0)])
+    flat = [
+        _gps_group(0, rec, rec),
+        {"SCEN": {"TimestampUs": 1_000_000, "0x5343454e": scen}},
+        {"FACE": {"TimestampUs": 1_000_000, "0x46414345": face}},
+    ]
+    nested = [
+        gps,
+        {"SCEN": {"TimestampUs": 1_000_000, "0x5343454e": _nested(scen, 7)}},
+        {"FACE": {"TimestampUs": 1_000_000, "0x46414345": _nested(face, 3)}},
+    ]
+
+    assert telemetry._gps9(nested).tolist() == telemetry._gps9(flat).tolist()
+    assert telemetry._gps9(nested).shape == (2, 10)
+    for fn in (telemetry._scen_indoor, telemetry._faces):
+        got, want = fn(nested), fn(flat)
+        assert [a.tolist() for a in got] == [a.tolist() for a in want]
+    assert telemetry._scen_indoor(nested)[1].tolist() == pytest.approx([0.4])
+
+
+@pytest.mark.parametrize(
+    "garbage",
+    ["GPS9", 7, [[1, 2], "x"], [[1, [2]]], [300, 1], [[-1]], {"a": 1}, [True, 0]],
+)
+def test_an_unusable_raw_payload_is_skipped(garbage, caplog):
+    rec = _gps_rec(46.5, 7.25, 1200.0, 3.0, 9100, 7200.0, 1.2, 3)
+    bad_gps = {"GPS9": {"TimestampUs": 1_000_000, "Scale": GPS_SCALE, "0x47505339": garbage}}
+    groups = [
+        _gps_group(0, rec),
+        bad_gps,
+        {"SCEN": {"TimestampUs": 1_000_000, "0x5343454e": garbage}},
+        {"FACE": {"TimestampUs": 1_000_000, "0x46414345": garbage}},
+    ]
+
+    with caplog.at_level("DEBUG", logger="cutpoint.telemetry"):
+        rows = telemetry._gps9(groups)
+        scen_t, _ = telemetry._scen_indoor(groups)
+        face_t, _ = telemetry._faces(groups)
+
+    assert rows.shape == (1, 10) and rows[0, 1] == pytest.approx(46.5)  # the good one stays
+    assert len(scen_t) == 0 and len(face_t) == 0
+    debug = [r.getMessage() for r in caplog.records if r.levelname == "DEBUG"]
+    assert [m.split(":")[0] for m in debug] == ["GPS9", "SCEN", "FACE"]
+
+
+def test_a_payload_shorter_than_its_declared_repeat_is_skipped(caplog):
+    rec = _gps_rec(46.5, 7.25, 1200.0, 3.0, 9100, 7200.0, 1.2, 3)
+    probs = [b"INDO" + struct.pack(">f", 0.4), b"URBA" + struct.pack(">f", 0.2)]
+    face = struct.pack(">BBHHHHHBB", 1, 80, 3, 0, 0, 32767, 13107, 0, 0)
+    cut_gps = _gps_group(1_000_000, rec, rec)
+    cut_gps["GPS9"]["0x47505339"] = cut_gps["GPS9"]["0x47505339"][:-20]  # 2 records declared
+    groups = [
+        _gps_group(0, rec),
+        cut_gps,
+        {"SCEN": {"TimestampUs": 1_000_000, "0x5343454e": _klv("SCEN", 8, probs)[:-5]}},
+        {"FACE": {"TimestampUs": 1_000_000, "0x46414345": _klv("FACE", 14, [face, face])[:-9]}},
+    ]
+
+    with caplog.at_level("DEBUG", logger="cutpoint.telemetry"):
+        rows = telemetry._gps9(groups)
+        scen_t, _ = telemetry._scen_indoor(groups)
+        face_t, _ = telemetry._faces(groups)
+
+    assert rows.shape == (1, 10) and rows[0, 1] == pytest.approx(46.5)  # the whole one stays
+    assert len(scen_t) == 0 and len(face_t) == 0
+    debug = [r.getMessage() for r in caplog.records if r.levelname == "DEBUG"]
+    assert [m.split(":")[0] for m in debug] == ["GPS9", "SCEN", "FACE"]
+    assert all("truncated payload" in m for m in debug)
+
+
 # ------------------------------------------------------------------------- clocks and runs
 def _tel(source: str, start: datetime | None, seconds: float, lift_from: float | None = None):
     n = int(seconds / DT)
@@ -225,3 +306,29 @@ def test_join_runs_joins_clips_across_short_gaps_and_splits_at_lifts_and_long_ga
     assert out["runs"][0]["top_speed_kmh"] == 40.0
     assert out["day"]["clips"] == 4 and out["day"]["runs"] == 3
     assert out["day"]["lift_s"] == pytest.approx(30)
+
+
+def test_a_nested_gps_scale_reads_as_flat_and_an_unusable_one_skips_its_payload(caplog):
+    rec = _gps_rec(46.5, 7.25, 1200.0, 3.0, 9100, 7200.0, 1.2, 3)
+    nested = _gps_group(0, rec)
+    nested["GPS9"]["Scale"] = [GPS_SCALE[:4], GPS_SCALE[4:]]
+    want = telemetry._gps9([_gps_group(0, rec)])
+    assert telemetry._gps9([nested]).tolist() == want.tolist()
+    one = _gps_group(0, struct.pack(">lllllllHH", *range(10, 19)))
+    one["GPS9"]["Scale"] = [[10]]  # one value scales every field
+    assert telemetry._gps9([one])[0, 1:].tolist() == pytest.approx([x / 10 for x in range(10, 19)])
+    one["GPS9"]["Scale"] = 10  # so does a bare number
+    assert telemetry._gps9([one])[0, 1:].tolist() == pytest.approx([x / 10 for x in range(10, 19)])
+
+    bad = [[[1, 2]], ["x"], [0] * 9, [True] * 9, "scale"]
+    groups = [_gps_group(0, rec)]
+    for k, scale in enumerate(bad, 1):
+        g = _gps_group(k * 1_000_000, rec)
+        g["GPS9"]["Scale"] = scale
+        groups.append(g)
+    with caplog.at_level("DEBUG", logger="cutpoint.telemetry"):
+        rows = telemetry._gps9(groups)
+
+    assert rows.tolist() == want.tolist()  # only the good payload is left
+    debug = [r.getMessage() for r in caplog.records if r.levelname == "DEBUG"]
+    assert len(debug) == len(bad) and all(m.startswith("GPS9: unusable Scale") for m in debug)

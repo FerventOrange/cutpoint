@@ -148,6 +148,70 @@ def _klv_blocks(raw: bytes) -> list[tuple[str, int, int, bytes]]:
     return out
 
 
+def _flat(raw: list[Any] | tuple[Any, ...]) -> list[Any]:
+    """``raw`` with its list items flattened one level."""
+    out: list[Any] = []
+    for item in raw:
+        if isinstance(item, list | tuple):
+            out.extend(item)
+        else:
+            out.append(item)
+    return out
+
+
+def _raw_bytes(raw: Any, key: str) -> bytes | None:
+    """A raw GPMF payload of telemetry-parser as bytes; None when it is missing or unusable
+    (logged at DEBUG).
+
+    The parser hands it over as bytes or a list of ints; a list of lists of ints is
+    flattened one level.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bytes | bytearray | memoryview):
+        return bytes(raw)
+    if isinstance(raw, list | tuple):
+        flat = _flat(raw)
+        if all(isinstance(b, int) and not isinstance(b, bool) and 0 <= b < 256 for b in flat):
+            return bytes(flat)
+    logger.debug("%s: unusable raw payload (%s); skipped", key, type(raw).__name__)
+    return None
+
+
+def _gps_scale(raw: Any) -> list[float] | None:
+    """The ``Scale`` of a GPS9 payload (missing: all 1; one value, bare or listed: for every
+    field); None (logged at DEBUG) when it is unusable: not a number or a flat or once-nested
+    list of 1 or at least 9 non-zero numbers."""
+    if not raw:
+        return [1] * 9
+    if isinstance(raw, int | float) and not isinstance(raw, bool):  # a bare number: for every field
+        return [raw] * 9
+    if isinstance(raw, list | tuple):
+        flat = _flat(raw)
+        if (len(flat) == 1 or len(flat) >= 9) and all(
+            isinstance(x, int | float) and not isinstance(x, bool) and x != 0 for x in flat
+        ):
+            return flat * 9 if len(flat) == 1 else flat
+    logger.debug("GPS9: unusable Scale (%r); skipped", raw)
+    return None
+
+
+def _klv_records(raw: bytes, fourcc: str, size: int, key: str) -> list[list[bytes]] | None:
+    """The records of every ``fourcc`` block of ``size`` bytes each in ``raw``, one list per
+    block; None (logged at DEBUG) when a block is shorter than its declared repeat."""
+    out = []
+    for got, sz, repeat, body in _klv_blocks(raw):
+        if got != fourcc or sz != size:
+            continue
+        if len(body) < size * repeat:
+            logger.debug(
+                "%s: truncated payload (%d of %d bytes); skipped", key, len(body), size * repeat
+            )
+            return None
+        out.append([body[i * size : (i + 1) * size] for i in range(repeat)])
+    return out
+
+
 def _payload_times(groups: list[dict[str, Any]], key: str) -> list[tuple[float, Any]]:
     """``(start_s, stream dict)`` for every payload carrying ``key``."""
     out = []
@@ -173,17 +237,15 @@ def _gps9(groups: list[dict[str, Any]]) -> np.ndarray:
     rows: list[list[float]] = []
     blocks = []
     for t, v in pays:
-        raw = v.get("0x47505339")
-        if raw is None:
+        raw = _raw_bytes(v.get("0x47505339"), "GPS9")
+        scale = None if raw is None else _gps_scale(v.get("Scale"))
+        if raw is None or scale is None:
             blocks.append((t, []))
             continue
-        scale = v.get("Scale") or [1] * 9
         recs = []
-        for fourcc, size, repeat, body in _klv_blocks(bytes(raw)):
-            if fourcc != "GPS9" or size != 32:
-                continue
-            for i in range(repeat):
-                r = struct.unpack(">lllllllHH", body[i * 32 : (i + 1) * 32])
+        for block in _klv_records(raw, "GPS9", 32, "GPS9") or []:
+            for rec in block:
+                r = struct.unpack(">lllllllHH", rec)
                 # Scale comes from the file: keep the old truncating zip on odd lengths.
                 recs.append([a / b for a, b in zip(r, scale, strict=False)])
         blocks.append((t, recs))
@@ -208,18 +270,11 @@ def _scen_indoor(groups: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray]:
     """SCEN classifier: times and the INDO (indoor) probability."""
     ts, vals = [], []
     for t, v in _payload_times(groups, "SCEN"):
-        raw = v.get("0x5343454e")
+        raw = _raw_bytes(v.get("0x5343454e"), "SCEN")
         if raw is None:
             continue
-        for fourcc, size, repeat, body in _klv_blocks(bytes(raw)):
-            if fourcc != "SCEN" or size != 8:
-                continue
-            probs = {
-                body[i * 8 : i * 8 + 4].decode("latin1"): struct.unpack(
-                    ">f", body[i * 8 + 4 : i * 8 + 8]
-                )[0]
-                for i in range(repeat)
-            }
+        for block in _klv_records(raw, "SCEN", 8, "SCEN") or []:
+            probs = {rec[:4].decode("latin1"): struct.unpack(">f", rec[4:])[0] for rec in block}
             ts.append(t)
             vals.append(probs.get("INDO", 0.0))
     return np.asarray(ts), np.asarray(vals)
@@ -229,15 +284,14 @@ def _faces(groups: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray]:
     """FACE detections: times and the largest box area (fraction of the frame)."""
     ts, area = [], []
     for t, v in _payload_times(groups, "FACE"):
-        raw = v.get("0x46414345")
-        if raw is None:
+        raw = _raw_bytes(v.get("0x46414345"), "FACE")
+        blocks = None if raw is None else _klv_records(raw, "FACE", 14, "FACE")
+        if blocks is None:
             continue
         best = 0.0
-        for fourcc, size, repeat, body in _klv_blocks(bytes(raw)):
-            if fourcc != "FACE" or size != 14:
-                continue
-            for i in range(repeat):  # BBSSSSSBB: ver, conf, id, x, y, w, h, ...
-                _, _, _, _, _, w, h, _, _ = struct.unpack(">BBHHHHHBB", body[i * 14 : (i + 1) * 14])
+        for block in blocks:
+            for rec in block:  # BBSSSSSBB: ver, conf, id, x, y, w, h, ...
+                _, _, _, _, _, w, h, _, _ = struct.unpack(">BBHHHHHBB", rec)
                 best = max(best, (w / 65535) * (h / 65535))
         ts.append(t)
         area.append(best)
