@@ -1306,12 +1306,8 @@ def detect_project(
                     [src],
                 )
     if not inputs and failed is not None:  # no source loaded: not one bad file, the step failed
-        message = f"crash detection failed for every source; last: {failed_src}: {failed}"
-        try:
-            named = type(failed)(message)  # same type, so callers' except clauses still match
-        except (TypeError, ValueError):  # an exception type with other constructor arguments
-            named = RuntimeError(message)
-        raise named from failed
+        logger.error("crash detection failed for every source; last: %s: %s", failed_src, failed)
+        raise failed  # unchanged: cli.py maps its type and attributes (missing_extra, errno)
     timings["inputs_s"] = round(time.perf_counter() - t0, 1)
     cands = []
     for inp in inputs.values():

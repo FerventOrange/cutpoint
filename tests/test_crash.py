@@ -173,12 +173,27 @@ def test_when_every_source_fails_the_error_propagates_and_crashes_json_stays(
     own_words = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())
     with caplog.at_level("WARNING"), pytest.raises(RuntimeError) as exc:
         crash.detect_project(project, params=own_words, dense=False, sheets=0)
-    assert str(exc.value) == (
-        f"crash detection failed for every source; last: {srcs[1]}: no CLIP weights"
-    )
-    assert isinstance(exc.value.__cause__, RuntimeError)
+    assert str(exc.value) == "no CLIP weights"
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert errors == [f"crash detection failed for every source; last: {srcs[1]}: no CLIP weights"]
     assert (project / "crashes.json").read_text(encoding="utf-8") == earlier
     assert sum("crash detection skipped this source" in r.getMessage() for r in caplog.records) == 2
+
+
+def test_when_every_source_fails_the_original_exception_keeps_its_attributes(tmp_path, monkeypatch):
+    """cli.py maps a ModuleNotFoundError by its ``name`` (missing_extra): it is raised as is."""
+    src = tmp_path / "a.mp4"
+    src.write_bytes(b"x")
+    project = _project(tmp_path, src)
+
+    def load_inputs(*a):
+        raise ModuleNotFoundError("No module named 'open_clip'", name="open_clip")
+
+    monkeypatch.setattr(crash, "load_inputs", load_inputs)
+    own_words = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())
+    with pytest.raises(ModuleNotFoundError) as exc:
+        crash.detect_project(project, params=own_words, dense=False, sheets=0)
+    assert exc.value.name == "open_clip"
 
 
 def test_a_low_memory_error_on_one_source_still_stops_the_run(tmp_path, monkeypatch):

@@ -1469,3 +1469,24 @@ def test_ollama_s_empty_replies_stop_the_rating_too(monkeypatch, src, caplog):
         "rating stopped, check --ollama-model or the Vision model in the Models tab of "
         "`cutpoint ui`"
     ]
+
+
+def test_ollama_s_failed_requests_stop_the_rating_too(ollama, src, monkeypatch, caplog):
+    """The server dies mid-run: /api/tags answered, every /api/chat is refused. A failed request
+    counts as an empty reply, so the third stops the rating."""
+    chats: list[str] = []
+
+    def post(url, json, timeout, **_k):
+        chats.append(url)
+        raise requests.ConnectionError("refused")
+
+    monkeypatch.setattr(vision.requests, "post", post)
+    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    rater.check_memory = lambda *a, **k: None
+    with caplog.at_level(logging.WARNING, logger="cutpoint.vision"):
+        for k in range(5):
+            assert rater.rate(src, 10.0 * k, 10.0 * k + 4, "gaming") is None
+    assert len(chats) == 3 and rater.stopped
+    stops = [r.getMessage() for r in caplog.records if "vision rating stopped" in r.getMessage()]
+    assert len(stops) == 1
