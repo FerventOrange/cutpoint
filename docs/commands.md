@@ -1242,13 +1242,14 @@ the source's cache folder, in files of about 256 MB removed as they are read. Th
 by as much as the OCR read lags behind the decode, up to 8 files (about 2 GB; 4 GB without the
 cap on a 446 s 1080p clip): then the decode, and the proxy with it, waits for the OCR read to
 catch up. It is skipped when the drive has less free space than that cap (or every OCR frame of
-a shorter source) plus 1 GB. `0`, unset or any other value: as described above. When the
+a shorter source), plus the scene proxy (about 0.45 MB per source second for 16:9 video, more for
+portrait), plus 1 GB. `0`, unset or any other value: as described above. When the
 background proxy has not started by the time scene detection needs it, or fails, scene
 detection decodes as usual; the scene cuts, `events.json`, `highlights.json` and the OCR
 caches are the same as with it off. Each source then logs an INFO line with the scene
 detection time, the wait for the background proxy and the spool peak, and one with the wait for
 the background OCR, for measuring; a source with cover art or more than one video stream, or a
-drive without room for the spool, logs why at once. When Cutpoint is killed or crashes during
+drive without room for the spool and proxy, logs why at once. When Cutpoint is killed or crashes during
 the split, its ffmpeg stops at once on Windows and with ffmpeg 7 and newer; on Linux and macOS
 with ffmpeg 6.x it finishes encoding the proxy first. Either way the spool and
 `proxy.tmp.mp4` stay in the cache folder until the next `analyze` that reads the source's HUD
