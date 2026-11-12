@@ -264,6 +264,7 @@ def windows_probe(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     fixed drive C: with a 1 GB bin (128 GB volume); a test changes one answer."""
     probe = SimpleNamespace(
         drive=3,
+        dos_target=r"\Device\HarddiskVolume3",
         nuke=0,
         mb=1024,
         guid="{1}",
@@ -274,6 +275,7 @@ def windows_probe(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     )
     monkeypatch.setattr(projectdelete, "_mount_root", lambda path: "C:\\")
     monkeypatch.setattr(projectdelete, "_drive_type", lambda root: probe.drive)
+    monkeypatch.setattr(projectdelete, "_dos_target", lambda drive: probe.dos_target)
     monkeypatch.setattr(projectdelete, "_volume_total_mb", lambda root: probe.total_mb)
     monkeypatch.setattr(projectdelete, "_bin_used", lambda root: probe.used)
     monkeypatch.setattr(projectdelete, "_policy", lambda: probe.policy)
@@ -351,6 +353,52 @@ def test_a_volume_without_settings_uses_the_windows_default(
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows UNC paths")
 def test_windows_probe_refuses_a_network_share(windows_probe: SimpleNamespace) -> None:
     assert "network share" in projectdelete.windows_blocker([(Path("//nas/share/p/ui"), 1)])
+
+
+@pytest.mark.parametrize(
+    ("target", "blocked"),
+    [
+        (r"\??\H:\scratch\p", True),
+        (r"\Device\HarddiskVolume3", False),
+        ("\\Device\\LanmanRedirector\\;Z:000\nas\\share", False),
+        ("", False),  # QueryDosDevice failed: behaves as before
+    ],
+)
+def test_windows_probe_refuses_a_subst_drive(
+    windows_probe: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, target: str, blocked: bool
+) -> None:
+    # abspath of a drive path is the same on every OS only on Windows, so make it explicit
+    monkeypatch.setattr(projectdelete.os.path, "splitdrive", lambda p: ("X:", p[2:]))
+    windows_probe.dos_target = target
+    reason = projectdelete.windows_blocker([(Path("X:/p/ui"), 1)])
+    if blocked:
+        assert "substituted drive (subst)" in reason
+    else:
+        assert reason is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows subst drives")
+def test_a_real_subst_drive_is_refused(tmp_path: Path) -> None:
+    import ctypes  # noqa: PLC0415
+    import string  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    used = ctypes.windll.kernel32.GetLogicalDrives()  # type: ignore[attr-defined]
+    free = [c for i, c in enumerate(string.ascii_uppercase) if not used >> i & 1][::-1]
+    if not free:
+        pytest.skip("no free drive letter")
+    drive = f"{free[0]}:"
+    (tmp_path / "p").mkdir()
+    try:
+        subprocess.run(["subst", drive, str(tmp_path)], check=True, capture_output=True)
+    except subprocess.CalledProcessError:
+        pytest.skip(f"subst {drive} failed")
+    try:
+        reason = projectdelete.windows_blocker([(Path(drive + r"\p"), 1)])
+        assert reason is not None and "subst" in reason
+        assert projectdelete.windows_blocker([(tmp_path / "p", 1)]) != reason
+    finally:
+        subprocess.run(["subst", drive, "/D"], check=False)
 
 
 def test_two_items_over_the_limit_together_ask_first_and_move_nothing(

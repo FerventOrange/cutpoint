@@ -344,7 +344,7 @@ by hand, `hud_presets` (you may have calibrated them), unknown files and folders
 is or holds a source video of any project; the project folder is removed only once it is empty. A
 symlink or junction is never followed, and your source videos are never touched. The files go to
 the Recycle Bin / Trash. On Windows Cutpoint first checks that the Recycle Bin of the drive will
-keep them (a fixed drive, not set to delete at once, big enough for the largest item); in a
+keep them (a fixed drive that is not a `subst` drive, not set to delete at once, big enough for the largest item); in a
 container there is no trash. If the trash cannot be used, the page asks a second time before
 deleting them for good. It is refused (409) while a job, an analysis or export, a preview
 render or an AI Chat turn is running on the project. After deleting, the page shows the start

@@ -10,7 +10,7 @@ is, or holds, a source video of a project. A symlink or junction is never follow
 with it the folder that holds it). The project folder itself goes only once it is empty.
 
 The files go to the Recycle Bin / Trash. ``send2trash`` deletes for good on Windows when an item
-cannot be recycled (network and removable drives, a bin set to delete at once, an item over the
+cannot be recycled (network, removable and ``subst`` drives, a bin set to delete at once, an item over the
 bin's size limit) and in a container there is no trash: :func:`trash_blocker` finds those cases
 first, and :func:`remove_items` then raises :class:`NoTrash` instead, so the page can ask.
 """
@@ -282,6 +282,17 @@ def _drive_type(root: str) -> int:
     return ctypes.windll.kernel32.GetDriveTypeW(root)  # type: ignore[attr-defined]
 
 
+def _dos_target(drive: str) -> str:
+    """Where the drive letter ``drive`` (``X:``) points: ``\\Device\\HarddiskVolumeN`` for a
+    volume, ``\\??\\...`` for a ``subst`` drive. Empty when Windows cannot say."""
+    import ctypes  # noqa: PLC0415
+
+    buf = ctypes.create_unicode_buffer(1024)
+    if not ctypes.windll.kernel32.QueryDosDeviceW(drive, buf, 1024):  # type: ignore[attr-defined]
+        return ""
+    return buf.value
+
+
 def _mount_root(path: str) -> str:
     """The mount point of the volume holding ``path`` (``C:\\``, or a folder a volume is mounted
     on)."""
@@ -389,13 +400,18 @@ def _default_capacity_mb(total_mb: int) -> int:
 def windows_blocker(items: list[tuple[Path, int]]) -> str | None:
     """Why the Recycle Bin might not keep ``items`` (path, bytes), else None.
 
-    Windows deletes for good what it cannot recycle: on a network or removable drive, with
+    Windows deletes for good what it cannot recycle: on a network, removable or ``subst`` drive, with
     ``NukeOnDelete`` or a Group Policy that turns the bin off, and when one operation holds more
     than the bin's size limit (it empties the oldest entries). Per volume the sum must fit in
     90% of the limit, less what the bin already holds. Unknown counts as a reason."""
     try:
         sizes: dict[str, int] = {}
         for path, size in items:
+            drive = os.path.splitdrive(os.path.abspath(path))[0]  # noqa: PTH100
+            if len(drive) == 2 and drive[1] == ":" and _dos_target(drive).startswith("\\??\\"):
+                # realpath would show the real folder, but the Shell gets the X: paths and
+                # recycles nothing there
+                return "it is on a substituted drive (subst), which has no Recycle Bin"
             real = os.path.realpath(path)
             if real.startswith("\\\\"):
                 return "it is on a network share, which has no Recycle Bin"
