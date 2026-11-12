@@ -162,7 +162,7 @@ def test_edge_cuts_decode_merged_windows_and_save_them(tmp_path, decodes):
     cuts = ec.around([20.0, 22.0, 60.0])
     assert decodes == [(0.0, 17.5, 24.5), (0.0, 57.5, 62.5)]
     assert cuts == [20.6, 60.6]
-    assert saved(tmp_path) == {"version": 2, "windows": [[17.5, 24.5], [57.5, 62.5]],
+    assert saved(tmp_path) == {"version": 3, "windows": [[17.5, 24.5], [57.5, 62.5]],
                                "cuts": [20.6, 60.6]}  # fmt: skip
     assert len(took) == 1 and took[0] >= 0
 
@@ -184,7 +184,7 @@ def test_a_window_touching_saved_ones_is_decoded_with_them(tmp_path, decodes):
     decodes.clear()
     assert ec.around([20.0, 24.0]) == [20.6]  # 24 needs 21.5-26.5: overlaps 17.5-22.5
     assert decodes == [(0.0, 17.5, 26.5)]
-    assert saved(tmp_path) == {"version": 2, "windows": [[17.5, 26.5]], "cuts": [20.6]}
+    assert saved(tmp_path) == {"version": 3, "windows": [[17.5, 26.5]], "cuts": [20.6]}
 
 
 def test_a_full_scenes_json_is_preferred_over_windows(tmp_path, decodes):
@@ -209,7 +209,7 @@ def test_a_windows_file_of_the_old_clock_is_decoded_again(tmp_path, decodes):
     write(tmp_path / WINDOWS, json.dumps({"version": 1, "windows": [[17.5, 22.5]], "cuts": [19.7]}))
     assert analyze.EdgeCuts(tmp_path / "a.mp4", tmp_path, 120.0).around([20.0]) == [20.6]
     assert decodes == [(0.0, 17.5, 22.5)]
-    assert saved(tmp_path)["version"] == analyze.SCENE_WINDOWS_VERSION == 2
+    assert saved(tmp_path)["version"] == analyze.SCENE_WINDOWS_VERSION == 3
 
 
 def test_an_old_scenes_json_is_not_used(tmp_path, decodes):

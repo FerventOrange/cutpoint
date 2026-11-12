@@ -21,7 +21,7 @@ Two more backings are recorded for the reader and later tuning, not required (on
 footage neither raised precision: busy kill feeds put text near every boom, and scene cuts
 rarely fall on one):
 
-* **screen**: a scene cut (the cached ``scenes-v2.json``) near the boom;
+* **screen**: a scene cut (the cached ``scenes-v3.json``) near the boom;
 * **hud**: an on-screen text event of the OCR layer starting shortly before or after it.
 
 The event keeps its fields and gets ``loud_jump`` (LU), ``backing`` (the names above that hold)
@@ -172,7 +172,7 @@ def confirm(
     place) with ``loud_jump``, ``backing`` and ``confirmed``; returns how many are confirmed.
 
     ``parts``: ``(offset, cache folder)`` of each part of the source (``--recover`` makes more
-    than one); their ``loudness.json`` and ``scenes-v2.json`` are joined on the source's time.
+    than one); their ``loudness.json`` and ``scenes-v3.json`` are joined on the source's time.
     ``loudness`` (times, momentary LUFS) and ``cuts`` replace them (tests). Without loudness no event is
     confirmed. ``luma`` reads the mean luma of the frames around a loud boom (:func:`luma_reader`
     of the source video; a stub in tests); None skips the loading-screen guard.
