@@ -480,7 +480,7 @@ class VisionRater:
         self.cache_only = False
         self.last_prompt_tokens: int | None = None  # of the last describe() (Ollama only)
         self.timed_out = False  # the last describe() to Ollama ran out of its timeout
-        # moments in a row whose replies were empty or unparseable; at EMPTY_REPLY_LIMIT the
+        # moments in a row without a usable reply (empty, unparseable, cut off, failed request); at EMPTY_REPLY_LIMIT the
         # rating stops (:attr:`stopped`, #986); a usable reply resets it
         self.empty_in_row = 0
         self.stopped = False  # True: rate() gives only cached ratings and asks nothing more
@@ -903,7 +903,9 @@ class VisionRater:
                     wall,
                 )
                 if reply is None:
-                    return None
+                    if self.via.available():  # the request failed (cut off, provider error)
+                        self._count_empty()
+                    return None  # else nothing was sent: no consent, no key (own handling)
                 content = reply
             else:
                 num_ctx = self._context(num_ctx)
@@ -936,6 +938,7 @@ class VisionRater:
                     logger.warning("Vision request failed: %s", err)
                     self.stats["calls"] += 1
                     self.stats["reply_s"] += time.perf_counter() - t_call
+                    self._count_empty()
                     return None
                 self._note_call(where, attempt, grab_s, body, time.perf_counter() - t_call)
             result = _parse(content)
@@ -956,10 +959,15 @@ class VisionRater:
                 "retrying" if attempt < len(_ATTEMPTS) else "giving up",
             )
         logger.warning("Vision reply not parseable: %.120s", content)
+        self._count_empty()
+        return None
+
+    def _count_empty(self) -> None:
+        """A moment ended without a usable reply (empty, unparseable, cut off or a failed
+        request): count it, and stop the rating at :data:`EMPTY_REPLY_LIMIT` in a row."""
         self.empty_in_row += 1
         if self.empty_in_row >= EMPTY_REPLY_LIMIT:
             self._stop_empty()
-        return None
 
     def _stop_empty(self) -> None:
         """Stop the rating after :data:`EMPTY_REPLY_LIMIT` moments in a row without a usable
@@ -972,8 +980,9 @@ class VisionRater:
         if not self.via:
             where = f"--ollama-model or {where}"
         message = (
-            f"{self.provider_name} {self.model} returned empty or unparseable replies for "
-            f"{self.empty_in_row} moments in a row; vision rating stopped, check {where}"
+            f"{self.provider_name} {self.model} gave no usable reply (empty, cut off, "
+            f"unparseable or a failed request) for {self.empty_in_row} moments in a row; "
+            f"vision rating stopped, check {where}"
         )
         logger.warning("%s", message)
         jsonout.warn("vision_unavailable", message)

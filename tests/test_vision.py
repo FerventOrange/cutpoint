@@ -1465,7 +1465,7 @@ def test_ollama_s_empty_replies_stop_the_rating_too(monkeypatch, src, caplog):
     assert len(chats) == 6 and rater.stopped and rater.asked == 3
     stops = [r.getMessage() for r in caplog.records if "vision rating stopped" in r.getMessage()]
     assert stops == [
-        "ollama tiny-vl returned empty or unparseable replies for 3 moments in a row; vision "
+        "ollama tiny-vl gave no usable reply (empty, cut off, unparseable or a failed request) for 3 moments in a row; vision "
         "rating stopped, check --ollama-model or the Vision model in the Models tab of "
         "`cutpoint ui`"
     ]

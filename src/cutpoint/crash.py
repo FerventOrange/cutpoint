@@ -1271,6 +1271,7 @@ def detect_project(
     prompts = activity.prompts(full_prof) if full_prof else None
     progress.start("inputs")
     failed: Exception | None = None  # the last source's error
+    failed_src: Path | None = None
     with activity.use_prompts(prompts or activity.project_prompts(project)):
         for src, dur in sources:
             try:
@@ -1284,7 +1285,7 @@ def detect_project(
                 logger.debug("%s: crash inputs failed", src, exc_info=True)
                 logger.warning("%s", message)
                 jsonout.warn("step_failed", message, [src])
-                failed = err
+                failed, failed_src = err, src
                 continue
             inputs[str(src)] = inp
             if inp.imu is None:
@@ -1305,7 +1306,12 @@ def detect_project(
                     [src],
                 )
     if not inputs and failed is not None:  # no source loaded: not one bad file, the step failed
-        raise failed
+        message = f"crash detection failed for every source; last: {failed_src}: {failed}"
+        try:
+            named = type(failed)(message)  # same type, so callers' except clauses still match
+        except (TypeError, ValueError):  # an exception type with other constructor arguments
+            named = RuntimeError(message)
+        raise named from failed
     timings["inputs_s"] = round(time.perf_counter() - t0, 1)
     cands = []
     for inp in inputs.values():

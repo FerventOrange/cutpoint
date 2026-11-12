@@ -167,12 +167,16 @@ def test_when_every_source_fails_the_error_propagates_and_crashes_json_stays(
     (project / "crashes.json").write_text(earlier, encoding="utf-8")
 
     def load_inputs(src, *a):
-        raise RuntimeError(f"no CLIP weights ({src.name})")
+        raise RuntimeError("no CLIP weights")
 
     monkeypatch.setattr(crash, "load_inputs", load_inputs)
     own_words = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())
-    with caplog.at_level("WARNING"), pytest.raises(RuntimeError, match=r"arch\.mp4"):
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError) as exc:
         crash.detect_project(project, params=own_words, dense=False, sheets=0)
+    assert str(exc.value) == (
+        f"crash detection failed for every source; last: {srcs[1]}: no CLIP weights"
+    )
+    assert isinstance(exc.value.__cause__, RuntimeError)
     assert (project / "crashes.json").read_text(encoding="utf-8") == earlier
     assert sum("crash detection skipped this source" in r.getMessage() for r in caplog.records) == 2
 
