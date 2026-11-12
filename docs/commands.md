@@ -2044,7 +2044,7 @@ continue where the run stopped. `edit` keeps its clips when the `clips` step was
 `clips/manifest.json` is unchanged since; an `edit` or `clips` stopped while exporting encodes
 only the clips it had not finished (see [Resuming an export](#resuming-an-export)).
 
-An `analyze` or `edit` run recorded without `--style` before the default changed (it then meant `gaming` for `analyze`, `action` for `edit`) now runs `--style auto`, with a `resume_args_changed` warning. An `edit` keeps none of its earlier clips: if its clips folder already has clips, the resume stops with `output_not_empty`; run the `edit` again with `--force` (and `--style action` for the earlier result).
+An `analyze` or `edit` run recorded without `--style` before the default changed (it then meant `gaming` for `analyze`, `action` for `edit`) now runs `--style auto` (`funny` for `edit --kind funny-moments`, as before); an interrupted one warns `resume_args_changed`. Such an `edit` keeps none of its earlier clips: if its clips folder already has clips, the resume stops with `output_not_empty`; run the `edit` again with `--force` (and `--style action` for the earlier result, except for funny-moments).
 
 Statuses that are resumed: `interrupted` (also `running` with a dead process), `failed` and
 `low_memory`. Status `done` logs `nothing to resume` and exits 0. Sources of the record that
