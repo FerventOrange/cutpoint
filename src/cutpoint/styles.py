@@ -168,10 +168,9 @@ _ACTION_CAM_KEYWORDS = {
 
 # The telemetry-driven action-cam style (and its ``kind``).
 ACTION_CAM = "action-cam"
-# ``--style auto`` (analyze, edit): the style follows the detected footage category
-# (:mod:`cutpoint.category`). A reserved name: a learned ``auto.json`` is ignored.
+# ``--style auto`` (analyze, edit; their default): the style follows the detected footage
+# category (:mod:`cutpoint.category`). A reserved name: a learned ``auto.json`` is ignored.
 AUTO = "auto"
-ANALYZE_STYLE = "gaming"  # analyze's default --style
 # The category whose style --style auto uses when the detection is ambiguous, in analyze and
 # edit (#896): everyday footage's, not gaming's (kill feeds and loudness), unless the best
 # guess is one of AUTO_GUESSED (gameplay: some HUD evidence), whose own style is used then.

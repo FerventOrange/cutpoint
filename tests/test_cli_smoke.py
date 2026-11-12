@@ -211,7 +211,8 @@ def test_failed_analyze_leaves_no_new_project_folder(
         raise error
 
     monkeypatch.setattr(cutpoint.analyze, "analyze_source", analyze_source)
-    assert cli.main(["analyze", str(video), "--no-vision", "--out", out]) == code
+    argv = ["analyze", str(video), "--style", "gaming", "--no-vision", "--out", out]
+    assert cli.main(argv) == code
     assert reached == [video]
     projects = home / "projects"
     if preexisting:

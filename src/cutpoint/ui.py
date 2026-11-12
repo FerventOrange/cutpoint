@@ -176,9 +176,9 @@ from cutpoint.pano.project import default_style as pano_style
 from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import (
     ACTION_CAM,
-    ANALYZE_STYLE,
     AUTO,
     Style,
+    auto_fallback,
     get_style,
     learned_styles,
     style_names,
@@ -4352,9 +4352,11 @@ def _style(name: object, hl: dict[str, Any] | None = None) -> Style | None:
 
 def _style_crash(style: object, hl: dict[str, Any] | None = None) -> float | None:
     """The ``must_include_crash`` of ``style`` (what ``--must-include-crash`` overrides), else
-    None (no known style). ``auto`` picks a built-in style, all with the same value: the
-    default style's."""
-    s = _style(ANALYZE_STYLE if style == AUTO else style, hl)
+    None (no known style). ``auto`` picks a built-in style, all with the same value: its
+    fallback's."""
+    from cutpoint.category import HYPE  # noqa: PLC0415
+
+    s = _style(auto_fallback(HYPE) if style == AUTO else style, hl)
     return s.must_include_crash if s is not None else None
 
 
@@ -6073,8 +6075,11 @@ def create_app(port: int) -> FastAPI:
             needs_proxy = _subscription_roles(args, next(iter(_values(args, "--style")), style))
         elif action == "resume" and run["command"] in ("analyze", "edit"):
             argv = [str(a) for a in rec.get("argv") or []]
-            # no --style: analyze's default (edit's defaults have no dialogue step)
-            default = ANALYZE_STYLE if run["command"] == "analyze" else None
+            # no --style: auto (edit: its kind's default, funny for funny-moments)
+            kind_arg = next(iter(_values(argv, "--kind")), "highlights")
+            default = (
+                KINDS[kind_arg].style if run["command"] == "edit" and kind_arg in KINDS else AUTO
+            )
             style_arg = next(iter(_values(argv, "--style")), default)
             needs_proxy = _subscription_roles(argv, style_arg)
         elif action in ("crashes", "events") or (

@@ -39,7 +39,7 @@ timeline
                    : Dialogue reader for funny and heated talk
                    : Visual index for AI Chat search
                    : Crash moments and custom styles
-                   : --style auto, opt-in
+                   : --style auto, detect the footage category
                    : Activity profiles discovered from the footage
                    : Resume for interrupted runs
                    : Timeline format choice, FCPXML or OTIO
@@ -50,10 +50,10 @@ timeline
                    : Mixed action-cam projects score every source
                    : Action-cam without telemetry falls back to action
                    : UI header shows the detected category and changes the style in one step
+                   : Auto becomes the CLI and agent default
+                   : Auto works in Cutpoint lite, without the vision check
     section Next
         Auto by default : Detection and scoring need no settings
-                        : Auto becomes the CLI and agent default
-                        : Agents and lite on auto
         Vision and speed : Vision on by default
                          : Faster scene detection on game footage
                          : Intel QSV and Apple VideoToolbox encode and decode
