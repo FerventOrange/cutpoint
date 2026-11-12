@@ -4,7 +4,11 @@ The loop offers the read tools (``find_moments``, ``look_for`` (CLIP search of t
 timeline, :mod:`cutpoint.assistant.lookfor`), ``find_words`` (where words are said, to the
 word, :mod:`cutpoint.assistant.words`), ``get_moment``, ``get_transcript``,
 ``show_moments``, and ``view_moment`` for a model that takes images, :mod:`cutpoint.assistant.watch`)
-and the final ``propose_edit``, for at most :data:`MAX_ROUNDS` model replies.
+and the final ``propose_edit``, for at most :data:`MAX_ROUNDS` model replies. The last of them,
+and the one after ``view_moment`` hit its limit, is the closing round: it offers only
+``propose_edit`` and asks for the answer (:data:`CLOSING`); a model that still looks something up
+gets that round once more, then the turn ends with the best it has (an earlier proposal, its
+first answer, or a short answer of the code's), never without one.
 A proposal is checked with :func:`cutpoint.assistant.ops.apply_ops`; a rejected one goes back to
 the model with the reason. A model without tool calls (or one that refuses them) answers in JSON
 mode: one ``{"tool", "arguments"}`` object per reply, constrained by :data:`JSON_SCHEMA`.
@@ -15,6 +19,7 @@ to show, a reply, proposals) that the page polls, the way it polls jobs.
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import re
@@ -44,7 +49,7 @@ from cutpoint.config import source_path
 
 logger = logging.getLogger(__name__)
 
-MAX_ROUNDS = 8  # model replies in one turn
+MAX_ROUNDS = 8  # model replies in one turn (plus one if the closing round is asked again)
 FIT_CHARS_PER_TOKEN = context.FIT_CHARS_PER_TOKEN
 MAX_RESULT_CHARS = context.MAX_RESULT_CHARS
 MAX_TEXT = 2000  # characters of a user message
@@ -52,9 +57,28 @@ MAX_SUMMARY = 500
 MAX_SUGGESTIONS = 4
 MAX_KEPT = 50  # finished turns kept in memory (chat.json has them all)
 MAX_PAD_S = 60.0  # get_transcript's pad
+MAX_LOOKED = 4  # searches the code's own answer names (_no_answer)
 NUDGE = (
     "If the user asked for a change to the sequence, call propose_edit now with the ops; "
     "otherwise give your answer again."
+)
+# The closing round: the lookups are spent, so the model answers with what it has. A small model
+# that found nothing keeps searching or viewing until the rounds run out; this asks it for the
+# plain answer instead ("I couldn't find ...; here is what they show", with something it can do)
+CLOSING = (
+    "No more lookups in this turn: answer the user now with what you have found. If the user "
+    "asked for a change and the moments you found fit it, call propose_edit with the ops; "
+    "otherwise answer in plain text. If the moments do not show what the user asked for, say "
+    'so plainly ("I couldn\'t find ... in these moments"), say in a sentence or two what they '
+    "do show, and offer what you can do instead, such as a montage of the best moments."
+)
+CLOSING_JSON = (
+    f'{CLOSING} Reply with one JSON object: {{"tool": "reply", "text": "..."}}, or propose_edit.'
+)
+# A lookup asked for in the closing round: not run (the result each call needs)
+NOT_RUN = (
+    "error: not run: no more lookups in this turn. Answer the user now in plain text with what "
+    "you have found, or call propose_edit"
 )
 WORD_EDGE_S = 0.02  # a trim edge this close to a find_words hit's edge is cut at the word
 # The nudge after find_words found words: a small model answers "make him say X" with "the words
@@ -210,6 +234,7 @@ TOOLS = [
     ),
 ]
 TOOL_NAMES = [t["function"]["name"] for t in TOOLS]
+FINAL_TOOL = "propose_edit"  # the one tool the closing round offers
 JSON_SCHEMA = {
     "type": "object",
     "properties": {
@@ -320,6 +345,7 @@ class Turn:
         self.viewer = viewer
         self._watch = False
         self._viewed: set[str] = set()
+        self._spent = False  # a view was refused for the limit: the next round is the closing one
         self._sheets: list[dict[str, Any]] = []
         self._images: list[dict[str, Any]] = []
         # look_for: the finder (reads each source's cached embeddings once) and the new moments
@@ -421,8 +447,7 @@ class Turn:
 
     def _run(self) -> None:
         try:
-            self._loop()  # returns with the turn still running only when the rounds ran out
-            self._finish("failed", f"no answer after {MAX_ROUNDS} rounds; try a simpler request")
+            self._loop()
         except ProviderError as err:
             self._finish("failed", str(err))
         except Exception as err:  # a bug must not leave the turn running forever
@@ -473,26 +498,32 @@ class Turn:
         """The names of the tools offered (:meth:`_offered`)."""
         return [n for n in TOOL_NAMES if self._offered(n)]
 
-    def _tools(self) -> list[dict[str, Any]]:
+    def _tools(self, closing: bool = False) -> list[dict[str, Any]]:
+        """The tools of a request; the closing round offers only ``propose_edit`` (a list that
+        is not empty: a provider wants tools defined next to the earlier calls)."""
+        if closing:
+            return [t for t in TOOLS if t["function"]["name"] == FINAL_TOOL]
         base = [t for t in TOOLS if self._offered(t["function"]["name"])]
         return [*base, watch.TOOL] if self._watch else base
 
-    def _schema(self) -> dict[str, Any]:
-        if not self._watch and self._names() == TOOL_NAMES:
+    def _schema(self, closing: bool = False) -> dict[str, Any]:
+        if not closing and not self._watch and self._names() == TOOL_NAMES:
             return JSON_SCHEMA
         names = [*self._names(), *([watch.NAME] if self._watch else []), "reply"]
+        if closing:
+            names = [FINAL_TOOL, "reply"]
         props = {**JSON_SCHEMA["properties"], "tool": {"type": "string", "enum": names}}
         return {**JSON_SCHEMA, "properties": props}
 
-    def _ask(self, messages: list[dict[str, Any]], json_mode: bool) -> Reply:
+    def _ask(self, messages: list[dict[str, Any]], json_mode: bool, closing: bool = False) -> Reply:
         """One reply. A model that refuses the sheets sent (:func:`watch.rejected_image`) is
         asked once more with them taken out, and is offered no more this session."""
 
         def once() -> Reply:
             return self.provider.chat(
                 messages,
-                tools=None if json_mode else self._tools(),
-                schema=self._schema() if json_mode else None,
+                tools=None if json_mode else self._tools(closing),
+                schema=self._schema(closing) if json_mode else None,
                 cancelled=lambda: self.status != "running",
             )
 
@@ -534,18 +565,27 @@ class Turn:
         cut = False  # a reply was cut off once: the conversation was shrunk and asked again
         capped = False  # a reply hit the output cap once: asked again for a shorter one
         last_cut: TruncatedError | None = None  # the latest round's cut-off, if it was one
-        for rnd in range(MAX_ROUNDS):
-            if self.status != "running":
-                return
+        rounds = MAX_ROUNDS  # one more when the closing round looks something up
+        closing = False  # the closing round: only propose_edit, and the answer is asked for
+        noted = False  # CLOSING is in the conversation
+        again = False  # the closing round was asked once more
+        for rnd in itertools.count():
+            if rnd >= rounds or self.status != "running":
+                break
+            closing = closing or self._spent or rnd >= MAX_ROUNDS - 1
+            if closing and not noted:
+                messages.append({"role": "user", "content": CLOSING_JSON if json_mode else CLOSING})
+                noted = True
             self._fit(messages, json_mode)
             try:
-                reply = self._ask(messages, json_mode)
+                reply = self._ask(messages, json_mode, closing)
                 last_cut = None
             except ToolsUnsupportedError:
                 json_mode = True
                 self._results = []
                 messages = self._messages(True)
                 base = len(messages)
+                noted = False
                 continue
             except OutputCapError as err:  # the context is not the problem: ask for less output
                 if capped:
@@ -577,6 +617,8 @@ class Turn:
                 calls, text, problem = _from_json(reply.text)
                 if problem:
                     messages.append({"role": "user", "content": f"error: {problem}"})
+                    if closing:  # no answer in the closing round: once more, then the best
+                        rounds, again = rnd + (1 if again else 2), True
                     continue
             else:
                 messages.append(reply.message)
@@ -584,11 +626,14 @@ class Turn:
             if not calls:
                 if self._nudged is not None and not text:
                     text = self._nudged  # the answer given again is empty: the first one stands
+                if not text and closing:  # once more, then the turn's best
+                    rounds, again = rnd + (1 if again else 2), True
+                    continue
                 if not text:
                     raise ProviderError(f"{self.provider.model} gave an empty answer")
                 if (
                     self._nudged is None
-                    and rnd < MAX_ROUNDS - 1  # a nudge in the last round would leave no answer
+                    and not closing  # a nudge in the closing round would leave no answer
                     and (
                         (self._names_moments(text) and not _asks_advice(self.text))
                         or self._announces_work(text)
@@ -611,7 +656,11 @@ class Turn:
                 self._finish("done")
                 return
             for call in calls:
-                result, final = self._call(call)
+                if closing and call.name != FINAL_TOOL:
+                    logger.info("assistant: %s in the closing round: not run", call.name)
+                    result, final = NOT_RUN, False
+                else:
+                    result, final = self._call(call)
                 if final:
                     self._finish("done")
                     return
@@ -626,6 +675,8 @@ class Turn:
             messages += self._sheets
             self._images += self._sheets
             self._sheets = []
+            if closing:  # looked something up instead of answering: once more, then the best
+                rounds, again = rnd + (1 if again else 2), True
         if self.status != "running":
             return
         if self._offer_fallback() or self._offer_own():  # the rounds ran out: better than none
@@ -633,9 +684,33 @@ class Turn:
             return
         if last_cut is not None:
             raise cut_again_error(self.provider, last_cut, again=False) from None
-        if self._nudged is not None:  # the rounds ran out after the nudge: the first answer stands
-            self._emit({"kind": "reply", "text": self._nudged})
-            self._finish("done")
+        # the rounds ran out after the nudge: the first answer stands; else the code's own
+        self._emit({"kind": "reply", "text": self._nudged or self._no_answer()})
+        self._finish("done")
+
+    def _no_answer(self) -> str:
+        """The reply of a turn whose model gave none: the last rejection of its proposals, or
+        what was looked for; and what to do."""
+        with self.lock:
+            rejected = [e["text"] for e in self.events if e["kind"] == "rejected"]
+            looked = [e["query"] for e in self.events if e["kind"] == "tool" and e.get("query")]
+        if rejected:
+            return (
+                "I couldn't make an edit that passes the checks (the last problem: "
+                f"{rejected[-1]}). Try asking for one change at a time."
+            )
+        looked = list(dict.fromkeys(looked))[:MAX_LOOKED]
+        viewed = sorted(self.table.name(r) for r in self._viewed)
+        done = []
+        if looked:
+            done.append("searched for " + ", ".join(repr(q) for q in looked))
+        if viewed:
+            done.append("viewed " + ", ".join(viewed))
+        how = f" (I {' and '.join(done)})" if done else ""
+        return (
+            f"I couldn't find an answer to this in the moments{how}. Try describing it in other "
+            "words, or ask for something they have, such as a montage of the best moments."
+        )
 
     def _announces_work(self, text: str) -> bool:
         """Whether ``text`` says more work follows ("Now let me search for ...") to a message
@@ -913,9 +988,10 @@ class Turn:
         cap = watch.view_cap(self.provider)
         if len(self._viewed) >= cap:
             self._emit({"kind": "tool", "name": watch.NAME, "id": real, "error": "limit"})
+            self._spent = True  # the next round is the closing one
             return (
-                f"error: at most {watch.views(cap)} can be viewed per message; answer with what you "
-                "have seen, or ask the user to send another message",
+                f"error: at most {watch.views(cap)} can be viewed per message and the limit is "
+                "reached; answer the user now with what you have seen",
                 False,
             )
         item = next((s for s in self.project.segments if s["id"] == real), None)

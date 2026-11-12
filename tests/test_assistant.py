@@ -337,11 +337,12 @@ def test_a_turn_looks_moments_up_retries_a_rejected_proposal_and_ends_with_it() 
     assert turn.record()["reply"] == "Proposed: Open on the laugh (changes: 1 added, 1 removed)"
 
 
-def test_a_turn_stops_after_eight_rounds() -> None:
+def test_a_turn_stops_after_eight_rounds_and_the_closing_round_once_more() -> None:
     fake = FakeProvider([])  # looks moments up forever
     turn = run(fake)
-    assert turn.status == "failed" and "8 rounds" in (turn.error or "")
-    assert len(fake.requests) == session.MAX_ROUNDS
+    assert turn.status == "done" and turn.error is None
+    assert len(fake.requests) == session.MAX_ROUNDS + 1
+    assert [e["kind"] for e in turn.events][-1] == "reply"
 
 
 @pytest.mark.parametrize("how", ["no tool calls", "tools refused"])
