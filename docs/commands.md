@@ -25,6 +25,7 @@ prints tracebacks of errors.
 | [`stage`](#stage) | Copy slow-storage sources to a local disk |
 | [`crashes`](#crashes), [`mix`](#mix) | Action-cam module |
 | [`resume`](#resume) | Re-run an interrupted or failed run from its `progress.json` |
+| [`rerank`](#rerank) | Re-rank an analyzed project with another style from its caches |
 | [`profile`](#profile) | Pick or discover the project's activity profile; list, show, create, validate and delete the profiles of your library |
 | [`style`](#style) | List, show, create, validate and delete your own scoring styles |
 | [`360 ...`](workflows/360.md) | Insta360 X3 module |
