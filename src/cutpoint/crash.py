@@ -63,6 +63,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import activity, cache, jsonout, memguard, progress
+from cutpoint.errors import LowMemoryError
 
 logger = logging.getLogger(__name__)
 # Why the run that calls detect_project has no visual layer (``analyze`` left the
@@ -1192,7 +1193,9 @@ def detect_project(
 
     Needs ``cutpoint analyze`` (audio, transcript, telemetry); the visual and voice
     layers (``cutpoint events``) are used when cached. Only the IMU grids and the
-    dense confirm decode anything; both are cached.
+    dense confirm decode anything; both are cached. A source whose inputs fail to load
+    (unreadable telemetry or IMU) is skipped with a WARNING and a ``step_failed`` warning;
+    when every source fails, the last error is raised and nothing is written.
 
     Args:
         project: Project folder (highlights.json).
@@ -1267,11 +1270,23 @@ def detect_project(
     # The 360 lift rides of load_inputs are found with this profile's lift captions.
     prompts = activity.prompts(full_prof) if full_prof else None
     progress.start("inputs")
+    failed: Exception | None = None  # the last source's error
     with activity.use_prompts(prompts or activity.project_prompts(project)):
         for src, dur in sources:
-            if force:
-                imu_grids(src, dur, force=True, tmp_dir=tmp_dir)
-            inp = inputs[str(src)] = load_inputs(src, dur, p, tmp_dir, language)
+            try:
+                if force:
+                    imu_grids(src, dur, force=True, tmp_dir=tmp_dir)
+                inp = load_inputs(src, dur, p, tmp_dir, language)
+            except LowMemoryError:
+                raise
+            except Exception as err:  # one unreadable source must not cost the others theirs
+                message = f"{src.name}: crash detection skipped this source ({err})"
+                logger.debug("%s: crash inputs failed", src, exc_info=True)
+                logger.warning("%s", message)
+                jsonout.warn("step_failed", message, [src])
+                failed = err
+                continue
+            inputs[str(src)] = inp
             if inp.imu is None:
                 jsonout.warn(
                     "no_telemetry",
@@ -1289,6 +1304,8 @@ def detect_project(
                     "what the camera sees",
                     [src],
                 )
+    if not inputs and failed is not None:  # no source loaded: not one bad file, the step failed
+        raise failed
     timings["inputs_s"] = round(time.perf_counter() - t0, 1)
     cands = []
     for inp in inputs.values():
