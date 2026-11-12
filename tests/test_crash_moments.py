@@ -297,7 +297,7 @@ def _analyzed(tmp_path, monkeypatch) -> tuple[Path, dict[str, Any]]:
     """:func:`_analyze_with_crash`, with a cache for the grids the events re-run builds from
     (this footage has no audio, so analyze cached none)."""
     proj, hl = _analyze_with_crash(tmp_path, monkeypatch)
-    cache.save_json(cache.source_dir(tmp_path / "a.mp4") / "scenes.json", [])
+    cache.save_json(cache.source_dir(tmp_path / "a.mp4") / analyze.SCENES_FILE, [])
     return proj, hl
 
 

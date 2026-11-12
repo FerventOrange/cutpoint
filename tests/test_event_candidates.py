@@ -676,7 +676,7 @@ def write_caches(src: Path, span: float, cuts: list[float]) -> None:
     ]
     seg = {"start": 40.0, "end": 41.6, "text": "no way that worked", "words": words}
     cache.save_json(cdir / transcript_name(TRANSCRIPT_MODELS[0]), [seg])
-    cache.save_json(cdir / "scenes.json", cuts)
+    cache.save_json(cdir / analyze.SCENES_FILE, cuts)
 
 
 def analysis_of(src: Path, span: float, **entry: Any) -> dict[str, Any]:
@@ -867,7 +867,9 @@ def test_number_candidates_goes_past_the_highest_id_there_ever_was():
 def test_a_source_with_scenes_and_no_audio_nominates_on_both_paths(tmp_path):
     src = tmp_path / "silent.mp4"
     src.write_bytes(b"x")
-    cache.save_json(cache.source_dir(src) / "scenes.json", [30.0])  # no loudness, no transcript
+    cache.save_json(
+        cache.source_dir(src) / analyze.SCENES_FILE, [30.0]
+    )  # no loudness, no transcript
     style = get_style("gaming")
     hl = analysis_of(src, 120.0)
     ev = {"events": [{**feed(100.0), "source": str(src)}], "windows": [], "sources": [str(src)]}
