@@ -542,6 +542,43 @@ def _probe(path: Path) -> MediaInfo:
     )
 
 
+# showinfo's time base and the integer pts of its first frame: its pts_time has 6 significant
+# digits on ffmpeg 6 (54322.7437 s prints as 54322.7) and may take exponent form
+_SHOWINFO_TB = re.compile(r"config in time_base:\s*(\d+)/(\d+)")
+_SHOWINFO_PTS = re.compile(r"\bn:\s*\d+\s+pts:\s*(-?\d+)\b")
+
+
+def showinfo_first_time(log: str) -> float | None:
+    """The time (s) of the first frame in a ``showinfo`` ``log``: its integer pts times the
+    filter's input time base; None when either is missing (no frame, or a NOPTS frame)."""
+    tb, pts = _SHOWINFO_TB.search(log), _SHOWINFO_PTS.search(log)
+    if tb is None or pts is None or int(tb.group(2)) == 0:
+        return None
+    return float(int(pts.group(1)) * Fraction(int(tb.group(1)), int(tb.group(2))))
+
+
+def first_frame_time(path: Path | str, *, keyframes: bool = False) -> float:
+    """The file timestamp (s, as :attr:`MediaInfo.fstart` counts) of the first video frame
+    ffmpeg decodes from ``path`` on the CPU, keyframes only with ``keyframes``: one frame
+    decoded, of the video stream ffmpeg picks without ``-map`` (the largest), as the scene pass
+    does. In an MPEG-TS cut in the middle of a GOP that is the first keyframe, not the first
+    packet.
+
+    Raises:
+        FFmpegError: If ffmpeg fails, times out or decodes no frame with a time.
+    """
+    skip = ["-skip_frame", "nokey"] if keyframes else []
+    out = run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-v", "info", *skip, "-copyts", "-i", str(path),
+         "-frames:v", "1", "-an", "-vf", "showinfo", "-f", "null", "-"],
+        timeout=FFPROBE_TIMEOUT_S,
+    )  # fmt: skip
+    t = showinfo_first_time(out)
+    if t is None:
+        raise FFmpegError(f"no timed video frame decoded from {path}")
+    return t
+
+
 def _color_tag(stream: dict[str, Any], key: str) -> str | None:
     """``stream[key]``, or None when it is missing, empty or "unknown"."""
     value = stream.get(key) or ""

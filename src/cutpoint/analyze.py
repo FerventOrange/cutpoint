@@ -73,6 +73,7 @@ from cutpoint.ffmpeg_utils import (
     decoder_for,
     extract_audio,
     ffprobe_json,
+    first_frame_time,
     gpu_chain,
     momentary_loudness,
     probe,
@@ -548,18 +549,19 @@ def _watch_extract(
         thread.join()
 
 
-def _fstart(src: Path, offset: float) -> float | None:
-    """The container start (:attr:`MediaInfo.fstart`) a scene pass of ``src`` from ``offset``
-    counts its time from (:func:`_proxy_args`), or None when ffmpeg's own count is that clock:
-    a pass that seeks (only in a container that seeks exactly), a whole pass of such a
-    container, and a source ffprobe fails on (the decode still runs, as :func:`_scene_decode`'s
-    plain path does)."""
+def _first_shift(src: Path, offset: float, duration: float) -> float | None:
+    """Where on the container clock (from :attr:`MediaInfo.fstart`) the first frame a whole
+    scene pass of ``src`` decodes lies (:func:`_proxy_args`), or None when ffmpeg's own count
+    is that clock: a pass that seeks (only in a container that seeks exactly), a whole pass of
+    such a container, and a source ffprobe or the one-frame decode fails on (the pass then
+    counts as ffmpeg does)."""
     if offset > 0 or _seeks_exactly(src):
         return None
     try:
-        return probe(src).fstart
+        first = first_frame_time(src, keyframes=duration > LONG_FILE_S)
+        return first - probe(src).fstart
     except FFmpegError as exc:
-        logger.debug("%s: no container start (%s); the scene pass counts as ffmpeg does", src, exc)
+        logger.debug("%s: no first frame time (%s); the scene pass counts as ffmpeg does", src, exc)
         return None
 
 
@@ -567,18 +569,18 @@ def _proxy_args(
     duration: float,
     offset: float = 0.0,
     limit: float | None = None,
-    fstart: float | None = None,
+    shift: float | None = None,
 ) -> tuple[list[str], list[str], str, list[str]]:
     """The scene proxy's input options, output options, filter chain and encoder arguments.
 
     Every pass counts from the container start (#976), so its cuts are on the clock clips are
     cut on: ``fps`` with ``start_time=0`` makes the proxy's first frame the seek point (the
     container start without one) and pads a video that starts later with its first frame.
-    That is ffmpeg's own count in a container that seeks exactly (:func:`_seeks_exactly`); in
-    MPEG-TS ffmpeg 6.1 counts a whole pass from the video instead (``-an``), so ``fstart`` (the
-    container start, :func:`_fstart`) keeps the file's timestamps (``-copyts``) and counts
-    from it, also when the file starts in the middle of a GOP. A seek needs a container that
-    seeks exactly."""
+    That is ffmpeg's own count in a container that seeks exactly (:func:`_seeks_exactly`). In
+    MPEG-TS ffmpeg 6.1 counts a whole pass from the video instead (``-an``), so the first
+    decoded frame is put at ``shift`` (:func:`_first_shift`: its container time, also when the
+    file starts in the middle of a GOP); ffmpeg's own timestamps stay, so a timestamp reset
+    (joined TS files) still runs on. A seek needs a container that seeks exactly."""
     long_file = duration > LONG_FILE_S
     pre = ["-skip_frame", "nokey"] if long_file else []
     if offset > 0:
@@ -586,9 +588,8 @@ def _proxy_args(
     post = ["-t", f"{limit:.3f}"] if limit else []
     rate, width = (2, 256) if long_file else (10, 320)
     vf = f"fps={rate}:start_time=0,scale={width}:-2"
-    if fstart is not None and offset <= 0:
-        pre += ["-copyts"]
-        vf = f"setpts=PTS-{fstart:.6f}/TB,{vf}"
+    if shift is not None and offset <= 0:
+        vf = f"setpts=PTS-STARTPTS+{shift:.6f}/TB,{vf}"
     return pre, post, vf, ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "32"]
 
 
@@ -709,7 +710,7 @@ def scene_cuts(
         return cuts
     proxy = cdir / "proxy.mp4"
     gpu = scene_decode_mode() != "cpu"
-    args = _proxy_args(duration, offset, limit, _fstart(src, offset))
+    args = _proxy_args(duration, offset, limit, _first_shift(src, offset, duration))
     _make_proxy(src, proxy, args, duration, cancel, gpu=gpu)
     return _detect(proxy, path, **dopts)
 
@@ -3054,9 +3055,9 @@ def _scene_plan(src: Path, duration: float) -> Any:
     """The :class:`~cutpoint.events.ocr_prefetch.ScenePlan` of a whole source whose scene
     proxy may be made in the background: up to :data:`LONG_FILE_S` (longer files decode
     keyframes only), its scene cuts not cached, one video stream (no cover art) and a
-    container that seeks exactly (:func:`_seeks_exactly`: an MPEG-TS pass needs its own input
-    options, :func:`_proxy_args`); else None (an INFO line names a failed stream or container
-    gate; called in a shared-decode mode only)."""
+    container that seeks exactly (:func:`_seeks_exactly`: an MPEG-TS pass places its first
+    frame by a decode of its own, :func:`_first_shift`); else None (an INFO line names a
+    failed stream or container gate; called in a shared-decode mode only)."""
     from cutpoint.events.ocr_prefetch import ScenePlan  # noqa: PLC0415
 
     cdir = cache.source_dir(src)

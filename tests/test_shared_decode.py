@@ -592,15 +592,17 @@ def test_scene_plan_only_for_a_whole_short_uncached_single_stream_source(
 
 def test_the_shared_scene_proxy_counts_from_the_container_start(tmp_path, monkeypatch, caplog):
     """#976: a late video in an MP4 gets the plain chain, whose ``fps`` start_time pads it from
-    the container start as the serial pass does; an MPEG-TS source, whose pass needs its own
-    input options (``-copyts``), is not shared."""
+    the container start as the serial pass does; an MPEG-TS source, whose pass places its first
+    frame by a decode of its own, is not shared."""
     monkeypatch.setattr(analyze.cache, "source_dir", lambda src, offset=0.0: tmp_path)
     monkeypatch.setattr(analyze, "single_video_stream", lambda io: True)
     monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 600.0, vstart=0.25, fstart=1.4))
     caplog.set_level("INFO", logger="cutpoint")
     plan = analyze._scene_plan(tmp_path / "a.mp4", 600.0)
     assert plan.vf == SCENE_VF == "fps=10:start_time=0,scale=320:-2"
-    pre, _post, vf, _enc = analyze._proxy_args(600.0, fstart=analyze._fstart(plan.io, 0.0))
+    pre, _post, vf, _enc = analyze._proxy_args(
+        600.0, 0.0, None, analyze._first_shift(plan.io, 0.0, 600.0)
+    )
     assert (pre, vf) == ([], plan.vf)  # the serial pass of the same source
     assert analyze._scene_plan(tmp_path / "a.ts", 600.0) is None
     assert caplog.messages == [

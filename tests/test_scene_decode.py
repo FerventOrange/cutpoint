@@ -610,3 +610,101 @@ def test_an_mpegts_cut_mid_gop_keeps_its_cuts_on_the_container_clock(
     want = [round(c + zero, 3) for c in CLIP_CUTS if c + zero > 0.5]
     got = one_pass(ts, tmp_path / "mid")
     assert near(got, want), (got, want)
+
+
+@pytest.fixture
+def joined_ts(cuts_clip, tmp_path) -> Path:
+    """``cuts_clip`` as two 12 s MPEG-TS files with audio joined byte for byte, as camera clips
+    or DVR captures are: the second one's timestamps start again where the first one's did."""
+    ff = shutil.which("ffmpeg")
+    halves = []
+    for i, start in enumerate(("0", "12")):
+        half = tmp_path / f"half{i}.ts"
+        subprocess.run(
+            [ff, "-v", "error", "-ss", start, "-t", "12", "-i", str(cuts_clip), "-f", "lavfi",
+             "-i", "sine=frequency=440:sample_rate=48000:duration=12", "-map", "0:v", "-map",
+             "1:a", "-c:v", "libx264", "-c:a", "aac", "-f", "mpegts", str(half)],
+            check=True,
+        )  # fmt: skip
+        halves.append(half.read_bytes())
+    out = tmp_path / "joined.ts"
+    out.write_bytes(b"".join(halves))
+    return out
+
+
+@needs_ffmpeg
+def test_an_mpegts_with_a_timestamp_reset_keeps_the_cuts_after_it(joined_ts, tmp_path, monkeypatch):
+    """#976 on Windows: ffmpeg runs a joined TS on past its timestamp reset, and so does the
+    full pass (its own timestamps, the first frame moved to its container time): every cut of
+    the clip, on the container clock, also the two after the join at 12 s."""
+    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    vstart = ffmpeg_utils.probe(joined_ts).vstart
+    got = one_pass(joined_ts, tmp_path / "joined")
+    assert near(got, [c + vstart for c in CLIP_CUTS]), got
+
+
+# ----------------------------------------------------------------- the first frame's time
+SHOWINFO_6 = """[Parsed_showinfo_0 @ 0x1] config in time_base: 1/90000, frame_rate: 10/1
+[Parsed_showinfo_0 @ 0x1] config out time_base: 0/0, frame_rate: 0/0
+[Parsed_showinfo_0 @ 0x1] n:   0 pts:4889019933 pts_time:54322.4 duration:   9000 \
+duration_time:0.1     fmt:yuv444p cl:left sar:1/1 s:64x48 i:P iskey:1 type:I checksum:6152D0EA
+[Parsed_showinfo_0 @ 0x1] n:   1 pts:4889028933 pts_time:54322.5 duration:   9000"""
+SHOWINFO_7 = """[Parsed_showinfo_0 @ 0x1] config in time_base: 1/1000, frame_rate: 30000/1001
+[Parsed_showinfo_0 @ 0x1] n:   0 pts:     33 pts_time:0.033    duration:     33 \
+duration_time:0.033   fmt:yuv420p cl:left sar:1/1 s:160x120 i:P iskey:1 type:I"""
+
+
+@pytest.mark.parametrize(
+    ("log", "want"),
+    [(SHOWINFO_6, 4889019933 / 90000), (SHOWINFO_7, 0.033), ("no frame", None),
+     ("[x] config in time_base: 1/90000\n[x] n:   0 pts:NOPTS pts_time:NOPTS", None)],
+    ids=["ffmpeg-6", "ffmpeg-7", "no-frame", "nopts"],
+)  # fmt: skip
+def test_the_first_frame_time_comes_from_the_integer_pts(log, want):
+    """ffmpeg 6 prints pts_time with 6 significant digits (54322.4 for 54322.4437 s): the time
+    is the integer pts times the time base."""
+    got = ffmpeg_utils.showinfo_first_time(log)
+    assert got == want if want is None else abs(got - want) < 1e-9
+
+
+@needs_ffmpeg
+def test_a_high_timestamp_ts_puts_its_first_frame_at_the_video_start(
+    cuts_clip, tmp_path, monkeypatch
+):
+    """A DVR or broadcast capture with timestamps past 10000 s: the shift is the video start to
+    the millisecond, not 0.05 s off as ffmpeg 6's pts_time would give."""
+    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
+    ts = tmp_path / "high.ts"
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-v", "error", "-i", str(cuts_clip), "-f", "lavfi", "-i",
+         "sine=frequency=440:sample_rate=48000:duration=24", "-map", "0:v", "-map", "1:a",
+         "-c:v", "copy", "-c:a", "aac", "-output_ts_offset", "54321.0437", "-f", "mpegts",
+         str(ts)],
+        check=True,
+    )  # fmt: skip
+    info = ffmpeg_utils.probe(ts)
+    assert info.fstart > 54000
+    shift = analyze._first_shift(ts, 0.0, info.duration)
+    assert shift is not None and abs(shift - info.vstart) < 1e-3, (shift, info.vstart)
+
+
+@needs_ffmpeg
+def test_the_first_frame_is_of_the_video_stream_the_pass_decodes(cuts_clip, tmp_path, monkeypatch):
+    """Two video streams: the pass decodes the largest (no ``-map``), which starts 2 s after a
+    small one, so its cuts and its first frame come from that stream."""
+    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    ts = tmp_path / "two.ts"
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-v", "error", "-i", str(cuts_clip), "-itsoffset", "2",
+         "-i", str(cuts_clip), "-filter_complex", "[0:v]scale=64:48[s]", "-map", "[s]",
+         "-map", "1:v", "-c:v", "libx264", "-f", "mpegts", str(ts)],
+        check=True,
+    )  # fmt: skip
+    data = ffmpeg_utils.ffprobe_json(ts, show_format=True, show_streams=True)
+    big = next(s for s in data["streams"] if s.get("width") == 160)
+    lead = float(big["start_time"]) - float(data["format"]["start_time"])
+    assert lead > 1.9
+    got = one_pass(ts, tmp_path / "two")
+    assert near(got, [c + lead for c in CLIP_CUTS]), (got, lead)

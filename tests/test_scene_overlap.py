@@ -76,7 +76,7 @@ class FakeTr(StubTranscriber):
 @pytest.fixture
 def world(home, tmp_path, monkeypatch):
     """Everything around ``analyze_source`` faked but the cache folder and the code under test.
-    ``w.scene`` is the fake ``scene_cuts``: it records its thread and saves ``scenes.json``."""
+    ``w.scene`` is the fake ``scene_cuts``: it records its thread and saves its cuts file."""
     monkeypatch.delenv(ENV, raising=False)
     src = write(tmp_path / "videos" / "a.mp4")
     FakeTr.hook, FakeTr.calls = None, 0
@@ -719,10 +719,23 @@ def test_a_stopped_transcription_kills_the_real_child_of_the_scene_job(
 # ---------------------------------------------------------------- scene proxy command (#730)
 
 
-def _proxy_command(tmp_path, monkeypatch, hw, duration=60.0, pix_fmt="yuv420p", name="s.mp4"):
+def _proxy_command(
+    tmp_path, monkeypatch, hw, duration=60.0, pix_fmt="yuv420p", name="s.mp4", first=None
+):
     """The ffmpeg commands the real ``scene_cuts`` runs when ``hw`` is the decoder (the GPU run
-    fails when ``hw`` is set, so the CPU one follows)."""
+    fails when ``hw`` is set, so the CPU one follows). ``first``: the one-frame decode of an
+    MPEG-TS source (a time, an exception, or a list collecting its ``keyframes``)."""
     cmds = []
+
+    def first_frame_time(path, keyframes=False):
+        if isinstance(first, list):
+            first.append(keyframes)
+            return 4.421
+        if isinstance(first, Exception):
+            raise first
+        return pytest.fail("a one-frame decode for a container that seeks exactly")
+
+    monkeypatch.setattr(analyze, "first_frame_time", first_frame_time)
     monkeypatch.setattr(analyze, "decoder_for", lambda src: hw)
     monkeypatch.setattr(
         analyze, "probe", lambda p: media_info(p, duration, pix_fmt=pix_fmt, fstart=1.4)
@@ -827,18 +840,28 @@ def test_a_failing_probe_on_a_gpu_decoder_runs_the_plain_cpu_command(tmp_path, m
 @pytest.mark.parametrize("long", [False, True], ids=["normal", "long"])
 def test_an_mpegts_scene_pass_counts_from_the_container_start(tmp_path, monkeypatch, long):
     """#976: ffmpeg counts a whole MPEG-TS pass from its video, also a video cut in the middle of
-    a GOP: the file's own timestamps (``-copyts``) minus the container start count instead, on
-    NVDEC (download still after ``fps``) and on the CPU."""
+    a GOP: its first decoded frame (one-frame decode, keyframes only as the long pass decodes)
+    goes to its container time, 4.421 - 1.4 s. ffmpeg's own timestamps stay (no ``-copyts``),
+    so a timestamp reset still runs on; on NVDEC the download stays after ``fps``."""
     duration = analyze.LONG_FILE_S + 1 if long else 60.0
     hw = ffmpeg_utils.HwDecoder("cuda")
-    gpu, cpu = _proxy_command(tmp_path, monkeypatch, hw, duration, name="s.ts")
+    first: list[bool] = []
+    gpu, cpu = _proxy_command(tmp_path, monkeypatch, hw, duration, name="s.ts", first=first)
+    assert first == [long]
     rate, width = (2, 256) if long else (10, 320)
-    head = f"setpts=PTS-1.400000/TB,fps={rate}:start_time=0"
+    head = f"setpts=PTS-STARTPTS+3.021000/TB,fps={rate}:start_time=0"
     assert _vf(gpu) == f"{head},hwdownload,format=nv12,scale={width}:-2"
     assert _vf(cpu) == f"{head},scale={width}:-2"
     for cmd in (gpu, cpu):
-        assert cmd.index("-copyts") < cmd.index("-i") and "-ss" not in cmd
+        assert "-copyts" not in cmd and "-ss" not in cmd
         assert ("-skip_frame" in cmd) is long
+
+
+def test_a_failed_first_frame_decode_keeps_the_plain_mpegts_chain(tmp_path, monkeypatch):
+    """The one-frame decode is only for the clock: when it fails the pass counts as ffmpeg
+    does, as before #976, instead of failing."""
+    (cmd,) = _proxy_command(tmp_path, monkeypatch, None, name="s.ts", first=FFmpegError("x"))
+    assert _vf(cmd) == "fps=10:start_time=0,scale=320:-2"
 
 
 def test_a_recovered_mpegts_part_seeks_without_copyts(tmp_path, monkeypatch):
@@ -846,6 +869,7 @@ def test_a_recovered_mpegts_part_seeks_without_copyts(tmp_path, monkeypatch):
     cmds = []
     monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
     monkeypatch.setattr(analyze, "probe", lambda p: pytest.fail("no probe for a seek"))
+    monkeypatch.setattr(analyze, "first_frame_time", lambda p, **k: pytest.fail("no decode"))
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
     monkeypatch.setattr(analyze, "_detect", lambda proxy, path, **k: CUTS)
     monkeypatch.setattr(analyze, "run_progress", lambda args, total, label, **kw: cmds.append(args))
