@@ -93,7 +93,7 @@ flowchart LR
 ```
 
 All kinds also set loudnorm on. `--style`, `--top` and `--max-total` override the kind.
-`--style auto` picks the style from the footage before the `--events` check (the funny style for
+Without `--style`, `--style auto` runs and picks the style from the footage before the `--events` check (the funny style for
 `funny-moments`); unclear footage gets `gaming` when its best guess is gameplay, else the General style (`action`; `funny` for `funny-moments`).
 
 ## Style auto (`--style auto`, `cutpoint detect`)

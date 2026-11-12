@@ -230,6 +230,17 @@ def file_name(path: Any) -> str:
     return source_path(str(path)).name
 
 
+def file_names(paths: list[str]) -> dict[str, str]:
+    """How the model sees each source: its file name, or ``folder/name`` when two sources share
+    the file name."""
+    names = [file_name(p) for p in paths]
+    twice = {f for f in names if names.count(f) > 1}
+    return {
+        p: f"{source_path(p).parent.name}/{f}" if f in twice else f
+        for p, f in zip(paths, names, strict=True)
+    }
+
+
 def words(text: str) -> list[str]:
     """The search words of ``text``: lower case, 3+ letters, common words left out."""
     found = re.findall(r"[^\W_]{3,}", text.lower())
@@ -390,6 +401,7 @@ class MomentTable:
         }
         self._short: dict[str, str] = {}
         self._real: dict[str, str] = {}
+        self._files: tuple[tuple[int, ...], dict[str, str]] | None = None  # file(): its key, names
         extra = [s["id"] for s in segments if s["id"] not in self.candidates]
         for i, real in enumerate([*self.rank, *extra], 1):
             self._short[real] = f"m{i}"
@@ -409,6 +421,17 @@ class MomentTable:
         if rank and real not in self.rank:
             self.rank.append(real)
         return self._short[real]
+
+    def file(self, source: Any) -> str:
+        """The file of ``source`` as the model sees it (:func:`file_names` over the project's
+        sources, its moments' and the sequence's)."""
+        key = (id(self.durations), len(self.durations), len(self.candidates), len(self.segments))
+        if self._files is None or self._files[0] != key:  # a moment added since: again
+            paths = [*self.durations, *(c.get("source") for c in self.candidates.values())]
+            paths += [s.get("source") for s in self.segments]
+            self._files = (key, file_names([p for p in dict.fromkeys(paths) if isinstance(p, str)]))
+        shown = self._files[1]
+        return shown.get(source, file_name(source)) if isinstance(source, str) else ""
 
     def name(self, real: str) -> str:
         """The short id of ``real`` (``real`` itself if it has none)."""
@@ -443,7 +466,7 @@ class MomentTable:
         item = seg or cand or {}
         out: dict[str, Any] = {
             "id": self.name(real),
-            "file": file_name(item.get("source", "")),
+            "file": self.file(item.get("source", "")),
             "start": round(float(item.get("start", 0)), 1),
             "end": round(float(item.get("end", 0)), 1),
             "len": round(self.length(real), 1),
@@ -839,7 +862,7 @@ def sequence_block(table: MomentTable) -> str:
         row = {
             "pos": i,
             "id": table.name(s["id"]),
-            "file": file_name(s["source"]),
+            "file": table.file(s["source"]),
             "start": round(s["start"], 1),
             "end": round(s["end"], 1),
             "len": round(table.length(s["id"]), 1),

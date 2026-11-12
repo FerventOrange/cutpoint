@@ -27,7 +27,7 @@ when torch reaches CUDA, otherwise on the CPU; the VLM layer of `cutpoint events
 See [Models and Ollama troubleshooting](troubleshooting/models.md#cutpoint-setup-fails-or-is-incomplete).
 
 **What kinds of video work?**
-Gameplay, action-cam, sport, funny moments and commentary or talk. Pick the matching `--style`
+Gameplay, action-cam, sport, funny moments and commentary or talk. Cutpoint detects the kind by default; pass the matching `--style` to override it
 ([Configuration](configuration.md#styles)). Scoring is heuristic and works best when there is
 voice or mic audio.
 

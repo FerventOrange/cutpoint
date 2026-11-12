@@ -13,7 +13,7 @@ optional and off by default.
 Cutpoint aims to need nothing but your footage. It is meant to detect what is in the video
 (the kind of footage, the activity and the moments) and score from that, so you do not have to
 say what you recorded. Settings such as the style are overrides, not requirements. Today
-`--style auto` is opt-in and the vision rating is off by default; the goal is to make both
+`analyze` and `edit` detect the footage by default (`--style auto`); the vision rating is off by default, and the goal is to make it
 automatic. What you ask for, such as funny moments or a length, steers the scoring.
 
 [Are you an AI agent? Start here](https://github.com/FerventOrange/cutpoint/blob/main/AGENTS.md)

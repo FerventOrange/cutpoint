@@ -457,12 +457,14 @@ shell's `PATH` refreshes.
 Use any video. Here one file becomes a highlights cut (with the installer, drop `uv run`):
 
 ```powershell
-uv run cutpoint analyze D:\Videos\clip.mp4 --style gaming --out my-edit
+uv run cutpoint analyze D:\Videos\clip.mp4 --out my-edit
 uv run cutpoint clips my-edit --top 8
 uv run cutpoint assemble projects/my-edit/clips --transition fade --loudnorm
 ```
 
-On Linux: `uv run cutpoint analyze ~/Videos/clip.mp4 --style gaming --out my-edit`.
+On Linux: `uv run cutpoint analyze ~/Videos/clip.mp4 --out my-edit`.
+
+Without `--style`, Cutpoint detects the footage and picks the style (`--style auto`). Give `--style NAME` to choose one.
 
 1. `analyze` writes `highlights.json` (ranked candidates) and `transcript.txt` to the project.
 2. `clips` exports `clips\001_<label>.mp4`, `002_...` and a `manifest.json`.

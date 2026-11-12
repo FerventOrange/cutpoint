@@ -90,10 +90,10 @@ TOOL = {
 }
 RULES = f"""
 
-{NAME}(query) compares the query with the footage itself (CLIP on the cached frames of every \
-source) and lists the best windows with match 0-10 and confidence strong or weak. Use it when \
-find_moments, labels, seen, cues and transcripts do not match what the user wants to see (spray \
-from a wave, a sunset, a red jacket), with a short English description of the picture. A clear window \
+{NAME}(query) compares the query with the footage itself and lists the best windows with \
+match 0-10 and confidence strong or weak. Use it when find_moments, labels, seen, cues and \
+transcripts do not match what the user wants to see (spray from a wave, a sunset, a red \
+jacket), with a short English description of the picture. A clear window \
 nobody covered comes back as a new moment (new: true) that you can add; one that is weak or \
 unconfirmed is a guess. Similarity is not certainty: say a match is likely or possible, never \
 sure, and name the moment so the user can check it. If {NAME} says it is not available, tell the \

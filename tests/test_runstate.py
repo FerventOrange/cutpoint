@@ -230,7 +230,7 @@ def test_first_run_keeps_its_folder_once_a_source_is_transcribed(
     home, tmp_path, monkeypatch, command, error, code, status
 ):
     sources = _two_sources(tmp_path, monkeypatch, 2, error)
-    argv = [command, str(sources[0].parent), "--no-vision", "--out", "new"]
+    argv = [command, str(sources[0].parent), "--style", "gaming", "--no-vision", "--out", "new"]
     assert cli.main(argv) == code
     project = home / "projects" / "new"
     assert sorted(p.name for p in project.iterdir()) == [runstate.FILE]  # no lock left
@@ -246,7 +246,10 @@ def test_first_run_stopped_before_a_transcript_leaves_no_folder(
     home, tmp_path, monkeypatch, command
 ):
     sources = _two_sources(tmp_path, monkeypatch, 1, KeyboardInterrupt())
-    assert cli.main([command, str(sources[0]), "--no-vision", "--out", "new"]) == 130
+    assert (
+        cli.main([command, str(sources[0]), "--style", "gaming", "--no-vision", "--out", "new"])
+        == 130
+    )
     projects = home / "projects"
     assert not projects.exists() or list(projects.iterdir()) == []
 
@@ -262,7 +265,10 @@ def test_a_rerun_of_analyze_records_and_locks_at_once(project, tmp_path, monkeyp
         return real(src, *a, **kw)
 
     monkeypatch.setattr(cutpoint.analyze, "analyze_source", analyze_source)
-    assert cli.main(["analyze", str(sources[0]), "--no-vision", "--out", "p"]) == 1
+    assert (
+        cli.main(["analyze", str(sources[0]), "--style", "gaming", "--no-vision", "--out", "p"])
+        == 1
+    )
     assert lock_seen == [True]
     rec = _read(project)  # nothing transcribed, yet this run's record replaced the old one
     assert "run" not in rec and rec["command"] == "analyze" and rec["status"] == "failed"
@@ -272,7 +278,12 @@ def test_a_rerun_of_analyze_records_and_locks_at_once(project, tmp_path, monkeyp
 
 def test_a_rerun_of_analyze_records_its_sources_once_transcribed(project, tmp_path, monkeypatch):
     sources = _two_sources(tmp_path, monkeypatch, 2, RuntimeError("bad"))
-    assert cli.main(["analyze", str(sources[0].parent), "--no-vision", "--out", "p"]) == 1
+    assert (
+        cli.main(
+            ["analyze", str(sources[0].parent), "--style", "gaming", "--no-vision", "--out", "p"]
+        )
+        == 1
+    )
     rec = _read(project)
     assert rec["command"] == "analyze" and rec["status"] == "failed"
     assert rec["sources"] == [str(s) for s in sources]
@@ -303,7 +314,10 @@ def test_first_analyze_on_a_busy_new_project_gets_folder_busy(home, tmp_path, mo
     monkeypatch.setattr(folders, "make_dirs", make_dirs)
     monkeypatch.setattr(procs, "pid_alive", lambda pid, not_after=None: True)
     monkeypatch.setattr(cutpoint.analyze, "analyze_source", lambda *a, **k: reached.append(a))
-    assert cli.main(["analyze", str(sources[0]), "--no-vision", "--out", "new"]) == 1
+    assert (
+        cli.main(["analyze", str(sources[0]), "--style", "gaming", "--no-vision", "--out", "new"])
+        == 1
+    )
     assert reached == [] and (project / LOCK).exists()
     assert not (project / runstate.FILE).exists()
 

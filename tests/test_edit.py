@@ -148,7 +148,8 @@ def test_edit_events_without_the_extra_fails_before_analyzing(pipeline, monkeypa
     monkeypatch.setattr(
         importlib.util, "find_spec", lambda name, *a: None if name == "torch" else real(name, *a)
     )
-    assert cli.main(["edit", str(pipeline.video), "--events"]) == 1
+    # an explicit style: --style auto (the default) probes the footage first
+    assert cli.main(["edit", str(pipeline.video), "--style", "action", "--events"]) == 1
     assert pipeline.calls == []
     assert "'events' extra" in caplog.text
 
@@ -161,22 +162,23 @@ def test_edit_events_passes_the_ollama_options_to_the_vlm_layer(pipeline, monkey
     monkeypatch.setattr(events_pipeline, "preflight", lambda layers: None)
     monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: got.append(kw))
     monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
-    argv = ["--events", "--ollama-url", "http://ollama.example:11434", "--ollama-model", "x:7b"]
-    assert cli.main(["edit", str(pipeline.video), *argv]) == 0
+    argv = ["--style", "action", "--events", "--ollama-url", "http://ollama.example:11434"]
+    assert cli.main(["edit", str(pipeline.video), *argv, "--ollama-model", "x:7b"]) == 0
     assert got == [{"ollama_url": "http://ollama.example:11434", "ollama_model": "x:7b"}]
     got.clear()
-    assert cli.main(["edit", str(pipeline.video), "--events", "--force"]) == 0
+    argv = ["--style", "action", "--events", "--force"]
+    assert cli.main(["edit", str(pipeline.video), *argv]) == 0
     assert got == [{"ollama_url": None, "ollama_model": None}]  # config.json and env decide
 
 
 @pytest.mark.parametrize(
     ("argv", "layers", "expected"),
     [
-        ([], ("audio", "ocr", "vlm"), None),  # None: no --layers, the events defaults
-        (["--skip", "crashes"], ("audio", "ocr", "vlm"), None),  # drops no default layer
-        (["--skip", "keyframes"], ("audio", "vlm"), ["audio", "vlm"]),  # no HUD discovery (#659)
-        (["--skip", "reactions"], ("ocr", "vlm"), ["ocr", "vlm"]),
-        (["--skip", "reactions", "keyframes", "crashes"], ("vlm",), ["vlm"]),
+        (["--style", "action"], ("audio", "ocr", "vlm"), None),  # None: the events defaults
+        (["--style", "action", "--skip", "crashes"], ("audio", "ocr", "vlm"), None),
+        (["--style", "action", "--skip", "keyframes"], ("audio", "vlm"), ["audio", "vlm"]),
+        (["--style", "action", "--skip", "reactions"], ("ocr", "vlm"), ["ocr", "vlm"]),
+        (["--style", "action", "--skip", "reactions", "keyframes", "crashes"], ("vlm",), ["vlm"]),
         (
             ["--style", "action-cam", "--skip", "keyframes"],
             ("audio", "voice", "crash", "vlm"),
@@ -326,6 +328,49 @@ def test_edit_with_an_explicit_style_never_probes(pipeline, monkeypatch):
     assert cli.main(["edit", str(pipeline.video), "--style", "gaming", "--events"]) == 0
 
 
+@pytest.mark.parametrize(
+    ("argv", "expect"),
+    [
+        ([], ("auto", "hype")),
+        (["--kind", "montage"], ("auto", "hype")),
+        (["--kind", "clips"], ("auto", "hype")),
+        (["--kind", "funny-moments"], ("funny", None)),  # funny is the kind's request
+        (["--kind", "funny-moments", "--style", "auto"], ("auto", "funny")),
+        (["--style", "gaming"], ("gaming", None)),  # an explicit style wins
+    ],
+    ids=["flagless", "montage", "clips", "funny-moments", "funny-auto", "explicit"],
+)
+def test_edit_without_style_detects_it(pipeline, argv, expect):
+    """#899: no --style is --style auto, but for funny-moments (funny)."""
+    assert cli.main(["edit", str(pipeline.video), *argv]) == 0
+    style = pipeline.calls[0][1][1]
+    if isinstance(style, styles.AutoRequest):
+        assert ("auto", style.emphasis) == expect
+    else:
+        assert (style, None) == expect
+
+
+@pytest.mark.parametrize(
+    ("argv", "expect"),
+    [([], "auto"), (["--style", "auto"], "auto"), (["--style", "action"], "action")],
+    ids=["flagless", "auto", "explicit"],
+)
+def test_analyze_without_style_detects_it(home, tmp_path, monkeypatch, argv, expect):
+    """#899: analyze with no --style is --style auto; an explicit style wins."""
+    got = []
+    monkeypatch.setattr(
+        cutpoint.analyze, "analyze", lambda targets, style, out, **kw: got.append(style)
+    )
+    video = tmp_path / "a.mp4"
+    video.write_bytes(b"x")
+    assert cli.main(["analyze", str(video), *argv]) == 0
+    style = got[0]
+    if expect == "auto":
+        assert style == styles.AutoRequest("hype")
+    else:
+        assert style.name == expect
+
+
 def test_edit_vertical_names_its_outputs(pipeline, home):
     assert cli.main(["edit", str(pipeline.video), "--vertical"]) == 0
     project = home / "projects" / "My Clip"
@@ -360,7 +405,8 @@ def test_edit_failed_analyze_leaves_no_new_project_folder(
         raise error
 
     monkeypatch.setattr(cutpoint.analyze, "analyze_source", analyze_source)
-    argv = ["edit", str(video), "--no-vision"] + (["--out", out] if out else [])
+    argv = ["edit", str(video), "--style", "action", "--no-vision"]
+    argv += ["--out", out] if out else []
     assert cli.main(argv) == code
     assert reached == [video]
     projects = home / "projects"

@@ -688,6 +688,30 @@ def test_edit_keeps_clips_only_on_resume_of_the_same_manifest(edit_run, project,
     assert len(edit_run["clips"]) == 1 and len(edit_run["assemble"]) == 1
 
 
+def _edit_key(style: str | None) -> str:
+    """The options key of ``edit videos/a.mp4 --out p --no-vision`` with ``style``."""
+    argv = ["edit", "videos/a.mp4", "--out", "p", "--no-vision"]
+    return runstate.options_key({**vars(cli._parse(cli.build_parser(), argv)), "style": style})
+
+
+def test_edit_without_style_records_the_kind_style(edit_run, project):
+    """#899: a flagless edit records the style it ran (auto), not an empty --style."""
+    assert _read(project)["options_key"] == _edit_key("auto") != _edit_key(None)
+
+
+def test_edit_resume_of_a_record_from_before_auto_does_not_keep_its_clips(
+    edit_run, project, capsys
+):
+    """#899: an edit recorded before Auto was the default (no style in its options) ran its
+    clips with action; its resume runs Auto, so it warns and keeps none of them."""
+    rec = _read(project)
+    cache.save_json(project / runstate.FILE, {**rec, "options_key": _edit_key(None)})
+    code, doc = _resume(capsys)
+    assert "resume_args_changed" in [w["code"] for w in doc["warnings"]]
+    assert code == 1 and doc["error"]["code"] == "output_not_empty"
+    assert len(edit_run["clips"]) == 1 and len(edit_run["assemble"]) == 1
+
+
 # -- the memory guard (#109 phase 5): low_memory, then resume ------------------------------
 
 

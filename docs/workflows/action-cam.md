@@ -30,7 +30,7 @@ Action-cam needs GoPro or Insta360 X3 telemetry. When no source has any (phones,
 cameras), `analyze` and `edit` use the `action` style instead, with a WARNING and an
 `action_cam_no_telemetry` warning; `highlights.json` records `style` `action`,
 `settings.style_requested` (the style you gave) and `settings.style_fallback`. Give
-`--style action` (or `auto`) to choose it yourself. A project where only some sources have
+`--style action` (or `auto`, the default) to choose it yourself. A project where only some sources have
 telemetry stays action-cam: the sources without it (or whose telemetry could not be read) are
 scored from audio, speech and model features only, with no speed, airtime or masking, and the
 same warning names them. Their scores are taken over those features alone (the telemetry

@@ -78,7 +78,7 @@ _NOT_ABOUT_IMAGES = ("rejected the api key", "rate limiting", "try again later",
 RULES = f"""
 
 {NAME}(id) shows you one moment: a timeline sheet image ({FEW} or {MANY} frames from its \
-clip, in reading order, each stamped with its number and source time) with its transcript and \
+clip, each stamped with its number and source time) with its transcript and \
 the sounds heard in it. Use it only when the labels, seen, cues, transcripts, scores and \
 find_moments cannot answer what the user asks about the picture (what can be seen, which view is best), and \
 only for the few moments that matter: never for every moment. A turn can view at most \

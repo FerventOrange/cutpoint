@@ -37,7 +37,10 @@ class Kind:
     """What one ``--kind`` makes.
 
     Attributes:
-        style: Analysis style (``--style`` overrides it).
+        style: Analysis style (``--style`` overrides it); :data:`~cutpoint.styles.AUTO`:
+            the style is detected from the footage; an ambiguous detection uses its best
+            guess's style if that is gameplay, else the General style
+            (:func:`~cutpoint.styles.auto_fallback`).
         top: Clip the N best moments (``clips --top``); None = no count limit.
         max_total: Cap the clips' total length in seconds (``clips --max-total``).
         order: Clip numbering and playback order (``clips --order``).
@@ -46,9 +49,6 @@ class Kind:
         captions: ``assemble --captions`` (burned in; whisper runs on the final).
         emphasis: ``--style auto``'s emphasis (:class:`~cutpoint.styles.AutoRequest`):
             ``funny`` for funny-moments, else ``hype``.
-        auto: ``--style auto``: the style is detected from the footage; an ambiguous
-            detection uses its best guess's style if that is gameplay, else the General
-            style (:func:`~cutpoint.styles.auto_fallback`).
     """
 
     style: str
@@ -59,13 +59,12 @@ class Kind:
     loudnorm: bool = True
     captions: bool = False
     emphasis: str = HYPE
-    auto: bool = False
 
 
 KINDS: dict[str, Kind] = {
-    "highlights": Kind("action", max_total=180, order="chronological", transition="fade"),
-    "montage": Kind("action", max_total=60, order="score", transition="fade"),
-    "clips": Kind("action", top=10, order="score", transition="cut"),
+    "highlights": Kind(AUTO, max_total=180, order="chronological", transition="fade"),
+    "montage": Kind(AUTO, max_total=60, order="score", transition="fade"),
+    "clips": Kind(AUTO, top=10, order="score", transition="cut"),
     "funny-moments": Kind(
         "funny", top=8, order="chronological", transition="cut", captions=True, emphasis=FUNNY
     ),
@@ -79,11 +78,8 @@ def resolve_kind(
     top: int | None = None,
     max_total: float | None = None,
 ) -> Kind:
-    """The :data:`KINDS` entry ``kind`` with the options the user gave replacing its own
-    (``style`` :data:`~cutpoint.styles.AUTO` sets ``auto``)."""
+    """The :data:`KINDS` entry ``kind`` with the options the user gave replacing its own."""
     given = {"style": style, "top": top, "max_total": max_total}
-    if style == AUTO:
-        given = {"auto": True, "top": top, "max_total": max_total}
     return replace(KINDS[kind], **{k: v for k, v in given.items() if v is not None})
 
 
@@ -273,7 +269,7 @@ def _run_edit(
     kept = keep_clips and runstate.clips_kept(project, clips_dir)
     if keep_clips and clips_dir.exists() and any(clips_dir.iterdir()) and not (force or kept):
         raise FileExistsError(f"{clips_dir} is not empty; use --force to replace its clips")
-    if kind.auto:
+    if kind.style == AUTO:
         style: Style | AutoRequest = AutoRequest(kind.emphasis)
     else:
         style = get_style(kind.style)

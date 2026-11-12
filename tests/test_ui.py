@@ -10897,10 +10897,11 @@ def proxy_job(
     style: str = "gaming",
     meta: dict | None = None,
     argv: list[str] | None = None,
+    command: str = "analyze",
 ) -> tuple[Any, list[SimpleNamespace]]:
     """Post a job of ``action`` on a ``style`` project (``meta`` added to its ui/meta.json) with
-    ``launcher`` as the proxy; the jobs ``Jobs.start`` was asked for (each with the notes the
-    job's ``before`` hook added)."""
+    ``launcher`` as the proxy (a resume replays ``argv`` of a ``command`` run); the jobs
+    ``Jobs.start`` was asked for (each with the notes the job's ``before`` hook added)."""
     src = tmp_path / "clip.mp4"
     src.write_bytes(b"x")
     res = client.post("/api/projects", json={"name": "P", "source": str(src), "style": style})
@@ -10911,7 +10912,7 @@ def proxy_job(
         cache.save_json(p / "ui" / "meta.json", {**ui.read_meta(p), **meta})
     client.app.state.proxies = launcher
     if action == "resume":
-        progress_record(p, "analyze", argv=argv or ["analyze", str(src), "--style", style])
+        progress_record(p, command, argv=argv or [command, str(src), "--style", style])
     return post_proxy_job(client, monkeypatch, pid, action)
 
 
@@ -11034,15 +11035,32 @@ def test_a_resumed_analysis_starts_the_proxy_its_recorded_command_needs(
     assert launcher.calls == [True] and launcher.starts == 1 and started[0].notes == []
 
 
-def test_a_resumed_analysis_without_a_style_uses_the_analyze_default(
-    client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("argv", "starts"),
+    [
+        (["analyze"], 1),  # auto: it may pick gaming, which has the dialogue step
+        (["edit"], 1),
+        (["edit", "--kind", "funny-moments"], 0),  # funny: no dialogue step
+    ],
+    ids=["analyze", "edit", "edit-funny-moments"],
+)
+def test_a_resumed_analysis_without_a_style_uses_the_default(
+    client: TestClient,
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    argv: list[str],
+    starts: int,
 ) -> None:
     set_config(home, assistant={"provider": "claude-code"})
     launcher = FakeLauncher(saved=True)
-    argv = ["analyze", str(tmp_path / "clip.mp4")]  # gaming: it has the dialogue step
-    res, _ = proxy_job(client, monkeypatch, tmp_path, launcher, action="resume", argv=argv)
+    command, *rest = argv
+    argv = [command, str(tmp_path / "clip.mp4"), *rest]
+    res, _ = proxy_job(
+        client, monkeypatch, tmp_path, launcher, action="resume", argv=argv, command=command
+    )
     assert res.status_code == 200, res.text
-    assert launcher.calls == [True] and launcher.starts == 1
+    assert launcher.starts == starts
 
 
 CHAT = {"assistant": {"provider": "claude-code"}}

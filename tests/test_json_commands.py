@@ -265,7 +265,8 @@ def test_edit_json_is_one_envelope_with_the_sub_steps_outputs_and_warnings(
 ):
     # No loudnorm: its limiter resamples with soxr, which some ffmpeg builds lack.
     monkeypatch.setitem(edit.KINDS, "clips", replace(edit.KINDS["clips"], loudnorm=False))
-    argv = ["edit", str(video), "--kind", "clips", "--top", "2", "--no-vision", *NO_EVENT_STEPS]
+    argv = ["edit", str(video), "--kind", "clips", "--style", "action", "--top", "2"]
+    argv += ["--no-vision", *NO_EVENT_STEPS]
     code, doc, _ = _json(capsys, argv)
     project = home / "projects" / "clip"
     assert code == 0 and doc["ok"] is True and doc["command"] == "edit"
@@ -376,7 +377,10 @@ def test_edit_events_json_reports_the_re_ranked_highlights(home, tmp_path, capsy
     monkeypatch.setattr(events_cli, "run_args", events)
     monkeypatch.setattr(edit, "export_clips", lambda project, **kw: project / "clips")
     monkeypatch.setattr(edit, "assemble", assemble)
-    assert cli.main(["edit", str(video), "--events", "--no-vision", "--json"]) == 0
+    assert (
+        cli.main(["edit", str(video), "--style", "action", "--events", "--no-vision", "--json"])
+        == 0
+    )
     out = capsys.readouterr().out
     doc = envelope(out)
     assert doc["ok"] is True and doc["command"] == "edit"

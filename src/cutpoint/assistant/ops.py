@@ -7,8 +7,9 @@ Its errors are plain sentences the model reads and retries on.
 
 Ops (positions count from 1):
 
-* ``{"op": "add", "id", "at"?, "start"?, "end"?}``: a moment into the sequence (default: last,
-  the moment's own range).
+* ``{"op": "add", "id", "at"?, "start"?, "end"?, "exact"?}``: a moment into the sequence
+  (default: last, the moment's own range). ``"exact": true`` (the chat sets it on an add at a
+  find_words edge) makes the row exact, as an ``add_range`` row, unless its edges were ignored.
 * ``{"op": "add_range", "source", "start", "end", "at"?, "label"?}``: an exact source range
   (a word splice), not tied to a moment: any range of a project source, as often as asked. Its
   row has ``"exact": true``: the export cuts it at exactly ``start`` and ``end`` (no tails,
@@ -162,6 +163,23 @@ def apply_ops(
     return Outcome(after, diff(before, after), color=color or None, notes=notes)
 
 
+def rows_after(
+    before: list[dict[str, Any]],
+    ops: list[Any],
+    candidates: list[dict[str, Any]],
+    durations: Mapping[str, float | None],
+    snap: Snap | None = None,
+) -> list[dict[str, Any]] | None:
+    """The sequence rows after ``ops``, as :func:`apply_ops` makes them before its checks: a
+    copy of ``before`` when there are no ops, None when an op is wrong."""
+    if not ops:
+        return [dict(row) for row in before]
+    try:
+        return _apply(before, ops, candidates, durations, str, {}, snap)
+    except OpsError:
+        return None
+
+
 def _number(op: dict[str, Any], key: str, where: str) -> float | None:
     v = op.get(key)
     if v is None:
@@ -259,6 +277,9 @@ def _apply(
                     f"{MIN_EXPORT_S:g} s); added as it is"
                 )
                 start = end = None
+            exact = op.get("exact")
+            if exact is not None and not isinstance(exact, bool):
+                raise OpsError(f"{where}: exact must be true or false")
             label = cand.get("label") if isinstance(cand.get("label"), str) else ""
             rows.insert(
                 at - 1,
@@ -268,6 +289,8 @@ def _apply(
                     "start": float(cand["start"]) if start is None else start,
                     "end": float(cand["end"]) if end is None else end,
                     "label": label[:LABEL_MAX],
+                    # cut where asked, as an add_range row; not at the moment's own edges
+                    **({"exact": True} if exact and (start, end) != (None, None) else {}),
                 },
             )
         elif kind == "add_range":

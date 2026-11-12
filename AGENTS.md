@@ -12,7 +12,7 @@ everything into a project folder.
 
 Cutpoint is a universal AI footage editor: it takes footage and nothing else, detects what is
 in it and scores from that. Do not ask the user what the footage is or which style to use. Let
-Cutpoint detect it (`--style auto`). Today auto picks only gameplay, action-cam, action, talk or general
+Cutpoint detect it: without `--style`, `analyze` and `edit` run `--style auto`. Today auto picks only gameplay, action-cam, action, talk or general
 footage; for sport or a funny edit, use the user's words (`--style sport`, `--kind
 funny-moments`). Name a style only when the user asks for something specific. `--activity` is an
 option of `profile` and `crashes`, not of `analyze` or `edit`. Steer the result with `--kind`,
@@ -30,7 +30,7 @@ option of `profile` and `crashes`, not of `analyze` or `edit`. Steer the result 
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for games |
 | Activity profiles for crash detection and the action-cam and 360 layers: `cutpoint profile <project>`, `--context` on `profile` and `crashes`. Cutpoint ships only `base` and `generic`; every other profile is discovered from the footage or made by the user or their agent | |
 | Profile library: `cutpoint profile list\|show\|create\|validate\|delete` (`create NAME --from FILE`; `--json`) | |
-| Footage category detection: `cutpoint detect`, and `--style auto` on `analyze` and `edit` (opt-in; unsure footage, and camera footage without telemetry, is shown to the vision model unless `--no-vision`, and if it is still unsure Auto uses `gaming` when it leans to gameplay, else `action`; `detect` shows `decided_by`) | |
+| Footage category detection: `cutpoint detect`, and `--style auto`, the default of `analyze` and `edit` (an explicit `--style NAME` wins; unsure footage, and camera footage without telemetry, is shown to the vision model unless `--no-vision`, and if it is still unsure Auto uses `gaming` when it leans to gameplay, else `action`; `detect` shows `decided_by`) | |
 | Frame index for the AI Chat's visual search: `--visual-index` on `analyze` and `edit` (off by default; `"visual_index": true` in `config.json`) also writes the CLIP frame embeddings for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` always have them | |
 | VLM layer of `cutpoint events` through the shared vision model: Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the Models tab of `cutpoint ui` | |
 | `--json` result envelope on stdout: `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `style ...`, `events`, `resume`, `rerank`, `360 ...` | |
@@ -147,23 +147,23 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
 
 Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
 
-1. **Pick a style.** Prefer `--style auto`: it picks one from the footage (see
+1. **Pick a style.** Give none: `--style auto` is the default of `analyze` and `edit`. It picks one from the footage (see
    `cutpoint detect`) and, when it cannot tell, uses `gaming` if its best guess is gameplay, else `action` (a
    `style_ambiguous` warning names the style used). Unsure footage, and camera footage without
    telemetry, is shown to the vision model first (on by default; Ollama, or the hosted Vision model the user allowed; `--no-vision` skips
    it; `funny-moments` gets `funny` either way). Name a style only when
    the request clearly calls for it: `funny`, `gaming`, `action`, `sport`, `commentary`
    (long talk), `action-cam` (helmet-, chest- or bike-mounted action-cam footage with
-   GoPro or Insta360 X3 telemetry; `ski` is not a style). Without
-   `--style`, `analyze` uses `gaming` and `edit` uses `action` (`funny` for `funny-moments`).
+   GoPro or Insta360 X3 telemetry; `ski` is not a style). An explicit `--style NAME` wins.
+   `edit --kind funny-moments` uses `funny`. `clips`, `events` and `assemble` use the style recorded in `highlights.json`. Running `analyze` or `edit` again without `--style` detects the footage again; pass `--style NAME` to keep a project's earlier style.
 2. **Analyze.**
 
    ```powershell
-   uv run cutpoint analyze D:\Videos\clip.mp4 --style auto --out clip-edit
+   uv run cutpoint analyze D:\Videos\clip.mp4 --out clip-edit
    ```
 
-   On Linux: `uv run cutpoint analyze ~/Videos/clip.mp4 --style auto --out clip-edit`.
-   `edit` takes `--style auto` too.
+   On Linux: `uv run cutpoint analyze ~/Videos/clip.mp4 --out clip-edit`.
+   `edit` detects the footage the same way.
 
    Writes `highlights.json` and `transcript.txt` into the project folder
    (`<projects>/clip-edit`, see `cutpoint paths`). It also runs the reaction, keyframe and crash
