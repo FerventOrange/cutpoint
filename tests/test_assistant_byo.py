@@ -334,6 +334,28 @@ def test_openai_base_url_gets_v1_only_when_it_has_no_path(url: str, want: str) -
     assert OpenAIProvider(url, "m", 0, KEY).url == want
 
 
+def oa_thinking(content: str | None, **fields: str) -> _Resp:
+    msg: dict[str, Any] = {"role": "assistant", "content": content, **fields}
+    return _Resp({"choices": [{"message": msg, "finish_reason": "stop"}]})
+
+
+@pytest.mark.parametrize("field", ["reasoning_content", "reasoning"])
+def test_an_empty_chat_content_keeps_its_reasoning_aside(monkeypatch, field) -> None:
+    """#986: the reasoning of an empty reply is kept on the side (the Vision rating may read
+    it); the text and the message added to the conversation stay empty."""
+    Wire(monkeypatch, oa_thinking("", **{field: "Thinking it over."}))
+    reply = OpenAIProvider("http://127.0.0.1:8080", "m", 0, None).chat(HI)
+    assert reply.text == "" and reply.reasoning == "Thinking it over."
+    assert reply.message == {"role": "assistant", "content": ""}
+
+
+def test_a_chat_reply_with_content_has_no_reasoning(monkeypatch) -> None:
+    Wire(monkeypatch, oa_thinking("Hello", reasoning_content="Thinking it over."))
+    reply = OpenAIProvider("http://127.0.0.1:8080", "m", 0, None).chat(HI)
+    assert reply.text == "Hello" and reply.reasoning == ""
+    assert reply.message == {"role": "assistant", "content": "Hello"}
+
+
 def test_a_local_openai_server_needs_no_key_and_serves_its_only_model(monkeypatch) -> None:
     wire = Wire(monkeypatch, _Resp({"data": [{"id": "qwen.gguf"}]}), oa_reply("Hello"))
     p = OpenAIProvider("http://127.0.0.1:8080", "", 0, None)

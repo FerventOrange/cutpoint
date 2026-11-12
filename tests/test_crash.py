@@ -100,6 +100,100 @@ def test_detect_project_skips_offline_source_and_processes_the_rest(tmp_path, mo
     assert json.loads(out.read_text(encoding="utf-8"))["n_candidates"] == 0
 
 
+def test_one_source_whose_telemetry_fails_is_skipped_and_the_others_get_crashes(
+    tmp_path, monkeypatch, caplog
+):
+    """#985: telemetry, IMU or input loading that raises on one source skips only that source,
+    with one WARNING naming it and a ``step_failed`` JSON warning; the rest get their crashes."""
+    from cutpoint import jsonout, mix, sources  # noqa: PLC0415
+    from cutpoint.events import visual, voice  # noqa: PLC0415
+
+    srcs = [tmp_path / f"{name}.mp4" for name in ("reef", "wreck", "cave", "drift")]
+    for s in srcs:
+        s.write_bytes(b"x")
+    project = _project(tmp_path, *srcs)
+    good = _inputs(spike=True)
+
+    def extract(src, duration):
+        if src.name == "wreck.mp4":
+            raise TypeError("'list' object cannot be interpreted as an integer")
+        return good.tel
+
+    def imu_grids(src, duration, force=False, tmp_dir=None):
+        if src.name == "cave.mp4":
+            raise ValueError("bad IMU block")
+        return good.imu
+
+    monkeypatch.setattr(telemetry, "extract", extract)
+    monkeypatch.setattr(crash, "imu_grids", imu_grids)
+    monkeypatch.setattr(voice, "load_voice", lambda src: None)
+    monkeypatch.setattr(visual, "load_visual", lambda src: good.visual)
+    monkeypatch.setattr(sources, "source_words", lambda src, lang: None)
+    monkeypatch.setattr(mix, "lift_rides", lambda src, n: None)
+    monkeypatch.setattr(crash, "crash_prompt_scores", lambda emb, p: good.kf_crash)
+    monkeypatch.setattr(crash, "_flip_deg", lambda inp: np.zeros(N))
+    good.visual.emb = None
+    own_words = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())  # no profile
+    with caplog.at_level("DEBUG", logger="cutpoint.crash"), jsonout.run("crashes") as result:
+        out = crash.detect_project(project, params=own_words, dense=False, sheets=0)
+
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert sorted(Path(c["source"]).name for c in data["crashes"]) == ["drift.mp4", "reef.mp4"]
+    warned = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert warned == [
+        "wreck.mp4: crash detection skipped this source "
+        "('list' object cannot be interpreted as an integer)",
+        "cave.mp4: crash detection skipped this source (bad IMU block)",
+    ]
+    tracebacks = [r for r in caplog.records if r.levelname == "DEBUG" and r.exc_info]
+    assert [r.exc_info[0] for r in tracebacks] == [TypeError, ValueError]
+    failed = [w for w in result.warnings if w["code"] == "step_failed"]
+    assert [(w["message"], w["files"]) for w in failed] == [
+        (warned[0], [str(srcs[1])]),
+        (warned[1], [str(srcs[2])]),
+    ]
+
+
+def test_when_every_source_fails_the_error_propagates_and_crashes_json_stays(
+    tmp_path, monkeypatch, caplog
+):
+    """A project-wide failure (every source raises) fails the step: the last error is raised
+    and the crashes.json of an earlier run is not replaced by an empty one."""
+    srcs = [tmp_path / f"{name}.mp4" for name in ("kelp", "arch")]
+    for s in srcs:
+        s.write_bytes(b"x")
+    project = _project(tmp_path, *srcs)
+    earlier = '{"crashes": [{"id": "c001"}]}'
+    (project / "crashes.json").write_text(earlier, encoding="utf-8")
+
+    def load_inputs(src, *a):
+        raise RuntimeError(f"no CLIP weights ({src.name})")
+
+    monkeypatch.setattr(crash, "load_inputs", load_inputs)
+    own_words = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError, match=r"arch\.mp4"):
+        crash.detect_project(project, params=own_words, dense=False, sheets=0)
+    assert (project / "crashes.json").read_text(encoding="utf-8") == earlier
+    assert sum("crash detection skipped this source" in r.getMessage() for r in caplog.records) == 2
+
+
+def test_a_low_memory_error_on_one_source_still_stops_the_run(tmp_path, monkeypatch):
+    from cutpoint.errors import LowMemoryError  # noqa: PLC0415
+
+    src = tmp_path / "a.mp4"
+    src.write_bytes(b"x")
+    project = _project(tmp_path, src)
+
+    def load_inputs(*a):
+        raise LowMemoryError("short of memory")
+
+    monkeypatch.setattr(crash, "load_inputs", load_inputs)
+    own_words = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())
+    with pytest.raises(LowMemoryError):
+        crash.detect_project(project, params=own_words, dense=False, sheets=0)
+    assert not (project / "crashes.json").exists()
+
+
 class _FakeClip:
     def __init__(self):
         self.at = "cuda"
