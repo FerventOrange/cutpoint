@@ -27,6 +27,7 @@ from cutpoint import cache, sources
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import EXACT_KEYS, plan_edges
 from cutpoint.config import remap_source
+from cutpoint.events.scoring import recorded_style
 from cutpoint.events.tails import EventTailSettings, load_events
 from cutpoint.ffmpeg_utils import probe
 from cutpoint.planning import Padding
@@ -189,8 +190,10 @@ class EdgePlanner:
         hl = cache.load_json(self.project / "highlights.json")
         hl = hl if isinstance(hl, dict) else {}
         try:
-            style = get_style(str(hl.get("style", "gaming")))
-        except ValueError:
+            style = recorded_style(hl)  # a deleted user style degrades to its recorded base
+        except ValueError as err:  # no recorded style, or an old file with no base
+            if hl.get("style"):
+                logger.warning("%s; planning the edges as 'gaming'", err)
             style = get_style("gaming")
         settings = hl.get("settings") if isinstance(hl.get("settings"), dict) else {}
         events = load_events(self.project) if opts.event_tails is not False else None

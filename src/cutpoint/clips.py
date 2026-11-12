@@ -49,6 +49,7 @@ from cutpoint.encode import (
     warn_if_log,
 )
 from cutpoint.errors import FFmpegError
+from cutpoint.events.scoring import recorded_style
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
 from cutpoint.ffmpeg_utils import (
     STOP_GRACE_S,
@@ -1523,7 +1524,8 @@ def export_clips(
     highlights = cache.load_json(project / "highlights.json")
     language = ((highlights or {}).get("settings") or {}).get("language")
     known_style = isinstance(highlights, dict) and "style" in highlights
-    style_name = (highlights or {}).get("style", "gaming")
+    # The recorded style: a deleted user style degrades to the built-in base the file records
+    style: Style = recorded_style(highlights) if known_style else get_style("gaming")
     if segments is not None:
         ordered = load_segments(segments)
         if order == "arc":  # the file's order is the day's order
@@ -1531,10 +1533,9 @@ def export_clips(
         else:
             order = "segments"
     else:
-        chosen, style_name = select_moments(project, top=top, ids=ids, max_total=max_total)
-        order = order or get_style(style_name).default_order
+        chosen, _ = select_moments(project, top=top, ids=ids, max_total=max_total)
+        order = order or style.default_order
         ordered = order_moments(chosen, order)
-    style: Style = get_style(style_name)
     color_mode = _color_mode(color, lut, style, known_style=known_style)
     base_tail = TailSettings.from_style(
         style, enabled=smart_tail_on, tail_min=tail_min, tail_max=tail_max

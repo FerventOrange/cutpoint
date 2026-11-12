@@ -3995,13 +3995,12 @@ def ui_styles() -> list[str]:
     return names
 
 
-def _gaming_style(name: object) -> bool:
+def _gaming_style(name: object, hl: dict[str, Any] | None = None) -> bool:
     """``name`` is a ``gaming`` style (or one based on it): config.json's ``color`` never grades
-    it, so the page's Color starts at Off for it."""
-    try:
-        return get_style(str(name)).base == "gaming" if name else False
-    except (ValueError, TypeError, AttributeError):
-        return False
+    it, so the page's Color starts at Off for it. ``hl``: the project's highlights.json, whose
+    recorded base stands in for its deleted style (:func:`_style`)."""
+    s = _style(name, hl)
+    return s is not None and s.base == "gaming"
 
 
 def suggest_style(
@@ -4113,6 +4112,59 @@ def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[A
     if requested == AUTO or (isinstance(st.get("style_fallback"), dict) and requested):
         return inputs, requested
     return inputs, (hl or {}).get("style")
+
+
+def _library_style(style: object, hl: dict[str, Any] | None) -> object:
+    """``style`` as a job may pass it to ``--style``: a style gone from the library (deleted) is
+    the built-in base ``hl`` records for it (the job then records the base); a bad request
+    (400) when the file records none (an older file). Auto, a style in the library and a style
+    whose file is there but broken (the CLI says why) stay as they are."""
+    if not isinstance(style, str) or not style or style == AUTO:
+        return style
+    try:
+        get_style(style)
+    except (ValueError, TypeError, AttributeError):
+        if style in learned_styles():
+            return style
+        try:
+            if not isinstance(hl, dict) or hl.get("style") != style:
+                raise ValueError(style)
+            return scoring.recorded_style(hl).name
+        except ValueError:
+            raise bad(
+                f"The style {style!r} of this analysis is not in the style library (deleted?); "
+                "pick another style"
+            ) from None
+    return style
+
+
+def _deleted_style(name: object) -> bool:
+    """``name`` is a style gone from the library (deleted): not auto, not built in, no file."""
+    if not isinstance(name, str) or not name or name == AUTO:
+        return False
+    try:
+        get_style(name)
+    except (ValueError, TypeError, AttributeError):
+        return name not in learned_styles()
+    return False
+
+
+def _keep_style(p: Path, style: str, undo: list[Callable[[], None]]) -> None:
+    """In a job's ``prepare``: make ``style`` the project's chosen style (``ui/meta.json``, as
+    :func:`set_style`), and have ``undo`` put it back, with the ui folder this created."""
+    made: list[Path] = []
+    _ui_folder(p, made=made)  # a command-line project has no ui folder (nor meta.json) yet
+    back = set_style(p, style)
+
+    def put_back() -> None:
+        try:
+            back()
+        finally:
+            for folder in made:  # the ui folder this created, if still empty
+                with contextlib.suppress(OSError):
+                    folder.rmdir()
+
+    undo.append(put_back)
 
 
 def _resolved_style(meta: dict[str, Any], hl: dict[str, Any] | None) -> object:
@@ -4283,25 +4335,33 @@ def _default_model(st: dict[str, Any]) -> str:
     return "medium" if st.get("whisper_device") == "cuda" else "small"
 
 
-def _style(name: object) -> Style | None:
+def _style(name: object, hl: dict[str, Any] | None = None) -> Style | None:
+    """The style ``name``, else None. The style ``hl`` (a project's highlights.json) records,
+    gone from the library (deleted), is its recorded built-in base; None when the file records
+    none (an older file): the page then shows the style's options as unknown."""
     try:
         return get_style(str(name)) if name else None
     except (ValueError, TypeError, AttributeError):
+        if isinstance(hl, dict) and name and name == hl.get("style"):
+            try:
+                return scoring.recorded_style(hl, logging.DEBUG)
+            except ValueError:
+                pass
         return None
 
 
-def _style_crash(style: object) -> float | None:
+def _style_crash(style: object, hl: dict[str, Any] | None = None) -> float | None:
     """The ``must_include_crash`` of ``style`` (what ``--must-include-crash`` overrides), else
     None (no known style). ``auto`` picks a built-in style, all with the same value: the
     default style's."""
-    s = _style(ANALYZE_STYLE if style == AUTO else style)
+    s = _style(ANALYZE_STYLE if style == AUTO else style, hl)
     return s.must_include_crash if s is not None else None
 
 
-def _no_scenes(st: dict[str, Any], style: object) -> bool:
+def _no_scenes(st: dict[str, Any], style: object, hl: dict[str, Any] | None = None) -> bool:
     """The analysis ran with ``--no-scenes``: it recorded no scene detection although its style
     detects scenes (action-cam never does, so it records none without the flag)."""
-    s = _style(style)
+    s = _style(style, hl)
     return st.get("scenes") is False and (s is None or s.use_scenes)
 
 
@@ -4329,7 +4389,7 @@ def analyze_options(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
     mc = st.get("max_candidates")
     crash = st.get("must_include_crash")
     ran = (hl or {}).get("style") or _resolved_style(meta, hl)  # not meta's: it may be mid-switch
-    default_crash = _style_crash(ran)
+    default_crash = _style_crash(ran, hl)
     return {
         "model": model
         if isinstance(model, str) and model and model != _default_model(st)
@@ -4340,7 +4400,7 @@ def analyze_options(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
         "max_candidates": mc
         if isinstance(mc, int) and not isinstance(mc, bool) and mc > 0
         else None,
-        "no_scenes": _no_scenes(st, ran),
+        "no_scenes": _no_scenes(st, ran, hl),
         "skip": _saved_skip(p, hl),
         "must_include_crash": float(crash)
         if default_crash is not None
@@ -4398,7 +4458,7 @@ def crash_step_runs(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
         return s is not None and (s.kind == ACTION_CAM or s.base in ("action", "sport"))
     from cutpoint import category  # noqa: PLC0415
 
-    s = _style(hl.get("style") or meta.get("style"))
+    s = _style(hl.get("style") or meta.get("style"), hl)
     if s is not None and (s.kind == ACTION_CAM or s.base in ("action", "sport")):
         return True
     det = hl.get("detection")
@@ -4508,7 +4568,7 @@ def preset_problem(meta: dict[str, Any], hl: dict[str, Any] | None) -> str | Non
         )
     inputs, style = _analysis_inputs(meta, hl)
     ran = (hl or {}).get("style") or _resolved_style(meta, hl)  # as analyze_options
-    if _no_scenes(st, ran):
+    if _no_scenes(st, ran, hl):
         return (
             "Presets are not available here: this project's analysis used --no-scenes, which "
             "cutpoint edit does not take."
@@ -4526,8 +4586,14 @@ def preset_problem(meta: dict[str, Any], hl: dict[str, Any] | None) -> str | Non
                 "cutpoint edit does not take."
             )
     # nor --must-include-crash: edit would analyze with the style's own confidence
-    crash, default_crash = st.get("must_include_crash"), _style_crash(ran)
-    if default_crash is not None and crash is not None and crash != default_crash:
+    crash, default_crash = st.get("must_include_crash"), _style_crash(ran, hl)
+    # (a deleted style runs in its base: the base's confidence, whatever the style had)
+    if (
+        default_crash is not None
+        and crash is not None
+        and crash != default_crash
+        and not _deleted_style(ran)
+    ):
         return (
             "Presets are not available here: this project's analysis used --must-include-crash, "
             "which cutpoint edit does not take."
@@ -5370,7 +5436,7 @@ def create_app(port: int) -> FastAPI:
             "name": meta.get("name") or pid,
             "style": meta.get("style") or (hl or {}).get("style") or "",
             # the page's Color starts at Off for gaming footage, as config.json's color does
-            "gaming": _gaming_style(_resolved_style(meta, hl)),
+            "gaming": _gaming_style(_resolved_style(meta, hl), hl),
             # the header's style button (#897): the detected category and the chosen style
             "detected": detected_view(meta, hl),
             "kind": "360" if meta.get("kind") == "360" else "video",
@@ -5394,7 +5460,7 @@ def create_app(port: int) -> FastAPI:
             "analyze_options": analyze_options(p, meta, hl),
             "must_include_crash_default": None
             if meta.get("kind") == "360"
-            else _style_crash(meta.get("style") or (hl or {}).get("style")),
+            else _style_crash(meta.get("style") or (hl or {}).get("style"), hl),
             # "Describe the footage" (crashes --context) and "Look closer with vision" (events)
             "refine": refine_state(p, meta, hl),
             "preset_taken": preset_taken(p),
@@ -5550,12 +5616,19 @@ def create_app(port: int) -> FastAPI:
                 raise bad("Analyze options are not available for 360 projects")
             if body.get("style") is not None:
                 raise bad("the style of a 360 project cannot be changed")
+            live = _library_style(style, hl)  # a deleted style: its recorded base
             _own(p, "highlights.json")  # the analysis rewrites it
             _own(p, "pano.json")  # and the scan this
             args = cutpoint_cmd(
                 "360", "analyze", str(p), "--scan", str(_pano_folder(meta["source"]))
             )
-            args += ["--style", str(style)]
+            args += ["--style", str(live)]
+            if live != style:
+                _own(p, META_FILE)  # refuse now, not when the job starts
+
+                def prepare() -> None:
+                    _keep_style(p, str(live), undo)
+
             if only := [c for c in meta.get("clips") or [] if isinstance(c, str)]:
                 args += ["--only", *only]
             plan = [{"step": s, "label": progress.LABELS[s]} for s in progress.PANO_STEPS]
@@ -5570,6 +5643,8 @@ def create_app(port: int) -> FastAPI:
                 or (new != AUTO and new not in ui_styles() and not _action_cam_style(new))
             ):
                 raise bad(f"unknown style {new!r}")
+            if new is None and (live := _library_style(style, hl)) != style:
+                new = str(live)  # a deleted style: analyze again in its base, and keep that
             # the options as the earlier analysis used them (inferred against its own style)
             recorded = analyze_options(p, meta, hl)
             leaving_auto = new is not None and style == AUTO and new != AUTO
@@ -5639,6 +5714,7 @@ def create_app(port: int) -> FastAPI:
             if why := preset_problem(meta, hl):
                 raise bad(why)
             inputs, style = _analysis_inputs(meta, hl)
+            live = _library_style(style, hl)  # a deleted style: the edit runs in its base
             vertical = _flag(body, "vertical")
             force = _flag(body, "force")
             clips_name = "clips_vertical" if vertical else "clips"
@@ -5651,7 +5727,7 @@ def create_app(port: int) -> FastAPI:
                     f"{clips_name} holds the clips of an earlier run; confirm to replace", 409
                 )
             args = cutpoint_cmd(
-                "edit", *map(str, inputs), "--kind", kind, "--style", str(style), "--out", str(p)
+                "edit", *map(str, inputs), "--kind", kind, "--style", str(live), "--out", str(p)
             )
             if vertical:
                 args.append("--vertical")
@@ -5667,8 +5743,13 @@ def create_app(port: int) -> FastAPI:
                 args += ["--skip", *skip]
                 _own(p, ANALYSIS_FILE)
 
+            if live != style:
+                _own(p, META_FILE)  # refuse now, not when the job starts
+
             def prepare() -> None:
                 _ui_folder(p)  # a command-line project has no ui folder for exports.json yet
+                if live != style:  # the edit records the base: so does the project's style
+                    _keep_style(p, str(live), undo)
 
             def on_success() -> None:
                 if (
@@ -5989,7 +6070,7 @@ def create_app(port: int) -> FastAPI:
         # --json: the envelope's error.code tells a busy project apart (Jobs._busy) and a resume
         # names what it wrote. The jobs run in the projects folder, not where the server started.
         if action in ("analyze", "edit") and meta.get("kind") != "360":
-            needs_proxy = _subscription_roles(args, style)
+            needs_proxy = _subscription_roles(args, next(iter(_values(args, "--style")), style))
         elif action == "resume" and run["command"] in ("analyze", "edit"):
             argv = [str(a) for a in rec.get("argv") or []]
             # no --style: analyze's default (edit's defaults have no dialogue step)
