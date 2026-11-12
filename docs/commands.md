@@ -344,7 +344,7 @@ by hand, `hud_presets` (you may have calibrated them), unknown files and folders
 is or holds a source video of any project; the project folder is removed only once it is empty. A
 symlink or junction is never followed, and your source videos are never touched. The files go to
 the Recycle Bin / Trash. On Windows Cutpoint first checks that the Recycle Bin of the drive will
-keep them (a fixed drive, not set to delete at once, big enough for the largest item); in a
+keep them (a fixed drive that is not a `subst` drive, not set to delete at once, big enough for the largest item); in a
 container there is no trash. If the trash cannot be used, the page asks a second time before
 deleting them for good. It is refused (409) while a job, an analysis or export, a preview
 render or an AI Chat turn is running on the project. After deleting, the page shows the start
@@ -897,7 +897,10 @@ setup --only visual`) and a cached visual layer (`analyze` writes it for the `ac
 that analysis cached with the transcript; nothing is transcribed again. It matches the words in
 order, in any case and without punctuation, short words such as "a" included. Each hit gives the
 file, the start of the first word, the end of the last word and a few words around it. A source
-without transcript words is skipped, and the model is told when no source has them.
+without transcript words is skipped, and the model is told when no source has them. When a
+phrase is not said in one place but each of its words is, the model gets the `add_range` ops
+that splice it: the first place each word is said, in order. In the moment and sequence rows,
+as in `find_words`, two sources with the same file name are shown as `folder/name`.
 
 To make someone say a sentence ("make her say 'I am done'"), the model finds each word or phrase
 with `find_words` and adds them in order with `add_range` ops: a `file`, a `start` and an `end` in
@@ -909,9 +912,12 @@ of it is a hard cut, whatever the transition or the single joins say, also in th
 preview. The same range can be added more than once. Whisper's word times are not always
 exact, so a word can start or end a little early or late: trim the row if it does.
 
-A trim that puts a clip's start or end on either edge of a `find_words` hit (within 0.02 s,
-a hit found in the same message) makes that clip exact too ("cut it right
-after 'done'"), so the export does not move the cut back into the speech.
+An add or trim (not `add_range`) that puts a clip's start or end within 0.1 s of either edge of
+a `find_words` hit (given in seconds or as a delta) moves that edge onto the nearest hit edge
+and makes the clip exact too ("cut it right after 'done'"), so the export does not move the cut
+back into the speech. A model that rounds 3627.04 to 3627 still cuts at the word. The hits of
+earlier messages count too: the chat keeps them, and the model sees the first three of each
+search after that message's reply. An edge that is on no `find_words` hit is moved as before.
 
 - Moments the model points to can be highlighted in the Moments list ("Highlight in list") or
   the list filtered by the model's search words (offered only when the list's search, which also
@@ -960,7 +966,7 @@ model asked to watch without it, `tool` events named `view_moment` (`id`, `frame
 `found`, `new`, `weak`, `unconfirmed`, `possible` (the unconfirmed windows: `id`, `source`,
 `start`, `end`, `label`, `confidence`), or `error`: why it could not search, with `reason`, a short
 sentence for the page, when there is one) and `find_words` (`query`, `found`: the places
-it is said); a `proposal` event can carry `color`
+it is said, `hits`: the places given to the model, each `source`, `start` and `end`); a `proposal` event can carry `color`
 (`mode`, `strength` or null) and `moments` (the `look_for` moments its ops add);
 `POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
 save or remove a keyring key for the host of the saved base URL and return only where each key
