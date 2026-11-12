@@ -25,8 +25,8 @@ it: it is the full reference.
 
 ## Choose the path
 
-Style (`--style` on `cutpoint edit` and `cutpoint analyze`): default to `--style auto`, which
-picks from the footage. `cutpoint detect <video> --json` shows its pick (`outputs.styles`); a
+Style (`--style` on `cutpoint edit` and `cutpoint analyze`): `--style auto` is the default, so
+give none and it picks from the footage. `cutpoint detect <video> --json` shows its pick (`outputs.styles`); a
 `style_ambiguous` warning means it could not tell and used `gaming` (best guess gameplay) or `action`; the warning names the style, and `detect` shows `decided_by`. Unsure footage, and camera footage without telemetry, is shown to the vision model first (`--no-vision` skips it). Name a style only when the user says
 what the footage is. Pick `funny`, `gaming`, `action`, `sport`, `commentary` (long talk) or
 `action-cam` (action-cam footage with GoPro or Insta360 X3 telemetry). Without any telemetry
@@ -50,7 +50,7 @@ user asks for it. If the user's `config.json` has `"vision": true`, it is on by 
 
 Choosing the moments yourself:
 
-1. `cutpoint analyze <video> --style <style> --out <project>`. It also runs the reaction, keyframe
+1. `cutpoint analyze <video> --out <project>` (add `--style <style>` only to override the detected one). It also runs the reaction, keyframe
    and crash steps it can (skipped with an INFO line when the extra or models are missing;
    `--skip reactions keyframes crashes dialogue` leaves them out) and writes `events.json`.
 2. Read `highlights.json` (ranked `candidates` with `id`, `start`, `end`, `score`, `label`,

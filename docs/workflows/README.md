@@ -15,10 +15,10 @@ All examples use `cutpoint` for `uv run cutpoint`. Paths are examples; use your 
 
 ```powershell
 # 1. Find and rank moments. Writes projects/my-edit/highlights.json and transcript.txt
-cutpoint analyze D:\Videos\clip.mp4 --style gaming --out my-edit
+cutpoint analyze D:\Videos\clip.mp4 --out my-edit
 
 # Several files and folders at once, skipping some by glob:
-cutpoint analyze D:\Videos\session1 D:\Videos\extra.mp4 --exclude "*DVR*" --style gaming --out my-edit
+cutpoint analyze D:\Videos\session1 D:\Videos\extra.mp4 --exclude "*DVR*" --out my-edit
 
 # 2. Optional: detect what happens (sounds, HUD text, model descriptions).
 #    Needs the `events` extra and `cutpoint setup`. Re-ranks highlights.json.

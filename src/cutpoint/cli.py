@@ -57,7 +57,6 @@ from cutpoint.extend import extend_clips, manifest_project
 from cutpoint.planning import Padding
 from cutpoint.progress import SKIPPABLE
 from cutpoint.styles import (
-    ANALYZE_STYLE,
     AUTO,
     AutoRequest,
     Style,
@@ -965,7 +964,11 @@ def _check_assemble(parser: argparse.ArgumentParser, a: argparse.Namespace) -> N
 
 
 def _check_edit(parser: argparse.ArgumentParser, a: argparse.Namespace) -> None:
-    """Refuse ``--no-keep-clips`` where the clips are needed or nothing is replaced (exit 2)."""
+    """Refuse ``--no-keep-clips`` where the clips are needed or nothing is replaced (exit 2).
+    Without ``--style``, set the kind's style (auto, funny for funny-moments), so progress.json
+    records the style the run used."""
+    if a.style is None:
+        a.style = KINDS[a.kind].style
     if a.keep_clips:
         return
     if a.kind == "clips":
@@ -1824,9 +1827,9 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     ed.add_argument(
         "--style",
         choices=[AUTO, *style_names()],
-        help="analysis preset (default: funny for funny-moments, else action); auto picks "
-        "one from the footage (gameplay, action cam, action, talk or general; ambiguous: gaming "
-        "when it leans to gameplay, else the default)",
+        help="analysis preset (default: auto, funny for funny-moments); auto picks one from "
+        "the footage (gameplay, action cam, action, talk or general; ambiguous: gaming when it "
+        f"leans to gameplay, else {auto_fallback(HYPE)})",
     )
     ed.add_argument(
         "--out",
@@ -1906,8 +1909,8 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     an.add_argument(
         "--style",
         choices=[AUTO, *style_names()],
-        default=ANALYZE_STYLE,
-        help=f"preset (default: {ANALYZE_STYLE}); learned presets in "
+        default=AUTO,
+        help="preset (default: auto); learned presets in "
         "<CUTPOINT_HOME>/styles/*.json are listed too (action-cam: telemetry-driven "
         "action-cam footage); auto picks one from the footage (gameplay, "
         f"action cam, action, talk or general, see cutpoint detect; ambiguous: gaming when it leans "

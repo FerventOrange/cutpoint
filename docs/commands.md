@@ -104,11 +104,11 @@ So do these combinations:
 | `step_failed` | `analyze` (so `edit`), `crashes`, `events` | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it. The dialogue step adds it too when there was not enough free memory for its text model (`Dialogue skipped: ...`). A failed HUD OCR (keyframes for `gaming` and `funny`) is a `WARNING` instead, whose message names the effect (menu filtering and HUD events skipped) and the source it failed on; `files` lists the sources it did not read. So is a source whose telemetry, IMU or cached layers crash detection could not read (`<file>: crash detection skipped this source (<error>)`): `files` names it, it gets no crash moments and the other sources keep theirs. Out of memory says so, with what to try |
 | `transcript_fallback` | `analyze` (so `edit`) | Without `--model`, Whisper ran (or an earlier run's transcript made so is reused) with `small` on the CPU instead of `medium` on the GPU, which was short of memory or failed; `files` names the sources. Speech-based moments can be weaker. A later run without `--model` transcribes them again with `medium` once it fits on the GPU (close the programs using it); after a CUDA failure the `small` transcript is kept (`--model medium` transcribes it again) |
 | `action_cam_no_telemetry` | `analyze` (so `edit`, `360 analyze`) | An action-cam style (`action-cam`, or a style of yours over it) on footage without GoPro or Insta360 X3 telemetry. When no source has any, the run used the `action` style instead (not in `360 analyze`): `highlights.json` has `style` `action`, `settings.style_requested` the style given and `settings.style_fallback` (`from`, `reason`); `files` lists every source; give `--style action` (or `auto`) to choose it. When some sources have telemetry, or a source's telemetry could not be read, the style stays and `files` names the sources scored from sound, speech and visual features only (no speed, airtime or masking), their scores taken over those features so their moments rank with the others |
-| `style_ambiguous` | `analyze`, `detect` (so `edit`) | `--style auto` could not tell the footage category apart (the message gives the evidence), so the run used its best guess's style when that is gameplay (`gaming`), else the General style (`action`), for `analyze` and `edit` alike (the message names the style used; `funny` for `funny-moments` either way); `files` lists the sources that were not clear. Give `--style` to choose one |
+| `style_ambiguous` | `analyze`, `detect` (so `edit`) | `--style auto` (the default) could not tell the footage category apart (the message gives the evidence), so the run used its best guess's style when that is gameplay (`gaming`), else the General style (`action`), for `analyze` and `edit` alike (the message names the style used; `funny` for `funny-moments` either way); `files` lists the sources that were not clear. Give `--style` to choose one |
 | `unknown_profile` | `style create`, `style validate` | The style's `profile` or an `applies_to` profile is not in the [activity profile library](#profile); it is stored as written |
 | `feature_not_computed` | `style create`, `style validate` | A weight names a feature the style's base never measures (for example a telemetry feature over a generic base), so it has no effect |
 | `invalid_style` | `style list` | A file in the styles folder is not a usable style; the message gives the reason. Run `style validate NAME` |
-| `style_sources_disagree` | `analyze`, `detect` (so `edit`) | With `--style auto`, sources making up more than 10% of the footage look like another category than the project's; the whole project still gets one style. `files` names them: analyze them apart, or give `--style` |
+| `style_sources_disagree` | `analyze`, `detect` (so `edit`) | With `--style auto` (the default), sources making up more than 10% of the footage look like another category than the project's; the whole project still gets one style. `files` names them: analyze them apart, or give `--style` |
 | `torch_no_cuda`, `sdk_needs_nvidia` | `capabilities`, `360 stitch` (the second only) | The warnings of the report, see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#torch-and-the-insta360-sdk-in-capabilities) |
 | `exclusions_ignored` | `mix` | Exclusions whose source is relative to the current folder of a drive were ignored |
 | `content_qa_failed` | `mix` | The content checks of the mix failed |
@@ -136,7 +136,7 @@ So do these combinations:
 |---|---|
 | `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
 | `resume` | `resume` (`argv`, `status_before`, `done_before`), `resumed`, and the replayed command's outputs |
-| `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set; the number of moments the default `clips` edit picks), `style`; with `--style auto`, `detection` (the `highlights.json` block, see [detect](#detect)) |
+| `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set; the number of moments the default `clips` edit picks), `style`; unless `--style` names a style, `detection` (the `highlights.json` block, see [detect](#detect)) |
 | `detect` | `category` (`gameplay`, `action-cam`, `action`, `talk` or `general`), `ambiguous`, `reason`, `scores` (share of the footage per category), `suggest` (`commentary` for talky gameplay, else `null`), `decided_by` (the evidence that decided the sure sources, most footage first: `telemetry`, `static HUD`, `HUD text`, `camera tags`, `360 frame`, `speech` or `vision`; empty when ambiguous), `sources` (each `path`, `duration`, `category`, `ambiguous`, `reason`, `decided_by` (`null` when ambiguous), `gameplay` (score 0-1, `null` with telemetry) and `speech` (share of the source covered by words, `null` before transcription)), `pending` (talk not checked yet: a long source has no transcript), `styles` (`analyze` and `funny-moments`: the style each would use) |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds`, `taken_over` (finished clips taken over from a stopped export's `.<folder>.cutpoint-resume`, not encoded again; 0 when none, missing for temporary clips) |
 | `extend` | As `clips` (`taken_over` included), and `seconds` (`{"start", "end"}`) |
@@ -232,7 +232,7 @@ folder or file of Insta360 X3 footage makes a 360 project, analyzed with `360 an
 (see [360 video](workflows/360.md#in-the-ui)); its moments preview through the director's camera
 path (the one the analysis cached when it is current), with badges for poor paths
 ([Director preview](workflows/360.md#director-preview-and-camera-path-flags)). It does not expose
-the action-cam commands or the other `360` commands; for standard footage, Highlight style starts on "Auto (detect from footage)" (`--style auto`; the project is
+the action-cam commands or the other `360` commands; for standard footage, Highlight style starts on "Auto (detect from footage)" (`--style auto`, the default; the project is
 analyzed with it) and also lists the
 `action-cam` style, which the dialog preselects instead when an input has GoPro or Insta360 telemetry (a
 stream-list probe of the first 12 files `analyze` would find) unless you chose another style.
@@ -1018,14 +1018,14 @@ one of them is refused.
 
 | Kind | Style | Selection | Order | Transition | Other |
 |---|---|---|---|---|---|
-| `highlights` (default) | `action` | up to 180 s | chronological | fade | loudnorm |
-| `montage` | `action` | up to 60 s | by score | fade | loudnorm |
-| `clips` | `action` | top 10 | by score | cut | loudnorm; the clips are the deliverable |
+| `highlights` (default) | `auto` | up to 180 s | chronological | fade | loudnorm |
+| `montage` | `auto` | up to 60 s | by score | fade | loudnorm |
+| `clips` | `auto` | top 10 | by score | cut | loudnorm; the clips are the deliverable |
 | `funny-moments` | `funny` | top 8 | chronological | cut | loudnorm, burned-in captions |
 
 | Option | Meaning |
 |---|---|
-| `--style`, `--top N`, `--max-total S` | Replace the kind's value; the others stay (`--kind montage --top 5`: the 5 best that fit in 60 s). `--style auto` picks the style from the footage as [`detect`](#detect) does (the funny style for `funny-moments`), before the `--events` check; unclear footage gets `gaming` when it leans to gameplay, else the General style (`action`; `funny` for `funny-moments` either way) |
+| `--style`, `--top N`, `--max-total S` | Replace the kind's value; the others stay (`--kind montage --top 5`: the 5 best that fit in 60 s). `--style auto`, the default, picks the style from the footage as [`detect`](#detect) does (the funny style for `funny-moments`), before the `--events` check; unclear footage gets `gaming` when it leans to gameplay, else the General style (`action`; `funny` for `funny-moments` either way) |
 | `--out DIR` | Project folder. Default: `<projects>\<name>` (the first input's name, as above) |
 | `--vertical` | 9:16 clips in `clips_vertical`, `final_vertical.mp4`, `<name>-final_vertical.mp4` |
 | `--force` | Replace the clips of an earlier run, as `clips --force`. Without it a non-empty clips folder stops the run before the analysis |
@@ -1063,7 +1063,7 @@ an analysed set processes only the new file.
 
 | Option | Meaning |
 |---|---|
-| `--style` | `gaming` (default), `action`, `sport`, `funny`, `commentary`, `action-cam` (`ski` is not a style), one of your own styles ([`cutpoint style`](#style)) or a learned preset, or `auto`: pick one from the footage, as [`detect`](#detect) does. `auto` never picks `sport` or `funny`; unclear footage gets `gaming` when it leans to gameplay, else `action`, with a `style_ambiguous` warning. `highlights.json` keeps the style it picked in `style` (with `style_kind`, and `style_base`, the built-in style it is based on: its own name for a built-in style, so readers need no style library; files from before it lack the field), `settings.style_requested` is `auto` and `detection` holds the evidence, so `events` and re-runs keep it without detecting again. `action-cam` (or a style of yours over it) on footage where no source has camera telemetry runs as `action`: `settings.style_requested` names the style given and `settings.style_fallback` is `{"from": <style>, "reason": "no telemetry"}`, with an `action_cam_no_telemetry` warning; a re-run asks for the given style again |
+| `--style` | `auto` (default): pick one from the footage, as [`detect`](#detect) does. Or `gaming`, `action`, `sport`, `funny`, `commentary`, `action-cam` (`ski` is not a style), one of your own styles ([`cutpoint style`](#style)) or a learned preset; an explicit style wins. `clips`, `events` and `assemble` use the style recorded in `highlights.json`. Running `analyze` or `edit` again without `--style` detects the footage again; pass `--style NAME` to keep a project's earlier style. `auto` never picks `sport` or `funny`; unclear footage gets `gaming` when it leans to gameplay, else `action`, with a `style_ambiguous` warning. `highlights.json` keeps the style it picked in `style` (with `style_kind`, and `style_base`, the built-in style it is based on: its own name for a built-in style, so readers need no style library; files from before it lack the field), `settings.style_requested` is `auto` and `detection` holds the evidence, so `events` keeps it without detecting again. `action-cam` (or a style of yours over it) on footage where no source has camera telemetry runs as `action`: `settings.style_requested` names the style given and `settings.style_fallback` is `{"from": <style>, "reason": "no telemetry"}`, with an `action_cam_no_telemetry` warning; a re-run asks for the given style again |
 | `--out DIR` | Project folder. Default: `<projects>\<name>`: a file's name without extension, or the folder's full name (`.` resolved; `project` for a drive root); for several inputs, their common parent folder's name |
 | `--exclude GLOB` | Skip files whose name or path matches (case-insensitive, repeatable) |
 | `--recursive` / `--no-recursive` | Search sub-folders of folder inputs (default: no). A folder whose full path matches `--exclude` (`*/Captures/*` or `*/Captures/`) is skipped completely |
@@ -2037,6 +2037,8 @@ runs in the recorded working directory with its recorded options, a `--force` am
 continue where the run stopped. `edit` keeps its clips when the `clips` step was done and
 `clips/manifest.json` is unchanged since; an `edit` or `clips` stopped while exporting encodes
 only the clips it had not finished (see [Resuming an export](#resuming-an-export)).
+
+An `analyze` or `edit` run recorded without `--style` before the default changed (it then meant `gaming` for `analyze`, `action` for `edit`) now runs `--style auto`, with a `resume_args_changed` warning. An `edit` keeps none of its earlier clips: if its clips folder already has clips, the resume stops with `output_not_empty`; run the `edit` again with `--force` (and `--style action` for the earlier result).
 
 Statuses that are resumed: `interrupted` (also `running` with a dead process), `failed` and
 `low_memory`. Status `done` logs `nothing to resume` and exits 0. Sources of the record that
