@@ -253,7 +253,7 @@ def ollama_allowed(url: str) -> bool:
     return want is None or want in get_config().vision_assistant.consent
 
 
-def _unreachable_reason(err: Exception) -> str:
+def unreachable_reason(err: Exception) -> str:
     """Why :meth:`VisionRater.available` got no model list, in a few words ("connection
     refused", "timed out", "name not resolved", "HTTP 404", "not JSON") instead of urllib3's
     full text (#921)."""
@@ -485,7 +485,7 @@ class VisionRater:
                 raise ValueError(f"/api/tags returned {type(data).__name__}, not an object")
             models = data.get("models", [])
         except (requests.RequestException, ValueError) as err:  # ValueError: not JSON
-            why = _unreachable_reason(err)
+            why = unreachable_reason(err)
             logger.info("Ollama not reachable at %s (%s); skipping vision", self.host, why)
             return False
         names = {m.get("name", "") for m in models}
@@ -587,7 +587,7 @@ class VisionRater:
             except ValueError as err:
                 logger.warning("Assistant reply is not JSON: %s", err)
                 return None
-            return _matching(data, schema)
+            return _matching(data, schema, self.model)
         if self.consent_needed:
             self.warn_consent()
             return None
@@ -625,7 +625,7 @@ class VisionRater:
         except (requests.RequestException, KeyError, ValueError) as err:
             logger.warning("Ollama request failed: %s", err)
             return None
-        return _matching(data, schema)
+        return _matching(data, schema, self.model)
 
     def describe(
         self,
@@ -1270,16 +1270,25 @@ def _cached(entry: object) -> VisionResult | None:
 
 
 def _json_object(content: str) -> object:
-    """A reply's JSON from its first ``{`` to its last ``}``; None if it has none."""
+    """A reply's JSON from its first ``{`` to its last ``}``; else the whole reply as JSON (a
+    list, string or number is returned as it is), None if that is no JSON."""
     match = re.search(r"\{.*\}", content, re.S)
-    return json.loads(match.group(0)) if match else None
+    if match:
+        return json.loads(match.group(0))
+    try:
+        return json.loads(content.strip())
+    except ValueError:
+        return None
 
 
-def _matching(data: object, schema: dict | None) -> dict | None:
+def _matching(data: object, schema: dict | None, who: str = "") -> dict | None:
     """``data`` when it is a JSON object with the ``required`` keys of ``schema`` (any object
     when None), else None (a missing key is logged, as a reply that is not JSON). Only the top
-    level is checked; item, type and enum checks stay with each caller's own parsing."""
+    level is checked; item, type and enum checks stay with each caller's own parsing. A reply
+    that is no object is dropped with a DEBUG line naming ``who`` (the model) and its JSON type."""
     if not isinstance(data, dict):
+        kind = "no JSON object" if data is None else type(data).__name__
+        logger.debug("Vision reply from %s dropped: %s, not a JSON object", who or "model", kind)
         return None
     for key in (schema or {}).get("required", ()):
         if key not in data:

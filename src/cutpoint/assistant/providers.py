@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import re
 import threading
 import time
@@ -49,8 +50,10 @@ from urllib3.util import parse_url
 from cutpoint.assistant import cliproxy, keys
 from cutpoint.backends import normalize_ollama_url, ollama_url
 from cutpoint.config import AssistantSettings, assistant_settings
-from cutpoint.vision import _unreachable_reason
 from cutpoint.vision import default_model as vision_model
+from cutpoint.vision import unreachable_reason
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_MODEL = "qwen3.5:9b"  # tools, vision and thinking; about 6.6 GB
 PREVIOUS_VISION_MODEL = "qwen3-vl:8b"  # the default vision model before qwen3.5:9b
@@ -614,7 +617,7 @@ class OllamaProvider:
                 raise moved
             data = resp.json() if resp.status_code < 400 else None
         except requests.RequestException as err:
-            why = f"Ollama is not reachable at {host_port(self.url)} ({_unreachable_reason(err)})"
+            why = f"Ollama is not reachable at {host_port(self.url)} ({unreachable_reason(err)})"
             raise ProviderError(why) from err
         except ValueError:  # not JSON
             data = None
@@ -641,7 +644,7 @@ class OllamaProvider:
                 **kw,
             )
         except requests.RequestException as err:
-            why = f"Ollama is not reachable at {host_port(self.url)} ({_unreachable_reason(err)})"
+            why = f"Ollama is not reachable at {host_port(self.url)} ({unreachable_reason(err)})"
             raise ProviderError(why) from err
         if moved := _redirect("Ollama", resp, "URL"):
             resp.close()
@@ -987,6 +990,7 @@ class OpenAIProvider(_HttpProvider):
 
     def __init__(self, url: str, model: str, context_tokens: int, key: str | None) -> None:
         super().__init__(_openai_base(url or self.default_url), model, context_tokens, key)
+        self._no_schema = False  # the server refused response_format: later calls leave it out
 
     @property
     def title(self) -> str:
@@ -1060,7 +1064,7 @@ class OpenAIProvider(_HttpProvider):
             payload = {"model": self.resolve_model(), "messages": wire}
             if tools:
                 payload["tools"] = tools
-            if schema:
+            if schema and not self._no_schema:
                 payload["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {"name": "cutpoint_reply", "schema": schema},
@@ -1068,6 +1072,15 @@ class OpenAIProvider(_HttpProvider):
         self._stop(cancelled)
         resp = self._send("POST", f"{self.url}/{endpoint}", payload, self.timeout)
         self._stop(cancelled)
+        if "response_format" in payload and resp.status_code == 400:
+            low = self._why(resp).lower()
+            if "response_format" in low or "json_schema" in low:
+                # the prompt asks for JSON anyway; the caller still checks the reply
+                logger.info("%s refused response_format: asking without it", self.title)
+                self._no_schema = True
+                del payload["response_format"]
+                resp = self._send("POST", f"{self.url}/{endpoint}", payload, self.timeout)
+                self._stop(cancelled)
         if resp.status_code < 400:
             data = self._read(resp)
             return self._responses_reply(data) if self.responses else self._reply(data)

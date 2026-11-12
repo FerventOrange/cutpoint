@@ -627,7 +627,7 @@ def run_events(
         vlm,
         seed_types,
         quiet="vlm" not in layers,
-        style=scoring.style_and_base(hl.get("style")),
+        style=scoring.style_and_base(hl.get("style"), hl.get("style_base")),
     )
     # a provider the user did not agree to (a hosted one, or an Ollama on another machine): no
     # request, no cached descriptions or windows either, as for analyze's vision ratings

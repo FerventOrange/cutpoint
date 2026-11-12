@@ -4,6 +4,7 @@ style, forced ones at or above ``must_include_crash`` and weaker ones ranked lik
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -394,6 +395,35 @@ def test_an_events_rerun_leaves_action_cam_to_its_scorer(tmp_path):
     assert analyze.rebuild_crash_moments(tmp_path) is False
 
 
+def test_recorded_style_of_a_deleted_style_is_its_base_with_the_crash_threshold(caplog):
+    """A style missing from the library (deleted) degrades to its recorded built-in base, with
+    one INFO line; the recorded --must-include-crash still applies."""
+    hl = {"style": "gone", "style_base": "action", "settings": {"must_include_crash": 0.8}}
+    with caplog.at_level(logging.INFO):
+        style = analyze._recorded_style(hl)
+    assert style == replace(get_style("action"), must_include_crash=0.8)
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+        (
+            logging.INFO,
+            "Style 'gone' is not in the style library (deleted?); using its base 'action'",
+        )
+    ]
+
+
+@pytest.mark.parametrize("base", [None, "gone", ["gaming"]])
+def test_recorded_style_without_a_built_in_base_names_the_missing_style(tmp_path, base):
+    """An older file (no style_base) or junk: a clear error naming the style, not a KeyError;
+    rebuild_crash_moments raises it too (the CLI makes it an ERROR line)."""
+    hl = {"style": "gone", "sources": [], "candidates": []}
+    if base is not None:
+        hl["style_base"] = base
+    with pytest.raises(ValueError, match=r"'gone' of this analysis is not in the style library"):
+        analyze._recorded_style(hl)
+    cache.save_json(tmp_path / "highlights.json", hl)
+    with pytest.raises(ValueError, match="run 'cutpoint analyze' again with another --style"):
+        analyze.rebuild_crash_moments(tmp_path)
+
+
 def test_the_events_command_rebuilds_the_crash_moments_before_it_rescores(tmp_path, monkeypatch):
     import argparse  # noqa: PLC0415
 
@@ -453,6 +483,23 @@ def test_menu_time_on_a_weak_crash_moment_keeps_repeat_runs_stable(
         assert analyze.rebuild_crash_moments(proj) is False
         scoring.rescore_highlights(proj)
         assert _state(proj) == once
+
+
+def test_rebuilt_crash_moments_of_a_deleted_style_are_trimmed_as_its_base(
+    home, tmp_path, monkeypatch
+):
+    """The menu-time trim of a rebuilt crash moment uses the recorded base of a deleted
+    style (its min_len), so the moment is trimmed, not left whole."""
+    proj, hl = _analyzed(tmp_path, monkeypatch)
+    src = tmp_path / "a.mp4"
+    assert hl["style"] in STYLES  # a built-in style: renamed below to one not in the library
+    cache.save_json(proj / "highlights.json", {**hl, "style": "gone", "style_base": hl["style"]})
+    _set_crashes(proj, record("c1", 20.0, 0.9, src), record("c2", 45.0, 0.55, src))
+    _menu(proj, src, (38.0, 43.0))
+    analyze.rebuild_crash_moments(proj)
+    got = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
+    weak = [c for c in got["candidates"] if (c.get("crash") or {}).get("id") == "c2"]
+    assert [(c["start"], c["end"]) for c in weak] == [(43.0, 53.0)]
 
 
 def test_a_widened_candidate_alone_is_no_change(home, tmp_path, monkeypatch):

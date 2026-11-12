@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import sources
-from cutpoint.styles import get_style
+from cutpoint.styles import Style
 from cutpoint.utils import slugify
 
 logger = logging.getLogger(__name__)
@@ -58,15 +58,18 @@ def _overlap(a: float, b: float, spans: list[list[float]]) -> float:
     return sum(max(0.0, min(b, y) - max(a, x)) for x, y in spans)
 
 
-def _min_len(style: str | None) -> float:
-    """The style's minimum candidate length; unknown styles are never trimmed."""
+def _style(hl: dict[str, Any]) -> Style | None:
+    """The style of the analysis ``hl`` (a deleted user style: its recorded base, see
+    :func:`cutpoint.events.scoring.recorded_style`); None when there is none to use."""
+    from cutpoint.events.scoring import recorded_style  # noqa: PLC0415 - imports this module
+
     try:
-        return get_style(style or "").min_len
+        return recorded_style(hl, logging.DEBUG)
     except ValueError:
-        return float("inf")
+        return None
 
 
-def _retranscribe(c: dict[str, Any], segments: list[dict[str, Any]] | None, style: str) -> None:
+def _retranscribe(c: dict[str, Any], segments: list[dict[str, Any]] | None, st: Style) -> None:
     """The transcript snippet of trimmed ``c`` from the cached ``segments`` (kept without).
 
     Its ``signals.keywords`` keep only the phrases still said in it (matched as analyze
@@ -91,7 +94,6 @@ def _retranscribe(c: dict[str, Any], segments: list[dict[str, Any]] | None, styl
     signals = c.get("signals") or {}
     if not signals.get("keywords"):
         return
-    st = get_style(style)
     marks = [m for m in flat_markers(segments) if c["start"] <= m["start"] <= c["end"]]
     hits = sorted(keyword_hits(said, st.keywords) + laughter_hits(said, marks), key=lambda h: -h[1])
     still = {p for *_, p in hits}
@@ -129,7 +131,8 @@ def drop_menu_time(hl: dict[str, Any], ev: dict[str, Any]) -> None:
     by_src = source_menu_spans(ev)
     if not by_src:
         return
-    min_len = _min_len(hl.get("style"))
+    style = _style(hl)
+    min_len = style.min_len if style is not None else float("inf")  # unknown: never trimmed
     settings = hl.get("settings") or {}
     language, model = settings.get("language"), settings.get("whisper_model")
     segments: dict[str, list[dict[str, Any]] | None] = {}  # loaded once per source
@@ -166,7 +169,8 @@ def drop_menu_time(hl: dict[str, Any], ev: dict[str, Any]) -> None:
                 except OSError as err:  # the source is gone (moved, drive disconnected)
                     logger.debug("No transcript for %s (%s)", c["source"], err)
                     segments[c["source"]] = None
-            _retranscribe(c, segments[c["source"]], hl["style"])
+            if style is not None:  # never None here: only a known style trims
+                _retranscribe(c, segments[c["source"]], style)
         left = _overlap(start, end, spans)
         if left > 0:
             n[4], n[5] = n[4] + 1, n[5] + left

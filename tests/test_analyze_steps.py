@@ -21,7 +21,7 @@ import numpy as np
 import pytest
 
 import cutpoint.actioncam as actioncam
-from conftest import HOP, StubTranscriber, add_profile, run_json, set_config, write
+from conftest import HOP, StubTranscriber, add_profile, envelope, run_json, set_config, write
 from cutpoint import (
     activity,
     analyze,
@@ -34,6 +34,7 @@ from cutpoint import (
     features,
     insta360,
     jsonout,
+    paths,
     progress,
     scorer,
     transcribe,
@@ -3145,3 +3146,118 @@ def test_features_by_source_names_each_sources_divisor_set(tmp_path, monkeypatch
 def test_a_source_not_picked_from_records_the_install_features(tmp_path):
     res = analyze.SourceResult(tmp_path / "a.mp4", None, 0.0, 60.0, [], [], None)
     assert analyze._features_by_source([res]) == {str(res.source): sorted(features.available())}
+
+
+def test_highlights_records_the_built_in_base_of_the_style(run):
+    """The base is written next to the style name: a built-in style is its own base, a user
+    style (over sport) records sport, with no style library needed to read it back."""
+    analyze.analyze([run.video], get_style("gaming"), run.proj, vision=False, layers=True)
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    assert (hl["style"], hl["style_base"]) == ("gaming", "gaming")
+    write(paths.styles_dir() / "trailride.json", json.dumps({"base": "sport", "weights": {}}))
+    analyze.analyze([run.video], get_style("trailride"), run.proj, vision=False, layers=True)
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    assert (hl["style"], hl["style_base"]) == ("trailride", "sport")
+
+
+def test_a_deleted_user_style_degrades_to_its_recorded_base(run, capsys, monkeypatch, caplog):
+    """The file wins: after `style delete`, `events` (crash rebuild and rescore) and the
+    re-analysis run with the recorded built-in base (gaming), with an INFO line, no error."""
+    from cutpoint import stylefiles  # noqa: PLC0415
+
+    write(paths.styles_dir() / "mine.json", json.dumps({"base": "gaming", "weights": {}}))
+    run.go("mine")
+    assert (_hl(run)["style"], _hl(run)["style_base"]) == ("mine", "gaming")
+    stylefiles.delete("mine")
+
+    def run_events(project, **kw):
+        lines = common.load_transcript_lines(project)
+        return report.write_outputs(project, [str(run.video)], [], [], lines, {}, {}, {})
+
+    monkeypatch.setattr(events_cli.pipeline, "run_events", run_events)
+    capsys.readouterr()
+    caplog.clear()
+    argv = ["events", str(run.proj), "--no-vlm", "--layers", "audio", "voice", "crash", "--json"]
+    with caplog.at_level(logging.INFO):
+        code = cli.main(argv)
+    doc = envelope(capsys.readouterr().out)
+    assert code == 0 and doc["error"] is None, caplog.text
+    said = [r for r in caplog.records if "not in the style library" in r.getMessage()]
+    assert [(r.levelno, r.getMessage()) for r in said] == [
+        (
+            logging.INFO,
+            "Style 'mine' is not in the style library (deleted?); using its base 'gaming'",
+        )
+    ]
+    hl = _hl(run)
+    assert (hl["style"], hl["style_base"]) == ("mine", "gaming")  # the file is not rewritten
+    assert all("score_pre_events" in c for c in hl["candidates"])  # the rescore ran
+    analyze.reanalyze(run.proj)
+    hl = _hl(run)
+    gaming = get_style("gaming")
+    assert (hl["style"], hl["style_base"], hl["style_kind"]) == ("gaming", "gaming", gaming.kind)
+    assert hl["candidates"]
+
+
+def test_a_deleted_user_style_without_a_recorded_base_is_a_clear_error(
+    run, capsys, monkeypatch, caplog
+):
+    """An older file (no style_base) of a deleted style: one ERROR line, no traceback."""
+    from cutpoint import stylefiles  # noqa: PLC0415
+
+    write(paths.styles_dir() / "mine.json", json.dumps({"base": "gaming", "weights": {}}))
+    run.go("mine")
+    hl = _hl(run)
+    del hl["style_base"]
+    cache.save_json(run.proj / "highlights.json", hl)
+    stylefiles.delete("mine")
+    with pytest.raises(ValueError, match=r"'mine' .* not in the style library \(deleted\?\)"):
+        analyze.reanalyze(run.proj)
+
+    def run_events(project, **kw):
+        lines = common.load_transcript_lines(project)
+        return report.write_outputs(project, [str(run.video)], [], [], lines, {}, {}, {})
+
+    monkeypatch.setattr(events_cli.pipeline, "run_events", run_events)
+    capsys.readouterr()
+    caplog.clear()
+    code = cli.main(["events", str(run.proj), "--no-vlm", "--layers", "audio", "--json"])
+    doc = envelope(capsys.readouterr().out)
+    assert code == 1 and doc["error"]["code"] == "error"
+    assert "'mine' of this analysis is not in the style library" in doc["error"]["message"]
+    [error] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert error.getMessage() == doc["error"]["message"] and error.exc_info is None
+
+
+def _fell_back(run, requested: str) -> None:
+    """Make highlights.json an action-cam run that fell back to action (#939)."""
+    hl = _hl(run)
+    hl["settings"]["style_requested"] = requested
+    hl["settings"]["style_fallback"] = {"from": requested, "to": "action"}
+    cache.save_json(run.proj / "highlights.json", hl)
+
+
+def test_reanalyze_of_a_fallback_from_a_deleted_style_keeps_the_recorded_style(run, caplog):
+    """An action-cam fallback whose requested style (a user style) was deleted re-runs the
+    recorded style (action), with one INFO line naming both, and no fallback any more."""
+    run.go("action")
+    _fell_back(run, "mycam")
+    with caplog.at_level(logging.INFO):
+        analyze.reanalyze(run.proj)
+    said = [r for r in caplog.records if "not in the style library" in r.getMessage()]
+    assert [(r.levelno, r.getMessage()) for r in said] == [
+        (logging.INFO, "Style 'mycam' is not in the style library (deleted?); using 'action'")
+    ]
+    hl = _hl(run)
+    assert (hl["style"], hl["style_base"]) == ("action", "action")
+    assert "style_fallback" not in hl["settings"]
+
+
+def test_reanalyze_of_a_fallback_from_a_broken_style_file_raises_its_error(run):
+    """A requested style whose file is there but unusable is no deleted style: its error."""
+    run.go("action")
+    _fell_back(run, "mycam")
+    write(paths.styles_dir() / "mycam.json", "{not json")
+    with pytest.raises(ValueError, match="Cannot read learned style"):
+        analyze.reanalyze(run.proj)
+    assert _hl(run)["settings"]["style_requested"] == "mycam"  # the project is left as it was

@@ -8753,6 +8753,33 @@ def test_the_project_view_says_whether_the_footage_is_gaming(
     assert client.get("/api/projects/cli").json()["gaming"] is gaming
 
 
+def test_the_project_view_of_a_deleted_user_style_reads_its_recorded_base(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The style is gone from the library: the page's Color start and --must-include-crash
+    default come from the built-in base highlights.json records, not from nothing."""
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl |= {"style": "gone", "style_base": "gaming"}
+    cache.save_json(p / "highlights.json", hl)
+    view = client.get("/api/projects/cli")
+    assert view.status_code == 200, view.text
+    assert view.json()["gaming"] is True
+    assert view.json()["must_include_crash_default"] == ui.get_style("gaming").must_include_crash
+
+
+def test_the_project_view_of_a_deleted_user_style_without_a_base_is_not_an_error(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """An older file (no style_base): the page loads, with the style's options unknown."""
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    cache.save_json(p / "highlights.json", hl | {"style": "gone"})
+    view = client.get("/api/projects/cli")
+    assert view.status_code == 200, view.text
+    assert view.json()["gaming"] is False and view.json()["must_include_crash_default"] is None
+
+
 def test_color_is_a_three_stop_slider_like_compress_audio_peaks() -> None:
     """Contract pin (#461): Color is a range slider with the stops Off, Auto and Underwater, built
     like Compress Audio Peaks, with a 0-100% Strength shown only with a grade; both name their
@@ -11062,6 +11089,20 @@ def refine_project(tmp_path: Path, style: str = "action", **hl_over: object) -> 
     return p
 
 
+@pytest.mark.parametrize("body", [{"action": "analyze"}, {"action": "edit", "kind": "highlights"}])
+def test_a_job_of_a_deleted_gaming_style_starts_the_proxy_for_the_chat_model(
+    home: Path, client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: dict
+) -> None:
+    """The dialogue step of the base (gaming) needs the subscription proxy; the deleted name
+    would not tell it, the ``--style`` the job runs with does."""
+    set_config(home, **CHAT)
+    deleted_style_project(tmp_path, "gaming")
+    res, seen = refine_job(client, monkeypatch, body)
+    assert res.status_code == 200, res.text
+    assert _after(_cli_args(seen[0]["args"]), "--style") == "gaming"
+    assert seen[0]["before"] is not None
+
+
 def refine_job(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, body: dict, *, lite: str | None = None
 ) -> tuple[object, list[dict[str, object]]]:
@@ -11532,6 +11573,126 @@ def test_a_command_line_auto_project_analyzes_again_with_style_auto(
     assert _after(_cli_args(captured[0]), "--style") == "auto"
 
 
+def deleted_style_project(tmp_path: Path, base: str | None) -> Path:
+    """The command-line project ``cli`` analyzed in the user style ``gone`` (deleted since), which
+    ui/meta.json also names; ``base``: the built-in style highlights.json records for it."""
+    p = auto_project(tmp_path, None, {"style": "gone"})
+    if base is not None:
+        hl = cache.load_json(p / "highlights.json")
+        cache.save_json(p / "highlights.json", hl | {"style_base": base})
+    return p
+
+
+def test_analyze_again_of_a_deleted_user_style_runs_in_its_base_and_keeps_it(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The job passes the recorded base, not the deleted name, and the project's chosen style
+    becomes the base (so the options panel shows it, not an unknown entry)."""
+    p = deleted_style_project(tmp_path, "action")
+    res, captured = style_job(client, monkeypatch, {})
+    assert res.status_code == 200, res.text
+    assert _after(_cli_args(captured[0]), "--style") == "action"
+    assert cache.load_json(p / "ui" / "meta.json")["style"] == "action"
+
+
+def test_analyze_again_of_a_deleted_user_style_without_a_base_is_a_clear_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    p = deleted_style_project(tmp_path, None)
+    res, captured = style_job(client, monkeypatch, {})
+    assert res.status_code == 400 and captured == []
+    assert res.json()["detail"] == (
+        "The style 'gone' of this analysis is not in the style library (deleted?); "
+        "pick another style"
+    )
+    assert cache.load_json(p / "ui" / "meta.json")["style"] == "gone"
+    # choosing another style is still possible
+    res, captured = style_job(client, monkeypatch, {"style": "action"})
+    assert res.status_code == 200 and _after(_cli_args(captured[0]), "--style") == "action"
+
+
+def edit_job(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+) -> tuple[Any, list[list[str]]]:
+    """Post an edit (preset) job to the project ``cli``; the job starts and its check runs."""
+    captured: list[list[str]] = []
+
+    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
+        captured.append(job_args(args))
+        same_folder()
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    return client.post("/api/projects/cli/jobs", json={"action": "edit", **body}), captured
+
+
+def test_a_preset_of_a_deleted_user_style_runs_in_its_base_and_keeps_it(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """edit records the base in highlights.json, so the project's chosen style becomes it too
+    (or the next Analyze again would not find the style it recorded)."""
+    p = deleted_style_project(tmp_path, "action")
+    res, captured = edit_job(client, monkeypatch, {"kind": "highlights"})
+    assert res.status_code == 200, res.text
+    assert _after(_cli_args(captured[0]), "--style") == "action"
+    assert cache.load_json(p / "ui" / "meta.json")["style"] == "action"
+
+
+def test_a_preset_of_a_deleted_user_style_without_a_base_is_a_clear_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    deleted_style_project(tmp_path, None)
+    res, captured = edit_job(client, monkeypatch, {"kind": "highlights"})
+    assert res.status_code == 400 and captured == []
+    assert "pick another style" in res.json()["detail"]
+
+
+def test_a_preset_of_a_deleted_user_style_ignores_the_crash_value_it_had(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The deleted style's own --must-include-crash is gone with it: the preset runs with the
+    base's, not refused for a value it cannot repeat."""
+    p = deleted_style_project(tmp_path, "action")
+    hl = cache.load_json(p / "highlights.json")
+    hl["settings"]["must_include_crash"] = 0.95
+    cache.save_json(p / "highlights.json", hl)
+    assert client.get("/api/projects/cli").json()["preset_problem"] is None
+    res, _ = edit_job(client, monkeypatch, {"kind": "highlights"})
+    assert res.status_code == 200, res.text
+
+
+def test_360_analyze_of_a_deleted_user_style_runs_in_its_base_and_keeps_it(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    for name in X3_CLIPS:
+        (folder / name).write_bytes(b"")
+    pid = client.post("/api/projects", json={"name": "T", "source": str(folder)}).json()["id"]
+    p = ui.project_dir(pid)
+    meta = cache.load_json(p / "ui" / "meta.json")
+    cache.save_json(p / "ui" / "meta.json", meta | {"style": "gone"})
+    cache.save_json(p / "highlights.json", {"style": "gone", "style_base": "action-cam"})
+    seen: list[list[str]] = []
+    monkeypatch.setattr(ui, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
+
+    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
+        seen.append(job_args(args))
+        same_folder()
+        return SimpleNamespace(view=lambda: {"status": "running"})
+
+    monkeypatch.setattr(ui.Jobs, "start", start)
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
+    assert res.status_code == 200, res.text
+    assert _after(seen[0], "--style") == "action-cam"
+    assert cache.load_json(p / "ui" / "meta.json")["style"] == "action-cam"
+    cache.save_json(p / "highlights.json", {"style": "gone"})  # an older file: no base
+    cache.save_json(p / "ui" / "meta.json", meta | {"style": "gone"})
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
+    assert res.status_code == 400 and len(seen) == 1
+    assert "pick another style" in res.json()["detail"]
+
+
 def style_job(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -11673,7 +11834,7 @@ def test_a_style_change_repeats_the_options_the_earlier_analysis_used(
     "scenes": false without --no-scenes, so the analysis in action detects scenes (#880), and
     its own crash default is not passed on as an explicit --must-include-crash."""
     # all built-in styles share one default, so give the earlier style its own to tell them apart
-    monkeypatch.setattr(ui, "_style_crash", lambda s: 0.3 if s == "action-cam" else 0.6)
+    monkeypatch.setattr(ui, "_style_crash", lambda s, _hl=None: 0.3 if s == "action-cam" else 0.6)
     p = auto_project(tmp_path, None, {"style": "action-cam"})
     hl = cache.load_json(p / "highlights.json")
     hl["settings"].update(scenes=False, must_include_crash=0.3)
@@ -11711,7 +11872,7 @@ def test_a_style_switch_that_did_not_finish_does_not_change_the_recorded_options
 def test_a_custom_styles_crash_value_survives_a_style_switch_that_did_not_finish(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(ui, "_style_crash", lambda s: 0.8 if s == "mine" else 0.6)
+    monkeypatch.setattr(ui, "_style_crash", lambda s, _hl=None: 0.8 if s == "mine" else 0.6)
     p = auto_project(tmp_path, None, {"style": "mine"})
     hl = cache.load_json(p / "highlights.json")
     hl["settings"].update(must_include_crash=0.8)

@@ -651,3 +651,73 @@ def test_export_line_says_smart_tail_off_when_no_clip_gets_one(
     )
     (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Exporting 1")]
     assert line.endswith(f"(segments order); {clause}")
+
+
+# -- a project whose user style was deleted ---------------------------------------------
+def _deleted_style_project(home: Path, **extra: Any) -> Path:
+    project = home / "projects" / "p"
+    src = write(project / "src.mp4")
+    hl = {
+        "style": "gone",
+        "candidates": [
+            {
+                "id": "h001",
+                "source": str(src),
+                "start": 0.0,
+                "end": 2.0,
+                "score": 9.0,
+                "duration": 2.0,
+                "label": "a",
+            }
+        ],
+        **extra,
+    }
+    (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    return project
+
+
+def _fake_export(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(clips, "probe", media_info)
+
+    def export(src, info, start, end, out, *_a, **_kw):
+        out.write_bytes(b"n")
+
+    monkeypatch.setattr(clips, "export_clip_checked", export)
+    monkeypatch.setattr(clips.sources, "source_words", lambda _src, _lang=None: None)
+    monkeypatch.setattr(clips.sources, "audio_window", lambda *a: None)
+
+
+def test_clips_of_a_deleted_user_style_use_its_recorded_base(home, monkeypatch, caplog):
+    """The style is gone from the library: clips reads the base the file records (its playback
+    order and tails), with one INFO line, and does not rewrite highlights.json."""
+    caplog.set_level(logging.INFO)
+    project = _deleted_style_project(home, style_base="commentary")
+    before = (project / "highlights.json").read_bytes()
+    _fake_export(monkeypatch)
+    clips.export_clips(project, top=1, speech_aware=False)
+    doc = json.loads((project / "clips" / "manifest.json").read_text(encoding="utf-8"))
+    base = get_style("commentary")
+    assert doc["order"] == base.default_order == "chronological"
+    assert doc["smart_tail"]["style"] == "commentary"
+    assert doc["smart_tail"]["tail_min"] == base.tail_min
+    assert "Style 'gone' is not in the style library (deleted?); using its base 'commentary'" in [
+        r.getMessage() for r in caplog.records
+    ]
+    assert (project / "highlights.json").read_bytes() == before
+
+
+def test_clips_of_a_deleted_user_style_without_a_recorded_base_is_a_clear_error(
+    home, monkeypatch, capsys, caplog
+):
+    """An older file (no style_base): one ERROR line, exit 1, nothing exported."""
+    from cutpoint import cli  # noqa: PLC0415
+
+    project = _deleted_style_project(home)
+    _fake_export(monkeypatch)
+    code = cli.main(["clips", str(project), "--top", "1"])
+    assert code == 1
+    [error] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert "'gone' of this analysis is not in the style library" in error.getMessage()
+    assert "run 'cutpoint analyze' again with another --style" in error.getMessage()
+    assert error.exc_info is None
+    assert not (project / "clips").exists()

@@ -40,12 +40,13 @@ from cutpoint import cache, scorer, sources
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match, resolve
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
-from cutpoint.styles import get_style
+from cutpoint.styles import STYLES, get_style, learned_styles
 from cutpoint.transcribe import flat_markers
 from cutpoint.utils import title_slug
 
 if TYPE_CHECKING:
     from cutpoint.analyze import GridPart
+    from cutpoint.styles import Style
 
 logger = logging.getLogger(__name__)
 
@@ -260,16 +261,55 @@ def _segments(source: str, language: str | None = None) -> list[dict[str, Any]]:
         return []
 
 
-def style_and_base(name: str | None) -> tuple[str, ...]:
+def style_and_base(name: str | None, recorded: object = None) -> tuple[str, ...]:
     """The project style's name and, for a learned style, its base (just the name
-    when the style is unknown or its file is missing)."""
+    when the style is unknown or its file is missing).
+
+    Args:
+        name: The project style's name.
+        recorded: The ``style_base`` of ``highlights.json``, used first when it names a
+            built-in style, so a deleted learned style keeps its base; anything else (no
+            field in an older file, an unknown name) leaves the style library to answer.
+    """
     if not name:
         return ()
-    try:
-        base = get_style(name).base
-    except ValueError:
-        return (name,)
+    if isinstance(recorded, str) and recorded in STYLES:
+        base = recorded
+    else:
+        try:
+            base = get_style(name).base
+        except ValueError:
+            return (name,)
     return (name,) if base == name else (name, base)
+
+
+def recorded_style(hl: dict[str, Any], level: int = logging.INFO) -> Style:
+    """The style of the analysis ``hl`` (a highlights.json object) from the style library.
+
+    The file wins: a style no longer in the library (a deleted user style) degrades to the
+    built-in ``style_base`` the file records, with a log line at ``level`` naming both.
+
+    Raises:
+        ValueError: If the style is not in the library and the file records no built-in
+            base (an older file, or an unknown name), or the style's file is there but
+            cannot be used (:func:`cutpoint.styles.load_learned`).
+    """
+    name = hl.get("style") or ""
+    try:
+        return get_style(name)
+    except ValueError:
+        if name in learned_styles():  # there but unusable (broken file): its own error
+            raise
+        base = hl.get("style_base")
+        if not isinstance(base, str) or base not in STYLES:
+            raise ValueError(
+                f"The style {name!r} of this analysis is not in the style library (deleted?); "
+                "run 'cutpoint analyze' again with another --style"
+            ) from None
+    logger.log(
+        level, "Style %r is not in the style library (deleted?); using its base %r", name, base
+    )
+    return STYLES[base]
 
 
 @dataclass(frozen=True)
@@ -659,13 +699,13 @@ def nominate(
     from cutpoint import analyze  # noqa: PLC0415 - imports this module
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports us
 
-    try:
-        style = get_style(hl.get("style") or "")
-    except ValueError:
+    try:  # a deleted user style nominates with its recorded base (logged by the caller)
+        style = recorded_style(hl, logging.DEBUG)
+    except ValueError:  # an older file without style_base: no style to nominate with
         return 0
     if not style.open_list:
         return 0
-    names = style_and_base(hl.get("style"))
+    names = style_and_base(hl.get("style"), hl.get("style_base"))
     cands = hl.get("candidates", [])
     types, menu = resolve(project, ev), source_menu_spans(ev)
     by_src: dict[str, list[dict[str, Any]]] = {}
@@ -791,7 +831,12 @@ def nominate(
                     rec["dialogue_title"] = title
                     rec["label"] = title_slug(title, default=rec["label"])
                 recs.append(rec)
-            menu_hl = {"style": hl.get("style"), "settings": hl.get("settings"), "candidates": recs}
+            menu_hl = {
+                "style": hl.get("style"),
+                "style_base": hl.get("style_base"),
+                "settings": hl.get("settings"),
+                "candidates": recs,
+            }
             drop_menu_time(menu_hl, ev)
             recs = menu_hl["candidates"]
             # An event is evidence of a moment where nothing is said: its window scores at least

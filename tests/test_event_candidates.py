@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import sys
 import threading
 from itertools import pairwise
@@ -500,9 +501,67 @@ def test_a_learned_style_with_a_generic_base_nominates_and_follows_its_open_list
     assert nominees(hl)[0]["signals"]["events"]["nominated"] == ["player_kills"]
 
 
-def test_an_unknown_style_nominates_nothing(tmp_path):
-    hl = highlights([own("h001", 20.0)], style="no-such-style")
-    assert scoring.nominate(hl, events_of([feed(100.0)]), tmp_path, [grid()]) == 0
+def test_an_unknown_style_without_a_recorded_base_nominates_nothing(tmp_path):
+    """An older file (no style_base) of a style the library lacks: nothing, as before."""
+    for base in (None, "no-such-base", 3):
+        hl = highlights([own("h001", 20.0)], style="no-such-style")
+        if base is not None:
+            hl["style_base"] = base
+        assert scoring.nominate(hl, events_of([feed(100.0)]), tmp_path, [grid()]) == 0
+
+
+@pytest.mark.parametrize(("base", "expected"), [("gaming", 1), ("action", 0)])
+def test_a_deleted_user_style_nominates_as_its_recorded_base(tmp_path, base, expected):
+    """The file wins: a deleted user style nominates with its recorded built-in base (gaming:
+    open list), and one over a base without an open list (action) still nominates nothing."""
+    learned("mine", base)
+    hl = highlights([own("h001", 20.0)], style="mine")
+    hl["style_base"] = base
+    (paths.styles_dir() / "mine.json").unlink()
+    with pytest.raises(ValueError, match="Unknown style"):
+        get_style("mine")
+    assert scoring.nominate(hl, events_of([feed(100.0)]), tmp_path, [grid()]) == expected
+    if expected:
+        assert nominees(hl)[0]["signals"]["events"]["nominated"] == ["player_kills"]
+
+
+@pytest.mark.parametrize(
+    ("text", "error"),
+    [
+        ("{not json", "Cannot read learned style"),
+        (json.dumps({"schema": 1, "base": "gaming", "weights": {"nope": 1}}),
+         "not a valid style file"),
+        (json.dumps({"base": "no-such-base", "weights": {}}), "unknown base style"),
+    ],
+)  # fmt: skip
+def test_recorded_style_of_a_broken_style_file_raises_its_own_error(text, error):
+    """A style file that is there but unusable is no deleted style: its error, no fallback."""
+    folder = paths.styles_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "mine.json").write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match=error):
+        scoring.recorded_style({"style": "mine", "style_base": "gaming"})
+    hl = highlights([own("h001", 20.0)], style="mine")
+    hl["style_base"] = "gaming"
+    assert scoring.nominate(hl, events_of([feed(100.0)]), Path(), [grid()]) == 0
+
+
+def test_recorded_style_degrades_a_missing_style_to_its_recorded_base(caplog):
+    with caplog.at_level(logging.DEBUG, logger=scoring.__name__):
+        got = scoring.recorded_style({"style": "gone", "style_base": "sport"}, logging.DEBUG)
+    assert got is get_style("sport")
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+        (
+            logging.DEBUG,
+            "Style 'gone' is not in the style library (deleted?); using its base 'sport'",
+        )
+    ]
+    caplog.clear()
+    assert scoring.recorded_style({"style": "gaming", "style_base": "sport"}) is get_style("gaming")
+    assert not caplog.records  # a style in the library: no fallback, no line
+    for hl in ({"style": "gone"}, {"style": "gone", "style_base": "gone"}, {"style_base": None}):
+        with pytest.raises(ValueError, match="not in the style library"):
+            scoring.recorded_style(hl)
 
 
 # --------------------------------------------------------------------------- rescore
