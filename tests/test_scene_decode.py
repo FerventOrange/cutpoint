@@ -338,6 +338,30 @@ def test_one_decode_without_cpu_free_or_with_the_switch(ff, monkeypatch, mode, g
     assert single == [gpu] and ff.calls == []
 
 
+def test_a_failed_gpu_proxy_encode_logs_why_it_reruns_on_the_cpu(monkeypatch, caplog, tmp_path):
+    runs = []
+
+    def run_progress(args, total, label, **kw):
+        runs.append(args)
+        if len(runs) == 1:
+            raise FFmpegError(
+                "ffmpeg failed during scene proxy (exit 1):\n\nCannot load libnvcuvid\nmore"
+            )
+
+    monkeypatch.setattr(analyze, "run_progress", run_progress)
+    src = tmp_path / "a.mp4"
+    with caplog.at_level("DEBUG", logger="cutpoint.analyze"):
+        analyze._make_proxy(src, tmp_path / "p.mp4", analyze._proxy_args(10.0), 10.0)
+    assert len(runs) == 2
+    assert [(r.levelname, r.getMessage()) for r in caplog.records] == [
+        (
+            "DEBUG",
+            "scene proxy: GPU decode failed for a.mp4 (Cannot load libnvcuvid); "
+            "re-running on the CPU",
+        )
+    ]
+
+
 def test_ctrl_c_stops_both_halves_and_removes_the_proxies(ff, monkeypatch):
     """KeyboardInterrupt in the waiting thread: both ffmpeg runs are told to stop (their
     ``cancel``), the proxies go and the interrupt is raised."""

@@ -1031,11 +1031,17 @@ def _make_proxy(
     try:
         try:
             run_progress(command(hw), seconds, label, **opts)
-        except FFmpegError:
+        except FFmpegError as err:
             if cancel is not None and cancel.wait(STOP_GRACE_S):  # Ctrl+C reached ffmpeg too
                 raise RunCancelled(label) from None
             if hw is None:
                 raise
+            # message: ffmpeg's header line, then the tail of its stderr; show its first line
+            lines = [ln.strip() for ln in str(err).splitlines() if ln.strip()]
+            first = (lines[1] if len(lines) > 1 else lines[0] if lines else "")[:200]
+            logger.debug(
+                "scene proxy: GPU decode failed for %s (%s); re-running on the CPU", src.name, first
+            )
             run_progress(command(None), seconds, label, **opts)
         if cancel is not None and cancel.is_set():
             raise RunCancelled(label)
