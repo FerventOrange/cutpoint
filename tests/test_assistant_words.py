@@ -344,6 +344,12 @@ def test_owner_scenario_make_her_say_a_sentence() -> None:
     apart = fake.requests[1]["messages"][-1]["content"]
     assert "nobody says 'I am shit' in one place" in apart
     assert "Its words are said apart: 'I' 1 times, 'am' 1 times, 'shit' 1 times" in apart
+    # #974: the splice comes ready, one add_range per word in order
+    assert (
+        'propose_edit with these ops, in order: [{"op": "add_range", "file": "a.mp4", '
+        '"start": 1.5, "end": 1.6}, {"op": "add_range", "file": "a.mp4", "start": 1.65, '
+        '"end": 1.8}, {"op": "add_range", "file": "b.mp4", "start": 2.45, "end": 2.8}]'
+    ) in apart
     assert "no moment id needed" in fake.requests[2]["messages"][-1]["content"]
     assert '"start": 1.5, "end": 1.8' in fake.requests[2]["messages"][-1]["content"]
     prop = turn.view()["events"][-1]
@@ -360,7 +366,7 @@ def test_owner_scenario_make_her_say_a_sentence() -> None:
         ({"end": 2.81}, True),  # the end of "SHIT." (2.8), within 0.02 s
         ({"start": 4.2}, True),  # right after "I'm": the hit's end
         ({"end": 4.0}, True),  # right before "I'm": the hit's start
-        ({"start": 3.9}, False),  # near no word
+        ({"start": 3.8}, False),  # near no word (0.2 s from "I'm")
     ],
 )
 def test_a_trim_at_a_found_words_edge_makes_the_row_exact(
@@ -398,6 +404,185 @@ def test_a_trim_at_a_found_words_edge_makes_the_row_exact(
 
 
 @pytest.mark.parametrize(
+    ("segments", "op", "exact"),
+    [
+        ([], {"op": "add", "id": "m3", "start": 4.0}, True),  # at the start of "I'm"
+        ([], {"op": "add", "id": "m3", "start": 4.5}, False),  # near no word
+        ([(2.0, 9.0)], {"op": "trim", "id": "m3", "end_delta": -6.2}, True),  # to "SHIT."'s end
+    ],
+)
+def test_an_add_or_a_delta_trim_at_a_found_words_edge_makes_the_row_exact(
+    segments: list[tuple[float, float]], op: dict[str, Any], exact: bool
+) -> None:
+    """#974: an add at a find_words hit edge, and a trim to one given as a delta, are cut at
+    the word as a trim in seconds is."""
+    proj = chat_project()
+    proj.segments = [
+        {"id": "c3", "source": B, "start": a, "end": b, "label": "x"} for a, b in segments
+    ]
+    fake = FakeProvider(
+        [
+            call("find_words", query="shit"),
+            call("find_words", query="I'm"),
+            call("propose_edit", summary="Cut at the word", ops=[op]),
+        ]
+    )
+    turn = run(fake, "cut it at the word", proj=proj)
+    prop = turn.view()["events"][-1]
+    assert prop["kind"] == "proposal", prop
+    assert prop["after"][-1].get("exact", False) is exact
+    assert (prop["ops"][0].get("exact") is True) is exact  # a rebase on save marks it again
+
+
+@pytest.mark.parametrize(
+    ("start", "want", "exact"),
+    [
+        (3627.0, 3627.04, True),  # a small model's rounding of "bathtub"'s start
+        (3627.5, 3627.5, False),  # 0.3 s from the nearest hit edge: as given
+        (10.1, 10.12, True),  # "is" ends at 10.05, "it" starts at 10.12: the nearer
+    ],
+)
+def test_an_edge_within_a_tenth_of_a_hit_edge_moves_onto_it(
+    start: float, want: float, exact: bool
+) -> None:
+    """#974: an add edge within 0.1 s of a find_words hit edge is put on the hit and cut
+    exactly there; one further away stays where the model put it."""
+    src = "/v/c.mp4"
+    spoken = {src: said((" is", 10.0, 10.05), (" it", 10.12, 10.3), (" bathtub", 3627.04, 3627.2))}
+    cands = [
+        {"id": "b", "source": src, "start": 3620.0, "end": 3632.0, "score": 90, "label": "tub"},
+        {"id": "i", "source": src, "start": 5.0, "end": 15.0, "score": 80, "label": "it"},
+    ]
+    proj = session.Project(
+        cands, [], ops.Durations({src: 4000.0}, lambda _p: None), "", "k", words=spoken.get
+    )
+    moment = "m1" if start > 100 else "m2"
+    fake = FakeProvider(
+        [
+            call("find_words", query="bathtub"),
+            call("find_words", query="is"),
+            call("find_words", query="it"),
+            call(
+                "propose_edit", summary="Add it", ops=[{"op": "add", "id": moment, "start": start}]
+            ),
+        ]
+    )
+    turn = run(fake, "add it from the word", proj=proj)
+    row = turn.view()["events"][-1]["after"][0]
+    assert (row["start"], row.get("exact", False)) == (want, exact)
+
+
+@pytest.mark.parametrize(
+    ("search", "ops_", "want"),
+    [
+        # F1: remove and add again put the row at its own 5.0-9.0; the delta counts from there
+        (
+            "shit",
+            [
+                {"op": "remove", "id": "m3"},
+                {"op": "add", "id": "m3"},
+                {"op": "trim", "id": "m3", "start_delta": 0.5},
+            ],
+            (5.5, 9.0, False),
+        ),
+        # a delta after an add counts from the add's own edges, as apply_ops applies it
+        (
+            "shit",
+            [
+                {"op": "remove", "id": "m3"},
+                {"op": "add", "id": "m3", "start": 3.0},
+                {"op": "trim", "id": "m3", "start_delta": -0.52},
+            ],
+            (2.45, 9.0, True),
+        ),
+        # ... and after an earlier trim that moved an end earlier
+        (
+            "shit",
+            [
+                {"op": "trim", "id": "m3", "end": 3.0},
+                {"op": "trim", "id": "m3", "end_delta": -0.21},
+            ],
+            (2.0, 2.8, True),
+        ),
+        # an end moved later: the delta counts from where apply_ops puts it (no phrase snap here)
+        (
+            "shit",
+            [
+                {"op": "trim", "id": "m3", "end": 9.5},
+                {"op": "trim", "id": "m3", "end_delta": -6.72},
+            ],
+            (2.0, 2.8, True),
+        ),
+        ("shit", [{"op": "trim", "id": "m3", "end": 2.75, "exact": False}], (2.0, 2.75, False)),
+        ("I am", [{"op": "trim", "id": "m3", "start": 1.52}], (1.52, 9.0, False)),  # a.mp4's hit
+    ],
+    ids=[
+        "remove-add-delta",
+        "add-then-delta",
+        "trim-then-delta",
+        "later-end-then-delta",
+        "exact-false",
+        "other-source",
+    ],
+)
+def test_chained_ops_exact_false_and_other_sources_at_word_edges(
+    search: str, ops_: list[dict[str, Any]], want: tuple[float, float, bool]
+) -> None:
+    """#974 review: a delta snaps from the row's edges as the ops before it leave them;
+    exact false and another source's hit are left as given."""
+    proj = chat_project()
+    proj.segments = [{"id": "c3", "source": B, "start": 2.0, "end": 9.0, "label": "crash"}]
+    fake = FakeProvider(
+        [call("find_words", query=search), call("propose_edit", summary="Trim it", ops=ops_)]
+    )
+    turn = run(fake, "trim it", proj=proj)
+    prop = turn.view()["events"][-1]
+    assert prop["kind"] == "proposal", prop
+    row = next(r for r in prop["after"] if r["id"] == "c3")
+    assert (row["start"], row["end"], row.get("exact", False)) == want
+
+
+def test_hits_older_than_the_turns_the_model_sees_are_forgotten() -> None:
+    """#974 review: a hit from a turn the model is no longer shown neither snaps nor nudges."""
+    first = run(
+        FakeProvider([call("find_words", query="shit"), Reply("At 2.45 s in b.mp4.")]),
+        "where does he say shit",
+        proj=chat_project(),
+    )
+    filler = [{"user": "hi", "reply": "hello"}] * session.context.budget(8192).turns
+    proj = chat_project()
+    proj.segments = [{"id": "c3", "source": B, "start": 2.0, "end": 9.0, "label": "crash"}]
+    trim = [{"op": "trim", "id": "m3", "end": 2.8}]
+    fake = FakeProvider([call("propose_edit", summary="Cut", ops=trim)])
+    turn = session.Turn(fake, proj, "cut the crash", [first.record(), *filler])
+    turn.start()
+    assert turn.done.wait(10)
+    assert not turn._found_words
+    assert "find_words hits" not in json.dumps(fake.requests[0]["messages"])
+    assert "exact" not in turn.view()["events"][-1]["after"][0]
+
+
+def test_hits_of_an_earlier_message_are_remembered() -> None:
+    """#974: "find where he says 'shit'", then "cut the crash at that word": the next message
+    sees the hit and its trim there is exact, with no new search."""
+    first = run(
+        FakeProvider([call("find_words", query="shit"), Reply("At 2.45 s in b.mp4.")]),
+        "where does he say shit",
+        proj=chat_project(),
+    )
+    proj = chat_project()
+    proj.segments = [{"id": "c3", "source": B, "start": 2.0, "end": 9.0, "label": "crash"}]
+    trim = [{"op": "trim", "id": "m3", "end": 2.8}]
+    fake = FakeProvider([call("propose_edit", summary="Cut at shit", ops=trim)])
+    turn = session.Turn(fake, proj, "cut the crash after that word", [first.record()])
+    turn.start()
+    assert turn.done.wait(10)
+    history = fake.requests[0]["messages"][-2]["content"]
+    assert history.endswith("(find_words hits: 'shit': b.mp4 2.45-2.8)")
+    assert turn.view()["events"][-1]["after"][0]["exact"] is True
+
+
+@pytest.mark.parametrize(
     ("query", "nudge"),
     [
         ("shit", "SPLICE_NUDGE"),
@@ -419,7 +604,10 @@ def test_a_refused_stitch_after_found_words_is_nudged_to_splice(query: str, nudg
     )
     turn = run(fake, "Stitch clips together that make her say 'I am shit'", proj=chat_project())
     assert turn.status == "done", turn.error
-    assert fake.requests[2]["messages"][-1] == {"role": "user", "content": getattr(session, nudge)}
+    sent = fake.requests[2]["messages"][-1]
+    assert sent["role"] == "user" and sent["content"].startswith(getattr(session, nudge))
+    # #974: a phrase said apart gets its splice ops in the nudge too
+    assert ("The ops: [" in sent["content"]) is (query == "I am shit")
     assert "add_range one find_words hit of each word" in session.SPLICE_NUDGE
     assert turn.view()["events"][-1]["kind"] == "proposal"
 
@@ -450,8 +638,14 @@ def test_owner_scenario_find_where_she_says_a_in_json_mode() -> None:
 def test_two_sources_with_one_file_name_are_told_apart_by_their_folder() -> None:
     day1, day2 = "/v/day1/a.mp4", "/v/day2/a.mp4"
     spoken = {day1: said((" a", 1.0, 1.1)), day2: said((" a", 2.0, 2.1))}
+    moment = {"id": "d2", "source": day2, "start": 1.0, "end": 5.0, "score": 50, "label": "x"}
     proj = session.Project(
-        [], [], ops.Durations({day1: 60.0, day2: 60.0}, lambda _p: None), "", "k", words=spoken.get
+        [moment],
+        [],
+        ops.Durations({day1: 60.0, day2: 60.0}, lambda _p: None),
+        "",
+        "k",
+        words=spoken.get,
     )
     same = [{"op": "add_range", "file": "a.mp4", "start": 2.0, "end": 2.1}]
     told = [{"op": "add_range", "file": "day2/a.mp4", "start": 2.0, "end": 2.1}]
@@ -466,6 +660,7 @@ def test_two_sources_with_one_file_name_are_told_apart_by_their_folder() -> None
     assert turn.status == "done", turn.error
     hits = data_rows(fake.requests[1]["messages"][-1]["content"])
     assert [h["file"] for h in hits] == ["day1/a.mp4", "day2/a.mp4"]
+    assert '"file":"day2/a.mp4"' in fake.requests[0]["messages"][1]["content"]  # #974: moments too
     rejected = fake.requests[2]["messages"][-1]["content"]
     assert "several sources are named 'a.mp4': use one of day1/a.mp4, day2/a.mp4" in rejected
     assert turn.view()["events"][-1]["after"][0]["source"] == day2
@@ -497,3 +692,17 @@ def test_a_real_export_of_a_short_word_keeps_it(home, monkeypatch) -> None:
     assert entry["audio_fade"] == planning.EXACT_AUDIO_FADE_S
     length = probe(folder / entry["file"]).duration
     assert 0.09 <= length <= 0.2, length
+
+
+def test_rows_after_follows_apply_ops_and_gives_none_for_wrong_ops() -> None:
+    """#974 review: the rows the word snap reads come from the ops code itself."""
+    seq = [{"id": "c1", "source": "/v/a.mp4", "start": 2.0, "end": 9.0, "label": "x"}]
+    cands = [{"id": "m1", "source": "/v/a.mp4", "start": 20.0, "end": 26.0, "label": "y"}]
+    durations = {"/v/a.mp4": 100.0}
+    copy = ops.rows_after(seq, [], cands, durations)
+    assert copy == seq and copy[0] is not seq[0]
+    later = ops.rows_after(
+        seq, [{"op": "trim", "id": "c1", "end": 9.5}], cands, durations, snap=lambda _s, t: t + 0.3
+    )
+    assert later is not None and later[0]["end"] == pytest.approx(9.8)
+    assert ops.rows_after(seq, [{"op": "trim", "id": "nope", "end": 3.0}], cands, durations) is None

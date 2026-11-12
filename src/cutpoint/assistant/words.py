@@ -55,7 +55,7 @@ TOOL = {
 }
 RULES = f"""
 
-{NAME}: where words are said, even "a". To make a person say a sentence, add each word in order, from anywhere: {{"op": "add_range", "file": "a.mp4", "start": 1.2, "end": 1.5}} (hit times). Search before saying a word is not said."""
+{NAME}: where words are said, even "a". To make a person say words never said together, splice them: one add_range per word, in order: {{"op": "add_range", "file": "a.mp4", "start": 1.2, "end": 1.5}} (hit times; no moment id). Never refuse a splice. Search before saying a word is not said."""
 
 
 @dataclass(frozen=True)
