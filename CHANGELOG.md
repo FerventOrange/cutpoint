@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Saving a discovered activity profile never overwrites a library file that is not a readable profile (a corrupt or foreign JSON file with the same name): the profile is saved as `<name>-<hash>` (or the next free `-2`, `-3`, ...) and a WARNING names the file left in place.
 - An OpenAI-compatible server (not OpenAI's own Responses API) that answers HTTP 400 naming `response_format` or `json_schema` is asked once again without it, and later calls of that provider leave it out; the reply is still checked for a JSON object with the required keys. Other 400s, timeouts and key errors are not retried (#920).
 - A Vision reply that is not a JSON object is dropped with a DEBUG line naming the model and the JSON type, no longer silently.
+- `cutpoint events` and the re-analysis of an action-cam project no longer end with `Unknown style` after the project's style was deleted with `cutpoint style delete`: the style degrades to the built-in base `highlights.json` records (`style_base`), with an INFO line naming both, so the crash moments are rebuilt and the events nominate and rescore as that base; the re-analysis records the base as the project's style. An older file without `style_base` ends with an ERROR line that names the missing style and asks for `cutpoint analyze` with another `--style`. A project of a deleted style over `action` or `sport` also keeps its visual pool when `highlights.json` has no `settings.visual_pool` record.
 
 ### Changed
 
