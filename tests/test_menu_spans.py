@@ -82,6 +82,14 @@ def test_trim_keeps_the_style_minimum_length() -> None:
     assert (c["start"], c["end"]) == (12, 40)
 
 
+def test_a_deleted_style_trims_as_its_recorded_base() -> None:
+    """A style no longer in the library trims with the min_len of its recorded base."""
+    hl = {**_hl(_cand(10, 40), style="gone"), "style_base": "commentary"}
+    drop_menu_time(hl, _ev([[5, 12], [31, 50]]))
+    (c,) = hl["candidates"]
+    assert (c["start"], c["end"]) == (12, 40)  # as commentary: the end would leave 19 s
+
+
 def test_unknown_style_is_never_trimmed() -> None:
     hl = _hl(_cand(10, 20), style="no-such-style")
     drop_menu_time(hl, _ev([[8, 12]]))

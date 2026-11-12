@@ -59,6 +59,7 @@ from cutpoint.events.scoring import (
     heard_laughter,
     is_nominated,
     number_candidates,
+    recorded_style,
     rescore,
     restore_widened,
 )
@@ -2424,7 +2425,12 @@ def rebuild_crash_moments(project: Path) -> bool:
     get the next ids (``settings.last_candidate_id``). Left alone: action-cam (its scorer reads
     crashes.json), 360 projects, ``settings.crash_moments`` false, and a source whose grids are
     not cached (recovered, offline). A candidate that a forced crash moment replaced is not brought back
-    when that crash goes away: only a re-analysis does."""
+    when that crash goes away: only a re-analysis does.
+
+    Raises:
+        ValueError: If the style is not in the library and the file records no built-in base
+            (:func:`_recorded_style`).
+    """
     from cutpoint.crash import load_crashes  # noqa: PLC0415
     from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415
@@ -2493,7 +2499,12 @@ def rebuild_crash_moments(project: Path) -> bool:
         kept.append(old if same else ({"id": old["id"]} if "id" in old else {}) | new)
     ev = cache.load_json(project / "events.json")
     if fresh and ev:  # menu time drops or trims a new one as analyze does, so it takes no id
-        menu_hl = {"style": hl.get("style"), "settings": hl.get("settings"), "candidates": fresh}
+        menu_hl = {
+            "style": hl.get("style"),
+            "style_base": hl.get("style_base"),
+            "settings": hl.get("settings"),
+            "candidates": fresh,
+        }
         drop_menu_time(menu_hl, ev)
         fresh = menu_hl["candidates"]
     pool = [c for c in rest if is_pool(c)]
@@ -4242,10 +4253,15 @@ def report_highlights(out_dir: Path, highlights: Path) -> None:
 
 
 def _recorded_style(hl: dict[str, Any]) -> Style:
-    """The style of the analysis ``hl``, with the ``--must-include-crash`` it recorded."""
-    from cutpoint.styles import get_style  # noqa: PLC0415
+    """The style of the analysis ``hl``, with the ``--must-include-crash`` it recorded.
 
-    style = get_style(hl["style"])
+    A style no longer in the library (a deleted user style) degrades to its recorded built-in
+    base (:func:`cutpoint.events.scoring.recorded_style`).
+
+    Raises:
+        ValueError: If the style is not in the library and ``hl`` records no built-in base.
+    """
+    style = recorded_style(hl)
     at = (hl.get("settings") or {}).get("must_include_crash")
     if at is not None:  # an `analyze --must-include-crash`
         style = replace(style, must_include_crash=float(at))
@@ -4263,7 +4279,8 @@ def reanalyze(project: Path) -> Path:
     Raises:
         FileNotFoundError: If the project has no highlights.json.
         ValueError: If highlights.json is unreadable, not valid JSON or records
-            no analysis.
+            no analysis, or its style is not in the library and it records no built-in
+            base (:func:`_recorded_style`).
     """
     from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
 
@@ -4286,9 +4303,16 @@ def reanalyze(project: Path) -> Path:
     if isinstance(st.get("style_fallback"), dict) and isinstance(requested, str):
         # an action-cam style that fell back to action (#939): asked for again, so the
         # telemetry probe decides as it did (or picks it up once the sources have it)
-        from cutpoint.styles import get_style  # noqa: PLC0415
+        from cutpoint.styles import get_style, learned_styles  # noqa: PLC0415
 
-        style = replace(get_style(requested), must_include_crash=style.must_include_crash)
+        try:
+            style = replace(get_style(requested), must_include_crash=style.must_include_crash)
+        except ValueError:  # a deleted user style: the recorded one, without the probe
+            if requested in learned_styles():  # there but unusable (broken file): its error
+                raise
+            logger.info(
+                "Style %r is not in the style library (deleted?); using %r", requested, style.name
+            )
     total = (hl.get("timings") or {}).get("total_s")
     # --style auto: the style it chose, and its decision kept (never detected again)
     detection = hl.get("detection") if st.get("style_requested") == AUTO else None
