@@ -845,7 +845,10 @@ cached in the project's `ui/assistant/sheets`, per moment, clip window, sheet si
 Its header shows the model and provider (local, or the hosted host), with a note
 that a small local model can miss moments or misread a request. Type a request and press Enter
 or Send (Shift+Enter starts a new line); the reply shows the steps the model took ("Searched
-for …") and can be stopped with Cancel. The chat needs an analyzed project.
+for …") and can be stopped with Cancel. The chat needs an analyzed project. After 7 replies of
+the model, or once it has watched as many moments as a message may, the model is asked to answer
+with what it found: when the moments do not show what you asked for, it says so and offers
+something it can do instead, such as a montage of the best moments.
 
 The model reads the moments as text: label (a generic one shown as what the vision model saw,
 as in the Moments list), score, times, transcript snippet and, when analysis has them, `kind`,
