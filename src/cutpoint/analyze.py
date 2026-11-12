@@ -65,6 +65,7 @@ from cutpoint.events.scoring import (
 )
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.ffmpeg_utils import (
+    NVDEC_DOWNLOAD,
     READ_ERROR_RE,
     STOP_GRACE_S,
     HwDecoder,
@@ -602,7 +603,7 @@ def _proxy_args(
     return pre, post, vf, ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "32"]
 
 
-_SCENE_DOWNLOAD = {"yuv420p": "nv12", "yuvj420p": "nv12", "yuv420p10le": "p010le"}
+_SCENE_DOWNLOAD = NVDEC_DOWNLOAD
 
 
 def _fixed_scale(vf: str, src: Path) -> str:
@@ -639,7 +640,19 @@ def _scene_decode(hw: HwDecoder | None, vf: str, src: Path) -> tuple[list[str], 
     if hw is None:
         return [], vf
     if not _seeks_exactly(src):
-        return (hw.input_args(), vf) if hw.kind == "cuda" else ([], vf)
+        if hw.kind == "cuda":
+            try:
+                pix_fmt = probe(src).pix_fmt or ""
+            except FFmpegError:
+                pix_fmt = None  # the decode reports an unreadable file itself
+            if pix_fmt is not None and pix_fmt not in _SCENE_DOWNLOAD:
+                logger.debug(
+                    "%s: pixel format %s is outside NVDEC's 8/10-bit 4:2:0 download formats; "
+                    "NVDEC may not decode it and ffmpeg then decodes it in software",
+                    src.name, pix_fmt or "unknown",
+                )  # fmt: skip
+            return hw.input_args(), vf
+        return [], vf
     fmt = _SCENE_DOWNLOAD.get(probe(src).pix_fmt or "")
     if fmt is None:
         return hw.input_args(), gpu_chain(hw, vf) or vf

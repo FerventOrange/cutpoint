@@ -1008,6 +1008,8 @@ def find_encoder(kind: str) -> tuple[VideoEncoder | None, list[str]]:
 # ----------------------------------------------------------------- GPU decode
 # Decoders are probed like encoders: a working encoder says nothing about the decoder.
 _GPU_DOWNLOAD = "hwdownload,format=nv12,format=yuv420p"  # to the 8-bit 4:2:0 the CPU chain expects
+# Source pixel format -> the format NVDEC downloads it in (8- and 10-bit 4:2:0 only).
+NVDEC_DOWNLOAD = {"yuv420p": "nv12", "yuvj420p": "nv12", "yuv420p10le": "p010le"}
 
 
 @dataclass(frozen=True)
@@ -1881,8 +1883,13 @@ def split_decode_args(
     is pinned at its head: a picture that changes size mid-file would otherwise reach the
     ``raw_vf`` crop out of bounds. ``format`` there (``src_fmt``, the probed pixel format;
     yuv420p for VAAPI, whose download gives it, and when unknown) keeps the scene proxy in the
-    source's format (the graph would negotiate bgr24 for the raw branch and make it yuv444p)."""
+    source's format (the graph would negotiate bgr24 for the raw branch and make it yuv444p).
+    On CUDA (``-hwaccel cuda`` alone: the decoder downloads the frames) it is NVDEC's own
+    download format (nv12, p010le), so the head adds no conversion; a format NVDEC does not
+    decode keeps the probed one."""
     fmt = "yuv420p" if hw is not None and hw.kind == "vaapi" else src_fmt or "yuv420p"
+    if hw is not None and hw.kind == "cuda":
+        fmt = NVDEC_DOWNLOAD.get(src_fmt or "", fmt)
     split = "split=2"
     if src_size is not None:
         split = f"scale={src_size[0]}:{src_size[1]},format={fmt},split=2"

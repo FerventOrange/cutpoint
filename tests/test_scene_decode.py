@@ -112,6 +112,26 @@ def test_a_forced_split_also_needs_a_container_that_seeks_exactly(monkeypatch, n
     assert analyze._hybrid_plan(Path(name), 600.0, 0.0, None, True) is None
 
 
+@pytest.mark.parametrize(
+    ("pix_fmt", "logged"),
+    [("yuv444p", True), ("yuv422p", True), ("yuv420p", False), ("yuv420p10le", False)],
+)
+def test_a_ts_nvdec_cannot_decode_is_logged(monkeypatch, caplog, pix_fmt, logged):
+    """A non-exact container on CUDA is decoded by ffmpeg alone, which falls back to software
+    silently for a format NVDEC may lack: one DEBUG line names the file and the format, and
+    only says NVDEC may not decode it."""
+    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 600.0, pix_fmt=pix_fmt))
+    with caplog.at_level("DEBUG", logger=analyze.logger.name):
+        args, _ = analyze._scene_decode(CUDA, "fps=2,scale=256:-2", Path("clip.ts"))
+    assert args == ["-hwaccel", "cuda"]
+    lines = [r.getMessage() for r in caplog.records if "NVDEC" in r.getMessage()]
+    assert bool(lines) is logged
+    if logged:
+        assert len(lines) == 1 and "clip.ts" in lines[0] and pix_fmt in lines[0]
+        assert "outside NVDEC's 8/10-bit 4:2:0 download formats" in lines[0]
+        assert "may not decode it" in lines[0]
+
+
 @pytest.mark.parametrize("name", ["a.mp4", "a.MOV", "a.m4v", "a.mkv"])
 def test_auto_splits_mp4_mov_m4v_and_mkv(name):
     assert analyze._hybrid_plan(Path(name), 600.0, 0.0, None, True) is not None

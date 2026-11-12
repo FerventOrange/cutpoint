@@ -94,7 +94,8 @@ def test_the_split_decode_keeps_one_graph_of_the_probed_size():
 
 
 def test_the_split_decode_pins_the_source_pixel_format():
-    """The head keeps the source's format (the serial pass's proxy and frames); VAAPI downloads
+    """The head keeps the source's format on the CPU (the serial pass's proxy and frames); CUDA
+    pins NVDEC's download format (nv12, p010le; other formats stay as probed); VAAPI downloads
     yuv420p, and an unknown format gives yuv420p."""
 
     def graph(fmt, hw=None):
@@ -107,7 +108,11 @@ def test_the_split_decode_pins_the_source_pixel_format():
     cuda = ffmpeg_utils.HwDecoder("cuda")
     vaapi = ffmpeg_utils.HwDecoder("vaapi", "/dev/dri/renderD128")
     assert graph("yuv444p").startswith("[0:v:0]scale=640:360,format=yuv444p,split=2[s][o]")
-    assert graph("yuv420p10le", cuda).startswith("[0:v:0]scale=640:360,format=yuv420p10le,split")
+    assert graph("yuv420p10le", cuda).startswith("[0:v:0]scale=640:360,format=p010le,split")
+    assert graph("yuv420p", cuda).startswith("[0:v:0]scale=640:360,format=nv12,split")
+    assert graph("yuvj420p", cuda).startswith("[0:v:0]scale=640:360,format=nv12,split")
+    assert graph("yuv444p", cuda).startswith("[0:v:0]scale=640:360,format=yuv444p,split")
+    assert graph("yuv420p10le").startswith("[0:v:0]scale=640:360,format=yuv420p10le,split")
     assert graph("yuv444p", vaapi).startswith(
         f"[0:v:0]{ffmpeg_utils._GPU_DOWNLOAD},scale=640:360,format=yuv420p,split=2[s][o]"
     )
