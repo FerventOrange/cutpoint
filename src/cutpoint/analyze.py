@@ -27,7 +27,7 @@ import re
 import sys
 import threading
 import time
-from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from itertools import pairwise
@@ -3684,6 +3684,7 @@ def analyze(
     footage: category.FootageVision | None = None,
     vision_time_share: float | None = None,
     telemetry_fallback: bool = True,
+    reranked: dict[str, Any] | None = None,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -3760,6 +3761,11 @@ def analyze(
             instead, recorded as ``settings.style_requested`` and ``settings.style_fallback``
             with an ``action_cam_no_telemetry`` warning (#939). False (``360 analyze``): the
             style runs as given.
+        reranked: The ``settings.reranked`` record of a project re-ranked to another style
+            (:mod:`cutpoint.rerank`, :func:`reanalyze`): recorded again, with
+            ``settings.style_requested`` the style's name, the user's choice. ``detection``
+            is then the earlier auto analysis's block, kept as it is but not acted on: the
+            layers follow ``style``.
 
     Returns:
         Path of the written highlights.json.
@@ -3792,6 +3798,7 @@ def analyze(
             footage=footage,
             vision_time_share=vision_time_share,
             telemetry_fallback=telemetry_fallback,
+            reranked=reranked,
         )
 
 
@@ -3823,6 +3830,7 @@ def _analyze(
     footage: category.FootageVision | None,
     vision_time_share: float | None,
     telemetry_fallback: bool,
+    reranked: dict[str, Any] | None,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
@@ -3840,7 +3848,8 @@ def _analyze(
             logger.info("Footage looks %s so far (%s)", category.label(det.category), det.reason)
         style = auto.style(name)
         cat = det.category if fallback is None else None
-    elif detection is not None and not detection.get("fallback"):  # a re-run: as decided
+    elif detection is not None and reranked is None and not detection.get("fallback"):
+        # a re-run: as decided
         stored = detection.get("category")
         cat = stored if stored in category.CATEGORIES else None
     # action-cam without any telemetry: the action style, decided before the OCR prefetch, the
@@ -3848,7 +3857,7 @@ def _analyze(
     style_fallback: dict[str, str] | None = None
     if (
         auto is None
-        and detection is None
+        and (detection is None or reranked is not None)
         and telemetry_fallback
         and style.kind == ACTION_CAM
         and not any(has_telemetry(s) for s in sources)
@@ -4068,7 +4077,17 @@ def _analyze(
                 "max_candidates": max_candidates,
                 "recover": recover,
                 **({} if crash_moments else {"crash_moments": False}),  # 360 analyze
-                **({"style_requested": AUTO} if detection_rec is not None else {}),
+                **(
+                    {"style_requested": AUTO}
+                    if detection_rec is not None and reranked is None
+                    else {}
+                ),
+                # re-ranked to another style (cutpoint rerank): the user's choice
+                **(
+                    {"style_requested": style.name, "reranked": reranked}
+                    if reranked is not None
+                    else {}
+                ),
                 # #939: an action-cam style without telemetry ran as `style` (action)
                 **(
                     {"style_requested": style_fallback["from"], "style_fallback": style_fallback}
@@ -4206,6 +4225,12 @@ def _records(parts: Sequence[CrashPart], style: Style) -> list[dict[str, Any]]:
     return [_candidate_record(c, i, style) for c, i in found]
 
 
+def span_key(c: dict[str, Any]) -> tuple[str, float, float]:
+    """What names a candidate's span across runs: its source and its start and end to the
+    hundredth of a second (as :func:`~cutpoint.events.scoring.nominate` matches nominees)."""
+    return (str(c["source"]), round(float(c["start"]), 2), round(float(c["end"]), 2))
+
+
 def rank_parts(
     hl: dict[str, Any],
     parts: Sequence[CrashPart],
@@ -4222,6 +4247,8 @@ def rank_parts(
     batch_size: int,
     vision_time_share: float | None,
     earlier_total_s: float | None,
+    ids: Mapping[tuple[str, float, float], str] | None = None,
+    vision_cache_only: bool = False,
 ) -> Any:
     """The ranking tail of an analysis: the candidates of ``parts`` (picked already) ranked
     into ``hl`` (a highlights.json object with its ``settings`` and ``timings``), in place.
@@ -4238,9 +4265,11 @@ def rank_parts(
     ``source_index`` is its part's position); a part without ``signals`` keeps its candidates
     but gives no grid. ``hl["timings"]`` gets ``vision_s``.
 
-    Seams for a re-rank (not used yet): it numbers every candidate from ``h001`` (keeping the
-    ids of unchanged spans would replace that), and the vision step asks the model (a cached-
-    ratings-only rating would set :attr:`VisionRater.cache_only`).
+    For a re-rank (:mod:`cutpoint.rerank`): ``ids`` maps the :func:`span_key` of the earlier
+    candidates to their ids; a candidate with the span of one keeps its id and the others get
+    the next ids after ``settings.last_candidate_id`` (:func:`number_candidates`). None: every
+    candidate is numbered from ``h001``. ``vision_cache_only``: the vision step takes the
+    cached ratings only and asks no model (the moments without one stay unrated).
 
     Returns:
         The events.json object the candidates were ranked with, or a falsy value without one.
@@ -4317,7 +4346,7 @@ def rank_parts(
             wording = activity.project_prompts(project)
         # available() first: it resolves a hosted provider's unset model, the cache key.
         # Offline, that model stays the placeholder and its cached ratings are not found.
-        online, n_cached = rater.available(), 0
+        online, n_cached = (not vision_cache_only and rater.available()), 0
         if not online:  # Ollama down: the ratings already cached, no requests (#413)
             rater.cache_only = True
             n_cached = sum(
@@ -4334,7 +4363,7 @@ def rank_parts(
                 for c in order
             )
         if online or n_cached:
-            if not online:
+            if not online and not vision_cache_only:
                 n_none = len(order) - n_cached
                 message = (
                     "vision rating requested but Ollama/model unavailable; using "
@@ -4410,6 +4439,9 @@ def rank_parts(
                     "skipped_by_cap": outcome.skipped_by_cap,
                     "clamped": n_clamped,
                 }
+        elif vision_cache_only:
+            logger.info("Vision: no cached rating for these moments; they stay unrated")
+            steps.skip("vision", "no cached ratings (re-rank)")
         else:
             message = "vision rating requested but Ollama/model unavailable; continuing without it"
             logger.warning("%s", message)
@@ -4421,9 +4453,21 @@ def rank_parts(
         key=lambda c: (not c.get("must_include"), *scorer.rank_key(c), *scorer.tie_key(c))
     )  # must-include first
     suggested = len(default_fit.fit_target(cands, style.target_total))
-    hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]
+    if ids is None:
+        hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]
+        hl["settings"]["last_candidate_id"] = len(cands)
+    else:  # unchanged spans keep their id, the others get the next ones
+        given: set[str] = set()
+        out = []
+        for c in cands:
+            was = ids.get(span_key(c))
+            if was is not None and was not in given:
+                given.add(was)
+                c = {"id": was, **c}
+            out.append(c)
+        hl["candidates"] = out
+        number_candidates(hl)
     hl["suggested_top"] = suggested
-    hl["settings"]["last_candidate_id"] = len(cands)
     from cutpoint import visual_pool  # noqa: PLC0415
 
     if visual_pool.is_pool_style(style):
@@ -4470,13 +4514,45 @@ def _recorded_style(hl: dict[str, Any]) -> Style:
     return style
 
 
-def reanalyze(project: Path) -> Path:
+def restyled(hl: dict[str, Any], style: Style) -> Style:
+    """``style`` for a re-rank of the analysis ``hl``, with the ``--must-include-crash`` it
+    recorded when that was not its own style's (an override of ``analyze``)."""
+    at = (hl.get("settings") or {}).get("must_include_crash")
+    if not isinstance(at, int | float) or isinstance(at, bool):
+        return style
+    try:
+        own = recorded_style(hl, logging.DEBUG).must_include_crash
+    except ValueError:  # a deleted style without a recorded base: no override to tell
+        return style
+    return style if float(at) == own else replace(style, must_include_crash=float(at))
+
+
+def rerank_record(hl: dict[str, Any], style: Style) -> dict[str, Any] | None:
+    """The ``settings.reranked`` record of the analysis ``hl`` re-ranked to ``style``: ``from``
+    the style it had and ``requested`` the style asked for then (``auto``, an action-cam style
+    that fell back, or the style of an earlier re-rank; None for a plain one). The same style:
+    the record ``hl`` has (None without one)."""
+    st = hl.get("settings") or {}
+    if style.name == hl.get("style"):
+        kept = st.get("reranked")
+        return kept if isinstance(kept, dict) else None
+    requested = st.get("style_requested")
+    return {"from": hl.get("style"), "requested": requested if isinstance(requested, str) else None}
+
+
+def reanalyze(project: Path, style: Style | None = None) -> Path:
     """Re-run ``analyze`` with the inputs and style recorded in highlights.json.
 
     Everything expensive is cached (audio, transcript, telemetry), so this is
     quick. ``cutpoint events`` calls it for action-cam projects, whose events feed the
     feature grid itself rather than a score boost. ``timings.total_s`` stays the earlier
     analysis's; the re-rank's own time is ``timings.rerank_s``.
+
+    ``style``: analyze with this style instead (``cutpoint rerank --analyze``), with the
+    event layers it plans (made where their caches miss) and the dialogue step; another
+    style than the recorded one is the user's choice (:func:`rerank_record`, an auto
+    analysis's ``detection`` block kept). None: the recorded style, the layers as they are.
+    A project re-ranked before keeps its style and record either way.
 
     Raises:
         FileNotFoundError: If the project has no highlights.json.
@@ -4500,9 +4576,13 @@ def reanalyze(project: Path) -> Path:
     st = hl.get("settings", {})
     inputs = st.get("inputs") or [s["path"] for s in hl["sources"]]
     pano = (project / PANO_FILE).is_file()
-    style = _recorded_style(hl)
+    given = style
+    reranked = None if given is None else rerank_record(hl, given)
+    if reranked is None and isinstance(st.get("reranked"), dict):
+        reranked = st["reranked"]  # re-ranked before: the user's style stays
+    style = _recorded_style(hl) if given is None else restyled(hl, given)
     requested = st.get("style_requested")
-    if isinstance(st.get("style_fallback"), dict) and isinstance(requested, str):
+    if given is None and isinstance(st.get("style_fallback"), dict) and isinstance(requested, str):
         # an action-cam style that fell back to action (#939): asked for again, so the
         # telemetry probe decides as it did (or picks it up once the sources have it)
         from cutpoint.styles import get_style, learned_styles  # noqa: PLC0415
@@ -4516,8 +4596,10 @@ def reanalyze(project: Path) -> Path:
                 "Style %r is not in the style library (deleted?); using %r", requested, style.name
             )
     total = (hl.get("timings") or {}).get("total_s")
-    # --style auto: the style it chose, and its decision kept (never detected again)
-    detection = hl.get("detection") if st.get("style_requested") == AUTO else None
+    # --style auto: the style it chose, and its decision kept (never detected again); for a
+    # re-ranked project the block only, as recorded
+    auto = st.get("style_requested") == AUTO
+    detection = hl.get("detection") if auto or reranked is not None else None
     return analyze(
         [Path(p) for p in inputs],
         style,
@@ -4541,6 +4623,9 @@ def reanalyze(project: Path) -> Path:
         # off for 360 projects (pano.json: also one analysed before crash_moments was recorded)
         crash_moments=st.get("crash_moments") is not False and not pano,
         telemetry_fallback=not pano,  # 360 projects stay action-cam
+        # another style: its own event layers (360 analyze runs its layers itself)
+        layers=given is not None and not pano,
+        reranked=reranked,
     )
 
 

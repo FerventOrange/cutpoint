@@ -35,7 +35,7 @@ prints tracebacks of errors.
 
 `--json` makes a command write its result as exactly one JSON object on stdout. It is available
 on `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
-`setup`, `events`, `crashes`, `profile`, `style` (every verb), `resume` and every `360` subcommand (`scan`, `analyze`, `status`,
+`setup`, `events`, `crashes`, `profile`, `style` (every verb), `resume`, `rerank` and every `360` subcommand (`scan`, `analyze`, `status`,
 `director`, `stitch`, `qa`, `repair`). `ui`, `guide`, `skill`, `proxy`, `login` and
 `logout` have no `--json`. Logs and errors stay on stderr, and
 output of child processes such as ffmpeg goes to stderr too, so stdout can be parsed as is. Exit
@@ -69,6 +69,7 @@ So do these combinations:
 - `assemble <project> --force` with `--format mp4`
 - `assemble <clips_dir>` with an option that only works from a project
 - `edit --format fcpxml|otio` with `--no-keep-clips`
+- `rerank --dry-run` with `--analyze` (exit 2, from the parser)
 
 | `error.code` | Exit | Cause |
 |---|---|---|
@@ -77,7 +78,8 @@ So do these combinations:
 | `ffmpeg_missing` | 1 | ffmpeg or ffprobe is not found |
 | `missing_extra` | 1 | An optional extra is not installed (the feature is not available in Cutpoint lite) |
 | `output_not_empty` | 1 | A file or folder is in the way; see `--force` |
-| `folder_busy` | 1 | Another cutpoint run holds the folder's lock (`.<folder>.cutpoint-lock`); wait and retry. `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` and `clips` hold `<project>/.analysis.run.cutpoint-lock` (see [Run lock](#run-lock-and-progressjson)) |
+| `folder_busy` | 1 | Another cutpoint run holds the folder's lock (`.<folder>.cutpoint-lock`); wait and retry. `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze`, `clips` and a saving `rerank` hold `<project>/.analysis.run.cutpoint-lock` (see [Run lock](#run-lock-and-progressjson)) |
+| `needs_analyze` | 1 | `rerank`: the project's caches lack a feature the style needs, so it can only be re-ranked by analyzing again; `outputs.missing` names each one and `outputs.analyze_command` the command that does it (`rerank ... --analyze`). See [rerank](#rerank) |
 | `low_memory` | 1 | Too little free memory to load a model, also after Cutpoint freed cached models and unloaded Ollama's; close other programs, then run the command the `ERROR` line names (`cutpoint resume <project>`, or the same command again when no `progress.json` was written yet). See [Memory guard](#memory-guard) |
 | `interrupted` | 130 | Ctrl+C, Ctrl+Break or SIGTERM |
 | `error` | 1 | Anything else |
@@ -136,6 +138,7 @@ So do these combinations:
 |---|---|
 | `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
 | `resume` | `resume` (`argv`, `status_before`, `done_before`), `resumed`, and the replayed command's outputs |
+| `rerank` | `highlights`, `backup` (`highlights.before-rerank.json` when saved, else `null`), `saved`, `analyzed` (`--analyze` ran analyze), `style`, `from` (the style before), `candidates` (count), `suggested_top`, `top` and `before` (the first `--top` moments after and before: each `rank`, `id`, `source`, `start`, `end`, `score`, `label`; `top` also `was`, the moment's rank before or `null` for a new span), `new_ids`, `dropped_ids`, `notes`, `seconds`. With `needs_analyze`: `missing` (each `feature`, `detail`, `source`) and `analyze_command` |
 | `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set; the number of moments the default `clips` edit picks), `style`; with `--style auto`, `detection` (the `highlights.json` block, see [detect](#detect)) |
 | `detect` | `category` (`gameplay`, `action-cam`, `action`, `talk` or `general`), `ambiguous`, `reason`, `scores` (share of the footage per category), `suggest` (`commentary` for talky gameplay, else `null`), `decided_by` (the evidence that decided the sure sources, most footage first: `telemetry`, `static HUD`, `HUD text`, `camera tags`, `360 frame`, `speech` or `vision`; empty when ambiguous), `sources` (each `path`, `duration`, `category`, `ambiguous`, `reason`, `decided_by` (`null` when ambiguous), `gameplay` (score 0-1, `null` with telemetry) and `speech` (share of the source covered by words, `null` before transcription)), `pending` (talk not checked yet: a long source has no transcript), `styles` (`analyze` and `funny-moments`: the style each would use) |
 | `clips` | `clips_dir`, `manifest`, `clips` (each `file`, `srt`, `label`, `source`, `start`, `end`, `score`), `count`, `total_seconds`, `taken_over` (finished clips taken over from a stopped export's `.<folder>.cutpoint-resume`, not encoded again; 0 when none, missing for temporary clips) |
@@ -2022,6 +2025,45 @@ long runs (as the crash layer of [`events`](#events) does); `crashes.json` is th
 
 Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, the default reanalyze step is skipped and `highlights.json` is left unchanged; rerun once the footage is back.
 
+## rerank
+
+```text
+cutpoint rerank <project> --style NAME [--dry-run | --analyze] [--top N] [--json]
+```
+
+Re-ranks an analysed project with another style in seconds, from the caches its analysis left
+(loudness, transcript, scene cuts, `events.json`, `crashes.json` and cached vision ratings),
+without running analyze again. `--style` is a built-in style or one of yours (`cutpoint style
+list`), not `auto`. It prints the new top `--top` moments (default 10) with their rank before
+(`new` for a span the earlier ranking does not have).
+
+- `--dry-run` shows the new ranking and writes nothing. It is exact: a save writes the same
+  ranking.
+- Without `--dry-run`, `highlights.json` is replaced and the file before is kept as
+  `highlights.before-rerank.json` (one backup: the next save replaces it). Copy it back to
+  undo. The save holds the project's run lock (`folder_busy` while another run works on it).
+- A moment whose span is unchanged keeps its id; a new span gets the next id after
+  `settings.last_candidate_id`, so an id never names another span.
+- The new style is recorded as your choice: `settings.style_requested` is its name and
+  `settings.reranked` records `from` (the style before) and `requested` (the style asked for
+  then, such as `auto`, else `null`). An auto project keeps its `detection` block. A
+  re-analysis (`rerank --analyze`, or the one `cutpoint events` runs) keeps the style.
+- Vision takes cached ratings only (the rating is per style, so moments of another style are
+  often unrated) and asks no model. With a style that does not weigh scene cuts, the cuts
+  around new moment edges are decoded from the footage when no earlier run cached them.
+
+It stops with `needs_analyze` (exit 1) when a feature the style needs is missing: an
+action-cam style, or a change between action-cam and the other styles; a 360 project; a source
+that is offline or was read in parts (`--recover`); a source with audio but no cached loudness
+or transcript; a source without a full scene pass when scene detection is on and the style
+weighs scene cuts (or the source is longer than 30 min); an event layer the style's footage
+category runs (such as the crash and visual layers of `action`) that the project's
+`events.json` lacks. The `ERROR` line names what is missing and the command to run.
+`--analyze` runs it in that case: analyze again with the recorded inputs and settings and the
+new style, with its event layers (minutes to hours; cached work is reused). Re-ranking into
+`gaming` when the dialogue step never read the project is only an INFO note: run
+`cutpoint analyze` with `--style gaming` for its talk stretches.
+
 ## resume
 
 ```text
@@ -2103,7 +2145,8 @@ and never over the record of an interrupted run of another command, which `cutpo
 then still continues). A second run on the project stops with `folder_busy` and an `ERROR`
 naming the process, as for the [folder lock](#folder-lock) of `clips`: wait, or delete the
 lock file if no run is active. `events`, `crashes` and `profile` treat a folder with only a
-`progress.json` as no project: they write nothing and take no lock. A first `analyze` or
+`progress.json` as no project: they write nothing and take no lock. `rerank` holds the lock
+only while it saves (`--dry-run` takes none) and writes no `progress.json`. A first `analyze` or
 `edit` writes `progress.json` only after its first source is transcribed. After Ctrl+C or a
 failure, the step the run was in reads `failed` (the `PROGRESS` states) and `status` says why.
 After a hard kill the file keeps `running`; `cutpoint resume` reads such a record, whose

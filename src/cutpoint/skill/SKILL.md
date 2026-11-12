@@ -64,6 +64,13 @@ Choosing the moments yourself:
    `cutpoint assemble <project> --top 8 --transition fade --loudnorm` exports the moments into a
    temporary folder, joins them and removes the clips.
 
+Another style on an analysed project ("more talk", "the funny bits"): `cutpoint rerank
+<project> --style NAME --dry-run` shows the new ranking in seconds from the analysis's caches;
+without `--dry-run` it saves it (the file before is kept as `highlights.before-rerank.json`;
+unchanged moments keep their ids). `error.code` `needs_analyze` means a feature the style needs
+is missing: tell the user, and with their OK run the command the ERROR line names
+(`rerank ... --analyze`, which analyzes again: minutes to hours).
+
 ## Rules
 
 - Never modify or delete the user's source videos.
@@ -80,7 +87,7 @@ Choosing the moments yourself:
   `schema`, `project`, `outputs` (absolute paths and key facts), `warnings` (`code`, `message`,
   `files`) and `error` (`code`, `message`, or `null`). It works on `paths`, `analyze`, `detect`, `clips`,
   `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `events`, `crashes`,
-  `profile`, `resume` and every `360` subcommand.
+  `profile`, `resume`, `rerank` and every `360` subcommand.
 - Cutpoint ships only the `base` and `generic` activity profiles. Others are discovered or made by
   the user or you: `cutpoint profile list|show|create|validate|delete` (`create NAME --from FILE`).
   `--activity NAME` takes a name from `profile list`.
@@ -93,8 +100,8 @@ Choosing the moments yourself:
   lock (`.<folder>.cutpoint-lock`; with `--json`, `error.code` is `folder_busy`), wait or
   retry; delete the lock file only if no run is active. If `clips --force` or `extend` refuses
   a `manifest.json` Cutpoint did not write, tell the user; never delete it.
-- `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` and `clips` hold
-  `<project>/.analysis.run.cutpoint-lock`; on `folder_busy` wait or retry, and delete the lock
+- `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze`, `clips` and a saving
+  `rerank` hold `<project>/.analysis.run.cutpoint-lock`; on `folder_busy` wait or retry, and delete the lock
   only if no run is active.
 - Check `cutpoint <command> --help`; never invent options.
 - When done, report the absolute paths of `final.mp4` (and the `<name>-final.mp4` copy after

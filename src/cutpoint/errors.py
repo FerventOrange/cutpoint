@@ -33,3 +33,15 @@ class LowVramError(LowMemoryError):
     """:class:`LowMemoryError` where the GPU's memory alone is short: Whisper, PANNs and the
     crash check's CLIP run on the CPU instead (:func:`cutpoint.memguard.device_for`); the
     visual models stop the run."""
+
+
+class NeedsAnalyzeError(RuntimeError):
+    """A re-rank (:mod:`cutpoint.rerank`) needs features the project's caches do not hold, so
+    ``analyze`` has to run with the style. ``missing``: what is missing (each with ``feature``,
+    ``detail`` and ``source``); ``command``: the command that analyzes the project with the
+    style."""
+
+    def __init__(self, message: str, missing: list[dict[str, str | None]], command: str) -> None:
+        super().__init__(message)
+        self.missing = missing
+        self.command = command
