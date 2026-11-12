@@ -1307,7 +1307,7 @@ def detect_project(
                 )
     if not inputs and failed is not None:  # no source loaded: not one bad file, the step failed
         logger.warning(
-            "%s: crash detection failed for every source (last: %s)",
+            "crash detection failed for every source (last: %s: %s)",
             failed_src.name if failed_src else "?", failed,
         )  # fmt: skip
         raise failed  # unchanged: cli.py maps its type and attributes (missing_extra, errno)

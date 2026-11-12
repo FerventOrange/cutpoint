@@ -177,7 +177,7 @@ def test_when_every_source_fails_the_error_propagates_and_crashes_json_stays(
     assert not [r for r in caplog.records if r.levelname == "ERROR"]  # the CLI logs the error
     final = [r for r in caplog.records if "for every source" in r.getMessage()]
     assert [(r.levelname, r.getMessage()) for r in final] == [
-        ("WARNING", "arch.mp4: crash detection failed for every source (last: no CLIP weights)")
+        ("WARNING", "crash detection failed for every source (last: arch.mp4: no CLIP weights)")
     ]
     assert (project / "crashes.json").read_text(encoding="utf-8") == earlier
     assert sum("crash detection skipped this source" in r.getMessage() for r in caplog.records) == 2
