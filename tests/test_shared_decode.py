@@ -74,7 +74,7 @@ def _split(clip: Path, cdir: Path, outs: list, cancel=None, hw=None) -> SplitDec
 def test_the_split_decode_keeps_one_graph_of_the_probed_size():
     """``-reinit_filter 0`` before the hw options and ``-i``; the source size is pinned at the
     graph's head, so a picture that changes size cannot reach the raw crop out of bounds."""
-    for kind, head in (("cuda", "scale=640:360,split=2"), ("vaapi", None)):
+    for kind, head in (("cuda", "scale=640:360,format=yuv420p,split=2"), ("vaapi", None)):
         hw = ffmpeg_utils.HwDecoder(kind, "/dev/dri/renderD128" if kind == "vaapi" else None)
         args = ffmpeg_utils.split_decode_args(
             "in.mp4", scene_vf=SCENE_VF, scene_enc=ENC, proxy=Path("p.mp4"), raw_vf=VF,
@@ -85,12 +85,34 @@ def test_the_split_decode_keeps_one_graph_of_the_probed_size():
         assert i < args.index("-hwaccel") < args.index("-i")
         graph = args[args.index("-filter_complex") + 1]
         assert graph.startswith(
-            f"[0:v:0]{head or ffmpeg_utils._GPU_DOWNLOAD + ',scale=640:360,split=2'}[s][o]"
+            f"[0:v:0]{head or ffmpeg_utils._GPU_DOWNLOAD + ',scale=640:360,format=yuv420p,split=2'}[s][o]"
         )
     plain = ffmpeg_utils.split_decode_args(
         "in.mp4", scene_vf=SCENE_VF, scene_enc=ENC, proxy=Path("p.mp4"), raw_vf=VF
     )
     assert plain[plain.index("-filter_complex") + 1].startswith("[0:v:0]split=2[s][o]")
+
+
+def test_the_split_decode_pins_the_source_pixel_format():
+    """The head keeps the source's format (the serial pass's proxy and frames); VAAPI downloads
+    yuv420p, and an unknown format gives yuv420p."""
+
+    def graph(fmt, hw=None):
+        args = ffmpeg_utils.split_decode_args(
+            "in.mp4", scene_vf=SCENE_VF, scene_enc=ENC, proxy=Path("p.mp4"), raw_vf=VF,
+            hw=hw, src_size=(640, 360), src_fmt=fmt,
+        )  # fmt: skip
+        return args[args.index("-filter_complex") + 1]
+
+    cuda = ffmpeg_utils.HwDecoder("cuda")
+    vaapi = ffmpeg_utils.HwDecoder("vaapi", "/dev/dri/renderD128")
+    assert graph("yuv444p").startswith("[0:v:0]scale=640:360,format=yuv444p,split=2[s][o]")
+    assert graph("yuv420p10le", cuda).startswith("[0:v:0]scale=640:360,format=yuv420p10le,split")
+    assert graph("yuv444p", vaapi).startswith(
+        f"[0:v:0]{ffmpeg_utils._GPU_DOWNLOAD},scale=640:360,format=yuv420p,split=2[s][o]"
+    )
+    assert graph(None).startswith("[0:v:0]scale=640:360,format=yuv420p,split=2[s][o]")
+    assert graph("").startswith("[0:v:0]scale=640:360,format=yuv420p,split=2[s][o]")
 
 
 def _left(cdir: Path) -> set[str]:
@@ -729,6 +751,7 @@ def test_split_claims_the_share_and_the_scene_cuts_get_its_proxy(pre, monkeypatc
     (kw,) = made
     assert (kw["raw_vf"], kw["scene_vf"], kw["scene_enc"], kw["size"]) == (VF, SCENE_VF, ENC, SIZE)
     assert kw["src_size"] == (640, 360)  # pinned at the graph's head
+    assert kw["src_fmt"] == "yuv420p"
     assert kw["spool"] == tmp_path / "cache" / ffmpeg_utils.SPOOL_DIR
     assert share.result() == tmp_path / "cache" / "proxy.mp4" and share.spool_peak == 1234
 

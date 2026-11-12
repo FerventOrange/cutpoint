@@ -628,10 +628,18 @@ def _scene_decode(hw: HwDecoder | None, vf: str, src: Path) -> tuple[list[str], 
     an 8- or 10-bit 4:2:0 source the frames stay on the GPU until the ``fps`` filter
     dropped the ones the detector does not read, so only those are downloaded. Other formats
     (4:4:4, 12-bit, unknown) and the CPU keep the plain path. The proxy's size is fixed
-    (:func:`_fixed_scale`)."""
+    (:func:`_fixed_scale`).
+
+    A container that does not seek exactly (MPEG-TS, possibly joined files) is decoded without
+    a ``hwdownload`` in the chain: NVDEC reinitialises at a join and ffmpeg rebuilds the graph
+    despite ``-reinit_filter 0`` (``setpts`` and ``fps`` start again, the encoder drops the
+    rest, exit 0). CUDA then downloads the frames itself (``-hwaccel cuda`` alone, the plain
+    chain); VAAPI always needs the download, so it decodes on the CPU."""
     vf = _fixed_scale(vf, src)
     if hw is None:
         return [], vf
+    if not _seeks_exactly(src):
+        return (hw.input_args(), vf) if hw.kind == "cuda" else ([], vf)
     fmt = _SCENE_DOWNLOAD.get(probe(src).pix_fmt or "")
     if fmt is None:
         return hw.input_args(), gpu_chain(hw, vf) or vf

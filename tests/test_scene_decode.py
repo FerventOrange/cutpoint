@@ -684,6 +684,20 @@ def test_a_picture_that_widens_mid_file_reaches_the_encoder_in_one_size(tmp_path
     assert len(raw) % frame == 0 and len(raw) // frame >= 38, len(raw)  # 40 at one size
 
 
+@needs_ffmpeg
+def test_a_joined_mpegts_keeps_its_cuts_after_the_join_on_the_gpu(joined_ts, tmp_path, monkeypatch):
+    """Windows, NVDEC: the decoder reinitialises at the join and a ``hwdownload`` chain lost
+    every cut after it (the encoder dropped the second half, ffmpeg exited 0)."""
+    dec = ffmpeg_utils.gpu_decoder()
+    if dec is None:
+        pytest.skip("no GPU decoder works here")
+    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(analyze, "decoder_for", lambda src: dec)
+    vstart = ffmpeg_utils.probe(joined_ts).vstart
+    got = one_pass(joined_ts, tmp_path / "joined")
+    assert near(got, [c + vstart for c in CLIP_CUTS]), got
+
+
 # ----------------------------------------------------------------- the first frame's time
 SHOWINFO_6 = """[Parsed_showinfo_0 @ 0x1] config in time_base: 1/90000, frame_rate: 10/1
 [Parsed_showinfo_0 @ 0x1] config out time_base: 0/0, frame_rate: 0/0

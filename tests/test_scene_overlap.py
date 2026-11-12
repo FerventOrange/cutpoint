@@ -861,11 +861,25 @@ def test_an_mpegts_scene_pass_counts_from_the_container_start(tmp_path, monkeypa
     assert first == [long]
     rate, width, height = (2, 256, 144) if long else (10, 320, 180)
     head = f"setpts=PTS-STARTPTS+3.021000/TB,fps={rate}:start_time=0"
-    assert _vf(gpu) == f"{head},hwdownload,format=nv12,scale={width}:{height}"
-    assert _vf(cpu) == f"{head},scale={width}:{height}"
+    # no hwdownload in the chain: NVDEC would rebuild the graph at a joined file's join
+    assert gpu[gpu.index("-hwaccel") : gpu.index("-i")] == ["-hwaccel", "cuda"]
+    assert "hwdownload" not in _vf(gpu) and "-hwaccel_output_format" not in gpu
+    assert _vf(gpu) == _vf(cpu) == f"{head},scale={width}:{height}"
     for cmd in (gpu, cpu):
         assert "-copyts" not in cmd and "-ss" not in cmd
         assert ("-skip_frame" in cmd) is long
+
+
+def test_a_vaapi_mpegts_scene_pass_decodes_on_the_cpu_and_an_mp4_keeps_the_gpu_chain(
+    tmp_path, monkeypatch
+):
+    """VAAPI frames need a ``hwdownload`` in the chain, so a container that does not seek
+    exactly decodes on the CPU; an MP4 keeps its GPU chain."""
+    vaapi = ffmpeg_utils.HwDecoder("vaapi", "/dev/dri/renderD128")
+    cmd = _proxy_command(tmp_path, monkeypatch, vaapi, name="s.ts", first=[])[0]
+    assert "-hwaccel" not in cmd and "hwdownload" not in _vf(cmd)
+    mp4 = _proxy_command(tmp_path, monkeypatch, vaapi, name="s.mp4")[0]
+    assert "-hwaccel_output_format" in mp4 and "hwdownload" in _vf(mp4)
 
 
 def test_a_failed_first_frame_decode_keeps_the_plain_mpegts_chain(tmp_path, monkeypatch):

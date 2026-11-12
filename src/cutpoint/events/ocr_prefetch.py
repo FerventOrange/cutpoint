@@ -501,6 +501,7 @@ class OcrPrefetch:
                     stderr_lines=errors,
                     hw=decoder_for(plan.io),
                     src_size=(info.width, info.height),
+                    src_fmt=info.pix_fmt,
                 )
             except Exception as err:  # noqa: BLE001 - not started: both decode as before
                 logger.debug("shared decode not started: %s", err)
