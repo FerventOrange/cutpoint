@@ -470,12 +470,13 @@ SOURCE_STAGES = ("probe_s", "audio_extract_s", "loudness_s", "transcribe_s", "sc
 SCENE_OVERLAP_ENV = "ANALYZE_SCENE_OVERLAP"  # CUTPOINT_ANALYZE_SCENE_OVERLAP=1: opt in (#725)
 SCENE_JOIN_S = 8.0  # a cancelled scene thread gets this long to stop (a daemon, never waited on)
 SCENE_POLL_S = 0.5  # waits on the scene thread in steps this long: Ctrl+C gets through on Windows
-# The full scene pass's cuts per part cache folder: "-v2" since every pass counts from the
-# container start (#976); an older scenes.json could count from the first video frame
-SCENES_FILE = "scenes-v2.json"
+# The full scene pass's cuts per part cache folder: "-v3" since the proxy is lossless (#994,
+# a lossy one added cuts at its keyframes); "-v2" counted every pass from the container start
+# (#976). An older file is not read, the source's scenes are detected again.
+SCENES_FILE = "scenes-v3.json"
 # Scene cuts of a style that does not weigh them, only around candidate edges (#730, EdgeCuts)
 SCENE_WINDOWS_FILE = "scenes-windows.json"  # per part cache folder, next to SCENES_FILE
-SCENE_WINDOWS_VERSION = 2  # 2: container clock (#976); a file of another version is decoded again
+SCENE_WINDOWS_VERSION = 3  # 3: lossless proxy (#994), 2: container clock (#976); else decoded again
 SNAP_REACH_S = 1.0  # _snap moves an edge to a scene cut at most this far
 SCENE_WARMUP_S = 1.5  # picture the detector needs around a cut (2-frame window, 0.5 s min)
 WINDOW_PAD_S = SNAP_REACH_S + SCENE_WARMUP_S  # a window reaches this far either side of an edge
@@ -601,7 +602,9 @@ def _proxy_args(
     vf = f"fps={rate}:start_time=0,scale={width}:-2"
     if shift is not None and offset <= 0:
         vf = f"setpts=PTS-STARTPTS+{shift:.6f}/TB,{vf}"
-    return pre, post, vf, ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "32"]
+    # Lossless: a lossy proxy has a keyframe every 250 frames (25 s at 10 fps) that adds to the
+    # detector's content value, so cuts appeared there and moved with the pass's start (#994)
+    return pre, post, vf, ["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0"]
 
 
 _SCENE_DOWNLOAD = NVDEC_DOWNLOAD
@@ -1016,7 +1019,7 @@ def _make_proxy(
     """Encode the scene proxy ``proxy`` of ``src`` with the :func:`_proxy_args` ``args``
     (``seconds`` long, for the progress lines): on the GPU decoder when there is one, else or
     when that fails on the CPU; ``gpu`` False always on the CPU. A ``cancel`` (see
-    :func:`scene_cuts`) removes the proxy."""
+    :func:`scene_cuts`) or a failure removes the partial proxy."""
     pre, post, vf, enc = args
     label = f"scene proxy {src.name}"
 
@@ -1042,10 +1045,11 @@ def _make_proxy(
             logger.debug(
                 "scene proxy: GPU decode failed for %s (%s); re-running on the CPU", src.name, first
             )
+            proxy.unlink(missing_ok=True)  # the re-run starts clean
             run_progress(command(None), seconds, label, **opts)
         if cancel is not None and cancel.is_set():
             raise RunCancelled(label)
-    except RunCancelled:
+    except BaseException:  # a partial lossless proxy is large: never leave it behind
         proxy.unlink(missing_ok=True)
         raise
 

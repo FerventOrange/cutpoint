@@ -37,6 +37,7 @@ import functools
 import logging
 import math
 import queue
+import re
 import shutil
 import threading
 import time
@@ -46,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import memguard, paths
+from cutpoint.encode import is_high_bit
 from cutpoint.events.common import Source, load_source
 from cutpoint.events.killfeed import (
     DecodeHook,
@@ -94,6 +96,21 @@ def sweep(cdir: Path) -> None:
     shutil.rmtree(cdir / SPOOL_DIR, ignore_errors=True)
     with contextlib.suppress(OSError):
         (cdir / PROXY_TMP).unlink(missing_ok=True)
+
+
+# lossless proxy, bytes per pixel and second: measured on NVDEC at 0.16-0.60 MB per source
+# second for 8-bit 1080p/4K sources and 0.79-0.92 for 10-bit ones (the proxy stays 10-bit)
+PROXY_BYTES_PER_PIXEL_S = {False: 11, True: 17}
+
+
+def proxy_bytes(plan: ScenePlan, src_size: tuple[int, int] | None, high_bit: bool = False) -> int:
+    """Disk the lossless scene proxy of ``plan`` takes, above what was measured: 11 bytes per
+    pixel and second, 17 for a 10-bit (``high_bit``) source. Its width comes from ``plan.vf``,
+    its height from the source's ``src_size`` (16:9 when unknown)."""
+    found = re.search(r"scale=(\d+)", plan.vf)
+    width = int(found.group(1)) if found else 320
+    height = width * src_size[1] / src_size[0] if src_size and src_size[0] else width * 9 / 16
+    return int(PROXY_BYTES_PER_PIXEL_S[high_bit] * width * height * plan.duration)
 
 
 @dataclass(frozen=True)
@@ -477,8 +494,15 @@ class OcrPrefetch:
             if plan.io != job.source.io_path or not self.params.hwaccel:
                 share.decline("another file or decoder than the OCR read")
                 return None
+            try:
+                info = probe(plan.io)
+                size = (info.width, info.height)
+            except Exception:  # noqa: BLE001 - only sizes the estimate; the start probes again
+                info, size = None, None
+            high_bit = info is not None and is_high_bit(info)
+            need += proxy_bytes(plan, size, high_bit)  # the scene proxy is written beside the spool
             if not spool_fits(plan.cdir, need):
-                why = f"less than {need / 2**30:.1f} GiB + 1 GiB free for the spool"
+                why = f"less than {need / 2**30:.1f} GiB + 1 GiB free for the spool and proxy"
                 share.decline(why)
                 # said now, not held for the OCR turn (REPLAY lets it through _Hold)
                 logger.info("%s: shared decode off: %s", job.source.name, why, extra={REPLAY: True})
@@ -486,7 +510,7 @@ class OcrPrefetch:
             if not share.claim():
                 return None
             try:
-                info = probe(plan.io)
+                info = info or probe(plan.io)
                 self._split = SplitDecode(
                     plan.io,
                     size=(width, height),

@@ -338,6 +338,24 @@ def test_one_decode_without_cpu_free_or_with_the_switch(ff, monkeypatch, mode, g
     assert single == [gpu] and ff.calls == []
 
 
+@pytest.mark.parametrize("gpu", [True, False])
+def test_a_failed_proxy_encode_removes_the_partial_proxy(monkeypatch, tmp_path, gpu):
+    proxy = tmp_path / "p.mp4"
+    seen = []
+
+    def run_progress(args, total, label, **kw):
+        seen.append(proxy.exists())  # the re-run finds no partial file of the first run
+        proxy.write_bytes(b"partial")
+        raise FFmpegError("ffmpeg failed during scene proxy (exit 1):\n\nboom")
+
+    monkeypatch.setattr(analyze, "run_progress", run_progress)
+    monkeypatch.setattr(analyze, "decoder_for", lambda src: CUDA if gpu else None)
+    with pytest.raises(FFmpegError):
+        analyze._make_proxy(tmp_path / "a.mp4", proxy, analyze._proxy_args(10.0), 10.0, gpu=gpu)
+    assert not proxy.exists()
+    assert seen == ([False, False] if gpu else [False])
+
+
 def test_a_failed_gpu_proxy_encode_logs_why_it_reruns_on_the_cpu(monkeypatch, caplog, tmp_path):
     runs = []
 
@@ -812,3 +830,35 @@ def test_the_first_frame_is_of_the_video_stream_the_pass_decodes(cuts_clip, tmp_
     assert lead > 1.9
     got = one_pass(ts, tmp_path / "two")
     assert near(got, [c + lead for c in CLIP_CUTS]), (got, lead)
+
+
+def test_the_scene_proxy_is_lossless():
+    """A lossy proxy has a keyframe every 250 frames (25 s at 10 fps) that adds to the
+    detector's content value: cuts appeared there and moved with a pass's start (#994)."""
+    _pre, _post, _vf, enc = analyze._proxy_args(60.0)
+    assert enc[enc.index("-qp") + 1] == "0"
+    assert "-crf" not in enc
+
+
+@needs_ffmpeg
+def test_the_scene_proxy_holds_the_filtered_frames_exactly(tmp_path):
+    """The proxy decodes to the very frames the filter chain gives (no coding loss)."""
+    src = tmp_path / "s.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+         "testsrc2=size=320x180:rate=10:duration=4", "-pix_fmt", "yuv420p", str(src)],
+        check=True,
+    )  # fmt: skip
+    args = analyze._proxy_args(4.0)
+    proxy = tmp_path / "proxy.mp4"
+    analyze._make_proxy(src, proxy, args, 4.0, gpu=False)
+
+    def md5(*cmd: str) -> list[str]:
+        out = subprocess.run(
+            ["ffmpeg", "-v", "error", *cmd, "-f", "framemd5", "-"],
+            capture_output=True, text=True, check=True,
+        ).stdout  # fmt: skip
+        return [ln.rsplit(",", 1)[-1].strip() for ln in out.splitlines() if ln[:1] != "#"]
+
+    direct = md5("-i", str(src), "-vf", args[2], "-pix_fmt", "yuv420p")
+    assert direct and md5("-i", str(proxy)) == direct

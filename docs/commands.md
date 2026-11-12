@@ -1144,7 +1144,7 @@ scene cuts (at most 1 s away) and never cut a word. A style whose `scene` weight
 `commentary`, or one of your styles that sets it to 0) uses scene cuts only for that snapping, so
 `analyze` does not decode the whole video for them: once the candidates are picked, it detects
 cuts only in windows of 2.5 s either side of each candidate edge, cached per source as
-`scenes-windows.json` next to `scenes-v2.json` (later runs decode only the windows not covered yet).
+`scenes-windows.json` next to `scenes-v3.json` (later runs decode only the windows not covered yet).
 The windows always decode on the CPU, also when a GPU decoder (NVDEC, VAAPI) is in use: each is a
 short ffmpeg run, and a GPU decoder's start-up costs more than it saves there. A source over 30
 minutes keeps the full pass, which reads keyframes only there and is faster than the windows.
@@ -1152,7 +1152,7 @@ So does a source in a container other than MP4, MOV, M4V or MKV (MPEG-TS, AVI, .
 there is not exact, and decoding up to each window costs more than the full pass. Every scene
 pass counts cut times from the start of the file, the clock clips are cut on, also when the
 video starts later than the audio.
-A full `scenes-v2.json` already in the cache is used instead, and a style with a scene weight runs
+A full `scenes-v3.json` already in the cache is used instead, and a style with a scene weight runs
 the full pass as before, also on a project analysed with a style without one. The `scene` signal of such a style's candidates is 0. Each signal is a named feature, and a style's weights name
 these features. The `score` is a candidate's weighted peak divided by the weights of the
 features this install can compute. A feature that needs a missing extra (the `events` extra
@@ -1251,13 +1251,14 @@ the source's cache folder, in files of about 256 MB removed as they are read. Th
 by as much as the OCR read lags behind the decode, up to 8 files (about 2 GB; 4 GB without the
 cap on a 446 s 1080p clip): then the decode, and the proxy with it, waits for the OCR read to
 catch up. It is skipped when the drive has less free space than that cap (or every OCR frame of
-a shorter source) plus 1 GB. `0`, unset or any other value: as described above. When the
+a shorter source), plus the scene proxy (budgeted at about 0.6 MB per source second for 16:9 video, 1.0 MB for
+10-bit video, more for portrait), plus 1 GB. `0`, unset or any other value: as described above. When the
 background proxy has not started by the time scene detection needs it, or fails, scene
 detection decodes as usual; the scene cuts, `events.json`, `highlights.json` and the OCR
 caches are the same as with it off. Each source then logs an INFO line with the scene
 detection time, the wait for the background proxy and the spool peak, and one with the wait for
 the background OCR, for measuring; a source with cover art or more than one video stream, or a
-drive without room for the spool, logs why at once. When Cutpoint is killed or crashes during
+drive without room for the spool and proxy, logs why at once. When Cutpoint is killed or crashes during
 the split, its ffmpeg stops at once on Windows and with ffmpeg 7 and newer; on Linux and macOS
 with ffmpeg 6.x it finishes encoding the proxy first. Either way the spool and
 `proxy.tmp.mp4` stay in the cache folder until the next `analyze` that reads the source's HUD
@@ -1273,7 +1274,7 @@ meanwhile, since both compete for the machine. Where one of them is much shorter
 other, there is little to gain. The scene cuts, `highlights.json` (apart from `timings`) and
 the caches are the same as with it off. An error in scene detection still stops the run after
 the transcription; when the transcription fails or is stopped, the scene detection is stopped
-too (its ffmpeg killed or its detection stopped within about 0.1 s plus a frame decode, no `scenes-v2.json` written). In
+too (its ffmpeg killed or its detection stopped within about 0.1 s plus a frame decode, no `scenes-v3.json` written). In
 `timings.sources`, `scenes_s` is then the time of the scene thread, mostly inside
 `transcribe_s`, and the source has `"overlap": true`. The overlap does not start for a source whose scene proxy comes from a shared decode
 (`CUTPOINT_ANALYZE_SHARED_DECODE=split`). The INFO line "detecting scene cuts" appears when

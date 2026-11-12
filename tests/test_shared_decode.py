@@ -29,7 +29,7 @@ SIZE = RECT[2:]
 FB = SIZE[0] * SIZE[1] * 3  # bytes of one raw frame
 VF = ocr_vf(3.0, RECT)
 SCENE_VF = "fps=10:start_time=0,scale=320:-2"
-ENC = ("-c:v", "libx264", "-preset", "ultrafast", "-crf", "32")
+ENC = ("-c:v", "libx264", "-preset", "ultrafast", "-qp", "0")
 HW = [False, True]  # True: the GPU decoder found here (NVDEC or VAAPI), skipped when none
 
 
@@ -740,7 +740,8 @@ def test_split_is_declined_below_the_disk_gate(pre, monkeypatch, tmp_path, caplo
     assert len(said) == 1 and share.why in said[0]
     _take(pre)
     assert pre.decoded is None and share.state == "declined"
-    assert asked == [120 * 60 * 3 * 181]  # every frame: W*H*3 bytes, 3 fps over 60 s (+1)
+    # every frame: W*H*3 bytes, 3 fps over 60 s (+1), and the lossless scene proxy beside it
+    assert asked == [120 * 60 * 3 * 181 + ocr_prefetch.proxy_bytes(pre.plan(), None)]
     assert "GiB + 1 GiB free" in share.why
     assert [m for m in caplog.messages if "shared decode off" in m] == said  # not replayed
 
@@ -752,7 +753,23 @@ def test_the_disk_gate_asks_for_the_spool_cap_when_it_is_less(pre, monkeypatch):
     monkeypatch.setattr(ffmpeg_utils, "SPOOL_MAX_SEGMENTS", 3)
     pre.make("split").offer(pre.src, 60.0, True, pre.plan())
     _take(pre)
-    assert asked == [30 * FB]  # 3 files of 10 frames, not every frame (181)
+    # 3 files of 10 frames, not every frame (181), and the scene proxy
+    assert asked == [30 * FB + ocr_prefetch.proxy_bytes(pre.plan(), None)]
+
+
+def test_the_proxy_estimate_follows_the_picture_size():
+    plan = ocr_prefetch.ScenePlan(Path("a.mp4"), Path("c"), 100.0, "fps=10,scale=320:-2", ENC)
+    wide = ocr_prefetch.proxy_bytes(plan, (1920, 1080))  # 8-bit: 0.16-0.60 MB/s measured
+    assert 0.60e6 * 100 < wide < 0.7e6 * 100
+    tall = ocr_prefetch.proxy_bytes(plan, (1080, 1920))
+    assert 2 * wide < tall < 4 * wide
+
+
+def test_the_proxy_estimate_of_a_10_bit_source_covers_what_was_measured():
+    plan = ocr_prefetch.ScenePlan(Path("a.mp4"), Path("c"), 100.0, "fps=10,scale=320:-2", ENC)
+    wide = ocr_prefetch.proxy_bytes(plan, (3840, 2160), True)  # 0.79 and 0.92 MB/s measured
+    assert 0.92e6 * 100 < wide < 1.1e6 * 100
+    assert wide > ocr_prefetch.proxy_bytes(plan, (3840, 2160))
 
 
 def test_split_claims_the_share_and_the_scene_cuts_get_its_proxy(pre, monkeypatch, tmp_path):
