@@ -741,6 +741,30 @@ def test_nominating_from_the_caches_equals_nominating_from_the_run(tmp_path):
     assert events_cmd == run
 
 
+@pytest.mark.parametrize("style_name", ["gaming", "funny", "action"])
+def test_picking_from_the_cached_grids_equals_picking_from_the_run(tmp_path, style_name):
+    """pick_candidates takes a GridPart of cached_grid_parts as it takes the run's part."""
+    src = tmp_path / "game.mp4"
+    src.write_bytes(b"x")
+    cuts = [37.0, 70.0]
+    write_caches(src, 120.0, cuts)
+    style = get_style(style_name)
+    (cached,) = analyze.cached_grid_parts(analysis_of(src, 120.0), style)
+
+    # what analyze_source hands over for the same caches
+    cdir = cache.source_dir(src)
+    data = cache.load_json(cdir / "loudness.json")
+    lufs = (np.asarray(data["t"]) - 0.2, np.asarray(data["m"]))
+    segs = cache.load_json(cdir / transcript_name(TRANSCRIPT_MODELS[0]))
+    ps = analyze.part_signals(120.0, lufs, segs, cuts, style, src.name)
+    run = analyze.SourceResult(src, None, 0.0, 120.0, [], segs, None, ps)
+
+    want = analyze.pick_candidates(run, style, None, {})
+    got = analyze.pick_candidates(cached, style, None, {})
+    assert want and got == want
+    assert cached.avail == run.avail is not None
+
+
 def test_part_signals_keeps_the_cuts_for_snapping():
     style = get_style("gaming")
     assert analyze.part_signals(60.0, None, [], [12.0, 30.0], style, "a.mp4").cuts == [12.0, 30.0]

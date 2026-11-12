@@ -1669,6 +1669,18 @@ class GridPart:
     offset: float
     duration: float
     signals: PartSignals
+    avail: frozenset[str] | None = None  # set by :func:`pick_candidates`
+
+
+class PickPart(Protocol):
+    """What :func:`pick_candidates` reads of a part, and its ``avail`` it sets: a
+    :class:`SourceResult` of this run, or a :class:`GridPart` of :func:`cached_grid_parts`."""
+
+    source: Path
+    offset: float
+    duration: float
+    signals: PartSignals | None
+    avail: frozenset[str] | None
 
 
 @dataclass
@@ -2025,13 +2037,14 @@ def analyze_source(
 
 
 def pick_candidates(
-    res: SourceResult,
+    res: PickPart,
     style: Style,
     max_candidates: int | None,
     timings: dict[str, float],
     cam_ctx: Any = None,
 ) -> list[Candidate]:
-    """Candidates of one analysed part (:func:`analyze_source`), in absolute source time."""
+    """Candidates of one analysed part (:func:`analyze_source`, or a :class:`GridPart`), in
+    absolute source time."""
     src, span, offset = res.source, res.duration, res.offset
     ps = res.signals
     if ps is None:
@@ -3379,7 +3392,7 @@ def _candidate_record(c: Candidate, source_index: int, style: Style) -> dict[str
 
 
 def _visual_pool(
-    project: Path, results: list[SourceResult], style: Style, hl: dict[str, Any]
+    project: Path, results: Sequence[CrashPart], style: Style, hl: dict[str, Any]
 ) -> list[dict[str, Any]]:
     """The visual pool candidates of a run (:mod:`cutpoint.visual_pool`), ids ``v001``...,
     recorded in ``hl``'s ``settings.visual_pool``. A failure logs a WARNING and adds none."""
@@ -4086,12 +4099,6 @@ def _analyze(
             "candidates": [],
         }
 
-        def records() -> list[dict[str, Any]]:
-            """The candidates, best first; ``source_index`` is the index into ``results``."""
-            found = [(c, i) for i, r in enumerate(results) for c in r.candidates]
-            found.sort(key=lambda ci: -ci[0].score)
-            return [_candidate_record(c, i, style) for c, i in found]
-
         # ---- 2-4. reactions, keyframes, crashes: the event layers (events.json)
         events_new = False
         if layers:
@@ -4114,7 +4121,8 @@ def _analyze(
                 else None
             )
             if plan.layers:
-                hl["candidates"] = records()  # VLM windows cached by `events` follow them
+                # VLM windows cached by `events` follow them
+                hl["candidates"] = _records(results, style)
                 t0 = time.perf_counter()
                 events_new = _run_layers(
                     out_dir,
@@ -4152,199 +4160,22 @@ def _analyze(
                     logger.info("%s: %d candidates", r.source.name, len(r.candidates))
             # a source's own set is known only once it is picked from
             hl["settings"]["features_by_source"] = _features_by_source(results)
-        if crash_moments and style.kind != ACTION_CAM:  # this run's crash step, `cutpoint crashes`
-            from cutpoint.crash import load_crashes  # noqa: PLC0415
-
-            add_crash_candidates(results, style, load_crashes(out_dir))
-        hl["candidates"] = records()
-        ev = None
-        if style.kind != ACTION_CAM:  # action-cam: the events are features of its scorer
-            ev = cache.load_json(out_dir / "events.json")
-        grids = [
-            GridPart(r.source, i, r.offset, r.duration, r.signals)
-            for i, r in enumerate(results)
-            if r.signals is not None
-        ]
-        if ev:
-            drop_menu_time(hl, ev)
-            changed = rescore(hl, ev, out_dir, grids)
-            logger.info(
-                "Rescored %d of %d candidates from events.json", changed, len(hl["candidates"])
-            )
-
-        # ---- 6. vision: the rating of the default edit and the moments below its cut, blended into
-        # their scores
-        cands = hl["candidates"]
-        rater: VisionRater | None = None
-        bad_url: ValueError | None = None
-        if vision and cands:
-            try:
-                rater = VisionRater(
-                    **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
-                )
-            except ValueError as err:  # a bad port in OLLAMA_HOST / ollama_url
-                bad_url = err
-        if not vision:
-            steps.skip("vision", "vision is off (Settings, config.json or --vision)")
-        elif not cands:
-            steps.skip("vision", "no candidates to rate")
-        elif rater is None:
-            message = f"vision model not usable ({bad_url}); the vision step is skipped"
-            logger.warning("%s", message)
-            jsonout.warn("vision_unavailable", message)
-            steps.skip("vision", message)
-        elif rater.consent_needed:
-            # a provider the user did not agree to (a hosted one, or an Ollama on another
-            # machine): no request, no cached ratings either
-            steps.skip("vision", rater.warn_consent())
-        else:
-            from cutpoint.visual_pool import is_pool  # noqa: PLC0415
-
-            # the default edit and the band below its cut, from the ranking before vision
-            ranked = sorted(
-                (c for c in cands if not c.get("must_include") and not is_pool(c)),
-                key=scorer.edit_rank_key,
-            )
-            picks = default_fit.fit_target(
-                sorted((c for c in cands if not is_pool(c)), key=scorer.edit_rank_key),
-                style.target_total,
-            )
-            order, cut, k = vision_band(ranked, picks, vision_top)
-            in_edit = {id(c) for c in picks}
-            # the moments above the cut the edit skipped (too long or overlapping a pick): no
-            # one's neighbours in the clamp, as long as they keep this span
-            for c in ranked[:cut]:
-                if id(c) not in in_edit:
-                    c["vision_skipped"] = [c["start"], c["end"]]
-            # action-cam: worded for the project's activity.json (the default without one)
-            wording = None
-            if style.base == ACTION_CAM:
-                from cutpoint import activity  # noqa: PLC0415
-
-                wording = activity.project_prompts(out_dir)
-            # available() first: it resolves a hosted provider's unset model, the cache key.
-            # Offline, that model stays the placeholder and its cached ratings are not found.
-            online, n_cached = rater.available(), 0
-            if not online:  # Ollama down: the ratings already cached, no requests (#413)
-                rater.cache_only = True
-                n_cached = sum(
-                    rater.cached(
-                        remap_source(Path(c["source"])),
-                        c["start"],
-                        c["end"],
-                        style.base,
-                        activity=wording,
-                        transcript=c.get("transcript"),
-                        laughter=heard_laughter(c),
-                    )
-                    is not None
-                    for c in order
-                )
-            if online or n_cached:
-                if not online:
-                    n_none = len(order) - n_cached
-                    message = (
-                        "vision rating requested but Ollama/model unavailable; using "
-                        f"{n_cached} cached rating{'s' if n_cached != 1 else ''}, "
-                        f"{n_none} candidate{'s' if n_none != 1 else ''} had no cached rating"
-                    )
-                    logger.warning("%s", message)
-                    jsonout.warn("vision_unavailable", message)
-                with steps.step("vision"):
-                    t0 = time.perf_counter()
-                    pre_vision_s = t0 - t_start
-                    share = (
-                        config.vision_time_share()
-                        if vision_time_share is None
-                        else vision_time_share
-                    )
-                    budget_s, budget_base = vision_budget(share, pre_vision_s, earlier_total_s)
-                    n_edit = sum(id(c) in in_edit for c in order)
-                    logger.info(
-                        "Vision: rating %d moments (%d of the default edit, %d below the cut at "
-                        "%d) of %d candidates",
-                        len(order),
-                        n_edit,
-                        len(order) - n_edit,
-                        cut,
-                        len(cands),
-                    )
-                    outcome = _rate_vision(
-                        order, rater, style, wording, batch_size, deadline=t0 + budget_s
-                    )
-                    if ev:  # the blended analysis scores plus the event boosts again
-                        hl["settings"]["vision"] = {}  # rescore_events records the clamp here
-                        rescore(hl, ev, out_dir, grids)
-                        n_clamped = hl["settings"]["vision"].get("clamped", 0)
-                    else:  # a rated moment stays between its unrated neighbours
-                        n_clamped = scorer.apply_vision_clamp(
-                            cands,
-                            [
-                                c["vision_rated"]["base"] if "vision_rated" in c else None
-                                for c in cands
-                            ],
-                        )
-                    timings["vision_s"] = round(time.perf_counter() - t0, 2)
-                    if outcome.capped:
-                        logger.info(
-                            "Vision: time cap reached after %d calls (%.0f s, budget %.0f s = "
-                            "%d%% of %.0f s); %d moments near the cut not rated",
-                            int(rater.stats["calls"]),
-                            timings["vision_s"],
-                            budget_s,
-                            round(100 * share),
-                            pre_vision_s if earlier_total_s is None else earlier_total_s,
-                            outcome.skipped_by_cap,
-                        )
-                    hl["settings"]["vision_used"] = outcome.used
-                    hl["settings"]["vision"] = {
-                        "requested": len(order),
-                        "failed": outcome.failed - rater.missed,
-                        **({} if online else {"uncached": rater.missed}),
-                        **_vision_stats(
-                            rater,
-                            rated=len(order) - outcome.failed - outcome.skipped_by_cap,
-                            vision_s=timings["vision_s"],
-                            pre_vision_s=pre_vision_s,
-                            rerank=earlier_total_s is not None,
-                        ),
-                        "cut": cut,
-                        "band_k": k,
-                        "rated_by_kind": outcome.by_kind,
-                        "centre": {
-                            kind: (
-                                round(outcome.centres[kind], 2) if kind in outcome.centres else None
-                            )
-                            for kind in ("speech", "frames")
-                        },
-                        "share": share,
-                        "budget_s": round(budget_s, 2),
-                        "budget_base": budget_base,
-                        "capped": outcome.capped,
-                        "skipped_by_cap": outcome.skipped_by_cap,
-                        "clamped": n_clamped,
-                    }
-            else:
-                message = (
-                    "vision rating requested but Ollama/model unavailable; continuing without it"
-                )
-                logger.warning("%s", message)
-                jsonout.warn("vision_unavailable", message)
-                steps.skip("vision", "Ollama or its vision model is not reachable")
-
-        cands = hl["candidates"]
-        cands.sort(
-            key=lambda c: (not c.get("must_include"), *scorer.rank_key(c), *scorer.tie_key(c))
-        )  # must-include first
-        suggested = len(default_fit.fit_target(cands, style.target_total))
-        hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]
-        hl["suggested_top"] = suggested
-        hl["settings"]["last_candidate_id"] = len(cands)
-        from cutpoint import visual_pool  # noqa: PLC0415
-
-        if visual_pool.is_pool_style(style):
-            # visual pool moments: after the scored ones, outside suggested_top
-            hl["candidates"] += _visual_pool(out_dir, results, style, hl)
+        ev = rank_parts(
+            hl,
+            results,
+            style,
+            out_dir,
+            steps,
+            t_start=t_start,
+            crash_moments=crash_moments,
+            vision=vision,
+            vision_top=vision_top,
+            ollama_url=ollama_url,
+            ollama_model=ollama_model,
+            batch_size=batch_size,
+            vision_time_share=vision_time_share,
+            earlier_total_s=earlier_total_s,
+        )
         hl["created"] = datetime.now().isoformat(timespec="seconds")
         hl["timings"]["sources"] = _source_timings(results, prefetch)
         took = round(time.perf_counter() - t_start, 2)
@@ -4366,6 +4197,239 @@ def _analyze(
         logger.info("Wrote %d candidates to %s (%.1fs)", len(hl["candidates"]), out, took)
         report_highlights(out_dir, out)
         return out
+
+
+def _records(parts: Sequence[CrashPart], style: Style) -> list[dict[str, Any]]:
+    """The candidates of ``parts``, best first; ``source_index`` is the index into ``parts``."""
+    found = [(c, i) for i, r in enumerate(parts) for c in r.candidates]
+    found.sort(key=lambda ci: -ci[0].score)
+    return [_candidate_record(c, i, style) for c, i in found]
+
+
+def rank_parts(
+    hl: dict[str, Any],
+    parts: Sequence[CrashPart],
+    style: Style,
+    project: Path,
+    steps: progress.Run,
+    *,
+    t_start: float,
+    crash_moments: bool,
+    vision: bool | None,
+    vision_top: int | None,
+    ollama_url: str | None,
+    ollama_model: str | None,
+    batch_size: int,
+    vision_time_share: float | None,
+    earlier_total_s: float | None,
+) -> Any:
+    """The ranking tail of an analysis: the candidates of ``parts`` (picked already) ranked
+    into ``hl`` (a highlights.json object with its ``settings`` and ``timings``), in place.
+
+    Runs inside the caller's ``ranking`` step (``steps``) and covers: the crash candidates of
+    the project's crashes.json (``crash_moments``, any style but action-cam), the records, the
+    bonus stage of the project's events.json (menu time, then :func:`rescore`: nominees,
+    widening, bonus), the ``vision`` step (the rating of the default edit and the band
+    below its cut, blended in and clamped; its time budget counts from ``t_start``, or
+    ``earlier_total_s`` for a re-rank), the final order with the ids ``h001``... and
+    ``settings.last_candidate_id``, and the visual pool. It writes no file.
+
+    ``parts`` are one per entry of ``hl["sources"]``, in that order (a candidate's
+    ``source_index`` is its part's position); a part without ``signals`` keeps its candidates
+    but gives no grid. ``hl["timings"]`` gets ``vision_s``.
+
+    Seams for a re-rank (not used yet): it numbers every candidate from ``h001`` (keeping the
+    ids of unchanged spans would replace that), and the vision step asks the model (a cached-
+    ratings-only rating would set :attr:`VisionRater.cache_only`).
+
+    Returns:
+        The events.json object the candidates were ranked with, or a falsy value without one.
+    """
+    timings = hl["timings"]
+
+    if crash_moments and style.kind != ACTION_CAM:  # this run's crash step, `cutpoint crashes`
+        from cutpoint.crash import load_crashes  # noqa: PLC0415
+
+        add_crash_candidates(parts, style, load_crashes(project))
+    hl["candidates"] = _records(parts, style)
+    ev = None
+    if style.kind != ACTION_CAM:  # action-cam: the events are features of its scorer
+        ev = cache.load_json(project / "events.json")
+    grids = [
+        GridPart(r.source, i, r.offset, r.duration, r.signals)
+        for i, r in enumerate(parts)
+        if r.signals is not None
+    ]
+    if ev:
+        drop_menu_time(hl, ev)
+        changed = rescore(hl, ev, project, grids)
+        logger.info("Rescored %d of %d candidates from events.json", changed, len(hl["candidates"]))
+
+    # ---- 6. vision: the rating of the default edit and the moments below its cut, blended into
+    # their scores
+    cands = hl["candidates"]
+    rater: VisionRater | None = None
+    bad_url: ValueError | None = None
+    if vision and cands:
+        try:
+            rater = VisionRater(
+                **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
+            )
+        except ValueError as err:  # a bad port in OLLAMA_HOST / ollama_url
+            bad_url = err
+    if not vision:
+        steps.skip("vision", "vision is off (Settings, config.json or --vision)")
+    elif not cands:
+        steps.skip("vision", "no candidates to rate")
+    elif rater is None:
+        message = f"vision model not usable ({bad_url}); the vision step is skipped"
+        logger.warning("%s", message)
+        jsonout.warn("vision_unavailable", message)
+        steps.skip("vision", message)
+    elif rater.consent_needed:
+        # a provider the user did not agree to (a hosted one, or an Ollama on another
+        # machine): no request, no cached ratings either
+        steps.skip("vision", rater.warn_consent())
+    else:
+        from cutpoint.visual_pool import is_pool  # noqa: PLC0415
+
+        # the default edit and the band below its cut, from the ranking before vision
+        ranked = sorted(
+            (c for c in cands if not c.get("must_include") and not is_pool(c)),
+            key=scorer.edit_rank_key,
+        )
+        picks = default_fit.fit_target(
+            sorted((c for c in cands if not is_pool(c)), key=scorer.edit_rank_key),
+            style.target_total,
+        )
+        order, cut, k = vision_band(ranked, picks, vision_top)
+        in_edit = {id(c) for c in picks}
+        # the moments above the cut the edit skipped (too long or overlapping a pick): no
+        # one's neighbours in the clamp, as long as they keep this span
+        for c in ranked[:cut]:
+            if id(c) not in in_edit:
+                c["vision_skipped"] = [c["start"], c["end"]]
+        # action-cam: worded for the project's activity.json (the default without one)
+        wording = None
+        if style.base == ACTION_CAM:
+            from cutpoint import activity  # noqa: PLC0415
+
+            wording = activity.project_prompts(project)
+        # available() first: it resolves a hosted provider's unset model, the cache key.
+        # Offline, that model stays the placeholder and its cached ratings are not found.
+        online, n_cached = rater.available(), 0
+        if not online:  # Ollama down: the ratings already cached, no requests (#413)
+            rater.cache_only = True
+            n_cached = sum(
+                rater.cached(
+                    remap_source(Path(c["source"])),
+                    c["start"],
+                    c["end"],
+                    style.base,
+                    activity=wording,
+                    transcript=c.get("transcript"),
+                    laughter=heard_laughter(c),
+                )
+                is not None
+                for c in order
+            )
+        if online or n_cached:
+            if not online:
+                n_none = len(order) - n_cached
+                message = (
+                    "vision rating requested but Ollama/model unavailable; using "
+                    f"{n_cached} cached rating{'s' if n_cached != 1 else ''}, "
+                    f"{n_none} candidate{'s' if n_none != 1 else ''} had no cached rating"
+                )
+                logger.warning("%s", message)
+                jsonout.warn("vision_unavailable", message)
+            with steps.step("vision"):
+                t0 = time.perf_counter()
+                pre_vision_s = t0 - t_start
+                share = (
+                    config.vision_time_share() if vision_time_share is None else vision_time_share
+                )
+                budget_s, budget_base = vision_budget(share, pre_vision_s, earlier_total_s)
+                n_edit = sum(id(c) in in_edit for c in order)
+                logger.info(
+                    "Vision: rating %d moments (%d of the default edit, %d below the cut at "
+                    "%d) of %d candidates",
+                    len(order),
+                    n_edit,
+                    len(order) - n_edit,
+                    cut,
+                    len(cands),
+                )
+                outcome = _rate_vision(
+                    order, rater, style, wording, batch_size, deadline=t0 + budget_s
+                )
+                if ev:  # the blended analysis scores plus the event boosts again
+                    hl["settings"]["vision"] = {}  # rescore_events records the clamp here
+                    rescore(hl, ev, project, grids)
+                    n_clamped = hl["settings"]["vision"].get("clamped", 0)
+                else:  # a rated moment stays between its unrated neighbours
+                    n_clamped = scorer.apply_vision_clamp(
+                        cands,
+                        [c["vision_rated"]["base"] if "vision_rated" in c else None for c in cands],
+                    )
+                timings["vision_s"] = round(time.perf_counter() - t0, 2)
+                if outcome.capped:
+                    logger.info(
+                        "Vision: time cap reached after %d calls (%.0f s, budget %.0f s = "
+                        "%d%% of %.0f s); %d moments near the cut not rated",
+                        int(rater.stats["calls"]),
+                        timings["vision_s"],
+                        budget_s,
+                        round(100 * share),
+                        pre_vision_s if earlier_total_s is None else earlier_total_s,
+                        outcome.skipped_by_cap,
+                    )
+                hl["settings"]["vision_used"] = outcome.used
+                hl["settings"]["vision"] = {
+                    "requested": len(order),
+                    "failed": outcome.failed - rater.missed,
+                    **({} if online else {"uncached": rater.missed}),
+                    **_vision_stats(
+                        rater,
+                        rated=len(order) - outcome.failed - outcome.skipped_by_cap,
+                        vision_s=timings["vision_s"],
+                        pre_vision_s=pre_vision_s,
+                        rerank=earlier_total_s is not None,
+                    ),
+                    "cut": cut,
+                    "band_k": k,
+                    "rated_by_kind": outcome.by_kind,
+                    "centre": {
+                        kind: (round(outcome.centres[kind], 2) if kind in outcome.centres else None)
+                        for kind in ("speech", "frames")
+                    },
+                    "share": share,
+                    "budget_s": round(budget_s, 2),
+                    "budget_base": budget_base,
+                    "capped": outcome.capped,
+                    "skipped_by_cap": outcome.skipped_by_cap,
+                    "clamped": n_clamped,
+                }
+        else:
+            message = "vision rating requested but Ollama/model unavailable; continuing without it"
+            logger.warning("%s", message)
+            jsonout.warn("vision_unavailable", message)
+            steps.skip("vision", "Ollama or its vision model is not reachable")
+
+    cands = hl["candidates"]
+    cands.sort(
+        key=lambda c: (not c.get("must_include"), *scorer.rank_key(c), *scorer.tie_key(c))
+    )  # must-include first
+    suggested = len(default_fit.fit_target(cands, style.target_total))
+    hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]
+    hl["suggested_top"] = suggested
+    hl["settings"]["last_candidate_id"] = len(cands)
+    from cutpoint import visual_pool  # noqa: PLC0415
+
+    if visual_pool.is_pool_style(style):
+        # visual pool moments: after the scored ones, outside suggested_top
+        hl["candidates"] += _visual_pool(project, parts, style, hl)
+    return ev
 
 
 def report_highlights(out_dir: Path, highlights: Path) -> None:
