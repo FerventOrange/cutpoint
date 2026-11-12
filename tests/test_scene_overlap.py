@@ -764,14 +764,14 @@ def test_a_cuda_scene_proxy_downloads_after_fps(tmp_path, monkeypatch):
     assert gpu[gpu.index("-hwaccel") : gpu.index("-i")] == [
         "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
     ]  # fmt: skip
-    assert _vf(gpu) == "fps=10:start_time=0,hwdownload,format=nv12,scale=320:-2"
+    assert _vf(gpu) == "fps=10:start_time=0,hwdownload,format=nv12,scale=320:180"
 
 
 def test_a_10_bit_cuda_scene_proxy_downloads_p010le(tmp_path, monkeypatch):
     cmds = _proxy_command(
         tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"), pix_fmt="yuv420p10le"
     )
-    assert _vf(cmds[0]) == "fps=10:start_time=0,hwdownload,format=p010le,scale=320:-2"
+    assert _vf(cmds[0]) == "fps=10:start_time=0,hwdownload,format=p010le,scale=320:180"
 
 
 def test_a_444_cuda_scene_proxy_keeps_the_plain_gpu_path(tmp_path, monkeypatch):
@@ -780,7 +780,7 @@ def test_a_444_cuda_scene_proxy_keeps_the_plain_gpu_path(tmp_path, monkeypatch):
     ]
     assert gpu[gpu.index("-hwaccel") : gpu.index("-i")] == ["-hwaccel", "cuda"]
     assert "-hwaccel_output_format" not in gpu
-    assert _vf(gpu) == "fps=10:start_time=0,scale=320:-2"
+    assert _vf(gpu) == "fps=10:start_time=0,scale=320:180"
 
 
 def test_a_vaapi_scene_proxy_downloads_after_fps(tmp_path, monkeypatch):
@@ -790,7 +790,7 @@ def test_a_vaapi_scene_proxy_downloads_after_fps(tmp_path, monkeypatch):
         "-hwaccel", "vaapi", "-hwaccel_device", "/dev/dri/renderD128",
         "-hwaccel_output_format", "vaapi",
     ]  # fmt: skip
-    assert _vf(gpu) == "fps=10:start_time=0,hwdownload,format=nv12,scale=320:-2"
+    assert _vf(gpu) == "fps=10:start_time=0,hwdownload,format=nv12,scale=320:180"
 
 
 def test_a_long_file_scene_proxy_keeps_its_keyframe_skip_and_downloads_after_fps(
@@ -799,20 +799,31 @@ def test_a_long_file_scene_proxy_keeps_its_keyframe_skip_and_downloads_after_fps
     long = analyze.LONG_FILE_S + 1
     gpu = _proxy_command(tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"), long)[0]
     assert gpu[:2] == ["ffmpeg", "-y"] and "-skip_frame" in gpu
-    assert _vf(gpu) == "fps=2:start_time=0,hwdownload,format=nv12,scale=256:-2"
+    assert _vf(gpu) == "fps=2:start_time=0,hwdownload,format=nv12,scale=256:144"
+
+
+@pytest.mark.parametrize("long", [False, True], ids=["normal", "long"])
+def test_every_scene_proxy_decode_keeps_one_filter_graph(tmp_path, monkeypatch, long):
+    """A mid-file change of the video parameters (a joined file) must not rebuild the graph:
+    ffmpeg 9 would restart ``setpts`` and ``fps`` there and lose the cuts after it."""
+    duration = analyze.LONG_FILE_S + 1 if long else 60.0
+    for cmd in _proxy_command(tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"), duration):
+        i = cmd.index("-reinit_filter")
+        assert cmd[i : i + 2] == ["-reinit_filter", "0"] and i < cmd.index("-i")
+    assert analyze._proxy_args(60.0, 5.0, 10.0)[0][:2] == ["-reinit_filter", "0"]
 
 
 def test_a_cpu_scene_proxy_has_no_gpu_options_or_download(tmp_path, monkeypatch):
     (cpu,) = _proxy_command(tmp_path, monkeypatch, None)
     assert "-hwaccel" not in cpu and "-hwaccel_output_format" not in cpu
-    assert _vf(cpu) == "fps=10:start_time=0,scale=320:-2"
+    assert _vf(cpu) == "fps=10:start_time=0,scale=320:180"
 
 
 def test_the_cpu_fallback_after_a_gpu_failure_is_the_plain_cpu_command(tmp_path, monkeypatch):
     gpu, cpu = _proxy_command(tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"))
     assert "-hwaccel" in gpu and "hwdownload" in _vf(gpu)
     assert "-hwaccel" not in cpu and "-hwaccel_output_format" not in cpu
-    assert _vf(cpu) == "fps=10:start_time=0,scale=320:-2"
+    assert _vf(cpu) == "fps=10:start_time=0,scale=320:180"
 
 
 def test_a_failing_probe_on_a_gpu_decoder_runs_the_plain_cpu_command(tmp_path, monkeypatch):
@@ -848,10 +859,10 @@ def test_an_mpegts_scene_pass_counts_from_the_container_start(tmp_path, monkeypa
     first: list[bool] = []
     gpu, cpu = _proxy_command(tmp_path, monkeypatch, hw, duration, name="s.ts", first=first)
     assert first == [long]
-    rate, width = (2, 256) if long else (10, 320)
+    rate, width, height = (2, 256, 144) if long else (10, 320, 180)
     head = f"setpts=PTS-STARTPTS+3.021000/TB,fps={rate}:start_time=0"
-    assert _vf(gpu) == f"{head},hwdownload,format=nv12,scale={width}:-2"
-    assert _vf(cpu) == f"{head},scale={width}:-2"
+    assert _vf(gpu) == f"{head},hwdownload,format=nv12,scale={width}:{height}"
+    assert _vf(cpu) == f"{head},scale={width}:{height}"
     for cmd in (gpu, cpu):
         assert "-copyts" not in cmd and "-ss" not in cmd
         assert ("-skip_frame" in cmd) is long
@@ -861,25 +872,25 @@ def test_a_failed_first_frame_decode_keeps_the_plain_mpegts_chain(tmp_path, monk
     """The one-frame decode is only for the clock: when it fails the pass counts as ffmpeg
     does, as before #976, instead of failing."""
     (cmd,) = _proxy_command(tmp_path, monkeypatch, None, name="s.ts", first=FFmpegError("x"))
-    assert _vf(cmd) == "fps=10:start_time=0,scale=320:-2"
+    assert _vf(cmd) == "fps=10:start_time=0,scale=320:180"
 
 
 def test_a_recovered_mpegts_part_seeks_without_copyts(tmp_path, monkeypatch):
     """A pass that seeks counts from its seek point by itself (``fps`` start_time)."""
     cmds = []
     monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
-    monkeypatch.setattr(analyze, "probe", lambda p: pytest.fail("no probe for a seek"))
+    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 60.0))  # only for the size
     monkeypatch.setattr(analyze, "first_frame_time", lambda p, **k: pytest.fail("no decode"))
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
     monkeypatch.setattr(analyze, "_detect", lambda proxy, path, **k: CUTS)
     monkeypatch.setattr(analyze, "run_progress", lambda args, total, label, **kw: cmds.append(args))
     analyze.scene_cuts(tmp_path / "s.ts", tmp_path, 60.0, offset=300.0)
     (cmd,) = cmds
-    assert "-copyts" not in cmd and _vf(cmd) == "fps=10:start_time=0,scale=320:-2"
+    assert "-copyts" not in cmd and _vf(cmd) == "fps=10:start_time=0,scale=320:180"
 
 
 def test_an_unknown_pix_fmt_keeps_the_plain_cuda_path(tmp_path, monkeypatch):
     gpu = _proxy_command(tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"), pix_fmt="")[0]
     assert gpu[gpu.index("-hwaccel") : gpu.index("-i")] == ["-hwaccel", "cuda"]
     assert "-hwaccel_output_format" not in gpu
-    assert _vf(gpu) == "fps=10:start_time=0,scale=320:-2"
+    assert _vf(gpu) == "fps=10:start_time=0,scale=320:180"

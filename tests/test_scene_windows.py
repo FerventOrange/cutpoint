@@ -247,9 +247,9 @@ def test_a_window_counts_as_ffmpeg_does_also_at_the_part_start(tmp_path, monkeyp
     analyze._window_cuts(tmp_path / "a.mp4", tmp_path, 0.0, 17.5, 22.5)
     first, later = seen
     assert "-ss" not in first and "-copyts" not in first
-    assert first[first.index("-vf") + 1] == "fps=10:start_time=0,scale=320:-2"
+    assert first[first.index("-vf") + 1] == "fps=10:start_time=0,scale=320:180"
     assert later[later.index("-ss") + 1] == "17.500" and "-copyts" not in later
-    assert later[later.index("-vf") + 1] == "fps=10:start_time=0,scale=320:-2"
+    assert later[later.index("-vf") + 1] == "fps=10:start_time=0,scale=320:180"
 
 
 # ----------------------------------------------------------------- analyze_source

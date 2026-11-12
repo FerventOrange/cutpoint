@@ -222,10 +222,16 @@ def test_the_halves_decode_their_ranges_and_their_cuts_merge(ff):
     assert cpu[cpu.index("-ss") + 1] == "97.000" and csecs == 103.0
     assert cpu[cpu.index("-threads") + 1] == "6" and cpu.index("-threads") < cpu.index("-i")
     # the format NVDEC downloads to, before the scale, as in the NVDEC half: the same pixels
-    assert gpu[gpu.index("-vf") + 1] == "fps=10:start_time=0,hwdownload,format=nv12,scale=320:-2"
+    assert gpu[gpu.index("-vf") + 1] == "fps=10:start_time=0,hwdownload,format=nv12,scale=320:180"
     assert "-hwaccel" not in cpu
-    assert cpu[cpu.index("-vf") + 1] == "fps=10:start_time=0,format=nv12,scale=320:-2"
+    assert cpu[cpu.index("-vf") + 1] == "fps=10:start_time=0,format=nv12,scale=320:180"
     assert "-t" not in cpu  # to the end
+    for half in (gpu, cpu):  # one filter graph per half
+        assert half[half.index("-reinit_filter") : half.index("-reinit_filter") + 2] == [
+            "-reinit_filter",
+            "0",
+        ] and half.index("-reinit_filter") < half.index("-i")
+    assert gpu.index("-reinit_filter") < gpu.index("-hwaccel")
     assert leftovers(ff.cdir) == [] and len(set(ff.seen)) == 2
 
 
@@ -233,7 +239,7 @@ def test_a_format_nvdec_does_not_download_keeps_the_plain_cpu_chain(ff, monkeypa
     monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 200.0, pix_fmt="yuv444p"))
     analyze._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6)
     cpu = next(args for half, args, _t in ff.calls if half == "cpu")
-    assert cpu[cpu.index("-vf") + 1] == "fps=10:start_time=0,scale=320:-2"
+    assert cpu[cpu.index("-vf") + 1] == "fps=10:start_time=0,scale=320:180"
 
 
 def test_both_halves_of_a_late_video_count_from_the_container_start(ff, monkeypatch):
@@ -244,10 +250,10 @@ def test_both_halves_of_a_late_video_count_from_the_container_start(ff, monkeypa
     assert analyze._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6) == [10.0, 99.95, 147.0]
     by = {half: args for half, args, _t in ff.calls}
     gpu, cpu = by["gpu"], by["cpu"]
-    assert gpu[gpu.index("-vf") + 1] == "fps=10:start_time=0,hwdownload,format=nv12,scale=320:-2"
+    assert gpu[gpu.index("-vf") + 1] == "fps=10:start_time=0,hwdownload,format=nv12,scale=320:180"
     assert "-copyts" not in gpu and "-copyts" not in cpu
     assert cpu[cpu.index("-ss") + 1] == "97.000"
-    assert cpu[cpu.index("-vf") + 1] == "fps=10:start_time=0,format=nv12,scale=320:-2"
+    assert cpu[cpu.index("-vf") + 1] == "fps=10:start_time=0,format=nv12,scale=320:180"
 
 
 def test_a_split_near_the_start_starts_the_cpu_half_at_0(ff):
@@ -615,15 +621,18 @@ def test_an_mpegts_cut_mid_gop_keeps_its_cuts_on_the_container_clock(
 @pytest.fixture
 def joined_ts(cuts_clip, tmp_path) -> Path:
     """``cuts_clip`` as two 12 s MPEG-TS files with audio joined byte for byte, as camera clips
-    or DVR captures are: the second one's timestamps start again where the first one's did."""
+    or DVR captures are: the second one's timestamps start again where the first one's did, and
+    its color parameters differ, so ffmpeg rebuilds the filter graph at the join."""
     ff = shutil.which("ffmpeg")
     halves = []
     for i, start in enumerate(("0", "12")):
+        color = ["-colorspace", "bt470bg", "-color_primaries", "bt470bg", "-color_trc", "gamma28"]
         half = tmp_path / f"half{i}.ts"
         subprocess.run(
             [ff, "-v", "error", "-ss", start, "-t", "12", "-i", str(cuts_clip), "-f", "lavfi",
              "-i", "sine=frequency=440:sample_rate=48000:duration=12", "-map", "0:v", "-map",
-             "1:a", "-c:v", "libx264", "-c:a", "aac", "-f", "mpegts", str(half)],
+             "1:a", "-c:v", "libx264", *(color if i else []), "-c:a", "aac", "-f", "mpegts",
+             str(half)],
             check=True,
         )  # fmt: skip
         halves.append(half.read_bytes())
@@ -642,6 +651,37 @@ def test_an_mpegts_with_a_timestamp_reset_keeps_the_cuts_after_it(joined_ts, tmp
     vstart = ffmpeg_utils.probe(joined_ts).vstart
     got = one_pass(joined_ts, tmp_path / "joined")
     assert near(got, [c + vstart for c in CLIP_CUTS]), got
+
+
+@needs_ffmpeg
+def test_a_picture_that_widens_mid_file_reaches_the_encoder_in_one_size(tmp_path, monkeypatch):
+    """A 320x240 and a 640x360 TS joined byte for byte: with ``-reinit_filter 0`` the proxy
+    chain keeps one graph, so ``scale=320:-2`` alone would pass 320x180 frames on (ffmpeg 9
+    then crashes in libx264 now and then). The probed size fixes the height: every raw frame
+    of the pass has the one size."""
+    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
+    halves = []
+    for i, size in enumerate(("320x240", "640x360")):
+        half = tmp_path / f"w{i}.ts"
+        subprocess.run(
+            [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
+             f"testsrc2=size={size}:rate=10:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-f", "mpegts", str(half)],
+            check=True,
+        )  # fmt: skip
+        halves.append(half.read_bytes())
+    joined = tmp_path / "widen.ts"
+    joined.write_bytes(b"".join(halves))
+    pre, _post, vf, _enc = analyze._proxy_args(4.0)
+    vf = analyze._fixed_scale(vf, joined)
+    assert vf.endswith("scale=320:240")
+    raw = subprocess.run(
+        [shutil.which("ffmpeg"), "-v", "error", *pre, "-i", str(joined), "-an", "-vf", vf,
+         "-pix_fmt", "yuv420p", "-f", "rawvideo", "-"],
+        check=True, capture_output=True,
+    ).stdout  # fmt: skip
+    frame = 320 * 240 * 3 // 2
+    assert len(raw) % frame == 0 and len(raw) // frame >= 38, len(raw)  # 40 at one size
 
 
 # ----------------------------------------------------------------- the first frame's time

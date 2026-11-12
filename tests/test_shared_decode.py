@@ -71,6 +71,28 @@ def _split(clip: Path, cdir: Path, outs: list, cancel=None, hw=None) -> SplitDec
     )
 
 
+def test_the_split_decode_keeps_one_graph_of_the_probed_size():
+    """``-reinit_filter 0`` before the hw options and ``-i``; the source size is pinned at the
+    graph's head, so a picture that changes size cannot reach the raw crop out of bounds."""
+    for kind, head in (("cuda", "scale=640:360,split=2"), ("vaapi", None)):
+        hw = ffmpeg_utils.HwDecoder(kind, "/dev/dri/renderD128" if kind == "vaapi" else None)
+        args = ffmpeg_utils.split_decode_args(
+            "in.mp4", scene_vf=SCENE_VF, scene_enc=ENC, proxy=Path("p.mp4"), raw_vf=VF,
+            hw=hw, src_size=(640, 360),
+        )  # fmt: skip
+        i = args.index("-reinit_filter")
+        assert args[i : i + 2] == ["-reinit_filter", "0"]
+        assert i < args.index("-hwaccel") < args.index("-i")
+        graph = args[args.index("-filter_complex") + 1]
+        assert graph.startswith(
+            f"[0:v:0]{head or ffmpeg_utils._GPU_DOWNLOAD + ',scale=640:360,split=2'}[s][o]"
+        )
+    plain = ffmpeg_utils.split_decode_args(
+        "in.mp4", scene_vf=SCENE_VF, scene_enc=ENC, proxy=Path("p.mp4"), raw_vf=VF
+    )
+    assert plain[plain.index("-filter_complex") + 1].startswith("[0:v:0]split=2[s][o]")
+
+
 def _left(cdir: Path) -> set[str]:
     return {p.name for p in cdir.iterdir()}
 
@@ -603,7 +625,7 @@ def test_the_shared_scene_proxy_counts_from_the_container_start(tmp_path, monkey
     pre, _post, vf, _enc = analyze._proxy_args(
         600.0, 0.0, None, analyze._first_shift(plan.io, 0.0, 600.0)
     )
-    assert (pre, vf) == ([], plan.vf)  # the serial pass of the same source
+    assert (pre, vf) == (analyze.REINIT_OFF, plan.vf)  # the serial pass of the same source
     assert analyze._scene_plan(tmp_path / "a.ts", 600.0) is None
     assert caplog.messages == [
         "a.ts: shared decode off: MPEG-TS or another container without exact seeks"
@@ -700,11 +722,13 @@ def test_split_claims_the_share_and_the_scene_cuts_get_its_proxy(pre, monkeypatc
             self.closed = True
 
     monkeypatch.setattr(ocr_prefetch, "spool_fits", lambda folder, need: True)
+    monkeypatch.setattr(ocr_prefetch, "probe", lambda p: media_info(p, 60.0, width=640, height=360))
     monkeypatch.setattr(ocr_prefetch, "SplitDecode", Fake)
     share = pre.make("split").offer(pre.src, 60.0, True, pre.plan())
     _take(pre)
     (kw,) = made
     assert (kw["raw_vf"], kw["scene_vf"], kw["scene_enc"], kw["size"]) == (VF, SCENE_VF, ENC, SIZE)
+    assert kw["src_size"] == (640, 360)  # pinned at the graph's head
     assert kw["spool"] == tmp_path / "cache" / ffmpeg_utils.SPOOL_DIR
     assert share.result() == tmp_path / "cache" / "proxy.mp4" and share.spool_peak == 1234
 
@@ -774,6 +798,7 @@ def test_close_removes_a_proxy_the_scene_cuts_never_took(pre, monkeypatch, tmp_p
             pass
 
     monkeypatch.setattr(ocr_prefetch, "spool_fits", lambda folder, need: True)
+    monkeypatch.setattr(ocr_prefetch, "probe", lambda p: media_info(p, 60.0, width=640, height=360))
     monkeypatch.setattr(ocr_prefetch, "SplitDecode", Fake)
     share = pre.make("split").offer(pre.src, 60.0, True, pre.plan())
     assert pre.pre._jobs[str(pre.src)].done.wait(60)

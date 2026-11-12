@@ -566,6 +566,9 @@ def _first_shift(src: Path, offset: float, duration: float) -> float | None:
         return None
 
 
+REINIT_OFF = ["-reinit_filter", "0"]  # input option: one filter graph per pass (_proxy_args)
+
+
 def _proxy_args(
     duration: float,
     offset: float = 0.0,
@@ -581,9 +584,14 @@ def _proxy_args(
     MPEG-TS ffmpeg 6.1 counts a whole pass from the video instead (``-an``), so the first
     decoded frame is put at ``shift`` (:func:`_first_shift`: its container time, also when the
     file starts in the middle of a GOP); ffmpeg's own timestamps stay, so a timestamp reset
-    (joined TS files) still runs on. A seek needs a container that seeks exactly."""
+    (joined TS files) still runs on. A seek needs a container that seeks exactly.
+
+    ``-reinit_filter 0`` keeps one filter graph for the whole pass: where the video parameters
+    change mid-file (a joined file's second half with other color tags) ffmpeg 9 would rebuild
+    it, and ``setpts`` re-reads its start and ``fps`` pads from 0 again, so the timestamps
+    after the join are wrong or lost."""
     long_file = duration > LONG_FILE_S
-    pre = ["-skip_frame", "nokey"] if long_file else []
+    pre = [*REINIT_OFF, *(["-skip_frame", "nokey"] if long_file else [])]
     if offset > 0:
         pre += ["-ss", f"{offset:.3f}"]
     post = ["-t", f"{limit:.3f}"] if limit else []
@@ -597,11 +605,31 @@ def _proxy_args(
 _SCENE_DOWNLOAD = {"yuv420p": "nv12", "yuvj420p": "nv12", "yuv420p10le": "p010le"}
 
 
+def _fixed_scale(vf: str, src: Path) -> str:
+    """``vf`` with the proxy's ``scale=W:-2`` given the height of ``src``'s probed picture
+    (``scale=W:H``, even): with ``-reinit_filter 0`` a picture that changes size mid-file
+    would reach libx264 in a new size, which crashes ffmpeg 9 now and then. ``vf`` as it is
+    when the probe fails or has no size."""
+    head, sep, rest = vf.rpartition(",scale=")
+    if not sep or not rest.endswith(":-2"):
+        return vf
+    try:
+        info = probe(src)
+    except FFmpegError:
+        return vf
+    if info.width <= 0 or info.height <= 0:
+        return vf
+    width = int(rest[: -len(":-2")])
+    return f"{head}{sep}{width}:{max(2, round(width * info.height / info.width / 2) * 2)}"
+
+
 def _scene_decode(hw: HwDecoder | None, vf: str, src: Path) -> tuple[list[str], str]:
     """The decoder's input options and the filter chain of the scene proxy. On a GPU decoder and
     an 8- or 10-bit 4:2:0 source the frames stay on the GPU until the ``fps`` filter
     dropped the ones the detector does not read, so only those are downloaded. Other formats
-    (4:4:4, 12-bit, unknown) and the CPU keep the plain path."""
+    (4:4:4, 12-bit, unknown) and the CPU keep the plain path. The proxy's size is fixed
+    (:func:`_fixed_scale`)."""
+    vf = _fixed_scale(vf, src)
     if hw is None:
         return [], vf
     fmt = _SCENE_DOWNLOAD.get(probe(src).pix_fmt or "")
@@ -860,18 +888,21 @@ def _hybrid_cuts(
     dec_args, chain = _scene_decode(hw, vf, src)
     # the CPU half converts to the format NVDEC downloads before it scales, as that half does,
     # so the same frames give the same proxy pixels
-    cpu_vf = chain.replace("hwdownload,", "", 1) if "hwdownload," in chain else vf
+    cpu_vf = (
+        chain.replace("hwdownload,", "", 1) if "hwdownload," in chain else _fixed_scale(vf, src)
+    )
     out = ["-an", "-vf"]
     halves = {
         "gpu": (
             cdir / f"proxy-gpu-{tag}.mp4",
-            [*dec_args, "-i", str(src), "-t", f"{gend:.3f}", *out, chain],
+            [*REINIT_OFF, *dec_args, "-i", str(src), "-t", f"{gend:.3f}", *out, chain],
             gend,
         ),
         "cpu": (
             cdir / f"proxy-cpu-{tag}.mp4",
             # both halves count from the container start (the chain's fps start_time, #976)
             [
+                *REINIT_OFF,
                 "-ss",
                 f"{cstart:.3f}",
                 "-threads",

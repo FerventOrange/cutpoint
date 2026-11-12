@@ -1871,15 +1871,20 @@ def split_decode_args(
     raw_vf: str,
     pix_fmt: PixFmt = "bgr24",
     hw: HwDecoder | None = None,
+    src_size: tuple[int, int] | None = None,
 ) -> list[str]:
     """ffmpeg arguments (without the executable) for one decode pass (``hw``, else the CPU)
     that writes both the scene proxy (``scene_vf`` and ``scene_enc`` as the scene cuts use
     them) to ``proxy`` and the raw frames of ``raw_vf`` (as :func:`decode_raw` gets them) to
-    stdout."""
-    graph_head = gpu_chain(hw, "split=2")  # VAAPI frames are downloaded before the split
+    stdout. ``-reinit_filter 0`` keeps one filter graph, so ``src_size`` (the probed picture)
+    is pinned at its head: a picture that changes size mid-file would otherwise reach the
+    ``raw_vf`` crop out of bounds."""
+    split = "split=2" if src_size is None else f"scale={src_size[0]}:{src_size[1]},split=2"
+    graph_head = gpu_chain(hw, split)  # VAAPI frames are downloaded before the split
     graph = f"[0:v:0]{graph_head}[s][o];[s]{scene_vf}[sv];[o]{raw_vf}[ov]"
     return [
         *("-hide_banner", "-nostats", "-v", "error", "-y"),
+        *("-reinit_filter", "0"),  # one graph: the scene proxy's fps and setpts must not restart
         *(hw.input_args() if hw is not None else ()),
         *("-i", str(path), "-filter_complex", graph),
         *("-map", "[sv]", "-an", *scene_enc, str(proxy)),
@@ -1918,6 +1923,7 @@ class SplitDecode:
         on_exit: Callable[[bool, int], None],
         stderr_lines: list[str] | None = None,
         hw: HwDecoder | None = None,
+        src_size: tuple[int, int] | None = None,
     ) -> None:
         width, height = size
         self.frame_bytes = width * height * PIX_CHANNELS["bgr24"]
@@ -1940,7 +1946,13 @@ class SplitDecode:
         self._closed = False
         self._seg: IO[bytes] | None = None  # the spool file frames() reads
         args = split_decode_args(
-            path, scene_vf=scene_vf, scene_enc=scene_enc, proxy=self.tmp, raw_vf=raw_vf, hw=hw
+            path,
+            scene_vf=scene_vf,
+            scene_enc=scene_enc,
+            proxy=self.tmp,
+            raw_vf=raw_vf,
+            hw=hw,
+            src_size=src_size,
         )
         cmd = _command("ffmpeg", args)
         logger.debug("exec: %s", subprocess.list2cmdline(cmd))

@@ -55,7 +55,14 @@ from cutpoint.events.killfeed import (
     detect_ocr_events,
 )
 from cutpoint.events.regions import game_key_for_path, load_preset
-from cutpoint.ffmpeg_utils import SPOOL_DIR, SplitDecode, decoder_for, spool_cap, spool_fits
+from cutpoint.ffmpeg_utils import (
+    SPOOL_DIR,
+    SplitDecode,
+    decoder_for,
+    probe,
+    spool_cap,
+    spool_fits,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -479,6 +486,7 @@ class OcrPrefetch:
             if not share.claim():
                 return None
             try:
+                info = probe(plan.io)
                 self._split = SplitDecode(
                     plan.io,
                     size=(width, height),
@@ -492,6 +500,7 @@ class OcrPrefetch:
                     on_exit=share.finish,
                     stderr_lines=errors,
                     hw=decoder_for(plan.io),
+                    src_size=(info.width, info.height),
                 )
             except Exception as err:  # noqa: BLE001 - not started: both decode as before
                 logger.debug("shared decode not started: %s", err)
