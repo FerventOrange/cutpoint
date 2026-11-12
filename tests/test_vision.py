@@ -1490,3 +1490,20 @@ def test_ollama_s_failed_requests_stop_the_rating_too(ollama, src, monkeypatch, 
     assert len(chats) == 3 and rater.stopped
     stops = [r.getMessage() for r in caplog.records if "vision rating stopped" in r.getMessage()]
     assert len(stops) == 1
+
+
+@pytest.mark.parametrize(
+    ("reason", "word"), [("length", "cut off (done_reason=length)"), ("stop", "not parseable")]
+)
+def test_an_ollama_reply_cut_off_is_logged_as_cut_off(monkeypatch, src, caplog, reason, word):
+    def post(url, json, timeout, **_k):
+        return _Resp({"message": {"content": '{"sc'}, "done_reason": reason})
+
+    monkeypatch.setattr(vision.requests, "post", post)
+    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="tiny-vl")
+    rater.check_memory = lambda *a, **k: None
+    with caplog.at_level(logging.WARNING, logger="cutpoint.vision"):
+        assert rater.rate(src, 10.0, 14.0, "gaming") is None
+    finals = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Vision reply")]
+    assert len(finals) == 1 and word in finals[0]

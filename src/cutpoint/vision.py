@@ -958,7 +958,10 @@ class VisionRater:
                 body.get("eval_count"),
                 "retrying" if attempt < len(_ATTEMPTS) else "giving up",
             )
-        logger.warning("Vision reply not parseable: %.120s", content)
+        if body.get("done_reason") == "length":
+            logger.warning("Vision reply cut off (done_reason=length): %.120s", content)
+        else:
+            logger.warning("Vision reply not parseable: %.120s", content)
         self._count_empty()
         return None
 
