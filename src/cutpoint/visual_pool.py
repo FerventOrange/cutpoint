@@ -126,11 +126,15 @@ def is_pool_style(style: Style) -> bool:
 def project_has_pool(hl: Mapping[str, Any]) -> bool:
     """Whether the analysis ``hl`` (a highlights.json object) is of a pool style: its
     ``settings.visual_pool`` record (``analyze`` writes it for those styles, learned presets
-    too), else its style name or kind."""
+    too), else its style kind, recorded built-in base (``style_base``) or name."""
     settings = hl.get("settings")
     if isinstance(settings, dict) and isinstance(settings.get("visual_pool"), dict):
         return True
-    return hl.get("style_kind") == ACTION_CAM or hl.get("style") in POOL_BASES
+    return (
+        hl.get("style_kind") == ACTION_CAM
+        or hl.get("style_base") in POOL_BASES
+        or hl.get("style") in POOL_BASES
+    )
 
 
 def is_pool(c: Mapping[str, Any]) -> bool:

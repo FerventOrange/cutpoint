@@ -402,6 +402,22 @@ def test_non_pool_styles_never_pick_pool_moments(tmp_path):
     assert [c["id"] for c in select_moments(learned, top=8)[0]][-1] == "v001"
 
 
+@pytest.mark.parametrize(
+    ("hl", "expected"),
+    [
+        ({"style": "sport"}, True),
+        ({"style": "gaming"}, False),
+        ({"style_kind": "action-cam", "style": "mycam"}, True),
+        ({"style": "mytrail", "style_base": "action"}, True),  # a user style, deleted or not
+        ({"style": "mygame", "style_base": "gaming"}, False),
+        ({"style": "mytrail", "settings": {"visual_pool": {}}}, True),
+        ({"style": "mytrail", "style_base": None, "settings": None}, False),  # an older file
+    ],
+)  # fmt: skip
+def test_project_has_pool_reads_the_recorded_base_without_a_pool_record(hl, expected):
+    assert visual_pool.project_has_pool(hl) is expected
+
+
 # --------------------------------------------------------------------------- rescore
 def test_rescore_events_keeps_the_pool_last_and_unscored():
     scored = [
