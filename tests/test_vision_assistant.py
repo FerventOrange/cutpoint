@@ -441,20 +441,23 @@ GOOD = '{"score": 8, "label": "big jump"}'
 class ScriptedProvider(FakeSubscription):
     """Gives ``texts`` in order, one per request; a request past the end fails the test."""
 
-    def __init__(self, texts: list[str]) -> None:
+    def __init__(self, texts: list) -> None:
         super().__init__("")
         self.texts = list(texts)
 
     def chat(self, messages, **_kw) -> Reply:
         self.sent.append(messages)
         assert self.texts, "the provider was asked after the rating stopped"
-        return Reply(self.texts.pop(0))
+        nxt = self.texts.pop(0)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return Reply(nxt)
 
     def unload(self) -> bool:
         return False
 
 
-def scripted(fake, monkeypatch, texts: list[str]) -> ScriptedProvider:
+def scripted(fake, monkeypatch, texts: list) -> ScriptedProvider:
     """The ``fake`` fixture's setup with a provider that answers ``texts``."""
     del fake
     provider = ScriptedProvider(texts)
@@ -489,7 +492,7 @@ def test_three_moments_of_empty_replies_stop_the_rating_with_one_warning(
     assert out.failed == 5
     stops = [r.getMessage() for r in caplog.records if "vision rating stopped" in r.getMessage()]
     assert stops == [
-        "codex gpt-x returned empty or unparseable replies for 3 moments in a row; vision "
+        "codex gpt-x gave no usable reply (empty, cut off, unparseable or a failed request) for 3 moments in a row; vision "
         "rating stopped, check the Vision model in the Models tab of `cutpoint ui`"
     ]
     assert [(w["code"], w["message"]) for w in res.warnings] == [("vision_unavailable", stops[0])]
@@ -508,25 +511,45 @@ def test_a_usable_reply_resets_the_count(fake, monkeypatch) -> None:
     assert len(provider.sent) == 11 and provider.texts == []
 
 
-def test_a_failed_request_neither_counts_nor_resets(fake, monkeypatch) -> None:
-    """Only replies count: a request that failed (logged) says nothing about the model."""
-    provider = scripted(fake, monkeypatch, [EMPTY] * 4 + [EMPTY] * 2)
-    calls = {"n": 0}
-    chat = provider.chat
-
-    def flaky(messages, **kw) -> Reply:
-        calls["n"] += 1
-        if calls["n"] == 5:
-            raise providers.ProviderError("HTTP 502")
-        return chat(messages, **kw)
-
-    provider.chat = flaky
+@pytest.mark.parametrize(
+    "failure",
+    [providers.TruncatedError("reply was cut off"), providers.ProviderError("HTTP 502")],
+    ids=["cut_off", "provider_error"],
+)
+def test_three_failed_requests_in_a_row_stop_the_rating(fake, monkeypatch, caplog, failure):
+    """A cut-off reply or a provider error is a failed moment like an empty one (#986)."""
+    provider = scripted(fake, monkeypatch, [failure] * 3)
     rater = vision.VisionRater()
-    for k in range(3):  # empty, empty, failed request
+    with caplog.at_level(logging.WARNING, logger="cutpoint.vision"), jsonout.run("x") as res:
+        for k in range(5):
+            assert rater.rate(Path("a.mp4"), 10.0 * k, 10.0 * k + 4, "gaming") is None
+    assert rater.stopped and provider.texts == [] and len(provider.sent) == 3
+    stops = [r.getMessage() for r in caplog.records if "vision rating stopped" in r.getMessage()]
+    assert stops == [
+        "codex gpt-x gave no usable reply (empty, cut off, unparseable or a failed request) "
+        "for 3 moments in a row; vision rating stopped, check the Vision model in the Models "
+        "tab of `cutpoint ui`"
+    ]
+    assert [(w["code"], w["message"]) for w in res.warnings] == [("vision_unavailable", stops[0])]
+
+
+def test_a_cut_off_reply_then_a_good_one_resets_the_count(fake, monkeypatch) -> None:
+    cut = providers.TruncatedError("reply was cut off")
+    scripted(fake, monkeypatch, [cut, cut, GOOD, cut, cut])
+    rater = vision.VisionRater()
+    got = [rater.rate(Path("a.mp4"), 10.0 * k, 10.0 * k + 4, "gaming") for k in range(5)]
+    assert [g is not None for g in got] == [False, False, True, False, False]
+    assert not rater.stopped and rater.empty_in_row == 2
+
+
+def test_missing_consent_is_not_a_failed_moment(fake, monkeypatch) -> None:
+    provider = scripted(fake, monkeypatch, [])
+    rater = vision.VisionRater()
+    rater.via.consent_needed = "vision-v2:test"
+    rater.via._ready = None
+    for k in range(5):
         assert rater.rate(Path("a.mp4"), 10.0 * k, 10.0 * k + 4, "gaming") is None
-    assert rater.empty_in_row == 2 and not rater.stopped
-    assert rater.rate(Path("a.mp4"), 40, 44, "gaming") is None
-    assert rater.stopped
+    assert rater.empty_in_row == 0 and not rater.stopped and provider.sent == []
 
 
 def test_a_cached_rating_is_still_taken_after_the_rating_stopped(
