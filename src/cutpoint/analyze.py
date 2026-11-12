@@ -19,7 +19,9 @@ from __future__ import annotations
 import contextlib
 import copy
 import gc
+import hashlib
 import importlib.util
+import json
 import logging
 import math
 import os
@@ -3689,6 +3691,7 @@ def analyze(
     vision_time_share: float | None = None,
     telemetry_fallback: bool = True,
     reranked: dict[str, Any] | None = None,
+    rerank_backup: str | None = None,
     ids: Mapping[tuple[str, float, float], str] | None = None,
     last_candidate_id: int = 0,
 ) -> Path:
@@ -3772,7 +3775,10 @@ def analyze(
             ``settings.style_requested`` the style's name, the user's choice. ``detection``
             is then the earlier auto analysis's block, kept as it is but not acted on: the
             layers follow ``style``.
-        ids: For ``cutpoint rerank --analyze`` (:func:`reanalyze` with a style): the ids of
+        rerank_backup: ``settings.rerank_backup`` (:func:`backup_digest` of the backup a
+            re-rank kept, :func:`reanalyze`): recorded again, so the backup still gives ids
+            back. None: not recorded (a fresh analysis is not linked to a backup).
+        ids: For a re-analysis (:func:`reanalyze`, ``cutpoint rerank --analyze``): the ids of
             the earlier candidates by :func:`span_key` (:func:`earlier_ids`). A candidate with
             the span of one keeps its id, the others get the next ids after
             ``last_candidate_id``. None: every candidate is numbered from ``h001``.
@@ -3810,6 +3816,7 @@ def analyze(
             vision_time_share=vision_time_share,
             telemetry_fallback=telemetry_fallback,
             reranked=reranked,
+            rerank_backup=rerank_backup,
             ids=ids,
             last_candidate_id=last_candidate_id,
         )
@@ -3844,6 +3851,7 @@ def _analyze(
     vision_time_share: float | None,
     telemetry_fallback: bool,
     reranked: dict[str, Any] | None,
+    rerank_backup: str | None,
     ids: Mapping[tuple[str, float, float], str] | None,
     last_candidate_id: int,
 ) -> Path:
@@ -4103,6 +4111,8 @@ def _analyze(
                     if reranked is not None
                     else {}
                 ),
+                # the backup of the last re-rank, which gives ids back (#1005)
+                **({"rerank_backup": rerank_backup} if rerank_backup is not None else {}),
                 # #939: an action-cam style without telemetry ran as `style` (action)
                 **(
                     {"style_requested": style_fallback["from"], "style_fallback": style_fallback}
@@ -4249,10 +4259,9 @@ def span_key(c: dict[str, Any]) -> tuple[str, float, float]:
     return (str(c["source"]), round(float(c["start"]), 2), round(float(c["end"]), 2))
 
 
-def earlier_ids(hl: dict[str, Any]) -> tuple[dict[tuple[str, float, float], str], int]:
-    """What a re-rank of the analysis ``hl`` keeps (#902): the ``h`` ids of its candidates by
-    :func:`span_key` (``ids`` of :func:`rank_parts`), and the highest id it ever gave
-    (``settings.last_candidate_id``, at least its highest ``h`` id)."""
+def _h_ids(hl: dict[str, Any]) -> tuple[dict[tuple[str, float, float], str], int]:
+    """The ``h`` ids of the candidates of ``hl`` by :func:`span_key`, and the highest id it
+    ever gave (``settings.last_candidate_id``, at least its highest ``h`` id)."""
     ids = {
         span_key(c): str(c["id"])
         for c in hl.get("candidates") or []
@@ -4260,6 +4269,45 @@ def earlier_ids(hl: dict[str, Any]) -> tuple[dict[tuple[str, float, float], str]
     }
     last = (hl.get("settings") or {}).get("last_candidate_id")
     return ids, max([int(last or 0), *(int(i[1:]) for i in ids.values())])
+
+
+def backup_digest(raw: bytes) -> str:
+    """What names a re-rank's backup file by its bytes (``settings.rerank_backup``, #1005)."""
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def earlier_ids(
+    hl: dict[str, Any], backup: bytes | None = None
+) -> tuple[dict[tuple[str, float, float], str], int]:
+    """What a re-rank of the analysis ``hl`` keeps (#902): the ``h`` ids of its candidates by
+    :func:`span_key` (``ids`` of :func:`rank_parts`), and the highest id it ever gave
+    (``settings.last_candidate_id``, at least its highest ``h`` id).
+
+    ``backup``: the bytes of ``highlights.before-rerank.json`` (#1005), used only when they are
+    the backup ``hl`` is linked to (:func:`backup_digest` equal to ``settings.rerank_backup``,
+    which a re-rank records and a re-analysis keeps; a fresh analysis has none). A span ``hl``
+    lacks gets its id there, unless ``hl`` gives that id to a span (``hl``'s ids come first,
+    so no id names another span); its highest id counts too. A backup that is not an analysis,
+    whose candidates cannot be read, or that gives a span both have another id than ``hl``
+    (edited by hand) is ignored."""
+    ids, last = _h_ids(hl)
+    link = (hl.get("settings") or {}).get("rerank_backup")
+    if backup is None or not link or backup_digest(backup) != link:
+        return ids, last  # none, or not the one hl was re-ranked from: stale
+    try:
+        old, old_last = _h_ids(json.loads(backup.decode("utf-8-sig")))
+    except (AttributeError, KeyError, TypeError, ValueError):  # not an analysis: ignored
+        logger.debug("the backup's ids cannot be read; ignored", exc_info=True)
+        return ids, last
+    if any(ids.get(k, i) != i for k, i in old.items()):  # edited since: stale
+        logger.debug("the backup's ids differ from highlights.json's; ignored")
+        return ids, last
+    taken = set(ids.values())
+    for key, i in old.items():
+        if key not in ids and i not in taken:
+            ids[key] = i
+            taken.add(i)
+    return ids, max(last, old_last)
 
 
 def rank_parts(
@@ -4296,11 +4344,12 @@ def rank_parts(
     ``source_index`` is its part's position); a part without ``signals`` keeps its candidates
     but gives no grid. ``hl["timings"]`` gets ``vision_s``.
 
-    For a re-rank (:mod:`cutpoint.rerank`): ``ids`` maps the :func:`span_key` of the earlier
-    candidates to their ids; a candidate with the span of one keeps its id and the others get
-    the next ids after ``settings.last_candidate_id`` (:func:`number_candidates`). None: every
-    candidate is numbered from ``h001``. ``vision_cache_only``: the vision step takes the
-    cached ratings only and asks no model (the moments without one stay unrated).
+    For a re-rank (:mod:`cutpoint.rerank`, :func:`reanalyze`): ``ids`` maps the
+    :func:`span_key` of the earlier candidates to their ids; a candidate with the span of one
+    keeps its id and the others get the next ids after ``settings.last_candidate_id``
+    (:func:`number_candidates`). None: every candidate is numbered from ``h001``.
+    ``vision_cache_only``: the vision step takes the cached ratings only and asks no model
+    (the moments without one stay unrated).
 
     Returns:
         The events.json object the candidates were ranked with, or a falsy value without one.
@@ -4578,7 +4627,13 @@ def rerank_record(hl: dict[str, Any], style: Style) -> dict[str, Any] | None:
     return {"from": hl.get("style"), "requested": requested if isinstance(requested, str) else None}
 
 
-def reanalyze(project: Path, style: Style | None = None) -> Path:
+def reanalyze(
+    project: Path,
+    style: Style | None = None,
+    *,
+    backup: bytes | None = None,
+    rerank_backup: str | None = None,
+) -> Path:
     """Re-run ``analyze`` with the inputs and style recorded in highlights.json.
 
     Everything expensive is cached (audio, transcript, telemetry), so this is
@@ -4589,10 +4644,15 @@ def reanalyze(project: Path, style: Style | None = None) -> Path:
     ``style``: analyze with this style instead (``cutpoint rerank --analyze``), with the
     event layers it plans (made where their caches miss) and the dialogue step; another
     style than the recorded one is the user's choice (:func:`rerank_record`, an auto
-    analysis's ``detection`` block kept), and the candidates whose span is unchanged keep their
-    ids, the new spans getting ids above ``settings.last_candidate_id`` (:func:`earlier_ids`).
-    None: the recorded style, the layers as they are, the ids from ``h001``. A project
-    re-ranked before keeps its style and record either way.
+    analysis's ``detection`` block kept). None: the recorded style, the layers as they are. A
+    project re-ranked before keeps its style and record either way.
+
+    Either way the candidates whose span is unchanged keep their ids and the new spans get ids
+    above ``settings.last_candidate_id``, which never goes down (:func:`earlier_ids`, #1006);
+    ``backup`` (``cutpoint rerank --analyze``: the bytes of the backup before its own) gives a
+    span the current analysis lacks its id there (#1005). ``rerank_backup``: the
+    ``settings.rerank_backup`` to record (``rerank --analyze``: its own backup's); None keeps
+    the recorded one.
 
     Raises:
         FileNotFoundError: If the project has no highlights.json.
@@ -4640,7 +4700,10 @@ def reanalyze(project: Path, style: Style | None = None) -> Path:
     # re-ranked project the block only, as recorded
     auto = st.get("style_requested") == AUTO
     detection = hl.get("detection") if auto or reranked is not None else None
-    ids, last_id = earlier_ids(hl) if given is not None else (None, 0)
+    ids, last_id = earlier_ids(hl, backup)
+    link = st.get("rerank_backup")
+    if rerank_backup is None and isinstance(link, str):
+        rerank_backup = link  # the backup still gives ids back after this re-analysis
     return analyze(
         [Path(p) for p in inputs],
         style,
@@ -4667,6 +4730,7 @@ def reanalyze(project: Path, style: Style | None = None) -> Path:
         # another style: its own event layers (360 analyze runs its layers itself)
         layers=given is not None and not pano,
         reranked=reranked,
+        rerank_backup=rerank_backup,
         ids=ids,
         last_candidate_id=last_id,
     )

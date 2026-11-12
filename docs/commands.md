@@ -2050,9 +2050,16 @@ list`), not `auto`. It prints the new top `--top` moments (default 10) with thei
 - Without `--dry-run`, `highlights.json` is replaced and the file before is kept as
   `highlights.before-rerank.json` (one backup: the next save replaces it). Copy it back to
   undo. The save holds the project's run lock (`folder_busy` while another run works on it).
-- A moment whose span is unchanged keeps its id; a new span gets the next id after
-  `settings.last_candidate_id`, so an id never names another span. `--analyze` keeps the ids
-  the same way.
+- A moment whose span is unchanged keeps its id; a span the ranking being replaced lacks but
+  `highlights.before-rerank.json` has gets its id from there, unless the ranking being
+  replaced gives that id to another span; a new span gets the next id after
+  `settings.last_candidate_id`, which never goes down, so an id never names another span.
+  `--analyze` keeps the ids the same way. The backup counts only while `highlights.json` is
+  linked to it (`settings.rerank_backup`, written by the rerank that kept it and kept by
+  re-analyses); after `analyze` or `edit` it gives no id back. Only one backup exists (each
+  rerank replaces it), so switching style and back gives the ids back; A to B to C to A does
+  not. The re-analysis of `cutpoint events` and `crashes --reanalyze` keeps the ids of
+  unchanged spans the same way (without the backup).
 - The new style is recorded as your choice: `settings.style_requested` is its name and
   `settings.reranked` records `from` (the style before) and `requested` (the style asked for
   then, such as `auto`, else `null`). An auto project keeps its `detection` block. A
