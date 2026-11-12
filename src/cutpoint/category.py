@@ -17,7 +17,8 @@ I/O. The project gets one category by duration-weighted majority; :func:`resolve
 frame probe is 32 small grey frames and numpy. A source the frames leave unsure between
 gameplay and general also gets the HUD text check (:func:`text_probe`, cached as
 :data:`TEXT_FILE`): the HUD OCR engine of the events extra looks for text that stays in place
-over a few frames, as a thin game HUD has; without the extra it is skipped. A source still
+over a few frames, as a thin game HUD has; without the extra (Cutpoint lite) the weaker
+screen-text cue (:func:`anchor_probe`, no OCR) takes its place. A source still
 unsure after that, or one that camera tags alone make general, is shown to the vision model
 (:func:`needs_vision`); for a camera-tagged source only an ``action`` answer counts (#958).
 """
@@ -141,6 +142,24 @@ CLOCK_RE = re.compile(
 
 _TEXT_FAILED: set[Path] = set()  # cache folders whose text check failed in this process
 
+# ---- the screen-text cue, in place of the HUD text check without OCR (Cutpoint lite, #904)
+# On the text check's frames: pixels that keep their value (against the median frame) and have
+# strong edges, joined into word blobs; a text-like blob (a line's height, wider than tall) in
+# the same place in most frames (:func:`text_anchors`) at the edge of the picture, where a HUD
+# sits, is an anchor; the subtitle band and the lower-third box are left out. Weaker than read
+# text: it lifts by ANCHOR_WEIGHT and never makes a source sure. Values from a prototype on 19
+# labelled sources; checked on the 99-source held-out run of #904.
+ANCHOR_VERSION = 1
+ANCHOR_FILE = f"category-anchors-v{ANCHOR_VERSION}.json"  # in the source's cache folder
+ANCHOR_EDGE = 60.0  # luma gradient (|dx| + |dy|) of a text pixel
+ANCHOR_STILL = 6.0  # luma levels: a pixel this close to the median frame stays in place
+ANCHOR_JOIN = 0.006  # share of the frame's height: blobs this close in a row join (min 2 px)
+ANCHOR_HEIGHT = (0.008, 0.06)  # share of the frame's height: a text line's
+ANCHOR_MAX_WIDTH = 0.5  # share of the frame's width
+ANCHOR_OUTER = (0.2, 0.25)  # x, y share of each side: an anchor's centre lies in that band
+ANCHOR_WEIGHT = 0.2  # gameplay score of TEXT_ANCHORS anchors (no source is sure from them)
+_ANCHORS_FAILED: set[Path] = set()  # cache folders whose cue failed in this process
+
 # ---- the vision question, for a source the rest leaves unsure (#898), or that camera tags
 # alone make general (#958: an action camera without telemetry has the tags of a phone clip)
 # The shared vision model (local Ollama, or a hosted Vision provider with the user's consent)
@@ -214,6 +233,9 @@ class SourceProbe:
         shake: Median shift (px) between consecutive frames of the crops.
         hud_text: HUD text anchors the HUD text check kept (None: not checked). Cached
             apart, in :data:`TEXT_FILE`, so not in :meth:`to_json`.
+        screen_anchors: Text anchors the screen-text cue kept, run in place of the HUD text
+            check without the OCR engine (Cutpoint lite; None: not run). Cached
+            apart, in :data:`ANCHOR_FILE`, so not in :meth:`to_json`.
         vision: The vision model's answer (one of :data:`VISION_ANSWERS`; None: not asked).
             Cached apart, in :data:`VISION_FILE`, so not in :meth:`to_json`.
     """
@@ -236,11 +258,12 @@ class SourceProbe:
     noise_floor: float | None = None
     shake: float | None = None
     hud_text: int | None = None
+    screen_anchors: int | None = None
     vision: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
-        del data["hud_text"], data["vision"]
+        del data["hud_text"], data["screen_anchors"], data["vision"]
         return {"version": VERSION, **data}
 
     @classmethod
@@ -691,7 +714,12 @@ def needs_text(p: SourceProbe) -> bool:
         return False
     if p.static_share is not None and p.static_share > STILL_SHARE:
         return False
-    return GENERAL_SURE <= gameplay_score(replace(p, hud_text=None))[0] < GAMEPLAY_SURE
+    return GENERAL_SURE <= gameplay_score(_bare(p))[0] < GAMEPLAY_SURE
+
+
+def _bare(p: SourceProbe) -> SourceProbe:
+    """``p`` without the HUD text check's and the screen-text cue's results."""
+    return replace(p, hud_text=None, screen_anchors=None)
 
 
 def _with_text(found: SourceProbe, cdir: Path, io: Path | None = None) -> SourceProbe:
@@ -713,7 +741,7 @@ def _with_text(found: SourceProbe, cdir: Path, io: Path | None = None) -> Source
         if cdir in _TEXT_FAILED:
             return found
         if not ocr_installed():
-            logger.debug("HUD text check of %s skipped: no OCR engine", found.path)
+            logger.debug("HUD text check of %s: no OCR engine, screen-text cue", found.path)
             return found
         from cutpoint.ffmpeg_utils import probe  # noqa: PLC0415
 
@@ -734,6 +762,119 @@ def _with_text(found: SourceProbe, cdir: Path, io: Path | None = None) -> Source
         logger.debug("HUD text check of %s: %.1fs", found.path, time.perf_counter() - t0)
         cache.save_json(cdir / TEXT_FILE, rec)
     return replace(found, hud_text=hud_anchors(rec["anchors"], found.box))
+
+
+# --------------------------------------------------------------------------- screen-text cue
+def anchor_boxes(frames: Sequence[np.ndarray]) -> list[list[Box]]:
+    """Text-like boxes per BGR frame (frame pixels) for the screen-text cue: word blobs of
+    pixels with strong edges (:data:`ANCHOR_EDGE`) that keep their value against the median
+    of ``frames`` (:data:`ANCHOR_STILL`), inside black bars that stay (:func:`_bars`), a line
+    high (:data:`ANCHOR_HEIGHT`), at least as wide as high and at most
+    :data:`ANCHOR_MAX_WIDTH` of the frame."""
+    import cv2  # noqa: PLC0415
+
+    fh, fw = frames[0].shape[:2]
+    luma = np.stack(
+        [
+            (0.114 * f[..., 0] + 0.587 * f[..., 1] + 0.299 * f[..., 2]).astype(np.float32)
+            for f in frames
+        ]
+    )
+    rows, cols = _bars(luma)
+    if rows.stop - rows.start < fh // 4 or cols.stop - cols.start < fw // 4:
+        rows, cols = slice(0, fh), slice(0, fw)  # all dark: nothing to crop to
+    luma = luma[:, rows, cols]
+    median = np.median(luma, axis=0)
+    lo, hi = ANCHOR_HEIGHT[0] * fh, ANCHOR_HEIGHT[1] * fh
+    join = max(2, round(ANCHOR_JOIN * fh))
+    kernel = np.ones((3, 2 * join + 1), np.uint8)
+    out: list[list[Box]] = []
+    for f in luma:
+        mask = (_gradient(f) > ANCHOR_EDGE) & (np.abs(f - median) < ANCHOR_STILL)
+        mask[:MARGIN] = mask[-MARGIN:] = False
+        mask[:, :MARGIN] = mask[:, -MARGIN:] = False
+        blobs = cv2.dilate(mask.astype(np.uint8), kernel)
+        stats = cv2.connectedComponentsWithStats(blobs, connectivity=8)[2]
+        boxes: list[Box] = []
+        for x, y, w, h, _area in stats[1:].tolist():
+            if lo <= h <= hi and h <= w <= ANCHOR_MAX_WIDTH * fw:
+                x0, y0 = cols.start + x, rows.start + y
+                boxes.append((float(x0), float(y0), float(x0 + w), float(y0 + h)))
+        out.append(boxes)
+    return out
+
+
+def anchor_probe(io: Path, duration: float, width: int, height: int) -> dict[str, Any] | None:
+    """The screen-text cue of one source, as cached in :data:`ANCHOR_FILE`: the text anchors
+    (:func:`text_anchors`) of :func:`anchor_boxes` on the HUD text check's frames
+    (:func:`_text_frames`), boxes as shares of the frame. None when too few frames were
+    read. Needs no OCR engine."""
+    frames = _text_frames(io, duration, width, height)
+    if len(frames) < TEXT_MIN_FRAMES:
+        return None
+    fh, fw = frames[0].shape[:2]
+    anchors = [
+        {"box": [round(x0 / fw, 4), round(y0 / fh, 4), round(x1 / fw, 4), round(y1 / fh, 4)]}
+        for _first, (x0, y0, x1, y1) in text_anchors(anchor_boxes(frames))
+    ]
+    return {"version": ANCHOR_VERSION, "frames": len(frames), "anchors": anchors}
+
+
+def screen_anchors(anchors: Sequence[Mapping[str, Any]], box: Sequence[float] | None = None) -> int:
+    """How many of the screen-text cue's ``anchors`` (``box`` as shares of the frame) are a
+    HUD's: centred in the outer band of the picture (:data:`ANCHOR_OUTER`), not in the
+    subtitle band and not in the lower-third ``box`` (:attr:`SourceProbe.box`)."""
+    x_lo, x_hi, y_lo = SUBTITLE_BAND
+    out_x, out_y = ANCHOR_OUTER
+    kept = 0
+    for a in anchors:
+        x0, y0, x1, y1 = a["box"]
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        if cy >= y_lo and x_lo <= cx <= x_hi:
+            continue
+        if box is not None and box[0] <= cy <= box[1]:
+            continue
+        if out_x <= cx <= 1 - out_x and out_y <= cy <= 1 - out_y:
+            continue
+        kept += 1
+    return kept
+
+
+def _with_anchors(found: SourceProbe, cdir: Path, io: Path | None = None) -> SourceProbe:
+    """``found`` with :attr:`SourceProbe.screen_anchors` when :func:`needs_text` and there is
+    no OCR engine (Cutpoint lite; a full install whose HUD text check fails gets no cue): from
+    :data:`ANCHOR_FILE`, else from :func:`anchor_probe` (cached); unchanged when the cue fails
+    (tried once per process)."""
+    if found.hud_text is not None or ocr_installed() or not needs_text(found):
+        return found
+    rec = cache.load_json(cdir / ANCHOR_FILE)
+    fresh = (
+        isinstance(rec, dict)
+        and rec.get("version") == ANCHOR_VERSION
+        and isinstance(rec.get("anchors"), list)
+    )
+    if not fresh:
+        if cdir in _ANCHORS_FAILED:
+            return found
+        from cutpoint.ffmpeg_utils import probe  # noqa: PLC0415
+
+        io = io or remap_source(Path(found.path))
+        t0 = time.perf_counter()
+        try:
+            info = probe(io)
+            rec = anchor_probe(io, info.duration, info.width, info.height)
+        except LowMemoryError:  # the memory guard stops the run
+            raise
+        except Exception as err:  # noqa: BLE001 - a decode failure: the frame probe stands
+            logger.warning("Screen-text cue of %s failed: %s", Path(found.path).name, err)
+            _ANCHORS_FAILED.add(cdir)
+            return found
+        if rec is None:
+            _ANCHORS_FAILED.add(cdir)
+            return found
+        logger.debug("Screen-text cue of %s: %.1fs", found.path, time.perf_counter() - t0)
+        cache.save_json(cdir / ANCHOR_FILE, rec)
+    return replace(found, screen_anchors=screen_anchors(rec["anchors"], found.box))
 
 
 # --------------------------------------------------------------------------- vision (#898)
@@ -939,7 +1080,8 @@ def probe_source(src: Path, vision: FootageVision | None = None) -> SourceProbe:
     cdir = cache.source_dir(src)
     cached = SourceProbe.from_json(cache.load_json(cdir / CACHE_FILE))
     if cached is not None:  # saved under the path of its first run, maybe another remap
-        return _with_vision(_with_text(replace(cached, path=str(src)), cdir), cdir, vision)
+        found = _with_anchors(_with_text(replace(cached, path=str(src)), cdir), cdir)
+        return _with_vision(found, cdir, vision)
     io = remap_source(src)
     info = probe(io)
     meta = _metadata(ffprobe_json(io, show_format=True, show_streams=True, timeout=60))
@@ -956,7 +1098,7 @@ def probe_source(src: Path, vision: FootageVision | None = None) -> SourceProbe:
             setattr(found, key, round(value, 5) if isinstance(value, float) else value)
     if found.telemetry or found.frames >= MIN_FRAMES:  # else a read failure that may pass
         cache.save_json(cdir / CACHE_FILE, found.to_json())
-    return _with_vision(_with_text(found, cdir, io), cdir, vision, io)
+    return _with_vision(_with_anchors(_with_text(found, cdir, io), cdir, io), cdir, vision, io)
 
 
 # --------------------------------------------------------------------------- speech
@@ -1074,20 +1216,32 @@ def gameplay_score(p: SourceProbe) -> tuple[float, list[str]]:
             why.append(f"HUD text in {p.hud_text} places")
         else:
             why.append("no HUD text")
+    elif p.screen_anchors is not None:  # the screen-text cue in its place (no OCR)
+        if p.screen_anchors >= TEXT_ANCHORS:
+            score += ANCHOR_WEIGHT
+            why.append(f"screen text anchors in {p.screen_anchors} places (no OCR)")
+        else:
+            why.append("no screen text anchors (no OCR)")
     return round(max(0.0, min(1.0, score)), 3), why
 
 
+def _cue_lifted(p: SourceProbe) -> bool:
+    """The screen-text cue (no OCR) lifts ``p``'s gameplay score: never to sure gameplay."""
+    return p.hud_text is None and (p.screen_anchors or 0) >= TEXT_ANCHORS
+
+
 def _text_alone(p: SourceProbe) -> bool:
-    """``p``'s gameplay score rests on its HUD text alone (:data:`TEXT_SUPPORT`)."""
-    lifted = (p.hud_text or 0) >= TEXT_ANCHORS
-    return lifted and gameplay_score(replace(p, hud_text=None))[0] < TEXT_SUPPORT
+    """``p``'s gameplay score rests on its HUD text (or the screen-text cue) alone
+    (:data:`TEXT_SUPPORT`)."""
+    lifted = (p.hud_text or 0) >= TEXT_ANCHORS or _cue_lifted(p)
+    return lifted and gameplay_score(_bare(p))[0] < TEXT_SUPPORT
 
 
 def _gameplay_evidence(p: SourceProbe) -> str:
     """What made ``p`` sure gameplay without the vision model: ``HUD text`` when the source
     is sure only with it, else ``static HUD``."""
     lifted = (p.hud_text or 0) >= TEXT_ANCHORS
-    if lifted and gameplay_score(replace(p, hud_text=None))[0] < GAMEPLAY_SURE:
+    if lifted and gameplay_score(_bare(p))[0] < GAMEPLAY_SURE:
         return "HUD text"
     return "static HUD"
 
@@ -1120,7 +1274,7 @@ def _source(p: SourceProbe, speech: float | None) -> SourceDecision:
     if p.vision in VISION_ANSWERS:
         why.append(f"vision: {p.vision}")
     if (score >= GAMEPLAY_MIN) if seen is None else seen == V_GAMEPLAY:
-        ambiguous = seen is None and (score < GAMEPLAY_SURE or _text_alone(p))
+        ambiguous = seen is None and (score < GAMEPLAY_SURE or _text_alone(p) or _cue_lifted(p))
         decided = None if ambiguous else "vision" if seen else _gameplay_evidence(p)
         return SourceDecision(
             p.path, p.duration, GAMEPLAY, ambiguous, ", ".join(why), score, speech, decided
