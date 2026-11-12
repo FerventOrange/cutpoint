@@ -125,6 +125,7 @@ from cutpoint.assemble import (
     JOIN_TRANSITIONS,
     OUTPUT_FORMATS,
     default_audio_transition,
+    exact_clips,
 )
 from cutpoint.assistant import cliproxy
 from cutpoint.assistant import context as ai_context
@@ -137,7 +138,7 @@ from cutpoint.assistant import session as ai_session
 from cutpoint.assistant import store as ai_store
 from cutpoint.assistant import watch as ai_watch
 from cutpoint.backends import ollama_url
-from cutpoint.clips import MIN_EXPORT_S
+from cutpoint.clips import MIN_EXPORT_S, too_short
 from cutpoint.config import (
     ASSISTANT_PROVIDERS,
     COLOR_MODES,
@@ -3222,7 +3223,8 @@ def _num(item: dict[str, Any], key: str, i: int) -> float:
 def validate_segments(
     raw: Any, sources: list[dict[str, Any]], media: Media
 ) -> list[dict[str, Any]]:
-    """Check a review against the project's sources; return the cleaned segments."""
+    """Check a review against the project's sources; return the cleaned segments (``exact``
+    kept only when true)."""
     if not isinstance(raw, list):
         raise bad("segments must be a list")
     if len(raw) > MAX_SEGMENTS:
@@ -3241,7 +3243,7 @@ def validate_segments(
         if src is None:
             raise bad(f"segment {i}: source is not part of this project")
         start, end = _num(item, "start", i), _num(item, "end", i)
-        if start < 0 or end - start < MIN_EXPORT_S:
+        if start < 0 or too_short(start, end):
             raise bad(f"segment {i}: needs 0 <= start and end at least {MIN_EXPORT_S}s after start")
         duration = src["duration"] or media.duration(remap_source(src["path"]))
         if duration is None:
@@ -3250,6 +3252,9 @@ def validate_segments(
             raise bad(f"segment {i}: end {end:g}s is past the source's {duration:g}s")
         if not isinstance(label, str) or len(label) > ai_ops.LABEL_MAX:
             raise bad(f"segment {i}: label must be text of at most {ai_ops.LABEL_MAX} characters")
+        exact = item.get("exact", False)
+        if not isinstance(exact, bool):
+            raise bad(f"segment {i}: exact must be true or false")
         out.append(
             {
                 "id": sid,
@@ -3257,6 +3262,8 @@ def validate_segments(
                 "start": round(start, 3),
                 "end": round(end, 3),
                 "label": "".join(c for c in label if c.isprintable()).strip() or "segment",
+                # a word splice: exported at exactly its edges and joined with hard cuts
+                **({"exact": True} if exact else {}),
             }
         )
     return out
@@ -5818,9 +5825,16 @@ def create_app(port: int) -> FastAPI:
             exp_dir = exp["dir"]
             saved = _joins_of(_load(p, f"{UI_DIR}/review.json"))
             joins = export_joins(p / exp_dir, saved)
+            files = clip_files(p / exp_dir)
+            hard = [a or b for a, b in pairwise(exact_clips(p / exp_dir, files))]
             final_joins = [
-                {"a": j["a"], "b": j["b"], "transition": j["transition"] or transition}
-                for j in clip_joins(p / exp_dir, saved)
+                {
+                    "a": j["a"],
+                    "b": j["b"],
+                    # a join next to a word splice is always a cut (assemble.hard_cuts)
+                    "transition": "cut" if cut else j["transition"] or transition,
+                }
+                for j, cut in zip(clip_joins(p / exp_dir, saved), hard, strict=True)
                 if j["a"] and j["b"]
             ]
             fade_dur = _seconds(body, "fade_dur", MAX_FADE_S, positive=True)
@@ -6416,6 +6430,7 @@ def create_app(port: int) -> FastAPI:
             windows,
             edge_planner(p),
             frame_index=ai_lookfor.indexed(list(durations)),  # no frames, no look_for
+            words=edge_planner(p).words,  # find_words: the cached transcript words
         )
         if ai_providers.is_subscription(provider) and (why := proxy_error(logged_in_only=True)):
             raise bad(why, 503)

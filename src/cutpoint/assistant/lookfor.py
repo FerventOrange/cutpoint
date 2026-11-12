@@ -75,8 +75,8 @@ TOOL = {
         "description": (
             "Search the footage itself for what a text describes (CLIP similarity on the "
             "cached frames of every source, also footage no moment covers), best first. "
-            "Use when labels and transcripts do not match. Each hit is strong or weak; a "
-            "weak one is a guess to confirm (view_moment) or to call uncertain."
+            "Use when labels and transcripts do not match; not for what is said. Each hit is "
+            "strong or weak; a weak one is a guess to confirm (view_moment) or to call uncertain."
         ),
         "parameters": {
             "type": "object",

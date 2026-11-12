@@ -63,6 +63,7 @@ from cutpoint.planning import (
     MANIFEST_GENERATOR,
     Padding,
     check_own_manifest,
+    exact_fade,
     file_size,
     kept_why,
     manifest_entries,
@@ -82,6 +83,18 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_AUDIO_FADE_S = 0.25  # audio fade in/out baked into every exported clip
 MIN_EXPORT_S = 0.1  # shortest clip export_clips accepts
+
+
+def too_short(start: float, end: float) -> bool:
+    """Whether ``start``-``end`` is under :data:`MIN_EXPORT_S`, with the page's 1e-6 slack so a
+    range of exactly 0.1 s written as floats is not refused."""
+    return end - start < MIN_EXPORT_S - 1e-6
+
+
+# An exact segment (``"exact": true``, a word splice of the AI Chat) is cut at its own edges: no
+# tails, no padding, no speech-aware move, and only a short fade against clicks
+# (planning.EXACT_AUDIO_FADE_S, planning.exact_fade); ``assemble`` joins it with hard cuts.
+EXACT_KEYS = {"smart_tail": False, "speech_aware": False, "extend_start": 0.0, "extend_end": 0.0}
 POLL_S = 0.1  # parallel export: the main thread waits in steps this long (Ctrl+C on Windows)
 
 
@@ -371,9 +384,12 @@ def load_segments(path: Path) -> list[dict[str, Any]]:
     of the speech-aware pass), ``"crop"`` (``auto``, ``none`` or ``W:H:X:Y``), ``"extend"`` /
     ``"extend_start"`` / ``"extend_end"`` (padding in seconds, overriding
     ``--extend*``) and ``"speech_max_extend"`` / ``"speech_max_lead"``
-    (this segment's speech-aware caps, overriding ``--speech-max-*``) and
+    (this segment's speech-aware caps, overriding ``--speech-max-*``),
     ``"min_start"`` / ``"max_end"`` (source seconds the clip never extends past
-    with lead-in, tails or padding; ``cutpoint 360 repair``).
+    with lead-in, tails or padding; ``cutpoint 360 repair``) and ``"exact": true`` (cut at
+    exactly ``start`` and ``end``: no tail, padding or speech-aware move, a fade of at most
+    :data:`~cutpoint.planning.EXACT_AUDIO_FADE_S`, recorded in the manifest so ``assemble`` joins it with hard
+    cuts; a word splice of the AI Chat).
 
     Raises:
         ValueError: If the file is malformed, a segment is invalid or two share an id.
@@ -422,6 +438,13 @@ def load_segments(path: Path) -> list[dict[str, Any]]:
             parse_spec(item["crop"])  # validate early
             moment["crop"] = item["crop"]
         moment.update(seconds_keys(item, ("extend", "extend_start", "extend_end"), f"Segment {i}"))
+        if "exact" in item:
+            if not isinstance(item["exact"], bool):
+                raise ValueError(f"Segment {i}: exact must be true or false")
+            if item["exact"]:  # its own edges: no tail, padding or speech-aware move
+                moment.pop("tail", None)
+                moment.pop("extend", None)
+                moment.update(exact=True, **EXACT_KEYS)
         moment.update(boundaries.clip_limits(item, f"Segment {i}"))
         bounds = seconds_keys(item, BOUND_KEYS, f"Segment {i}", allow_negative=True)
         for key, val in bounds.items():
@@ -561,7 +584,7 @@ def plan_edges(
         src = io_paths[m["source"]]
         info = infos[m["source"]]
         start, end = m["start"], min(m["end"], info.duration)
-        if end - start < MIN_EXPORT_S:
+        if too_short(start, end):
             raise ValueError(f"{m['id']}: {start:.2f}-{m['end']:.2f} is outside {src.name}")
         limit = sources.readable_end(src, start, info.duration)
         if nxt is not None:
@@ -853,7 +876,7 @@ def render_clips(
             fmt,
             vertical,
             plan.crop,
-            audio_fade,
+            exact_fade(plan.entry, audio_fade),
             peak,
             grade,
         )
@@ -882,7 +905,7 @@ def render_clips(
                     start,
                     end,
                     out,
-                    audio_fade=audio_fade,
+                    audio_fade=exact_fade(m, audio_fade),
                     kind=m.get("kind"),
                     grade=grade,
                     selected=(plan.keep[0], min(float(m["end"]), plan.keep[1])),
@@ -986,7 +1009,8 @@ def _entry(
         **({"speech": plan.speech} if plan.speech is not None else {}),
         **({"speech_aware": False} if m.get("speech_aware") is False else {}),
         **{k: m[k] for k in (*boundaries.LIMIT_KEYS, *BOUND_KEYS) if m.get(k) is not None},
-        "audio_fade": audio_fade,
+        "audio_fade": exact_fade(m, audio_fade),
+        **({"exact": True} if m.get("exact") is True else {}),
         **({"compress_peaks": peaks} if peaks else {}),
         **({"compress_peaks_makeup_db": makeup or 0.0} if peaks else {}),
         **({"kind": m["kind"]} if m.get("kind") else {}),
@@ -1624,7 +1648,17 @@ def export_clips(
                 work,
                 "clips",
                 {
-                    p.name: clip_key(p.src, p.start, p.end, fmt, vertical, p.crop, audio_fade, k, g)
+                    p.name: clip_key(
+                        p.src,
+                        p.start,
+                        p.end,
+                        fmt,
+                        vertical,
+                        p.crop,
+                        exact_fade(p.entry, audio_fade),
+                        k,
+                        g,
+                    )
                     for p, k, g in zip(plans, peaks, grades, strict=True)
                     if not p.pano
                 },

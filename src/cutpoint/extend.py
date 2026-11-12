@@ -22,7 +22,9 @@ during review are respected. Per-clip speech-aware caps come from the
 manifest entry (``speech_max_extend`` / ``speech_max_lead``, set by a
 segment) or ``--clip-override``, which can also set one clip's total padding
 (``extend`` / ``extend_start`` / ``extend_end``); ``--reuse DIR`` copies clips whose result is
-identical to one in an earlier output instead of re-encoding them.
+identical to one in an earlier output instead of re-encoding them. An exact clip (manifest
+``exact``, a word splice of the AI Chat) keeps its edges and its short fade
+(:func:`cutpoint.planning.exact_fade`).
 """
 
 from __future__ import annotations
@@ -55,6 +57,7 @@ from cutpoint.planning import (
     MANIFEST_GENERATOR,
     Padding,
     check_own_manifest,
+    exact_fade,
     file_size,
     kept_why,
     manifest_entries,
@@ -169,7 +172,9 @@ def apply_overrides(
             raise ValueError(f"--clip-override {pattern}: matches no clip in the folder")
         for plan in hits:
             plan.entry = plan.entry | limits
-            if pads:
+            if pads and plan.entry.get("exact") is True:
+                logger.info("  %s: an exact clip (word splice) keeps its edges", plan.name)
+            elif pads:
                 e = plan.entry
                 own = (padding or Padding()).override(pads)
                 start, end, rec = pad(
@@ -419,7 +424,9 @@ def _extend_locked(
             if str(src) not in infos:
                 infos[str(src)] = probe(src)
             info = infos[str(src)]
-            start, end, rec = pad(src, info, float(e["start"]), float(e["end"]), padding, e)
+            # an exact clip (a word splice) keeps its own edges: no padding
+            own = Padding() if e.get("exact") is True else padding
+            start, end, rec = pad(src, info, float(e["start"]), float(e["end"]), own, e)
             plans.append(ExtendPlan(f.name, e, src, info, start, end, rec, _pick(e)))
 
         apply_overrides(plans, clip_overrides, padding)
@@ -543,7 +550,7 @@ def _extend_locked(
                         fmt,
                         vertical,
                         _crop_box(p.entry),
-                        audio_fade,
+                        exact_fade(p.entry, audio_fade),
                         "",
                         grades[p.name],
                     )
@@ -564,7 +571,10 @@ def _extend_locked(
                 reuse_dir is not None
                 and (reuse_dir / name).is_file()
                 and _reusable(
-                    prior, e | {"start": start, "end": end}, reuse_same_format, audio_fade
+                    prior,
+                    e | {"start": start, "end": end},
+                    reuse_same_format,
+                    exact_fade(e, audio_fade),
                 )
             ):
                 with folders.atomic_output(work / name) as part:
@@ -583,7 +593,7 @@ def _extend_locked(
                     start,
                     end,
                     work / name,
-                    audio_fade=audio_fade,
+                    audio_fade=exact_fade(e, audio_fade),
                     kind=e.get("kind"),
                     reuse_path=old,
                     source_mode=None if pano_source else pano_rec.get("mode"),
@@ -599,7 +609,7 @@ def _extend_locked(
                     fmt,
                     vertical,
                     _crop_box(e),
-                    audio_fade,
+                    exact_fade(e, audio_fade),
                     "",  # extend does not compress peaks (warned above)
                     grades[name],
                 )
@@ -639,7 +649,7 @@ def _extend_locked(
                     "pick": {"start": round(p0, 3), "end": round(p1, 3)},
                     "extend": rec,
                     **({"speech": speech_recs[name]} if name in speech_recs else {}),
-                    "audio_fade": audio_fade,
+                    "audio_fade": exact_fade(e, audio_fade),
                     **({"pano": pano_rec} if pano_rec else {}),
                     **({"read_error": read_err} if read_err else {}),
                     **({"srt": sub} if sub else {}),

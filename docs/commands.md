@@ -890,6 +890,26 @@ says "not available in Cutpoint lite" with the install command), the CLIP weight
 setup --only visual`) and a cached visual layer (`analyze` writes it for the `action-cam`,
 `action` and `sport` styles); without one it says so and the model falls back on `find_moments`.
 
+`find_words` finds where a word or a short phrase is said, to the word. It reads the word times
+that analysis cached with the transcript; nothing is transcribed again. It matches the words in
+order, in any case and without punctuation, short words such as "a" included. Each hit gives the
+file, the start of the first word, the end of the last word and a few words around it. A source
+without transcript words is skipped, and the model is told when no source has them.
+
+To make someone say a sentence ("make her say 'I am done'"), the model finds each word or phrase
+with `find_words` and adds them in order with `add_range` ops: a `file`, a `start` and an `end` in
+seconds of the source. A shorter range (Whisper often times "a" under 0.1 s) is widened
+to 0.1 s around its middle. Such a row is exact (`"exact": true` in the sequence
+and the clips manifest). Export cuts it at exactly those times: no smart tail, no speech-aware
+move, no padding (`--extend`), and only a 10 ms audio fade against clicks. Every join into or out
+of it is a hard cut, whatever the transition or the single joins say, also in the Cut mode
+preview. The same range can be added more than once. Whisper's word times are not always
+exact, so a word can start or end a little early or late: trim the row if it does.
+
+A trim that puts a clip's start or end on either edge of a `find_words` hit (within 0.02 s,
+a hit found in the same message) makes that clip exact too ("cut it right
+after 'done'"), so the export does not move the cut back into the speech.
+
 - Moments the model points to can be highlighted in the Moments list ("Highlight in list") or
   the list filtered by the model's search words (offered only when the list's search, which also
   matches vision labels, finds one of them).
@@ -936,7 +956,8 @@ model asked to watch without it, `tool` events named `view_moment` (`id`, `frame
 `cached`, or `error`: `limit` when the per-message limit was reached) and `look_for` (`query`,
 `found`, `new`, `weak`, `unconfirmed`, `possible` (the unconfirmed windows: `id`, `source`,
 `start`, `end`, `label`, `confidence`), or `error`: why it could not search, with `reason`, a short
-sentence for the page, when there is one); a `proposal` event can carry `color`
+sentence for the page, when there is one) and `find_words` (`query`, `found`: the places
+it is said); a `proposal` event can carry `color`
 (`mode`, `strength` or null) and `moments` (the `look_for` moments its ops add);
 `POST /api/assistant/key` (`provider`, `key`) and `POST /api/assistant/key/clear` (`provider`)
 save or remove a keyring key for the host of the saved base URL and return only where each key
@@ -1601,6 +1622,7 @@ Optional per-segment keys:
 | `extend`, `extend_start`, `extend_end` | Padding for this segment |
 | `speech_max_extend`, `speech_max_lead` | Speech-aware caps for this segment |
 | `min_start`, `max_end` | Source times the clip never extends past |
+| `exact` | `true` cuts the clip at exactly `start` and `end`: no tail, speech-aware move or padding, a 10 ms audio fade. The manifest records it, and `assemble` joins it with hard cuts (an AI Chat word splice) |
 
 Notes:
 
@@ -1711,6 +1733,8 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
 - `--clip-override GLOB KEY=S` (repeatable) sets per-clip `speech_max_extend`, `speech_max_lead`,
   `extend`, `extend_start` or `extend_end` for matching file names, for example
   `--clip-override 005_* speech_max_extend=45`.
+- A clip marked `exact` in the manifest (an AI Chat word splice) keeps its own start and end:
+  no padding, also not from `--clip-override`, no speech-aware move, and its 10 ms audio fade.
 - `--json` writes the result as one [JSON envelope](#json-output) on stdout.
 - A clip exported with `clips --lut` is graded again with the LUT and strength its manifest
   entry records; if that file is gone, the run stops before exporting (`not_found`). A clip
@@ -1807,6 +1831,8 @@ into a clip renamed during review are read from its manifest entry, matched by s
   Fade join crossfades its audio even under a global cut. For hard audio on the fades, use
   `--transition fade --audio-transition cut` and mark the other joins as cuts in the file.
   There is one fade length (`--fade-dur`) for all fades.
+- A clip marked `exact` in the manifest (an AI Chat word splice) is always joined with hard
+  cuts, whatever `--transition` or `--joins` say, and gets at most a 10 ms audio edge fade.
 - `--loudnorm` measures the joined audio (EBU R128) and applies one linear gain toward
   -14 LUFS, so the levels between and inside clips stay as they are, followed by a true-peak
   limiter; it then measures the result and redoes the pass with a lower ceiling if the true

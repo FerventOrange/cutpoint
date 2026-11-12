@@ -720,6 +720,66 @@ def test_join_kinds_takes_adjacent_pairs_in_order_and_warns_once_per_unmatched(c
     assert assemble.join_kinds(files, "cut", None) is None  # no joins: no per-join logic
 
 
+def _exact_manifest(clips_dir: Path, names: list[str], exact: set[str]) -> list[Path]:
+    clips_dir.mkdir(exist_ok=True)
+    entries = []
+    for name in names:
+        (clips_dir / name).write_bytes(b"x")
+        entries.append({"file": name, **({"exact": True} if name in exact else {})})
+    (clips_dir / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
+    return [clips_dir / n for n in names]
+
+
+def test_joins_into_and_out_of_an_exact_clip_are_hard_cuts(tmp_path, caplog):
+    names = ["001_a.mp4", "002_word.mp4", "003_b.mp4", "004_c.mp4"]
+    files = _exact_manifest(tmp_path, names, {"002_word.mp4"})
+    assert assemble.exact_clips(tmp_path, files) == [False, True, False, False]
+    with caplog.at_level("INFO"):
+        assert assemble.hard_cuts(tmp_path, files, "fade", None) == ["cut", "cut", "fade"]
+    assert "2 join(s) next to exact clips" in caplog.text
+    kinds = ["fade", "fade", "cut"]  # per-join choices (--joins): the exact clip's still cut
+    assert assemble.hard_cuts(tmp_path, files, "cut", kinds) == ["cut", "cut", "cut"]
+    plain = _exact_manifest(tmp_path / "plain", names, set())
+    assert assemble.hard_cuts(tmp_path / "plain", plain, "fade", None) is None  # nothing changes
+    assert assemble.hard_cuts(tmp_path, files[1:2], "fade", None) is None  # one clip: no joins
+
+
+def test_an_exact_clip_gets_at_most_the_short_edge_fade(tmp_path):
+    files = _exact_manifest(tmp_path, ["001_a.mp4", "002_word.mp4"], {"002_word.mp4"})
+    assert assemble._edge_fades(tmp_path, files, 0.25) == [0.25, 0.01]
+
+
+@needs_ffmpeg
+def test_assemble_cuts_hard_next_to_a_word_splice(tmp_path, monkeypatch):
+    """A fade project with an exact clip: the join into it is a cut, so the final video is
+    the clips' whole length (no crossfade overlap)."""
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    clips_dir = tmp_path / "clips"
+    clips_dir.mkdir()
+    for name in ("001_a.mp4", "002_word.mp4"):
+        _clip(clips_dir / name, 2.0, 2.0)
+    entries = [
+        {"file": "001_a.mp4", "source": "a.mp4", "start": 0.0, "end": 2.0},
+        {"file": "002_word.mp4", "source": "a.mp4", "start": 3.0, "end": 5.0, "exact": True},
+    ]
+    (clips_dir / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
+    final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.5)
+    assert _stream_durations(final)["video"] == pytest.approx(4.0, abs=0.05)
+    for kind, mark in (("fcpxml", "Cross Dissolve"), ("otio", "Transition")):
+        timeline = assemble.assemble(
+            clips_dir, final, output_format=kind, transition="fade", fade_dur=0.5
+        )
+        assert mark not in timeline.read_text(encoding="utf-8"), kind  # a cut, no dissolve
+    entries[1].pop("exact")  # the same clips without the splice: the dissolve is there
+    (clips_dir / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
+    for kind, mark in (("fcpxml", "Cross Dissolve"), ("otio", "Transition")):
+        timeline = assemble.assemble(
+            clips_dir, final, output_format=kind, transition="fade", fade_dur=0.5
+        )
+        assert mark in timeline.read_text(encoding="utf-8"), kind
+
+
 def test_a_join_without_room_becomes_a_cut_alone_and_is_reported():
     a, b, c = _named("a.mp4", "b.mp4", "c.mp4", duration=4.0)
     c = replace(c, duration=0.05, vduration=0.05)  # 45% of it is under one frame

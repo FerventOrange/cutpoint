@@ -28,6 +28,9 @@ from cutpoint.ffmpeg_utils import MediaInfo
 logger = logging.getLogger(__name__)
 
 MANIFEST_GENERATOR = "cutpoint"  # manifest ``generator``: written by clips / extend
+# the audio fade of an exact clip (``"exact": true``, a word splice of the AI Chat): only enough
+# against clicks, so a short word keeps its sound
+EXACT_AUDIO_FADE_S = 0.01
 
 
 def select_moments(
@@ -189,6 +192,12 @@ def _reserve(
             ", ".join(c["id"] for c in taken),
         )
     return chosen + taken
+
+
+def exact_fade(entry: dict[str, Any], audio_fade: float) -> float:
+    """The audio fade baked into the clip of ``entry`` (a segment or a manifest entry):
+    ``audio_fade``, or at most :data:`EXACT_AUDIO_FADE_S` for an exact one."""
+    return min(audio_fade, EXACT_AUDIO_FADE_S) if entry.get("exact") is True else audio_fade
 
 
 @dataclass(frozen=True)

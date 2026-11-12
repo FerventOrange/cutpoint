@@ -391,6 +391,47 @@ def test_plan_clips_speech_pass_and_opt_out(plan_env):
     assert calls["words"] == [Path("a.mp4")]
 
 
+def test_an_exact_segment_is_cut_at_its_own_edges(plan_env, tmp_path):
+    """A word splice ("exact": true) gets no tail, padding or speech-aware move, also with all
+    of them on: a 0.3 s word inside an utterance stays 0.3 s."""
+    run, calls = plan_env
+    (tmp_path / "a.mp4").write_bytes(b"x")
+    seg_file = tmp_path / "segments.json"
+    seg_file.write_text(
+        json.dumps(
+            [
+                {"source": "a.mp4", "start": 10.5, "end": 10.8, "exact": True, "tail": 4.0},
+                {"source": "a.mp4", "start": 5.0, "end": 12.0, "extend": 1.0},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    word, plain = clips.load_segments(seg_file)
+    word["source"] = SRC_A  # the planning inputs of plan_env
+    assert word["exact"] is True and "tail" not in word and "extend" not in word
+    assert {k: word[k] for k in clips.EXACT_KEYS} == clips.EXACT_KEYS
+    assert "exact" not in plain
+    plans = run(
+        [word],
+        tail=TailSettings(enabled=True),
+        speech=boundaries.SpeechSettings(),
+        padding=Padding(1.0, 1.0),
+    )
+    assert (plans[0].start, plans[0].end) == (10.5, 10.8) and plans[0].speech is None
+    assert calls["words"] == []  # no speech pass read for it
+    assert planning.exact_fade(word, 0.25) == planning.EXACT_AUDIO_FADE_S
+    assert planning.exact_fade(plain, 0.25) == 0.25
+    assert planning.exact_fade(word, 0.0) == 0.0  # never more than the export's own fade
+
+
+def test_load_segments_rejects_an_exact_that_is_not_true_or_false(tmp_path):
+    (tmp_path / "a.mp4").write_bytes(b"x")
+    seg_file = tmp_path / "segments.json"
+    seg_file.write_text(json.dumps([{"source": "a.mp4", "start": 1, "end": 2, "exact": "yes"}]))
+    with pytest.raises(ValueError, match="Segment 1: exact must be true or false"):
+        clips.load_segments(seg_file)
+
+
 def test_plan_clips_honour_min_start_and_max_end(plan_env):
     run, _ = plan_env
     seg = _moment("a", SRC_A, 10.0, 20.0, tail=8.0, min_start=9.0, max_end=23.0)

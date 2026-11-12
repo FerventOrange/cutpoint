@@ -114,6 +114,27 @@ test('Save sends the sequence in order; the button and state follow unsaved chan
   assert.equal(m.$('#saveBtn').disabled, true);
 });
 
+test('a word splice removed and added back is still exact, as a moment\'s own trim is', async (t) => {
+  let saved = null;
+  const project = withSegments('h001');
+  const h001 = project.review.segments[0];
+  project.review.segments[0] = { ...h001, exact: true };
+  project.review.segments.push({ id: 'r1', source: h001.source, start: 20, end: 20.3, label: 'am', exact: true });
+  const m = await review(t, { project, routes: { 'PUT /api/projects/p1/review': (req) => { saved = req.body; return {}; } } });
+  for (const id of ['r1', 'h001']) {
+    await m.click(m.row(id).querySelector('[data-act=remove]'));
+    if (m.$('#confirmDialog').hasAttribute('open')) await m.answer('ok');
+  }
+  assert.deepEqual(m.seqIds(), []);
+  await m.click(m.$('#removedList li[data-id=r1] [data-act=add]'));
+  await m.add('h001');
+  assert.deepEqual(m.seqIds(), ['h001', 'r1']);
+  assert.equal(m.$('#saveState').textContent, 'Sequence saved', 'exactly the saved sequence, exact included');
+  await m.click(m.row('r1').querySelector('[data-act=up]'));
+  await m.click('#saveBtn');
+  assert.deepEqual(saved.segments.map((s) => [s.id, s.exact]), [['r1', true], ['h001', true]]);
+});
+
 test('a failed save keeps the changes unsaved and shows the error', async (t) => {
   const m = await review(t, { routes: { 'PUT /api/projects/p1/review': reply(500, { detail: 'disk full' }) } });
   await m.add('h001');

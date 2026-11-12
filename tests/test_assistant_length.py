@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 from cutpoint import cache, ui
 from cutpoint.assistant import context, edges, lookfor, ops, providers, session, topup
+from cutpoint.clips import EXACT_KEYS
 from test_assistant import (
     CANDS,
     SEQ,
@@ -423,6 +424,7 @@ def test_a_new_transcript_drops_the_cached_phrase_ends(
     transcript.write_text('["new"]')
     assert plan.phrase_end(A, 11.0) == pytest.approx(13.4)
     assert len(reads) == 2
+    assert len(plan._chains) == 1 and len(plan._words) == 1  # the old transcript's are gone
 
 
 def test_no_transcript_leaves_the_end_where_it_was_asked(
@@ -476,6 +478,39 @@ def test_a_flag_off_or_a_rows_own_off_reaches_the_plan(tmp_path: Path, planning)
     planner.plan(rows)
     flags = [m.get("speech_aware") for m in planning["calls"][-1]["moments"]]
     assert flags == [False, None, None]
+
+
+def test_an_exact_row_is_planned_at_its_own_edges(tmp_path: Path, planning) -> None:
+    """An add_range row reaches the plan with tails, speech pass and padding off, and the same
+    rows with and without ``exact`` are two plans."""
+    planner = edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
+    planner.plan(SEQ)
+    rows = [{**SEQ[0], "exact": True}, *SEQ[1:]]
+    planner.plan(rows)
+    assert len(planning["calls"]) == 2
+    word, other, _ = planning["calls"][-1]["moments"]
+    assert {k: word[k] for k in EXACT_KEYS} == EXACT_KEYS
+    assert "smart_tail" not in other and "speech_aware" not in other
+
+
+def test_the_planner_reads_a_sources_words_once(tmp_path: Path, monkeypatch) -> None:
+    asked: list[Path] = []
+
+    def source_words(src: Path, _language: str | None = None) -> list[dict[str, Any]]:
+        asked.append(src)
+        return words((10, 10.5), (11, 11.4))
+
+    monkeypatch.setattr(edges.sources, "source_words", source_words)
+    monkeypatch.setattr(edges.sources, "parts", lambda _p: [])
+    planner = edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
+    assert [w["start"] for w in planner.words(A)] == [10, 11]
+    planner.phrase_end(A, 10.2)  # the phrase ends read the same words
+    assert asked == [tmp_path / "a.mp4"]
+    (tmp_path / "highlights.json").write_text(json.dumps({"settings": {"language": "de"}}))
+    planner.words(A)  # another transcript: read again, and it replaces the one held
+    assert len(asked) == 2 and len(planner._words) == 1
+    monkeypatch.setattr(edges.sources, "source_words", lambda *_a: None)
+    assert planner.words(B) == []  # no transcript: no words
 
 
 def test_the_same_sequence_is_planned_once(tmp_path: Path, planning) -> None:

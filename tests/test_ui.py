@@ -10739,6 +10739,23 @@ def test_an_assemble_under_a_global_fade_records_fade_for_its_default_joins(
     assert export["final_joins"] == [{"a": "h1", "b": "h2", "transition": "cut"}]
 
 
+def test_an_assemble_records_a_cut_next_to_a_word_splice_whatever_was_chosen(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Clip 2 is exact (an AI Chat word splice): assemble joins it with a hard cut, so the
+    joins recorded for the page say cut, not the Fade saved for the 1 -> 2 join."""
+    p, seg = _joins_project(client, tmp_path)
+    manifest = cache.load_json(p / "clips_ui_1" / "manifest.json")
+    manifest["clips"][1]["exact"] = True
+    cache.save_json(p / "clips_ui_1" / "manifest.json", manifest)
+    fade = [{"a": "h1", "b": "h2", "transition": "fade"}]
+    (hook,) = _assemble_to_success(client, monkeypatch, seg, fade, {"transition": "fade"})
+    write(p / "final_ui_1.mp4")
+    hook()
+    (export,) = cache.load_json(p / "ui" / "exports.json")["exports"]
+    assert export["final_joins"] == [{"a": "h1", "b": "h2", "transition": "cut"}]
+
+
 def test_an_assemble_that_makes_no_final_keeps_the_joins_of_the_earlier_one(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

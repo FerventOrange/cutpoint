@@ -831,7 +831,8 @@ def sequence_length(table: MomentTable) -> float:
 
 def sequence_block(table: MomentTable) -> str:
     """The sequence rows (``len``: as exported; ``room_before`` / ``room_after``: seconds of the
-    source around the row that a trim may use) and a total line."""
+    source around the row that a trim may use; ``exact`` for an add_range row) and a total
+    line."""
     rows: list[dict[str, Any]] = []
     for i, s in enumerate(table.segments, 1):
         start, end = table.planned.get(s["id"]) or (s["start"], s["end"])  # as exported
@@ -848,6 +849,8 @@ def sequence_block(table: MomentTable) -> str:
         if duration is not None:
             row["room_after"] = round(min(MAX_ROOM_S, max(0.0, duration - end)), 1)
         row["label"] = table.label(s["id"], s.get("label", ""))
+        if s.get("exact"):  # an add_range row: cut at its own edges
+            row["exact"] = True
         rows.append(row)
     if rows:
         rows.append({"total": {"clips": len(rows), "len": round(sequence_length(table), 1)}})

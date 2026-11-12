@@ -157,7 +157,8 @@ let previewVolume = () => 1; // the shared volume of the preview videos (initVol
 
 // ---------- state helpers ----------
 
-const pick = (s) => ({ id: s.id, source: s.source, start: s.start, end: s.end, label: s.label });
+// exact: a word splice of AI Chat, exported at exactly its edges and joined with hard cuts
+const pick = (s) => ({ id: s.id, source: s.source, start: s.start, end: s.end, label: s.label, ...(s.exact ? { exact: true } : {}) });
 const key = () => JSON.stringify(S.segments.map(pick));
 const joinKey = (j) => `${j.a}\n${j.b}`;
 /** What Save sends, as a string: the sequence and the joins, in a fixed order, so that undoing a choice is no change. */
@@ -2723,7 +2724,8 @@ function addSeg(id) {
   // A removed clip goes back to the index it had, clamped to the current length; clips moved or
   // removed since then shift it, which is simpler than tracking neighbours. New clips go last.
   const at = Math.min(d?.at ?? S.segments.length, S.segments.length);
-  S.segments.splice(at, 0, { id, source: c.source, start: d?.start ?? c.start, end: d?.end ?? c.end, label: d?.label ?? c.label ?? id });
+  const exact = d ? d.exact : c.exact; // a word splice stays one when it is added back
+  S.segments.splice(at, 0, { id, source: c.source, start: d?.start ?? c.start, end: d?.end ?? c.end, label: d?.label ?? c.label ?? id, ...(exact ? { exact: true } : {}) });
   delete S.drafts[id];
   renderAfterSeqChange();
   return at;
@@ -2732,9 +2734,10 @@ function addSeg(id) {
 /** Keep a removed clip's trim and index ``at`` for re-adding; a clip that is no moment is kept
  * whole, so the stage and the Removed list can still offer it after it leaves the sequence. */
 function keepDraft(seg, at) {
+  const exact = seg.exact ? { exact: true } : {};
   S.drafts[seg.id] = cands().some((c) => c.id === seg.id)
-    ? { start: seg.start, end: seg.end, label: seg.label, at }
-    : { source: seg.source, start: seg.start, end: seg.end, label: seg.label, at };
+    ? { start: seg.start, end: seg.end, label: seg.label, at, ...exact }
+    : { source: seg.source, start: seg.start, end: seg.end, label: seg.label, at, ...exact };
 }
 
 function removeSeg(id) {
@@ -3882,8 +3885,8 @@ function renderCutTransition() {
 
 /** The choice of clip ``a`` into clip ``b``, or undefined for Default. */
 const joinOf = (a, b) => S.joins.find((j) => j.a === a.id && j.b === b.id)?.transition;
-/** What clip ``a`` into clip ``b`` plays and exports: its own choice, or the transition of the whole video. */
-const joinTransition = (a, b) => joinOf(a, b) ?? $('#optTransition').value;
+/** What clip ``a`` into clip ``b`` plays and exports: its own choice, or the transition of the whole video; always a Cut next to a word splice (assemble cuts there). */
+const joinTransition = (a, b) => (a.exact || b.exact ? 'cut' : joinOf(a, b) ?? $('#optTransition').value);
 /** The Fade length as Assemble uses it: the field, or its default when blank or out of range. */
 const fadeLen = () => ($('#optFadeDur').value.trim() && $('#optFadeDur').checkValidity() ? Number($('#optFadeDur').value) : FADE_DUR);
 /** Seconds clip ``a`` and clip ``b`` overlap: 0 for a Cut. All Fades share one length, as in assemble: at most a share of the shortest clip they join. */
@@ -4042,8 +4045,15 @@ function renderCutPlay() {
   b.setAttribute('aria-keyshortcuts', on ? 'Escape' : 'Space');
 }
 
-/** The button of the join of clip ``a`` into clip ``b`` (cut ``i`` of ``n - 1``): the letter of what it plays, solid when it is the join's own choice, dashed for Default. */
+/** The button of the join of clip ``a`` into clip ``b`` (cut ``i`` of ``n - 1``): the letter of what it plays, solid when it is the join's own choice, dashed for Default. Next to a word splice it is always a cut and cannot be changed. */
 function joinButton(a, b, i, n, k, onkeydown) {
+  if (a.exact || b.exact) {
+    const why = `Cut ${i + 1}: always a cut next to a word splice`;
+    return h('button', {
+      type: 'button', class: 'cut-mark', 'data-join': i, 'data-own': 'false', 'aria-disabled': 'true', tabindex: i === k ? 0 : -1,
+      'aria-label': why, title: why, onkeydown,
+    }, JOIN_NAMES.cut[0]);
+  }
   const own = joinOf(a, b);
   const on = JOIN_NAMES[joinTransition(a, b)];
   const next = JOIN_NEXT[own ?? 'default'];
@@ -5403,6 +5413,7 @@ async function revertChange(entry) {
 
 const TOOL_TEXT = {
   find_moments: (ev) => `Searched for “${ev.query}”: ${ev.found} found`,
+  find_words: (ev) => `Looked for the words “${ev.query}”: said ${times(Number(ev.found) || 0)}`,
   get_moment: (ev) => `Looked at ${momentName(ev.id)}`,
   get_transcript: (ev) => `Read the transcript around ${momentName(ev.id)}`,
   look_for: (ev) => ev.error ? (ev.reason || `Could not look through the footage for “${ev.query}”`)
@@ -5428,6 +5439,7 @@ const times = (n) => (n === 1 ? 'once' : `${n} times`);
 const STEP_SUMMARY = {
   find_moments: { icon: 'search', text: (l) => `Searched ${times(l.n)} · ${plural(l.found, 'moment')} found` },
   look_for: { icon: 'scan', text: (l) => `Looked through the footage ${times(l.n)} · ${l.found} found` },
+  find_words: { icon: 'text', text: (l) => `Looked for words ${times(l.n)} · ${plural(l.found, 'place')} found` },
   view_moment: { icon: 'eye', text: (l) => `Watched ${plural(l.n, 'moment')}` },
   get_moment: { icon: 'clip', text: (l) => `Looked at ${plural(l.n, 'moment')}` },
   get_transcript: { icon: 'text', text: (l) => `Read ${plural(l.n, 'transcript')}` },
