@@ -215,7 +215,9 @@ def world(home, tmp_path, monkeypatch, decodes):
     w.src, w.decodes, w.full = src, decodes, []
     w.cdir = cache.source_dir(src, 0.0)
 
-    def full(src_, cdir, duration, offset=0.0, limit=None, shared=None, cancel=None):
+    def full(
+        src_, cdir, duration, offset=0.0, limit=None, shared=None, cancel=None, cpu_free=False
+    ):
         w.full.append(threading.current_thread())
         cache.save_json(cdir / "scenes.json", [16.4])
         return [16.4]
@@ -386,7 +388,7 @@ def test_the_shared_scene_proxy_is_not_planned_without_scene_weight(world, monke
     planned = []
     monkeypatch.setattr(analyze, "_scene_plan", lambda src, d: planned.append(src))
 
-    pre = SimpleNamespace(mode="split", waits={}, offer=lambda *a: None)
+    pre = SimpleNamespace(mode="split", waits={}, offer=lambda *a: None, busy=False)
     monkeypatch.setattr(analyze, "_ocr_prefetch", lambda *a, **k: contextlib.nullcontext(pre))
     monkeypatch.setattr(analyze, "Transcriber", type("Tr", (StubTranscriber,), {"device": "cuda"}))
     for name in ("funny", "gaming"):

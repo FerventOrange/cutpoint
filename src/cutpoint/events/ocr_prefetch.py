@@ -379,6 +379,12 @@ class OcrPrefetch:
             self.make_engine = functools.cache(lambda: OcrEngine())
 
     @property
+    def busy(self) -> bool:
+        """The worker is on a source or has one offered it has not finished (queued: it is
+        set to ``current`` only once the worker takes it). Main thread."""
+        return self.current is not None or any(not j.done.is_set() for j in self._jobs.values())
+
+    @property
     def stuck(self) -> bool:
         """The worker outlived :meth:`close` (one long OCR call): its engine and the raw
         cache of the source it is on are not free (see :meth:`wait_for`)."""
