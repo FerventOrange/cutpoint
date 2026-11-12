@@ -179,11 +179,13 @@ def _raw_bytes(raw: Any, key: str) -> bytes | None:
 
 
 def _gps_scale(raw: Any) -> list[float] | None:
-    """The ``Scale`` of a GPS9 payload (missing: all 1; one value: for every field); None
-    (logged at DEBUG) when it is unusable: not a flat or once-nested list of 1 or at least 9
-    non-zero numbers."""
+    """The ``Scale`` of a GPS9 payload (missing: all 1; one value, bare or listed: for every
+    field); None (logged at DEBUG) when it is unusable: not a number or a flat or once-nested
+    list of 1 or at least 9 non-zero numbers."""
     if not raw:
         return [1] * 9
+    if isinstance(raw, int | float) and not isinstance(raw, bool):  # a bare number: for every field
+        return [raw] * 9
     if isinstance(raw, list | tuple):
         flat = _flat(raw)
         if (len(flat) == 1 or len(flat) >= 9) and all(

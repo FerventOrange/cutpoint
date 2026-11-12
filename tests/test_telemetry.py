@@ -317,6 +317,8 @@ def test_a_nested_gps_scale_reads_as_flat_and_an_unusable_one_skips_its_payload(
     one = _gps_group(0, struct.pack(">lllllllHH", *range(10, 19)))
     one["GPS9"]["Scale"] = [[10]]  # one value scales every field
     assert telemetry._gps9([one])[0, 1:].tolist() == pytest.approx([x / 10 for x in range(10, 19)])
+    one["GPS9"]["Scale"] = 10  # so does a bare number
+    assert telemetry._gps9([one])[0, 1:].tolist() == pytest.approx([x / 10 for x in range(10, 19)])
 
     bad = [[[1, 2]], ["x"], [0] * 9, [True] * 9, "scale"]
     groups = [_gps_group(0, rec)]
