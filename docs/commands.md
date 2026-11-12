@@ -906,8 +906,8 @@ of it is a hard cut, whatever the transition or the single joins say, also in th
 preview. The same range can be added more than once. Whisper's word times are not always
 exact, so a word can start or end a little early or late: trim the row if it does.
 
-A trim that puts a clip's start on the start of a `find_words` hit, or its end on the end of
-one (within 0.02 s, a hit found in the same message), makes that clip exact too ("cut it right
+A trim that puts a clip's start or end on either edge of a `find_words` hit (within 0.02 s,
+a hit found in the same message) makes that clip exact too ("cut it right
 after 'done'"), so the export does not move the cut back into the speech.
 
 - Moments the model points to can be highlighted in the Moments list ("Highlight in list") or

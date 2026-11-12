@@ -358,7 +358,8 @@ def test_owner_scenario_make_her_say_a_sentence() -> None:
     [
         ({"start": 4.0}, True),  # the start of "I'm"
         ({"end": 2.81}, True),  # the end of "SHIT." (2.8), within 0.02 s
-        ({"start": 4.2}, False),  # the end of "I'm" is no start edge
+        ({"start": 4.2}, True),  # right after "I'm": the hit's end
+        ({"end": 4.0}, True),  # right before "I'm": the hit's start
         ({"start": 3.9}, False),  # near no word
     ],
 )

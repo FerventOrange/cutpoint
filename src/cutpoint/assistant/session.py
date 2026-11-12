@@ -312,7 +312,7 @@ class Turn:
         self._nudged: str | None = None  # the text-only reply that got the nudge (this turn's one)
         self._found_words = False  # find_words found the words this turn (SPLICE_NUDGE)
         # the edges of this turn's find_words hits: a trim to one makes its row exact
-        self._word_edges: list[tuple[str, str, float]] = []  # (source, "start" | "end", s)
+        self._word_edges: list[tuple[str, float]] = []  # (source, s): both edges of each hit
         self._results: list[dict[str, Any]] = []  # tool result messages of the conversation
         self._saved = False
         # view_moment: offered (decided in _loop), moments viewed, sheets waiting to be sent and
@@ -833,7 +833,7 @@ class Turn:
             for h in got.hits
         ]
         for h in got.hits:
-            self._word_edges += [(h["source"], "start", h["start"]), (h["source"], "end", h["end"])]
+            self._word_edges += [(h["source"], h["start"]), (h["source"], h["end"])]
         if got.total > len(rows):
             note = f" ({len(rows)} of {got.total} shown; limit up to {words.MAX_LIMIT}){note}"
         body = chr(10).join(json.dumps(r, ensure_ascii=False) for r in rows)
@@ -1004,7 +1004,7 @@ class Turn:
         return checked, ""
 
     def _at_words(self, ops: Any, rows: list[dict[str, Any]]) -> Any:
-        """``ops`` with ``"exact": true`` on each trim that puts an edge on the same edge of a
+        """``ops`` with ``"exact": true`` on each trim that puts an edge on either edge of a
         find_words hit of this turn (within :data:`WORD_EDGE_S`): the cut the user asked for at
         a word stays there at export, as an add_range row's. The proposal keeps the flag, so a
         rebase on save marks the row again."""
@@ -1022,7 +1022,8 @@ class Turn:
                     and isinstance(op.get(edge), (int, float))
                     and not isinstance(op.get(edge), bool)
                     and abs(op[edge] - t) <= WORD_EDGE_S
-                    for hit_src, edge, t in self._word_edges
+                    for hit_src, t in self._word_edges
+                    for edge in ("start", "end")
                 ):
                     op = {**op, "exact": True}
             out.append(op)
