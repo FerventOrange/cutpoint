@@ -129,15 +129,17 @@ MAX_TRANSCRIPT_CHARS = 600
 # ratings are centred on their own mean (analyze.rating_centres, #909). With fewer than
 # PRIOR_N ratings of a kind the mean is shrunk toward this prior, per (style group, prompt
 # kind): group "action" for styles over analyze.ACTION_STYLES (action, sport, action-cam),
-# "other" for the rest (analyze.prior_group). Today every group has the one mean per kind
-# fitted on qwen3.5:9b ratings of the top 60 moments over 8 footage, 2026-11-10 (frames n=30,
-# bimodal: action about 6.5-7.1, gameplay without speech about 3.7; speech n=205); every model
-# uses the same numbers. The values per group are pending the #948 measurement
-# (scripts/vision_prior_eval.py): a (group, kind) cell gets its own prior only when it has
-# n >= 15 ratings and |mean - today's constant| >= 0.5.
+# "other" for the rest (analyze.prior_group). Every model uses the same numbers. The first fit
+# (2026-11-10, qwen3.5:9b, top 60 moments of 8 footage: frames n=30, bimodal, speech n=205)
+# gave 5.6 and 4.1. The per-group values were measured 2026-11-11 with
+# scripts/vision_prior_eval.py on 25 #900 projects (qwen3.5:9b, default --vision-top, about 2
+# rated moments per project). A (group, kind) cell gets its own prior only when it has n >= 15
+# ratings and |mean - today's constant| >= 0.5. Only action/frames passed: n=17, mean 5.06,
+# delta -0.54, so 5.1. The others keep their values: action/speech n=3 (-0.69), other/frames
+# n=5 (-2.72), other/speech n=26 (-0.04).
 PRIOR_GROUPS = ("action", "other")
 RATING_PRIOR = {
-    ("action", "frames"): 5.6,
+    ("action", "frames"): 5.1,
     ("action", "speech"): 4.1,
     ("other", "frames"): 5.6,
     ("other", "speech"): 4.1,

@@ -179,10 +179,13 @@ def test_the_prior_is_one_constant_per_group_and_kind_for_every_model():
     assert set(vision.RATING_PRIOR) == {
         (g, k) for g in vision.PRIOR_GROUPS for k in ("frames", "speech")
     }
-    # #948: until the measurement every group keeps the #909 fit
-    for g in vision.PRIOR_GROUPS:
-        assert vision.RATING_PRIOR[g, "frames"] == 5.6
-        assert vision.RATING_PRIOR[g, "speech"] == 4.1
+    # #948: only action/frames passed the measurement rule; the rest keep the #909 fit
+    assert vision.RATING_PRIOR == {
+        ("action", "frames"): 5.1,
+        ("action", "speech"): 4.1,
+        ("other", "frames"): 5.6,
+        ("other", "speech"): 4.1,
+    }
     assert vision.PRIOR_N == 5
     assert not hasattr(vision, "SPEECH_PROMPT_LIFT")  # replaced by the centring
 
