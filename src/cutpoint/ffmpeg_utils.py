@@ -421,6 +421,9 @@ class MediaInfo:
     color_range: str | None = None
     # Where the video stream starts (s, from the container start); 0 unless it starts late.
     vstart: float = 0.0
+    # Where the container starts on its own clock (s, ffprobe's format start_time): ``-ss`` and
+    # the clips count from here; 1.4 or more in MPEG-TS, usually 0 elsewhere.
+    fstart: float = 0.0
 
     def concat_key(self) -> tuple:
         """Parameters that must match for lossless concat-demuxer joining."""
@@ -535,6 +538,7 @@ def _probe(path: Path) -> MediaInfo:
         color_space=_color_tag(video, "color_space"),
         color_range=_color_tag(video, "color_range"),
         vstart=float(video.get("start_time") or f_start) - f_start,
+        fstart=f_start,
     )
 
 

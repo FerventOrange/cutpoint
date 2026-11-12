@@ -1132,11 +1132,15 @@ scene cuts (at most 1 s away) and never cut a word. A style whose `scene` weight
 `commentary`, or one of your styles that sets it to 0) uses scene cuts only for that snapping, so
 `analyze` does not decode the whole video for them: once the candidates are picked, it detects
 cuts only in windows of 2.5 s either side of each candidate edge, cached per source as
-`scenes-windows.json` next to `scenes.json` (later runs decode only the windows not covered yet).
+`scenes-windows.json` next to `scenes-v2.json` (later runs decode only the windows not covered yet).
 The windows always decode on the CPU, also when a GPU decoder (NVDEC, VAAPI) is in use: each is a
 short ffmpeg run, and a GPU decoder's start-up costs more than it saves there. A source over 30
 minutes keeps the full pass, which reads keyframes only there and is faster than the windows.
-A full `scenes.json` already in the cache is used instead, and a style with a scene weight runs
+So does a source in a container other than MP4, MOV, M4V or MKV (MPEG-TS, AVI, ...): a seek
+there is not exact, and decoding up to each window costs more than the full pass. Every scene
+pass counts cut times from the start of the file, the clock clips are cut on, also when the
+video starts later than the audio.
+A full `scenes-v2.json` already in the cache is used instead, and a style with a scene weight runs
 the full pass as before, also on a project analysed with a style without one. The `scene` signal of such a style's candidates is 0. Each signal is a named feature, and a style's weights name
 these features. The `score` is a candidate's weighted peak divided by the weights of the
 features this install can compute. A feature that needs a missing extra (the `events` extra
@@ -1257,7 +1261,7 @@ meanwhile, since both compete for the machine. Where one of them is much shorter
 other, there is little to gain. The scene cuts, `highlights.json` (apart from `timings`) and
 the caches are the same as with it off. An error in scene detection still stops the run after
 the transcription; when the transcription fails or is stopped, the scene detection is stopped
-too (its ffmpeg killed or its detection stopped within about 0.1 s plus a frame decode, no `scenes.json` written). In
+too (its ffmpeg killed or its detection stopped within about 0.1 s plus a frame decode, no `scenes-v2.json` written). In
 `timings.sources`, `scenes_s` is then the time of the scene thread, mostly inside
 `transcribe_s`, and the source has `"overlap": true`. The overlap does not start for a source whose scene proxy comes from a shared decode
 (`CUTPOINT_ANALYZE_SHARED_DECODE=split`). The INFO line "detecting scene cuts" appears when

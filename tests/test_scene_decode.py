@@ -92,7 +92,8 @@ def test_auto_splits_only_h264(monkeypatch, vcodec):
     ids=["10-bit", "4:2:2", "4:4:4", "late-video"],
 )
 def test_auto_splits_only_8bit_420_starting_with_the_file(monkeypatch, over):
-    """NVDEC here decodes no 10-bit or 4:2:2 H.264; a late video start moves the CPU seek."""
+    """NVDEC here decodes no 10-bit or 4:2:2 H.264; a late video start stays one decode until the
+    NVDEC half's padded start (#976) is measured on NVDEC."""
     monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 600.0, **over))
     assert plan() is None
     monkeypatch.setenv(ENV, "hybrid")
@@ -101,6 +102,13 @@ def test_auto_splits_only_8bit_420_starting_with_the_file(monkeypatch, over):
 
 @pytest.mark.parametrize("name", ["a.ts", "a.m2ts", "a.avi", "a.webm"])
 def test_auto_splits_only_containers_that_seek_exactly(name):
+    assert analyze._hybrid_plan(Path(name), 600.0, 0.0, None, True) is None
+
+
+@pytest.mark.parametrize("name", ["a.ts", "a.mts", "a.avi"])
+def test_a_forced_split_also_needs_a_container_that_seeks_exactly(monkeypatch, name):
+    """The CPU half seeks: MPEG-TS seeks inexactly (#976), so it decodes in one pass."""
+    monkeypatch.setenv(ENV, "hybrid")
     assert analyze._hybrid_plan(Path(name), 600.0, 0.0, None, True) is None
 
 
@@ -214,8 +222,9 @@ def test_the_halves_decode_their_ranges_and_their_cuts_merge(ff):
     assert cpu[cpu.index("-ss") + 1] == "97.000" and csecs == 103.0
     assert cpu[cpu.index("-threads") + 1] == "6" and cpu.index("-threads") < cpu.index("-i")
     # the format NVDEC downloads to, before the scale, as in the NVDEC half: the same pixels
-    assert gpu[gpu.index("-vf") + 1] == "fps=10,hwdownload,format=nv12,scale=320:-2"
-    assert "-hwaccel" not in cpu and cpu[cpu.index("-vf") + 1] == "fps=10,format=nv12,scale=320:-2"
+    assert gpu[gpu.index("-vf") + 1] == "fps=10:start_time=0,hwdownload,format=nv12,scale=320:-2"
+    assert "-hwaccel" not in cpu
+    assert cpu[cpu.index("-vf") + 1] == "fps=10:start_time=0,format=nv12,scale=320:-2"
     assert "-t" not in cpu  # to the end
     assert leftovers(ff.cdir) == [] and len(set(ff.seen)) == 2
 
@@ -224,15 +233,21 @@ def test_a_format_nvdec_does_not_download_keeps_the_plain_cpu_chain(ff, monkeypa
     monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 200.0, pix_fmt="yuv444p"))
     analyze._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6)
     cpu = next(args for half, args, _t in ff.calls if half == "cpu")
-    assert cpu[cpu.index("-vf") + 1] == "fps=10,scale=320:-2"
+    assert cpu[cpu.index("-vf") + 1] == "fps=10:start_time=0,scale=320:-2"
 
 
-def test_the_cpu_half_seeks_past_a_late_video_start(ff, monkeypatch):
-    """One decode's time 0 is the first video frame; ``-ss`` counts from the container start."""
+def test_both_halves_of_a_late_video_count_from_the_container_start(ff, monkeypatch):
+    """#976: in a container that seeks exactly ffmpeg counts both halves from the container
+    start; ``fps`` start_time pads the NVDEC half's late video, the CPU half seeks the split
+    point as clips are cut. No ``-copyts``, and downloads stay after ``fps``."""
     monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 200.0, vstart=0.25))
     assert analyze._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6) == [10.0, 99.95, 147.0]
-    cpu = next(args for half, args, _t in ff.calls if half == "cpu")
-    assert cpu[cpu.index("-ss") + 1] == "97.250"
+    by = {half: args for half, args, _t in ff.calls}
+    gpu, cpu = by["gpu"], by["cpu"]
+    assert gpu[gpu.index("-vf") + 1] == "fps=10:start_time=0,hwdownload,format=nv12,scale=320:-2"
+    assert "-copyts" not in gpu and "-copyts" not in cpu
+    assert cpu[cpu.index("-ss") + 1] == "97.000"
+    assert cpu[cpu.index("-vf") + 1] == "fps=10:start_time=0,format=nv12,scale=320:-2"
 
 
 def test_a_split_near_the_start_starts_the_cpu_half_at_0(ff):
@@ -265,13 +280,13 @@ def test_scene_cuts_falls_back_to_one_decode_when_a_half_fails(ff, monkeypatch, 
     monkeypatch.setattr(analyze, "_scan", lambda proxy, cancel: [42.0])
     cuts = analyze.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=True)
     assert cuts == [42.0] and single == [True]
-    assert cache.load_json(ff.cdir / "scenes.json") == [42.0] and leftovers(ff.cdir) == []
+    assert cache.load_json(ff.cdir / analyze.SCENES_FILE) == [42.0] and leftovers(ff.cdir) == []
 
 
 def test_scene_cuts_saves_the_merged_cuts_as_one_pass_would(ff, monkeypatch):
     monkeypatch.setattr(analyze, "_make_proxy", lambda *a, **k: pytest.fail("one decode"))
     cuts = analyze.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=True)
-    assert cache.load_json(ff.cdir / "scenes.json") == cuts
+    assert cache.load_json(ff.cdir / analyze.SCENES_FILE) == cuts
     assert all(isinstance(c, float) for c in cuts) and cuts == sorted(cuts)
     assert analyze.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=True) == cuts  # cached
     assert len(ff.calls) == 2
@@ -332,7 +347,7 @@ def test_a_set_cancel_stops_the_split_and_writes_nothing(ff, monkeypatch):
     monkeypatch.setattr(analyze, "run_progress", run_progress)
     with pytest.raises(RunCancelled):
         analyze.scene_cuts(ff.src, ff.cdir, 200.0, cancel=outer, cpu_free=True)
-    assert leftovers(ff.cdir) == [] and not (ff.cdir / "scenes.json").exists()
+    assert leftovers(ff.cdir) == [] and not (ff.cdir / analyze.SCENES_FILE).exists()
 
 
 # ----------------------------------------------------------------- the OCR busy gate
@@ -502,23 +517,96 @@ def test_a_late_video_start_or_mpegts_is_not_split_by_auto(cuts_clip, late_and_t
     assert analyze._hybrid_plan(ts, 600.0, 0.0, None, True) is None
 
 
+CLIP_CUTS = [4.0, 8.0, 11.0, 11.6, 15.0, 19.0]  # one pass of cuts_clip (15.3 dropped)
+
+
+def near(got: list[float], want: list[float]) -> bool:
+    """``got`` and ``want`` hold the same cuts within one 0.1 s proxy frame."""
+    return len(got) == len(want) and all(
+        abs(a - b) <= analyze.SCENE_GRID_S + 1e-6 for a, b in zip(got, want, strict=True)
+    )
+
+
+def one_pass(src: Path, cdir: Path) -> list[float]:
+    """The full pass of ``src`` as ``scene_cuts`` makes it (one CPU decode), cached in ``cdir``."""
+    cdir.mkdir()
+    return analyze.scene_cuts(src, cdir, ffmpeg_utils.probe(src).duration)
+
+
 @needs_ffmpeg
 def test_a_forced_split_of_a_late_video_matches_one_pass(late_and_ts, tmp_path, monkeypatch):
-    """The CPU half seeks to the split plus the video start: its cuts land where one pass's do
-    (within one 0.1 s proxy frame)."""
+    """Both halves count from the container start, as the full pass does (#976): the split's
+    cuts land where one pass's do (within one 0.1 s proxy frame), on any ffmpeg."""
     monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
     monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
     late, _ts = late_and_ts
     duration = ffmpeg_utils.probe(late).duration
+    one = one_pass(late, tmp_path / "one")
+    assert near(one, [c + 0.25 for c in CLIP_CUTS]), one  # the container clock
     cdir = tmp_path / "late-cdir"
     cdir.mkdir()
-    proxy = cdir / "one.mp4"
-    analyze._make_proxy(late, proxy, analyze._proxy_args(duration), duration, gpu=False)
-    one = analyze._scan(proxy, None)
-    proxy.unlink()
-    assert len(one) == 6
     for split in (11.0, 10.9, 11.6, 15.2, 6.0):
         got = analyze._hybrid_cuts(late, cdir, duration, None, split, 2)
-        assert len(got) == len(one), (split, got, one)
-        assert all(abs(a - b) <= analyze.SCENE_GRID_S + 1e-6 for a, b in zip(got, one, strict=True))
+        assert near(got, one), (split, got, one)
     assert leftovers(cdir) == []
+
+
+@needs_ffmpeg
+def test_every_scene_pass_counts_from_the_container_start(late_and_ts, tmp_path, monkeypatch):
+    """#976 on a video 0.25 s late: the full pass, the edge windows (one at the part start, so
+    without a seek) give the cuts 0.25 s after the clip's; the MPEG-TS copy gets its full pass
+    instead of windows, on the same clock."""
+    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    late, ts = late_and_ts
+    want = [c + 0.25 for c in CLIP_CUTS]
+    full = one_pass(late, tmp_path / "full")
+    assert near(full, want), full
+    span = ffmpeg_utils.probe(late).duration
+    wdir = tmp_path / "windows"
+    wdir.mkdir()
+    edges = [2.5, 8.0, 11.5, 15.0, 19.0]  # the first window starts at 0: no seek
+    got = analyze.EdgeCuts(late, wdir, span).around(edges)
+    assert (wdir / analyze.SCENE_WINDOWS_FILE).exists()
+    assert not (wdir / analyze.SCENES_FILE).exists()
+    assert near(got, full), (got, full)
+    tdir = tmp_path / "ts"
+    tdir.mkdir()
+    got = analyze.EdgeCuts(ts, tdir, ffmpeg_utils.probe(ts).duration).around(edges)
+    assert near(got, want), got
+    assert (tdir / analyze.SCENES_FILE).exists()
+    assert not (tdir / analyze.SCENE_WINDOWS_FILE).exists()
+
+
+@pytest.fixture
+def mid_gop_ts(cuts_clip, tmp_path) -> tuple[Path, float]:
+    """``cuts_clip`` with audio as MPEG-TS (3 s GOPs, no B-frames) with its first 8% of 188-byte
+    packets cut off, so the video starts in the middle of a GOP and decodes from the next
+    keyframe; and where the clip's time 0 lies on that file's container clock."""
+    ff = shutil.which("ffmpeg")
+    whole, cut = tmp_path / "whole.ts", tmp_path / "mid.ts"
+    subprocess.run(
+        [ff, "-v", "error", "-i", str(cuts_clip), "-f", "lavfi", "-i",
+         "sine=frequency=440:sample_rate=48000:duration=24", "-map", "0:v", "-map", "1:a",
+         "-c:v", "libx264", "-g", "30", "-bf", "0", "-c:a", "aac", "-f", "mpegts", str(whole)],
+        check=True,
+    )  # fmt: skip
+    data = whole.read_bytes()
+    cut.write_bytes(data[(len(data) // 188 * 8 // 100) * 188 :])
+    info, part = ffmpeg_utils.probe(whole), ffmpeg_utils.probe(cut)
+    return cut, info.fstart + info.vstart - part.fstart
+
+
+@needs_ffmpeg
+def test_an_mpegts_cut_mid_gop_keeps_its_cuts_on_the_container_clock(
+    mid_gop_ts, tmp_path, monkeypatch
+):
+    """#976 review: the full pass counts from the container start, not from the first frame
+    it could decode (the dropped lead-in would move every cut early by about 1.7 s)."""
+    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    ts, zero = mid_gop_ts
+    assert zero < 0  # the clip's start was cut off
+    want = [round(c + zero, 3) for c in CLIP_CUTS if c + zero > 0.5]
+    got = one_pass(ts, tmp_path / "mid")
+    assert near(got, want), (got, want)

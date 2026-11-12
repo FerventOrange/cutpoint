@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import needs_ffmpeg
+from conftest import media_info, needs_ffmpeg
 from cutpoint import analyze, ffmpeg_utils
 from cutpoint.errors import FFmpegError
 from cutpoint.events import ocr_prefetch
@@ -28,7 +28,7 @@ RECT = (40, 20, 120, 60)  # x, y, w, h of the OCR crop
 SIZE = RECT[2:]
 FB = SIZE[0] * SIZE[1] * 3  # bytes of one raw frame
 VF = ocr_vf(3.0, RECT)
-SCENE_VF = "fps=10,scale=320:-2"
+SCENE_VF = "fps=10:start_time=0,scale=320:-2"
 ENC = ("-c:v", "libx264", "-preset", "ultrafast", "-crf", "32")
 HW = [False, True]  # True: the GPU decoder found here (NVDEC or VAAPI), skipped when none
 
@@ -131,10 +131,10 @@ def test_split_gives_the_frames_proxy_and_cuts_of_separate_decodes(
     assert unlinked == [f"seg-{i:05d}.raw" for i in range(3)]  # each full file once read
     assert _left(cdir) == {"proxy.mp4"}  # the spool and the tmp proxy are gone
     assert _framemd5(cdir / "proxy.mp4") == _framemd5(serial / "proxy.mp4")
-    a = analyze._detect(serial / "proxy.mp4", serial / "scenes.json")
-    b = analyze._detect(cdir / "proxy.mp4", cdir / "scenes.json")
+    a = analyze._detect(serial / "proxy.mp4", serial / analyze.SCENES_FILE)
+    b = analyze._detect(cdir / "proxy.mp4", cdir / analyze.SCENES_FILE)
     assert a == b == [4.0]
-    assert (serial / "scenes.json").read_bytes() == (cdir / "scenes.json").read_bytes()
+    assert (serial / analyze.SCENES_FILE).read_bytes() == (cdir / analyze.SCENES_FILE).read_bytes()
 
 
 # ----------------------------------------------------------------- reads and spool files
@@ -586,8 +586,26 @@ def test_scene_plan_only_for_a_whole_short_uncached_single_stream_source(
     assert caplog.messages == [
         "art.mp4: shared decode off: not exactly one video stream (cover art or several)"
     ]
-    (tmp_path / "scenes.json").write_text("[1.0]", encoding="utf-8")
+    (tmp_path / analyze.SCENES_FILE).write_text("[1.0]", encoding="utf-8")
     assert analyze._scene_plan(tmp_path / "a.mp4", 600.0) is None
+
+
+def test_the_shared_scene_proxy_counts_from_the_container_start(tmp_path, monkeypatch, caplog):
+    """#976: a late video in an MP4 gets the plain chain, whose ``fps`` start_time pads it from
+    the container start as the serial pass does; an MPEG-TS source, whose pass needs its own
+    input options (``-copyts``), is not shared."""
+    monkeypatch.setattr(analyze.cache, "source_dir", lambda src, offset=0.0: tmp_path)
+    monkeypatch.setattr(analyze, "single_video_stream", lambda io: True)
+    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 600.0, vstart=0.25, fstart=1.4))
+    caplog.set_level("INFO", logger="cutpoint")
+    plan = analyze._scene_plan(tmp_path / "a.mp4", 600.0)
+    assert plan.vf == SCENE_VF == "fps=10:start_time=0,scale=320:-2"
+    pre, _post, vf, _enc = analyze._proxy_args(600.0, fstart=analyze._fstart(plan.io, 0.0))
+    assert (pre, vf) == ([], plan.vf)  # the serial pass of the same source
+    assert analyze._scene_plan(tmp_path / "a.ts", 600.0) is None
+    assert caplog.messages == [
+        "a.ts: shared decode off: MPEG-TS or another container without exact seeks"
+    ]
 
 
 # ----------------------------------------------------------------- the prefetch side
@@ -818,7 +836,7 @@ def test_real_split_read_equals_the_step_1_read(home, tmp_path, monkeypatch) -> 
     a, b = (
         e2e.ocr_cache_files(common.load_source(c, 12.0).cdir) for c in (serial_clip, shared_clip)
     )
-    assert b.pop("scenes.json") == b"[]"  # the serial clip's scene cuts go to `plain`
+    assert b.pop(analyze.SCENES_FILE) == b"[]"  # the serial clip's scene cuts go to `plain`
     assert a == b
     plain = tmp_path / "plain"
     plain.mkdir()
