@@ -2908,6 +2908,7 @@ def plan_layers(
     skip: Collection[str],
     cat: str | None = None,
     visual_index: bool = False,
+    cuda: Callable[[], bool] | None = None,
 ) -> LayerPlan:
     """Which event layers the reactions, keyframes and crashes steps run.
 
@@ -2916,7 +2917,9 @@ def plan_layers(
     footage, whose crash audio score reads it). Keyframes: HUD OCR for gameplay, the CLIP
     visual layer for action-cam, action and general footage (only with a CUDA GPU); ``visual_index``
     (``--visual-index``) adds the CLIP visual layer to the keyframes of gameplay (before the
-    HUD text) and talk too, for the assistant's visual search only. Crashes:
+    HUD text) and talk too, for the assistant's visual search only. ``cuda``: whether a CUDA
+    GPU is there (None: torch's own check, :func:`_cuda`; ``cutpoint ui`` passes a child
+    process's answer, so it never imports torch). Crashes:
     action-cam, action and general footage, or any source with telemetry. A step whose events extra
     or model files are missing is left out with one INFO line naming the fix; nothing is
     downloaded.
@@ -2960,7 +2963,7 @@ def plan_layers(
             plan.skipped[step] = SKIP_NO_EXTRA
         want.clear()
         return plan
-    if "visual" in want.get("keyframes", ()) and not _cuda():
+    if "visual" in want.get("keyframes", ()) and not (cuda or _cuda)():
         rest = tuple(x for x in want["keyframes"] if x != "visual")  # gameplay: the HUD text stays
         logger.info(
             "No CUDA GPU: %s skipped (CLIP on the CPU would take about an hour per hour of "

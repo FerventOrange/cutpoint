@@ -17,9 +17,9 @@ import numpy as np
 import pytest
 
 from conftest import envelope
-from cutpoint import analyze, cache, cli, folders, rerank, runstate
+from cutpoint import analyze, cache, cli, folders, jsonout, rerank, runstate
 from cutpoint.assistant.providers import AUTO_SERVER_MODEL
-from cutpoint.errors import FolderBusyError, NeedsAnalyzeError
+from cutpoint.errors import FolderBusyError, NeedsAnalyzeError, StaleRankingError
 from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import get_style
@@ -285,7 +285,7 @@ def test_an_event_layer_the_style_plans_and_did_not_run_needs_analyze(home, tmp_
     )
     asked: list[str] = []
 
-    def plan_layers(style, sources, skip, cat=None, visual_index=False):
+    def plan_layers(style, sources, skip, cat=None, visual_index=False, cuda=None):
         asked.append(cat)
         assert sources == []  # no telemetry probe of the sources
         return plan
@@ -315,6 +315,26 @@ def test_dialogue_never_read_is_a_note_only(home, tmp_path):
     (project / "events.json").write_text(json.dumps(ev), encoding="utf-8")
     assert rerank.readiness(project, read(project), get_style("gaming")).notes == []
     assert rerank.readiness(project, read(project), get_style("funny")).notes == []
+
+
+def test_an_injected_cuda_answer_is_used_instead_of_torch(home, tmp_path, monkeypatch):
+    project = make_project(home, tmp_path)  # gameplay layers: audio, ocr
+    monkeypatch.setattr(rerank, "_events_extra", lambda: True)
+    monkeypatch.setattr(analyze, "EVENTS_MODULES", ())  # the extra is "installed"
+
+    def boom() -> bool:
+        raise AssertionError("torch's own CUDA check ran")
+
+    monkeypatch.setattr(analyze, "_cuda", boom)
+    calls: list[int] = []
+
+    def probe() -> bool:
+        calls.append(1)
+        return False
+
+    miss = rerank.readiness(project, read(project), get_style("action"), probe).missing
+    assert calls, "the injected CUDA answer was never asked"
+    assert "layer:visual" not in {m.feature for m in miss}  # no GPU: the visual layer is skipped
 
 
 # --------------------------------------------------------------------------- ranking and ids
@@ -553,6 +573,29 @@ def test_an_analyze_override_of_must_include_crash_is_kept(home, tmp_path):
     assert rerank.rerank(plain, get_style("action")).after["settings"]["must_include_crash"] == (
         get_style("action").must_include_crash
     )
+
+
+def test_a_save_with_the_previewed_key_writes(home, tmp_path):
+    project = make_project(home, tmp_path)
+    token = rerank.key((project / "highlights.json").read_bytes())
+    res = rerank.rerank(project, get_style("funny"), expect=token)
+    assert res.saved and read(project)["style"] == "funny"
+    assert (project / rerank.BACKUP).exists()
+
+
+def test_a_save_with_a_stale_key_raises_before_any_write(home, tmp_path):
+    project = make_project(home, tmp_path)
+    token = rerank.key((project / "highlights.json").read_bytes())
+    rerank.rerank(project, get_style("commentary"))  # another ranking ran meanwhile
+    files = {p.name: p.read_bytes() for p in project.iterdir()}
+    with pytest.raises(StaleRankingError):
+        rerank.rerank(project, get_style("funny"), expect=token)
+    assert {p.name: p.read_bytes() for p in project.iterdir()} == files
+    assert read(project)["style"] == "commentary"
+
+
+def test_a_stale_key_is_the_stale_error_code():
+    assert jsonout.error_code(StaleRankingError("x")) == "stale"
 
 
 def test_a_save_waits_for_no_other_run_but_a_preview_reads(home, tmp_path):

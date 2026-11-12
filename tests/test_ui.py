@@ -11591,6 +11591,135 @@ def test_a_command_line_auto_project_analyzes_again_with_style_auto(
     assert _after(_cli_args(captured[0]), "--style") == "auto"
 
 
+def cli_reranked_project(tmp_path: Path, meta: dict[str, Any] | None) -> tuple[Path, dict]:
+    """The Auto-analyzed (gameplay) command-line project ``cli`` after ``cutpoint rerank --style
+    funny``: highlights.json is in funny and records the re-rank and keeps the detection; the
+    command line leaves ui/meta.json (``meta``) as it was."""
+    det = detection()
+    p = auto_project(tmp_path, det, meta)
+    hl = cache.load_json(p / "highlights.json")
+    hl["style"] = "funny"
+    hl["settings"].update(
+        style_requested="funny",
+        reranked={"from": "gaming", "requested": "auto"},
+        rerank_backup="0123456789abcdef",
+    )
+    cache.save_json(p / "highlights.json", hl)
+    return p, det
+
+
+def analyzed_again(p: Path) -> None:
+    """The analysis Analyze again ran finished: highlights.json is in its style and records no
+    re-rank (as ``cutpoint analyze --style NAME`` writes it)."""
+    hl = cache.load_json(p / "highlights.json")
+    for key in ("reranked", "rerank_backup"):
+        hl["settings"].pop(key, None)
+    cache.save_json(p / "highlights.json", hl)
+
+
+def test_a_reranked_analysis_runs_on_its_style_over_the_chosen_auto() -> None:
+    """#902: meta.json still says auto after a command-line re-rank; the analysis runs on funny."""
+    hl = {"style": "funny", "settings": {"reranked": {"from": "gaming", "requested": "auto"}}}
+    assert ui._analysis_inputs({"style": "auto"}, hl)[1] == "funny"
+    assert ui._analysis_inputs({}, hl)[1] == "funny"
+    plain = {"style": "funny", "settings": {"style_requested": "auto"}}
+    assert ui._analysis_inputs({"style": "auto"}, plain)[1] == "auto"  # no re-rank: unchanged
+
+
+def test_a_reranked_project_shows_its_style_and_the_detection_as_stale(
+    client: TestClient, tmp_path: Path
+) -> None:
+    cli_reranked_project(tmp_path, {"style": "auto"})
+    got = client.get("/api/projects/cli").json()
+    assert got["style"] == "funny"
+    d = got["detected"]
+    assert (d["chosen"], d["style"], d["category"], d["stale"]) == (
+        "funny",
+        "funny",
+        "gameplay",
+        True,
+    )
+    assert got["ranking_key"] and got["rerank_backup"] is False
+
+
+def test_a_reranked_project_is_not_gaming_after_a_rerank_away_from_gaming(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The Color default and the crash default follow the style the ranking is in."""
+    p, _ = cli_reranked_project(tmp_path, {"style": "auto"})
+    got = client.get("/api/projects/cli").json()
+    assert got["gaming"] is False
+    assert got["must_include_crash_default"] == ui._style_crash("funny", None)
+    hl = cache.load_json(p / "highlights.json")  # the same project ranked in gaming again
+    hl["style"] = "gaming"
+    cache.save_json(p / "highlights.json", hl)
+    assert client.get("/api/projects/cli").json()["gaming"] is True
+
+
+def test_analyze_again_after_a_command_line_rerank_keeps_its_style(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Analyze again must not send --style auto back (it would undo the re-rank)."""
+    cli_reranked_project(tmp_path, {"style": "auto"})
+    res, captured = style_job(client, monkeypatch, {})
+    assert res.status_code == 200, res.text
+    assert _after(_cli_args(captured[0]), "--style") == "funny"
+
+
+@pytest.mark.parametrize("action", ["analyze", "edit"])
+def test_a_reranked_style_is_kept_after_the_next_analysis(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, action: str
+) -> None:
+    """The job saves the re-ranked style (and the detection) in meta.json: the analysis it runs
+    records no re-rank, so the second Analyze again still sends funny, not meta's auto."""
+    p, det = cli_reranked_project(tmp_path, {"style": "auto"})
+    if action == "analyze":
+        res, captured = style_job(client, monkeypatch, {})
+    else:
+        res, captured = edit_job(client, monkeypatch, {"kind": "highlights"})
+    assert res.status_code == 200, res.text
+    assert _after(_cli_args(captured[0]), "--style") == "funny"
+    meta = cache.load_json(p / "ui" / "meta.json")
+    assert (meta["style"], meta["detection"]) == ("funny", det)
+    analyzed_again(p)
+    res, captured = style_job(client, monkeypatch, {})
+    assert res.status_code == 200, res.text
+    assert _after(_cli_args(captured[0]), "--style") == "funny"
+    d = client.get("/api/projects/cli").json()["detected"]
+    assert (d["chosen"], d["category"], d["stale"]) == ("funny", "gameplay", True)
+
+
+def test_the_header_pick_wins_over_a_rerank_until_the_next_rerank(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The user's last pick wins even when its analysis failed (highlights.json is still the
+    re-ranked one); re-ranking the project after that pick wins again."""
+    p, _ = cli_reranked_project(tmp_path, {"style": "auto"})
+    res, _ = style_job(client, monkeypatch, {"style": "action"})
+    assert res.status_code == 200, res.text  # the job then fails: highlights.json stays
+    assert cache.load_json(p / "ui" / "meta.json")["style"] == "action"
+    assert client.get("/api/projects/cli").json()["detected"]["chosen"] == "action"
+    res, captured = style_job(client, monkeypatch, {})
+    assert _after(_cli_args(captured[0]), "--style") == "action"
+    hl = cache.load_json(p / "highlights.json")  # `cutpoint rerank --style funny` again
+    hl["settings"]["rerank_backup"] = "fedcba9876543210"
+    cache.save_json(p / "highlights.json", hl)
+    assert client.get("/api/projects/cli").json()["detected"]["chosen"] == "funny"
+    res, captured = style_job(client, monkeypatch, {})
+    assert _after(_cli_args(captured[0]), "--style") == "funny"
+
+
+def test_an_older_meta_without_the_rerank_mark_lets_the_rerank_win() -> None:
+    hl = {
+        "style": "funny",
+        "settings": {"reranked": {"from": "gaming"}, "rerank_backup": "0123456789abcdef"},
+    }
+    assert ui._analysis_inputs({"style": "action"}, hl)[1] == "funny"
+    assert ui._analysis_inputs({"style": "action", "style_for": None}, hl)[1] == "funny"
+    marked = {"style": "action", "style_for": "0123456789abcdef"}
+    assert ui._analysis_inputs(marked, hl)[1] == "action"
+
+
 def deleted_style_project(tmp_path: Path, base: str | None) -> Path:
     """The command-line project ``cli`` analyzed in the user style ``gone`` (deleted since), which
     ui/meta.json also names; ``base``: the built-in style highlights.json records for it."""
