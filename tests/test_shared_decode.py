@@ -98,10 +98,10 @@ def test_the_split_decode_pins_the_source_pixel_format():
     pins NVDEC's download format (nv12, p010le; other formats stay as probed); VAAPI downloads
     yuv420p, and an unknown format gives yuv420p."""
 
-    def graph(fmt, hw=None):
+    def graph(fmt, hw=None, codec="hevc"):
         args = ffmpeg_utils.split_decode_args(
             "in.mp4", scene_vf=SCENE_VF, scene_enc=ENC, proxy=Path("p.mp4"), raw_vf=VF,
-            hw=hw, src_size=(640, 360), src_fmt=fmt,
+            hw=hw, src_size=(640, 360), src_fmt=fmt, src_codec=codec,
         )  # fmt: skip
         return args[args.index("-filter_complex") + 1]
 
@@ -118,6 +118,29 @@ def test_the_split_decode_pins_the_source_pixel_format():
     )
     assert graph(None).startswith("[0:v:0]scale=640:360,format=yuv420p,split=2[s][o]")
     assert graph("").startswith("[0:v:0]scale=640:360,format=yuv420p,split=2[s][o]")
+
+
+@pytest.mark.parametrize(
+    ("codec", "pix_fmt", "want"),
+    [
+        ("h264", "yuv420p", "nv12"), ("h264", "yuvj420p", "nv12"),
+        ("h264", "yuv420p10le", "yuv420p10le"), ("h264", "yuv422p", "yuv422p"),
+        ("h264", "yuv422p10le", "yuv422p10le"),
+        ("hevc", "yuv420p", "nv12"), ("hevc", "yuv420p10le", "p010le"),
+        ("hevc", "yuv444p", "yuv444p"),
+        ("vp9", "yuv420p10le", "p010le"), ("av1", "yuv420p", "nv12"),
+        ("mpeg4", "yuv420p", "yuv420p"), (None, "yuv420p10le", "yuv420p10le"),
+    ],
+)  # fmt: skip
+def test_the_cuda_pin_is_nvdec_s_format_only_for_a_codec_it_decodes(codec, pix_fmt, want):
+    """H.264 10-bit is decoded in software (yuv420p10le frames): pinning p010le there would
+    convert every frame, so the probed format is pinned instead."""
+    args = ffmpeg_utils.split_decode_args(
+        "in.mp4", scene_vf=SCENE_VF, scene_enc=ENC, proxy=Path("p.mp4"), raw_vf=VF,
+        hw=ffmpeg_utils.HwDecoder("cuda"), src_size=(640, 360), src_fmt=pix_fmt, src_codec=codec,
+    )  # fmt: skip
+    graph = args[args.index("-filter_complex") + 1]
+    assert graph.startswith(f"[0:v:0]scale=640:360,format={want},split=2[s][o]")
 
 
 def _left(cdir: Path) -> set[str]:
@@ -757,6 +780,7 @@ def test_split_claims_the_share_and_the_scene_cuts_get_its_proxy(pre, monkeypatc
     assert (kw["raw_vf"], kw["scene_vf"], kw["scene_enc"], kw["size"]) == (VF, SCENE_VF, ENC, SIZE)
     assert kw["src_size"] == (640, 360)  # pinned at the graph's head
     assert kw["src_fmt"] == "yuv420p"
+    assert kw["src_codec"] == "h264"
     assert kw["spool"] == tmp_path / "cache" / ffmpeg_utils.SPOOL_DIR
     assert share.result() == tmp_path / "cache" / "proxy.mp4" and share.spool_peak == 1234
 

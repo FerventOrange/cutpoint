@@ -720,8 +720,9 @@ def test_a_stopped_transcription_kills_the_real_child_of_the_scene_job(
 
 
 def _proxy_command(
-    tmp_path, monkeypatch, hw, duration=60.0, pix_fmt="yuv420p", name="s.mp4", first=None
-):
+    tmp_path, monkeypatch, hw, duration=60.0, pix_fmt="yuv420p", name="s.mp4", first=None,
+    vcodec="h264",
+):  # fmt: skip
     """The ffmpeg commands the real ``scene_cuts`` runs when ``hw`` is the decoder (the GPU run
     fails when ``hw`` is set, so the CPU one follows). ``first``: the one-frame decode of an
     MPEG-TS source (a time, an exception, or a list collecting its ``keyframes``)."""
@@ -738,7 +739,9 @@ def _proxy_command(
     monkeypatch.setattr(analyze, "first_frame_time", first_frame_time)
     monkeypatch.setattr(analyze, "decoder_for", lambda src: hw)
     monkeypatch.setattr(
-        analyze, "probe", lambda p: media_info(p, duration, pix_fmt=pix_fmt, fstart=1.4)
+        analyze,
+        "probe",
+        lambda p: media_info(p, duration, pix_fmt=pix_fmt, vcodec=vcodec, fstart=1.4),
     )
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
     monkeypatch.setattr(analyze, "_detect", lambda proxy, path, **k: CUTS)
@@ -767,10 +770,19 @@ def test_a_cuda_scene_proxy_downloads_after_fps(tmp_path, monkeypatch):
     assert _vf(gpu) == "fps=10:start_time=0,hwdownload,format=nv12,scale=320:180"
 
 
+def test_a_10_bit_h264_cuda_scene_proxy_keeps_the_plain_gpu_path(tmp_path, monkeypatch):
+    gpu = _proxy_command(
+        tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"), pix_fmt="yuv420p10le"
+    )[0]
+    assert gpu[gpu.index("-hwaccel") : gpu.index("-i")] == ["-hwaccel", "cuda"]
+    assert "hwdownload" not in _vf(gpu)
+
+
 def test_a_10_bit_cuda_scene_proxy_downloads_p010le(tmp_path, monkeypatch):
     cmds = _proxy_command(
-        tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"), pix_fmt="yuv420p10le"
-    )
+        tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"), pix_fmt="yuv420p10le",
+        vcodec="hevc",
+    )  # fmt: skip
     assert _vf(cmds[0]) == "fps=10:start_time=0,hwdownload,format=p010le,scale=320:180"
 
 

@@ -174,8 +174,11 @@ def test_when_every_source_fails_the_error_propagates_and_crashes_json_stays(
     with caplog.at_level("WARNING"), pytest.raises(RuntimeError) as exc:
         crash.detect_project(project, params=own_words, dense=False, sheets=0)
     assert str(exc.value) == "no CLIP weights"
-    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
-    assert errors == [f"crash detection failed for every source; last: {srcs[1]}: no CLIP weights"]
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]  # the CLI logs the error
+    final = [r for r in caplog.records if "for every source" in r.getMessage()]
+    assert [(r.levelname, r.getMessage()) for r in final] == [
+        ("WARNING", "arch.mp4: crash detection failed for every source (last: no CLIP weights)")
+    ]
     assert (project / "crashes.json").read_text(encoding="utf-8") == earlier
     assert sum("crash detection skipped this source" in r.getMessage() for r in caplog.records) == 2
 
