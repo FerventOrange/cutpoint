@@ -759,10 +759,17 @@ def test_the_disk_gate_asks_for_the_spool_cap_when_it_is_less(pre, monkeypatch):
 
 def test_the_proxy_estimate_follows_the_picture_size():
     plan = ocr_prefetch.ScenePlan(Path("a.mp4"), Path("c"), 100.0, "fps=10,scale=320:-2", ENC)
-    wide = ocr_prefetch.proxy_bytes(plan, (1920, 1080))  # 0.34 MB/s measured at 320x180
-    assert 0.34e6 * 100 < wide < 0.6e6 * 100
-    tall = ocr_prefetch.proxy_bytes(plan, (1080, 1920))  # 1.28 MB/s measured
-    assert 1.28e6 * 100 < tall < 1.8e6 * 100
+    wide = ocr_prefetch.proxy_bytes(plan, (1920, 1080))  # 8-bit: 0.16-0.60 MB/s measured
+    assert 0.60e6 * 100 < wide < 0.7e6 * 100
+    tall = ocr_prefetch.proxy_bytes(plan, (1080, 1920))
+    assert 2 * wide < tall < 4 * wide
+
+
+def test_the_proxy_estimate_of_a_10_bit_source_covers_what_was_measured():
+    plan = ocr_prefetch.ScenePlan(Path("a.mp4"), Path("c"), 100.0, "fps=10,scale=320:-2", ENC)
+    wide = ocr_prefetch.proxy_bytes(plan, (3840, 2160), True)  # 0.79 and 0.92 MB/s measured
+    assert 0.92e6 * 100 < wide < 1.1e6 * 100
+    assert wide > ocr_prefetch.proxy_bytes(plan, (3840, 2160))
 
 
 def test_split_claims_the_share_and_the_scene_cuts_get_its_proxy(pre, monkeypatch, tmp_path):

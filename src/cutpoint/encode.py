@@ -130,11 +130,16 @@ def color_kind(info: MediaInfo) -> str | None:
     return None
 
 
+def is_high_bit(info: MediaInfo) -> bool:
+    """True for a 10-bit (or deeper) source, HDR included."""
+    return bool(_HIGH_BIT_RE.search(info.pix_fmt or ""))
+
+
 def is_high_bit_sdr(info: MediaInfo) -> bool:
     """True for a 10-bit (or deeper) source that gets no HDR or BT.2020 conversion
     (:func:`color_kind`): the sources :func:`warn_if_log` checks and whose log look
     :mod:`cutpoint.color` skips."""
-    return bool(_HIGH_BIT_RE.search(info.pix_fmt)) and not color_kind(info)
+    return is_high_bit(info) and not color_kind(info)
 
 
 def sdr_filter(info: MediaInfo, filters: frozenset[str] | None = None) -> str:

@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import memguard, paths
+from cutpoint.encode import is_high_bit
 from cutpoint.events.common import Source, load_source
 from cutpoint.events.killfeed import (
     DecodeHook,
@@ -97,17 +98,19 @@ def sweep(cdir: Path) -> None:
         (cdir / PROXY_TMP).unlink(missing_ok=True)
 
 
-PROXY_BYTES_PER_PIXEL_S = 8  # lossless proxy: 0.34 MB/s at 320x180, 1.28 MB/s at 320x568
+# lossless proxy, bytes per pixel and second: measured on NVDEC at 0.16-0.60 MB per source
+# second for 8-bit 1080p/4K sources and 0.79-0.92 for 10-bit ones (the proxy stays 10-bit)
+PROXY_BYTES_PER_PIXEL_S = {False: 11, True: 17}
 
 
-def proxy_bytes(plan: ScenePlan, src_size: tuple[int, int] | None) -> int:
-    """Disk the lossless scene proxy of ``plan`` takes, a little over what was measured
-    (about 6-7 bytes per pixel and second): its width from ``plan.vf``, its height from the
-    source's ``src_size`` (16:9 when unknown)."""
+def proxy_bytes(plan: ScenePlan, src_size: tuple[int, int] | None, high_bit: bool = False) -> int:
+    """Disk the lossless scene proxy of ``plan`` takes, above what was measured: 11 bytes per
+    pixel and second, 17 for a 10-bit (``high_bit``) source. Its width comes from ``plan.vf``,
+    its height from the source's ``src_size`` (16:9 when unknown)."""
     found = re.search(r"scale=(\d+)", plan.vf)
     width = int(found.group(1)) if found else 320
     height = width * src_size[1] / src_size[0] if src_size and src_size[0] else width * 9 / 16
-    return int(PROXY_BYTES_PER_PIXEL_S * width * height * plan.duration)
+    return int(PROXY_BYTES_PER_PIXEL_S[high_bit] * width * height * plan.duration)
 
 
 @dataclass(frozen=True)
@@ -496,7 +499,8 @@ class OcrPrefetch:
                 size = (info.width, info.height)
             except Exception:  # noqa: BLE001 - only sizes the estimate; the start probes again
                 info, size = None, None
-            need += proxy_bytes(plan, size)  # the scene proxy is written beside the spool
+            high_bit = info is not None and is_high_bit(info)
+            need += proxy_bytes(plan, size, high_bit)  # the scene proxy is written beside the spool
             if not spool_fits(plan.cdir, need):
                 why = f"less than {need / 2**30:.1f} GiB + 1 GiB free for the spool and proxy"
                 share.decline(why)

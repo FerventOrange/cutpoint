@@ -1248,8 +1248,8 @@ the source's cache folder, in files of about 256 MB removed as they are read. Th
 by as much as the OCR read lags behind the decode, up to 8 files (about 2 GB; 4 GB without the
 cap on a 446 s 1080p clip): then the decode, and the proxy with it, waits for the OCR read to
 catch up. It is skipped when the drive has less free space than that cap (or every OCR frame of
-a shorter source), plus the scene proxy (about 0.45 MB per source second for 16:9 video, more for
-portrait), plus 1 GB. `0`, unset or any other value: as described above. When the
+a shorter source), plus the scene proxy (budgeted at about 0.6 MB per source second for 16:9 video, 1.0 MB for
+10-bit video, more for portrait), plus 1 GB. `0`, unset or any other value: as described above. When the
 background proxy has not started by the time scene detection needs it, or fails, scene
 detection decodes as usual; the scene cuts, `events.json`, `highlights.json` and the OCR
 caches are the same as with it off. Each source then logs an INFO line with the scene
