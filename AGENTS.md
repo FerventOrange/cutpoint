@@ -78,7 +78,7 @@ To let Claude Code find Cutpoint on its own, the user can install the skill with
   With `CUTPOINT_PROGRESS=1`, stderr also has `PROGRESS {...}` lines per step (`analyze` has 7 steps, `edit` 9). Keys of both:
   [docs/commands.md#json-output](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#json-output)
   and [#progress-output](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#progress-output).
-- Custom styles: run `style list`, `style show` and `style features` before `style create`; never invent feature names (`style features` lists them). `style delete` asks nothing: only delete a style you created.
+- Custom styles: run `style list`, `style show` and `style features` before `style create`; never invent feature names (`style features` lists them). `style delete` asks nothing: only delete a style you created. A project analyzed with a deleted style keeps working with its built-in base (`style_base` in `highlights.json`); an older file without it needs `analyze` again.
 - Commands are re-runnable. Per-source results are cached (path, size, modification time).
 - `clips` refuses a non-empty output folder without `--force`. `--force` replaces only the clips
   its `manifest.json` lists, once every new clip is exported; every other file stays, sources

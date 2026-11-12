@@ -2205,7 +2205,7 @@ footage or a project.
 | `show NAME` | The effective weights of a style (its base's, then its own) and where each comes from (`base` or `style`), with the style `hash` |
 | `create NAME` | Save a style (`source: hand`). Needs `--base`, or a `--from` file that has one |
 | `validate NAME\|FILE` | Check a style by name or a `.json` file by path and list every problem; exit 1 if invalid. A legacy preset is valid and noted as legacy |
-| `delete NAME` | Delete one of your styles. Built-in styles cannot be deleted. There is no confirmation |
+| `delete NAME` | Delete one of your styles. Built-in styles cannot be deleted. There is no confirmation. A project analyzed with a style you then delete keeps working in `clips`, `events`, `cutpoint ui` and the AI Chat with the built-in base its `highlights.json` records (`style_base`; an INFO line names it); analyze it again to record the base in an older file that has none |
 | `features` | The feature names weights can use, their layer, and whether this install has them (`available`; `extra` names the extra a feature needs) |
 
 `create` options:

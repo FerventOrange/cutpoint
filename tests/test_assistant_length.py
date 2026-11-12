@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from cutpoint import cache, ui
 from cutpoint.assistant import context, edges, lookfor, ops, providers, session, topup
 from cutpoint.clips import EXACT_KEYS
+from cutpoint.styles import get_style
 from test_assistant import (
     CANDS,
     SEQ,
@@ -1858,3 +1859,28 @@ def test_a_source_that_changed_is_planned_again(tmp_path: Path, planning) -> Non
     src.write_bytes(b"xy")
     planner.plan(SEQ)
     assert len(planning["calls"]) == 2
+
+
+def test_the_edge_plan_of_a_deleted_user_style_reads_its_recorded_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A style missing from the library: the plan uses the base highlights.json records; an
+    older file with none falls back to gaming."""
+    seen: list[float] = []
+
+    def stop(*_a, tail, **_kw):
+        seen.append(tail.tail_min)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(edges, "probe", lambda _p: object())
+    monkeypatch.setattr(edges, "plan_edges", stop)
+    row = {"id": "x", "source": "a.mp4", "start": 1.0, "end": 3.0}
+    for extra in ({"style_base": "commentary"}, {}):
+        (tmp_path / "highlights.json").write_text(
+            json.dumps({"style": "gone", **extra}), encoding="utf-8"
+        )
+        plan = edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
+        with pytest.raises(RuntimeError, match="stop"):
+            plan._plan([row], True, True, edges.ExportOptions())
+    assert seen == [get_style("commentary").tail_min, get_style("gaming").tail_min]
+    assert seen[0] != seen[1]
