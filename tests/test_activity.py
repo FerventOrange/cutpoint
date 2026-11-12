@@ -859,6 +859,26 @@ def test_identical_discoveries_share_one_library_file(home):
     assert set(activity.user_files()) == {"pack-rafting", second}
 
 
+def test_an_unreadable_library_file_is_never_overwritten(home, caplog):
+    """A corrupt file with the profile's name stays; the profile gets the next free name."""
+    prof = activity.validate(PACK_RAFTING)
+    bad = paths.profiles_dir() / "pack-rafting.json"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text("[1, 2", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="cutpoint.activity"):
+        name = activity.save_to_library(prof, ["ride.mp4:1"])
+    assert name.startswith("pack-rafting-") and name != "pack-rafting"
+    assert bad.read_text(encoding="utf-8") == "[1, 2"
+    assert any(str(bad) in r.message for r in caplog.records)
+    assert activity.save_to_library(prof, ["ride.mp4:1"]) == name  # its own file again
+    # the suffixed name is unreadable too: the next free one is used
+    again = paths.profiles_dir() / f"{name}.json"
+    again.unlink()
+    again.write_text("{", encoding="utf-8")
+    third = activity.save_to_library(prof, ["other.mp4:2"])
+    assert third not in ("pack-rafting", name) and again.read_text(encoding="utf-8") == "{"
+
+
 def test_a_rediscovery_of_the_same_footage_overwrites_its_library_file(home):
     """#947: --refresh-profile rewrites the footage's profile, no ``<name>-<hash>`` copy."""
     prof = activity.validate(PACK_RAFTING)

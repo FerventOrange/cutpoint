@@ -1412,6 +1412,20 @@ def test_ask_json_rejects_an_ollama_reply_without_the_required_keys(monkeypatch,
     assert _ollama_says(monkeypatch, content).ask_json("q", schema=MOMENTS) is None
 
 
+def test_a_reply_that_is_no_object_is_dropped_with_a_debug_line(monkeypatch, caplog):
+    with caplog.at_level(logging.DEBUG, logger="cutpoint.vision"):
+        for content in ("[1, 2]", '"secret"', "3"):
+            rater = _ollama_says(monkeypatch, content)
+            rater.model = "mdl-x"
+            assert rater.ask_json("q") is None
+    messages = [r.message for r in caplog.records if r.levelno == logging.DEBUG]
+    dropped = [m for m in messages if "dropped" in m and "mdl-x" in m]
+    assert len(dropped) == 3
+    for kind in ("list", "str", "int"):
+        assert any(kind in m for m in dropped)
+    assert "secret" not in caplog.text and "[1, 2]" not in caplog.text
+
+
 @pytest.mark.parametrize(
     "content",
     [
