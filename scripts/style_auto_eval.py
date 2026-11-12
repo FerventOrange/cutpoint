@@ -393,7 +393,7 @@ def flip_ready(
     if errors:
         failed.append(f"unreadable: {len(errors)} source(s) failed to probe > 0")
     if not ocr:
-        failed.append("HUD text check unavailable (lite?): unsure sources were not checked")
+        failed.append("HUD text check unavailable (lite?): unsure sources got the screen-text cue")
     if wrong:
         failed.append(f"sure-wrong: {len(wrong)} source(s) > 0")
     open_talk = [r for r in rows if r.untranscribed]
@@ -487,7 +487,7 @@ def print_summary(data: dict[str, Any]) -> None:
     t = data["timing"]
     unread = data.get("errors", [])
     open_talk = sum(1 for s in data["sources"] if s.get("untranscribed"))
-    ocr = "available" if data.get("ocr_available", True) else "UNAVAILABLE"
+    ocr = "available" if data.get("ocr_available", True) else "unavailable, screen-text cue used"
     print(f"\nHUD text check: {ocr}; untranscribed long general sources: {open_talk}")
     print(f"UNREADABLE (failed to probe): {len(unread)}")
     for e in unread:

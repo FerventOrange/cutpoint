@@ -102,7 +102,7 @@ All kinds also set loudnorm on. `--style`, `--top` and `--max-total` override th
 flowchart TD
     P["Per source: container tags, telemetry, 40 small frames (cached)"]
     P --> U{{"Unsure between gameplay and general, no camera tags, not a still?"}}
-    U -->|yes| OCR["HUD text check: OCR of 8 frames, text that stays in place, less clocks, dates and subtitles (cached; skipped in lite)"]
+    U -->|yes| OCR["HUD text check: OCR of 8 frames, text that stays in place, less clocks, dates and subtitles (cached; in lite a screen-text cue without OCR, which makes gameplay ambiguous at most)"]
     U -->|no| V
     OCR --> V{{"Still unsure, or General by camera tags alone (no telemetry)?"}}
     V -->|yes| VIS["Vision check: 6 frames to the vision model (cached; skipped in lite, without consent, or with --no-vision)"]

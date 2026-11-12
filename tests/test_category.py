@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from typing import ClassVar
 
@@ -562,17 +562,20 @@ def test_hud_text_makes_an_unsure_screen_recording_sure_gameplay():
 @pytest.fixture(autouse=True)
 def _reset_failed_text_checks():
     category._TEXT_FAILED.clear()
+    category._ANCHORS_FAILED.clear()
     yield
     category._TEXT_FAILED.clear()
+    category._ANCHORS_FAILED.clear()
 
 
 @pytest.fixture
 def text_check(faked_probe, monkeypatch):
     """``faked_probe`` of a thin-HUD screen recording, with the OCR faked:
     ``state.anchors`` is what :func:`category.text_probe` finds, ``state.texts`` counts
-    its runs."""
+    its runs; the screen-text cue is faked too (``state.cue_anchors``, ``state.cues``)."""
     state = faked_probe
     state.anchors, state.texts = [text_box(0.02 + 0.2 * i, 0.03) for i in range(5)], 0
+    state.cue_anchors, state.cues = [], 0
     state.frame = {"frames": 16, "hud_static": 0.0, "static_share": 0.05}
 
     def frame_probe(*a):
@@ -584,7 +587,13 @@ def text_check(faked_probe, monkeypatch):
         return {"version": 1, "engine": "x", "frames": 8, "anchors": state.anchors}
 
     monkeypatch.setattr(category, "_frame_probe", frame_probe)
+
+    def anchor_probe(*a):
+        state.cues += 1
+        return {"version": category.ANCHOR_VERSION, "frames": 8, "anchors": state.cue_anchors}
+
     monkeypatch.setattr(category, "text_probe", text_probe)
+    monkeypatch.setattr(category, "anchor_probe", anchor_probe)
     monkeypatch.setattr(ocr_raw, "engine_version", lambda: "x")
     monkeypatch.setattr(category, "ocr_installed", lambda: True)  # also in Cutpoint lite
     monkeypatch.setattr(category, "_metadata", lambda data: {"handler": "VideoHandle"})
@@ -611,18 +620,20 @@ def test_a_new_ocr_engine_reads_the_text_again(text_check, monkeypatch):
 
 
 def test_without_the_ocr_engine_the_check_is_skipped_quietly(text_check, monkeypatch, caplog):
-    """Cutpoint lite: no check, nothing cached, the detection stays ambiguous; installing
-    the engine later runs it."""
+    """Cutpoint lite: no check, nothing cached, the screen-text cue in its place (finding
+    nothing here), the detection stays ambiguous; installing the engine later runs it."""
     from cutpoint import cache  # noqa: PLC0415
 
     monkeypatch.setattr(category, "ocr_installed", lambda: False)
     with caplog.at_level(logging.INFO):
         p = category.probe_source(text_check.src)
     assert p.hud_text is None and text_check.texts == 0 and caplog.text == ""
+    assert (p.screen_anchors, text_check.cues) == (0, 1)
     assert not (cache.source_dir(text_check.src) / category.TEXT_FILE).exists()
     assert category.decide([p]).ambiguous
     monkeypatch.setattr(category, "ocr_installed", lambda: True)
-    assert category.probe_source(text_check.src).hud_text == 5
+    p = category.probe_source(text_check.src)
+    assert (p.hud_text, p.screen_anchors, text_check.cues) == (5, None, 1)
 
 
 def test_a_failed_text_check_keeps_the_frame_probe_and_is_not_cached(text_check, monkeypatch):
@@ -687,11 +698,15 @@ def test_camera_overlays_never_make_camera_footage_sure_gameplay(text_check):
         ({"static_share": 0.9}, {"handler": "VideoHandle"}),  # a still picture
     ],
 )
-def test_sure_footage_and_stills_are_never_read(text_check, monkeypatch, frame, meta):
+@pytest.mark.parametrize("ocr", [True, False])
+def test_sure_footage_and_stills_are_never_read(text_check, monkeypatch, frame, meta, ocr):
+    """Neither the HUD text check nor, without OCR, the screen-text cue runs on them."""
     text_check.frame.update(frame)
     monkeypatch.setattr(category, "_metadata", lambda data: meta)
-    assert category.probe_source(text_check.src).hud_text is None
-    assert text_check.texts == 0
+    monkeypatch.setattr(category, "ocr_installed", lambda: ocr)
+    p = category.probe_source(text_check.src)
+    assert (p.hud_text, p.screen_anchors) == (None, None)
+    assert (text_check.texts, text_check.cues) == (0, 0)
 
 
 def test_text_probe_reads_a_real_hud_and_leaves_out_clock_and_subtitles(monkeypatch):
@@ -725,6 +740,225 @@ def test_text_frames_decodes_eight_frames_at_the_ocr_width(video):
     frames = category._text_frames(video, 10.0, 160, 120)
     assert len(frames) == category.TEXT_FRAMES
     assert all(f.shape == (120, 160, 3) for f in frames)
+
+
+# --------------------------------------------------------------------------- screen-text cue (#904)
+CUE_W, CUE_H = 640, 360
+
+
+def word(frame: np.ndarray, x: int, y: int) -> None:
+    """A word of fixed text at ``(x, y)``: bright strokes on a dark box (strong edges)."""
+    frame[y - 2 : y + 14, x - 2 : x + 62] = 20
+    for c in range(x, x + 60, 6):
+        frame[y : y + 12, c : c + 3] = 235
+
+
+def cue_frames(fixed=(), moving=(), n: int = 8) -> list[np.ndarray]:
+    """``n`` BGR frames of a flat picture whose brightness changes, with words that stay in
+    place (``fixed``) and words that move (``moving``: their place in the first frame)."""
+    frames = []
+    for i in range(n):
+        f = np.full((CUE_H, CUE_W, 3), 90 + 12 * i, np.uint8)
+        for x, y in fixed:
+            word(f, x, y)
+        for x, y in moving:
+            word(f, x + 37 * i, y + 23 * i)
+        frames.append(f)
+    return frames
+
+
+CORNERS = ((20, 20), (560, 20), (20, 320))  # top left, top right, bottom left
+CENTRE, SUBTITLE = (290, 170), (290, 320)
+
+
+def test_anchor_boxes_find_text_that_stays_in_place():
+    """A fixed word is a box in every frame; a moving word is in none."""
+    per = category.anchor_boxes(cue_frames(fixed=[CORNERS[0]], moving=[(100, 60)]))
+    assert all(len(boxes) == 1 for boxes in per)
+    x0, y0, x1, y1 = per[0][0]
+    assert x0 <= 18 and y0 <= 18 and 82 <= x1 <= 90 and 34 <= y1 <= 40
+    assert category.text_anchors(per) == [(0, per[0][0])]
+
+
+def test_anchor_boxes_leave_out_black_bars_and_big_or_tall_shapes():
+    frames = cue_frames(fixed=[(560, 60)])
+    for f in frames:
+        f[:40], f[-40:] = 0, 0  # a letterbox: its edge with the picture stays put
+        f[150:250, 100:110] = 235  # a tall bar
+        f[100:290, 400:450] = 235  # a block higher than a text line
+    per = category.anchor_boxes(frames)
+    assert all(len(boxes) == 1 and boxes[0][0] >= 550 for boxes in per)
+
+
+def test_anchor_probe_counts_text_at_the_edge_of_the_picture(monkeypatch):
+    """Three corner words are anchors; a word in the centre (a sign in a fixed camera's
+    shot), a subtitle and a moving word are not; a lower-third box leaves its text out."""
+    frames = cue_frames(fixed=[*CORNERS, CENTRE, SUBTITLE], moving=[(100, 60)])
+    monkeypatch.setattr(category, "_text_frames", lambda *a: frames)
+    rec = category.anchor_probe(Path("x"), 60.0, CUE_W, CUE_H)
+    assert rec["version"] == category.ANCHOR_VERSION and rec["frames"] == 8
+    assert len(rec["anchors"]) == 5
+    assert all(0.0 <= v <= 1.0 for a in rec["anchors"] for v in a["box"])
+    assert category.screen_anchors(rec["anchors"]) == 3
+    assert category.screen_anchors(rec["anchors"], [0.85, 0.97]) == 2  # bottom left in the box
+    monkeypatch.setattr(category, "_text_frames", lambda *a: frames[:5])
+    assert category.anchor_probe(Path("x"), 60.0, CUE_W, CUE_H) is None  # too few frames
+
+
+def cue_box(cx: float, cy: float) -> dict:
+    return {"box": [cx - 0.04, cy - 0.01, cx + 0.04, cy + 0.01]}
+
+
+@pytest.mark.parametrize(
+    ("centre", "kept"),
+    [
+        ((0.1, 0.1), True),  # a corner
+        ((0.5, 0.1), True),  # top centre (a compass, a score)
+        ((0.9, 0.5), True),  # right edge
+        ((0.1, 0.9), True),  # bottom left
+        ((0.5, 0.5), False),  # the centre
+        ((0.3, 0.7), False),  # inside the outer band
+        ((0.5, 0.9), False),  # the subtitle band
+    ],
+)
+def test_screen_anchors_keep_the_edge_of_the_picture(centre, kept):
+    assert category.screen_anchors([cue_box(*centre)]) == int(kept)
+
+
+BARE = {**THIN_HUD, "handler": ""}  # gameplay score 0.3 without text
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [BARE, THIN_HUD, {**BARE, "hud_static": 0.002}],  # 0.3, 0.4 and 0.55 without the cue
+)
+def test_screen_anchors_lift_to_unsure_gameplay_never_sure(fields):
+    """Enough anchors lift by ANCHOR_WEIGHT to gameplay, never sure (0.55 + 0.2 is past
+    GAMEPLAY_SURE), also when the source is talky: gameplay wins as with read text."""
+    many = category.TEXT_ANCHORS
+    p = probe(**fields, screen_anchors=many)
+    bare = category.gameplay_score(probe(**fields))[0]
+    assert category.gameplay_score(p)[0] == pytest.approx(bare + category.ANCHOR_WEIGHT)
+    for speech in (None, 0.9):
+        src = category._source(replace(p, duration=900.0), speech)
+        assert (src.category, src.ambiguous, src.decided_by) == (GAMEPLAY, True, None)
+        assert f"screen text anchors in {many} places (no OCR)" in src.reason
+    assert category.decide([p]).decided_by == []
+
+
+def test_few_screen_anchors_change_nothing():
+    p = probe(**BARE, screen_anchors=category.TEXT_ANCHORS - 1)
+    assert category.gameplay_score(p)[0] == category.gameplay_score(probe(**BARE))[0]
+    det = category.decide([p])
+    assert (det.category, det.ambiguous) == (GENERAL, True)
+    assert "no screen text anchors (no OCR)" in det.reason
+
+
+def test_screen_anchors_follow_the_text_support_guard_and_leave_needs_text_alone():
+    many = category.TEXT_ANCHORS
+    assert category._text_alone(probe(**BARE, screen_anchors=many))
+    assert not category._text_alone(probe(**{**BARE, "hud_static": 0.002}, screen_anchors=many))
+    assert category.needs_text(probe(**{**BARE, "hud_static": 0.002}, screen_anchors=9))
+
+
+def test_read_hud_text_wins_over_the_screen_anchors():
+    read = probe(**THIN_HUD, hud_text=category.TEXT_ANCHORS)
+    assert category.decide([replace(read, screen_anchors=0)]) == category.decide([read])
+    assert category.decide([read]).ambiguous is False
+
+
+def test_without_ocr_the_cue_is_cached_apart_and_lifts_the_source(text_check, monkeypatch):
+    from cutpoint import cache  # noqa: PLC0415
+
+    monkeypatch.setattr(category, "ocr_installed", lambda: False)
+    text_check.cue_anchors = [cue_box(0.1, 0.05), cue_box(0.9, 0.05), cue_box(0.1, 0.9)]
+    src = text_check.src
+    first = category.probe_source(src)
+    assert (first.hud_text, first.screen_anchors, text_check.cues) == (None, 3, 1)
+    cdir = cache.source_dir(src)
+    assert "screen_anchors" not in cache.load_json(cdir / category.CACHE_FILE)
+    assert (cdir / category.ANCHOR_FILE).exists()
+    assert category.probe_source(src) == first and text_check.cues == 1  # cached
+    det = category.decide([first])
+    assert (det.category, det.ambiguous, det.decided_by) == (GAMEPLAY, True, [])
+
+
+def test_with_ocr_the_cue_never_runs_and_the_records_stay(text_check, monkeypatch):
+    """A full install: the HUD text check reads the source, the cue is never computed, the
+    probe record keeps its keys and the decision is the text check's alone."""
+    from cutpoint import cache  # noqa: PLC0415
+
+    monkeypatch.setattr(category, "anchor_probe", lambda *a: pytest.fail("screen-text cue"))
+    src = text_check.src
+    p = category.probe_source(src)
+    cdir = cache.source_dir(src)
+    assert (p.hud_text, p.screen_anchors) == (5, None)
+    assert not (cdir / category.ANCHOR_FILE).exists()
+    record = (cdir / category.CACHE_FILE).read_bytes()
+    keys = {"version"} | {f.name for f in fields(SourceProbe)}
+    assert set(json.loads(record)) == keys - {"hud_text", "screen_anchors", "vision"}
+    det = category.decide([p])
+    assert (det.category, det.ambiguous, det.decided_by) == (GAMEPLAY, False, ["HUD text"])
+    assert category.decide([replace(p, screen_anchors=9)]) == det
+    assert category.probe_source(src) == p
+    assert (cdir / category.CACHE_FILE).read_bytes() == record
+
+
+def test_a_failed_text_check_gets_no_cue(text_check, monkeypatch):
+    """A full install keeps today's result when its HUD text check fails: no cue."""
+    from cutpoint import cache  # noqa: PLC0415
+
+    def broken(*a):
+        raise RuntimeError("onnxruntime fell over")
+
+    monkeypatch.setattr(category, "text_probe", broken)
+    p = category.probe_source(text_check.src)
+    assert (p.hud_text, p.screen_anchors, text_check.cues) == (None, None, 0)
+    assert not (cache.source_dir(text_check.src) / category.ANCHOR_FILE).exists()
+
+
+def test_a_failed_cue_is_tried_once_and_not_cached(text_check, monkeypatch, caplog):
+    from cutpoint import cache  # noqa: PLC0415
+
+    monkeypatch.setattr(category, "ocr_installed", lambda: False)
+
+    def broken(*a):
+        text_check.cues += 1
+        raise RuntimeError("decode fell over")
+
+    monkeypatch.setattr(category, "anchor_probe", broken)
+    with caplog.at_level(logging.WARNING):
+        assert category.probe_source(text_check.src).screen_anchors is None
+    assert "Screen-text cue of a.mp4 failed" in caplog.text
+    assert category.probe_source(text_check.src).screen_anchors is None
+    assert text_check.cues == 1
+    assert not (cache.source_dir(text_check.src) / category.ANCHOR_FILE).exists()
+
+
+def test_a_cue_with_too_few_frames_is_tried_once(text_check, monkeypatch):
+    monkeypatch.setattr(category, "ocr_installed", lambda: False)
+
+    def short(*a):
+        text_check.cues += 1
+
+    monkeypatch.setattr(category, "anchor_probe", short)
+    assert category.probe_source(text_check.src).screen_anchors is None
+    assert category.probe_source(text_check.src).screen_anchors is None
+    assert text_check.cues == 1
+
+
+def test_a_cue_short_of_memory_stops_the_detection(text_check, monkeypatch):
+    from cutpoint.errors import LowMemoryError  # noqa: PLC0415
+
+    monkeypatch.setattr(category, "ocr_installed", lambda: False)
+
+    def short(*a):
+        raise LowMemoryError("Not enough memory")
+
+    monkeypatch.setattr(category, "anchor_probe", short)
+    with pytest.raises(LowMemoryError):
+        category.probe_source(text_check.src)
+    assert not category._ANCHORS_FAILED
 
 
 # --------------------------------------------------------------------------- vision (#898)

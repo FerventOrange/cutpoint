@@ -845,7 +845,10 @@ cached in the project's `ui/assistant/sheets`, per moment, clip window, sheet si
 Its header shows the model and provider (local, or the hosted host), with a note
 that a small local model can miss moments or misread a request. Type a request and press Enter
 or Send (Shift+Enter starts a new line); the reply shows the steps the model took ("Searched
-for …") and can be stopped with Cancel. The chat needs an analyzed project.
+for …") and can be stopped with Cancel. The chat needs an analyzed project. After 7 replies of
+the model, or once it has watched as many moments as a message may, the model is asked to answer
+with what it found: when the moments do not show what you asked for, it says so and offers
+something it can do instead, such as a montage of the best moments.
 
 The model reads the moments as text: label (a generic one shown as what the vision model saw,
 as in the Moments list), score, times, transcript snippet and, when analysis has them, `kind`,
@@ -1440,8 +1443,12 @@ when the gameplay score without that text is below 0.4 the source stays unsure a
 vision check. Clocks, dates, speeds, GPS positions (a camera's or dashcam's burned-in overlay) and the subtitle
 band at the bottom centre do not count. It takes a few seconds per unsure source, is cached as
 `category-text-v1.json` (read again when the OCR engine changes) and runs only for `detect` and
-`--style auto`. In Cutpoint lite, which has no OCR engine, it is skipped and the source stays
-ambiguous.
+`--style auto`. In Cutpoint lite, which has no OCR engine, the screen-text cue takes its place on the same 8 frames: no reading, only shapes. Edges
+that keep their value over the frames, joined into word-sized boxes, count when a box stays in
+the same place in most frames at the edge of the picture (not the middle, the subtitle band or a
+lower-third box). At least 3 such boxes add less than read HUD text and never make a source sure:
+it becomes ambiguous gameplay at most, with the reason `screen text anchors in N places (no OCR)`
+and no `decided_by`. It is cached as `category-anchors-v1.json` (#904).
 
 A 2:1 frame counts as 360 footage only at 3840 px wide or more; `decided_by` is then `360 frame`.
 
