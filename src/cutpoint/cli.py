@@ -1,5 +1,6 @@
 """Command-line interface: ``cutpoint edit | analyze | events | crashes | profile | clips |
-extend | assemble | stage | 360 | setup | paths | capabilities | style | guide | skill | ui``.
+extend | assemble | rerank | stage | 360 | setup | paths | capabilities | style | guide | skill |
+ui``.
 
 Installed as the ``cutpoint`` console script.
 """
@@ -670,6 +671,57 @@ def _resume_command(args: argparse.Namespace) -> str:
         return runstate.resumable(resolve_project_path(args.project))["command"]
     except (OSError, ValueError):
         return args.json_command
+
+
+def _cmd_rerank(a: argparse.Namespace) -> None:
+    """``cutpoint rerank``: re-rank an analysed project with another style from its caches
+    (#902); ``needs_analyze`` when they lack what the style needs (see :mod:`cutpoint.rerank`)."""
+    from cutpoint import rerank  # noqa: PLC0415
+    from cutpoint.errors import NeedsAnalyzeError  # noqa: PLC0415
+    from cutpoint.utils import clock  # noqa: PLC0415
+
+    project = resolve_project_path(a.project)
+    jsonout.set_project(project)
+    style = get_style(a.style)
+    try:
+        res = rerank.rerank(project, style, dry_run=a.dry_run, analyze_missing=a.analyze)
+    except NeedsAnalyzeError as err:
+        jsonout.output("missing", err.missing)
+        jsonout.output("analyze_command", err.command)
+        raise
+    before, after = res.before, res.after
+    new, dropped = rerank.changes(before, after)
+    top = rerank.rows(after, a.top, before)
+    jsonout.output("highlights", project / rerank.HIGHLIGHTS)
+    jsonout.output("backup", res.backup)
+    jsonout.output("saved", res.saved)
+    jsonout.output("analyzed", res.analyzed)
+    jsonout.output("style", after.get("style"))
+    jsonout.output("from", before.get("style"))
+    jsonout.output("candidates", len(after.get("candidates") or []))
+    jsonout.output("suggested_top", after.get("suggested_top"))
+    jsonout.output("top", top)
+    jsonout.output("before", rerank.rows(before, a.top))
+    jsonout.output("new_ids", new)
+    jsonout.output("dropped_ids", dropped)
+    jsonout.output("notes", res.notes)
+    jsonout.output("seconds", res.seconds)
+    if jsonout.active():
+        return
+    what = "saved" if res.saved else "preview, nothing saved"
+    print(f"{before.get('style')} -> {after.get('style')} ({what}, {res.seconds:.1f} s)")
+    print(
+        f"{len(new)} new moment(s), {len(dropped)} gone; suggested_top {after.get('suggested_top')}"
+    )
+    for r in top:
+        was = "new" if r["was"] is None else f"was {r['was']}"
+        span = f"{clock(float(r['start']))}-{clock(float(r['end']))}"
+        print(
+            f"{r['rank']:>3}  {r['id']:<5} {was:<7} {float(r['score']):6.1f}  "
+            f"{Path(str(r['source'])).name} {span}  {r['label']}"
+        )
+    if res.backup is not None:
+        print(f"Earlier ranking: {res.backup}")
 
 
 def _cmd_profile(a: argparse.Namespace) -> None:
@@ -2165,6 +2217,39 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     )
     _add_json_argument(rs)
     rs.set_defaults(func=_cmd_resume)
+
+    rr = sub.add_parser(
+        "rerank",
+        help="re-rank an analysed project with another style from its caches, in seconds "
+        "(needs_analyze when a feature the style needs is missing)",
+    )
+    rr.add_argument("project", help="analysed project (bare name = projects folder)")
+    rr.add_argument(
+        "--style",
+        required=True,
+        choices=style_names(),
+        help="the style to rank with (a built-in style or one of yours; not auto)",
+    )
+    rr_mode = rr.add_mutually_exclusive_group()
+    rr_mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show the new ranking only; highlights.json stays as it is",
+    )
+    rr_mode.add_argument(
+        "--analyze",
+        action="store_true",
+        help="when the caches lack a feature the style needs, analyze again with the style "
+        "(minutes to hours) instead of stopping with needs_analyze",
+    )
+    rr.add_argument(
+        "--top",
+        type=positive_int,
+        default=10,
+        help="moments shown before and after (default 10)",
+    )
+    _add_json_argument(rr)
+    rr.set_defaults(func=_cmd_rerank)
 
     mx = sub.add_parser(
         "mix",

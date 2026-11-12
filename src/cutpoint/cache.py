@@ -24,7 +24,7 @@ def cache_root() -> Path:
     return root
 
 
-def source_dir(src: Path, offset: float = 0.0) -> Path:
+def source_dir(src: Path, offset: float = 0.0, *, create: bool = True) -> Path:
     """Cache folder for one source, keyed by absolute path + size + mtime.
 
     The path in the key is canonicalised through ``source_remap`` (see
@@ -35,6 +35,8 @@ def source_dir(src: Path, offset: float = 0.0) -> Path:
         offset: Start of a virtual source (``analyze --recover`` resumes a
             damaged file here); 0 for the file itself. Each offset gets its own
             folder, so the cached audio/transcript of a part starts at 0.
+        create: Make the folder when it is missing; False only names it (a check that
+            must leave no folder behind, such as ``cutpoint rerank``'s readiness).
     """
     from cutpoint.config import canonical_source, remap_source  # noqa: PLC0415
 
@@ -49,7 +51,8 @@ def source_dir(src: Path, offset: float = 0.0) -> Path:
         tag = f"@{offset:.0f}"
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
     folder = cache_root() / f"{src.stem[:40]}{tag}-{digest}"
-    folder.mkdir(parents=True, exist_ok=True)
+    if create:
+        folder.mkdir(parents=True, exist_ok=True)
     return folder
 
 
