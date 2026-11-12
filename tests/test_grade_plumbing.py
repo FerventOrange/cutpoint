@@ -360,11 +360,39 @@ def test_color_mode_on_gaming_footage_warns_on_json_too(home, monkeypatch, caplo
 
 @pytest.mark.parametrize(("cfg", "given"), [("auto", None), ("off", "auto")])
 def test_color_mode_with_an_unknown_style_never_counts_as_gaming(home, caplog, cfg, given):
-    # segments without highlights.json: the gaming fallback is not the footage's style
+    # segments without highlights.json: a fallback style is not the footage's style
     set_config(home, color=cfg)
     caplog.set_level(logging.INFO)
     assert clips._color_mode(given, None, GAMING, known_style=False) == "auto"
     assert not [r for r in caplog.records if r.name == "cutpoint.clips"]
+
+
+@pytest.mark.parametrize(
+    ("hl", "want", "known"),
+    [
+        (None, "action", False),  # segments without highlights.json
+        ({}, "action", False),  # a file without style: auto's for unclear footage (#1002)
+        ({"style_base": "sport"}, "sport", True),
+        ({"detection": {"style": "commentary"}}, "commentary", True),
+        ({"style_base": "zz-unknown", "detection": {"style": "gaming"}}, "gaming", True),
+        ({"style": "funny", "style_base": "funny"}, "funny", True),
+    ],
+)
+def test_clips_use_the_style_a_file_records_and_never_assume_gaming(
+    home, monkeypatch, hl, want, known
+):
+    seen: list[tuple[str, bool]] = []
+
+    def stop(_color, _lut, style, *, known_style=True):
+        seen.append((style.name, known_style))
+        raise RuntimeError("stop")
+
+    if hl is not None:
+        write(home / "projects" / "p" / "highlights.json", json.dumps(hl))
+    monkeypatch.setattr(clips, "_color_mode", stop)
+    with pytest.raises(RuntimeError, match="stop"):
+        _run(home, monkeypatch)
+    assert seen == [(want, known)]
 
 
 @pytest.mark.parametrize("given", ["auto", "underwater"])

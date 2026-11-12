@@ -27,11 +27,11 @@ from cutpoint import cache, sources
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import EXACT_KEYS, plan_edges
 from cutpoint.config import remap_source
-from cutpoint.events.scoring import recorded_style
+from cutpoint.events.scoring import analysis_style
 from cutpoint.events.tails import EventTailSettings, load_events
 from cutpoint.ffmpeg_utils import probe
 from cutpoint.planning import Padding
-from cutpoint.styles import get_style
+from cutpoint.styles import STYLES, style_name
 from cutpoint.tail import TailSettings
 
 logger = logging.getLogger(__name__)
@@ -189,12 +189,11 @@ class EdgePlanner:
         read), why each moved, and whether every source could be read."""
         hl = cache.load_json(self.project / "highlights.json")
         hl = hl if isinstance(hl, dict) else {}
-        try:
-            style = recorded_style(hl)  # a deleted user style degrades to its recorded base
-        except ValueError as err:  # no recorded style, or an old file with no base
-            if hl.get("style"):
-                logger.warning("%s; planning the edges as 'gaming'", err)
-            style = get_style("gaming")
+        try:  # a deleted user style degrades to its recorded base; none recorded: auto's
+            style = analysis_style(hl)
+        except ValueError as err:  # a deleted user style in an old file with no base
+            style = STYLES[style_name({})]
+            logger.warning("%s; planning the edges as %r", err, style.name)
         settings = hl.get("settings") if isinstance(hl.get("settings"), dict) else {}
         events = load_events(self.project) if opts.event_tails is not False else None
         off = {"smart_tail": False} if not smart_tail else {}

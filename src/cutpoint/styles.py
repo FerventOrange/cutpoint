@@ -231,6 +231,26 @@ def project_kind(hl: dict) -> str | None:
     return hl.get("style_kind")
 
 
+def recorded_name(hl: dict) -> str | None:
+    """The style name the analysis ``hl`` (a highlights.json object) records: its ``style``;
+    in a file without one, the built-in ``style_base`` it records, else the built-in style its
+    ``detection`` chose; None when it records none (see :func:`style_name`)."""
+    if hl.get("style"):
+        return str(hl["style"])
+    det = hl.get("detection")
+    for name in (hl.get("style_base"), det.get("style") if isinstance(det, dict) else None):
+        if isinstance(name, str) and name in STYLES:
+            return name
+    return None
+
+
+def style_name(hl: dict) -> str:
+    """The style name of the analysis ``hl`` (:func:`recorded_name`); for a file that records
+    none, the style ``--style auto`` uses for unclear footage (:func:`auto_fallback`), not
+    ``gaming`` (#1002)."""
+    return recorded_name(hl) or auto_fallback("hype")
+
+
 STYLES: dict[str, Style] = {
     "gaming": Style(
         name="gaming",

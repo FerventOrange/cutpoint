@@ -24,6 +24,7 @@ from cutpoint import boundaries, cache, default_fit, jsonout, sources, visual_po
 from cutpoint.config import path_key
 from cutpoint.events.tails import load_events
 from cutpoint.ffmpeg_utils import MediaInfo
+from cutpoint.styles import style_name
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,8 @@ def select_moments(
 
     Returns:
         ``(moments, style name)``: the chosen candidate dicts (ids order, else
-        by score) and the analysis style (default ``gaming``).
+        by score) and the analysis style (:func:`cutpoint.styles.style_name`: for a file
+        that records none, auto's style for unclear footage).
 
     Raises:
         FileNotFoundError: If the project has no highlights.json.
@@ -145,7 +147,7 @@ def select_moments(
         chosen = _reserve(project, chosen, pool, len(chosen) if max_total else picks, max_total)
     if not chosen:
         raise ValueError("No moments selected")
-    return chosen, data.get("style", "gaming")
+    return chosen, style_name(data)
 
 
 def _reserve(
