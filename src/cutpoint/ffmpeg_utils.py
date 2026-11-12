@@ -421,6 +421,9 @@ class MediaInfo:
     color_range: str | None = None
     # Where the video stream starts (s, from the container start); 0 unless it starts late.
     vstart: float = 0.0
+    # Where the container starts on its own clock (s, ffprobe's format start_time): ``-ss`` and
+    # the clips count from here; 1.4 or more in MPEG-TS, usually 0 elsewhere.
+    fstart: float = 0.0
 
     def concat_key(self) -> tuple:
         """Parameters that must match for lossless concat-demuxer joining."""
@@ -535,7 +538,45 @@ def _probe(path: Path) -> MediaInfo:
         color_space=_color_tag(video, "color_space"),
         color_range=_color_tag(video, "color_range"),
         vstart=float(video.get("start_time") or f_start) - f_start,
+        fstart=f_start,
     )
+
+
+# showinfo's time base and the integer pts of its first frame: its pts_time has 6 significant
+# digits on ffmpeg 6 (54322.7437 s prints as 54322.7) and may take exponent form
+_SHOWINFO_TB = re.compile(r"config in time_base:\s*(\d+)/(\d+)")
+_SHOWINFO_PTS = re.compile(r"\bn:\s*\d+\s+pts:\s*(-?\d+)\b")
+
+
+def showinfo_first_time(log: str) -> float | None:
+    """The time (s) of the first frame in a ``showinfo`` ``log``: its integer pts times the
+    filter's input time base; None when either is missing (no frame, or a NOPTS frame)."""
+    tb, pts = _SHOWINFO_TB.search(log), _SHOWINFO_PTS.search(log)
+    if tb is None or pts is None or int(tb.group(2)) == 0:
+        return None
+    return float(int(pts.group(1)) * Fraction(int(tb.group(1)), int(tb.group(2))))
+
+
+def first_frame_time(path: Path | str, *, keyframes: bool = False) -> float:
+    """The file timestamp (s, as :attr:`MediaInfo.fstart` counts) of the first video frame
+    ffmpeg decodes from ``path`` on the CPU, keyframes only with ``keyframes``: one frame
+    decoded, of the video stream ffmpeg picks without ``-map`` (the largest), as the scene pass
+    does. In an MPEG-TS cut in the middle of a GOP that is the first keyframe, not the first
+    packet.
+
+    Raises:
+        FFmpegError: If ffmpeg fails, times out or decodes no frame with a time.
+    """
+    skip = ["-skip_frame", "nokey"] if keyframes else []
+    out = run(
+        ["ffmpeg", "-hide_banner", "-nostats", "-v", "info", *skip, "-copyts", "-i", str(path),
+         "-frames:v", "1", "-an", "-vf", "showinfo", "-f", "null", "-"],
+        timeout=FFPROBE_TIMEOUT_S,
+    )  # fmt: skip
+    t = showinfo_first_time(out)
+    if t is None:
+        raise FFmpegError(f"no timed video frame decoded from {path}")
+    return t
 
 
 def _color_tag(stream: dict[str, Any], key: str) -> str | None:
@@ -1830,15 +1871,26 @@ def split_decode_args(
     raw_vf: str,
     pix_fmt: PixFmt = "bgr24",
     hw: HwDecoder | None = None,
+    src_size: tuple[int, int] | None = None,
+    src_fmt: str | None = None,
 ) -> list[str]:
     """ffmpeg arguments (without the executable) for one decode pass (``hw``, else the CPU)
     that writes both the scene proxy (``scene_vf`` and ``scene_enc`` as the scene cuts use
     them) to ``proxy`` and the raw frames of ``raw_vf`` (as :func:`decode_raw` gets them) to
-    stdout."""
-    graph_head = gpu_chain(hw, "split=2")  # VAAPI frames are downloaded before the split
+    stdout. ``-reinit_filter 0`` keeps one filter graph, so ``src_size`` (the probed picture)
+    is pinned at its head: a picture that changes size mid-file would otherwise reach the
+    ``raw_vf`` crop out of bounds. ``format`` there (``src_fmt``, the probed pixel format;
+    yuv420p for VAAPI, whose download gives it, and when unknown) keeps the scene proxy in the
+    source's format (the graph would negotiate bgr24 for the raw branch and make it yuv444p)."""
+    fmt = "yuv420p" if hw is not None and hw.kind == "vaapi" else src_fmt or "yuv420p"
+    split = "split=2"
+    if src_size is not None:
+        split = f"scale={src_size[0]}:{src_size[1]},format={fmt},split=2"
+    graph_head = gpu_chain(hw, split)  # VAAPI frames are downloaded before the split
     graph = f"[0:v:0]{graph_head}[s][o];[s]{scene_vf}[sv];[o]{raw_vf}[ov]"
     return [
         *("-hide_banner", "-nostats", "-v", "error", "-y"),
+        *("-reinit_filter", "0"),  # one graph: the scene proxy's fps and setpts must not restart
         *(hw.input_args() if hw is not None else ()),
         *("-i", str(path), "-filter_complex", graph),
         *("-map", "[sv]", "-an", *scene_enc, str(proxy)),
@@ -1877,6 +1929,8 @@ class SplitDecode:
         on_exit: Callable[[bool, int], None],
         stderr_lines: list[str] | None = None,
         hw: HwDecoder | None = None,
+        src_size: tuple[int, int] | None = None,
+        src_fmt: str | None = None,
     ) -> None:
         width, height = size
         self.frame_bytes = width * height * PIX_CHANNELS["bgr24"]
@@ -1899,7 +1953,14 @@ class SplitDecode:
         self._closed = False
         self._seg: IO[bytes] | None = None  # the spool file frames() reads
         args = split_decode_args(
-            path, scene_vf=scene_vf, scene_enc=scene_enc, proxy=self.tmp, raw_vf=raw_vf, hw=hw
+            path,
+            scene_vf=scene_vf,
+            scene_enc=scene_enc,
+            proxy=self.tmp,
+            raw_vf=raw_vf,
+            hw=hw,
+            src_size=src_size,
+            src_fmt=src_fmt,
         )
         cmd = _command("ffmpeg", args)
         logger.debug("exec: %s", subprocess.list2cmdline(cmd))

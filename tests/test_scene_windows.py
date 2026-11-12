@@ -71,7 +71,7 @@ def test_a_window_proxy_seeks_to_the_part_offset_plus_the_window(tmp_path, monke
     assert cuts == [17.9, 19.5]
     (args,) = seen
     assert args[args.index("-ss") + 1] == "117.500" and args[args.index("-t") + 1] == "5.000"
-    assert "fps=10,scale=320:-2" in args and "-skip_frame" not in args
+    assert "fps=10:start_time=0,scale=320:-2" in args and "-skip_frame" not in args
     assert not list(tmp_path.glob("proxy-window*"))
 
 
@@ -106,7 +106,7 @@ def test_a_window_proxy_decodes_on_the_cpu_with_a_gpu_decoder(tmp_path, monkeypa
     assert analyze._window_cuts(write(tmp_path / "a.mp4"), tmp_path, 0.0, 17.5, 22.5) == [17.9]
     (args,) = seen
     assert "-hwaccel" not in args and "hwdownload" not in " ".join(args)
-    assert args[args.index("-vf") + 1] == "fps=10,scale=320:-2"
+    assert args[args.index("-vf") + 1] == "fps=10:start_time=0,scale=320:-2"
 
 
 @pytest.mark.parametrize(
@@ -162,7 +162,7 @@ def test_edge_cuts_decode_merged_windows_and_save_them(tmp_path, decodes):
     cuts = ec.around([20.0, 22.0, 60.0])
     assert decodes == [(0.0, 17.5, 24.5), (0.0, 57.5, 62.5)]
     assert cuts == [20.6, 60.6]
-    assert saved(tmp_path) == {"version": 1, "windows": [[17.5, 24.5], [57.5, 62.5]],
+    assert saved(tmp_path) == {"version": 2, "windows": [[17.5, 24.5], [57.5, 62.5]],
                                "cuts": [20.6, 60.6]}  # fmt: skip
     assert len(took) == 1 and took[0] >= 0
 
@@ -184,11 +184,11 @@ def test_a_window_touching_saved_ones_is_decoded_with_them(tmp_path, decodes):
     decodes.clear()
     assert ec.around([20.0, 24.0]) == [20.6]  # 24 needs 21.5-26.5: overlaps 17.5-22.5
     assert decodes == [(0.0, 17.5, 26.5)]
-    assert saved(tmp_path) == {"version": 1, "windows": [[17.5, 26.5]], "cuts": [20.6]}
+    assert saved(tmp_path) == {"version": 2, "windows": [[17.5, 26.5]], "cuts": [20.6]}
 
 
 def test_a_full_scenes_json_is_preferred_over_windows(tmp_path, decodes):
-    cache.save_json(tmp_path / "scenes.json", [5.0, 21.0])
+    cache.save_json(tmp_path / analyze.SCENES_FILE, [5.0, 21.0])
     assert analyze.EdgeCuts(tmp_path / "a.mp4", tmp_path, 120.0).around([20.0]) == [5.0, 21.0]
     assert decodes == [] and not (tmp_path / WINDOWS).exists()
 
@@ -202,6 +202,54 @@ def test_an_unreadable_windows_file_is_decoded_again(tmp_path, decodes):
 def test_a_recovered_part_decodes_at_its_offset(tmp_path, decodes):
     analyze.EdgeCuts(tmp_path / "a.mp4", tmp_path, 50.0, offset=300.0).around([49.0])
     assert decodes == [(300.0, 46.5, 50.0)]  # part time, clamped to the part
+
+
+def test_a_windows_file_of_the_old_clock_is_decoded_again(tmp_path, decodes):
+    """Version 1 counted a late video from its first frame (#976): its windows are not reused."""
+    write(tmp_path / WINDOWS, json.dumps({"version": 1, "windows": [[17.5, 22.5]], "cuts": [19.7]}))
+    assert analyze.EdgeCuts(tmp_path / "a.mp4", tmp_path, 120.0).around([20.0]) == [20.6]
+    assert decodes == [(0.0, 17.5, 22.5)]
+    assert saved(tmp_path)["version"] == analyze.SCENE_WINDOWS_VERSION == 2
+
+
+def test_an_old_scenes_json_is_not_used(tmp_path, decodes):
+    write(tmp_path / "scenes.json", "[19.7]")
+    assert analyze.EdgeCuts(tmp_path / "a.mp4", tmp_path, 120.0).around([20.0]) == [20.6]
+
+
+@pytest.mark.parametrize("name", ["a.ts", "a.MTS", "a.m2ts", "a.avi"])
+def test_a_container_that_seeks_inexactly_gets_the_full_pass(tmp_path, decodes, monkeypatch, name):
+    """MPEG-TS input seeks land off the frame asked for (#976), and decoding from the start to
+    each window costs 3-4x the full pass: one full pass, cached as SCENES_FILE, and no windows."""
+    full = []
+
+    def scene_cuts(src, cdir, duration, offset=0.0, limit=None, **kw):
+        full.append((src.name, duration, offset, limit))
+        return [5.0, 21.0]
+
+    monkeypatch.setattr(analyze, "scene_cuts", scene_cuts)
+    took = []
+    ec = analyze.EdgeCuts(tmp_path / name, tmp_path, 120.0, 300.0, 100.0, on_time=took.append)
+    assert ec.around([20.0]) == [5.0, 21.0]
+    assert full == [(name, 120.0, 300.0, 100.0)] and decodes == [] and len(took) == 1
+    assert not (tmp_path / WINDOWS).exists()
+
+
+def test_a_window_counts_as_ffmpeg_does_also_at_the_part_start(tmp_path, monkeypatch):
+    """In a container that seeks exactly ffmpeg counts from the container start, with a seek or
+    without (a window at the part start), so the chain is the plain one (#976)."""
+    seen = []
+    monkeypatch.setattr(analyze, "decoder_for", lambda s: None)
+    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 60.0, vstart=0.25, fstart=1.4))
+    monkeypatch.setattr(analyze, "run_progress", lambda args, total, label, **k: seen.append(args))
+    monkeypatch.setattr(analyze, "_scan", lambda proxy, cancel: [])
+    analyze._window_cuts(tmp_path / "a.mp4", tmp_path, 0.0, 0.0, 3.5)
+    analyze._window_cuts(tmp_path / "a.mp4", tmp_path, 0.0, 17.5, 22.5)
+    first, later = seen
+    assert "-ss" not in first and "-copyts" not in first
+    assert first[first.index("-vf") + 1] == "fps=10:start_time=0,scale=320:180"
+    assert later[later.index("-ss") + 1] == "17.500" and "-copyts" not in later
+    assert later[later.index("-vf") + 1] == "fps=10:start_time=0,scale=320:180"
 
 
 # ----------------------------------------------------------------- analyze_source
@@ -219,7 +267,7 @@ def world(home, tmp_path, monkeypatch, decodes):
         src_, cdir, duration, offset=0.0, limit=None, shared=None, cancel=None, cpu_free=False
     ):
         w.full.append(threading.current_thread())
-        cache.save_json(cdir / "scenes.json", [16.4])
+        cache.save_json(cdir / analyze.SCENES_FILE, [16.4])
         return [16.4]
 
     monkeypatch.setattr(analyze, "scene_cuts", full)
@@ -236,6 +284,16 @@ def world(home, tmp_path, monkeypatch, decodes):
     return w
 
 
+def test_an_mpegts_source_takes_the_full_pass_and_says_so(world, tmp_path):
+    """#976: no edge windows for a container that seeks inexactly, so analyze reports no
+    ``scene_windows`` stage and gives the part no EdgeCuts; the full pass runs up front."""
+    ts = write(tmp_path / "videos" / "a.ts")
+    res = analyze.analyze_source(ts, get_style("funny"), StubTranscriber(), True, None, {})
+    assert len(world.full) == 1 and world.decodes == []
+    assert "scene_windows" not in res.stages and res.signals.edge_cuts is None
+    assert res.signals.cuts == [16.4]
+
+
 def edges(res) -> list[float]:
     return sorted(t for c in res.candidates for t in (c.start, c.end))
 
@@ -250,7 +308,7 @@ def test_a_style_without_scene_weight_runs_no_full_pass(world, monkeypatch, name
     assert res.stages["scene_windows"] is True and res.stages["scenes_s"] >= 0
     assert world.timings["scenes_s"] == res.stages["scenes_s"]
     assert not res.signals.sig["scene"].any()  # weight 0: no curve
-    assert not (world.cdir / "scenes.json").exists() and (world.cdir / WINDOWS).is_file()
+    assert not (world.cdir / analyze.SCENES_FILE).exists() and (world.cdir / WINDOWS).is_file()
     rec = analyze._source_timings([res], None)[0]
     assert rec["scene_windows"] is True and "overlap" not in rec
 
@@ -277,7 +335,7 @@ def test_edges_snap_to_window_cuts_as_to_full_ones(world, monkeypatch):
     near = {round(x, 3) for _o, a, b in world.decodes for x in [t + 0.6 for t in range(0, 60, 10)]
             if a <= x <= b}  # fmt: skip
     assert set(from_windows) & near  # a cut was in reach and taken
-    cache.save_json(world.cdir / "scenes.json", sorted(near))
+    cache.save_json(world.cdir / analyze.SCENES_FILE, sorted(near))
     world.decodes.clear()
     assert edges(world.source(get_style("funny"))) == from_windows
     assert world.decodes == [] and world.full == []  # the cached full pass was used
@@ -321,7 +379,7 @@ def test_a_long_source_of_a_style_without_scene_weight_overlaps_as_before(world,
 
 
 def test_a_cached_full_pass_is_used_by_a_style_without_scene_weight(world):
-    cache.save_json(world.cdir / "scenes.json", [16.4])
+    cache.save_json(world.cdir / analyze.SCENES_FILE, [16.4])
     res = world.source(get_style("funny"))
     assert world.full == [] and world.decodes == []
     assert res.signals.cuts == [16.4] and res.signals.edge_cuts is None
@@ -407,7 +465,7 @@ def test_cached_grids_detect_around_edges_for_a_style_without_scene_weight(tmp_p
     assert part.signals.edge_cuts is not None and part.signals.cuts == []
     (part,) = analyze.cached_grid_parts(hl, get_style("gaming"))
     assert part.signals.edge_cuts is None
-    cache.save_json(cdir / "scenes.json", [12.0])
+    cache.save_json(cdir / analyze.SCENES_FILE, [12.0])
     (part,) = analyze.cached_grid_parts(hl, get_style("funny"))
     assert part.signals.edge_cuts is None and part.signals.cuts == [12.0]
     assert decodes == []  # nothing decoded until a candidate edge needs it

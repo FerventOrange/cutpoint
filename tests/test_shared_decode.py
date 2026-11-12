@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import needs_ffmpeg
+from conftest import media_info, needs_ffmpeg
 from cutpoint import analyze, ffmpeg_utils
 from cutpoint.errors import FFmpegError
 from cutpoint.events import ocr_prefetch
@@ -28,7 +28,7 @@ RECT = (40, 20, 120, 60)  # x, y, w, h of the OCR crop
 SIZE = RECT[2:]
 FB = SIZE[0] * SIZE[1] * 3  # bytes of one raw frame
 VF = ocr_vf(3.0, RECT)
-SCENE_VF = "fps=10,scale=320:-2"
+SCENE_VF = "fps=10:start_time=0,scale=320:-2"
 ENC = ("-c:v", "libx264", "-preset", "ultrafast", "-crf", "32")
 HW = [False, True]  # True: the GPU decoder found here (NVDEC or VAAPI), skipped when none
 
@@ -69,6 +69,50 @@ def _split(clip: Path, cdir: Path, outs: list, cancel=None, hw=None) -> SplitDec
         on_exit=lambda ok, peak: outs.append((ok, peak)),
         hw=hw,
     )
+
+
+def test_the_split_decode_keeps_one_graph_of_the_probed_size():
+    """``-reinit_filter 0`` before the hw options and ``-i``; the source size is pinned at the
+    graph's head, so a picture that changes size cannot reach the raw crop out of bounds."""
+    for kind, head in (("cuda", "scale=640:360,format=yuv420p,split=2"), ("vaapi", None)):
+        hw = ffmpeg_utils.HwDecoder(kind, "/dev/dri/renderD128" if kind == "vaapi" else None)
+        args = ffmpeg_utils.split_decode_args(
+            "in.mp4", scene_vf=SCENE_VF, scene_enc=ENC, proxy=Path("p.mp4"), raw_vf=VF,
+            hw=hw, src_size=(640, 360),
+        )  # fmt: skip
+        i = args.index("-reinit_filter")
+        assert args[i : i + 2] == ["-reinit_filter", "0"]
+        assert i < args.index("-hwaccel") < args.index("-i")
+        graph = args[args.index("-filter_complex") + 1]
+        assert graph.startswith(
+            f"[0:v:0]{head or ffmpeg_utils._GPU_DOWNLOAD + ',scale=640:360,format=yuv420p,split=2'}[s][o]"
+        )
+    plain = ffmpeg_utils.split_decode_args(
+        "in.mp4", scene_vf=SCENE_VF, scene_enc=ENC, proxy=Path("p.mp4"), raw_vf=VF
+    )
+    assert plain[plain.index("-filter_complex") + 1].startswith("[0:v:0]split=2[s][o]")
+
+
+def test_the_split_decode_pins_the_source_pixel_format():
+    """The head keeps the source's format (the serial pass's proxy and frames); VAAPI downloads
+    yuv420p, and an unknown format gives yuv420p."""
+
+    def graph(fmt, hw=None):
+        args = ffmpeg_utils.split_decode_args(
+            "in.mp4", scene_vf=SCENE_VF, scene_enc=ENC, proxy=Path("p.mp4"), raw_vf=VF,
+            hw=hw, src_size=(640, 360), src_fmt=fmt,
+        )  # fmt: skip
+        return args[args.index("-filter_complex") + 1]
+
+    cuda = ffmpeg_utils.HwDecoder("cuda")
+    vaapi = ffmpeg_utils.HwDecoder("vaapi", "/dev/dri/renderD128")
+    assert graph("yuv444p").startswith("[0:v:0]scale=640:360,format=yuv444p,split=2[s][o]")
+    assert graph("yuv420p10le", cuda).startswith("[0:v:0]scale=640:360,format=yuv420p10le,split")
+    assert graph("yuv444p", vaapi).startswith(
+        f"[0:v:0]{ffmpeg_utils._GPU_DOWNLOAD},scale=640:360,format=yuv420p,split=2[s][o]"
+    )
+    assert graph(None).startswith("[0:v:0]scale=640:360,format=yuv420p,split=2[s][o]")
+    assert graph("").startswith("[0:v:0]scale=640:360,format=yuv420p,split=2[s][o]")
 
 
 def _left(cdir: Path) -> set[str]:
@@ -131,10 +175,10 @@ def test_split_gives_the_frames_proxy_and_cuts_of_separate_decodes(
     assert unlinked == [f"seg-{i:05d}.raw" for i in range(3)]  # each full file once read
     assert _left(cdir) == {"proxy.mp4"}  # the spool and the tmp proxy are gone
     assert _framemd5(cdir / "proxy.mp4") == _framemd5(serial / "proxy.mp4")
-    a = analyze._detect(serial / "proxy.mp4", serial / "scenes.json")
-    b = analyze._detect(cdir / "proxy.mp4", cdir / "scenes.json")
+    a = analyze._detect(serial / "proxy.mp4", serial / analyze.SCENES_FILE)
+    b = analyze._detect(cdir / "proxy.mp4", cdir / analyze.SCENES_FILE)
     assert a == b == [4.0]
-    assert (serial / "scenes.json").read_bytes() == (cdir / "scenes.json").read_bytes()
+    assert (serial / analyze.SCENES_FILE).read_bytes() == (cdir / analyze.SCENES_FILE).read_bytes()
 
 
 # ----------------------------------------------------------------- reads and spool files
@@ -586,8 +630,28 @@ def test_scene_plan_only_for_a_whole_short_uncached_single_stream_source(
     assert caplog.messages == [
         "art.mp4: shared decode off: not exactly one video stream (cover art or several)"
     ]
-    (tmp_path / "scenes.json").write_text("[1.0]", encoding="utf-8")
+    (tmp_path / analyze.SCENES_FILE).write_text("[1.0]", encoding="utf-8")
     assert analyze._scene_plan(tmp_path / "a.mp4", 600.0) is None
+
+
+def test_the_shared_scene_proxy_counts_from_the_container_start(tmp_path, monkeypatch, caplog):
+    """#976: a late video in an MP4 gets the plain chain, whose ``fps`` start_time pads it from
+    the container start as the serial pass does; an MPEG-TS source, whose pass places its first
+    frame by a decode of its own, is not shared."""
+    monkeypatch.setattr(analyze.cache, "source_dir", lambda src, offset=0.0: tmp_path)
+    monkeypatch.setattr(analyze, "single_video_stream", lambda io: True)
+    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 600.0, vstart=0.25, fstart=1.4))
+    caplog.set_level("INFO", logger="cutpoint")
+    plan = analyze._scene_plan(tmp_path / "a.mp4", 600.0)
+    assert plan.vf == SCENE_VF == "fps=10:start_time=0,scale=320:-2"
+    pre, _post, vf, _enc = analyze._proxy_args(
+        600.0, 0.0, None, analyze._first_shift(plan.io, 0.0, 600.0)
+    )
+    assert (pre, vf) == (analyze.REINIT_OFF, plan.vf)  # the serial pass of the same source
+    assert analyze._scene_plan(tmp_path / "a.ts", 600.0) is None
+    assert caplog.messages == [
+        "a.ts: shared decode off: MPEG-TS or another container without exact seeks"
+    ]
 
 
 # ----------------------------------------------------------------- the prefetch side
@@ -680,11 +744,14 @@ def test_split_claims_the_share_and_the_scene_cuts_get_its_proxy(pre, monkeypatc
             self.closed = True
 
     monkeypatch.setattr(ocr_prefetch, "spool_fits", lambda folder, need: True)
+    monkeypatch.setattr(ocr_prefetch, "probe", lambda p: media_info(p, 60.0, width=640, height=360))
     monkeypatch.setattr(ocr_prefetch, "SplitDecode", Fake)
     share = pre.make("split").offer(pre.src, 60.0, True, pre.plan())
     _take(pre)
     (kw,) = made
     assert (kw["raw_vf"], kw["scene_vf"], kw["scene_enc"], kw["size"]) == (VF, SCENE_VF, ENC, SIZE)
+    assert kw["src_size"] == (640, 360)  # pinned at the graph's head
+    assert kw["src_fmt"] == "yuv420p"
     assert kw["spool"] == tmp_path / "cache" / ffmpeg_utils.SPOOL_DIR
     assert share.result() == tmp_path / "cache" / "proxy.mp4" and share.spool_peak == 1234
 
@@ -754,6 +821,7 @@ def test_close_removes_a_proxy_the_scene_cuts_never_took(pre, monkeypatch, tmp_p
             pass
 
     monkeypatch.setattr(ocr_prefetch, "spool_fits", lambda folder, need: True)
+    monkeypatch.setattr(ocr_prefetch, "probe", lambda p: media_info(p, 60.0, width=640, height=360))
     monkeypatch.setattr(ocr_prefetch, "SplitDecode", Fake)
     share = pre.make("split").offer(pre.src, 60.0, True, pre.plan())
     assert pre.pre._jobs[str(pre.src)].done.wait(60)
@@ -818,7 +886,7 @@ def test_real_split_read_equals_the_step_1_read(home, tmp_path, monkeypatch) -> 
     a, b = (
         e2e.ocr_cache_files(common.load_source(c, 12.0).cdir) for c in (serial_clip, shared_clip)
     )
-    assert b.pop("scenes.json") == b"[]"  # the serial clip's scene cuts go to `plain`
+    assert b.pop(analyze.SCENES_FILE) == b"[]"  # the serial clip's scene cuts go to `plain`
     assert a == b
     plain = tmp_path / "plain"
     plain.mkdir()

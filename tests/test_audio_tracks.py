@@ -380,7 +380,7 @@ def _cdir(tmp_path: Path) -> Path:
         "transcript-small-en.json",
         "events-audio-ab12.json",
         "voice-ab12.npz",
-        "scenes.json",
+        analyze.SCENES_FILE,
         "events-ocr-ab12.json",
         "visual-ab12.npz",
         "audio-tracks.json",
@@ -406,7 +406,12 @@ def test_a_wav_made_with_copies_is_analysed_again_once(tmp_path):
     analyze._audio_mix(Path("a.mp4"), cdir, (0,), 5)
     names = {f.name for f in cdir.iterdir()}
     assert not names & AUDIO_DERIVED  # the hot WAV and everything made from it
-    assert {"scenes.json", "events-ocr-ab12.json", "visual-ab12.npz", "audio-tracks.json"} < names
+    assert {
+        analyze.SCENES_FILE,
+        "events-ocr-ab12.json",
+        "visual-ab12.npz",
+        "audio-tracks.json",
+    } < names
     assert cache.load_json(cdir / analyze.MIX_FILE) == {"tracks": [0]}
     for name in AUDIO_DERIVED:  # the new WAV and its caches
         write(cdir / name)
