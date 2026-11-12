@@ -163,6 +163,33 @@ def test_style_and_base(home):
     assert scoring.style_and_base(None) == ()
 
 
+def test_style_and_base_uses_the_recorded_base_first(home):
+    # a deleted user style (no file) keeps the recorded built-in base
+    assert scoring.style_and_base("gone", "sport") == ("gone", "sport")
+    assert scoring.style_and_base("sport", "sport") == ("sport",)
+    # the recorded base wins over the library's
+    _learned(home, "mine", "funny")
+    assert scoring.style_and_base("mine", "gaming") == ("mine", "gaming")
+
+
+def test_style_and_base_ignores_an_unusable_recorded_base(home):
+    _learned(home, "mine", "funny")
+    for junk in (None, "", "nope", 7, ["sport"]):
+        assert scoring.style_and_base("mine", junk) == ("mine", "funny")
+        assert scoring.style_and_base("gone", junk) == ("gone",)
+    assert scoring.style_and_base(None, "sport") == ()
+
+
+def test_deleted_style_with_a_recorded_base_still_matches_its_events(home):
+    segs = [seg(12, 13)]
+    got = scoring.event_boost(
+        CAND, [death()], style=scoring.style_and_base("gone", "funny"), segments=segs
+    )
+    assert got[0] == 8.0
+    got = scoring.event_boost(CAND, [death()], style=scoring.style_and_base("gone"), segments=segs)
+    assert got[0] == 0.0
+
+
 def test_learned_funny_style_applies(home):
     _learned(home, "mine", "funny")
     _learned(home, "other", "gaming")

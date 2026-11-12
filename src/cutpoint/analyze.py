@@ -3864,6 +3864,9 @@ def _analyze(
             "version": 1,
             "style": style.name,
             "style_kind": style.kind,
+            # The built-in style this one is based on (its own name for a built-in one), so
+            # readers need no style library. Older files lack it.
+            "style_base": style.base,
             **({"detection": detection_rec} if detection_rec is not None else {}),
             "created": None,
             "settings": {

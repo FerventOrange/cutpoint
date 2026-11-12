@@ -62,6 +62,25 @@ def test_the_style_base(hl, base, resolved, known):
     assert vp.style_base(hl) == (base, resolved, known)
 
 
+def test_a_project_groups_by_its_recorded_base_without_the_library(tmp_path):
+    proj = project(tmp_path, "p", "trailride", [rated(0, 7.0)], style_base="sport")
+    got = vp.load_project(proj)
+    assert (got["base"], got["group"], got["resolved"]) == ("sport", "action", True)
+
+
+def test_an_older_file_without_the_base_falls_back_to_the_library(tmp_path):
+    write(paths.styles_dir() / "trailride.json", json.dumps({"base": "sport", "weights": {}}))
+    old = vp.load_project(project(tmp_path, "old", "trailride", [rated(0, 7.0)]))
+    assert (old["base"], old["group"]) == ("sport", "action")
+
+
+def test_a_recorded_base_needs_no_style_library():
+    """The file's ``style_base`` wins; the library (empty here) is not asked."""
+    assert not list(paths.styles_dir().glob("*.json"))
+    hl = {"style": "trailride", "style_kind": "generic", "style_base": "sport"}
+    assert vp.style_base(hl) == ("sport", True, True)
+
+
 def test_a_user_style_resolves_to_its_base_from_the_library():
     write(paths.styles_dir() / "trailride.json", json.dumps({"base": "sport", "weights": {}}))
     assert vp.style_base({"style": "trailride"}) == ("sport", True, True)

@@ -34,6 +34,7 @@ from cutpoint import (
     features,
     insta360,
     jsonout,
+    paths,
     progress,
     scorer,
     transcribe,
@@ -3145,3 +3146,15 @@ def test_features_by_source_names_each_sources_divisor_set(tmp_path, monkeypatch
 def test_a_source_not_picked_from_records_the_install_features(tmp_path):
     res = analyze.SourceResult(tmp_path / "a.mp4", None, 0.0, 60.0, [], [], None)
     assert analyze._features_by_source([res]) == {str(res.source): sorted(features.available())}
+
+
+def test_highlights_records_the_built_in_base_of_the_style(run):
+    """The base is written next to the style name: a built-in style is its own base, a user
+    style (over sport) records sport, with no style library needed to read it back."""
+    analyze.analyze([run.video], get_style("gaming"), run.proj, vision=False, layers=True)
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    assert (hl["style"], hl["style_base"]) == ("gaming", "gaming")
+    write(paths.styles_dir() / "trailride.json", json.dumps({"base": "sport", "weights": {}}))
+    analyze.analyze([run.video], get_style("trailride"), run.proj, vision=False, layers=True)
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    assert (hl["style"], hl["style_base"]) == ("trailride", "sport")
