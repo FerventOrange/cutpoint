@@ -255,7 +255,7 @@ def rescore_events(
         by_src.setdefault(e["source"], []).append(e)
     windows = ev.get("windows", [])
     types = resolve(project, ev)
-    style = scoring.style_and_base(hl.get("style"))
+    style = scoring.style_and_base(hl.get("style"), hl.get("style_base"))
     language = (hl.get("settings") or {}).get("language")
     segments: dict[str, list[dict[str, Any]] | None] = {}
     cands = [c for c in hl.get("candidates", []) if not is_pool(c)]

@@ -40,7 +40,7 @@ from cutpoint import cache, scorer, sources
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match, resolve
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
-from cutpoint.styles import get_style
+from cutpoint.styles import STYLES, get_style
 from cutpoint.transcribe import flat_markers
 from cutpoint.utils import title_slug
 
@@ -260,15 +260,25 @@ def _segments(source: str, language: str | None = None) -> list[dict[str, Any]]:
         return []
 
 
-def style_and_base(name: str | None) -> tuple[str, ...]:
+def style_and_base(name: str | None, recorded: object = None) -> tuple[str, ...]:
     """The project style's name and, for a learned style, its base (just the name
-    when the style is unknown or its file is missing)."""
+    when the style is unknown or its file is missing).
+
+    Args:
+        name: The project style's name.
+        recorded: The ``style_base`` of ``highlights.json``, used first when it names a
+            built-in style, so a deleted learned style keeps its base; anything else (no
+            field in an older file, an unknown name) leaves the style library to answer.
+    """
     if not name:
         return ()
-    try:
-        base = get_style(name).base
-    except ValueError:
-        return (name,)
+    if isinstance(recorded, str) and recorded in STYLES:
+        base = recorded
+    else:
+        try:
+            base = get_style(name).base
+        except ValueError:
+            return (name,)
     return (name,) if base == name else (name, base)
 
 
@@ -665,7 +675,7 @@ def nominate(
         return 0
     if not style.open_list:
         return 0
-    names = style_and_base(hl.get("style"))
+    names = style_and_base(hl.get("style"), hl.get("style_base"))
     cands = hl.get("candidates", [])
     types, menu = resolve(project, ev), source_menu_spans(ev)
     by_src: dict[str, list[dict[str, Any]]] = {}

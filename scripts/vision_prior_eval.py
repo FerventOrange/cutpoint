@@ -14,10 +14,10 @@ the more moments rated (``--vision-top``), the better the measurement.
 
 A project's style group is :func:`cutpoint.analyze.prior_group` of its style's built-in base:
 ``action`` for action, sport and action-cam, ``other`` for the rest. The base of a user style
-is read from this machine's style library (``cutpoint style show NAME``); a style not found
-there takes its group from ``style_kind`` when that says action-cam, and is otherwise
-``unresolved``: its ratings are left out of the cells (they could be action or other) and the
-project is listed under ``unresolved``.
+is the ``style_base`` the file records, else read from this machine's style library
+(``cutpoint style show NAME``); a style not found there takes its group from ``style_kind``
+when that says action-cam, and is otherwise ``unresolved``: its ratings are left out of the
+cells (they could be action or other) and the project is listed under ``unresolved``.
 
 Per candidate with a current vision rating: the model's raw rating ``signals.vision`` and the
 prompt kind ``vision_rated.kind`` (``frames`` or ``speech``). A stale rating (``vision_stale``:
@@ -70,12 +70,16 @@ def project_dirs(paths: Iterable[Path]) -> list[Path]:
 
 
 def style_base(hl: dict[str, Any]) -> tuple[str, bool, bool]:
-    """``(base, resolved, known)`` of a project's style: a built-in style is its own base, a
-    user style's base comes from the style library (both resolved); otherwise action-cam when
+    """``(base, resolved, known)`` of a project's style: the ``style_base`` highlights.json
+    records (resolved); in an older file, a built-in style is its own base, a user style's
+    base comes from the style library (both resolved); otherwise action-cam when
     ``style_kind`` says so (known, not resolved) or the name as given (neither)."""
     from cutpoint import styles  # noqa: PLC0415
 
     name = str(hl.get("style") or "")
+    recorded = hl.get("style_base")
+    if isinstance(recorded, str) and recorded:
+        return recorded, True, True
     if name in styles.STYLES:
         return name, True, True
     try:
