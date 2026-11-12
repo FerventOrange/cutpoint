@@ -79,7 +79,7 @@ So do these combinations:
 | `missing_extra` | 1 | An optional extra is not installed (the feature is not available in Cutpoint lite) |
 | `output_not_empty` | 1 | A file or folder is in the way; see `--force` |
 | `folder_busy` | 1 | Another cutpoint run holds the folder's lock (`.<folder>.cutpoint-lock`); wait and retry. `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze`, `clips` and a saving `rerank` hold `<project>/.analysis.run.cutpoint-lock` (see [Run lock](#run-lock-and-progressjson)) |
-| `needs_analyze` | 1 | `rerank`: the project's caches lack a feature the style needs, so it can only be re-ranked by analyzing again; `outputs.missing` names each one and `outputs.analyze_command` the command that does it (`rerank ... --analyze`). See [rerank](#rerank) |
+| `needs_analyze` | 1 | `rerank`: the project's caches lack a feature the style needs, so it can only be re-ranked by analyzing again; `outputs.missing` names each one and `outputs.analyze_command` the command that does it (`rerank ... --analyze`; for a 360 project `360 analyze ... --style NAME`). See [rerank](#rerank) |
 | `low_memory` | 1 | Too little free memory to load a model, also after Cutpoint freed cached models and unloaded Ollama's; close other programs, then run the command the `ERROR` line names (`cutpoint resume <project>`, or the same command again when no `progress.json` was written yet). See [Memory guard](#memory-guard) |
 | `interrupted` | 130 | Ctrl+C, Ctrl+Break or SIGTERM |
 | `error` | 1 | Anything else |
@@ -2049,11 +2049,14 @@ list`), not `auto`. It prints the new top `--top` moments (default 10) with thei
   `highlights.before-rerank.json` (one backup: the next save replaces it). Copy it back to
   undo. The save holds the project's run lock (`folder_busy` while another run works on it).
 - A moment whose span is unchanged keeps its id; a new span gets the next id after
-  `settings.last_candidate_id`, so an id never names another span.
+  `settings.last_candidate_id`, so an id never names another span. `--analyze` keeps the ids
+  the same way.
 - The new style is recorded as your choice: `settings.style_requested` is its name and
   `settings.reranked` records `from` (the style before) and `requested` (the style asked for
   then, such as `auto`, else `null`). An auto project keeps its `detection` block. A
   re-analysis (`rerank --analyze`, or the one `cutpoint events` runs) keeps the style.
+  Running `analyze` or `edit` again without `--style` detects the footage again; pass
+  `--style NAME` to keep the re-ranked style.
 - Vision takes cached ratings only (the rating is per style, so moments of another style are
   often unrated) and asks no model. With a style that does not weigh scene cuts, the cuts
   around new moment edges are decoded from the footage when no earlier run cached them.
@@ -2062,11 +2065,16 @@ It stops with `needs_analyze` (exit 1) when a feature the style needs is missing
 action-cam style, or a change between action-cam and the other styles; a 360 project; a source
 that is offline or was read in parts (`--recover`); a source with audio but no cached loudness
 or transcript; a source without a full scene pass when scene detection is on and the style
-weighs scene cuts (or the source is longer than 30 min); an event layer the style's footage
+weighs scene cuts (or the source is longer than 30 min); a source with nothing cached (no
+audio and no scene cuts); an event layer the style's footage
 category runs (such as the crash and visual layers of `action`) that the project's
 `events.json` lacks. The `ERROR` line names what is missing and the command to run.
 `--analyze` runs it in that case: analyze again with the recorded inputs and settings and the
-new style, with its event layers (minutes to hours; cached work is reused). Re-ranking into
+new style, with its event layers (minutes to hours; cached work is reused). It writes
+`highlights.before-rerank.json` before it starts. `rerank --analyze` is not resumable
+(`cutpoint resume` does not replay it); running it again reuses its caches. A 360 project is
+analyzed again by `cutpoint 360 analyze <project> --style NAME`, the command the `ERROR` line
+names; `--analyze` refuses it. Re-ranking into
 `gaming` when the dialogue step never read the project is only an INFO note: run
 `cutpoint analyze` with `--style gaming` for its talk stretches.
 

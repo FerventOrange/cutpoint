@@ -69,7 +69,9 @@ Another style on an analysed project ("more talk", "the funny bits"): `cutpoint 
 without `--dry-run` it saves it (the file before is kept as `highlights.before-rerank.json`;
 unchanged moments keep their ids). `error.code` `needs_analyze` means a feature the style needs
 is missing: tell the user, and with their OK run the command the ERROR line names
-(`rerank ... --analyze`, which analyzes again: minutes to hours).
+(`rerank ... --analyze`, which analyzes again: minutes to hours). `events` and
+`rerank --analyze` keep the re-ranked style; running `analyze` or `edit` again without
+`--style` detects the footage again: pass `--style NAME` to keep it.
 
 ## Rules
 

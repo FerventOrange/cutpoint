@@ -3685,6 +3685,8 @@ def analyze(
     vision_time_share: float | None = None,
     telemetry_fallback: bool = True,
     reranked: dict[str, Any] | None = None,
+    ids: Mapping[tuple[str, float, float], str] | None = None,
+    last_candidate_id: int = 0,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -3766,6 +3768,11 @@ def analyze(
             ``settings.style_requested`` the style's name, the user's choice. ``detection``
             is then the earlier auto analysis's block, kept as it is but not acted on: the
             layers follow ``style``.
+        ids: For ``cutpoint rerank --analyze`` (:func:`reanalyze` with a style): the ids of
+            the earlier candidates by :func:`span_key` (:func:`earlier_ids`). A candidate with
+            the span of one keeps its id, the others get the next ids after
+            ``last_candidate_id``. None: every candidate is numbered from ``h001``.
+        last_candidate_id: The highest id the earlier analysis gave (with ``ids`` only).
 
     Returns:
         Path of the written highlights.json.
@@ -3799,6 +3806,8 @@ def analyze(
             vision_time_share=vision_time_share,
             telemetry_fallback=telemetry_fallback,
             reranked=reranked,
+            ids=ids,
+            last_candidate_id=last_candidate_id,
         )
 
 
@@ -3831,6 +3840,8 @@ def _analyze(
     vision_time_share: float | None,
     telemetry_fallback: bool,
     reranked: dict[str, Any] | None,
+    ids: Mapping[tuple[str, float, float], str] | None,
+    last_candidate_id: int,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
@@ -4179,6 +4190,8 @@ def _analyze(
                     logger.info("%s: %d candidates", r.source.name, len(r.candidates))
             # a source's own set is known only once it is picked from
             hl["settings"]["features_by_source"] = _features_by_source(results)
+        if ids is not None:  # a re-rank's new spans get ids above the earlier analysis's
+            hl["settings"]["last_candidate_id"] = last_candidate_id
         ev = rank_parts(
             hl,
             results,
@@ -4194,6 +4207,7 @@ def _analyze(
             batch_size=batch_size,
             vision_time_share=vision_time_share,
             earlier_total_s=earlier_total_s,
+            ids=ids,
         )
         hl["created"] = datetime.now().isoformat(timespec="seconds")
         hl["timings"]["sources"] = _source_timings(results, prefetch)
@@ -4229,6 +4243,19 @@ def span_key(c: dict[str, Any]) -> tuple[str, float, float]:
     """What names a candidate's span across runs: its source and its start and end to the
     hundredth of a second (as :func:`~cutpoint.events.scoring.nominate` matches nominees)."""
     return (str(c["source"]), round(float(c["start"]), 2), round(float(c["end"]), 2))
+
+
+def earlier_ids(hl: dict[str, Any]) -> tuple[dict[tuple[str, float, float], str], int]:
+    """What a re-rank of the analysis ``hl`` keeps (#902): the ``h`` ids of its candidates by
+    :func:`span_key` (``ids`` of :func:`rank_parts`), and the highest id it ever gave
+    (``settings.last_candidate_id``, at least its highest ``h`` id)."""
+    ids = {
+        span_key(c): str(c["id"])
+        for c in hl.get("candidates") or []
+        if re.fullmatch(r"h\d+", str(c.get("id", "")))
+    }
+    last = (hl.get("settings") or {}).get("last_candidate_id")
+    return ids, max([int(last or 0), *(int(i[1:]) for i in ids.values())])
 
 
 def rank_parts(
@@ -4347,6 +4374,13 @@ def rank_parts(
         # available() first: it resolves a hosted provider's unset model, the cache key.
         # Offline, that model stays the placeholder and its cached ratings are not found.
         online, n_cached = (not vision_cache_only and rater.available()), 0
+        if vision_cache_only and rater.via is not None:
+            from cutpoint.assistant.providers import AUTO_SERVER_MODEL  # noqa: PLC0415
+
+            # a re-rank asks no model, but a hosted server's unset model is the cache key: its
+            # check resolves it (a model list, no frames)
+            if rater.model == AUTO_SERVER_MODEL and rater.via.available():
+                rater.model = rater.via.model
         if not online:  # Ollama down: the ratings already cached, no requests (#413)
             rater.cache_only = True
             n_cached = sum(
@@ -4551,8 +4585,10 @@ def reanalyze(project: Path, style: Style | None = None) -> Path:
     ``style``: analyze with this style instead (``cutpoint rerank --analyze``), with the
     event layers it plans (made where their caches miss) and the dialogue step; another
     style than the recorded one is the user's choice (:func:`rerank_record`, an auto
-    analysis's ``detection`` block kept). None: the recorded style, the layers as they are.
-    A project re-ranked before keeps its style and record either way.
+    analysis's ``detection`` block kept), and the candidates whose span is unchanged keep their
+    ids, the new spans getting ids above ``settings.last_candidate_id`` (:func:`earlier_ids`).
+    None: the recorded style, the layers as they are, the ids from ``h001``. A project
+    re-ranked before keeps its style and record either way.
 
     Raises:
         FileNotFoundError: If the project has no highlights.json.
@@ -4600,6 +4636,7 @@ def reanalyze(project: Path, style: Style | None = None) -> Path:
     # re-ranked project the block only, as recorded
     auto = st.get("style_requested") == AUTO
     detection = hl.get("detection") if auto or reranked is not None else None
+    ids, last_id = earlier_ids(hl) if given is not None else (None, 0)
     return analyze(
         [Path(p) for p in inputs],
         style,
@@ -4626,6 +4663,8 @@ def reanalyze(project: Path, style: Style | None = None) -> Path:
         # another style: its own event layers (360 analyze runs its layers itself)
         layers=given is not None and not pano,
         reranked=reranked,
+        ids=ids,
+        last_candidate_id=last_id,
     )
 
 

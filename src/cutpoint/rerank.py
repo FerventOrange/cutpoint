@@ -22,7 +22,6 @@ import contextlib
 import copy
 import importlib.util
 import logging
-import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,9 +54,9 @@ _CATEGORY_LAYERS = {
 @dataclass(frozen=True)
 class Missing:
     """What keeps a re-rank from the fast path: a ``feature`` code (``360``, ``action_cam``,
-    ``style_kind``, ``recovered``, ``offline``, ``loudness``, ``transcript``, ``scenes`` or
-    ``layer:<name>``), the ``detail`` the ERROR line gives and its ``source`` (None: the
-    project)."""
+    ``style_kind``, ``recovered``, ``offline``, ``loudness``, ``transcript``, ``scenes``,
+    ``caches`` or ``layer:<name>``), the ``detail`` the ERROR line gives and its ``source``
+    (None: the project)."""
 
     feature: str
     detail: str
@@ -160,15 +159,14 @@ def readiness(project: Path, hl: dict[str, Any], style: Style) -> Readiness:
     (``offset``, ``read_errors``) or not reachable; a source with audio but no cached loudness
     or transcript; a source without a full scene pass (:data:`~cutpoint.analyze.SCENES_FILE`)
     when scene detection is on and ``style`` weighs scenes, or the source is too long for
-    edge windows (:func:`~cutpoint.analyze.edge_windows`); an event layer ``style``'s category
+    edge windows (:func:`~cutpoint.analyze.edge_windows`); a source with nothing cached to
+    build its grid from (no audio and no scene cuts); an event layer ``style``'s category
     plans that events.json lacks. Dialogue never read (``style`` reads it, the project's did
     not) is a note only. Reads only: no cache folder is made.
     """
-    from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
-
     out = Readiness()
     miss = out.missing.append
-    if (project / PANO_FILE).is_file():
+    if _is_360(project):
         miss(Missing("360", "a 360 project is ranked by '360 analyze'"))
     kind = hl.get("style_kind") or GENERIC
     if style.kind == ACTION_CAM:
@@ -202,10 +200,16 @@ def readiness(project: Path, hl: dict[str, Any], style: Style) -> Readiness:
                 miss(Missing("loudness", f"{name} has no cached loudness", path))
             if not heard:
                 miss(Missing("transcript", f"{name} has no cached transcript", path))
-        if scenes and not (cdir / analyze.SCENES_FILE).is_file():
-            span = float(e.get("analyzed_s") or e.get("duration") or 0.0)
-            if analyze.scores_scenes(style) or not analyze.edge_windows(style, span):
-                miss(Missing("scenes", f"{name} has no full scene pass", path))
+        span = float(e.get("analyzed_s") or e.get("duration") or 0.0)
+        found = (cdir / analyze.SCENES_FILE).is_file()
+        windowed = scenes and not found and analyze.edge_windows(style, span)
+        if scenes and not found and (analyze.scores_scenes(style) or not windowed):
+            miss(Missing("scenes", f"{name} has no full scene pass", path))
+            continue
+        # as cached_grid_parts: no loudness, transcript, scene cuts or edge windows to decode
+        # (scenes off) leaves the source no grid to rank
+        if not (loud or heard or found or windowed):
+            miss(Missing("caches", f"{name} has nothing cached", path))
     ran, events = _events_layers(project)
     for layer in _missing_layers(style, ran):
         miss(Missing(f"layer:{layer}", f"the {layer} layer has not run for this project"))
@@ -222,11 +226,20 @@ def readiness(project: Path, hl: dict[str, Any], style: Style) -> Readiness:
     return out
 
 
+def _is_360(project: Path) -> bool:
+    from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
+
+    return (project / PANO_FILE).is_file()
+
+
 def analyze_command(project: Path, style: Style) -> str:
     """The command that analyzes ``project`` again with ``style`` (its recorded inputs and
-    settings): ``cutpoint rerank <project> --style NAME --analyze``."""
+    settings): ``cutpoint rerank <project> --style NAME --analyze``, for a 360 project
+    ``cutpoint 360 analyze <project> --style NAME``."""
     here = project.absolute()
     where = here.name if here.parent == projects_dir().absolute() else str(here)
+    if _is_360(project):
+        return "cutpoint " + command_line(["360", "analyze", where, "--style", style.name])
     return "cutpoint " + command_line(["rerank", where, "--style", style.name, "--analyze"])
 
 
@@ -270,15 +283,7 @@ def ranked(project: Path, hl: dict[str, Any], style: Style) -> dict[str, Any]:
         vision_used=False,
         vision=None,
     )
-    old = hl.get("candidates") or []
-    ids = {
-        analyze.span_key(c): str(c["id"])
-        for c in old
-        if re.fullmatch(r"h\d+", str(c.get("id", "")))
-    }
-    st["last_candidate_id"] = max(
-        [int(st.get("last_candidate_id") or 0), *(int(i[1:]) for i in ids.values())]
-    )
+    ids, st["last_candidate_id"] = analyze.earlier_ids(hl)
     timings = new.setdefault("timings", {})
     timings.pop("vision_s", None)
     grids = {p.index: p for p in analyze.cached_grid_parts(new, style)}
@@ -286,15 +291,10 @@ def ranked(project: Path, hl: dict[str, Any], style: Style) -> dict[str, Any]:
     by_source: dict[str, list[str]] = {}
     for i, e in enumerate(new.get("sources") or []):
         g = grids.get(i)
-        if g is None:  # not reachable through readiness; its candidates go
-            span = float(e.get("analyzed_s") or e["duration"])
-            parts.append(
-                analyze.HighlightsPart(
-                    Path(e["path"]), float(e.get("offset") or 0.0), span, [], None
-                )
-            )
-            by_source[str(e["path"])] = sorted(features.available())
-            continue
+        if g is None:  # readiness refuses such a source: never drop its candidates quietly
+            path = str(e["path"])
+            name = Path(path).name
+            raise _refused(project, style, [Missing("caches", f"{name} has nothing cached", path)])
         picked = analyze.pick_candidates(g, style, st.get("max_candidates"), {})
         parts.append(analyze.HighlightsPart(g.source, g.offset, g.duration, picked, g.signals))
         by_source[str(g.source)] = sorted(features.available() if g.avail is None else g.avail)
@@ -332,8 +332,9 @@ def rerank(
     project's run lock (``folder_busy`` while another run holds it).
 
     When :func:`readiness` refuses the fast path: with ``analyze_missing`` (not with
-    ``dry_run``), :func:`cutpoint.analyze.reanalyze` with ``style`` instead (the backup kept as
-    well); else :class:`~cutpoint.errors.NeedsAnalyzeError`.
+    ``dry_run``, not for a 360 project), :func:`cutpoint.analyze.reanalyze` with ``style``
+    instead (the backup written before it; unchanged spans keep their ids there too); else
+    :class:`~cutpoint.errors.NeedsAnalyzeError`, naming :func:`analyze_command`.
 
     Raises:
         NeedsAnalyzeError: If the caches lack what ``style`` needs (see above).
@@ -353,15 +354,17 @@ def rerank(
         for note in ready.notes:
             logger.info("%s", note)
         if not ready.ready:
-            if dry_run or not analyze_missing:
+            # a 360 project is analyzed by `360 analyze` (the command the error names)
+            if dry_run or not analyze_missing or _is_360(project):
                 raise _refused(project, style, ready.missing)
             logger.info(
                 "Re-ranking with the %s style needs analyze (%s); analyzing again",
                 style.name,
                 "; ".join(m.detail for m in ready.missing),
             )
-            analyze.reanalyze(project, style)
+            # the backup first: reanalyze replaces highlights.json when it ends
             cache.save_bytes(project / BACKUP, raw)
+            analyze.reanalyze(project, style)
             _, after = load(project)
             return Result(
                 project,

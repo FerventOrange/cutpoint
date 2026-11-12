@@ -8,7 +8,9 @@ tests hold in Cutpoint full and lite alike.
 from __future__ import annotations
 
 import json
+from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -16,10 +18,13 @@ import pytest
 
 from conftest import envelope
 from cutpoint import analyze, cache, cli, folders, rerank, runstate
+from cutpoint.assistant.providers import AUTO_SERVER_MODEL
 from cutpoint.errors import FolderBusyError, NeedsAnalyzeError
+from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import get_style
 from cutpoint.transcribe import transcript_name
+from test_analyze_steps import run  # noqa: F401 (the fixture: analyze with its fakes)
 
 SPAN = 240.0
 WORDS = ("haha", "no", "way", "that", "worked", "go", "nice", "wow", "okay", "run")
@@ -197,6 +202,42 @@ def test_a_source_without_audio_needs_no_loudness_or_transcript(home, tmp_path, 
         f.unlink()
     monkeypatch.setattr(rerank, "_has_audio", lambda s: False)
     assert rerank.readiness(project, read(project), get_style("funny")).ready
+
+
+@pytest.mark.parametrize("scenes", [True, False])
+def test_a_source_with_nothing_cached_needs_analyze(home, tmp_path, monkeypatch, scenes):
+    """No audio and no scene cuts (scene detection off, or a source too long for edge
+    windows): cached_grid_parts has nothing to build its grid from."""
+    project = make_project(home, tmp_path, scenes=scenes)
+    hl = read(project)
+    if scenes:
+        hl["sources"][0]["duration"] = analyze.LONG_FILE_S + 60.0
+        (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    src = Path(hl["sources"][0]["path"])
+    for f in cache.source_dir(src).iterdir():
+        f.unlink()
+    monkeypatch.setattr(rerank, "_has_audio", lambda s: False)
+    assert features_of(project, "funny") == ({"scenes"} if scenes else {"caches"})
+    if not scenes:
+        (missing,) = rerank.readiness(project, read(project), get_style("funny")).missing
+        assert (missing.feature, missing.source) == ("caches", str(src))
+    assert [p.index for p in analyze.cached_grid_parts(read(project), get_style("funny"))] == [1]
+
+
+def test_ranked_never_drops_a_source_without_a_grid(home, tmp_path, monkeypatch):
+    project = make_project(home, tmp_path)
+    hl = read(project)
+    real = analyze.cached_grid_parts
+    monkeypatch.setattr(analyze, "cached_grid_parts", lambda h, st: real(h, st)[1:])
+    with pytest.raises(NeedsAnalyzeError) as got:
+        rerank.ranked(project, hl, get_style("funny"))
+    assert got.value.missing == [
+        {
+            "feature": "caches",
+            "detail": "s0.mp4 has nothing cached",
+            "source": hl["sources"][0]["path"],
+        }
+    ]
 
 
 def test_scenes_are_needed_only_by_a_style_that_weighs_them(home, tmp_path):
@@ -385,12 +426,12 @@ def test_refused_names_the_missing_features_and_the_command(home, tmp_path):
 
 def test_analyze_runs_reanalyze_with_the_style_when_refused(home, tmp_path, monkeypatch):
     project = make_project(home, tmp_path)
-    (project / "pano.json").write_text("{}", encoding="utf-8")
     before = (project / "highlights.json").read_bytes()
     called: list[Any] = []
 
     def fake_reanalyze(p: Path, style=None) -> Path:
         called.append((p, style.name))
+        assert (p / rerank.BACKUP).read_bytes() == before  # written before analyze replaces it
         hl = read(p)
         hl.update(style=style.name, candidates=[])
         (p / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
@@ -404,6 +445,22 @@ def test_analyze_runs_reanalyze_with_the_style_when_refused(home, tmp_path, monk
     assert called == [(project, "action-cam")]
     assert res.analyzed and res.saved and res.after["style"] == "action-cam"
     assert (project / rerank.BACKUP).read_bytes() == before
+
+
+def test_a_360_project_names_360_analyze_and_analyze_refuses_it(home, tmp_path, monkeypatch):
+    project = make_project(home, tmp_path)
+    (project / "pano.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(analyze, "reanalyze", lambda *a, **k: pytest.fail("analyzed"))
+    with pytest.raises(NeedsAnalyzeError) as got:
+        rerank.rerank(project, get_style("funny"), analyze_missing=True)
+    assert got.value.command == "cutpoint 360 analyze p --style funny"
+    assert got.value.command in str(got.value)
+    assert not (project / rerank.BACKUP).exists()
+    assert rerank.analyze_command(project, get_style("action-cam")) == (
+        "cutpoint 360 analyze p --style action-cam"
+    )
+    args = cli.build_parser().parse_args(["360", "analyze", "p", "--style", "funny"])
+    assert (args.project, args.style) == ("p", "funny")
 
 
 def test_analyze_is_not_run_when_the_fast_path_can(home, tmp_path, monkeypatch):
@@ -435,6 +492,53 @@ def test_reanalyze_with_a_style_runs_its_layers_and_records_the_choice(home, tmp
     assert got["layers"] is True
     assert got["reranked"] == {"from": "gaming", "requested": "auto"}
     assert got["detection"] == detection  # kept as a record; the layers follow the style
+
+
+def test_reanalyze_with_a_style_passes_the_earlier_ids(home, tmp_path, monkeypatch):
+    project = make_project(home, tmp_path)
+    hl = read(project)
+    hl["settings"]["last_candidate_id"] = 300
+    (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    got = _captured_analyze(monkeypatch)
+    analyze.reanalyze(project, get_style("funny"))
+    assert got["ids"] == {analyze.span_key(c): c["id"] for c in hl["candidates"]}
+    assert got["last_candidate_id"] == 300
+    got.clear()
+    analyze.reanalyze(project)  # e.g. cutpoint events: numbered from h001 as before
+    assert got["ids"] is None
+
+
+def test_rerank_analyze_keeps_the_ids_of_unchanged_spans(run, monkeypatch):  # noqa: F811
+    """#902 F1: the analysis --analyze runs keeps the id of an unchanged span and gives a new
+    span the next id after settings.last_candidate_id, as the fast path does."""
+    run.go("funny")  # one candidate, 10-20 s
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    (only,) = hl["candidates"]
+    only["id"] = "h007"
+    hl["settings"]["last_candidate_id"] = 40
+    (run.proj / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+
+    def two(src, style, tr, use_scenes, max_cand, timings, **kw):
+        info = MediaInfo(
+            src, 60.0, 60.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
+        )
+        cands = [
+            analyze.Candidate(src, 10.0, 20.0, 15.0, 1.0, {"loudness": 1.0}, score=50.0),
+            analyze.Candidate(src, 30.0, 40.0, 35.0, 1.0, {"loudness": 1.0}, score=60.0),
+        ]
+        return analyze.SourceResult(src, info, 0.0, 60.0, cands, [], None)
+
+    monkeypatch.setattr(analyze, "analyze_source", two)
+    monkeypatch.setattr(
+        rerank, "readiness", lambda *a: rerank.Readiness([rerank.Missing("x", "y")])
+    )
+    res = rerank.rerank(run.proj, get_style("commentary"), analyze_missing=True)
+    assert res.analyzed
+    after = read(run.proj)
+    by_start = {c["start"]: c["id"] for c in after["candidates"]}
+    assert by_start == {10.0: "h007", 30.0: "h041"}
+    assert after["settings"]["last_candidate_id"] == 41
+    assert rerank.changes(res.before, res.after) == (["h041"], [])
 
 
 def test_reanalyze_of_a_reranked_project_keeps_the_users_style(home, tmp_path, monkeypatch):
@@ -527,3 +631,61 @@ def test_rerank_prints_the_new_ranking(home, tmp_path, capsys):
     out = capsys.readouterr().out.splitlines()
     assert out[0].startswith("gaming -> funny (preview, nothing saved")
     assert len(out) == 4  # header, counts, two moments
+
+
+# --------------------------------------------------------------------------- vision, cache only
+def test_a_hosted_unset_model_is_resolved_before_the_cached_ratings(home, tmp_path, monkeypatch):
+    """#902 F6: a hosted Vision provider whose model is unset (the AUTO_SERVER_MODEL
+    placeholder) is checked (a model list, no frames) so the ratings are looked up under the
+    model it resolves to; the rater itself is never asked."""
+    project = make_project(home, tmp_path)
+    hl = read(project)
+    hl["settings"]["vision_requested"] = True
+    looked_up: list[str] = []
+    checks: list[int] = []
+
+    class Via:
+        model = AUTO_SERVER_MODEL
+
+        def available(self):
+            checks.append(1)
+            self.model = "served-model"
+            return True
+
+    class Rater:
+        cache_only = False
+        hits = asked = missed = 0
+        stats = dict.fromkeys(
+            ("calls", "grab_s", "load_s", "prompt_s", "reply_s", "prompt_tokens", "reply_tokens"), 0
+        )
+        provider_name = "hosted"
+        consent_needed = None
+
+        def __init__(self, **_):
+            self.via = Via()
+            self.model = self.via.model
+
+        def available(self):
+            pytest.fail("a re-rank asks no model")
+
+        def cached(self, src, start, end, base, **kw):
+            looked_up.append(self.model)
+            hit = self.model == "served-model"
+            return SimpleNamespace(score=8.0, label="nice") if hit else None
+
+        def rate(self, src, start, end, base, **kw):
+            assert self.cache_only
+            res = self.cached(src, start, end, base)
+            if res is not None:
+                self.hits += 1
+            return res
+
+        def unload(self):
+            pass
+
+    monkeypatch.setattr(analyze, "VisionRater", Rater)
+    after = rerank.ranked(project, hl, get_style("funny"))
+    assert checks == [1]
+    assert looked_up and set(looked_up) == {"served-model"}
+    assert after["settings"]["vision_used"] is True
+    assert after["settings"]["vision"]["model"] == "served-model"
