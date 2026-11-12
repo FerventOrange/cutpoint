@@ -50,7 +50,26 @@ def test_select_moments_suggested_top_then_default_5(tmp_path):
     assert len(select_moments(project)[0]) == 3
     (project / "highlights.json").write_text(json.dumps({"candidates": cands}), encoding="utf-8")
     chosen, style = select_moments(project)
-    assert len(chosen) == 5 and style == "gaming"
+    assert len(chosen) == 5 and style == "action"  # no style recorded: auto's, not gaming
+
+
+@pytest.mark.parametrize(
+    ("recorded", "want"),
+    [
+        ({}, "action"),  # auto's style for unclear footage (#1002)
+        ({"style_base": "sport"}, "sport"),
+        ({"detection": {"style": "commentary"}}, "commentary"),
+        ({"style_base": "zz-unknown", "detection": {"style": "funny"}}, "funny"),
+        ({"style_base": "sport", "detection": {"style": "commentary"}}, "sport"),
+        ({"detection": {"style": "zz-unknown"}}, "action"),
+    ],
+)
+def test_select_moments_of_a_file_without_style_uses_what_it_records(tmp_path, recorded, want):
+    project = tmp_path / "proj"
+    project.mkdir()
+    data = {"candidates": [_cand("a", 1)], **recorded}
+    (project / "highlights.json").write_text(json.dumps(data), encoding="utf-8")
+    assert select_moments(project)[1] == want
 
 
 def test_select_moments_ids_keep_their_order(tmp_path):

@@ -17,6 +17,7 @@ from conftest import envelope, write
 from cutpoint import cache, cli, folders, memguard, procs, progress, runstate
 from cutpoint.errors import FolderBusyError
 from cutpoint.ffmpeg_utils import MediaInfo
+from cutpoint.utils import command_line
 
 LOCK = ".analysis.run.cutpoint-lock"
 
@@ -677,13 +678,20 @@ def test_edit_resume_skips_the_finished_clips(edit_run, project, capsys, caplog)
 @pytest.mark.parametrize("how", ["manifest-changed", "plain-rerun"])
 def test_edit_keeps_clips_only_on_resume_of_the_same_manifest(edit_run, project, capsys, how):
     """The clips folder stays protected: a manifest changed since the interrupted run, or a
-    plain re-run (not resume), stops on the non-empty clips folder as before."""
+    plain re-run (not resume), stops on the non-empty clips folder as before. The resume's
+    message names the recorded command with --force (resume takes none, #1003)."""
     if how == "manifest-changed":
         cache.save_json(project / "clips" / "manifest.json", {"clips": [], "edited": True})
         code, doc = _resume(capsys)
+        again = "cutpoint edit videos/a.mp4 --out p --no-vision --force"
+        assert doc["error"]["message"] == (
+            f"{project / 'clips'} is not empty; cutpoint resume takes no --force; "
+            f"to replace its clips, run {again} in {Path.cwd()}"
+        )
     else:
         code = cli.main(["edit", "videos/a.mp4", "--out", "p", "--no-vision", "--json"])
         doc = envelope(capsys.readouterr().out)
+        assert doc["error"]["message"].endswith("is not empty; use --force to replace its clips")
     assert code == 1 and doc["error"]["code"] == "output_not_empty"
     assert len(edit_run["clips"]) == 1 and len(edit_run["assemble"]) == 1
 
@@ -710,6 +718,30 @@ def test_edit_resume_of_a_record_from_before_auto_does_not_keep_its_clips(
     assert "resume_args_changed" in [w["code"] for w in doc["warnings"]]
     assert code == 1 and doc["error"]["code"] == "output_not_empty"
     assert len(edit_run["clips"]) == 1 and len(edit_run["assemble"]) == 1
+
+
+@pytest.mark.parametrize("resumed", [True, False])
+def test_clips_into_a_non_empty_folder_names_the_command_with_force(tmp_path, resumed):
+    """#1003: clips of a resumed run name the recorded command (before its ``--``) with
+    --force; a plain run says --force."""
+    import cutpoint.clips  # noqa: PLC0415
+
+    out = write(tmp_path / "proj" / "clips" / "001_x.mp4").parent
+    rec = {"argv": ["clips", "proj", "--ids", "h001", "--", "x y"], "cwd": "/work dir"}
+    with pytest.raises(FileExistsError) as err:
+        if resumed:
+            with runstate.resuming(rec), cutpoint.clips._claimed(out, False):
+                pass
+        else:
+            with cutpoint.clips._claimed(out, False):
+                pass
+    again = command_line(["cutpoint", "clips", "proj", "--ids", "h001", "--force", "--", "x y"])
+    tail = (
+        f"cutpoint resume takes no --force; to replace its clips, run {again} in /work dir"
+        if resumed
+        else "use --force to replace its clips"
+    )
+    assert str(err.value) == f"{out} is not empty; {tail}"
 
 
 # -- the memory guard (#109 phase 5): low_memory, then resume ------------------------------

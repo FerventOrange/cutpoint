@@ -40,7 +40,7 @@ from cutpoint import cache, scorer, sources
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match, resolve
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
-from cutpoint.styles import STYLES, get_style, learned_styles
+from cutpoint.styles import STYLES, get_style, learned_styles, style_name
 from cutpoint.transcribe import flat_markers
 from cutpoint.utils import title_slug
 
@@ -310,6 +310,19 @@ def recorded_style(hl: dict[str, Any], level: int = logging.INFO) -> Style:
         level, "Style %r is not in the style library (deleted?); using its base %r", name, base
     )
     return STYLES[base]
+
+
+def analysis_style(hl: dict[str, Any], level: int = logging.INFO) -> Style:
+    """The style of the analysis ``hl`` (a highlights.json object, ``{}`` for none): its
+    :func:`recorded_style`; for a file without ``style``, the built-in style
+    :func:`cutpoint.styles.style_name` falls back to (never ``gaming`` by default).
+
+    Raises:
+        ValueError: As :func:`recorded_style`, for a recorded style that cannot be used.
+    """
+    if hl.get("style"):
+        return recorded_style(hl, level)
+    return STYLES[style_name(hl)]
 
 
 @dataclass(frozen=True)

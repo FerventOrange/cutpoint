@@ -268,7 +268,7 @@ def _run_edit(
     # cutpoint resume of a run that finished its clips: they are kept (runstate.clips_kept)
     kept = keep_clips and runstate.clips_kept(project, clips_dir)
     if keep_clips and clips_dir.exists() and any(clips_dir.iterdir()) and not (force or kept):
-        raise FileExistsError(f"{clips_dir} is not empty; use --force to replace its clips")
+        raise FileExistsError(f"{clips_dir} is not empty; {runstate.force_hint()}")
     if kind.style == AUTO:
         style: Style | AutoRequest = AutoRequest(kind.emphasis)
     else:

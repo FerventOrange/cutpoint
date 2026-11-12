@@ -63,7 +63,7 @@ from cutpoint import __version__, cache, folders, jsonout, procs
 from cutpoint.config import path_key
 from cutpoint.errors import LowMemoryError
 from cutpoint.progress import Run
-from cutpoint.utils import file_stamp
+from cutpoint.utils import command_line, file_stamp
 
 logger = logging.getLogger(__name__)
 
@@ -417,6 +417,20 @@ def resuming(rec: dict[str, Any]) -> Iterator[None]:
         yield
     finally:
         _RESUMING = None
+
+
+def force_hint() -> str:
+    """How to replace the clips of a non-empty clips folder: ``--force``; in a run ``cutpoint
+    resume`` replays (it takes no ``--force``, #1003), the recorded command with ``--force``
+    and the folder to run it in."""
+    if _RESUMING is None:
+        return "use --force to replace its clips"
+    argv: list[str] = list(_RESUMING["argv"])
+    cut = argv.index("--") if "--" in argv else len(argv)
+    again = command_line(["cutpoint", *argv[:cut], "--force", *argv[cut:]])
+    return (
+        f"cutpoint resume takes no --force; to replace its clips, run {again} in {_RESUMING['cwd']}"
+    )
 
 
 def resumable(project: Path) -> dict[str, Any]:

@@ -21,7 +21,7 @@ from fractions import Fraction
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
-from cutpoint import boundaries, cache, folders, jsonout, procs, sources, srt
+from cutpoint import boundaries, cache, folders, jsonout, procs, runstate, sources, srt
 from cutpoint.audio_tracks import export_tracks
 from cutpoint.clipresume import ClipResume, clip_key
 from cutpoint.color import SKIP_360, SKIP_LOG, SKIP_NOT_UNDERWATER, AutoGrade, auto_grade
@@ -49,7 +49,7 @@ from cutpoint.encode import (
     warn_if_log,
 )
 from cutpoint.errors import FFmpegError
-from cutpoint.events.scoring import recorded_style
+from cutpoint.events.scoring import analysis_style
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
 from cutpoint.ffmpeg_utils import (
     STOP_GRACE_S,
@@ -73,7 +73,7 @@ from cutpoint.planning import (
     select_moments,
     speech_pass,
 )
-from cutpoint.styles import Style, get_style
+from cutpoint.styles import Style, recorded_name
 from cutpoint.tail import TailResult, TailSettings, smart_tail
 from cutpoint.utils import clip_files, seconds_keys, slugify
 
@@ -1398,7 +1398,7 @@ def _claimed(out_dir: Path, force: bool) -> Iterator[None]:
     with folders.swap_lock(out_dir):
         folders.recover_swap(out_dir)  # before the folder is looked at
         if not force and out_dir.exists() and any(out_dir.iterdir()):
-            raise FileExistsError(f"{out_dir} is not empty; use --force to replace its clips")
+            raise FileExistsError(f"{out_dir} is not empty; {runstate.force_hint()}")
         yield
 
 
@@ -1523,9 +1523,11 @@ def export_clips(
             raise jsonout.ArgumentError(str(err)) from None
     highlights = cache.load_json(project / "highlights.json")
     language = ((highlights or {}).get("settings") or {}).get("language")
-    known_style = isinstance(highlights, dict) and "style" in highlights
-    # The recorded style: a deleted user style degrades to the built-in base the file records
-    style: Style = recorded_style(highlights) if known_style else get_style("gaming")
+    hl = highlights if isinstance(highlights, dict) else {}
+    known_style = recorded_name(hl) is not None
+    # The recorded style: a deleted user style degrades to the built-in base the file records;
+    # a file (or none) that records no style gets auto's style for unclear footage (#1002)
+    style: Style = analysis_style(hl)
     if segments is not None:
         ordered = load_segments(segments)
         if order == "arc":  # the file's order is the day's order

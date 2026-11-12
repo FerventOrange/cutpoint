@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `highlights.json` without `style` (written by hand or by another tool) no longer counts as `gaming` in `clips`, `assemble` and the AI Chat's edge planning: they use its `style_base`, else the style its `detection` chose, else `action`, the style `--style auto` uses for unclear footage. Segments exported without a `highlights.json` use `action` too (#1002).
+- When a run that `cutpoint resume` replays stops on a non-empty clips folder (`output_not_empty`), the message names the recorded command with `--force` and the folder to run it in, as `resume` takes no `--force`; other runs still say to use `--force` (#1003).
 - The re-analysis of `cutpoint events` (action-cam) and `crashes --reanalyze` keeps the ids of unchanged spans and gives new spans ids after `settings.last_candidate_id`, which never goes down, instead of numbering from `h001` (after a rerank, an id could name another span) (#1006).
 - Scene detection no longer adds or drops cuts at the scene proxy's keyframes (every 25 s), so a pass's cuts do not depend on where it starts. The proxy is now lossless (temporary, about 0.2-0.6 MB per source second for 8-bit 16:9 footage, 0.8-0.9 MB for 10-bit, about 3-4 times that for portrait video, while scanning, and 0.1-1.4 % more CPU time). Cached scene cuts are detected again once (the cache note is under #976).
 - Delete project: a project on a `subst` drive is no longer deleted for good without asking. The Recycle Bin keeps nothing sent through such a drive letter, so it now asks before a permanent delete, like for a network drive (#757).
