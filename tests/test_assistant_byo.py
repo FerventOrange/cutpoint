@@ -377,6 +377,38 @@ def test_openai_json_mode_constrains_the_reply_to_the_schema(monkeypatch) -> Non
     assert "tools" not in wire.sent[1]["json"] and reply.text.startswith("{")
 
 
+def _refusal(text: str, code: int = 400) -> _Resp:
+    return _Resp({"error": {"message": text}}, status=code)
+
+
+def test_a_server_refusing_response_format_is_asked_once_without_it(monkeypatch) -> None:
+    wire = Wire(
+        monkeypatch,
+        _refusal("Unsupported parameter: 'response_format.json_schema' is not allowed"),
+        oa_reply('{"a": 1}'),
+        oa_reply('{"a": 2}'),
+    )
+    p = OpenAIProvider("http://127.0.0.1:1234", "m", 0, None)
+    hi = [{"role": "user", "content": "hi"}]
+    assert p.chat(hi, schema=session.JSON_SCHEMA).text == '{"a": 1}'
+    assert "response_format" in wire.sent[0]["json"]
+    assert "response_format" not in wire.sent[1]["json"]
+    # remembered: the next call does not offer it again
+    assert p.chat(hi, schema=session.JSON_SCHEMA).text == '{"a": 2}'
+    assert len(wire.sent) == 3 and "response_format" not in wire.sent[2]["json"]
+
+
+@pytest.mark.parametrize(
+    "answer", [_refusal("model not loaded"), _refusal("bad key", 401), requests.Timeout("slow")]
+)
+def test_other_failures_are_not_retried_without_response_format(monkeypatch, answer) -> None:
+    wire = Wire(monkeypatch, answer)
+    p = OpenAIProvider("http://127.0.0.1:1234", "m", 0, None)
+    with pytest.raises(ProviderError):
+        p.chat([{"role": "user", "content": "hi"}], schema=session.JSON_SCHEMA)
+    assert len(wire.sent) == 1
+
+
 @pytest.mark.parametrize(
     ("url", "why"),
     [

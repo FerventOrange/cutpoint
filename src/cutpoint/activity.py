@@ -438,7 +438,7 @@ def save_to_library(profile: dict[str, Any], footage: list[str] | None = None) -
             and raw.get("footage") == footage
         ):
             new = profile["name"]
-            taken = {k.lower() for k in library()}
+            taken = {k.lower() for k in library()} | {k.lower() for k in files}
             if new != stem and not name_problem(new) and new.lower() not in taken:
                 path = paths.profiles_dir() / f"{new}.json"
                 cache.save_json(
@@ -457,9 +457,22 @@ def save_to_library(profile: dict[str, Any], footage: list[str] | None = None) -
         if have is not None and _content(have) == want:
             return stem
     name = profile["name"]
-    taken = {k.lower() for k in library()}  # names that differ only in case clash on Windows
+    lib = library()
+    # names that differ only in case clash on Windows; an unreadable file counts as taken
+    taken = {k.lower() for k in lib} | {k.lower() for k in files}
     if name_problem(name) or name.lower() in taken:  # a built-in or a Windows device name
-        name = f"{name}-{cache.params_hash(profile, 6)}"
+        for stem, f in files.items():
+            if stem.lower() == name.lower() and stem not in lib:
+                logger.warning(
+                    "%s is not a readable profile: left in place, saving %r under another name",
+                    f,
+                    name,
+                )
+        base_name = f"{name}-{cache.params_hash(profile, 6)}"
+        name, n = base_name, 1
+        while name.lower() in taken:
+            n += 1
+            name = f"{base_name}-{n}"
     path = paths.profiles_dir() / f"{name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     own = {"footage": footage} if footage else {}
