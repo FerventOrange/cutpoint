@@ -247,9 +247,16 @@ def _refused(project: Path, style: Style, missing: list[Missing]) -> NeedsAnalyz
     command = analyze_command(project, style)
     shown = "; ".join(m.detail for m in missing[:5])
     more = f" (and {len(missing) - 5} more)" if len(missing) > 5 else ""
+    offline = [m for m in missing if m.feature == "offline"]
+    if offline and len(offline) == len(missing):  # analyze can't read it either
+        then = "Reconnect the footage and run the rerank again"
+    elif offline:
+        then = f"Reconnect the footage, then run: {command}"
+    else:
+        then = f"Run: {command}"
     message = (
         f"Re-ranking {project.name} with the {style.name} style needs analyze: "
-        f"{shown}{more}. Run: {command}"
+        f"{shown}{more}. {then}"
     )
     return NeedsAnalyzeError(message, [m.record() for m in missing], command)
 

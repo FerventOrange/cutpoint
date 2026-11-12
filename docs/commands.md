@@ -2070,7 +2070,8 @@ or transcript; a source without a full scene pass when scene detection is on and
 weighs scene cuts (or the source is longer than 30 min); a source with nothing cached (no
 audio and no scene cuts); an event layer the style's footage
 category runs (such as the crash and visual layers of `action`) that the project's
-`events.json` lacks. The `ERROR` line names what is missing and the command to run.
+`events.json` lacks. The `ERROR` line names what is missing and the command to run (for an
+offline source: reconnect the footage first; with nothing else missing, rerank again).
 `--analyze` runs it in that case: analyze again with the recorded inputs and settings and the
 new style, with its event layers (minutes to hours; cached work is reused). It writes
 `highlights.before-rerank.json` before it starts. `rerank --analyze` is not resumable

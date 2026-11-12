@@ -175,6 +175,17 @@ def test_an_offline_source_needs_analyze_and_leaves_no_cache_folder(home, tmp_pa
     assert sorted(cache.cache_root().iterdir()) == before
 
 
+def test_an_offline_refusal_asks_to_reconnect_the_footage(home, tmp_path):
+    project = make_project(home, tmp_path)
+    style = get_style("funny")
+    gone = rerank.Missing("offline", "a.mp4 is not reachable", "a.mp4")
+    only = str(rerank._refused(project, style, [gone]))
+    assert "Reconnect the footage and run the rerank again" in only
+    assert "--analyze" not in only
+    both = str(rerank._refused(project, style, [gone, rerank.Missing("loudness", "no loudness")]))
+    assert "Reconnect the footage, then run: " in both and "--analyze" in both
+
+
 def test_source_dir_without_create_names_the_folder_only(home, tmp_path):
     src = tmp_path / "new.mp4"
     src.write_bytes(b"x")
