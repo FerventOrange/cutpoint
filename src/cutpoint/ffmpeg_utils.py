@@ -1010,6 +1010,22 @@ def find_encoder(kind: str) -> tuple[VideoEncoder | None, list[str]]:
 _GPU_DOWNLOAD = "hwdownload,format=nv12,format=yuv420p"  # to the 8-bit 4:2:0 the CPU chain expects
 # Source pixel format -> the format NVDEC downloads it in (8- and 10-bit 4:2:0 only).
 NVDEC_DOWNLOAD = {"yuv420p": "nv12", "yuvj420p": "nv12", "yuv420p10le": "p010le"}
+# Source codec -> the pixel formats NVDEC decodes (conservative: H.264 has no 10-bit or 4:2:2).
+_NVDEC_CODEC_FORMATS = {
+    "h264": frozenset({"yuv420p", "yuvj420p"}),
+    "hevc": frozenset(NVDEC_DOWNLOAD),
+    "vp9": frozenset({"yuv420p", "yuv420p10le"}),
+    "av1": frozenset({"yuv420p", "yuv420p10le"}),
+}
+
+
+def nvdec_download(codec: str | None, pix_fmt: str | None) -> str | None:
+    """The format NVDEC downloads a ``codec`` source of ``pix_fmt`` in (nv12, p010le), or None
+    when it does not decode that combination (ffmpeg then decodes it in software and the
+    frames keep ``pix_fmt``)."""
+    if pix_fmt not in _NVDEC_CODEC_FORMATS.get(codec or "", ()):
+        return None
+    return NVDEC_DOWNLOAD[pix_fmt or ""]
 
 
 @dataclass(frozen=True)
@@ -1875,6 +1891,7 @@ def split_decode_args(
     hw: HwDecoder | None = None,
     src_size: tuple[int, int] | None = None,
     src_fmt: str | None = None,
+    src_codec: str | None = None,
 ) -> list[str]:
     """ffmpeg arguments (without the executable) for one decode pass (``hw``, else the CPU)
     that writes both the scene proxy (``scene_vf`` and ``scene_enc`` as the scene cuts use
@@ -1885,11 +1902,12 @@ def split_decode_args(
     yuv420p for VAAPI, whose download gives it, and when unknown) keeps the scene proxy in the
     source's format (the graph would negotiate bgr24 for the raw branch and make it yuv444p).
     On CUDA (``-hwaccel cuda`` alone: the decoder downloads the frames) it is NVDEC's own
-    download format (nv12, p010le), so the head adds no conversion; a format NVDEC does not
-    decode keeps the probed one."""
+    download format (nv12, p010le), so the head adds no conversion, but only for a codec
+    (``src_codec``) and format NVDEC decodes; otherwise ffmpeg decodes in software and the
+    probed format stays, so the head converts nothing."""
     fmt = "yuv420p" if hw is not None and hw.kind == "vaapi" else src_fmt or "yuv420p"
     if hw is not None and hw.kind == "cuda":
-        fmt = NVDEC_DOWNLOAD.get(src_fmt or "", fmt)
+        fmt = nvdec_download(src_codec, src_fmt) or fmt
     split = "split=2"
     if src_size is not None:
         split = f"scale={src_size[0]}:{src_size[1]},format={fmt},split=2"
@@ -1938,6 +1956,7 @@ class SplitDecode:
         hw: HwDecoder | None = None,
         src_size: tuple[int, int] | None = None,
         src_fmt: str | None = None,
+        src_codec: str | None = None,
     ) -> None:
         width, height = size
         self.frame_bytes = width * height * PIX_CHANNELS["bgr24"]
@@ -1968,6 +1987,7 @@ class SplitDecode:
             hw=hw,
             src_size=src_size,
             src_fmt=src_fmt,
+            src_codec=src_codec,
         )
         cmd = _command("ffmpeg", args)
         logger.debug("exec: %s", subprocess.list2cmdline(cmd))

@@ -78,6 +78,7 @@ from cutpoint.ffmpeg_utils import (
     first_frame_time,
     gpu_chain,
     momentary_loudness,
+    nvdec_download,
     probe,
     read_window_ok,
     run_progress,
@@ -642,18 +643,23 @@ def _scene_decode(hw: HwDecoder | None, vf: str, src: Path) -> tuple[list[str], 
     if not _seeks_exactly(src):
         if hw.kind == "cuda":
             try:
-                pix_fmt = probe(src).pix_fmt or ""
+                info = probe(src)
             except FFmpegError:
-                pix_fmt = None  # the decode reports an unreadable file itself
-            if pix_fmt is not None and pix_fmt not in _SCENE_DOWNLOAD:
+                info = None  # the decode reports an unreadable file itself
+            if info is not None and nvdec_download(info.vcodec, info.pix_fmt or "") is None:
                 logger.debug(
-                    "%s: pixel format %s is outside NVDEC's 8/10-bit 4:2:0 download formats; "
-                    "NVDEC may not decode it and ffmpeg then decodes it in software",
-                    src.name, pix_fmt or "unknown",
+                    "%s: %s %s is outside what NVDEC decodes (8/10-bit 4:2:0 HEVC, VP9, AV1, "
+                    "8-bit 4:2:0 H.264); NVDEC may not decode it and ffmpeg then decodes it "
+                    "in software",
+                    src.name, info.vcodec or "unknown", info.pix_fmt or "unknown",
                 )  # fmt: skip
             return hw.input_args(), vf
         return [], vf
-    fmt = _SCENE_DOWNLOAD.get(probe(src).pix_fmt or "")
+    info = probe(src)
+    if hw.kind == "cuda":
+        fmt = nvdec_download(info.vcodec, info.pix_fmt or "")
+    else:
+        fmt = _SCENE_DOWNLOAD.get(info.pix_fmt or "")
     if fmt is None:
         return hw.input_args(), gpu_chain(hw, vf) or vf
     head, sep, rest = vf.partition(",scale=")  # the proxy chain's fps filter comes before it
