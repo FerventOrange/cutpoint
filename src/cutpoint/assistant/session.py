@@ -22,6 +22,7 @@ from __future__ import annotations
 import itertools
 import json
 import logging
+import math
 import re
 import secrets
 import threading
@@ -32,7 +33,7 @@ from typing import Any
 
 from cutpoint.assistant import context, lookfor, pacing, watch, words
 from cutpoint.assistant.edges import EdgePlanner, length
-from cutpoint.assistant.ops import apply_ops, change_counts, summary_gap
+from cutpoint.assistant.ops import apply_ops, change_counts, rows_after, summary_gap
 from cutpoint.assistant.providers import (
     OllamaProvider,
     OutputCapError,
@@ -45,7 +46,6 @@ from cutpoint.assistant.providers import (
     describe,
 )
 from cutpoint.assistant.topup import kind_groups, top_up
-from cutpoint.config import source_path
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,8 @@ NOT_RUN = (
     "error: not run: no more lookups in this turn. Answer the user now in plain text with what "
     "you have found, or call propose_edit"
 )
-WORD_EDGE_S = 0.02  # a trim edge this close to a find_words hit's edge is cut at the word
+WORD_EDGE_S = 0.1  # an add or trim edge this close to a find_words hit edge is moved onto it, exact
+EARLIER_HITS = 3  # hits of each earlier find_words search the model is reminded of
 # The nudge after find_words found words: a small model answers "make him say X" with "the words
 # are never said together" (they never are: that is what a splice is for)
 SPLICE_NUDGE = (
@@ -310,12 +311,22 @@ class Turn:
         self.provider = provider
         self.project = project
         self.text = text
-        self.earlier = [
-            {"user": str(t.get("user", "")), "reply": str(t.get("reply", ""))}
-            for t in earlier or []
-        ]
         self.table = context.MomentTable(project.candidates, project.segments, project.windows)
         self.table.durations = project.durations
+        # the edges of the find_words hits of this turn and the earlier ones: an add or trim to
+        # one makes its row exact
+        self._word_edges: list[tuple[str, float]] = []  # (source, s): both edges of each hit
+        # only the turns the model is shown (context.budget's window) give their hits
+        window = context.budget(provider.context_tokens).turns
+        earlier = list(earlier or [])
+        seen = len(earlier) - window
+        self.earlier = [
+            {
+                "user": str(t.get("user", "")),
+                "reply": str(t.get("reply", "")) + (self._hits_of(t) if i >= seen else ""),
+            }
+            for i, t in enumerate(earlier)
+        ]
         self.target = context.target_seconds(text)  # seconds the user asked for, if any
         self.mix = pacing.asks_for_mix(text)  # asks to break up / mix in kinds: code spreads them
         self.dialogue = pacing.names_dialogue(text)
@@ -335,9 +346,10 @@ class Turn:
         # to the asked length is offered when the retries do not get there
         self._candidates: list[tuple[str, dict[str, Any]]] = []
         self._nudged: str | None = None  # the text-only reply that got the nudge (this turn's one)
-        self._found_words = False  # find_words found the words this turn (SPLICE_NUDGE)
-        # the edges of this turn's find_words hits: a trim to one makes its row exact
-        self._word_edges: list[tuple[str, float]] = []  # (source, s): both edges of each hit
+        self._splice: str | None = None  # the add_range ops of a phrase said apart (_apart)
+        # find_words found the words, this turn or an earlier one the model is shown
+        # (SPLICE_NUDGE)
+        self._found_words = bool(self._word_edges)
         self._results: list[dict[str, Any]] = []  # tool result messages of the conversation
         self._saved = False
         # view_moment: offered (decided in _loop), moments viewed, sheets waiting to be sent and
@@ -645,7 +657,9 @@ class Turn:
                     # text: ask once more (the nudge stays in this conversation; the page and chat.json
                     # never get it)
                     self._nudged = text
-                    nudge = SPLICE_NUDGE if self._found_words else NUDGE
+                    nudge = NUDGE
+                    if self._found_words:  # with the ops of a phrase said apart, if any
+                        nudge = SPLICE_NUDGE + (f" The ops: {self._splice}" if self._splice else "")
                     messages.append({"role": "user", "content": nudge})
                     continue
                 if self._offer_fallback():  # the earlier proposal beats an answer in text
@@ -883,7 +897,14 @@ class Turn:
         limit = max(1, min(limit, words.MAX_LIMIT))
         p = self.project
         got = words.find(list(p.durations), p.words or _no_words, query, limit)
-        self._emit({"kind": "tool", "name": words.NAME, "query": query, "found": got.total})
+        apart, splice = ("", []) if got.hits or not got.with_words else self._apart(query)
+        # the places given to the model go into chat.json too: a later message remembers them
+        # (_hits_of)
+        hits = [{k: h[k] for k in ("source", "start", "end")} for h in got.hits or splice]
+        self._remember_hits(hits)
+        self._emit(
+            {"kind": "tool", "name": words.NAME, "query": query, "found": got.total, "hits": hits}
+        )
         if not got.with_words:
             return (
                 "no source of this project has transcript words (analyze transcribes them); "
@@ -892,23 +913,19 @@ class Turn:
         note = ""
         if got.with_words < got.sources:
             note = f" ({got.sources - got.with_words} of {got.sources} sources have no words)"
-        self._found_words = self._found_words or bool(got.hits)
+        self._found_words = self._found_words or bool(hits)
         if not got.hits:
-            apart = self._apart(query)
             where = "in one place" if apart else "in the transcripts"
             return f"nobody says {query!r} {where}{note}{apart}", False
-        shown = _file_names(list(p.durations))
         rows = [
             {
-                "file": shown[h["source"]],
+                "file": self.table.file(h["source"]),
                 "start": h["start"],
                 "end": h["end"],
                 "said": h["said"],
             }
             for h in got.hits
         ]
-        for h in got.hits:
-            self._word_edges += [(h["source"], h["start"]), (h["source"], h["end"])]
         if got.total > len(rows):
             note = f" ({len(rows)} of {got.total} shown; limit up to {words.MAX_LIMIT}){note}"
         body = chr(10).join(json.dumps(r, ensure_ascii=False) for r in rows)
@@ -922,24 +939,64 @@ class Turn:
         )
         return context.data_block("words", body) + note + use, False
 
-    def _apart(self, query: str) -> str:
-        """For a phrase nobody says in one place: how often each of its words is said, so the
-        model joins them with add_range instead of giving up."""
-        tokens = list(dict.fromkeys(w for w in query.split() if words.norm(w)))
-        if len(tokens) < 2:
-            return ""
+    def _remember_hits(self, hits: list[dict[str, Any]]) -> None:
+        """Note both edges of each find_words hit (``source``, ``start``, ``end``)."""
+        for h in hits:
+            self._word_edges += [(h["source"], h["start"]), (h["source"], h["end"])]
+
+    def _hits_of(self, record: Mapping[str, Any]) -> str:
+        """The find_words hits of an earlier turn's ``record`` (its events, as chat.json keeps
+        them), remembered for :meth:`_at_words` and as a line the model reads after that
+        turn's reply, so a later message can cut at them without searching again."""
+        events = record.get("events")
+        said = []
+        for e in events if isinstance(events, list) else []:
+            if not isinstance(e, Mapping) or e.get("name") != words.NAME:
+                continue
+            hits = [
+                h
+                for h in e.get("hits") or []
+                if isinstance(h, Mapping)
+                and h.get("source") in self.project.durations
+                and _num(h.get("start")) is not None
+                and _num(h.get("end")) is not None
+            ]
+            self._remember_hits(hits)
+            places = [
+                f"{self.table.file(h['source'])} {h['start']:g}-{h['end']:g}"
+                for h in hits[:EARLIER_HITS]
+            ]
+            if places:
+                said.append(f"{str(e.get('query', ''))[:40]!r}: {', '.join(places)}")
+        return f"\n(find_words hits: {'; '.join(said)})" if said else ""
+
+    def _apart(self, query: str) -> tuple[str, list[dict[str, Any]]]:
+        """For a phrase nobody says in one place: how often each of its words is said, and when
+        each is said somewhere, the add_range ops of a splice (the first hit of each word, in
+        order) so the model proposes them instead of giving up. Returns the text and those hits."""
+        tokens = [w for w in query.split() if words.norm(w)]
+        if len(set(tokens)) < 2:
+            return "", []
         p = self.project
-        counts = [
-            (t, words.find(list(p.durations), p.words or _no_words, t, 1).total) for t in tokens
+        found = {
+            t: words.find(list(p.durations), p.words or _no_words, t, 1)
+            for t in dict.fromkeys(tokens)
+        }
+        said = ", ".join(f"{t!r} {f.total} times" for t, f in found.items())
+        if any(not f.hits for f in found.values()):
+            return f". Its words alone: {said}.", []
+        hits = [found[t].hits[0] for t in tokens]  # a word said twice: its hit twice
+        ops = [
+            {"op": "add_range", "file": self.table.file(h["source"])}
+            | {k: h[k] for k in ("start", "end")}
+            for h in hits
         ]
-        said = ", ".join(f"{t!r} {n} times" for t, n in counts)
-        if any(n == 0 for _, n in counts):
-            return f". Its words alone: {said}."
-        self._found_words = True  # every word is said somewhere: a refusal gets SPLICE_NUDGE
+        # a refusal gets these ops in SPLICE_NUDGE too
+        self._splice = json.dumps(ops, ensure_ascii=False)
         return (
-            f". Its words are said apart: {said}. To make someone say it, find_words each word "
-            "and add_range one hit of each, in order (a splice; never say it cannot be done)."
-        )
+            f". Its words are said apart: {said}. To make someone say it, splice them: "
+            f"propose_edit with these ops, in order: {self._splice}"
+        ), hits
 
     def _tool_get_moment(self, args: dict[str, Any]) -> tuple[str, bool]:
         real, problem = self._moment(args.get("id"))
@@ -1033,7 +1090,7 @@ class Turn:
                 )
         p = self.project
         known = [c for c in self.found if c["id"] not in blocked]
-        mapped = self._at_words(mapped, [*p.segments, *p.candidates, *known])
+        mapped = self._at_words(mapped, [*p.candidates, *known])
         out = apply_ops(
             p.segments,
             mapped,
@@ -1079,29 +1136,46 @@ class Turn:
             checked["moments"] = moments  # look_for finds: the page's analysis does not have them
         return checked, ""
 
-    def _at_words(self, ops: Any, rows: list[dict[str, Any]]) -> Any:
-        """``ops`` with ``"exact": true`` on each trim that puts an edge on either edge of a
-        find_words hit of this turn (within :data:`WORD_EDGE_S`): the cut the user asked for at
-        a word stays there at export, as an add_range row's. The proposal keeps the flag, so a
-        rebase on save marks the row again."""
+    def _at_words(self, ops: Any, moments: list[dict[str, Any]]) -> Any:
+        """``ops`` with each add or trim edge (in seconds or as a delta) within
+        :data:`WORD_EDGE_S` of a find_words hit edge (this message's or an earlier one's) moved
+        onto the nearest one, and ``"exact": true``: the cut the user asked for at a word stays
+        there at export, as an add_range row's. An op with ``"exact": false`` is left as it is.
+        The proposal keeps the flag, so a rebase on save marks the row again.
+
+        A delta counts from the row's edges as :func:`rows_after` leaves them after the ops
+        before it; when those ops are wrong, the delta is left as given."""
         if not self._word_edges or not isinstance(ops, list):
             return ops
-        source = {}
-        for row in reversed(rows):  # the sequence's row first
-            source[row["id"]] = row["source"]
-        out = []
+        p = self.project
+        snap = p.edges.phrase_end if p.edges is not None else None
+        own = {m["id"]: m for m in moments}
+        out: list[Any] = []
         for op in ops:
-            if isinstance(op, dict) and op.get("op") == "trim" and "exact" not in op:
-                src = source.get(op.get("id"))
-                if any(
-                    src == hit_src
-                    and isinstance(op.get(edge), (int, float))
-                    and not isinstance(op.get(edge), bool)
-                    and abs(op[edge] - t) <= WORD_EDGE_S
-                    for hit_src, t in self._word_edges
-                    for edge in ("start", "end")
-                ):
-                    op = {**op, "exact": True}
+            kind = op.get("op") if isinstance(op, dict) else None
+            sid = op.get("id") if isinstance(op, dict) else None
+            if not isinstance(sid, str) or kind not in ("add", "trim"):
+                out.append(op)
+                continue
+            row: dict[str, Any] = dict(own.get(sid) or {})  # an add: the moment's own range
+            if kind == "trim":
+                rows = rows_after(p.segments, out, moments, p.durations, snap=snap)
+                row = next((r for r in rows or [] if r.get("id") == sid), {})
+            source = row.get("source") or (own.get(sid) or {}).get("source")
+            hits = [w for src, w in self._word_edges if src == source]
+            for edge in ("start", "end"):
+                t = _num(op.get(edge))
+                delta = _num(op.get(f"{edge}_delta")) if kind == "trim" else None
+                if t is None and delta is not None and _num(row.get(edge)) is not None:
+                    t = row[edge] + delta
+                if t is None:
+                    continue
+                near = min(hits, key=lambda w: abs(w - t), default=None)
+                close = near is not None and abs(near - t) <= WORD_EDGE_S + 1e-6
+                if close and op.get("exact") is not False:
+                    # on the word (a small model rounds 3627.04 to 3627): the hit's own time
+                    op = {k: v for k, v in op.items() if k != f"{edge}_delta"}
+                    op |= {edge: near, "exact": True}
             out.append(op)
         return out
 
@@ -1489,25 +1563,14 @@ def _real_ops(ops: Any, table: context.MomentTable) -> tuple[list[Any] | None, s
     return out, ""
 
 
-def _file_names(paths: list[str]) -> dict[str, str]:
-    """How find_words and add_range name each source: its file name, or ``folder/name`` when
-    two sources share the file name."""
-    names = [context.file_name(p) for p in paths]
-    twice = {f for f in names if names.count(f) > 1}
-    return {
-        p: f"{source_path(p).parent.name}/{f}" if f in twice else f
-        for p, f in zip(paths, names, strict=True)
-    }
-
-
 def _source_of(name: Any, table: context.MomentTable, n: int) -> tuple[str | None, str]:
     """``(source path, "")`` of the file ``name`` an ``add_range`` op gives (a name as
-    :func:`_file_names` shows it, a bare file name when it is unique, or the path itself), else
-    ``(None, why)``."""
+    :meth:`context.MomentTable.file` shows it, a bare file name when it is unique, or the path
+    itself), else ``(None, why)``."""
     paths = list(table.durations)
     if isinstance(name, str) and name in paths:
         return name, ""
-    shown = _file_names(paths)
+    shown = {p: table.file(p) for p in paths}
     given = name.replace("\\", "/").strip("/") if isinstance(name, str) else None
     hits = [p for p in paths if given is not None and given == shown[p]]
     hits = hits or [p for p in paths if given is not None and given == context.file_name(p)]
@@ -1521,6 +1584,12 @@ def _source_of(name: Any, table: context.MomentTable, n: int) -> tuple[str | Non
 
 def _no_words(_source: str) -> None:
     return None
+
+
+def _num(v: Any) -> float | None:
+    """``v`` as a finite number of seconds, else None."""
+    ok = isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    return float(v) if ok else None
 
 
 def _leave_out(msg: dict[str, Any]) -> None:
