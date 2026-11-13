@@ -46,6 +46,7 @@ from cutpoint import (
     features,
     folders,
     jsonout,
+    memguard,
     paths,
     progress,
     runstate,
@@ -53,7 +54,7 @@ from cutpoint import (
 )
 from cutpoint.config import path_key, remap_source, unc_path
 from cutpoint.dsp import conv_same
-from cutpoint.errors import FFmpegError, LowMemoryError, is_out_of_memory
+from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events import paths as event_paths
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.events.scoring import (
@@ -3044,19 +3045,14 @@ REASON_CHARS = 120  # the reason of a failed OCR layer is cut to this
 def _ocr_failed(err: BaseException) -> tuple[str, list[str]]:
     """The WARNING (and ``step_failed`` message) of an OCR layer that failed with ``err``,
     naming what it costs, and the paths of the sources it did not read (none when the
-    failure is not tagged with them, :func:`~cutpoint.events.pipeline.ocr_failure`). The
-    out-of-memory hint names ``CUTPOINT_ANALYZE_OVERLAP`` only when the failing read ran in
-    the background while Whisper ran (:func:`_ocr_prefetch`)."""
+    failure is not tagged with them, :func:`~cutpoint.events.pipeline.ocr_failure`). An
+    out-of-memory error never gets here: it stops the run (:class:`_StepHook`)."""
     from cutpoint.events.pipeline import ocr_failure  # noqa: PLC0415
 
     lines = str(err).strip().splitlines()
-    oom = is_out_of_memory(err)
-    if oom:
-        reason = "out of memory"
-    else:
-        reason = lines[0].strip() if lines else type(err).__name__
-        if len(reason) > REASON_CHARS:
-            reason = reason[: REASON_CHARS - 3].rstrip() + "..."
+    reason = lines[0].strip() if lines else type(err).__name__
+    if len(reason) > REASON_CHARS:
+        reason = reason[: REASON_CHARS - 3].rstrip() + "..."
     where = ocr_failure(err)
     paths = where.not_read if where else []
     effect = "menu filtering and HUD events (kill feed, banners, notices) skipped for"
@@ -3074,9 +3070,6 @@ def _ocr_failed(err: BaseException) -> tuple[str, list[str]]:
         later = len(paths) - 1
         rest = f" and {later} later source{'s' if later != 1 else ''}" if later else ""
         message = f"OCR failed ({reason}): {effect} {Path(paths[0]).name}{rest}"
-    if oom:
-        hint = ", set CUTPOINT_ANALYZE_OVERLAP=0" if where and where.background else ""
-        message += f"; close other programs{hint} or pass --skip keyframes"
     return message, paths
 
 
@@ -3085,7 +3078,9 @@ class _StepHook:
     layer that fails fails its step (an ERROR line and a ``step_failed`` warning; for the
     OCR layer a WARNING naming the sources without menu filtering and HUD events, see
     :func:`_ocr_failed`), and the next steps still run. A layer in ``optional`` that fails
-    only gets a WARNING and a ``step_failed`` warning: its step is not failed."""
+    only gets a WARNING and a ``step_failed`` warning: its step is not failed. Out of memory
+    in the OCR layer stops the run instead, as ``low_memory`` (resumable; the layer's reads
+    and discovery raise it themselves, this catches the rest)."""
 
     def __init__(self, steps: progress.Run, optional: Collection[str] = ()) -> None:
         self.steps = steps
@@ -3108,6 +3103,7 @@ class _StepHook:
             logger.debug("%s layer failed", layer, exc_info=True)
             files: list[str] = []
             if layer == "ocr":  # analyze goes on, ranked without the HUD: a WARNING
+                memguard.raise_if_out_of_memory(err, "the HUD OCR", "the sources not read yet")
                 message, files = _ocr_failed(err)
                 logger.warning("%s", message)
             elif layer in self.optional:

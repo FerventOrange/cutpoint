@@ -86,7 +86,6 @@ class OcrFailure(NamedTuple):
 
     not_read: list[str]  # the paths of the sources it did not read, the failing one first
     discovery: bool  # in HUD region discovery: it read none
-    background: bool  # the failing read ran in the background (:class:`OcrPrefetch`)
     games: int  # discovery: the games it was to discover (0: not known yet)
 
 
@@ -95,21 +94,21 @@ def _mark_ocr_failure(
     not_read: list[Any],
     *,
     discovery: bool,
-    background: bool = False,
     games: int = 0,
 ) -> None:
     """Note on ``err`` (re-raised unchanged) the sources the OCR layer did not read."""
     paths = [str(s.path) for s in not_read]
-    setattr(err, _FAILURE, OcrFailure(paths, discovery, background, games))
+    setattr(err, _FAILURE, OcrFailure(paths, discovery, games))
 
 
 def ocr_failure(err: BaseException) -> OcrFailure | None:
     """Where the OCR layer failed with ``err``: the sources it did not read (the one it
     failed on first), whether it failed in HUD region discovery (then it read none, and no
-    preset was installed for at least one game), whether the failing read ran in the
-    background and how many games discovery was to discover. The sources read before keep
+    preset was installed for at least one game) and how many games discovery was to
+    discover. The sources read before keep
     their events and menu spans. None: ``err`` did not come from the OCR layer's discovery
-    or per-source reads."""
+    or per-source reads. An out-of-memory error there is raised as a
+    :class:`~cutpoint.errors.LowMemoryError` instead (it stops the run, resumable)."""
     return getattr(err, _FAILURE, None)
 
 
@@ -471,7 +470,10 @@ def run_events(
                     discover_hint,
                     make_labeler(rater) if rater is not None else None,
                 )
+            except LowMemoryError:
+                raise
             except Exception as err:
+                memguard.raise_if_out_of_memory(err, "HUD region discovery", "every source")
                 if ocr_failure(err) is None:  # before _discover knew its games
                     _mark_ocr_failure(err, sources, discovery=True)
                 raise
@@ -517,14 +519,11 @@ def run_events(
                     )
                 on_progress = (lambda share, i=i: on_source(i + share)) if "ocr" in layers else None
                 got = None
-                background = False  # the failing read ran in the background
                 try:
                     if prefetch is not None:  # the background read of these exact inputs
                         plain = "ocr" not in force and not ocr_debug and not bad.get(str(s.path))
                         if "ocr" in layers and plain:
-                            background = True
                             got = prefetch.take(s, ocr, on_progress)
-                            background = False
                         else:
                             prefetch.close()
                         if got is None and prefetch.stuck:  # it outlived close(): not its engine
@@ -546,8 +545,11 @@ def run_events(
                     teamkills = bool(preset and preset.feed.get("teamkills"))
                     link_teamkills(evs, generic_teamkills=teamkills)
                     derive_streaks(evs)
+                except LowMemoryError:
+                    raise
                 except Exception as err:
-                    _mark_ocr_failure(err, ocr_sources[i:], discovery=False, background=background)
+                    memguard.raise_if_out_of_memory(err, "the HUD OCR", s.name)
+                    _mark_ocr_failure(err, ocr_sources[i:], discovery=False)
                     raise
                 layer1[str(s.path)] += evs
                 ocr_stats[s.name] = st
@@ -1075,7 +1077,10 @@ def _discover(
                 **({"labeler": labeler} if labeler else {}),
                 **({"keep_src_keys": keep} if keep is not None else {}),
             )
+        except LowMemoryError:
+            raise
         except Exception as err:  # the games before it have their presets
+            memguard.raise_if_out_of_memory(err, "HUD region discovery", game)
             _mark_ocr_failure(err, sources, discovery=True, games=runs["total"])
             raise
         rec: dict[str, Any] = {
