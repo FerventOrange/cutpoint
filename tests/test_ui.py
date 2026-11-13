@@ -12148,3 +12148,18 @@ def test_a_custom_styles_crash_value_survives_a_style_switch_that_did_not_finish
     assert res.status_code == 200, res.text
     assert not any(a.startswith("--must-include-crash") for a in _cli_args(captured[0]))
     assert client.get("/api/projects/cli").json()["analyze_options"]["must_include_crash"] is None
+
+
+def test_a_step_failed_warning_names_its_sources_in_the_job_log() -> None:
+    job = ui.Job("p", "events")
+    job.result = {
+        "warnings": [
+            {"code": "step_failed", "message": "reactions failed", "files": ["a.mp4", "b.mp4"]},
+            {"code": "step_failed", "message": "keyframes failed", "files": []},
+            {"code": "other", "message": "not shown", "files": ["c.mp4"]},
+        ]
+    }
+    ui._note_warnings(job)
+    assert any(line.endswith("reactions failed (a.mp4, b.mp4)") for line in job.logs)
+    assert not any("not shown" in line for line in job.logs)
+    assert any(line.endswith("keyframes failed") for line in job.logs)
