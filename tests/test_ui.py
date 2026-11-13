@@ -1145,6 +1145,125 @@ def test_a_director_preview_is_only_for_a_project_source(
     assert len(run.renders) == 1
 
 
+class DirectorReads:
+    """Counts what the director route reads for a request (#1029): ``highlights.json`` loads and
+    candidate states built (``listings``: one per candidate of each rebuild)."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.highlights = self.listings = 0
+        real_load, real_state = cache.load_json, ui.PanoPreviews._state
+
+        def load_json(path: Any, *a: Any, **kw: Any) -> Any:
+            if Path(path).name == "highlights.json":
+                self.highlights += 1
+            return real_load(path, *a, **kw)
+
+        def state(previews: ui.PanoPreviews, project: Path, cid: str, info: dict) -> Any:
+            self.listings += 1  # a rebuild of the ready previews asks each candidate's state
+            return real_state(previews, project, cid, info)
+
+        monkeypatch.setattr(cache, "load_json", load_json)
+        monkeypatch.setattr(ui.PanoPreviews, "_state", state)
+
+    def reset(self) -> None:
+        self.highlights = self.listings = 0
+
+
+def ready_director(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[DirectorPreviews, str]:
+    """A 360 project with ``h001``'s preview ready, and that preview's URL path."""
+    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)  # the lookups stay kept however slow
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    run.ask("h001")
+    pv = run.wait("h001", "ready")
+    return run, pv["url"].replace("http://127.0.0.1", "")
+
+
+def test_repeated_director_requests_read_neither_highlights_nor_the_listing(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1029: an unchanged project answers the many Range requests of one preview from memory."""
+    _run, url = ready_director(client, tmp_path, monkeypatch)
+    assert client.get(url).status_code == 200  # builds the kept answer
+    reads = DirectorReads(monkeypatch)
+    for i in range(9):
+        res = client.get(url, headers={"Range": f"bytes={i}-{i + 3}"})
+        assert (res.status_code, res.content) == (206, b"director view"[i : i + 4])
+    assert (reads.highlights, reads.listings) == (0, 0)
+
+
+def test_a_rewritten_highlights_file_is_seen_by_the_director_route(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, url = ready_director(client, tmp_path, monkeypatch)
+    assert client.get(url).status_code == 200
+    reads = DirectorReads(monkeypatch)
+    hl = cache.load_json(run.p / "highlights.json")
+    hl["candidates"][0]["source"] = str(tmp_path / "elsewhere" / X3_LRV)  # as analyze or Undo do
+    cache.save_json(run.p / "highlights.json", hl)
+    reads.reset()
+    assert client.get(url).status_code == 404  # no longer a moment of this source
+    assert reads.highlights >= 1 and reads.listings >= 1
+    hl["candidates"][0]["source"] = run.lrv  # rewritten back
+    cache.save_json(run.p / "highlights.json", hl)
+    assert client.get(url).status_code == 200
+
+
+def test_a_preview_removed_or_added_is_seen_by_the_director_route(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, url = ready_director(client, tmp_path, monkeypatch)
+    assert client.get(url).status_code == 200
+    (run.p / ui.UI_DIR / "pano").joinpath(
+        url.split("/director/")[1].split("?")[0] + ".mp4"
+    ).unlink()
+    assert client.get(url).status_code == 404  # removed
+    run.ask("h001")  # rendered again
+    run.wait("h001", "ready")
+    assert client.get(url).status_code == 200  # added
+    reads = DirectorReads(monkeypatch)
+    assert client.get(url).status_code == 200
+    assert client.get(url).status_code == 200
+    assert reads.listings <= 3  # at most one rebuild (3 candidates) of what the render changed
+
+
+def test_a_changed_render_setting_or_camera_path_stops_serving_the_preview(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, home: Path
+) -> None:
+    run, url = ready_director(client, tmp_path, monkeypatch)
+    assert client.get(url).status_code == 200
+    set_config(home, pano={"level_strength": 0.5})
+    assert client.get(url).status_code == 404  # a new identity: no re-render needed to see it
+    assert len(run.renders) == 1
+    set_config(home)
+    assert client.get(url).status_code == 200
+    slot = run.p / pano_candidates.CACHE_DIR / pano_candidates.slot_name(run.clip, 5.0, 10.0)
+    entry = cache.load_json(slot)
+    entry["path"]["keys"][0]["yaw"] = 30.0  # re-planned
+    cache.save_json(slot, entry)
+    assert client.get(url).status_code == 404
+    assert len(run.renders) == 1
+
+
+def test_director_answers_are_per_project(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, url = ready_director(client, tmp_path, monkeypatch)
+    assert client.get(url).status_code == 200
+    (tmp_path / "two").mkdir()
+    pid2, _ = make_project(client, tmp_path / "two", {"a.mp4": b"x"})
+    sid2 = client.get(f"/api/projects/{pid2}").json()["sources"][0]["id"]
+    name = url.split("/director/")[1]
+    other = f"/api/projects/{pid2}/sources/{sid2}/director/{name}"
+    assert client.get(other).status_code == 404  # the first project's preview is not served here
+    assert client.get(url).status_code == 200
+    previews: ui.PanoPreviews = client.app.state.previews
+    assert previews.ready(ui.project_dir(pid2)) == {}
+    assert set(previews.ready(run.p)) == {"h001"}
+    assert set(previews.ready_memo) >= {run.p, ui.project_dir(pid2)}
+
+
 def test_a_changed_imu_offset_or_render_format_renders_a_fresh_preview(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, home: Path
 ) -> None:

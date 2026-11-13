@@ -226,6 +226,102 @@ def test_the_kept_answer_is_per_projects_folder(
     assert client.get(url).status_code == 404
 
 
+def window_url(client: TestClient, pid: str, sid: str) -> str:
+    token = client.headers["X-Cutpoint-Token"]
+    return f"/api/projects/{pid}/sources/{sid}/window/0-100?t={token}"
+
+
+@pytest.fixture
+def stat_keys(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """The source paths :meth:`Media.key` (one stat of the source) was asked for."""
+    asked: list[str] = []
+    real = ui.Media.key
+
+    def key(path: Path) -> str | None:
+        asked.append(str(path))
+        return real(path)
+
+    monkeypatch.setattr(ui.Media, "key", staticmethod(key))
+    return asked
+
+
+def test_window_requests_within_the_ttl_stat_the_source_once(
+    client: TestClient, tmp_path: Path, stat_keys: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1030: no window proxy is ready, so each request also asks the status: still one stat."""
+    pid, sid, source = make_project(client, tmp_path)
+    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)  # within the TTL however slow the runner
+    stat_keys.clear()
+    for _ in range(20):
+        assert client.get(window_url(client, pid, sid)).status_code == 409  # not ready
+    assert [Path(x) for x in stat_keys] == [source]
+
+
+def test_a_window_request_after_the_ttl_stats_the_source_again(
+    client: TestClient, tmp_path: Path, stat_keys: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid, sid, source = make_project(client, tmp_path)
+    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)
+    stat_keys.clear()
+    assert client.get(window_url(client, pid, sid)).status_code == 409
+    assert client.get(window_url(client, pid, sid)).status_code == 409
+    assert len(stat_keys) == 1
+    source.write_bytes(DATA + b"changed")  # a changed source: seen once the kept answer is stale
+    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 0.0)
+    assert client.get(window_url(client, pid, sid)).status_code == 409
+    assert len(stat_keys) == 2
+    assert client.get(window_url(client, pid, sid)).status_code == 409
+    assert len(stat_keys) == 3  # a TTL of 0 keeps nothing
+
+
+def test_range_requests_within_the_ttl_stat_the_source_once(
+    client: TestClient, tmp_path: Path, stat_keys: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid, sid, source = make_project(client, tmp_path)
+    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)
+    stat_keys.clear()
+    for i in range(20):
+        res = client.get(media_url(client, pid, sid), headers={"Range": f"bytes={i}-{i + 9}"})
+        assert (res.status_code, res.content) == (206, DATA[i : i + 10])
+    assert [Path(x) for x in stat_keys] == [source]
+
+
+def test_a_source_removed_after_its_key_was_kept_is_404_not_500(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid, sid, source = make_project(client, tmp_path)
+    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)
+    url = media_url(client, pid, sid)
+    assert client.get(url).status_code == 200  # key kept
+    source.unlink()
+    res = client.get(url)
+    assert (res.status_code, res.json()["detail"]) == (404, "source is failed")
+
+
+def test_window_content_keys_are_per_project(
+    client: TestClient, tmp_path: Path, stat_keys: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid, sid, source = make_project(client, tmp_path)
+    other_folder = tmp_path / "other-footage"
+    other_folder.mkdir()
+    other_source = other_folder / "a.mp4"
+    other_source.write_bytes(b"another file")
+    res = client.post("/api/projects", json={"name": "Other", "source": str(other_folder)})
+    assert res.status_code == 200, res.text
+    other = res.json()["id"]
+    other_sid = client.get(f"/api/projects/{other}").json()["sources"][0]["id"]
+    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)
+    stat_keys.clear()
+    for _ in range(3):
+        for p, s in ((pid, sid), (other, other_sid)):
+            assert client.get(window_url(client, p, s)).status_code == 409
+    assert sorted(Path(x) for x in stat_keys) == sorted([source, other_source])  # once each
+    lookups: ui.MediaLookups = client.app.state.lookups
+    seen = {pid_: v[3] for (_, pid_), v in lookups.kept.items()}
+    assert seen[pid] == {str(source): ui.Media.key(source)}
+    assert seen[other] == {str(other_source): ui.Media.key(other_source)}
+
+
 # ---------------------------------------------------------------- slow-start hints
 
 
