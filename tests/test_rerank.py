@@ -770,6 +770,172 @@ def test_a_plain_reanalyze_keeps_the_ids_and_never_lowers_the_last(run, monkeypa
     assert after["settings"]["last_candidate_id"] == 41
 
 
+def test_a_fresh_analyze_into_a_project_keeps_the_ids_and_never_lowers_the_last(run, monkeypatch):  # noqa: F811
+    """#1009: analyze/edit again into a project (no ids given) keeps the id of an unchanged
+    span, gives a new span the next id after settings.last_candidate_id, never lowers it."""
+    run.go("funny")  # one candidate, 10-20 s
+    hl = read(run.proj)
+    (only,) = hl["candidates"]
+    only["id"] = "h007"
+    hl["settings"]["last_candidate_id"] = 40
+    (run.proj / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    run.go("funny", layers=False)
+    after = read(run.proj)
+    assert [c["id"] for c in after["candidates"]] == ["h007"]
+    assert after["settings"]["last_candidate_id"] == 40
+
+    def two(src, style, tr, use_scenes, max_cand, timings, **kw):
+        info = MediaInfo(
+            src, 60.0, 60.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
+        )
+        cands = [
+            analyze.Candidate(src, 10.0, 20.0, 15.0, 1.0, {"loudness": 1.0}, score=50.0),
+            analyze.Candidate(src, 30.0, 40.0, 35.0, 1.0, {"loudness": 1.0}, score=60.0),
+        ]
+        return analyze.SourceResult(src, info, 0.0, 60.0, cands, [], None)
+
+    monkeypatch.setattr(analyze, "analyze_source", two)
+    run.go("funny", layers=False)
+    after = read(run.proj)
+    assert {c["start"]: c["id"] for c in after["candidates"]} == {10.0: "h007", 30.0: "h041"}
+    assert after["settings"]["last_candidate_id"] == 41
+
+
+def test_a_fresh_analyze_gives_a_span_its_id_from_the_linked_backup(run, monkeypatch):  # noqa: F811
+    """#1009 review F1: analyze again into a re-ranked project: a span highlights.json lacks
+    gets its id from the backup it is linked to, and the backup's last id counts."""
+    run.go("funny")  # one candidate, 10-20 s
+    hl = read(run.proj)
+    (only,) = hl["candidates"]
+    only["id"] = "h007"
+    hl["settings"]["last_candidate_id"] = 40
+    backup = {
+        "candidates": [
+            {**only, "id": "h007"},
+            {**only, "id": "h009", "start": 30.0, "end": 40.0},
+        ],
+        "settings": {"last_candidate_id": 60},
+    }
+    raw = json.dumps(backup).encode()
+    (run.proj / rerank.BACKUP).write_bytes(raw)
+    hl["settings"]["rerank_backup"] = analyze.backup_digest(raw)
+    (run.proj / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+
+    def two(src, style, tr, use_scenes, max_cand, timings, **kw):
+        info = MediaInfo(
+            src, 60.0, 60.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
+        )
+        cands = [
+            analyze.Candidate(src, 10.0, 20.0, 15.0, 1.0, {"loudness": 1.0}, score=50.0),
+            analyze.Candidate(src, 30.0, 40.0, 35.0, 1.0, {"loudness": 1.0}, score=60.0),
+        ]
+        return analyze.SourceResult(src, info, 0.0, 60.0, cands, [], None)
+
+    monkeypatch.setattr(analyze, "analyze_source", two)
+    run.go("funny", layers=False)
+    after = read(run.proj)
+    assert {c["start"]: c["id"] for c in after["candidates"]} == {10.0: "h007", 30.0: "h009"}
+    assert after["settings"]["last_candidate_id"] >= 60
+
+
+def _spans(monkeypatch, *spans: tuple[float, float]) -> None:
+    def fake(src, style, tr, use_scenes, max_cand, timings, **kw):
+        info = MediaInfo(
+            src, 60.0, 60.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
+        )
+        cands = [
+            analyze.Candidate(src, a, b, (a + b) / 2, 1.0, {"loudness": 1.0}, score=50.0)
+            for a, b in spans
+        ]
+        return analyze.SourceResult(src, info, 0.0, 60.0, cands, [], None)
+
+    monkeypatch.setattr(analyze, "analyze_source", fake)
+
+
+def _link_backup(proj: Path, raw: bytes, *, link: bool = True) -> None:
+    (proj / rerank.BACKUP).write_bytes(raw)
+    hl = read(proj)
+    if link:
+        hl["settings"]["rerank_backup"] = analyze.backup_digest(raw)
+    (proj / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+
+
+def test_a_fresh_analyze_carries_the_link_so_a_second_one_still_gets_backup_ids(
+    run,  # noqa: F811
+    monkeypatch,
+):
+    """#1009 (W1): action -> rerank -> analyze -> analyze: the backup keeps giving its ids."""
+    run.go("funny")  # one candidate, 10-20 s
+    hl = read(run.proj)
+    hl["candidates"][0]["id"] = "h014"
+    hl["settings"]["last_candidate_id"] = 14
+    (run.proj / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    backup = {
+        "candidates": [
+            {**hl["candidates"][0], "id": "h001", "start": 50.0, "end": 58.0},
+            {**hl["candidates"][0], "id": "h002", "start": 30.0, "end": 40.0},
+        ],
+        "settings": {"last_candidate_id": 2},
+    }
+    raw = json.dumps(backup).encode()
+    _link_backup(run.proj, raw)
+    _spans(monkeypatch, (10.0, 20.0))
+    run.go("funny", layers=False)  # the style the rerank went to, analysed fresh
+    after = read(run.proj)
+    assert after["settings"]["rerank_backup"] == analyze.backup_digest(raw)
+    _spans(monkeypatch, (10.0, 20.0), (30.0, 40.0))
+    run.go("funny", layers=False)
+    after = read(run.proj)
+    assert {c["start"]: c["id"] for c in after["candidates"]}[30.0] == "h002"
+
+
+def test_action_rerank_sport_analyze_sport_analyze_action_gives_the_original_ids(
+    run,  # noqa: F811
+    monkeypatch,
+):
+    """#1009 (W1), the whole chain for real: action analysed, a real rerank to sport, a fresh
+    analyze as sport, a fresh analyze as action: the action spans get their first ids back."""
+    action = [(10.0, 20.0), (30.0, 40.0), (50.0, 58.0)]
+    sport = [(5.0, 9.0), (22.0, 27.0)]
+    write_caches(run.video)
+    _spans(monkeypatch, *action)
+    run.go("action", layers=False)
+    first = {c["start"]: c["id"] for c in read(run.proj)["candidates"]}
+    assert sorted(first.values()) == ["h001", "h002", "h003"]
+    rerank.rerank(run.proj, get_style("sport"))
+    assert (run.proj / rerank.BACKUP).exists()
+    assert "rerank_backup" in read(run.proj)["settings"]
+    _spans(monkeypatch, *sport)
+    run.go("sport", layers=False)
+    assert "rerank_backup" in read(run.proj)["settings"]  # carried on
+    _spans(monkeypatch, *action)
+    run.go("action", layers=False)
+    assert {c["start"]: c["id"] for c in read(run.proj)["candidates"]} == first
+
+
+def test_a_fresh_analyze_records_no_link_for_a_stale_or_unlinked_backup(run, monkeypatch):  # noqa: F811
+    run.go("funny")
+    _link_backup(run.proj, b"{}", link=False)
+    run.go("funny", layers=False)
+    assert "rerank_backup" not in read(run.proj)["settings"]
+    hl = read(run.proj)
+    hl["settings"]["rerank_backup"] = "0123456789abcdef"  # not this backup's digest
+    (run.proj / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    run.go("funny", layers=False)
+    assert "rerank_backup" not in read(run.proj)["settings"]
+
+
+@pytest.mark.parametrize("raw", ["not json", "[1, 2]", '{"no": "analysis"}', b"\xff\xfe"])
+def test_a_fresh_analyze_over_an_unreadable_highlights_numbers_from_h001(run, raw):  # noqa: F811
+    run.go("funny")
+    path = run.proj / "highlights.json"
+    path.write_bytes(raw if isinstance(raw, bytes) else raw.encode())
+    run.go("funny", layers=False)
+    after = read(run.proj)
+    assert [c["id"] for c in after["candidates"]] == ["h001"]
+    assert after["settings"]["last_candidate_id"] == 1
+
+
 def test_reanalyze_of_a_reranked_project_keeps_the_users_style(home, tmp_path, monkeypatch):
     project = make_project(home, tmp_path, style_requested="auto")
     hl = read(project)

@@ -121,10 +121,36 @@ def test_a_single_quoted_path_with_an_apostrophe(text: str) -> None:
         "requests: url: /api/chat failed",
         "bad host:11434/api reply",
         r"the pattern \d+ and \w did not match",
+        "Invalid URL (POST /v1/chat/completions)",
+        "404 Not Found (GET /api/tags)",
+        "Bad request (DELETE /v1/models/x)",
+        "POST /v1/chat/completions",
+        "GET /v1beta/models/x:generateContent",
     ],
 )
 def test_urls_and_regex_text_stay(text: str) -> None:
     assert errtext.no_paths(text) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "POSTED /home/user/x.mp4 ok",
+        "opened /Users/me/a.mp4",
+        "Invalid URL (POST /v1/x) in /home/user/x",
+        "POST /home/user/x.mp4 failed",
+        "GET /Users/me/a.mp4",
+        "url: /home/u/x.mp4",
+        "bad url: /Users/me/a.mp4",
+        "'POST /home/user/x.mp4'",
+        "post /home/user/x.mp4",
+        "POST  /home/user/x.mp4",
+        "POST /apiary/x.mp4",
+    ],
+)
+def test_a_host_path_after_other_text_is_still_redacted(text: str) -> None:
+    got = errtext.no_paths(text)
+    assert not any(w in got for w in ("home", "Users", "apiary")), got
 
 
 def test_many_apostrophes_do_not_make_the_cleaning_slow() -> None:
