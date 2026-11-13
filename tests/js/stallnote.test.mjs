@@ -126,3 +126,47 @@ test('a paused element opening a sequence clip that waits shows the note', async
 test('a paused element outside Play sequence shows no note', async (t) => {
   assert.ok(!(await opening(t, false)));
 });
+
+/** Play sequence on a clip that waits; Stop at ``stopAt`` ms, then run on to ``end`` ms. */
+async function stopping(t, stopAt, end) {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const project = makeProject({ network: true });
+  project.sources[0] = { ...project.sources[0], status: 'needs-proxy', windows: [] };
+  const c = project.highlights.candidates[0];
+  const seg = { id: c.id, source: c.source, start: c.start, end: c.end, label: c.label };
+  project.review = { segments: [seg] };
+  const page = await boot({ project, routes: { 'POST /api/projects/p1/sources/s1/prepare': {} } });
+  t.after(() => page.close());
+  const d = page.document;
+  const note = d.querySelector('#stallNote');
+  d.querySelector('#seqPlayBtn').click();
+  await page.settle();
+  const m = d.querySelector('.screen video.active').__media;
+  Object.assign(m, { paused: true, readyState: 0 });
+  m.fire('loadstart');
+  t.mock.timers.tick(stopAt);
+  const before = { hidden: note.hidden, text: note.textContent };
+  d.querySelector('#seqPlayBtn').click(); // Stop
+  const after = { hidden: note.hidden, text: note.textContent };
+  await page.settle();
+  for (let at = stopAt; at < end; at += 1000) { // the poll reloads the stage: settle between
+    t.mock.timers.tick(1000);
+    await page.settle();
+  }
+  return { before, after, late: { hidden: note.hidden, text: note.textContent } };
+}
+
+test('Stop removes the note a waiting sequence clip showed', async (t) => {
+  const r = await stopping(t, 5100, 5100);
+  assert.ok(!r.before.hidden, 'the note showed after 5 s');
+  assert.ok(r.after.hidden, 'Stop hides it');
+  assert.equal(r.after.text, '', 'and empties it');
+});
+
+test('Stop before 5 s means the note never shows', async (t) => {
+  const r = await stopping(t, 2000, 8000);
+  assert.ok(r.before.hidden, 'not yet at 2 s');
+  assert.ok(r.after.hidden);
+  assert.ok(r.late.hidden, 'the cancelled wait does not show a note later');
+  assert.equal(r.late.text, '');
+});
