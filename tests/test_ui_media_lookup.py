@@ -82,9 +82,10 @@ def box(kind: bytes, body: bytes = b"") -> bytes:
 
 
 def test_range_requests_within_the_ttl_check_the_folder_once(
-    client: TestClient, tmp_path: Path, counted: dict[str, int]
+    client: TestClient, tmp_path: Path, counted: dict[str, int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pid, sid, _ = make_project(client, tmp_path)
+    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)  # within the TTL however slow the runner
     url = media_url(client, pid, sid)
     counted.update(project_dir=0, entries=0)
     for i in range(50):
@@ -120,6 +121,7 @@ def test_per_request_cost_drops_with_a_slow_folder_check(
         return real_dir(pid)
 
     monkeypatch.setattr(ui, "project_dir", slow)
+    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)  # a slow runner takes over 2 s for n
     n = 200
     for i in range(n):
         assert client.get(url, headers={"Range": f"bytes={i}-{i}"}).status_code == 206
