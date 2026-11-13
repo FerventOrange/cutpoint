@@ -1121,6 +1121,7 @@ Transcribes the audio, scores it on a 0.1 s grid, runs the analysis steps below,
 `highlights.json` and `transcript.txt` to the project folder. Inputs may be any mix of files and folders; they are
 de-duplicated and kept in the order given. Each source has its own cache, so adding one file to
 an analysed set processes only the new file.
+A fresh run into an existing project reads the ids from the current `highlights.json`: a moment whose span is unchanged keeps its id, new spans get ids above `settings.last_candidate_id`, which never goes down. With no readable file, numbering starts at `h001`.
 
 | Option | Meaning |
 |---|---|

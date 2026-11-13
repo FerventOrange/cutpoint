@@ -3784,12 +3784,17 @@ def analyze(
         ids: For a re-analysis (:func:`reanalyze`, ``cutpoint rerank --analyze``): the ids of
             the earlier candidates by :func:`span_key` (:func:`earlier_ids`). A candidate with
             the span of one keeps its id, the others get the next ids after
-            ``last_candidate_id``. None: every candidate is numbered from ``h001``.
+            ``last_candidate_id``. None: the ids of an earlier ``out_dir/highlights.json`` that is
+            an analysis are taken the same way (:func:`project_ids`, #1009), so a fresh run
+            into a project (``analyze``, ``edit``, ``360 analyze``) keeps the ids of the spans
+            it finds again; without one every candidate is numbered from ``h001``.
         last_candidate_id: The highest id the earlier analysis gave (with ``ids`` only).
 
     Returns:
         Path of the written highlights.json.
     """
+    if ids is None:
+        ids, last_candidate_id = project_ids(out_dir)
     with progress.run(ANALYZE_STEPS, use=layers) as steps:
         return _analyze(
             target,
@@ -4311,6 +4316,29 @@ def earlier_ids(
             ids[key] = i
             taken.add(i)
     return ids, max(last, old_last)
+
+
+def project_ids(
+    project: Path,
+) -> tuple[dict[tuple[str, float, float], str] | None, int]:
+    """The ids a fresh analysis into ``project`` keeps (#1009): :func:`earlier_ids` of its
+    highlights.json and of its re-rank backup, or ``(None, 0)`` (number from ``h001``) when
+    there is no highlights.json or it is not a readable analysis."""
+    from cutpoint.rerank import BACKUP  # noqa: PLC0415
+
+    raw = cache.load_bytes(project / "highlights.json")
+    if raw is None:
+        return None, 0
+    try:
+        hl = json.loads(raw.decode("utf-8-sig"))
+        if not isinstance(hl, dict) or not isinstance(hl.get("candidates"), list):
+            return None, 0
+        return earlier_ids(hl, cache.load_bytes(project / BACKUP))
+    except (AttributeError, KeyError, TypeError, ValueError):  # not an analysis
+        logger.debug(
+            "the earlier highlights.json's ids cannot be read; numbering anew", exc_info=True
+        )
+        return None, 0
 
 
 def rank_parts(

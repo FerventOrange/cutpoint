@@ -986,3 +986,32 @@ def test_preview_path_is_consistent_across_threads(project) -> None:
         with ThreadPoolExecutor(len(spans)) as pool:
             got = list(pool.map(call, spans))
         assert got == want
+
+
+def test_360_analyze_again_keeps_the_ids_of_the_earlier_analysis(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """#1009: 360 analyze calls analyze() without ids; the earlier highlights.json still gives
+    the same spans their ids and a new span ids after settings.last_candidate_id."""
+    real = analyze_mod.analyze
+    _timing_run(monkeypatch, tmp_path)
+    cands = [
+        {"id": "h003", "source": "a.lrv", "start": 10.0, "end": 20.0},
+        {"id": "s001", "source": "a.lrv", "start": 5.0, "end": 6.0},  # not an h id: ignored
+    ]
+    cache.save_json(
+        tmp_path / "highlights.json",
+        {"candidates": cands, "settings": {"last_candidate_id": 40}},
+    )
+    got: list[dict] = []
+
+    def capture(*a, **k):
+        got.append(k)
+        return tmp_path / "highlights.json"
+
+    monkeypatch.setattr(analyze_mod, "analyze", real)
+    monkeypatch.setattr(analyze_mod, "_analyze", capture)
+    _run_analyze(no_events=True)
+    (kw,) = got
+    assert kw["ids"] == {("a.lrv", 10.0, 20.0): "h003"}
+    assert kw["last_candidate_id"] == 40
