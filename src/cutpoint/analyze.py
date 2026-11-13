@@ -3780,7 +3780,9 @@ def analyze(
             layers follow ``style``.
         rerank_backup: ``settings.rerank_backup`` (:func:`backup_digest` of the backup a
             re-rank kept, :func:`reanalyze`): recorded again, so the backup still gives ids
-            back. None: not recorded (a fresh analysis is not linked to a backup).
+            back. None: not recorded, unless the earlier ``out_dir/highlights.json`` is linked
+            to the backup file next to it (:func:`project_backup_link`, #1009): that link is
+            carried on. Otherwise a fresh analysis is not linked to a backup.
         ids: For a re-analysis (:func:`reanalyze`, ``cutpoint rerank --analyze``): the ids of
             the earlier candidates by :func:`span_key` (:func:`earlier_ids`). A candidate with
             the span of one keeps its id, the others get the next ids after
@@ -3795,6 +3797,8 @@ def analyze(
     """
     if ids is None:
         ids, last_candidate_id = project_ids(out_dir)
+        if rerank_backup is None:
+            rerank_backup = project_backup_link(out_dir)
     with progress.run(ANALYZE_STEPS, use=layers) as steps:
         return _analyze(
             target,
@@ -4293,7 +4297,8 @@ def earlier_ids(
 
     ``backup``: the bytes of ``highlights.before-rerank.json`` (#1005), used only when they are
     the backup ``hl`` is linked to (:func:`backup_digest` equal to ``settings.rerank_backup``,
-    which a re-rank records and a re-analysis keeps; a fresh analysis has none). A span ``hl``
+    which a re-rank records; a re-analysis and a fresh analysis keep it while it still names the
+    backup, :func:`project_backup_link`). A span ``hl``
     lacks gets its id there, unless ``hl`` gives that id to a span (``hl``'s ids come first,
     so no id names another span); its highest id counts too. A backup that is not an analysis,
     whose candidates cannot be read, or that gives a span both have another id than ``hl``
@@ -4339,6 +4344,23 @@ def project_ids(
             "the earlier highlights.json's ids cannot be read; numbering anew", exc_info=True
         )
         return None, 0
+
+
+def project_backup_link(project: Path) -> str | None:
+    """The ``settings.rerank_backup`` of ``project``'s highlights.json when it still names the
+    re-rank backup file next to it (:func:`backup_digest` equal), else None (#1009): a fresh
+    analysis records it again, so the backup keeps giving ids back after it."""
+    from cutpoint.rerank import BACKUP  # noqa: PLC0415
+
+    raw = cache.load_bytes(project / "highlights.json")
+    backup = cache.load_bytes(project / BACKUP)
+    if raw is None or backup is None:
+        return None
+    try:
+        link = (json.loads(raw.decode("utf-8-sig")).get("settings") or {}).get("rerank_backup")
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return link if isinstance(link, str) and backup_digest(backup) == link else None
 
 
 def rank_parts(

@@ -2108,7 +2108,7 @@ list`), not `auto`. It prints the new top `--top` moments (default 10) with thei
   `settings.last_candidate_id`, which never goes down, so an id never names another span.
   `--analyze` keeps the ids the same way. The backup counts only while `highlights.json` is
   linked to it (`settings.rerank_backup`, written by the rerank that kept it and kept by
-  re-analyses); after `analyze` or `edit` it gives no id back. Only one backup exists (each
+  re-analyses and by `analyze` or `edit` into the project). Only one backup exists (each
   rerank replaces it), so switching style and back gives the ids back; A to B to C to A does
   not. The re-analysis of `cutpoint events` and `crashes --reanalyze` keeps the ids of
   unchanged spans the same way (without the backup).
