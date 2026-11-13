@@ -305,10 +305,13 @@ class ProgressResult:
     Attributes:
         stderr: Everything ffmpeg wrote to stderr (warnings included).
         out_time: Last output timestamp ffmpeg reported (s), i.e. how far it got.
+        dropped: Frames ffmpeg's output frame-rate sync dropped (``drop_frames`` of its
+            progress report), for example frames whose timestamps went back.
     """
 
     stderr: str
     out_time: float
+    dropped: int = 0
 
 
 # ffmpeg exits 0 after these, leaving a silently truncated output. On Windows a
@@ -341,12 +344,16 @@ def run_progress(
         RunCancelled: When ``cancel`` was set before ffmpeg finished.
     """
     cmd = _command(args[0], ["-progress", "pipe:1", "-nostats", *args[1:]])
-    t0, next_pct, out_time = time.perf_counter(), 10, 0.0
+    t0, next_pct, out_time, dropped = time.perf_counter(), 10, 0.0, 0
 
     def read_progress(stream: IO[str]) -> None:
-        nonlocal next_pct, out_time
+        nonlocal next_pct, out_time, dropped
         try:
             for line in stream:
+                if line.startswith("drop_frames="):
+                    with suppress(ValueError):
+                        dropped = max(dropped, int(line.split("=", 1)[1]))
+                    continue
                 if not line.startswith("out_time_us="):
                     continue
                 try:
@@ -391,7 +398,7 @@ def run_progress(
         if proc.returncode != 0:
             code = exit_code(proc.returncode)
             raise FFmpegError(f"ffmpeg failed during {label} (exit {code}):\n{_tail(stderr)}")
-    return ProgressResult(stderr=stderr, out_time=out_time)
+    return ProgressResult(stderr=stderr, out_time=out_time, dropped=dropped)
 
 
 @dataclass(frozen=True)
