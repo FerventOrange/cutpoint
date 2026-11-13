@@ -412,6 +412,9 @@ def test_non_pool_styles_never_pick_pool_moments(tmp_path):
         ({"style": "mygame", "style_base": "gaming"}, False),
         ({"style": "mytrail", "settings": {"visual_pool": {}}}, True),
         ({"style": "mytrail", "style_base": None, "settings": None}, False),  # an older file
+        ({"detection": {"style": "sport"}}, True),  # no style: the detection's (#1015)
+        ({"detection": {"style": "gaming"}}, False),
+        ({}, True),  # nothing recorded: the fallback, action
     ],
 )  # fmt: skip
 def test_project_has_pool_reads_the_recorded_base_without_a_pool_record(hl, expected):

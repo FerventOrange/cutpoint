@@ -90,6 +90,20 @@ def test_a_deleted_style_trims_as_its_recorded_base() -> None:
     assert (c["start"], c["end"]) == (12, 40)  # as commentary: the end would leave 19 s
 
 
+def test_a_file_without_style_trims_as_its_fallback_style() -> None:
+    """No `style` (hand-made file): the recorded base, else the detection's style, else action,
+    never gaming; it trims instead of being left alone (#1015)."""
+    for extra, expected in (
+        ({"style_base": "commentary"}, (12, 40)),  # min_len 28: the end stays
+        ({"detection": {"style": "commentary"}}, (12, 40)),
+        ({}, (12, 20)),  # action (min_len 3): both ends trim
+    ):
+        hl = {"settings": {}, "candidates": [_cand(10, 20 if not extra else 40)], **extra}
+        drop_menu_time(hl, _ev([[5, 12], [20, 50]] if not extra else [[5, 12], [31, 50]]))
+        (c,) = hl["candidates"]
+        assert (c["start"], c["end"]) == expected, extra
+
+
 def test_unknown_style_is_never_trimmed() -> None:
     hl = _hl(_cand(10, 20), style="no-such-style")
     drop_menu_time(hl, _ev([[8, 12]]))
