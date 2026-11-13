@@ -54,6 +54,9 @@
       <div id="analyzeSteps" class="steps" hidden></div>
       <p id="analyzeStepsStatus" class="vh" role="status"></p>
       <p id="runBusy" class="muted run-busy" role="status" hidden></p>
+      <!-- Undo/Redo of the last ranking change (#902): swaps highlights.json and its backup -->
+      <p id="rankUndoRow" class="rank-undo" hidden><button type="button" id="rankUndoBtn" class="link-btn"></button></p>
+      <p id="rankUndoLive" class="vh" role="status"></p>
       <div class="filter-row" id="filterWrap" hidden>
         <label class="filter">
           <span class="vh">Search moments by label, words, file or candidate id</span>

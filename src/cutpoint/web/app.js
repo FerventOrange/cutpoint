@@ -141,6 +141,7 @@ const S = {
   // {previewing} while it is asked, {stale} the base the apply route called stale
   rankings: new Map(),
   rankApplying: null, // the card id whose ranking the apply route is saving
+  rankUndoing: false, // the undo route is swapping the ranking (from a card or the Moments link)
   shown: null, // Set of the moment ids the assistant showed (show_moments), highlighted in the list
   history: [], // the applied assistant changes (GET history), oldest first
 };
@@ -775,6 +776,7 @@ function renderMoments() {
   const resume = $('#resumeBtn'); // a stopped run of progress.json (#109); before analysis the empty state has its own
   resume.hidden = !hl || !p.run?.resumable;
   if (!resume.hidden) resume.dataset.label = resumeLabel(p.run);
+  renderRankUndo(); // the last ranking change's Undo/Redo, above the list
   $('.moments').classList.toggle('bare', !hl);
   $('#filterWrap').hidden = !list.length;
   $('#kindSeg').hidden = !list.length;
@@ -5758,7 +5760,7 @@ function rankingItem(ev, id) {
   const name = styleTitle(v.style);
   const busy = rankBusy();
   const dismissed = S.dismissed.has(id) && state !== 'in-use';
-  const off = busy || previewing || (!!S.rankApplying && S.rankApplying !== id);
+  const off = busy || previewing || S.rankUndoing || (!!S.rankApplying && S.rankApplying !== id);
   const btn = (act, label, onclick, primary = false, disabled = off) => h('button', { type: 'button', class: `btn${primary ? ' primary' : ''}`, 'data-act': act, disabled, onclick }, label);
   const kids = [
     h('span', { class: 'prop-label', text: 'Ranking' }),
@@ -5767,7 +5769,14 @@ function rankingItem(ev, id) {
   ];
   let acts = [];
   const notes = [];
-  if (state === 'in-use') notes.push(`In use: the moments are ranked in the ${name} style.`);
+  if (state === 'in-use') {
+    notes.push(`In use: the moments are ranked in the ${name} style.`);
+    const u = S.project?.ranking_undo;
+    if (u?.action === 'undo') { // this ranking is the change Undo takes back
+      acts = [h('button', { type: 'button', class: 'btn', 'data-act': 'undo-ranking', disabled: off || !!S.rankApplying,
+        'aria-label': `Undo the ${name} ranking, back to ${styleTitle(u.style)}`, onclick: () => undoRanking(id) }, S.rankUndoing ? 'Undoing…' : 'Undo')];
+    }
+  }
   else if (dismissed) notes.push('Dismissed');
   else if (state === 'stale') {
     notes.push('The moments changed since this preview.');
@@ -5813,7 +5822,7 @@ function focusRankCard(id) {
 async function previewRanking(ev, id) {
   const pid = S.id;
   const { v } = rankView(ev, id);
-  if (!pid || S.rankApplying || S.rankings.get(id)?.previewing || rankBusy()) return;
+  if (!pid || S.rankApplying || S.rankUndoing || S.rankings.get(id)?.previewing || rankBusy()) return;
   chatError('');
   S.rankings.set(id, { ...S.rankings.get(id), previewing: true });
   renderChat();
@@ -5845,7 +5854,7 @@ async function previewRanking(ev, id) {
 async function useRanking(ev, id) {
   const pid = S.id;
   const { v, state } = rankView(ev, id);
-  if (!pid || S.rankApplying || state !== 'ready' || rankBusy()) return;
+  if (!pid || S.rankApplying || S.rankUndoing || state !== 'ready' || rankBusy()) return;
   const name = styleTitle(v.style);
   S.rankApplying = id;
   chatError('');
@@ -5882,9 +5891,69 @@ async function useRanking(ev, id) {
   }
 }
 
+/** The Moments column's "Undo ranking (was Gaming)" or, after an Undo, "Redo ranking (Funny)": shown
+ * while the backup matches the analysis (ranking_undo), disabled while a run or a ranking change holds the project. */
+function renderRankUndo() {
+  const p = S.project;
+  const u = p?.highlights ? p.ranking_undo : null;
+  const row = $('#rankUndoRow');
+  const b = $('#rankUndoBtn');
+  if (!u && b === document.activeElement) $('#momentsTitle').focus(); // it is going: keep focus in the column
+  row.hidden = !u;
+  if (!u) return;
+  const name = styleTitle(u.style);
+  const redo = u.action === 'redo';
+  const label = S.rankUndoing ? (redo ? 'Redoing ranking…' : 'Undoing ranking…') : redo ? `Redo ranking (${name})` : `Undo ranking (was ${name})`;
+  if (b.textContent !== label) b.textContent = label;
+  const busy = rankBusy();
+  b.disabled = busy || S.rankUndoing || !!S.rankApplying;
+  b.title = busy ? BUSY_TEXT : redo ? `Use the ${name} ranking again` : `Go back to the ${name} ranking`;
+}
+
+/** Undo (or Redo) the last ranking change: the undo route swaps highlights.json and its backup against the
+ * page's ranking_key, then the page reloads the project. ``id``: the ranking card it was asked from (else the Moments link). */
+async function undoRanking(id = null) {
+  const pid = S.id;
+  const u = S.project?.ranking_undo;
+  if (!pid || !u || S.rankUndoing || S.rankApplying || rankBusy()) return;
+  const name = styleTitle(u.style);
+  const redo = u.action === 'redo';
+  const live = id ? $('#chatLive') : $('#rankUndoLive');
+  const error = (text) => (id ? chatError(text) : banner(text));
+  S.rankUndoing = true;
+  error('');
+  renderRankUndo();
+  renderChat();
+  live.textContent = redo ? 'Redoing the ranking…' : 'Undoing the ranking…';
+  let said = '';
+  try {
+    await api(rankUrl('undo'), { method: 'POST', body: { base: S.project.ranking_key } });
+    if (S.id !== pid) return;
+    S.shown = null; // the assistant's highlights were of the ranking before
+    S.rankUndoing = false;
+    await refreshProject();
+    said = redo ? `Using the ${name} ranking again.` : `Back to the ${name} ranking.`;
+  } catch (e) {
+    if (S.id !== pid) return;
+    S.rankUndoing = false;
+    await refreshProject(); // stale, busy or nothing to undo: the page follows the server
+    if (e.code !== 'folder_busy' || !rankBusy()) error(e.message);
+  } finally {
+    S.rankUndoing = false;
+    if (S.id === pid) {
+      renderRankUndo();
+      renderChat();
+      live.textContent = said;
+      if (id) focusRankCard(id);
+      else if (!$('#rankUndoRow').hidden) $('#rankUndoBtn').focus();
+    }
+  }
+}
+
 /** Draw the ranking cards again when a run starts or stops holding the project (their buttons follow it). */
 let rankBusySeen = false;
 function syncRankingBusy() {
+  renderRankUndo();
   const busy = rankBusy();
   if (busy === rankBusySeen) return;
   rankBusySeen = busy;
@@ -8131,6 +8200,7 @@ function bind() {
     focusRow(0, 'select');
   });
   $('#resumeBtn').addEventListener('click', (e) => resumeRun(e.currentTarget));
+  $('#rankUndoBtn').addEventListener('click', () => undoRanking());
   // an out-of-range Analyze option blocks Analyze: open the options so the browser can point at it
   $('#againOk').addEventListener('click', () => {
     if (!$('#analyzeDialog form').checkValidity()) $('#analyzeOpts').open = true;
