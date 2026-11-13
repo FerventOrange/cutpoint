@@ -19,14 +19,16 @@ import re
 # a path's start: a file:// URL, a drive, a UNC (or repr'd UNC) prefix, a forward-slash UNC,
 # a drive-less Windows root (two parts at least), a POSIX root (also right after a colon, as in
 # "error:/home/..."; not the path of an http(s) URL, nor the "url: /api/chat" of a requests
-# error) or ~
+# error, nor an API route (/v1..., /api, /openai) after an HTTP method) or ~
 _START = (
     r"(?:(?<![\w])(?i:file):/+"
     r"|(?<![\w])[A-Za-z]:[\\/]"
     r"|(?<![\w\\])\\\\+(?=[^\s\\'\"])"
     r"|(?<![\w:/\\])//(?=[^\s/])"
     r"|(?<![\w\\:])\\(?=[^\s\\'\"]+\\)"
-    r"|(?<![\w/.~\\-])(?<!url: )/(?=[^\s/])"
+    r"|(?<![\w/.~\\-])(?<!url: )"
+    r"(?:(?<!\bGET )(?<!\bPOST )(?<!\bPUT )(?<!\bPATCH )(?<!\bDELETE )(?<!\bHEAD )(?<!\bOPTIONS )"
+    r"|(?!/(?:v\d+\w*|api|openai)(?![\w.-])))/(?=[^\s/])"
     r"|(?<![\w])~[\\/])"
 )
 # quoted: everything up to the closing quote of the same kind (spaces too; Python puts a path
