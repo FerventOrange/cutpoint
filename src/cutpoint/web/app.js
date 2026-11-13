@@ -2624,6 +2624,7 @@ onStage('seeked', () => {
   const w = seekWant;
   if (w) seekTo(w.t, w.fast); // the latest scrub target that waited for this seek
   else updatePlayhead();
+  if (S.cutMode && !S.seqPlay) precueCut(); // a seek that kept readyState high ends with only seeked
 });
 onStage('click', togglePlay);
 // the spare player seeks to the clip it preloads as soon as it knows the source

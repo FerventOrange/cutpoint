@@ -970,6 +970,25 @@ test('the spare player waits while the stage player still opens or seeks the fil
   assert.equal(spare.dataset.url, stageV.dataset.url, 'the spare player opens clip 2');
 });
 
+test('a seek that never lowers readyState ends with seeked, and the spare player opens clip 2 then (#1028)', async (t) => {
+  const m = await inCut(t, { project: withSegments('h001', 'h002') });
+  const stageV = m.active();
+  const spare = spareOf(m, stageV);
+  await m.click('#cutTransition button[data-value=fade]');
+  t.mock.timers.tick(1000);
+  await m.page.settle();
+  stageV.__media.loaded(600);
+  Object.defineProperty(stageV, 'seeking', { configurable: true, get: () => true });
+  t.mock.timers.tick(1000);
+  await m.page.settle();
+  assert.equal(spare.getAttribute('src'), null, 'no second open while the stage player seeks');
+  delete stageV.seeking;
+  stageV.__media.fire('seeked');
+  t.mock.timers.tick(600);
+  await m.page.settle();
+  assert.equal(spare.dataset.url, stageV.dataset.url, 'seeked asks again; the spare player opens clip 2');
+});
+
 test('Stop in the middle of a dip leaves the players whole and the next play without a stray dim (#1028)', async (t) => {
   const m = await inCut(t, { project: withSegments('h001', 'h002') });
   m.t = t;
