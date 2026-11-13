@@ -26,6 +26,7 @@ from typing import Any, NamedTuple
 
 from cutpoint import cache, jsonout, progress
 from cutpoint import paths as cutpoint_paths
+from cutpoint.errors import LowMemoryError
 from cutpoint.events import explosions, paths, scoring
 from cutpoint.events.audio_events import (
     AudioParams,
@@ -321,6 +322,8 @@ def run_events(
         with stage("audio"):
             unload_ollama()
             with VramMonitor() as vm:
+                failed: Exception | None = None  # the last source's error
+                n_failed = 0  # sources whose detection failed
                 try:
                     for i, s in enumerate(sources):
                         if batch_size and i and not i % batch_size:  # a batch boundary
@@ -345,8 +348,17 @@ def run_events(
                                 # the device of this run, as voice and visual record theirs:
                                 # a run that only reads cached events loads no PANNs
                                 stats["audio_device"] = det.device
-                            evs = detect_audio_events(s, det, audio, force=True)  # miss or forced
+                            try:  # miss or forced
+                                evs = detect_audio_events(s, det, audio, force=True)
+                            except LowMemoryError:
+                                raise
+                            except Exception as err:  # noqa: BLE001 - one bad source, logged
+                                skip_source("Audio events", s, err)
+                                failed, evs = err, []
+                                n_failed += 1
                         layer1[str(s.path)] += [{**e, "kind": "audio"} for e in evs]
+                    if failed is not None and n_failed == len(sources):  # the layer failed
+                        raise failed
                 except BaseException:
                     keep = False  # the layer failed: free the model now
                     raise
@@ -369,14 +381,19 @@ def run_events(
         t0 = time.perf_counter()
         try:
             with stage("voice"), VramMonitor() as vm:
+                voice_errors: list[Exception] = []  # of every batch: one bad file skips itself
                 for k, part in enumerate(progress.batches(sources, batch_size)):
                     if k:  # a batch boundary: the PANNs of the batch before is closed
                         if det is not None:
                             det.close()
                             det = None
                         _boundary("voice", k * batch_size, len(sources))
-                    st = voice_layer.run_layer(part, voice_params, force="voice" in force, det=det)
+                    st = voice_layer.run_layer(
+                        part, voice_params, force="voice" in force, det=det, errors=voice_errors
+                    )
                     stats["voice"] = merge_stats(stats["voice"], st) if k else st
+                if voice_errors and len(voice_errors) == len(sources):  # the layer failed
+                    raise voice_errors[-1]
         finally:
             if det is not None:  # closed before the next layer loads its model
                 det.close()
@@ -399,6 +416,7 @@ def run_events(
         handoff = crash_run and "ocr" not in layers and encoder is None
         t0 = time.perf_counter()
         with stage("visual"), VramMonitor() as vm, use_prompts(prompts):
+            visual_errors: list[Exception] = []  # of every batch: one bad file skips itself
             parts = progress.batches(sources, batch_size)
             for k, part in enumerate(parts):
                 if k:  # a batch boundary: run_layer closed the models of the batch before
@@ -414,8 +432,13 @@ def run_events(
                         if handoff and last
                         else None
                     ),
+                    errors=visual_errors,
                 )
                 stats["visual"] = merge_stats(stats["visual"], st) if k else st
+            if visual_errors and len(visual_errors) == len(sources):  # the layer failed
+                while kept:  # a CLIP handed over by the last batch: freed with the layer
+                    kept.pop().close()
+                raise visual_errors[-1]
         vram["visual"] = vm.summary()
         timings["visual_s"] = round(time.perf_counter() - t0, 1)
 
@@ -851,6 +874,15 @@ def _release_engine(make_engine: Callable[[], OcrEngine]) -> None:
     make_engine.cache_clear()  # type: ignore[attr-defined]
 
 
+def skip_source(what: str, s: Any, err: Exception) -> None:
+    """A WARNING and a ``step_failed`` warning naming the source ``what`` skipped (``err``);
+    also used by the voice and visual layers."""
+    message = f"{s.name}: {what} skipped this source ({err})"
+    logger.debug("%s: %s failed", s.path, what, exc_info=True)
+    logger.warning("%s", message)
+    jsonout.warn("step_failed", message, [s.path])
+
+
 def _telemetry_layer(
     project: Path, sources: list[Any], vlm: VlmParams
 ) -> dict[str, list[dict[str, Any]]]:
@@ -859,12 +891,16 @@ def _telemetry_layer(
     Airtime and crash events become window seeds and events.txt lines.
     ``coverage`` pseudo-events (low priority, never written to events.json)
     tile the riding that is not on a lift or stopped, so spare VLM windows
-    describe ordinary riding too (scenic views, friends, trees).
+    describe ordinary riding too (scenic views, friends, trees). A source whose telemetry
+    fails to read keeps its events without coverage (a WARNING and a ``step_failed`` warning
+    name it); when every source fails, the last error is raised.
     """
     from cutpoint.telemetry import DT, extract  # noqa: PLC0415
 
     data = cache.load_json(project / "telemetry.json") or {}
     out: dict[str, list[dict[str, Any]]] = {}
+    failed: Exception | None = None  # the last source's error
+    n_failed = 0  # sources whose telemetry read failed
     for s in sources:
         rec = (data.get("sources") or {}).get(str(s.path))
         if not rec:
@@ -890,7 +926,14 @@ def _telemetry_layer(
                     "confidence": e.get("strength", e.get("score")),
                 }
             )
-        tel = extract(s.path, s.duration)
+        try:
+            tel = extract(s.path, s.duration)
+        except LowMemoryError:
+            raise
+        except Exception as err:  # noqa: BLE001 - logged; its events stay, without coverage
+            skip_source("Telemetry coverage", s, err)
+            failed, tel = err, None
+            n_failed += 1
         if tel is not None:
             g = tel.grid
             ride = (g["lift_mask"] == 0) & (g["still_mask"] == 0)
@@ -907,6 +950,8 @@ def _telemetry_layer(
                     }
                 )
         out[str(s.path)] = evs
+    if failed is not None and n_failed == len(sources):  # not one bad file: the layer failed
+        raise failed
     return out
 
 

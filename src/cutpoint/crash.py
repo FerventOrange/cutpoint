@@ -1195,7 +1195,10 @@ def detect_project(
     layers (``cutpoint events``) are used when cached. Only the IMU grids and the
     dense confirm decode anything; both are cached. A source whose inputs fail to load
     (unreadable telemetry or IMU) is skipped with a WARNING and a ``step_failed`` warning;
-    when every source fails, the last error is raised and nothing is written.
+    when every source fails, the last error is raised and nothing is written. A source whose
+    dense confirm fails keeps its candidates unconfirmed, with the same warnings; when every
+    source with dense windows fails, the last error is raised. A source whose contact sheets
+    fail (or whose dense confirm failed) gets none; crashes.json is still written.
 
     Args:
         project: Project folder (highlights.json).
@@ -1347,9 +1350,13 @@ def detect_project(
         progress.start("dense")
         progress.continuing("dense check", sum(k in stores[s] for s, k in windows), len(windows))
     seen: set[tuple[str, str]] = set()  # the dense windows of this loop so far
+    dense_failed: dict[str, Exception] = {}  # source: its error (its other windows skipped)
     try:
         for c in todo:
             src = c["source"]
+            if src in dense_failed:
+                c["dense"] = None
+                continue
             store = stores[src]
             a, b = dense_window(c, p)
             key = f"{a:.1f}-{b:.1f}"
@@ -1362,14 +1369,27 @@ def detect_project(
             if enc is None and key not in store:
                 enc = ClipEncoder()
             new = key not in store
-            c["dense"] = dense_feature(enc, inputs[src], c, p, store)
+            try:
+                c["dense"] = dense_feature(enc, inputs[src], c, p, store)
+            except LowMemoryError:
+                raise
+            except Exception as err:  # one unreadable source must not cost the others theirs
+                message = f"{Path(src).name}: crash dense check skipped this source ({err})"
+                logger.debug("%s: crash dense check failed", src, exc_info=True)
+                logger.warning("%s", message)
+                jsonout.warn("step_failed", message, [src])
+                c["dense"], dense_failed[src] = None, err
+                continue
             if new and key in store:  # saved at once: an interrupted run keeps its windows
                 cache.save_json(_dense_cache(Path(src), p), store)
+        if dense_failed and len(dense_failed) == len(stores):  # not one bad file: it failed
+            raise list(dense_failed.values())[-1]
     finally:
         if enc is not None:
             enc.close()
     for src, store in stores.items():
-        cache.save_json(_dense_cache(Path(src), p), store)
+        if src not in dense_failed:  # a failed source may be gone: its windows were saved
+            cache.save_json(_dense_cache(Path(src), p), store)
     timings["dense_s"] = round(time.perf_counter() - t0, 1)
     for c in cands:
         d = c.get("dense")
@@ -1390,6 +1410,7 @@ def detect_project(
     if sheets:
         for f in out_dir.glob("*.jpg"):
             cache.remove(f)
+    sheet_failed: set[str] = set(dense_failed)  # sources whose frames cannot be read
     for c in cands[:sheets]:
         c["caption"] = (
             f"{c['id']} {c['name']} {c['t0']:.1f}-{c['t1']:.1f}s "
@@ -1398,7 +1419,21 @@ def detect_project(
             f"dense {c['scores'].get('dense', 0):.2f} "
             f"aud {c['scores']['audio']:.2f} words {c['scores']['words']:.2f}"
         )
-        path = write_sheet(c, out_dir / f"{c['id']}_{Path(c['name']).stem}_{c['t0']:.0f}.jpg")
+        if c["source"] in sheet_failed:
+            continue
+        try:
+            path = write_sheet(c, out_dir / f"{c['id']}_{Path(c['name']).stem}_{c['t0']:.0f}.jpg")
+        except LowMemoryError:
+            raise
+        except Exception as err:  # a sheet is a by-product: crashes.json is still written
+            sheet_failed.add(c["source"])
+            logger.debug("%s: crash contact sheet failed", c["source"], exc_info=True)
+            if c["source"] not in dense_failed:  # warned once per source
+                name = Path(c["source"]).name
+                message = f"{name}: crash contact sheets skipped this source ({err})"
+                logger.warning("%s", message)
+                jsonout.warn("step_failed", message, [c["source"]])
+            continue
         if path:
             c["sheet"] = str(path)
             written.append(path)

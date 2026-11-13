@@ -430,7 +430,7 @@ def test_run_events_hands_the_visual_clip_model_to_the_crash_layer(
         crash.ClipEncoder, "from_visual", classmethod(lambda cls, m: enc if m is models else None)
     )
 
-    def run_layer(sources, params, force=False, bad=None, handoff=None):
+    def run_layer(sources, params, force=False, bad=None, handoff=None, errors=None):
         got["handoff"] = handoff
         if handoff is not None:
             handoff(models)

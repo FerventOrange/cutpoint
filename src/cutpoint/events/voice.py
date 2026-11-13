@@ -283,11 +283,21 @@ def needs_run(sources: list[Source], params: VoiceParams, force: bool = False) -
 
 
 def run_layer(
-    sources: list[Source], params: VoiceParams, force: bool = False, det: Any = None
+    sources: list[Source],
+    params: VoiceParams,
+    force: bool = False,
+    det: Any = None,
+    errors: list[Exception] | None = None,
 ) -> dict[str, Any]:
     """Compute the voice grids for every source that lacks them; returns stats.
 
-    A given ``det`` (PANNs) stays open: the caller closes it."""
+    A given ``det`` (PANNs) stays open: the caller closes it. A source whose grids fail
+    is skipped with a WARNING and a ``step_failed`` warning; its error is appended to
+    ``errors`` (the caller decides), or without ``errors`` the last one is raised when
+    every source failed. :class:`~cutpoint.errors.LowMemoryError` always propagates."""
+    from cutpoint.errors import LowMemoryError  # noqa: PLC0415
+    from cutpoint.events.pipeline import skip_source  # noqa: PLC0415
+
     need = [s for s in sources if force or load_voice(s, params) is None]
     stats: dict[str, Any] = {"cached": len(sources) - len(need), "computed": 0}
     if not need:
@@ -298,13 +308,26 @@ def run_layer(
     det = det or PannsDetector()
     stats["device"] = det.device
     vad = SileroVad()
+    failed: list[Exception] = []
     try:
         for s in need:
-            if compute_voice(s, det, vad, params, force=True) is not None:
+            try:
+                got = compute_voice(s, det, vad, params, force=True)
+            except LowMemoryError:
+                raise
+            except Exception as err:  # noqa: BLE001 - one bad source, logged
+                skip_source("Voice layer", s, err)
+                failed.append(err)
+                continue
+            if got is not None:
                 stats["computed"] += 1
     finally:
         if own:
             det.close()
+    if errors is not None:
+        errors += failed
+    elif failed and len(failed) == len(sources):  # not one bad file: the layer failed
+        raise failed[-1]
     return stats
 
 
