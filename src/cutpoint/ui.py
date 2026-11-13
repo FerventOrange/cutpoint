@@ -5055,6 +5055,7 @@ REFINE_WARNINGS = (
     "vision_unavailable",
     "vlm_unavailable",
     "context_not_applied",
+    "step_failed",
 )
 
 
@@ -5127,7 +5128,8 @@ def refine_state(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> di
 
 def _note_warnings(job: Job) -> None:
     """Put the envelope's :data:`REFINE_WARNINGS` into the job's log as WARNING notes, when the
-    CLI's own line (logged as it ran) is not there already."""
+    CLI's own line (logged as it ran) is not there already; the warning's ``files`` (the sources
+    it is about) follow the message."""
     for w in (job.result or {}).get("warnings") or []:
         msg = w.get("message") if isinstance(w, dict) else None
         if (
@@ -5135,7 +5137,8 @@ def _note_warnings(job: Job) -> None:
             and w.get("code") in REFINE_WARNINGS
             and not any(msg in line for line in job.logs)
         ):
-            job.note("WARNING", msg)
+            files = [f for f in w.get("files") or [] if isinstance(f, str)]
+            job.note("WARNING", f"{msg} ({', '.join(files)})" if files else msg)
 
 
 def _analyze_args(body: dict[str, Any], recorded: dict[str, Any]) -> tuple[list[str], list[str]]:
