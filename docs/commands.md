@@ -752,6 +752,17 @@ count. These are `move`, `add` and `remove` ops marked
 were spread. Without such wording the order is the assistant's. `move` and `add` positions
 written as `3.0` or `"3"` count as 3.
 
+Ranking preview: when you ask for a different kind of moment first ("show me the funny bits
+first", "more talk"), the chat can preview the whole moments list ranked in another style, a
+built-in or one you saved. A card shows the new top 10 next to the current list. Nothing changes
+until you click **Use this ranking**: it writes `highlights.json` and keeps
+`highlights.before-rerank.json`, the same as `cutpoint rerank`. When the project
+changed since the preview, the card says it is out of date: click Preview again. When the
+caches cannot give that style, the card says it needs a new analysis: click Analyze again as
+<style>. While another job runs on the project, wait. Specific moments still use the word and
+moment search. After the ranking changes, earlier replies are marked "(moment ids changed
+since)". Only file names go to the model, never paths.
+
 The AI Chat tab talks to the model set in the [`assistant`](configuration.md#assistant) section of
 `config.json`, chosen in the Models tab (Chat role) as a Provider with a model; no base
 URL is typed:
