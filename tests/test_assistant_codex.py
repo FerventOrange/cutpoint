@@ -125,3 +125,52 @@ def test_codex_chat_does_not_check_management_status(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(providers.cliproxy, "chat", lambda prov, req: _answer({"content": "ok"}))
     p = providers.SubscriptionProvider("codex", "", "gpt-5.6-sol", 0)
     assert p.chat([{"role": "user", "content": "hi"}]).text == "ok"
+
+
+def test_a_subscription_refusing_response_format_is_asked_once_without_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[dict[str, Any]] = []
+    refusal = providers.cliproxy.ProxyHTTPError(
+        "proxy inference error 400: Unsupported parameter: response_format", status=400
+    )
+
+    def fake_chat(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
+        sent.append(dict(payload))
+        if len(sent) == 1:
+            raise refusal
+        return _answer({"content": "{}"})
+
+    monkeypatch.setattr(providers.cliproxy, "chat", fake_chat)
+    p = providers.SubscriptionProvider("codex", "", "gpt-5.6-sol", 0)
+    msgs, schema = [{"role": "user", "content": "go"}], {"type": "object"}
+    assert p.chat(msgs, schema=schema).text == "{}"
+    assert "response_format" in sent[0] and "response_format" not in sent[1]
+    p.chat(msgs, schema=schema)  # remembered
+    assert len(sent) == 3 and "response_format" not in sent[2]
+    assert all("chat_template_kwargs" not in s for s in sent)
+
+
+@pytest.mark.parametrize(
+    ("err", "status"),
+    [
+        ("proxy inference error 400: model not found", 400),
+        ("proxy inference error 500: response_format blew up", 500),
+        # a status-less error whose text merely mentions 400 is not a refusal
+        ("proxy inference error 400: response_format", 0),
+    ],
+)
+def test_other_subscription_failures_are_not_retried(
+    monkeypatch: pytest.MonkeyPatch, err, status
+) -> None:
+    calls: list[int] = []
+
+    def fake_chat(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
+        calls.append(1)
+        raise providers.cliproxy.ProxyHTTPError(err, status)
+
+    monkeypatch.setattr(providers.cliproxy, "chat", fake_chat)
+    p = providers.SubscriptionProvider("codex", "", "gpt-5.6-sol", 0)
+    with pytest.raises(ProviderError):
+        p.chat([{"role": "user", "content": "go"}], schema={"type": "object"})
+    assert len(calls) == 1

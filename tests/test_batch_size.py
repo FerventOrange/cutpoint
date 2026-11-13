@@ -915,7 +915,7 @@ class _Provider:
 
     def chat(self, messages, *, schema=None, **_kw):
         self.chats += 1
-        return SimpleNamespace(text='{"score": 7, "label": "x"}')
+        return SimpleNamespace(text='{"score": 7, "label": "x"}', finish="")
 
     def unload(self) -> bool:
         self.unloads += 1

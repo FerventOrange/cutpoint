@@ -472,6 +472,22 @@ def moments(n: int) -> list[dict]:
     ]
 
 
+@pytest.mark.parametrize(("finish", "shown"), [("length", "(done_reason=length)"), ("", "")])
+def test_the_hosted_retry_line_shows_the_finish_reason_or_omits_it(
+    fake, monkeypatch, caplog, finish, shown
+) -> None:
+    provider = ScriptedProvider([])
+    provider.chat = lambda messages, **_kw: Reply(EMPTY, finish=finish)
+    monkeypatch.setattr(providers, "make", lambda *_a, **_k: provider)
+    rater = vision.VisionRater()
+    assert rater.available()
+    with caplog.at_level(logging.INFO, logger="cutpoint.vision"):
+        assert rater.rate(Path("a.mp4"), 0, 4, "gaming") is None
+    (line, _) = [r.getMessage() for r in caplog.records if "empty/unparseable" in r.getMessage()]
+    assert "None" not in line and "done_reason" not in line.replace(shown, "")
+    assert (shown in line) if shown else ("(" not in line)
+
+
 def test_three_moments_of_empty_replies_stop_the_rating_with_one_warning(
     fake, monkeypatch, caplog
 ) -> None:

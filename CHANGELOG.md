@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A Claude Code, ChatGPT Codex or Antigravity subscription whose proxy refuses `response_format` is now asked once without it and remembered for the session, as an OpenAI-compatible server already was. OpenAI-compatible servers (not api.openai.com, xAI or the proxy) are asked for a reply without thinking with `chat_template_kwargs: {"enable_thinking": false}`, dropped for the session when a server refuses it. The Vision retry log line shows the finish reason of a hosted reply when it has one and no longer prints `done_reason=None` (#1036).
 - A fresh `analyze` or `edit` into an existing project, and `360 analyze` again, no longer renumber the moments from `h001`: a moment whose span is unchanged keeps its id, new spans get ids after `settings.last_candidate_id`, which never goes down, as `cutpoint rerank` and a re-analysis already did (#1009). The link of a re-ranked project to its backup is carried on, so the backup still gives its ids back after the fresh run.
 - GPU scene detection on an MP4 or MKV that changes resolution mid-file put every later cut 0.1 s late (or lost cuts with older ffmpeg). Such a file is now decoded again without keeping its frames on the GPU; other files are unchanged (#1031).
 - In Cut mode, Play across the cut no longer shows a hard cut on the first press of a Fade between two clips of the same file: the second player opens while the cut is on screen, and if it is still not ready the picture dips to black and back (#1028).
