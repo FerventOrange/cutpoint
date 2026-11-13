@@ -136,7 +136,11 @@ const S = {
   sending: false,
   applying: false,
   pendingProposal: null, // a proposal that came in while Apply waited: previewed once Apply is done
-  dismissed: new Set(), // ids of proposals discarded from their chat card
+  dismissed: new Set(), // ids of proposals discarded from their chat card (and of ranking cards dismissed)
+  // ranking cards (#902), by card id (`${turn}-${n}`): {payload} a newer preview from Preview again,
+  // {previewing} while it is asked, {stale} the base the apply route called stale
+  rankings: new Map(),
+  rankApplying: null, // the card id whose ranking the apply route is saving
   shown: null, // Set of the moment ids the assistant showed (show_moments), highlighted in the list
   history: [], // the applied assistant changes (GET history), oldest first
 };
@@ -4599,6 +4603,7 @@ function syncStageAnalyze() {
 }
 
 function renderBusy() {
+  syncRankingBusy(); // the ranking cards' buttons follow a run on the project
   const p = S.project;
   const busy = !!S.active;
   const why = busy ? 'Another job is running.' : '';
@@ -5032,7 +5037,7 @@ const baseOf = (diff) => JSON.stringify(diff.filter((r) => r.before).sort((a, b)
 /** The working sequence in the same shape. */
 const seqShape = () => JSON.stringify(S.segments.map((s) => [s.id, s.start, s.end]));
 /** A saved turn (chat.json) or a polled one, in one shape. */
-const chatTurn = (t) => ({ id: t.id, user: t.user ?? t.text ?? '', status: t.status, error: t.error, events: [...(t.events ?? [])] });
+const chatTurn = (t) => ({ id: t.id, user: t.user ?? t.text ?? '', status: t.status, error: t.error, events: [...(t.events ?? [])], ranking_key: t.ranking_key ?? null });
 const arrow = () => [h('span', { 'aria-hidden': 'true', text: ' → ' }), h('span', { class: 'vh', text: ' to ' })];
 
 /** "Auto, strength 80%" for a Color ({mode, strength}); Off has no strength, a strength the op left out is not named. */
@@ -5063,6 +5068,7 @@ async function loadAssistant() {
   const chat = S.chat = pid ? { pid, provider: null, consent: null, frames: null, turns: [], error: '', loaded: false } : null;
   S.history = [];
   S.dismissed.clear();
+  S.rankings.clear();
   chatError('');
   renderChat();
   if (!chat) return;
@@ -5134,6 +5140,7 @@ async function pollTurn() {
     t.events.push(...v.events);
     t.status = v.status;
     t.error = v.error;
+    t.ranking_key = v.ranking_key ?? t.ranking_key;
     run.next = v.next;
     if (v.provider) chat.provider = v.provider;
     for (const ev of v.events) onChatEvent(ev);
@@ -5166,9 +5173,10 @@ function onChatEvent(ev) {
 
 /** What the live region says when a turn ends. */
 function turnNews(t) {
-  const last = [...t.events].reverse().find((e) => ['reply', 'proposal', 'error'].includes(e.kind));
+  const last = [...t.events].reverse().find((e) => ['reply', 'proposal', 'ranking', 'error'].includes(e.kind));
   if (t.status === 'cancelled') return 'Reply cancelled.';
   if (last?.kind === 'proposal') return `Proposed: ${last.summary}. It is previewed in the Sequence tab.`;
+  if (last?.kind === 'ranking') return `Previewed a ${styleTitle(last.style)} ranking. Use it or dismiss it from its card in the chat.`;
   if (last) return last.text;
   return t.error || 'The assistant gave no answer.';
 }
@@ -5201,6 +5209,7 @@ async function clearChat() {
     clearTimeout(S.chatTimer);
     S.turn = null;
     chat.turns = [];
+    S.rankings.clear();
     S.shown = null;
     if (S.proposal && !isRevert(S.proposal)) S.proposal = null; // its turn is gone: it can no longer be applied; no edit is undone
     if (S.pendingProposal && !isRevert(S.pendingProposal)) S.pendingProposal = null;
@@ -5421,6 +5430,8 @@ const TOOL_TEXT = {
   view_moment: (ev) => ev.error === 'limit' ? `Did not watch ${momentName(ev.id)}: the limit of moments watched per message was reached`
     : ev.error ? `Could not watch ${momentName(ev.id)}: ${ev.error}`
       : `Watched ${momentName(ev.id)} (${ev.frames} frames)`,
+  preview_ranking: (ev) => ev.error ? `Could not preview a ranking${ev.style ? ` in the ${styleTitle(ev.style)} style` : ''}: ${ev.error}`
+    : `Previewed a ranking${ev.style ? ` in the ${styleTitle(ev.style)} style` : ''}`,
 };
 
 /** 13 px stroke icons of the tool summary (decorative: the line says it in words). */
@@ -5443,6 +5454,7 @@ const STEP_SUMMARY = {
   view_moment: { icon: 'eye', text: (l) => `Watched ${plural(l.n, 'moment')}` },
   get_moment: { icon: 'clip', text: (l) => `Looked at ${plural(l.n, 'moment')}` },
   get_transcript: { icon: 'text', text: (l) => `Read ${plural(l.n, 'transcript')}` },
+  preview_ranking: { icon: 'clip', text: (l) => `Previewed ${plural(l.n, 'ranking')}` },
   rejected: { icon: 'retry', text: (l) => `${plural(l.n, 'attempt')} retried` },
 };
 const openSteps = new Set(); // ids of the tool details the user opened: they stay open when the chat is drawn again
@@ -5499,8 +5511,10 @@ function turnItems(t) {
     }
     flush();
     if (ev.kind === 'show') items.push(showItem(ev, id, query));
-    else if (ev.kind === 'reply') items.push(h('li', { class: 'msg ai plain', 'data-id': id }, h('span', { class: 'vh', text: 'Assistant: ' }), markdown(ev.text)));
+    else if (ev.kind === 'reply') items.push(h('li', { class: 'msg ai plain', 'data-id': id }, h('span', { class: 'vh', text: 'Assistant: ' }), markdown(ev.text),
+      idsMoved(t) ? h('p', { class: 'msg-meta', 'data-act': 'ids-moved', text: '(moment ids changed since)' }) : null));
     else if (ev.kind === 'proposal') items.push(proposalItem(ev, id));
+    else if (ev.kind === 'ranking') items.push(rankingItem(ev, id));
     else if (ev.kind === 'frames_consent') items.push(framesItem(ev, id, t));
     else if (ev.kind === 'error') items.push(h('li', { class: 'msg ai bad', 'data-id': id, text: ev.text }));
   }
@@ -5513,6 +5527,9 @@ function turnItems(t) {
   else if (t.error && !t.events.some((e) => e.kind === 'error')) items.push(h('li', { class: 'msg ai bad', 'data-id': `${t.id}-x`, text: t.error }));
   return items;
 }
+
+/** Turn ``t`` was answered on another ranking than the project's now (Q7, #902): the short moment ids its replies name may point elsewhere. Nothing without both keys. */
+const idsMoved = (t) => !!t.ranking_key && !!S.project?.ranking_key && t.ranking_key !== S.project.ranking_key;
 
 /** show_moments: the moments, highlighted in the list (a toggle) or, by the words the model searched for, filtered through the list's own filter. */
 function showItem(ev, id, query) {
@@ -5619,6 +5636,207 @@ function proposalStrip(ev) {
   const total = segs.reduce((n, x) => n + x.end - x.start, 0);
   return h('span', { class: 'prop-strip', role: 'img', 'aria-label': `The sequence after the change: ${plural(segs.length, 'clip')}, ${fmtLen(total)}` },
     segs.map((x) => h('span', { class: 'prop-block', 'data-kind': kindOf(cands().find((c) => c.id === x.id)), style: `flex-grow: ${x.end - x.start}` })));
+}
+
+// ---------- ranking cards (#902) ----------
+// preview_ranking's card: the project ranked in another library style, before/after. Its state is
+// derived from the project's ranking_key and the style its highlights.json is ranked in, so it
+// survives a reload; only the apply route (Use this ranking) writes anything.
+
+/** A style name as a card says it: "funny" → "Funny". */
+const styleTitle = (s) => (s ? `${String(s)[0].toUpperCase()}${String(s).slice(1)}` : '');
+/** A run holds the open project (a job of this page on it, the command line, another server): rankings wait. */
+const rankBusy = () => !!S.project?.busy || (!!S.active && S.active.project_id === S.id);
+const rankUrl = (what) => `/api/projects/${encodeURIComponent(S.id)}/ranking/${what}`;
+const MISSING_SHOWN = 3; // details of what is missing on a Needs analyze card
+
+/** The card's preview (a newer one from Preview again wins; the model's reason stays) and its state:
+ * applying, in-use, stale, needs-analyze or ready. */
+function rankView(ev, id) {
+  const local = S.rankings.get(id) ?? {};
+  const v = { ...ev, ...(local.payload ?? {}), reason: ev.reason };
+  const key = S.project?.ranking_key ?? null;
+  const now = S.project?.highlights?.style ?? null;
+  const state = S.rankApplying === id ? 'applying'
+    : key !== v.base && now === v.style ? 'in-use'
+      : key !== v.base || local.stale === v.base ? 'stale'
+        : !v.ready ? 'needs-analyze' : 'ready';
+  return { v, state, now, previewing: !!local.previewing };
+}
+
+/** A row's move: New, ↑n, ↓n or = (the arrows read as words). */
+function rankBadge(r) {
+  if (r.was == null) return h('span', { class: 'prop-mark added rank-new', text: 'New' });
+  const d = r.was - r.rank;
+  if (!d) return h('span', { class: 'prop-mark' }, h('span', { 'aria-hidden': 'true', text: '=' }), h('span', { class: 'vh', text: 'same place' }));
+  return h('span', { class: `prop-mark ${d > 0 ? 'rank-up' : 'rank-down'}` },
+    h('span', { 'aria-hidden': 'true', text: `${d > 0 ? '↑' : '↓'}${Math.abs(d)}` }),
+    h('span', { class: 'vh', text: `${d > 0 ? 'up' : 'down'} ${plural(Math.abs(d), 'place')}` }));
+}
+
+/** One moment of the new top: rank, label, file and time, its move; a moment the page has focuses on click. */
+function rankRow(r) {
+  const c = cands().find((m) => m.id === r.id);
+  const text = h('span', { class: 'prop-text' },
+    h('span', { class: 'prop-title', text: shownName(c, r.label) || r.label || r.cli_id }),
+    h('span', { class: 'prop-time tc', text: `${r.file} ${fmt(r.start)}–${fmt(r.end)}` }),
+    h('span', { class: 'prop-marks' }, rankBadge(r)));
+  const rank = h('span', { class: 'rank tc', text: String(r.rank) });
+  return h('li', { class: `prop${r.was == null ? ' added' : ''}`, 'data-id': r.id },
+    c ? h('button', { type: 'button', class: 'prop-main', 'data-act': 'focus', onclick: () => focusMoment(r.id) }, rank, text)
+      : h('span', { class: 'prop-main' }, rank, text));
+}
+
+/** "7 new in top 10", "suggested 8 (was 12)" and, when the moments themselves changed, the new and dropped counts. */
+function rankChips(v) {
+  const top = v.top ?? [];
+  const fresh = top.filter((r) => r.was == null || r.was > top.length).length;
+  const parts = [[`${fresh} new in top ${top.length}`, 'chip']];
+  const st = v.suggested_top ?? {};
+  if (Number.isFinite(st.after)) parts.push([`suggested ${st.after}${Number.isFinite(st.before) && st.before !== st.after ? ` (was ${st.before})` : ''}`, 'chip']);
+  if (v.new_ids_count) parts.push([`${plural(v.new_ids_count, 'new moment')}`, 'chip auto']);
+  if (v.dropped_count) parts.push([`${v.dropped_count} dropped`, 'chip auto']);
+  return h('span', { class: 'chips' }, parts.flatMap(([text, cls], i) => [i ? h('span', { class: 'vh', text: ', ' }) : null, h('span', { class: cls, text })]));
+}
+
+/** A ranking card: Ready (the new top 10, Use this ranking, Dismiss), Applying, In use, Stale (Preview
+ * again), Needs analyze (Analyze again as X…, or reconnect the footage); Busy while a run holds the project. */
+function rankingItem(ev, id) {
+  const { v, state, now, previewing } = rankView(ev, id);
+  const name = styleTitle(v.style);
+  const busy = rankBusy();
+  const dismissed = S.dismissed.has(id) && state !== 'in-use';
+  const off = busy || previewing || (!!S.rankApplying && S.rankApplying !== id);
+  const btn = (act, label, onclick, primary = false, disabled = off) => h('button', { type: 'button', class: `btn${primary ? ' primary' : ''}`, 'data-act': act, disabled, onclick }, label);
+  const kids = [
+    h('span', { class: 'prop-label', text: 'Ranking' }),
+    h('p', { class: 'msg-title', text: `${name} ranking${now && now !== v.style ? ` (now: ${styleTitle(now)})` : ''}` }),
+    v.reason ? h('p', { text: v.reason }) : null,
+  ];
+  let acts = [];
+  const notes = [];
+  if (state === 'in-use') notes.push(`In use: the moments are ranked in the ${name} style.`);
+  else if (dismissed) notes.push('Dismissed');
+  else if (state === 'stale') {
+    notes.push('The moments changed since this preview.');
+    acts = [btn('preview-again', previewing ? 'Previewing…' : 'Preview again', () => previewRanking(ev, id), true), btn('dismiss', 'Dismiss', () => dismissRanking(id), false, false)];
+  } else if (state === 'needs-analyze') {
+    const missing = v.missing ?? [];
+    const more = missing.length - MISSING_SHOWN;
+    kids.push(h('p', { text: v.can_analyze ? `Ranking in the ${name} style needs another analysis first.` : 'Reconnect the footage to rank it in this style.' }),
+      h('ul', { class: 'rank-missing msg-meta' }, missing.slice(0, MISSING_SHOWN).map((m) => h('li', { text: `${m.detail}${m.file && !String(m.detail).includes(m.file) ? ` (${m.file})` : ''}` })),
+        more > 0 ? h('li', { text: `and ${more} more` }) : null));
+    if (v.can_analyze) acts = [btn('analyze', `Analyze again as ${name}…`, () => analyzeAgain(false, { style: v.style, name }), true, off || !!S.active), btn('dismiss', 'Dismiss', () => dismissRanking(id), false, false)];
+  } else {
+    kids.push(rankChips(v),
+      ...(v.notes ?? []).map((n) => h('p', { class: 'msg-meta', text: n })),
+      h('ol', { class: 'prop-list', 'aria-label': `The first ${plural((v.top ?? []).length, 'moment')} in the ${name} ranking` }, (v.top ?? []).map(rankRow)));
+    acts = [btn('use-ranking', state === 'applying' ? 'Applying…' : 'Use this ranking', () => useRanking(ev, id), true, off || state === 'applying'),
+      btn('dismiss', 'Dismiss', () => dismissRanking(id), false, state === 'applying')];
+  }
+  if (busy && acts.length) notes.push(BUSY_TEXT);
+  return h('li', { class: `msg ai proposal prop-card rank-card${state === 'in-use' ? ' previewing' : ''}`, 'data-id': id, 'data-rid': id, 'data-state': dismissed ? 'dismissed' : state },
+    ...kids,
+    ...notes.map((n) => h('p', { class: 'msg-meta rank-note', text: n })),
+    acts.length ? h('span', { class: 'prop-acts' }, acts) : null);
+}
+
+/** Dismiss a ranking card: it stays in the chat without its buttons. */
+function dismissRanking(id) {
+  if (S.rankApplying === id) return;
+  chatError('');
+  S.dismissed.add(id);
+  renderChat();
+  $('#chatLive').textContent = 'Ranking dismissed';
+  $('#chatInput').focus(); // the card's buttons are gone
+}
+
+/** After a card's request its pressed button may be gone or disabled: focus the card's first enabled button, else the message box. */
+function focusRankCard(id) {
+  if (document.activeElement !== document.body && document.activeElement?.isConnected) return;
+  ($(`#chatLog [data-rid="${CSS.escape(id)}"] button:not(:disabled)`) ?? $('#chatInput')).focus();
+}
+
+/** Preview again: the preview route straight away (no model turn); the answer replaces the card's preview. */
+async function previewRanking(ev, id) {
+  const pid = S.id;
+  const { v } = rankView(ev, id);
+  if (!pid || S.rankApplying || S.rankings.get(id)?.previewing || rankBusy()) return;
+  chatError('');
+  S.rankings.set(id, { ...S.rankings.get(id), previewing: true });
+  renderChat();
+  let said = '';
+  try {
+    const r = await api(rankUrl('preview'), { method: 'POST', body: { style: v.style } });
+    if (S.id !== pid) return;
+    S.rankings.set(id, { payload: r });
+    S.dismissed.delete(id);
+    if (r.base !== S.project?.ranking_key) await refreshProject(); // the page's key is older than the server's
+    said = r.ready ? `Previewed the ${styleTitle(r.style)} ranking again.` : `The ${styleTitle(r.style)} ranking needs another analysis first.`;
+  } catch (e) {
+    if (S.id !== pid) return;
+    S.rankings.set(id, { ...S.rankings.get(id), previewing: false });
+    if (e.code === 'folder_busy') await refreshProject();
+    if (e.code !== 'folder_busy' || !rankBusy()) chatError(e.message);
+  } finally {
+    if (S.id === pid) {
+      const local = S.rankings.get(id);
+      if (local) local.previewing = false;
+      renderChat();
+      if (said) $('#chatLive').textContent = said;
+      focusRankCard(id);
+    }
+  }
+}
+
+/** Use this ranking: the apply route redoes the ranking against the previewed key, then the page reloads the project. */
+async function useRanking(ev, id) {
+  const pid = S.id;
+  const { v, state } = rankView(ev, id);
+  if (!pid || S.rankApplying || state !== 'ready' || rankBusy()) return;
+  const name = styleTitle(v.style);
+  S.rankApplying = id;
+  chatError('');
+  renderChat();
+  $('#chatLive').textContent = `Applying the ${name} ranking…`;
+  let said = '';
+  try {
+    const r = await api(rankUrl('apply'), { method: 'POST', body: { style: v.style, base: v.base } });
+    if (S.id !== pid) return;
+    S.shown = null; // the assistant's highlights were of the ranking before
+    S.rankApplying = null;
+    await refreshProject();
+    said = `Using the ${name} ranking now${r.new_ids?.length ? `; ${plural(r.new_ids.length, 'new moment')}` : ''}.`;
+  } catch (e) {
+    if (S.id !== pid) return;
+    S.rankApplying = null;
+    if (e.code === 'stale') {
+      S.rankings.set(id, { ...S.rankings.get(id), stale: v.base });
+      await refreshProject();
+      said = 'The moments changed since this preview. Preview it again.';
+    } else if (e.code === 'needs_analyze') {
+      return await previewRanking(ev, id); // the card shows what is missing now
+    } else if (e.code === 'folder_busy') {
+      await refreshProject();
+      if (!rankBusy()) chatError(e.message);
+    } else chatError(e.message);
+  } finally {
+    if (S.rankApplying === id) S.rankApplying = null;
+    if (S.id === pid) {
+      renderChat();
+      if (said) $('#chatLive').textContent = said;
+      focusRankCard(id);
+    }
+  }
+}
+
+/** Draw the ranking cards again when a run starts or stops holding the project (their buttons follow it). */
+let rankBusySeen = false;
+function syncRankingBusy() {
+  const busy = rankBusy();
+  if (busy === rankBusySeen) return;
+  rankBusySeen = busy;
+  if (S.chat?.turns.some((t) => t.events.some((e) => e.kind === 'ranking'))) renderChat();
 }
 
 /** view_moment without frame consent: allow video frames of this project to go to the host (and ask again). */

@@ -4,7 +4,8 @@ The loop offers the read tools (``find_moments``, ``look_for`` (CLIP search of t
 timeline, :mod:`cutpoint.assistant.lookfor`), ``find_words`` (where words are said, to the
 word, :mod:`cutpoint.assistant.words`), ``get_moment``, ``get_transcript``,
 ``show_moments``, and ``view_moment`` for a model that takes images, :mod:`cutpoint.assistant.watch`)
-and the final ``propose_edit``, for at most :data:`MAX_ROUNDS` model replies. The last of them,
+and the final ``propose_edit`` (or ``preview_ranking``, the whole list ranked in another style,
+:mod:`cutpoint.assistant.ranking`, for a project the page gives a ranking hook), for at most :data:`MAX_ROUNDS` model replies. The last of them,
 and the one after ``view_moment`` hit its limit, is the closing round: it offers only
 ``propose_edit`` and asks for the answer (:data:`CLOSING`); a model that still looks something up
 gets that round once more, then the turn ends with the best it has (an earlier proposal, its
@@ -31,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from cutpoint.assistant import context, lookfor, pacing, watch, words
+from cutpoint.assistant import context, lookfor, pacing, ranking, watch, words
 from cutpoint.assistant.edges import EdgePlanner, length
 from cutpoint.assistant.ops import apply_ops, change_counts, rows_after, summary_gap
 from cutpoint.assistant.providers import (
@@ -276,6 +277,12 @@ class Project:
     frame_index: bool = True
     # a source's cached transcript words (edges.EdgePlanner.words); None: find_words finds none
     words: Callable[[str], list[dict[str, Any]] | None] | None = None
+    # the library styles to preview a ranking in (ranking.Hook); None: preview_ranking is not
+    # offered (no analysis, a 360 project)
+    ranking: ranking.Hook | None = None
+    # ui.ranking_key of highlights.json: kept in the turn record, so a later turn knows the
+    # moment ids of an earlier one changed (another ranking or analysis since)
+    ranking_key: str | None = None
 
 
 def _now() -> str:
@@ -320,10 +327,15 @@ class Turn:
         window = context.budget(provider.context_tokens).turns
         earlier = list(earlier or [])
         seen = len(earlier) - window
+        key = project.ranking_key
         self.earlier = [
             {
                 "user": str(t.get("user", "")),
                 "reply": str(t.get("reply", "")) + (self._hits_of(t) if i >= seen else ""),
+                # its short ids (m1...) were of another ranking (context.IDS_CHANGED)
+                "ids_changed": isinstance(key, str)
+                and isinstance(t.get("ranking_key"), str)
+                and t["ranking_key"] != key,
             }
             for i, t in enumerate(earlier)
         ]
@@ -365,6 +377,19 @@ class Turn:
         self._finder = lookfor.Finder(list(project.durations))
         self.found: list[dict[str, Any]] = []
         self._unsure: set[str] = set()  # ids of found windows that are only guesses
+        # preview_ranking: the styles offered ((name, note), ranking.listed) and the one the
+        # moments are ranked in now; no other style, no tool
+        self._styles: list[tuple[str, str]] = []
+        self._current = ""
+        if project.ranking is not None:
+            try:
+                self._current = str(project.ranking.current() or "")
+                self._styles = ranking.listed(project.ranking.styles())
+            except Exception:  # a hook that fails offers no rankings; the turn goes on
+                logger.exception("assistant: the ranking styles could not be read")
+                self._styles = []
+            if not [n for n, _ in self._styles if n != self._current]:
+                self._styles = []
 
     # -- what the page sees ------------------------------------------------------------
     def view(self, after: int = 0) -> dict[str, Any]:
@@ -378,6 +403,7 @@ class Turn:
                 "events": self.events[max(0, after) :],
                 "next": len(self.events),
                 "error": self.error,
+                "ranking_key": self.project.ranking_key,
             }
 
     def record(self) -> dict[str, Any]:
@@ -397,7 +423,9 @@ class Turn:
                         n = len({*pace["moved"], *pace["added"], *pace["replaced"]})
                         counts += f"; {n} auto-spread"
                     reply = f"Proposed: {e['summary']} (changes: {counts})"
-            return {
+                elif e["kind"] == "ranking":
+                    reply = ranking.reply(e)
+            out = {
                 "id": self.id,
                 "user": self.text,
                 "started": self.started,
@@ -406,6 +434,9 @@ class Turn:
                 "events": list(self.events),
                 "reply": reply,
             }
+            if self.project.ranking_key is not None:  # the ranking its short ids are of
+                out["ranking_key"] = self.project.ranking_key
+            return out
 
     def proposal(self, pid: str) -> dict[str, Any] | None:
         with self.lock:
@@ -483,32 +514,52 @@ class Turn:
         tools = None
         if json_mode:
             listed = [t for t, n in zip(_JSON_TOOLS, TOOL_NAMES, strict=True) if self._offered(n)]
-            tools = [*listed, *([watch.JSON_TOOL] if self._watch else [])]
-        # find_words' and look_for's rules, then how and when to watch, after the others and
-        # measured with them
+            tools = [
+                *listed,
+                *([ranking.JSON_TOOL] if self._styles else []),
+                *([watch.JSON_TOOL] if self._watch else []),
+            ]
+        # find_words', look_for's and preview_ranking's rules, then how and when to watch, after
+        # the others and measured with them
         late = words.RULES
         late += lookfor.rules(bool(self._watch)) if self.project.frame_index else ""
-        if self._watch:
-            late += watch.RULES.replace("{cap}", watch.views(sheets))
-        out = context.build_messages(
-            self.table,
-            self.earlier,
-            self.text,
-            plan,
-            json_tools=tools,
-            images=bool(self._watch),
-            target=self.target,
-            late_rules=late,
-        )
-        return out
+        after = watch.RULES.replace("{cap}", watch.views(sheets)) if self._watch else ""
+
+        def build(rank_rules: str) -> list[dict[str, Any]]:
+            return context.build_messages(
+                self.table,
+                self.earlier,
+                self.text,
+                plan,
+                json_tools=tools,
+                images=bool(self._watch),
+                target=self.target,
+                late_rules=late + rank_rules + after,
+            )
+
+        if not self._styles:
+            return build("")
+        out = build(ranking.rules(self._styles, self._current))
+        floor = int(plan.tokens // 4 * context.CHARS_PER_TOKEN) // (2 if plan.tight else 1)
+        if plan.chars > floor:
+            return out
+        # At the budget's floor (a small context) the brief rules, without the built-in styles'
+        # notes, when the full ones would cost the moment table rows: it only grows with more
+        brief = build(ranking.brief(self._styles, self._current, names=json_mode))
+        return brief if len(brief[1]["content"]) > len(out[1]["content"]) else out
 
     def _offered(self, name: str) -> bool:
         """Whether the tool ``name`` is offered: ``look_for`` only with cached frame embeddings."""
         return self.project.frame_index or name != lookfor.NAME
 
     def _names(self) -> list[str]:
-        """The names of the tools offered (:meth:`_offered`)."""
+        """The names of the tools of :data:`TOOLS` offered (:meth:`_offered`)."""
         return [n for n in TOOL_NAMES if self._offered(n)]
+
+    def _extra(self) -> list[str]:
+        """The per-turn tools offered besides :data:`TOOLS`: ``preview_ranking`` with a style to
+        choose, ``view_moment`` for a model that takes images."""
+        return [*([ranking.NAME] if self._styles else []), *([watch.NAME] if self._watch else [])]
 
     def _tools(self, closing: bool = False) -> list[dict[str, Any]]:
         """The tools of a request; the closing round offers only ``propose_edit`` (a list that
@@ -516,12 +567,14 @@ class Turn:
         if closing:
             return [t for t in TOOLS if t["function"]["name"] == FINAL_TOOL]
         base = [t for t in TOOLS if self._offered(t["function"]["name"])]
+        if self._styles:  # this turn's styles are the enum of its style
+            base.append(ranking.tool([n for n, _ in self._styles]))
         return [*base, watch.TOOL] if self._watch else base
 
     def _schema(self, closing: bool = False) -> dict[str, Any]:
-        if not closing and not self._watch and self._names() == TOOL_NAMES:
+        if not closing and not self._extra() and self._names() == TOOL_NAMES:
             return JSON_SCHEMA
-        names = [*self._names(), *([watch.NAME] if self._watch else []), "reply"]
+        names = [*self._names(), *self._extra(), "reply"]
         if closing:
             names = [FINAL_TOOL, "reply"]
         props = {**JSON_SCHEMA["properties"], "tool": {"type": "string", "enum": names}}
@@ -766,7 +819,7 @@ class Turn:
         """``(result for the model, whether the turn is over)``."""
         if call.error:
             return f"error: {call.name}: {call.error}", False
-        names = [*self._names(), *([watch.NAME] if self._watch else [])]
+        names = [*self._names(), *self._extra()]
         handler = getattr(self, f"_tool_{call.name}", None) if call.name in names else None
         if handler is None:
             return f"error: unknown tool {call.name!r}; the tools are {', '.join(names)}", False
@@ -1225,6 +1278,55 @@ class Turn:
         event = {"kind": "proposal", **self._numbered("p", summary.strip(), main)}
         self._emit({**event, "suggestions": suggestions})
         return "proposal shown to the user", True
+
+    def _tool_preview_ranking(self, args: dict[str, Any]) -> tuple[str, bool]:
+        """Show the page's preview card of the moments ranked in ``style`` (the user applies it
+        or not) and end the turn, as a proposal does. A style not offered, the current one, a
+        busy project or a refused preview go back to the model."""
+        hook = self.project.ranking
+        style = args.get("style")
+        others = [n for n, _ in self._styles if n != self._current]
+        if hook is None or not isinstance(style, str) or style not in others:
+            now = f" (the moments are ranked as {self._current} now)" if self._current else ""
+            return f"error: style must be one of {', '.join(others)}{now}", False
+        reason = args.get("reason")
+        reason = " ".join(reason.split())[: ranking.MAX_REASON] if isinstance(reason, str) else ""
+        try:
+            payload = hook.preview(style)
+        except ranking.RankingError as err:
+            logger.info("assistant: ranking preview refused: %s", err)
+            self._emit(
+                {
+                    "kind": "tool",
+                    "name": ranking.NAME,
+                    "style": style,
+                    "error": "the project is busy" if err.busy else str(err),
+                }
+            )
+            if err.busy:
+                return (
+                    "error: the project is busy (an analysis or another ranking runs): tell the "
+                    "user to ask again when it is done",
+                    False,
+                )
+            return f"error: the ranking could not be previewed: {err}. Tell the user", False
+        except Exception:  # a text with a file path must not reach the model or the reply
+            logger.exception("assistant: ranking preview failed")
+            self._emit(
+                {
+                    "kind": "tool",
+                    "name": ranking.NAME,
+                    "style": style,
+                    "error": "an error on this computer",
+                }
+            )
+            return (
+                "error: the ranking could not be previewed (an error on this computer). "
+                "Tell the user",
+                False,
+            )
+        self._emit({"kind": "ranking", **payload, "reason": reason})
+        return ranking.result(payload), True
 
     @staticmethod
     def _reserve(summary: str, main: dict[str, Any]) -> tuple[str, str]:

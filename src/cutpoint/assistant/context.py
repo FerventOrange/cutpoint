@@ -39,6 +39,9 @@ IMAGE_TOKENS = 1500  # of one image (a timeline sheet)
 FIT_CHARS_PER_TOKEN = 2.0  # fitting a turn: the densest JSON measured (2.0-2.4), never over
 MAX_RESULT_CHARS = 6000  # of one tool result
 LEFT_OUT = "(earlier result left out for space; call the tool again if needed)"
+# Before an earlier reply made with another ranking (a re-rank or an analysis since): its short
+# ids (m1, m2, ...) were numbered by that ranking
+IDS_CHANGED = "(moment ids changed since)"
 SNIPPET_CHARS = 160  # transcript of a moment in the table
 SEEN_CHARS = 100  # what the vision model saw of a moment, in the table
 SEEN_FULL_CHARS = 600  # ... in get_moment
@@ -62,8 +65,8 @@ RULES = """\
 You are the editing assistant of Cutpoint, a video highlight editor. The user's sequence is an \
 ordered list of moments (clips) cut from their source videos; it becomes their final video.
 
-You can only propose changes: the user previews a proposal and applies it or not. Look moments \
-up with the tools, then call propose_edit once with every op of the change. To answer without \
+You only propose changes: the user previews a proposal or ranking and applies it or not. Look \
+moments up with the tools, then call propose_edit once with every op of the change. To answer without \
 changing anything, reply in plain text. When the user asks to make, build, add, place or change \
 anything in the sequence, end with propose_edit. An empty sequence is built with add ops, one per \
 moment in order. Never list chosen moments in text instead.
@@ -935,7 +938,7 @@ def rules(table: MomentTable, *, images: bool = False) -> str:
 
 def build_messages(
     table: MomentTable,
-    turns: list[dict[str, str]],
+    turns: list[dict[str, Any]],
     text: str,
     plan: Budget,
     *,
@@ -948,7 +951,8 @@ def build_messages(
 
     Args:
         table: The moments and the current sequence.
-        turns: Earlier turns, oldest first, as ``{"user", "reply"}``.
+        turns: Earlier turns, oldest first, as ``{"user", "reply"}``; ``ids_changed`` true
+            marks a reply whose short ids were of another ranking (:data:`IDS_CHANGED`).
         text: The user's message.
         plan: The size :func:`budget`.
         json_tools: Tool names, when the model answers in JSON mode instead of tool calls.
@@ -966,9 +970,12 @@ def build_messages(
     history: list[dict[str, Any]] = []
     spent = 0
     for turn in reversed(turns[-plan.turns :] if plan.turns else []):
+        reply = turn.get("reply", "")
+        if turn.get("ids_changed"):  # its m1, m2, ... name other moments now
+            reply = f"{IDS_CHANGED} {reply}"
         pair = [
             {"role": "user", "content": turn.get("user", "")},
-            {"role": "assistant", "content": turn.get("reply", "")},
+            {"role": "assistant", "content": reply},
         ]
         size = sum(len(m["content"]) for m in pair)
         if spent + size > room // 4:
