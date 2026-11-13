@@ -3598,8 +3598,9 @@ def detect_ocr_events(
     finished chunk.
 
     An out-of-memory error of an OCR call (:func:`~cutpoint.errors.is_out_of_memory`, not a
-    failed decode) is raised as it is, also with ``cancel``: it is neither retried nor read
-    again in its turn.
+    failed decode) is raised as it is, also with ``cancel``: it is not retried here. The
+    background reader (:mod:`cutpoint.events.ocr_prefetch`) hands such a read back to its
+    turn; inline it stops the run.
 
     Args:
         src: Source video (read once, sequentially).
@@ -3832,7 +3833,7 @@ def detect_ocr_events(
                     break
                 except RuntimeError as err:
                     if is_out_of_memory(err) and not isinstance(err, FFmpegError):
-                        raise  # an OCR call short of memory is no failed decode: it stops the run
+                        raise  # an OCR call short of memory is no failed decode (see above)
                     if cancel is not None and (cancel.is_set() or exits or gpu or shared):
                         # cancelled or stopped from outside, or a failed GPU pass: the read in
                         # its turn redoes it from the raw chunks (CPU retry, hwaccel stats) as a

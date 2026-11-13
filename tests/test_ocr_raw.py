@@ -614,7 +614,8 @@ def test_out_of_memory_in_an_ocr_call_is_no_failed_decode(
     tmp_path: Path, monkeypatch, caplog, background: bool
 ) -> None:
     """An OCR call short of memory is raised as it is: no CPU retry and no "no frames"
-    inline, no :class:`OcrCancelled` (read again in its turn) in the background."""
+    inline, and in the background the error itself, not :class:`OcrCancelled`, so the
+    background reader can tell it apart (it hands the read back to its turn)."""
     err = RuntimeError(OOM)
     starts: list[float] = []
     kw = {"cancel": threading.Event()} if background else {}

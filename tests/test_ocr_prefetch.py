@@ -359,27 +359,65 @@ def _stopped(info, what: str, name: str) -> None:
     assert is_out_of_memory(info.value.__cause__)
 
 
+def _handed_back(caplog, name: str) -> list[str]:
+    """The INFO lines of a background read handed back to its turn for out of memory."""
+    want = f"{name}: the background OCR ran out of memory ("
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith(want)]
+
+
 @pytest.mark.parametrize("err", [_oom(), MemoryError()])
-def test_out_of_memory_in_a_worker_read_stops_the_run(ocr_run, caplog, err) -> None:
-    """Out of memory in the background read of the second source reaches the OCR turn and
-    stops the run as low_memory (no WARNING, no step_failed); the worker is stopped."""
+def test_out_of_memory_in_a_worker_read_is_read_again_in_its_turn(ocr_run, caplog, err) -> None:
+    """Out of memory in the background read of the first source (the GPU steps it overlaps
+    hold the GPU) hands it back: it is read inline in its turn, and so is the source after
+    it, which the worker does not start. No WARNING, no step_failed; the worker is stopped."""
 
     def read(src, cancel):
-        if src.name == "b.mp4":
+        if cancel is not None:  # the background read
             raise err
-        return [], {"menu_spans": [[1.0, 2.0]]}
+        return [{"t": 1.0, "type": "kill", "src": src.name}], {"frames": 4}
 
     ocr_run.read = read
     pre = ocr_run.make()
     for p in ocr_run.paths:
         pre.offer(p, 60.0, True)
     thread = pre._thread
-    with jsonout.run("analyze") as res, pre:  # _run_layers stops the reader as it leaves
-        ocr_run.run(pre, stage=analyze._StepHook, stops=LowMemoryError)
-    _stopped(ocr_run.stopped, "the HUD OCR", "b.mp4")
-    assert ocr_run.stopped.value.__cause__ is err
+    with caplog.at_level(logging.INFO), jsonout.run("analyze") as res, pre:
+        seen = ocr_run.run(pre, stage=analyze._StepHook)
+    assert [evs[0]["src"] for evs in seen] == ["a.mp4", "b.mp4"]
+    assert ocr_run.reads == ["a.mp4", "a.mp4", "b.mp4"]  # a: background, then inline
+    reason = str(err) or "MemoryError"
+    assert _handed_back(caplog, "a.mp4") == [
+        f"a.mp4: the background OCR ran out of memory ({reason}); reading it again in its turn"
+    ]
+    assert _handed_back(caplog, "b.mp4") == []  # not started in the background: no OOM
     assert _ocr_warnings(caplog) == [] and res.warnings == []
-    assert ocr_run.reads == ["a.mp4", "b.mp4"]  # each read once, by the worker
+    assert thread is not None and not thread.is_alive() and not pre.stuck
+
+
+@pytest.mark.parametrize("err", [_oom(), MemoryError()])
+def test_out_of_memory_in_the_read_again_stops_the_run(ocr_run, caplog, err) -> None:
+    """The second source runs out of memory in the background and again inline, in its
+    turn: that stops the run as low_memory (no WARNING, no step_failed); the first source
+    keeps its background result."""
+
+    def read(src, cancel):
+        if src.name == "b.mp4":
+            raise err
+        return [{"t": 1.0, "type": "kill", "src": src.name}], {"frames": 4}
+
+    ocr_run.read = read
+    pre = ocr_run.make()
+    for p in ocr_run.paths:
+        pre.offer(p, 60.0, True)
+    thread = pre._thread
+    with caplog.at_level(logging.INFO), jsonout.run("analyze") as res, pre:
+        seen = ocr_run.run(pre, stage=analyze._StepHook, stops=LowMemoryError)
+    _stopped(ocr_run.stopped, "the HUD OCR", "b.mp4")
+    assert ocr_run.stopped.value.__cause__ is err  # the inline read's error
+    assert [evs[0]["src"] for evs in seen] == ["a.mp4"]
+    assert ocr_run.reads == ["a.mp4", "b.mp4", "b.mp4"]  # b: background, then inline
+    assert len(_handed_back(caplog, "b.mp4")) == 1
+    assert _ocr_warnings(caplog) == [] and res.warnings == []
     assert thread is not None and not thread.is_alive() and not pre.stuck
 
 
