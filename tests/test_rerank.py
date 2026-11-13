@@ -22,7 +22,7 @@ from cutpoint.assistant.providers import AUTO_SERVER_MODEL
 from cutpoint.errors import FolderBusyError, NeedsAnalyzeError, StaleRankingError
 from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.sources import TRANSCRIPT_MODELS
-from cutpoint.styles import get_style
+from cutpoint.styles import get_style, style_name
 from cutpoint.transcribe import transcript_name
 from test_analyze_steps import run  # noqa: F401 (the fixture: analyze with its fakes)
 
@@ -257,7 +257,7 @@ def test_ranked_never_drops_a_source_without_a_grid(home, tmp_path, monkeypatch)
     assert got.value.missing == [
         {
             "feature": "caches",
-            "detail": "s0.mp4 has nothing cached",
+            "detail": "s0.mp4 has no cached loudness, transcript or scene cuts to build a ranking from",
             "source": hl["sources"][0]["path"],
         }
     ]
@@ -1038,6 +1038,67 @@ def test_rerank_prints_the_new_ranking(home, tmp_path, capsys):
     out = capsys.readouterr().out.splitlines()
     assert out[0].startswith("gaming -> funny (preview, nothing saved")
     assert len(out) == 4  # header, counts, two moments
+
+
+def _strip_style(project: Path) -> str:
+    hl = read(project)
+    for key in ("style", "style_base", "style_kind", "detection"):
+        hl.pop(key, None)
+    (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    fallback = style_name(hl)
+    assert fallback != "gaming"
+    return fallback
+
+
+def test_rerank_prints_the_fallback_style_of_a_file_without_style(home, tmp_path, capsys):
+    """#1015: no "None -> funny" for a file that records no style."""
+    fallback = _strip_style(make_project(home, tmp_path))
+    assert cli.main(["rerank", "p", "--style", "funny", "--dry-run", "--top", "2"]) == 0
+    assert capsys.readouterr().out.splitlines()[0].startswith(f"{fallback} -> funny (preview")
+
+
+def test_rerank_json_from_is_the_fallback_style(home, tmp_path, capsys):
+    fallback = _strip_style(make_project(home, tmp_path))
+    code, doc = _json(capsys, ["rerank", "p", "--style", "funny", "--dry-run", "--top", "2"])
+    assert code == 0 and doc["outputs"]["from"] == fallback
+
+
+def test_rerank_record_uses_the_fallback_style(home, tmp_path):
+    project = make_project(home, tmp_path)
+    fallback = _strip_style(project)
+    hl = read(project)
+    assert "style" not in hl
+    assert analyze.rerank_record(hl, get_style("funny")) == {"from": fallback, "requested": None}
+    hl["settings"]["reranked"] = {"from": "x", "requested": None}
+    assert analyze.rerank_record(hl, get_style(fallback)) == {"from": "x", "requested": None}
+
+
+def test_a_source_with_nothing_cached_says_what_is_missing(home, tmp_path, monkeypatch):
+    project = make_project(home, tmp_path, scenes=False)
+    src = Path(read(project)["sources"][0]["path"])
+    for f in cache.source_dir(src).iterdir():
+        f.unlink()
+    monkeypatch.setattr(rerank, "_has_audio", lambda s: False)
+    with pytest.raises(NeedsAnalyzeError) as got:
+        rerank.ranked(project, read(project), get_style("funny"))
+    assert "s0.mp4 has no cached loudness, transcript or scene cuts" in str(got.value)
+    assert "nothing cached" not in str(got.value)
+
+
+def test_a_source_without_a_length_says_so(home, tmp_path):
+    project = make_project(home, tmp_path)
+    hl = read(project)
+    for e in hl["sources"]:
+        e.pop("duration", None)
+        e.pop("analyzed_s", None)
+    (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    miss = rerank.readiness(project, read(project), get_style("funny")).missing
+    assert miss and {m.feature for m in miss} == {"length"}
+    assert "s0.mp4 records no length (duration) in highlights.json" in miss[0].detail
+    with pytest.raises(NeedsAnalyzeError) as got:
+        rerank.ranked(project, read(project), get_style("funny"))
+    assert "records no length (duration)" in str(got.value)
+    assert "no cached loudness" not in str(got.value)
 
 
 # --------------------------------------------------------------------------- vision, cache only

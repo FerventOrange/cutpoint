@@ -98,6 +98,7 @@ from cutpoint.styles import (
     AutoRequest,
     Style,
     style_hash,
+    style_name,
 )
 from cutpoint.transcribe import (
     Segment,
@@ -4714,11 +4715,11 @@ def rerank_record(hl: dict[str, Any], style: Style) -> dict[str, Any] | None:
     that fell back, or the style of an earlier re-rank; None for a plain one). The same style:
     the record ``hl`` has (None without one)."""
     st = hl.get("settings") or {}
-    if style.name == hl.get("style"):
+    if style.name == style_name(hl):
         kept = st.get("reranked")
         return kept if isinstance(kept, dict) else None
     requested = st.get("style_requested")
-    return {"from": hl.get("style"), "requested": requested if isinstance(requested, str) else None}
+    return {"from": style_name(hl), "requested": requested if isinstance(requested, str) else None}
 
 
 def reanalyze(

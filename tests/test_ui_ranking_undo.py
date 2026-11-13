@@ -16,7 +16,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 from cutpoint import analyze, rerank, ui
-from cutpoint.styles import get_style
+from cutpoint.styles import get_style, style_name
 from test_rerank import lite_layers, make_project, read  # noqa: F401 (lite_layers: a fixture)
 from test_ui_ranking import apply, hold_lock, preview, snapshot
 
@@ -102,6 +102,25 @@ def test_undo_redo_round_trip_restores_ids_candidates_and_style(home, tmp_path, 
     assert swap(client).json()["action"] == "undo"
     assert ranking(project) == first
     assert not temps(project)
+
+
+def test_redo_from_a_file_without_style_names_the_fallback(home, tmp_path, client):
+    """A hand edit that drops the style, sealed again: the Redo's ``from`` is the fallback."""
+    project = make_project(home, tmp_path)
+    applied(client)
+    assert swap(client).json()["action"] == "undo"
+
+    def drop_style(hl: dict[str, Any]) -> None:
+        for key in ("style", "style_base", "style_kind", "detection"):
+            hl.pop(key, None)
+
+    rewrite(project, "highlights.json", drop_style)
+    rewrite(project, "highlights.json", lambda hl: rerank.sealed(hl, undone=True))
+    fallback = style_name(read(project))
+    assert fallback != "gaming"
+    assert page(client)["ranking_undo"] == {"action": "redo", "style": "funny"}
+    got = swap(client).json()
+    assert (got["action"], got["style"], got["from"]) == ("redo", "funny", fallback)
 
 
 def test_undo_back_to_an_auto_analysis_shows_auto_and_redo_keeps_the_detection(

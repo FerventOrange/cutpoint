@@ -18,7 +18,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 from cutpoint import analyze, cache, folders, rerank, runstate, ui
-from cutpoint.styles import get_style
+from cutpoint.styles import get_style, style_name
 from test_rerank import lite_layers, make_project, read  # noqa: F401 (lite_layers: a fixture)
 
 PORT = 8765
@@ -108,6 +108,22 @@ def test_a_preview_is_refused_while_a_run_holds_the_project(home, tmp_path, clie
     hold_lock(make_project(home, tmp_path))
     res = preview(client)
     assert res.status_code == 409 and res.json()["code"] == "folder_busy"
+
+
+def strip_style(project: Path) -> str:
+    hl = read(project)
+    for key in ("style", "style_base", "style_kind", "detection"):
+        hl.pop(key, None)
+    (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    return style_name(hl)
+
+
+def test_preview_and_apply_of_a_file_without_style_name_the_fallback(home, tmp_path, client):
+    project = make_project(home, tmp_path)
+    fallback = strip_style(project)
+    shown = preview(client).json()
+    assert shown["from"] == fallback
+    assert apply(client, shown["base"]).json()["from"] == fallback
 
 
 # --------------------------------------------------------------------------- apply

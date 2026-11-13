@@ -63,6 +63,7 @@ from cutpoint.styles import (
     Style,
     auto_fallback,
     get_style,
+    style_name,
     style_names,
 )
 from cutpoint.utils import (
@@ -697,7 +698,7 @@ def _cmd_rerank(a: argparse.Namespace) -> None:
     jsonout.output("saved", res.saved)
     jsonout.output("analyzed", res.analyzed)
     jsonout.output("style", after.get("style"))
-    jsonout.output("from", before.get("style"))
+    jsonout.output("from", style_name(before))
     jsonout.output("candidates", len(after.get("candidates") or []))
     jsonout.output("suggested_top", after.get("suggested_top"))
     jsonout.output("top", top)
@@ -709,7 +710,7 @@ def _cmd_rerank(a: argparse.Namespace) -> None:
     if jsonout.active():
         return
     what = "saved" if res.saved else "preview, nothing saved"
-    print(f"{before.get('style')} -> {after.get('style')} ({what}, {res.seconds:.1f} s)")
+    print(f"{style_name(before)} -> {after.get('style')} ({what}, {res.seconds:.1f} s)")
     print(
         f"{len(new)} new moment(s), {len(dropped)} gone; suggested_top {after.get('suggested_top')}"
     )
