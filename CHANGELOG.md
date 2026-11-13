@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- GPU scene detection on an MP4 or MKV that changes resolution mid-file put every later cut one frame late (or lost cuts with older ffmpeg). Such a file is now decoded again without keeping its frames on the GPU; other files are unchanged (#1031).
 - `cutpoint ui`: Play sequence no longer opens a source file again for each clip of it: the next clip of the file the player has open is sought to there, which saves about 2.5 s per clip of a fragmented MP4 on a network drive; a Fade across the cut between two clips of one file still opens it in the second player, as both play at once. The 360 director preview route keeps the project lookup for 2 s like the other video routes, and the slow-start note asks once for a source probed after the project was listed, so its fragmented-MP4 reason shows on the first wait (#1020).
 - AI Chat: a reply that says it will look something up next ("I'll search each one now.", "Let me check the transcript", or one that ends in a colon) without making the call no longer ends the turn. The model is asked once to make the call or answer (one nudge a turn, native tool calls and JSON tool mode alike), and the model's own reply is always what is shown (#1013).
 - `cutpoint ui`: the AI Chat ranking card that says to reconnect the footage (it needs an analysis the offline footage cannot get) now has a **Dismiss** button, like the other ranking cards (#902).

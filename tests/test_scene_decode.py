@@ -766,6 +766,45 @@ def test_a_joined_mpegts_keeps_its_cuts_after_the_join_on_the_gpu(joined_ts, tmp
     assert near(got, [c + vstart for c in CLIP_CUTS]), got
 
 
+@needs_ffmpeg
+def test_a_picture_that_changes_size_mid_file_keeps_its_cuts_on_the_gpu(tmp_path, monkeypatch):
+    """#1031: an MKV whose second part has another size (1280x720, then 1920x1080): NVDEC starts
+    again at the change, ffmpeg rebuilds the graph and the encoder dropped frames, so every
+    later cut came late or not at all. The GPU result is the CPU's."""
+    dec = ffmpeg_utils.gpu_decoder()
+    if dec is None:
+        pytest.skip("no GPU decoder works here")
+    ff = shutil.which("ffmpeg")
+    first, second = tmp_path / "a.ts", tmp_path / "b.ts"
+    subprocess.run(
+        [ff, "-v", "error", "-f", "lavfi", "-i", "testsrc=size=1280x720:duration=6", "-c:v",
+         "libx264", "-pix_fmt", "yuv420p", "-f", "mpegts", str(first)],
+        check=True,
+    )  # fmt: skip
+    subprocess.run(  # 1920x1080: 3 s of testsrc2, then a cut to 3 s of testsrc
+        [ff, "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:duration=3", "-f",
+         "lavfi", "-i", "testsrc=size=1920x1080:duration=3", "-filter_complex",
+         "[0][1]concat=n=2:v=1:a=0,format=yuv420p", "-c:v", "libx264", "-output_ts_offset", "6",
+         "-f", "mpegts", str(second)],
+        check=True,
+    )  # fmt: skip
+    parts = [first.read_bytes(), second.read_bytes()]
+    joined = tmp_path / "ab.ts"
+    joined.write_bytes(b"".join(parts))
+    mkv = tmp_path / "ab.mkv"
+    subprocess.run([ff, "-v", "error", "-i", str(joined), "-c", "copy", str(mkv)], check=True)
+    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    cpu = one_pass(mkv, tmp_path / "cpu")
+    monkeypatch.setattr(analyze, "decoder_for", lambda src: dec)
+    gpu = one_pass(mkv, tmp_path / "gpu")
+    assert len(cpu) == 2, cpu  # the size change and the cut after it
+    # half a proxy frame: without the re-run the second cut came a whole frame (0.1 s) late
+    assert len(gpu) == len(cpu) and all(
+        abs(g - c) < analyze.SCENE_GRID_S / 2 for g, c in zip(gpu, cpu, strict=True)
+    ), (gpu, cpu)
+
+
 # ----------------------------------------------------------------- the first frame's time
 SHOWINFO_6 = """[Parsed_showinfo_0 @ 0x1] config in time_base: 1/90000, frame_rate: 10/1
 [Parsed_showinfo_0 @ 0x1] config out time_base: 0/0, frame_rate: 0/0
