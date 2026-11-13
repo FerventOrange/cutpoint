@@ -141,10 +141,11 @@ _LAST_SENTENCE = re.compile(r"[^.:;!]*$")
 # check the transcript"); not one that offers it ("I'll search more if you want") nor one with
 # another verb ("Let me know if ...", "I'll leave it there", "Let's call it a draw")
 _PROMISES = re.compile(
-    r"(?:(?:now|ok|okay|next|so|alright|then)\b,?\s*)?(?:let me|let's|i'll|i will|i need to"
+    r"(?:(?:now|ok|okay|next|so|alright|then)\b,?\s*)?(?:let's\s+(?:now\s+|also\s+|first\s+"
+    r"|next\s+)?(?:search|find|look|check|scan|query|fetch)|(?:let me|i'll|i will|i need to"
     r"|i am going to|i'm going to|i'm gonna)\s+(?:now\s+|also\s+|first\s+|next\s+)?(?:search"
     r"|find|look|check|scan|query|fetch|get(?!\s+back)|view|watch|run|try|go through|do that"
-    r"|do it)\b",
+    r"|do it))\b",
     re.I,
 )
 # ... or one that is only a moment asked for ("One moment", "Give me a second"; not "One moment
@@ -158,7 +159,7 @@ _MOMENT_ONLY = re.compile(
 # terms: grifter, loser, and curse words")
 _ANSWERED = re.compile(
     r"\d|\bm\d+\b|\"|(?<!\w)'|'(?!\w)|\b(?:is|are|was|were|says|said|has|have|had|appears?"
-    r"|shows?|does|did)\b",
+    r"|shows?|does|did|no|not|none|nothing|never|only)\b|n't\b",
     re.I,
 )
 # ... or one that opens with a gerund, only when it ends in "now" or the reply in an ellipsis
@@ -168,7 +169,9 @@ _GERUND = re.compile(r"(?:searching|looking|checking|scanning)\b", re.I)
 _NOW = re.compile(r"\bnow$", re.I)
 _COLON = re.compile(r":\s+")
 _OFFERS = re.compile(
-    r"\b(?:if you|would you|do you|want me|you want|you'd like|you would like)\b", re.I
+    r"\b(?:if you|would you|do you|want me|you want|you'd like|you would like|next time|later)\b"
+    r"|(?<!see )(?<!check )\bif\b",
+    re.I,
 )
 _SENTENCES = re.compile(r"[.!?]+\s+|\n+")
 
@@ -191,7 +194,9 @@ def _promises(text: str) -> bool:
         head, after = last[: colon.start()], last[colon.end() :]
     if _OFFERS.search(last) or _ANSWERED.search(after):
         return False
-    if _GERUND.match(head):
+    if _GERUND.match(head):  # "Looking at the rest, nothing else." answers
+        if _ANSWERED.search(head.partition(",")[2]):
+            return False
         return trails or bool(_NOW.search(last))
     return bool(_PROMISES.match(head))
 
@@ -430,7 +435,6 @@ class Turn:
         # to the asked length is offered when the retries do not get there
         self._candidates: list[tuple[str, dict[str, Any]]] = []
         self._nudged: str | None = None  # the text-only reply that got the nudge (this turn's one)
-        self._promised = False  # ... and it only promised a lookup (PROMISE_NUDGE): no answer
         self._splice: str | None = None  # the add_range ops of a phrase said apart (_apart)
         # find_words found the words, this turn or an earlier one the model is shown
         # (SPLICE_NUDGE)
@@ -769,23 +773,18 @@ class Turn:
                 calls, text = reply.tool_calls, reply.text.strip()
             if not calls:
                 if self._nudged is not None and not text:
-                    text = self._first_answer()  # the answer given again is empty: the first stands
+                    text = self._nudged  # the answer given again is empty: the first one stands
                 if not text and closing:  # once more, then the turn's best
                     rounds, again = rnd + (1 if again else 2), True
                     continue
                 if not text:
                     raise ProviderError(f"{self.provider.model} gave an empty answer")
-                # promised again after the nudge, or in the closing round: the turn never ends
-                # on a promise it does not keep
-                if (self._promised or closing) and _promises(text):
-                    text = self._no_answer()
                 # a nudge in the closing round would leave no answer
                 nudge = None if self._nudged is not None or closing else self._nudge(text)
                 if nudge is not None:
                     # ask once more (the nudge stays in this conversation; the page and chat.json
                     # never get it, and the reply after it is the answer)
                     self._nudged = text
-                    self._promised = nudge == PROMISE_NUDGE
                     messages.append({"role": "user", "content": nudge})
                     continue
                 if self._offer_fallback():  # the earlier proposal beats an answer in text
@@ -825,7 +824,7 @@ class Turn:
         if last_cut is not None:
             raise cut_again_error(self.provider, last_cut, again=False) from None
         # the rounds ran out after the nudge: the first answer stands; else the code's own
-        self._emit({"kind": "reply", "text": self._first_answer()})
+        self._emit({"kind": "reply", "text": self._nudged or self._no_answer()})
         self._finish("done")
 
     def _nudge(self, text: str) -> str | None:
@@ -843,13 +842,6 @@ class Turn:
                 return SPLICE_NUDGE + (f" The ops: {self._splice}" if self._splice else "")
             return NUDGE
         return PROMISE_NUDGE if _promises(text) else None
-
-    def _first_answer(self) -> str:
-        """The nudged reply, when the reply after the nudge gives no answer; the code's own
-        (:meth:`_no_answer`) when there is none or it only promised a lookup."""
-        if self._nudged is None or self._promised:
-            return self._no_answer()
-        return self._nudged
 
     def _no_answer(self) -> str:
         """The reply of a turn whose model gave none: the last rejection of its proposals, or

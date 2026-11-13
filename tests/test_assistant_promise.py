@@ -76,6 +76,22 @@ def sent(fake: FakeProvider, text: str = session.PROMISE_NUDGE) -> int:
         ("I searched for loser: no hits.", False),
         ("Let me check for the other terms: grifter, loser, and curse words.", True),
         ("Let me check the moment at 12:30.", True),
+        ("Let's do it!", False),
+        ("Let's try it.", False),
+        ("Let's get started!", False),
+        ("Let's run with that.", False),
+        ("Let's view it in the player.", False),
+        ("Let's try a shorter cut.", False),
+        ("I'll find a better transition if the fade feels off.", False),
+        ("I'll try to keep it under 60 s next time.", False),
+        ("I'll check later.", False),
+        ("Let me check: nothing there.", False),
+        ("Let me check: no hits.", False),
+        ("Let's look at the results: no hits for grifter or loser.", False),
+        ("Looking through the transcript, I don't see 'grifter' anywhere...", False),
+        ("Let me check if she says it.", True),
+        ("Let me do that.", True),
+        ("Searching for grifter, loser, and curse words...", True),
         ("Searching now...", True),
         ("One moment.", True),
         ("I'll look for the other words next.", True),
@@ -150,35 +166,30 @@ def test_a_reply_that_is_no_promise_is_not_nudged(json_mode: bool) -> None:
 
 @pytest.mark.parametrize("json_mode", [False, True])
 @pytest.mark.parametrize("again", ["promise", "empty"])
-def test_a_promise_after_the_nudge_or_nothing_ends_in_the_code_own_answer(
+def test_after_the_nudge_the_models_own_reply_stands_whatever_it_is(
     json_mode: bool, again: str
 ) -> None:
     mk = said_json if json_mode else say
-    second = mk("Searching again now...") if again == "promise" else mk("")
-    fake = FakeProvider([mk(ISSUE), second], NO_TOOLS if json_mode else NATIVE)
+    second = "Searching again now..." if again == "promise" else ""
+    fake = FakeProvider([mk(ISSUE), mk(second)], NO_TOOLS if json_mode else NATIVE)
     turn = run(fake, ASK, proj=chat_project())
     assert turn.status == "done", turn.error
     assert sent(fake) == 1  # an empty JSON reply is asked again as malformed: no second nudge
     assert json_mode or len(fake.requests) == 2
-    assert replies(turn) == [turn._no_answer()]
-    assert "couldn't find an answer" in replies(turn)[0]
+    # a promise again is shown as it is; an empty reply leaves the nudged one
+    assert replies(turn) == [second or ISSUE]
 
 
 def test_searches_after_the_nudge_that_end_on_a_promise_get_no_second_nudge() -> None:
+    last = "I'll search each one now."
     fake = FakeProvider(
-        [
-            say(ISSUE),
-            call("find_words", query="a"),
-            call("find_words", query="am"),
-            say("I'll search each one now."),
-        ],
+        [say(ISSUE), call("find_words", query="a"), call("find_words", query="am"), say(last)],
         NATIVE,
     )
     turn = run(fake, ASK, proj=chat_project())
     assert turn.status == "done", turn.error
     assert sent(fake) == 1 and len(fake.requests) == 4
-    assert replies(turn) == [turn._no_answer()]
-    assert "searched for 'a', 'am'" in replies(turn)[0]
+    assert replies(turn) == [last]
 
 
 def test_no_promise_nudge_in_the_closing_round() -> None:
@@ -187,7 +198,14 @@ def test_no_promise_nudge_in_the_closing_round() -> None:
     turn = run(fake, ASK)
     assert turn.status == "done", turn.error
     assert sent(fake) == 0
-    assert replies(turn) == [turn._no_answer()]  # a promise in the closing round is no answer
+    assert replies(turn) == [ISSUE]  # shown as the model wrote it
+
+
+def test_a_closing_round_answer_with_a_lets_run_sentence_is_shown_unchanged() -> None:
+    final = "The crash at 1:20 is the best opener. Let's run with that."
+    script = [call("get_moment", id="m1") for _ in range(session.MAX_ROUNDS - 1)]
+    turn = run(FakeProvider([*script, say(final)], NATIVE), ASK)
+    assert replies(turn) == [final]
 
 
 def test_an_answer_in_the_closing_round_that_only_starts_like_a_promise_is_shown() -> None:
