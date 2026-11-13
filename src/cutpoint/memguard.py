@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from cutpoint import state
-from cutpoint.errors import LowMemoryError, LowVramError
+from cutpoint.errors import LowMemoryError, LowVramError, is_out_of_memory
 from cutpoint.utils import command_line
 
 if TYPE_CHECKING:
@@ -237,6 +237,23 @@ def _resume_hint() -> str:
     if project is None:
         return "then run the command again"
     return f"then run `{command_line(['cutpoint', 'resume', str(project)])}` to continue"
+
+
+def raise_if_out_of_memory(err: Exception, what: str, name: str) -> None:
+    """Stop the run when ``err``, caught by a per-source guard (one bad source skips only
+    itself), is a failed allocation (:func:`~cutpoint.errors.is_out_of_memory`): it is not a
+    bad source, so it becomes a :class:`~cutpoint.errors.LowMemoryError` (``low_memory``,
+    resumable) chained to ``err``. ``what``: the step; ``name``: the source's file name.
+
+    Raises:
+        LowMemoryError: If ``err`` is an out-of-memory error.
+    """
+    if not is_out_of_memory(err):
+        return
+    raise LowMemoryError(
+        f"Out of memory in {what} ({name}); close other programs, {_resume_hint()}",
+        "out of memory",
+    ) from err
 
 
 def _guard(

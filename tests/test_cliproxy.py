@@ -1837,3 +1837,27 @@ def test_shutdown_during_a_start_ends_it_stops_the_guardian_and_frees_the_lock(
 
     monkeypatch.setattr(cliproxy, "_wait_until_ready", lambda proc, **kw: None)
     cliproxy.start().stop()  # the launch lock was freed
+
+
+@pytest.mark.parametrize("call", ["_client_request", "_management_request"])
+def test_a_proxy_http_error_carries_the_response_status(
+    monkeypatch: pytest.MonkeyPatch, call: str
+) -> None:
+    class _Resp:
+        ok = False
+        status_code = 422
+        text = "nope"
+
+        def json(self) -> dict:
+            return {"error": "Extra inputs are not permitted"}
+
+    class _Sess:
+        def request(self, *args: object, **kwargs: object) -> _Resp:
+            return _Resp()
+
+    monkeypatch.setattr(cliproxy, "_is_daemon_owned", lambda: True)
+    monkeypatch.setattr(cliproxy, "_load_keys", lambda: ("m", "c"))
+    monkeypatch.setattr(cliproxy, "_session", lambda: _Sess())
+    with pytest.raises(cliproxy.ProxyHTTPError) as exc:
+        getattr(cliproxy, call)("POST", "/v1/x", json_data={})
+    assert exc.value.status == 422

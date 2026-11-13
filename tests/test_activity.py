@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from conftest import HOP, SLED, add_profile, set_config
-from cutpoint import activity, jsonout, paths, vision
+from cutpoint import activity, jsonout, paths, stylefiles, vision
 from cutpoint.errors import LowMemoryError
 
 
@@ -1109,3 +1109,31 @@ def test_describe_surfaces_a_failed_grab_from_the_pool(monkeypatch, fake_clip):
     shown, ask = _shown()
     activity.describe(emb, refs, ask)  # the grab error falls back to CLIP, as before
     assert shown == []
+
+
+def test_a_long_discovered_name_keeps_its_suffixes_within_the_name_limit(home):
+    long = "a" * 56 + "-pack-xy"  # 64 characters, a valid name
+    assert stylefiles.NAME_RE.fullmatch(long)
+
+    def make(description: str) -> dict:
+        return {**activity.validate({**PACK_RAFTING, "description": description}), "name": long}
+
+    first = activity.save_to_library(make("one"))
+    assert first == long
+    second = activity.save_to_library(make("two"))  # taken by other content: hash suffix
+    third = activity.save_to_library(make("three"))
+    names = [first, second, third]
+    assert len(set(names)) == 3
+    for n in names:
+        assert len(n) <= 64 and stylefiles.NAME_RE.fullmatch(n)
+    for n in names:
+        assert activity.name_problem(n) is None
+
+    # the same content again while its file is unreadable: the "-<n>" branch, still within the limit
+    bad = paths.profiles_dir() / f"{second}.json"
+    bad.unlink()
+    bad.write_text("{", encoding="utf-8")
+    activity._FILES.pop(str(bad), None)  # the parsed-file cache would still serve the old content
+    fourth = activity.save_to_library(make("two"))
+    assert fourth.endswith("-2") and fourth not in names
+    assert len(fourth) <= 64 and activity.name_problem(fourth) is None

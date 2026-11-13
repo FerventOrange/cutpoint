@@ -334,7 +334,7 @@ def layers_run(home, tmp_path, monkeypatch):
         return audio.get(s.name, [])
 
     def layer(name: str):
-        def run_layer(sources, params, force=False, det=None, bad=None, handoff=None):
+        def run_layer(sources, params, force=False, det=None, bad=None, handoff=None, errors=None):
             need = [s for s in sources if s.name not in st.done.setdefault(name, set())]
             out: dict[str, Any] = {"cached": len(sources) - len(need), "computed": 0}
             st.handoff.append(handoff)
@@ -915,7 +915,7 @@ class _Provider:
 
     def chat(self, messages, *, schema=None, **_kw):
         self.chats += 1
-        return SimpleNamespace(text='{"score": 7, "label": "x"}')
+        return SimpleNamespace(text='{"score": 7, "label": "x"}', finish="")
 
     def unload(self) -> bool:
         self.unloads += 1

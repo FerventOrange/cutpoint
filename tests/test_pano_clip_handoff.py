@@ -199,7 +199,7 @@ def events(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(common, "gpu_memory_used_mib", lambda: None)
     rec = SimpleNamespace(handoff=[], encoder=[], fail=False)
 
-    def visual(sources, params, force=False, bad=None, handoff=None):
+    def visual(sources, params, force=False, bad=None, handoff=None, errors=None):
         rec.handoff.append(handoff)
         return {}
 

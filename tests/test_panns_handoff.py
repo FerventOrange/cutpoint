@@ -78,7 +78,7 @@ def run(tmp_path: Path, monkeypatch):
                 raise RuntimeError("boom")
             return []
 
-        def run_layer(sources, params, force=False, det=None):
+        def run_layer(sources, params, force=False, det=None, errors=None):
             log.append(("voice", det))
             if det is None and voice.needs_run(sources, params, force):
                 Det()  # loads its own PANNs, as the real one does

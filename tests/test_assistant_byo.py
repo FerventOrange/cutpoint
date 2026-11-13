@@ -1260,3 +1260,95 @@ def test_subscription_resolve_model_keeps_a_chosen_model_and_refuses_an_empty_li
     assert providers.SubscriptionProvider("codex", "", "picked", 0).resolve_model() == "picked"
     with pytest.raises(ProviderError, match="no models available from proxy"):
         providers.SubscriptionProvider("codex", "", "", 0).resolve_model()
+
+
+def _kwargs(wire: Wire) -> list[Any]:
+    return [s["json"].get("chat_template_kwargs") for s in wire.sent if s["method"] == "POST"]
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8080", "http://localhost:1234"])
+def test_a_local_openai_server_is_asked_without_thinking(monkeypatch, url) -> None:
+    wire = Wire(monkeypatch, oa_reply("ok"))
+    OpenAIProvider(url, "m", 0, None).chat(HI)
+    assert _kwargs(wire) == [{"enable_thinking": False}]
+
+
+@pytest.mark.parametrize(
+    ("make", "answer"),
+    [
+        (lambda: OpenAIProvider("", "gpt-x", 0, KEY), rs_reply(rs_text("ok"))),  # /v1/responses
+        (lambda: providers.XAIProvider("", "grok", 0, XKEY), oa_reply("ok")),
+    ],
+)
+def test_hosted_openai_and_xai_get_no_template_kwargs(monkeypatch, make, answer) -> None:
+    wire = Wire(monkeypatch, answer)
+    make().chat(HI)
+    assert _kwargs(wire) == [None]
+
+
+def test_a_server_refusing_chat_template_kwargs_is_asked_once_without_it(monkeypatch) -> None:
+    wire = Wire(
+        monkeypatch,
+        _refusal("Unrecognized request argument supplied: chat_template_kwargs"),
+        oa_reply("one"),
+        oa_reply("two"),
+    )
+    p = OpenAIProvider("http://127.0.0.1:1234", "m", 0, None)
+    assert p.chat(HI).text == "one"
+    assert _kwargs(wire) == [{"enable_thinking": False}, None]
+    assert p.chat(HI).text == "two"  # remembered
+    assert _kwargs(wire) == [{"enable_thinking": False}, None, None]
+
+
+def test_a_422_refusal_of_chat_template_kwargs_is_retried_without_it(monkeypatch) -> None:
+    wire = Wire(
+        monkeypatch,
+        _refusal("Extra inputs are not permitted", 422),
+        oa_reply("one"),
+    )
+    p = OpenAIProvider("http://127.0.0.1:1234", "m", 0, None)
+    assert p.chat(HI).text == "one"
+    assert _kwargs(wire) == [{"enable_thinking": False}, None]
+
+
+def test_a_422_refusing_nothing_known_is_not_retried(monkeypatch) -> None:
+    wire = Wire(monkeypatch, _refusal("messages: field required", 422), oa_reply("never"))
+    p = OpenAIProvider("http://127.0.0.1:1234", "m", 0, None)
+    with pytest.raises(ProviderError):
+        p.chat(HI)
+    assert len(wire.sent) == 1
+
+
+def test_an_official_host_behind_the_openai_provider_gets_no_template_kwargs(monkeypatch) -> None:
+    wire = Wire(monkeypatch, oa_reply("ok"))
+    OpenAIProvider("https://api.x.ai", "grok", 0, XKEY).chat(HI)
+    assert _kwargs(wire) == [None]
+
+
+def test_an_unknown_field_error_drops_chat_template_kwargs_before_response_format(
+    monkeypatch,
+) -> None:
+    wire = Wire(monkeypatch, _refusal("Extra inputs are not permitted"), oa_reply("{}"))
+    p = OpenAIProvider("http://127.0.0.1:1234", "m", 0, None)
+    p.chat(HI, schema=session.JSON_SCHEMA)
+    assert "response_format" in wire.sent[1]["json"]
+    assert "chat_template_kwargs" not in wire.sent[1]["json"]
+    assert not p._no_schema
+
+
+def test_both_optional_fields_can_be_refused_in_turn(monkeypatch) -> None:
+    wire = Wire(
+        monkeypatch,
+        _refusal("Unrecognized request argument supplied: chat_template_kwargs"),
+        _refusal("Unsupported parameter: 'response_format'"),
+        oa_reply("{}"),
+    )
+    OpenAIProvider("http://127.0.0.1:1234", "m", 0, None).chat(HI, schema=session.JSON_SCHEMA)
+    last = wire.sent[2]["json"]
+    assert len(wire.sent) == 3 and "response_format" not in last
+    assert "chat_template_kwargs" not in last
+
+
+def test_a_chat_reply_carries_its_finish_reason(monkeypatch) -> None:
+    Wire(monkeypatch, oa_reply("ok"))
+    assert OpenAIProvider("http://127.0.0.1:8080", "m", 0, None).chat(HI).finish == "stop"

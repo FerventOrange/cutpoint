@@ -468,11 +468,14 @@ def save_to_library(profile: dict[str, Any], footage: list[str] | None = None) -
                     f,
                     name,
                 )
-        base_name = f"{name}-{cache.params_hash(profile, 6)}"
-        name, n = base_name, 1
+        # the base is trimmed so the suffixed name fits NAME_RE's 64 characters
+        tag = f"-{cache.params_hash(profile, 6)}"
+        stem = name
+        name, n = f"{stem[: 64 - len(tag)].rstrip('-_')}{tag}", 1
         while name.lower() in taken:
             n += 1
-            name = f"{base_name}-{n}"
+            tail = f"{tag}-{n}"
+            name = f"{stem[: 64 - len(tail)].rstrip('-_')}{tail}"
     path = paths.profiles_dir() / f"{name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     own = {"footage": footage} if footage else {}

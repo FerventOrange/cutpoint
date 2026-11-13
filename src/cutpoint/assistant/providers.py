@@ -155,6 +155,35 @@ IMAGE_MODEL_PREFIXES = (
 # Words of a server's refusal of tools (Ollama, vLLM, llama-server without --jinja).
 _NO_TOOLS = ("support", "requires", "jinja", "enable")
 
+# Optional request fields a server may refuse with a 400 (the reply is still asked for without
+# them), each with the words of the error that name it; the first listed is dropped first.
+_OPTIONAL_FIELDS = (
+    ("chat_template_kwargs", ("chat_template_kwargs", "enable_thinking")),
+    ("response_format", ("response_format", "json_schema")),
+)
+# an error that names no field: it is about chat_template_kwargs, the field servers do not all know
+_UNKNOWN_FIELD = (
+    "unknown field",
+    "extra field",
+    "extra inputs",
+    "unrecognized",
+    "unexpected field",
+)
+NO_THINKING = {
+    "enable_thinking": False
+}  # vLLM, SGLang and llama.cpp read it for Qwen3-style models
+
+
+def refused_field(why: str, payload: dict[str, Any]) -> str | None:
+    """The optional field of ``payload`` that the 400 error text ``why`` refuses, or None."""
+    low = why.lower()
+    for name, words in _OPTIONAL_FIELDS:
+        if name in payload and any(w in low for w in words):
+            return name
+    if "chat_template_kwargs" in payload and any(w in low for w in _UNKNOWN_FIELD):
+        return "chat_template_kwargs"
+    return None
+
 
 class ProviderError(RuntimeError):
     """The model could not be asked or its reply not read; the message is for the user."""
@@ -213,6 +242,8 @@ class Reply:
     # an OpenAI-compatible reply's reasoning_content or reasoning when its content is empty (a
     # thinking model's answer can end up there, #986); only the Vision rating reads it
     reasoning: str = ""
+    # the reply's finish reason (an OpenAI-compatible server's finish_reason); "" when none
+    finish: str = ""
 
 
 class Provider(Protocol):
@@ -994,6 +1025,7 @@ class OpenAIProvider(_HttpProvider):
     def __init__(self, url: str, model: str, context_tokens: int, key: str | None) -> None:
         super().__init__(_openai_base(url or self.default_url), model, context_tokens, key)
         self._no_schema = False  # the server refused response_format: later calls leave it out
+        self._no_thinking = False  # the server refused chat_template_kwargs: same
 
     @property
     def title(self) -> str:
@@ -1011,6 +1043,16 @@ class OpenAIProvider(_HttpProvider):
         """Whether the Responses API is used: OpenAI's own host only (xAI and compatible
         servers speak Chat Completions)."""
         return self.name == "openai" and keys.official("openai", self.host)
+
+    @property
+    def asks_no_thinking(self) -> bool:
+        """Whether ``chat_template_kwargs`` is sent: OpenAI-compatible servers (``openai`` at a
+        base URL other than an official host), not OpenAI's own host, xAI or the proxy."""
+        return (
+            self.name == "openai"
+            and self.host.lower().rstrip(".") not in keys.OFFICIAL_HOST.values()
+            and not self._no_thinking
+        )
 
     def _models(self) -> list[str]:
         resp = self._send("GET", f"{self.url}/models", None, CHECK_TIMEOUT_S)
@@ -1072,18 +1114,26 @@ class OpenAIProvider(_HttpProvider):
                     "type": "json_schema",
                     "json_schema": {"name": "cutpoint_reply", "schema": schema},
                 }
+            if self.asks_no_thinking:
+                payload["chat_template_kwargs"] = dict(NO_THINKING)
         self._stop(cancelled)
         resp = self._send("POST", f"{self.url}/{endpoint}", payload, self.timeout)
         self._stop(cancelled)
-        if "response_format" in payload and resp.status_code == 400:
-            low = self._why(resp).lower()
-            if "response_format" in low or "json_schema" in low:
-                # the prompt asks for JSON anyway; the caller still checks the reply
-                logger.info("%s refused response_format: asking without it", self.title)
+        for _ in range(2):  # each optional field is dropped once, then remembered
+            refused = (
+                refused_field(self._why(resp), payload) if resp.status_code in (400, 422) else None
+            )
+            if refused is None:
+                break
+            # the prompt asks for JSON anyway; the caller still checks the reply
+            logger.info("%s refused %s: asking without it", self.title, refused)
+            if refused == "response_format":
                 self._no_schema = True
-                del payload["response_format"]
-                resp = self._send("POST", f"{self.url}/{endpoint}", payload, self.timeout)
-                self._stop(cancelled)
+            else:
+                self._no_thinking = True
+            del payload[refused]
+            resp = self._send("POST", f"{self.url}/{endpoint}", payload, self.timeout)
+            self._stop(cancelled)
         if resp.status_code < 400:
             data = self._read(resp)
             return self._responses_reply(data) if self.responses else self._reply(data)
@@ -1132,7 +1182,8 @@ class OpenAIProvider(_HttpProvider):
         message: dict[str, Any] = {"role": "assistant", "content": text}
         if raw_calls:
             message["tool_calls"] = raw_calls
-        return Reply(text, calls, message, reasoning)
+        finish = first.get("finish_reason") if isinstance(first, dict) else None
+        return Reply(text, calls, message, reasoning, finish if isinstance(finish, str) else "")
 
     def _responses_payload(
         self,
@@ -1561,9 +1612,22 @@ class SubscriptionProvider(OpenAIProvider):
                 "type": "json_schema",
                 "json_schema": {"name": "cutpoint_reply", "schema": schema},
             }
+        if schema and self._no_schema:
+            del payload["response_format"]
         self._stop(cancelled)
         try:
-            resp_data = cliproxy.chat(self.name, payload)
+            try:
+                resp_data = cliproxy.chat(self.name, payload)
+            except cliproxy.ProxyHTTPError as err:
+                # same as OpenAIProvider.chat: refused once, asked again without it, remembered
+                if err.status != 400 or "response_format" not in payload:
+                    raise
+                if refused_field(str(err), payload) != "response_format":
+                    raise
+                logger.info("%s refused response_format: asking without it", self.title)
+                self._no_schema = True
+                del payload["response_format"]
+                resp_data = cliproxy.chat(self.name, payload)
         except cliproxy.ProxyError as err:
             why = str(err)
             low = why.lower()

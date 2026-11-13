@@ -1252,6 +1252,7 @@ def test_a_hosted_call_records_wall_time_only(monkeypatch, src):
         {
             "ask": lambda self, text, frames, **_k: '{"score": 6, "label": "x"}',
             "available": lambda self: True,
+            "finish": "",
         },
     )()
     rater.check_memory = lambda *a, **k: None
@@ -1319,7 +1320,7 @@ def _hosted_rater(sent: list) -> vision.VisionRater:
         return '{"score": 6, "label": "x"}'
 
     rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
-    rater.via = type("Via", (), {"ask": ask, "available": lambda self: True})()
+    rater.via = type("Via", (), {"ask": ask, "available": lambda self: True, "finish": ""})()
     rater.check_memory = lambda *a, **k: None
     rater.cache_only = False
     return rater

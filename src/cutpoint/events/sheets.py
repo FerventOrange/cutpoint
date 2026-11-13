@@ -18,7 +18,8 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint.errors import FFmpegError
+from cutpoint import jsonout, memguard
+from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.ffmpeg_utils import grab_images
 from cutpoint.imageio import write_jpeg
 
@@ -102,41 +103,84 @@ def _spread_top(
     return out
 
 
-def write_visual_sheets(project: Path, sources: list[Any], n: int = 24) -> list[Path]:
-    """Write the contact sheets for a project's sources (visual layer must have run)."""
+_Frame = tuple[float, str, float, Any]  # (score, source, t, extra)
+_Boxes = dict[tuple[str, int], list[tuple[float, ...]]]  # (source, frame index): person boxes
+
+
+def _source_frames(s: Any) -> tuple[list[_Frame], list[_Frame], list[_Frame], _Boxes] | None:
+    """One source's beauty, friends and lift frames and its person boxes per frame, for
+    :func:`write_visual_sheets`; None when its visual layer has not run."""
     from cutpoint.events import visual as V  # noqa: PLC0415
     from cutpoint.telemetry import extract  # noqa: PLC0415
 
     rules = V.PeopleRules()
-    beauty, friends, lift = [], [], []
-    boxes_of: dict[tuple[str, int], list[tuple[float, ...]]] = {}
-    for s in sources:
-        d = V.load_visual(s)
-        if d is None:
+    beauty: list[_Frame] = []
+    friends: list[_Frame] = []
+    lift: list[_Frame] = []
+    boxes_of: _Boxes = {}
+    d = V.load_visual(s)
+    if d is None:
+        return None
+    sc = V.frame_scores(d)
+    fr = V.friends_score(sc)
+    tel = extract(s.path, s.duration)
+    masked = np.zeros(len(d.t), bool)
+    if tel is not None:
+        g = tel.grid
+        idx = np.clip((d.t / 0.1).astype(int), 0, tel.n - 1)
+        masked = (g["lift_mask"][idx] > 0) | (g["still_mask"][idx] > 0)
+    is_self = V.self_boxes(d, rules)
+    for row, me in zip(d.det, is_self, strict=True):
+        fi, lab, score, x1, y1, x2, y2 = row
+        if int(lab) != V.COCO_PERSON or score < rules.min_score:
             continue
-        sc = V.frame_scores(d)
-        fr = V.friends_score(sc)
-        tel = extract(s.path, s.duration)
-        masked = np.zeros(len(d.t), bool)
-        if tel is not None:
-            g = tel.grid
-            idx = np.clip((d.t / 0.1).astype(int), 0, tel.n - 1)
-            masked = (g["lift_mask"][idx] > 0) | (g["still_mask"][idx] > 0)
-        is_self = V.self_boxes(d, rules)
-        for row, me in zip(d.det, is_self, strict=True):
-            fi, lab, score, x1, y1, x2, y2 = row
-            if int(lab) != V.COCO_PERSON or score < rules.min_score:
-                continue
-            kept = not me and y2 - y1 >= rules.min_height
-            boxes_of.setdefault((str(s.path), int(fi)), []).append((x1, y1, x2, y2, kept))
-        for i, t in enumerate(d.t):
-            extra = (i, sc["beauty_zs"][i], sc["aesthetic"][i], fr[i], int(sc["count"][i]))
-            beauty.append((float(V.beauty_score(sc)[i]), str(s.path), float(t), extra))
-            friends.append((float(fr[i]), str(s.path), float(t), extra))
-            if masked[i] and boxes_of.get((str(s.path), i)):
-                lift.append(
-                    (float(np.random.default_rng(i).random()), str(s.path), float(t), extra)
-                )
+        kept = not me and y2 - y1 >= rules.min_height
+        boxes_of.setdefault((str(s.path), int(fi)), []).append((x1, y1, x2, y2, kept))
+    for i, t in enumerate(d.t):
+        extra = (i, sc["beauty_zs"][i], sc["aesthetic"][i], fr[i], int(sc["count"][i]))
+        beauty.append((float(V.beauty_score(sc)[i]), str(s.path), float(t), extra))
+        friends.append((float(fr[i]), str(s.path), float(t), extra))
+        if masked[i] and boxes_of.get((str(s.path), i)):
+            lift.append((float(np.random.default_rng(i).random()), str(s.path), float(t), extra))
+    return beauty, friends, lift, boxes_of
+
+
+def write_visual_sheets(project: Path, sources: list[Any], n: int = 24) -> list[Path]:
+    """Write the contact sheets for a project's sources (visual layer must have run).
+
+    A source whose visual data or telemetry fails to read is left out of the sheets (a
+    WARNING and a ``step_failed`` warning name it); when every source with visual data
+    fails, the last error is raised. An out-of-memory error stops the run
+    (:class:`~cutpoint.errors.LowMemoryError`).
+    """
+    beauty: list[_Frame] = []
+    friends: list[_Frame] = []
+    lift: list[_Frame] = []
+    boxes_of: _Boxes = {}
+    failed: Exception | None = None  # the last source's error
+    done = 0
+    for s in sources:
+        try:
+            got = _source_frames(s)
+        except LowMemoryError:
+            raise
+        except Exception as err:  # one unreadable source must not cost the others theirs
+            memguard.raise_if_out_of_memory(err, "the contact sheets", s.name)
+            message = f"{s.name}: contact sheets skipped this source ({err})"
+            logger.debug("%s: contact sheet frames failed", s.path, exc_info=True)
+            logger.warning("%s", message)
+            jsonout.warn("step_failed", message, [s.path])
+            failed = err
+            continue
+        if got is None:
+            continue
+        done += 1
+        beauty += got[0]
+        friends += got[1]
+        lift += got[2]
+        boxes_of.update(got[3])
+    if failed is not None and not done:  # not one bad file: the step failed
+        raise failed
     out_dir = project / "visual_check"
     written = []
 

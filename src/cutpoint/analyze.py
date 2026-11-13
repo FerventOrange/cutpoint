@@ -53,7 +53,7 @@ from cutpoint import (
 )
 from cutpoint.config import path_key, remap_source, unc_path
 from cutpoint.dsp import conv_same
-from cutpoint.errors import FFmpegError, LowMemoryError
+from cutpoint.errors import FFmpegError, LowMemoryError, is_out_of_memory
 from cutpoint.events import paths as event_paths
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.events.scoring import (
@@ -3042,11 +3042,6 @@ def plan_layers(
     return plan
 
 
-# An error text of a failed allocation: torch ("CUDA out of memory"), onnxruntime
-# ("Failed to allocate memory"), OpenCV ("Insufficient memory"), C++ (std::bad_alloc).
-OOM_RE = re.compile(
-    r"out of memory|insufficient memory|(?:unable|failed) to allocate|bad[ _]alloc", re.I
-)
 REASON_CHARS = 120  # the reason of a failed OCR layer is cut to this
 
 
@@ -3059,7 +3054,7 @@ def _ocr_failed(err: BaseException) -> tuple[str, list[str]]:
     from cutpoint.events.pipeline import ocr_failure  # noqa: PLC0415
 
     lines = str(err).strip().splitlines()
-    oom = isinstance(err, MemoryError) or bool(OOM_RE.search(str(err)))
+    oom = is_out_of_memory(err)
     if oom:
         reason = "out of memory"
     else:

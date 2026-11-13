@@ -132,6 +132,10 @@ class ProxyConnectionError(ProxyError):
 class ProxyHTTPError(ProxyError):
     """CLIProxyAPI daemon responded with an HTTP error status."""
 
+    def __init__(self, message: str, status: int = 0) -> None:
+        super().__init__(message)
+        self.status = status
+
 
 class LoginError(ProxyError):
     """A terminal login (:func:`login_interactive`) did not start, failed or timed out."""
@@ -348,7 +352,7 @@ def _management_request(
         except (ValueError, json.JSONDecodeError):
             err_msg = resp.text
         clean_msg = redact(f"proxy error {resp.status_code}: {err_msg}")
-        raise ProxyHTTPError(clean_msg)
+        raise ProxyHTTPError(clean_msg, resp.status_code)
     try:
         return resp.json()
     except (ValueError, json.JSONDecodeError) as err:
@@ -393,7 +397,7 @@ def _client_request(
         except (ValueError, json.JSONDecodeError):
             err_msg = resp.text
         clean_msg = redact(f"proxy inference error {resp.status_code}: {err_msg}")
-        raise ProxyHTTPError(clean_msg)
+        raise ProxyHTTPError(clean_msg, resp.status_code)
 
     try:
         return resp.json()
