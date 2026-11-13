@@ -302,6 +302,7 @@ class AssistantVision:
         self.model = self.provider.model
         self._ready: bool | None = None
         self.sent = False  # True once a request went to the provider: unload() asks it
+        self.finish = ""  # the finish reason of the last reply, "" when the provider gave none
         # the vision-v2: key the provider still needs; None: on this machine (a local base URL
         # in config.json, nothing leaves it) or agreed to
         want = providers.consent_key(self.provider, "vision")
@@ -374,6 +375,7 @@ class AssistantVision:
             for j in jpegs
         ]
         self.sent = True
+        self.finish = ""
         try:
             reply = self.provider.chat([{"role": "user", "content": parts}], schema=schema)
         except (
@@ -382,6 +384,7 @@ class AssistantVision:
         ) as err:
             logger.warning("Vision request failed: %s", keys.redact(str(err)))
             return None
+        self.finish = reply.finish
         if not reply.text.strip() and reply.reasoning and accept and accept(reply.reasoning):
             logger.debug(
                 "Vision reply of %s %s taken from its reasoning", self.provider.name, self.model
@@ -907,6 +910,8 @@ class VisionRater:
                         self._count_empty()
                     return None  # else nothing was sent: no consent, no key (own handling)
                 content = reply
+                if self.via.finish:  # a hosted reply may carry a finish reason (not Ollama's)
+                    body = {"done_reason": self.via.finish}
             else:
                 num_ctx = self._context(num_ctx)
                 payload = {
@@ -951,11 +956,15 @@ class VisionRater:
                     logger.info("Vision retry %d succeeded", attempt)
                 self.empty_in_row = 0
                 return result
+            known = [
+                f"{k}={body[k]}" if k == "done_reason" else f"{body[k]} tokens"
+                for k in ("done_reason", "eval_count")
+                if body.get(k) is not None
+            ]
             logger.info(
-                "Vision reply %d empty/unparseable (done_reason=%s, %s tokens); %s",
+                "Vision reply %d empty/unparseable%s; %s",
                 attempt,
-                body.get("done_reason"),
-                body.get("eval_count"),
+                f" ({', '.join(known)})" if known else "",
                 "retrying" if attempt < len(_ATTEMPTS) else "giving up",
             )
         if body.get("done_reason") == "length":
