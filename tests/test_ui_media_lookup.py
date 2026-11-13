@@ -129,6 +129,44 @@ def test_per_request_cost_drops_with_a_slow_folder_check(
     assert sum(slept) < n * 0.013 / 100
 
 
+def director_url(client: TestClient, pid: str, sid: str, name: str = "none") -> str:
+    token = client.headers["X-Cutpoint-Token"]
+    return f"/api/projects/{pid}/sources/{sid}/director/{name}?t={token}"
+
+
+def test_director_preview_requests_within_the_ttl_check_the_folder_once(
+    client: TestClient, tmp_path: Path, counted: dict[str, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 360 director preview plays as a proxy too, in many Range requests (#1020)."""
+    pid, sid, _ = make_project(client, tmp_path)
+    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)  # within the TTL however slow the runner
+    counted.update(project_dir=0, entries=0)
+    for _ in range(20):  # no preview of this flat project: 404 after the lookup
+        assert client.get(director_url(client, pid, sid)).status_code == 404
+    assert counted == {"project_dir": 1, "entries": 1}
+    assert client.get(media_url(client, pid, sid)).status_code == 200  # the same kept answer
+    assert counted == {"project_dir": 1, "entries": 1}
+
+
+def test_director_previews_of_a_deleted_project_are_409_then_404(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid, sid, _ = make_project(client, tmp_path)
+    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)
+    assert client.get(media_url(client, pid, sid)).status_code == 200  # kept now
+    p = ui.projects_dir() / pid
+    ui.DELETING.add(p)
+    try:
+        assert client.get(director_url(client, pid, sid)).status_code == 409
+    finally:
+        ui.DELETING.discard(p)
+    res = client.request("DELETE", f"/api/projects/{pid}", json={"permanent": True})
+    assert res.status_code == 200, res.text
+    res = client.get(director_url(client, pid, sid))
+    assert (res.status_code, res.json()["detail"]) != (404, "director preview is not ready")
+    assert res.status_code == 404
+
+
 def test_an_unknown_project_is_404_and_a_new_one_is_found_at_once(
     client: TestClient, tmp_path: Path
 ) -> None:

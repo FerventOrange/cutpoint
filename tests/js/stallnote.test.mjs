@@ -15,7 +15,7 @@ async function stage(t, over = {}, src = {}) {
   const v = d.querySelector('#video');
   const note = d.querySelector('#stallNote');
   return {
-    v, note,
+    v, note, page,
     async wait(ms = 0) { await page.settle(); t.mock.timers.tick(ms); await page.settle(); },
     /** The browser asked to play and waits for data. */
     waiting() { Object.assign(v.__media, { paused: false, readyState: 1 }); v.__media.fire('waiting'); },
@@ -36,6 +36,43 @@ test('a wait over 5 s shows the likely reasons, and playing removes them', async
   s.v.__media.fire('playing');
   assert.ok(s.note.hidden);
   assert.equal(s.note.textContent, '');
+});
+
+test('a source not probed when listed gets its fragmented reason from one refresh (#1020)', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const project = makeProject({ network: false });
+  project.sources[0] = { ...project.sources[0], fragmented: null, proxy: false };
+  let probed = false; // serving the source probes it: the listings after the stall know
+  const asked = [];
+  const page = await boot({ project, routes: { 'GET /api/projects/p1': () => {
+    asked.push(probed);
+    const p = structuredClone(project);
+    p.sources[0].fragmented = probed ? true : null;
+    return p;
+  } } });
+  t.after(() => page.close());
+  const v = page.document.querySelector('#video');
+  const note = page.document.querySelector('#stallNote');
+  probed = true;
+  const before = asked.length;
+  Object.assign(v.__media, { paused: false, readyState: 1 });
+  v.__media.fire('waiting');
+  t.mock.timers.tick(5100);
+  assert.match(note.textContent, /^Still loading\. The drive or the video may be slow to read\.$/);
+  await page.settle();
+  assert.equal(asked.length, before + 1, 'one refresh');
+  assert.ok(!note.hidden);
+  assert.match(note.textContent, /fragmented MP4/);
+});
+
+test('a known source does not refresh the project for the note', async (t) => {
+  const s = await stage(t, { network: true }, { fragmented: false });
+  let asked = 0;
+  s.page.routes['GET /api/projects/p1'] = () => { asked += 1; return makeProject({ network: true }); };
+  s.waiting();
+  await s.wait(5100);
+  assert.ok(!s.note.hidden);
+  assert.equal(asked, 0);
 });
 
 test('without a known reason the note says so in general terms', async (t) => {

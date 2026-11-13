@@ -63,6 +63,13 @@ const withRanges = (ranges) => {
   for (const s of p.review.segments) [s.start, s.end] = ranges[s.id];
   return p;
 };
+/** As ``withSegments``, with ``moved`` in a second source file, b.mp4 (the others are in a.mp4). */
+const withOtherFile = (moved, ...ids) => {
+  const p = withSegments(...ids);
+  p.sources.push({ id: 's2', path: '/videos/b.mp4', name: 'b.mp4', status: 'ready', url: '/api/projects/p1/sources/s2?t=x', duration: 600 });
+  for (const x of [...p.highlights.candidates, ...p.review.segments]) if (x.id === moved) x.source = '/videos/b.mp4';
+  return p;
+};
 const edgesRoute = (edges) => ({ 'POST /api/projects/p1/edges': () => ({ edges }) });
 const inCut = async (t, opts) => {
   const m = await stage(t, opts);
@@ -267,7 +274,7 @@ test('a still that is loading dims the old picture; a roll dims it again until t
 // ---- play across the cut ----
 
 test('Play across the cut plays the last 3 s of clip 1, then the first 3 s of clip 2 from the spare player', async (t) => {
-  const m = await inCut(t, { project: withSegments('h001', 'h002', 'h003') });
+  const m = await inCut(t, { project: withOtherFile('h002', 'h001', 'h002', 'h003') }); // a.mp4, then b.mp4
   await m.click('#cutPlayBtn');
   assert.equal(m.$('#cutPlayBtn').textContent, 'Stop');
   assert.ok(m.$('#stageBody').classList.contains('cut-playing'));
@@ -295,6 +302,42 @@ test('Play across the cut plays the last 3 s of clip 1, then the first 3 s of cl
   assert.equal(m.$('#seqList li[aria-current=true]').dataset.id, 'h001');
 });
 
+test('Play across a Cut between two clips of one file seeks in the same player (#1020)', async (t) => {
+  const m = await inCut(t, { project: withSegments('h001', 'h002') }); // both in a.mp4
+  await m.click('#cutPlayBtn');
+  const first = m.active();
+  first.__media.loaded(600);
+  await m.page.settle();
+  const spare = [...m.d.querySelectorAll('.screen video')].find((e) => e !== first);
+  assert.equal(spare.getAttribute('src'), null, 'the file is not opened a second time');
+  first.__media.tick(18);
+  t.mock.timers.tick(16);
+  await m.page.settle();
+  assert.match(m.live(), /Playing clip 2 of 2/);
+  assert.equal(m.active(), first, 'no swap');
+  assert.equal(first.__media.currentTime, 100);
+  assert.equal(first.__media.paused, false);
+});
+
+test('Play across a Fade between two clips of one file opens it in the spare player too: both play at once', async (t) => {
+  const m = await inCut(t, { project: withSegments('h001', 'h002') });
+  await m.click('#cutTransition button[data-value=fade]');
+  await m.click('#cutPlayBtn');
+  const first = m.active();
+  const spare = [...m.d.querySelectorAll('.screen video')].find((e) => e !== first);
+  assert.equal(spare.dataset.url, first.dataset.url);
+  for (const v of [first, spare]) v.__media.loaded(600);
+  await m.page.settle();
+  assert.equal(spare.__media.currentTime, 100, 'waiting at clip 2');
+  first.__media.tick(17.8);
+  t.mock.timers.tick(16);
+  await m.page.settle();
+  assert.match(m.live(), /Playing clip 2 of 2/);
+  assert.equal(m.active(), spare, 'the Fade starts on the spare player');
+  assert.equal(first.__media.paused, false, 'under the outgoing clip');
+  await m.click('#cutPlayBtn'); // Stop
+});
+
 test('Play across the cut honours the tails: it ends in the planned out and starts at the planned in', async (t) => {
   const m = await stage(t, {
     project: withSegments('h001', 'h002'),
@@ -309,11 +352,16 @@ test('Play across the cut honours the tails: it ends in the planned out and star
   for (const v of videos) v.__media.loaded(600);
   await m.page.settle();
   assert.equal(m.active().__media.currentTime, 17);
-  assert.ok(videos.some((v) => v.__media.currentTime === 98));
   m.active().__media.tick(18.5); // past the trim, inside the tail: still clip 1
   t.mock.timers.tick(16);
   await m.page.settle();
   assert.match(m.live(), /Playing clip 1 of 2/);
+  m.active().__media.tick(20);
+  t.mock.timers.tick(16);
+  await m.page.settle();
+  assert.match(m.live(), /Playing clip 2 of 2/);
+  assert.equal(m.active().__media.currentTime, 98, 'one file: sought to the planned in');
+  assert.ok(!videos.some((v) => v.__media.currentTime === 100), 'not to the trim');
 });
 
 test('a clip shorter than 3 s plays whole', async (t) => {
@@ -802,7 +850,10 @@ test('Play across a join set to Cut stays a hard cut under a Fade default', asyn
   assert.match(n.live(), /Playing clip 1 of 2/, 'a Cut waits for the end of the clip');
   await advance(n, one, 17.97);
   assert.match(n.live(), /Playing clip 2 of 2/);
-  assert.equal(one.__media.paused, true, 'no overlap');
+  // one file: the same player seeks on to clip 2, so nothing overlaps (#1020)
+  assert.equal(n.active(), one);
+  assert.equal(one.__media.currentTime, 100);
+  assert.ok([...n.d.querySelectorAll('.screen video')].every((e) => e === one || e.__media.paused), 'no overlap');
 });
 
 test('Assemble sends Fade length under a Cut default only while a join of the sequence is set to Fade', async (t) => {

@@ -6848,7 +6848,7 @@ def create_app(port: int) -> FastAPI:
     @served.api_route("/projects/{pid}/sources/{sid}/director/{name}", methods=["GET", "HEAD"])
     def source_director(pid: str, sid: str, name: str, request: Request):
         """A rendered director preview of a 360 moment of this source (#517)."""
-        p, entry = find_source(pid, sid)
+        p, entry = lookups.find(pid, sid)  # one Range request of many, as source_media (#1020)
         hl = _highlights(p) or {}
         mine = {
             str(c.get("id")) for c in hl.get("candidates") or [] if c.get("source") == entry["path"]

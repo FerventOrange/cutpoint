@@ -2027,7 +2027,7 @@ let stallTimer = null;
  * hundreds of small requests).
  */
 function stallText() {
-  const src = S.project?.sources?.find((s) => s.url === v.dataset.url);
+  const src = stallSource();
   const why = [];
   if (S.project?.network) why.push('the project folder is on a network or external drive');
   if (src?.fragmented && !src.proxy) why.push('this video is a fragmented MP4, which the browser opens in many small reads');
@@ -2035,7 +2035,14 @@ function stallText() {
   return `Still loading, likely because ${why.join(' and ')}.`;
 }
 
-/** The visible player waits for data: name the likely reason if it still waits after ``STALL_NOTE_MS``. */
+/** The source the visible player plays as listed, if it plays one as is or from its whole proxy. */
+const stallSource = () => S.project?.sources?.find((s) => s.url === v.dataset.url);
+
+/**
+ * The visible player waits for data: name the likely reason if it still waits after
+ * ``STALL_NOTE_MS``. A source not probed when the project was listed has no ``fragmented``
+ * yet; serving it probed it, so one refresh fills the reason in.
+ */
 function watchStall() {
   if (stallTimer != null) return;
   stallTimer = setTimeout(() => {
@@ -2045,6 +2052,12 @@ function watchStall() {
     const el = $('#stallNote');
     el.textContent = stallText();
     el.hidden = false;
+    const src = stallSource();
+    if (!src || src.proxy || src.fragmented != null) return;
+    const url = v.dataset.url;
+    refreshProject().then(() => {
+      if (!el.hidden && v.dataset.url === url) el.textContent = stallText(); // still the same wait
+    });
   }, STALL_NOTE_MS);
 }
 
@@ -2527,7 +2540,8 @@ onStage('pause', clearStall); // a pause while it waits: the user is not waiting
 // another file loads (a new src, or load() emptied it); a sequence clip that waits is watched
 onStage('loadstart', () => { clearStall(); if (S.seqPlay?.wait) watchStall(); });
 onStage('ended', () => {
-  if (S.seqPlay) !S.seqPlay.wait && seqGo(S.seqPlay.i + 1); // a source shorter than its clip
+  // a source shorter than its clip; not once the next clip of the same file was sought to (#1020)
+  if (S.seqPlay) !S.seqPlay.wait && v.ended && seqGo(S.seqPlay.i + 1);
   else partEnd(); // a window proxy's end
 });
 onStage('error', () => {
@@ -4426,8 +4440,10 @@ function cueNext() {
   const seg = seqSeg(j);
   const src = srcOf(seg?.source);
   const p = readyFor(src, seg) && fileFor(src, seg); // the whole source, or a window covering the clip
-  if (!p || (cur && !seqLap() && seg.source === cur.source && Math.abs(seg.start - cur.end) <= GAP && v.dataset.url === p.url)) {
-    cued = null; // not playable yet, or it plays on in the visible player
+  // a file the visible player has open plays the clip there, sought to (seqGo): opening it again
+  // costs seconds on a network share (#1020); only a Fade plays two clips of it at once
+  if (!p || (cur && !seqLap() && v.dataset.url === p.url)) {
+    cued = null; // not playable yet, or it plays in the visible player
     return;
   }
   if (cued?.id === seg.id && cued.start === seg.start && o.dataset.url === p.url) return;
@@ -4447,9 +4463,9 @@ function cueNext() {
 /**
  * Play clip ``j`` of the sequence. Clips that left it are passed over and clips whose preview
  * could not be built are skipped with a note; after the last one the sequence stops. The next
- * clip waits in the spare player, so a step is a swap; otherwise the stage loads it (and waits
- * for its proxy). ``lap``: the seconds of the Fade starting here (startBlend), the old clip
- * playing on under it.
+ * clip waits in the spare player, so a step is a swap; one in the file the visible player has
+ * open is sought to there; otherwise the stage loads it (and waits for its proxy). ``lap``: the
+ * seconds of the Fade starting here (startBlend), the old clip playing on under it.
  */
 function seqGo(j, lap = 0) {
   const sp = S.seqPlay;
@@ -4486,6 +4502,10 @@ function seqGo(j, lap = 0) {
     if (lap) startBlend(old, cur.end, lap);
     else old.pause();
     showMoment(seg.id, true);
+  } else if (!lap && url && v.dataset.url === url && !v.error) {
+    showMoment(seg.id, true); // the visible player's own file: a seek, not a new open (#1020)
+    seekTo(seg.start);
+    v.play().catch(() => {});
   } else {
     showMoment(seg.id); // loads the source (or a window proxy covering the clip), or waits for one
     if (url && v.dataset.url === url) v.play().catch(() => {});
