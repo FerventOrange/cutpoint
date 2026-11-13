@@ -2317,6 +2317,41 @@ def test_rescore_in_memory_equals_rescore_highlights(tmp_path, monkeypatch):
     assert boosted["score"] > 40.0 and boosted["score_pre_events"] == 40.0
 
 
+def test_a_highlights_file_without_style_or_candidates_rescores_without_raising(
+    tmp_path, monkeypatch
+):
+    """#1015: ``cutpoint events`` on a bare {"sources": [...]} file: no KeyError, a sane file."""
+    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: [])
+    src = str(tmp_path / "a.mp4")
+    ev = {
+        "created": "2026-01-01T00:00:00",
+        "events": [
+            {"source": src, "kind": "audio", "label": "Laughter", "confidence": 0.9,
+             "start": 12.0, "end": 13.0},
+        ],
+        "windows": [],
+    }  # fmt: skip
+    proj = tmp_path / "proj"
+    write(proj / "highlights.json", json.dumps({"sources": [{"path": src}]}))
+    write(proj / "events.json", json.dumps(ev))
+    assert scoring.rescore_highlights(proj) == 0
+    saved = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
+    assert saved["candidates"] == []
+    assert saved["sources"] == [{"path": src}]
+    assert saved["settings"]["events_rescored"] == ev["created"]
+
+
+def test_a_detected_gaming_file_without_candidates_keeps_its_nominee(tmp_path, monkeypatch):
+    """Nominees of an open-list style are not lost when ``candidates`` is missing."""
+    from cutpoint import scorer  # noqa: PLC0415
+    from test_event_candidates import SRC, events_of, feed, grid  # noqa: PLC0415
+
+    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: [])
+    hl = {"sources": [{"path": SRC}], "detection": {"style": "gaming"}}
+    scorer.rescore_events(hl, events_of([feed(100.0)]), tmp_path, [grid()])
+    assert len([c for c in hl["candidates"] if scoring.is_nominated(c)]) == 1
+
+
 # ----------------------------------------------------------------- cached OCR and pct
 @pytest.mark.parametrize(("layers", "ocr_updates"), [((), 0), (("ocr",), 2)])
 def test_only_a_running_ocr_layer_reports_pct(tmp_path, monkeypatch, layers, ocr_updates):

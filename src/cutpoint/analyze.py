@@ -4768,7 +4768,7 @@ def reanalyze(
     except FileNotFoundError:
         raise FileNotFoundError(f"{project / 'highlights.json'} not found") from None
     # e.g. an empty {} or a list: a clear error, not a KeyError or AttributeError traceback
-    if not isinstance(hl, dict) or "style" not in hl or "sources" not in hl:
+    if not isinstance(hl, dict) or not isinstance(hl.get("sources"), list):
         raise ValueError(
             f"{project / 'highlights.json'} records no analysis; run 'cutpoint analyze' again"
         )

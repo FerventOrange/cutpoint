@@ -136,6 +136,18 @@ def test_a_project_with_every_cache_is_ready(home, tmp_path):
         assert rerank.readiness(project, read(project), get_style(style)).ready, style
 
 
+def test_load_takes_a_file_without_style(home, tmp_path):
+    """#1015: a bare {"sources": [...]} file loads; one without sources still does not."""
+    project = tmp_path / "bare"
+    project.mkdir()
+    (project / "highlights.json").write_text('{"sources": []}', encoding="utf-8")
+    raw, hl = rerank.load(project)
+    assert hl == {"sources": []} and raw
+    (project / "highlights.json").write_text('{"style": "funny"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="records no analysis"):
+        rerank.load(project)
+
+
 def test_a_360_project_needs_analyze(home, tmp_path):
     project = make_project(home, tmp_path)
     (project / "pano.json").write_text("{}", encoding="utf-8")

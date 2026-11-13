@@ -57,6 +57,28 @@ def test_reanalyze_if_reachable_leaves_highlights_when_a_source_is_offline(
     assert hl.read_bytes() == before
 
 
+def test_reanalyze_refuses_a_null_sources_list(tmp_path):
+    write(tmp_path / "highlights.json", json.dumps({"sources": None}))
+    with pytest.raises(ValueError, match="records no analysis"):
+        analyze.reanalyze(tmp_path)
+
+
+def test_reanalyze_takes_a_file_without_style_and_uses_the_fallback_style(tmp_path, monkeypatch):
+    """#1015: a bare {"sources": [...]} re-analyzes with the style fallback, not a ValueError."""
+    src = str(tmp_path / "a.mp4")
+    write(tmp_path / "highlights.json", json.dumps({"sources": [{"path": src}]}))
+    seen = {}
+
+    def fake_analyze(inputs, style, project, **kw):
+        seen.update(inputs=inputs, style=style)
+        return project / "highlights.json"
+
+    monkeypatch.setattr(analyze, "analyze", fake_analyze)
+    assert analyze.reanalyze(tmp_path) == tmp_path / "highlights.json"
+    assert seen["inputs"] == [Path(src)]
+    assert seen["style"].name == analyze._recorded_style({"sources": []}).name
+
+
 def _remapped_project(home, tmp_path, monkeypatch, recorded):
     """Footage moved from ``old`` to ``new``; ``source_remap`` makes the copy reachable."""
     old, new = tmp_path / "old", tmp_path / "new"

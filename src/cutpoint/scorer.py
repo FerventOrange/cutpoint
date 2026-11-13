@@ -249,6 +249,7 @@ def rescore_events(
     from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, resolve  # noqa: PLC0415
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports this
 
+    hl.setdefault("candidates", [])  # nominate appends to it
     scoring.nominate(hl, ev, project, parts)
     by_src: dict[str, list[dict[str, Any]]] = {}
     for e in ev.get("events", []):

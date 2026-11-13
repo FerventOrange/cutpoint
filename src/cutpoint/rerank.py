@@ -122,7 +122,7 @@ def load(project: Path) -> tuple[bytes, dict[str, Any]]:
     except FileNotFoundError:
         raise FileNotFoundError(f"{path} not found; run 'cutpoint analyze' first") from None
     hl = cache.read_json(path, hint="; re-run `cutpoint analyze` to rewrite it")
-    if not isinstance(hl, dict) or "style" not in hl or not isinstance(hl.get("sources"), list):
+    if not isinstance(hl, dict) or not isinstance(hl.get("sources"), list):
         raise ValueError(f"{path} records no analysis; run 'cutpoint analyze' again")
     return raw, hl
 
