@@ -123,6 +123,7 @@ from cutpoint import (
     progress,
     projectdelete,
     runstate,
+    stage,
 )
 from cutpoint import envelope as audio_envelope
 from cutpoint.assemble import (
@@ -255,6 +256,10 @@ EVENT_KINDS = (
 EVENTS_MAX = 5000  # events sent per project
 SOURCES_CACHE_MAX = 32  # projects whose source lists are kept; the least recently used go first
 SOURCES_CACHE_S = 60.0  # rebuild a kept source list at least this often (what stats miss)
+# media routes reuse a project's folder check and source list this long (#1014): a browser opens
+# a fragmented MP4 with hundreds of Range requests
+MEDIA_LOOKUP_S = 2.0
+FRAGMENT_SCAN_BOXES = 16  # top-level MP4 boxes read to tell a fragmented file (#1014)
 _suggest_lock = threading.Lock()  # one style suggestion probes at a time; another gets no answer
 TELEMETRY_PROBE_TIMEOUT = 10  # seconds per ffprobe of that suggestion
 MAX_TELEMETRY_PROBES = 12  # files one style suggestion probes, so a big folder or a NAS stays quick
@@ -1481,6 +1486,34 @@ class ProxyWindow:
 
 
 # --------------------------------------------------------------------------- playable media
+def fragmented_mp4(path: Path) -> bool:
+    """Whether ``path`` is a fragmented MP4 or MOV without a segment index: a ``moof`` box among
+    its first top-level boxes before any ``sidx``. A browser opens such a file with a Range
+    request per fragment (hundreds, #1014). Reads only box headers; False if unreadable."""
+    try:
+        with path.open("rb") as f:
+            end = os.fstat(f.fileno()).st_size
+            pos = 0
+            for _ in range(FRAGMENT_SCAN_BOXES):
+                f.seek(pos)
+                head = f.read(16)
+                if len(head) < 8:
+                    return False
+                size, kind, start = int.from_bytes(head[:4], "big"), head[4:8], 8
+                if size == 1 and len(head) == 16:  # a 64-bit size follows the type
+                    size, start = int.from_bytes(head[8:16], "big"), 16
+                elif size == 0:  # the box runs to the end of the file
+                    size = end - pos
+                if kind in (b"moof", b"sidx"):
+                    return kind == b"moof"
+                if size < start or pos + size >= end:
+                    return False
+                pos += size
+    except OSError:
+        pass
+    return False
+
+
 class Media:
     """Probe cache and on-demand H.264/AAC proxies for sources a browser cannot play.
 
@@ -1531,6 +1564,9 @@ class Media:
         # key -> still_filter of its stills (#412, #441): also for a source the browser plays
         # as is
         self.still_color: dict[str, str] = {}
+        # source path -> whether the probed file the browser plays as is is a fragmented MP4
+        # (#1014), for the page's slow-start notice; the last probe of that path wins
+        self.fragmented: dict[str, bool] = {}
 
     @staticmethod
     def key(real: Path) -> str | None:
@@ -1556,6 +1592,7 @@ class Media:
                 )
                 color = preview_filter(i)
                 self.still_color[key] = still_filter(i)
+                self.fragmented[str(real)] = ok and fragmented_mp4(real)
                 self.probed[key] = (ok, i.duration, i.audio_streams, "" if ok else color)
             except (FFmpegError, OSError, ValueError, KeyError):
                 self.probed[key] = None
@@ -3128,6 +3165,80 @@ class Sources:
             while len(self.kept) > SOURCES_CACHE_MAX:
                 del self.kept[next(iter(self.kept))]
         return entries, None
+
+
+class MediaLookups:
+    """The project folder (:func:`project_dir`) and source list (:class:`Sources`) the media
+    routes serve from, kept for ``MEDIA_LOOKUP_S`` per project: a browser opens a fragmented MP4
+    with hundreds of Range requests, and on a network share each folder check costs ~10 ms, so
+    rechecking it for each one stalled playback ~16 s (#1014).
+
+    Only found projects are kept: an unknown project is checked on every request (404). A project
+    being deleted answers 409 at once (``DELETING`` is checked before the kept answer), and
+    :meth:`forget` drops it once deleted, so it is 404 right after an in-app delete. A folder
+    deleted, moved or changed outside the app (or a source added or removed meanwhile) is seen
+    within ``MEDIA_LOOKUP_S``."""
+
+    def __init__(self, sources: Sources) -> None:
+        self.sources = sources
+        self.lock = threading.Lock()
+        # (projects folder, project id) -> (checked at, project folder, its source entries)
+        self.kept: dict[tuple[str, str], tuple[float, Path, list[dict[str, Any]]]] = {}
+        # bumped by each forget: a check that started before one keeps nothing
+        self.gen = 0
+
+    def find(self, pid: str, sid: str) -> tuple[Path, dict[str, Any]]:
+        """``(project folder, source entry)``, else 404 (unknown project or source) or 409."""
+        key = (str(projects_dir()), pid)
+        now = time.monotonic()
+        with self.lock:
+            hit, gen = self.kept.get(key), self.gen
+        if hit is not None and now - hit[0] < MEDIA_LOOKUP_S and hit[1] not in DELETING:
+            p, entries = hit[1], hit[2]
+        else:
+            p = project_dir(pid)  # 404 or 409: nothing kept
+            entries = self.sources.entries(p)
+            with self.lock:
+                self.kept = {k: v for k, v in self.kept.items() if now - v[0] < MEDIA_LOOKUP_S}
+                if gen == self.gen:  # no delete finished meanwhile: this answer still holds
+                    self.kept[key] = (now, p, entries)
+        entry = next((s for s in entries if s["id"] == sid), None)
+        if entry is None:
+            raise bad("unknown source", 404)
+        return p, entry
+
+    def forget(self, p: Path) -> None:
+        """Drop the kept answer for the project folder ``p`` (it was deleted)."""
+        with self.lock:
+            self.gen += 1
+            self.kept = {k: v for k, v in self.kept.items() if v[1] != p}
+
+
+_REMOTE: dict[str, bool] = {}  # project folder -> stage.is_remote of it, for the page (#1014)
+
+
+DRIVE_REMOVABLE, DRIVE_REMOTE = 2, 4  # GetDriveTypeW
+
+
+def on_network(p: Path) -> bool:
+    """Whether the project folder ``p`` is likely on a network or removable drive, checked once
+    per folder and run. Windows asks the drive type (a UNC path is remote), so a local drive
+    other than C: to E: is not named; elsewhere, or if Windows cannot say,
+    :func:`cutpoint.stage.is_remote`."""
+    key = str(p)
+    if key not in _REMOTE:
+        try:
+            if sys.platform == "win32":
+                try:
+                    kind = projectdelete._drive_type(p.anchor)
+                    _REMOTE[key] = kind in (DRIVE_REMOVABLE, DRIVE_REMOTE)
+                    return _REMOTE[key]
+                except OSError:
+                    pass
+            _REMOTE[key] = stage.is_remote(p)
+        except (OSError, ValueError):
+            _REMOTE[key] = False
+    return _REMOTE[key]
 
 
 def source_folder(p: Path) -> Path | None:
@@ -5028,6 +5139,7 @@ def stitch_first(
 def create_app(port: int) -> FastAPI:
     token = secrets.token_urlsafe(32)
     jobs, media, picker, sources = Jobs(), Media(), Picker(), Sources()
+    lookups = MediaLookups(sources)
     previews = PanoPreviews()
     # the subscription proxy, started when a login or a subscription model needs it (#821)
     proxies = cliproxy.ProxyLauncher()
@@ -5051,7 +5163,7 @@ def create_app(port: int) -> FastAPI:
     )
 
     app.state.token, app.state.jobs, app.state.media = token, jobs, media
-    app.state.picker, app.state.sources = picker, sources
+    app.state.picker, app.state.sources, app.state.lookups = picker, sources, lookups
     app.state.previews = previews
     app.state.proxies = proxies  # routes look it up here, so a test can swap it
 
@@ -5671,6 +5783,8 @@ def create_app(port: int) -> FastAPI:
                     # "ready": the whole source plays (as is or from its proxy)
                     "status": status,
                     "proxy": proxied,  # the browser plays it from a proxy, not as is
+                    # a fragmented MP4 played as is opens slowly (#1014); null until probed
+                    "fragmented": media.fragmented.get(str(remap_source(s["path"]))),
                     # share of the whole proxy encoded (0-1) while it encodes, else null
                     "progress": None if done is None else round(done, 3),
                     # window proxies (#323) that play while the whole proxy builds
@@ -5740,6 +5854,9 @@ def create_app(port: int) -> FastAPI:
             # The picked folder could not be listed (gone, unreadable): a field, so Settings
             # (source remap), Reveal and Delete still work.
             "source_error": source_error,
+            # the project folder is likely on a network drive: the page names it when the
+            # player buffers long (#1014)
+            "network": on_network(p),
             # The last recorded run (progress.json, #109): Resume when it stopped, null without one
             "run": last_run,
             # a run holds the project now (this server's own job too): the page says to wait
@@ -6453,7 +6570,7 @@ def create_app(port: int) -> FastAPI:
 
     @served.api_route("/projects/{pid}/sources/{sid}", methods=["GET", "HEAD"])
     def source_media(pid: str, sid: str, request: Request):
-        p, entry = find_source(pid, sid)
+        p, entry = lookups.find(pid, sid)  # one Range request of many (#1014)
         status, file = media.status(p, entry["path"])
         if file is None:
             raise bad(f"source is {status}", 404 if status == "failed" else 409)
@@ -6466,7 +6583,7 @@ def create_app(port: int) -> FastAPI:
         m = re.fullmatch(r"(\d{1,9})-(\d{1,9})", span)
         if m is None:
             raise bad("unknown window", 404)
-        p, entry = find_source(pid, sid)
+        p, entry = lookups.find(pid, sid)
         file = media.window(p, entry["path"], int(m[1]), int(m[2]))
         if file is None:
             status = media.status(p, entry["path"])[0]
@@ -7066,6 +7183,7 @@ def create_app(port: int) -> FastAPI:
                     raise bad(f"could not delete the project: {err.strerror or err}", 500) from err
                 projectdelete.remove_folder(p)
             finally:
+                lookups.forget(p)  # before the 409 ends: the media routes check it again
                 DELETING.discard(p)
         media.forget(p)
         turns.clear(str(p))

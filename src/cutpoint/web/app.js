@@ -2011,6 +2011,45 @@ function screenMsg(text) {
   el.hidden = !text;
 }
 
+// A player that waits for data this long says why it may be slow (#1014), until it plays.
+const STALL_NOTE_MS = 5000;
+let stallTimer = null;
+
+/**
+ * The likely reasons the stage player opens slowly, from the project listing: its folder on a network
+ * or external drive (``network``), and a fragmented MP4 played as is (``fragmented``: the browser reads it in
+ * hundreds of small requests).
+ */
+function stallText() {
+  const src = S.project?.sources?.find((s) => s.url === v.dataset.url);
+  const why = [];
+  if (S.project?.network) why.push('the project folder is on a network or external drive');
+  if (src?.fragmented && !src.proxy) why.push('this video is a fragmented MP4, which the browser opens in many small reads');
+  if (!why.length) return 'Still loading. The drive or the video may be slow to read.';
+  return `Still loading, likely because ${why.join(' and ')}.`;
+}
+
+/** The visible player waits for data: name the likely reason if it still waits after ``STALL_NOTE_MS``. */
+function watchStall() {
+  if (stallTimer != null) return;
+  stallTimer = setTimeout(() => {
+    stallTimer = null;
+    if (v.paused || v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return;
+    const el = $('#stallNote');
+    el.textContent = stallText();
+    el.hidden = false;
+  }, STALL_NOTE_MS);
+}
+
+/** Playback started (or stopped): no stall note. */
+function clearStall() {
+  if (stallTimer != null) clearTimeout(stallTimer);
+  stallTimer = null;
+  const el = $('#stallNote');
+  el.hidden = true;
+  el.textContent = '';
+}
+
 // Source proxies are made on demand: only the focused source is prepared, and only it is polled.
 // Keys "<project>:<path>": whole proxies asked for. Window requests dedupe only against the last
 // one (``lastPart``, the key plus "@<lo>-<hi>"): the server may drop a window (superseded, stopped,
@@ -2099,6 +2138,7 @@ function loadFile(src, p, t) {
   seekWant = null;
   pendingSeek = t;
   screenMsg('Loading video…');
+  clearStall(); // another file: its own wait counts afresh
   v.src = p.url;
   waitFor = null;
   if (resumeAt && src.path !== resumeAt.source) resumeAt = null; // another source: no resume
@@ -2267,6 +2307,7 @@ function drop(msg) {
   seekWant = null;
   pendingSeek = null;
   unload(v);
+  clearStall(); // load() fires no pause: no note over an empty stage
   showPlaying(false); // load() drops the queued pause event, so a playing video would keep the Pause icon
   screenMsg(msg);
 }
@@ -2466,9 +2507,17 @@ onStage('canplay', () => {
     v.play().catch(() => showPlaying(false));
   }
 });
-onStage('playing', () => screenMsg(''));
+onStage('playing', () => {
+  screenMsg('');
+  clearStall();
+});
 onStage('timeupdate', () => document.hidden && seqCheck()); // frames stop in a hidden tab; timeupdate still fires
-onStage('waiting', () => screenMsg('Buffering…'));
+onStage('waiting', () => {
+  screenMsg('Buffering…');
+  watchStall();
+});
+onStage('pause', clearStall); // a pause while it waits: the user is not waiting for it
+onStage('loadstart', clearStall); // another file loads (a new src, or load() emptied it)
 onStage('ended', () => {
   if (S.seqPlay) !S.seqPlay.wait && seqGo(S.seqPlay.i + 1); // a source shorter than its clip
   else partEnd(); // a window proxy's end

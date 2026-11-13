@@ -684,6 +684,8 @@ body.tips-off .flag-tip { display: none; }
 .screen video:not(.active) { opacity: 0; pointer-events: none; } /* the spare player preloads the next clip of "Play sequence" */
 .screen-msg { position: absolute; inset: 0; display: grid; place-items: center; padding: var(--space-4) var(--space-4) var(--bar-h); text-align: center; color: var(--muted); pointer-events: none; }
 .screen-msg:empty { display: none; }
+/* why a long wait may be slow (#1014), over the top of the picture */
+.stall-note { position: absolute; top: var(--space-3); left: 50%; transform: translateX(-50%); max-width: min(36rem, 80%); margin: 0; padding: var(--space-1) var(--space-3); border-radius: var(--radius-sm); background: var(--scrim); color: var(--scrim-ink); font-size: var(--fs-caption); text-align: center; pointer-events: none; }
 /* the playhead against the clip's in point; the corner goes to Stats for Nerds while they show */
 .in-badge { position: absolute; top: var(--space-3); left: var(--space-3); padding: var(--space-0) var(--space-2); border-radius: var(--radius-sm); background: var(--scrim); color: var(--scrim-ink); font: 500 var(--fs-caption) var(--mono); pointer-events: none; }
 .screen:has(> .nerd-stats:not([hidden])) > .in-badge { left: auto; right: var(--space-3); }
