@@ -5807,7 +5807,7 @@ function rankingItem(ev, id) {
     kids.push(h('p', { text: v.can_analyze ? `Ranking in the ${name} style needs another analysis first.` : 'Reconnect the footage to rank it in this style.' }),
       h('ul', { class: 'rank-missing msg-meta' }, missing.slice(0, MISSING_SHOWN).map((m) => h('li', { text: `${m.detail}${m.file && !String(m.detail).includes(m.file) ? ` (${m.file})` : ''}` })),
         more > 0 ? h('li', { text: `and ${more} more` }) : null));
-    if (v.can_analyze) acts = [btn('analyze', `Analyze again as ${name}…`, () => analyzeAgain(false, { style: v.style, name }), true, off || !!S.active), btn('dismiss', 'Dismiss', () => dismissRanking(id), false, false)];
+    acts = [...(v.can_analyze ? [btn('analyze', `Analyze again as ${name}…`, () => analyzeAgain(false, { style: v.style, name }), true, off || !!S.active)] : []), btn('dismiss', 'Dismiss', () => dismissRanking(id), false, false)];
   } else {
     kids.push(rankChips(v),
       ...(v.notes ?? []).map((n) => h('p', { class: 'msg-meta', text: n })),
