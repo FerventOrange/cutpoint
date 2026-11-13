@@ -4344,6 +4344,7 @@ function seqStop(msg = S.seqPlay?.across ? 'Stopped playing across the cut' : 'S
   cued = null;
   clearTimeout(S.seqTimer);
   v.pause();
+  clearStall(); // a paused element fires no pause event, so the note would stay
   unload(spare()); // the visible player stays the stage player
   for (const el of els) el.preload = 'metadata'; // the stage preview buffers on demand again
   if (across && back && S.focus !== across.back && S.segments.some((s) => s.id === across.back)) showMoment(across.back);
