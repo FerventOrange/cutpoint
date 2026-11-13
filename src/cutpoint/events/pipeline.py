@@ -24,7 +24,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from cutpoint import cache, jsonout, progress
+from cutpoint import cache, jsonout, memguard, progress
 from cutpoint import paths as cutpoint_paths
 from cutpoint.errors import LowMemoryError
 from cutpoint.events import explosions, paths, scoring
@@ -876,7 +876,9 @@ def _release_engine(make_engine: Callable[[], OcrEngine]) -> None:
 
 def skip_source(what: str, s: Any, err: Exception) -> None:
     """A WARNING and a ``step_failed`` warning naming the source ``what`` skipped (``err``);
-    also used by the voice and visual layers."""
+    also used by the voice and visual layers. An out-of-memory ``err`` stops the run instead
+    (:func:`~cutpoint.memguard.raise_if_out_of_memory`)."""
+    memguard.raise_if_out_of_memory(err, what, s.name)
     message = f"{s.name}: {what} skipped this source ({err})"
     logger.debug("%s: %s failed", s.path, what, exc_info=True)
     logger.warning("%s", message)

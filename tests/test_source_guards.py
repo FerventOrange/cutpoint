@@ -404,7 +404,8 @@ def test_visual_layer_lets_a_memory_shortage_stop_the_run(tmp_path, monkeypatch)
 def dense_project(tmp_path, monkeypatch):
     """``crash.detect_project`` over one candidate per source with the real
     :func:`crash.dense_feature` and :func:`crash.write_sheet`; ``bad`` names the sources whose
-    decode raises ``err`` (``vanish``: after deleting the file)."""
+    decode raises ``err`` (``vanish``: after deleting the file), ``bad_inputs`` those whose
+    inputs raise it and ``gone`` those deleted once their inputs loaded."""
 
     def go(
         names: list[str],
@@ -412,6 +413,8 @@ def dense_project(tmp_path, monkeypatch):
         err: Exception | None = None,
         sheets: int = 0,
         vanish: bool = False,
+        bad_inputs: frozenset[str] = frozenset(),
+        gone: frozenset[str] = frozenset(),
     ) -> Path:
         srcs = [tmp_path / f"{n}.mp4" for n in names]
         for s in srcs:
@@ -422,6 +425,10 @@ def dense_project(tmp_path, monkeypatch):
         (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
 
         def inputs(src, dur, p, tmp, lang):
+            if src.stem in bad_inputs:
+                raise err or ValueError("bad IMU block")
+            if src.stem in gone:
+                src.unlink()
             return crash.SourceInputs(
                 path=src, duration=dur, tel=None, imu=None, visual=None, kf_crash=None
             )
@@ -557,3 +564,103 @@ def test_a_failed_visual_layer_frees_the_clip_it_handed_to_the_crash_layer(
     with pytest.raises(OSError, match="moov atom"):
         run_audio(srcs, set(), layers=("visual", "crash"))
     assert closed == [1]
+
+
+# --------------------------------------------------------------------------- out of memory
+def _oom() -> RuntimeError:
+    return RuntimeError("CUDA out of memory. Tried to allocate 20.00 MiB (GPU 0; 7.79 GiB total)")
+
+
+def _stopped(info, what: str, name: str) -> None:
+    """The run stopped with a resumable LowMemoryError chained to the GPU's error."""
+    assert str(info.value).startswith(f"Out of memory in {what} ({name}); close other programs")
+    assert isinstance(info.value.__cause__, RuntimeError)
+
+
+def test_out_of_memory_in_the_telemetry_read_stops_the_run(tmp_path, monkeypatch):
+    srcs = [tmp_path / f"{n}.mp4" for n in ("ridge", "gully")]
+    monkeypatch.setattr(actioncam, "extract", _extract({"ridge"}, _oom()))
+    with pytest.raises(LowMemoryError) as info:
+        actioncam.prepare(srcs, {str(s): N / 10 for s in srcs}, tmp_path)
+    _stopped(info, "the telemetry read", "ridge.mp4")
+
+
+def test_out_of_memory_in_the_contact_sheets_stops_the_run(tmp_path, monkeypatch, sheet_fakes):
+    srcs = [_source(tmp_path, n) for n in ("reef", "wreck")]
+    monkeypatch.setattr(telemetry, "extract", _extract({"reef"}, _oom()))
+    with pytest.raises(LowMemoryError) as info:
+        sheets.write_visual_sheets(tmp_path, srcs)
+    _stopped(info, "the contact sheets", "reef.mp4")
+    assert sheet_fakes == {}
+
+
+def test_out_of_memory_in_the_telemetry_coverage_stops_the_run(tmp_path, monkeypatch):
+    srcs = [_source(tmp_path, n) for n in ("ridge", "gully")]
+    data = {"sources": {str(s.path): {"events": []} for s in srcs}}
+    (tmp_path / "telemetry.json").write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(telemetry, "extract", _extract({"ridge"}, _oom()))
+    with pytest.raises(LowMemoryError) as info:
+        pipeline._telemetry_layer(tmp_path, srcs, pipeline.VlmParams())
+    _stopped(info, "Telemetry coverage", "ridge.mp4")
+
+
+def test_out_of_memory_in_the_audio_layer_stops_the_run(tmp_path, run_audio):
+    srcs = [_source(tmp_path, n) for n in ("cave", "arch")]
+    with pytest.raises(LowMemoryError) as info:
+        run_audio(srcs, {"cave"}, _oom())
+    _stopped(info, "Audio events", "cave.mp4")
+
+
+def test_out_of_memory_in_the_voice_layer_stops_the_run(tmp_path, monkeypatch):
+    srcs = [_source(tmp_path, n) for n in ("cave", "arch")]
+    done = _voice(monkeypatch, {"cave"}, _oom())
+    with pytest.raises(LowMemoryError) as info:
+        voice.run_layer(srcs, voice.VoiceParams(), det=_Det(), errors=[])
+    _stopped(info, "Voice layer", "cave.mp4")
+    assert done == []  # arch is not computed after it
+
+
+def test_out_of_memory_in_the_visual_layer_stops_the_run(tmp_path, monkeypatch):
+    srcs = [_source(tmp_path, n) for n in ("reef", "wreck")]
+    st = _visual(monkeypatch, {"reef"}, _oom())
+    with pytest.raises(LowMemoryError) as info:
+        visual.run_layer(srcs, visual.VisualParams(), errors=[], handoff=st.handed.append)
+    _stopped(info, "Visual layer", "reef.mp4")
+    assert st.done == [] and st.handed == [] and st.closed == 1
+
+
+def test_out_of_memory_in_the_crash_inputs_stops_the_run(dense_project, tmp_path):
+    with pytest.raises(LowMemoryError) as info:
+        dense_project(["ridge", "gully"], set(), _oom(), bad_inputs=frozenset({"ridge"}))
+    _stopped(info, "crash detection", "ridge.mp4")
+    assert not (tmp_path / "proj" / crash.CRASHES_FILE).exists()
+
+
+def test_out_of_memory_in_the_crash_dense_check_stops_the_run(dense_project, tmp_path):
+    with pytest.raises(LowMemoryError) as info:
+        dense_project(["ridge", "gully"], {"ridge"}, _oom())
+    _stopped(info, "the crash dense check", "ridge.mp4")
+    assert not (tmp_path / "proj" / crash.CRASHES_FILE).exists()
+
+
+def test_out_of_memory_in_the_crash_sheets_stops_the_run(dense_project, monkeypatch, tmp_path):
+    def write_sheet(c, out, *a, **k):
+        raise _oom()
+
+    monkeypatch.setattr(crash, "write_sheet", write_sheet)
+    with pytest.raises(LowMemoryError) as info:
+        dense_project(["ridge", "gully"], set(), sheets=15)
+    assert "Out of memory in the crash contact sheets" in str(info.value)
+    assert not (tmp_path / "proj" / crash.CRASHES_FILE).exists()
+
+
+# --------------------------------------------------------------------------- crash dense cache
+def test_a_source_gone_before_its_dense_cache_is_read_is_skipped(dense_project, caplog):
+    with caplog.at_level(logging.WARNING), jsonout.run("crashes") as result:
+        out = dense_project(["ridge", "gully"], set(), sheets=15, gone=frozenset({"gully"}))
+    got = {Path(c["source"]).name: c for c in json.loads(out.read_text("utf-8"))["crashes"]}
+    assert got["ridge.mp4"]["confirmed"] and not got["gully.mp4"]["confirmed"]
+    assert "sheet" not in got["gully.mp4"]
+    (message,) = _warned(caplog)
+    assert message.startswith("gully.mp4: crash dense check skipped this source (")
+    assert [f for _, f in _step_failed(result)] == [[got["gully.mp4"]["source"]]]

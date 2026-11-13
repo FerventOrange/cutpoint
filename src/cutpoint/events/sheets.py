@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import jsonout
+from cutpoint import jsonout, memguard
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.ffmpeg_utils import grab_images
 from cutpoint.imageio import write_jpeg
@@ -150,7 +150,8 @@ def write_visual_sheets(project: Path, sources: list[Any], n: int = 24) -> list[
 
     A source whose visual data or telemetry fails to read is left out of the sheets (a
     WARNING and a ``step_failed`` warning name it); when every source with visual data
-    fails, the last error is raised.
+    fails, the last error is raised. An out-of-memory error stops the run
+    (:class:`~cutpoint.errors.LowMemoryError`).
     """
     beauty: list[_Frame] = []
     friends: list[_Frame] = []
@@ -164,6 +165,7 @@ def write_visual_sheets(project: Path, sources: list[Any], n: int = 24) -> list[
         except LowMemoryError:
             raise
         except Exception as err:  # one unreadable source must not cost the others theirs
+            memguard.raise_if_out_of_memory(err, "the contact sheets", s.name)
             message = f"{s.name}: contact sheets skipped this source ({err})"
             logger.debug("%s: contact sheet frames failed", s.path, exc_info=True)
             logger.warning("%s", message)

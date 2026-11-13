@@ -1198,7 +1198,9 @@ def detect_project(
     when every source fails, the last error is raised and nothing is written. A source whose
     dense confirm fails keeps its candidates unconfirmed, with the same warnings; when every
     source with dense windows fails, the last error is raised. A source whose contact sheets
-    fail (or whose dense confirm failed) gets none; crashes.json is still written.
+    fail (or whose dense confirm failed) gets none; crashes.json is still written. An
+    out-of-memory error in any of these stops the run
+    (:class:`~cutpoint.errors.LowMemoryError`, resumable) instead of skipping the source.
 
     Args:
         project: Project folder (highlights.json).
@@ -1284,6 +1286,7 @@ def detect_project(
             except LowMemoryError:
                 raise
             except Exception as err:  # one unreadable source must not cost the others theirs
+                memguard.raise_if_out_of_memory(err, "crash detection", src.name)
                 message = f"{src.name}: crash detection skipped this source ({err})"
                 logger.debug("%s: crash inputs failed", src, exc_info=True)
                 logger.warning("%s", message)
@@ -1341,16 +1344,30 @@ def detect_project(
     enc = encoder
     stores: dict[str, dict[str, Any]] = {}
     windows: set[tuple[str, str]] = set()
+    dense_failed: dict[str, Exception] = {}  # source: its error (its other windows skipped)
+
+    def dense_skip(src: str, err: Exception) -> None:
+        """One source's dense check failed (``err``): warned, its candidates unconfirmed."""
+        memguard.raise_if_out_of_memory(err, "the crash dense check", Path(src).name)
+        message = f"{Path(src).name}: crash dense check skipped this source ({err})"
+        logger.debug("%s: crash dense check failed", src, exc_info=True)
+        logger.warning("%s", message)
+        jsonout.warn("step_failed", message, [src])
+        dense_failed[src] = err
+
     for c in todo:
         src = c["source"]
         if src not in stores:
-            stores[src] = {} if force else (cache.load_json(_dense_cache(Path(src), p)) or {})
+            try:  # the cache folder stats the file: one gone since its inputs loaded fails
+                stores[src] = {} if force else (cache.load_json(_dense_cache(Path(src), p)) or {})
+            except OSError as err:
+                dense_skip(src, err)
+                stores[src] = {}
         windows.add((src, "{:.1f}-{:.1f}".format(*dense_window(c, p))))
     if dense:
         progress.start("dense")
         progress.continuing("dense check", sum(k in stores[s] for s, k in windows), len(windows))
     seen: set[tuple[str, str]] = set()  # the dense windows of this loop so far
-    dense_failed: dict[str, Exception] = {}  # source: its error (its other windows skipped)
     try:
         for c in todo:
             src = c["source"]
@@ -1373,12 +1390,9 @@ def detect_project(
                 c["dense"] = dense_feature(enc, inputs[src], c, p, store)
             except LowMemoryError:
                 raise
-            except Exception as err:  # one unreadable source must not cost the others theirs
-                message = f"{Path(src).name}: crash dense check skipped this source ({err})"
-                logger.debug("%s: crash dense check failed", src, exc_info=True)
-                logger.warning("%s", message)
-                jsonout.warn("step_failed", message, [src])
-                c["dense"], dense_failed[src] = None, err
+            except Exception as err:  # noqa: BLE001 - one bad source, logged by dense_skip
+                dense_skip(src, err)
+                c["dense"] = None
                 continue
             if new and key in store:  # saved at once: an interrupted run keeps its windows
                 cache.save_json(_dense_cache(Path(src), p), store)
@@ -1426,6 +1440,7 @@ def detect_project(
         except LowMemoryError:
             raise
         except Exception as err:  # a sheet is a by-product: crashes.json is still written
+            memguard.raise_if_out_of_memory(err, "the crash contact sheets", Path(c["source"]).name)
             sheet_failed.add(c["source"])
             logger.debug("%s: crash contact sheet failed", c["source"], exc_info=True)
             if c["source"] not in dense_failed:  # warned once per source

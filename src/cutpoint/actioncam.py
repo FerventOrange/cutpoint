@@ -80,7 +80,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache, features, jsonout, scorer
+from cutpoint import cache, features, jsonout, memguard, scorer
 from cutpoint.config import path_key, source_path
 from cutpoint.errors import LowMemoryError
 from cutpoint.telemetry import DT, Telemetry, extract, join_runs, paint_spans
@@ -162,7 +162,8 @@ def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> 
     """Extract telemetry for every source, load events.json, write telemetry.json.
 
     A source whose telemetry fails to read is scored without it (a WARNING and a
-    ``step_failed`` warning name it); when every source fails, the last error is raised.
+    ``step_failed`` warning name it); when every source fails, the last error is raised. An
+    out-of-memory error stops the run (:class:`~cutpoint.errors.LowMemoryError`).
 
     Args:
         sources: Source videos (original paths, as recorded in highlights.json).
@@ -178,6 +179,7 @@ def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> 
         except LowMemoryError:
             raise
         except Exception as err:  # one unreadable source must not cost the others theirs
+            memguard.raise_if_out_of_memory(err, "the telemetry read", src.name)
             message = f"{src.name}: telemetry not read ({err}); scored without it"
             logger.debug("%s: telemetry failed", src, exc_info=True)
             logger.warning("%s", message)
