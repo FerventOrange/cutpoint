@@ -80,8 +80,9 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache, features, scorer
+from cutpoint import cache, features, jsonout, memguard, scorer
 from cutpoint.config import path_key, source_path
+from cutpoint.errors import LowMemoryError
 from cutpoint.telemetry import DT, Telemetry, extract, join_runs, paint_spans
 
 logger = logging.getLogger(__name__)
@@ -160,14 +161,33 @@ def _key(path: str | Path) -> str:
 def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> ActionCamContext:
     """Extract telemetry for every source, load events.json, write telemetry.json.
 
+    A source whose telemetry fails to read is scored without it (a WARNING and a
+    ``step_failed`` warning name it); when every source fails, the last error is raised. An
+    out-of-memory error stops the run (:class:`~cutpoint.errors.LowMemoryError`).
+
     Args:
         sources: Source videos (original paths, as recorded in highlights.json).
         durations: ``{str(source): container duration}``.
         project: Project folder.
     """
     tels: dict[str, Telemetry | None] = {}
+    failed: Exception | None = None  # the last source's error
+    n_failed = 0
     for src in sources:
-        tels[str(src)] = extract(src, durations[str(src)])
+        try:
+            tels[str(src)] = extract(src, durations[str(src)])
+        except LowMemoryError:
+            raise
+        except Exception as err:  # one unreadable source must not cost the others theirs
+            memguard.raise_if_out_of_memory(err, "the telemetry read", src.name)
+            message = f"{src.name}: telemetry not read ({err}); scored without it"
+            logger.debug("%s: telemetry failed", src, exc_info=True)
+            logger.warning("%s", message)
+            jsonout.warn("step_failed", message, [src])
+            tels[str(src)], failed = None, err
+            n_failed += 1
+    if failed is not None and n_failed == len(sources):  # not one bad file: the step failed
+        raise failed
     good = [t for t in tels.values() if t is not None]
     speeds = []
     for t in good:

@@ -2,6 +2,19 @@
 
 from __future__ import annotations
 
+import re
+
+# An error text of a failed allocation: torch ("CUDA out of memory"), onnxruntime
+# ("Failed to allocate memory"), OpenCV ("Insufficient memory"), C++ (std::bad_alloc).
+OOM_RE = re.compile(
+    r"out of memory|insufficient memory|(?:unable|failed) to allocate|bad[ _]alloc", re.I
+)
+
+
+def is_out_of_memory(err: BaseException) -> bool:
+    """Whether ``err`` is a failed allocation: :class:`MemoryError` or an :data:`OOM_RE` text."""
+    return isinstance(err, MemoryError) or bool(OOM_RE.search(str(err)))
+
 
 class FFmpegError(RuntimeError):
     """Raised when ffmpeg/ffprobe is missing or a command fails."""

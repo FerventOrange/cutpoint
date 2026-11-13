@@ -872,13 +872,20 @@ def run_layer(
     force: bool = False,
     bad: dict[str, list[tuple[float, float]]] | None = None,
     handoff: Callable[[VisualModels], None] | None = None,
+    errors: list[Exception] | None = None,
 ) -> dict[str, Any]:
     """Compute the visual layer for every source that lacks it; returns stats.
 
     ``handoff`` is called with the loaded models before they are freed, so a
     later step can keep their CLIP model (``models.clip``) instead of loading
-    it again; the detector is freed either way.
+    it again; the detector is freed either way. A source whose layer fails is skipped
+    with a WARNING and a ``step_failed`` warning; its error is appended to ``errors``
+    (the caller decides), or without ``errors`` the last one is raised when every source
+    failed. :class:`~cutpoint.errors.LowMemoryError` always propagates.
     """
+    from cutpoint.errors import LowMemoryError  # noqa: PLC0415
+    from cutpoint.events.pipeline import skip_source  # noqa: PLC0415
+
     need = [s for s in sources if force or load_visual(s, params) is None]
     stats: dict[str, Any] = {"cached": len(sources) - len(need), "computed": 0}
     if not need:
@@ -899,12 +906,24 @@ def run_layer(
             (p.person_pos, p.person_neg),
         ):
             text_embeddings(pos + neg, models)
+        failed: list[Exception] = []
         for s in need:
-            if (
-                compute_visual(s, models, params, force=True, avoid=(bad or {}).get(str(s.path)))
-                is not None
-            ):
+            try:
+                got = compute_visual(
+                    s, models, params, force=True, avoid=(bad or {}).get(str(s.path))
+                )
+            except LowMemoryError:
+                raise
+            except Exception as err:  # noqa: BLE001 - one bad source, logged
+                skip_source("Visual layer", s, err)
+                failed.append(err)
+                continue
+            if got is not None:
                 stats["computed"] += 1
+        if errors is not None:
+            errors += failed
+        elif failed and len(failed) == len(sources):  # not one bad file: the layer failed
+            raise failed[-1]
         if handoff is not None:
             handoff(models)
     finally:
