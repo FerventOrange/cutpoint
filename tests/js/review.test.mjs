@@ -524,7 +524,7 @@ test('every export setting that moves the ends is sent to /edges, and a change a
   assert.equal(asked.length, 7);
 });
 
-test('Play sequence cues the next clip at its planned start', async (t) => {
+test('Play sequence moves on to the next clip at its planned start', async (t) => {
   const m = await review(t, {
     project: withSegments('h001', 'h002'), // 10 to 18, then 100 to 108
     routes: edgesRoute({ h001: { start: 10, end: 18 }, h002: { start: 97.5, end: 108, reason: 'speech-aware' } }),
@@ -532,10 +532,33 @@ test('Play sequence cues the next clip at its planned start', async (t) => {
   t.mock.timers.tick(400);
   await m.page.settle();
   await m.click('#seqPlayBtn');
-  const videos = [...m.d.querySelectorAll('video')];
+  const v = m.$('#video');
+  v.__media.loaded(600);
+  await m.page.settle();
+  v.__media.tick(18);
+  t.mock.timers.tick(20);
+  await m.page.settle();
+  assert.equal(v.__media.currentTime, 97.5, 'the same file seeks to the planned start (#1020)');
+  await m.click('#seqPlayBtn'); // Stop
+});
+
+test('Play sequence cues a clip of another file in the spare player at its planned start', async (t) => {
+  const project = withSegments('h001', 'h002'); // 10 to 18 of a.mp4, then 100 to 108
+  project.sources.push({ id: 's2', path: '/videos/b.mp4', name: 'b.mp4', status: 'ready', url: '/api/projects/p1/sources/s2?t=x', duration: 600 });
+  for (const x of [...project.highlights.candidates, ...project.review.segments]) if (x.id === 'h002') x.source = '/videos/b.mp4';
+  const m = await review(t, {
+    project,
+    routes: edgesRoute({ h001: { start: 10, end: 18 }, h002: { start: 97.5, end: 108, reason: 'speech-aware' } }),
+  });
+  t.mock.timers.tick(400);
+  await m.page.settle();
+  await m.click('#seqPlayBtn');
+  const videos = [...m.d.querySelectorAll('.screen video')];
   for (const v of videos) v.__media.loaded(600);
   await m.page.settle();
   assert.ok(videos.some((v) => v.__media.currentTime === 97.5), 'the spare player waits at the planned start');
+  assert.ok(!videos.some((v) => v.__media.currentTime === 100), 'not at the raw start');
+  await m.click('#seqPlayBtn'); // Stop
 });
 
 test('re-ticking Smart tails sends the tail fields again, once their change event enabled them', async (t) => {
