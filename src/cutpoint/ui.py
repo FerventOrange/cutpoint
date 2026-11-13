@@ -1609,9 +1609,12 @@ class Media:
             return key
         return hashlib.sha1(f"{key}|{res[3]}".encode()).hexdigest()[:16]
 
-    def _lookup(self, real: Path) -> tuple[str | None, tuple[bool, float, int, str] | None]:
-        """``(content key, info)`` of ``real``; both None if it is missing."""
-        key = self.key(real)
+    def _lookup(
+        self, real: Path, key: str | None = None
+    ) -> tuple[str | None, tuple[bool, float, int, str] | None]:
+        """``(content key, info)`` of ``real``; both None if it is missing. ``key``: its content
+        key if the caller has it already (:meth:`MediaLookups.content_key`), so no stat."""
+        key = key or self.key(real)
         return key, self.info(real, key) if key else None
 
     def duration(self, real: Path) -> float | None:
@@ -1624,10 +1627,11 @@ class Media:
         res = self.probed.get(key) if key else None
         return res[1] if res else None
 
-    def status(self, project: Path, path: str) -> tuple[str, Path | None]:
-        """``(status, file to serve)``: ready | needs-proxy | preparing | failed. No side effects."""
+    def status(self, project: Path, path: str, key: str | None = None) -> tuple[str, Path | None]:
+        """``(status, file to serve)``: ready | needs-proxy | preparing | failed. No side effects.
+        ``key``: the source's content key if known (see :meth:`_lookup`)."""
         real = remap_source(path)
-        key, res = self._lookup(real)
+        key, res = self._lookup(real, key)
         if res is None or key is None:
             return "failed", None
         if res[0]:
@@ -1907,9 +1911,12 @@ class Media:
                 target=procs.kill_tree, args=(kill, procs.SOFT_STOP_S), daemon=True
             ).start()
 
-    def window(self, project: Path, path: str, lo: int, hi: int) -> Path | None:
-        """The ready window ``lo``-``hi`` (centiseconds) of a source, else None; marks it used."""
-        key = self._proxy_key(self.key(remap_source(path)))
+    def window(
+        self, project: Path, path: str, lo: int, hi: int, key: str | None = None
+    ) -> Path | None:
+        """The ready window ``lo``-``hi`` (centiseconds) of a source, else None; marks it used.
+        ``key``: the source's content key if known (see :meth:`_lookup`)."""
+        key = self._proxy_key(key or self.key(remap_source(path)))
         if key is None:
             return None
         with self.lock:
@@ -2585,6 +2592,12 @@ class PanoPreviews:
         # project -> (signature of its candidate cache and render settings, {cid: entry info})
         self.memo: dict[Path, tuple[Any, dict[str, dict[str, Any]]]] = {}
         self.pruned: set[Path] = set()
+        # bumped (under the lock) by each change of the queue, the running render, ``done`` or
+        # ``outcomes``: what :meth:`ready` keeps is valid for one value
+        self.rev = 0
+        # project -> (built at, rev and file stamps it was built from, {cid: (source, name)}),
+        # least recently used first
+        self.ready_memo: dict[Path, tuple[float, Any, dict[str, tuple[str, str]]]] = {}
 
     # -- the listing ------------------------------------------------------------------
     @staticmethod
@@ -2675,6 +2688,45 @@ class PanoPreviews:
             for cid, info in self.entries(project).items()
         }
 
+    def ready(self, project: Path) -> dict[str, tuple[str, str]]:
+        """``{cid: (source path, preview name)}`` of the previews :meth:`listing` has ready, for
+        the director route's many Range requests (#1029). Kept while ``highlights.json``,
+        ``pano.json``, the camera path cache folder and the previews folder (a preview written or
+        removed changes it) keep their stamps, the render settings and :attr:`rev` stay, and for
+        at most ``SOURCES_CACHE_S`` (what a stamp cannot see); at most ``SOURCES_CACHE_MAX``
+        projects. Callers must not change the answer."""
+        from cutpoint.pano.candidates import CACHE_DIR  # noqa: PLC0415
+
+        # stamped (and rev read) before the listing is built: a change made meanwhile shows next time
+        with self.lock:
+            rev, hit = self.rev, self.ready_memo.get(project)
+        sig = (
+            rev,
+            _pano_key({}, _pano_settings()),
+            file_stamp(project / "highlights.json"),
+            file_stamp(project / pano_project.PANO_FILE),
+            file_stamp(project / CACHE_DIR),
+            file_stamp(project / UI_DIR / "pano"),
+        )
+        now = time.monotonic()
+        if hit is not None and hit[1] == sig and now - hit[0] < SOURCES_CACHE_S:
+            with self.lock:
+                if self.ready_memo.get(project) is hit:
+                    self.ready_memo[project] = self.ready_memo.pop(project)
+            return hit[2]
+        entries = self.entries(project)  # one snapshot: states come from these entries
+        out = {
+            cid: (info["source"], st["name"])
+            for cid, info in entries.items()
+            if (st := self._state(project, cid, info)) is not None and st["state"] == "ready"
+        }
+        with self.lock:
+            self.ready_memo.pop(project, None)
+            self.ready_memo[project] = (now, sig, out)
+            while len(self.ready_memo) > SOURCES_CACHE_MAX:
+                del self.ready_memo[next(iter(self.ready_memo))]
+        return out
+
     def _state(self, project: Path, cid: str, info: dict[str, Any]) -> dict[str, Any] | None:
         key = (project, cid)
         if not info["clip"].lrv:
@@ -2739,6 +2791,7 @@ class PanoPreviews:
         if info["clip"].lrv and state not in ("ready", "rendering", "queued"):
             with self.lock:
                 self.outcomes.pop((project, cid), None)
+                self.rev += 1
             self._queue(PanoPreview(project, cid, info))
             view = self.listing(project).get(cid)
         return view
@@ -2752,6 +2805,7 @@ class PanoPreviews:
                 queued.cancelled = True  # superseded: the user moved on (no outcome to show)
             self.queue.clear()
             self.queue.append(job)
+            self.rev += 1
             run = self.running
             if run is not None and not run.cancelled:
                 run.cancelled = True
@@ -2777,6 +2831,7 @@ class PanoPreviews:
                 stop, ident = run.scope, run.ident
             if ident is not None:
                 self.outcomes[key] = {"state": "cancelled", "reason": "", "ident": ident}
+            self.rev += 1
         if stop is not None:
             stop.kill()
         return ident is not None
@@ -2789,12 +2844,14 @@ class PanoPreviews:
                 if self.closing:
                     return
                 job = self.running = self.queue.popleft()
+                self.rev += 1
                 job.started = time.time()
             try:
                 self._render(job)
             finally:
                 with self.lock:
                     self.running = None
+                    self.rev += 1
 
     def _render(self, job: PanoPreview) -> None:
         """Plan ``job``'s path (``preview_path``) and render it from the clip's .lrv
@@ -2845,6 +2902,7 @@ class PanoPreviews:
                     )  # fmt: skip
                     logger.info("director preview of %s in %.1fs", what, time.perf_counter() - t0)
             with self.lock:
+                self.rev += 1
                 if not job.cancelled:
                     self.done[job.key] = {
                         "ident": job.ident,
@@ -2875,6 +2933,7 @@ class PanoPreviews:
         if failed is not None:
             logger.warning("director preview of %s failed: %s", what, failed)
             with self.lock:
+                self.rev += 1
                 if not job.cancelled:
                     self.outcomes[job.key] = {
                         "state": "failed",
@@ -3183,8 +3242,11 @@ class MediaLookups:
     def __init__(self, sources: Sources) -> None:
         self.sources = sources
         self.lock = threading.Lock()
-        # (projects folder, project id) -> (checked at, project folder, its source entries)
-        self.kept: dict[tuple[str, str], tuple[float, Path, list[dict[str, Any]]]] = {}
+        # (projects folder, project id) -> (checked at, project folder, its source entries, the
+        # content keys of its sources seen so far: source path -> :meth:`Media.key`)
+        self.kept: dict[
+            tuple[str, str], tuple[float, Path, list[dict[str, Any]], dict[str, str]]
+        ] = {}
         # bumped by each forget: a check that started before one keeps nothing
         self.gen = 0
 
@@ -3202,11 +3264,31 @@ class MediaLookups:
             with self.lock:
                 self.kept = {k: v for k, v in self.kept.items() if now - v[0] < MEDIA_LOOKUP_S}
                 if gen == self.gen:  # no delete finished meanwhile: this answer still holds
-                    self.kept[key] = (now, p, entries)
+                    self.kept[key] = (now, p, entries, {})
         entry = next((s for s in entries if s["id"] == sid), None)
         if entry is None:
             raise bad("unknown source", 404)
         return p, entry
+
+    def content_key(self, pid: str, path: str) -> str | None:
+        """:meth:`Media.key` of the source ``path`` of project ``pid`` (after :meth:`find`),
+        kept as long as the project's kept answer is (``MEDIA_LOOKUP_S``), so repeated requests
+        stat the source once. A source that goes missing is seen at once by the route's own stat;
+        a changed one within ``MEDIA_LOOKUP_S``. A missing source is not kept."""
+        key = (str(projects_dir()), pid)
+        with self.lock:
+            hit = self.kept.get(key)
+            if hit is not None and time.monotonic() - hit[0] < MEDIA_LOOKUP_S:
+                seen = hit[3].get(path)
+                if seen is not None:
+                    return seen
+            else:
+                hit = None
+        found = Media.key(remap_source(path))
+        if found is not None and hit is not None:
+            with self.lock:
+                hit[3][path] = found
+        return found
 
     def forget(self, p: Path) -> None:
         """Drop the kept answer for the project folder ``p`` (it was deleted)."""
@@ -6717,13 +6799,18 @@ def create_app(port: int) -> FastAPI:
         return jobs.cancel(job_id).view()
 
     def send(
-        file: Path, request: Request, name: str | None = None, *, proxy: bool = False
+        file: Path,
+        request: Request,
+        name: str | None = None,
+        *,
+        proxy: bool = False,
+        stat_result: os.stat_result | None = None,
     ) -> FileResponse:
         """Range-capable file response; ``?download=1`` makes the browser save it.
 
         ``proxy``: a proxy, marked used (see :func:`_mark_used`), with an ETag from its name
         (which holds its key) and size, so touching it does not turn a seek's ranged request
-        (If-Range) into a whole response."""
+        (If-Range) into a whole response. ``stat_result``: the file's stat, taken by the caller."""
         download = request.query_params.get("download") == "1"
         # mimetypes knows .srt only where the OS registry or mime.types lists it
         kind = "text/plain" if file.suffix.lower() == ".srt" else mimetypes.guess_type(file.name)[0]
@@ -6738,6 +6825,7 @@ def create_app(port: int) -> FastAPI:
             headers=headers,
             filename=name or file.name if download else None,
             content_disposition_type="attachment" if download else "inline",
+            stat_result=stat_result,
         )
 
     def find_source(pid: str, sid: str) -> tuple[Path, dict[str, Any]]:
@@ -6750,11 +6838,18 @@ def create_app(port: int) -> FastAPI:
     @served.api_route("/projects/{pid}/sources/{sid}", methods=["GET", "HEAD"])
     def source_media(pid: str, sid: str, request: Request):
         p, entry = lookups.find(pid, sid)  # one Range request of many (#1014)
-        status, file = media.status(p, entry["path"])
+        status, file = media.status(p, entry["path"], lookups.content_key(pid, entry["path"]))
         if file is None:
             raise bad(f"source is {status}", 404 if status == "failed" else 409)
+        is_proxy = file.parent == p / UI_DIR / "proxy"
+        st = None
+        if not is_proxy:  # the source itself: gone since the kept key is a 404, not a 500
+            try:
+                st = file.stat()
+            except OSError:
+                raise bad("source is failed", 404) from None
         # a proxy is marked used; never the source itself
-        return send(file, request, entry["name"], proxy=file.parent == p / UI_DIR / "proxy")
+        return send(file, request, entry["name"], proxy=is_proxy, stat_result=st)
 
     @served.api_route("/projects/{pid}/sources/{sid}/window/{span}", methods=["GET", "HEAD"])
     def source_window(pid: str, sid: str, span: str, request: Request):
@@ -6763,9 +6858,10 @@ def create_app(port: int) -> FastAPI:
         if m is None:
             raise bad("unknown window", 404)
         p, entry = lookups.find(pid, sid)
-        file = media.window(p, entry["path"], int(m[1]), int(m[2]))
+        key = lookups.content_key(pid, entry["path"])  # no stat per request (#1030)
+        file = media.window(p, entry["path"], int(m[1]), int(m[2]), key)
         if file is None:
-            status = media.status(p, entry["path"])[0]
+            status = media.status(p, entry["path"], key)[0]
             raise bad(
                 f"window is not ready (source is {status})", 404 if status == "failed" else 409
             )
@@ -6849,16 +6945,11 @@ def create_app(port: int) -> FastAPI:
     def source_director(pid: str, sid: str, name: str, request: Request):
         """A rendered director preview of a 360 moment of this source (#517)."""
         p, entry = lookups.find(pid, sid)  # one Range request of many, as source_media (#1020)
-        hl = _highlights(p) or {}
-        mine = {
-            str(c.get("id")) for c in hl.get("candidates") or [] if c.get("source") == entry["path"]
-        }
-        listed = {
-            view["preview"].get("name")
-            for cid, view in previews.listing(p).items()
-            if cid in mine and view["preview"] is not None and view["preview"]["state"] == "ready"
-        }
-        file = previews.file(p, name) if name in listed else None
+        # highlights.json and the previews listing are read when they change (#1029)
+        ready = previews.ready(p).values()
+        file = None
+        if any(src == entry["path"] and n == name for src, n in ready):
+            file = previews.file(p, name)
         if file is None:
             raise bad("director preview is not ready", 404)
         return send(file, request, proxy=True)
