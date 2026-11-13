@@ -53,6 +53,15 @@ Notes:
 - Action-cam telemetry reads whole files; stage first. Crash detection reads only the telemetry
   track and needs no staging.
 
+## Preview slow to start in `cutpoint ui`
+
+When the preview player waits for data over 5 s, a note over the picture names the likely
+reason: the project folder is on a network or external drive, or the video is a fragmented MP4 (as some
+cameras and screen recorders write it), which the browser opens in hundreds of small reads.
+Short clips in Play sequence show it most. The note goes once playback starts. To make it faster,
+keep `projects_dir` on a local disk, or remux the video into a plain MP4
+(`ffmpeg -i in.mp4 -c copy -movflags +faststart out.mp4`) and use that copy.
+
 ## Flaky network links while writing
 
 If the link drops during long writes, keep writes local and copy once:
