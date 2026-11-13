@@ -64,6 +64,7 @@ const COLOR_NAMES = { off: 'Off', auto: 'Auto', underwater: 'Underwater' };
 const LINKED_AUDIO = { cut: 'cut', fade: 'crossfade' }; // Link Transitions: the audio transition of each video one
 const FRAME = 0.04; // seconds: "Play sequence" moves on this close to a clip's end
 const GAP = 0.05; // seconds: a clip starting this close to the previous one's end plays on without a cut
+const PRECUE_WAIT = 500; // ms a Fade cut rests in Cut mode, its stage player idle, before the spare player opens clip 2 (precueCut)
 const CUT_PLAY = 3; // seconds: "Play across the cut" plays this much of each clip; the roll track shows as much on each side
 const FADE_DUR = 0.25; // seconds: Fade length left blank (assemble --fade-dur's default)
 const JOINS_NOTE = 'Assemble again to apply the joins.';
@@ -158,6 +159,7 @@ let cued = null; // {id, start, vt}: the clip the spare player holds, at video t
 let seekWant = null; // {t, fast}: the latest scrub target while a seek is in flight
 let wasIn = true; // the playhead was on the rail at the last frame or view change (tick follows it off the edge)
 let blend = null; // {old, end, lap}: a Fade playing across a cut: the outgoing player, its out point in video time and the fade's seconds
+let dip = null; // {lap}: a Fade across a cut the spare player was not ready for, played as a dip to black in the visible player
 let previewVolume = () => 1; // the shared volume of the preview videos (initVolume)
 
 // ---------- state helpers ----------
@@ -2488,8 +2490,19 @@ function seqCheck() {
     return false;
   }
   stepBlend();
-  const lap = sp.i === 0 && spareReady() ? seqLap() : 0; // the Fade of a cut starts this early; a spare player not ready yet leaves a cut
-  if (playhead() >= seg.end - (lap || FRAME)) seqGo(sp.i + 1, lap);
+  const fade = sp.i === 0 ? seqLap() : 0;
+  // the spare player is not ready as the Fade starts: a next clip in this player's file dips to black here (#1028)
+  if (fade && !dip && playhead() >= seg.end - fade && !spareReady() && dipFits()) dip = { lap: fade };
+  stepDip();
+  // the Fade of a cut starts this early; a spare player not ready yet leaves a cut (or a dip, when clip 2 is in this player's file)
+  const lap = fade && !dip && spareReady() ? fade : 0;
+  if (dip && sp.i === 0) {
+    if (playhead() >= seg.end - dip.lap / 2) { // black: seek to the next clip, half the Fade in
+      cued = null;
+      unload(spare()); // its open is late: let the seek have the file
+      seqGo(1);
+    }
+  } else if (playhead() >= seg.end - (lap || FRAME)) seqGo(sp.i + 1, lap);
   return !v.paused && !S.seqPlay?.wait;
 }
 
@@ -2526,6 +2539,7 @@ onStage('canplay', () => {
     resumeAt = null; // the file after the window playback stopped at: play on
     v.play().catch(() => showPlaying(false));
   }
+  if (S.cutMode && !S.seqPlay) precueCut(); // the stage player settled: a Fade cut may open its clip 2 now
 });
 onStage('playing', () => {
   screenMsg('');
@@ -3870,6 +3884,7 @@ function setCut(on) {
   (on ? $('.stage-head') : $('.transport')).append($('#stageMode'));
   if (had?.closest?.('#stageMode')) had.focus(); // moving an element drops its focus
   renderSeqPlay();
+  if (!on) precueCut(); // releases a spare opened for a cut
 }
 
 function enterCut() {
@@ -3932,6 +3947,7 @@ function renderCut() {
   nav[0].disabled = k <= 0;
   nav[1].disabled = k >= S.segments.length - 2;
   if (had?.disabled) (nav.find((x) => !x.disabled) ?? $('#cutJoin')).focus();
+  precueCut();
 }
 
 /** Show the still of ``s`` at ``t`` in ``img``; the last one stays, dimmed, until it has loaded. */
@@ -4357,6 +4373,7 @@ function seqStop(msg = S.seqPlay?.across ? 'Stopped playing across the cut' : 'S
   const { across } = S.seqPlay;
   S.seqPlay = null;
   endBlend();
+  endDip();
   cued = null;
   clearTimeout(S.seqTimer);
   v.pause();
@@ -4433,7 +4450,6 @@ function seqPoll() {
 /** Load the clip after the playing one into the spare player, paused at its start. */
 function cueNext() {
   const sp = S.seqPlay;
-  const o = spare();
   let j = sp.i + 1;
   while (j < sp.order.length && !seqSeg(j)) j += 1;
   const cur = seqSeg(sp.i);
@@ -4446,6 +4462,12 @@ function cueNext() {
     cued = null; // not playable yet, or it plays in the visible player
     return;
   }
+  cueSpare(seg, src, p);
+}
+
+/** Hold ``seg`` of ``src`` in the spare player, paused at its start, from ``p`` (fileFor). */
+function cueSpare(seg, src, p) {
+  const o = spare();
   if (cued?.id === seg.id && cued.start === seg.start && o.dataset.url === p.url) return;
   const { url, offset } = p;
   cued = { id: seg.id, start: seg.start, vt: seg.start - offset };
@@ -4457,7 +4479,39 @@ function cueNext() {
     if (url === src.url) delete o.dataset.hi;
     else o.dataset.hi = p.hi; // a window proxy: the stage reads its range after the swap
     o.src = url; // seeks to cued.vt on loadedmetadata
-  } else if (o.readyState >= HTMLMediaElement.HAVE_METADATA) o.currentTime = cued.vt;
+  } else if (o.readyState >= HTMLMediaElement.HAVE_METADATA && Math.abs(o.currentTime - cued.vt) > GAP) {
+    o.currentTime = cued.vt; // a spare already there (precueCut) is not sought again
+  }
+}
+
+let precueTimer = 0;
+/**
+ * In Cut mode, open clip 2 of a Fade cut in the spare player once the cut rests on screen, so
+ * the first "Play across the cut" has its second picture in time: a fragmented MP4 without an
+ * index takes seconds to open a second time (#1028). Only for a Fade between clips of the file
+ * the stage player has open, and only once that player is idle (canplay asks again), so two
+ * opens of one file never compete; otherwise a spare it opened is released. A roll keeps it.
+ */
+function precueCut(now = false) {
+  clearTimeout(precueTimer);
+  if (S.seqPlay || cutDrag) return; // a play cues its own clip
+  const k = S.cutMode ? cutIndex() : -1;
+  const [a, b] = k < 0 ? [] : [S.segments[k], S.segments[k + 1]];
+  const seg = b && { ...b, ...planned(b) };
+  const src = srcOf(seg?.source);
+  const p = a && joinLap(a, b) > 0 && !v.error && readyFor(src, seg) && fileFor(src, seg);
+  if (!p || p.url !== v.dataset.url) {
+    if (cued) unload(spare()); // outside a play only this function cues
+    cued = null;
+    return;
+  }
+  if (cued && spare().dataset.url !== p.url) { // it holds another file
+    unload(spare());
+    cued = null;
+  }
+  if (v.seeking || v.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) return; // the stage player is still opening or seeking
+  if (now) cueSpare(seg, src, p);
+  else precueTimer = setTimeout(() => precueCut(true), PRECUE_WAIT);
 }
 
 /**
@@ -4486,8 +4540,8 @@ function seqGo(j, lap = 0) {
   sp.i = j;
   sp.wait = false;
   const url = readyFor(src, seg) && fileFor(src, seg).url; // the whole source, or a window covering the clip
-  if (cur && !lap && seqLap()) $('#cutRollMsg').textContent = `Clip ${j + 1} was not ready in time, so this play shows a cut in place of the Fade. Play it again to see the Fade.`;
-  if (!lap && cur && seg.source === cur.source && Math.abs(playhead(cur) - seg.start) <= FRAME + GAP && v.dataset.url === url && !v.paused) {
+  if (cur && !lap && seqLap()) $('#cutRollMsg').textContent = `Clip ${j + 1} was not ready in time, so this play shows ${dip ? 'a dip to black' : 'a cut'} in place of the Fade. Play it again to see the Fade.`;
+  if (!lap && !dip && cur && seg.source === cur.source && Math.abs(playhead(cur) - seg.start) <= FRAME + GAP && v.dataset.url === url && !v.paused) {
     showMoment(seg.id, true); // contiguous: plays on without a cut
   } else if (cued?.id === seg.id && o.dataset.url === url && !o.error) {
     const old = v;
@@ -4504,7 +4558,7 @@ function seqGo(j, lap = 0) {
     showMoment(seg.id, true);
   } else if (!lap && url && v.dataset.url === url && !v.error) {
     showMoment(seg.id, true); // the visible player's own file: a seek, not a new open (#1020)
-    seekTo(seg.start);
+    seekTo(dip ? seg.start + dip.lap / 2 : seg.start); // a dip comes back half the Fade in, so the play keeps its length
     v.play().catch(() => {});
   } else {
     showMoment(seg.id); // loads the source (or a window proxy covering the clip), or waits for one
@@ -4522,6 +4576,40 @@ function seqGo(j, lap = 0) {
 function spareReady() {
   const o = spare();
   return cued?.id === S.seqPlay.order[1] && !o.error && !o.seeking && o.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA;
+}
+
+/** The second clip of the playing cut plays from the file the visible player has open, so a seek reaches it without the spare player. */
+function dipFits() {
+  const seg = seqSeg(1);
+  const src = srcOf(seg?.source);
+  return !!seg && !v.error && readyFor(src, seg) && fileFor(src, seg).url === v.dataset.url;
+}
+
+/**
+ * One frame of a dip: the first clip fades to black over the first half of the Fade, the second
+ * fades in from black over its second half, each on its own clock, so a slow seek holds black.
+ * Picture and sound follow together; with reduced motion the picture changes at once.
+ */
+function stepDip() {
+  if (!dip) return;
+  const sp = S.seqPlay;
+  const seg = seqSeg(sp.i);
+  const half = dip.lap / 2;
+  const p = sp.i === 0 ? (seg.end - half - playhead()) / half : (playhead() - seg.start - half) / half;
+  if (sp.i > 0 && p >= 1) return endDip();
+  const x = Math.min(Math.max(p, 0), 1);
+  v.style.opacity = String(reduceMotion.matches ? Math.round(x) : x);
+  v.volume = previewVolume() * x;
+}
+
+/** End a dip, at its end or when the play stops: the visible player whole again, at the shared volume. */
+function endDip() {
+  if (!dip) return;
+  dip = null;
+  for (const el of els) {
+    el.style.opacity = '';
+    el.volume = previewVolume();
+  }
 }
 
 /** Start a Fade of ``lap`` seconds: ``old``, the outgoing player, plays on to ``end`` (source time) under the visible player, which just took over. */
@@ -7616,8 +7704,8 @@ function initVolume() {
     const volume = Number(range.value) / 100;
     set({ volume, muted: vol.muted && volume === 0 });
   });
-  // a Fade ramps the stage players itself: those volumes are not the setting
-  for (const el of vids) el.addEventListener('volumechange', () => (blend && el !== vids.at(-1) ? null : set({ volume: el.volume, muted: el.muted })));
+  // a Fade (or its dip to black) ramps the stage players itself: those volumes are not the setting
+  for (const el of vids) el.addEventListener('volumechange', () => ((blend || dip) && el !== vids.at(-1) ? null : set({ volume: el.volume, muted: el.muted })));
   previewVolume = () => vol.volume;
   $('.transport-end').append(h('div', { class: 'vol', role: 'group', 'aria-label': 'Preview sound' }, btn, range));
   apply();

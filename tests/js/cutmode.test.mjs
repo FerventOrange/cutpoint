@@ -856,6 +856,148 @@ test('Play across a join set to Cut stays a hard cut under a Fade default', asyn
   assert.ok([...n.d.querySelectorAll('.screen video')].every((e) => e === one || e.__media.paused), 'no overlap');
 });
 
+// a fragmented MP4 without an index takes seconds to open a second time (#1028)
+const spareOf = (m, el) => [...m.d.querySelectorAll('.screen video')].find((e) => e !== el);
+
+test('a Fade whose spare player is not ready at its start dips to black in the open player, not a hard cut (#1028)', async (t) => {
+  const m = await inCut(t, { project: withSegments('h001', 'h002') }); // both in a.mp4
+  m.t = t;
+  await m.click('#cutTransition button[data-value=fade]');
+  await m.click('#cutPlayBtn');
+  const first = m.active();
+  const spare = spareOf(m, first);
+  first.__media.loaded(600); // the spare player is still opening the file
+  await m.page.settle();
+  assert.equal(spare.dataset.url, first.dataset.url, 'the spare player opens the file for the Fade');
+  await advance(m, first, 17.8); // 0.05 s into the 0.25 s Fade: a fifth of the way down
+  assert.match(m.live(), /Playing clip 1 of 2/, 'no swap to a player without a picture');
+  assert.equal(m.active(), first);
+  assert.ok(Math.abs(Number(first.style.opacity) - 0.6) < 0.01, 'the picture fades down');
+  assert.ok(Math.abs(first.__media.volume - 0.6) < 0.01, 'with its sound');
+  await advance(m, first, 17.9); // past half the Fade: black, the seek
+  assert.match(m.live(), /Playing clip 2 of 2/);
+  assert.equal(m.active(), first, 'the open player plays clip 2');
+  assert.equal(first.__media.currentTime, 100.125, 'half the Fade into clip 2, so the play keeps its length');
+  assert.equal(first.style.opacity, '0');
+  assert.equal(spare.getAttribute('src'), null, 'the late spare player lets the file go');
+  assert.match(m.$('#cutRollMsg').textContent, /^Clip 2 was not ready in time, so this play shows a dip to black in place of the Fade\./);
+  await advance(m, first, 100.1875);
+  assert.ok(Math.abs(Number(first.style.opacity) - 0.5) < 0.01, 'clip 2 fades in');
+  assert.ok(Math.abs(first.__media.volume - 0.5) < 0.01);
+  await advance(m, first, 100.26);
+  assert.equal(first.style.opacity, '', 'whole again after the Fade');
+  assert.equal(first.__media.volume, 1);
+  assert.equal(m.$('.vol input[type=range]').value, '100', 'the ramp is not taken for the volume setting');
+  await m.click('#cutPlayBtn'); // Stop
+});
+
+test('a Fade into a clip of another file whose spare player is late stays a cut, as before (#1028)', async (t) => {
+  const m = await inCut(t, { project: withOtherFile('h002', 'h001', 'h002') }); // a.mp4, then b.mp4
+  m.t = t;
+  await m.click('#cutTransition button[data-value=fade]');
+  await m.click('#cutPlayBtn');
+  const first = m.active();
+  first.__media.loaded(600);
+  await m.page.settle();
+  await advance(m, first, 17.8);
+  assert.equal(first.style.opacity, '', 'no dip: a seek cannot reach another file');
+  await advance(m, first, 17.97);
+  assert.match(m.live(), /Playing clip 2 of 2/);
+  assert.match(m.$('#cutRollMsg').textContent, /shows a cut in place of the Fade/);
+  await m.click('#cutPlayBtn'); // Stop
+});
+
+test('Cut mode opens clip 2 of a Fade in one file in the spare player once the cut rests, so the first play fades (#1028)', async (t) => {
+  const m = await inCut(t, { project: withSegments('h001', 'h002') });
+  m.t = t;
+  const stageV = m.active();
+  stageV.__media.loaded(600);
+  await m.page.settle();
+  const spare = spareOf(m, stageV);
+  t.mock.timers.tick(1000);
+  await m.page.settle();
+  assert.equal(spare.getAttribute('src'), null, 'a Cut opens nothing ahead');
+  await m.click('#cutTransition button[data-value=fade]');
+  t.mock.timers.tick(400);
+  await m.page.settle();
+  assert.equal(spare.getAttribute('src'), null, 'not before the cut rests 500 ms');
+  t.mock.timers.tick(200);
+  await m.page.settle();
+  assert.equal(spare.dataset.url, stageV.dataset.url, 'the spare player opens the file ahead of the play');
+  spare.__media.loaded(600);
+  await m.page.settle();
+  assert.equal(spare.__media.currentTime, 100, 'at clip 2');
+  assert.equal(spare.__media.paused, true);
+
+  await m.click('#cutPlayBtn');
+  assert.ok(!spare.__media.calls.includes('load'), 'the play keeps the open spare');
+  assert.equal(m.active(), stageV);
+  await advance(m, stageV, 17.8);
+  assert.equal(m.active(), spare, 'the Fade runs on the spare player at the first press');
+  assert.equal(stageV.__media.paused, false, 'under the outgoing clip');
+  await m.click('#cutPlayBtn'); // Stop
+
+  t.mock.timers.tick(600); // the cut rests again: the other player opens clip 2
+  await m.page.settle();
+  assert.equal(spareOf(m, m.active()).dataset.url, m.active().dataset.url);
+  await m.click(m.clipBtn());
+  t.mock.timers.tick(200);
+  await m.page.settle();
+  assert.equal(spareOf(m, m.active()).getAttribute('src'), null, 'leaving Cut mode lets the spare go');
+});
+
+test('the spare player waits while the stage player still opens or seeks the file, then opens clip 2 after canplay and 500 ms (#1028)', async (t) => {
+  const m = await inCut(t, { project: withSegments('h001', 'h002') });
+  const stageV = m.active();
+  const spare = spareOf(m, stageV);
+  await m.click('#cutTransition button[data-value=fade]');
+  t.mock.timers.tick(1000);
+  await m.page.settle();
+  assert.ok(stageV.dataset.url, 'the stage player has the file');
+  assert.equal(spare.getAttribute('src'), null, 'no second open while the stage player opens it');
+  Object.defineProperty(stageV, 'seeking', { configurable: true, get: () => true });
+  stageV.__media.loaded(600); // canplay, but a seek is still out
+  t.mock.timers.tick(1000);
+  await m.page.settle();
+  assert.equal(spare.getAttribute('src'), null, 'no second open while the stage player seeks');
+  delete stageV.seeking;
+  stageV.__media.fire('canplay');
+  t.mock.timers.tick(400);
+  await m.page.settle();
+  assert.equal(spare.getAttribute('src'), null, 'the stage settled; the cut has not rested 500 ms yet');
+  t.mock.timers.tick(200);
+  await m.page.settle();
+  assert.equal(spare.dataset.url, stageV.dataset.url, 'the spare player opens clip 2');
+});
+
+test('Stop in the middle of a dip leaves the players whole and the next play without a stray dim (#1028)', async (t) => {
+  const m = await inCut(t, { project: withSegments('h001', 'h002') });
+  m.t = t;
+  await m.click('#cutTransition button[data-value=fade]');
+  await m.click('#cutPlayBtn');
+  const first = m.active();
+  const spare = spareOf(m, first);
+  first.__media.loaded(600);
+  await m.page.settle();
+  await advance(m, first, 17.8); // the dip has started
+  assert.notEqual(first.style.opacity, '');
+  await m.click('#cutPlayBtn'); // Stop
+  assert.equal(first.style.opacity, '');
+  assert.equal(first.__media.volume, 1);
+  assert.equal(m.$('.vol input[type=range]').value, '100');
+  assert.equal(spare.getAttribute('src'), null);
+
+  await m.click('#cutPlayBtn'); // the next play
+  const again = m.active();
+  again.__media.loaded(600);
+  await m.page.settle();
+  await advance(m, again, 16);
+  assert.match(m.live(), /Playing clip 1 of 2/);
+  for (const el of m.d.querySelectorAll('.screen video')) assert.equal(el.style.opacity, '', 'no dim before the Fade');
+  assert.equal(again.__media.volume, 1);
+  await m.click('#cutPlayBtn'); // Stop
+});
+
 test('Assemble sends Fade length under a Cut default only while a join of the sequence is set to Fade', async (t) => {
   const jobs = [];
   const p = withSegments('h001', 'h002');
