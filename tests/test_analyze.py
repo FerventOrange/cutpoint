@@ -4,26 +4,110 @@ from __future__ import annotations
 
 import json
 import sys
+from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from conftest import StubTranscriber, media_info, remap, set_config, write
 from cutpoint import analyze, config, extras, features, reset_state
+from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.styles import LAUGHTER, get_style
 
 
 @pytest.mark.parametrize(
-    ("readable_from", "expected"), [(133.0, 136.0), (None, None)], ids=["recovers", "nothing"]
+    ("readable_from", "expected"),
+    [(133.0, (136.0, 133.0)), (None, None)],
+    ids=["recovers", "nothing"],
 )
 def test_find_resume_point(monkeypatch, readable_from, expected):
-    """Probes 5/10/20/40 s past the failure, then bisects back toward it."""
+    """Probes 5/10/20/40 s past the failure, then bisects back toward it; also returns where
+    the unreadable stretch ends (the last failed probe's window, at most the first good one)."""
     monkeypatch.setattr(
         analyze, "read_window_ok", lambda src, t: readable_from is not None and t >= readable_from
     )
     got = analyze.find_resume_point(Path("a.mp4"), fail_t=100.0, duration=1000.0)
     assert got == (pytest.approx(expected) if expected else None)
+
+
+@pytest.mark.parametrize(
+    ("readable_from", "resume", "until"),
+    [
+        (100.5, 102.25, 101.25),  # damage under 5 s: the 5 s probe is good, bisection narrows it
+        (138.0, 141.0, 138.0),  # bisected: last bad probe 135 + 3 s window, below the good 140
+        (104.9, 106.0, 105.0),  # capped at the good probe: 103.75 + 3 s reaches past 105
+    ],
+    ids=["short", "bisected", "capped-at-good"],
+)
+def test_find_resume_point_says_where_the_unreadable_stretch_ends(
+    monkeypatch, readable_from, resume, until
+):
+    monkeypatch.setattr(analyze, "read_window_ok", lambda src, t: t >= readable_from)
+    got = analyze.find_resume_point(Path("a.mp4"), fail_t=100.0, duration=1000.0)
+    assert got == (pytest.approx(resume), pytest.approx(until))
+    assert until <= resume - analyze.RESUME_MARGIN_S  # never past the first good probe
+
+
+@pytest.fixture
+def recovering(home, tmp_path, monkeypatch):
+    """``analyze.analyze(recover=True)`` of one source with ``analyze_source`` faked: the first
+    part reports ``state.record`` as its read error, the recovered part none. ``state.seen``
+    has each call's ``(offset, readable_from)``."""
+    video = write(tmp_path / "videos" / "a.mp4")
+    proj = tmp_path / "proj"
+    state = SimpleNamespace(video=video, proj=proj, seen=[], record={}, probes=[])
+
+    def fake_source(src, style, tr, use_scenes, max_cand, timings, offset=0.0, **kw):
+        state.seen.append((offset, kw.get("readable_from")))
+        info = MediaInfo(
+            src, 300.0, 300.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
+        )
+        rec = dict(state.record) if not offset else None
+        return analyze.SourceResult(src, info, offset, 300.0 - offset, [], [], rec)
+
+    def probe_window(src, t):
+        state.probes.append(t)
+        return t >= 133.0
+
+    monkeypatch.setattr(analyze, "Transcriber", StubTranscriber)
+    monkeypatch.setattr(analyze, "analyze_source", fake_source)
+    monkeypatch.setattr(analyze, "read_window_ok", probe_window)
+    monkeypatch.setattr(analyze, "has_telemetry", lambda src, timeout=60: False)
+    state.go = lambda: analyze.analyze(
+        video, get_style("funny"), proj, recover=True, use_scenes=False, layers=False
+    )
+    return state
+
+
+def _saved_record(state) -> dict:
+    (path,) = state.proj.parent.rglob(analyze.READ_ERRORS_FILE)
+    return json.loads(path.read_text())
+
+
+def test_the_end_of_the_damage_is_saved_and_given_to_the_recovered_part(recovering):
+    recovering.record = {"failure_time": 100.0}
+    recovering.go()
+    assert recovering.seen == [(0.0, None), (136.0, 133.0)]
+    rec = _saved_record(recovering)
+    assert (rec["resumed_at"], rec["unreadable_until"]) == (136.0, 133.0)
+
+
+def test_a_cached_resume_point_hands_its_saved_end_of_the_damage_on(recovering):
+    recovering.record = {"failure_time": 100.0, "resumed_at": 136.0, "unreadable_until": 90.0}
+    recovering.go()
+    assert recovering.probes == []  # nothing probed again
+    assert recovering.seen == [(0.0, None), (136.0, 90.0)]
+    assert _saved_record(recovering)["unreadable_until"] == 90.0
+
+
+def test_an_old_record_without_the_end_of_the_damage_gives_the_part_no_lead_in(recovering):
+    recovering.record = {"failure_time": 100.0, "resumed_at": 136.0}
+    recovering.go()  # no crash
+    assert recovering.probes == []
+    assert recovering.seen == [(0.0, None), (136.0, None)]
+    assert _saved_record(recovering)["unreadable_until"] is None
 
 
 def test_profanity_counts_only_next_to_another_cue():

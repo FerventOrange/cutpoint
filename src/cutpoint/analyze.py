@@ -69,6 +69,7 @@ from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.ffmpeg_utils import (
     NVDEC_DOWNLOAD,
     READ_ERROR_RE,
+    READ_PROBE_S,
     STOP_GRACE_S,
     HwDecoder,
     MediaInfo,
@@ -483,6 +484,17 @@ SNAP_REACH_S = 1.0  # _snap moves an edge to a scene cut at most this far
 SCENE_WARMUP_S = 1.5  # picture the detector needs around a cut (2-frame window, 0.5 s min)
 WINDOW_PAD_S = SNAP_REACH_S + SCENE_WARMUP_S  # a window reaches this far either side of an edge
 SCENE_GRID_S = 0.1  # the full proxy's frame step (10 fps, _proxy_args): windows start on it
+# A recovered part of a container that seeks inexactly (MPEG-TS) is decoded from this far before
+# its start (_lead_in): ffmpeg's seek there lands on the next keyframe, past cuts near the start
+LEAD_IN_S = 10.0
+# ... but never from before the end of the unreadable stretch before it (the read-error record's
+# ``unreadable_until``), and not at all when less than this is left: about one GOP of a common
+# recording (OBS and stream encoders put a keyframe every 2 s), so a shorter lead-in mostly lands
+# on the keyframe the plain seek does and only costs its measuring decode
+LEAD_IN_MIN_S = 2.0
+# Scene files of older clocks (#976, #994), never read again: removed from a source's cache
+# folder once its current SCENES_FILE is saved (_drop_old_scene_files)
+OLD_SCENES_FILES = ("scenes.json", "scenes-v2.json")
 
 
 def scene_overlap() -> bool:
@@ -558,9 +570,10 @@ def _watch_extract(
 def _first_shift(src: Path, offset: float, duration: float) -> float | None:
     """Where on the container clock (from :attr:`MediaInfo.fstart`) the first frame a whole
     scene pass of ``src`` decodes lies (:func:`_proxy_args`), or None when ffmpeg's own count
-    is that clock: a pass that seeks (only in a container that seeks exactly), a whole pass of
-    such a container, and a source ffprobe or the one-frame decode fails on (the pass then
-    counts as ffmpeg does)."""
+    is that clock: a pass that seeks (in a container that does not seek exactly a recovered
+    part places its frames by :func:`_lead_in` instead), a whole pass of a container that seeks
+    exactly, and a source ffprobe or the one-frame decode fails on (the pass then counts as
+    ffmpeg does)."""
     if offset > 0 or _seeks_exactly(src):
         return None
     try:
@@ -568,6 +581,36 @@ def _first_shift(src: Path, offset: float, duration: float) -> float | None:
         return first - probe(src).fstart
     except FFmpegError as exc:
         logger.debug("%s: no first frame time (%s); the scene pass counts as ffmpeg does", src, exc)
+        return None
+
+
+def _lead_in(
+    src: Path, offset: float, duration: float, readable_from: float | None
+) -> tuple[float, float] | None:
+    """The seek point and the shift of a scene pass of ``src`` from ``offset`` (a recovered
+    part) in a container that does not seek exactly (:func:`_seeks_exactly`), or None: a pass
+    from the start, a container that seeks exactly, no ``readable_from`` known (a read-error
+    record older than it), less than :data:`LEAD_IN_MIN_S` between it and ``offset``, and a
+    source ffprobe or the one-frame decode fails on (the pass then seeks ``offset`` as ffmpeg
+    does).
+
+    MPEG-TS seeks to the next keyframe after ``offset`` (``-ss 6.4`` decodes from 8.02), so
+    cuts before it were lost. The pass seeks :data:`LEAD_IN_S` earlier instead, but never
+    before ``readable_from`` (the end of the unreadable stretch before the part,
+    :func:`find_resume_point`: the read error must not come back), and the first frame decoded
+    from there is put at its container time less ``offset`` (measured by a decode of its own:
+    the seek may land anywhere, or clamp to the start), so ``fps`` drops the lead-in and the
+    proxy starts at ``offset`` (:func:`_proxy_args`)."""
+    if offset <= 0 or readable_from is None or _seeks_exactly(src):
+        return None
+    seek = round(max(0.0, offset - LEAD_IN_S, readable_from), 3)
+    if offset - seek < LEAD_IN_MIN_S:
+        return None
+    try:
+        first = first_frame_time(src, keyframes=duration > LONG_FILE_S, start=seek)
+        return seek, first - probe(src).fstart - offset
+    except FFmpegError as exc:
+        logger.debug("%s: no first frame time (%s); the scene pass seeks as ffmpeg does", src, exc)
         return None
 
 
@@ -579,6 +622,7 @@ def _proxy_args(
     offset: float = 0.0,
     limit: float | None = None,
     shift: float | None = None,
+    lead_in: tuple[float, float] | None = None,
 ) -> tuple[list[str], list[str], str, list[str]]:
     """The scene proxy's input options, output options, filter chain and encoder arguments.
 
@@ -589,7 +633,9 @@ def _proxy_args(
     MPEG-TS ffmpeg 6.1 counts a whole pass from the video instead (``-an``), so the first
     decoded frame is put at ``shift`` (:func:`_first_shift`: its container time, also when the
     file starts in the middle of a GOP); ffmpeg's own timestamps stay, so a timestamp reset
-    (joined TS files) still runs on. A seek needs a container that seeks exactly.
+    (joined TS files) still runs on. A seek is exact only in a container that seeks exactly;
+    elsewhere ``lead_in`` (:func:`_lead_in`: seek point and shift) seeks earlier and puts the
+    first decoded frame at ``shift``, so ``fps`` drops the frames before ``offset``.
 
     ``-reinit_filter 0`` keeps one filter graph for the whole pass: where the video parameters
     change mid-file (a joined file's second half with other color tags) ffmpeg 9 would rebuild
@@ -597,12 +643,17 @@ def _proxy_args(
     after the join are wrong or lost."""
     long_file = duration > LONG_FILE_S
     pre = [*REINIT_OFF, *(["-skip_frame", "nokey"] if long_file else [])]
-    if offset > 0:
+    if lead_in is not None:
+        if lead_in[0] > 0:
+            pre += ["-ss", f"{lead_in[0]:.3f}"]
+    elif offset > 0:
         pre += ["-ss", f"{offset:.3f}"]
     post = ["-t", f"{limit:.3f}"] if limit else []
     rate, width = (2, 256) if long_file else (10, 320)
     vf = f"fps={rate}:start_time=0,scale={width}:-2"
-    if shift is not None and offset <= 0:
+    if lead_in is not None:
+        vf = f"setpts=PTS-STARTPTS+{lead_in[1]:.6f}/TB,{vf}"
+    elif shift is not None and offset <= 0:
         vf = f"setpts=PTS-STARTPTS+{shift:.6f}/TB,{vf}"
     # Lossless: a lossy proxy has a keyframe every 250 frames (25 s at 10 fps) that adds to the
     # detector's content value, so cuts appeared there and moved with the pass's start (#994)
@@ -680,10 +731,10 @@ def _run_scene_proxy(
     seconds: float,
     label: str,
     cancel: threading.Event | None = None,
-) -> None:
+) -> ProgressResult:
     """Run the scene proxy's ffmpeg ``command(False)``; when its frames stayed on the GPU
     (``hwdownload``, :func:`_scene_decode`) and ffmpeg dropped frames, run ``command(True)``
-    again, which does not keep them there.
+    again, which does not keep them there. Returns the last run's result.
 
     The stream parameters changed mid-file (#1031: an MP4 or MKV whose second part has another
     size): the GPU decoder starts again with new frames, and ffmpeg rebuilds the filter graph
@@ -695,7 +746,7 @@ def _run_scene_proxy(
     first = command(False)
     res = run_progress(first, seconds, label, **opts)
     if not any("hwdownload" in arg for arg in first) or not res.dropped:
-        return
+        return res
     logger.info(
         "%s: the video changes its size or format mid-file and the GPU decode lost its frame "
         "timing there (%d frames dropped); making it again without keeping its frames on the GPU",
@@ -703,7 +754,7 @@ def _run_scene_proxy(
         res.dropped,
     )
     proxy.unlink(missing_ok=True)  # the re-run starts clean
-    run_progress(command(True), seconds, label, **opts)
+    return run_progress(command(True), seconds, label, **opts)
 
 
 def _detect(proxy: Path, path: Path, cancel: threading.Event | None = None) -> list[float]:
@@ -719,7 +770,15 @@ def _detect(proxy: Path, path: Path, cancel: threading.Event | None = None) -> l
         except OSError as exc:  # never replace the original exception
             logger.debug("could not delete %s: %s", proxy, exc)
     cache.save_json(path, cuts)
+    _drop_old_scene_files(path.parent)
     return cuts
+
+
+def _drop_old_scene_files(cdir: Path) -> None:
+    """Remove the :data:`OLD_SCENES_FILES` of the cache folder ``cdir``, if there are any."""
+    for name in OLD_SCENES_FILES:
+        with contextlib.suppress(OSError):
+            (cdir / name).unlink(missing_ok=True)
 
 
 def _scan(proxy: Path, cancel: threading.Event | None) -> list[float]:
@@ -768,6 +827,7 @@ def scene_cuts(
     shared: Any = None,
     cancel: threading.Event | None = None,
     cpu_free: bool = False,
+    readable_from: float | None = None,
 ) -> list[float]:
     """Scene-cut times (s) via PySceneDetect AdaptiveDetector on a tiny proxy.
 
@@ -790,6 +850,10 @@ def scene_cuts(
         cpu_free: The caller knows no CPU-heavy step (the background HUD OCR, Whisper on the
             CPU) runs meanwhile, so the decode may be split between NVDEC and the CPU
             (:func:`_hybrid_plan`, #730). False (the default): one decode, as before.
+        readable_from: For a recovered part (``offset`` above 0): where the unreadable stretch
+            before it ends (absolute s, the read-error record's ``unreadable_until``). In a
+            container that does not seek exactly the pass starts a little before ``offset``,
+            but never before this (:func:`_lead_in`); None: it seeks ``offset``.
     """
     path = cdir / SCENES_FILE
     cached = cache.load_json(path)
@@ -803,11 +867,34 @@ def scene_cuts(
     plan = _hybrid_plan(src, duration, offset, limit, cpu_free)
     if plan is not None and (cuts := _hybrid_cuts(src, cdir, duration, *plan, cancel)) is not None:
         cache.save_json(path, cuts)
+        _drop_old_scene_files(cdir)
         return cuts
     proxy = cdir / "proxy.mp4"
     gpu = scene_decode_mode() != "cpu"
-    args = _proxy_args(duration, offset, limit, _first_shift(src, offset, duration))
-    _make_proxy(src, proxy, args, duration, cancel, gpu=gpu)
+    lead = _lead_in(src, offset, duration, readable_from)
+    args = _proxy_args(duration, offset, limit, _first_shift(src, offset, duration), lead)
+    try:
+        res = _make_proxy(src, proxy, args, duration, cancel, gpu=gpu)
+        # ffmpeg stops at a read error and exits 0: one in the lead-in left no frame past the
+        # part's start (out_time is part-relative, fps drops the lead-in); one later in the part
+        # leaves the proxy as the plain seek would, so it is kept
+        failed = (
+            lead is not None
+            and bool(READ_ERROR_RE.search(res.stderr))
+            and res.out_time < SCENE_GRID_S
+        )
+    except FFmpegError:
+        if lead is None:
+            raise
+        failed = True
+    if failed:  # the lead-in reached back to the damage before a recovered part
+        logger.info(
+            "%s: the scene decode's lead-in before %s hit a read error; decoding from there",
+            src.name,
+            clock(offset),
+        )
+        proxy.unlink(missing_ok=True)
+        _make_proxy(src, proxy, _proxy_args(duration, offset, limit), duration, cancel, gpu=gpu)
     return _detect(proxy, path, **dopts)
 
 
@@ -828,9 +915,9 @@ HYBRID_CODECS = frozenset({"h264"})
 # 8-bit 4:2:0 only: NVDEC here decodes no 10-bit or 4:2:2 H.264 (the NVDEC half fails, or decodes
 # on the CPU without saying so)
 HYBRID_PIX_FMTS = frozenset({"yuv420p", "yuvj420p"})
-# Containers whose input seek is frame-accurate; MPEG-TS seeks inexactly and moves the CPU half's
-# cuts (up to 0.6 s, or loses them)
-HYBRID_SUFFIXES = frozenset({".mp4", ".mov", ".m4v", ".mkv"})
+# Containers whose input seek is frame-accurate (WebM too, also without cues, #1038); MPEG-TS
+# seeks inexactly and moves the CPU half's cuts (up to 0.6 s, or loses them)
+HYBRID_SUFFIXES = frozenset({".mp4", ".mov", ".m4v", ".mkv", ".webm"})
 # The CPU decodes at about this share of NVDEC's rate per decode thread (74 s on 8 threads vs
 # 57 s); the split puts each half's end at about the same time: 8 threads 0.57, 6 0.63.
 CPU_RATE_PER_THREAD = 0.096
@@ -873,8 +960,8 @@ def _hybrid_plan(
     splits whenever NVDEC decodes ``src`` and its container seeks exactly, as the CPU half
     seeks (:func:`_seeks_exactly`); ``auto`` only when also ``cpu_free`` (no CPU-heavy step
     runs meanwhile), the source is at least :data:`HYBRID_MIN_S` long, in one of
-    :data:`HYBRID_CODECS` and :data:`HYBRID_PIX_FMTS`, its video starts with the container
-    (``vstart`` 0), and :data:`HYBRID_MIN_THREADS` CPU threads are left after the headroom.
+    :data:`HYBRID_CODECS` and :data:`HYBRID_PIX_FMTS`, and :data:`HYBRID_MIN_THREADS` CPU
+    threads are left after the headroom.
     Only a whole, clean source of up to :data:`LONG_FILE_S` (a longer one decodes keyframes
     only)."""
     mode = scene_decode_mode()
@@ -900,13 +987,7 @@ def _hybrid_plan(
 def _hybrid_source_ok(src: Path) -> bool:
     """``src`` is a source ``auto`` splits: see :func:`_hybrid_plan`."""
     info = probe(src)
-    return (
-        info.vcodec in HYBRID_CODECS
-        and info.pix_fmt in HYBRID_PIX_FMTS
-        # a late start splits correctly since #976, but the NVDEC half's padded start is not
-        # measured on NVDEC yet
-        and abs(info.vstart) < 1e-3
-    )
+    return info.vcodec in HYBRID_CODECS and info.pix_fmt in HYBRID_PIX_FMTS
 
 
 def _seeks_exactly(src: Path) -> bool:
@@ -1057,11 +1138,12 @@ def _make_proxy(
     seconds: float,
     cancel: threading.Event | None = None,
     gpu: bool = True,
-) -> None:
+) -> ProgressResult:
     """Encode the scene proxy ``proxy`` of ``src`` with the :func:`_proxy_args` ``args``
     (``seconds`` long, for the progress lines): on the GPU decoder when there is one, else or
     when that fails on the CPU; ``gpu`` False always on the CPU. A ``cancel`` (see
-    :func:`scene_cuts`) or a failure removes the partial proxy."""
+    :func:`scene_cuts`) or a failure removes the partial proxy. Returns the last ffmpeg run's
+    result (its stderr may name a read error ffmpeg did not fail on)."""
     pre, post, vf, enc = args
     label = f"scene proxy {src.name}"
 
@@ -1075,7 +1157,9 @@ def _make_proxy(
     opts = {"cancel": cancel} if cancel is not None else {}  # plain call when not overlapped
     try:
         try:
-            _run_scene_proxy(lambda download: command(hw, download), proxy, seconds, label, cancel)
+            res = _run_scene_proxy(
+                lambda download: command(hw, download), proxy, seconds, label, cancel
+            )
         except FFmpegError as err:
             if cancel is not None and cancel.wait(STOP_GRACE_S):  # Ctrl+C reached ffmpeg too
                 raise RunCancelled(label) from None
@@ -1088,12 +1172,13 @@ def _make_proxy(
                 "scene proxy: GPU decode failed for %s (%s); re-running on the CPU", src.name, first
             )
             proxy.unlink(missing_ok=True)  # the re-run starts clean
-            run_progress(command(None), seconds, label, **opts)
+            res = run_progress(command(None), seconds, label, **opts)
         if cancel is not None and cancel.is_set():
             raise RunCancelled(label)
     except BaseException:  # a partial lossless proxy is large: never leave it behind
         proxy.unlink(missing_ok=True)
         raise
+    return res
 
 
 class _SceneJob:
@@ -1112,6 +1197,7 @@ class _SceneJob:
         limit: float | None,
         shared: Any,
         cpu_free: bool = False,
+        readable_from: float | None = None,
     ) -> None:
         self.cancel = threading.Event()
         self.cuts: list[float] = []
@@ -1119,7 +1205,9 @@ class _SceneJob:
         self._error: BaseException | None = None
         self._args = (src, cdir, duration, offset, limit, shared)
         # the split decode (scene_cuts' cpu_free): a plain call when Whisper is on the CPU
-        self._opts = {"cpu_free": True} if cpu_free else {}
+        self._opts: dict[str, Any] = {"cpu_free": True} if cpu_free else {}
+        if readable_from is not None:  # a recovered part's lead-in (scene_cuts)
+            self._opts["readable_from"] = readable_from
         self._thread = threading.Thread(target=self._main, name="scene-overlap", daemon=True)
         self._thread.start()
 
@@ -1830,15 +1918,19 @@ def warn_read_error(src: Path, rec: dict[str, Any], recover: bool) -> None:
     logger.warning(bar)
 
 
-def find_resume_point(src: Path, fail_t: float, duration: float) -> float | None:
+def find_resume_point(src: Path, fail_t: float, duration: float) -> tuple[float, float] | None:
     """First readable time after ``fail_t``, found with a few small probe reads.
 
     Probes at growing distances (5, 10, 20, ... s) and stops at the first good
     read, then bisects ``RESUME_REFINE`` times toward the failure to lose less
-    footage. Each probe decodes only ~3 s, and a failed spot is never retried.
+    footage. Each probe decodes only ~3 s (:data:`READ_PROBE_S`), and a failed spot is
+    never retried.
 
     Returns:
-        Absolute resume time, or None if nothing readable was found.
+        Absolute resume time and where the unreadable stretch before it ends (the last
+        failed probe, or ``fail_t``, plus :data:`READ_PROBE_S`, at most the first good probe:
+        the scene pass of the recovered part never seeks before it, :func:`_lead_in`), or None
+        if nothing readable was found.
     """
     last_bad, good = fail_t, None
     for step in RESUME_STEPS_S:
@@ -1863,7 +1955,9 @@ def find_resume_point(src: Path, fail_t: float, duration: float) -> float | None
             good = mid
         else:
             last_bad = mid
-    return round(min(good + RESUME_MARGIN_S, duration), 3)
+    return round(min(good + RESUME_MARGIN_S, duration), 3), round(
+        min(last_bad + READ_PROBE_S, good), 3
+    )
 
 
 def _shift_segments(segments: list[Segment], dt: float) -> list[Segment]:
@@ -1899,6 +1993,7 @@ def analyze_source(
     text: bool = True,
     on_transcript: Callable[[], None] | None = None,
     cpu_busy: Callable[[], bool] | None = None,
+    readable_from: float | None = None,
 ) -> SourceResult:
     """Compute signals for one source (or a recovered part starting at ``offset``).
 
@@ -1919,6 +2014,8 @@ def analyze_source(
     scene cuts. ``cpu_busy`` says whether a CPU-heavy step of the caller (the background HUD
     OCR) runs right now (None: none does); the scene cuts split their decode between NVDEC and
     the CPU only when it does not, nor Whisper on the CPU (:func:`_hybrid_plan`).
+    ``readable_from`` (a recovered part): where the unreadable stretch before ``offset`` ends,
+    for :func:`scene_cuts`.
     """
 
     stages: dict[str, Any] = {}
@@ -1989,7 +2086,8 @@ def analyze_source(
                 # Whisper runs meanwhile: the split decode only while it is on the GPU
                 free = getattr(tr, "device", None) == "cuda" and not (cpu_busy and cpu_busy())
                 limit = span if read_error else None
-                overlap = _SceneJob(io, cdir, span, offset, limit, shared, free)
+                lead = {"readable_from": readable_from} if readable_from is not None else {}
+                overlap = _SceneJob(io, cdir, span, offset, limit, shared, free, **lead)
             segments = _transcript(wav, cdir, tr, transcribed if report else None, src)
             tick("transcribe_s", t0)
             if on_transcript is not None:
@@ -2036,9 +2134,11 @@ def analyze_source(
             took = overlap.took  # the thread's own time, mostly inside the transcription
             stages["overlap"] = True
         else:
-            free = {} if cpu_busy is not None and cpu_busy() else {"cpu_free": True}
+            opts: dict[str, Any] = {} if cpu_busy is not None and cpu_busy() else {"cpu_free": True}
+            if readable_from is not None:
+                opts["readable_from"] = readable_from
             cuts = scene_cuts(
-                io, cdir, span, offset, limit=span if read_error else None, shared=shared, **free
+                io, cdir, span, offset, limit=span if read_error else None, shared=shared, **opts
             )
             took = time.perf_counter() - t0
         add("scenes_s", took)
@@ -4009,6 +4109,7 @@ def _analyze(
                 steps.update(progress.fraction(i + shown, len(sources)))
 
             offset, n_parts = 0.0, 0
+            readable_from: float | None = None  # where the damage before a recovered part ends
             while True:
                 logger.info(
                     "Analyzing %s%s",
@@ -4032,6 +4133,7 @@ def _analyze(
                     # progress.json from the first transcript on, before the scene cuts
                     on_transcript=lambda: runstate.transcribed(out_dir, sources),
                     cpu_busy=cpu_busy,
+                    readable_from=readable_from,
                 )
                 results.append(res)
                 name = f"{src.name}@{offset:.0f}" if offset else src.name
@@ -4042,9 +4144,13 @@ def _analyze(
                 if not (recover and rec) or n_parts >= MAX_RECOVERED_PARTS:
                     break
                 cdir = cache.source_dir(src, offset)
-                resume = rec.get("resumed_at") or find_resume_point(
-                    remap_source(src), rec["failure_time"], res.info.duration
-                )
+                # a record older than unreadable_until: no lead-in for the next part's scene pass
+                resume, until = rec.get("resumed_at"), rec.get("unreadable_until")
+                if not resume:
+                    found = find_resume_point(
+                        remap_source(src), rec["failure_time"], res.info.duration
+                    )
+                    resume, until = found if found is not None else (None, None)
                 if resume is None or resume <= offset:
                     logger.warning(
                         "%s: no readable point found after %s; rest of file skipped",
@@ -4053,6 +4159,7 @@ def _analyze(
                     )
                     break
                 rec["resumed_at"] = resume
+                rec["unreadable_until"] = until
                 rec["lost_s"] = round(resume - rec["failure_time"], 3)
                 cache.save_json(cdir / READ_ERRORS_FILE, rec)
                 logger.warning(
@@ -4061,7 +4168,7 @@ def _analyze(
                     clock(resume),
                     rec["lost_s"],
                 )
-                offset, n_parts = resume, n_parts + 1
+                offset, readable_from, n_parts = resume, until, n_parts + 1
             runstate.transcribed(out_dir, sources)  # a source without audio: once analyzed
         # Written with highlights.json at the end; the event layers read it from memory.
         transcript = "\n".join(transcript_lines)

@@ -901,18 +901,30 @@ def test_a_failed_first_frame_decode_keeps_the_plain_mpegts_chain(tmp_path, monk
     assert _vf(cmd) == "fps=10:start_time=0,scale=320:180"
 
 
-def test_a_recovered_mpegts_part_seeks_without_copyts(tmp_path, monkeypatch):
-    """A pass that seeks counts from its seek point by itself (``fps`` start_time)."""
+def test_a_recovered_mpegts_part_seeks_a_lead_in_without_copyts(tmp_path, monkeypatch):
+    """#1038: MPEG-TS seeks to the next keyframe, so a recovered part seeks LEAD_IN_S earlier
+    and its first decoded frame (measured after that seek) is put on the part's clock; ``fps``
+    start_time drops the lead-in."""
     cmds = []
     monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
     monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 60.0))  # only for the size
-    monkeypatch.setattr(analyze, "first_frame_time", lambda p, **k: pytest.fail("no decode"))
+    starts = []
+    monkeypatch.setattr(
+        analyze, "first_frame_time", lambda p, **k: starts.append(k["start"]) or 291.5
+    )
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
     monkeypatch.setattr(analyze, "_detect", lambda proxy, path, **k: CUTS)
-    monkeypatch.setattr(analyze, "run_progress", lambda args, total, label, **kw: cmds.append(args))
-    analyze.scene_cuts(tmp_path / "s.ts", tmp_path, 60.0, offset=300.0)
+
+    def run(args, total, label, **kw):
+        cmds.append(args)
+        return ffmpeg_utils.ProgressResult(stderr="", out_time=total)
+
+    monkeypatch.setattr(analyze, "run_progress", run)
+    analyze.scene_cuts(tmp_path / "s.ts", tmp_path, 60.0, offset=300.0, readable_from=280.0)
     (cmd,) = cmds
-    assert "-copyts" not in cmd and _vf(cmd) == "fps=10:start_time=0,scale=320:180"
+    assert starts == [290.0] and cmd[cmd.index("-ss") + 1] == "290.000"
+    assert "-copyts" not in cmd
+    assert _vf(cmd) == "setpts=PTS-STARTPTS+-8.500000/TB,fps=10:start_time=0,scale=320:180"
 
 
 def test_an_unknown_pix_fmt_keeps_the_plain_cuda_path(tmp_path, monkeypatch):
