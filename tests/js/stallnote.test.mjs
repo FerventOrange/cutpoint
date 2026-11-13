@@ -133,7 +133,8 @@ async function stopping(t, stopAt, end) {
   const project = makeProject({ network: true });
   project.sources[0] = { ...project.sources[0], status: 'needs-proxy', windows: [] };
   const c = project.highlights.candidates[0];
-  project.review = { segments: [{ id: c.id, source: c.source, start: c.start, end: c.end, label: c.label }] };
+  const seg = { id: c.id, source: c.source, start: c.start, end: c.end, label: c.label };
+  project.review = { segments: [seg] };
   const page = await boot({ project, routes: { 'POST /api/projects/p1/sources/s1/prepare': {} } });
   t.after(() => page.close());
   const d = page.document;
