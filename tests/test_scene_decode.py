@@ -88,19 +88,18 @@ def test_auto_splits_only_h264(monkeypatch, vcodec):
 
 @pytest.mark.parametrize(
     "over",
-    [{"pix_fmt": "yuv420p10le"}, {"pix_fmt": "yuv422p"}, {"pix_fmt": "yuv444p"}, {"vstart": 0.25}],
-    ids=["10-bit", "4:2:2", "4:4:4", "late-video"],
+    [{"pix_fmt": "yuv420p10le"}, {"pix_fmt": "yuv422p"}, {"pix_fmt": "yuv444p"}],
+    ids=["10-bit", "4:2:2", "4:4:4"],
 )
-def test_auto_splits_only_8bit_420_starting_with_the_file(monkeypatch, over):
-    """NVDEC here decodes no 10-bit or 4:2:2 H.264; a late video start stays one decode until the
-    NVDEC half's padded start (#976) is measured on NVDEC."""
+def test_auto_splits_only_8bit_420(monkeypatch, over):
+    """NVDEC here decodes no 10-bit or 4:2:2 H.264."""
     monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 600.0, **over))
     assert plan() is None
     monkeypatch.setenv(ENV, "hybrid")
     assert plan() is not None
 
 
-@pytest.mark.parametrize("name", ["a.ts", "a.m2ts", "a.avi", "a.webm"])
+@pytest.mark.parametrize("name", ["a.ts", "a.m2ts", "a.avi"])
 def test_auto_splits_only_containers_that_seek_exactly(name):
     assert analyze._hybrid_plan(Path(name), 600.0, 0.0, None, True) is None
 
@@ -138,7 +137,7 @@ def test_a_ts_nvdec_cannot_decode_is_logged(monkeypatch, caplog, vcodec, pix_fmt
         assert "may not decode it" in lines[0]
 
 
-@pytest.mark.parametrize("name", ["a.mp4", "a.MOV", "a.m4v", "a.mkv"])
+@pytest.mark.parametrize("name", ["a.mp4", "a.MOV", "a.m4v", "a.mkv", "a.webm"])
 def test_auto_splits_mp4_mov_m4v_and_mkv(name):
     assert analyze._hybrid_plan(Path(name), 600.0, 0.0, None, True) is not None
 
@@ -582,12 +581,13 @@ def late_and_ts(cuts_clip, tmp_path) -> tuple[Path, Path]:
 
 
 @needs_ffmpeg
-def test_a_late_video_start_or_mpegts_is_not_split_by_auto(cuts_clip, late_and_ts, monkeypatch):
+def test_auto_splits_a_late_mp4_but_not_mpegts(cuts_clip, late_and_ts, monkeypatch):
+    """A late MP4 splits (#1038: its halves match one pass); MPEG-TS stays one decode."""
     monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
     late, ts = late_and_ts
     assert ffmpeg_utils.probe(late).vstart > 0.2
     assert analyze._hybrid_plan(cuts_clip, 600.0, 0.0, None, True) is not None  # the control
-    assert analyze._hybrid_plan(late, 600.0, 0.0, None, True) is None
+    assert analyze._hybrid_plan(late, 600.0, 0.0, None, True) is not None
     assert analyze._hybrid_plan(ts, 600.0, 0.0, None, True) is None
 
 
@@ -767,8 +767,11 @@ def test_a_joined_mpegts_keeps_its_cuts_after_the_join_on_the_gpu(joined_ts, tmp
 
 
 @needs_ffmpeg
-def test_a_picture_that_changes_size_mid_file_keeps_its_cuts_on_the_gpu(tmp_path, monkeypatch):
-    """#1031: an MKV whose second part has another size (1280x720, then 1920x1080): NVDEC starts
+@pytest.mark.parametrize("suffix", [".mkv", ".mp4"])
+def test_a_picture_that_changes_size_mid_file_keeps_its_cuts_on_the_gpu(
+    tmp_path, monkeypatch, suffix
+):
+    """#1031: an MKV (or MP4) whose second part has another size (1280x720, then 1920x1080): NVDEC starts
     again at the change, ffmpeg rebuilds the graph and the encoder dropped frames, so every
     later cut came late or not at all. The GPU result is the CPU's."""
     dec = ffmpeg_utils.gpu_decoder()
@@ -791,7 +794,7 @@ def test_a_picture_that_changes_size_mid_file_keeps_its_cuts_on_the_gpu(tmp_path
     parts = [first.read_bytes(), second.read_bytes()]
     joined = tmp_path / "ab.ts"
     joined.write_bytes(b"".join(parts))
-    mkv = tmp_path / "ab.mkv"
+    mkv = tmp_path / f"ab{suffix}"
     subprocess.run([ff, "-v", "error", "-i", str(joined), "-c", "copy", str(mkv)], check=True)
     monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
     monkeypatch.setattr(analyze, "decoder_for", lambda src: None)

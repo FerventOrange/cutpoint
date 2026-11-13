@@ -564,19 +564,22 @@ def showinfo_first_time(log: str) -> float | None:
     return float(int(pts.group(1)) * Fraction(int(tb.group(1)), int(tb.group(2))))
 
 
-def first_frame_time(path: Path | str, *, keyframes: bool = False) -> float:
+def first_frame_time(path: Path | str, *, keyframes: bool = False, start: float = 0.0) -> float:
     """The file timestamp (s, as :attr:`MediaInfo.fstart` counts) of the first video frame
-    ffmpeg decodes from ``path`` on the CPU, keyframes only with ``keyframes``: one frame
-    decoded, of the video stream ffmpeg picks without ``-map`` (the largest), as the scene pass
-    does. In an MPEG-TS cut in the middle of a GOP that is the first keyframe, not the first
-    packet.
+    ffmpeg decodes from ``path`` on the CPU, keyframes only with ``keyframes``, after an input
+    seek to ``start`` (s from the container start) when it is above 0: one frame decoded, of
+    the video stream ffmpeg picks without ``-map`` (the largest), as the scene pass does. In an
+    MPEG-TS cut in the middle of a GOP that is the first keyframe, not the first packet; after
+    a seek in MPEG-TS, the keyframe the seek lands on.
 
     Raises:
         FFmpegError: If ffmpeg fails, times out or decodes no frame with a time.
     """
     skip = ["-skip_frame", "nokey"] if keyframes else []
+    seek = ["-ss", f"{start:.3f}"] if start > 0 else []
     out = run(
-        ["ffmpeg", "-hide_banner", "-nostats", "-v", "info", *skip, "-copyts", "-i", str(path),
+        ["ffmpeg", "-hide_banner", "-nostats", "-v", "info", *skip, *seek, "-copyts", "-i",
+         str(path),
          "-frames:v", "1", "-an", "-vf", "showinfo", "-f", "null", "-"],
         timeout=FFPROBE_TIMEOUT_S,
     )  # fmt: skip
@@ -686,7 +689,12 @@ def wav_duration(path: Path) -> float:
         return w.getnframes() / float(w.getframerate())
 
 
-def read_window_ok(src: Path, t: float, dur: float = 3.0) -> bool:
+# What read_window_ok decodes per probe (s): a failed probe at t had a read error between t and
+# about t + this (find_resume_point's ``unreadable_until``)
+READ_PROBE_S = 3.0
+
+
+def read_window_ok(src: Path, t: float, dur: float = READ_PROBE_S) -> bool:
     """Decode ``dur`` s of audio at ``t``; False if ffmpeg reports a read error.
 
     Used to find where a damaged file becomes readable again. It reads only a
