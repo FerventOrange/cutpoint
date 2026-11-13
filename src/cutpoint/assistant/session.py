@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from cutpoint.assistant import context, lookfor, pacing, ranking, watch, words
+from cutpoint.assistant import context, errtext, lookfor, pacing, ranking, watch, words
 from cutpoint.assistant.edges import EdgePlanner, length
 from cutpoint.assistant.ops import apply_ops, change_counts, rows_after, summary_gap
 from cutpoint.assistant.providers import (
@@ -289,6 +289,15 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _earlier_reply(turn: Mapping[str, Any]) -> str:
+    """The reply of a saved turn for the model; a failed turn's error saved before #1017 can
+    name folders of this computer, so an error reply loses its paths (a model's answer is
+    sent as it is)."""
+    reply = str(turn.get("reply", ""))
+    error = turn.get("error")
+    return errtext.no_paths(reply) if isinstance(error, str) and error and reply == error else reply
+
+
 def cut_again_error(provider: Any, err: TruncatedError, again: bool = True) -> ProviderError:
     """The failure for a reply cut off after the conversation was already made smaller: the
     provider's own message, and the context advice only where ``assistant.context_tokens``
@@ -331,7 +340,7 @@ class Turn:
         self.earlier = [
             {
                 "user": str(t.get("user", "")),
-                "reply": str(t.get("reply", "")) + (self._hits_of(t) if i >= seen else ""),
+                "reply": _earlier_reply(t) + (self._hits_of(t) if i >= seen else ""),
                 # its short ids (m1...) were of another ranking (context.IDS_CHANGED)
                 "ids_changed": isinstance(key, str)
                 and isinstance(t.get("ranking_key"), str)
@@ -481,6 +490,12 @@ class Turn:
             return True
 
     def _finish(self, status: str, error: str | None = None) -> None:
+        # the error is the turn's reply in chat.json, sent to the model on later turns: no
+        # folders of this computer in it (#1017); the log has the full text
+        cleaned = errtext.no_paths(error) if error else error
+        if cleaned != error:
+            logger.info("assistant turn %s failed: %s", self.id, error)
+        error = cleaned
         with self.lock:
             if self.status != "running":
                 return
@@ -495,7 +510,7 @@ class Turn:
             self._finish("failed", str(err))
         except Exception as err:  # a bug must not leave the turn running forever
             logger.exception("assistant turn %s failed", self.id)
-            self._finish("failed", f"the assistant stopped: {err}")
+            self._finish("failed", f"the assistant stopped: {errtext.error_text(err)}")
         finally:
             self._save()
             self.done.set()
@@ -864,16 +879,19 @@ class Turn:
         try:
             got = self._finder.search(query, limit, covering, p.durations)
         except lookfor.LookForError as err:
+            # the lite edition's install hint can name a local source folder (#1017)
+            logger.info("assistant: look_for unavailable: %s", err)
+            why = errtext.no_paths(str(err))
             self._emit(
                 {
                     "kind": "tool",
                     "name": lookfor.NAME,
                     "query": query[:200],
-                    "error": str(err),
+                    "error": why,
                     **({"reason": err.reason} if err.reason else {}),
                 }
             )
-            return f"error: look_for is not available: {err}", False
+            return f"error: look_for is not available: {why}", False
         rows = []
         possible = []
         group: list[str] = []
