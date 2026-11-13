@@ -14,7 +14,9 @@ The preview (``--dry-run``) is the re-rank itself, written nowhere: the save wri
 ranking. Saving replaces ``highlights.json`` and keeps the one before as
 :data:`BACKUP` (one Undo). Candidates whose span is unchanged keep their ids, a span only the
 backup has gets its id there (#1005: a switch of style and back restores the ids), and new
-spans get ids above ``settings.last_candidate_id``.
+spans get ids above ``settings.last_candidate_id``. A saved ranking is sealed
+(``settings.rerank_undo``, :func:`seal`): ``cutpoint ui`` offers its Undo while highlights.json
+is still the file the save wrote.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import importlib.util
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -41,6 +44,8 @@ logger = logging.getLogger("cutpoint")
 HIGHLIGHTS = "highlights.json"
 BACKUP = "highlights.before-rerank.json"  # the highlights.json a save replaced (one Undo)
 GENERIC = "generic"  # the style kind of every style but action-cam
+# settings key of a ranking a save (or cutpoint ui's Undo) wrote: {"seal": seal(hl), "undone": bool}
+UNDO = "rerank_undo"
 
 # The event layers a footage category plans (:func:`cutpoint.analyze.plan_layers`) before the
 # install's own limits; when the project's events.json has them all, the plan is not needed.
@@ -127,6 +132,26 @@ def key(raw: bytes) -> str:
     it changes whenever an analysis or a re-rank rewrites the file. Same digest as
     :func:`analyze.backup_digest`."""
     return analyze.backup_digest(raw)
+
+
+def seal(hl: dict[str, Any]) -> str:
+    """The digest of the analysis ``hl`` as a file holds it, its ``settings.rerank_undo`` (:data:`UNDO`)
+    left out: equal to the recorded seal only while no analysis, ``events`` run or hand edit
+    has rewritten the file since a re-rank save (or ``cutpoint ui``'s Undo) wrote it (a
+    re-analysis keeps ``settings.rerank_backup`` but records no seal)."""
+    data = json.loads(json.dumps(hl))  # as the file reads back: string keys, lists
+    st = data.get("settings")
+    if isinstance(st, dict):
+        st.pop(UNDO, None)
+    text = json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return analyze.backup_digest(text.encode("utf-8"))
+
+
+def sealed(hl: dict[str, Any], *, undone: bool = False) -> dict[str, Any]:
+    """``hl`` with its ``settings.rerank_undo`` (:data:`UNDO`) set: its :func:`seal` and whether
+    it is the ranking an Undo went back to (``undone``: the next swap is a Redo)."""
+    hl.setdefault("settings", {})[UNDO] = {"seal": seal(hl), "undone": undone}
+    return hl
 
 
 def _has_audio(src: Path) -> bool:
@@ -296,7 +321,7 @@ def ranked(
     stays). Vision takes cached ratings only. ``timings`` keep the analysis's, with this
     re-rank's ``rerank_s``. ``settings.rerank_backup`` links it to the backup a save keeps:
     :func:`~cutpoint.analyze.backup_digest` of ``raw``, the bytes of the project's
-    highlights.json (read when None).
+    highlights.json (read when None); ``settings.rerank_undo`` seals it (:func:`sealed`).
     """
     t0 = time.perf_counter()
     style = analyze.restyled(hl, style)
@@ -359,7 +384,7 @@ def ranked(
             vision_cache_only=True,
         )
     timings["rerank_s"] = round(time.perf_counter() - t0, 2)
-    return new
+    return sealed(new)  # last: the seal covers everything a save writes
 
 
 def rerank(

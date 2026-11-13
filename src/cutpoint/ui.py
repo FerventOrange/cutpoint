@@ -4212,6 +4212,8 @@ STALE_TEXT = (
     "The moments changed since this preview (an analysis or another ranking ran); preview it again"
 )
 RERANK_BUSY_TEXT = "A ranking is being applied to this project; wait a moment"
+UNDO_STALE_TEXT = "The moments changed since the page loaded (an analysis or another ranking ran)"
+NO_UNDO_TEXT = "There is no earlier ranking of this analysis to go back to"
 
 
 class RankingRefused(Exception):
@@ -4374,6 +4376,154 @@ def ranking_preview(p: Path, style_name: object) -> dict[str, Any]:
         "notes": ready.notes,
         "seconds": round(time.perf_counter() - t0, 2),
     }
+
+
+def _source_paths(hl: dict[str, Any]) -> list[str]:
+    return [str(s.get("path")) for s in hl.get("sources") or [] if isinstance(s, dict)]
+
+
+def _ranking_undo(p: Path, hl: dict[str, Any]) -> tuple[dict[str, Any], bool] | None:
+    """The ranking an Undo (or Redo) of ``p`` swaps in, given its highlights.json ``hl``: the
+    backup's object and whether ``hl`` is the ranking an Undo went back to (the swap is a Redo
+    then). None when nothing matches (the Undo is hidden):
+
+    - ``hl`` is sealed (``settings.rerank_undo``, :func:`cutpoint.rerank.seal`): no analysis,
+      ``events`` run or hand edit rewrote highlights.json since a re-rank save or a swap wrote
+      it (a re-analysis keeps ``settings.rerank_backup``, but not the seal);
+    - :data:`RERANK_BACKUP` is in the project (not a link out of it) and its key is
+      ``settings.rerank_backup``: the very file that ranking replaced, unchanged;
+    - the backup is an analysis of the same sources.
+    """
+    from cutpoint import rerank  # noqa: PLC0415
+
+    st = hl.get("settings")
+    mark = st.get(rerank.UNDO) if isinstance(st, dict) else None
+    link = st.get("rerank_backup") if isinstance(st, dict) else None
+    if not isinstance(mark, dict) or not isinstance(link, str) or not _inside(p, RERANK_BACKUP):
+        return None
+    back_raw = cache.load_bytes(p / RERANK_BACKUP)
+    if back_raw is None or rerank.key(back_raw) != link or mark.get("seal") != rerank.seal(hl):
+        return None
+    try:
+        back = json.loads(back_raw.decode("utf-8-sig"))
+    except ValueError:  # UnicodeDecodeError too
+        return None
+    if (
+        not isinstance(back, dict)
+        or "style" not in back
+        or not isinstance(back.get("sources"), list)
+        or not isinstance(back.get("settings", {}), dict)
+        or _source_paths(back) != _source_paths(hl)
+    ):
+        return None
+    return back, mark.get("undone") is True
+
+
+# the last ranking_undo_view per project: (highlights.json key, backup size and mtime) -> view
+_UNDO_SEEN: dict[Path, tuple[tuple[str, int, int], dict[str, Any] | None]] = {}
+
+
+def ranking_undo_view(p: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
+    """What the page's Undo ranking offers (:func:`_ranking_undo`): ``action`` ``undo`` or
+    ``redo`` and ``style``, the style of the ranking it swaps in; None when there is none to
+    swap in, and for 360 projects. Remembered per project until either file changes."""
+    from cutpoint import rerank  # noqa: PLC0415
+
+    if meta.get("kind") == "360" or (p / pano_project.PANO_FILE).is_file():
+        return None
+    if not _inside(p, RERANK_BACKUP) or not _inside(p, rerank.HIGHLIGHTS):
+        return None
+    try:
+        st = (p / RERANK_BACKUP).stat()
+        raw = (p / rerank.HIGHLIGHTS).read_bytes()
+    except OSError:
+        return None
+    seen = (rerank.key(raw), st.st_size, st.st_mtime_ns)
+    if (got := _UNDO_SEEN.get(p)) is not None and got[0] == seen:
+        return got[1]
+    try:
+        hl = json.loads(raw.decode("utf-8-sig"))
+    except ValueError:
+        hl = None
+    found = _ranking_undo(p, hl) if isinstance(hl, dict) else None
+    view = (
+        None
+        if found is None
+        else {"action": "redo" if found[1] else "undo", "style": found[0].get("style")}
+    )
+    _UNDO_SEEN[p] = (seen, view)
+    return view
+
+
+def _swap_ranking_files(p: Path, restored: bytes, current: bytes) -> None:
+    """Swap the project's rankings: highlights.json gets ``restored`` (made from the backup) and
+    :data:`RERANK_BACKUP` ``current`` (highlights.json's bytes now). Both are staged as temp
+    files first, then renamed: highlights.json first, while the backup still holds the
+    ranking it gets. A failed second rename puts highlights.json back; should that fail too,
+    the temp file holding ``current`` is kept (its path logged), as one a hard kill leaves."""
+    hl_path, back_path = p / "highlights.json", p / RERANK_BACKUP
+    staged: list[Path] = []
+    keep = False
+    try:
+        for path, data in ((hl_path, restored), (back_path, current)):
+            fd, name = tempfile.mkstemp(dir=p, prefix=path.name + ".", suffix=".tmp")
+            os.close(fd)
+            staged.append(Path(name))
+            staged[-1].write_bytes(data)
+            cache.match_mode(staged[-1], path)
+        cache.retry_locked(lambda: staged[0].replace(hl_path), hl_path, "replace")
+        try:
+            cache.retry_locked(lambda: staged[1].replace(back_path), back_path, "replace")
+        except BaseException:
+            try:
+                cache.save_bytes(hl_path, current)  # as it was: all or nothing
+            except BaseException:
+                keep = True  # the only copy of the current ranking now
+                logger.error("The ranking before the swap is kept in %s", staged[1])
+                raise
+            raise
+    finally:
+        for tmp in staged if not keep else ():
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+
+
+def ranking_swap(p: Path, base: str) -> tuple[dict[str, Any], dict[str, Any], bool] | None:
+    """Undo (or Redo) the last ranking change of ``p``, under its run lock: swap highlights.json
+    and :data:`RERANK_BACKUP` (:func:`_ranking_undo`). The ranking swapped in keeps its moments
+    and ids as they are; only its settings change: ``rerank_backup`` links it to the file it
+    replaced, ``last_candidate_id`` is the higher of the two (never down), and it is sealed
+    again (``undone`` flips, so the next swap is the other way). Returns the ranking before,
+    the one now and whether this was an Undo; None when there is nothing to swap in
+    (:func:`_ranking_undo` is None).
+
+    Raises:
+        StaleRankingError: If highlights.json's key is not ``base`` any more.
+        FolderBusyError: If another run holds the project's lock.
+        FileNotFoundError, ValueError: As :func:`cutpoint.rerank.load`.
+    """
+    from cutpoint import rerank  # noqa: PLC0415
+    from cutpoint.errors import StaleRankingError  # noqa: PLC0415
+
+    with folders.swap_lock(p / runstate.LOCK_NAME, p):
+        raw, hl = rerank.load(p)
+        if rerank.key(raw) != base:
+            raise StaleRankingError(f"{p / rerank.HIGHLIGHTS} changed since the page loaded")
+        found = _ranking_undo(p, hl)
+        if found is None:
+            return None
+        back, undone = found
+        st = back.setdefault("settings", {})
+        st["rerank_backup"] = rerank.key(raw)
+        last = [(x.get("settings") or {}).get("last_candidate_id") for x in (hl, back)]
+        if ints := [n for n in last if isinstance(n, int) and not isinstance(n, bool)]:
+            st["last_candidate_id"] = max(ints)
+        rerank.sealed(back, undone=not undone)
+        # as cache.save_json writes it: the indent's line breaks in the platform's endings
+        text = json.dumps(back, indent=2, ensure_ascii=False).replace("\n", os.linesep)
+        _swap_ranking_files(p, text.encode("utf-8"), raw)
+        _UNDO_SEEN.pop(p, None)
+        return hl, back, not undone
 
 
 class RankingHook:
@@ -5891,6 +6041,9 @@ def create_app(port: int) -> FastAPI:
             # whether a ranking applied here or by `cutpoint rerank` kept the one before
             "ranking_key": ranking_key(p),
             "rerank_backup": _inside(p, RERANK_BACKUP) and (p / RERANK_BACKUP).is_file(),
+            # Undo (or Redo) of the last ranking change: {action, style}, null when the backup
+            # does not match the current analysis (ranking_undo_view)
+            "ranking_undo": ranking_undo_view(p, meta),
         }
 
     @owned.get("/projects/{pid}/resume")
@@ -6831,6 +6984,68 @@ def create_app(port: int) -> FastAPI:
             }
         finally:
             for folder in made:  # the ui folder this created for a ranking it did not save
+                with contextlib.suppress(OSError):
+                    folder.rmdir()
+            with jobs.lock:
+                RERANKING.discard(p)
+
+    @owned.post("/projects/{pid}/ranking/undo")
+    def undo_ranking(pid: str, body: dict[str, Any]):
+        """Undo the last ranking change, or Redo it after an Undo (:func:`ranking_swap`), from
+        the page that loaded the ranking key ``base``; the style of the ranking swapped in is the
+        project's chosen style again. No job starts on the project meanwhile.
+
+        409 with ``code``: ``stale`` (highlights.json is not the loaded one any more) or
+        ``folder_busy``; 409 for a 360 project and when there is no earlier ranking that
+        matches this analysis."""
+        from cutpoint.errors import StaleRankingError  # noqa: PLC0415
+
+        p = project_dir(pid)
+        base = body.get("base")
+        if not isinstance(base, str) or not base:
+            raise bad("base must be the ranking key of the loaded project")
+        try:
+            _ranking_check(p)
+        except RankingRefused as err:
+            return err.response()
+        for name in ("highlights.json", RERANK_BACKUP, META_FILE):
+            _own(p, name)  # refuse now, not after the swap
+        with jobs.lock:  # no job starts on the project while its ranking is swapped
+            p = project_dir(pid)
+            if p in RERANKING:
+                return RankingRefused(RERANK_BUSY_TEXT, jsonout.FOLDER_BUSY).response()
+            if any(j.status == "running" and j.project_id == pid for j in jobs.jobs.values()):
+                return RankingRefused(BUSY_TEXT, jsonout.FOLDER_BUSY).response()
+            RERANKING.add(p)
+        made: list[Path] = []
+        try:
+            _ui_folder(p, made=made)  # a command-line project has no ui folder (meta.json) yet
+            try:
+                swapped = ranking_swap(p, base)
+            except StaleRankingError:
+                return RankingRefused(UNDO_STALE_TEXT, jsonout.STALE).response()
+            except FolderBusyError:
+                return RankingRefused(BUSY_TEXT, jsonout.FOLDER_BUSY).response()
+            except (FileNotFoundError, ValueError):  # no analysis (any more)
+                raise bad(NO_UNDO_TEXT, 409) from None
+            if swapped is None:
+                raise bad(NO_UNDO_TEXT, 409)
+            before, after, undone = swapped
+            # the style the ranking swapped in runs on (auto for an auto analysis), as the
+            # header shows it and the next analysis passes it; a detection kept when not Auto
+            style = _analysis_inputs({}, after)[1]
+            if isinstance(style, str) and style:
+                det = after.get("detection") if style != AUTO else None
+                set_style(p, style, det if isinstance(det, dict) else None)
+            made.clear()  # the ui folder holds meta.json now
+            return {
+                "action": "undo" if undone else "redo",
+                "style": after.get("style"),
+                "from": before.get("style"),
+                "key": ranking_key(p),
+            }
+        finally:
+            for folder in made:  # the ui folder this created for a swap it did not make
                 with contextlib.suppress(OSError):
                     folder.rmdir()
             with jobs.lock:

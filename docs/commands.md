@@ -763,6 +763,14 @@ caches cannot give that style, the card says it needs a new analysis: click Anal
 moment search. After the ranking changes, earlier replies are marked "(moment ids changed
 since)". Only file names go to the model, never paths.
 
+Undo ranking: after a ranking change (here, by an earlier chat or by `cutpoint rerank`), the
+card in use has **Undo** and the Moments column has a link "Undo ranking (was <style>)". It
+swaps `highlights.json` and `highlights.before-rerank.json`, so the moments and their ids are
+back exactly as they were and the style is the project's again; the link then reads "Redo
+ranking (<style>)" and swaps back. There is one step only. Undo and Redo are hidden once the
+project changed after the change (analyze, edit, `events`, `rerank --analyze` or an edit of
+either file), as the earlier ranking no longer matches the analysis.
+
 The AI Chat tab talks to the model set in the [`assistant`](configuration.md#assistant) section of
 `config.json`, chosen in the Models tab (Chat role) as a Provider with a model; no base
 URL is typed:
@@ -1009,8 +1017,18 @@ project; no job starts on it while a ranking is applied), `needs_analyze` (apply
 and `can_analyze`) and, on apply only, `stale` (`highlights.json` is not the one previewed any
 more: preview again). A 360 project, or one without an analysis, is refused with 409 and no
 `code`. `GET /api/projects/<id>` has `ranking_key`, the `base` a preview of the current
-`highlights.json` gets (null without one), and `rerank_backup`, whether
-`highlights.before-rerank.json` is there (a ranking applied here or by `rerank` kept one).
+`highlights.json` gets (null without one), `rerank_backup`, whether
+`highlights.before-rerank.json` is there (a ranking applied here or by `rerank` kept one), and
+`ranking_undo`: `{action, style}` (`undo`, or `redo` after an Undo; `style` is the one the
+ranking swapped in was made in) when the backup matches the current analysis, else null.
+A match means `highlights.json` still has the seal a `rerank` save or a swap wrote
+(`settings.rerank_undo`: a digest of the file without it, which an analysis or `events` run
+does not write), the backup's digest is its `settings.rerank_backup`, and the backup is an
+analysis of the same sources. `POST /api/projects/<id>/ranking/undo` with `{base}` (the page's
+`ranking_key`) swaps the two files, written as temp files first so a stop midway loses neither;
+the one swapped in keeps its moments and ids, links to the other and becomes the project's
+style. It answers `action`, `style`, `from` and `key`, or 409 with `stale`, `folder_busy`, or
+no `code` for a 360 project or when there is nothing to undo.
 
 ## capabilities
 
@@ -2082,7 +2100,7 @@ list`), not `auto`. It prints the new top `--top` moments (default 10) with thei
   ranking.
 - Without `--dry-run`, `highlights.json` is replaced and the file before is kept as
   `highlights.before-rerank.json` (one backup: the next save replaces it). Copy it back to
-  undo. The save holds the project's run lock (`folder_busy` while another run works on it).
+  undo, or use Undo ranking in `cutpoint ui`. The save holds the project's run lock (`folder_busy` while another run works on it).
 - A moment whose span is unchanged keeps its id; a span the ranking being replaced lacks but
   `highlights.before-rerank.json` has gets its id from there, unless the ranking being
   replaced gives that id to another span; a new span gets the next id after
