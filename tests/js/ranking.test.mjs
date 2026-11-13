@@ -181,13 +181,24 @@ test('409 needs_analyze: the card previews again and lists what is missing (3 an
   assert.equal(m.jobPosts[0].style, 'funny');
 });
 
-test('footage offline only: Reconnect the footage, no Analyze button', async (t) => {
+test('footage offline only: Reconnect the footage, no Analyze button, Dismiss clears the card', async (t) => {
   const m = await open(t, { events: [ready({ ready: false, can_analyze: false, top: [], missing: [{ file: 'a.mp4', detail: 'a.mp4 is offline' }] })] });
   assert.equal(m.card().dataset.state, 'needs-analyze');
   assert.match(m.card().textContent, /Reconnect the footage/);
   assert.equal(m.btn('analyze'), null);
   assert.equal(m.btn('use-ranking'), null);
-  assert.equal(m.card().querySelectorAll('button').length, 0, 'nothing to press');
+  const buttons = [...m.card().querySelectorAll('button')];
+  assert.equal(buttons.length, 1, 'only Dismiss');
+  assert.equal(buttons[0], m.btn('dismiss'));
+  assert.equal((buttons[0].getAttribute('aria-label') || buttons[0].textContent).trim(), 'Dismiss');
+
+  await m.click('dismiss');
+  assert.equal(m.card().dataset.state, 'dismissed');
+  assert.match(m.card().textContent, /Dismissed/);
+  assert.equal(m.card().querySelectorAll('button').length, 0);
+  assert.equal(m.$('#chatLive').textContent, 'Ranking dismissed');
+  assert.equal(m.page.requests.filter((r) => r.method === 'POST').length, 0, 'nothing posted');
+  assert.equal(m.jobPosts.length, 0);
 });
 
 test('folder_busy on apply: Busy text, buttons disabled and no error; back when the run ends', async (t) => {
