@@ -221,10 +221,15 @@ def test_fragmented_mp4_of_a_missing_file_is_false(tmp_path: Path) -> None:
     assert ui.fragmented_mp4(tmp_path / "gone.mp4") is False
 
 
+def no_drive_type(root: str) -> int:
+    raise OSError("no drive type")  # Windows then falls back to stage.is_remote
+
+
 def test_the_project_lists_its_slow_start_hints(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(ui, "_REMOTE", {})
+    monkeypatch.setattr(projectdelete, "_drive_type", no_drive_type)  # tested apart
     monkeypatch.setattr(stage, "is_remote", lambda path: True)
     fragmented = box(b"ftyp") + box(b"moov", box(b"mvex")) + box(b"moof") + box(b"mdat")
     pid, sid, _ = make_project(client, tmp_path, fragmented)
@@ -239,6 +244,7 @@ def test_a_flat_source_on_local_storage_has_no_hints(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(ui, "_REMOTE", {})
+    monkeypatch.setattr(projectdelete, "_drive_type", no_drive_type)  # tested apart
     monkeypatch.setattr(stage, "is_remote", lambda path: False)
     pid, sid, _ = make_project(client, tmp_path, box(b"ftyp") + box(b"moov") + box(b"mdat"))
     assert client.get(media_url(client, pid, sid)).status_code == 200

@@ -2038,7 +2038,8 @@ function watchStall() {
   if (stallTimer != null) return;
   stallTimer = setTimeout(() => {
     stallTimer = null;
-    if (v.paused || v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) return;
+    // a paused element never fires `waiting`: Play sequence opening a clip waits while paused
+    if (v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA || (v.paused && !S.seqPlay?.wait)) return;
     const el = $('#stallNote');
     el.textContent = stallText();
     el.hidden = false;
@@ -2521,7 +2522,8 @@ onStage('waiting', () => {
   watchStall();
 });
 onStage('pause', clearStall); // a pause while it waits: the user is not waiting for it
-onStage('loadstart', clearStall); // another file loads (a new src, or load() emptied it)
+// another file loads (a new src, or load() emptied it); a sequence clip that waits is watched
+onStage('loadstart', () => { clearStall(); if (S.seqPlay?.wait) watchStall(); });
 onStage('ended', () => {
   if (S.seqPlay) !S.seqPlay.wait && seqGo(S.seqPlay.i + 1); // a source shorter than its clip
   else partEnd(); // a window proxy's end

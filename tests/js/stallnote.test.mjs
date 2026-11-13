@@ -95,3 +95,34 @@ test('a wait started before another file loads shows no note for it', async (t) 
   await s.wait(4000);
   assert.ok(s.note.hidden);
 });
+
+/** Boot a project whose only clip cannot play yet; ``play``: Play sequence waits for it. */
+async function opening(t, play) {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const project = makeProject({ network: true });
+  project.sources[0] = { ...project.sources[0], status: 'needs-proxy', windows: [] };
+  const c = project.highlights.candidates[0];
+  project.review = { segments: [{ id: c.id, source: c.source, start: c.start, end: c.end, label: c.label }] };
+  const page = await boot({ project, routes: { 'POST /api/projects/p1/sources/s1/prepare': {} } });
+  t.after(() => page.close());
+  const d = page.document;
+  if (play) d.querySelector('#seqPlayBtn').click();
+  await page.settle();
+  // the open is slow and the element stays paused, so it never fires `waiting`
+  const m = d.querySelector('.screen video.active').__media;
+  Object.assign(m, { paused: true, readyState: 0 });
+  m.fire('loadstart');
+  t.mock.timers.tick(5100); // read before the project refreshes: that reloads the stage
+  const shown = !d.querySelector('#stallNote').hidden;
+  if (play) d.querySelector('#seqPlayBtn').click(); // Stop: nothing runs on after the test
+  await page.settle();
+  return shown;
+}
+
+test('a paused element opening a sequence clip that waits shows the note', async (t) => {
+  assert.ok(await opening(t, true));
+});
+
+test('a paused element outside Play sequence shows no note', async (t) => {
+  assert.ok(!(await opening(t, false)));
+});
