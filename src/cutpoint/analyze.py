@@ -58,10 +58,10 @@ from cutpoint.events import paths as event_paths
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.events.scoring import (
     Seed,
+    analysis_style,
     heard_laughter,
     is_nominated,
     number_candidates,
-    recorded_style,
     rescore,
     restore_widened,
 )
@@ -2307,7 +2307,10 @@ def cached_grid_parts(hl: dict[str, Any], style: Style) -> list[GridPart]:
         segments = source_segments(src, settings.get("language"), settings.get("whisper_model"))
         found = cache.load_json(cdir / SCENES_FILE)
         scenes = bool(settings.get("scenes", True))
-        span = float(e.get("analyzed_s") or e["duration"])
+        span = e.get("analyzed_s") or e.get("duration")
+        if not span:
+            continue  # no source length recorded (hand-made file): no grids
+        span = float(span)
         windowed = scenes and found is None and edge_windows(style, span)  # EdgeCuts serve it
         if loud is None and segments is None and found is None and not windowed:
             continue  # nothing cached to build from
@@ -2615,7 +2618,8 @@ def rebuild_crash_moments(project: Path) -> bool:
     get the next ids (``settings.last_candidate_id``). Left alone: action-cam (its scorer reads
     crashes.json), 360 projects, ``settings.crash_moments`` false, and a source whose grids are
     not cached (recovered, offline). A candidate that a forced crash moment replaced is not brought back
-    when that crash goes away: only a re-analysis does.
+    when that crash goes away: only a re-analysis does. A file without ``style`` takes the
+    fallback style of :func:`_recorded_style`.
 
     Raises:
         ValueError: If the style is not in the library and the file records no built-in base
@@ -2627,7 +2631,7 @@ def rebuild_crash_moments(project: Path) -> bool:
 
     path = project / "highlights.json"
     hl = cache.load_json(path)
-    if not isinstance(hl, dict) or "style" not in hl or "sources" not in hl:
+    if not isinstance(hl, dict) or "sources" not in hl:
         return False
     if (hl.get("settings") or {}).get("crash_moments") is False or (project / PANO_FILE).is_file():
         return False
@@ -2690,7 +2694,7 @@ def rebuild_crash_moments(project: Path) -> bool:
     ev = cache.load_json(project / "events.json")
     if fresh and ev:  # menu time drops or trims a new one as analyze does, so it takes no id
         menu_hl = {
-            "style": hl.get("style"),
+            "style": hl.get("style") or style.name,
             "style_base": hl.get("style_base"),
             "settings": hl.get("settings"),
             "candidates": fresh,
@@ -4677,12 +4681,13 @@ def _recorded_style(hl: dict[str, Any]) -> Style:
     """The style of the analysis ``hl``, with the ``--must-include-crash`` it recorded.
 
     A style no longer in the library (a deleted user style) degrades to its recorded built-in
-    base (:func:`cutpoint.events.scoring.recorded_style`).
+    base; ``hl`` without ``style`` has the built-in style :func:`cutpoint.styles.style_name`
+    falls back to (:func:`cutpoint.events.scoring.analysis_style`).
 
     Raises:
         ValueError: If the style is not in the library and ``hl`` records no built-in base.
     """
-    style = recorded_style(hl)
+    style = analysis_style(hl)
     at = (hl.get("settings") or {}).get("must_include_crash")
     if at is not None:  # an `analyze --must-include-crash`
         style = replace(style, must_include_crash=float(at))
@@ -4691,12 +4696,13 @@ def _recorded_style(hl: dict[str, Any]) -> Style:
 
 def restyled(hl: dict[str, Any], style: Style) -> Style:
     """``style`` for a re-rank of the analysis ``hl``, with the ``--must-include-crash`` it
-    recorded when that was not its own style's (an override of ``analyze``)."""
+    recorded when that was not its own style's (an override of ``analyze``). A file without
+    ``style`` has the fallback style of :func:`cutpoint.events.scoring.analysis_style`."""
     at = (hl.get("settings") or {}).get("must_include_crash")
     if not isinstance(at, int | float) or isinstance(at, bool):
         return style
     try:
-        own = recorded_style(hl, logging.DEBUG).must_include_crash
+        own = analysis_style(hl, logging.DEBUG).must_include_crash
     except ValueError:  # a deleted style without a recorded base: no override to tell
         return style
     return style if float(at) == own else replace(style, must_include_crash=float(at))
@@ -4757,7 +4763,7 @@ def reanalyze(
     except FileNotFoundError:
         raise FileNotFoundError(f"{project / 'highlights.json'} not found") from None
     # e.g. an empty {} or a list: a clear error, not a KeyError or AttributeError traceback
-    if not isinstance(hl, dict) or "style" not in hl or "sources" not in hl:
+    if not isinstance(hl, dict) or not isinstance(hl.get("sources"), list):
         raise ValueError(
             f"{project / 'highlights.json'} records no analysis; run 'cutpoint analyze' again"
         )

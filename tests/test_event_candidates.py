@@ -510,6 +510,19 @@ def test_an_unknown_style_without_a_recorded_base_nominates_nothing(tmp_path):
         assert scoring.nominate(hl, events_of([feed(100.0)]), tmp_path, [grid()]) == 0
 
 
+def test_a_file_without_style_nominates_with_its_fallback_style(tmp_path):
+    """No `style`: the style of the detection (here gaming, an open list) nominates; with
+    nothing recorded the fallback is action, which does not, never gaming (#1015)."""
+    hl = highlights([own("h001", 20.0)])
+    del hl["style"]
+    hl["detection"] = {"style": "gaming"}
+    assert scoring.nominate(hl, events_of([feed(100.0)]), tmp_path, [grid()]) == 1
+    assert nominees(hl)[0]["signals"]["events"]["nominated"] == ["player_kills"]
+    bare = highlights([own("h001", 20.0)])
+    del bare["style"]
+    assert scoring.nominate(bare, events_of([feed(100.0)]), tmp_path, [grid()]) == 0
+
+
 @pytest.mark.parametrize(("base", "expected"), [("gaming", 1), ("action", 0)])
 def test_a_deleted_user_style_nominates_as_its_recorded_base(tmp_path, base, expected):
     """The file wins: a deleted user style nominates with its recorded built-in base (gaming:

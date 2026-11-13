@@ -324,6 +324,25 @@ def test_an_events_rerun_rebuilds_the_crash_moments_as_reanalyze_does(home, tmp_
     assert _without_ids(_moments(proj)) == _without_ids(rebuilt)
 
 
+def test_an_events_rerun_rebuilds_a_file_without_style_with_the_fallback_style(
+    home, tmp_path, monkeypatch
+):
+    """No `style`: the recorded base decides, the rebuild is not skipped (#1015)."""
+    proj, hl = _analyzed(tmp_path, monkeypatch)
+    hl["style_base"] = hl.pop("style")
+    cache.save_json(proj / "highlights.json", hl)
+    _set_crashes(proj, record("c2", 40.0, 0.7, tmp_path / "a.mp4"))
+    assert analyze.rebuild_crash_moments(proj) is True
+    assert {m["crash"]["id"] for m in _moments(proj) if m["crash"]} == {"c2"}
+
+
+def test_a_bare_file_without_style_or_duration_is_left_alone(tmp_path):
+    """A hand-made file (no style, no source length): no grids, so nothing to rebuild."""
+    cache.save_json(tmp_path / "highlights.json", {"sources": [{"path": str(tmp_path / "a.mp4")}]})
+    _set_crashes(tmp_path, record("c1", 20.0, 0.9))
+    assert analyze.rebuild_crash_moments(tmp_path) is False
+
+
 def test_an_events_rerun_changes_nothing_the_second_time(home, tmp_path, monkeypatch):
     proj, _ = _analyzed(tmp_path, monkeypatch)
     src = tmp_path / "a.mp4"
@@ -408,6 +427,21 @@ def test_recorded_style_of_a_deleted_style_is_its_base_with_the_crash_threshold(
             "Style 'gone' is not in the style library (deleted?); using its base 'action'",
         )
     ]
+
+
+def test_a_file_without_style_takes_the_fallback_style_and_its_crash_threshold():
+    """No `style`: the recorded base, else the detection's style, else action (never gaming);
+    the recorded --must-include-crash applies, and restyled tells no override from the
+    fallback style's own threshold (#1015)."""
+    hl = {"style_base": "sport", "settings": {"must_include_crash": 0.8}}
+    assert analyze._recorded_style(hl) == replace(get_style("sport"), must_include_crash=0.8)
+    hl = {"detection": {"style": "commentary"}, "settings": {}}
+    assert analyze._recorded_style(hl) == get_style("commentary")
+    bare = {"settings": {"must_include_crash": get_style("action").must_include_crash}}
+    assert analyze._recorded_style(bare) == get_style("action")
+    assert analyze.restyled(bare, get_style("funny")) is get_style("funny")  # same as its own
+    bare["settings"]["must_include_crash"] = 0.9
+    assert analyze.restyled(bare, get_style("funny")).must_include_crash == 0.9
 
 
 @pytest.mark.parametrize("base", [None, "gone", ["gaming"]])

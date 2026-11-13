@@ -59,12 +59,13 @@ def _overlap(a: float, b: float, spans: list[list[float]]) -> float:
 
 
 def _style(hl: dict[str, Any]) -> Style | None:
-    """The style of the analysis ``hl`` (a deleted user style: its recorded base, see
-    :func:`cutpoint.events.scoring.recorded_style`); None when there is none to use."""
-    from cutpoint.events.scoring import recorded_style  # noqa: PLC0415 - imports this module
+    """The style of the analysis ``hl`` (a deleted user style: its recorded base; a file without
+    ``style``: the built-in style :func:`cutpoint.styles.style_name` falls back to, see
+    :func:`cutpoint.events.scoring.analysis_style`); None when there is none to use."""
+    from cutpoint.events.scoring import analysis_style  # noqa: PLC0415 - imports this module
 
     try:
-        return recorded_style(hl, logging.DEBUG)
+        return analysis_style(hl, logging.DEBUG)
     except ValueError:
         return None
 

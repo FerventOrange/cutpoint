@@ -283,6 +283,12 @@ def style_and_base(name: str | None, recorded: object = None) -> tuple[str, ...]
     return (name,) if base == name else (name, base)
 
 
+def analysis_names(hl: dict[str, Any]) -> tuple[str, ...]:
+    """:func:`style_and_base` of the analysis ``hl``: its style, for a file without ``style``
+    the fallback of :func:`cutpoint.styles.style_name` (never ``gaming`` by default)."""
+    return style_and_base(style_name(hl), hl.get("style_base"))
+
+
 def recorded_style(hl: dict[str, Any], level: int = logging.INFO) -> Style:
     """The style of the analysis ``hl`` (a highlights.json object) from the style library.
 
@@ -684,7 +690,9 @@ def nominate(
     after a clip counts for that clip too (:func:`event_boost`, ``LOOKAHEAD_S``), but gets a
     window of its own after it. Returns how many nominated candidates ``hl`` has now.
 
-    Open-list styles only (``Style.open_list``): any other style gets none. A nominee is
+    The style is the analysis's (:func:`analysis_style`: a file without ``style`` uses the
+    built-in style :func:`cutpoint.styles.style_name` falls back to, never ``gaming`` by
+    default). Open-list styles only (``Style.open_list``): any other style gets none. A nominee is
     scored from the grids of its part (``parts``; None:
     from the caches of the analysis, see :func:`cutpoint.analyze.cached_grid_parts`, so a
     source whose caches are gone gets none), as a picked window there would be, and is then
@@ -713,12 +721,12 @@ def nominate(
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports us
 
     try:  # a deleted user style nominates with its recorded base (logged by the caller)
-        style = recorded_style(hl, logging.DEBUG)
+        style = analysis_style(hl, logging.DEBUG)
     except ValueError:  # an older file without style_base: no style to nominate with
         return 0
     if not style.open_list:
         return 0
-    names = style_and_base(hl.get("style"), hl.get("style_base"))
+    names = style_and_base(hl.get("style") or style.name, hl.get("style_base"))
     cands = hl.get("candidates", [])
     types, menu = resolve(project, ev), source_menu_spans(ev)
     by_src: dict[str, list[dict[str, Any]]] = {}
@@ -845,7 +853,7 @@ def nominate(
                     rec["label"] = title_slug(title, default=rec["label"])
                 recs.append(rec)
             menu_hl = {
-                "style": hl.get("style"),
+                "style": hl.get("style") or style.name,
                 "style_base": hl.get("style_base"),
                 "settings": hl.get("settings"),
                 "candidates": recs,

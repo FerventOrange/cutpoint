@@ -153,6 +153,15 @@ def _learned(home: Path, name: str, base: str) -> None:
     )
 
 
+def test_analysis_names_of_a_file_without_style_use_the_fallback(home):
+    """The names the event scoring matches types with (rescore, vision windows): a file without
+    `style` has its recorded base, else its detection's style, else action, never gaming (#1015)."""
+    assert scoring.analysis_names({"style": "funny"}) == ("funny",)
+    assert scoring.analysis_names({"style_base": "funny"}) == ("funny",)
+    assert scoring.analysis_names({"detection": {"style": "gaming"}}) == ("gaming",)
+    assert scoring.analysis_names({}) == ("action",)
+
+
 def test_style_and_base(home):
     _learned(home, "mine", "funny")
     _learned(home, "other", "gaming")
