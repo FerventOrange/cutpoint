@@ -140,6 +140,8 @@ def test_urls_and_regex_text_stay(text: str) -> None:
         "Invalid URL (POST /v1/x) in /home/user/x",
         "POST /home/user/x.mp4 failed",
         "GET /Users/me/a.mp4",
+        "url: /home/u/x.mp4",
+        "bad url: /Users/me/a.mp4",
         "'POST /home/user/x.mp4'",
         "post /home/user/x.mp4",
         "POST  /home/user/x.mp4",
