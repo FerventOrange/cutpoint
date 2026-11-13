@@ -140,6 +140,7 @@ from cutpoint.assistant import keys as ai_keys
 from cutpoint.assistant import lookfor as ai_lookfor
 from cutpoint.assistant import ops as ai_ops
 from cutpoint.assistant import providers as ai_providers
+from cutpoint.assistant import ranking as ai_ranking
 from cutpoint.assistant import session as ai_session
 from cutpoint.assistant import store as ai_store
 from cutpoint.assistant import watch as ai_watch
@@ -4375,6 +4376,31 @@ def ranking_preview(p: Path, style_name: object) -> dict[str, Any]:
     }
 
 
+class RankingHook:
+    """The chat's ``preview_ranking`` for project ``p`` (:class:`cutpoint.assistant.ranking.Hook`):
+    the library styles with their saved description, the style the moments are ranked in now
+    (``current``) and :func:`ranking_preview`, its refusals as ``RankingError``."""
+
+    def __init__(self, p: Path, current: str) -> None:
+        self.p, self._current = p, current
+
+    def styles(self) -> list[tuple[str, str]]:
+        return [
+            (n, str((get_style(n).learned or {}).get("description") or "")) for n in ui_styles()
+        ]
+
+    def current(self) -> str:
+        return self._current
+
+    def preview(self, name: str) -> dict[str, Any]:
+        try:
+            return ranking_preview(self.p, name)
+        except RankingRefused as err:
+            raise ai_ranking.RankingError(err.detail, err.code == jsonout.FOLDER_BUSY) from None
+        except HTTPException as err:
+            raise ai_ranking.RankingError(str(err.detail)) from None
+
+
 # --------------------------------------------------------------------------- app
 def _flag(body: dict[str, Any], key: str) -> bool:
     v = body.get(key, False)
@@ -6997,6 +7023,12 @@ def create_app(port: int) -> FastAPI:
                 transcript = (p / "transcript.txt").read_text(encoding="utf-8-sig")
         # the events VLM windows: what the vision model saw, which find_moments searches
         windows = ai_context.vlm_windows(_load(p, "events.json"))
+        # preview_ranking: an analyzed project that is not 360, ranked in its recorded style
+        meta, hl = read_meta(p), _highlights(p)
+        ranking = None
+        if hl and meta.get("kind") != "360" and not (p / pano_project.PANO_FILE).is_file():
+            current = hl.get("style") or _analysis_inputs(meta, hl)[1] or ""
+            ranking = RankingHook(p, str(current))
         project = ai_session.Project(
             moments,
             segments,
@@ -7007,6 +7039,8 @@ def create_app(port: int) -> FastAPI:
             edge_planner(p),
             frame_index=ai_lookfor.indexed(list(durations)),  # no frames, no look_for
             words=edge_planner(p).words,  # find_words: the cached transcript words
+            ranking=ranking,
+            ranking_key=ranking_key(p),  # kept in the turn: later turns know when ids changed
         )
         if ai_providers.is_subscription(provider) and (why := proxy_error(logged_in_only=True)):
             raise bad(why, 503)

@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `vision_time_share` in `config.json` caps the vision rating at a share of the analyze time before it (default 0.3). It rates the moments nearest the cut first, takes cached ratings after the cap, makes at least one call and can run over by one call (#909).
 - The UI header shows what the footage was detected as ("Detected: Gameplay", or "Not sure: General style"), with the reason and the sources that disagree, and changes the style in one step: choosing one analyzes the project again in it (#897, #880).
 - `cutpoint ui` routes to preview and apply a ranking in another library style: `POST /api/projects/<id>/ranking/preview` (writes nothing) and `.../ranking/apply` (the page sends it on the user's click; saves `highlights.json` with `highlights.before-rerank.json` as the backup). Apply is refused with 409 `stale` when the moments changed since the preview, `needs_analyze` or `folder_busy` (#902).
+- AI Chat ranking preview: asked for a different kind of moment first ("show me the funny bits first"), the chat previews the whole moments list ranked in another library style on a card with the new top 10 against the current list; **Use this ranking** applies it, the same as `cutpoint rerank` (#902).
 
 ### Fixed
 

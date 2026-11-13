@@ -1239,6 +1239,10 @@ details.more > p { margin-top: var(--space-1); overflow-wrap: anywhere; }
 .prop-block[data-kind="funny"] { --k: var(--k-funny); }
 .prop-block[data-kind="dialogue"] { --k: var(--k-dialogue); }
 .prop-block[data-kind="crash"] { --k: var(--k-crash); }
+/* a ranking card (#902): the same card, the new top as proposal rows */
+.rank-card .msg-title { font-weight: 650; }
+.rank-missing { display: grid; gap: var(--space-0); padding-left: 1.3em; list-style: disc; }
+.prop-mark.rank-up { color: var(--ok); border-color: var(--ok); }
 .prop-acts { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .prop-acts .btn { min-height: 34px; }
 .chat-history summary { cursor: pointer; font-weight: 650; font-size: var(--fs-body); }
