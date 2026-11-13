@@ -972,9 +972,12 @@ def test_a_reply_that_announces_more_work_gets_the_one_nudge() -> None:
     turn = run(fake, "add some beauty shots")
     assert kinds(turn) == ["proposal"]
     assert fake.requests[1]["messages"][-1]["content"] == session.NUDGE
-    # a question needs no edit: the reply stands
-    fake = FakeProvider([said])
+    # a question needs no edit, but the announced search is a promise (#1013): the promise nudge
+    fake = FakeProvider(
+        [said, Reply("It shows a jump.", [], {"role": "assistant", "content": "x"})]
+    )
     assert kinds(run(fake, "what is in this video?")) == ["reply"]
+    assert fake.requests[1]["messages"][-1]["content"] == session.PROMISE_NUDGE
     # only once: the second announcement is the answer
     fake = FakeProvider([said, said])
     assert kinds(run(fake, "add some beauty shots")) == ["reply"]
