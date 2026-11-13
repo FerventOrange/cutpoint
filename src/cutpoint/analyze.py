@@ -630,22 +630,25 @@ def _fixed_scale(vf: str, src: Path) -> str:
     return f"{head}{sep}{width}:{max(2, round(width * info.height / info.width / 2) * 2)}"
 
 
-def _scene_decode(hw: HwDecoder | None, vf: str, src: Path) -> tuple[list[str], str]:
+def _scene_decode(
+    hw: HwDecoder | None, vf: str, src: Path, download: bool = False
+) -> tuple[list[str], str]:
     """The decoder's input options and the filter chain of the scene proxy. On a GPU decoder and
     an 8- or 10-bit 4:2:0 source the frames stay on the GPU until the ``fps`` filter
     dropped the ones the detector does not read, so only those are downloaded. Other formats
     (4:4:4, 12-bit, unknown) and the CPU keep the plain path. The proxy's size is fixed
     (:func:`_fixed_scale`).
 
-    A container that does not seek exactly (MPEG-TS, possibly joined files) is decoded without
-    a ``hwdownload`` in the chain: NVDEC reinitialises at a join and ffmpeg rebuilds the graph
-    despite ``-reinit_filter 0`` (``setpts`` and ``fps`` start again, the encoder drops the
-    rest, exit 0). CUDA then downloads the frames itself (``-hwaccel cuda`` alone, the plain
+    A container that does not seek exactly (MPEG-TS, possibly joined files), and any source with
+    ``download`` (its stream parameters change mid-file, :func:`_run_scene_proxy`), is decoded
+    without a ``hwdownload`` in the chain: NVDEC reinitialises at a join and ffmpeg rebuilds the
+    graph despite ``-reinit_filter 0`` (``setpts`` and ``fps`` start again, the encoder drops
+    the rest, exit 0). CUDA then downloads the frames itself (``-hwaccel cuda`` alone, the plain
     chain); VAAPI always needs the download, so it decodes on the CPU."""
     vf = _fixed_scale(vf, src)
     if hw is None:
         return [], vf
-    if not _seeks_exactly(src):
+    if download or not _seeks_exactly(src):
         if hw.kind == "cuda":
             try:
                 info = probe(src)
@@ -669,6 +672,38 @@ def _scene_decode(hw: HwDecoder | None, vf: str, src: Path) -> tuple[list[str], 
         return hw.input_args(), gpu_chain(hw, vf) or vf
     head, sep, rest = vf.partition(",scale=")  # the proxy chain's fps filter comes before it
     return hw.input_args(keep_on_gpu=True), f"{head},hwdownload,format={fmt}{sep}{rest}"
+
+
+def _run_scene_proxy(
+    command: Callable[[bool], list[str]],
+    proxy: Path,
+    seconds: float,
+    label: str,
+    cancel: threading.Event | None = None,
+) -> None:
+    """Run the scene proxy's ffmpeg ``command(False)``; when its frames stayed on the GPU
+    (``hwdownload``, :func:`_scene_decode`) and ffmpeg dropped frames, run ``command(True)``
+    again, which does not keep them there.
+
+    The stream parameters changed mid-file (#1031: an MP4 or MKV whose second part has another
+    size): the GPU decoder starts again with new frames, and ffmpeg rebuilds the filter graph
+    for them despite ``-reinit_filter 0``. The new ``fps`` pads from 0 again, the encoder drops
+    those frames but keeps one, and every later cut is a frame late (or lost). Frames that
+    are not on the GPU keep one graph, as on the CPU. A pass whose ``fps`` output is the only
+    frame source drops none, so a normal file runs once."""
+    opts = {"cancel": cancel} if cancel is not None else {}  # plain call when not overlapped
+    first = command(False)
+    res = run_progress(first, seconds, label, **opts)
+    if not any("hwdownload" in arg for arg in first) or not res.dropped:
+        return
+    logger.info(
+        "%s: the video changes its size or format mid-file and the GPU decode lost its frame "
+        "timing there (%d frames dropped); making it again without keeping its frames on the GPU",
+        label,
+        res.dropped,
+    )
+    proxy.unlink(missing_ok=True)  # the re-run starts clean
+    run_progress(command(True), seconds, label, **opts)
 
 
 def _detect(proxy: Path, path: Path, cancel: threading.Event | None = None) -> list[float]:
@@ -924,12 +959,13 @@ def _hybrid_cuts(
         chain.replace("hwdownload,", "", 1) if "hwdownload," in chain else _fixed_scale(vf, src)
     )
     out = ["-an", "-vf"]
+
+    def gpu_args(download: bool) -> list[str]:  # download: see _run_scene_proxy
+        dec, gchain = _scene_decode(hw, vf, src, True) if download else (dec_args, chain)
+        return [*REINIT_OFF, *dec, "-i", str(src), "-t", f"{gend:.3f}", *out, gchain]
+
     halves = {
-        "gpu": (
-            cdir / f"proxy-gpu-{tag}.mp4",
-            [*REINIT_OFF, *dec_args, "-i", str(src), "-t", f"{gend:.3f}", *out, chain],
-            gend,
-        ),
+        "gpu": (cdir / f"proxy-gpu-{tag}.mp4", gpu_args(False), gend),
         "cpu": (
             cdir / f"proxy-cpu-{tag}.mp4",
             # both halves count from the container start (the chain's fps start_time, #976)
@@ -953,9 +989,13 @@ def _hybrid_cuts(
 
     def half(name: str) -> None:
         proxy, args, seconds = halves[name]
+
+        def command(download: bool) -> list[str]:  # only the GPU half runs again (no hwdownload)
+            given = gpu_args(True) if download else args
+            return ["ffmpeg", "-y", "-v", "error", *given, *enc, str(proxy)]
+
         try:
-            cmd = ["ffmpeg", "-y", "-v", "error", *args, *enc, str(proxy)]
-            run_progress(cmd, seconds, f"scene proxy {src.name} ({name} part)", cancel=stop)
+            _run_scene_proxy(command, proxy, seconds, f"scene proxy {src.name} ({name} part)", stop)
             found[name] = _scan(proxy, stop)
         except BaseException as exc:  # noqa: BLE001 - reported by the caller's thread
             errors[name] = exc
@@ -1025,8 +1065,8 @@ def _make_proxy(
     pre, post, vf, enc = args
     label = f"scene proxy {src.name}"
 
-    def command(dec: HwDecoder | None) -> list[str]:  # the decoder's input options go before -i
-        dec_args, chain = _scene_decode(dec, vf, src)
+    def command(dec: HwDecoder | None, download: bool = False) -> list[str]:
+        dec_args, chain = _scene_decode(dec, vf, src, download)  # input options go before -i
         args = [*pre, *dec_args, "-i", str(src), *post]
         return ["ffmpeg", "-y", "-v", "error", *args, "-an", "-vf", chain, *enc, str(proxy)]
 
@@ -1035,7 +1075,7 @@ def _make_proxy(
     opts = {"cancel": cancel} if cancel is not None else {}  # plain call when not overlapped
     try:
         try:
-            run_progress(command(hw), seconds, label, **opts)
+            _run_scene_proxy(lambda download: command(hw, download), proxy, seconds, label, cancel)
         except FFmpegError as err:
             if cancel is not None and cancel.wait(STOP_GRACE_S):  # Ctrl+C reached ffmpeg too
                 raise RunCancelled(label) from None
