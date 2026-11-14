@@ -584,7 +584,7 @@ def imu_read_path(src: Path) -> tuple[Path, Path | None, Path, bool]:
 
     io = remap_source(src)
     x3_imu = imu_source(io)
-    read_path = x3_imu or Path(staged_path(str(io)))
+    read_path = x3_imu or Path(staged_path(str(io), repaired=False))  # tsrepair copies drop data
     return io, x3_imu, read_path, x3_imu is None and read_path == io and is_remote(io)
 
 

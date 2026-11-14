@@ -39,10 +39,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from cutpoint import boundaries, cache, folders, jsonout, srt
+from cutpoint import boundaries, cache, folders, jsonout, srt, tsrepair
 from cutpoint.clipresume import ClipResume, clip_key
 from cutpoint.color import COLOR_VERSION, AutoGrade
-from cutpoint.config import path_key, remap_source
+from cutpoint.config import path_key, remap_source, source_path
 from cutpoint.crop import Crop, parse_spec
 from cutpoint.encode import (
     Grade,
@@ -404,6 +404,18 @@ def _extend_locked(
             (e["source"], _read_path(e), []) for e in by_file.values() if e.get("source")
         )
         known = manifest_entries(clips_dir, files)  # clips renamed during review too
+        # joined MPEG-TS/PS recordings are read through their stream copy, the clock of the
+        # analysis (#1052); one the analysis read so is never read in place
+        highlights = cache.load_json(manifest_project(manifest, clips_dir) / "highlights.json")
+        remuxed = [
+            e["path"]
+            for e in (highlights.get("sources") if isinstance(highlights, dict) else None) or []
+            if isinstance(e, dict) and e.get("timeline") and isinstance(e.get("path"), str)
+        ]
+        tsrepair.prepare_sources(
+            [source_path(e["source"]) for e in by_file.values() if e.get("source")],
+            required=remuxed,
+        )
         for f in files:
             e = by_file.get(f.name)
             if e is None:

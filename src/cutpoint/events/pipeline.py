@@ -24,7 +24,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from cutpoint import cache, jsonout, memguard, progress
+from cutpoint import cache, jsonout, memguard, progress, tsrepair
 from cutpoint import paths as cutpoint_paths
 from cutpoint.errors import LowMemoryError
 from cutpoint.events import explosions, paths, scoring
@@ -274,6 +274,11 @@ def run_events(
         # apart (rater.host: providers.endpoint; an Ollama's host[:port] of its URL, #670)
         host = rater.host if hosted else host_port(rater.url)
         vlm.model = f"{rater.provider_name}@{host}:{rater.model}"
+    # joined MPEG-TS/PS recordings are read through their stream copy (#1052)
+    tsrepair.prepare_sources(
+        [Path(s["path"]) for s in hl["sources"]],
+        required=[s["path"] for s in hl["sources"] if s.get("timeline")],
+    )
     sources = []
     seen: set[str] = set()
     unreachable: list[tuple[str, OSError]] = []
@@ -1184,7 +1189,15 @@ def _discover(
         need = [s for s in tested if len(got.get(str(s.path), [])) < game_fit.TOP_UP_FRAMES]
         if need:
             logger.debug("HUD fit check for %r: sampling %d source(s)", game, len(need))
-            recs = game_fit.sample_frames(need, project / "discovery" / "_fit" / game, params)
+            try:
+                recs = game_fit.sample_frames(need, project / "discovery" / "_fit" / game, params)
+            except LowMemoryError:
+                raise
+            except Exception as err:
+                memguard.raise_if_out_of_memory(
+                    err, "the HUD fit check", f"{game}: {', '.join(s.name for s in need)}"
+                )
+                raise
             for path, frames in per_source(recs, need).items():
                 got.setdefault(path, []).extend(frames)
         return got

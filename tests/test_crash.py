@@ -750,7 +750,7 @@ def test_imu_read_path_prefers_the_x3_trailer_then_the_staged_copy(
     src = Path("/nas/GX01.mp4")
     monkeypatch.setattr(config, "remap_source", Path)
     monkeypatch.setattr(insta360, "imu_source", lambda _p: trailer and Path(trailer))
-    monkeypatch.setattr(stage, "staged_path", functools.cache(lambda p: staged or p))
+    monkeypatch.setattr(stage, "staged_path", functools.cache(lambda p, repaired=True: staged or p))
     monkeypatch.setattr(stage, "is_remote", lambda _p: remote)
     io, x3_imu, read_path, got = telemetry.imu_read_path(src)
     assert (io, x3_imu, read_path, got) == (src, trailer and Path(trailer), Path(read), unstaged)

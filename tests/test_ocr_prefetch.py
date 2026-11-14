@@ -421,6 +421,100 @@ def test_out_of_memory_in_the_read_again_stops_the_run(ocr_run, caplog, err) -> 
     assert thread is not None and not thread.is_alive() and not pre.stuck
 
 
+def _guarded_read(mem, background_gb: float, inline_gb: float):
+    """A read that makes its OCR engine as the real one does (``memguard.check("ocr")``),
+    with ``background_gb`` of RAM free in the worker and ``inline_gb`` in its turn."""
+
+    def read(src, cancel):
+        mem.ram = background_gb if cancel is not None else inline_gb
+        memguard.check("ocr")
+        return [{"t": 1.0, "type": "kill", "src": src.name}], {"frames": 4}
+
+    return read
+
+
+def _freed_on(monkeypatch, mem) -> list[str]:
+    """The names of the threads that freed cached models."""
+    threads: list[str] = []
+    counted = analyze.free_models
+
+    def free_models() -> None:
+        threads.append(threading.current_thread().name)
+        counted()
+
+    monkeypatch.setattr(analyze, "free_models", free_models)
+    return threads
+
+
+def test_a_failed_ram_check_in_a_worker_read_is_read_again_in_its_turn(
+    ocr_run, caplog, mem, monkeypatch
+) -> None:
+    """The memory guard finds too little RAM free for the OCR engine in the background: the
+    source is handed back and read in its turn, where the RAM is free, and so is the source
+    after it. One INFO line, no LowMemoryError, no WARNING; the worker frees nothing."""
+    freed = _freed_on(monkeypatch, mem)
+    ocr_run.read = _guarded_read(mem, background_gb=1.0, inline_gb=64.0)
+    pre = ocr_run.make()
+    for p in ocr_run.paths:
+        pre.offer(p, 60.0, True)
+    with caplog.at_level(logging.INFO), jsonout.run("analyze") as res, pre:
+        seen = ocr_run.run(pre, stage=analyze._StepHook)
+    assert [evs[0]["src"] for evs in seen] == ["a.mp4", "b.mp4"]
+    assert ocr_run.reads == ["a.mp4", "a.mp4", "b.mp4"]  # a: background, then inline
+    want = "a.mp4: the background OCR had too little memory free ("
+    lines = [m for m in caplog.messages if m.startswith(want)]
+    assert lines == [f"{want}1.0 GB RAM free, 3.0 GB needed); reading it again in its turn"]
+    assert not any("freeing cached models" in m for m in caplog.messages)
+    assert freed == [] and mem.unloaded == 0
+    assert _ocr_warnings(caplog) == [] and res.warnings == []
+
+
+def test_a_ram_check_that_fails_again_in_its_turn_stops_the_run(
+    ocr_run, caplog, mem, monkeypatch
+) -> None:
+    """Too little RAM in the background and again in the source's turn: the inline check
+    frees cached models (on the main thread, the worker freed nothing), then stops the run
+    with low_memory."""
+    freed = _freed_on(monkeypatch, mem)
+    ocr_run.read = _guarded_read(mem, background_gb=1.0, inline_gb=1.5)
+    pre = ocr_run.make()
+    for p in ocr_run.paths:
+        pre.offer(p, 60.0, True)
+    with caplog.at_level(logging.INFO), jsonout.run("analyze") as res, pre:
+        seen = ocr_run.run(pre, stage=analyze._StepHook, stops=LowMemoryError)
+    err = ocr_run.stopped.value
+    assert err.args[1] == "1.5 GB RAM free, 3.0 GB needed"
+    assert str(err).startswith("Not enough memory for the OCR engine: 1.5 GB RAM free")
+    assert seen == [] and ocr_run.reads == ["a.mp4", "a.mp4"]
+    assert freed == [threading.main_thread().name] and mem.unloaded == 1
+    assert _ocr_warnings(caplog) == [] and res.warnings == []
+
+
+def test_no_free_holds_only_in_its_own_thread(mem) -> None:
+    """A check inside ``no_free`` frees nothing and stops at once; another thread's check
+    meanwhile frees as before, and so does this thread's after it."""
+    mem.ram = 1.0
+    with memguard.no_free():
+        with pytest.raises(LowMemoryError):
+            memguard.check("ocr")
+        assert mem.freed == mem.unloaded == 0
+        other: list[BaseException] = []
+
+        def check() -> None:
+            try:
+                memguard.check("ocr")
+            except LowMemoryError as e:
+                other.append(e)
+
+        t = threading.Thread(target=check)
+        t.start()
+        t.join(5)
+        assert len(other) == 1 and mem.freed == mem.unloaded == 1
+    with pytest.raises(LowMemoryError):
+        memguard.check("ocr")
+    assert mem.freed == mem.unloaded == 2
+
+
 def test_a_non_memory_worker_error_still_only_warns(ocr_run, caplog) -> None:
     def read(src, cancel):
         if src.name == "b.mp4":

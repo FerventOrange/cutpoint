@@ -107,6 +107,8 @@ So do these combinations:
 | `step_failed` | `analyze` (so `edit`), `crashes`, `events` | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it. The dialogue step adds it too when there was not enough free memory for its text model (`Dialogue skipped: ...`). A failed HUD OCR (keyframes for `gaming` and `funny`) is a `WARNING` instead, whose message names the effect (menu filtering and HUD events skipped) and the source it failed on; `files` lists the sources it did not read. So is a source whose telemetry, IMU or cached layers crash detection could not read (`<file>: crash detection skipped this source (<error>)`): `files` names it, it gets no crash moments and the other sources keep theirs. A GPU out of memory in a step's per-source work or in the HUD OCR is no `step_failed`: the run stops with `low_memory` (see the errors above). A background OCR read that runs out of memory is first read again in its turn |
 | `transcript_fallback` | `analyze` (so `edit`) | Without `--model`, Whisper ran (or an earlier run's transcript made so is reused) with `small` on the CPU instead of `medium` on the GPU, which was short of memory or failed; `files` names the sources. Speech-based moments can be weaker. A later run without `--model` transcribes them again with `medium` once it fits on the GPU (close the programs using it); after a CUDA failure the `small` transcript is kept (`--model medium` transcribes it again) |
 | `action_cam_no_telemetry` | `analyze` (so `edit`, `360 analyze`) | An action-cam style (`action-cam`, or a style of yours over it) on footage without GoPro or Insta360 X3 telemetry. When no source has any, the run used the `action` style instead (not in `360 analyze`): `highlights.json` has `style` `action`, `settings.style_requested` the style given and `settings.style_fallback` (`from`, `reason`); `files` lists every source; give `--style action` (or `auto`) to choose it. When some sources have telemetry, or a source's telemetry could not be read, the style stays and `files` names the sources scored from sound, speech and visual features only (no speed, airtime or masking), their scores taken over those features so their moments rank with the others |
+| `timeline_remuxed` | `analyze`, `detect`, `clips`, `events` (so `edit`, `assemble <project>`, `rerank --analyze`) | A joined MPEG-TS or MPEG-PS recording's timestamps jump back (or far ahead) at a join, so the file says it is shorter (or longer) than it plays; `files` names it. It is read through a stream copy (video and audio, no re-encode) remuxed into its cache folder (`timeline.mkv`), so all of it is analysed and clipped. `highlights.json` records `timeline` on the source (`remuxed`, `probed_s`, `read_s`, `discontinuities`); `source` stays the original path. The copy takes about as much space as the recording and stays until the cache is cleared |
+| `timeline_remux_failed` | `analyze`, `detect`, `clips`, `events` (so `edit`, `assemble <project>`, `rerank --analyze`) | Such a recording got no stream copy (less free space in the cache folder than 1.05 times its size, or ffmpeg failed; the WARNING says which); `files` names it. It is read as it is, so the footage after its first join may be left out. For too little space, free space and run again; report an ffmpeg failure. `clips` and `events` stop instead for a source the analysis read through a copy |
 | `style_ambiguous` | `analyze`, `detect` (so `edit`) | `--style auto` (the default) could not tell the footage category apart (the message gives the evidence), so the run used its best guess's style when that is gameplay (`gaming`), else the General style (`action`), for `analyze` and `edit` alike (the message names the style used; `funny` for `funny-moments` either way); `files` lists the sources that were not clear. Give `--style` to choose one |
 | `unknown_profile` | `style create`, `style validate` | The style's `profile` or an `applies_to` profile is not in the [activity profile library](#profile); it is stored as written |
 | `feature_not_computed` | `style create`, `style validate` | A weight names a feature the style's base never measures (for example a telemetry feature over a generic base), so it has no effect |
@@ -1361,8 +1363,10 @@ Nothing new is required. Without the `events` extra or the model files, a step i
 logs an `ERROR`, adds a `step_failed` warning and the run continues without it. A failed HUD
 OCR logs a `WARNING` instead, naming the sources left without menu filtering and HUD events;
 the sources read before it keep theirs. A GPU out of memory in the HUD OCR is the exception.
-When the background read runs out of memory, that source is read again in its turn, with an
-`INFO` line. A GPU out of memory in that read again or
+When the background read runs out of memory, or the memory guard finds too little RAM free for
+its OCR engine, that source is read again in its turn, with an `INFO` line. The background
+check frees nothing; the check in its turn frees cached models first. Too little RAM then, a
+GPU out of memory in that read again, or
 in any other OCR read (the inline read, HUD region discovery, `events`) stops the run with
 `error.code` `low_memory`. The `ERROR` line says to close other programs and run
 `cutpoint resume <project>`. The VLM
@@ -1441,6 +1445,13 @@ If ffmpeg hits read errors (a damaged file, a failing drive), `analyze` warns lo
 `read_errors` on that source in `highlights.json`, and stops analysing that source at the
 failure time. `--recover` then probes past the bad region and continues from the first
 readable point.
+
+A recording joined from several in an MPEG-TS or MPEG-PS file (`.ts`, `.m2ts`, `.mpg`) can have
+timestamps that jump back to zero, or far ahead, at each join, so ffprobe reports a length that
+is not what plays. `analyze` checks such files once (one stream-copy read, cached), and one
+whose timestamps jump is read through a stream copy remuxed into its cache folder, with an INFO
+line and the `timeline_remuxed` warning (see [JSON output](#json-output)); `clips`, `events`
+and `detect` read the same copy.
 
 #### Typical cost
 

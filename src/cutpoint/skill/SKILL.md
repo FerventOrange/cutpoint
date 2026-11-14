@@ -89,7 +89,11 @@ is missing: tell the user, and with their OK run the command the ERROR line name
   `schema`, `project`, `outputs` (absolute paths and key facts), `warnings` (`code`, `message`,
   `files`) and `error` (`code`, `message`, or `null`). It works on `paths`, `analyze`, `detect`, `clips`,
   `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `events`, `crashes`,
-  `profile`, `resume`, `rerank` and every `360` subcommand.
+  `profile`, `resume`, `rerank` and every `360` subcommand. Tell the user about the warnings
+  `timeline_remuxed` (a joined `.ts` or `.mpg` recording whose timestamps jump is read through a
+  stream copy in the cache, about its size) and `timeline_remux_failed` (no copy could be made, so
+  the footage after its first join may be left out: tell the user what the WARNING says, to free
+  space in the cache folder, or for an ffmpeg failure to report it).
 - Cutpoint ships only the `base` and `generic` activity profiles. Others are discovered or made by
   the user or you: `cutpoint profile list|show|create|validate|delete` (`create NAME --from FILE`).
   `--activity NAME` takes a name from `profile list`.

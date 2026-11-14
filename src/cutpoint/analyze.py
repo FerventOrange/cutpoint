@@ -51,6 +51,7 @@ from cutpoint import (
     progress,
     runstate,
     scorer,
+    tsrepair,
 )
 from cutpoint.config import path_key, remap_source, unc_path
 from cutpoint.dsp import conv_same
@@ -4007,6 +4008,8 @@ def _analyze(
     t_start = time.perf_counter()
     steps.start("transcribe")
     sources = find_sources(target, exclude, recursive)
+    # joined MPEG-TS/PS recordings whose timestamps jump are read through a stream copy (#1052)
+    timelines = tsrepair.prepare_sources(sources)
     # --style auto: probed before transcription, which needs the style's action-cam context, scene
     # setting and OCR prefetch; talk is told from general once the speech coverage is known.
     auto = style if isinstance(style, AutoRequest) else None
@@ -4292,6 +4295,9 @@ def _analyze(
                         else {}
                     ),
                     **({"read_errors": [r.read_error]} if r.read_error else {}),
+                    **(
+                        {"timeline": timelines[str(r.source)]} if str(r.source) in timelines else {}
+                    ),
                 }
                 for r in results
             ],
