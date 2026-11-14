@@ -80,6 +80,7 @@ class Config:
     visual_index: bool = False  # analyze writes frame embeddings for every style, not just action
     ocr_det_skip: bool = False  # HUD OCR skips the det gate of unchanged regions (#807)
     vision_time_share: float = VISION_TIME_SHARE  # vision time cap, share of analyze (#909)
+    vision_detect_all: bool = False  # --style auto shows every source to the vision model (#1069)
 
 
 def load_config_data(path: Path | None = None) -> dict:
@@ -193,6 +194,7 @@ def _load_config(path: Path) -> Config:
     _check_type(path, data, "vision", _is_bool, "true or false")
     _check_type(path, data, "visual_index", _is_bool, "true or false")
     _check_type(path, data, "ocr_det_skip", _is_bool, "true or false")
+    _check_type(path, data, "vision_detect_all", _is_bool, "true or false")
     skip = _analysis_skip(path, data)
     projects = resolve_projects_dir(data)
     remap = data.get("source_remap") or {}
@@ -240,6 +242,7 @@ def _load_config(path: Path) -> Config:
         data.get("visual_index") is True,
         data.get("ocr_det_skip") is True,
         _vision_time_share(path, data),
+        data.get("vision_detect_all") is True,
     )
 
 
@@ -460,6 +463,13 @@ def ocr_det_skip_default() -> bool:
     region that has not changed when neither ``--ocr-det-skip`` nor ``--no-ocr-det-skip`` is
     given (``ocr_det_skip`` in ``config.json``; default False)."""
     return get_config().ocr_det_skip
+
+
+def vision_detect_all_default() -> bool:
+    """Whether ``--style auto`` (``analyze``, ``edit``, ``detect``) shows every source to the
+    vision model when neither ``--vision-detect-all`` nor ``--no-vision-detect-all`` is given
+    (``vision_detect_all`` in ``config.json``; default False: only the unsure sources)."""
+    return get_config().vision_detect_all
 
 
 def vision_time_share() -> float:

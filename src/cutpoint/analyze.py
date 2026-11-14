@@ -3888,6 +3888,7 @@ def analyze(
     last_candidate_id: int = 0,
     context: str | None = None,
     context_recorded: bool = False,
+    vision_detect_all: bool = False,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -3990,6 +3991,11 @@ def analyze(
         context_recorded: ``context`` is the recorded ``settings.context`` of a re-analysis
             (:func:`reanalyze`), not words the user gave now: the crash step keeps the
             project's activity.json then, as ``crashes`` without ``--context`` does.
+        vision_detect_all: ``--vision-detect-all`` (#1069; the caller has turned it off for
+            ``--no-vision``): ``--style auto`` shows every source to the vision model; it only
+            settles sources (:func:`cutpoint.category.decide`), recorded as
+            ``settings.vision_detect_all`` (only when on) for a re-analysis and ``cutpoint
+            ui``. With ``footage``, its own ``every_source`` decides.
 
     Returns:
         Path of the written highlights.json.
@@ -4032,6 +4038,7 @@ def analyze(
             last_candidate_id=last_candidate_id,
             context=footage_context(context),
             context_recorded=context_recorded,
+            vision_detect_all=footage.every_source if footage is not None else vision_detect_all,
         )
 
 
@@ -4069,6 +4076,7 @@ def _analyze(
     last_candidate_id: int,
     context: str | None,
     context_recorded: bool,
+    vision_detect_all: bool,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
@@ -4079,11 +4087,19 @@ def _analyze(
     # --style auto: probed before transcription, which needs the style's action-cam context, scene
     # setting and OCR prefetch; talk is told from general once the speech coverage is known.
     auto = style if isinstance(style, AutoRequest) else None
+    if auto is not None and vision is False and footage is None:
+        vision_detect_all = False  # --no-vision wins: nothing is shown to the model
     probes: list[category.SourceProbe] = []
     cat: str | None = None  # the category whose layers run (None: the style's own)
     if auto is not None:
         probes, det = category.detect(
-            sources, vision, ollama_url, ollama_model, shared=footage, context=context
+            sources,
+            vision,
+            ollama_url,
+            ollama_model,
+            shared=footage,
+            context=context,
+            every_source=vision_detect_all,
         )
         name, fallback = category.choose_style(det, auto.emphasis)
         if det.pending:
@@ -4250,6 +4266,7 @@ def _analyze(
                 category.source_speech(
                     sources, [(r.source, r.duration, r.segments) for r in results]
                 ),
+                every_source=vision_detect_all and vision is not False,
             )
             if pending:  # talk or general: this style's transcript signals and candidates
                 # (otherwise the speech only adds the commentary hint: the style stays)
@@ -4350,6 +4367,8 @@ def _analyze(
                 # --context (#1068): the crash step's profile, the vision and dialogue prompts;
                 # `cutpoint events`, `rerank` and re-analyses read it from here (only when given)
                 **({"context": context} if context else {}),
+                # --vision-detect-all (#1069): how --style auto detected (only when on)
+                **({"vision_detect_all": True} if vision_detect_all and detection_rec else {}),
             },
             "timings": timings,
             "suggested_top": 0,
@@ -5025,6 +5044,8 @@ def reanalyze(
         last_candidate_id=last_id,
         context=st.get("context"),  # #1068: as the analysis was told (footage_context checks it)
         context_recorded=True,
+        # #1069: recorded again (nothing is detected again; cutpoint ui reads it back)
+        vision_detect_all=st.get("vision_detect_all") is True,
     )
 
 

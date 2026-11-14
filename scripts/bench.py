@@ -23,6 +23,8 @@ The manifest (keep it and the label files out of the repository; paths are relat
 
 - ``category``: the true footage category (``cutpoint.category.CATEGORIES``); for ``mixed`` the
   category of most of the footage by duration, set by the labeller.
+- ``also`` (optional): further categories a detection may give and still count right, for
+  footage that honestly fits more than one (a list of ``CATEGORIES``).
 - ``bucket``: one of :data:`BUCKETS`; the labeller sets it (kills or no kills, telemetry or not).
 - ``labels`` (optional): a :mod:`moment_eval` label file. Times may also be ``"mm:ss"`` or
   ``"h:mm:ss"`` strings. Without labels the source is scored for detection only. A label file's
@@ -202,6 +204,7 @@ class Source:
     labels_path: Path | None = None
     labels: dict[str, Any] | None = None
     note: str = ""
+    also: tuple[str, ...] = ()  # further categories a detection may give and count right
 
 
 @dataclass
@@ -331,6 +334,11 @@ def load_manifest(path: Path) -> Manifest:
         inp = paths.absolute(base / s["input"])
         src = Source(sid, inp, s.get("category"), s.get("bucket"), holdout)
         src.note = str(s.get("note") or "")
+        also = s.get("also", [])
+        if not isinstance(also, list) or any(c not in CATEGORIES for c in also):
+            errors.append(f"{where}: 'also' must list categories of {', '.join(CATEGORIES)}")
+        else:
+            src.also = tuple(dict.fromkeys(c for c in also if c != src.category))
         if not src.input.exists():
             errors.append(f"{where}: input {src.input} does not exist")
         if s.get("labels"):
@@ -861,7 +869,7 @@ def score_detection(source: Source, hl: dict[str, Any]) -> dict[str, Any] | None
     if not isinstance(det, dict) or det.get("category") is None:
         return None
     ambiguous = bool(det.get("ambiguous"))
-    right = det["category"] == source.category
+    right = det["category"] == source.category or det["category"] in source.also
     verdict = "ambiguous" if ambiguous else "right" if right else "sure_wrong"
     return {
         "category": det["category"],
@@ -907,6 +915,7 @@ def source_entry(source: Source) -> dict[str, Any]:
         "holdout": source.holdout,
         "labels": str(source.labels_path) if source.labels_path else None,
         "labels_sha256": file_sha256(source.labels_path) if source.labels_path else None,
+        **({"also": list(source.also)} if source.also else {}),  # none: as before the key
     }
 
 
@@ -1019,7 +1028,7 @@ def compare_issues(a: dict[str, Any], b: dict[str, Any]) -> tuple[list[str], lis
 
 
 #: Per source, what must be the same in both runs for them to be compared.
-LABEL_KEYS = ("category", "bucket", "holdout", "labels_sha256")
+LABEL_KEYS = ("category", "also", "bucket", "holdout", "labels_sha256")
 
 
 def label_mismatches(a: dict[str, Any], b: dict[str, Any]) -> dict[str, list[str]]:

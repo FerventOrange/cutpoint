@@ -288,6 +288,18 @@ def test_edit_style_auto_shares_one_vision_client_with_its_analysis(
     assert (footage is not None) is shared
 
 
+@pytest.mark.parametrize(
+    ("flag", "every"),
+    [([], False), (["--vision-detect-all"], True), (["--vision-detect-all", "--no-vision"], None)],
+)
+def test_edit_hands_vision_detect_all_to_the_shared_vision_client(pipeline, flag, every):
+    """The client both detections share asks about every source; none with --no-vision."""
+    argv = ["edit", str(pipeline.video), "--style", "auto", *flag]
+    assert cli.main(argv) == 0
+    footage = pipeline.calls[0][2]["footage"]
+    assert (footage and footage.every_source) == every
+
+
 def test_analyze_hands_vision_and_ollama_options_to_the_detection(tmp_path, monkeypatch):
     from cutpoint import analyze, category  # noqa: PLC0415
 
@@ -312,7 +324,9 @@ def test_analyze_hands_vision_and_ollama_options_to_the_detection(tmp_path, monk
             ollama_url="http://h:1",
             ollama_model="m",
         )
-    assert got == [((False, "http://h:1", "m"), {"shared": None, "context": None})]
+    assert got == [
+        ((False, "http://h:1", "m"), {"shared": None, "context": None, "every_source": False})
+    ]
 
 
 def test_edit_with_an_explicit_style_never_probes(pipeline, monkeypatch):

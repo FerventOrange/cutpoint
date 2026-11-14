@@ -33,7 +33,7 @@ what the footage is, pass their words with `--context "<the user's words>"` on `
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for games |
 | Activity profiles for crash detection and the action-cam and 360 layers: `cutpoint profile <project>`, `--context` on `profile` and `crashes`. Cutpoint ships only `base` and `generic`; every other profile is discovered from the footage or made by the user or their agent | |
 | Profile library: `cutpoint profile list\|show\|create\|validate\|delete` (`create NAME --from FILE`; `--json`) | |
-| Footage category detection: `cutpoint detect`, and `--style auto`, the default of `analyze` and `edit` (an explicit `--style NAME` wins; unsure footage, and camera footage without telemetry, is shown to the vision model unless `--no-vision`, and if it is still unsure Auto uses `gaming` when it leans to gameplay, else `action`; `detect` shows `decided_by`) | |
+| Footage category detection: `cutpoint detect`, and `--style auto`, the default of `analyze` and `edit` (an explicit `--style NAME` wins; unsure footage, and camera footage without telemetry, is shown to the vision model unless `--no-vision`, and if it is still unsure Auto uses `gaming` when it leans to gameplay, else `action`; `detect` shows `decided_by`). `--vision-detect-all` on `analyze`, `edit` and `detect` (off by default; `"vision_detect_all": true` in `config.json`) shows every source to the vision model, about one call per source; it only settles sources: a sure gameplay source becomes unsure when the vision answer and the HUD text both see no game | |
 | Frame index for the AI Chat's visual search: `--visual-index` on `analyze` and `edit` (off by default; `"visual_index": true` in `config.json`) also writes the CLIP frame embeddings for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` always have them | |
 | VLM layer of `cutpoint events` through the shared vision model: Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the Models tab of `cutpoint ui` | |
 | `--json` result envelope on stdout: `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `style ...`, `events`, `resume`, `rerank`, `360 ...` | |
@@ -136,7 +136,10 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
   `analyze`; `--visual-index` and `--no-visual-index` as on `analyze` (the frame embeddings for
   the visual search of `cutpoint ui`, off by default; they change no ranking);
   `--ocr-det-skip` and `--no-ocr-det-skip` as on `analyze` (faster gameplay HUD reading, off
-  by default; `"ocr_det_skip": true` in `config.json`); `--context "<the user's words>"` as on
+  by default; `"ocr_det_skip": true` in `config.json`); `--vision-detect-all` and
+  `--no-vision-detect-all` as on `analyze` (every source to the vision model in `--style auto`,
+  off by default; only when the user asks for a closer footage check);
+  `--context "<the user's words>"` as on
   `analyze` (what the footage is, when the user said it);
   `--compress-peaks`, `--lut`, `--lut-strength`, `--color` and `--color-strength` as on `clips`.
 - Outputs: the project `<projects>/clip` (`--out NAME` to change it) with the clips,
