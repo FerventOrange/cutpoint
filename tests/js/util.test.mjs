@@ -111,3 +111,37 @@ test('crashOf and crashText: the confidence with two decimals, forced from crash
   assert.equal(u.crashText({ confidence: 0.912 }), 'CRASH 0.91');
   assert.equal(u.crashText({ confidence: null }), 'CRASH');
 });
+
+test('namesFile: a project file counts only whole and as written; a folder also as "<name> folder"', () => {
+  const cases = [
+    ['The transcript is in transcript.txt.', 'transcript.txt', true],
+    ['See `final.mp4`', 'final.mp4', true],
+    ['It is at /home/x/projects/demo/final.mp4', 'final.mp4', true],
+    ['It is at C:\\Projects\\demo\\final.srt, next to it', 'final.srt', true],
+    ['an old myfinal.mp4.bak', 'final.mp4', false],
+    ['an old final.mp4.bak', 'final.mp4', false],
+    ['clip-final.mp4 is the copy', 'final.mp4', false],
+    ['Final.mp4', 'final.mp4', false], // case-sensitive, as the real file
+    ['the transcript', 'transcript.txt', false],
+    ['open clips/001_a.mp4', 'clips/', true],
+    ['the clips folder of the export', 'clips/', true],
+    ['the `clips` folder', 'clips/', true],
+    ['I added 3 clips to the sequence', 'clips/', false],
+    ['the clips_vertical folder', 'clips/', false],
+    ['the clips_vertical folder', 'clips_vertical/', true],
+    ['in D:\\Videos\\demo\\clips\\002_b.mp4', 'clips/', true],
+  ];
+  for (const [text, name, want] of cases) assert.equal(u.namesFile(text, name), want, `${name} in ${text}`);
+});
+
+test('namedFolders: the folders of the files a reply names, project first, each once', () => {
+  const files = [
+    { name: 'transcript.txt', target: 'project' },
+    { name: 'final.mp4', target: 'project' },
+    { name: 'clips/', target: 'clips' },
+  ];
+  assert.deepEqual(u.namedFolders('Your clips folder and final.mp4 and transcript.txt', files), ['project', 'clips']);
+  assert.deepEqual(u.namedFolders('Only the clips/ folder', files), ['clips']);
+  assert.deepEqual(u.namedFolders('Nothing named here', files), []);
+  assert.deepEqual(u.namedFolders('final.mp4', undefined), []);
+});

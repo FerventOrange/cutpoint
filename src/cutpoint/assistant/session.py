@@ -20,6 +20,7 @@ to show, a reply, proposals) that the page polls, the way it polls jobs.
 
 from __future__ import annotations
 
+import contextlib
 import itertools
 import json
 import logging
@@ -30,6 +31,7 @@ import threading
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from cutpoint.assistant import context, errtext, lookfor, pacing, ranking, watch, words
@@ -45,6 +47,7 @@ from cutpoint.assistant.providers import (
     ToolsUnsupportedError,
     TruncatedError,
     describe,
+    is_consent_exempt,
 )
 from cutpoint.assistant.topup import kind_groups, top_up
 
@@ -351,6 +354,10 @@ class Project:
     # ui.ranking_key of highlights.json: kept in the turn record, so a later turn knows the
     # moment ids of an earlier one changed (another ranking or analysis since)
     ranking_key: str | None = None
+    # the project's files the model may name (context.project_files): names only
+    files: list[dict[str, str]] = field(default_factory=list)
+    # the absolute project folder: given only to a model on this machine (Turn.folder)
+    folder: str = ""
 
 
 def _now() -> str:
@@ -364,6 +371,23 @@ def _earlier_reply(turn: Mapping[str, Any]) -> str:
     reply = str(turn.get("reply", ""))
     error = turn.get("error")
     return errtext.no_paths(reply) if isinstance(error, str) and error and reply == error else reply
+
+
+def _without_folder(text: str, folder: str) -> str:
+    """``text`` of an earlier turn for a model not given the project ``folder`` (#1010): a
+    model on this machine may have answered with a full path, and that reply would go to a
+    hosted model the user switched to. Every spelling of the folder goes (so the name inside
+    it stays), then any other absolute path becomes its bare name (:func:`errtext.no_paths`)."""
+    path = Path(folder)
+    spellings = {folder, path.as_posix(), folder.replace("/", "\\")}
+    with contextlib.suppress(OSError, RuntimeError):
+        spellings.add(str(path.resolve()))
+    bases = sorted((s.rstrip("/\\") for s in spellings if s.rstrip("/\\")), key=len, reverse=True)
+    for base in bases:  # with a separator after it first: "<folder>/x.txt" leaves "x.txt"
+        text = text.replace(base + "/", "").replace(base + "\\", "")
+    for base in bases:
+        text = text.replace(base, "")
+    return errtext.no_paths(text)
 
 
 def cut_again_error(provider: Any, err: TruncatedError, again: bool = True) -> ProviderError:
@@ -405,10 +429,17 @@ class Turn:
         earlier = list(earlier or [])
         seen = len(earlier) - window
         key = project.ranking_key
+        # a model not given the folder gets no earlier reply naming it (chat.json keeps it)
+        hidden = project.folder if self.folder() is None else ""
+
+        def reply(t: Mapping[str, Any], i: int) -> str:
+            text = _earlier_reply(t) + (self._hits_of(t) if i >= seen else "")
+            return _without_folder(text, hidden) if hidden else text
+
         self.earlier = [
             {
                 "user": str(t.get("user", "")),
-                "reply": _earlier_reply(t) + (self._hits_of(t) if i >= seen else ""),
+                "reply": reply(t, i),
                 # its short ids (m1...) were of another ranking (context.IDS_CHANGED)
                 "ids_changed": isinstance(key, str)
                 and isinstance(t.get("ranking_key"), str)
@@ -481,6 +512,8 @@ class Turn:
                 "next": len(self.events),
                 "error": self.error,
                 "ranking_key": self.project.ranking_key,
+                # the files the model was told of: the page links a reply naming one
+                "files": [{"name": f["name"], "target": f["target"]} for f in self.project.files],
             }
 
     def record(self) -> dict[str, Any]:
@@ -618,6 +651,8 @@ class Turn:
                 images=bool(self._watch),
                 target=self.target,
                 late_rules=late + rank_rules + after,
+                files=self.project.files,
+                folder=self.folder(),
             )
 
         if not self._styles:
@@ -630,6 +665,15 @@ class Turn:
         # notes, when the full ones would cost the moment table rows: it only grows with more
         brief = build(ranking.brief(self._styles, self._current, names=json_mode))
         return brief if len(brief[1]["content"]) > len(out[1]["content"]) else out
+
+    def folder(self) -> str | None:
+        """The project folder's path for the model, only when nothing sent to it leaves this
+        machine (:func:`~cutpoint.assistant.providers.is_consent_exempt` of its URL: not a
+        hosted API, not the subscription proxy, not Ollama on another machine); else None."""
+        if not self.project.folder or self.provider.local is not True:
+            return None
+        url = getattr(self.provider, "url", None)
+        return self.project.folder if url is None or is_consent_exempt(url) else None
 
     def _offered(self, name: str) -> bool:
         """Whether the tool ``name`` is offered: ``look_for`` only with cached frame embeddings."""

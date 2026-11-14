@@ -29,9 +29,10 @@ Trust boundaries:
   line in its confirm dialog first; the server never changes it, and a clips folder it wrote
   outside the project is never listed as an export.
 * "Show folder" (``.../reveal?target=``) opens, in the file manager and without a shell, one of
-  three folders the server resolves from the project: its own sources (the default), the clips
-  folder of its latest export, or the project folder holding its assembled final. The request
-  names only the target, never a path.
+  four folders the server resolves from the project: its own sources (the default), the clips
+  folder of its latest export, the project folder holding its assembled final, or the project
+  folder itself (AI Chat's Open project folder, next to a reply that names a project file). The
+  request names only the target, never a path.
 * Choosing a source or folder (``POST /api/pick?kind=file|folder``) opens the machine's own open
   dialog (Windows: Tk's system dialog; macOS: ``osascript``; Linux: zenity, else kdialog) in a
   child process without a shell, one at a time; the server never lists folders itself. With no
@@ -57,7 +58,8 @@ Trust boundaries:
   ``highlights.before-rerank.json``) and the chosen style in ``ui/meta.json``, in this process,
   and only when ``highlights.json`` is still the one previewed (409 ``stale`` otherwise). Its
   CUDA check runs in a child process: the UI process never imports torch. Project text (labels, transcripts, file names, never
-  paths) reaches the model only inside marked data blocks. Its GET routes only read.
+  paths; only a model on this machine is given the project folder's path) reaches the model only
+  inside marked data blocks. Its GET routes only read.
 * A hosted assistant provider (any whose host is not this machine) gets no project text until
   the user agrees once for it (``POST /api/assistant/consent``, an ``assistant-v3:`` key kept in
   ``config.json``); nor is its model list asked for (``GET /api/assistant/models``) before that
@@ -3988,6 +3990,14 @@ def output_names(p: Path) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def chat_files(p: Path) -> list[dict[str, str]]:
+    """The files of project ``p`` that AI Chat may name (:func:`cutpoint.assistant.context.project_files`):
+    its analysis files that exist, its finals and the clips folder of its latest export."""
+    present = [n for n in ai_context.FILE_HOLDS if (p / n).is_file() and _inside(p, n)]
+    exp = current_export(p)
+    return ai_context.project_files(present, output_names(p), exp["dir"] if exp else None)
+
+
 def fresh_name(parent: Path, stem: str, exts: tuple[str, ...] = ("",)) -> str:
     """``stem`` or ``stem-N``: the first name no file ``name + ext`` already uses.
 
@@ -6218,8 +6228,8 @@ def create_app(port: int) -> FastAPI:
 
     @owned.post("/projects/{pid}/reveal")
     def reveal_folder(pid: str, target: str = "sources"):
-        """Show a project folder in the file manager: its videos, latest clips or final (path from
-        the project; ``target`` only picks which)."""
+        """Show a project folder in the file manager: its videos, latest clips, final or the
+        project folder itself (path from the project; ``target`` only picks which)."""
         p = project_dir(pid)
         if target == "sources":
             folder = source_folder(p)
@@ -6233,6 +6243,8 @@ def create_app(port: int) -> FastAPI:
         elif target == "outputs":
             if not output_names(p):
                 raise bad("nothing has been assembled yet", 404)
+            folder = p
+        elif target == "project":  # AI Chat's link next to a reply naming a project file
             folder = p
         else:
             raise bad("unknown folder")
@@ -7258,6 +7270,8 @@ def create_app(port: int) -> FastAPI:
             "frames": frames_state(p, provider),
             "turns": ai_store.turns(p),
             "running": running,
+            # the files the chat may name: the page links a reply naming one (Open folder)
+            "files": [{"name": f["name"], "target": f["target"]} for f in chat_files(p)],
         }
 
     def frames_state(p: Path, provider: ai_providers.Provider) -> dict[str, Any]:
@@ -7353,6 +7367,8 @@ def create_app(port: int) -> FastAPI:
             words=edge_planner(p).words,  # find_words: the cached transcript words
             ranking=ranking,
             ranking_key=ranking_key(p),  # kept in the turn: later turns know when ids changed
+            files=chat_files(p),  # names only
+            folder=str(p),  # only a model on this machine is given it (Turn.folder)
         )
         if ai_providers.is_subscription(provider) and (why := proxy_error(logged_in_only=True)):
             raise bad(why, 503)

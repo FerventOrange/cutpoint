@@ -314,3 +314,25 @@ export function markdown(text) {
   }
   return root;
 }
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const NAME_CHAR = '[\\p{L}\\p{N}_.-]'; // a character that would make a longer name of it
+
+/**
+ * Whether ``text`` names the project file ``name`` (#1010): whole and as written, so
+ * ``final.mp4`` is not in ``myfinal.mp4.bak`` or ``Final.mp4``; a path ending in it counts. A
+ * folder (a name ending in ``/``) counts as ``clips/``, ``clips\`` or ``clips folder``.
+ */
+export function namesFile(text, name) {
+  const folder = name.endsWith('/');
+  const base = escapeRe(folder ? name.slice(0, -1) : name);
+  if (!base) return false;
+  const end = folder ? '(?:[\\\\/]|[`\'"’”]?\\s+folder(?![\\p{L}\\p{N}_]))' : '(?![\\p{L}\\p{N}_-]|\\.[\\p{L}\\p{N}_])';
+  return new RegExp(`(?<!${NAME_CHAR})${base}${end}`, 'u').test(String(text ?? ''));
+}
+
+/** The folders a chat reply points to: 'project' and/or 'clips' (in that order), for the files of ``files`` (``{name, target}``) that ``text`` names. */
+export function namedFolders(text, files) {
+  const found = new Set((files ?? []).filter((f) => typeof f?.name === 'string' && namesFile(text, f.name)).map((f) => f.target));
+  return ['project', 'clips'].filter((t) => found.has(t));
+}
