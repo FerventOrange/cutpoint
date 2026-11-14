@@ -286,11 +286,12 @@ def _cmd_detect(a: argparse.Namespace) -> None:
     would pick; talk only for sources already transcribed (by an earlier analysis). The
     vision model is asked about unsure sources and camera-tagged ones without telemetry, as for ``--style auto`` (``--no-vision`` or
     ``"vision": false`` skips it)."""
-    from cutpoint import category  # noqa: PLC0415
+    from cutpoint import category, tsrepair  # noqa: PLC0415
     from cutpoint.analyze import find_sources  # noqa: PLC0415
     from cutpoint.sources import source_segments  # noqa: PLC0415
 
     found = find_sources([Path(t) for t in a.inputs], a.exclude or [], a.recursive)
+    tsrepair.prepare_sources(found)  # joined MPEG-TS/PS: probed on the copy's timeline (#1052)
     with category.footage_vision(_vision(a), a.ollama_url, a.ollama_model) as vision:
         probes = [category.probe_source(s, vision) for s in found]
     speech = {}

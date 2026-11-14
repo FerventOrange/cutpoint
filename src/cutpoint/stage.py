@@ -14,6 +14,10 @@ Layout: ``<stage_dir>/<digest>-<file name>`` plus ``index.json`` mapping the
 canonical source path (:func:`stage_key`) to ``{"file", "size", "mtime_ns", "source",
 "read_s"}``, plus ``"rel"`` (the exact path parts below a Windows-form ``source_remap``
 prefix, on POSIX only) and, for case-twins below such a prefix, extra keys (see :func:`_find`).
+
+A joined MPEG-TS or MPEG-PS recording whose timestamps jump has a stream copy remuxed into
+the cache (:mod:`cutpoint.tsrepair`, #1052); :func:`staged_path` returns that copy before the
+staged one, so every read sees the timeline ffmpeg plays.
 """
 
 from __future__ import annotations
@@ -25,12 +29,13 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from cutpoint import cache, jsonout, state
+from cutpoint import cache, jsonout, paths, state
 from cutpoint.config import (
     canonical_source,
     get_config,
@@ -216,8 +221,15 @@ def _base_key(slot: str, entry: dict[str, Any]) -> str:
 # from, so a long-lived process (`cutpoint ui`) sees copies staged by another process and an
 # edited stage_dir or source_remap without reload_stage_index().
 _INDEX: dict[tuple, dict[str, dict]] = {}
-# staged_path results: path -> (result, size of the copy; None when result is path).
-_STAGED: dict[tuple, dict[str, tuple[str, int | None]]] = {}
+# staged_path results: path -> (result, size of the copy or None when result is path, whether
+# the result is a timeline copy of tsrepair).
+_STAGED: dict[tuple, dict[str, tuple[str, int | None, bool]]] = {}
+# The last loaded timeline index of tsrepair (cache_dir()/timeline-index.json), by its stamp.
+_TIMELINE: dict[tuple, dict[str, dict]] = state.register_container(__name__, "_TIMELINE", {})
+# A thread inside unrepaired(): staged_path skips the timeline copies (tsrepair reads the
+# recording itself).
+_LOCAL = threading.local()
+TIMELINE_INDEX = "timeline-index.json"  # in the cache folder (cutpoint.tsrepair)
 
 
 def _index_stamp(stage_dir: Path) -> tuple:
@@ -246,29 +258,82 @@ def reload_stage_index() -> None:
     ``stage_dir``, ``source_remap`` or the index file changes)."""
     _stage_index.cache_clear()  # type: ignore[attr-defined]
     staged_path.cache_clear()  # type: ignore[attr-defined]
+    _TIMELINE.clear()
     _EXPANDED.clear()
     _SUBST.clear()
 
 
-def staged_path(path: str) -> str:
+@contextlib.contextmanager
+def unrepaired() -> Iterator[None]:
+    """In the block, :func:`staged_path` of this thread returns no timeline copy
+    (:mod:`cutpoint.tsrepair`): reads see the recording itself (or its staged copy)."""
+    before = getattr(_LOCAL, "unrepaired", False)
+    _LOCAL.unrepaired = True
+    try:
+        yield
+    finally:
+        _LOCAL.unrepaired = before
+
+
+def _timeline_stamp() -> tuple:
+    """``(cache folder, stamp of its timeline index or None)``; no folder is created."""
+    root = paths.cache_dir()
+    return (root, file_stamp(root / TIMELINE_INDEX))
+
+
+def timeline_index(stamp: tuple | None = None) -> dict[str, dict]:
+    """tsrepair's timeline index ``{stage key: {"file", "size", "mtime_ns", "copy_size"}}``
+    (``file`` relative to the cache folder), cached until the index file changes."""
+    stamp = stamp or _timeline_stamp()
+    index = _TIMELINE.get(stamp)
+    if index is None:
+        data = cache.load_json(stamp[0] / TIMELINE_INDEX)
+        index = data if isinstance(data, dict) else {}
+        _TIMELINE.clear()
+        _TIMELINE[stamp] = index
+    return index
+
+
+def staged_path(path: str, *, repaired: bool = True) -> str:
     """Local staged copy of a source if one exists, else ``path`` unchanged.
+
+    A timeline copy of a joined MPEG-TS/PS recording (:mod:`cutpoint.tsrepair`) comes first,
+    unless ``repaired`` is False or the thread is inside :func:`unrepaired`.
 
     A copy counts only if its size matches the size recorded when it was
     staged. Non-video arguments (pipes, lavfi specs, outputs) never match the
     index, so this is safe to apply to any ffmpeg ``-i`` argument.
 
-    Results are cached until ``stage_dir``, ``source_remap`` or the stage index
-    file changes; a cached copy is checked again (one stat), so one deleted or
+    Results are cached until ``stage_dir``, ``source_remap``, the stage index or the timeline
+    index file changes; a cached copy is checked again (one stat), so one deleted or
     truncated by hand is no longer returned.
     """
+    if not repaired or getattr(_LOCAL, "unrepaired", False):
+        return _staged_path(path, repaired=False)[0]
+    return _memo_hit(path)[0]
+
+
+def timeline_copy(path: str) -> str | None:
+    """The timeline copy :func:`staged_path` reads for ``path`` (:mod:`cutpoint.tsrepair`), or
+    None when it reads none."""
+    hit = _memo_hit(path)
+    return hit[0] if hit[2] else None
+
+
+def _memo_hit(path: str) -> tuple[str, int | None, bool]:
+    """:func:`staged_path`'s memo entry for ``path`` (made when missing or stale)."""
     cfg = get_config()
-    deps = (cfg.source_remap, _index_stamp(cfg.stage_dir))
+    deps = (cfg.source_remap, _index_stamp(cfg.stage_dir), _timeline_stamp())
     memo = _STAGED.get(deps)
     if memo is None:
         _STAGED.clear()
         memo = _STAGED[deps] = {}
     hit = memo.get(path)
-    if hit is not None and hit[1] is not None:
+    if hit is not None and hit[2]:
+        # a timeline copy is looked up again (its source stat too): a source replaced at its
+        # path in a long-lived process (`cutpoint ui`) no longer reads the old copy
+        hit = None
+    elif hit is not None and hit[1] is not None:
         try:
             if Path(hit[0]).stat().st_size != hit[1]:
                 hit = None
@@ -276,34 +341,79 @@ def staged_path(path: str) -> str:
             hit = None
     if hit is None:
         hit = memo[path] = _staged_path(path)
-    return hit[0]
+    return hit
 
 
 state.register_dict_cache(staged_path, _STAGED, lambda: sum(map(len, _STAGED.values())))
 
 
-def _staged_path(path: str) -> tuple[str, int | None]:
-    """:func:`staged_path` without the cache: ``(result, size of the copy or None)``."""
+def _timeline_path(path: str) -> tuple[str, int] | None:
+    """``(timeline copy, its size)`` of the source read at ``path`` (:mod:`cutpoint.tsrepair`),
+    or None. It counts only while the source keeps the size and mtime and the copy the size
+    the index recorded."""
+    stamp = _timeline_stamp()
+    index = timeline_index(stamp)
+    if not index:
+        return None
+    entry = index.get(stage_key(path))
+    if not isinstance(entry, dict):
+        return _timeline_unlisted(path)
+    try:
+        st = Path(path).stat()
+        copy = stamp[0] / entry["file"]
+        if (
+            st.st_size != entry["size"]
+            or st.st_mtime_ns != entry["mtime_ns"]
+            or copy.stat().st_size != entry["copy_size"]
+        ):
+            return None
+    except (OSError, KeyError, TypeError):
+        return None
+    logger.debug("timeline copy read %s -> %s", path, copy)
+    return str(copy), entry["copy_size"]
+
+
+def _timeline_unlisted(path: str) -> tuple[str, int] | None:
+    """``(timeline copy, its size)`` of a source the timeline index lacks (two runs wrote the
+    index at once and one entry was lost), from the ``copy_size`` its own cache folder records
+    with the copy (the folder is keyed by the source's size and mtime)."""
+    try:
+        cdir = cache.source_dir(Path(path), create=False)
+        size = (cache.load_json(cdir / "timeline.json") or {}).get("copy_size")
+        copy = cdir / "timeline.mkv"
+        if not isinstance(size, int) or copy.stat().st_size != size:
+            return None
+    except (OSError, AttributeError):
+        return None
+    logger.debug("timeline copy read %s -> %s (not in the index)", path, copy)
+    return str(copy), size
+
+
+def _staged_path(path: str, *, repaired: bool = True) -> tuple[str, int | None, bool]:
+    """:func:`staged_path` without the cache: ``(result, size of the copy or None, whether it
+    is a timeline copy)``."""
     if not path or path.startswith(("-", "pipe:")) or "=" in path:
-        return path, None
+        return path, None, False
+    if repaired and (timeline := _timeline_path(path)) is not None:
+        return timeline[0], timeline[1], True
     index = _stage_index()
     if not index:
-        return path, None
+        return path, None, False
     key, parts = _identity(path)
     slot = _find(index, key, parts)
     if slot is None:
         slot = _find_subst(index, key)
     if slot is None:
-        return path, None
+        return path, None, False
     entry = index[slot]
     copy = get_config().stage_dir / entry["file"]
     try:
         if copy.stat().st_size != entry["size"]:
-            return path, None
+            return path, None, False
     except OSError:
-        return path, None
+        return path, None, False
     logger.debug("staged read %s -> %s", path, copy)
-    return str(copy), entry["size"]
+    return str(copy), entry["size"], False
 
 
 def _query_dos_device(drive: str) -> str | None:
