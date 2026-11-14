@@ -388,7 +388,12 @@ def test_a_turn_previews_a_ranking_and_chat_json_keeps_the_event_and_the_key(
     assert saved["ranking_key"] == ui.ranking_key(project_dir)
     assert any(e["kind"] == "ranking" for e in saved["events"])
     assert saved["reply"].startswith("Previewed the funny ranking")
-    assert str(project_dir) not in json.dumps(fake.requests)
+    # a model on this machine is told the project folder in the files block (#1010); nothing
+    # else names it
+    sent = fake.requests[0]
+    others = [m for i, m in enumerate(sent["messages"]) if i != 1]
+    assert str(project_dir) not in json.dumps([others, sent["tools"]])
+    assert str(project_dir) not in sent["messages"][1]["content"].split("<<<DATA files>>>")[0]
 
 
 def test_a_360_project_is_not_offered_the_tool(home, tmp_path, client, monkeypatch) -> None:

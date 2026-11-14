@@ -5,8 +5,10 @@ The model is the scripted ``FakeProvider`` of ``test_assistant``.
 
 from __future__ import annotations
 
+import getpass
 import json
 import logging
+import socket
 import threading
 import time
 from collections.abc import Iterator
@@ -1300,3 +1302,161 @@ def test_more_edit_phrasings_get_the_nudge_and_advice_questions_do_not(
     assert len(fake.requests) == (2 if nudged else 1)
     if nudged:
         assert fake.requests[1]["messages"][-1]["content"] == session.NUDGE
+
+
+# -- project files and where they are (#1010) ------------------------------------------------
+
+
+def _calls(*named: tuple[str, dict[str, Any]]) -> Reply:
+    """A reply with several tool calls."""
+    raw = [{"function": {"name": n, "arguments": a}} for n, a in named]
+    return Reply(
+        "",
+        [providers.ToolCall(n, a) for n, a in named],
+        {"role": "assistant", "content": "", "tool_calls": raw},
+    )
+
+
+def _with_files(p: Path) -> None:
+    """Give project ``p`` a transcript, events, a final with subtitles and an export."""
+    (p / "transcript.txt").write_text(
+        "[clip.mp4 00:00:10.0-00:00:14.0] hello there, that was a big laugh\n", "utf-8"
+    )
+    (p / "events.txt").write_text("LAUGH clip.mp4 00:00:11\n", "utf-8")
+    (p / "final.mp4").write_bytes(b"x")
+    (p / "final.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", "utf-8")
+    (p / "clips").mkdir()
+    cache.save_json(p / "clips" / "manifest.json", {"clips": []})
+    (p / "ui").mkdir(exist_ok=True)
+    cache.save_json(
+        p / "ui" / "exports.json", {"exports": [{"dir": "clips", "final": "final.mp4"}]}
+    )
+
+
+def _every_tool() -> list[Reply]:
+    """Every tool the assistant offers or refuses, a rejected proposal, then a valid one;
+    then, in a turn of its own (it ends the turn), a ranking preview."""
+    reads = _calls(
+        ("find_moments", {"query": "laugh"}),
+        ("get_moment", {"id": "m1"}),
+        ("get_transcript", {"id": "m1", "pad": 30}),
+        ("find_words", {"query": "hello there"}),
+        ("look_for", {"query": "a dog on a beach"}),
+        ("show_moments", {"ids": ["m1"], "note": "the laugh"}),
+        ("view_moment", {"id": "m1"}),
+        ("no_such_tool", {}),
+    )
+    bad = call(
+        "propose_edit",
+        summary="Add a range",
+        ops=[{"op": "add_range", "file": "nope.mp4", "start": 1, "end": 2}],
+    )
+    good = call("propose_edit", summary="Add the fall", ops=[{"op": "add", "id": "m3"}])
+    return [reads, bad, good, call("preview_ranking", style="funny")]
+
+
+def test_the_chat_lists_the_project_files_and_the_page_gets_their_folders(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
+) -> None:
+    p, seq, _ = proj
+    _with_files(p)
+    want = [
+        {"name": "transcript.txt", "target": "project"},
+        {"name": "highlights.json", "target": "project"},
+        {"name": "events.txt", "target": "project"},
+        {"name": "final.mp4", "target": "project"},
+        {"name": "final.srt", "target": "project"},
+        {"name": "clips/", "target": "clips"},
+    ]
+    use(monkeypatch, FakeProvider([]))
+    assert client.get("/api/projects/cli/assistant").json()["files"] == want
+    fake = use(monkeypatch, FakeProvider([Reply("It is transcript.txt.")]))
+    view = ask(client, "where is the transcript?", seq)
+    assert view["files"] == want
+    ctx = fake.requests[0]["messages"][1]["content"]
+    block = ctx[ctx.index("<<<DATA files>>>") :]
+    for f in want:
+        assert json.dumps(f["name"]) in block
+    # a model on this machine also gets the project folder
+    assert json.dumps({"folder": str(p)}, separators=(",", ":")) in block
+
+
+def test_no_path_user_or_host_name_reaches_a_hosted_model(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj, tmp_path: Path
+) -> None:
+    """Owner rule (#1010): host information only to a model on this machine. Every prompt and
+    every tool result of a hosted model's turn, over every tool, has names only."""
+    p, seq, _ = proj
+    _with_files(p)
+    # an earlier turn answered by a model on this machine, with the full path
+    use(monkeypatch, FakeProvider([Reply(f"It is {p / 'transcript.txt'}.")]))
+    assert ask(client, "where is the transcript?", seq)["status"] == "done"
+    fake = use(monkeypatch, HostedFake(_every_tool()))
+    fake.context_tokens = 64000  # room for the earlier turns
+    monkeypatch.setattr(ui.ai_lookfor, "indexed", lambda _sources: True)  # look_for is offered
+    ok = client.post(
+        "/api/assistant/consent", json={"key": "assistant-v3:anthropic@api.anthropic.com"}
+    )
+    assert ok.status_code == 200, ok.text
+    view = ask(client, "where is the transcript and the final video on my computer?", seq)
+    assert view["status"] == "done" and view["events"][-1]["kind"] == "proposal"
+    names = [e.get("name") for e in view["events"] if e["kind"] == "tool"]
+    assert {"find_moments", "get_moment", "get_transcript", "find_words", "look_for"} <= set(names)
+    assert len(fake.requests) == 3  # every tool result went back to the model
+    ranked = ask(client, "rank it as funny", seq)  # the earlier turn's reply goes along too
+    assert ranked["status"] == "done" and ranked["events"][-1]["kind"] == "ranking"
+
+    sent = json.dumps(fake.requests, default=str)
+    assert "It is transcript.txt." in sent  # the local model's reply, without the folder
+    assert "transcript.txt" in sent and "final.mp4" in sent and "clips/" in sent
+    assert '"folder"' not in sent
+    secrets_ = {str(tmp_path), str(p), str(p.parent), getpass.getuser(), socket.gethostname()}
+    secrets_ |= {part for part in tmp_path.parts[1:] if part.lower() not in {"tmp", "temp"}}
+    for secret in secrets_:
+        for spelling in {secret, json.dumps(secret)[1:-1]}:  # as is and JSON-escaped
+            assert spelling not in sent, secret
+
+
+def test_an_earlier_reply_with_the_folder_reaches_only_a_model_on_this_machine(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
+) -> None:
+    """A local model's reply naming the full path stays in chat.json and goes back to a later
+    local turn, but a hosted model the user switched to gets only the file names (#1010)."""
+    p, seq, _ = proj
+    windows = str(p).replace("/", "\\")
+    replies = [
+        f"It is {p / 'transcript.txt'}",
+        f"Or {windows}\\events.txt and {p.as_posix()}/final.mp4 in {p}",
+    ]
+    (p / "ui" / "assistant").mkdir(parents=True)
+    for r in replies:
+        ai_store.add_turn(p, {"user": "where?", "reply": r})
+    fake = use(monkeypatch, HostedFake([Reply("Fine.")]))
+    fake.context_tokens = 64000  # room for the earlier turns
+    ok = client.post(
+        "/api/assistant/consent", json={"key": "assistant-v3:anthropic@api.anthropic.com"}
+    )
+    assert ok.status_code == 200, ok.text
+    assert ask(client, "and now?", seq)["status"] == "done"
+    sent = json.dumps(fake.requests, default=str)
+    assert "It is transcript.txt" in sent and "Or events.txt and final.mp4 in " in sent
+    for spelling in {str(p), p.as_posix(), windows, str(p.parent)}:
+        for form in {spelling, json.dumps(spelling)[1:-1]}:
+            assert form not in sent, form
+    assert [t["reply"] for t in ai_store.turns(p)][:2] == replies  # chat.json keeps them
+
+    local = use(monkeypatch, FakeProvider([Reply("Yes.")]))
+    local.context_tokens = 64000
+    assert ask(client, "and locally?", seq)["status"] == "done"
+    assert json.dumps(replies[0])[1:-1] in json.dumps(local.requests, default=str)
+
+
+def test_a_model_on_this_machine_gets_the_project_folder(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
+) -> None:
+    p, seq, _ = proj
+    fake = use(monkeypatch, FakeProvider([Reply("It is in the project folder.")]))
+    ask(client, "where is the project?", seq)
+    sent = json.dumps(fake.requests, default=str)
+    # the folder sits in the files data block (JSON-escaped once), then in the dumped requests
+    assert json.dumps(json.dumps(str(p))[1:-1])[1:-1] in sent

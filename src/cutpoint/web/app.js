@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, AI_OTHER, aiModelChoices, baseName, colorNote, crashOf, crashText, filtersOn, fmt, fmtBytes, fmtLen, h, KINDS, kindOf, markdown, momentMatches, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, scoreText, spanText, svg, themeFromStored } from './util.js';
+import { $, AI_OTHER, aiModelChoices, baseName, colorNote, crashOf, crashText, filtersOn, fmt, fmtBytes, fmtLen, h, KINDS, kindOf, markdown, momentMatches, namedFolders, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, scoreText, spanText, svg, themeFromStored } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -1182,7 +1182,7 @@ async function resumeRun(btn) {
 /** A command line as typed: arguments with spaces or quotes in double quotes. */
 const commandLine = (argv) => argv.map((a) => (/[\s"]/.test(a) || a === '' ? `"${a.replace(/"/g, '\\"')}"` : a)).join(' ');
 
-/** Ask the server to show a project folder in the file manager: 'sources', 'clips' or 'outputs'. */
+/** Ask the server to show a project folder in the file manager: 'sources', 'clips', 'outputs' or 'project'. */
 async function revealFolder(btn, target = 'sources') {
   btn.disabled = true; // one request at a time
   try {
@@ -5228,7 +5228,7 @@ async function loadAssistant() {
   const pid = S.id;
   clearTimeout(S.chatTimer);
   S.turn = null;
-  const chat = S.chat = pid ? { pid, provider: null, consent: null, frames: null, turns: [], error: '', loaded: false } : null;
+  const chat = S.chat = pid ? { pid, provider: null, consent: null, frames: null, turns: [], files: [], error: '', loaded: false } : null;
   S.history = [];
   S.dismissed.clear();
   S.rankings.clear();
@@ -5241,6 +5241,7 @@ async function loadAssistant() {
     chat.provider = a.provider;
     chat.consent = a.consent ?? null;
     chat.frames = a.frames ?? null;
+    chat.files = a.files ?? [];
     chat.turns = (a.turns ?? []).map(chatTurn);
     S.history = hist.applied ?? [];
     const run = a.running?.[0];
@@ -5278,6 +5279,7 @@ async function sendChat(e) {
     // its events, even those already in this answer, come in through pollTurn, which acts on them
     chat.turns.push(chatTurn({ ...t, status: 'running', events: [] }));
     if (t.provider) chat.provider = t.provider;
+    if (t.files) chat.files = t.files;
     S.turn = { id: t.id, next: 0 };
     $('#chatLive').textContent = 'Sent. The assistant is answering.';
     S.chatTimer = setTimeout(pollTurn, t.status === 'running' ? CHAT_POLL_MS : 0);
@@ -5306,6 +5308,7 @@ async function pollTurn() {
     t.ranking_key = v.ranking_key ?? t.ranking_key;
     run.next = v.next;
     if (v.provider) chat.provider = v.provider;
+    if (v.files) chat.files = v.files; // the files this turn's model was told of
     for (const ev of v.events) onChatEvent(ev);
     if (v.status !== 'running') {
       S.turn = null;
@@ -5675,7 +5678,7 @@ function turnItems(t) {
     flush();
     if (ev.kind === 'show') items.push(showItem(ev, id, query));
     else if (ev.kind === 'reply') items.push(h('li', { class: 'msg ai plain', 'data-id': id }, h('span', { class: 'vh', text: 'Assistant: ' }), markdown(ev.text),
-      idsMoved(t) ? h('p', { class: 'msg-meta', 'data-act': 'ids-moved', text: '(moment ids changed since)' }) : null));
+      idsMoved(t) ? h('p', { class: 'msg-meta', 'data-act': 'ids-moved', text: '(moment ids changed since)' }) : null, folderActs(ev.text)));
     else if (ev.kind === 'proposal') items.push(proposalItem(ev, id));
     else if (ev.kind === 'ranking') items.push(rankingItem(ev, id));
     else if (ev.kind === 'frames_consent') items.push(framesItem(ev, id, t));
@@ -5689,6 +5692,18 @@ function turnItems(t) {
   else if (t.status === 'cancelled') items.push(h('li', { class: 'msg step', 'data-id': `${t.id}-x`, text: 'Cancelled.' }));
   else if (t.error && !t.events.some((e) => e.kind === 'error')) items.push(h('li', { class: 'msg ai bad', 'data-id': `${t.id}-x`, text: t.error }));
   return items;
+}
+
+const FOLDER_ACTS = { project: 'Open project folder', clips: 'Open clips folder' };
+
+/** Open folder buttons for a reply that names a project file (#1010): the page knows where the files are, the model only their names. None where folders cannot be opened (as Show folder). */
+function folderActs(text) {
+  const targets = S.canReveal ? namedFolders(text, S.chat?.files) : [];
+  if (!targets.length) return null;
+  return h('span', { class: 'msg-acts' }, targets.map((target) => h('button', {
+    type: 'button', class: 'btn small', 'data-act': 'open-folder', 'data-target': target,
+    onclick: (e) => revealFolder(e.currentTarget, target),
+  }, icon('folder'), FOLDER_ACTS[target])));
 }
 
 /** Turn ``t`` was answered on another ranking than the project's now (Q7, #902): the short moment ids its replies name may point elsewhere. Nothing without both keys. */

@@ -765,6 +765,15 @@ caches cannot give that style, the card says it needs a new analysis: click Anal
 moment search. After the ranking changes, earlier replies are marked "(moment ids changed
 since)". Only file names go to the model, never paths.
 
+Project files: asked where a file is ("where is the transcript?"), the chat names it:
+`transcript.txt`, `highlights.json`, `events.txt`, the final videos with their subtitles and
+timelines (`final.mp4`, `final.srt`, `<name>-final.mp4`) and the clips folder of the latest
+export. When a reply names one, the page shows **Open project folder** (or **Open clips folder**)
+next to it, which opens that folder in the file manager; on a machine that cannot open folders
+(no display, Docker) the button is not shown. A hosted model gets the file names only; a model on
+this machine (Ollama here, not on another machine, and not a subscription) is also given the
+project folder's path, so it can answer with the full path.
+
 Undo ranking: after a ranking change (here, by an earlier chat or by `cutpoint rerank`), the
 card in use has **Undo** and the Moments column has a link "Undo ranking (was <style>)". It
 swaps `highlights.json` and `highlights.before-rerank.json`, so the moments and their ids are

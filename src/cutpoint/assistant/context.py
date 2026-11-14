@@ -4,7 +4,8 @@ Moments get short ids (``m1``, ``m2``, ...; :class:`MomentTable`), mapped back t
 moment ids on the server, so the model never handles the hash ids. Everything that comes from
 the project (labels, transcripts, file names) is untrusted: it goes inside marked data blocks
 (:func:`data_block`) that the rules say are never instructions. Only file names are shown, not
-paths.
+paths: the project's own files too (:func:`project_files`, for "where is the transcript?"), with
+the project folder's path only for a model on this machine (:func:`files_block`).
 
 What analysis saw goes along as text and numbers, never frames: ``seen`` (the vision rating's
 label and the description of the ``events`` VLM window over the moment), ``cues`` (visual,
@@ -936,6 +937,71 @@ def rules(table: MomentTable, *, images: bool = False) -> str:
     return f"{RULES[:at]}{seen_rules(table, images=images)}\n\n{RULES[at:]}"
 
 
+# What a project file holds, for the model (:func:`project_files`).
+FILE_HOLDS = {
+    "transcript.txt": "the time-stamped transcript of the footage",
+    "highlights.json": "the analysis: the ranked moments with their scores",
+    "events.txt": "the detected events: sounds, on-screen events and what the vision model saw",
+}
+OUTPUT_HOLDS = {
+    ".mp4": "a final video",
+    ".srt": "the subtitles of a final video",
+    ".fcpxml": "a timeline of a final video, for an editing program",
+    ".otio": "a timeline of a final video, for an editing program",
+}
+MAX_OUTPUT_FILES = 12  # final videos, timelines and subtitles listed, newest first
+
+
+def project_files(
+    present: list[str], outputs: list[str], clips: str | None
+) -> list[dict[str, str]]:
+    """The project files the chat may name, each ``{name, holds, target}``: ``target`` is the
+    folder the page opens for it (``project``: the project folder; ``clips``: the latest
+    export's clips folder, listed as ``<dir>/``). Names only, never a path.
+
+    Args:
+        present: The analysis files of :data:`FILE_HOLDS` that exist in the project folder.
+        outputs: The finals in the project folder, newest first (``ui.output_names``).
+        clips: The folder of the latest export with its clips, if any.
+    """
+    rows = [{"name": n, "holds": FILE_HOLDS[n], "target": "project"} for n in present]
+    for name in outputs[:MAX_OUTPUT_FILES]:
+        holds = OUTPUT_HOLDS.get(name[name.rfind(".") :].lower()) if "." in name else None
+        if holds:
+            rows.append({"name": name, "holds": holds, "target": "project"})
+    if clips:
+        rows.append(
+            {
+                "name": f"{clips}/",
+                "holds": "the clips of the latest export: a video and subtitles per clip, "
+                "and manifest.json",
+                "target": "clips",
+            }
+        )
+    return rows
+
+
+def files_block(files: list[dict[str, str]], folder: str | None = None) -> str:
+    """The project's files for the model: their names and what each holds; ``folder`` (the
+    absolute project folder) only for a model on this machine. Empty without files or folder."""
+    if not files and not folder:
+        return ""
+    if folder:
+        where = (
+            "This model runs on the user's computer, so it may give the project folder "
+            "(folder below) and the full path of a file in it; the clips folder is inside it. "
+        )
+    else:
+        where = "Where they are is not given: never guess a folder or path. "
+    rows = [{"folder": folder}] if folder else []
+    rows += [{"name": f["name"], "holds": f["holds"]} for f in files]
+    return (
+        "\nThe project's files (in the project folder). When the user asks where a file is or "
+        "what holds something, name the file exactly as listed; the page can then show an Open "
+        f"folder button next to the reply. {where}\n" + data_block("files", _jsonl(rows))
+    )
+
+
 def build_messages(
     table: MomentTable,
     turns: list[dict[str, Any]],
@@ -946,6 +1012,8 @@ def build_messages(
     images: bool = False,
     target: float | None = None,
     late_rules: str = "",
+    files: list[dict[str, str]] | None = None,
+    folder: str | None = None,
 ) -> list[dict[str, Any]]:
     """The conversation for one new user message ``text``.
 
@@ -959,6 +1027,9 @@ def build_messages(
         images: Whether view_moment is offered, so the rules say it shows frames.
         target: The length in seconds the user asked for, if any (:func:`target_seconds`).
         late_rules: Rules that follow all others (look_for, view_moment), measured with them.
+        files: The project's files the model may name (:func:`project_files`).
+        folder: The absolute project folder, only for a model on this machine (never a hosted
+            one: host information stays here).
     """
     text_rules = (
         rules(table, images=images)
@@ -966,7 +1037,8 @@ def build_messages(
         + late_rules
     )
     seq = sequence_block(table)
-    room = plan.chars - len(text_rules) - len(text) - len(seq)
+    named = files_block(files or [], folder)
+    room = plan.chars - len(text_rules) - len(text) - len(seq) - len(named)
     history: list[dict[str, Any]] = []
     spent = 0
     for turn in reversed(turns[-plan.turns :] if plan.turns else []):
@@ -1012,7 +1084,7 @@ def build_messages(
     context = (
         f"The current sequence and the project's moments ({scores}; seq is the moment's "
         "position in the sequence, null when it is not in it):\n"
-        f"{goal}{seq}\n{data_block('moments', chr(10).join(rows) or '(none)')}{note}"
+        f"{goal}{seq}\n{data_block('moments', chr(10).join(rows) or '(none)')}{note}{named}"
     )
     return [
         {"role": "system", "content": text_rules},

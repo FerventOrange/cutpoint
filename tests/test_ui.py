@@ -3407,6 +3407,31 @@ def test_show_folder_targets_open_the_latest_clips_and_the_final_folder(
     assert res.status_code == 500 and "Access is denied" in res.json()["detail"]
 
 
+def test_show_folder_project_opens_the_project_folder_itself(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reveal_env: tuple[list[Path], str, Path, Path, str],
+) -> None:
+    """AI Chat's Open project folder (#1010): always there, nothing exported or assembled yet;
+    the path still comes from the project, and a machine without a file manager says so."""
+    opened, _pid, _folder, p, reveal = reveal_env
+    res = client.post(reveal, params={"target": "project", "path": str(tmp_path)})
+    assert res.status_code == 200 and res.json() == {"path": str(p)}
+    assert opened == [p]
+    assert (
+        client.post(
+            reveal, params={"target": "project"}, headers={"X-Cutpoint-Token": ""}
+        ).status_code
+        == 403
+    )
+    monkeypatch.setattr(ui, "folder_opener", lambda: None)
+    res = client.post(reveal, params={"target": "project"})
+    assert res.status_code == 501
+    assert res.json()["detail"] == "Opening folders isn't available on this machine"
+    assert opened == [p]
+
+
 @pytest.mark.parametrize("bad", ["..", ".", ".hidden"])
 def test_exports_json_cannot_point_outside_the_project(
     client: TestClient, reveal_env: tuple[list[Path], str, Path, Path, str], bad: str

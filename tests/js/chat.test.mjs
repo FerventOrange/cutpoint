@@ -845,3 +845,41 @@ test('card Apply of a color-only proposal on a non-empty sequence posts directly
   await m.click('#chatLog [data-pid="pr1"] [data-act="apply"]');
   assert.equal(m.posts('/proposals/pr1/applied').length, 1);
 });
+
+test('a reply naming a project file gets Open folder buttons that open the folder the server resolves', async (t) => {
+  const files = [{ name: 'transcript.txt', target: 'project' }, { name: 'clips/', target: 'clips' }];
+  const text = 'The transcript is transcript.txt, and the clips are in the clips folder. myfinal.mp4.bak is not listed.';
+  const m = await chatPage(t, {
+    assistant: { files },
+    routes: {
+      'GET /api/session': { styles: ['funny'], can_reveal: true, can_pick: false },
+      'POST /api/projects/p1/reveal': { path: 'x' },
+      ...turnRoutes([{ kind: 'reply', n: 0, text }], 'done', { files }),
+    },
+  });
+  await m.send('where is the transcript?');
+  await m.tick(1000);
+  const buttons = [...m.d.querySelectorAll('#chatLog [data-act="open-folder"]')];
+  assert.deepEqual(buttons.map((b) => [b.dataset.target, b.textContent.trim()]), [['project', 'Open project folder'], ['clips', 'Open clips folder']]);
+  buttons[0].click();
+  await m.page.settle();
+  const post = m.page.requests.find((r) => r.method === 'POST' && r.path === '/api/projects/p1/reveal');
+  assert.equal(post.query, '?target=project');
+  assert.equal(post.body, undefined, 'the request names only the target');
+});
+
+const SAVED = { id: 't0', user: 'where is the final?', status: 'done', events: [{ kind: 'reply', n: 0, text: 'It is final.mp4.' }], reply: 'It is final.mp4.' };
+
+test('a saved reply gets its button from the files the chat loads', async (t) => {
+  const m = await chatPage(t, {
+    assistant: { turns: [SAVED], files: [{ name: 'final.mp4', target: 'project' }] },
+    routes: { 'GET /api/session': { styles: ['funny'], can_reveal: true, can_pick: false } },
+  });
+  assert.deepEqual([...m.d.querySelectorAll('#chatLog [data-act="open-folder"]')].map((b) => b.dataset.target), ['project']);
+});
+
+test('no Open folder button where folders cannot be opened, as Show folder', async (t) => {
+  const m = await chatPage(t, { assistant: { turns: [SAVED], files: [{ name: 'final.mp4', target: 'project' }] } }); // can_reveal false
+  assert.equal(m.d.querySelector('#chatLog [data-act="open-folder"]'), null);
+  assert.match(m.log().join(' '), /final\.mp4/);
+});
