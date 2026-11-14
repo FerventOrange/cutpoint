@@ -1348,8 +1348,10 @@ Nothing new is required. Without the `events` extra or the model files, a step i
 logs an `ERROR`, adds a `step_failed` warning and the run continues without it. A failed HUD
 OCR logs a `WARNING` instead, naming the sources left without menu filtering and HUD events;
 the sources read before it keep theirs. A GPU out of memory in the HUD OCR is the exception.
-When the background read runs out of memory, that source is read again in its turn, with an
-`INFO` line. A GPU out of memory in that read again or
+When the background read runs out of memory, or the memory guard finds too little RAM free for
+its OCR engine, that source is read again in its turn, with an `INFO` line. The background
+check frees nothing; the check in its turn frees cached models first. Too little RAM then, a
+GPU out of memory in that read again, or
 in any other OCR read (the inline read, HUD region discovery, `events`) stops the run with
 `error.code` `low_memory`. The `ERROR` line says to close other programs and run
 `cutpoint resume <project>`. The VLM
