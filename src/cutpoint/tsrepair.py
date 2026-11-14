@@ -22,15 +22,18 @@ import logging
 import os
 import re
 import shutil
-from collections.abc import Collection, Iterable
+import time
+import uuid
+from collections.abc import Collection, Iterable, Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache, jsonout, procs, stage, state
+from cutpoint import cache, folders, jsonout, procs, stage, state
 from cutpoint.config import remap_source
-from cutpoint.errors import FFmpegError
+from cutpoint.errors import FFmpegError, FolderBusyError
 from cutpoint.ffmpeg_utils import MediaInfo, probe, run_progress
 
 logger = logging.getLogger(__name__)
@@ -44,15 +47,19 @@ CONTAINERS = ("mpegts", "mpeg")
 MISMATCH_S = 1.0  # read and probed length this far apart (with a jump) make a copy
 FREE_FACTOR = 1.05  # free space the copy needs, times the source's size
 _DISCONTINUITY = re.compile(r"timestamp discontinuity[^\n]*")
-_PART = re.compile(r"timeline\.(\d+)\.part\.mkv")
+_PART = re.compile(r"timeline\.(\d+)\.[0-9a-f]{8}\.part\.mkv")
 # What a source keeps of its cache when it is first marked for a copy: the audio and what is
 # made of it come out the same from the copy (ffmpeg corrected the jumps when it was extracted)
 _KEPT = ("audio16k.wav", "audio16k-tracks.json", "loudness.json", "transcript-*.json",
-         "fallback-transcript-*.json", TIMELINE_FILE, COPY_FILE, "timeline.*.part.mkv")  # fmt: skip
+         "fallback-transcript-*.json", TIMELINE_FILE, COPY_FILE, "timeline.*.part.mkv",
+         ".timeline.cutpoint-lock")  # fmt: skip
 
 # (stage key, copy size) of the copies this process has logged (`edit` runs the analysis and
 # the clips, a `cutpoint ui` many reads: the INFO line comes once)
 _REPORTED: set[tuple[str, int]] = state.register_container(__name__, "_REPORTED", set())
+# stage key -> the message of the copy that failed this run: not tried again (a copy that
+# appears halfway would drop the caches this run wrote), the warning code still reported
+_FAILED: dict[str, str] = state.register_container(__name__, "_FAILED", {})
 
 
 @dataclass(frozen=True)
@@ -160,12 +167,51 @@ def _drop_stale_caches(cdir: Path) -> None:
 def ensure_copy(src: Path, verdict: Verdict) -> Path | None:
     """The stream copy of ``src`` on ffmpeg's clock, remuxed into its cache folder when it is
     missing; None when it cannot be made (too little free space, ffmpeg failed: a WARNING and
-    the ``--json`` warning ``timeline_remux_failed``)."""
+    the ``--json`` warning ``timeline_remux_failed``; not tried again in this process).
+
+    One run at a time makes the copy of a source (a lock in its cache folder); another waits
+    and uses the copy that run made.
+    """
     io = remap_source(src)
     st = io.stat()
     cdir = cache.source_dir(src)
     copy = cdir / COPY_FILE
     key = stage.stage_key(io)
+    if key in _FAILED:
+        if not jsonout.has_warning("timeline_remux_failed", [src]):
+            jsonout.warn("timeline_remux_failed", _FAILED[key], [src])
+        return None
+    if _registered(key, copy, st):
+        return copy
+    with _copy_lock(cdir, src):
+        return _make_copy(src, verdict, io, st, cdir, key)
+
+
+@contextlib.contextmanager
+def _copy_lock(cdir: Path, src: Path) -> Iterator[None]:
+    """Hold the lock of the copy in ``cdir`` (:func:`cutpoint.folders.swap_lock`), waiting for
+    another run that holds it (a stale one is taken over)."""
+    held = ExitStack()
+    waiting = False
+    while True:
+        try:
+            held.enter_context(folders.swap_lock(cdir / "timeline"))
+            break
+        except FolderBusyError:
+            if not waiting:
+                waiting = True
+                logger.info("%s: waiting for another run to finish its stream copy", src.name)
+            time.sleep(0.2)
+    with held:
+        yield
+
+
+def _make_copy(
+    src: Path, verdict: Verdict, io: Path, st: os.stat_result, cdir: Path, key: str
+) -> Path | None:
+    """:func:`ensure_copy` holding the copy's lock: the copy another run made while this one
+    waited is used, else it is remuxed."""
+    copy = cdir / COPY_FILE
     if _registered(key, copy, st):
         return copy
     stored = cache.load_json(cdir / TIMELINE_FILE) or {}
@@ -180,24 +226,22 @@ def ensure_copy(src: Path, verdict: Verdict) -> Path | None:
             verdict,
             f"too little free space in {cdir.parent} ({_size(free)} free, "
             f"{_size(round(FREE_FACTOR * st.st_size))} needed)",
+            key,
         )
         return None
-    part = cdir / f"timeline.{os.getpid()}.part.mkv"
+    part = cdir / f"timeline.{os.getpid()}.{uuid.uuid4().hex[:8]}.part.mkv"
     logger.info("%s: remuxing a stream copy (%s) into the cache", src.name, _size(st.st_size))
     args = ["ffmpeg", "-nostdin", "-y", "-v", "warning", "-i", str(io), "-map", "0:v",
             "-map", "0:a?", "-c", "copy", "-ignore_unknown", "-f", "matroska", str(part)]  # fmt: skip
     try:
         with stage.unrepaired():
             run_progress(args, verdict.read_s, f"timeline remux {src.name}")
-        if _registered(key, copy, st):  # another run finished first: keep its copy
-            part.unlink()
-            return copy
         # os.replace, not Path.replace: tests patch cache.os.replace
         cache.retry_locked(partial(os.replace, part, copy), copy, "replace")
     except FFmpegError as err:
         with contextlib.suppress(OSError):
             part.unlink(missing_ok=True)
-        _failed(src, verdict, f"ffmpeg failed: {err}")
+        _failed(src, verdict, f"ffmpeg failed: {err}", key)
         return None
     except BaseException:
         with contextlib.suppress(OSError):  # still locked (Windows, right after Ctrl+C)
@@ -270,12 +314,13 @@ def _jumps(verdict: Verdict) -> str:
     )
 
 
-def _failed(src: Path, verdict: Verdict, why: str) -> None:
+def _failed(src: Path, verdict: Verdict, why: str, key: str) -> None:
     message = (
         f"{src.name}: {_jumps(verdict)}, but no stream copy could be made ({why}); it is "
         "read as it is, so the footage after the first join may be left out"
     )
     logger.warning("%s", message)
+    _FAILED[key] = message
     if not jsonout.has_warning("timeline_remux_failed", [src]):
         jsonout.warn("timeline_remux_failed", message, [src])
 

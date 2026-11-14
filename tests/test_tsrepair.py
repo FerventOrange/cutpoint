@@ -10,15 +10,18 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from collections import namedtuple
 from pathlib import Path
 
 import pytest
 
 from conftest import StubTranscriber
-from cutpoint import analyze, cache, cli, clips, jsonout, stage, tsrepair, ui
+from cutpoint import analyze, cache, cli, clips, extend, jsonout, stage, tsrepair, ui
+from cutpoint.boundaries import SpeechSettings
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import probe
+from cutpoint.planning import Padding
 from cutpoint.styles import get_style
 
 pytestmark = [
@@ -331,7 +334,7 @@ def test_a_failed_remux_warns_and_the_source_is_read_in_place(media, scans, monk
 def test_a_part_of_a_dead_run_is_removed_before_the_next_remux(media, scans):
     src = media["back"]
     cdir = cache.source_dir(src)
-    stale = cdir / "timeline.5000000000.part.mkv"  # no such process
+    stale = cdir / "timeline.5000000000.0a1b2c3d.part.mkv"  # no such process
     stale.write_bytes(b"half")
 
     tsrepair.prepare_sources([src])
@@ -465,6 +468,7 @@ def test_caches_read_without_a_copy_are_dropped_by_the_next_successful_copy(
     with monkeypatch.context() as m:
         m.setattr(tsrepair.shutil, "disk_usage", lambda p: FREE(10, 10, 0))
         assert tsrepair.prepare_sources([src]) == {}  # read in place
+    tsrepair._FAILED.clear()  # a later run: the failed copy is tried again
     cdir = cache.source_dir(src)
     sentinel = _sentinel(cdir)  # a read in place caches a cut-short result
     assert "copy_size" not in json.loads((cdir / "timeline.json").read_text(encoding="utf-8"))
@@ -490,6 +494,7 @@ def test_a_lost_copy_that_cannot_be_made_again_marks_the_caches_for_the_next_cop
     with monkeypatch.context() as m:
         m.setattr(tsrepair.shutil, "disk_usage", lambda p: FREE(10, 10, 0))
         assert tsrepair.prepare_sources([src]) == {}
+    tsrepair._FAILED.clear()  # a later run: the failed copy is tried again
     sentinel = _sentinel(cdir)
 
     assert tsrepair.prepare_sources([src])
@@ -566,3 +571,127 @@ def test_a_copy_missing_from_the_shared_index_is_found_from_the_sources_own_fold
     stage.reload_stage_index()
 
     assert stage.staged_path(str(src)) == str(src)
+
+
+# --- review fixes, cycle 2 (#1062) -------------------------------------------------------------
+
+
+def _exported(media, tmp_path) -> tuple[Path, Path]:
+    """``(source, clips folder)`` of one clip after the join, exported from the copy."""
+    src = media["back"]
+    project = tmp_path / "proj"
+    project.mkdir()
+    record = tsrepair.prepare_sources([src])
+    cand = {"id": "h001", "source": str(src), "start": 5.0, "end": 7.0, "duration": 2.0,
+            "score": 90, "label": "late"}  # fmt: skip
+    hl = {"style": "funny", "suggested_top": 1, "candidates": [cand],
+          "sources": [{"path": str(src), "duration": 8.0, "timeline": record[str(src)]}]}  # fmt: skip
+    (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    return src, clips.export_clips(project, top=1)
+
+
+def test_extend_makes_the_copy_again_when_it_is_gone(media, scans, home, tmp_path, monkeypatch):
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    src, out = _exported(media, tmp_path)
+    _copy_of(src).unlink()
+    scans.calls.clear()
+
+    ext = extend.extend_clips(out, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False))
+
+    assert len(scans.remuxes) == 1
+    assert _copy_of(src).is_file()
+    (clip,) = sorted(ext.glob("*.mp4"))
+    assert probe(clip).duration == pytest.approx(4.0, abs=0.5)
+
+
+def test_extend_never_reads_a_remuxed_source_in_place(media, scans, home, tmp_path, monkeypatch):
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    src, out = _exported(media, tmp_path)
+    _copy_of(src).unlink()
+    monkeypatch.setattr(tsrepair.shutil, "disk_usage", lambda p: FREE(10, 10, 0))
+
+    with pytest.raises(FFmpegError, match="stream copy"):
+        extend.extend_clips(out, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False))
+
+
+def test_a_failed_copy_is_not_tried_again_but_still_warned_of(media, scans, monkeypatch, caplog):
+    src = media["back"]
+    with monkeypatch.context() as m:
+        m.setattr(tsrepair.shutil, "disk_usage", lambda p: FREE(10, 10, 0))
+        assert tsrepair.prepare_sources([src]) == {}
+    logged = len([r for r in caplog.records if r.levelname == "WARNING"])
+    assert logged == 1
+    result = jsonout.Result("test")
+    monkeypatch.setattr(jsonout, "_active", result)
+
+    # space is free again, but this run already read the source as it is
+    assert tsrepair.prepare_sources([src]) == {}
+    assert tsrepair.prepare_sources([src]) == {}
+
+    assert not scans.remuxes
+    _no_copy(src)
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == logged
+    assert [w["code"] for w in result.warnings] == ["timeline_remux_failed"]
+    # a new process (state reset) tries again
+    from cutpoint import state  # noqa: PLC0415
+
+    state.reset_state()
+    assert tsrepair.prepare_sources([src])
+
+
+def test_a_part_name_is_unique_per_remux(media, scans):
+    src = media["back"]
+    tsrepair.prepare_sources([src])
+    names = [Path(c[-1]).name for c in scans.remuxes]
+    assert len(names) == 1
+    assert tsrepair._PART.fullmatch(names[0])
+    assert names[0].startswith(f"timeline.{os.getpid()}.")
+
+
+def test_a_second_run_waits_for_the_copy_and_uses_it(media, scans, monkeypatch, tmp_path):
+    src = tmp_path / "rec.ts"
+    shutil.copyfile(media["back"], src)
+    verdict = tsrepair.check(src)
+    assert verdict is not None
+    first_in = threading.Event()
+    release = threading.Event()
+    real = scans._real
+
+    def slow(args, total, label, *rest, **kw):
+        scans.calls.append(list(args))
+        first_in.set()
+        assert release.wait(30)
+        return real(args, total, label, *rest, **kw)
+
+    monkeypatch.setattr(tsrepair, "run_progress", slow)
+    try:
+        results: list[Path | None] = []
+        t1 = threading.Thread(target=lambda: results.append(tsrepair.ensure_copy(src, verdict)))
+        t1.start()
+        assert first_in.wait(30)
+        t2 = threading.Thread(target=lambda: results.append(tsrepair.ensure_copy(src, verdict)))
+        t2.start()
+        t2.join(1.0)
+        assert t2.is_alive()  # waiting for the first run's lock
+        release.set()
+        t1.join(60)
+        t2.join(60)
+    finally:
+        release.set()
+    assert results == [_copy_of(src), _copy_of(src)]
+    assert len(scans.remuxes) == 1  # the second run found the copy the first one made
+    assert not list(cache.source_dir(src).glob("timeline.*.part.mkv"))
+    assert (cache.source_dir(src) / ".timeline.cutpoint-lock").exists() is False
+
+
+def test_the_lock_file_survives_the_drop_of_stale_caches(media, scans, tmp_path):
+    cdir = cache.source_dir(media["back"])
+    lock = cdir / ".timeline.cutpoint-lock"
+    lock.write_text("x", encoding="utf-8")
+    other = cdir / "scenes-v3.json"
+    other.write_text("x", encoding="utf-8")
+
+    tsrepair._drop_stale_caches(cdir)
+
+    assert lock.exists()
+    assert not other.exists()
