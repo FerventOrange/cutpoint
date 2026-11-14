@@ -1508,3 +1508,58 @@ def test_an_ollama_reply_cut_off_is_logged_as_cut_off(monkeypatch, src, caplog, 
         assert rater.rate(src, 10.0, 14.0, "gaming") is None
     finals = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Vision reply")]
     assert len(finals) == 1 and word in finals[0]
+
+
+# --------------------------------------------------------------------------- --context (#1068)
+CTX = "downhill mtb {chest} <mount>"
+
+
+@pytest.mark.parametrize("style", ["gaming", "action-cam", "funny"])
+@pytest.mark.parametrize("speech", [False, True])
+def test_context_leaves_the_prompts_and_key_alone_unless_given(style, speech):
+    plain = vision._prompts(style, None, None, speech)
+    for none in (None, "", "  \n "):
+        assert vision._prompts(style, None, None, speech, False, none) == plain
+        assert vision.rating_key("m", style, [1.0], context=none) == vision.rating_key(
+            "m", style, [1.0]
+        )
+    first, retry = vision._prompts(style, None, None, speech, False, CTX)
+    assert (first, retry) != plain
+    for text, closing in ((first, "JSON only"), (retry, "Output only JSON")):
+        assert text.count("<description>") == 1 and "mount" in text and "<mount>" not in text
+        assert text.index("<description>") < text.index(closing)
+    assert vision.rating_key("m", style, [1.0], context=CTX) != vision.rating_key("m", style, [1.0])
+    assert vision.rating_key("m", style, [1.0], context=CTX) != vision.rating_key(
+        "m", style, [1.0], context="a lake"
+    )
+
+
+def test_context_braces_survive_format_and_the_contact_sheet():
+    profile = vision.rating_profile("qwen3.5:9b")
+    for prof in (None, profile):
+        for text in vision._prompts("gaming", prof, None, False, False, CTX):
+            assert "{chest}" in text.format(n=3, style="gaming", speech="")
+
+
+def test_the_rater_puts_its_context_in_the_prompts_and_the_rating_key(posts, src):
+    def rate(context: str | None) -> vision.VisionRater:
+        rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+        assert rater.context is None  # the default: as without --context
+        rater.context = context
+        rater.rate(src, 0, 4, "gaming")
+        return rater
+
+    assert rate(None).asked == 1
+    first, retry = _chat_prompts(posts)
+    assert "<description>" not in first + retry
+    posts.clear()
+    assert rate("chest mount").asked == 1  # a rating without the words is not reused
+    first, retry = _chat_prompts(posts)
+    assert "chest mount" in first and "chest mount" in retry
+    assert rate("chest mount").asked == 0
+    assert rate(None).asked == 0  # both kept
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    rater.context = "chest mount"
+    assert rater.cached(src, 0, 4, "gaming") is not None
+    rater.context = "other words"
+    assert rater.cached(src, 0, 4, "gaming") is None

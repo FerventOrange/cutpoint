@@ -404,3 +404,64 @@ def test_check_preview_does_not_reuse_replies_given_to_another_wording(tmp_path,
     check(other)
     assert other.calls == first.calls  # another wording: asked again
     vlcheck._MEMO.clear()
+
+
+# ----------------------------------------------------------------- --context (#1068)
+def _crash_context_run(tmp_path, monkeypatch, settings, context, profile=None) -> list[Any]:
+    """``run_events`` over the crash layer; the ``context`` its profile step got."""
+    from cutpoint.events import sheets  # noqa: PLC0415
+    from cutpoint.events import visual as visual_layer  # noqa: PLC0415
+
+    src = tmp_path / "a.mp4"
+    src.write_bytes(b"x")
+    s = SimpleNamespace(path=src, name="a.mp4")
+    hl = {"sources": [{"path": str(src)}], **({"settings": settings} if settings else {})}
+    if profile:
+        _write(tmp_path, profile)
+    monkeypatch.setattr(pipeline, "load_highlights", lambda project: hl)
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: s)
+    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
+    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
+    monkeypatch.setattr(pipeline, "VramMonitor", _Mon)
+    monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
+    monkeypatch.setattr(
+        pipeline,
+        "VisionRater",
+        lambda *a, **k: SimpleNamespace(
+            provider_name="ollama", url="http://127.0.0.1:11434", model="m"
+        ),
+    )
+    got: list[Any] = []
+
+    def detect(project, **kw):
+        got.append(kw["context"])
+        return {}
+
+    def stop(project, sources):
+        raise _Stop
+
+    monkeypatch.setattr(visual_layer, "run_layer", lambda *a, **k: {})
+    monkeypatch.setattr(crash, "detect_project", detect)
+    monkeypatch.setattr(sheets, "write_visual_sheets", stop)
+    with pytest.raises(_Stop):
+        pipeline.run_events(
+            tmp_path, layers=("visual", "crash"), sheets=True, cached_ocr=False, context=context
+        )
+    return got
+
+
+@pytest.mark.parametrize(
+    ("settings", "context", "profile", "want"),
+    [
+        ({"context": "recorded"}, "explicit", None, "explicit"),  # the call wins
+        ({"context": "recorded"}, None, None, "recorded"),  # else the analysis's words
+        ({}, None, None, None),  # none anywhere: as before
+        ({"context": "recorded"}, None, "puddle-hop", None),  # a profile exists: it stays
+        ({"context": "recorded"}, "explicit", "puddle-hop", "explicit"),
+    ],
+)
+def test_run_events_gives_the_crash_layer_the_analysis_context(
+    home, tmp_path, monkeypatch, settings, context, profile, want
+):
+    assert _crash_context_run(tmp_path, monkeypatch, settings, context, profile) == [want]

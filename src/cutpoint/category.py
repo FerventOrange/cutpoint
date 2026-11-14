@@ -44,6 +44,7 @@ from cutpoint import cache
 from cutpoint.config import remap_source
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.ffmpeg_utils import GRAB_WORKERS
+from cutpoint.utils import context_block, context_hash, footage_context
 
 logger = logging.getLogger(__name__)
 
@@ -903,7 +904,9 @@ class FootageVision:
 
     ``ollama_url`` and ``ollama_model`` are the run's ``--ollama-url`` and ``--ollama-model``
     (they pick the Ollama over a hosted Vision role, as for the rating). ``explicit``: the
-    user asked for vision (``--vision``, ``"vision": true``).
+    user asked for vision (``--vision``, ``"vision": true``). ``context``: the user's
+    ``--context`` words about the footage (#1068), a hint in the question (the frames decide);
+    the answers are cached apart per text (:meth:`key`). Without a model it changes nothing.
 
     Quiet: in Cutpoint lite, when no model answers or memory is short, one INFO line, and the
     sources stay as the rest decided them. Without the user's Vision consent the same, unless
@@ -915,8 +918,10 @@ class FootageVision:
         ollama_url: str | None = None,
         ollama_model: str | None = None,
         explicit: bool = False,
+        context: str | None = None,
     ) -> None:
         self._url, self._model, self._explicit = ollama_url, ollama_model, explicit
+        self.context = footage_context(context)
         self._client: Any = None
         self._made = False
         self._ready: bool | None = None  # None: not checked yet
@@ -943,9 +948,13 @@ class FootageVision:
         return self._client
 
     def key(self) -> str | None:
-        """The cache key of the model's answers, ``<model>@<host>`` (None without a client)."""
+        """The cache key of the model's answers, ``<model>@<host>``, with ``#<hash>`` of the
+        ``--context`` words when given (None without a client)."""
         rater = self.client()
-        return None if rater is None else f"{rater.model}@{rater.host}"
+        if rater is None:
+            return None
+        words = context_hash(self.context)
+        return f"{rater.model}@{rater.host}" + (f"#{words}" if words else "")
 
     def _rater(self) -> Any:
         """The client once it is checked (consent, then the model answering), else None."""
@@ -979,7 +988,7 @@ class FootageVision:
             return None
         try:
             reply = rater.ask_json(
-                VISION_PROMPT.format(n=len(frames)),
+                vision_prompt(len(frames), self.context),
                 frames,
                 VISION_SCHEMA,
                 num_predict=256,
@@ -1000,14 +1009,32 @@ class FootageVision:
             self._client.unload()
 
 
+def vision_prompt(n: int, context: str | None = None) -> str:
+    """The footage question about ``n`` frames, with the user's ``context`` words as a hint
+    before the reply format (:data:`VISION_PROMPT` as it is without any)."""
+    prompt = VISION_PROMPT.format(n=n)
+    block = context_block(context)
+    if not block:
+        return prompt
+    hint = block + "Take it as a hint only: answer from what the frames show.\n"
+    return prompt.replace("Reply with JSON only:", hint + "Reply with JSON only:", 1)
+
+
 @contextlib.contextmanager
 def footage_vision(
-    vision: bool | None = None, ollama_url: str | None = None, ollama_model: str | None = None
+    vision: bool | None = None,
+    ollama_url: str | None = None,
+    ollama_model: str | None = None,
+    context: str | None = None,
 ) -> Iterator[FootageVision | None]:
     """A :class:`FootageVision` for one detection, closed at the end. ``vision``: True = asked
     for (a missing consent is a WARNING), None = the default (asked quietly), False = off (None
-    is yielded). ``ollama_url``, ``ollama_model``: see :class:`FootageVision`."""
-    vision = None if vision is False else FootageVision(ollama_url, ollama_model, vision is True)
+    is yielded). ``ollama_url``, ``ollama_model``, ``context``: see :class:`FootageVision`."""
+    vision = (
+        None
+        if vision is False
+        else FootageVision(ollama_url, ollama_model, vision is True, context)
+    )
     try:
         yield vision
     finally:
@@ -1425,12 +1452,13 @@ def detect(
     ollama_model: str | None = None,
     *,
     shared: FootageVision | None = None,
+    context: str | None = None,
 ) -> tuple[list[SourceProbe], Detection]:
     """Probe ``sources`` (:func:`probe_source`, cached) and decide without the speech
     coverage (talk is then pending, see :attr:`Detection.pending`).
 
-    ``vision``, ``ollama_url`` and ``ollama_model`` as for :func:`footage_vision`; ``shared``
-    is a :class:`FootageVision` of the caller (the other arguments are ignored) so that two
+    ``vision``, ``ollama_url``, ``ollama_model`` and ``context`` as for :func:`footage_vision`;
+    ``shared`` is a :class:`FootageVision` of the caller (the other arguments are ignored) so that two
     detections of a run ask one client; the model is freed after each detection.
     """
     logger.info("Detecting the footage category of %d source(s)", len(sources))
@@ -1438,7 +1466,7 @@ def detect(
         probes = [probe_source(s, shared) for s in sources]
         shared.close()
     else:
-        with footage_vision(vision, ollama_url, ollama_model) as fv:
+        with footage_vision(vision, ollama_url, ollama_model, context) as fv:
             probes = [probe_source(s, fv) for s in sources]
     return probes, decide(probes)
 

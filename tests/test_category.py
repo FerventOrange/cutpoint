@@ -1485,3 +1485,60 @@ def test_text_and_vision_frames_grab_in_parallel_with_the_sequential_result(monk
         assert runs[1][1] == 1 and runs[category.GRAB_WORKERS][1] > 1, name
         assert runs[1][0] == runs[category.GRAB_WORKERS][0], name
         assert len(runs[1][0]) == count, name  # one failed grab each
+
+
+# --------------------------------------------------------------------------- --context (#1068)
+def test_the_vision_question_without_context_is_byte_identical():
+    plain = category.VISION_PROMPT.format(n=6)
+    assert category.vision_prompt(6) == plain
+    assert category.vision_prompt(6, None) == plain
+    assert category.vision_prompt(6, "  \n ") == plain
+
+
+def test_the_vision_question_carries_the_context_as_a_hint_before_the_reply_format():
+    prompt = category.vision_prompt(6, "downhill mtb {chest} mount")
+    assert prompt.count("<description>\ndownhill mtb {chest} mount\n</description>") == 1
+    assert "hint only" in prompt
+    assert prompt.index("<description>") < prompt.index("Reply with JSON only:")
+    assert "6 frames" in prompt
+
+
+def test_the_footage_vision_key_has_a_context_hash_only_with_context(stub_rater):
+    from cutpoint.utils import context_hash  # noqa: PLC0415
+
+    with category.footage_vision() as vision:
+        assert vision.key() == "qwen3.5:9b@127.0.0.1:11434"
+    with category.footage_vision(None, None, None, "  ") as vision:
+        assert vision.key() == "qwen3.5:9b@127.0.0.1:11434"
+    with category.footage_vision(None, None, None, "a river  trip") as vision:
+        assert vision.context == "a river trip"
+        assert vision.key() == f"qwen3.5:9b@127.0.0.1:11434#{context_hash('a river trip')}"
+
+
+def test_a_cached_answer_without_context_is_not_reused_with_context(faked_probe, stub_rater):
+    src = faked_probe.src
+    with category.footage_vision() as plain:
+        assert category.probe_source(src, plain).vision == "gameplay"
+        assert category.probe_source(src, plain).vision == "gameplay"  # cached
+    [first] = stub_rater.raters
+    assert len(first.asks) == 1 and "<description>" not in first.asks[0][0]
+    stub_rater.kw = {"reply": {"footage": "camera"}}
+    with category.footage_vision(None, None, None, "chest mount") as hinted:
+        assert category.probe_source(src, hinted).vision == "camera"  # asked again
+    assert "chest mount" in stub_rater.raters[1].asks[0][0]
+    with category.footage_vision() as plain:  # the answer without context is still kept
+        assert category.probe_source(src, plain).vision == "gameplay"
+    assert len(stub_rater.raters[2].asks) == 0
+
+
+def test_detect_hands_its_context_to_the_vision_client(faked_probe, stub_rater):
+    probes, _ = category.detect([faked_probe.src], context="  chest   mount ")
+    assert probes and "chest mount" in stub_rater.raters[0].asks[0][0]
+
+
+def test_detect_command_gives_its_context_to_the_vision_question(faked_probe, stub_rater):
+    argv = ["detect", str(faked_probe.src), "--context", "chest  mount"]
+    assert cli.main(argv) == 0
+    assert "chest mount" in stub_rater.raters[0].asks[0][0]
+    assert cli.main(["detect", str(faked_probe.src)]) == 0  # nothing said: no block
+    assert "<description>" not in stub_rater.raters[1].asks[0][0]

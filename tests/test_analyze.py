@@ -606,3 +606,20 @@ def test_analyze_records_features_by_source(home, tmp_path, monkeypatch):
     st = hl["settings"]
     assert {c["source"] for c in hl["candidates"]} <= set(st["features_by_source"])
     assert all(v == st["features_available"] for v in st["features_by_source"].values())
+
+
+def test_reanalyze_passes_the_recorded_context_back(home, tmp_path, monkeypatch):
+    write(tmp_path / "a.mp4")
+    _stub_probe_and_transcriber(monkeypatch)
+    proj = tmp_path / "proj"
+    seen: list[dict] = []
+    real = analyze.analyze
+    for words in (None, "chest mount"):
+        analyze.analyze(
+            tmp_path / "a.mp4", get_style("funny"), proj, vision=False, use_scenes=False,
+            context=words,
+        )  # fmt: skip
+        monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.append(kw) or proj)
+        analyze.reanalyze(proj)
+        monkeypatch.setattr(analyze, "analyze", real)
+    assert [kw["context"] for kw in seen] == [None, "chest mount"]

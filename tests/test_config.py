@@ -368,3 +368,19 @@ def test_config_encoding_bom_loads_and_utf16_is_one_clear_error(home, caplog):
     assert len(errors) == 1
     assert str(path) in errors[0].getMessage()
     assert "not UTF-8 text" in errors[0].getMessage()
+
+
+# -- --context (#1068) ----------------------------------------------------------------
+
+
+def test_analyze_and_edit_hand_the_context_on(home, tmp_path, monkeypatch):
+    import cutpoint.analyze  # noqa: PLC0415
+
+    video = write(tmp_path / "a.mp4")
+    seen: list = []
+    monkeypatch.setattr(cutpoint.analyze, "analyze", lambda *a, **kw: seen.append(kw["context"]))
+    monkeypatch.setattr(cli, "run_edit", lambda *a, **kw: seen.append(kw["context"]))
+    for command in ("analyze", "edit"):
+        assert cli.main([command, str(video), "--out", "p"]) == 0
+        assert cli.main([command, str(video), "--out", "p", "--context", "chest mount"]) == 0
+    assert seen == [None, "chest mount", None, "chest mount"]

@@ -133,7 +133,7 @@ So do these combinations:
 | `no_telemetry` | `crashes`, `events` (crash layer) | A source has no IMU telemetry; its crashes come from the transcript only |
 | `no_visual_layer` | `crashes`, `events` (crash layer) | A source has no visual layer; run `events` first so what the camera sees counts |
 | `highlights_not_updated` | `crashes`, `events` | The reanalyze step (`events`: the action-cam re-rank) was skipped (a source could not be found at its recorded or remapped path, or was not reachable), so `highlights.json` is unchanged |
-| `context_not_applied` | `crashes`, `profile` | `--context` was not applied (Ollama or the LLM unavailable, or no usable profile from it) |
+| `context_not_applied` | `crashes`, `profile`, `analyze`, `edit`, `events` (crash step or layer) | `--context` was not applied to the activity profile (Ollama or the LLM unavailable, or no usable profile from it) |
 
 `outputs` keys per command (`project` as in the table above):
 
@@ -1079,7 +1079,7 @@ cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [-
               [--top N] [--max-total S] [--vertical] [--force] [--no-keep-clips]
               [--format mp4|fcpxml|otio] [--events]
               [--vision | --no-vision] [--vision-top N] [--ollama-url URL]
-              [--ollama-model MODEL] [--skip STEP [STEP ...]]
+              [--ollama-model MODEL] [--context TEXT] [--skip STEP [STEP ...]]
               [--visual-index | --no-visual-index] [--ocr-det-skip | --no-ocr-det-skip]
               [--compress-peaks off|light|strong] [--lut FILE [--lut-strength 0-1]]
               [--color off|auto|underwater [--color-strength 0-1]] [--json]
@@ -1110,6 +1110,7 @@ one of them is refused.
 | `--events` | Also run [`events`](#events) with its defaults, without the layers of the `--skip` steps, to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
 | `--vision` / `--no-vision` | As on `analyze`: rate the default edit and the moments below its cut with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off. With `--style auto` they also govern the footage check of unsure sources and camera footage without telemetry (see [detect](#detect)): on unless `--no-vision` or `"vision": false`; `--vision` also warns of a missing consent |
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): the most moments sent to vision, and the Ollama server and model (also for the VLM layer of `--events`); an invalid port in `--ollama-url` exits 2 (`bad_args`) |
+| `--context TEXT` | As on [`analyze`](#analyze): what the footage is, in the user's words, for the footage question of `--style auto`, the crash step's activity profile and the vision rating, dialogue and `--events` VLM prompts; recorded as `settings.context` |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes`, `crashes` and/or `dialogue`. Give it after the input paths |
 | `--visual-index` / `--no-visual-index` | As on `analyze`: also write the frame embeddings of the AI Chat's visual search for `gaming`, `funny` and `commentary` footage, or not. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
 | `--ocr-det-skip` / `--no-ocr-det-skip` | As on `analyze`, also for the OCR layer of `--events`. Default: [`ocr_det_skip`](configuration.md#ocr_det_skip) in `config.json`, else off |
@@ -1149,6 +1150,7 @@ A fresh run into an existing project reads the ids from the current `highlights.
 | `--ollama-url`, `--ollama-model` | Defaults: `vision_assistant.url` (Vision role `ollama`) / `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `vision_assistant.model` (Vision role `ollama`) / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a [`vision_assistant`](configuration.md#vision_assistant) of any provider other than `ollama` in `config.json`, the frames (here and for `360 director --vl-check`) go to that provider instead: an API (`anthropic`, `openai`, `xai`, with your API key) or a subscription (`claude-code`, `codex`, `antigravity`), once you agreed to it in the Models tab ("Allow vision requests"), unless you give `--ollama-url` and/or `--ollama-model`: then that Ollama is used instead (a flag left out takes its default) and nothing goes to the hosted provider. An Ollama URL that is not this machine (`localhost` or a loopback address, except on the Cutpoint proxy's port) needs that Vision consent too; without it vision is skipped with a WARNING (`vision_consent_needed`). An `--ollama-url` with an invalid port (such as `myhost:99999`) exits 2 with `bad_args`; a bad port in `OLLAMA_HOST`, `ollama_url`, the Models-tab Vision URL (`vision_assistant.url`) or the AI Chat Ollama URL only skips the step |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
 | `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
+| `--context TEXT` | What the footage is, in the user's words (`--context "downhill mtb, chest mount, muddy lens"`), given before the analysis. One line, cut to 500 characters, as on [`profile`](#profile); blank text is none. It goes to: the footage question of `--style auto` (a hint in the vision model's prompt; the frames decide, and without a model the detection is unchanged), the crash step's activity profile (as `crashes --context`; `activity.json` records it, with a `context_not_applied` warning when no model could use it), the `--vision` rating prompts, the `dialogue` reader's prompt and the window prompts of the VLM layer of [`events`](#events) (also `edit --events`). It changes no scoring weight. The text is sent only where those steps already send data, under the same consents (a hosted Vision or AI Chat model needs its consent). Recorded as `settings.context` in `highlights.json`: `events`, `rerank` (also `--analyze`) and `cutpoint resume` reuse it, and `crashes`, `profile` and `events` take it for the activity profile while the project has none yet (or with `--refresh-profile`), unless given their own `--context` or `--activity`. `crashes --context` and `profile --context` record their text as `settings.context` in turn, so the project keeps one description. Running `analyze` or `edit` again without `--context` records none (an existing `activity.json` keeps its profile, also in a re-analysis such as `rerank --analyze`). With `--vision`, the text the ratings were made with is recorded as `settings.vision_context` (`null` when rated without text; `crashes --context` and `profile --context` add it to an older file that rated without the key); a plain `rerank` looks the cached ratings up with it, so a later `crashes --context` or `profile --context` does not lose them until the next analysis rates again. The vision, dialogue, VLM-window and footage-question caches are keyed on the text, so a changed text asks the models again; without it the caches and results are as before |
 | `--skip STEP ...` | Leave out `reactions`, `keyframes`, `crashes` and/or `dialogue` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
 | `--visual-index` / `--no-visual-index` | Also write the frame embeddings (the CLIP visual layer, in the `keyframes` step, before the HUD text for `gaming` and `funny`) that the AI Chat's [`look_for`](#ai-chat) searches, for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` footage always has them. They change no ranking. Sources with telemetry: the crashes step also reads them, so `crashes.json` can differ; the ranking does not. Like that layer for the other styles it needs the `events` extra, its model files and a CUDA GPU, and is left out with an INFO line otherwise (the HUD text of `gaming` and `funny` still runs). Cached per source like the rest: a later run with the option on computes only what is missing, and one with it off leaves what exists. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
 | `--ocr-det-skip` / `--no-ocr-det-skip` | Gameplay HUD text (the `keyframes` step): skip the text detection of a HUD region that has not changed since detection last ran there, and keep that result. Faster on footage with a still HUD; on two test clips it saved a third and a tenth of the detection calls and lost no event. A read with it is cached apart from one without it, so switching reads the footage again once. Default: [`ocr_det_skip`](configuration.md#ocr_det_skip) in `config.json`, else off |
@@ -1479,7 +1481,7 @@ on CUDA and `small` on CPU), so it is reused only when both runs use the same `-
 ## detect
 
 ```text
-cutpoint detect <file|folder> [<file|folder> ...] [--exclude GLOB] [--recursive] [--vision | --no-vision] [--ollama-url URL] [--ollama-model NAME] [--json]
+cutpoint detect <file|folder> [<file|folder> ...] [--exclude GLOB] [--recursive] [--vision | --no-vision] [--ollama-url URL] [--ollama-model NAME] [--context TEXT] [--json]
 ```
 
 Tells which category the footage is and which style `--style auto` would use, without analyzing
@@ -1523,7 +1525,10 @@ unsure; with `--vision` or `"vision": true` given explicitly, a skip for lack of
 source only `action` counts: any other answer leaves it General by its camera tags, as re-exports and phone clips carry them
 too. Fast first-person footage (worn or mounted cameras, FPV drone flight) is meant to be `action`. Answers are cached per
 model and host as `category-vision-v3.json` (an older `category-vision-v2.json` is not read: these sources are asked once more). `decided_by` in the result (and the `detect` output)
-names the evidence that decided: `vision` for these sources.
+names the evidence that decided: `vision` for these sources. `--context TEXT` (also on `analyze`
+and `edit`) adds the user's words about the footage to the question as a hint; the answer still
+comes from the frames, a source the vision check is not asked about is decided as without it,
+and its answers are cached apart from those without words.
 
 **HUD text check.** A thin HUD (a few lines of text, as in War Thunder, Rainbow Six or
 Battlefield) is too small to show in the small frames. So a source those leave unsure between
@@ -2311,12 +2316,14 @@ result was reused), and `crashes.json` the profile step in `timings.profile_s`. 
 retry is skipped when the first attempt took nearly the whole timeout. In
 `analyze` and `edit` it runs whenever a local Ollama answers, without `--vision`, and is quiet:
 a missing consent, a bad Ollama port, too little free memory or a fallback is one INFO line.
-`profile`, `crashes` and `events` still warn.
+`profile`, `crashes` and `events` still warn, and so do `analyze` and `edit` given `--context`.
+Without `--context`, `profile`, `crashes` and `events` use the `settings.context` of
+`analyze --context` while the project has no `activity.json` yet, or with `--refresh-profile`.
 
 | Option | Meaning |
 |---|---|
 | `--activity NAME` | Use `generic` or a profile of your library (`cutpoint profile list`). An unknown name is `bad_args`. Default: found in your library or discovered from the footage |
-| `--context TEXT` | What the video is, in the user's words. The local LLM turns it into extra crash captions and slang on top of the profile. A changed text rebuilds the profile |
+| `--context TEXT` | What the video is, in the user's words. The local LLM turns it into extra crash captions and slang on top of the profile. A changed text rebuilds the profile. It is also recorded as the project's `settings.context` in `highlights.json` (as `analyze --context`), so re-analyses and `events` use the latest description. Without it, the `settings.context` of `analyze --context` is used while the project has no `activity.json` yet, or with `--refresh-profile` |
 | `--refresh-profile` | Ignore `activity.json` and the profile (or failed discovery) cached for this footage, and detect or build the profile again, and replace the cached one, also in your library. Footage that matches a library profile keeps it unless you give `--context`; to start over, run `cutpoint profile delete NAME` first |
 | `--ollama-url`, `--ollama-model` | The Ollama server and model that build the profile, as on [`analyze`](#analyze) (a flag left out takes its default). A new profile needs no deleting of `activity.json` to use them: add `--refresh-profile` |
 | `--json` | One [result envelope](#json-output) on stdout; `outputs` holds the `activity.json` record (`name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `scores`, `description`, `profile`) and `activity_file`. Output of the local model never reaches stdout |
