@@ -759,3 +759,22 @@ def test_hype_weights_and_cue_flags_of_the_styles():
         "gaming": True, "action": True, "sport": True, "action-cam": True,
         "funny": False, "commentary": False,
     }  # fmt: skip
+
+
+def test_a_label_names_the_keyword_by_its_style_weight_not_its_damped_one():
+    # a flat "oh my god" (1.0, cut to 0.3 with no cue) and a "wow" (0.8) on a loudness jump in
+    # one candidate: the label is "oh my god"; a lone "yes" (0.4, under 0.5) names nothing
+    style = get_style("gaming")
+    loud = np.zeros(1000)
+    loud[195:215] = 0.8  # a jump at 20 s only
+    ps = _part(_phrase_words((10.0, "oh my god"), (20.0, "wow"), (50.0, "yes")), loud)
+    analyze.text_signals(ps, style, "a.mp4")
+    weights = {p: w for _, w, p in ps.kw_hits}
+    assert weights["oh my god"] < weights["wow"]  # the score sees the damped weight
+    cands = [
+        analyze.Candidate(Path("a.mp4"), 5.0, 25.0, 20.0, 1.0, {}),
+        analyze.Candidate(Path("a.mp4"), 45.0, 55.0, 50.0, 1.0, {}),
+    ]
+    both, alone = analyze.describe_candidates(cands, style, ps, 0.0)
+    assert both.keywords[0] == "wow" and both.label_hint == "oh my god"
+    assert alone.keywords == ["yes"] and alone.label_hint == ""

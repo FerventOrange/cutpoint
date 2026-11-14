@@ -1246,7 +1246,7 @@ Whisper heard with confidence below 0.5 as `[index, confidence]`, the index coun
 `--vision`, a rated candidate also has the model's own description in `vision_label` and
 `vision_rated` (the `start` and `end` it rated, the score before and after the rating, `base`
 and `blended`, the prompt `kind`, `speech` or `frames`, and its `centre`). The vision rating never changes a moment's `label`, so its clip gets the same name with and
-without `--vision` (the `events` VLM windows can name it, see [Candidates](#candidates)) (the rating can still change which moments are picked and their order). The rating counts only
+without `--vision` (the rating can still change which moments are picked and their order; an `events` VLM window can rename it, see [Candidates](#candidates)). The rating counts only
 while the candidate keeps that span: once `events` widens or a menu trim cuts it, the rating
 moves to `vision_stale` (`score`, `label`, `window`), `signals.vision` is `null` and `vision_label`
 goes; the span coming back restores them. A moment the default edit skipped above its cut when
