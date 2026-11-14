@@ -1,5 +1,5 @@
 # uv, pinned by digest; a FROM line so Dependabot can propose updates.
-FROM ghcr.io/astral-sh/uv:0.13.7@sha256:96f40d3904aad8d0bd010539001d36c8e2188b981e1334471a90c4a1d93bb490 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.8@sha256:5cc1805e2426484abca4ad46ea783bab281fdb225fd82d8ce6d66a81254bac85 AS uv
 
 # ubuntu 24.04, pinned by multi-arch index digest so a rebuild at the same commit starts from the same base.
 # Dependabot (docker ecosystem) proposes updates.
