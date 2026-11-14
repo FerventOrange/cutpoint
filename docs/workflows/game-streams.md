@@ -229,7 +229,14 @@ are, and text that stays on a screen (the same word with the same name beside it
 it needs no new OCR.
 
 An announcement is boost-only: it adds 3 points (at most 2 counted) to a candidate that already
-exists, and it never makes a moment of its own or seeds a vision window, in `gaming` too.
+exists, and it never makes a moment of its own or seeds a vision window, in `gaming` too. A line
+shown often in a source (a phase or team caption every round) counts less each time: up to
+max(3, 3 per hour) times in full, above that each at sqrt(allowance / count), keyed by its
+learned words. Round banners, kills and score changes are outcomes and keep their points.
+
+A moment a round banner or multikill nominated is labelled with the banner's words
+(`won-round`, `match-point`), unless the `events` VLM window over it names it (see
+[Candidates](../commands.md#candidates)).
 
 ## Score readout
 

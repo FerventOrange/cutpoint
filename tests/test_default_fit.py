@@ -49,9 +49,22 @@ def test_a_long_number_one_is_still_pickable_explicitly(tmp_path):
 
 
 def test_candidates_that_do_not_fit_are_skipped_and_the_next_is_tried(tmp_path):
-    cands = [_c("a", 9, 0, 60), _c("b", 8, 100, 160), _c("c", 7, 200, 230)]
+    cands = [
+        _c("a", 9, 0, 50),
+        _c("x", 8.9, 300, 350),
+        _c("y", 8.8, 400, 450),
+        _c("b", 8, 100, 140),
+        _c("c", 7, 200, 230),
+    ]
+    chosen, _ = select_moments(_project(tmp_path, cands, target=180.0))
+    assert _ids(chosen) == ["a", "x", "y", "c"]  # b (40 s) does not fit in the 30 s left; c does
+
+
+def test_a_candidate_longer_than_a_third_of_the_target_is_skipped(tmp_path):
+    cands = [_c("talk", 9, 0, 53), _c("b", 8, 100, 130), _c("c", 7, 200, 208)]
     chosen, _ = select_moments(_project(tmp_path, cands))
-    assert _ids(chosen) == ["a", "c"]  # b (60 s) does not fit in the 30 s left; c does
+    assert _ids(chosen) == ["b", "c"]  # 53 s would fit the 90 s, but is over its third (30 s)
+    assert default_fit.FIT_SHARE == 1 / 3
 
 
 def test_must_include_is_kept_past_the_target(tmp_path):
@@ -66,8 +79,8 @@ def test_must_include_is_kept_past_the_target(tmp_path):
 
 def test_overlap_skip_still_applies_and_a_skipped_clash_uses_no_room(tmp_path):
     cands = [
-        _c("long", 9, 100, 160),
-        _c("inside", 8, 120, 130),
+        _c("long", 9, 100, 125),
+        _c("inside", 8, 110, 120),
         _c("far", 7, 500, 530),
     ]
     chosen, _ = select_moments(_project(tmp_path, cands))

@@ -20,7 +20,8 @@ nominates a candidate of its own, as marked, and adds a few points to any candid
 
 A whole dialogue stretch longer than :data:`DIALOGUE_WIDEN_MAX_S` (:func:`is_long_dialogue`)
 has more room for events than a short moment, so its laughter and on-screen events count per
-minute (see :func:`event_boost`). It also does not take the score of the best moment inside it: its analysis score is the :data:`NOMINEE_FLOOR` share of the source's best (see
+minute (see :func:`event_boost`). It also does not take the score of the best moment inside it: its analysis score is the :data:`DIALOGUE_FLOOR` share of the source's best (for the best few per
+hour of the part, else :data:`NOMINEE_FLOOR`; see
 :func:`nominate`).
 
 This module collects the evidence; the points are combined by the scorer's bonus stage
@@ -30,19 +31,20 @@ This module collects the evidence; the points are combined by the scorer's bonus
 from __future__ import annotations
 
 import logging
+import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from cutpoint import cache, scorer, sources
+from cutpoint import cache, repeats, scorer, sources
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match, resolve
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
 from cutpoint.styles import STYLES, get_style, learned_styles, style_name
 from cutpoint.transcribe import flat_markers
-from cutpoint.utils import title_slug
+from cutpoint.utils import slugify, title_slug
 
 if TYPE_CHECKING:
     from cutpoint.analyze import GridPart
@@ -68,9 +70,19 @@ TYPED_KINDS = ("ocr", "audio")
 REACTION_WINDOW_S = 6.0  # a reaction starts at most this long after the event
 REACTION_PAUSE_S = 1.5  # speech is a reaction only after this much silence up to the event
 REACTION_SOUNDS = ("Laughter", "Scream")
-# A nominee's analysis score is at least this share of its source's best. A whole dialogue
-# stretch over DIALOGUE_WIDEN_MAX_S has exactly this score, whatever its grids say.
+# A nominee's analysis score is at least this share of its source's best (a dialogue stretch's:
+# DIALOGUE_FLOOR). A whole dialogue stretch over DIALOGUE_WIDEN_MAX_S has exactly its share,
+# whatever its grids say.
 NOMINEE_FLOOR = 0.6
+# The DIALOGUE_FLOOR_PER_H best dialogue nominees per hour of a part (at least DIALOGUE_FLOOR_MIN),
+# by their grid score, have this share instead (#1071): once flat hype words stopped lifting the
+# grids under strong talk, the reader's pick is the evidence that it is a moment. Only the best
+# few: with every dialogue nominee at one floor, a talkative source got a block of tied bits,
+# and the long ones filled the edit. The grid score, not the reader's rating, ranks them: the
+# ratings of a hosted and a local model are not on one scale. Below 1, so the best plays of the
+# source still rank above a bit of talk with no event in it.
+DIALOGUE_FLOOR = 0.75
+DIALOGUE_FLOOR_PER_H, DIALOGUE_FLOOR_MIN = 2.5, 2
 LAUGH_SOUNDS = ("Laughter",)  # audio events that score laughter points
 # A heard laugh with a confidence below this (the detector's own absolute threshold,
 # ``audio_events.DEFAULT_GROUPS``: weaker peaks pass only its relative rule, and at 0.04-0.1 they
@@ -91,6 +103,11 @@ DIALOGUE_POINTS = 3.0
 # It is also the length above which a whole dialogue stretch is scored at the floor and its
 # laughter and on-screen events count per minute.
 DIALOGUE_WIDEN_MAX_S = 90.0
+# The events VLM window names a candidate (#1071) only when it covers at least this share of it.
+VLM_LABEL_COVER = 0.5
+# On-screen event types whose own words name the moment they nominate (``WON ROUND`` is
+# ``won-round``), instead of the event type's name (#1071).
+TEXT_LABEL_TYPES = ("banner", "multikill")
 # A widened candidate does not keep a silence this long (no transcript speech) next to its
 # original moment: it starts after the one before it and ends before the one after it.
 WIDEN_SILENCE_S = 8.0
@@ -133,6 +150,51 @@ def _laugh_markers(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def repeat_key(e: dict[str, Any]) -> str:
+    """The repeat key of an OCR event (:func:`cutpoint.repeats.text_key`): its learned
+    announcement words when it has them (the OCR layer's own key of the line, so ``YOUR TEAM``
+    read with a name beside it is the same line), else its text."""
+    d = e["details"] if isinstance(e.get("details"), dict) else e
+    words = d.get("announce_words")
+    if words:
+        return "|".join(sorted({repeats.text_key(str(w)) for w in words}))
+    return repeats.text_key(str(e.get("label") or e.get("text") or ""))
+
+
+def repeat_weights(
+    events: list[dict[str, Any]],
+    types: tuple[EventType, ...] = DEFAULT_EVENT_TYPES,
+    span_s: float | None = None,
+) -> dict[int, float]:
+    """The weight (0-1] of each event of ``events`` (one source's, by ``id``) that counts for a
+    type with ``damp_repeats``: the repeat factor of its text (:func:`repeat_key`) among that
+    type's events of the source (:func:`cutpoint.repeats.repeat_factor`), over the source's
+    length ``span_s`` (None: up to the end of its last event). Events of other types are left out
+    (weight 1)."""
+    damped = {t.name for t in types if t.damp_repeats}
+    if not damped:
+        return {}
+    keyed: list[tuple[int, str]] = []
+    for e in events:
+        if e.get("kind") in TYPED_KINDS and (t := first_match(types, e)) and t.name in damped:
+            keyed.append((id(e), f"{t.name}:{repeat_key(e)}"))
+    if span_s is None:
+        span_s = max((float(e.get("end") or 0.0) for e in events), default=0.0)
+    factors = repeats.repeat_factors((k for _, k in keyed), span_s)
+    return {i: factors[k] for i, k in keyed}
+
+
+def source_spans(hl: dict[str, Any]) -> dict[str, float]:
+    """The length (seconds analysed, else the duration) of each source of the analysis ``hl``
+    that records one, by path."""
+    out = {}
+    for e in hl.get("sources") or []:
+        span = e.get("analyzed_s") or e.get("duration") if isinstance(e, dict) else None
+        if span:
+            out[str(e.get("path"))] = float(span)
+    return out
+
+
 def event_boost(
     cand: dict[str, Any],
     events: list[dict[str, Any]],
@@ -140,6 +202,7 @@ def event_boost(
     *,
     style: str | tuple[str, ...] | None = None,
     segments: list[dict[str, Any]] | None = None,
+    repeat: Mapping[int, float] | None = None,
 ) -> tuple[float, dict[str, Any]]:
     """Additive boost (points on the 0-100 scale) and the evidence behind it.
 
@@ -160,6 +223,11 @@ def event_boost(
     ``score * min(max, n / minutes)`` (n events over the same minutes) instead of
     ``score * min(max, n)``. Reaction, scream and dialogue points and the evidence counts are
     the same for every length.
+
+    An event of a type with ``damp_repeats`` (announcements) adds its weight in ``repeat``
+    (:func:`repeat_weights` of the source's events, by ``id``; None: worked out from ``events``)
+    to ``n`` instead of 1: a caption shown all through the source counts less each time. The
+    evidence still counts it as one.
     """
     a, b = cand["start"], cand["end"] + LOOKAHEAD_S
     laugh = scream = dialogue = 0.0
@@ -169,6 +237,9 @@ def event_boost(
     scored = {t.name: t for t in types if t.score is not None and t.applies(*names)}
     reacting = {t.name: t for t in types if t.reaction is not None and t.applies(*names)}
     counts = dict.fromkeys([*EVIDENCE_KEYS, *scored], 0)
+    worth = dict.fromkeys(scored, 0.0)  # the counts, a damped type's events at their weight
+    if repeat is None and any(scored[n].damp_repeats for n in scored):
+        repeat = repeat_weights(events, types)
     reactions = dict.fromkeys(reacting, 0)
     for e in events:
         if e["end"] < a or e["start"] > b:
@@ -189,6 +260,7 @@ def event_boost(
             t = first_match(types, e)
             if t and t.name in scored:
                 counts[t.name] += 1
+                worth[t.name] += (repeat or {}).get(id(e), 1.0)
             if (
                 t
                 and t.name in reacting
@@ -204,8 +276,9 @@ def event_boost(
 
         laugh_points *= min(1.0, laughs / minutes / DENSITY_FULL)
     boost = laugh_points + min(6.0, 40 * scream) + DIALOGUE_POINTS * dialogue
-    for name, n in counts.items():  # defaults first, in the original order
+    for name in counts:  # defaults first, in the original order
         if name in scored:
+            n = worth[name]
             boost += scored[name].score * min(scored[name].max, n / minutes if long else n)
     for name, n in reactions.items():
         boost += reacting[name].reaction * n
@@ -249,6 +322,41 @@ def best_window(cand: dict[str, Any], windows: list[dict[str, Any]]) -> dict[str
         if ov > best_ov:
             best, best_ov = w, ov
     return best if best_ov >= 2.0 else None
+
+
+def put_vlm_labels(cands: list[dict[str, Any]]) -> None:
+    """Give each of ``cands`` that :func:`set_vlm_label` renamed its label back (``label_vlm``,
+    ``label_before_vlm``), unless something else has renamed it since; a rescore names them
+    again from the windows it finds."""
+    for c in cands:
+        if "label_vlm" in c:
+            was = c.pop("label_before_vlm", None)
+            if was is not None and c.get("label") == c["label_vlm"]:
+                c["label"] = was
+            del c["label_vlm"]
+        else:
+            c.pop("label_before_vlm", None)
+
+
+def set_vlm_label(c: dict[str, Any], win: dict[str, Any] | None) -> None:
+    """Name the candidate ``c`` after its events VLM window ``win`` (:func:`best_window`): the
+    slug of the window's ``label`` becomes its label (and clip file name), the label it had kept
+    in ``label_before_vlm`` and the slug in ``label_vlm`` (:func:`put_vlm_labels` takes it back).
+    Only when the window covers at least :data:`VLM_LABEL_COVER` of the candidate (a window
+    that only touches it is about something else) and ``c`` has no ``dialogue_title``: the
+    dialogue reader's title names the bit of talk the moment was made or widened for, which the
+    window, a fixed stretch of picture around it, may only partly cover. The banner words of a
+    banner nominee (:func:`seeds`) and the analysis label are the fallbacks, as before."""
+    if win is None or c.get("dialogue_title") or not win.get("label"):
+        return
+    length = c["end"] - c["start"]
+    cover = min(win["end"], c["end"]) - max(win["start"], c["start"])
+    if length <= 0 or cover < VLM_LABEL_COVER * length:
+        return
+    slug = title_slug(str(win["label"]), default="")
+    if slug and slug != c.get("label"):
+        c["label_before_vlm"] = c.get("label")
+        c["label_vlm"] = c["label"] = slug
 
 
 def _segments(source: str, language: str | None = None) -> list[dict[str, Any]]:
@@ -345,6 +453,8 @@ class Seed:
             ``max_len`` cap; see :func:`cutpoint.analyze.nominate_candidates`).
         over: A ``whole`` stretch too long to widen the candidates it overlaps
             (:data:`DIALOGUE_WIDEN_MAX_S`): it stays whole over them (set by :func:`nominate`).
+        text: The words on screen of an event of :data:`TEXT_LABEL_TYPES` (``WON ROUND``),
+            which name its candidate; "" for the others (named after ``name``).
     """
 
     name: str
@@ -354,6 +464,7 @@ class Seed:
     tail_s: float | None = None
     whole: bool = False
     over: bool = False
+    text: str = ""
 
 
 def seeds(
@@ -390,7 +501,10 @@ def seeds(
         if e["kind"] in TYPED_KINDS:
             t = first_match(types, e)
             if t and t.nominate and t.score and t.applies(*style):
-                seed = Seed(t.name, e["start"], e["end"], min(length, OCR_HOLD_S), t.tail_s)
+                text = str(e.get("label") or "") if e.get("type") in TEXT_LABEL_TYPES else ""
+                seed = Seed(
+                    t.name, e["start"], e["end"], min(length, OCR_HOLD_S), t.tail_s, text=text
+                )
                 if t.seed_gap_s and not (covered and covered(seed)):
                     spaced.append((len(out), t, _seed_worth(e)))
                 out.append(seed)
@@ -697,8 +811,9 @@ def nominate(
     from the caches of the analysis, see :func:`cutpoint.analyze.cached_grid_parts`, so a
     source whose caches are gone gets none), as a picked window there would be, and is then
     rescored with the events like the rest. Its analysis score is at least
-    :data:`NOMINEE_FLOOR` of the best other candidate's of its source (an event is evidence
-    enough that a quiet window is a moment); the grid score it had stays as ``grid_score``,
+    :data:`NOMINEE_FLOOR` (the best few a dialogue stretch made per hour of the part: :data:`DIALOGUE_FLOOR`, see
+    :func:`_raised_talk`) of the best other
+    candidate's of its source (an event is evidence enough that a quiet window is a moment); the grid score it had stays as ``grid_score``,
     for ties. A whole dialogue stretch over :data:`DIALOGUE_WIDEN_MAX_S` (:func:`is_long_dialogue`)
     has exactly that floor as its analysis score, not the peak of the grids inside it: the best
     short moment in minutes of talk would otherwise rank the whole stretch first. The geometry is :func:`cutpoint.analyze.nominate_candidates`'s. Menu time is
@@ -864,9 +979,11 @@ def nominate(
             # a share of the best picked one's, whatever the length of the list, so the boost
             # decides, not the grids.
             base = [c.get("score_pre_events", c["score"]) for c in own if c["source"] == src]
-            floor = NOMINEE_FLOOR * max(base) if base else 0.0
+            best = max(base) if base else 0.0
+            raised = _raised_talk(recs, part.duration)
             for r in recs:
                 r["grid_score"] = r["score"]
+                floor = (DIALOGUE_FLOOR if id(r) in raised else NOMINEE_FLOOR) * best
                 # a long stretch has the floor itself, not the best moment inside it
                 r["score"] = floor if is_long_dialogue(r) else max(r["score"], floor)
             room = analyze.candidate_cap(style, explicit) - sum(
@@ -875,8 +992,10 @@ def nominate(
             cap = max(0, room)
             if len(recs) > cap:
                 src_types = types.get(src, DEFAULT_EVENT_TYPES)
+                weights = repeat_weights(by_src[src], src_types, source_spans(hl).get(src))
                 worth = {
-                    id(r): r["score"] + event_boost(r, by_src[src], src_types, style=names)[0]
+                    id(r): r["score"]
+                    + event_boost(r, by_src[src], src_types, style=names, repeat=weights)[0]
                     for r in recs
                 }
                 recs = sorted(recs, key=lambda r: (-worth[id(r)], -r["grid_score"]))[:cap]
@@ -888,9 +1007,35 @@ def nominate(
         )
     new += [c for c in old if c["source"] in todo and c["source"] not in done]  # no grids now
     same = {(c["source"], round(c["start"], 2), round(c["end"], 2)): c for c in old}
+    for r in new:  # an earlier nominee named after its event type takes the banner's words
+        was = same.get((r["source"], round(r["start"], 2), round(r["end"], 2)))
+        if was is not None and was is not r and was.get("label") in _type_labels(was):
+            was["label"] = r["label"]
     new = [same.get((r["source"], round(r["start"], 2), round(r["end"], 2)), r) for r in new]
     cands[:] = [*kept, *new]  # in place: callers hold the list
     return len(new)
+
+
+def _raised_talk(recs: list[dict[str, Any]], span_s: float) -> set[int]:
+    """The ids of the nominees of ``recs`` (one part ``span_s`` seconds long, scored from its
+    grids) that a dialogue stretch made and that get :data:`DIALOGUE_FLOOR`: the
+    max(:data:`DIALOGUE_FLOOR_MIN`, floor(:data:`DIALOGUE_FLOOR_PER_H` x hours + 0.5)) with the best
+    grid score (the earlier on a tie)."""
+    talk = [
+        r
+        for r in recs
+        if any(str(n).startswith("dialogue-") for n in r["signals"]["events"]["nominated"])
+    ]
+    k = max(DIALOGUE_FLOOR_MIN, math.floor(DIALOGUE_FLOOR_PER_H * span_s / 3600.0 + 0.5))
+    ranked = sorted(talk, key=lambda r: (-r["score"], r["start"]))
+    return {id(r) for r in ranked[:k]}
+
+
+def _type_labels(c: dict[str, Any]) -> set[str]:
+    """The labels a nominee ``c`` gets from the names of the events that nominated it (as
+    :func:`cutpoint.analyze.nominate_candidates` names one without a text of its own)."""
+    nominated = ((c.get("signals") or {}).get("events") or {}).get("nominated") or []
+    return {slugify(str(n), 30) for n in nominated}
 
 
 def number_candidates(hl: dict[str, Any]) -> None:

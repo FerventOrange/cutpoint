@@ -49,6 +49,7 @@ from cutpoint import (
     memguard,
     paths,
     progress,
+    repeats,
     runstate,
     scorer,
     tsrepair,
@@ -116,7 +117,14 @@ from cutpoint.transcribe import (
     split_markers,
     transcript_name,
 )
-from cutpoint.utils import clock, find_videos, footage_context, matches_glob, slugify
+from cutpoint.utils import (
+    clock,
+    find_videos,
+    footage_context,
+    matches_glob,
+    slugify,
+    title_slug,
+)
 from cutpoint.vision import PRIOR_N, RATING_PRIOR, VisionRater, speech_excerpt
 
 if TYPE_CHECKING:
@@ -130,6 +138,21 @@ LONG_FILE_S = 1800  # above this, scene detection decodes keyframes only
 PROFANE = {p.rstrip("*") for p in PROFANITY}  # names as keyword_hits reports them
 PROFANITY_CUE_S = 3.0  # a profane word counts only if another cue is this close
 PROFANITY_CUE_MIN = 0.8  # minimum weight of a keyword that counts as a cue
+# Delivery cue of a hype word (#1071, styles with ``delivery_cue``): within DELIVERY_CUE_S of it,
+# laughter, a non-profane keyword other than itself of at least PROFANITY_CUE_MIN, or a loudness
+# jump: the loudness grid's highest from DELIVERY_PRE_S before the word to DELIVERY_POST_S after
+# it at least DELIVERY_JUMP above its median over the DELIVERY_BASE_S before that (the grid is
+# already the source's own robust z-score, so the jump is relative to the source), or at least
+# DELIVERY_LOUD (the loudness that lets a profane word count alone). A hype word with none keeps
+# DELIVERY_FLAT of its weight: said flat it is still talk about the moment, so it can break a tie
+# and name a clip, but no longer outranks a loud one (0.3: what a secondary hit adds under the
+# keyword cap, :func:`keyword_signal`). On the 3 h stream of #1071, 89% of the "oh my god" hits
+# had no such cue.
+DELIVERY_CUE_S = PROFANITY_CUE_S
+DELIVERY_PRE_S, DELIVERY_POST_S, DELIVERY_BASE_S = 1.0, 2.0, 9.0
+DELIVERY_JUMP = 0.2
+DELIVERY_LOUD = 0.5
+DELIVERY_FLAT = 0.3
 # the vision band (#909): the default edit plus k below its cut, k = this share of the edit's
 # moments, at least VISION_BAND_MIN and at most VISION_BAND_MAX
 VISION_BAND_SHARE, VISION_BAND_MIN, VISION_BAND_MAX = 0.3, 2, 24
@@ -351,6 +374,57 @@ def gate_profanity(
                 continue
         kept.append((t, w, p))
     return kept
+
+
+def damp_keywords(
+    kw_hits: list[tuple[float, float, str]], span_s: float
+) -> list[tuple[float, float, str]]:
+    """``kw_hits`` of one source (or part) ``span_s`` seconds long with each weight times the
+    repeat factor of its phrase there (:func:`cutpoint.repeats.repeat_factor`): a phrase said
+    often counts less each time, a rare one keeps its weight (#1071)."""
+    factors = repeats.repeat_factors((p for _, _, p in kw_hits), span_s)
+    return [(t, w * factors[p], p) for t, w, p in kw_hits]
+
+
+def loudness_jump(loudness: np.ndarray, t: float) -> bool:
+    """Whether the loudness grid jumps at ``t`` (seconds): its highest over
+    ``[t - DELIVERY_PRE_S, t + DELIVERY_POST_S]`` is at least :data:`DELIVERY_LOUD`, or at least
+    :data:`DELIVERY_JUMP` above its median over the :data:`DELIVERY_BASE_S` before that."""
+    n = len(loudness)
+    if not n:
+        return False
+    i = min(n - 1, max(0, int(t / DT)))
+    lo = max(0, i - int(DELIVERY_PRE_S / DT))
+    peak = float(loudness[lo : i + int(DELIVERY_POST_S / DT) + 1].max())
+    base = loudness[max(0, lo - int(DELIVERY_BASE_S / DT)) : lo]
+    return peak >= DELIVERY_LOUD or peak - (float(np.median(base)) if base.size else 0.0) >= (
+        DELIVERY_JUMP
+    )
+
+
+def gate_delivery(
+    kw_hits: list[tuple[float, float, str]],
+    laugh_hits: list[tuple[float, float, str]],
+    loudness: np.ndarray,
+) -> list[tuple[float, float, str]]:
+    """``kw_hits`` with each non-profane hit that has no delivery cue near it (laughter,
+    another strong non-profane keyword, a loudness jump: :data:`DELIVERY_CUE_S`,
+    :func:`loudness_jump`) at :data:`DELIVERY_FLAT` of its weight; profane hits are left to
+    :func:`gate_profanity`. A cue keyword is a different phrase: a filler said twice in a row is
+    no cue for itself. The cues are judged on the weights given, so the result does not depend
+    on the order of the hits."""
+    strong = [(t, p) for t, w, p in kw_hits if p not in PROFANE and w >= PROFANITY_CUE_MIN]
+    laughs = np.asarray([t for t, _, _ in laugh_hits], dtype=float)
+    out = []
+    for t, w, p in kw_hits:
+        if p not in PROFANE and not (
+            (laughs.size and float(np.min(np.abs(laughs - t))) <= DELIVERY_CUE_S)
+            or any(q != p and abs(u - t) <= DELIVERY_CUE_S for u, q in strong)
+            or loudness_jump(loudness, t)
+        ):
+            w *= DELIVERY_FLAT
+        out.append((t, w, p))
+    return out
 
 
 # --------------------------------------------------------------------------- per-source caching
@@ -1768,11 +1842,19 @@ class PartSignals:
 
 def text_signals(ps: PartSignals, style: Style, name: str) -> None:
     """Fill the style-dependent transcript signals of ``ps``: the keyword and laughter hits
-    and the ``speech`` and ``laughter`` curves (profanity gated against the loudness for
-    styles with ``profanity_alone`` False). ``name``: the source's, for the log."""
+    and the ``speech`` and ``laughter`` curves. The keyword weights are, in this order, damped
+    by how often the part says each phrase (styles with ``repeat_damping``,
+    :func:`damp_keywords`), cut to :data:`DELIVERY_FLAT` for a hype word said flat (styles with
+    ``delivery_cue``, :func:`gate_delivery`), and profanity is gated against the loudness
+    (styles with ``profanity_alone`` False, :func:`gate_profanity`, which then sees the
+    weights left). Laughter is never damped or gated. ``name``: the source's, for the log."""
     n, sig, words = ps.n, ps.sig, ps.words
     kw_hits = keyword_hits(words, style.keywords)
     laugh_hits = laughter_hits(words, flat_markers(ps.segments))
+    if style.repeat_damping:
+        kw_hits = damp_keywords(kw_hits, n * DT)
+    if style.delivery_cue:
+        kw_hits = gate_delivery(kw_hits, laugh_hits, sig["loudness"])
     if not style.profanity_alone:
         n_before = len(kw_hits)
         n_profane = sum(1 for *_, p in kw_hits if p in PROFANE)
@@ -2303,6 +2385,9 @@ def describe_candidates(
     ``avail``: the features the score is renormalised over (default
     :func:`cutpoint.scorer.available_for`; an action-cam source's own, #950)."""
     words, kw_hits, laugh_hits = ps.words, ps.kw_hits, ps.laugh_hits
+    # a label names what was said by the style's own weight, before repeat damping and the
+    # delivery cue (#1071): those decide the score, not what the moment is about
+    said_w = {k.rstrip("*"): w for k, w in style.keywords.items()}
     if avail is None:
         avail = scorer.available_for(style)
     for c in cands:
@@ -2310,9 +2395,8 @@ def describe_candidates(
         inside = [(t, w, p) for t, w, p in kw_hits + laugh_hits if c.start <= t <= c.end]
         c.keywords = [p for _, _, p in sorted(inside, key=lambda h: -h[1])]
         c.keywords = list(dict.fromkeys(c.keywords))[:5]
-        strong = [
-            p for _, w, p in sorted(inside, key=lambda h: -h[1]) if w >= 0.5 and p not in PROFANE
-        ]  # a bare swear is a useless label
+        named = sorted(((said_w.get(p, w), p) for _, w, p in inside), key=lambda h: -h[0])
+        strong = [p for w, p in named if w >= 0.5 and p not in PROFANE]  # a bare swear: no label
         if not c.label_hint:  # action-cam picks bring their own ("jump 0.6s", "crash 7g")
             c.label_hint = strong[0] if strong else ""
         said = [w for w in words if c.start <= w["start"] <= c.end]
@@ -2413,7 +2497,7 @@ def nominate_candidates(
                 t,
                 0.0,
                 dict.fromkeys(ps.sig, 0.0),
-                label_hint=slugify(s.name, 30),
+                label_hint=title_slug(s.text, default="") or slugify(s.name, 30),
                 nominated=[s.name],
                 whole=s.whole,
                 over=s.over,

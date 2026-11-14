@@ -409,8 +409,8 @@ most, and in the hover text. A moment a stretch only widened keeps its own type 
 the stretch's title as its name and the title's slug as its label.
 A moment with only a generic label (`action-moment`, `loud-moment`) is titled with what the
 vision model saw: its vision rating label, else the label of its `events` VLM window (the search
-finds both). `highlights.json`, the label a moment takes into the sequence and clip file names
-keep the analysis label. A moment of the visual pool (beauty shots, friends, cruising runs)
+finds both). The label a moment takes into the sequence and clip file names is its `label` in
+`highlights.json` (the `events` VLM window's label when it has one, see [Candidates](#candidates)). A moment of the visual pool (beauty shots, friends, cruising runs)
 carries a "visual" badge with its kind, such as "visual · view".
 
 While an analysis runs, the Moments column lists its steps (Transcription, Reactions, Keyframes,
@@ -1245,8 +1245,8 @@ Whisper heard with confidence below 0.5 as `[index, confidence]`, the index coun
 `transcript.split(" ")` (omitted when none is unsure or the transcript has no confidences). With
 `--vision`, a rated candidate also has the model's own description in `vision_label` and
 `vision_rated` (the `start` and `end` it rated, the score before and after the rating, `base`
-and `blended`, the prompt `kind`, `speech` or `frames`, and its `centre`). Vision never changes a moment's `label`, so its clip gets the same name with and
-without `--vision` (the rating can still change which moments are picked and their order). The rating counts only
+and `blended`, the prompt `kind`, `speech` or `frames`, and its `centre`). The vision rating never changes a moment's `label`, so its clip gets the same name with and
+without `--vision` (the `events` VLM windows can name it, see [Candidates](#candidates)) (the rating can still change which moments are picked and their order). The rating counts only
 while the candidate keeps that span: once `events` widens or a menu trim cuts it, the rating
 moves to `vision_stale` (`score`, `label`, `window`), `signals.vision` is `null` and `vision_label`
 goes; the span coming back restores them. A moment the default edit skipped above its cut when
@@ -1428,6 +1428,18 @@ the default count above (or `--max-candidates`), each at least a quarter of the 
 usual count, but beyond that count a moment must reach 0.5 of the strongest peak. The default
 sequence stays about 90 s. `--max-candidates` sets the cap for every style, as before.
 
+The transcript grid (`speech`) counts the style's keywords. Per source, a phrase said often
+counts less each time: up to max(3, 3 per hour of the source) times at its full weight, above
+that each hit at sqrt(allowance / count) of it, so a speaker's filler ("oh my god" 36 times in
+3 h) fades while a rare "let's go" keeps its weight. This holds in every style; laughter is never
+damped. In `gaming`, `action`, `sport` and `action-cam` a non-profane keyword counts fully only
+with a delivery cue within 3 s: laughter, another strong keyword (a different phrase of weight
+0.8 or more after damping) or a loudness jump (the loudness grid at least 0.2 above its median
+of the 9 s before, or at least 0.5)); said flat it counts 0.3 of its weight. `funny` and
+`commentary` need no delivery cue: calm talk is their content. Profanity, in the styles that
+gate it, then needs a cue as before, so a damped or flat hype word no longer vouches for it. A
+candidate's label still names the strongest keyword said by the keyword's own weight.
+
 In styles with an open list (`gaming`), detected events can also create candidates of their own
 ("nominated" moments), so a moment no longer has to be found by the grids first. Other styles
 create none and behave as before. When events are scored (`analyze` with its event
@@ -1438,10 +1450,23 @@ candidate, and so labels it `laughter`, only with backup within 5 s: another lau
 cheering sound, a laughter word or marker in the transcript, or loud speech. A stronger laugh
 needs none. A nominated candidate has `signals.events.nominated` (the
 event names) and keeps the score its window had from the grids as `grid_score`; its `score` is at
-least 0.6 of the best other candidate's of that source, so the events decide its rank. A dialogue stretch over 90 s has exactly 0.6 of it, and its laughter and on-screen events count per minute. Ids of
+least 0.6 of the best other candidate's of that source (0.75 for the best ones a dialogue stretch made: by `grid_score`, 2.5 per hour of the part, rounded half up, at least 2; the others 0.6 too), so the events decide its rank. A dialogue stretch over 90 s has exactly that share, and its laughter and on-screen events count per minute. Ids of
 nominees continue after the highest id ever given (`settings.last_candidate_id`). Menu time is
 left out. Run again, the
 same events give the same nominees. A source whose caches are gone gets none.
+
+A nominee is labelled by what nominated it: a round banner or multikill by its own words
+(`won-round`, `match-point`), a dialogue stretch by its title, another event by its type
+(`explosions`, `laughter`). When events are scored, a candidate whose `events` VLM window
+covers at least half of it takes the slug of the window's label as its `label` (and clip file
+name, such as `1v1-clutch-win`); the label it had stays in `label_before_vlm` and the slug in
+`label_vlm`, and the next rescore names it again from the windows it finds then. The kind
+`cutpoint ui` and AI Chat give the moment still comes from `label_before_vlm`: the window's
+title is only its name. A candidate
+with a `dialogue_title` keeps the title's slug: the title names the bit of talk the moment was
+made or widened for, which a window of picture around it may only partly cover. The order is
+the dialogue title, the VLM window label, the banner's words, then the analysis label (a strong
+keyword, `laugh`, `loud-moment`, `<style>-moment`). The `--vision` rating never changes a label.
 
 If ffmpeg hits read errors (a damaged file, a failing drive), `analyze` warns loudly, records
 `read_errors` on that source in `highlights.json`, and stops analysing that source at the
@@ -1673,7 +1698,7 @@ computer (a network folder) is not, so delete it by hand if no run is active.
 
 | Option | Meaning |
 |---|---|
-| `--top N` | Top N by score (default: the best moments that fit the style's target length, a moment that does not fit in the room left is skipped and the next one tried; a must-include crash is always kept, and if none fits the best one is taken). An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
+| `--top N` | Top N by score (default: the best moments that fit the style's target length, a moment longer than a third of it or that does not fit in the room left is skipped and the next one tried; a must-include crash is always kept, and if none fits the best one is taken). An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
 | `--ids ...` | Explicit candidate ids |
 | `--segments FILE` | Export exactly the listed segments in the listed order |
 | `--max-total S` | Keep the best-scoring moments that fit in S seconds. An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
@@ -1986,7 +2011,7 @@ write to, as for `clips --segments`). Everything else is a clips folder, as befo
 options below are then refused (`bad_args`, exit 1).
 
 - The moments are chosen as `clips` chooses them: `--top N`, `--ids`, `--segments FILE`,
-  `--max-total S` and `--order` (default: the best moments that fit the style's target length, as `clips`; `suggested_top` of `highlights.json` is their count). `--mix` is
+  `--max-total S` and `--order` (default: the best moments that fit the style's target length, each at most a third of it, as `clips`; `suggested_top` of `highlights.json` is their count). `--mix` is
   not offered; pass `--segments <project>/mix_segments.json --order arc`.
 - They are exported with the export options of [`clips`](#clips): `--vertical`, `--size`,
   `--crop`, `--smart-tail`, `--tail-min`, `--tail-max`, `--event-tails`, `--event-window`,

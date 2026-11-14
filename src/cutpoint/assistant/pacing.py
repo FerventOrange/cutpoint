@@ -217,7 +217,8 @@ def moment_kind(
     (``action-cam-moment``, ``loud-moment``) decides, then speech over it (``spoken``: dialogue), else it
     is action. A moment a talk stretch nominated (``signals.events.nominated`` holds
     ``dialogue-*``) is dialogue; one a stretch only widened keeps its own type, from the label it
-    had before it took the stretch's title.
+    had before it took the stretch's title. A moment an ``events`` VLM window named
+    (``label_before_vlm``, #1071) is judged by the label it had before, not the window's title.
     """
     cand = cand or {}
     if cand.get("kind") in (CRASH, "wipeout") or (
@@ -233,6 +234,9 @@ def moment_kind(
         cand.get("label"),
         cand.get("vision_label"),
     )  # "action-cam-moment" names nothing
+    if isinstance(cand.get("label_before_vlm"), str):  # a VLM window's title names it only
+        vlm = cand.get("label")
+        named = tuple(cand["label_before_vlm"] if x == vlm else x for x in named)
     if cand.get(
         "dialogue_title"
     ):  # a moment a stretch widened keeps its own type: not the title's words

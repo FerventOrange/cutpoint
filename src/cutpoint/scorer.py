@@ -250,6 +250,7 @@ def rescore_events(
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports this
 
     hl.setdefault("candidates", [])  # nominate appends to it
+    scoring.put_vlm_labels(hl["candidates"])  # the labels of the analysis; named again below
     scoring.nominate(hl, ev, project, parts)
     by_src: dict[str, list[dict[str, Any]]] = {}
     for e in ev.get("events", []):
@@ -259,6 +260,8 @@ def rescore_events(
     style = scoring.analysis_names(hl)
     language = (hl.get("settings") or {}).get("language")
     segments: dict[str, list[dict[str, Any]] | None] = {}
+    spans = scoring.source_spans(hl)
+    repeat: dict[str, dict[int, float]] = {}  # per source: the repeat-damped events' weights
     cands = [c for c in hl.get("candidates", []) if not is_pool(c)]
     pool = [c for c in hl.get("candidates", []) if is_pool(c)]
     old = [c["score"] for c in cands]
@@ -274,8 +277,15 @@ def rescore_events(
         if src not in segments:
             reacts = any(t.reaction is not None and t.applies(*style) for t in src_types)
             segments[src] = scoring._segments(src, language) if reacts else None
+        if src not in repeat:
+            repeat[src] = scoring.repeat_weights(by_src.get(src, []), src_types, spans.get(src))
         boost, evidence = scoring.event_boost(
-            c, by_src.get(src, []), src_types, style=style, segments=segments[src]
+            c,
+            by_src.get(src, []),
+            src_types,
+            style=style,
+            segments=segments[src],
+            repeat=repeat[src],
         )
         win = scoring.best_window(c, windows)
         vlm = None
@@ -287,6 +297,7 @@ def rescore_events(
                 "label": win.get("label"),
                 "window": [win["start"], win["end"]],
             }
+        scoring.set_vlm_label(c, win)
         score = with_bonus(base, boost, vlm)
         active = rated is not None and "vision_stale" not in c  # a stale rating: unrated
         unrated.append(with_bonus(c["vision_rated"]["base"], boost, vlm) if active else None)

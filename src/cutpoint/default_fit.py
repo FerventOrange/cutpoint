@@ -17,6 +17,11 @@ from cutpoint.config import path_key
 CLASH_SHARE = (
     0.5  # an automatic pick skips a candidate overlapping a pick by this share of the shorter
 )
+# An automatic pick skips a candidate longer than this share of the target (#1071): a whole
+# stretch of talk of a minute would otherwise fill most of a 90 s edit. Every built-in style's
+# max_len is within it (gaming 12 s of 90, funny 20 of 60, commentary 120 of 750), so it only
+# bites the long moments events make (dialogue stretches).
+FIT_SHARE = 1 / 3
 
 
 def span_overlaps(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -54,16 +59,20 @@ def fit_target(candidates: Iterable[dict[str, Any]], target: float) -> list[dict
     """The default pick: the best candidates whose lengths fit in ``target`` seconds.
 
     ``candidates`` are the scored (not visual pool) moments. They are taken must-include first,
-    then best score first (a tie keeps the given order). A candidate that does not fit in the
-    room left, or that mostly overlaps a pick from the same source, is skipped and the next one
-    is tried. A ``must_include`` candidate is always kept, even past ``target``. When nothing is
+    then best score first (a tie keeps the given order). A candidate longer than
+    :data:`FIT_SHARE` of ``target``, that does not fit in the room left, or that mostly overlaps
+    a pick from the same source, is skipped and the next one is tried. A ``must_include`` candidate is always kept, even past ``target``. When nothing is
     picked, the best candidate is, so the edit is never empty. Returns the picks in that order.
     """
     ordered = sorted(candidates, key=lambda c: (not c.get("must_include"), -c["score"]))
     picked: list[dict[str, Any]] = []
     total = 0.0
     for c in ordered:
-        if c.get("must_include") or (total + length(c) <= target and not clashes(c, picked)):
+        if c.get("must_include") or (
+            length(c) <= FIT_SHARE * target
+            and total + length(c) <= target
+            and not clashes(c, picked)
+        ):
             picked.append(c)
             total += length(c)
     return picked or ordered[:1]
