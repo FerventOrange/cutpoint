@@ -236,6 +236,16 @@ def file_name(path: Any) -> str:
     return source_path(str(path)).name
 
 
+def _local_name(path: str, name: str) -> str:
+    """``folder/name`` of a source for a model on this machine; at a drive root ``C:/name``,
+    elsewhere at a root ``/name``."""
+    parent = source_path(path).parent
+    if parent.name:
+        return f"{parent.name}/{name}"
+    drive = getattr(source_path(path), "drive", "")
+    return f"{drive}/{name}" if len(drive) == 2 and drive.endswith(":") else f"/{name}"
+
+
 def file_names(paths: list[str], *, local: bool) -> dict[str, str]:
     """How the model sees each source: its file name, and when two sources share it, for a
     model on this machine (``local``) ``folder/name``, for any other the name and a number
@@ -245,8 +255,7 @@ def file_names(paths: list[str], *, local: bool) -> dict[str, str]:
     if local:
         twice = {f for f in names if names.count(f) > 1}
         return {
-            p: f"{source_path(p).parent.name}/{f}" if f in twice else f
-            for p, f in zip(paths, names, strict=True)
+            p: _local_name(p, f) if f in twice else f for p, f in zip(paths, names, strict=True)
         }
     taken, seen, out = set(names), set(), {}
     for p, f in zip(paths, names, strict=True):
@@ -469,7 +478,7 @@ class MomentTable:
         """The names a model of the other kind (on this machine or not) was shown of the
         sources that share a file name, to the name :meth:`file` shows instead, for its earlier
         replies (#1060): for a model not on this machine each ``folder/name`` (both slashes;
-        none for a source at a drive root, ``/name`` is part of other paths), so no folder name
+        none for a source at a root without a drive, ``/name`` is part of other paths), so no folder name
         reaches it; for one on this machine each numbered name (``clip.mp4 (2)``), which it
         could not give back."""
         paths = self._sources()
@@ -478,7 +487,7 @@ class MomentTable:
         for p in paths:
             if self.local and away[p] != file_name(p):
                 out[away[p]] = here[p]
-            elif not self.local and here[p] != file_name(p) and source_path(p).parent.name:
+            elif not self.local and here[p] != file_name(p) and here[p] != f"/{file_name(p)}":
                 out[here[p]] = out[here[p].replace("/", "\\")] = away[p]
         return out
 
