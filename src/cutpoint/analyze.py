@@ -52,6 +52,7 @@ from cutpoint import (
     repeats,
     runstate,
     scorer,
+    selfcheck,
     tsrepair,
 )
 from cutpoint.config import path_key, remap_source, unc_path
@@ -4542,6 +4543,7 @@ def _analyze(
             earlier_total_s=earlier_total_s,
             ids=ids,
         )
+        selfcheck.apply(hl, ev)  # warns; changes no score (#1073)
         hl["created"] = datetime.now().isoformat(timespec="seconds")
         hl["timings"]["sources"] = _source_timings(results, prefetch)
         took = round(time.perf_counter() - t_start, 2)

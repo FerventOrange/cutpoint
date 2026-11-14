@@ -3414,8 +3414,7 @@ class OcrInterpretation:
                 else:
                     kept.append(e)
             tracker.events = kept
-        if report:
-            stats["feed_regions"] = report
+        stats["feed_regions"] = report  # empty: the pass had no feed region (self-checks, #1073)
 
     def finish(self) -> list[dict[str, Any]]:
         """The events, after the menu frames' sightings are dropped (JSON presets)."""

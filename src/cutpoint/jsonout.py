@@ -123,6 +123,14 @@ def warn(code: str, message: str, files: Iterable[Path | str] = ()) -> None:
             )
 
 
+def drop_warnings(codes: Iterable[str]) -> None:
+    """Remove the warnings of these codes (a later step of the run replaces them)."""
+    drop = set(codes)
+    with _lock:
+        if _active is not None:
+            _active.warnings = [w for w in _active.warnings if w["code"] not in drop]
+
+
 def has_warning(code: str, files: Iterable[Path | str] = ()) -> bool:
     """Whether the running ``--json`` command already has a warning ``code`` naming exactly
     ``files`` (False without one)."""

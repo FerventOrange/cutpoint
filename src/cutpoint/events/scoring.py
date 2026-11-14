@@ -38,7 +38,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from cutpoint import cache, repeats, scorer, sources
+from cutpoint import cache, repeats, scorer, selfcheck, sources
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match, resolve
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
@@ -1080,6 +1080,7 @@ def rescore_highlights(project: Path) -> int:
     drop_menu_time(hl, ev)
     changed = rescore(hl, ev, project)
     number_candidates(hl)
+    selfcheck.apply(hl, ev)  # warns; changes no score (#1073)
     cache.save_json(project / "highlights.json", hl)
     logger.info(
         "Rescored %d of %d candidates from events.json", changed, len(hl.get("candidates", []))
