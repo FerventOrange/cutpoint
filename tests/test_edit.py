@@ -517,3 +517,30 @@ def test_edit_no_keep_clips_refuses_what_needs_kept_clips(pipeline, capsys, argv
     assert exc.value.code == 2
     assert message in capsys.readouterr().err
     assert pipeline.calls == []
+
+
+def test_edit_context_reaches_the_shared_vision_client_and_the_analysis(pipeline, monkeypatch):
+    """#1068: the client the preflight and analyze share asks with the words, and analyze
+    gets them to record and hand on."""
+    from cutpoint import category  # noqa: PLC0415
+    from cutpoint.events import cli as events_cli  # noqa: PLC0415
+    from cutpoint.events import pipeline as events_pipeline  # noqa: PLC0415
+
+    monkeypatch.setattr(events_pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: None)
+    monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
+    monkeypatch.setattr(
+        category,
+        "probe_source",
+        lambda src, vision=None: category.SourceProbe(str(src), 60.0, False),
+    )
+    argv = ["edit", str(pipeline.video), "--style", "auto", "--events"]
+    assert cli.main([*argv, "--context", "  chest   mount "]) == 0
+    kw = pipeline.calls[0][2]
+    assert kw["context"] == "  chest   mount "  # analyze() cleans it
+    assert kw["footage"].context == "chest mount"
+    pipeline.calls.clear()
+    assert cli.main(argv) == 0
+    assert (
+        pipeline.calls[0][2]["context"] is None and pipeline.calls[0][2]["footage"].context is None
+    )

@@ -15,6 +15,7 @@ import time
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import cv2
 import numpy as np
@@ -3298,3 +3299,110 @@ def test_reanalyze_of_a_fallback_from_a_broken_style_file_raises_its_error(run):
     with pytest.raises(ValueError, match="Cannot read learned style"):
         analyze.reanalyze(run.proj)
     assert _hl(run)["settings"]["style_requested"] == "mycam"  # the project is left as it was
+
+
+# ----------------------------------------------------------------- --context (#1068)
+def test_the_context_is_recorded_one_line_and_only_when_given(run):
+    run.go()
+    assert "context" not in _hl(run)["settings"]
+    run.go(context="  \n ")
+    assert "context" not in _hl(run)["settings"]
+    run.go(context="  downhill mtb,\n chest   mount ")
+    assert _hl(run)["settings"]["context"] == "downhill mtb, chest mount"
+
+
+def test_the_context_reaches_the_footage_question_and_the_event_layers(probed, monkeypatch):
+    seen: list[dict] = []
+    real = category.detect
+    monkeypatch.setattr(category, "detect", lambda *a, **kw: seen.append(kw) or real(*a, **kw))
+    probed.plan = plan(reactions=("audio",), crashes=("crash",))
+    probed.go(analyze.AutoRequest("hype"), context=" chest   mount ")
+    assert [kw["context"] for kw in seen] == ["chest mount"]
+    ((_project, _layers, kw),) = probed.events_calls
+    assert kw["context"] == "chest mount"
+    seen.clear()
+    probed.events_calls.clear()
+    probed.go(analyze.AutoRequest("hype"))
+    assert [kw["context"] for kw in seen] == [None]
+    assert probed.events_calls[0][2]["context"] is None
+
+
+def test_the_context_reaches_the_dialogue_reader(run, monkeypatch):
+    got: list[Any] = []
+
+    def reader(backend, spoken, steps, timings, ran, context=None):
+        got.append(context)
+        return lambda audio: []
+
+    monkeypatch.setattr(analyze, "_dialogue_backend", lambda *a: object())
+    monkeypatch.setattr(analyze, "_dialogue_reader", reader)
+    run.plan = plan(reactions=("audio",))
+    run.go("gaming", context="raid night")
+    run.go("gaming")
+    assert got == ["raid night", None]
+
+
+def test_the_dialogue_reader_hands_the_context_to_read_all(monkeypatch):
+    from cutpoint.events import dialogue  # noqa: PLC0415
+
+    got: dict[str, Any] = {}
+
+    def read_all(transcripts, audio, backend, on_progress=None, *, context=None):
+        got["context"] = context
+        return []
+
+    monkeypatch.setattr(dialogue, "read_all", read_all)
+    steps = SimpleNamespace(update=lambda *a: None)
+    read = analyze._dialogue_reader(object(), {}, steps, {}, [], "raid night")
+    assert read([]) == [] and got["context"] == "raid night"
+
+
+def test_a_reanalysis_keeps_the_recorded_context(run):
+    run.go(context="chest mount")
+    run.old = None
+    analyze.reanalyze(run.proj)
+    assert _hl(run)["settings"]["context"] == "chest mount"
+
+
+def test_the_rating_prompts_get_the_recorded_context(run, monkeypatch):
+    """rank_parts sets the rater's context from settings, so ratings are keyed by it."""
+    raters: list[Any] = []
+    base = analyze.VisionRater
+
+    class Rater(base):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            raters.append(self)
+
+    monkeypatch.setattr(analyze, "VisionRater", Rater)
+    run.go(vision=True, context="chest mount")
+    run.go(vision=True)
+    assert [r.context for r in raters] == ["chest mount", None]
+
+
+def test_an_analysis_records_the_words_it_rated_with(run):
+    """Review F2/F4: settings.vision_context, the words of the rating prompts (a re-rank
+    looks the cached ratings up with them); null when rated without words."""
+    run.go(vision=True, context="chest mount")
+    assert _hl(run)["settings"]["vision_context"] == "chest mount"
+    run.go(vision=True)
+    assert "vision_context" in _hl(run)["settings"]
+    assert _hl(run)["settings"]["vision_context"] is None
+    run.go(context="chest mount")  # no vision step: nothing was rated with them
+    assert "vision_context" not in _hl(run)["settings"]
+
+
+def test_a_reanalysis_keeps_the_projects_activity_json_over_the_recorded_context(run):
+    """Review F1: a re-analysis hands the recorded settings.context to the event layers as
+    not given, so the crash step keeps the project's activity.json (``crashes --activity``)
+    instead of choosing a profile from the words; the analysis still records them."""
+    run.plan = plan(reactions=("audio",), crashes=("crash",))
+    run.go(context="chest mount")
+    assert run.events_calls[0][2]["context"] == "chest mount"
+    assert (run.proj / "activity.json").is_file()
+    run.events_calls.clear()
+    run.old = (run.proj / "highlights.json").read_bytes()
+    analyze.reanalyze(run.proj, get_style("funny"))  # a style given: the event layers run
+    ((_project, _layers, kw),) = run.events_calls
+    assert kw["context"] is None
+    assert _hl(run)["settings"]["context"] == "chest mount"

@@ -453,6 +453,39 @@ def test_read_all_gives_events_per_source_and_frees_the_model(tmp_path):
     assert freed == [True]
 
 
+# --------------------------------------------------------------------------- --context (#1068)
+def test_the_prompt_and_cache_key_are_as_before_without_context():
+    lines = talk_lines(5)
+    for none in (None, "", "  ", " 	 "):
+        assert dialogue.prompt(none) == dialogue.PROMPT
+        assert dialogue.cache_key(lines, "k", none) == dialogue.cache_key(lines, "k")
+
+
+def test_the_context_goes_before_the_transcript_and_into_the_cache_key():
+    words = "a {raid} night <with> friends"
+    text = dialogue.prompt(words)
+    assert text.count("<description>") == 1 and "a {raid} night with friends" in text
+    assert text.index("<description>") < text.index("Transcript, one numbered line each:")
+    assert text.endswith(dialogue.PROMPT.rpartition("Transcript, one numbered line each:")[2])
+    lines = talk_lines(5)
+    key = dialogue.cache_key(lines, "k", words)
+    assert key != dialogue.cache_key(lines, "k")
+    assert key != dialogue.cache_key(lines, "k", "another night")
+    assert key == dialogue.cache_key(lines, "k", " a {raid}  night <with> friends ")
+
+
+def test_read_all_gives_the_context_to_the_backend_and_caches_it_apart(tmp_path):
+    a = write(tmp_path / "a.mp4")
+    segs = [{"start": 0.0, "end": 5.0, "text": "one"}, {"start": 6.0, "end": 9.0, "text": "two"}]
+    backend, prompts = fake_backend(lambda _p: {"moments": [moment(0, 1)]})
+    dialogue.read_all({str(a): segs}, None, backend)
+    assert "<description>" not in prompts[0] and prompts[0].startswith(dialogue.PROMPT)
+    dialogue.read_all({str(a): segs}, None, backend, context="raid night")
+    assert len(prompts) == 2 and "raid night" in prompts[1]  # not the reading without it
+    dialogue.read_all({str(a): segs}, None, backend, context="raid night")
+    assert len(prompts) == 2  # cached
+
+
 # --------------------------------------------------------------------------- the backend
 class Net:
     """Every ``requests.get`` and ``post``: a pulled Ollama model (``ollama``), the AI Chat

@@ -269,3 +269,75 @@ def test_no_visual_layer_says_why_inside_analyze(ski, monkeypatch, reason, expec
         crash.detect_project(project, dense=False, sheets=0, activity_name="generic")
     (w,) = [w for w in result.warnings if w["code"] == "no_visual_layer"]
     assert expected in w["message"] and w["files"] == [str(src)]
+
+
+# --------------------------------------------------------------------------------- --context (#1068)
+def _settings(project: Path) -> dict:
+    return json.loads((project / "highlights.json").read_text(encoding="utf-8")).get("settings", {})
+
+
+def _hl_context(project: Path, words: str | None) -> None:
+    hl = json.loads((project / "highlights.json").read_text(encoding="utf-8"))
+    hl["settings"] = {"style": "action"} | ({"context": words} if words else {})
+    (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+
+
+@pytest.fixture
+def crash_args(monkeypatch) -> list[dict]:
+    """``crash.detect_project`` as a recorder (the keyword arguments of each call)."""
+    calls: list[dict] = []
+
+    def detect(project, params=None, **kw):
+        calls.append(kw)
+        return project / crash.CRASHES_FILE
+
+    monkeypatch.setattr(crash, "detect_project", detect)
+    return calls
+
+
+def test_crashes_context_is_recorded_before_the_reanalysis_reads_it(ski, crash_args, monkeypatch):
+    project, _ = ski
+    _hl_context(project, "old words")
+    seen: list[str | None] = []
+    monkeypatch.setattr(
+        analyze,
+        "reanalyze_if_reachable",
+        lambda p: seen.append(_settings(p).get("context")) or p / "highlights.json",
+    )
+    assert cli.main(["crashes", "ski", "--context", " chest\n mount "]) == 0
+    assert seen == ["chest mount"]
+    assert crash_args[0]["context"] == " chest\n mount "
+    assert _settings(project) == {"style": "action", "context": "chest mount"}
+
+
+def test_crashes_without_context_records_nothing_and_uses_the_analysis_words(ski, crash_args):
+    project, _ = ski
+    _hl_context(project, "analysis words")
+    before = (project / "highlights.json").read_bytes()
+    assert cli.main(["crashes", "ski", "--no-reanalyze"]) == 0
+    assert crash_args[0]["context"] == "analysis words"  # the fallback, not recorded again
+    assert (project / "highlights.json").read_bytes() == before
+    _hl_context(project, None)
+    before = (project / "highlights.json").read_bytes()
+    assert cli.main(["crashes", "ski", "--no-reanalyze"]) == 0
+    assert crash_args[1]["context"] is None
+    assert (project / "highlights.json").read_bytes() == before
+
+
+def test_profile_context_is_recorded_for_the_project(ski, monkeypatch):
+    project, _ = ski
+    monkeypatch.setattr(activity, "default_ask", lambda: (lambda prompt, images, schema: {}, None))
+    assert cli.main(["profile", "ski", "--activity", "generic", "--context", "icy  groomer"]) == 0
+    assert _settings(project)["context"] == "icy groomer"
+
+
+def test_profile_without_context_leaves_the_analysis_alone(ski, monkeypatch):
+    project, _ = ski
+    monkeypatch.setattr(activity, "default_ask", lambda: (lambda prompt, images, schema: {}, None))
+    before = (project / "highlights.json").read_bytes()
+    assert cli.main(["profile", "ski", "--activity", "generic"]) == 0
+    assert (project / "highlights.json").read_bytes() == before
+    _hl_context(project, "analysis words")
+    before = (project / "highlights.json").read_bytes()
+    assert cli.main(["profile", "ski"]) == 0  # the first profile is built from them
+    assert (project / "highlights.json").read_bytes() == before
