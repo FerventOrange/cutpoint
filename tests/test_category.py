@@ -965,8 +965,11 @@ def test_a_cue_short_of_memory_stops_the_detection(text_check, monkeypatch):
 class FakeVision:
     """Stands in for :class:`category.FootageVision`: ``answer`` to every question."""
 
-    def __init__(self, answer: str | None = "gameplay", key: str = "qwen@local") -> None:
+    def __init__(
+        self, answer: str | None = "gameplay", key: str = "qwen@local", every_source: bool = False
+    ) -> None:
         self.answer, self._key, self.asked = answer, key, 0
+        self.every_source = every_source
 
     def key(self) -> str:
         return self._key
@@ -1542,3 +1545,202 @@ def test_detect_command_gives_its_context_to_the_vision_question(faked_probe, st
     assert "chest mount" in stub_rater.raters[0].asks[0][0]
     assert cli.main(["detect", str(faked_probe.src)]) == 0  # nothing said: no block
     assert "<description>" not in stub_rater.raters[1].asks[0][0]
+
+
+# ------------------------------------------------------- --vision-detect-all (#1069)
+def decided(p: SourceProbe, answer, every: bool = True, speech=None):
+    """The one source ``decide`` makes of ``p`` with the vision ``answer``."""
+    [src] = category.decide([replace(p, vision=answer)], speech, every_source=every).sources
+    return src
+
+
+@pytest.mark.parametrize("answer", [None, "gameplay", "camera", "screen", "action", "other"])
+@pytest.mark.parametrize(
+    "fields",
+    [
+        UNSURE,
+        GAME,
+        THIN_HUD,
+        CAMERA,
+        {**UNSURE, "hud_text": category.TEXT_ANCHORS},
+        {**UNSURE, "hud_text": 0},
+        {**THIN_HUD, "hud_text": category.TEXT_ANCHORS},
+    ],
+)
+def test_vision_detect_all_off_decides_as_today(fields, answer):
+    """Without the option the record has no flag and the text weighs as before; with it, a
+    probe the model did not answer (or answered `other`) is decided the same."""
+    p = probe(**fields, vision=answer)
+    off = category.decide([p])
+    assert off.every_source is False
+    assert "vision_detect_all" not in off.record("hype", "gaming", None)
+    if answer in (None, "other"):
+        on = category.decide([p], every_source=True)
+        assert on.sources == off.sources
+        assert (on.category, on.ambiguous, on.decided_by) == (
+            off.category, off.ambiguous, off.decided_by,
+        )  # fmt: skip
+
+
+def test_vision_detect_all_is_recorded_only_when_on():
+    det = category.decide([probe(**GAME)], every_source=True)
+    assert det.record("hype", "gaming", None)["vision_detect_all"] is True
+
+
+@pytest.mark.parametrize(
+    ("fields", "answer", "expect"),
+    [
+        # unsure without the option: the answer settles it, as today (r6-stream in the bench)
+        ({**UNSURE, "hud_text": 0}, "gameplay", (GAMEPLAY, False, "vision")),
+        ({**UNSURE, "hud_text": category.TEXT_ANCHORS}, "gameplay", (GAMEPLAY, False, "vision")),
+        # sure without the option and the answer agrees: as decided without it
+        (GAME, "gameplay", (GAMEPLAY, False, "static HUD")),
+        # pixel-sure gameplay the answer and the checked text (or the lite cue) both contradict:
+        # unsure gameplay, never flipped
+        ({**GAME, "hud_text": 0}, "camera", (GAMEPLAY, True, None)),
+        ({**GAME, "hud_text": 0}, "screen", (GAMEPLAY, True, None)),
+        ({**GAME, "hud_text": 0}, "action", (GAMEPLAY, True, None)),
+        ({**GAME, "screen_anchors": 0}, "camera", (GAMEPLAY, True, None)),
+        # no text to side with the answer (not checked, or it failed): the pixels' sure decision
+        (GAME, "camera", (GAMEPLAY, False, "static HUD")),
+        (GAME, "screen", (GAMEPLAY, False, "static HUD")),
+        (GAME, "action", (GAMEPLAY, False, "static HUD")),
+        # the text sides with the pixels: as decided without the option
+        ({**GAME, "hud_text": 4}, "camera", (GAMEPLAY, False, "static HUD")),
+        # the text plus another gameplay cue (recorder tags): sure by the text without it
+        ({**THIN_HUD, "hud_text": 4}, "camera", (GAMEPLAY, False, "HUD text")),
+        ({**THIN_HUD, "hud_text": 4}, "screen", (GAMEPLAY, False, "HUD text")),
+        # the model says camera, the text alone shows a HUD (#513 guard): the model decides
+        ({**UNSURE, "hud_text": 4}, "camera", (GENERAL, False, "vision")),
+        ({**UNSURE, "hud_text": 4}, "screen", (GENERAL, False, "vision")),
+        # the model says camera and the text shows nothing: general, vision decided
+        (UNSURE, "camera", (GENERAL, False, "vision")),
+        ({**UNSURE, "hud_text": 0}, "camera", (GENERAL, False, "vision")),
+        # the text was not checked (a still, no OCR): the model alone decides
+        (UNSURE, "gameplay", (GAMEPLAY, False, "vision")),
+        # too few places is no HUD text
+        ({**UNSURE, "hud_text": category.TEXT_ANCHORS - 1}, "camera", (GENERAL, False, "vision")),
+    ],
+)
+def test_vision_detect_all_lets_the_hud_text_tie_break_the_model(fields, answer, expect):
+    src = decided(probe(**fields), answer)
+    assert (src.category, src.ambiguous, src.decided_by) == expect
+
+
+def test_the_hud_text_alone_never_overrides_the_model():
+    """A sure score that rests on the text alone (below TEXT_SUPPORT without it): the model's
+    answer decides (#513 guard)."""
+    p = probe(**UNSURE, hud_text=4)
+    assert category.gameplay_score(p)[0] >= category.GAMEPLAY_SURE and category._text_alone(p)
+    src = decided(p, "camera")
+    assert (src.category, src.ambiguous, src.decided_by) == (GENERAL, False, "vision")
+    src = decided(p, "camera", every=False)  # the model alone, as today
+    assert (src.category, src.ambiguous, src.decided_by) == (GENERAL, False, "vision")
+
+
+def test_camera_tags_keep_text_in_four_places_from_beating_the_model():
+    """Tagged footage is decided by its tags, whatever the model and the text say but `action`."""
+    tagged = probe(**{**CAMERA, "hud_text": 4})
+    for every in (True, False):
+        src = decided(tagged, "camera", every=every)
+        assert (src.category, src.ambiguous, src.decided_by) == (GENERAL, False, "camera tags")
+
+
+@pytest.mark.parametrize("answer", [None, "other"])
+def test_vision_detect_all_without_a_usable_answer_decides_as_today(answer):
+    """No answer (not asked, the model failed) or `other`: as without the option."""
+    for extra in (UNSURE, {**GAME, "hud_text": 5}, {**UNSURE, "hud_text": 5}):
+        p = probe(**extra)
+        assert decided(p, answer) == decided(p, answer, every=False)
+
+
+@pytest.mark.parametrize(
+    ("anchors", "answer", "expect"),
+    [
+        (0, "gameplay", (GAMEPLAY, False, "vision")),  # unsure without it: settled as today
+        (category.TEXT_ANCHORS, "gameplay", (GAMEPLAY, False, "vision")),
+        (0, "camera", (GENERAL, False, "vision")),
+        (0, "other", (GENERAL, True, None)),  # as today
+        (0, None, (GENERAL, True, None)),
+    ],
+)
+def test_vision_detect_all_in_lite_uses_the_screen_text_cue(anchors, answer, expect):
+    src = decided(probe(**UNSURE, screen_anchors=anchors), answer)
+    assert (src.category, src.ambiguous, src.decided_by) == expect
+
+
+@pytest.mark.parametrize(
+    ("fields", "every", "needs"),
+    [
+        (GAME, False, False),
+        (GAME, True, True),  # sure gameplay: the model is asked too
+        (CAMERA, True, True),
+        ({**UNSURE, "static_share": 0.9}, True, True),  # a still: asked as well
+        ({**UNSURE, "width": 5760, "height": 2880}, True, False),  # a 360 frame: never
+        ({**CAMERA, "width": 5760, "height": 2880}, True, False),
+        ({**GAME, "telemetry": True}, True, False),
+        ({**GAME, "frames": 2, "hud_static": None}, True, False),  # no frame measures
+    ],
+)
+def test_needs_vision_with_every_source(fields, every, needs):
+    assert category.needs_vision(probe(**fields), every) is needs
+
+
+@pytest.mark.parametrize(
+    ("fields", "every", "needs"),
+    [
+        (GAME, False, False),
+        (GAME, True, True),  # sure gameplay: the text is read to tie-break
+        (CAMERA, True, False),  # camera tags: the text never counts
+        ({**GAME, "telemetry": True}, True, False),
+        ({**UNSURE, "static_share": 0.9}, True, False),  # a still
+        ({**GAME, "frames": 2, "hud_static": None}, True, False),
+    ],
+)
+def test_needs_text_with_every_source(fields, every, needs):
+    assert category.needs_text(probe(**fields), every) is needs
+
+
+def test_vision_detect_all_reads_the_text_of_sure_footage(text_check):
+    """The text check runs for a source the pixels make sure only with the option."""
+    text_check.frame = {"frames": 16, "hud_static": 0.01, "static_share": 0.05}
+    src = text_check.src
+    assert category.probe_source(src).hud_text is None and text_check.texts == 0
+    vision = FakeVision("camera", every_source=True)
+    p = category.probe_source(src, vision)
+    assert (p.hud_text, p.vision, text_check.texts, vision.asked) == (5, "camera", 1, 1)
+    assert category.probe_source(src, vision) == p  # cached: nothing read or asked again
+    assert (text_check.texts, vision.asked) == (1, 1)
+
+
+def test_vision_detect_all_asks_sure_footage_and_shares_the_answer_cache(faked_probe, monkeypatch):
+    frame = {"frames": 16, "hud_static": 0.01, "static_share": 0.05}
+    monkeypatch.setattr(category, "_frame_probe", lambda *a: dict(frame))
+    src = faked_probe.src
+    plain = FakeVision("gameplay")
+    assert category.probe_source(src, plain).vision is None and plain.asked == 0
+    every = FakeVision("gameplay", every_source=True)
+    assert category.probe_source(src, every).vision == "gameplay" and every.asked == 1
+    again = FakeVision("camera", every_source=True)  # the same model key: the cached answer
+    assert category.probe_source(src, again).vision == "gameplay" and again.asked == 0
+
+
+def test_the_every_source_question_has_the_cache_key_of_the_unsure_one(stub_rater):
+    with category.footage_vision(None, None, None, None, True) as every:
+        assert every.every_source is True
+        key = every.key()
+    with category.footage_vision() as plain:
+        assert plain.every_source is False
+        assert plain.key() == key
+    with category.footage_vision(False, None, None, None, True) as off:
+        assert off is None  # --no-vision wins
+
+
+def test_detect_decides_with_the_option_of_its_vision(faked_probe):
+    _, off = category.detect([faked_probe.src], False, every_source=True)
+    assert off.every_source is False  # no vision: decided as today
+    with category.footage_vision(None, every_source=True) as shared:
+        _, det = category.detect([faked_probe.src], shared=shared)
+    assert det.every_source is True
+    _, det = category.detect([faked_probe.src], None, every_source=True)
+    assert det.every_source is True

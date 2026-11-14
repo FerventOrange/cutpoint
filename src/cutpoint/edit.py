@@ -149,6 +149,7 @@ def run_edit(
     skip: Collection[str] = (),
     visual_index: bool | None = None,
     ocr_det_skip: bool | None = None,
+    vision_detect_all: bool = False,
     compress_peaks: str = "off",
     lut: Lut | None = None,
     color: str | None = None,
@@ -168,7 +169,8 @@ def run_edit(
     for the events VLM layer; ``skip`` also leaves its steps' layers out of ``events``,
     :data:`~cutpoint.analyze.LAYER_STEP`); ``visual_index`` is ``analyze --visual-index``
     (opt-in: None or False writes the frame embeddings only for the styles that always do);
-    ``ocr_det_skip`` is ``analyze --ocr-det-skip`` (None or False: off), also for ``events``.
+    ``ocr_det_skip`` is ``analyze --ocr-det-skip`` (None or False: off), also for ``events``;
+    ``vision_detect_all`` is ``analyze --vision-detect-all`` (off with ``vision`` False).
     ``compress_peaks``
     (``clips``/``assemble --compress-peaks``) is baked into the clips, so the final keeps it
     without compressing twice. ``lut`` (:func:`~cutpoint.encode.check_lut`) grades the clips
@@ -212,6 +214,7 @@ def run_edit(
             skip=skip,
             visual_index=visual_index,
             ocr_det_skip=ocr_det_skip,
+            vision_detect_all=vision_detect_all,
             compress_peaks=compress_peaks,
             lut=lut,
             color=color,
@@ -239,6 +242,7 @@ def _run_edit(
     skip: Collection[str],
     visual_index: bool | None,
     ocr_det_skip: bool | None,
+    vision_detect_all: bool,
     compress_peaks: str,
     lut: Lut | None,
     color: str | None,
@@ -282,7 +286,9 @@ def _run_edit(
     tsrepair.prepare_sources(videos)
     # one client of the vision model for both detections (here and in analyze): a failed
     # request is not tried again; None with --no-vision / "vision": false
-    with category.footage_vision(vision, ollama_url, ollama_model, context) as footage:
+    with category.footage_vision(
+        vision, ollama_url, ollama_model, context, vision_detect_all
+    ) as footage:
         if events:
             from cutpoint.analyze import LAYER_STEP  # noqa: PLC0415
             from cutpoint.events.pipeline import ACTION_CAM_LAYERS, DEFAULT_LAYERS, preflight  # noqa: PLC0415

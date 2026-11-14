@@ -33,6 +33,7 @@ One JSON file. Paths in it are relative to the manifest's folder.
 | `id` | Unique name: letters, digits, `.`, `_`, `-`. It names the run folder |
 | `input` | A file or a folder, as `analyze` takes it |
 | `category` | The true footage category: `action-cam`, `gameplay`, `action`, `talk` or `general` |
+| `also` | Optional list of further categories a detection may give and still count right, for footage that honestly fits more than one (`"also": ["action"]`). An unknown category is an error |
 | `bucket` | The group it is reported in (next table) |
 | `labels` | Optional moment label file. Without it the source is scored for detection only |
 | `holdout` | `true` keeps the source out of tuning (see [Holdout](#holdout)) |
@@ -193,8 +194,8 @@ The first variant is the baseline; each other one is compared against it. Withou
 there is one, `base`. `--compare A.json B.json` compares two earlier results files the same way
 and prints the comparison (it writes no file); a file that is not a bench results file is an
 error (exit 2). It warns when the editions, schema, overlap rule, seed or number of control runs
-differ. Each results file records per source its category, bucket, holdout flag and the sha256
-of its label file: a source where these differ between the two runs was labelled differently,
+differ. Each results file records per source its category, its `also` list (only when given),
+bucket, holdout flag and the sha256 of its label file: a source where these differ between the two runs was labelled differently,
 so it is named in a warning and left out of the comparison and the gate. The holdout is
 compared only with `--holdout` (and when both runs viewed it).
 
