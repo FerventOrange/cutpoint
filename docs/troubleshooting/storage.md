@@ -89,6 +89,17 @@ output. Cutpoint checks for this.
 Best fix: copy the file to a healthy disk (or let `cutpoint stage` do it) and point
 `source_remap` at the copy.
 
+## Joined recordings that stop halfway
+
+A `.ts` or `.mpg` recording joined from several (a restarted recorder, files appended to one
+another) can have timestamps that jump back at each join, so it looks half as long as it plays.
+Cutpoint finds this and reads a stream copy remuxed into the cache instead (an INFO line naming
+the jumps, the `timeline_remuxed` warning). The copy needs free space of about the recording's
+size in the cache folder; without it a WARNING (`timeline_remux_failed`) says only part of the
+file may be read. Free space and run again, or delete the cache folder of sources you no longer
+use (the copies are kept until the cache is cleared; `cutpoint stage --clear` does not remove
+them).
+
 ## Docker volume from the 0.2.0 image
 
 The 0.2.0 image ran as root, so an existing `cutpoint-data` volume is root-owned and newer images

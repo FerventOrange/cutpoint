@@ -20,7 +20,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from cutpoint import cache, category, folders, jsonout, progress, runstate
+from cutpoint import cache, category, folders, jsonout, progress, runstate, tsrepair
 from cutpoint.assemble import assemble, temporary_clips
 from cutpoint.category import FUNNY, HYPE
 from cutpoint.clips import export_clips
@@ -274,6 +274,8 @@ def _run_edit(
     else:
         style = get_style(kind.style)
     event_layers = None  # the events defaults
+    # joined MPEG-TS/PS recordings: their stream copies before the detection probes them (#1052)
+    tsrepair.prepare_sources(videos)
     # one client of the vision model for both detections (here and in analyze): a failed
     # request is not tried again; None with --no-vision / "vision": false
     with category.footage_vision(vision, ollama_url, ollama_model) as footage:

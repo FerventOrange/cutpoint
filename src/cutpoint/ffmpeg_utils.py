@@ -431,6 +431,8 @@ class MediaInfo:
     # Where the container starts on its own clock (s, ffprobe's format start_time): ``-ss`` and
     # the clips count from here; 1.4 or more in MPEG-TS, usually 0 elsewhere.
     fstart: float = 0.0
+    # ffprobe's format_name of the file probed (``mpegts``, ``mov,mp4,m4a,3gp,3g2,mj2``, ...).
+    container: str = ""
 
     def concat_key(self) -> tuple:
         """Parameters that must match for lossless concat-demuxer joining."""
@@ -546,6 +548,7 @@ def _probe(path: Path) -> MediaInfo:
         color_range=_color_tag(video, "color_range"),
         vstart=float(video.get("start_time") or f_start) - f_start,
         fstart=f_start,
+        container=str(data.get("format", {}).get("format_name") or ""),
     )
 
 

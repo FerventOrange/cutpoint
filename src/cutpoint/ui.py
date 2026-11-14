@@ -1574,11 +1574,15 @@ class Media:
 
     @staticmethod
     def key(real: Path) -> str | None:
+        """Content key of ``real``: its path, size and mtime, plus whether ffmpeg reads it
+        through a timeline copy (:mod:`cutpoint.tsrepair`, #1052), which probes and plays
+        longer: a copy made or gone probes it again and names its proxies apart."""
         try:
             st = real.stat()
         except OSError:
             return None
-        return hashlib.sha1(f"{real}|{st.st_size}|{st.st_mtime_ns}".encode()).hexdigest()[:16]
+        copy = "|timeline" if stage.timeline_copy(str(real)) else ""
+        return hashlib.sha1(f"{real}|{st.st_size}|{st.st_mtime_ns}{copy}".encode()).hexdigest()[:16]
 
     def info(self, real: Path, key: str) -> tuple[bool, float, int, str] | None:
         """``(browser plays it as is, duration, audio tracks, colour filter of its proxy)``, or

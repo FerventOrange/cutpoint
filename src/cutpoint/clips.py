@@ -21,7 +21,7 @@ from fractions import Fraction
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
-from cutpoint import boundaries, cache, folders, jsonout, procs, runstate, sources, srt
+from cutpoint import boundaries, cache, folders, jsonout, procs, runstate, sources, srt, tsrepair
 from cutpoint.audio_tracks import export_tracks
 from cutpoint.clipresume import ClipResume, clip_key
 from cutpoint.color import SKIP_360, SKIP_LOG, SKIP_NOT_UNDERWATER, AutoGrade, auto_grade
@@ -1577,6 +1577,14 @@ def export_clips(
         # Sources keep their recorded path as identity (events, tails, manifest);
         # the file actually read may be a remapped copy (config ``source_remap``).
         io_paths = {s: remap_source(s) for s in {m["source"] for m in ordered}}
+        # joined MPEG-TS/PS recordings are read through their stream copy, the clock of the
+        # analysis (#1052); one the analysis read so is never read in place
+        remuxed = [
+            e["path"]
+            for e in hl.get("sources") or []
+            if isinstance(e, dict) and e.get("timeline") and isinstance(e.get("path"), str)
+        ]
+        tsrepair.prepare_sources([source_path(s) for s in io_paths], required=remuxed)
         for s, p in io_paths.items():
             if str(p) != s:
                 logger.info("Reading %s from %s (source_remap)", source_path(s).name, p)
