@@ -125,6 +125,7 @@ from cutpoint import (
     progress,
     projectdelete,
     runstate,
+    selfcheck,
     stage,
 )
 from cutpoint import envelope as audio_envelope
@@ -4459,7 +4460,7 @@ def ranking_preview(p: Path, style_name: object) -> dict[str, Any]:
     after: dict[str, Any] = {}
     if not missing:
         try:
-            after = rerank.ranked(p, hl, style, raw)
+            after = rerank.ranked(p, hl, style, raw, check=False)
         except NeedsAnalyzeError as err:  # a source with nothing cached after all
             missing = err.missing
     if missing:
@@ -5091,6 +5092,7 @@ REFINE_WARNINGS = (
     "vlm_unavailable",
     "context_not_applied",
     "step_failed",
+    *selfcheck.CODES,  # the analysis self-checks (#1073): a detection that silently failed
 )
 
 
