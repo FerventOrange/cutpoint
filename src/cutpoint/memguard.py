@@ -16,6 +16,7 @@ When memory is short, :func:`cutpoint.analyze.free_models` and
 still short, it raises :class:`~cutpoint.errors.LowMemoryError` (``--json`` ``error.code``
 ``low_memory``, exit 1; ``progress.json`` status ``low_memory``) with an ERROR text that names
 ``cutpoint resume <project>``. Shrinking ``--batch-size`` does not help: the need is per model.
+Inside :func:`no_free` a thread's checks free nothing: short is short at once.
 
 Free RAM: ``MemAvailable`` of ``/proc/meminfo`` (Linux), ``GlobalMemoryStatusEx`` (Windows);
 elsewhere (macOS) it is unknown and the guard is off. Free VRAM: torch's
@@ -28,12 +29,14 @@ RAM headroom check alone and a WARNING; one on another machine uses no memory he
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import logging
 import os
 import subprocess
 import sys
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -70,6 +73,20 @@ LABELS = {
 }
 # vision servers warned about, once per process; emptied by reset_state
 _WARNED: set[str] = state.register_container(__name__, "_WARNED", set())
+_LOCAL = threading.local()  # ``no_free``: this thread's checks free nothing
+
+
+@contextlib.contextmanager
+def no_free() -> Iterator[None]:
+    """The checks of this thread free no cached models and unload no Ollama model while it
+    lasts: for a background thread (the HUD OCR reader) whose shortage comes from the models
+    the main thread uses; it frees in the main thread's turn instead."""
+    before = getattr(_LOCAL, "on", False)
+    _LOCAL.on = True
+    try:
+        yield
+    finally:
+        _LOCAL.on = before
 
 
 def whisper_need(name: str) -> str:
@@ -274,12 +291,13 @@ def _guard(
     found = _shortfall(head, ram_gb, vram_gb, pooled)
     if found is None or (loaded is not None and loaded()):
         return
-    logger.info("Memory low for %s (%s): freeing cached models", what, found[0])
-    _free(url)
-    found = _shortfall(head, ram_gb, vram_gb, pooled)
-    if found is None:
-        logger.info("Memory for %s is free now", what)
-        return
+    if not getattr(_LOCAL, "on", False):  # not in no_free()
+        logger.info("Memory low for %s (%s): freeing cached models", what, found[0])
+        _free(url)
+        found = _shortfall(head, ram_gb, vram_gb, pooled)
+        if found is None:
+            logger.info("Memory for %s is free now", what)
+            return
     short, vram_only = found
     error = LowVramError if vram_only else LowMemoryError
     # a VRAM shortage is not about the RAM memory_guard keeps free

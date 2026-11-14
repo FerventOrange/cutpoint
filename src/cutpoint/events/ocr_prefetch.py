@@ -11,7 +11,11 @@ debug lines of helper threads and a "resuming the OCR read" line when a read is 
 to its turn), and its progress is forwarded then through the step's own callback. A read
 that runs out of memory (:func:`~cutpoint.errors.is_out_of_memory`; the GPU steps it overlaps
 hold most of the GPU) is handed back to its turn too, with an INFO line, and so are the
-sources after it; out of memory in that inline read stops the run (``low_memory``).
+sources after it; out of memory in that inline read stops the run (``low_memory``). So is a
+read whose OCR engine the memory guard (:func:`cutpoint.memguard.check`) finds too little RAM
+free for: the worker's check frees nothing (:func:`cutpoint.memguard.no_free`, the models it
+would free are the main thread's), the inline turn checks again, freeing, and stops the run
+when still short.
 
 It runs only when nothing it needs comes later: a clean read (no ``read_errors``, so no bad
 ranges; a source after one is not offered either), Whisper on CUDA (the overlap pays only
@@ -51,7 +55,7 @@ from typing import Any
 
 from cutpoint import memguard, paths
 from cutpoint.encode import is_high_bit
-from cutpoint.errors import is_out_of_memory
+from cutpoint.errors import LowMemoryError, is_out_of_memory
 from cutpoint.events.common import Source, load_source
 from cutpoint.events.killfeed import (
     DecodeHook,
@@ -214,7 +218,7 @@ class _Job:
     result: Result | None = None
     error: BaseException | None = None
     skipped: bool = False  # declined or cancelled: read inline
-    oom: str = ""  # why it ran out of memory in the background (skipped: read inline)
+    oom: str = ""  # how it was short of memory in the background (skipped: read inline)
     share: SceneShare | None = None  # its scene proxy, made in the background
     index: int = 0  # its place among the analysis' sources (--batch-size)
 
@@ -353,9 +357,7 @@ class OcrPrefetch:
         if not job.done.is_set() or job.skipped:  # a cancelled read's records are dropped
             if job.oom:
                 logger.info(
-                    "%s: the background OCR ran out of memory (%s); reading it again in its turn",
-                    src.name,
-                    job.oom,
+                    "%s: the background OCR %s; reading it again in its turn", src.name, job.oom
                 )
             if self.declined:
                 logger.debug("OCR prefetch off: %s", self.declined)
@@ -463,25 +465,33 @@ class OcrPrefetch:
                 if self.batch_size and job.index and not job.index % self.batch_size:
                     # a batch boundary (--batch-size): the next read makes a new engine
                     self.make_engine.cache_clear()  # type: ignore[attr-defined]
-                job.result = detect_ocr_events(
-                    job.source,
-                    self.params,
-                    None,
-                    on_progress=job.shares.append,
-                    make_engine=self.make_engine,
-                    cancel=self._cancel,
-                    decode=self._decoder(job),
-                )
+                with memguard.no_free():  # the main thread's models: freed in its turn
+                    job.result = detect_ocr_events(
+                        job.source,
+                        self.params,
+                        None,
+                        on_progress=job.shares.append,
+                        make_engine=self.make_engine,
+                        cancel=self._cancel,
+                        decode=self._decoder(job),
+                    )
             except OcrCancelled:  # cancelled, or a GPU pass failed: read in its turn
                 job.skipped, why = True, "the OCR read was cancelled or its GPU pass failed"
                 self._cancel.set()  # the later sources too, after it
             except BaseException as err:  # noqa: BLE001 - re-raised by take()
-                if is_out_of_memory(err):
+                if isinstance(err, LowMemoryError):
+                    # the memory guard found too little RAM free for the OCR engine next to
+                    # the steps it overlaps: checked again (and freed) in its turn
+                    short = err.args[1] if len(err.args) > 1 else str(err)
+                    job.skipped, job.oom = True, f"had too little memory free ({short})"
+                    why = "too little memory was free for the OCR read"
+                elif is_out_of_memory(err):
                     # short of memory next to the GPU steps it overlaps (our own contention):
                     # read in its turn, once they are done; out of memory there stops the run.
                     # Only its text is kept: the error's frames may hold the memory
                     lines = str(err).strip().splitlines()
-                    job.skipped, job.oom = True, lines[0] if lines else type(err).__name__
+                    reason = lines[0] if lines else type(err).__name__
+                    job.skipped, job.oom = True, f"ran out of memory ({reason})"
                     why = "the OCR read ran out of memory"
                 else:
                     job.error, why = err, "the OCR read failed"
