@@ -158,7 +158,7 @@ export const crashText = (crash) => (crash.confidence == null ? 'CRASH' : `CRASH
  * crash, which AI Chat names alike (pacing.moment_kind); a moment a weaker crash only marked keeps
  * its kind (it shows the crash badge). A moment made
  * from a talk stretch is dialogue, and a widened moment is judged by ``widened_from.label``, not its
- * title. Otherwise it follows
+ * title; a moment an events VLM window named by ``label_before_vlm``, not the window's title. Otherwise it follows
  * pacing.moment_kind (what AI Chat calls the moment) in the same order: the words of its labels
  * (not a generic "x-moment") and ``kind`` decide first (``view`` or a scenic word: scenic; a funny
  * word: funny; ``crew``, ``cruise`` or an action word: action; a talk word: dialogue), then the
@@ -174,7 +174,10 @@ export function kindOf(c) {
   const nominated = c.signals?.events?.nominated;
   if (Array.isArray(nominated) && nominated.some((n) => String(n).startsWith('dialogue-'))) return 'dialogue'; // made from a talk stretch, whatever its title says
   // a moment a stretch only widened keeps its own type: its words are the label it had, not the title's
-  const words = c.dialogue_title ? [c.widened_from?.label ?? c.label, c.vision_label] : [c.display_label, c.label, c.vision_label];
+  // a VLM window's title (#1071) is only the moment's name: its type comes from the label it had
+  const vlm = typeof c.label_before_vlm === 'string' ? c.label : undefined;
+  const own = (x) => (vlm !== undefined && x === vlm ? c.label_before_vlm : x);
+  const words = (c.dialogue_title ? [c.widened_from?.label ?? c.label, c.vision_label] : [c.display_label, c.label, c.vision_label]).map(own);
   const named = words.filter((x) => x && !GENERIC.test(String(x)));
   const tokens = new Set(`${named.join(' ')} ${kind}`.toLowerCase().split(/[^a-z]+/));
   const has = (words) => words.some((w) => tokens.has(w));

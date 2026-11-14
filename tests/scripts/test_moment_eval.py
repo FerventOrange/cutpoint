@@ -182,7 +182,10 @@ def test_beats_noise_only_above_the_p95(tmp_path):
     assert v["metrics"]["keep_top10"]["lift"] > 1.5
 
 
-def test_reference_budget_and_default_edit(tmp_path):
+def test_reference_budget_and_default_edit(tmp_path, monkeypatch):
+    from cutpoint import default_fit  # noqa: PLC0415
+
+    monkeypatch.setattr(default_fit, "FIT_SHARE", 1.0)  # fixture moments are long for their target
     project = write_project(tmp_path, grid())
     # 15% of 1000 s is 150 s: the 15 best candidates (0..14). Reference 700 is candidate 14,
     # 800 is candidate 16 and only fits at 30%.
@@ -203,7 +206,10 @@ def test_reference_budget_and_default_edit(tmp_path):
     assert me.evaluate_video(project, labels, 10, 1, 0.5, 30)["edit"]["clips"] == 3
 
 
-def test_edit_counts_only_this_video_and_the_duration_must_agree(tmp_path):
+def test_edit_counts_only_this_video_and_the_duration_must_agree(tmp_path, monkeypatch):
+    from cutpoint import default_fit  # noqa: PLC0415
+
+    monkeypatch.setattr(default_fit, "FIT_SHARE", 1.0)  # fixture moments are long for their target
     other = cand(50, 800, 810, 99.5, source="D:/Videos/other.mp4")
     project = write_project(tmp_path, [*grid(3), other])
     labels = me.load_labels(write_labels(tmp_path, keep=[[0, 10]]))
@@ -299,7 +305,10 @@ def test_bad_input_is_an_error_exit(tmp_path):
         me.main(["--project", str(project)])
 
 
-def test_compare_warns_on_different_settings_and_has_edit_rows(tmp_path):
+def test_compare_warns_on_different_settings_and_has_edit_rows(tmp_path, monkeypatch):
+    from cutpoint import default_fit  # noqa: PLC0415
+
+    monkeypatch.setattr(default_fit, "FIT_SHARE", 1.0)  # fixture moments are long for their target
     project = write_project(tmp_path, grid())
     labels = me.load_labels(write_labels(tmp_path, keep=[[0, 10]]))
     video = me.evaluate_video(project, labels, 5, 1, 0.5, None)

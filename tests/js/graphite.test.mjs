@@ -69,6 +69,15 @@ test('picking a theme in Settings applies it at once; Graphite is stored as no k
 
 // ---- kind ----
 
+test('kindOf: a moment an events VLM window named is judged by the label it had, not the window title', () => {
+  const named = { label: 'x-banter', label_before_vlm: 'gaming-moment', label_vlm: 'x-banter', transcript: '' };
+  assert.equal(u.kindOf(named), 'action'); // "banter" is the window's title, not what the moment is
+  assert.equal(u.kindOf({ ...named, label_before_vlm: 'laughter', label: 'calm-view' }), 'funny');
+  assert.equal(u.kindOf({ label: 'x-banter', transcript: '' }), 'dialogue'); // not renamed: its words count
+  const titled = { label: 'clutch-win', display_label: 'clutch-win', label_before_vlm: 'gaming-moment', signals: { events: { nominated: ['dialogue-funny'] } } };
+  assert.equal(u.kindOf(titled), 'dialogue'); // a talk stretch's nominee stays dialogue
+});
+
 test('kindOf: scenic views, laughter, a few spoken words, else action; scoreText fits both scales', () => {
   assert.equal(u.kindOf({ pool: 'visual', kind: 'view' }), 'scenic');
   assert.equal(u.kindOf({ pool: 'visual', kind: 'cruise', transcript: '' }), 'action');

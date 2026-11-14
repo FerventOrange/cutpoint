@@ -991,6 +991,9 @@ def test_a_style_without_an_open_list_gets_no_nominee_and_the_same_suggested_top
     """Kills nothing covers nominate no window under a style that does not go past its usual
     list, and the suggestion is the one of a run without events, on the analyze path and when
     ``cutpoint events`` rescores the file afterwards."""
+    from cutpoint import default_fit  # noqa: PLC0415
+
+    monkeypatch.setattr(default_fit, "FIT_SHARE", 1.0)  # fixture moments are long for their target
 
     sig = {k: np.zeros(6001) for k in ("loudness", "speech", "laughter", "scene", "continuity")}
     signals = analyze.PartSignals(6001, sig, [], [], [], [], [])  # grids: a nominee could be scored
@@ -3112,6 +3115,9 @@ def test_moments_that_tie_before_vision_are_taken_alike_by_analyze_and_its_resco
     both take the edit in :func:`cutpoint.scorer.edit_rank_key` order: T (earlier start) is
     taken, S skipped and marked, and the rescore keeps the mark, so U, rated up, passes S
     instead of being held under T's 60. A re-rank changes nothing."""
+    from cutpoint import default_fit  # noqa: PLC0415
+
+    monkeypatch.setattr(default_fit, "FIT_SHARE", 1.0)  # fixture moments are long for their target
     monkeypatch.setattr(analyze, "analyze_source", _tied)
     band_run.ratings = dict.fromkeys((200.0, 100.0, 20.0, 300.0), 0.0)  # U and the rest: 10
     kill = {

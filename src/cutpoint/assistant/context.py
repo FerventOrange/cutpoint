@@ -286,7 +286,8 @@ def shown_label(label: Any, cand: dict[str, Any] | None, window: str = "") -> st
     (``signals.events.vlm``) or ``window`` (an events.json window's label).
 
     For the assistant and the ``cutpoint ui`` moments list only: highlights.json and the clip
-    file names keep the analysis label.
+    file names keep the label in highlights.json (the analysis label, a dialogue title's slug,
+    or an events VLM window's label, #1071).
     """
     cand = cand or {}
     title = cand.get("dialogue_title")

@@ -20,16 +20,20 @@ logger = logging.getLogger(__name__)
 PROFANITY = {"fuck*": 0.8, "shit*": 0.6, "damn*": 0.4}
 _EXCLAIM = {"wtf": 1.0, "holy": 0.8}
 _SWEARS = {**PROFANITY, **_EXCLAIM}
+# Hype words. "oh my god"/"omg", "yes" and "what" were lowered a step in #1071: the most
+# frequent hype phrases of a 3 h stream (36, 47 and 175 times), mostly said flat, which at
+# 1.2 / 0.5 / 0.3 filled the speech signal of a quarter of its moments. The rare, explicit ones
+# ("let's go", "no way", "insane") keep their weight.
 _HYPE = {
     "let's go": 1.5,
     "lets go": 1.5,
     "no way": 1.2,
-    "oh my god": 1.2,
-    "omg": 1.0,
+    "oh my god": 1.0,
+    "omg": 0.8,
     "wow": 0.8,
-    "yes": 0.5,
+    "yes": 0.4,
     "insane": 1.0,
-    "what": 0.3,
+    "what": 0.2,
     "oh no": 0.8,
 }
 LAUGHTER = {
@@ -74,6 +78,13 @@ class Style:
         profanity_alone: If False, ``PROFANITY`` hits only count when a
             non-profane keyword, laughter or a loudness spike is within a few
             seconds, and they are never used as a clip label.
+        repeat_damping: Each keyword hit counts less the more often its phrase is
+            said in the source (:mod:`cutpoint.repeats`, #1071): a speaker's filler
+            fades, a rare exclamation keeps its weight. Laughter is never damped.
+        delivery_cue: Non-profane keyword hits count fully only with a delivery cue
+            nearby (laughter, another strong keyword, a loudness jump), else at
+            :data:`cutpoint.analyze.DELIVERY_FLAT` of their weight (#1071). Off for
+            styles where calm talk is the content (``funny``, ``commentary``).
         smart_tail: Extend clips that end on speech past the last word until
             the audio (laughter, reaction, game sounds) settles; see
             ``cutpoint.tail``.
@@ -126,6 +137,8 @@ class Style:
     default_order: str = "story"
     keyword_cap: float | None = None
     profanity_alone: bool = True
+    repeat_damping: bool = True
+    delivery_cue: bool = False
     smart_tail: bool = True
     tail_min: float = 1.5
     tail_max: float = 5.0
@@ -264,6 +277,7 @@ STYLES: dict[str, Style] = {
         merge_gap=3.0,
         keyword_cap=1.5,
         profanity_alone=False,
+        delivery_cue=True,
         open_list=True,
         keywords={
             **_HYPE,
@@ -295,6 +309,7 @@ STYLES: dict[str, Style] = {
         merge_gap=2.0,
         keyword_cap=1.5,
         profanity_alone=False,
+        delivery_cue=True,
         keywords={**_HYPE, **_SWEARS, "whoa": 1.0, "go": 0.4, "jump": 0.6, "crash": 0.8},
     ),
     "sport": Style(
@@ -307,6 +322,7 @@ STYLES: dict[str, Style] = {
         max_len=20.0,
         target_total=90.0,
         merge_gap=4.0,
+        delivery_cue=True,
         keywords={
             **_HYPE,
             "goal": 1.5,
@@ -408,6 +424,7 @@ STYLES: dict[str, Style] = {
         merge_gap=1.0,
         keyword_cap=1.5,
         profanity_alone=False,
+        delivery_cue=True,
         keywords=_ACTION_CAM_KEYWORDS,
         use_scenes=False,
         tail_min=1.0,

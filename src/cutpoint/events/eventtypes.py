@@ -137,6 +137,9 @@ class EventType:
         nominate: False: boost-only. The type adds its ``score`` to candidates that already exist
             but never nominates one (:func:`cutpoint.events.scoring.seeds`) or seeds a VLM
             window, whatever its ``seed``. Not read from preset JSON.
+        damp_repeats: Each event counts less the more often its text is shown in the source
+            (:func:`cutpoint.events.scoring.repeat_weights`, #1071): a caption the game shows
+            every round is filler. Not read from preset JSON.
     """
 
     name: str
@@ -150,6 +153,7 @@ class EventType:
     styles: tuple[str, ...] | None = None
     seed_gap_s: float | None = None
     nominate: bool = True
+    damp_repeats: bool = False
 
     def matches(self, e: dict[str, Any]) -> bool:
         """Whether any matcher matches the event."""
@@ -178,7 +182,9 @@ class EventType:
 # layer learned as pop-ups that come back all through the source (``announce``,
 # :func:`cutpoint.events.killfeed.learn_announcements`), half a kill each, at most 2 counted, no tail
 # payoff. Boost-only: they add points to candidates that exist and never nominate a moment or seed a
-# VLM window.
+# VLM window. Repeat-damped (#1071): a line shown often in a source (a phase or team caption
+# every round) counts less each time; banners, kills and score changes are outcomes, not
+# filler, and keep their weight however often they come.
 # Explosions (#801): a heard boom with a loudness jump out of ongoing
 # sound (``confirmed``, :mod:`cutpoint.events.explosions`): two thirds of a kill,
 # at most 2 counted, a VLM seed a little below a player kill; only where blasts are moments
@@ -229,6 +235,7 @@ DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
         score=3.0,
         max=2,
         nominate=False,
+        damp_repeats=True,
     ),
     EventType(
         "explosions",

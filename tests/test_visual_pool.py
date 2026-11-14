@@ -422,7 +422,10 @@ def test_project_has_pool_reads_the_recorded_base_without_a_pool_record(hl, expe
 
 
 # --------------------------------------------------------------------------- rescore
-def test_rescore_events_keeps_the_pool_last_and_unscored():
+def test_rescore_events_keeps_the_pool_last_and_unscored(monkeypatch):
+    from cutpoint import default_fit  # noqa: PLC0415
+
+    monkeypatch.setattr(default_fit, "FIT_SHARE", 1.0)  # fixture moments are long for their target
     scored = [
         {"id": "h001", "source": "a.mp4", "start": 0.0, "end": 8.0, "score": 10.0},
         {"id": "h002", "source": "a.mp4", "start": 50.0, "end": 58.0, "score": 20.0},

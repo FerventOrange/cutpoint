@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import sys
 from fractions import Fraction
@@ -14,7 +15,7 @@ import pytest
 from conftest import StubTranscriber, media_info, remap, set_config, write
 from cutpoint import analyze, config, extras, features, reset_state
 from cutpoint.ffmpeg_utils import MediaInfo
-from cutpoint.styles import LAUGHTER, get_style
+from cutpoint.styles import LAUGHTER, STYLES, get_style
 
 
 @pytest.mark.parametrize(
@@ -623,3 +624,157 @@ def test_reanalyze_passes_the_recorded_context_back(home, tmp_path, monkeypatch)
         analyze.reanalyze(proj)
         monkeypatch.setattr(analyze, "analyze", real)
     assert [kw["context"] for kw in seen] == [None, "chest mount"]
+
+
+# --------------------------------------------------------------------------- delivery cue (#1071)
+def test_a_hype_word_said_flat_keeps_a_third_of_its_weight_and_a_cued_one_all():
+    quiet = np.zeros(1000)
+    kw = [
+        (10.0, 1.0, "oh my god"),  # laughter 1 s later: cue
+        (50.0, 1.0, "oh my god"),  # alone and flat
+        (90.0, 1.0, "wow"),  # a different strong keyword 2 s later: cue for both
+        (92.0, 1.0, "no way"),
+    ]
+    got = analyze.gate_delivery(kw, [(11.0, 1.0, "laugh")], quiet)
+    assert [w for _, w, _ in got] == [1.0, analyze.DELIVERY_FLAT, 1.0, 1.0]
+
+
+def test_a_filler_said_twice_in_a_row_is_no_cue_for_itself():
+    kw = [(10.0, 1.0, "wow"), (11.0, 1.0, "wow")]
+    got = analyze.gate_delivery(kw, [], np.zeros(1000))
+    assert [w for _, w, _ in got] == [analyze.DELIVERY_FLAT] * 2
+
+
+def test_a_weak_keyword_is_no_cue_and_the_result_does_not_depend_on_order():
+    kw = [(10.0, 1.0, "wow"), (11.0, 0.4, "yes"), (60.0, 1.0, "no way"), (61.0, 0.9, "wow")]
+    quiet = np.zeros(1000)
+    got = analyze.gate_delivery(kw, [], quiet)
+    again = analyze.gate_delivery(kw[::-1], [], quiet)
+    assert sorted(got) == sorted(again)
+    assert got[0][1] == analyze.DELIVERY_FLAT  # "yes" at 0.4 is below 0.8
+    assert got[2][1] == 1.0  # "wow" 0.9 beside it is strong
+
+
+def test_profane_hits_are_left_to_the_profanity_gate():
+    swear = sorted(analyze.PROFANE)[0]
+    kw = [(10.0, 0.8, swear)]
+    assert analyze.gate_delivery(kw, [], np.zeros(1000)) == kw
+
+
+@pytest.mark.parametrize(
+    ("at", "expected"),
+    [
+        ({}, False),  # silence
+        ({505: 0.25}, True),  # 0.25 above a silent base
+        ({505: 0.15}, False),  # a small bump
+        ({515: 0.3}, True),  # up to 2 s after the word
+        ({525: 0.3}, False),  # later than that belongs to something else
+        ({492: 0.3}, True),  # up to 1 s before it
+        ({485: 0.3}, False),
+        ({505: 0.5}, True),  # as loud as a profane word needs, whatever the base
+    ],
+)
+def test_loudness_jump_at_a_word_at_50_s(at, expected):
+    x = np.zeros(1000)
+    for i, v in at.items():
+        x[i] = v
+    assert analyze.loudness_jump(x, 50.0) is expected
+
+
+def test_a_loud_stretch_before_the_word_is_the_base_not_a_jump():
+    x = np.full(1000, 0.3)  # steady 0.3 over the 9 s before
+    x[505] = 0.4  # only 0.1 above it
+    assert not analyze.loudness_jump(x, 50.0)
+    x[505] = 0.55  # absolute 0.5
+    assert analyze.loudness_jump(x, 50.0)
+    x = np.full(1000, 0.1)
+    x[505] = 0.35  # 0.25 above the median
+    assert analyze.loudness_jump(x, 50.0)
+
+
+def _part(words, loudness):
+    n = len(loudness)
+    sig = {k: np.zeros(n) for k in ("loudness", "speech", "laughter", "scene", "continuity")}
+    sig["loudness"] = loudness
+    return analyze.PartSignals(n, sig, [], [], words, [], [])
+
+
+def _phrase_words(*items):
+    """Word dicts for ``(second, phrase)`` items (a phrase's words 0.3 s apart)."""
+    out = []
+    for t, phrase in items:
+        for i, w in enumerate(phrase.split()):
+            out.append(
+                {"start": t + 0.3 * i, "end": t + 0.3 * i + 0.25, "word": w, "probability": 1.0}
+            )
+    return out
+
+
+def _hits(style, items, n=1000, loudness=None):
+    ps = _part(_phrase_words(*items), np.zeros(n) if loudness is None else loudness)
+    analyze.text_signals(ps, style, "a.mp4")
+    return ps.kw_hits
+
+
+@pytest.mark.parametrize(
+    ("style_name", "flat"), [("gaming", True), ("action", True), ("funny", False)]
+)
+def test_only_delivery_cue_styles_cut_a_flat_hype_word(style_name, flat):
+    style = get_style(style_name)
+    (hit,) = _hits(style, [(30.0, "wow")])
+    assert hit[1] == pytest.approx(style.keywords["wow"] * (analyze.DELIVERY_FLAT if flat else 1))
+
+
+def test_a_hype_word_said_loudly_keeps_its_weight_in_a_cue_style():
+    loud = np.zeros(1000)
+    loud[305] = 0.6
+    (hit,) = _hits(get_style("gaming"), [(30.0, "wow")], loudness=loud)
+    assert hit[1] == pytest.approx(get_style("gaming").keywords["wow"])
+
+
+def test_a_repeated_phrase_is_damped_before_the_delivery_cue_judges_it():
+    # "wow" (0.8) twelve times in 300 s: factor 0.5, so 0.4, below the 0.8 a cue needs. Undamped
+    # it would cue the "no way" beside it; damped it does not, but "no way" cues it.
+    style = get_style("gaming")
+    items = [(10.0 + 20 * i, "wow") for i in range(1, 13)] + [(9.0, "no way")]
+    hits = {(round(t), p): w for t, w, p in _hits(style, items, n=3000)}
+    assert hits[(30, "wow")] == pytest.approx(0.8 * 0.5 * analyze.DELIVERY_FLAT)
+    assert hits[(9, "no way")] == pytest.approx(style.keywords["no way"] * analyze.DELIVERY_FLAT)
+
+
+def test_a_style_without_repeat_damping_keeps_the_weights():
+    style = get_style("funny")
+    items = [(10.0 + 20 * i, "wow") for i in range(12)]
+    assert all(w == pytest.approx(0.4) for _, w, _ in _hits(style, items, n=3000))
+    off = dataclasses.replace(style, repeat_damping=False)
+    assert all(w == pytest.approx(0.8) for _, w, _ in _hits(off, items, n=3000))
+
+
+def test_hype_weights_and_cue_flags_of_the_styles():
+    k = get_style("gaming").keywords
+    assert (k["oh my god"], k["omg"], k["yes"], k["what"]) == (1.0, 0.8, 0.4, 0.2)
+    assert k["let's go"] == 1.5  # the rare, explicit ones keep their weight
+    names = ("gaming", "action", "sport", "action-cam", "funny", "commentary")
+    assert {n: STYLES[n].delivery_cue for n in names} == {
+        "gaming": True, "action": True, "sport": True, "action-cam": True,
+        "funny": False, "commentary": False,
+    }  # fmt: skip
+
+
+def test_a_label_names_the_keyword_by_its_style_weight_not_its_damped_one():
+    # a flat "oh my god" (1.0, cut to 0.3 with no cue) and a "wow" (0.8) on a loudness jump in
+    # one candidate: the label is "oh my god"; a lone "yes" (0.4, under 0.5) names nothing
+    style = get_style("gaming")
+    loud = np.zeros(1000)
+    loud[195:215] = 0.8  # a jump at 20 s only
+    ps = _part(_phrase_words((10.0, "oh my god"), (20.0, "wow"), (50.0, "yes")), loud)
+    analyze.text_signals(ps, style, "a.mp4")
+    weights = {p: w for _, w, p in ps.kw_hits}
+    assert weights["oh my god"] < weights["wow"]  # the score sees the damped weight
+    cands = [
+        analyze.Candidate(Path("a.mp4"), 5.0, 25.0, 20.0, 1.0, {}),
+        analyze.Candidate(Path("a.mp4"), 45.0, 55.0, 50.0, 1.0, {}),
+    ]
+    both, alone = analyze.describe_candidates(cands, style, ps, 0.0)
+    assert both.keywords[0] == "wow" and both.label_hint == "oh my god"
+    assert alone.keywords == ["yes"] and alone.label_hint == ""
