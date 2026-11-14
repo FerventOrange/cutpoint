@@ -365,6 +365,25 @@ def test_one_game_in_one_folder_keeps_one_discovery(folder, caplog) -> None:
     assert not [m for m in caplog.messages if "does not fit" in m]
 
 
+def test_out_of_memory_in_the_fit_check_names_the_step_and_the_sources(folder, monkeypatch) -> None:
+    from cutpoint.errors import LowMemoryError, is_out_of_memory  # noqa: PLC0415
+
+    folder.run(folder.sources({"alpha one.mp4": "a", "alpha two.mp4": "a"}))
+    srcs = folder.sources({"alpha one.mp4": "a", "alpha two.mp4": "a", "alpha three.mp4": "a"})
+    err = RuntimeError("CUDA out of memory. Tried to allocate 64.00 MiB (GPU 0)")
+
+    def sample(sources, out_dir, params):
+        raise err
+
+    monkeypatch.setattr(game_fit, "sample_frames", sample)
+    with pytest.raises(LowMemoryError) as got:
+        folder.run(srcs)
+    assert str(got.value).startswith(
+        "Out of memory in the HUD fit check (neon-drift: alpha three.mp4); close other programs"
+    )
+    assert got.value.__cause__ is err and is_out_of_memory(err)
+
+
 def test_a_new_source_is_checked_against_the_preset_found(folder, caplog) -> None:
     from cutpoint.events import regions  # noqa: PLC0415
 
