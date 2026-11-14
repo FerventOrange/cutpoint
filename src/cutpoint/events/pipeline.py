@@ -179,6 +179,7 @@ def run_events(
     discover_hint: str = EVENTS_DISCOVER_HINT,
     batch_size: int = 0,
     dialogue: Callable[[dict[str, list[dict[str, Any]]]], list[dict[str, Any]]] | None = None,
+    context: str | None = None,
 ) -> tuple[Path, Path]:
     """Run the event layers on every source of ``project``.
 
@@ -213,6 +214,9 @@ def run_events(
             (None: unless action-cam, which has no HUD).
         llm: Let the crash layer's activity profile ask the local Ollama models
             (:data:`cutpoint.activity.AUTO`: not asked for, see :func:`cutpoint.activity.resolve`).
+        context: ``analyze --context`` (#1068) for the crash layer's activity profile, as
+            ``crashes --context``; None: :func:`cutpoint.activity.default_context` (the
+            analysis's ``settings.context`` while the project has no profile yet).
         prefetch: OCR read in the background by ``cutpoint analyze``: a source's result
             is taken from it in its turn (same events, caches and log lines); what it did
             not read is read here, after it is stopped, with its engine.
@@ -595,6 +599,7 @@ def run_events(
 
     # ---- crashes (after voice + visual, whose caches it reads): crashes.json
     if crash_run:
+        from cutpoint.activity import default_context  # noqa: PLC0415
         from cutpoint.crash import detect_project  # noqa: PLC0415
 
         t0 = time.perf_counter()
@@ -604,6 +609,7 @@ def run_events(
                 detect_project(
                     project,
                     force="crash" in force,
+                    context=default_context(project, context=context, hl=hl),
                     encoder=enc,
                     warn_unreachable=False,
                     llm=llm,

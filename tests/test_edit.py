@@ -312,7 +312,7 @@ def test_analyze_hands_vision_and_ollama_options_to_the_detection(tmp_path, monk
             ollama_url="http://h:1",
             ollama_model="m",
         )
-    assert got == [((False, "http://h:1", "m"), {"shared": None})]
+    assert got == [((False, "http://h:1", "m"), {"shared": None, "context": None})]
 
 
 def test_edit_with_an_explicit_style_never_probes(pipeline, monkeypatch):

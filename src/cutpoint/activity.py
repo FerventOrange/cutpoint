@@ -105,7 +105,8 @@ from cutpoint.events.common import load_highlights
 from cutpoint.events.visual import load_visual, text_embeddings
 from cutpoint.events.vlm_windows import ACTION_CAM_TAGS
 from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
-from cutpoint.utils import slugify
+from cutpoint.utils import MAX_CONTEXT_CHARS as MAX_CONTEXT_CHARS  # cutpoint ui reads it here
+from cutpoint.utils import footage_context, slugify
 from cutpoint.vision import VisionRater
 
 logger = logging.getLogger(__name__)
@@ -117,7 +118,6 @@ MAX_PROMPTS = 16  # per caption list
 MAX_WORDS = 40
 MAX_PROMPT_CHARS = 100
 MAX_WORD_CHARS = 40
-MAX_CONTEXT_CHARS = 500
 MAX_LIST = 8  # occluder / low_info / scene captions
 MAX_EXCLUDE = 80  # exclude_base entries (a profile may replace every floor caption)
 MAX_VL_CHARS = 80
@@ -1189,6 +1189,31 @@ def _save_discovery(key: str, entry: dict[str, Any]) -> None:
 
 
 # --------------------------------------------------------------------------- resolve
+def default_context(
+    project: Path,
+    *,
+    activity: str | None = None,
+    context: str | None = None,
+    refresh: bool = False,
+    hl: dict[str, Any] | None = None,
+) -> str | None:
+    """The ``context`` of :func:`resolve` for ``crashes``, ``profile`` and ``events``:
+    ``context`` when given; else, with no ``activity`` either, the ``settings.context`` the
+    analysis recorded (``analyze --context``, #1068) while ``activity.json`` holds no profile
+    yet or ``refresh`` drops it, so the first profile is built from the words the analysis was
+    given. A profile made since (``crashes --context``) stays: None then, and :func:`resolve`
+    keeps ``activity.json`` as it is. ``hl``: the analysis (None: ``highlights.json``)."""
+    if footage_context(context) or activity:
+        return context
+    old = None if refresh else cache.load_json(project / ACTIVITY_FILE)
+    if isinstance(old, dict) and old.get("version") == PROFILE_VERSION:
+        return None
+    if hl is None:
+        hl = cache.load_json(project / "highlights.json")
+    settings = hl.get("settings") if isinstance(hl, dict) else None
+    return footage_context(settings.get("context")) if isinstance(settings, dict) else None
+
+
 def resolve(
     project: Path,
     *,
@@ -1233,8 +1258,7 @@ def resolve(
         # A failed synthesis is retried with the request that asked for it.
         req = old.get("request") or {}
         activity, context = req.get("activity"), req.get("context")
-    context = " ".join(context.split())[:MAX_CONTEXT_CHARS] if context else None
-    context = context or None  # blank words are no context
+    context = footage_context(context)  # one line, capped; blank words are no context
     request = {"activity": activity, "context": context}
     if (
         old is not None

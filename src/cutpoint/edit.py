@@ -156,6 +156,7 @@ def run_edit(
     keep_clips: bool = True,
     output_format: str = "mp4",
     vision_time_share: float | None = None,
+    context: str | None = None,
 ) -> Path:
     """Analyze ``inputs`` into ``project``, export clips and assemble them as ``kind`` says.
 
@@ -173,7 +174,8 @@ def run_edit(
     without compressing twice. ``lut`` (:func:`~cutpoint.encode.check_lut`) grades the clips
     as ``clips --lut`` does, ``color`` and ``color_strength`` as ``clips --color`` and
     ``--color-strength`` (None: config.json's ``color``); the final keeps the grade.
-    ``vision_time_share`` is analyze's (None: config.json's ``vision_time_share``).
+    ``vision_time_share`` is analyze's (None: config.json's ``vision_time_share``), and so is
+    ``context`` (``--context``, #1068; also the hint of this run's footage question).
 
     ``keep_clips`` False exports the clips into a temporary folder in ``project``, removed
     after the join (also on a failure or Ctrl+C), and leaves the clips folder alone.
@@ -217,6 +219,7 @@ def run_edit(
             keep_clips=keep_clips,
             output_format=output_format,
             vision_time_share=vision_time_share,
+            context=context,
         )
 
 
@@ -243,6 +246,7 @@ def _run_edit(
     keep_clips: bool,
     output_format: str,
     vision_time_share: float | None,
+    context: str | None,
 ) -> Path:
     """:func:`run_edit`, reporting to ``steps``."""
     from cutpoint.analyze import analyze, report_highlights  # noqa: PLC0415
@@ -278,7 +282,7 @@ def _run_edit(
     tsrepair.prepare_sources(videos)
     # one client of the vision model for both detections (here and in analyze): a failed
     # request is not tried again; None with --no-vision / "vision": false
-    with category.footage_vision(vision, ollama_url, ollama_model) as footage:
+    with category.footage_vision(vision, ollama_url, ollama_model, context) as footage:
         if events:
             from cutpoint.analyze import LAYER_STEP  # noqa: PLC0415
             from cutpoint.events.pipeline import ACTION_CAM_LAYERS, DEFAULT_LAYERS, preflight  # noqa: PLC0415
@@ -305,6 +309,7 @@ def _run_edit(
             ocr_det_skip=bool(ocr_det_skip),
             footage=footage,
             vision_time_share=vision_time_share,
+            context=context,
         )
     if events:
         from cutpoint.events.cli import run_args  # noqa: PLC0415

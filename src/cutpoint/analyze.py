@@ -116,7 +116,7 @@ from cutpoint.transcribe import (
     split_markers,
     transcript_name,
 )
-from cutpoint.utils import clock, find_videos, matches_glob, slugify
+from cutpoint.utils import clock, find_videos, footage_context, matches_glob, slugify
 from cutpoint.vision import PRIOR_N, RATING_PRIOR, VisionRater, speech_excerpt
 
 if TYPE_CHECKING:
@@ -3391,11 +3391,12 @@ def _dialogue_reader(
     steps: progress.Run,
     timings: dict[str, float],
     ran: list[bool],
+    context: str | None = None,
 ) -> Callable[[list[dict[str, Any]]], list[dict[str, Any]]]:
     """The dialogue step as a function of the audio events (events.json entries with source,
     ``start``, ``label`` and ``confidence``): reads the ``transcripts`` with ``backend`` and
     returns the dialogue events. Records ``timings["dialogue_s"]`` and appends to ``ran`` when
-    called."""
+    called. ``context``: the user's ``--context`` words, given to the reader's prompt."""
     from cutpoint.events import dialogue  # noqa: PLC0415
 
     def read(audio: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3403,7 +3404,11 @@ def _dialogue_reader(
         t0 = time.perf_counter()
         try:
             found = dialogue.read_all(
-                transcripts, audio, backend, lambda pct, name: steps.update(pct, name)
+                transcripts,
+                audio,
+                backend,
+                lambda pct, name: steps.update(pct, name),
+                context=context,
             )
         except LowMemoryError:  # an optional step never aborts the analysis
             message = f"Dialogue skipped: not enough free memory for {backend.model}"
@@ -3468,6 +3473,7 @@ def _run_layers(
     batch_size: int = 0,
     dialogue: Callable[[dict[str, list[dict[str, Any]]]], list[dict[str, Any]]] | None = None,
     det_skip: bool = False,
+    context: str | None = None,
 ) -> bool:
     """Run the planned event layers on the analysis ``hl`` (not written yet) and write
     events.json, as ``cutpoint events`` would (held back with the other
@@ -3478,7 +3484,8 @@ def _run_layers(
     None: from config.json and the environment); ``batch_size``: ``--batch-size``
     (:func:`~cutpoint.events.pipeline.run_events`); ``dialogue``: the dialogue reader it runs as
     the ``dialogue`` step before it writes events.json (:func:`_dialogue_reader`); ``det_skip``:
-    ``--ocr-det-skip`` (``OcrParams.det_skip``)."""
+    ``--ocr-det-skip`` (``OcrParams.det_skip``); ``context``: ``--context``, for the crash
+    layer's activity profile."""
     from cutpoint.crash import no_visual_reason  # noqa: PLC0415
     from cutpoint.events.audio_events import AudioParams  # noqa: PLC0415
     from cutpoint.events.common import pending_highlights  # noqa: PLC0415
@@ -3510,6 +3517,7 @@ def _run_layers(
                 discover_hint=DISCOVER_HINT,
                 batch_size=batch_size,
                 dialogue=dialogue,
+                context=context,
             )
     except Exception as err:
         if steps.current == "ranking" or isinstance(err, LowMemoryError):
@@ -3878,6 +3886,7 @@ def analyze(
     rerank_backup: str | None = None,
     ids: Mapping[tuple[str, float, float], str] | None = None,
     last_candidate_id: int = 0,
+    context: str | None = None,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -3972,6 +3981,11 @@ def analyze(
             into a project (``analyze``, ``edit``, ``360 analyze``) keeps the ids of the spans
             it finds again; without one every candidate is numbered from ``h001``.
         last_candidate_id: The highest id the earlier analysis gave (with ``ids`` only).
+        context: ``--context``, the user's words about the footage (#1068), recorded as
+            ``settings.context``: a hint in the footage question of ``--style auto`` (not
+            with ``footage``, which brings its own), it picks the crash step's activity
+            profile as ``crashes --context`` does, and it goes into the vision rating and
+            dialogue prompts. No scoring weight reads it. None or blank: as without it.
 
     Returns:
         Path of the written highlights.json.
@@ -4012,6 +4026,7 @@ def analyze(
             rerank_backup=rerank_backup,
             ids=ids,
             last_candidate_id=last_candidate_id,
+            context=footage_context(context),
         )
 
 
@@ -4047,6 +4062,7 @@ def _analyze(
     rerank_backup: str | None,
     ids: Mapping[tuple[str, float, float], str] | None,
     last_candidate_id: int,
+    context: str | None,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
@@ -4060,7 +4076,9 @@ def _analyze(
     probes: list[category.SourceProbe] = []
     cat: str | None = None  # the category whose layers run (None: the style's own)
     if auto is not None:
-        probes, det = category.detect(sources, vision, ollama_url, ollama_model, shared=footage)
+        probes, det = category.detect(
+            sources, vision, ollama_url, ollama_model, shared=footage, context=context
+        )
         name, fallback = category.choose_style(det, auto.emphasis)
         if det.pending:
             logger.info("Footage looks %s so far (%s)", category.label(det.category), det.reason)
@@ -4323,6 +4341,9 @@ def _analyze(
                 ),
                 # --ocr-det-skip: `cutpoint events` reads HUD text as this run did (only when on)
                 **({"ocr_det_skip": True} if ocr_det_skip else {}),
+                # --context (#1068): the crash step's profile, the vision and dialogue prompts;
+                # `cutpoint events`, `rerank` and re-analyses read it from here (only when given)
+                **({"context": context} if context else {}),
             },
             "timings": timings,
             "suggested_top": 0,
@@ -4365,7 +4386,7 @@ def _analyze(
             backend = _dialogue_backend(style, skip, steps, spoken, ollama_url, ollama_model)
             ran: list[bool] = []
             reader = (
-                _dialogue_reader(backend, spoken, steps, timings, ran)
+                _dialogue_reader(backend, spoken, steps, timings, ran, context)
                 if backend is not None
                 else None
             )
@@ -4386,6 +4407,7 @@ def _analyze(
                     batch_size=batch_size,
                     dialogue=(lambda layer1: reader(_audio_events(layer1))) if reader else None,
                     det_skip=ocr_det_skip,
+                    context=context,
                 )
                 timings["events_s"] = round(time.perf_counter() - t0, 2)
                 free_models()
@@ -4664,6 +4686,8 @@ def rank_parts(
         for c in ranked[:cut]:
             if id(c) not in in_edit:
                 c["vision_skipped"] = [c["start"], c["end"]]
+        # the user's --context words (#1068) go into the prompts, so into the cache keys
+        rater.context = footage_context((hl.get("settings") or {}).get("context"))
         # action-cam: worded for the project's activity.json (the default without one)
         wording = None
         if style.base == ACTION_CAM:
@@ -4981,6 +5005,7 @@ def reanalyze(
         rerank_backup=rerank_backup,
         ids=ids,
         last_candidate_id=last_id,
+        context=st.get("context"),  # #1068: as the analysis was told (footage_context checks it)
     )
 
 

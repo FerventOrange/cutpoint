@@ -32,6 +32,12 @@ what the footage is. Pick `funny`, `gaming`, `action`, `sport`, `commentary` (lo
 `action-cam` (action-cam footage with GoPro or Insta360 X3 telemetry). Without any telemetry
 `action-cam` runs as `action` with an `action_cam_no_telemetry` warning: tell the user.
 
+When the user says what the footage is ("downhill mtb, chest mount, muddy lens"), pass their own
+words before the analysis: `cutpoint analyze <video> --context "<words>"` (also on `edit`). They
+are a hint for the footage detection, the crash profile and the vision and dialogue models, never
+a scoring weight; `highlights.json` keeps them for `events`, `rerank` and `resume`. Do not ask
+the user for a description.
+
 One step ("edit this into a montage"):
 
 ```text
