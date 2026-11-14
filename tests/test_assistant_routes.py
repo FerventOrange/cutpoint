@@ -1458,4 +1458,5 @@ def test_a_model_on_this_machine_gets_the_project_folder(
     fake = use(monkeypatch, FakeProvider([Reply("It is in the project folder.")]))
     ask(client, "where is the project?", seq)
     sent = json.dumps(fake.requests, default=str)
-    assert json.dumps(str(p))[1:-1] in sent
+    # the folder sits in the files data block (JSON-escaped once), then in the dumped requests
+    assert json.dumps(json.dumps(str(p))[1:-1])[1:-1] in sent
