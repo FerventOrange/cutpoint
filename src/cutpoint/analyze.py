@@ -147,9 +147,13 @@ WAV_HEADER = 44
 # The audio tracks the analysis WAV mixes, saved next to it only when copies of another track
 # are left out (#685); without it the WAV mixes every track
 MIX_FILE = "audio16k-tracks.json"
+# Written next to the analysis WAV once it is read on the container's clock (a gap in the
+# timestamps is silence, ffmpeg_utils.AUDIO_CLOCK, #1056); a WAV without it is checked once
+CLOCK_FILE = "audio16k-clock.json"
 # The caches made from the analysis WAV and, last, the WAV, removed when it mixed other tracks
+# or left out a gap
 AUDIO_CACHES = ("loudness.json", "transcript-*.json", "fallback-transcript-*.json",
-                "events-audio-*.json", "voice-*.npz", "audio16k.wav")  # fmt: skip
+                "events-audio-*.json", "voice-*.npz", CLOCK_FILE, "audio16k.wav")  # fmt: skip
 RESUME_REFINE = 2  # bisection probes to lose less footage before the resume point
 RESUME_MARGIN_S = 1.0  # start the recovered part a little after the first good probe
 MAX_RECOVERED_PARTS = 5  # per source
@@ -444,7 +448,22 @@ def _audio_mix(src: Path, cdir: Path, tracks: tuple[int, ...], streams: int) -> 
     want = list(tracks) if len(tracks) < streams else None
     if _mixed_tracks(cdir, streams) == want:
         return
-    stale = [f for pattern in AUDIO_CACHES for f in cdir.glob(pattern)]
+    if not _purge_audio(src, cdir, "mixed other tracks"):
+        return
+    if want is None:
+        (cdir / MIX_FILE).unlink(missing_ok=True)
+    else:
+        cache.save_json(cdir / MIX_FILE, {"tracks": want})
+
+
+def _purge_audio(src: Path, cdir: Path, why: str, extra: tuple[str, ...] = ()) -> bool:
+    """Remove the analysis WAV of ``src`` from ``cdir`` with every cache made from it
+    (:data:`AUDIO_CACHES`) and the ``extra`` files, the WAV last; ``why`` is what the INFO line
+    says was wrong with the old audio. A file that cannot be removed (open in another program)
+    is named in a WARNING; the WAV is then kept too, so the old WAV and the caches left are
+    used together meanwhile. Returns whether every file is gone."""
+    patterns = (*AUDIO_CACHES[:-1], *extra, AUDIO_CACHES[-1])
+    stale = [f for pattern in patterns for f in cdir.glob(pattern)]
     kept: list[Path] = []
     for f in stale:
         if kept and f.name == "audio16k.wav":
@@ -461,15 +480,38 @@ def _audio_mix(src: Path, cdir: Path, tracks: tuple[int, ...], streams: int) -> 
             src.name,
             ", ".join(f.name for f in kept),
         )
-        return
+        return False
     if stale:  # the WAV (removed last) is gone: extracted again
-        logger.info(
-            "%s: the cached analysis audio mixed other tracks; extracting it again", src.name
-        )
-    if want is None:
-        (cdir / MIX_FILE).unlink(missing_ok=True)
-    else:
-        cache.save_json(cdir / MIX_FILE, {"tracks": want})
+        logger.info("%s: the cached analysis audio %s; extracting it again", src.name, why)
+    return True
+
+
+def _audio_clock(src: Path, info: MediaInfo, offset: float, cdir: Path) -> None:
+    """Make the cached analysis WAV in ``cdir`` one read on the container's clock (#1056).
+
+    A WAV made before :data:`CLOCK_FILE` existed left out the stretch where a forward jump in
+    the timestamps (under tsrepair's limit) was: it is shorter than the source, its read-error
+    record (if any) has no ffmpeg message, and the transcript after the jump is early. Such a
+    WAV is removed with every cache made from it and the length-only record, so it is
+    extracted again once. A WAV of full length, or one cut short by a read error ffmpeg
+    reported, is kept; either way :data:`CLOCK_FILE` is written, so the check is made once.
+    ``info`` is the probe of the file the WAV is read from (the copy of a repaired source).
+    """
+    wav = cdir / "audio16k.wav"
+    if not wav.exists() or (cdir / CLOCK_FILE).exists():
+        return
+    short = (info.duration - offset) - wav_duration(wav)
+    saved = load_read_errors(cdir)
+    if short > SHORTFALL_FLOOR_S and not (saved and saved.get("messages")):
+        why = f"left out {short:.1f} s where the timestamps jump"
+        _purge_audio(src, cdir, why, extra=(READ_ERRORS_FILE,))
+        return  # gone: its extract writes the record; kept: the next run checks again
+    _write_clock(cdir)
+
+
+def _write_clock(cdir: Path) -> None:
+    """Record that the WAV in ``cdir`` was read on the container's clock."""
+    cache.save_json(cdir / CLOCK_FILE, {"version": 1})
 
 
 SOURCE_STAGES = ("probe_s", "audio_extract_s", "loudness_s", "transcribe_s", "scenes_s")
@@ -2059,10 +2101,12 @@ def analyze_source(
                 report(EXTRACT_SHARE + (1 - EXTRACT_SHARE) * at(frac))
 
         tracks = _analysis_tracks(src, io, info, cdir)
+        _audio_clock(src, info, offset, cdir)
         made = not wav.exists() or cached_transcript(tr, cdir) is None
         if not wav.exists():
             with _watch_extract(wav, span, extracted if report else None):
                 res = extract_audio(io, wav, info, start=offset, tracks=tracks)
+            _write_clock(cdir)
         tick("audio_extract_s", t0)
         read_error = check_read(src, info, offset, wav, cdir, res)
         if read_error:

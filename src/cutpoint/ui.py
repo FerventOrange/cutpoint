@@ -248,7 +248,7 @@ FRAME_TIMEOUT_S = 30.0
 FRAME_MAX_AT = 1e7  # seconds (~115 days): cap when the length is unknown
 FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
 FRAME_CACHE_MAX = 1500  # stills kept per project; the least recently used go first
-ENVELOPE_VERSION = 1  # part of a cached envelope's name: bump it when the envelope changes
+ENVELOPE_VERSION = 2  # part of a cached envelope's name: bump it when the envelope changes
 ENVELOPE_TIMEOUT_S = 1800.0  # a decode running longer is killed (a multi-hour source on a NAS)
 ENVELOPE_STALE_S = (
     10.0  # a queued decode nobody asked for in this long (2 x the page's 5 s) is dropped

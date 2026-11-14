@@ -332,16 +332,18 @@ def _extract_args(monkeypatch, streams: int, kept: tuple[int, ...] | None = None
 
 def test_analysis_audio_mixes_the_tracks_exports_mix(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
+    clock = ffmpeg_utils.AUDIO_CLOCK  # on the container's clock (#1056)
     # single track: the command line as before #685
-    assert _extract_args(monkeypatch, 1) == ["-map", "0:a:0"]
+    assert _extract_args(monkeypatch, 1) == ["-map", "0:a:0", "-af", clock]
     # every track differs: summed as before #685
     assert _extract_args(monkeypatch, 3, (0, 1, 2)) == [
-        "-filter_complex", f"{ffmpeg_utils.audio_mix_filter(3)}[a]", "-map", "[a]",
+        "-filter_complex", f"{ffmpeg_utils.audio_mix_filter(3)},{clock}[a]", "-map", "[a]",
     ]  # fmt: skip
     # copies left out: the kept track alone, or the kept ones summed at full level
-    assert _extract_args(monkeypatch, 5, (0,)) == ["-map", "0:a:0"]
+    assert _extract_args(monkeypatch, 5, (0,)) == ["-map", "0:a:0", "-af", clock]
     assert _extract_args(monkeypatch, 3, (0, 2)) == [
-        "-filter_complex", "[0:a:0][0:a:2]amix=inputs=2:normalize=0:duration=longest[a]",
+        "-filter_complex",
+        f"[0:a:0][0:a:2]amix=inputs=2:normalize=0:duration=longest,{clock}[a]",
         "-map", "[a]",
     ]  # fmt: skip
 
@@ -509,7 +511,12 @@ def test_analyze_source_extracts_the_kept_tracks(tmp_path, monkeypatch, streams,
     info = MediaInfo(src, 100.0, 100.0, 640, 360, Fraction(30), "yuv420p", "h264", streams,
                      "aac", 16000, 1)  # fmt: skip
     cdir = tmp_path / "cache"
-    for name in ("audio16k.wav", "loudness.json", "transcript-m.json"):  # an earlier analysis
+    for name in (
+        "audio16k.wav",
+        analyze.CLOCK_FILE,
+        "loudness.json",
+        "transcript-m.json",
+    ):  # earlier
         write(cdir / name, "[[0.0], [0.0]]" if name == "loudness.json" else "[]")
     monkeypatch.setattr(analyze, "probe", lambda path: info)
     monkeypatch.setattr(analyze.cache, "source_dir", lambda s, off=0.0: cdir)

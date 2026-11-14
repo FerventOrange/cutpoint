@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from _tsmedia import PART_S, join_parts, make_part
 from conftest import StubTranscriber
 from cutpoint import analyze, cache, cli, clips, extend, jsonout, stage, tsrepair, ui
 from cutpoint.boundaries import SpeechSettings
@@ -32,35 +33,13 @@ pytestmark = [
     ),
 ]
 
-PART_S = 4  # length of one part (s)
-
-
-def _part(d: Path, name: str, *, off: float = 0.0, audio: bool = True, fmt: str = "mpegts") -> Path:
-    """One short part; ``off`` shifts its timestamps (``-output_ts_offset``)."""
-    out = d / name
-    cmd = [shutil.which("ffmpeg"), "-v", "error", "-y", "-f", "lavfi", "-i",
-           f"testsrc=size=128x96:rate=10:duration={PART_S}"]  # fmt: skip
-    if audio:
-        cmd += ["-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=16000:duration={PART_S}"]
-    cmd += ["-c:v", "mpeg2video" if fmt == "mpeg" else "libx264", "-pix_fmt", "yuv420p"]
-    if audio:
-        cmd += ["-c:a", "mp2" if fmt == "mpeg" else "aac", "-b:a", "32k"]
-    cmd += ["-output_ts_offset", str(off), "-f", fmt, str(out)]
-    subprocess.run(cmd, check=True)
-    return out
-
-
-def _join(out: Path, *parts: Path) -> Path:
-    out.write_bytes(b"".join(p.read_bytes() for p in parts))
-    return out
-
 
 @pytest.fixture(scope="module")
 def media(tmp_path_factory) -> dict[str, Path]:
     d = tmp_path_factory.mktemp("tsrepair-media")
-    a, b = _part(d, "a.ts"), _part(d, "b.ts")
-    silent = [_part(d, "na.ts", audio=False), _part(d, "nb.ts", audio=False)]
-    mpg = [_part(d, "pa.mpg", fmt="mpeg"), _part(d, "pb.mpg", fmt="mpeg")]
+    a, b = make_part(d, "a.ts"), make_part(d, "b.ts")
+    silent = [make_part(d, "na.ts", audio=False), make_part(d, "nb.ts", audio=False)]
+    mpg = [make_part(d, "pa.mpg", fmt="mpeg"), make_part(d, "pb.mpg", fmt="mpeg")]
     mp4 = d / "plain.mp4"
     subprocess.run(
         [shutil.which("ffmpeg"), "-v", "error", "-y", "-i", str(a), "-c", "copy", str(mp4)],
@@ -72,17 +51,17 @@ def media(tmp_path_factory) -> dict[str, Path]:
         check=True,
     )
     return {
-        "back": _join(d / "back.ts", a, b),  # the second part starts over: 4 s read as 8
-        "three": _join(d / "three.ts", a, b, _part(d, "c.ts")),
-        "forward": _join(d / "forward.ts", a, _part(d, "f.ts", off=20)),  # a gap of 20 s
-        "noaudio": _join(d / "noaudio.ts", *silent),
-        "ps": _join(d / "back.mpg", *mpg),
+        "back": join_parts(d / "back.ts", a, b),  # the second part starts over: 4 s read as 8
+        "three": join_parts(d / "three.ts", a, b, make_part(d, "c.ts")),
+        "forward": join_parts(d / "forward.ts", a, make_part(d, "f.ts", off=20)),  # a gap of 20 s
+        "noaudio": join_parts(d / "noaudio.ts", *silent),
+        "ps": join_parts(d / "back.mpg", *mpg),
         "normal": a,
         # backward by 0.1 s only (a 3.9 s offset; 3.4 s sits at 0.93 s, too near the 1 s gate to
         # assert on), a gap of 5 s: ffmpeg corrects (or ignores) them, the length the file says
         # stays well within a second of the one it plays
-        "small": _join(d / "small.ts", a, _part(d, "s.ts", off=3.9)),
-        "gap5": _join(d / "gap5.ts", a, _part(d, "g.ts", off=9)),
+        "small": join_parts(d / "small.ts", a, make_part(d, "s.ts", off=3.9)),
+        "gap5": join_parts(d / "gap5.ts", a, make_part(d, "g.ts", off=9)),
         "mp4": mp4,
         "mkv": mkv,
     }
@@ -398,7 +377,7 @@ def _fill_cache(src: Path) -> Path:
     cdir = cache.source_dir(src)
     (cdir / "scenes").mkdir()
     (cdir / "scenes" / "cuts.json").write_text("[]", encoding="utf-8")
-    for name in ("read_errors.json", "scenes-0.json", "audio16k.wav", "audio16k-tracks.json",
+    for name in ("read_errors.json", "scenes-0.json", "audio16k.wav", "audio16k-tracks.json", "audio16k-clock.json",
                  "loudness.json", "transcript-small.json", "fallback-transcript-small.json"):  # fmt: skip
         (cdir / name).write_text("x", encoding="utf-8")
     return cdir
@@ -411,7 +390,8 @@ def test_the_first_copy_drops_the_cut_short_caches_and_keeps_the_audio(media, sc
     assert tsrepair.prepare_sources([src])
 
     assert sorted(p.name for p in cdir.iterdir()) == [
-        "audio16k-tracks.json", "audio16k.wav", "fallback-transcript-small.json",
+        "audio16k-clock.json", "audio16k-tracks.json", "audio16k.wav",
+        "fallback-transcript-small.json",
         "loudness.json", "timeline.json", "timeline.mkv", "transcript-small.json",
     ]  # fmt: skip
 

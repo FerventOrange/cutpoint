@@ -46,7 +46,8 @@ EDGE_KEYFRAMES_S = (0.5,)
 # are filled with silence once they add up to ``min_hard_comp`` (one AAC frame), so clips and
 # finals no longer come out short with the audio running ahead of the video (#476). Audio that
 # starts after the video is no longer moved forward at the start of a clip; sources without gaps
-# or delay (GoPro) give the same samples as before.
+# or delay (GoPro) give the same samples as before. The analysis audio and the waveform use the
+# same settings (ffmpeg_utils.AUDIO_CLOCK, #1056): keep them in step.
 A_FMT = (
     "aresample=48000:async=1:min_hard_comp=0.02:first_pts=0,"
     "aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo"
