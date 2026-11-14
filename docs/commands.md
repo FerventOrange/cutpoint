@@ -2133,7 +2133,7 @@ action-cam style, or a change between action-cam and the other styles; a 360 pro
 that is offline or was read in parts (`--recover`); a source with audio but no cached loudness
 or transcript; a source without a full scene pass when scene detection is on and the style
 weighs scene cuts (or the source is longer than 30 min); a source with nothing cached (no
-audio and no scene cuts); an event layer the style's footage
+loudness, transcript or scene cuts) or no recorded length; an event layer the style's footage
 category runs (such as the crash and visual layers of `action`) that the project's
 `events.json` lacks. The `ERROR` line names what is missing and the command to run (for an
 offline source: reconnect the footage first; with nothing else missing, rerank again).

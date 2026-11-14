@@ -190,6 +190,9 @@ from cutpoint.styles import (
     learned_styles,
     style_names,
 )
+from cutpoint.styles import (
+    style_name as fallback_style_name,
+)
 from cutpoint.utils import (
     PANO_EXTS,
     VIDEO_EXTS,
@@ -4435,7 +4438,7 @@ def ranking_preview(p: Path, style_name: object) -> dict[str, Any]:
     _ranking_check(p)
     t0 = time.perf_counter()
     raw, hl = _ranking_load(p)
-    head = {"style": style.name, "from": hl.get("style"), "base": rerank.key(raw)}
+    head = {"style": style.name, "from": fallback_style_name(hl), "base": rerank.key(raw)}
     ready = rerank.readiness(p, hl, style, cuda_probe)
     missing = [m.record() for m in ready.missing]
     after: dict[str, Any] = {}
@@ -7069,7 +7072,7 @@ def create_app(port: int) -> FastAPI:
             new_ids, dropped = rerank.changes(before, result.after)
             return {
                 "style": style.name,
-                "from": before.get("style"),
+                "from": fallback_style_name(before),
                 "key": ranking_key(p),
                 "backup": True,
                 "new_ids": new_ids,
@@ -7134,8 +7137,8 @@ def create_app(port: int) -> FastAPI:
             made.clear()  # the ui folder holds meta.json now
             return {
                 "action": "undo" if undone else "redo",
-                "style": after.get("style"),
-                "from": before.get("style"),
+                "style": fallback_style_name(after),
+                "from": fallback_style_name(before),
                 "key": ranking_key(p),
             }
         finally:

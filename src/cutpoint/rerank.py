@@ -249,6 +249,9 @@ def readiness(
             if not heard:
                 miss(Missing("transcript", f"{name} has no cached transcript", path))
         span = float(e.get("analyzed_s") or e.get("duration") or 0.0)
+        if not span:
+            miss(Missing("length", _no_length(name), path))
+            continue
         found = (cdir / analyze.SCENES_FILE).is_file()
         windowed = scenes and not found and analyze.edge_windows(style, span)
         if scenes and not found and (analyze.scores_scenes(style) or not windowed):
@@ -257,7 +260,7 @@ def readiness(
         # as cached_grid_parts: no loudness, transcript, scene cuts or edge windows to decode
         # (scenes off) leaves the source no grid to rank
         if not (loud or heard or found or windowed):
-            miss(Missing("caches", f"{name} has nothing cached", path))
+            miss(Missing("caches", _nothing_cached(name), path))
     ran, events = _events_layers(project)
     for layer in _missing_layers(style, ran, cuda):
         miss(Missing(f"layer:{layer}", f"the {layer} layer has not run for this project"))
@@ -289,6 +292,14 @@ def analyze_command(project: Path, style: Style) -> str:
     if _is_360(project):
         return "cutpoint " + command_line(["360", "analyze", where, "--style", style.name])
     return "cutpoint " + command_line(["rerank", where, "--style", style.name, "--analyze"])
+
+
+def _nothing_cached(name: str) -> str:
+    return f"{name} has no cached loudness, transcript or scene cuts to build a ranking from"
+
+
+def _no_length(name: str) -> str:
+    return f"{name} records no length (duration) in highlights.json"
 
 
 def _refused(project: Path, style: Style, missing: list[Missing]) -> NeedsAnalyzeError:
@@ -357,7 +368,9 @@ def ranked(
         if g is None:  # readiness refuses such a source: never drop its candidates quietly
             path = str(e["path"])
             name = Path(path).name
-            raise _refused(project, style, [Missing("caches", f"{name} has nothing cached", path)])
+            if not (e.get("analyzed_s") or e.get("duration")):
+                raise _refused(project, style, [Missing("length", _no_length(name), path)])
+            raise _refused(project, style, [Missing("caches", _nothing_cached(name), path)])
         picked = analyze.pick_candidates(g, style, st.get("max_candidates"), {})
         parts.append(analyze.HighlightsPart(g.source, g.offset, g.duration, picked, g.signals))
         by_source[str(g.source)] = sorted(features.available() if g.avail is None else g.avail)
