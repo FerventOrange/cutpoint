@@ -106,7 +106,7 @@ from cutpoint.events.visual import load_visual, text_embeddings
 from cutpoint.events.vlm_windows import ACTION_CAM_TAGS
 from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
 from cutpoint.utils import MAX_CONTEXT_CHARS as MAX_CONTEXT_CHARS  # cutpoint ui reads it here
-from cutpoint.utils import footage_context, slugify
+from cutpoint.utils import context_block, footage_context, slugify
 from cutpoint.vision import VisionRater
 
 logger = logging.getLogger(__name__)
@@ -959,6 +959,12 @@ def _without_incidents(captions: list[str], own: list[str], normal: set[str]) ->
     ]
 
 
+def _synth_context(context: str | None) -> str:
+    """The user's words in :data:`_SYNTH_PROMPT`: delimited as in the other prompts
+    (:func:`~cutpoint.utils.context_block`, #1068); without any, ``nothing`` as before."""
+    return context_block(context, lead="").strip() or "nothing"
+
+
 def synthesize(
     description: str,
     context: str | None,
@@ -987,7 +993,7 @@ def synthesize(
             return None
         prompt = _SYNTH_PROMPT.format(
             description=description or "unknown",
-            context=context or "nothing",
+            context=_synth_context(context),
             examples=examples,
             n=n,
             w=w,
@@ -1152,6 +1158,9 @@ def discovery_key(
             "model": model,
             "prompts": prompts,
             "context": context,
+            # the words delimited in the synthesis prompt (#1068); only with words, so a
+            # discovery without them keeps its key
+            **({"context_block": 1} if context else {}),
             "examples": shown,
         },
         16,
@@ -1212,6 +1221,35 @@ def default_context(
         hl = cache.load_json(project / "highlights.json")
     settings = hl.get("settings") if isinstance(hl, dict) else None
     return footage_context(settings.get("context")) if isinstance(settings, dict) else None
+
+
+def record_context(project: Path, context: str | None) -> bool:
+    """Record the ``--context`` of ``crashes`` or ``profile`` as the analysis's
+    ``settings.context`` in ``<project>/highlights.json`` (#1068), so one description holds for
+    the project: re-analyses (``rerank --analyze``, ``crashes --reanalyze``) and ``events`` use
+    the latest words. Nothing without words, without a readable analysis (missing, broken, not
+    an object, no ``sources`` list, a ``settings`` that is not an object) or when it records
+    these words already. An older file that rated with vision (``vision_used``) and has no
+    ``settings.vision_context`` gets the words before as that first, so a plain ``rerank``
+    keeps finding its cached ratings. Written atomically; True when written."""
+    words = footage_context(context)
+    if words is None:
+        return False
+    path = project / "highlights.json"
+    hl = cache.load_json(path)
+    if not isinstance(hl, dict) or not isinstance(hl.get("sources"), list):
+        return False
+    settings = hl.setdefault("settings", {})
+    if not isinstance(settings, dict) or settings.get("context") == words:
+        return False
+    # a file from before settings.vision_context that rated with vision: the words of its
+    # ratings, so a plain rerank still finds them under the new words
+    if "vision_context" not in settings and settings.get("vision_used") is True:
+        settings["vision_context"] = settings.get("context")
+    settings["context"] = words
+    cache.save_json(path, hl)
+    logger.info("activity: the description is recorded in %s", path.name)
+    return True
 
 
 def resolve(

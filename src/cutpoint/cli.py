@@ -546,7 +546,11 @@ def _cmd_stage(a: argparse.Namespace) -> None:
 
 def _cmd_crashes(a: argparse.Namespace) -> None:
     from cutpoint import progress  # noqa: PLC0415
-    from cutpoint.activity import ACTIVITY_FILE, default_context  # noqa: PLC0415 - action-cam
+    from cutpoint.activity import (  # noqa: PLC0415 - action-cam
+        ACTIVITY_FILE,
+        default_context,
+        record_context,
+    )
     from cutpoint.crash import CrashParams, detect_project  # noqa: PLC0415
 
     params = CrashParams(
@@ -573,6 +577,7 @@ def _cmd_crashes(a: argparse.Namespace) -> None:
             ollama_url=a.ollama_url,
             ollama_model=a.ollama_model,
         )
+    record_context(project, a.context)  # one description: before the reanalyze reads it (#1068)
     if jsonout.active():  # recorded before reanalyze, so a failure there still reports them
         data = cache.load_json(out) or {}
         cands = data.get("crashes") or []
@@ -733,7 +738,12 @@ def _cmd_rerank(a: argparse.Namespace) -> None:
 
 
 def _cmd_profile(a: argparse.Namespace) -> None:
-    from cutpoint.activity import ACTIVITY_FILE, default_context, record_profile  # noqa: PLC0415
+    from cutpoint.activity import (  # noqa: PLC0415
+        ACTIVITY_FILE,
+        default_context,
+        record_context,
+        record_profile,
+    )
     from cutpoint.activity import resolve as resolve_activity  # noqa: PLC0415
 
     project = resolve_project_path(a.project)
@@ -749,6 +759,7 @@ def _cmd_profile(a: argparse.Namespace) -> None:
         ollama_url=a.ollama_url,
         ollama_model=a.ollama_model,
     )
+    record_context(project, a.context)  # the project's one description (#1068)
     shown = {**rec, "profile": record_profile(rec)}  # what `crashes` uses, not the stored file
     if jsonout.active():
         for key, value in shown.items():  # the record's own keys, as the old --json printed them

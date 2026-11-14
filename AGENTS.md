@@ -25,7 +25,7 @@ what the footage is, pass their words with `--context "<the user's words>"` on `
 | Available now | Planned (do not call; it does not exist yet) |
 |---|---|
 | CLI `cutpoint` with the commands below | Clip order chosen by a local model |
-| `--context TEXT` on `analyze` and `edit` (also `detect`): the user's words about the footage, given before the analysis, go to the footage question of `--style auto` (a hint; the frames decide), the crash step's activity profile (as `crashes --context`) and the vision rating and dialogue prompts; no scoring weight. Recorded as `settings.context` in `highlights.json` and reused by `events`, `rerank` and `resume` | |
+| `--context TEXT` on `analyze` and `edit` (also `detect`): the user's words about the footage, given before the analysis, go to the footage question of `--style auto` (a hint; the frames decide), the crash step's activity profile (as `crashes --context`) and the vision rating, dialogue and `events` VLM prompts; no scoring weight. Recorded as `settings.context` in `highlights.json` (`crashes --context` and `profile --context` update it) and reused by `events`, `rerank` and `resume` | |
 | `cutpoint edit`: analyze, clips and assemble in one command | |
 | `cutpoint resume <project>`: re-runs an interrupted or failed run from its `progress.json` | |
 | `cutpoint rerank <project> --style NAME`: re-ranks an analysed project with another style from its caches, in seconds (`--dry-run` previews; `needs_analyze` when a feature the style needs is missing, `--analyze` then analyzes again) | |

@@ -3887,6 +3887,7 @@ def analyze(
     ids: Mapping[tuple[str, float, float], str] | None = None,
     last_candidate_id: int = 0,
     context: str | None = None,
+    context_recorded: bool = False,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -3986,6 +3987,9 @@ def analyze(
             with ``footage``, which brings its own), it picks the crash step's activity
             profile as ``crashes --context`` does, and it goes into the vision rating and
             dialogue prompts. No scoring weight reads it. None or blank: as without it.
+        context_recorded: ``context`` is the recorded ``settings.context`` of a re-analysis
+            (:func:`reanalyze`), not words the user gave now: the crash step keeps the
+            project's activity.json then, as ``crashes`` without ``--context`` does.
 
     Returns:
         Path of the written highlights.json.
@@ -4027,6 +4031,7 @@ def analyze(
             ids=ids,
             last_candidate_id=last_candidate_id,
             context=footage_context(context),
+            context_recorded=context_recorded,
         )
 
 
@@ -4063,6 +4068,7 @@ def _analyze(
     ids: Mapping[tuple[str, float, float], str] | None,
     last_candidate_id: int,
     context: str | None,
+    context_recorded: bool,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
@@ -4407,7 +4413,9 @@ def _analyze(
                     batch_size=batch_size,
                     dialogue=(lambda layer1: reader(_audio_events(layer1))) if reader else None,
                     det_skip=ocr_det_skip,
-                    context=context,
+                    # a recorded context does not replace the project's activity.json (the
+                    # VLM layer still reads it from settings.context)
+                    context=None if context_recorded else context,
                 )
                 timings["events_s"] = round(time.perf_counter() - t0, 2)
                 free_models()
@@ -4686,8 +4694,18 @@ def rank_parts(
         for c in ranked[:cut]:
             if id(c) not in in_edit:
                 c["vision_skipped"] = [c["start"], c["end"]]
-        # the user's --context words (#1068) go into the prompts, so into the cache keys
-        rater.context = footage_context((hl.get("settings") or {}).get("context"))
+        # the user's --context words (#1068) go into the prompts, so into the cache keys. An
+        # analysis records the words it rated with as settings.vision_context (null: rated
+        # without words); a re-rank keeps them, so its cached ratings are found after `crashes`
+        # or `profile --context` changed settings.context (a file without the key, from before
+        # it: settings.context)
+        settings = hl["settings"]
+        recorded = settings.get("context")
+        if vision_cache_only and "vision_context" in settings:
+            recorded = settings["vision_context"]
+        rater.context = footage_context(recorded)
+        if not vision_cache_only:
+            settings["vision_context"] = rater.context
         # action-cam: worded for the project's activity.json (the default without one)
         wording = None
         if style.base == ACTION_CAM:
@@ -5006,6 +5024,7 @@ def reanalyze(
         ids=ids,
         last_candidate_id=last_id,
         context=st.get("context"),  # #1068: as the analysis was told (footage_context checks it)
+        context_recorded=True,
     )
 
 

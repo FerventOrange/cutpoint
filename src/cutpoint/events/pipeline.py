@@ -67,6 +67,7 @@ from cutpoint.events.vlm_windows import (
 )
 from cutpoint.sources import parts as source_parts
 from cutpoint.styles import ACTION_CAM, project_kind
+from cutpoint.utils import footage_context
 from cutpoint.vision import VisionRater
 
 logger = logging.getLogger(__name__)
@@ -216,7 +217,8 @@ def run_events(
             (:data:`cutpoint.activity.AUTO`: not asked for, see :func:`cutpoint.activity.resolve`).
         context: ``analyze --context`` (#1068) for the crash layer's activity profile, as
             ``crashes --context``; None: :func:`cutpoint.activity.default_context` (the
-            analysis's ``settings.context`` while the project has no profile yet).
+            analysis's ``settings.context`` while the project has no profile yet). The VLM
+            layer's prompts carry it, else the analysis's ``settings.context``.
         prefetch: OCR read in the background by ``cutpoint analyze``: a source's result
             is taken from it in its turn (same events, caches and log lines); what it did
             not read is read here, after it is stopped, with its engine.
@@ -640,6 +642,10 @@ def run_events(
     # action-cam: worded for the activity.json the crash layer above may have just written
     cam_prompts = project_prompts(project) if is_cam else None
     vlm.action_cam = action_cam_wording(cam_prompts) if cam_prompts is not None else None
+    # the user's words about the footage (#1068): analyze's --context, else the recorded one
+    vlm.context = footage_context(
+        context if context is not None else (hl.get("settings") or {}).get("context")
+    )
     if "vlm" in layers:
         progress.start("vlm")  # cutpoint events: the step of progress.json
         free_torch()  # the CUDA memory torch still caches for the layers before
@@ -769,6 +775,8 @@ def run_events(
         events += [normalize(e["source"], e) for e in windows_to_events(results)]
         events += talk
         vlm_settings = asdict(vlm)
+        if vlm_settings.get("context") is None:  # without --context: as before (#1068)
+            vlm_settings.pop("context", None)
         if cam_prompts is not None and vlm.action_cam is not None:  # the activity, not its text
             wording = vlm.action_cam.key() or "default"
             vlm_settings["action_cam"] = {"activity": cam_prompts.name, "wording": wording}
