@@ -620,13 +620,24 @@ def mix_head(tracks: Sequence[int], input_idx: int = 0) -> str:
     return f"{ins}amix=inputs={len(tracks)}:normalize=0," if len(tracks) > 1 else ins
 
 
-def _map_tracks(tracks: Sequence[int]) -> list[str]:
+# Puts the samples of an audio read on the container's clock: a forward gap in the timestamps
+# (a TS with a jump under tsrepair's 10 s) is filled with silence, not dropped, so the WAV and
+# the waveform are as long as the video (#1056). The settings of encode.A_FMT, which clip export
+# already uses (keep the two in step); the rate is left to the caller's ``-ar``.
+AUDIO_CLOCK = "aresample=async=1:min_hard_comp=0.02:first_pts=0"
+
+
+def _map_tracks(tracks: Sequence[int], chain: str = "") -> list[str]:
     """ffmpeg arguments reading ``tracks`` (audio track indices) of input 0 as one stream:
-    several are summed as :func:`audio_mix_filter` sums them, one is mapped directly."""
+    several are summed as :func:`audio_mix_filter` sums them, one is mapped directly.
+    ``chain`` (filters, no leading comma) is applied to the result: as ``-af`` after one
+    track, inside the graph after the sum."""
     if len(tracks) < 2:  # none: ffmpeg reports the missing stream, as before
-        return ["-map", f"0:a:{tracks[0] if tracks else 0}"]
+        return ["-map", f"0:a:{tracks[0] if tracks else 0}", *(["-af", chain] if chain else [])]
     ins = "".join(f"[0:a:{i}]" for i in tracks)
-    return ["-filter_complex", f"{ins}amix=inputs={len(tracks)}:normalize=0:duration=longest[a]",
+    tail = f",{chain}" if chain else ""
+    return ["-filter_complex",
+            f"{ins}amix=inputs={len(tracks)}:normalize=0:duration=longest{tail}[a]",
             "-map", "[a]"]  # fmt: skip
 
 
@@ -674,7 +685,7 @@ def extract_audio(
     tmp = dst.with_suffix(".tmp.wav")
     seek = ["-ss", f"{start:.3f}"] if start > 0 else []
     args = ["ffmpeg", "-y", "-v", "error", *seek, "-i", str(src), "-vn"]
-    args += _map_tracks(_tracks_or_every(src, info) if tracks is None else tracks)
+    args += _map_tracks(_tracks_or_every(src, info) if tracks is None else tracks, AUDIO_CLOCK)
     args += ["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(tmp)]
     try:
         res = run_progress(args, info.duration - start, f"audio extract {src.name}")

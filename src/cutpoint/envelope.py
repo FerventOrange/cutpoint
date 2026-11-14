@@ -12,7 +12,7 @@ from typing import BinaryIO
 
 import numpy as np
 
-from cutpoint.ffmpeg_utils import audio_mix_filter
+from cutpoint.ffmpeg_utils import AUDIO_CLOCK, audio_mix_filter
 
 RATE = 8000  # Hz: plenty for a level meter
 BASE_S = 0.05  # seconds per bucket as decoded
@@ -26,7 +26,12 @@ def ffmpeg_args(src: str, tracks: int = 1) -> list[str]:
     16-bit little-endian PCM at ``RATE`` Hz to stdout. ``tracks``: the source's audio streams;
     2 or more are mixed as the preview proxy mixes them (a game track and a separate mic)."""
     mix = audio_mix_filter(tracks)
-    pick = ["-filter_complex", f"{mix}[a]", "-map", "[a]"] if mix else []
+    # on the container's clock, so a gap in the timestamps is silence, not cut out (#1056)
+    pick = (
+        ["-filter_complex", f"{mix},{AUDIO_CLOCK}[a]", "-map", "[a]"]
+        if mix
+        else ["-af", AUDIO_CLOCK]
+    )
     return [
         "ffmpeg", "-v", "error", "-nostdin", "-i", src, "-vn", *pick,
         *("-ac", "1", "-ar", str(RATE), "-f", "s16le", "pipe:1"),

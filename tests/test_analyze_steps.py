@@ -560,6 +560,7 @@ def test_analyze_source_reports_extract_then_whisper(
     monkeypatch.setattr(analyze.cache, "source_dir", lambda s, off=0.0: tmp_path / "cache")
     if cached_wav:
         write(tmp_path / "cache" / "audio16k.wav")
+        write(tmp_path / "cache" / analyze.CLOCK_FILE)
 
     @contextlib.contextmanager
     def watch(wav, seconds, report):
@@ -2512,6 +2513,7 @@ def test_analyze_source_times_each_stage_and_flags_a_cached_source(tmp_path, mon
     cdir = tmp_path / "cache"
     if cached:
         write(cdir / "audio16k.wav")
+        write(cdir / analyze.CLOCK_FILE)
         write(cdir / "transcript-m.json", "[]")
     monkeypatch.setattr(analyze, "probe", lambda path: info)
     monkeypatch.setattr(analyze.cache, "source_dir", lambda s, off=0.0: cdir)
