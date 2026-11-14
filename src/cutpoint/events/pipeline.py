@@ -1184,7 +1184,15 @@ def _discover(
         need = [s for s in tested if len(got.get(str(s.path), [])) < game_fit.TOP_UP_FRAMES]
         if need:
             logger.debug("HUD fit check for %r: sampling %d source(s)", game, len(need))
-            recs = game_fit.sample_frames(need, project / "discovery" / "_fit" / game, params)
+            try:
+                recs = game_fit.sample_frames(need, project / "discovery" / "_fit" / game, params)
+            except LowMemoryError:
+                raise
+            except Exception as err:
+                memguard.raise_if_out_of_memory(
+                    err, "the HUD fit check", f"{game}: {', '.join(s.name for s in need)}"
+                )
+                raise
             for path, frames in per_source(recs, need).items():
                 got.setdefault(path, []).extend(frames)
         return got
