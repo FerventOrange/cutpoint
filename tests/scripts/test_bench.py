@@ -188,6 +188,8 @@ def results_files(manifest: Path) -> dict[str, dict]:
     [
         ([source("a", category="sport")], None, "category 'sport'"),
         ([source("a", bucket="kills")], None, "bucket 'kills'"),
+        ([source("a", also=["sport"])], None, "'also' must list categories"),
+        ([source("a", also="action")], None, "'also' must list categories"),
         ([source("a"), source("a")], None, "duplicate id"),
         (
             [source("a", labels="a.json")],
@@ -461,6 +463,32 @@ def test_per_bucket_detection_and_ranking(tmp_path):
     k10 = rank["gameplay-kills"]["metrics"]["keep_top10"]
     assert (k10["value"], k10["of"], k10["videos"]) == (4, 6, 2)  # 2 of 3 keeps per video
     assert rank["gameplay-kills"]["metrics"]["skip_top10"]["value"] == 2
+
+
+def test_also_categories_count_right_and_mark_the_source_entry(tmp_path):
+    """A detection of a category in ``also`` counts right; ``also`` is recorded (only when
+    given) and a source labelled with it is compared only with runs labelled the same."""
+    sources = [
+        source("g1", also=["action", "action", "gameplay"]),
+        source("g2", also=["action"]),
+        source("g3"),
+    ]
+    m = bench.load_manifest(write_manifest(tmp_path, sources))
+    assert [s.also for s in m.sources] == [("action",), ("action",), ()]
+    detected = {"g1": ("action", False), "g2": ("talk", False), "g3": ("action", False)}
+    verdicts, entries = {}, []
+    for s in m.sources:
+        project = tmp_path / "p" / s.id
+        write_highlights(project, *detected[s.id])
+        verdicts[s.id] = bench.score_detection(s, json.loads(
+            (project / "highlights.json").read_text(encoding="utf-8")))["verdict"]  # fmt: skip
+        entries.append(bench.source_entry(s))
+    assert verdicts == {"g1": "right", "g2": "sure_wrong", "g3": "sure_wrong"}
+    assert entries[0]["also"] == ["action"] and "also" not in entries[2]
+    old = {**entries[0]}
+    del old["also"]
+    assert bench.label_mismatches({"sources": [old]}, {"sources": [entries[0]]}) == {"g1": ["also"]}
+    assert bench.label_mismatches({"sources": [entries[2]]}, {"sources": [entries[2]]}) == {}
 
 
 # -- compare and gate --------------------------------------------------------------------------

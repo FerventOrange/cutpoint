@@ -2508,6 +2508,77 @@ def test_reanalyze_keeps_the_detection_and_never_probes_again(probed, monkeypatc
     assert after["settings"]["style_requested"] == "auto"
 
 
+# ------------------------------------------------------------ --vision-detect-all (#1069)
+@pytest.mark.parametrize(
+    ("kw", "style", "flag"),
+    [
+        ({"vision_detect_all": True}, analyze.AutoRequest("hype"), True),
+        ({"vision_detect_all": False}, analyze.AutoRequest("hype"), None),
+        ({}, analyze.AutoRequest("hype"), None),
+        ({"vision_detect_all": True}, "gaming", None),  # an explicit style detects nothing
+    ],
+)
+def test_vision_detect_all_is_recorded_only_when_on_and_the_style_is_auto(probed, kw, style, flag):
+    probed.go(style, vision=None, **kw)
+    st = _hl(probed)["settings"]
+    assert st.get("vision_detect_all") is flag
+    assert "vision_detect_all" not in st or flag is True
+    if style == "gaming":
+        assert "detection" not in _hl(probed)
+    else:
+        assert (_hl(probed)["detection"].get("vision_detect_all") is True) is (flag is True)
+
+
+def test_vision_detect_all_reaches_the_probes_of_the_detection(probed, monkeypatch):
+    asked = []
+    monkeypatch.setattr(
+        category,
+        "probe_source",
+        lambda src, vision=None: (
+            asked.append(vision and vision.every_source)
+            or category.SourceProbe(str(src), 60.0, False, **GAME_PROBE)
+        ),
+    )
+    probed.go(analyze.AutoRequest("hype"), vision=None, vision_detect_all=True)
+    assert asked == [True]
+    asked.clear()
+    probed.go(analyze.AutoRequest("hype"), vision=None)
+    assert asked == [False]
+
+
+def test_vision_detect_all_off_with_the_vision_model_off_asks_as_today(probed, monkeypatch):
+    asked = []
+    monkeypatch.setattr(
+        category,
+        "probe_source",
+        lambda src, vision=None: (
+            asked.append(vision) or category.SourceProbe(str(src), 60.0, False, **GAME_PROBE)
+        ),
+    )
+    probed.go(analyze.AutoRequest("hype"), vision=False, vision_detect_all=True)
+    assert asked == [None]  # no vision client at all
+    assert "vision_detect_all" not in _hl(probed)["detection"]
+
+
+def test_reanalyze_keeps_vision_detect_all_and_never_probes_again(probed, monkeypatch):
+    probed.go(analyze.AutoRequest("hype"), vision=None, vision_detect_all=True)
+    before = _hl(probed)
+    assert before["settings"]["vision_detect_all"] is True
+    monkeypatch.setattr(
+        category, "probe_source", lambda src, vision=None: pytest.fail("probed again")
+    )
+    analyze.reanalyze(probed.proj)
+    after = _hl(probed)
+    assert after["settings"]["vision_detect_all"] is True
+    assert after["detection"] == before["detection"]
+
+
+def test_reanalyze_without_vision_detect_all_records_none(probed):
+    probed.go(analyze.AutoRequest("hype"), vision=None)
+    analyze.reanalyze(probed.proj)
+    assert "vision_detect_all" not in _hl(probed)["settings"]
+
+
 # ----------------------------------------------------------------- per-source timings (#725)
 @pytest.mark.parametrize("cached", [True, False])
 def test_analyze_source_times_each_stage_and_flags_a_cached_source(tmp_path, monkeypatch, cached):

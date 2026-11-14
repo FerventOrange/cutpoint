@@ -3278,9 +3278,11 @@ function confirmAction(title, text, ok = 'Remove', danger = true) {
  * Analyze options (#483): filled with what the project's analysis used (``analyze_options``), so
  * Analyze again repeats it unless changed; the disclosure starts open when one is set. Hidden
  * for 360 projects; "Crashes become moments at" (--must-include-crash) when the style has a default
- * (``must_include_crash_default``: every style but 360 projects).
+ * (``must_include_crash_default``: every style but 360 projects). "Show every video to the vision
+ * model" (--vision-detect-all) is on only while the analysis runs in ``style`` (the style button's,
+ * else the project's) ``auto``.
  */
-function fillAnalyzeOptions(p) {
+function fillAnalyzeOptions(p, style = p.style) {
   const o = p.analyze_options ?? {};
   const crashDefault = p.must_include_crash_default;
   $('#analyzeOpts').hidden = p.kind === '360';
@@ -3292,6 +3294,8 @@ function fillAnalyzeOptions(p) {
   for (const el of [$('#anCrashLabel'), $('#anCrash')]) el.hidden = crashDefault == null;
   $('#anNoScenes').checked = !!o.no_scenes;
   $('#anRecover').checked = !!o.recover;
+  $('#anVisionDetectAll').checked = !!o.vision_detect_all;
+  $('#anVisionDetectAll').disabled = style !== 'auto';
   for (const box of document.querySelectorAll('input[name=anSkip]')) box.checked = !!o.skip?.includes(box.value);
   $('#analyzeOpts').open = Object.values(analyzeOptions()).some((v) => (Array.isArray(v) ? v.length > 0 : v != null && v !== false));
 }
@@ -3307,6 +3311,8 @@ function analyzeOptions() {
     must_include_crash: num('#anCrash'),
     no_scenes: $('#anNoScenes').checked,
     recover: $('#anRecover').checked,
+    // only Auto detects the footage: another style sends none (the analysis's own is kept)
+    vision_detect_all: $('#anVisionDetectAll').disabled ? null : $('#anVisionDetectAll').checked,
     skip: [...document.querySelectorAll('input[name=anSkip]:checked')].map((box) => box.value),
   };
 }
@@ -3360,7 +3366,7 @@ function analyzeAgain(fresh = false, to = null) {
     : to
       ? `The project's footage is analyzed again ${to.style === 'auto' ? 'in the style detected from it' : `in the ${to.style} style`} and its moments are ranked anew. Transcripts are reused; the sequence, clips and videos stay.`
       : "The project's footage is analyzed again and its moments are ranked anew.";
-  fillAnalyzeOptions(p);
+  fillAnalyzeOptions(p, to?.style ?? p.style);
   fillRefine(p);
   $('#refine').hidden = !!to;
   if (fresh) $('#analyzeOpts').open = true;

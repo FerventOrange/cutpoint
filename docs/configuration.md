@@ -83,6 +83,7 @@ with `_` are ignored.
   "vision_time_share": 0.3,
   "visual_index": false,
   "ocr_det_skip": false,
+  "vision_detect_all": false,
   "compress_peaks": "off",
   "color": "off",
   "analysis": {"skip": []},
@@ -200,6 +201,17 @@ event. `--no-ocr-det-skip` turns it off for one run; with `false` or no key, onl
 reads the footage again once. `events` without the flag uses the setting the analysis used
 (`settings.ocr_det_skip` in `highlights.json`; no entry means off, older projects too), not
 this key; this key applies there only when no analysis is recorded. Other values are rejected.
+
+### vision_detect_all
+
+`true` or `false` (default). With `true`, `--style auto` (`analyze`, `edit`) and `detect` show
+every source to the vision model, not only the unsure ones, as
+[`--vision-detect-all`](commands.md#detect) does. It only settles sources: a sure gameplay
+source becomes unsure when the vision answer and the HUD text both see no game. It costs about one
+vision call per source. `--no-vision-detect-all` turns it off for one run; with `false` or no
+key, only `--vision-detect-all` turns it on. `--no-vision` or `"vision": false` turns it off
+too. The Analysis options of `cutpoint ui` start from it before a project's first Auto
+analysis. Other values are rejected.
 
 ### vision_assistant
 

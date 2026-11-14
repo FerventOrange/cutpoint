@@ -514,7 +514,7 @@ copy next to it; that export becomes the current one. If earlier clips exist,
 a second run asks before replacing them and passes `--force` only when you confirm. The presets
 are off, with the reason shown, for 360 projects and for projects analyzed with `--exclude` or
 `--recursive`, `--no-scenes`, a non-default whisper `--model`, `--language`, `--max-candidates`,
-`--must-include-crash` with a value other than the style's default (0.6) or `--recover`. A Skip steps choice is passed on as `edit --skip`.
+`--must-include-crash` with a value other than the style's default (0.6) or `--recover`. A Skip steps choice is passed on as `edit --skip`, and for an Auto project the analysis's Show every video to the vision model as `edit --vision-detect-all` or `--no-vision-detect-all`.
 
 **Analysis options** are in the "Analyze again" dialog, and in the dialog that "Analysis
 options…" opens before the first analysis ("Analyze footage" alone uses none of them). Each one
@@ -529,13 +529,14 @@ applies:
 | Crashes become moments at | `--must-include-crash` |
 | Skip scene detection | `--no-scenes` |
 | Recover after read errors | `--recover` |
+| Show every video to the vision model (Auto style) | `--vision-detect-all` / `--no-vision-detect-all` |
 | Skip steps: Reactions, Keyframes, Crashes, Dialogue | `--skip reactions keyframes crashes dialogue` |
 
 The dialog starts with what the project's analysis used, as `highlights.json` records it (the
 model only when it is not the default), so "Analyze again" repeats it unless you change it. It
 keeps a recorded `--recover` the same way. `highlights.json` does not record `--skip`, so the UI
 keeps it in `ui/analysis.json` for that analysis only; after a command-line re-run it starts
-unticked. 360 projects have no Analysis options (`360 analyze` takes none of these flags).
+unticked. Show every video to the vision model can be changed only while the analysis runs in the Auto style (the project's, or the one the style button switches to); it starts ticked when the analysis recorded `settings.vision_detect_all`, unticked for an Auto analysis without it, and before any Auto analysis as [`vision_detect_all`](configuration.md#vision_detect_all) in `config.json` says. An Auto analysis always passes it explicitly, as `--vision-detect-all` or `--no-vision-detect-all`. 360 projects have no Analysis options (`360 analyze` takes none of these flags).
 
 **Refine** is a block of the same dialog, below the options. Each control starts its own job,
 not an analysis:
@@ -1082,6 +1083,7 @@ cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [-
               [--vision | --no-vision] [--vision-top N] [--ollama-url URL]
               [--ollama-model MODEL] [--context TEXT] [--skip STEP [STEP ...]]
               [--visual-index | --no-visual-index] [--ocr-det-skip | --no-ocr-det-skip]
+              [--vision-detect-all | --no-vision-detect-all]
               [--compress-peaks off|light|strong] [--lut FILE [--lut-strength 0-1]]
               [--color off|auto|underwater [--color-strength 0-1]] [--json]
 ```
@@ -1115,6 +1117,7 @@ one of them is refused.
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes`, `crashes` and/or `dialogue`. Give it after the input paths |
 | `--visual-index` / `--no-visual-index` | As on `analyze`: also write the frame embeddings of the AI Chat's visual search for `gaming`, `funny` and `commentary` footage, or not. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
 | `--ocr-det-skip` / `--no-ocr-det-skip` | As on `analyze`, also for the OCR layer of `--events`. Default: [`ocr_det_skip`](configuration.md#ocr_det_skip) in `config.json`, else off |
+| `--vision-detect-all` / `--no-vision-detect-all` | As on [`analyze`](#analyze), for both footage checks of the run (the `--events` check and the analysis's). Default: [`vision_detect_all`](configuration.md#vision_detect_all) in `config.json`, else off |
 | `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression), baked into the clips (so the final has it too). Default: `compress_peaks` in `config.json`, else off |
 | `--lut FILE`, `--lut-strength 0-1` | Grade the clips with a 3D LUT, as on [`clips`](#clips) (so the final has it too). Checked before the analysis |
 | `--color off\|auto\|underwater`, `--color-strength 0-1` | [Automatic color correction](#clips) of the clips, as on `clips` (so the final has it too). Not with `--lut`; checked before the analysis |
@@ -1155,6 +1158,7 @@ A fresh run into an existing project reads the ids from the current `highlights.
 | `--skip STEP ...` | Leave out `reactions`, `keyframes`, `crashes` and/or `dialogue` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
 | `--visual-index` / `--no-visual-index` | Also write the frame embeddings (the CLIP visual layer, in the `keyframes` step, before the HUD text for `gaming` and `funny`) that the AI Chat's [`look_for`](#ai-chat) searches, for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` footage always has them. They change no ranking. Sources with telemetry: the crashes step also reads them, so `crashes.json` can differ; the ranking does not. Like that layer for the other styles it needs the `events` extra, its model files and a CUDA GPU, and is left out with an INFO line otherwise (the HUD text of `gaming` and `funny` still runs). Cached per source like the rest: a later run with the option on computes only what is missing, and one with it off leaves what exists. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
 | `--ocr-det-skip` / `--no-ocr-det-skip` | Gameplay HUD text (the `keyframes` step): skip the text detection of a HUD region that has not changed since detection last ran there, and keep that result. Faster on footage with a still HUD; on two test clips it saved a third and a tenth of the detection calls and lost no event. A read with it is cached apart from one without it, so switching reads the footage again once. Default: [`ocr_det_skip`](configuration.md#ocr_det_skip) in `config.json`, else off |
+| `--vision-detect-all` / `--no-vision-detect-all` | `--style auto`: show every source with frames and without telemetry to the vision model, not only the unsure ones (about one vision call per source); it only settles sources: a sure gameplay source becomes unsure when the vision answer and the HUD text both see no game (see **Every source** under [`detect`](#detect)). Off with `--no-vision` or `"vision": false` (one INFO line). Recorded as `settings.vision_detect_all` (only when on), which a re-analysis keeps. Default: [`vision_detect_all`](configuration.md#vision_detect_all) in `config.json`, else off |
 | `--no-scenes` | Skip scene detection |
 | `--max-candidates N` | Candidates per source before merging. Default: enough to cover about 3 times the style's target length, at least 30. `gaming` has an open list instead: see [Candidates](#candidates) |
 | `--recover` | After a read error, resume analysis past the bad region |
@@ -1507,7 +1511,7 @@ on CUDA and `small` on CPU), so it is reused only when both runs use the same `-
 ## detect
 
 ```text
-cutpoint detect <file|folder> [<file|folder> ...] [--exclude GLOB] [--recursive] [--vision | --no-vision] [--ollama-url URL] [--ollama-model NAME] [--context TEXT] [--json]
+cutpoint detect <file|folder> [<file|folder> ...] [--exclude GLOB] [--recursive] [--vision | --no-vision] [--vision-detect-all | --no-vision-detect-all] [--ollama-url URL] [--ollama-model NAME] [--context TEXT] [--json]
 ```
 
 Tells which category the footage is and which style `--style auto` would use, without analyzing
@@ -1556,6 +1560,27 @@ and `edit`) adds the user's words about the footage to the question as a hint; t
 comes from the frames, a source the vision check is not asked about is decided as without it,
 and its answers are cached apart from those without words.
 
+**Every source.** `--vision-detect-all` (on `detect`, `analyze` and `edit`; the Analysis options of `cutpoint ui`;
+[`vision_detect_all`](configuration.md#vision_detect_all) in `config.json`) shows every source
+with frames and without telemetry to the vision model, not only the unsure ones, except 360
+footage (a 2:1 frame), which is asked only when unsure. It costs about one vision call per
+source; the answers share the cache of the unsure-only check (the same question). The HUD
+text check then also runs on every source without camera tags that is not a still picture.
+The option only settles sources, except that it can make sure gameplay unsure (below); it
+never flips a source on the vision answer alone. With a vision answer other than `other`:
+
+- A source the check without the option leaves unsure is decided as there (the answer
+  settles it, `decided_by` `vision`).
+- A source the check without the option makes sure stays as decided there, except sure
+  gameplay when the answer is not `gameplay` and the HUD text check found fewer than 3 boxes:
+  the answer and the text both see no game, so it becomes ambiguous gameplay (never General).
+  When the text check did not run or failed, the pixels' decision stands.
+- For a camera-tagged source only `action` counts, as in the unsure-only check.
+
+In Cutpoint lite the screen-text cue stands in for the read text in the second rule. Without an answer (no model, no consent, `other`) a source is decided as
+without the option. `--no-vision` or `"vision": false` turns it off, with one INFO line. The
+`detection` block then has `"vision_detect_all": true`; without the option it has no such key.
+
 **HUD text check.** A thin HUD (a few lines of text, as in War Thunder, Rainbow Six or
 Battlefield) is too small to show in the small frames. So a source those leave unsure between
 gameplay and general, with no camera tags and not a still picture, also gets the HUD text check:
@@ -1577,7 +1602,8 @@ A 2:1 frame counts as 360 footage only at 3840 px wide or more; `decided_by` is 
 `highlights.json` of an `auto` analysis has a `detection` block: `version` (4), `category`,
 `emphasis` (`hype`, or `funny` for `funny-moments`), `style`, `reason`, `ambiguous`, `scores`,
 `fallback` (the style used when the category was unclear, else `null`), `suggest`, `decided_by` and
-`sources` (as in the [`--json` outputs](#json-output)).
+`sources` (as in the [`--json` outputs](#json-output)), and `vision_detect_all` (`true`) only
+when it was detected with [`--vision-detect-all`](#detect).
 
 ## events
 
