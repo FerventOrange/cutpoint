@@ -593,6 +593,59 @@ def test_background_read_leaves_the_cpu_retry_to_its_turn(tmp_path, monkeypatch)
     assert events == ref and _untimed(stats) == _untimed(ref_stats)
 
 
+class _ShortEngine(_Engine):
+    """An engine whose OCR calls fail with ``err`` from the ``after``-th call on."""
+
+    def __init__(self, err: Exception, after: int = 5) -> None:
+        super().__init__()
+        self.err, self.after = err, after
+
+    def _boxes(self, crop: np.ndarray) -> list[tuple[str, list[list[float]]]]:
+        if self.calls >= self.after:
+            raise self.err
+        return super()._boxes(crop)
+
+
+OOM = "CUDA out of memory. Tried to allocate 96.00 MiB (GPU 0; 3.94 GiB total)"
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_out_of_memory_in_an_ocr_call_is_no_failed_decode(
+    tmp_path: Path, monkeypatch, caplog, background: bool
+) -> None:
+    """An OCR call short of memory is raised as it is: no CPU retry and no "no frames"
+    inline, and in the background the error itself, not :class:`OcrCancelled`, so the
+    background reader can tell it apart (it hands the read back to its turn)."""
+    err = RuntimeError(OOM)
+    starts: list[float] = []
+    kw = {"cancel": threading.Event()} if background else {}
+    with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError) as got:
+        _run(tmp_path, monkeypatch, _ShortEngine(err), starts=starts, **kw)
+    assert got.value is err
+    assert starts == [0.0]  # one pass, not retried
+    assert "hwaccel decode failed" not in caplog.text and "no frames" not in caplog.text
+    assert not list(tmp_path.glob("events-ocr-*.json"))
+
+
+@pytest.mark.parametrize("background", [False, True])
+def test_another_runtime_error_in_an_ocr_call_still_counts_as_a_failed_pass(
+    tmp_path: Path, monkeypatch, caplog, background: bool
+) -> None:
+    """Not out of memory: as before, the inline read retries on the CPU, the background
+    read leaves it to its turn."""
+    starts: list[float] = []
+    engine = _ShortEngine(RuntimeError("model input mismatch"))
+    if background:
+        with pytest.raises(killfeed.OcrCancelled):
+            _run(tmp_path, monkeypatch, engine, starts=starts, cancel=threading.Event())
+        assert starts == [0.0]
+        return
+    with caplog.at_level(logging.WARNING):
+        _run(tmp_path, monkeypatch, engine, starts=starts)
+    assert starts == [0.0, 0.0]  # the CPU retry
+    assert "hwaccel decode failed (model input mismatch); retrying on CPU" in caplog.text
+
+
 def test_cleanup_keeps_the_most_recently_used(tmp_path: Path) -> None:
     def raw(name: str, complete: bool, age: float) -> Path:
         folder = tmp_path / f"ocr-raw-{name}"

@@ -34,6 +34,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache, memguard, state
+from cutpoint.errors import FFmpegError, is_out_of_memory
 from cutpoint.events import ocr_raw
 from cutpoint.events.common import Source, layer_cache_path
 from cutpoint.events.discover import (
@@ -3596,6 +3597,11 @@ def detect_ocr_events(
     are those of the cached read), and an interrupted read resumes after its last
     finished chunk.
 
+    An out-of-memory error of an OCR call (:func:`~cutpoint.errors.is_out_of_memory`, not a
+    failed decode) is raised as it is, also with ``cancel``: it is not retried here. The
+    background reader (:mod:`cutpoint.events.ocr_prefetch`) hands such a read back to its
+    turn; inline it stops the run.
+
     Args:
         src: Source video (read once, sequentially).
         params: OCR parameters.
@@ -3826,6 +3832,8 @@ def detect_ocr_events(
                     stats["hwaccel"] = gpu
                     break
                 except RuntimeError as err:
+                    if is_out_of_memory(err) and not isinstance(err, FFmpegError):
+                        raise  # an OCR call short of memory is no failed decode (see above)
                     if cancel is not None and (cancel.is_set() or exits or gpu or shared):
                         # cancelled or stopped from outside, or a failed GPU pass: the read in
                         # its turn redoes it from the raw chunks (CPU retry, hwaccel stats) as a

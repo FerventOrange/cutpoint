@@ -8,7 +8,10 @@ then takes each result in its normal turn, so the merge order, events.json and t
 are those of a serial run. The worker never reports: its log records are held and replayed,
 in order, when its result is taken (the same lines in the same order, apart from rare ``-v``
 debug lines of helper threads and a "resuming the OCR read" line when a read is handed back
-to its turn), and its progress is forwarded then through the step's own callback.
+to its turn), and its progress is forwarded then through the step's own callback. A read
+that runs out of memory (:func:`~cutpoint.errors.is_out_of_memory`; the GPU steps it overlaps
+hold most of the GPU) is handed back to its turn too, with an INFO line, and so are the
+sources after it; out of memory in that inline read stops the run (``low_memory``).
 
 It runs only when nothing it needs comes later: a clean read (no ``read_errors``, so no bad
 ranges; a source after one is not offered either), Whisper on CUDA (the overlap pays only
@@ -48,6 +51,7 @@ from typing import Any
 
 from cutpoint import memguard, paths
 from cutpoint.encode import is_high_bit
+from cutpoint.errors import is_out_of_memory
 from cutpoint.events.common import Source, load_source
 from cutpoint.events.killfeed import (
     DecodeHook,
@@ -210,6 +214,7 @@ class _Job:
     result: Result | None = None
     error: BaseException | None = None
     skipped: bool = False  # declined or cancelled: read inline
+    oom: str = ""  # why it ran out of memory in the background (skipped: read inline)
     share: SceneShare | None = None  # its scene proxy, made in the background
     index: int = 0  # its place among the analysis' sources (--batch-size)
 
@@ -346,6 +351,12 @@ class OcrPrefetch:
             if finished or self._thread is None or not self._thread.is_alive():
                 break
         if not job.done.is_set() or job.skipped:  # a cancelled read's records are dropped
+            if job.oom:
+                logger.info(
+                    "%s: the background OCR ran out of memory (%s); reading it again in its turn",
+                    src.name,
+                    job.oom,
+                )
             if self.declined:
                 logger.debug("OCR prefetch off: %s", self.declined)
                 self.declined = None  # said once
@@ -465,7 +476,15 @@ class OcrPrefetch:
                 job.skipped, why = True, "the OCR read was cancelled or its GPU pass failed"
                 self._cancel.set()  # the later sources too, after it
             except BaseException as err:  # noqa: BLE001 - re-raised by take()
-                job.error, why = err, "the OCR read failed"
+                if is_out_of_memory(err):
+                    # short of memory next to the GPU steps it overlaps (our own contention):
+                    # read in its turn, once they are done; out of memory there stops the run.
+                    # Only its text is kept: the error's frames may hold the memory
+                    lines = str(err).strip().splitlines()
+                    job.skipped, job.oom = True, lines[0] if lines else type(err).__name__
+                    why = "the OCR read ran out of memory"
+                else:
+                    job.error, why = err, "the OCR read failed"
                 self._cancel.set()  # a serial run stops at this source too
             finally:
                 if self._split is not None:  # its frames were not all read: ffmpeg is killed
