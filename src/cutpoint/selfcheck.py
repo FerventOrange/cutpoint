@@ -123,11 +123,15 @@ def feed_quiet(hl: dict[str, Any], ev: dict[str, Any]) -> list[dict[str, Any]]:
     if not _gaming(hl):
         return []
     found: list[str] = []
-    layers = _dict(ev.get("settings")).get("layers")
-    told = _vlm_kills(ev) if isinstance(layers, list) and "vlm" in layers else None
+    told = _vlm_kills(ev)
+    described = Counter(
+        _name(str(e.get("source")))
+        for e in ev.get("events") or []
+        if isinstance(e, dict) and e.get("kind") == "vlm"
+    )
     for name, stat in _ocr_stats(ev).items():
-        if told is not None and told.get(name, 0) < KILLS_MIN_VLM_MENTIONS:
-            continue  # the vision model saw no kills here: a game without a kill feed
+        if described.get(name, 0) and told.get(name, 0) < KILLS_MIN_VLM_MENTIONS:
+            continue  # the vision model described this source and saw no kills: no kill feed
         for region in _dict(stat.get("feed_regions")).values():
             lines = _dict(region).get("lines")
             gameplay = _gameplay_hours(stat, region)

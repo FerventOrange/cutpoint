@@ -141,7 +141,20 @@ def test_feed_quiet_stays_quiet_in_a_game_without_kills() -> None:
     stats = {"a.mp4": stat(22, 1.0)}
     quiet = with_vlm(ev_of(stats, vlm_kills(selfcheck.KILLS_MIN_VLM_MENTIONS - 1)))
     assert selfcheck.feed_quiet(hl_of(), quiet) == []
-    assert selfcheck.feed_quiet(hl_of(), with_vlm(ev_of(stats, vlm_kills(30, "D:/v/b.mp4")))) == []
+    # kills described in another source say nothing about this one: it was not described at all
+    other = with_vlm(ev_of(stats, vlm_kills(30, "D:/v/b.mp4")))
+    assert codes(selfcheck.feed_quiet(hl_of(), other)) == ["feed_quiet"]
+
+
+def test_feed_quiet_still_fires_when_the_vlm_described_nothing() -> None:
+    """The vision model was requested but unavailable: no description, no skip."""
+    unavailable = with_vlm(ev_of({"a.mp4": stat(22, 1.0)}, []))
+    assert codes(selfcheck.feed_quiet(hl_of(), unavailable)) == ["feed_quiet"]
+
+
+def test_feed_quiet_stays_quiet_when_the_vlm_described_a_source_without_kills() -> None:
+    calm = [{"kind": "vlm", "source": "D:/v/a.mp4", "description": "The player walks."}] * 5
+    assert selfcheck.feed_quiet(hl_of(), ev_of({"a.mp4": stat(22, 1.0)}, calm)) == []
 
 
 def test_feed_quiet_still_fires_when_kills_are_described() -> None:
