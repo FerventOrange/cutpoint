@@ -936,7 +936,11 @@ file, the start of the first word, the end of the last word and a few words arou
 without transcript words is skipped, and the model is told when no source has them. When a
 phrase is not said in one place but each of its words is, the model gets the `add_range` ops
 that splice it: the first place each word is said, in order. In the moment and sequence rows,
-as in `find_words`, two sources with the same file name are shown as `folder/name`.
+as in `find_words`, two sources with the same file name are shown as `folder/name` to a model on
+this machine; any other model (hosted, a subscription, or Ollama on another machine) gets no folder
+name: the first is shown as `clip.mp4`, the next as `clip.mp4 (2)`, and so on, never the name of
+another source. Transcript lines given to the model name the file the same way. Earlier replies
+that named a file the way the other kind of model was shown it reach the model with its own name.
 
 To make someone say a sentence ("make her say 'I am done'"), the model finds each word or phrase
 with `find_words` and adds them in order with `add_range` ops: a `file`, a `start` and an `end` in

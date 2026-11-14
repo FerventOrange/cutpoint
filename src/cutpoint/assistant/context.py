@@ -158,6 +158,8 @@ _GENERIC = re.compile(r"(?:[\w-]+-moment|vlm)?")
 _LINE = re.compile(
     r"\[(.+) (\d{2,}):(\d{2}):(\d{2}(?:\.\d+)?)-(\d{2,}):(\d{2}):(\d{2}(?:\.\d+)?)\]"
 )
+# the part of a transcript heading after its source path: " (from 01:02:03)", a recovered part
+_HEAD = re.compile(r" \(from [\d:.]+\)$")
 
 
 @dataclass(frozen=True)
@@ -234,15 +236,29 @@ def file_name(path: Any) -> str:
     return source_path(str(path)).name
 
 
-def file_names(paths: list[str]) -> dict[str, str]:
-    """How the model sees each source: its file name, or ``folder/name`` when two sources share
-    the file name."""
+def file_names(paths: list[str], *, local: bool) -> dict[str, str]:
+    """How the model sees each source: its file name, and when two sources share it, for a
+    model on this machine (``local``) ``folder/name``, for any other the name and a number
+    (``clip.mp4 (2)``, ...) in the order of ``paths``, so no folder name leaves this machine
+    (#1060). A number never gives the name of another source."""
     names = [file_name(p) for p in paths]
-    twice = {f for f in names if names.count(f) > 1}
-    return {
-        p: f"{source_path(p).parent.name}/{f}" if f in twice else f
-        for p, f in zip(paths, names, strict=True)
-    }
+    if local:
+        twice = {f for f in names if names.count(f) > 1}
+        return {
+            p: f"{source_path(p).parent.name}/{f}" if f in twice else f
+            for p, f in zip(paths, names, strict=True)
+        }
+    taken, seen, out = set(names), set(), {}
+    for p, f in zip(paths, names, strict=True):
+        if f in seen:
+            n = 2
+            while f"{f} ({n})" in taken:
+                n += 1
+            f = f"{f} ({n})"
+            taken.add(f)
+        seen.add(f)
+        out[p] = f
+    return out
 
 
 def words(text: str) -> list[str]:
@@ -406,6 +422,8 @@ class MomentTable:
         self._short: dict[str, str] = {}
         self._real: dict[str, str] = {}
         self._files: tuple[tuple[int, ...], dict[str, str]] | None = None  # file(): its key, names
+        # the model runs on this machine: file() may tell sources apart by their folder's name
+        self.local = False
         extra = [s["id"] for s in segments if s["id"] not in self.candidates]
         for i, real in enumerate([*self.rank, *extra], 1):
             self._short[real] = f"m{i}"
@@ -426,16 +444,43 @@ class MomentTable:
             self.rank.append(real)
         return self._short[real]
 
+    def _sources(self) -> list[str]:
+        """The project's sources, its moments' and the sequence's, each once, in that order."""
+        paths = [*self.durations, *(c.get("source") for c in self.candidates.values())]
+        paths += [s.get("source") for s in self.segments]
+        return [p for p in dict.fromkeys(paths) if isinstance(p, str)]
+
     def file(self, source: Any) -> str:
-        """The file of ``source`` as the model sees it (:func:`file_names` over the project's
-        sources, its moments' and the sequence's)."""
-        key = (id(self.durations), len(self.durations), len(self.candidates), len(self.segments))
+        """The file of ``source`` as the model sees it (:func:`file_names` over
+        :meth:`_sources`, for a model on this machine or not as :attr:`local` says)."""
+        key = (
+            id(self.durations),
+            len(self.durations),
+            len(self.candidates),
+            len(self.segments),
+            self.local,
+        )
         if self._files is None or self._files[0] != key:  # a moment added since: again
-            paths = [*self.durations, *(c.get("source") for c in self.candidates.values())]
-            paths += [s.get("source") for s in self.segments]
-            self._files = (key, file_names([p for p in dict.fromkeys(paths) if isinstance(p, str)]))
+            self._files = (key, file_names(self._sources(), local=self.local))
         shown = self._files[1]
         return shown.get(source, file_name(source)) if isinstance(source, str) else ""
+
+    def other_names(self) -> dict[str, str]:
+        """The names a model of the other kind (on this machine or not) was shown of the
+        sources that share a file name, to the name :meth:`file` shows instead, for its earlier
+        replies (#1060): for a model not on this machine each ``folder/name`` (both slashes;
+        none for a source at a drive root, ``/name`` is part of other paths), so no folder name
+        reaches it; for one on this machine each numbered name (``clip.mp4 (2)``), which it
+        could not give back."""
+        paths = self._sources()
+        here, away = file_names(paths, local=True), file_names(paths, local=False)
+        out = {}
+        for p in paths:
+            if self.local and away[p] != file_name(p):
+                out[away[p]] = here[p]
+            elif not self.local and here[p] != file_name(p) and source_path(p).parent.name:
+                out[here[p]] = out[here[p].replace("/", "\\")] = away[p]
+        return out
 
     def name(self, real: str) -> str:
         """The short id of ``real`` (``real`` itself if it has none)."""
@@ -834,18 +879,31 @@ def _other_length(m: re.Match[str]) -> bool:
     return bool(verbs) and not _CHANGE_TO.search(part, verbs[-1].end())
 
 
-def transcript_lines(transcript: str, source: str, start: float, end: float) -> list[str]:
-    """Lines of ``transcript.txt`` from the file of ``source`` that overlap ``start``-``end``."""
+def transcript_lines(
+    transcript: str, source: str, start: float, end: float, *, shown: str
+) -> list[str]:
+    """Lines of ``transcript.txt`` from the file of ``source`` that overlap ``start``-``end``,
+    each with the file named ``shown`` (:meth:`MomentTable.file`), so a model tells two sources
+    of one file name apart there too. A line gives only the file name; analysis heads each
+    source's lines with ``# <path>``, so when a heading names ``source`` only the lines under
+    such headings count (a transcript without them: every line of the file name)."""
     name = file_name(source)
-    out = []
+    heads = [_HEAD.sub("", line[2:]) for line in transcript.splitlines() if line.startswith("# ")]
+    mine = source_path(source)
+    headed = any(source_path(h) == mine for h in heads)
+    out, inside = [], not headed
     for line in transcript.splitlines():
+        if line.startswith("# "):
+            inside = not headed or source_path(_HEAD.sub("", line[2:])) == mine
+            continue
         m = _LINE.match(line)
-        if not m or m.group(1).split("@")[0] != name:
+        if not inside or not m or m.group(1).split("@")[0] != name:
             continue
         g = [float(x) for x in m.groups()[1:]]
         t0, t1 = g[0] * 3600 + g[1] * 60 + g[2], g[3] * 3600 + g[4] * 60 + g[5]
         if t1 >= start and t0 <= end:
-            out.append(line)
+            part = m.group(1)[len(name) :]  # "@<offset>" of a recovered part, else ""
+            out.append(f"[{shown}{part}{line[m.start(1) + len(m.group(1)) :]}")
             if len(out) >= MAX_TRANSCRIPT_LINES:
                 break
     return out

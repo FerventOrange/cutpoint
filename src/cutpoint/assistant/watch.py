@@ -458,7 +458,8 @@ class Viewer:
             f"frames ({grid} grid, reading order, source time): "
             + ", ".join(stamp(i, t).replace("  ", " ") for i, t in enumerate(times, 1)),
         ]
-        said = context.transcript_lines(transcript, source, start, end)
+        shown = str(row.get("file") or context.file_name(source))  # as the table shows it
+        said = context.transcript_lines(transcript, source, start, end, shown=shown)
         lines += ["transcript:", *(said or ["(no transcript lines)"])]
         sounds = heard(self.events(), source, start, end)
         lines += ["heard:", *(sounds or ["(no detected sounds)"])]
