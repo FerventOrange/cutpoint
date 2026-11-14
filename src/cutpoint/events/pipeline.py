@@ -468,8 +468,15 @@ def run_events(
     with stage("ocr") if "ocr" in layers else contextlib.nullcontext():
         base = 0.0  # progress the per-source OCR starts at (after discovery)
         if "ocr" in layers and discover is not False:
-            from cutpoint.events.feed_labels import make_labeler  # noqa: PLC0415
+            from cutpoint.events.feed_labels import VisionCalls, make_labeler  # noqa: PLC0415
+            from cutpoint.events.hud_map import make_mapper  # noqa: PLC0415
 
+            # the HUD map and the feed labels share the model check, load and budget; the map's
+            # prompt carries the user's words about the footage (#1068)
+            calls = VisionCalls(rater) if rater is not None else None
+            words = footage_context(
+                context if context is not None else (hl.get("settings") or {}).get("context")
+            )
             try:
                 stats["discovery"] = _discover(
                     project,
@@ -479,7 +486,10 @@ def run_events(
                     discover_bursts,
                     preset_scope,
                     discover_hint,
-                    make_labeler(rater) if rater is not None else None,
+                    make_labeler(rater, calls) if rater is not None and calls else None,
+                    make_mapper(rater, words, calls) if rater is not None and calls else None,
+                    # a top-up changes the preset the background OCR reads with: stopped first
+                    before_top_up=prefetch.close if prefetch is not None else None,
                 )
             except LowMemoryError:
                 raise
@@ -999,9 +1009,22 @@ def _discover(
     scope: str,
     hint: str = EVENTS_DISCOVER_HINT,
     labeler: Callable[..., dict[str, Any]] | None = None,
+    hud_mapper: Any = None,
+    before_top_up: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Run region discovery per game where needed; install new presets. ``labeler`` names the
-    proposals with the shared vision model (:mod:`cutpoint.events.feed_labels`).
+    proposals with the shared vision model (:mod:`cutpoint.events.feed_labels`), after
+    ``hud_mapper`` pointed at the HUD elements with it (:mod:`cutpoint.events.hud_map`).
+
+    A game whose installed discovered preset (``<CUTPOINT_HOME>/presets``) has no
+    ``discovery.hud_map`` yet is topped up once, when the vision model answers: discovery runs
+    for it on this project's sources (its regions are left alone), the map's confirmed regions
+    are added to the preset and a feed region OCR finds no feed lines in becomes a notice
+    (:func:`cutpoint.events.hud_map.top_up`). Project presets are never topped up.
+    ``before_top_up`` runs first (``cutpoint analyze`` stops its background OCR, which reads with
+    the preset as it was). A top-up that gives no map (the model on the CPU alone, a timeout, too
+    little memory) is recorded (:func:`cutpoint.events.hud_map.mark_tried`) and not run again
+    while the preset file and the model stay the same.
 
     Sources whose key is a first guess (no ``--game``, no preset ``match`` hint) and that
     have no recorded decision (or all of them with ``force``) get the HUD fit check
@@ -1014,9 +1037,11 @@ def _discover(
     Returns:
         ``{game: {"preset": path, "installed": bool, "regions": [...], ...}}``; for a
         game with a preset also ``suggested_regions`` (extra notice regions and a score
-        readout the preset does not have; never written into it).
+        readout the preset does not have; never written into it) and, after a top-up,
+        ``topped_up`` (the region names added, replaced and relabelled).
     """
     from cutpoint.events import discover, game_fit  # noqa: PLC0415
+    from cutpoint.events import hud_map as vision_map  # noqa: PLC0415
     from cutpoint.events import regions as hud  # noqa: PLC0415
 
     params = discover.DiscoverParams(bursts=bursts)
@@ -1046,19 +1071,29 @@ def _discover(
         existing: Any,
         keep: set[str] | None = None,
         install: bool = True,
+        topping: bool = False,
     ) -> dict[str, Any]:
         """Discovery for ``game`` on ``srcs`` and its install, as a record in ``out``;
         ``keep``: cluster again from these sources' records only (no OCR, no "No HUD
         preset matches" line);
         ``install`` False: no preset written yet (:func:`install_preset` does it once the
-        fit check has split off other games)."""
+        fit check has split off other games); ``topping``: for the HUD map top-up of the
+        existing preset only (no feed labels: the preset's regions stay)."""
         gi = runs["started"]
         if keep is None:
             runs["started"] += 1
             runs["total"] = max(runs["total"], runs["started"])
         name = "this game" if game == "game" else game
         first = "" if existing is not None else f"first run for {name}: "
-        if existing is None and keep is None:
+        if topping:
+            progress.update(detail="mapping the HUD with the vision model")
+            logger.info(
+                "The HUD preset for %r has no vision HUD map yet; making one from %s "
+                "(once per game)",
+                game,
+                srcs[0].path,
+            )
+        elif existing is None and keep is None:
             progress.update(detail=f"{first}discovering HUD regions")
             logger.info(
                 "No HUD preset matches %s; discovering regions as %r (a few minutes). "
@@ -1093,8 +1128,9 @@ def _discover(
                 params,
                 on_frame=on_frame if keep is None else None,
                 **covered,
-                **({"labeler": labeler} if labeler else {}),
+                **({"labeler": labeler} if labeler and not topping else {}),
                 **({"keep_src_keys": keep} if keep is not None else {}),
+                **({"hud_mapper": hud_mapper} if hud_mapper is not None else {}),
             )
         except LowMemoryError:
             raise
@@ -1117,6 +1153,7 @@ def _discover(
                 install_preset(game, proposal)
         else:
             rec["preset"] = str(existing.path)
+        if existing is not None and not topping:
             rec["suggested_regions"] = list(proposal.get("suggested_regions") or [])
             logger.info(
                 "Kept existing HUD preset for %r (%s); discovery proposal: %s",
@@ -1136,6 +1173,48 @@ def _discover(
                     rec["preset"],
                 )
         return proposal
+
+    def top_up(game: str, existing: Any, proposal: dict[str, Any] | None) -> str | None:
+        """Add the vision HUD map of ``proposal`` (a discovery over the existing preset) to the
+        installed discovered preset ``existing`` (:func:`cutpoint.events.hud_map.top_up`),
+        written atomically. Returns why there was no map to add (the model answered for no
+        frame, or the discovery had none); None when it was added, or the preset was topped up
+        meanwhile or cannot be read or written (WARNING)."""
+        disc = (proposal or {}).get("discovery") or {}
+        got = disc.get("hud_map")
+        if not got:
+            return "the vision model gave no HUD map"
+        if existing.path is None:
+            return None
+        data = cache.load_json(existing.path)
+        if not isinstance(data, dict):
+            return None
+        if "hud_map" in (data.get("discovery") or {}):  # another run topped it up meanwhile
+            return None
+        ids = set(disc.get("frames") or [])
+        recs = discover.read_ocr_samples(project / "discovery" / game / "ocr.jsonl")
+        frames = discover.gameplay_frames([f for f in recs if f["id"] in ids], params)
+        new, changes = vision_map.top_up(data, got, frames)
+        try:
+            cache.save_json(existing.path, new)
+        except OSError as err:
+            logger.warning(
+                "Could not add the vision HUD map to the preset '%s' (%s): %s",
+                game,
+                existing.path,
+                err,
+            )
+            return None
+        if game in out:
+            out[game]["topped_up"] = changes
+        done = "; ".join(f"{k} {', '.join(v)}" for k, v in changes.items() if v)
+        logger.info(
+            "Topped up the HUD preset '%s' with the vision HUD map (%s): %s",
+            game,
+            done or "no region changed",
+            existing.path,
+        )
+        return None
 
     def add_fit_ref(game: str, path: Path | None, ref: Any) -> None:
         """Give an existing preset the fresh grid ``fit_ref`` of a forced discovery (the HUD
@@ -1259,6 +1338,33 @@ def _discover(
         proposal = (
             run(game, srcs, existing, install=not split) if existing is None or force else None
         )
+        # an installed discovered preset without a vision HUD map gets one, once (#1069)
+        if (
+            existing is not None
+            and hud_mapper is not None
+            and vision_map.wants_top_up(existing, cutpoint_paths.presets_dir())
+            and hud_mapper.usable(top_up=True)
+            and not vision_map.tried(game, hud_mapper.model, existing.path)
+        ):
+            if before_top_up is not None:
+                before_top_up()
+            try:
+                # the model is loaded (on a GPU) before the minutes of discovery it is for
+                why = None if proposal is not None else hud_mapper.ready()
+                if why is None:
+                    why = top_up(
+                        game, existing, proposal or run(game, srcs, existing, topping=True)
+                    )
+            finally:
+                hud_mapper.release()
+            if why is not None:
+                vision_map.mark_tried(game, hud_mapper.model, existing.path, why)
+                logger.info(
+                    "No vision HUD map for the preset '%s' (%s); not tried again until the "
+                    "preset or the vision model changes",
+                    game,
+                    why,
+                )
         # a forced discovery over an existing preset: the sources are checked against its grid
         # fit_ref, or, without one, against each other like a new discovery; the preset gets
         # the fit_ref of the sources that fit (its regions stay)

@@ -22,6 +22,7 @@ def _kill_flags(ev: dict[str, Any]) -> list[str]:
             ("TEAMKILL", ev.get("teamkill")),
             ("player kill", ev.get("player_kill")),
             ("player death", ev.get("player_death")),
+            ("replay", ev.get("replay")),
         )
         if on
     ]
