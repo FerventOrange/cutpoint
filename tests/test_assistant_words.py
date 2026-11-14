@@ -751,6 +751,101 @@ def test_a_source_at_a_drive_root_renames_no_path_that_ends_in_its_name() -> Non
     assert session._without_names(said, renamed) == "It is clips/a.mp4, from a.mp4 (2)."
 
 
+def test_a_reply_names_match_whatever_the_case_and_show_the_name_as_is() -> None:
+    """Windows paths differ in case: the scrub finds "b/CLIP.MP4" and writes the shown name."""
+    table = context.MomentTable([], [])
+    table.durations = {"/v/B/Clip.mp4": 60.0, "/v/c/Clip.mp4": 60.0}
+    table.local = False
+    renamed = table.other_names()
+    said = "Use B\\Clip.mp4 and b/CLIP.MP4, then C/clip.mp4; not xb/clip.mp4."
+    want = "Use Clip.mp4 and Clip.mp4, then Clip.mp4 (2); not xb/clip.mp4."
+    assert session._without_names(said, renamed) == want
+    # names that differ only in case keep their own shown name
+    table.durations = {"/v/B/clip.mp4": 60.0, "/v/b/clip.mp4": 60.0}
+    said = "B/clip.mp4 and b/clip.mp4"
+    assert session._without_names(said, table.other_names()) == "clip.mp4 and clip.mp4 (2)"
+
+
+def test_a_case_pair_unicode_maps_differently_never_raises_nor_leaks_the_folder() -> None:
+    table = context.MomentTable([], [])
+    table.durations = {"/v/\u0130zmir/clip.mp4": 60.0, "/v/b/clip.mp4": 60.0}
+    table.local = False
+    # re.IGNORECASE matches "I" to the dotted capital I; str.lower() does not map them alike
+    assert session._without_names("see Izmir/clip.mp4", table.other_names()) == "see clip.mp4"
+
+
+ROOT, UNDER = "C:\\clip.mp4", "C:\\v\\a\\clip.mp4"  # Windows paths: not keys of "/clip.mp4"
+
+
+def _root_twins() -> session.Project:
+    spoken = {ROOT: said((" a", 1.0, 1.1)), UNDER: said((" a", 2.0, 2.1))}
+    return session.Project(
+        [],
+        [],
+        ops.Durations({ROOT: 60.0, UNDER: 60.0}, lambda _p: None),
+        "",
+        "k",
+        words=spoken.get,
+    )
+
+
+def test_a_local_model_picks_the_source_at_a_drive_root_by_the_name_it_is_shown() -> None:
+    table = context.MomentTable([], [])
+    table.durations = {ROOT: 60.0, UNDER: 60.0}
+    table.local = True
+    assert [table.file(p) for p in table.durations] == ["C:/clip.mp4", "a/clip.mp4"]
+    for p in table.durations:
+        assert session._source_of(table.file(p), table, 1) == (p, "")
+    assert session._source_of("/clip.mp4", table, 1)[0] is None  # not what it was shown
+    table.durations = {ROOT: 60.0, "/clip.mp4": 60.0}  # a POSIX root twin keeps "/clip.mp4"
+    assert [table.file(p) for p in table.durations] == ["C:/clip.mp4", "/clip.mp4"]
+    for p in table.durations:
+        assert session._source_of(table.file(p), table, 1) == (p, "")
+    told = [{"op": "add_range", "file": "C:/clip.mp4", "start": 1.0, "end": 1.1}]
+    fake = FakeProvider([call("propose_edit", summary="x", ops=told)])
+    turn = run(fake, "add it", proj=_root_twins())
+    assert turn.status == "done", turn.error
+    assert turn.view()["events"][-1]["after"][0]["source"] == ROOT
+
+
+def test_a_root_without_a_drive_is_shown_with_a_slash_and_resolves() -> None:
+    table = context.MomentTable([], [])
+    table.durations = {"\\clip.mp4": 60.0, UNDER: 60.0}
+    table.local = True
+    assert table.file("\\clip.mp4") == "/clip.mp4"
+    for name in ("/clip.mp4", "\\clip.mp4"):
+        assert session._source_of(name, table, 1) == ("\\clip.mp4", "")
+    assert session._source_of("a/clip.mp4", table, 1) == (UNDER, "")
+
+
+def test_drive_roots_of_two_drives_are_told_apart_and_the_drive_stays_from_a_hosted_model() -> None:
+    other = "D:\\clip.mp4"
+    table = context.MomentTable([], [])
+    table.durations = {ROOT: 60.0, other: 60.0}
+    table.local = True
+    assert [table.file(p) for p in table.durations] == ["C:/clip.mp4", "D:/clip.mp4"]
+    for p in table.durations:
+        assert session._source_of(table.file(p), table, 1) == (p, "")
+    assert table.other_names() == {"clip.mp4 (2)": "D:/clip.mp4"}
+    table.local = False
+    assert [table.file(p) for p in table.durations] == ["clip.mp4", "clip.mp4 (2)"]
+    renamed = table.other_names()
+    said = "Cut C:/clip.mp4 and D:\\clip.mp4."
+    assert session._without_names(said, renamed) == "Cut clip.mp4 and clip.mp4 (2)."
+
+
+def test_a_hosted_model_picks_either_twin_of_a_drive_root_by_its_shown_name() -> None:
+    table = context.MomentTable([], [])
+    table.durations = {ROOT: 60.0, UNDER: 60.0}
+    table.local = False
+    for name, want in (("clip.mp4", ROOT), ("clip.mp4 (2)", UNDER)):
+        assert session._source_of(name, table, 1) == (want, "")
+    told = [{"op": "add_range", "file": "clip.mp4 (2)", "start": 2.0, "end": 2.1}]
+    turn = run(Hosted([call("propose_edit", summary="x", ops=told)]), "add", proj=_root_twins())
+    assert turn.status == "done", turn.error
+    assert turn.view()["events"][-1]["after"][0]["source"] == UNDER
+
+
 TWO_DAYS_TRANSCRIPT = """# /v/day1/a.mp4
 [a.mp4 00:00:01.0-00:00:03.0] morning on day one
 
