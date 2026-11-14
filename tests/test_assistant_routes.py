@@ -1333,6 +1333,25 @@ def _with_files(p: Path) -> None:
     )
 
 
+# the folders of two more sources named clip.mp4: names no hosted prompt may hold (#1060)
+TWIN_FOLDERS = ("pz-ann-4u7q", "pz-bo-8k2w")
+
+
+def _with_twins(p: Path, root: Path) -> None:
+    """Give project ``p`` two more sources named clip.mp4, in :data:`TWIN_FOLDERS` under
+    ``root``, each with a moment ranked last."""
+    hl = cache.load_json(p / "highlights.json")
+    for n, folder in enumerate(TWIN_FOLDERS, 4):
+        src = root / folder / "clip.mp4"
+        src.parent.mkdir()
+        src.write_bytes(b"x")
+        hl["sources"].append({"path": str(src), "duration": 100.0})
+        hl["settings"]["inputs"].append(str(src))
+        cand = {"id": f"h00{n}", "source": str(src), "start": 5, "end": 13, "score": 10 - n}
+        hl["candidates"].append({**cand, "label": f"dive {n}"})
+    cache.save_json(p / "highlights.json", hl)
+
+
 def _every_tool() -> list[Reply]:
     """Every tool the assistant offers or refuses, a rejected proposal, then a valid one;
     then, in a turn of its own (it ends the turn), a ranking preview."""
@@ -1385,12 +1404,20 @@ def test_no_path_user_or_host_name_reaches_a_hosted_model(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, proj, tmp_path: Path
 ) -> None:
     """Owner rule (#1010): host information only to a model on this machine. Every prompt and
-    every tool result of a hosted model's turn, over every tool, has names only."""
+    every tool result of a hosted model's turn, over every tool, has names only; sources of
+    one file name are told apart by a number, not by their folders' names (#1060)."""
     p, seq, _ = proj
     _with_files(p)
-    # an earlier turn answered by a model on this machine, with the full path
-    use(monkeypatch, FakeProvider([Reply(f"It is {p / 'transcript.txt'}.")]))
+    _with_twins(p, tmp_path)
+    ann, bo = TWIN_FOLDERS
+    # an earlier turn answered by a model on this machine, with the full path and the name it
+    # was shown for a source of a shared file name
+    said = f"It is {p / 'transcript.txt'}. The dive is in {ann}/clip.mp4, not {bo}\\clip.mp4."
+    local = use(monkeypatch, FakeProvider([Reply(said)]))
+    local.context_tokens = 64000  # room for every moment
     assert ask(client, "where is the transcript?", seq)["status"] == "done"
+    shown = json.dumps(local.requests, default=str)
+    assert f"{ann}/clip.mp4" in shown and f"{bo}/clip.mp4" in shown  # local: as it was
     fake = use(monkeypatch, HostedFake(_every_tool()))
     fake.context_tokens = 64000  # room for the earlier turns
     monkeypatch.setattr(ui.ai_lookfor, "indexed", lambda _sources: True)  # look_for is offered
@@ -1408,9 +1435,13 @@ def test_no_path_user_or_host_name_reaches_a_hosted_model(
 
     sent = json.dumps(fake.requests, default=str)
     assert "It is transcript.txt." in sent  # the local model's reply, without the folder
+    assert "The dive is in clip.mp4 (2), not clip.mp4 (3)." in sent
+    for n in (2, 3):  # the moment rows
+        assert json.dumps(f'"file":"clip.mp4 ({n})"')[1:-1] in sent, n
     assert "transcript.txt" in sent and "final.mp4" in sent and "clips/" in sent
     assert '"folder"' not in sent
     secrets_ = {str(tmp_path), str(p), str(p.parent), getpass.getuser(), socket.gethostname()}
+    secrets_ |= set(TWIN_FOLDERS)
     secrets_ |= {part for part in tmp_path.parts[1:] if part.lower() not in {"tmp", "temp"}}
     for secret in secrets_:
         for spelling in {secret, json.dumps(secret)[1:-1]}:  # as is and JSON-escaped

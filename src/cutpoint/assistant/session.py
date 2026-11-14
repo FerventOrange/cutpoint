@@ -390,6 +390,16 @@ def _without_folder(text: str, folder: str) -> str:
     return errtext.no_paths(text)
 
 
+def _without_names(text: str, renamed: Mapping[str, str]) -> str:
+    """``text`` with each name of ``renamed`` (:meth:`context.MomentTable.other_names`) that
+    does not go on another name (``xday1/a.mp4``) replaced by the name shown instead, in one
+    pass, the longest first."""
+    if not renamed:
+        return text
+    names = "|".join(re.escape(n) for n in sorted(renamed, key=len, reverse=True))
+    return re.sub(rf"(?<![\w.-])(?:{names})", lambda m: renamed[m.group()], text)
+
+
 def cut_again_error(provider: Any, err: TruncatedError, again: bool = True) -> ProviderError:
     """The failure for a reply cut off after the conversation was already made smaller: the
     provider's own message, and the context advice only where ``assistant.context_tokens``
@@ -421,6 +431,7 @@ class Turn:
         self.text = text
         self.table = context.MomentTable(project.candidates, project.segments, project.windows)
         self.table.durations = project.durations
+        self.table.local = self._on_this_machine()  # before the earlier turns name files
         # the edges of the find_words hits of this turn and the earlier ones: an add or trim to
         # one makes its row exact
         self._word_edges: list[tuple[str, float]] = []  # (source, s): both edges of each hit
@@ -429,11 +440,15 @@ class Turn:
         earlier = list(earlier or [])
         seen = len(earlier) - window
         key = project.ranking_key
-        # a model not given the folder gets no earlier reply naming it (chat.json keeps it)
+        # a model not given the folder gets no earlier reply naming it (chat.json keeps it),
+        # and the names of sources of one file name a model of the other kind was shown become
+        # this one's
         hidden = project.folder if self.folder() is None else ""
+        renamed = self.table.other_names()
 
         def reply(t: Mapping[str, Any], i: int) -> str:
-            text = _earlier_reply(t) + (self._hits_of(t) if i >= seen else "")
+            text = _without_names(_earlier_reply(t), renamed)
+            text += self._hits_of(t) if i >= seen else ""
             return _without_folder(text, hidden) if hidden else text
 
         self.earlier = [
@@ -666,14 +681,19 @@ class Turn:
         brief = build(ranking.brief(self._styles, self._current, names=json_mode))
         return brief if len(brief[1]["content"]) > len(out[1]["content"]) else out
 
-    def folder(self) -> str | None:
-        """The project folder's path for the model, only when nothing sent to it leaves this
-        machine (:func:`~cutpoint.assistant.providers.is_consent_exempt` of its URL: not a
-        hosted API, not the subscription proxy, not Ollama on another machine); else None."""
-        if not self.project.folder or self.provider.local is not True:
-            return None
+    def _on_this_machine(self) -> bool:
+        """Whether nothing sent to the model leaves this machine
+        (:func:`~cutpoint.assistant.providers.is_consent_exempt` of its URL: not a hosted API,
+        not the subscription proxy, not Ollama on another machine)."""
+        if self.provider.local is not True:
+            return False
         url = getattr(self.provider, "url", None)
-        return self.project.folder if url is None or is_consent_exempt(url) else None
+        return url is None or is_consent_exempt(url)
+
+    def folder(self) -> str | None:
+        """The project folder's path for the model, only when it runs on this machine
+        (:meth:`_on_this_machine`); else None."""
+        return self.project.folder if self.project.folder and self._on_this_machine() else None
 
     def _offered(self, name: str) -> bool:
         """Whether the tool ``name`` is offered: ``look_for`` only with cached frame embeddings."""
@@ -1206,7 +1226,10 @@ class Turn:
         item = item or self.table.candidates[real]
         self._emit({"kind": "tool", "name": "get_transcript", "id": real})
         start, end = float(item["start"]) - pad, float(item["end"]) + pad
-        lines = context.transcript_lines(self.project.transcript, item["source"], start, end)
+        shown = self.table.file(item["source"])
+        lines = context.transcript_lines(
+            self.project.transcript, item["source"], start, end, shown=shown
+        )
         if not lines:
             return "no transcript lines in that range", False
         return context.data_block("transcript", "\n".join(lines)), False
@@ -1620,7 +1643,11 @@ class Turn:
                 if not isinstance(said, str) or len(said.split()) < pacing.SPOKEN_WORDS:
                     row = cand or item
                     lines = context.transcript_lines(
-                        self.project.transcript, row["source"], row["start"], row["end"]
+                        self.project.transcript,
+                        row["source"],
+                        row["start"],
+                        row["end"],
+                        shown=self.table.file(row["source"]),
                     )
                     said = " ".join(line.partition("] ")[2] for line in lines)
                 return len(said.split()) >= pacing.SPOKEN_WORDS

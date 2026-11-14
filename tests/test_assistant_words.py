@@ -14,7 +14,7 @@ import pytest
 
 from conftest import media_info, needs_ffmpeg, write
 from cutpoint import clips, planning, sources, ui
-from cutpoint.assistant import ops, session, words
+from cutpoint.assistant import context, ops, session, words
 from cutpoint.assistant.providers import Capabilities, Reply
 from cutpoint.ffmpeg_utils import probe
 from test_assistant import CANDS, SEQ, A, B, FakeProvider, call, durations, run
@@ -635,18 +635,25 @@ def test_owner_scenario_find_where_she_says_a_in_json_mode() -> None:
     assert (row["source"], row["start"], row["end"], row["exact"]) == (A, 5.0, 5.12, True)
 
 
-def test_two_sources_with_one_file_name_are_told_apart_by_their_folder() -> None:
-    day1, day2 = "/v/day1/a.mp4", "/v/day2/a.mp4"
-    spoken = {day1: said((" a", 1.0, 1.1)), day2: said((" a", 2.0, 2.1))}
-    moment = {"id": "d2", "source": day2, "start": 1.0, "end": 5.0, "score": 50, "label": "x"}
-    proj = session.Project(
+DAY1, DAY2 = "/v/day1/a.mp4", "/v/day2/a.mp4"
+
+
+def two_days() -> session.Project:
+    """A project of two sources named a.mp4 (folders day1 and day2), a moment in the second."""
+    spoken = {DAY1: said((" a", 1.0, 1.1)), DAY2: said((" a", 2.0, 2.1))}
+    moment = {"id": "d2", "source": DAY2, "start": 1.0, "end": 5.0, "score": 50, "label": "x"}
+    return session.Project(
         [moment],
         [],
-        ops.Durations({day1: 60.0, day2: 60.0}, lambda _p: None),
+        ops.Durations({DAY1: 60.0, DAY2: 60.0}, lambda _p: None),
         "",
         "k",
         words=spoken.get,
     )
+
+
+def test_two_sources_with_one_file_name_are_told_apart_by_their_folder() -> None:
+    proj = two_days()
     same = [{"op": "add_range", "file": "a.mp4", "start": 2.0, "end": 2.1}]
     told = [{"op": "add_range", "file": "day2/a.mp4", "start": 2.0, "end": 2.1}]
     fake = FakeProvider(
@@ -659,11 +666,124 @@ def test_two_sources_with_one_file_name_are_told_apart_by_their_folder() -> None
     turn = run(fake, "add the a", proj=proj)
     assert turn.status == "done", turn.error
     hits = data_rows(fake.requests[1]["messages"][-1]["content"])
-    assert [h["file"] for h in hits] == ["day1/a.mp4", "day2/a.mp4"]
+    assert [h["file"] for h in hits] == ["day1/a.mp4", "day2/a.mp4"]  # on this machine
     assert '"file":"day2/a.mp4"' in fake.requests[0]["messages"][1]["content"]  # #974: moments too
     rejected = fake.requests[2]["messages"][-1]["content"]
     assert "several sources are named 'a.mp4': use one of day1/a.mp4, day2/a.mp4" in rejected
-    assert turn.view()["events"][-1]["after"][0]["source"] == day2
+    assert turn.view()["events"][-1]["after"][0]["source"] == DAY2
+
+
+class Hosted(FakeProvider):
+    local = False
+    host = "api.example.com"
+
+
+class FarOllama(FakeProvider):
+    """Ollama on another machine: local in kind, but what it is sent leaves this machine."""
+
+    url = "http://192.168.1.50:11434"
+
+
+@pytest.mark.parametrize("kind", [Hosted, FarOllama])
+def test_a_model_not_on_this_machine_tells_them_apart_by_a_number_not_the_folder(
+    kind: type[FakeProvider],
+) -> None:
+    """#1060: no folder name for a model whose prompts leave this machine; the numbered name
+    it gives back still means its source."""
+    told = [{"op": "add_range", "file": "a.mp4 (2)", "start": 2.0, "end": 2.1}]
+    fake = kind([call("find_words", query="a"), call("propose_edit", summary="y", ops=told)])
+    turn = run(fake, "add the a", proj=two_days())
+    assert turn.status == "done", turn.error
+    hits = data_rows(fake.requests[1]["messages"][-1]["content"])
+    assert [h["file"] for h in hits] == ["a.mp4", "a.mp4 (2)"]
+    assert '"file":"a.mp4 (2)"' in fake.requests[0]["messages"][1]["content"]
+    sent = json.dumps(fake.requests, default=str)
+    assert "day1" not in sent and "day2" not in sent
+    assert turn.view()["events"][-1]["after"][0]["source"] == DAY2
+
+
+def test_a_numbered_name_is_never_the_name_of_another_source() -> None:
+    real = "/w/a.mp4 (2)"  # a source that is named so
+    paths = [DAY1, real, DAY2, "/v/day3/a.mp4"]
+    assert context.file_names(paths, local=False) == {
+        DAY1: "a.mp4",
+        real: "a.mp4 (2)",
+        DAY2: "a.mp4 (3)",
+        "/v/day3/a.mp4": "a.mp4 (4)",
+    }
+    assert context.file_names(paths, local=True)[DAY2] == "day2/a.mp4"
+    table = context.MomentTable([], [])
+    table.durations = dict.fromkeys(paths, 60.0)
+    for name, want in (("a.mp4 (2)", real), ("a.mp4 (3)", DAY2), ("a.mp4", DAY1)):
+        assert session._source_of(name, table, 1) == (want, "")
+    assert session._source_of("day2/a.mp4", table, 1)[0] is None  # never shown to it
+
+
+def test_the_names_follow_the_table_s_locality_and_rename_an_earlier_reply() -> None:
+    table = context.MomentTable([], [])
+    table.durations = {DAY1: 60.0, DAY2: 60.0}
+    table.local = True
+    assert table.file(DAY2) == "day2/a.mp4"
+    # a hosted model's earlier reply: its numbered name is one the local model can give back
+    assert table.other_names() == {"a.mp4 (2)": "day2/a.mp4"}
+    assert session._without_names("a.mp4 (2)", table.other_names()) == "day2/a.mp4"
+    table.local = False  # the user switched to a hosted model: no cached folder name
+    assert table.file(DAY2) == "a.mp4 (2)"
+    renamed = table.other_names()
+    assert renamed == {
+        "day1/a.mp4": "a.mp4",
+        "day1\\a.mp4": "a.mp4",
+        "day2/a.mp4": "a.mp4 (2)",
+        "day2\\a.mp4": "a.mp4 (2)",
+    }
+    said = "Cut day2/a.mp4 at 2 s, then day1\\a.mp4, not xday2/a.mp4."
+    want = "Cut a.mp4 (2) at 2 s, then a.mp4, not xday2/a.mp4."
+    assert session._without_names(said, renamed) == want
+
+
+def test_a_source_at_a_drive_root_renames_no_path_that_ends_in_its_name() -> None:
+    table = context.MomentTable([], [])
+    table.durations = {"/a.mp4": 60.0, DAY2: 60.0}
+    assert table.file(DAY2) == "a.mp4 (2)"
+    renamed = table.other_names()
+    assert "/a.mp4" not in renamed and "\\a.mp4" not in renamed
+    said = "It is clips/a.mp4, from day2/a.mp4."
+    assert session._without_names(said, renamed) == "It is clips/a.mp4, from a.mp4 (2)."
+
+
+TWO_DAYS_TRANSCRIPT = """# /v/day1/a.mp4
+[a.mp4 00:00:01.0-00:00:03.0] morning on day one
+
+# /v/day2/a.mp4
+[a.mp4 00:00:01.0-00:00:03.0] morning on day two
+
+# /v/day2/a.mp4 (from 00:00:30)
+[a.mp4@30 00:00:31.0-00:00:33.0] after the gap
+"""
+
+
+def test_transcript_lines_are_of_their_own_source_and_named_as_the_model_sees_it() -> None:
+    lines = context.transcript_lines(TWO_DAYS_TRANSCRIPT, DAY2, 0.0, 40.0, shown="a.mp4 (2)")
+    assert lines == [
+        "[a.mp4 (2) 00:00:01.0-00:00:03.0] morning on day two",
+        "[a.mp4 (2)@30 00:00:31.0-00:00:33.0] after the gap",
+    ]
+    lines = context.transcript_lines(TWO_DAYS_TRANSCRIPT, DAY1, 0.0, 40.0, shown="day1/a.mp4")
+    assert lines == ["[day1/a.mp4 00:00:01.0-00:00:03.0] morning on day one"]
+    # no heading names the source (an older or moved transcript): every line of its file name
+    bare = TWO_DAYS_TRANSCRIPT.replace("# /v/", "# /old/")
+    assert len(context.transcript_lines(bare, DAY2, 0.0, 40.0, shown="a.mp4")) == 3
+
+
+def test_get_transcript_for_a_hosted_model_names_the_numbered_file() -> None:
+    proj = two_days()
+    proj.transcript = TWO_DAYS_TRANSCRIPT
+    fake = Hosted([call("get_transcript", id="m1", pad=0), Reply("ok")])
+    turn = run(fake, "what is said?", proj=proj)
+    assert turn.status == "done", turn.error
+    result = fake.requests[1]["messages"][-1]["content"]
+    assert "[a.mp4 (2) 00:00:01.0-00:00:03.0] morning on day two" in result
+    assert "day one" not in result and "day2" not in json.dumps(fake.requests, default=str)
 
 
 @needs_ffmpeg
