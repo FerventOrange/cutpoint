@@ -2192,7 +2192,7 @@ def test_analyze_options_reach_the_analyze_command_line_unchanged(
     if settings:  # the page shows what the analysis used
         assert client.get("/api/projects/cli").json()["analyze_options"] == {
             **ANALYZE_DEFAULTS, "model": "large-v3", "language": "de", "max_candidates": 30,
-            "no_scenes": True, "recover": True, "skip": [],
+            "no_scenes": True, "recover": True, "skip": [], "vision_detect_all": False,
         }  # fmt: skip
     captured: list[list[str]] = []
     monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
@@ -2208,6 +2208,122 @@ def test_analyze_options_reach_the_analyze_command_line_unchanged(
     assert res.status_code == 200, res.text
     a = cli.build_parser().parse_args(_cli_args(captured[0]))
     assert {k: getattr(a, k) for k in ANALYZE_DEFAULTS} == {**ANALYZE_DEFAULTS, **parsed}
+
+
+def _auto_project(tmp_path: Path, **settings: object) -> Path:
+    """A command-line project analyzed with ``--style auto`` (it chose gaming)."""
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl["style"] = "gaming"
+    hl["detection"] = {"style": "gaming", "category": "gameplay"}
+    hl["settings"].update(style_requested="auto", **settings)
+    cache.save_json(p / "highlights.json", hl)
+    return p
+
+
+@pytest.mark.parametrize(
+    ("settings", "config", "want"),
+    [
+        ({"vision_detect_all": True}, {}, True),  # recorded by the analysis
+        ({}, {"vision_detect_all": True}, False),  # an auto analysis without it: off
+    ],
+)
+def test_analyze_options_report_vision_detect_all(
+    client: TestClient, tmp_path: Path, settings: dict, config: dict, want: bool
+) -> None:
+    _auto_project(tmp_path, **settings)
+    set_config(ui.paths.home(), **config)
+    opts = client.get("/api/projects/cli").json()["analyze_options"]
+    assert opts["vision_detect_all"] is want
+
+
+def test_analyze_options_vision_detect_all_defaults_to_the_config_before_an_auto_analysis(
+    client: TestClient, tmp_path: Path
+) -> None:
+    cli_project(tmp_path)  # no analysis style recorded
+    assert client.get("/api/projects/cli").json()["analyze_options"]["vision_detect_all"] is False
+    set_config(ui.paths.home(), vision_detect_all=True)
+    assert client.get("/api/projects/cli").json()["analyze_options"]["vision_detect_all"] is True
+    set_config(ui.paths.home(), vision_detect_all="yes")  # invalid: the helper does not raise
+    assert ui._vision_detect_all(None) is False
+
+
+@pytest.mark.parametrize(
+    ("recorded", "body", "flag"),
+    [
+        (False, {"vision_detect_all": True}, "--vision-detect-all"),
+        (True, {"vision_detect_all": False}, "--no-vision-detect-all"),
+        (True, {}, "--vision-detect-all"),  # Analyze again repeats the analysis's
+        (False, {}, "--no-vision-detect-all"),  # explicit, even off: config.json may differ
+        (False, {"vision_detect_all": None}, None),  # the page sent none: the CLI's default
+    ],
+)
+def test_an_auto_analyze_job_sends_vision_detect_all_explicitly(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recorded: bool,
+    body: dict,
+    flag: str | None,
+) -> None:
+    _auto_project(tmp_path, **({"vision_detect_all": True} if recorded else {}))
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    res = client.post("/api/projects/cli/jobs", json={"action": "analyze", **body})
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    assert _after(args, "--style") == "auto"
+    got = [a for a in args if a in ("--vision-detect-all", "--no-vision-detect-all")]
+    assert got == ([flag] if flag else [])
+
+
+@pytest.mark.parametrize("style", ["funny", "gaming"])
+def test_other_styles_send_no_vision_detect_all(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, style: str
+) -> None:
+    p, _ = cli_project(tmp_path)
+    hl = cache.load_json(p / "highlights.json")
+    hl["style"] = style
+    hl["settings"]["vision_detect_all"] = True
+    cache.save_json(p / "highlights.json", hl)
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    body = {"action": "analyze", "vision_detect_all": True}
+    assert client.post("/api/projects/cli/jobs", json=body).status_code == 200
+    assert not [a for a in captured[0] if a.endswith("-vision-detect-all")]
+
+
+def test_a_non_boolean_vision_detect_all_is_refused(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _auto_project(tmp_path)
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    for bad_value in ("yes", 1, [True]):
+        body = {"action": "analyze", "vision_detect_all": bad_value}
+        res = client.post("/api/projects/cli/jobs", json=body)
+        assert res.status_code == 400
+        assert "vision_detect_all must be true or false" in res.json()["detail"]
+    assert not captured
+
+
+@pytest.mark.parametrize(("recorded", "flag"), [(True, "--vision-detect-all"), (False, None)])
+def test_one_click_edit_repeats_an_auto_analyses_vision_detect_all(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recorded: bool,
+    flag: str | None,
+) -> None:
+    _auto_project(tmp_path, **({"vision_detect_all": True} if recorded else {}))
+    captured: list[list[str]] = []
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    res = client.post("/api/projects/cli/jobs", json={"action": "edit", "kind": "clips"})
+    assert res.status_code == 200, res.text
+    args = _cli_args(captured[0])
+    assert args[0] == "edit"
+    got = [a for a in args if a.endswith("-vision-detect-all")]
+    assert got == [flag or "--no-vision-detect-all"]
 
 
 def test_the_analyze_skip_is_kept_for_analyze_again_and_one_click_edit(

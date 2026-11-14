@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from cutpoint import analyze, cache, category, features, folders, progress, runstate
+from cutpoint import analyze, cache, category, features, folders, progress, runstate, selfcheck
 from cutpoint.config import projects_dir, remap_source
 from cutpoint.errors import NeedsAnalyzeError, StaleRankingError
 from cutpoint.ffmpeg_utils import probe
@@ -321,7 +321,12 @@ def _refused(project: Path, style: Style, missing: list[Missing]) -> NeedsAnalyz
 
 
 def ranked(
-    project: Path, hl: dict[str, Any], style: Style, raw: bytes | None = None
+    project: Path,
+    hl: dict[str, Any],
+    style: Style,
+    raw: bytes | None = None,
+    *,
+    check: bool = True,
 ) -> dict[str, Any]:
     """The analysis ``hl`` of ``project`` re-ranked with ``style`` from its caches (see
     :func:`readiness`), as a new highlights.json object; writes nothing to the project.
@@ -333,6 +338,8 @@ def ranked(
     re-rank's ``rerank_s``. ``settings.rerank_backup`` links it to the backup a save keeps:
     :func:`~cutpoint.analyze.backup_digest` of ``raw``, the bytes of the project's
     highlights.json (read when None); ``settings.rerank_undo`` seals it (:func:`sealed`).
+    ``check``: run the analysis self-checks (:mod:`cutpoint.selfcheck`; they warn and record
+    ``settings.self_checks``).
     """
     t0 = time.perf_counter()
     style = analyze.restyled(hl, style)
@@ -378,7 +385,7 @@ def ranked(
     total = (hl.get("timings") or {}).get("total_s")
     with progress.run(progress.ANALYZE_STEPS, use=False) as steps:
         steps.start("ranking")
-        analyze.rank_parts(
+        ev = analyze.rank_parts(
             new,
             parts,
             style,
@@ -396,6 +403,8 @@ def ranked(
             ids=ids,
             vision_cache_only=True,
         )
+    if check:  # a UI preview records and warns about nothing
+        selfcheck.apply(new, ev)  # warns; changes no score (#1073)
     timings["rerank_s"] = round(time.perf_counter() - t0, 2)
     return sealed(new)  # last: the seal covers everything a save writes
 

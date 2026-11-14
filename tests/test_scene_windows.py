@@ -427,7 +427,7 @@ def test_an_auto_switch_to_a_scene_weighted_style_drops_the_windows_mark(world, 
     det = SimpleNamespace(pending=True, category="general", reason="test", record=lambda *a: {})
     picks = iter(["funny", "action"])
     monkeypatch.setattr(analyze.category, "detect", lambda sources, *a, **kw: ([], det))
-    monkeypatch.setattr(analyze.category, "decide", lambda probes, speech: det)
+    monkeypatch.setattr(analyze.category, "decide", lambda probes, speech, **kw: det)
     monkeypatch.setattr(analyze.category, "source_speech", lambda *a: {})
     monkeypatch.setattr(analyze.category, "choose_style", lambda d, e: (next(picks), None))
     monkeypatch.setattr(analyze.category, "warn", lambda *a: None)

@@ -47,6 +47,7 @@ from cutpoint.config import (
     path_key,
     projects_dir,
     resolve_project_path,
+    vision_detect_all_default,
     vision_setting,
     visual_index_default,
 )
@@ -100,6 +101,20 @@ def _ocr_det_skip(a: argparse.Namespace) -> bool:
     """``--ocr-det-skip`` / ``--no-ocr-det-skip`` as given, else ``ocr_det_skip`` in config.json
     (default off)."""
     return ocr_det_skip_default() if a.ocr_det_skip is None else a.ocr_det_skip
+
+
+def _vision_detect_all(a: argparse.Namespace) -> bool:
+    """``--vision-detect-all`` / ``--no-vision-detect-all`` as given, else
+    ``vision_detect_all`` in config.json (default off). ``--no-vision`` (or ``"vision":
+    false``) wins: then off, with one INFO line."""
+    on = vision_detect_all_default() if a.vision_detect_all is None else a.vision_detect_all
+    if on and _vision(a) is False:
+        logger.info(
+            "--vision-detect-all is off: the vision model is off "
+            '(--no-vision or "vision": false in config.json)'
+        )
+        return False
+    return on
 
 
 def _skip(a: argparse.Namespace) -> tuple[str, ...]:
@@ -279,6 +294,7 @@ def _cmd_analyze(a: argparse.Namespace) -> None:
         visual_index=_visual_index(a),
         ocr_det_skip=_ocr_det_skip(a),
         context=a.context,
+        vision_detect_all=a.style == AUTO and _vision_detect_all(a),
     )
 
 
@@ -286,21 +302,25 @@ def _cmd_detect(a: argparse.Namespace) -> None:
     """``cutpoint detect``: the footage category of the inputs and the style ``--style auto``
     would pick; talk only for sources already transcribed (by an earlier analysis). The
     vision model is asked about unsure sources and camera-tagged ones without telemetry, as for ``--style auto`` (``--no-vision`` or
-    ``"vision": false`` skips it)."""
+    ``"vision": false`` skips it); with ``--vision-detect-all`` about every source."""
     from cutpoint import category, tsrepair  # noqa: PLC0415
     from cutpoint.analyze import find_sources  # noqa: PLC0415
     from cutpoint.sources import source_segments  # noqa: PLC0415
 
     found = find_sources([Path(t) for t in a.inputs], a.exclude or [], a.recursive)
     tsrepair.prepare_sources(found)  # joined MPEG-TS/PS: probed on the copy's timeline (#1052)
-    with category.footage_vision(_vision(a), a.ollama_url, a.ollama_model, a.context) as vision:
+    every = _vision_detect_all(a)
+    with category.footage_vision(
+        _vision(a), a.ollama_url, a.ollama_model, a.context, every
+    ) as vision:
         probes = [category.probe_source(s, vision) for s in found]
+        every = vision is not None and vision.every_source
     speech = {}
     for src, p in zip(found, probes, strict=True):
         segments = source_segments(src)
         if segments is not None:
             speech[p.path] = round(category.speech_coverage(segments, p.duration), 3)
-    det = category.decide(probes, speech)
+    det = category.decide(probes, speech, every)
     hype, fallback = category.choose_style(det, HYPE)
     funny, _ = category.choose_style(det, FUNNY)
     category.warn(det, hype, fallback)
@@ -354,6 +374,7 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         skip=_skip(a),
         visual_index=_visual_index(a),
         ocr_det_skip=_ocr_det_skip(a),
+        vision_detect_all=_vision_detect_all(a),
         compress_peaks=_compress_peaks(a),
         lut=lut,
         color=color,
@@ -1650,6 +1671,21 @@ def _add_ocr_det_skip_argument(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_vision_detect_all_argument(p: argparse.ArgumentParser) -> None:
+    """``--vision-detect-all`` / ``--no-vision-detect-all`` (#1069)."""
+    p.add_argument(
+        "--vision-detect-all",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="--style auto: show every source to the vision model, not only the unsure ones "
+        "(about one vision call per source); it only settles sources: a sure gameplay source "
+        "becomes unsure when the vision answer and the HUD text both see no game. "
+        "--no-vision turns it off; "
+        "--no-vision-detect-all turns it off when config.json turns it on "
+        "(default: vision_detect_all in config.json, else off)",
+    )
+
+
 def _ollama_url_arg(text: str) -> str:
     """argparse type of ``--ollama-url``: the value, if it has a host and a valid port."""
     from cutpoint.backends import split_ollama_url  # noqa: PLC0415
@@ -1967,6 +2003,7 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_skip_argument(ed)
     _add_visual_index_argument(ed)
     _add_ocr_det_skip_argument(ed)
+    _add_vision_detect_all_argument(ed)
     _add_compress_peaks_argument(ed, "baked into the clips and so the final video")
     _add_lut_arguments(ed)
     _add_color_arguments(ed)
@@ -1991,6 +2028,7 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
         '--no-vision (or "vision": false in config.json) skips it; --vision (or "vision": true) '
         "also warns when the Vision provider lacks consent",
     )
+    _add_vision_detect_all_argument(dt)
     _add_ollama_arguments(dt)
     _add_context_argument(dt, "a hint in the vision model's footage question")
     _add_json_argument(dt)
@@ -2048,6 +2086,7 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_skip_argument(an)
     _add_visual_index_argument(an)
     _add_ocr_det_skip_argument(an)
+    _add_vision_detect_all_argument(an)
     add_batch_size_argument(an)
     _add_json_argument(an)
     an.set_defaults(func=_cmd_analyze)
