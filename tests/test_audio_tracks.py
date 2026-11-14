@@ -545,6 +545,7 @@ def test_analyze_source_extracts_the_kept_tracks(tmp_path, monkeypatch, streams,
     assert extracts == ([kept] if stale else [])
     assert (cdir / analyze.MIX_FILE).exists() == stale
     assert (cdir / "audio16k.wav").exists()  # the same name either way
+    assert (cdir / analyze.CLOCK_FILE).exists()  # marked as following the clock
 
 
 def _source(path: Path, *tracks: str) -> Path:
