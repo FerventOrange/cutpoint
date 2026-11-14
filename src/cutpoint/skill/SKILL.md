@@ -99,7 +99,9 @@ is missing: tell the user, and with their OK run the command the ERROR line name
   `timeline_remuxed` (a joined `.ts` or `.mpg` recording whose timestamps jump is read through a
   stream copy in the cache, about its size) and `timeline_remux_failed` (no copy could be made, so
   the footage after its first join may be left out: tell the user what the WARNING says, to free
-  space in the cache folder, or for an ffmpeg failure to report it).
+  space in the cache folder, or for an ffmpeg failure to report it). A `feed_quiet`, `feed_missing`, `kills_uncredited`,
+  `signal_dominates` or `label_dominates` warning is a self-check of the analysis: a detection
+  probably failed silently (the ranking is unchanged); tell the user its message and hint.
 - Cutpoint ships only the `base` and `generic` activity profiles. Others are discovered or made by
   the user or you: `cutpoint profile list|show|create|validate|delete` (`create NAME --from FILE`).
   `--activity NAME` takes a name from `profile list`.
