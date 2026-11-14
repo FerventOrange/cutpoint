@@ -19,7 +19,20 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".m4v", ".avi", ".webm"}
+VIDEO_EXTS = {
+    ".mp4",
+    ".mov",
+    ".mkv",
+    ".m4v",
+    ".avi",
+    ".webm",
+    ".ts",
+    ".m2ts",
+    ".mts",
+    ".m2t",
+    ".mpg",
+    ".mpeg",
+}
 # Insta360 360 files: not in VIDEO_EXTS, so find_videos never reads raw fisheye as flat video
 PANO_EXTS = frozenset({".insv", ".lrv"})
 

@@ -166,6 +166,18 @@ def locked():
         folder.chmod(0o755)
 
 
+MPEG_EXTS = [".ts", ".m2ts", ".mts", ".m2t", ".mpg", ".mpeg"]
+
+
+@pytest.mark.parametrize("ext", MPEG_EXTS)
+def test_find_videos_folder_input_finds_mpeg_transport_and_program_streams(tmp_path, ext):
+    (tmp_path / f"rec{ext}").write_bytes(b"x")
+    (tmp_path / f"UPPER{ext.upper()}").write_bytes(b"x")
+    (tmp_path / "notes.txt").write_bytes(b"x")
+
+    assert {p.name for p in find_videos([tmp_path])} == {f"rec{ext}", f"UPPER{ext.upper()}"}
+
+
 @needs_chmod
 @pytest.mark.parametrize("case", ["folder", "file_under_locked_parent"])
 def test_find_videos_unreadable_input_is_a_clear_error(tmp_path, locked, case):

@@ -23,6 +23,7 @@ from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import probe
 from cutpoint.planning import Padding
 from cutpoint.styles import get_style
+from cutpoint.utils import find_videos
 
 pytestmark = [
     pytest.mark.ffmpeg,
@@ -148,6 +149,19 @@ def test_joined_recording_gets_a_remux_verdict(media, scans, name, jumps, plays_
     assert verdict.read_s == pytest.approx(plays_s, abs=0.5)
     assert abs(verdict.read_s - verdict.probed_s) >= tsrepair.MISMATCH_S
     assert len(scans.scans) == 1
+
+
+def test_a_joined_ts_in_a_folder_input_is_found_and_checked(media, scans, tmp_path):
+    folder = tmp_path / "recordings"
+    folder.mkdir()
+    shutil.copy(media["back"], folder / "rec.ts")
+    shutil.copy(media["ps"], folder / "rec.mpg")
+
+    found = find_videos([folder])
+
+    assert [p.name for p in found] == ["rec.mpg", "rec.ts"]
+    assert all(tsrepair.scanned(probe(p)) for p in found)
+    assert all(tsrepair.check(p).remux for p in found)
 
 
 def test_a_recording_without_audio_is_scanned_on_its_video(media, scans):

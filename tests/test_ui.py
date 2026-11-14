@@ -1358,6 +1358,16 @@ def test_find_videos_never_returns_raw_360_files(tmp_path: Path) -> None:
     assert [p.name for p in find_videos([tmp_path])] == ["a.mp4"]
 
 
+@pytest.mark.parametrize("ext", [".ts", ".m2ts", ".mts", ".m2t", ".mpg", ".mpeg"])
+def test_source_problem_accepts_mpeg_transport_and_program_streams(
+    tmp_path: Path, ext: str
+) -> None:
+    rec = tmp_path / f"rec{ext}"
+    rec.write_bytes(b"")
+    assert ui.source_problem(rec) is None
+    assert ui.source_problem(tmp_path) is None
+
+
 def wait_job(client: TestClient, timeout: float = 600) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
