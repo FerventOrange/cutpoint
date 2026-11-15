@@ -307,10 +307,31 @@ def test_settle_leaves_out_an_oversized_banner_and_keeps_a_normal_one() -> None:
     assert [r.kind for r in regions] == ["banner"] and regions[0].x == 714
 
 
-def test_apply_reads_a_rule_made_feed_in_an_ignored_area_as_a_notice() -> None:
+@pytest.mark.parametrize(
+    ("element", "kind"), [("chat", "feed"), ("webcam", "notice"), ("caption", "notice")]
+)
+def test_a_rule_made_feed_in_an_ignored_box_is_a_feed_only_in_a_chat_box(
+    element: str, kind: str
+) -> None:
+    props = [_prop("feed", "feed", 32, 332, 276, 176)]
+    hud = {
+        "model": "m",
+        "elements": [{"kind": element, "box": [0, 300, 400, 300], "confirmed": True}],
+    }
+    labels, new, excl = hud_map.settle(hud, props, {"feed"})
+    regions = discover.proposals_to_regions(props)
+    regions, extra = discover.apply_labels(props, labels, regions, [])
+    got, _ = hud_map.apply(regions, extra, new, excl, labels, [])
+    assert [(r.name, r.kind) for r in got] == [("feed", kind)]
+
+
+def test_apply_does_not_turn_an_ignored_area_feed_into_a_bogus_notice_when_judged() -> None:
     regions = [Region("feed", 20, 320, 300, 200, "feed", gate="det")]
-    got, _ = hud_map.apply(regions, [], [], [(0, 300, 400, 300)], {}, [])
-    assert [(r.name, r.kind) for r in got] == [("feed", "notice")]
+    labels = {"feed": {"label": "chat", "from": "hud_map", "model": "m"}}
+    frames = _frames(4, 2, lambda _b, n: _feed_rows(n))
+    vision = Region("vision_feed", 800, 500, 380, 140, "feed", gate="det")
+    got, _ = hud_map.apply(regions, [], [vision], [(0, 300, 400, 300)], labels, frames)
+    assert [(r.name, r.kind) for r in got] == [("vision_feed", "feed"), ("feed", "feed")]
 
 
 def test_apply_keeps_a_feed_in_ocr_reads_feed_lines_and_demotes_one_that_it_does_not() -> None:

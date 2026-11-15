@@ -824,11 +824,11 @@ def apply(
     labels: dict[str, dict[str, str]],
     frames: list[dict[str, Any]],
 ) -> tuple[list[Region], list[dict[str, Any]]]:
-    """Discovery's regions after the map (:func:`settle`): a rule-made feed in a chat, webcam
-    or caption box becomes a ``notice``; with a kill feed the map confirmed, a rule-made feed
-    elsewhere that no model named a kill feed stays a feed only when OCR reads feed-like lines
-    in it (:func:`feed_like`; else a ``notice``); the new regions are added (feeds first) and an
-    outside notice region on a new feed leaves ``extra``."""
+    """Discovery's regions after the map (:func:`settle`): a rule-made feed in a chat box stays
+    a ``feed`` (its lines are filtered when it is read); with a kill feed the map confirmed, a
+    rule-made feed elsewhere that no model named a kill feed stays a feed only when OCR reads
+    feed-like lines in it (:func:`feed_like`; else a ``notice``); the new regions are added
+    (feeds first) and an outside notice region on a new feed leaves ``extra``."""
     named = {n for n, v in labels.items() if v.get("label") == "kill_feed"}
     vision_feeds = [r for r in new if r.kind == "feed"]
     judged = bool(frames) and (
@@ -847,12 +847,21 @@ def apply(
                 and not any(iou(_rect(r), _rect(v)) >= MATCH_IOU for v in vision_feeds)
                 and not feed_like(frames, _rect(r))[0]
             )
-            if excluded or bogus:
+            if excluded:
+                # stays a feed: reading it tells chat from a feed by lines per hour and drops
+                # the events of a chat (killfeed._drop_chat), as with a feed labelled chat
                 logger.info(
-                    "HUD map: rule-made feed %s@%d,%d %dx%d is no kill feed (%s); read as a notice",
+                    "HUD map: rule-made feed %s@%d,%d %dx%d is no kill feed (a chat "
+                    "box there); kept as a feed so its lines are filtered",
                     r.name,
                     *_rect(r),
-                    "chat, webcam or caption there" if excluded else "OCR reads no feed lines",
+                )
+            elif bogus:
+                logger.info(
+                    "HUD map: rule-made feed %s@%d,%d %dx%d is no kill feed (OCR reads no feed "
+                    "lines); read as a notice",
+                    r.name,
+                    *_rect(r),
                 )
                 r = Region(r.name, r.x, r.y, r.w, r.h, "notice", gate=r.gate, every=3)
         out.append(r)

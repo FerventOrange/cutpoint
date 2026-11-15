@@ -126,8 +126,10 @@ that overlaps a proposal names it, and a score readout names every score proposa
 inside it (it is not
 asked again in the labels); one that does not becomes a region of its own (`"origin": "vision"`
 in the preset: `vision_feed`, `vision_score`, `vision_banner`, `replay`). With a vision kill feed,
-a rule `feed` region in which OCR finds no feed lines becomes a `notice`, and a feed inside a
-chat, webcam or caption box too. A replay marker counts only when the discovery OCR reads there,
+a rule `feed` region in which OCR finds no feed lines becomes a `notice`, while a feed inside a
+chat box stays a `feed`, so the chat check below drops its lines (one in a webcam or caption box
+is labelled `other` and becomes a `notice`). A replay marker counts only when the discovery OCR
+reads there,
 again and again (in at least 2 bursts; misreads such as "DREPLAY" for "REPLAY" count as the
 same), a text like the one the model read in it: that text is learned from the footage and saved
 with the region (`marker`). Text in a kill feed (the streamer's own kill line) is never taken for
