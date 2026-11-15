@@ -45,7 +45,15 @@ from cutpoint.events.discover import (
     score_value,
 )
 from cutpoint.events.menu_spans import merge_menu_frames
-from cutpoint.events.regions import HudPreset, Region, game_key_for_path, load_preset, scaled
+from cutpoint.events.regions import (
+    HudPreset,
+    Region,
+    game_key_for_path,
+    letters,
+    load_preset,
+    marker_seen,
+    scaled,
+)
 from cutpoint.ffmpeg_utils import READ_ERROR_RE, decode_raw, decoder_for, probe
 from cutpoint.imageio import write_png
 
@@ -1609,6 +1617,34 @@ class Interpreter:
         :class:`ScoreTracker` only."""
         if not items or region.kind == "score":
             return
+        if region.kind == "replay":
+            # a replay or killcam marker the vision HUD map pointed at: text there means a
+            # replay is on screen (one event per stretch; what it says does not matter)
+            # each OCR item on its own: a feed row that reaches into the box is no marker
+            # (or, when none is, the items of one row joined: a marker read in parts)
+            cap = 2 * len(letters(region.marker))
+
+            def marked(text: str) -> bool:
+                return sum(ch.isalpha() for ch in text) >= REPLAY_MIN_LETTERS and (
+                    not region.marker
+                    or (len(letters(text)) <= cap and marker_seen(text, region.marker))
+                )
+
+            hits = [i[1] for i in items if marked(i[1])]
+            if not hits and len(items) > 1:
+                joined = (" ".join(i[1] for i in row) for row in _rows(items, 12 * self.scale))
+                hits = [text for text in joined if marked(text)]
+            line = " ".join(hits).strip()
+            if line:
+                self.tracker.see(
+                    t,
+                    "replay",
+                    "replay",
+                    text=line[:40],
+                    confidence=round(float(np.mean([i[2] for i in items])), 3),
+                    region=region.name,
+                )
+            return
         if region.kind == "feed":
             for ev in self.feed.parse(img, items):
                 # exclusive: identical rows on screen at once are separate kills
@@ -1628,10 +1664,10 @@ class Interpreter:
                 continue
             if region.kind == "bigtext" and h < 1.4 * min_h:
                 continue  # unknown text must be really big to count as a banner
-            letters = sum(ch.isalpha() for ch in line)
+            n_letters = sum(ch.isalpha() for ch in line)
             etype = "notice" if region.kind == "notice" else "bigtext"
             tracker = self.tracker
-            if letters < 4 or letters < 0.6 * len(line.replace(" ", "")):
+            if n_letters < 4 or n_letters < 0.6 * len(line.replace(" ", "")):
                 if etype == "notice" or not any(ch.isdigit() for ch in line):
                     continue  # ranges, reticle marks; numbers in a notice are never learned
                 tracker = self.digits  # numbers: no event unless learned as an announcement
@@ -2182,16 +2218,126 @@ def link_teamkills(events: list[dict[str, Any]], generic_teamkills: bool = False
     """(Re)compute the ``teamkill`` flag of kill events in place.
 
     A kill is a teamkill only when ``generic_teamkills`` (the preset's
-    ``feed.teamkills``: it trusts its colours) and both name colours read as ally.
+    ``feed.teamkills``: it trusts its colours) and both name colours read as ally, and never
+    one read during a replay (``replay``, :func:`mark_replay_kills`).
     Applied to cached results too, so the rule can change without re-OCR.
     """
     for e in events:
         if e.get("type") == "kill":
             e["teamkill"] = bool(
                 generic_teamkills
+                and not e.get("replay")
                 and e.get("killer_team") == "ally"
                 and e.get("victim_team") == "ally"
             )
+
+
+# Replays (#1069): a "replay" region (the vision HUD map's replay or killcam marker,
+# :mod:`cutpoint.events.hud_map`) with text in it, REPLAY_MIN_LETTERS letters at least, in
+# text like the region's learned marker (``marker``, :func:`cutpoint.events.regions.marker_seen`:
+# a round notice or a name shown in the same place is no replay), read REPLAY_MIN_SIGHTINGS
+# times or on screen for REPLAY_MIN_S (the det gate reads a still marker once and keeps it
+# while its text boxes stay), is a replay on screen from its first read to its last. A kill
+# first read then, or within one read interval after it (never before: a replay often starts
+# right after the live kill it shows, which stays the player's), is a kill shown again (a
+# killcam, an end-of-round replay): it already happened live, so it is no kill or death of the
+# player and no teamkill. The event stays, marked ``replay`` (``replay_of``: the time of the
+# live read of the same kill, when there is one), and scores like another player's kill
+# (nothing of its own: the player's kills are the only kills that score).
+# A replay can go on after its marker is gone (another point of view): a kill read within
+# REPLAY_CHAIN_S after a replay span's end, or after the last kill so taken, is in the replay
+# too, up to REPLAY_CHAIN_MAX_S after the marker's end (a busy feed does not chain on for
+# ever). And a kill read again with the killer and victim of a live kill read before a replay
+# started, within REPLAY_COPY_S of it, is that kill shown again (a kill of the player or a
+# death of the player alike), when it is read no later after the replay's start than the live
+# kill was before it, plus REPLAY_CHAIN_S (a replay runs at about real speed). Both need a replay span: a game without a
+# marker found never loses a kill read twice (a respawn game can have the same pair twice).
+REPLAY_MIN_LETTERS = 3
+REPLAY_MIN_SIGHTINGS = 2
+REPLAY_MIN_S = 1.5
+REPLAY_CHAIN_S = 8.0
+REPLAY_CHAIN_MAX_S = 20.0
+REPLAY_COPY_S = 60.0
+
+
+def replay_spans(events: list[dict[str, Any]]) -> list[tuple[float, float]]:
+    """The ``(start, end)`` of the ``replay`` events read :data:`REPLAY_MIN_SIGHTINGS` times or
+    shown for :data:`REPLAY_MIN_S`."""
+    return [
+        (float(e["t"]), float(e["end"]))
+        for e in events
+        if e.get("type") == "replay"
+        and (
+            e.get("sightings", 1) >= REPLAY_MIN_SIGHTINGS
+            or float(e["end"]) - float(e["t"]) >= REPLAY_MIN_S
+        )
+    ]
+
+
+def mark_replay_kills(
+    events: list[dict[str, Any]], spans: list[tuple[float, float]], pad: float
+) -> int:
+    """Mark the kills shown again in a replay as ``replay`` and clear their player and
+    teamkill flags, in place: those first read in a replay span (or ``pad`` seconds after it,
+    never before it), those read on within :data:`REPLAY_CHAIN_S` after it (the span grows
+    with each, up to :data:`REPLAY_CHAIN_MAX_S` after the marker's end) and copies of a live
+    kill read before a span started, within :data:`REPLAY_COPY_S` of it and no later after
+    the span's start than the live kill was before it (plus :data:`REPLAY_CHAIN_S`). A copy
+    gets the live kill's time as ``replay_of``; the live kill keeps its credit. Returns how
+    many."""
+    n = 0
+    live: list[dict[str, Any]] = []
+    # [start, end so far, the marker's own end]
+    marks = sorted([float(a), float(b), float(b)] for a, b in spans)
+    for e in sorted((e for e in events if e.get("type") == "kill"), key=lambda e: e["t"]):
+        t = float(e["t"])
+        span = next((s for s in marks if s[0] <= t <= s[1] + pad), None)
+        if span is None:
+            span = next(
+                (
+                    s
+                    for s in marks
+                    if s[1] < t <= min(s[1] + REPLAY_CHAIN_S, s[2] + REPLAY_CHAIN_MAX_S)
+                ),
+                None,
+            )
+            if span is not None:
+                span[1] = t  # the replay goes on (another point of view)
+
+        def replayed(lt: float, t: float = t) -> bool:
+            """A replay started between the live read at ``lt`` and ``t``, and ``t`` is no
+            later after its start than ``lt`` was before it (plus REPLAY_CHAIN_S)."""
+            return any(lt < s[0] <= t and t - s[0] <= s[0] - lt + REPLAY_CHAIN_S for s in marks)
+
+        same = [
+            k
+            for k in live
+            if t - float(k["t"]) <= REPLAY_COPY_S
+            and _names_match(k.get("killer"), e.get("killer"))
+            and _names_match(k.get("victim"), e.get("victim"))
+            and replayed(float(k["t"]))
+        ]
+        if span is None and not same:
+            live.append(e)
+            continue
+        if same:
+            e["replay_of"] = same[-1]["t"]
+        e["replay"] = True
+        for k in ("player", "player_kill", "player_death", "teamkill"):
+            if k in e:
+                e[k] = False
+        n += 1
+    return n
+
+
+def _names_match(a: Any, b: Any) -> bool:
+    """Whether two OCR reads of a name are the same name (letters and digits, case and a
+    misread letter or two aside)."""
+    from difflib import SequenceMatcher  # noqa: PLC0415
+
+    x = "".join(ch for ch in str(a or "").lower() if ch.isalnum())
+    y = "".join(ch for ch in str(b or "").lower() if ch.isalnum())
+    return bool(x and y) and SequenceMatcher(None, x, y, autojunk=False).ratio() >= 0.8
 
 
 def derive_streaks(events: list[dict[str, Any]], window_s: float = 20.0) -> None:
@@ -3532,6 +3678,11 @@ class OcrInterpretation:
                     and e["end"] - e["t"] > ROW_NOTICE_MAX_S
                 )
             ]
+        spans = replay_spans(events)
+        if spans:  # kills shown again in a replay are no kills of the player
+            step = max(r.every for r in self.regions if r.kind == "replay") / self.interp.params.fps
+            stats["replays"] = len(spans)
+            stats["replay_kills"] = mark_replay_kills(events, spans, step)
         events = collapse_banner_bursts(events)
         events = learn_announcements(events, self.interp.digits.finish())
         if any(r.kind == "score" for r in self.regions):

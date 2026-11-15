@@ -64,7 +64,7 @@ from cutpoint.events.killfeed import (
     OcrParams,
     detect_ocr_events,
 )
-from cutpoint.events.regions import game_key_for_path, load_preset
+from cutpoint.events.regions import HudPreset, game_key_for_path, load_preset
 from cutpoint.ffmpeg_utils import (
     SPOOL_DIR,
     SplitDecode,
@@ -221,6 +221,7 @@ class _Job:
     oom: str = ""  # how it was short of memory in the background (skipped: read inline)
     share: SceneShare | None = None  # its scene proxy, made in the background
     index: int = 0  # its place among the analysis' sources (--batch-size)
+    preset_key: Any = None  # the OCR key of the preset it was read with (take() compares it)
 
 
 REPLAY = "cutpoint_prefetch_replay"  # set on a held record when it is replayed
@@ -376,6 +377,13 @@ class OcrPrefetch:
             job.records.clear()
             self.close()
             return None
+        if job.preset_key is not None and job.preset_key != self._preset_key(src.path):
+            # the source's preset changed after it was read (the vision HUD map's top-up during
+            # discovery): read again in its turn, with the preset as it is now
+            logger.debug("OCR prefetch: the HUD preset of %s changed; reading it again", src.name)
+            job.records.clear()
+            self.close()
+            return None
         for handler, record in job.records:
             setattr(record, REPLAY, True)
             handler.handle(record)
@@ -435,6 +443,13 @@ class OcrPrefetch:
             assert self._stuck is not None
             self._stuck.join(POLL_S)
 
+    def _preset_key(self, path: Path) -> dict[str, Any] | None:
+        """The OCR key (regions and preset) a read of ``path`` gets with its preset now (None
+        without a preset)."""
+        game = game_key_for_path(str(path), self.params.game, self.project)
+        preset = load_preset(game, self.project)
+        return self.params.key(game, preset) if isinstance(preset, HudPreset) else None
+
     # ---- worker thread
     def _check(self) -> bool:
         """Presets for every game and the VRAM gate (once, on the first source)."""
@@ -465,6 +480,7 @@ class OcrPrefetch:
                 if self.batch_size and job.index and not job.index % self.batch_size:
                     # a batch boundary (--batch-size): the next read makes a new engine
                     self.make_engine.cache_clear()  # type: ignore[attr-defined]
+                job.preset_key = self._preset_key(job.source.path)
                 with memguard.no_free():  # the main thread's models: freed in its turn
                     job.result = detect_ocr_events(
                         job.source,

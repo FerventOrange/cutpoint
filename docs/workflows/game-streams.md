@@ -112,13 +112,71 @@ on the CPU alone (no GPU memory in `ollama ps`) nothing is asked, an INFO line s
 rules decide. Each proposal then gets up to 60 s and all of them 120 s together, the likely kill
 feeds first; a proposal that runs out of time ends the labelling and the labels so far are kept.
 About 3.5 s per proposal on a GPU, at most 12 proposals.
-A game that already has a preset does not pick this up: discovery does not run for it and the old
-preset (no feed region, no `row_notices`) stays, so its kills stay at 0. Either move or rename the old
-preset (`<presets>/<game>.json`, or the project's `hud_presets/<game>.json`) and run `analyze` or
-`events` again, so discovery installs the new one, or run `events --discover-regions` (which leaves
-the preset's regions alone, at most adds the HUD fit check's `discovery.fit_ref`, and writes
-`projects/<name>/discovery/<game>/proposal.json`) and copy the
-proposal's `feed` region and `"feed": {"row_notices": true}` into the preset by hand. Either way the new region needs new OCR reads (no cache replay).
+Before the labels, the vision model also points at the HUD itself (the vision HUD map). It is
+shown up to three full gameplay frames of the discovery, picked so that they cover the
+proposals, one call each, and asked to box the kill feed, the score, objective banners and a
+replay or killcam marker, and to box stream chat, a webcam and captions so they are ignored; it
+only points and does not judge moments. Your `--context` words go into that prompt. OCR then
+judges every box: a box counts when the model drew it on two of the frames (or on one when OCR
+reads it in many bursts; the third frame is skipped when the first two agree) and the discovery
+OCR reads text there (a kill feed in at least 3 bursts, with lines that change; a score with
+digits). Its region is the OCR text in the box, padded, never the model's box itself, and covers
+at most 15% of the screen (a banner 25%, and its text shows in at most half the frames). A box
+that overlaps a proposal names it, and a score readout names every score proposal at least half
+inside it (it is not
+asked again in the labels); one that does not becomes a region of its own (`"origin": "vision"`
+in the preset: `vision_feed`, `vision_score`, `vision_banner`, `replay`). With a vision kill feed,
+a rule `feed` region in which OCR finds no feed lines becomes a `notice`, while a feed inside a
+chat box stays a `feed`, so the chat check below drops its lines (one in a webcam or caption box
+is labelled `other` and becomes a `notice`). A replay marker counts only when the discovery OCR
+reads there,
+again and again (in at least 2 bursts; misreads such as "DREPLAY" for "REPLAY" count as the
+same), a text like the one the model read in it: that text is learned from the footage and saved
+with the region (`marker`). Text in a kill feed (the streamer's own kill line) is never taken for
+the marker, the region leaves the feed out, and a marker box on a banner or notice (a bomb
+notice) is left out with an INFO line. Map and labels share one model load and budget (60 s more for the map).
+The map is saved in the preset (`discovery.hud_map`) and its answers are cached per frame in
+`<project>\discovery\<game>\hud_map.json`. Without a model, in Cutpoint lite or without Vision
+consent for an Ollama on another machine or a hosted model, discovery is as before.
+
+A game that already has a discovered preset in `<CUTPOINT_HOME>\presets` without
+`discovery.hud_map` is topped up once, the first time `analyze` or `events` runs for it with the
+vision model answering (`The HUD preset for '<game>' has no vision HUD map yet` in the log): a
+discovery runs on the project's sources, the map is made, and its confirmed regions are added to
+the preset, which is rewritten in place. This happens to a discovered preset you edited by hand
+too. A preset `feed` region in which OCR finds no feed lines becomes a `notice` (`"was": "feed"`)
+and the map's kill feed is added (a notice or banner region where the map sees the feed is
+turned into it), so a preset whose kills stayed at 0 starts reading them; a score or replay
+region is added only when the preset has none. The preset records the map and the changes
+(`discovery.hud_map.top_up`, with every rewritten region as it was in `originals`), so it is not
+topped up again. Before the top-up's discovery the model is loaded; when it runs on the CPU
+alone, does not load or gives no map (`No vision HUD map for the preset` in the log), the
+attempt is recorded in the cache folder (`hud_map_tried.json`) and not made again until the
+preset file or the vision model changes. `analyze` stops its background HUD reading before a
+top-up and reads the sources with the topped-up preset. Project presets
+(`hud_presets/<game>.json`) and presets without a `discovery` block (written by hand) are never
+touched; for those, move or rename the
+preset and run `analyze` or `events` again, or run `events --discover-regions` (it leaves the
+preset's regions alone, at most adds the HUD fit check's `discovery.fit_ref`, and writes
+`projects/<name>/discovery/<game>/proposal.json`) and copy the proposal's regions by hand. A new
+or changed region needs new OCR reads (no cache replay).
+
+Replays: text like the region's `marker` in a `replay` region (at least 3 letters, read at least
+twice or kept on screen for 1.5 s; each OCR line on its own and no more than twice the marker's
+length, so a feed row with a name such as "Playmaker" is none) marks a replay on screen; other
+text there, such as a round notice or a player's name, does not. A kill read during it, or
+within one read interval after it, is a kill shown again (a killcam or end-of-round replay).
+So is a kill read within 8 s after a replay or after the last kill so taken, up to 20 s after
+the marker is gone (a replay goes on from another point of view), and a kill read again with the
+killer and victim of a live kill read before a replay started, within 60 s of it and no later
+after the replay's start than the live kill was before it, plus 8 s (a replay runs at about real
+speed; a kill of the player or a death of the player). Such a kill is no kill or death of the player and no teamkill, and it
+stays in `events.json` marked `replay`, scoring nothing, like another player's kill
+(`replay_of` names the time of the live read of the same kill). A kill read before the marker
+shows is live and keeps its credit, also when the replay right after it shows it again. Without
+a replay found in the footage, a kill read twice with the same names stays two kills. `events.txt` shows the `replay` flag. The marker's text is picked with what the
+model read in it; a replay marker that is on screen in none of the map's frames is not found.
+
 Menus with little text (hangar or crew screens) are found because they hold still: a frame is a
 static screen when a small grey thumbnail of the HUD area (the regions but `score` ones) stays nearly the same, with no feed
 sighting or kill within 2 s, for at least 5 s when new menu text shows (at least 2 text lines

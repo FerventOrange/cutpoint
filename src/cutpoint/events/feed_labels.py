@@ -251,66 +251,110 @@ def model_key(rater: Any) -> str:
     return f"{rater.provider_name}@{host}:{rater.model}"
 
 
-def make_labeler(rater: Any) -> Labeler:
-    """A :data:`Labeler` for ``discover_regions`` that asks the shared vision client
-    ``rater`` (:class:`cutpoint.vision.VisionRater`).
+class VisionCalls:
+    """The shared vision client's calls during one run's discoveries: the vision HUD map
+    (:mod:`cutpoint.events.hud_map`) and the feed labels ask through one of these, so they share
+    the model check, the model load and the budget of a game.
 
-    It asks nothing, and gives no labels, when the model is not there: an Ollama that does not
-    answer or lacks the model (an INFO line), a provider the user has not allowed for Vision
-    (the ``vision_consent_needed`` warning, :meth:`~cutpoint.vision.VisionRater.warn_consent`)
-    or too little free memory (a WARNING). The rules then decide alone. An Ollama model is
-    loaded by a request of its own first; when ``/api/ps`` shows it on the CPU alone nothing
-    is asked (:data:`ON_CPU`). The calls of one game share :data:`LABEL_BUDGET`, and one that times out
-    ends the labelling (an INFO line); the labels so far are kept. The model is freed after
-    the last call unless it is hosted.
+    It asks nothing when the model is not there: an Ollama that does not answer or lacks the
+    model (an INFO line), a provider the user has not allowed for Vision (the
+    ``vision_consent_needed`` warning, :meth:`~cutpoint.vision.VisionRater.warn_consent`). An
+    Ollama model is loaded by a request of its own first; when ``/api/ps`` shows it on the CPU
+    alone nothing is asked (:data:`ON_CPU`). The calls of one game share a budget
+    (:meth:`begin`), and one that times out ends the calls of that game (:class:`StopLabelling`);
+    a model that loads on the CPU alone or does not load in time ends those of the run.
     """
-    state: dict[str, bool] = {}
 
-    def usable() -> bool:
-        if "ok" not in state:
-            if rater.consent_needed:
-                rater.warn_consent()
-                state["ok"] = False
+    def __init__(self, rater: Any) -> None:
+        self.rater = rater
+        self.ok: bool | None = None  # rater usable, asked once
+        self.ollama = rater.provider_name == "ollama"
+        self.stop: list[str] = []  # why the model cannot answer: the same for every game
+        self.deadline: list[float] = []  # set after a game's first call: the budget from then
+        self.budget: float = LABEL_BUDGET
+        self.carry: object = None  # the game whose next begin() keeps the budget (carry_over)
+        self.cold = False  # the load request was refused: the next call loads the model
+
+    def usable(self) -> bool:
+        """Whether the model answers (asked once per run)."""
+        if self.ok is None:
+            if self.rater.consent_needed:
+                self.rater.warn_consent()
+                self.ok = False
             else:
-                state["ok"] = rater.available()
-                if not state["ok"]:
+                self.ok = bool(self.rater.available())
+                if not self.ok:
                     logger.info("Feed labels: no vision model answers; the rules decide")
-        return state["ok"]
+        return self.ok
 
-    ollama = rater.provider_name == "ollama"
-    deadline: list[float] = []  # set after a game's first call: LABEL_BUDGET from then
-    stop: list[str] = []  # why the model cannot label: it is the same for every game
+    def begin(self, game: object, budget: float) -> None:
+        """Start the calls of ``game`` (its frame folder) with ``budget`` seconds, unless the
+        calls before handed their budget on to it (:meth:`carry_over`): the HUD map and the
+        feed labels of one discovery share one budget."""
+        if self.carry is not None and self.carry == game:
+            self.carry = None
+            return
+        self.carry = None
+        self.budget = budget
+        self.deadline.clear()
 
-    def ask(prompt: str, jpegs: list[bytes], schema: dict[str, Any]) -> dict[str, Any] | None:
-        cold = False  # this call also loads the model
-        if stop:
-            raise StopLabelling(stop[0])
-        if ollama and not rater.used:
-            # the load gets its own, long timeout (#796); the calls then get ASK_TIMEOUT
+    def carry_over(self, game: object) -> None:
+        """Let the next :meth:`begin` for ``game`` go on with what is left of this budget."""
+        self.carry = game
+
+    def _warm(self) -> None:
+        """Load an Ollama model before its first call, with its own long timeout (#796), so
+        the calls then get ASK_TIMEOUT. Raises :class:`StopLabelling` when no call should go
+        out (it runs on the CPU alone, or did not load in time)."""
+        rater = self.rater
+        if self.stop:
+            raise StopLabelling(self.stop[0])
+        if self.ollama and not rater.used:
             if rater.load(FIRST_ASK_TIMEOUT, num_ctx=LABEL_NUM_CTX):
                 if not ON_CPU and rater.on_gpu() is False:
-                    stop.append(f"{rater.model} runs on the CPU only, too slow to label")
-                    raise StopLabelling(stop[0])
+                    self.stop.append(f"{rater.model} runs on the CPU only, too slow to label")
+                    raise StopLabelling(self.stop[0])
             elif rater.timed_out:
-                stop.append(f"the vision model did not load within {FIRST_ASK_TIMEOUT}s")
-                raise StopLabelling(stop[0])
+                self.stop.append(f"the vision model did not load within {FIRST_ASK_TIMEOUT}s")
+                raise StopLabelling(self.stop[0])
             else:
-                cold = True  # the load request was refused: the call loads it, as before
+                self.cold = True  # the load request was refused: the call loads it, as before
+
+    def ready(self) -> bool:
+        """Whether calls can go out now: the model answers (:meth:`usable`) and an Ollama model
+        is loaded on a GPU. Checked before work that only the calls make worth doing (the HUD
+        map top-up's discovery); :attr:`stop` says why not."""
+        if not self.usable():
+            return False
+        try:
+            self._warm()
+        except StopLabelling:
+            return False
+        return True
+
+    def ask(
+        self, prompt: str, jpegs: list[bytes], schema: dict[str, Any], num_predict: int = 500
+    ) -> dict[str, Any] | None:
+        """One call: the reply dict or None. Raises :class:`StopLabelling` when no more calls
+        should go out."""
+        rater = self.rater
+        self._warm()
+        cold, self.cold = self.cold, False  # this call also loads the model
         if cold:
             timeout: float = FIRST_ASK_TIMEOUT
         else:
-            if not deadline:
-                deadline.append(time.monotonic() + LABEL_BUDGET)
-            left = deadline[0] - time.monotonic()
+            if not self.deadline:
+                self.deadline.append(time.monotonic() + self.budget)
+            left = self.deadline[0] - time.monotonic()
             if left < MIN_ASK:
-                raise StopLabelling(f"the {LABEL_BUDGET}s for labelling are spent")
+                raise StopLabelling(f"the {self.budget:.0f}s for the vision model are spent")
             timeout = min(ASK_TIMEOUT, left)
         reply = rater.describe(
             prompt,
             jpegs,
             schema,
             num_ctx=LABEL_NUM_CTX,
-            num_predict=500,
+            num_predict=num_predict,
             temperature=0.0,
             timeout=timeout,
         )
@@ -318,21 +362,44 @@ def make_labeler(rater: Any) -> Labeler:
             raise StopLabelling(f"a call ran out of its {timeout:.0f}s")
         return reply
 
+    def release(self) -> None:
+        """Free an Ollama model after the last call of a game (a hosted one stays); a budget
+        handed on (:meth:`carry_over`) ends with it."""
+        self.carry = None
+        if self.ollama:
+            self.rater.unload()
+
+
+def make_labeler(rater: Any, calls: VisionCalls | None = None) -> Labeler:
+    """A :data:`Labeler` for ``discover_regions`` that asks the shared vision client
+    ``rater`` (:class:`cutpoint.vision.VisionRater`) through ``calls`` (a new
+    :class:`VisionCalls` when None; the vision HUD map shares one with it).
+
+    It asks nothing, and gives no labels, when the model is not there (see
+    :class:`VisionCalls`) or with too little free memory (a WARNING). The rules then decide
+    alone. The calls of one game share :data:`LABEL_BUDGET` (with the HUD map's, when it ran
+    first), and one that times out ends the labelling (an INFO line); the labels so far are
+    kept. The model is freed after the last call unless it is hosted.
+    """
+    calls = calls or VisionCalls(rater)
+
     def label(
         proposals: list[dict[str, Any]], frames: list[dict[str, Any]], frame_dir: Path
     ) -> dict[str, dict[str, str]]:
-        if not candidates(proposals) or not usable():
+        if not candidates(proposals):
+            calls.release()  # loaded for the HUD map: freed all the same
             return {}
-        deadline.clear()  # each game has its own budget
+        if not calls.usable():
+            return {}
+        calls.begin(frame_dir, LABEL_BUDGET)  # each game has its own budget
         progress.update(detail="labelling HUD regions with the vision model")
         try:
-            labels = label_proposals(proposals, frames, frame_dir, ask, model_key(rater))
+            labels = label_proposals(proposals, frames, frame_dir, calls.ask, model_key(rater))
         except LowMemoryError as err:
             logger.warning("Feed labels skipped, the rules decide: %s", err)
             return {}
         finally:
-            if rater.provider_name == "ollama":
-                rater.unload()
+            calls.release()
         logger.info(
             "Feed labels (%s): %s",
             model_key(rater),

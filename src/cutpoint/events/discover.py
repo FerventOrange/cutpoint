@@ -1799,6 +1799,7 @@ def discover_regions(
     labeler: Callable[[list[dict[str, Any]], list[dict[str, Any]], Path], dict[str, Any]]
     | None = None,
     keep_src_keys: set[str] | None = None,
+    hud_mapper: Any = None,
 ) -> dict[str, Any]:
     """Run discovery on ``sources`` and write the proposal into ``out_dir``.
 
@@ -1822,6 +1823,9 @@ def discover_regions(
             see :func:`_src`); the burst plan stays that of all ``sources``, so a run
             after one that read them all reads nothing again (the HUD fit check drops the
             sources of another game this way).
+        hud_mapper: The vision HUD map (:func:`cutpoint.events.hud_map.make_mapper`; called
+            with the proposals, the gameplay frames and their folder before ``labeler``, and
+            its ``release()`` after it); None, or no map: as without it.
 
     Returns:
         The proposal: a preset dict (``game``, ``regions``, ``banner_phrases``,
@@ -1834,7 +1838,9 @@ def discover_regions(
         ``regions`` when ``covered`` is None (the discovered regions and the
         big-text region count as covered), else listed in ``suggested_regions``
         only, as are the ``score`` regions when the preset has none. When ``labeler`` labelled proposals, ``discovery.labels`` holds the labels (see
-        :func:`apply_labels`).
+        :func:`apply_labels`). When ``hud_mapper`` made a map, ``discovery.hud_map`` holds it
+        (:mod:`cutpoint.events.hud_map`): the proposals it settled are labelled (and not asked
+        about again), and its regions on no proposal are added, marked ``"origin": "vision"``.
     """
     params = params or DiscoverParams()
     t0 = time.perf_counter()
@@ -1875,10 +1881,36 @@ def discover_regions(
     extra = notice_proposals(game_frames, cover, params, maps["static"], outside)
     extra_regions = [notice_region(p) for p in extra]
     proposals += extra
-    labels = labeler(proposals, game_frames, out_dir / "frames") if labeler else {}
+    hud: dict[str, Any] | None = None
+    settled: dict[str, dict[str, str]] = {}
+    vision: list[Region] = []
+    excl: list[tuple[int, int, int, int]] = []
+    try:
+        if hud_mapper is not None:
+            hud = hud_mapper(proposals, game_frames, out_dir / "frames")
+        if hud:
+            from cutpoint.events import hud_map  # noqa: PLC0415 (it imports this module)
+
+            taken = {p["name"] for p in proposals} | {r.name for r in regions}
+            taken |= {e["name"] for e in extra_regions}
+            settled, vision, excl = hud_map.settle(hud, proposals, taken)
+        rest = [p for p in proposals if p["name"] not in settled]
+        labels = labeler(rest, game_frames, out_dir / "frames") if labeler else {}
+    finally:
+        if hud_mapper is not None:
+            hud_mapper.release()
+    labels = settled | labels
     if labels:
         regions, extra_regions = apply_labels(proposals, labels, regions, extra_regions)
         regions = guard_regions(regions, where)
+    if vision or excl:
+        from cutpoint.events import hud_map  # noqa: PLC0415
+
+        regions, extra_regions = hud_map.apply(
+            regions, extra_regions, vision, excl, labels, game_frames
+        )
+        regions = guard_regions(regions, where)
+    vision_names = {r.name for r in vision}
     extra_regions = [e for e in (guard_entry(e, where) for e in extra_regions) if e is not None]
     extra_labelled = [
         e | ({"label": labels[e["name"]]["label"]} if e["name"] in labels else {})
@@ -1896,12 +1928,16 @@ def discover_regions(
     icon = any(p["evidence"].get("icon_feed") for p in proposals if p.get("name") in names)
     # a feed the model named has no kill words to learn: its icon lines are the kills
     icon = icon or any(labels.get(n, {}).get("label") == "kill_feed" for n in names)
+    icon = icon or bool(names & vision_names)  # ...and so has one the HUD map pointed at
     preset = {
         "game": game,
         "reference": [REF_W, REF_H],
         "source": "discovered",
         "regions": [
-            r.key() | ({"label": labels[r.name]["label"]} if r.name in labels else {})
+            r.key()
+            | ({"label": labels[r.name]["label"]} if r.name in labels else {})
+            | ({"origin": "vision"} if r.name in vision_names else {})
+            | ({"label": "kill_feed"} if r.name in vision_names and r.kind == "feed" else {})
             for r in regions
         ]
         + (extra_labelled if covered is None else []),
@@ -1911,6 +1947,7 @@ def discover_regions(
         "discovery": {
             **maps["stats"],
             **({"labels": labels} if labels else {}),
+            **({"hud_map": hud} if hud else {}),
             "params": asdict(params),
             "elapsed_s": round(time.perf_counter() - t0, 1),
             "source_resolution": [info.width, info.height] if info else None,
