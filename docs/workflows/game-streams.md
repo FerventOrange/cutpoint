@@ -121,7 +121,9 @@ judges every box: a box counts when the model drew it on two of the frames (or o
 reads it in many bursts; the third frame is skipped when the first two agree) and the discovery
 OCR reads text there (a kill feed in at least 3 bursts, with lines that change; a score with
 digits). Its region is the OCR text in the box, padded, never the model's box itself, and covers
-at most 15% of the screen (banners excepted). A box that overlaps a proposal names it (it is not
+at most 15% of the screen (a banner 25%, and its text shows in at most half the frames). A box
+that overlaps a proposal names it, and a score readout names every score proposal at least half
+inside it (it is not
 asked again in the labels); one that does not becomes a region of its own (`"origin": "vision"`
 in the preset: `vision_feed`, `vision_score`, `vision_banner`, `replay`). With a vision kill feed,
 a rule `feed` region in which OCR finds no feed lines becomes a `notice`, and a feed inside a

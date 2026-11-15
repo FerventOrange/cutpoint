@@ -184,6 +184,28 @@ def test_judge_caps_a_region_at_a_share_of_the_frame_except_banners() -> None:
     assert rec["confirmed"] and w * h > hud_map.MAX_AREA * 1920 * 1080
 
 
+def test_judge_rejects_a_banner_whose_text_is_there_most_of_the_time() -> None:
+    zone = (882, 194, 158, 56)
+
+    def label(_b: int, _n: int) -> list[dict[str, Any]]:
+        return [_box("ROUND", 890, 200, 140, 40)]
+
+    always = _frames(8, 2, label)
+    rec = hud_map.judge(_group("objective_banner", zone), always, 2)
+    assert not rec["confirmed"] and "most of the time" in rec["why"]
+    rare = _frames(8, 2, label, only={1, 5})
+    assert hud_map.judge(_group("objective_banner", zone), rare, 2)["confirmed"]
+
+
+def test_judge_rejects_a_near_full_frame_banner_even_on_strong_evidence() -> None:
+    big = (12, 44, 1908, 1036)
+    frames = _frames(
+        8, 2, lambda _b, _n: [_box("VICTORY ACHIEVED", 20, 50, 1880, 1020)], only={1, 3, 5, 7}
+    )
+    rec = hud_map.judge(_group("objective_banner", big, seen=1), frames, 2)
+    assert not rec["confirmed"] and rec["why"] == "too large"
+
+
 def test_judge_a_strong_single_frame_counts_and_a_weak_one_does_not() -> None:
     strong = _frames(6, 2, lambda _b, n: _feed_rows(n))
     weak = _frames(4, 2, lambda _b, n: _feed_rows(n))
@@ -259,6 +281,30 @@ def test_settle_labels_a_proposal_and_makes_a_region_for_an_element_on_none() ->
     assert regions[0].gate == "det" and regions[1].every == 1
     assert excl == [(0, 300, 400, 300)]
     assert {"vision_feed", "replay"} <= taken
+
+
+def test_settle_labels_a_score_proposal_inside_a_wide_score_element() -> None:
+    hud = {"model": "m", "elements": [_el("score", (586, 148, 670, 72))]}
+    props = [
+        _prop("score2", "score", 600, 150, 100, 60),
+        _prop("score", "score", 1100, 150, 100, 60),
+    ]
+    taken = {"score2", "score"}
+    labels, regions, _ = hud_map.settle(hud, props, taken)
+    assert regions == [] and set(labels) == {"score2", "score"}
+    assert {v["label"] for v in labels.values()} == {hud_map.LABEL_OF["score"]}
+
+
+def test_settle_leaves_out_an_oversized_banner_and_keeps_a_normal_one() -> None:
+    hud = {
+        "model": "m",
+        "elements": [
+            _el("objective_banner", (12, 44, 1908, 1036)),
+            _el("objective_banner", (714, 185, 400, 80)),
+        ],
+    }
+    _, regions, _ = hud_map.settle(hud, [], set())
+    assert [r.kind for r in regions] == ["banner"] and regions[0].x == 714
 
 
 def test_apply_reads_a_rule_made_feed_in_an_ignored_area_as_a_notice() -> None:
@@ -363,6 +409,13 @@ def test_top_up_adds_a_score_and_a_replay_once_and_only_where_the_preset_lacks_t
     # nothing over a region that is there
     data = _preset(Region("banner", 400, 400, 600, 100, "banner", gate="det"))
     _, changes = hud_map.top_up(data, _hud(banner), [])
+    assert changes["added"] == []
+
+
+def test_top_up_adds_no_oversized_banner() -> None:
+    data = _preset()
+    big = _el("objective_banner", (12, 44, 1908, 1036))
+    _, changes = hud_map.top_up(data, _hud(big), [])
     assert changes["added"] == []
 
 

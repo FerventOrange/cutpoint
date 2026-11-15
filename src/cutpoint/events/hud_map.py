@@ -19,7 +19,7 @@ Vision points, OCR reads:
   (:func:`feed_like`), a score small numbers (:func:`~cutpoint.events.discover.score_value`), a
   banner words, a replay marker words that show only some of the time. The region is the union
   of the OCR boxes inside the box (with a margin), padded; at most :data:`MAX_AREA` of the frame
-  (banners excepted). Chat, webcam and caption boxes seen in two frames are exclusions: no
+  (a banner: :data:`BANNER_MAX_AREA`, its text in at most :data:`BANNER_MAX_SHARE` of the frames). Chat, webcam and caption boxes seen in two frames are exclusions: no
   rule-made feed there.
 * **Merge** (:func:`settle`, :func:`apply`). An element on a pixel proposal (IoU at least
   :data:`MATCH_IOU`) gives it its label (a kill feed: the feed region, as a ``kill_feed`` label
@@ -90,7 +90,8 @@ MAP_FRAMES = 3  # frames shown, one call each
 MAP_BUDGET = 60  # seconds the map adds to the feed labels' LABEL_BUDGET (one budget per game)
 NUM_PREDICT = 900  # reply tokens: about a dozen elements
 MATCH_IOU = 0.3  # boxes of one element (frames, proposals, preset regions) overlap this much
-MAX_AREA = 0.15  # a region (banners excepted) covers at most this share of the frame
+MAX_AREA = 0.15  # a region (a banner: BANNER_MAX_AREA) covers at most this share of the frame
+BANNER_MAX_AREA = 0.25  # a banner covers at most this share (the largest real one: 0.078)
 PAD = 12  # reference px around the OCR boxes, as discover._padded
 MARGIN = 0.1  # the vision box grows by this share of its size for the OCR test...
 MARGIN_MIN = 16  # ...and at least this many reference px (a model's box is rough)
@@ -107,6 +108,7 @@ BANNER_MIN_ALPHA = 0.6
 HINT_MAX = 40  # letters kept of what the model read in a replay marker
 REPLAY_MIN_BURSTS = 2  # replay marker: words in this many bursts...
 REPLAY_MAX_SHARE = 0.5  # ...but in at most this share of the frames (live play is the rule)
+BANNER_MAX_SHARE = 0.5  # a banner's text is there in at most this share of the frames
 # an element marked in one frame only counts when its OCR test holds in this many bursts
 STRONG_BURSTS = {"kill_feed": 6, "score": 6, "objective_banner": 4, "replay": 3}
 # the labels a settled proposal gets (feed_labels.LABELS); replay and clock have none
@@ -206,6 +208,13 @@ def _inside(r: Rect, zone: Rect) -> bool:
     """Whether the centre of ``r`` lies in ``zone``."""
     cx, cy = r[0] + r[2] / 2, r[1] + r[3] / 2
     return zone[0] <= cx <= zone[0] + zone[2] and zone[1] <= cy <= zone[1] + zone[3]
+
+
+def _covers(big: Rect, small: Rect) -> bool:
+    """Whether at least half of ``small`` lies inside ``big``."""
+    w = min(big[0] + big[2], small[0] + small[2]) - max(big[0], small[0])
+    h = min(big[1] + big[3], small[1] + small[3]) - max(big[1], small[1])
+    return w > 0 and h > 0 and w * h >= 0.5 * small[2] * small[3]
 
 
 def _numbers(box: Any) -> list[float] | None:
@@ -424,6 +433,11 @@ def feed_like(frames: list[dict[str, Any]], rect: Rect) -> tuple[bool, dict[str,
     return ok, {k: v for k, v in st.items() if not k.startswith("_")}
 
 
+def _max_area(kind: str) -> float:
+    """The largest share of the frame a region of ``kind`` covers."""
+    return BANNER_MAX_AREA if kind == "objective_banner" else MAX_AREA
+
+
 def _test(kind: str, st: dict[str, Any]) -> str | None:
     """Why OCR does not confirm an element of ``kind`` (None: it does)."""
     if kind == "kill_feed":
@@ -441,6 +455,8 @@ def _test(kind: str, st: dict[str, Any]) -> str | None:
     if kind == "objective_banner":
         if st["bursts"] < BANNER_MIN_BURSTS or st["alpha"] < BANNER_MIN_ALPHA:
             return "OCR reads no banner words"
+        if st["share"] > BANNER_MAX_SHARE:
+            return "text there most of the time, no banner"
         return None
     if kind == "replay":
         if st["bursts"] < REPLAY_MIN_BURSTS or st["alpha"] < BANNER_MIN_ALPHA:
@@ -560,7 +576,7 @@ def judge(
     if rect is None:
         rec["why"] = "no OCR box inside"
         return rec
-    if kind != "objective_banner" and rect[2] * rect[3] > MAX_AREA * REF_W * REF_H:
+    if rect[2] * rect[3] > _max_area(kind) * REF_W * REF_H:
         rec["why"] = "too large"
         return rec
     if kind == "score":
@@ -752,7 +768,7 @@ def settle(
 
     Returns:
         (labels, regions, exclusions): labels of the proposals an element lies on (IoU at least
-        :data:`MATCH_IOU`; as :func:`~cutpoint.events.discover.apply_labels` takes them, with
+        :data:`MATCH_IOU`, or, for a score readout, every score proposal at least half inside it; as :func:`~cutpoint.events.discover.apply_labels` takes them, with
         ``"from": "hud_map"``), new regions (``"origin": "vision"`` in the preset) for elements
         on no proposal, and the chat, webcam and caption boxes. ``taken``: names in use (the
         new regions' names are added).
@@ -781,9 +797,17 @@ def settle(
                     labels[p["name"]] = {"label": LABEL_OF[kind], "model": model, "from": "hud_map"}
             continue
         rect = tuple(e["rect"])
+        if rect[2] * rect[3] > _max_area(kind) * REF_W * REF_H:
+            continue
         if kind == "replay" and _on_banner(rect, confirmed, proposals):
             continue
         on = [(iou(_rect(p), rect), p) for p in proposals if fits[kind](p)]
+        if kind == "score":  # score proposals inside a wide readout are it: all labelled
+            inner = [p for p in proposals if fits[kind](p) and _covers(rect, _rect(p))]
+            for p in inner:
+                labels[p["name"]] = {"label": LABEL_OF[kind], "model": model, "from": "hud_map"}
+            if inner:
+                continue
         best = max(on, key=lambda t: t[0], default=None)
         if best is not None and best[0] >= MATCH_IOU:
             labels[best[1]["name"]] = {"label": LABEL_OF[kind], "model": model, "from": "hud_map"}
@@ -919,6 +943,8 @@ def top_up(
             if rect is None:
                 continue
             e = e | {"rect": list(rect)}
+        if rect[2] * rect[3] > _max_area(kind) * REF_W * REF_H:
+            continue
         made = new_region(e, "_").kind
         if overlaps(rect, regs) or (
             made in ("score", "replay") and any(r.get("kind") == made for r in regs)
