@@ -833,7 +833,7 @@ is missing, and notes that the check waits; the check
 runs when you save again after agreeing, and the first message checks it too. Another
 host (OpenRouter, a LAN server) may list its models without a key, so its key is checked when you
 send the first message. The API key is read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
-`XAI_API_KEY` when `cutpoint ui` starts, then from the system keyring (the Models tab has Save key and
+`XAI_API_KEY` when `cutpoint ui` starts, then from the native OS keyring (the Models tab has Save key and
 Clear key), then, only for a custom base URL, from `CUTPOINT_ASSISTANT_API_KEY`.
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `XAI_API_KEY` go only to `api.anthropic.com`,
 `api.openai.com` and `api.x.ai`, and `CUTPOINT_ASSISTANT_API_KEY` never goes to any of those
