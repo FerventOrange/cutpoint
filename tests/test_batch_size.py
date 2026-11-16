@@ -1000,3 +1000,27 @@ def test_events_hand_the_ollama_flags_to_the_crash_layer(layers_run, monkeypatch
     argv = ["events", "p", "--layers", "visual", "crash", "--no-rescore"]
     assert cli.main(argv) == 0
     assert (got["ollama_url"], got["ollama_model"]) == (None, None)
+
+
+# -- the light frame index runs between the visual layer and the crash layer (#989) -----------
+
+
+@pytest.mark.parametrize(
+    ("layers", "handoff"),
+    [(("visual_light", "crash"), True), (("visual_light", "ocr", "crash"), False)],
+)
+def test_the_light_layer_hands_clip_to_the_crash_layer_only_without_ocr_between(
+    layers_run, monkeypatch, layers, handoff
+):
+    from cutpoint import crash  # noqa: PLC0415
+
+    got: list[Any] = []
+
+    def light(hl, sources, kept, encoder, crash_run, force=False):
+        got.append(crash_run)
+        return {"cached": 0, "computed": 0, "frames": 0}
+
+    monkeypatch.setattr(pipeline, "_light_layer", light)
+    monkeypatch.setattr(crash, "detect_project", lambda project, **kw: None)
+    pipeline.run_events(layers_run.project, layers=layers, discover=False)
+    assert got == [handoff]
