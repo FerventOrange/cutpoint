@@ -18,7 +18,7 @@ import numpy as np
 import requests
 
 from cutpoint import cache
-from cutpoint.backends import ollama_url
+from cutpoint.backends import ollama_get, ollama_post, ollama_url
 
 logger = logging.getLogger(__name__)
 
@@ -242,29 +242,23 @@ def unload_ollama(url: str | None = None) -> list[str]:
     Returns:
         Names of the models that were unloaded (empty if Ollama is not running).
     """
-    from cutpoint.vision import ollama_allowed, refuse_redirect  # noqa: PLC0415
+    from cutpoint.vision import ollama_allowed  # noqa: PLC0415
 
     try:
         url = url or ollama_url()
         if not ollama_allowed(url):  # an Ollama on another machine the user did not agree to
             return []
-        resp = requests.get(f"{url}/api/ps", timeout=(1, 3), allow_redirects=False)
-        refuse_redirect(resp)
-        loaded = resp.json().get("models", [])
+        loaded = ollama_get(url, "/api/ps", timeout=(1, 3)).get("models", [])
     except (requests.RequestException, ValueError):
         return []
     names = []
-    for m in loaded:
-        name = m.get("name") or m.get("model")
+    for m in loaded if isinstance(loaded, list) else []:  # another shape: none (A116)
+        name = (m.get("name") or m.get("model")) if isinstance(m, dict) else None
+        if not isinstance(name, str):
+            continue
         try:
-            refuse_redirect(
-                requests.post(
-                    f"{url}/api/generate",
-                    json={"model": name, "keep_alive": 0},
-                    timeout=30,
-                    allow_redirects=False,
-                )
-            )
+            payload = {"model": name, "keep_alive": 0}
+            ollama_post(url, "/api/generate", payload, timeout=30, read=False)
             logger.info("Unloaded Ollama model %s", name)
             names.append(name)
         except requests.RequestException as err:
@@ -274,9 +268,7 @@ def unload_ollama(url: str | None = None) -> list[str]:
     deadline = time.time() + 15
     while time.time() < deadline:
         try:
-            resp = requests.get(f"{url}/api/ps", timeout=(1, 3), allow_redirects=False)
-            refuse_redirect(resp)
-            if not resp.json().get("models"):
+            if not ollama_get(url, "/api/ps", timeout=(1, 3)).get("models"):
                 break
         except (requests.RequestException, ValueError):
             break

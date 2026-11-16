@@ -210,7 +210,7 @@ def test_unload_does_not_follow_a_redirect(monkeypatch, caplog):
     was never allowed): one request, no exception, the model counted as still loaded."""
     sent: list[tuple[str, bool]] = []
 
-    def post(url, json, timeout, allow_redirects=True):
+    def post(url, json, timeout, allow_redirects=True, **_k):
         sent.append((url, allow_redirects))
         resp = requests.Response()
         resp.status_code, resp.url = 307, url
@@ -230,7 +230,7 @@ def test_unload_does_not_follow_a_redirect(monkeypatch, caplog):
 def _moved(sent: list[tuple[str, bool]]):
     """A requests stand-in answering every call with a real 307 to another host."""
 
-    def call(url, json=None, timeout=None, allow_redirects=True):
+    def call(url, json=None, timeout=None, allow_redirects=True, **_k):
         sent.append((url, allow_redirects))
         resp = requests.Response()
         resp.status_code, resp.url = 307, url
@@ -269,7 +269,7 @@ def test_ask_json_does_not_follow_a_redirect(monkeypatch, caplog, model, endpoin
 def test_available_does_not_follow_a_redirect(monkeypatch, caplog):
     sent: list[tuple[str, bool]] = []
 
-    def get(url, timeout=None, allow_redirects=True):
+    def get(url, timeout=None, allow_redirects=True, **_k):
         sent.append((url, allow_redirects))
         resp = requests.Response()
         resp.status_code = 307
@@ -287,7 +287,7 @@ def test_available_unreachable_logs_a_short_reason(monkeypatch, caplog):
     """#921: host:port and a short reason, not urllib3's text; a short connect timeout."""
     timeouts = []
 
-    def get(url, timeout=None, allow_redirects=True):
+    def get(url, timeout=None, allow_redirects=True, **_k):
         timeouts.append(timeout)
         try:
             raise ConnectionRefusedError(111, "Connection refused")

@@ -35,7 +35,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
-import re
 import threading
 import time
 from collections.abc import Callable
@@ -48,7 +47,8 @@ from urllib3.exceptions import LocationParseError
 from urllib3.util import parse_url
 
 from cutpoint.assistant import cliproxy, keys
-from cutpoint.backends import normalize_ollama_url, ollama_url
+from cutpoint.backends import headers_only as _headers_only
+from cutpoint.backends import normalize_ollama_url, ollama_send, ollama_url, strip_userinfo
 from cutpoint.config import AssistantSettings, assistant_settings
 from cutpoint.vision import default_model as vision_model
 from cutpoint.vision import unreachable_reason
@@ -387,13 +387,6 @@ def _direct(on_machine: bool) -> dict[str, Any]:
     return {"proxies": {"http": None, "https": None, "all": None}} if on_machine else {}
 
 
-def _headers_only(request: Any) -> Any:
-    """An explicit ``auth`` that changes nothing: ``requests`` then reads no ``~/.netrc``, which
-    would replace the ``Authorization`` header (the key) with that file's login, or send that
-    login to an Ollama server."""
-    return request
-
-
 def proxy_port() -> int | None:
     """The port of Cutpoint's subscription proxy (:func:`cutpoint.assistant.cliproxy.port`:
     the running daemon's, else the configured one, else
@@ -588,13 +581,10 @@ def _openai_base(url: str) -> str:
     return base + "/v1" if urlsplit(base).path in ("", "/") else base
 
 
-_USERINFO = re.compile(r"(?<=://)[^/@\s]+@")
-
-
 def public(text: str) -> str:
     """``text`` with the ``user:password@`` part of every URL in it left out: what a message
     (a turn's error, which ``chat.json`` keeps) may show."""
-    return _USERINFO.sub("", text)
+    return strip_userinfo(text)
 
 
 def _key_hint(name: str, host: str, *, shared: bool = True, vision: bool = False) -> str:
@@ -670,13 +660,7 @@ class OllamaProvider:
         """The names of the pulled models (``/api/tags``); [] for an error answer."""
         try:
             # a short connect timeout, as VisionRater.available() (#921, #928)
-            resp = requests.get(
-                f"{self.url}/api/tags",
-                timeout=(1, 3),
-                allow_redirects=False,
-                auth=_headers_only,
-                **_direct(self.on_machine),
-            )
+            resp = ollama_send("GET", self.url, "/api/tags", timeout=(1, 3))
             if moved := _redirect("Ollama", resp, "URL"):
                 raise moved
             data = resp.json() if resp.status_code < 400 else None
@@ -697,17 +681,13 @@ class OllamaProvider:
         return [{"id": n, "name": n} for n in self._tags()]
 
     def _post(
-        self, endpoint: str, payload: dict[str, Any], timeout: float, **kw: Any
+        self, endpoint: str, payload: dict[str, Any], timeout: float, *, stream: bool = False
     ) -> requests.Response:
+        """One request (:func:`cutpoint.backends.ollama_send`), streamed for ``stream``; a
+        redirect is refused here, the status is the caller's."""
         try:
-            resp = requests.post(
-                f"{self.url}/api/{endpoint}",
-                json=payload,
-                timeout=timeout,
-                allow_redirects=False,
-                auth=_headers_only,
-                **_direct(self.on_machine),
-                **kw,
+            resp = ollama_send(
+                "POST", self.url, f"/api/{endpoint}", json=payload, timeout=timeout, stream=stream
             )
         except requests.RequestException as err:
             why = f"Ollama is not reachable at {host_port(self.url)} ({unreachable_reason(err)})"
