@@ -21,6 +21,7 @@ from conftest import patch_ui
 from cutpoint import analyze, cache, folders, rerank, runstate, ui
 from cutpoint.styles import get_style, style_name
 from test_rerank import lite_layers, make_project, read  # noqa: F401 (lite_layers: a fixture)
+from test_untrusted_paths import flushed_before_replace, fsyncs  # noqa: F401 (a fixture)
 
 PORT = 8765
 BASE = "/api/projects/p/ranking"
@@ -279,6 +280,27 @@ def test_a_project_is_not_deleted_while_its_ranking_is_applied(home, tmp_path, c
     assert res.status_code == 409
     assert res.json()["detail"] == "A ranking is being applied to this project; wait a moment"
     assert (project / "highlights.json").is_file()
+
+
+def test_apply_keeps_no_ollama_login_and_writes_highlights_durably(
+    home,
+    tmp_path,
+    client,
+    fsyncs,  # noqa: F811
+):
+    """A639, A667: a file written before #1119 kept the login in ``settings.ollama_url``: after
+    the apply neither highlights.json nor the backup has it, and highlights.json was flushed
+    to disk before its rename (the apply saves through :func:`cutpoint.rerank.rerank`)."""
+    project = make_project(home, tmp_path, ollama_url="http://alice:s3c@ret@myhost:11434")
+    assert b"s3c" in (project / "highlights.json").read_bytes()
+    fsyncs.clear()
+    res = apply(client, preview(client).json()["base"])
+    assert res.status_code == 200, res.text
+    for name in ("highlights.json", rerank.BACKUP):
+        raw = (project / name).read_bytes()
+        assert b"alice" not in raw and b"s3c" not in raw, name
+        assert json.loads(raw)["settings"]["ollama_url"] == "http://myhost:11434"
+    assert flushed_before_replace(fsyncs, "highlights.json")
 
 
 # --------------------------------------------------------------------------- no torch

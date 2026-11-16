@@ -332,33 +332,39 @@ def ranking_undo_view(p: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
     return view
 
 
-def _swap_ranking_files(p: Path, restored: bytes, current: bytes) -> None:
+def _swap_ranking_files(p: Path, restored: bytes, kept: bytes, current: bytes) -> None:
     """Swap the project's rankings: highlights.json gets ``restored`` (made from the backup) and
-    :data:`RERANK_BACKUP` ``current`` (highlights.json's bytes now). Both are staged as temp
-    files first, then renamed: highlights.json first, while the backup still holds the
-    ranking it gets. A failed second rename puts highlights.json back; should that fail too,
-    the temp file holding ``current`` is kept (its path logged), as one a hard kill leaves."""
+    :data:`RERANK_BACKUP` ``kept`` (:func:`cutpoint.rerank.backup_bytes` of ``current``,
+    highlights.json's bytes now). Both are staged as temp files first, then renamed:
+    highlights.json first, while the backup still holds the ranking it gets. A failed second
+    rename puts ``current`` back into highlights.json; should that fail too, the temp file
+    holding ``kept`` is kept (its path logged), as one a hard kill leaves.
+    Durable as ``cache.save_bytes(..., durable=True)`` (A667): each temp file is flushed to
+    disk before its rename and, on POSIX, the folder after the renames."""
     hl_path, back_path = p / "highlights.json", p / RERANK_BACKUP
     staged: list[Path] = []
     keep = False
     try:
-        for path, data in ((hl_path, restored), (back_path, current)):
+        for path, data in ((hl_path, restored), (back_path, kept)):
             fd, name = tempfile.mkstemp(dir=p, prefix=path.name + ".", suffix=".tmp")
             os.close(fd)
             staged.append(Path(name))
             staged[-1].write_bytes(data)
+            with staged[-1].open("r+b") as f:  # as cache.save_bytes(durable=True)
+                os.fsync(f.fileno())
             cache.match_mode(staged[-1], path)
         cache.retry_locked(lambda: staged[0].replace(hl_path), hl_path, "replace")
         try:
             cache.retry_locked(lambda: staged[1].replace(back_path), back_path, "replace")
         except BaseException:
             try:
-                cache.save_bytes(hl_path, current)  # as it was: all or nothing
+                cache.save_bytes(hl_path, current, durable=True)  # as it was: all or nothing
             except BaseException:
                 keep = True  # the only copy of the current ranking now
                 logger.error("The ranking before the swap is kept in %s", staged[1])
                 raise
             raise
+        cache._fsync_dir(p)
     finally:
         for tmp in staged if not keep else ():
             with contextlib.suppress(OSError):
@@ -379,7 +385,7 @@ def ranking_swap(p: Path, base: str) -> tuple[dict[str, Any], dict[str, Any], bo
         FolderBusyError: If another run holds the project's lock.
         FileNotFoundError, ValueError: As :func:`cutpoint.rerank.load`.
     """
-    from cutpoint import rerank  # noqa: PLC0415
+    from cutpoint import backends, rerank  # noqa: PLC0415
     from cutpoint.errors import StaleRankingError  # noqa: PLC0415
 
     with folders.swap_lock(p / runstate.LOCK_NAME, p):
@@ -390,15 +396,19 @@ def ranking_swap(p: Path, base: str) -> tuple[dict[str, Any], dict[str, Any], bo
         if found is None:
             return None
         back, undone = found
+        # neither file keeps an Ollama login an older one held (A639): the ranking swapped in
+        # as every highlights.json is written, the one it replaces as a re-rank keeps it
+        backends.saved_settings(back)
+        kept = rerank.backup_bytes(raw)
         st = back.setdefault("settings", {})
-        st["rerank_backup"] = rerank.key(raw)
+        st["rerank_backup"] = rerank.key(kept)
         last = [(x.get("settings") or {}).get("last_candidate_id") for x in (hl, back)]
         if ints := [n for n in last if isinstance(n, int) and not isinstance(n, bool)]:
             st["last_candidate_id"] = max(ints)
         rerank.sealed(back, undone=not undone)
         # as cache.save_json writes it: the indent's line breaks in the platform's endings
         text = json.dumps(back, indent=2, ensure_ascii=False).replace("\n", os.linesep)
-        _swap_ranking_files(p, text.encode("utf-8"), raw)
+        _swap_ranking_files(p, text.encode("utf-8"), kept, raw)
         _UNDO_SEEN.pop(p, None)
         return hl, back, not undone
 
