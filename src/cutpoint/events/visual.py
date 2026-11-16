@@ -36,6 +36,7 @@ from __future__ import annotations
 import bisect
 import hashlib
 import importlib.util
+import io
 import logging
 import re
 import sys
@@ -155,19 +156,19 @@ def load_visual(src: Source | Path, params: VisualParams | None = None) -> Visua
 
 
 def _load_npz(path: Path) -> VisualData | None:
-    """The :class:`VisualData` cached in ``path`` (and its ``.json`` meta), or None."""
-    if not path.exists():
+    """The :class:`VisualData` cached in ``path`` (and its ``.json`` meta), or None when it
+    is missing, damaged or lacks an array (a cache miss)."""
+    z = cache.load_npz(path)
+    if z is None or not {"t", "emb", "det", "box_emb", "box_idx"} <= z.keys():
         return None
-    with np.load(path, allow_pickle=False) as z:
-        meta = cache.load_json(path.with_suffix(".json")) or {}
-        return VisualData(
-            t=z["t"],
-            emb=z["emb"],
-            det=z["det"],
-            box_emb=z["box_emb"],
-            box_idx=z["box_idx"],
-            meta=meta,
-        )
+    return VisualData(
+        t=z["t"],
+        emb=z["emb"],
+        det=z["det"],
+        box_emb=z["box_emb"],
+        box_idx=z["box_idx"],
+        meta=cache.load_json(path.with_suffix(".json")) or {},
+    )
 
 
 # --------------------------------------------------------------------------- decoding
@@ -587,7 +588,7 @@ def compute_visual(
         "person_crops": len(has),
         "params": params.key(),
     }
-    np.savez_compressed(
+    cache.save_npz(
         path, t=data.t, emb=data.emb, det=data.det, box_emb=data.box_emb, box_idx=data.box_idx
     )
     cache.save_json(path.with_suffix(".json"), data.meta)
@@ -657,11 +658,7 @@ def load_visual_light(src: Source | Path, params: LightParams | None = None) -> 
     except OSError as err:
         logger.warning("%s: footage not reachable (%s); no frame index for it", src, err)
         return None
-    try:
-        return _load_npz(path)
-    except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile) as err:
-        logger.warning("%s: unreadable frame index (%s); indexing it again", path.name, err)
-        return None
+    return _load_npz(path)
 
 
 def drop_light(src: Source | Path) -> None:
@@ -849,7 +846,7 @@ def compute_light(
         "params": params.key(),
     }
     path = light_cache_path(src, params)
-    np.savez_compressed(
+    cache.save_npz(
         path, t=data.t, emb=data.emb, det=data.det, box_emb=data.box_emb, box_idx=data.box_idx
     )
     cache.save_json(path.with_suffix(".json"), data.meta)
@@ -890,7 +887,10 @@ def text_embeddings(
     """
     path = _prompt_file(prompts)
     if save and path.exists():
-        return np.load(path)
+        try:
+            return np.load(path, allow_pickle=False)
+        except cache.NPZ_ERRORS as err:
+            logger.debug("%s: text embeddings unreadable (%s); recomputed", path, err)
     if models is not None:
         e = models.encode_text(prompts)
     else:
@@ -909,8 +909,9 @@ def text_embeddings(
             e = model.encode_text(tokenizer(list(prompts))).float()
             e = (e / e.norm(dim=-1, keepdim=True)).numpy()
     if save:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        np.save(path, e.astype(np.float32))
+        buf = io.BytesIO()  # a file object: numpy adds no suffix
+        np.save(buf, e.astype(np.float32))
+        cache.save_bytes(path, buf.getvalue(), parents=True)
     return e.astype(np.float32)
 
 

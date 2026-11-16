@@ -197,15 +197,17 @@ def load_views(src: Path, params: ViewParams | None = None) -> PanoViews | None:
         return None
     if upright and _stale_selfie(Path(src), meta):
         return None
-    with np.load(path) as z:
-        return PanoViews(
-            t=z["t"],
-            emb=z["emb"],
-            det=z["det"],
-            box_emb=z["box_emb"],
-            box_idx=z["box_idx"],
-            meta=meta,
-        )
+    z = cache.load_npz(path)
+    if z is None or not {"t", "emb", "det", "box_emb", "box_idx"} <= z.keys():
+        return None
+    return PanoViews(
+        t=z["t"],
+        emb=z["emb"],
+        det=z["det"],
+        box_emb=z["box_emb"],
+        box_idx=z["box_idx"],
+        meta=meta,
+    )
 
 
 # --------------------------------------------------------------------------- compute
@@ -438,7 +440,7 @@ def compute_views(
 def save_views(src: Path, data: PanoViews, params: ViewParams) -> Path:
     """Write the pano cache and the standard visual-layer cache of one clip."""
     path = cache_path(src, params)
-    np.savez_compressed(
+    cache.save_npz(
         path, t=data.t, emb=data.emb, det=data.det, box_emb=data.box_emb, box_idx=data.box_idx
     )
     cache.save_json(path.with_suffix(".json"), data.meta)
@@ -993,7 +995,7 @@ def write_standard_visual(src: Path, pv: PanoViews) -> Path:
     box_emb = pv.box_emb[sel] if sel else np.zeros((0, 768), np.float16)
     # the camera directions of 4b3894b's crops (-z yaw 270 / 0 / 90) on an upright clip
     emb = pv.emb[:, [2, 4, 6] if pv.meta.get("det_frame") == DET_FRAME else [6, 0, 2]]
-    np.savez_compressed(path, t=pv.t, emb=emb, det=std, box_emb=box_emb, box_idx=box_idx)
+    cache.save_npz(path, t=pv.t, emb=emb, det=std, box_emb=box_emb, box_idx=box_idx)
     cache.save_json(
         path.with_suffix(".json"),
         {

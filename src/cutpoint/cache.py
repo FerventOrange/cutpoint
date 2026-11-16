@@ -4,17 +4,25 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import json
+import logging
 import os
 import signal
 import tempfile
 import time
+import zipfile
+import zlib
 from collections.abc import Callable, Collection, Iterator
 from functools import partial
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from cutpoint import paths
+
+logger = logging.getLogger(__name__)
 
 
 def cache_root() -> Path:
@@ -395,6 +403,32 @@ def save_bytes(path: Path, data: bytes, *, parents: bool = False) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def save_npz(path: Path, *, compressed: bool = True, parents: bool = False, **arrays: Any) -> None:
+    """Atomically write ``arrays`` as an ``.npz`` (:func:`save_bytes`), so an interrupted
+    write never leaves a half-written archive at ``path``."""
+    buf = io.BytesIO()  # a file object: numpy adds no suffix
+    (np.savez_compressed if compressed else np.savez)(buf, **arrays)
+    save_bytes(path, buf.getvalue(), parents=parents)
+
+
+#: What reading a damaged or half-written ``.npz`` raises.
+NPZ_ERRORS = (OSError, ValueError, EOFError, KeyError, zipfile.BadZipFile, zlib.error)
+
+
+def load_npz(path: Path) -> dict[str, np.ndarray] | None:
+    """All arrays of the ``.npz`` at ``path`` (read eagerly, no file handle kept), or None
+    if it is missing or unreadable (logged at DEBUG: the caller treats it as a cache miss)."""
+    data = load_bytes(path)
+    if data is None:
+        return None
+    try:
+        with np.load(io.BytesIO(data), allow_pickle=False) as z:
+            return {k: z[k] for k in z.files}
+    except NPZ_ERRORS as err:
+        logger.debug("%s: cache unreadable (%s); treated as missing", path, err)
+        return None
 
 
 def make_dirs(folder: Path, made: list[Path]) -> None:

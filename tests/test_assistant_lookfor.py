@@ -326,12 +326,12 @@ def test_the_event_of_a_failed_search_carries_the_short_reason(clip, monkeypatch
     assert ev["error"].startswith("no source of this project") and ev["reason"] == lookfor.NO_INDEX
 
 
-def test_an_unreadable_cache_is_skipped_not_fatal(clip, monkeypatch) -> None:
+def test_a_damaged_cache_is_a_miss_not_fatal(clip, monkeypatch) -> None:
     good = V.load_visual
 
     def load(src: Path, params: Any = None):
         if Path(src).as_posix() == A:
-            raise ValueError("bad npz")
+            return None  # a damaged cache loads as a miss
         return good(src)
 
     monkeypatch.setattr(V, "load_visual", load)

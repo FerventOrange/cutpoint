@@ -32,9 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-import logging
 import os
-import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,8 +44,6 @@ from cutpoint import actioncam, extras
 from cutpoint.config import path_key
 from cutpoint.events import visual as V
 from cutpoint.visual_pool import _fit, _overlap
-
-logger = logging.getLogger(__name__)
 
 NAME = "look_for"
 JSON_TOOL = f"{NAME} {{query, limit?}}"
@@ -286,11 +282,8 @@ class Finder:
         if self._frames is None:
             frames = {}
             for source in self.sources:
-                try:  # the full index wins over the light one
-                    data = V.load_visual(Path(source)) or V.load_visual_light(Path(source))
-                except (OSError, ValueError, KeyError, zipfile.BadZipFile) as err:
-                    logger.warning("look_for: %s: visual layer unreadable (%s)", source, err)
-                    continue
+                # the full index wins over the light one; a damaged cache is a miss
+                data = V.load_visual(Path(source)) or V.load_visual_light(Path(source))
                 if data is not None and len(data.t):
                     frames[source] = (data.t.astype(float), data.mean_emb)
             self._frames = frames

@@ -371,11 +371,10 @@ def imu_grids(
     from cutpoint.telemetry import imu_read_path  # noqa: PLC0415
 
     path = cache.source_dir(src) / f"crashimu-v{IMU_VERSION}.npz"
-    if not force and path.exists():
-        with np.load(path) as z:
-            if "none" in z.files:
-                return None
-            return {k: z[k].astype(np.float64) for k in z.files}
+    if not force and (z := cache.load_npz(path)) is not None:
+        if "none" in z:
+            return None
+        return {k: v.astype(np.float64) for k, v in z.items()}
     io, _, read_path, unstaged = imu_read_path(src)
     t0 = time.perf_counter()
     grids = None
@@ -387,9 +386,9 @@ def imu_grids(
     if grids is None:
         grids = _compute_imu(read_path, duration, force)
     if grids is None:
-        np.savez_compressed(path, none=np.zeros(1))
+        cache.save_npz(path, none=np.zeros(1))
         return None
-    np.savez_compressed(path, **{k: v.astype(np.float32) for k, v in grids.items()})
+    cache.save_npz(path, **{k: v.astype(np.float32) for k, v in grids.items()})
     logger.info(
         "%s: crash IMU grids in %.1fs (%.0f Hz)",
         src.name,

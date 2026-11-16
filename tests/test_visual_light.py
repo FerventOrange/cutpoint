@@ -383,14 +383,10 @@ def test_a_second_run_with_a_new_span_adds_frames_to_the_cache(
 
 
 # --------------------------------------------------------------------------- unreadable cache
-def test_an_unreadable_light_cache_is_ignored_with_a_warning_and_rewritten(
-    tmp_path: Path, decode, caplog
-) -> None:
+def test_an_unreadable_light_cache_is_ignored_and_rewritten(tmp_path: Path, decode) -> None:
     src = source(tmp_path, 35.0)
     V.light_cache_path(src).write_bytes(b"not an npz at all")
-    with caplog.at_level("WARNING"):
-        assert V.load_visual_light(src) is None
-    assert "unreadable frame index" in caplog.text
+    assert V.load_visual_light(src) is None
     data = V.compute_light(src, FakeEncoder(), [])
     assert data is not None
     again = V.load_visual_light(src)
