@@ -53,7 +53,7 @@ All keys live in the `pano` section of `config.json`; every one is optional. See
 |---|---|
 | `sdk_exe` | Path of `MediaSDKTest.exe` (`MediaSDKTest` on Linux). `CUTPOINT_INSTA360_SDK` overrides it. Default: auto-detect under `<CUTPOINT_HOME>\sdk\insta360\` |
 | `stitched_dir` | Where stitched equirects go, as `<VID stem>_NNN.equirect.mp4`. Default `<CUTPOINT_HOME>\360-stitched` |
-| `stitch_args` | SDK arguments placed after `-inputs ... -output ...`; replaces the defaults. Passed through unchanged apart from the `-stitch_type` and `-output_size` checks below, both made before the run. Default: `-stitch_type optflow -output_size 5760x2880 -enable_h265_encoder -bitrate 100000000 -enable_stitchfusion` |
+| `stitch_args` | SDK arguments placed after `-inputs ... -output ...`; replaces the defaults. Passed through unchanged apart from the `-stitch_type` and `-output_size` checks below, both made before the run; `-inputs` and `-output` are set by Cutpoint and refused here. One stitch runs per output file at a time, also across projects. Default: `-stitch_type optflow -output_size 5760x2880 -enable_h265_encoder -bitrate 100000000 -enable_stitchfusion` |
 | `stitch_timeout_s` | Kill one clip's stitch after this many seconds (positive number). Default: no limit |
 
 Notes:

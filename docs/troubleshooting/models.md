@@ -58,10 +58,12 @@ with the other layers. Check the points above, or pull the model with `ollama pu
   folder layout in [Configuration](../configuration.md#data-folder-cutpoint_home).
 - `panns` downloads the checkpoint from a Hugging Face copy of the Zenodo record (CC BY 4.0)
   first, then from Zenodo, and checks size and sha256. A source that fails or starts too slowly is
-  skipped. To use your own copy, set `CUTPOINT_PANNS_URL`; it is tried first.
+  skipped. The class-label list is fetched over https and checked by size and sha256. To use your own copy, set `CUTPOINT_PANNS_URL`; it is tried first.
 - `Could not download Cnn14_DecisionLevelMax_mAP=0.385.pth from any mirror`: every source failed;
   the message lists the reason for each. Check the network, run `cutpoint setup --only panns`
   again (partial downloads resume), or set `CUTPOINT_PANNS_URL`.
+- `voice` downloads the Silero VAD model pinned to release v6.2.3 and checks size and sha256.
+  `cutpoint setup` replaces an older copy; a download that fails the check keeps the file there before.
 - Disk space: see [Storage](storage.md#disk-space) for sizes. Move the data folder with `CUTPOINT_HOME` or
   `CUTPOINT_MODELS_DIR` if the system drive is small.
 

@@ -834,7 +834,7 @@ is missing, and notes that the check waits; the check
 runs when you save again after agreeing, and the first message checks it too. Another
 host (OpenRouter, a LAN server) may list its models without a key, so its key is checked when you
 send the first message. The API key is read from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or
-`XAI_API_KEY` when `cutpoint ui` starts, then from the system keyring (the Models tab has Save key and
+`XAI_API_KEY` when `cutpoint ui` starts, then from the native OS keyring (the Models tab has Save key and
 Clear key), then, only for a custom base URL, from `CUTPOINT_ASSISTANT_API_KEY`.
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `XAI_API_KEY` go only to `api.anthropic.com`,
 `api.openai.com` and `api.x.ai`, and `CUTPOINT_ASSISTANT_API_KEY` never goes to any of those
@@ -1637,7 +1637,7 @@ Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash 
 | `--force LAYER ...` | Recompute those layers |
 | `--only GLOB` | Only sources whose file name matches |
 | `--avoid "GLOB@START-END"` | Never decode this range (repeatable). Recorded read errors are always avoided |
-| `--game KEY`, `--player TAG` | HUD preset (`auto` or a preset key) and your in-game name(s) |
+| `--game KEY`, `--player TAG` | HUD preset (`auto` or a preset key: a name without `/`, `\`, `:` or NUL, not empty, `.` or `..`; otherwise `bad_args`) and your in-game name(s) |
 | `--discover-regions` / `--no-discover` | Force or disable HUD region discovery |
 | `--preset-scope {user,project}` | Where a discovered preset is saved |
 | `--max-windows N`, `--window S`, `--pre S`, `--post S`, `--window-at "GLOB@START-END"` | Model window count and geometry |
@@ -2238,7 +2238,7 @@ cutpoint resume <project> [--dry-run] [--json]
 
 Re-runs the last `analyze`, `edit`, `events`, `crashes`, `profile`, `360 analyze` or `clips` of a
 project that was interrupted or failed, from the command line recorded in its `progress.json`
-(see [Run lock and progress.json](#run-lock-and-progressjson)). `<project>` is resolved like
+(see [Run lock and progress.json](#run-lock-and-progressjson)); a `progress.json` whose recorded command line does not parse to the recorded command on this project is refused with an error and not run. `<project>` is resolved like
 the project of other commands (a bare name is in the projects folder). The recorded command
 runs in the recorded working directory with its recorded options, a `--force` among them;
 `resume` has no `--force` (it is a `bad_args` error, exit 2). Per-source caches make the rerun

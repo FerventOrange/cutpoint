@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache, procs
+from cutpoint import cache, folders, procs
 from cutpoint.ffmpeg_utils import exit_code
 from cutpoint.pano.project import (
     EQUIRECT_META_VERSION,
@@ -713,7 +713,9 @@ def stitch_clips(
                     }
                 )
                 continue
-            records.append(_stitch_one(c, cmd, part, out, out_dir, timeout_s))
+            # the stitched folder is shared by projects: one run per output (A660)
+            with folders.swap_lock(out):
+                records.append(_stitch_one(c, cmd, part, out, out_dir, timeout_s))
     return records
 
 

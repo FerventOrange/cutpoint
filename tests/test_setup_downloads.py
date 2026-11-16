@@ -24,6 +24,8 @@ def _panns_env(monkeypatch, tmp_path: Path, good: bytes, mirrors: tuple[str, ...
     monkeypatch.setattr(setup, "PANNS_CKPT_SHA256", hashlib.sha256(good).hexdigest())
     labels = write_bytes(tmp_path / "srv" / "labels.csv", b"a,b\n")
     monkeypatch.setattr(setup, "PANNS_LABELS_URL", labels)
+    monkeypatch.setattr(setup, "PANNS_LABELS_SIZE", 4)
+    monkeypatch.setattr(setup, "PANNS_LABELS_SHA256", hashlib.sha256(b"a,b\n").hexdigest())
     monkeypatch.setattr(ev_paths, "panns_ckpt", lambda: ckpt)
     monkeypatch.setattr(ev_paths, "panns_labels", lambda: tmp_path / "models" / "panns" / "l.csv")
     return ckpt
@@ -40,6 +42,60 @@ def test_corrupt_cached_archive_is_downloaded_again(tmp_path):
     dst.write_bytes(b"X" * len(data))  # same size, corrupt content
     setup.download(url, dst, len(data), hashlib.sha256(data).hexdigest())
     assert dst.read_bytes() == data
+
+
+def test_the_panns_labels_are_fetched_over_https_and_checked(tmp_path, monkeypatch):
+    """A650: a changed label CSV (it fixes the class order) is refused, not installed."""
+    assert setup.PANNS_LABELS_URL.startswith("https://")
+    pinned = setup.PANNS_LABELS_SIZE, setup.PANNS_LABELS_SHA256
+    good = b"good-checkpoint" * 20
+    _panns_env(monkeypatch, tmp_path, good, (write_bytes(tmp_path / "srv" / "g.pth", good),))
+    monkeypatch.delenv("CUTPOINT_PANNS_URL", raising=False)
+    monkeypatch.setattr(setup, "PANNS_LABELS_SIZE", pinned[0])
+    monkeypatch.setattr(setup, "PANNS_LABELS_SHA256", pinned[1])
+    with pytest.raises(RuntimeError, match="sha256 mismatch"):
+        setup.install_panns()
+    assert not ev_paths.panns_labels().exists()
+
+
+def test_the_silero_model_is_pinned_and_checked(tmp_path, monkeypatch):
+    """A651: a tag URL, and a model of other content is downloaded again, then refused."""
+    assert "/raw/v6.2.3/" in ev_paths.SILERO_URL and ev_paths.SILERO_URL.startswith("https://")
+    dst = write(tmp_path / "models" / "silero" / "silero_vad.onnx", b"old model")
+    served = b"X" * ev_paths.SILERO_SIZE  # right size, wrong content
+    monkeypatch.setattr(ev_paths, "SILERO_URL", write_bytes(tmp_path / "srv" / "s.onnx", served))
+    monkeypatch.setattr(ev_paths, "silero_vad", lambda: dst)
+    with pytest.raises(RuntimeError, match="sha256 mismatch"):
+        setup.install_voice()
+    # F2: a bad download never removes the model there before (another size: not checked)
+    assert dst.read_bytes() == b"old model"
+    assert not dst.with_name(dst.name + ".part").exists()
+
+
+def test_a_bad_download_keeps_the_file_there_before(tmp_path):
+    """F2: the sha256 is checked on the .part file; the older file of another size stays."""
+    url = write_bytes(tmp_path / "srv" / "new.bin", b"tampered")
+    dst = write(tmp_path / "out" / "m.bin", b"older working model")
+    with pytest.raises(RuntimeError, match="sha256 mismatch"):
+        setup.download(url, dst, 8, hashlib.sha256(b"expected").hexdigest())
+    assert dst.read_bytes() == b"older working model"
+    assert not dst.with_name("m.bin.part").exists()
+
+
+@pytest.mark.parametrize("served", ["missing", "bad_sha"])
+def test_a_same_size_older_file_stays_when_the_new_download_fails(tmp_path, served):
+    """Windows review W2: a file of the right size but another sha256 (an older release) is
+    kept until a checked download replaces it."""
+    good = b"new-model" * 10
+    old = b"old-model" * 10  # same size
+    dst = write(tmp_path / "out" / "m.bin", old)
+    srv = tmp_path / "srv" / "m.bin"
+    url = srv.as_uri() if served == "missing" else write_bytes(srv, b"bad-model" * 10)
+    with pytest.raises((RuntimeError, OSError)):
+        setup.download(url, dst, len(good), hashlib.sha256(good).hexdigest())
+    assert dst.read_bytes() == old
+    setup.download(write_bytes(srv, good), dst, len(good), hashlib.sha256(good).hexdigest())
+    assert dst.read_bytes() == good
 
 
 # -- #30: PANNs checkpoint mirrors ----------------------------------------------------------------

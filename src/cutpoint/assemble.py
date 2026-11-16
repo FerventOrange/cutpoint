@@ -113,7 +113,7 @@ def _peak_tagged(path: Path) -> bool:
     """Whether ``path`` carries :data:`~cutpoint.encode.PEAK_TAG` (its container comment)."""
     try:
         comment = run(["ffprobe", "-v", "error", "-show_entries", "format_tags=comment",
-                       "-of", "default=nw=1:nk=1", str(path)])  # fmt: skip
+                       "-of", "default=nw=1:nk=1", "-i", str(path)])  # fmt: skip
     except FFmpegError:
         return False
     return PEAK_TAG in comment

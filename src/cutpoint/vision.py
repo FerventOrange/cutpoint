@@ -219,12 +219,12 @@ def _host_port(url: str) -> str:
     return providers.host_port(url)
 
 
-def _ollama_consent_key(url: str) -> str | None:
-    """The ``vision-v2:`` key an Ollama at ``url`` needs (None: on this machine), as the Models
-    tab of cutpoint ui saves it."""
+def _ollama_consent_key(url: str, role: str = "vision") -> str | None:
+    """The ``vision-v2:`` key (``role`` "assistant": ``assistant-v3:``) an Ollama at ``url``
+    needs (None: on this machine), as the Models tab of cutpoint ui saves it."""
     from cutpoint.assistant import providers  # noqa: PLC0415
 
-    return providers.consent_key(providers.OllamaProvider(url, "", 0), "vision")
+    return providers.consent_key(providers.OllamaProvider(url, "", 0), role)
 
 
 def _consent_message(lead: str, key: str, skipping: str = "skipping vision") -> str:
@@ -415,8 +415,18 @@ class VisionRater:
     """
 
     def __init__(
-        self, url: str | None = None, model: str | None = None, *, local_only: bool = False
+        self,
+        url: str | None = None,
+        model: str | None = None,
+        *,
+        local_only: bool = False,
+        consent: str = "vision",
     ) -> None:
+        """``consent``: what the Ollama on another machine needs before a request goes there:
+        ``"vision"`` (frames: the Vision consent) or ``"chat"`` (whole transcripts for the
+        dialogue reader, with ``local_only``: the AI Chat consent of that server, #644)."""
+        if consent not in ("vision", "chat"):
+            raise ValueError(f"consent must be 'vision' or 'chat', not {consent!r}")
         cfg = get_config()
         v_ast = cfg.vision_assistant
         explicit = bool(url or model)  # given on the command line: they win (#805)
@@ -425,7 +435,7 @@ class VisionRater:
         env_model = paths.env("VISION_MODEL")
         # the vision-v2: key the provider still needs (an Ollama on another machine, or the
         # hosted provider of self.via); None: on this machine or agreed to
-        self.consent_needed: str | None = None
+        self._consent_needed: str | None = None
         self.local_only = local_only  # activity detection: the Ollama only, never self.via
         if self.via:
             self.model = self.via.model
@@ -433,7 +443,7 @@ class VisionRater:
             self.provider_name = self.via.provider.name
             # the cache key's host (rating_key): one model id on two servers rates apart
             self.host = _endpoint(self.via.provider)
-            self.consent_needed = self.via.consent_needed
+            self._consent_needed = self.via.consent_needed
         else:
             self.provider_name = "ollama"
             self.model = (
@@ -457,8 +467,11 @@ class VisionRater:
             # an Ollama on another machine is hosted, as for AI Chat: frames go there only once
             # the user agreed to it for Vision (the Models tab of cutpoint ui). Activity
             # detection (local_only) too: it sends frames and the user's words
-            want = _ollama_consent_key(self.url)
-            self.consent_needed = want if want is not None and want not in v_ast.consent else None
+            if consent == "chat":
+                want, agreed = _ollama_consent_key(self.url, "assistant"), cfg.assistant.consent
+            else:
+                want, agreed = _ollama_consent_key(self.url), v_ast.consent
+            self._consent_needed = want if want is not None and want not in agreed else None
         self.used = False  # True once a request went to the model: unload() frees it
         # the context (num_ctx) of the last request to Ollama; the memory guard's (#732)
         self.num_ctx: int | None = None
@@ -493,6 +506,13 @@ class VisionRater:
         self.context: str | None = None
         # per source: (cache file, its ratings), or None when the source cannot be keyed
         self._ratings: dict[Path, tuple[Path, dict[str, Any]] | None] = {}
+
+    @property
+    def consent_needed(self) -> str | None:
+        """The consent key the provider still needs (None: on this machine or agreed to), as
+        computed for this rater's ``consent``; read-only, so no caller can switch the guard of
+        every request off (A644)."""
+        return self._consent_needed
 
     def available(self) -> bool:
         """True if the server answers and has the model pulled; records the model's
@@ -636,7 +656,8 @@ class VisionRater:
             endpoint = "chat"
         else:
             payload |= {
-                "prompt": f"<|im_start|>user\n{prompt}<|im_end|>\n"
+                # "<|" in the text (a transcript can hold <|im_end|>) would end the user turn
+                "prompt": f"<|im_start|>user\n{prompt.replace('<|', '< |')}<|im_end|>\n"
                 "<|im_start|>assistant\n<think>\n\n</think>\n\n",
                 "raw": True,
                 "options": options,
@@ -1072,6 +1093,8 @@ class VisionRater:
         """
         if self.via:
             return True
+        if self.consent_needed:  # as every request: none to an Ollama without the consent
+            return False
         body: dict[str, Any] = {"model": self.model}
         if num_ctx is not None:
             num_ctx = self._context(num_ctx)
@@ -1098,7 +1121,7 @@ class VisionRater:
         """Whether Ollama holds any of the loaded model in GPU memory (``size_vram`` of
         ``/api/ps``): False when it runs on the CPU alone; None when not known (a hosted
         Vision role, the model not loaded, no answer)."""
-        if self.via:
+        if self.via or self.consent_needed:
             return None
         try:
             resp = requests.get(f"{self.url}/api/ps", timeout=(1, 3), allow_redirects=False)

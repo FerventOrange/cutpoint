@@ -53,8 +53,8 @@ def guardian_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     backend = tmp_path / "synthetic_keyring.py"
     backend.write_text(_BACKEND, encoding="utf-8")
     (tmp_path / "sitecustomize.py").write_text(
-        "from cutpoint.assistant.proxy_credentials import CredentialStore\n"
-        "CredentialStore._select_os_backend = staticmethod(lambda module: module.get_keyring())\n",
+        "from cutpoint.assistant import keys\n"
+        "keys.os_backend = lambda module: module.get_keyring()\n",
         encoding="utf-8",
     )
 

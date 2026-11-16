@@ -16,6 +16,7 @@ The executables are located (in order) via the ``CUTPOINT_FFMPEG`` /
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import os
@@ -88,7 +89,7 @@ def find_tool(name: str) -> str:
     env = paths.env(name.upper())
     if env and Path(env).is_file():
         return env
-    on_path = shutil.which(name)
+    on_path = _on_path(name)
     if on_path:
         return on_path
     if sys.platform != "win32":
@@ -96,22 +97,40 @@ def find_tool(name: str) -> str:
             f"{name} not found. Install ffmpeg with your package manager (e.g. "
             f"sudo apt install ffmpeg) or set CUTPOINT_{name.upper()}=/path/to/{name}."
         )
+    local = os.environ.get("LOCALAPPDATA", "")
     roots = [
-        Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links",
-        Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Packages",
+        # no LOCALAPPDATA: no WinGet folders (not ones relative to the current folder)
+        *(
+            [Path(local) / "Microsoft" / "WinGet" / d for d in ("Links", "Packages")]
+            if local
+            else []
+        ),
         Path("C:/ffmpeg/bin"),
         Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "ffmpeg" / "bin",  # noqa: SIM112 - Windows spelling
     ]
     for root in roots:
-        if not root.is_dir():
+        if not root.is_absolute() or not root.is_dir():
             continue
         hits = sorted(root.glob(f"**/{name}.exe"), key=lambda p: len(str(p)))
         if hits:
+            # a guessed folder (C:/ffmpeg/bin can be made by any local user): say which
+            logger.info("Using %s (not on PATH)", hits[0])
             return str(hits[0])
     raise FFmpegNotFoundError(
         f"{name} not found. Install it (winget install --id Gyan.FFmpeg -e) or set "
         f"the CUTPOINT_{name.upper()} environment variable to the full path of {name}.exe."
     )
+
+
+def _on_path(name: str) -> str | None:
+    """``shutil.which(name)`` over the absolute folders of ``PATH`` only: on Windows a plain
+    lookup tries the current folder first, so an ``ffmpeg.exe`` in the footage folder
+    cutpoint runs from would win (A664)."""
+    for folder in os.environ.get("PATH", "").split(os.pathsep):
+        hit = shutil.which(str(Path(folder) / name)) if Path(folder).is_absolute() else None
+        if hit:
+            return hit
+    return None
 
 
 def stage_inputs(cmd: list[str]) -> list[str]:
@@ -1409,9 +1428,37 @@ _PTS_RE = re.compile(rb"pts_time:\s*([-\d.]+)")
 _PTS_WAIT_S = 30.0  # showinfo logs a frame before it is written; a lag this long is a bug
 
 
+# Protocols an ffmpeg input may open: a "video" that is really a playlist or a concat
+# script must not make ffmpeg fetch URLs or open concat:/subfile: paths (A665).
+INPUT_PROTOCOLS = "file,pipe"
+
+
+def limit_protocols(cmd: list[str]) -> list[str]:
+    """``cmd`` with ``-protocol_whitelist`` :data:`INPUT_PROTOCOLS` before every ``-i``
+    (also what the input opens: a concat list's files); not for a ``-f lavfi`` input (a
+    filter graph, no file) or one that sets its own."""
+    out: list[str] = []
+    group: list[str] = []  # the options of the input being read
+    i = 0
+    while i < len(cmd):
+        if cmd[i] == "-i" and i + 1 < len(cmd):
+            lavfi = any(a == "-f" and b == "lavfi" for a, b in itertools.pairwise(group))
+            if not lavfi and "-protocol_whitelist" not in group:
+                out += ["-protocol_whitelist", INPUT_PROTOCOLS]
+            out += cmd[i : i + 2]
+            group = []
+            i += 2
+            continue
+        out.append(cmd[i])
+        group.append(cmd[i])
+        i += 1
+    return out
+
+
 def _command(tool: str, args: Sequence[str]) -> list[str]:
-    """Full argv for ``tool`` with every ``-i`` input redirected to its staged copy."""
-    return stage_inputs([find_tool(tool), *args])
+    """Full argv for ``tool`` with every ``-i`` input redirected to its staged copy, and
+    limited to local files and pipes (:func:`limit_protocols`)."""
+    return limit_protocols(stage_inputs([find_tool(tool), *args]))
 
 
 def _tail(stderr: bytes | str, n: int = _STDERR_TAIL) -> str:

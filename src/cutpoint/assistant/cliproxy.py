@@ -30,7 +30,7 @@ from typing import Any
 import requests
 
 from cutpoint import folders, paths
-from cutpoint.assistant import proxy_tls
+from cutpoint.assistant import keys, proxy_tls
 from cutpoint.assistant.keys import KeyringError
 from cutpoint.assistant.private_files import private_directory, private_file
 from cutpoint.assistant.proxy_credentials import checkpoint
@@ -103,9 +103,11 @@ _PROHIBITED_ENV_EXACT = {
 
 
 def _sanitize_daemon_env() -> dict[str, str]:
-    """Strip pinned upstream store, deployment and management authentication overrides."""
+    """This process's environment without the API key variables (:func:`keys.child_env`: the
+    guardian and the daemon need none) and the pinned upstream store, deployment and
+    management authentication overrides."""
     cleaned: dict[str, str] = {}
-    for k, v in os.environ.items():
+    for k, v in keys.child_env().items():
         k_lower = k.lower()
         if (
             any(k_lower.startswith(p) for p in _PROHIBITED_ENV_PREFIXES)
@@ -264,6 +266,8 @@ def _read_keys_file() -> tuple[str, str, int] | None:
         client = data.get("client_api_key", "")
         p = int(data.get("port") or DEFAULT_PORT)
         if mgmt and client:
+            keys._remember(mgmt)  # redacted in this process's log records too
+            keys._remember(client)
             return mgmt, client, p
     except (ValueError, json.JSONDecodeError):
         return None
@@ -274,6 +278,8 @@ def _ensure_keys(target_port: int | None = None) -> tuple[str, str]:
     p = target_port or port()
     mgmt = secrets.token_hex(32)
     client = secrets.token_hex(32)
+    keys._remember(mgmt)  # redacted in this process's log records too
+    keys._remember(client)
     _write_private_file(
         keys_path(),
         json.dumps(
@@ -314,6 +320,32 @@ def _is_daemon_owned() -> bool:
     return not folders._lock_stale(lock, found[1])
 
 
+def _error_text(resp: requests.Response) -> Any:
+    """The ``error`` or ``message`` of an error answer that is a JSON object, else its text."""
+    try:
+        body = resp.json()
+    except (ValueError, json.JSONDecodeError):
+        return resp.text
+    if not isinstance(body, dict):
+        return resp.text
+    return body.get("error") or body.get("message") or resp.text
+
+
+def _json_object(resp: requests.Response) -> dict[str, Any]:
+    """The answer's JSON object.
+
+    Raises:
+        ProxyError: It is not JSON, or not an object.
+    """
+    try:
+        data = resp.json()
+    except (ValueError, json.JSONDecodeError) as err:
+        raise ProxyError(redact(f"proxy returned invalid JSON: {err}")) from err
+    if not isinstance(data, dict):
+        raise ProxyError(f"proxy returned JSON that is not an object ({type(data).__name__})")
+    return data
+
+
 def _management_request(
     method: str,
     path: str,
@@ -346,17 +378,9 @@ def _management_request(
         raise ProxyConnectionError(redact(f"proxy connection failed: {err}")) from err
 
     if not resp.ok:
-        try:
-            body = resp.json()
-            err_msg = body.get("error") or body.get("message") or resp.text
-        except (ValueError, json.JSONDecodeError):
-            err_msg = resp.text
-        clean_msg = redact(f"proxy error {resp.status_code}: {err_msg}")
+        clean_msg = redact(f"proxy error {resp.status_code}: {_error_text(resp)}")
         raise ProxyHTTPError(clean_msg, resp.status_code)
-    try:
-        return resp.json()
-    except (ValueError, json.JSONDecodeError) as err:
-        raise ProxyError(redact(f"proxy returned invalid JSON: {err}")) from err
+    return _json_object(resp)
 
 
 def _client_request(
@@ -391,18 +415,10 @@ def _client_request(
         raise ProxyConnectionError(redact(f"proxy inference request failed: {err}")) from err
 
     if not resp.ok:
-        try:
-            body = resp.json()
-            err_msg = body.get("error") or body.get("message") or resp.text
-        except (ValueError, json.JSONDecodeError):
-            err_msg = resp.text
-        clean_msg = redact(f"proxy inference error {resp.status_code}: {err_msg}")
+        clean_msg = redact(f"proxy inference error {resp.status_code}: {_error_text(resp)}")
         raise ProxyHTTPError(clean_msg, resp.status_code)
 
-    try:
-        return resp.json()
-    except (ValueError, json.JSONDecodeError) as err:
-        raise ProxyError(redact(f"proxy returned invalid JSON: {err}")) from err
+    return _json_object(resp)
 
 
 def _ensure_credential_prefixes() -> None:
@@ -772,8 +788,10 @@ def _install_binary(dst_dir: Path) -> Path:
 
     filename, sha256 = _detect_platform_asset()
     url = f"{BASE_RELEASE_URL}/{filename}"
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    dst_dir.chmod(0o700)
+    try:
+        private_directory(dst_dir)  # also on Windows: nobody else may swap the binary
+    except OSError as err:
+        raise ProxyError(f"cannot protect the CLIProxyAPI folder {dst_dir}: {err}") from err
     archive_dst = dst_dir / filename
     try:
         download(url=url, dst=archive_dst, sha256=sha256)

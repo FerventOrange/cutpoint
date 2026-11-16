@@ -77,8 +77,11 @@ AESTHETIC_SHA256 = "8aa479a5065da0ad9941938da7f5ef8eeb66df8bf91385a8381557ee511f
 PANNS_MIN_RATE = 500_000
 SLOW_START_WINDOW = 20.0
 PANNS_LABELS_URL = (
-    "http://storage.googleapis.com/us_audioset/youtube_corpus/v1/csv/class_labels_indices.csv"
+    "https://storage.googleapis.com/us_audioset/youtube_corpus/v1/csv/class_labels_indices.csv"
 )
+# the CSV fixes the class order every PANNs grid is read in: a changed file is refused
+PANNS_LABELS_SIZE = 14675
+PANNS_LABELS_SHA256 = "cdd1049833c4b86127c2773ac0d14a2754b6a6d0d1798002ed5c66e699708429"
 
 # Import names of the ``events`` extra (see pyproject.toml).
 EVENTS_MODULES = (
@@ -162,8 +165,8 @@ def download(
         if sha256 is None or _sha256(dst) == sha256:
             logger.info("have %s", dst.name)
             return dst
+        # kept until a checked download replaces it: a failed one leaves it as it was
         logger.warning("%s does not match its sha256; downloading it again", dst.name)
-        dst.unlink()
     dst.parent.mkdir(parents=True, exist_ok=True)
     have = part.stat().st_size if part.exists() else 0
     req = urllib.request.Request(url, headers={"User-Agent": "cutpoint-setup"})
@@ -194,11 +197,17 @@ def download(
                 if total and done / total >= next_log:
                     logger.info("%s %5.1f%% of %.2f GB", dst.name, 100 * done / total, total / 1e9)
                     next_log += 0.1
-    part.replace(dst)
-    if sha256 is not None and (actual := _sha256(dst)) != sha256:
-        dst.unlink(missing_ok=True)
+    # checked before it replaces dst: a bad download never removes a working older file
+    if sha256 is not None and (actual := _sha256(part)) != sha256:
         part.unlink(missing_ok=True)
         raise RuntimeError(f"{dst.name}: sha256 mismatch (expected {sha256}, got {actual})")
+    if (
+        sha256 is None
+        and expected_size is not None
+        and (got := part.stat().st_size) != (expected_size)
+    ):  # cut short: the .part stays for the next run to resume
+        raise RuntimeError(f"{dst.name}: {got} bytes downloaded, expected {expected_size}")
+    part.replace(dst)
     return dst
 
 
@@ -223,7 +232,7 @@ def install_panns() -> None:
     The checkpoint comes from the first of ``PANNS_CKPT_MIRRORS`` that works,
     preceded by ``CUTPOINT_PANNS_URL`` when that environment variable is set.
     """
-    download(PANNS_LABELS_URL, paths.panns_labels())
+    download(PANNS_LABELS_URL, paths.panns_labels(), PANNS_LABELS_SIZE, PANNS_LABELS_SHA256)
     urls = list(PANNS_CKPT_MIRRORS)
     if env_url := os.environ.get("CUTPOINT_PANNS_URL", "").strip():
         urls = [env_url, *(u for u in urls if u != env_url)]
@@ -338,7 +347,7 @@ def install_whisper(model: str | None = None) -> dict[str, str]:
 
 def install_voice() -> None:
     """Download the Silero VAD ONNX model."""
-    download(paths.SILERO_URL, paths.silero_vad())
+    download(paths.SILERO_URL, paths.silero_vad(), paths.SILERO_SIZE, paths.SILERO_SHA256)
 
 
 def add_arguments(ap: argparse.ArgumentParser) -> None:

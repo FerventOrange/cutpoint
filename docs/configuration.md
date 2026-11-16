@@ -378,7 +378,7 @@ host of its base URL. It is taken, in order, from:
 | Source | Used for |
 |---|---|
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY` | that provider's own host only: `api.anthropic.com` / `api.openai.com` / `api.x.ai`. An OpenAI key is never sent to OpenRouter, a LAN server or a server on this machine, and an xAI key never anywhere but `api.x.ai` (not to the `openai` provider with an `api.x.ai` URL either) |
-| The system keyring (service `cutpoint`) | saved from the Models tab (Save key) for the provider and base URL saved there. The user is `anthropic`, `openai` or `xai` for the provider's own host, else `<provider>@<host>` (for example `openai@openrouter.ai`) |
+| The native OS keyring (a plaintext backend such as keyrings.alt is never used; service `cutpoint`) | saved from the Models tab (Save key) for the provider and base URL saved there. The user is `anthropic`, `openai` or `xai` for the provider's own host, else `<provider>@<host>` (for example `openai@openrouter.ai`) |
 | `CUTPOINT_ASSISTANT_API_KEY` | custom and self-hosted base URLs only (for example an OpenRouter key, or a key for your own server). Never sent to `api.anthropic.com`, `api.openai.com` or `api.x.ai`, not even when no other key is set: those need their own variable or a keyring key. The [Vision role](#vision_assistant) uses it only when its key goes to the same host as the assistant's (an API provider); for another host, save the Vision key in the Models tab |
 
 A preset's key is for its own host, so it can be saved before the settings. For a custom base
@@ -568,7 +568,7 @@ digest and the first guess, so later runs and every step read the same key witho
 again; a changed file or a changed first guess is checked again. The file also keeps the first
 name of each folder of date-named videos, so deleting the oldest recording or a folder that is
 offline changes no key. To skip the check, name the
-game with `--game KEY` or add a `match` hint to its preset (neither is checked); to check every
+game with `--game KEY` or add a `match` hint to its preset (neither is fit-checked; a `--game` key must be a plain name: no `/`, `\`, `:`, NUL, empty, `.` or `..`, else `bad_args`; a preset whose `game` is such a name is still used for reading, with a WARNING, but is not refitted or discovered again); to check every
 source again, run with `--discover-regions`.
 
 The OCR layer also keeps its raw read of each source (the text it read per frame) in the source's

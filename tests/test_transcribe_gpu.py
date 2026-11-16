@@ -52,6 +52,42 @@ def test_loadable_cuda_libs_choose_cuda_silently(nvidia_device, monkeypatch, cap
     assert hints(caplog) == []
 
 
+def test_windows_probe_never_loads_a_dll_from_the_current_folder(
+    nvidia_device, monkeypatch, tmp_path
+):
+    """A643: the current folder leaves the DLL search before the probe; the wheels' bin
+    folders are added first, and the CUDA DLLs are probed by name, never by absolute path (a
+    wheel's DLL loaded by path binds to torch's loaded copies: WinError 127). A name that does
+    not load is reported missing."""
+    site = tmp_path / "site"
+    bin_dir = site / "nvidia" / "cublas" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "cublas64_12.dll").write_bytes(b"")
+    calls: list[tuple] = []
+    gone = transcribe._CUDA_LIBS["win32"][-1]
+
+    def load(name, **kw):
+        calls.append(("load", name, kw.get("winmode")))
+        if name == gone:
+            raise OSError(name)
+
+    kernel32 = types.SimpleNamespace(SetDllDirectoryW=lambda d: calls.append(("dir", d)))
+    monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(kernel32=kernel32), raising=False)
+    monkeypatch.setattr(ctypes, "WinDLL", load, raising=False)
+    monkeypatch.setattr(
+        transcribe.os, "add_dll_directory", lambda d: calls.append(("add", d)), raising=False
+    )
+    monkeypatch.setattr(transcribe.sys, "platform", "win32")
+    monkeypatch.setattr(transcribe.sys, "path", [str(site)])
+    monkeypatch.setattr(transcribe, "_dll_dirs_added", False)
+    monkeypatch.setenv("PATH", "")
+    assert transcribe.cuda_available() is False
+    assert calls[:2] == [("dir", ""), ("add", str(bin_dir))]
+    loads = [c[1:] for c in calls if c[0] == "load"]
+    assert loads == [(n, 0) for n in transcribe._CUDA_LIBS["win32"]]  # bare names only
+    assert transcribe._missing_cuda_libs() == [gone]
+
+
 class FakeTorchFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     """Serves a fake ``torch`` through the real import machinery and records the import."""
 

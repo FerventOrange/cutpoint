@@ -208,6 +208,8 @@ def validate_stitch_args(args: list[str]) -> list[str]:
     out = [str(a) for a in args]
     for i, a in enumerate(out):
         value = out[i + 1] if i + 1 < len(out) else None
+        if a in ("-output", "-inputs"):  # cutpoint sets them; a second one goes unchecked
+            raise ValueError(f"{a} is set by cutpoint; remove it from pano.stitch_args")
         if a == "-stitch_type" and value not in STITCH_TYPES:
             raise ValueError(
                 f"Unsupported -stitch_type {value!r} in pano.stitch_args "
