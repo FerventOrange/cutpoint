@@ -68,7 +68,7 @@ from cutpoint.events.feed_labels import (
 )
 from cutpoint.events.regions import REF_H, Region, clamp_box, letters, marker_seen
 from cutpoint.imageio import read_image
-from cutpoint.utils import context_block, context_hash
+from cutpoint.utils import context_block, context_hash, file_stamp
 
 logger = logging.getLogger(__name__)
 
@@ -1004,11 +1004,8 @@ def _tried_key(game: str, model: str) -> str:
 
 
 def _stamp(path: Any) -> list[int] | None:
-    try:
-        st = Path(path).stat()
-    except OSError:
-        return None
-    return [st.st_size, st.st_mtime_ns]
+    stamp = file_stamp(Path(path))
+    return None if stamp is None else [stamp[1], stamp[0]]
 
 
 def tried(game: str, model: str, preset_path: Any) -> bool:

@@ -13,13 +13,13 @@ trimmed by a read error are never taken over. Nothing in the resume folder is ev
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Any
 
 from cutpoint import __version__, cache, folders
 from cutpoint.encode import Grade, Lut, OutputFormat
+from cutpoint.utils import file_stamp
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +60,9 @@ def clip_key(
 
 
 def _stamp(path: Path) -> list[int] | None:
-    try:
-        st = os.stat(path)  # noqa: PTH116 - one call for size and mtime
-    except OSError:
-        return None
-    return [st.st_size, st.st_mtime_ns]
+    """``[size, mtime_ns]`` of ``path``, or None when it cannot be stat-ed."""
+    stamp = file_stamp(path)
+    return None if stamp is None else [stamp[1], stamp[0]]
 
 
 class ClipResume:
