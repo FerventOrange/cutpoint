@@ -873,6 +873,9 @@ def _ask(
     return json.dumps(data), {"prompt_tokens": rater.last_prompt_tokens}
 
 
+MAX_FAILS_IN_A_ROW = 3  # windows without a reply in a row after which the layer stops
+
+
 def describe_windows(
     server: VisionRater | None,
     sources: dict[str, Source],
@@ -882,6 +885,7 @@ def describe_windows(
     transcript_lines: list[dict[str, Any]],
     layer1: dict[str, list[dict[str, Any]]],
     force: bool = False,
+    fails: int = 0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Describe every window (cached per source + window + parameters).
 
@@ -894,7 +898,9 @@ def describe_windows(
         prompts: ``{source_path: game prompt}`` (missing: a generic video game).
         transcript_lines: Parsed transcript.txt.
         layer1: Layer-1 events per source (for hints).
-        force: Ignore cached results.
+        force: Ignore cached results (until the layer has stopped).
+        fails: Windows in a row without a usable reply before this call (a batch before);
+            ``stats["streak"]`` gives the count at its end.
 
     Returns:
         (window results, stats).
@@ -917,11 +923,11 @@ def describe_windows(
             caches[win.source] = (cpath, cache.load_json(cpath) or {"windows": {}})
         cpath, store = caches[win.source]
         hit = store["windows"].get(win.key)
-        if hit and not force:
+        if hit and (not force or "stopped" in stats):
             stats["cached"] += 1
             results.append({**hit, "reasons": win.reasons, "priority": win.priority})
             continue
-        if server is None:
+        if server is None or "stopped" in stats:  # a stopped layer keeps only the cache
             continue
         t0 = time.perf_counter()
         frames = grab_frames(
@@ -945,6 +951,7 @@ def describe_windows(
             layer1.get(win.source, []),
         )
         parsed, usage, err = None, {}, None
+        timed_out = False
         for attempt in range(2):
             try:
                 text, usage = _ask(server, msgs, params, attempt)
@@ -954,11 +961,20 @@ def describe_windows(
             except (VlmRequestError, KeyError, ValueError) as e:  # retry once
                 err = str(e)
                 logger.warning("%s %s: VLM request failed: %s", src.name, win.key, e)
+                if getattr(server, "timed_out", False) is True:
+                    timed_out = True  # a stalled server: no retry of this window
+                    break
         elapsed = round(time.perf_counter() - t0, 1)
         if not parsed:
             stats["failed"] += 1
             logger.warning("%s %s: unusable VLM reply (%s)", src.name, win.key, err)
+            fails += 1
+            if timed_out:
+                stats["stopped"] = "a request to the vision model timed out"
+            elif fails >= MAX_FAILS_IN_A_ROW:
+                stats["stopped"] = f"{fails} requests in a row failed"
             continue
+        fails = 0
         rec = {
             "source": win.source,
             "start": win.start,
@@ -987,6 +1003,7 @@ def describe_windows(
             parsed["label"],
             parsed["summary"][:100],
         )
+    stats["streak"] = fails
     return results, stats
 
 
