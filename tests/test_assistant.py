@@ -482,6 +482,14 @@ def test_cut_result_keeps_the_text_around_the_block_and_short_results() -> None:
     assert cut.startswith("before\n<<<DATA t>>>\n") and len(cut) <= len(text) - 1
     assert "\n<<<END DATA>>>\n(" in cut and cut.count("y" * 10) < 10
     assert cut.endswith("left out: the result is too long)\nafter") and len(cut) <= len(text) - 1
+    # one row longer than the cap (a moment with a long transcript): its start is kept
+    row = context.cut_result(context.data_block("moment", "y" * 8000), 6000)
+    assert len(row) <= 6000 and row.count("y") > 5000
+    assert row.endswith("<<<END DATA>>>\n(the first line is cut: the result is too long)")
+    two = context.cut_result(context.data_block("m", "y" * 8000 + "\nz"), 6000)
+    assert len(two) <= 6000 and two.endswith(
+        "cut and the other 1 left out: the result is too long)"
+    )
     # no room for the block: the open block goes, nothing else is left behind
     assert context.cut_result(text, 20) == "before\n"
     assert context.cut_result("z" * 50, 10) == "z" * 10

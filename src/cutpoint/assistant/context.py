@@ -234,8 +234,8 @@ def data_block(kind: str, body: str) -> str:
 
 def cut_result(text: str, limit: int = MAX_RESULT_CHARS) -> str:
     """``text`` (a tool result) within ``limit`` characters. A data block loses whole lines
-    from its end but keeps its end marker, with a note of the lines left out after it; the
-    text around the block stays. Markers inside a body are broken up by :func:`data_block`,
+    from its end (a first line too long alone keeps its start) but keeps its end marker, with
+    a note of what was left out after it; the text around the block stays. Markers inside a body are broken up by :func:`data_block`,
     so the first ones found are the block's own."""
     if len(text) <= limit:
         return text
@@ -253,7 +253,13 @@ def cut_result(text: str, limit: int = MAX_RESULT_CHARS) -> str:
         while kept < len(lines) and used + 1 + len(lines[kept]) <= room:
             used += 1 + len(lines[kept])
             kept += 1
-        if room >= 0:
+        if kept == 0:  # one long row (a moment with its whole transcript): keep its start
+            rest = f" and the other {len(lines) - 1} left out" if len(lines) > 1 else ""
+            left = f"\n(the first line is cut{rest}: the result is too long)"
+            room = limit - len(head) - len(close) - len(after) - len(left)
+            if room > 1:
+                return head + lines[0][: room - 1] + "…" + close + left + after
+        elif room >= 0:
             left = note.format(len(lines) - kept, len(lines))
             return head + "\n".join(lines[:kept]) + close + left + after
     # no block, or the text around it alone is too long: cut, and drop a block left open
