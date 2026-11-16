@@ -37,6 +37,9 @@ def test_command_limits_the_protocols(monkeypatch) -> None:
 
 
 def _exe(path):
+    """An executable ``path`` (``.exe`` added on Windows, where ``shutil.which`` needs it)."""
+    if os.name == "nt":
+        path = path.with_name(path.name + ".exe")
     write(path, "#!/bin/sh\n")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return path
@@ -55,7 +58,7 @@ def test_a_tool_in_a_relative_path_folder_is_not_used(tmp_path, monkeypatch, fre
     _exe(tmp_path / "ffmpeg")  # planted in the current folder, which PATH names as "."
     real = _exe(tmp_path / "bin" / "ffmpeg")
     monkeypatch.setenv("PATH", os.pathsep.join([".", "", str(real.parent)]))
-    assert fu._on_path("ffmpeg") == str(real)
+    assert os.path.normcase(fu._on_path("ffmpeg") or "") == os.path.normcase(str(real))
     monkeypatch.setenv("PATH", ".")
     assert fu._on_path("ffmpeg") is None
 

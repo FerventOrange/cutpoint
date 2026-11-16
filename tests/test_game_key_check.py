@@ -63,22 +63,39 @@ def test_discovery_refuses_a_path_as_game(tmp_path: Path, monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("game", ["../../escaped", "Made Up: Game"])
-def test_a_preset_game_that_is_no_plain_name_falls_back_to_the_first_guess(
+def test_a_preset_game_that_is_no_plain_name_is_kept_but_not_rediscovered(
     tmp_path: Path, monkeypatch, caplog, game: str
 ) -> None:
     """A project preset whose ``game`` is a path or holds ":" and whose ``match`` hint names
-    the source: a WARNING naming the preset, and the source's first guess names its files."""
+    the source: a WARNING naming the preset; no discovery runs and no preset is written."""
+    project = tmp_path / "proj"
+    presets = project / "hud_presets"
+    presets.mkdir(parents=True)
+    preset = presets / "x.json"
+    preset.write_text(json.dumps({"game": game, "match": ["session"], "regions": []}), "utf-8")
+    monkeypatch.setattr(pipeline, "load_preset", lambda key, project=None: key == game or None)
+    before = sorted(tmp_path.rglob("*"))
+    with caplog.at_level("WARNING"):
+        ran = _discover(project, monkeypatch, "auto")
+    assert ran == [] and sorted(tmp_path.rglob("*")) == before
+    (warning,) = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert str(preset) in warning and repr(game) in warning and "not refitted" in warning
+
+
+def test_a_preset_game_that_is_no_plain_name_and_does_not_load_uses_the_first_guess(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
     from cutpoint.events import regions  # noqa: PLC0415
 
     project = tmp_path / "proj"
     presets = project / "hud_presets"
     presets.mkdir(parents=True)
     preset = presets / "x.json"
-    preset.write_text(json.dumps({"game": game, "match": ["session"], "regions": []}), "utf-8")
+    preset.write_text(json.dumps({"game": "a/b", "match": ["session"]}), "utf-8")
+    monkeypatch.setattr(pipeline, "load_preset", lambda key, project=None: None)
     with caplog.at_level("WARNING"):
         ran = _discover(project, monkeypatch, "auto")
     guess = regions.first_guess("/synthetic/footage/session.mp4", project)
     assert [a[1] for a in ran] == [project / "discovery" / guess]
-    (warning,) = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
-    assert str(preset) in warning and repr(game) in warning
-    assert not (tmp_path / "escaped").exists()
+    assert any(str(preset) in r.getMessage() for r in caplog.records)
+    assert not (tmp_path / "a").exists()

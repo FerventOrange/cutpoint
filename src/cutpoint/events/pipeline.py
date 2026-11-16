@@ -1188,8 +1188,10 @@ def _discover(
         except jsonout.ArgumentError:
             if named:
                 raise
-            # a preset's ``game`` that is no plain name ("Rainbow Six: Siege"): its discovery
-            # files get the source's first guess instead of a path made from it
+            # a preset's ``game`` that is no plain name ("Rainbow Six: Siege"): no path is
+            # made from it. A preset that loads is still read with (OCR finds it by that
+            # key) but is not refitted, topped up or discovered again; else the source gets
+            # its first guess
             preset = next(
                 (
                     p
@@ -1198,15 +1200,18 @@ def _discover(
                 ),
                 None,
             )
+            loads = load_preset(key, project) is not None
             guess = hud.first_guess(path, project)
             logger.warning(
-                "HUD preset %s names its game %r, which is no plain name (no /, \\, :, '..'); "
-                "using %r for %s",
+                "HUD preset %s names its game %r, which is no plain name (no /, \\, :, '..'); %s",
                 preset or "(unknown file)",
                 key,
-                guess,
-                path,
+                f"{path} is read with it but it is not refitted or discovered again"
+                if loads
+                else f"using {guess!r} for {path}",
             )
+            if loads:
+                continue
             key = guess
         by_game.setdefault(key, []).append(s)
     planned = sum(force or load_preset(g, project) is None for g in by_game)
