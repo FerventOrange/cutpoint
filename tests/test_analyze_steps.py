@@ -2008,6 +2008,29 @@ def test_a_shared_decode_mode_offers_the_scene_plan(prefetched, monkeypatch, dev
     assert prefetched.pre.scenes == [("plan", "a.mp4", 60.0) if planned else None]
 
 
+def test_a_style_without_scenes_turns_them_off_for_the_source_and_the_prefetch(
+    prefetched, monkeypatch
+):
+    """The style's own ``use_scenes`` is applied before the sources are transcribed."""
+    from dataclasses import replace  # noqa: PLC0415
+
+    prefetched.plan = plan(reactions=("audio",), keyframes=("ocr",))
+    prefetched.pre.mode = "split"
+    monkeypatch.setattr(analyze, "_scene_plan", lambda src, duration: ("plan", src.name, duration))
+    seen = []
+    inner = analyze.analyze_source
+
+    def source(src, style, tr, use_scenes, *a, **kw):
+        seen.append(use_scenes)
+        return inner(src, style, tr, use_scenes, *a, **kw)
+
+    monkeypatch.setattr(analyze, "analyze_source", source)
+    prefetched.go(replace(get_style("gaming"), use_scenes=False), use_scenes=True)
+    assert seen == [False]
+    assert prefetched.pre.scenes == [None]  # no scene plan offered
+    assert _hl(prefetched)["settings"]["scenes"] is False
+
+
 def test_the_ocr_prefetch_stops_before_a_cancelled_run_cleans_up(prefetched):
     prefetched.plan = plan(reactions=("audio",), keyframes=("ocr",))
     prefetched.fail, prefetched.cancel = "audio", True
@@ -2618,6 +2641,7 @@ def test_vision_detect_all_off_with_the_vision_model_off_asks_as_today(probed, m
     probed.go(analyze.AutoRequest("hype"), vision=False, vision_detect_all=True)
     assert asked == [None]  # no vision client at all
     assert "vision_detect_all" not in _hl(probed)["detection"]
+    assert "vision_detect_all" not in _hl(probed)["settings"]  # the --no-vision guard
 
 
 def test_reanalyze_keeps_vision_detect_all_and_never_probes_again(probed, monkeypatch):

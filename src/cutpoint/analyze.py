@@ -4204,11 +4204,7 @@ def analyze(
         if rerank_backup is None:
             rerank_backup = project_backup_link(out_dir)
     with progress.run(ANALYZE_STEPS, use=layers) as steps:
-        return _analyze(
-            target,
-            style,
-            out_dir,
-            steps,
+        opts = AnalyzeOptions(
             vision=vision,
             model=model,
             language=language,
@@ -4239,6 +4235,69 @@ def analyze(
             context_recorded=context_recorded,
             vision_detect_all=footage.every_source if footage is not None else vision_detect_all,
         )
+        return _analyze(target, style, out_dir, steps, opts=opts)
+
+
+@dataclass(frozen=True)
+class AnalyzeOptions:
+    """The keyword options of :func:`analyze` (see there) as :func:`_analyze` and its steps read
+    them: ``visual_index`` and ``ocr_det_skip`` as bools, ``context`` through
+    :func:`~cutpoint.utils.footage_context`, ``vision_detect_all`` ``footage``'s own
+    ``every_source`` when it is given, and ``ids``, ``last_candidate_id`` and ``rerank_backup``
+    from the project when :func:`analyze` got no ``ids``. :func:`_analyze` replaces
+    ``vision_detect_all`` (off with ``--no-vision``) and ``use_scenes`` (and the style's own)
+    before the steps read them."""
+
+    vision: bool | None
+    model: str | None
+    language: str | None
+    use_scenes: bool
+    max_candidates: int | None
+    vision_top: int | None
+    ollama_url: str | None
+    ollama_model: str | None
+    exclude: Sequence[str]
+    recursive: bool
+    recover: bool
+    layers: bool
+    skip: Collection[str]
+    earlier_total_s: float | None
+    detection: dict[str, Any] | None
+    batch_size: int
+    visual_index: bool
+    ocr_det_skip: bool
+    crash_moments: bool
+    footage: category.FootageVision | None
+    vision_time_share: float | None
+    telemetry_fallback: bool
+    reranked: dict[str, Any] | None
+    rerank_backup: str | None
+    ids: Mapping[tuple[str, float, float], str] | None
+    last_candidate_id: int
+    context: str | None
+    context_recorded: bool
+    vision_detect_all: bool
+
+
+@dataclass
+class _StylePlan:
+    """The style an analysis starts its transcription with (:func:`_start_style`)."""
+
+    style: Style
+    cat: str | None  # the category whose layers run (None: the style's own)
+    probes: list[category.SourceProbe]  # --style auto: decided again with the speech coverage
+    pending: bool  # --style auto: talk is told from general once the speech coverage is known
+    fallback: str | None  # --style auto: category.choose_style's fallback
+    style_fallback: dict[str, str] | None  # #939: an action-cam style without telemetry
+
+
+@dataclass
+class _ActionCam:
+    """The action-cam context of an analysis (:func:`_prepare_action_cam`)."""
+
+    ctx: Any  # cutpoint.actioncam.ActionCamContext
+    durations: dict[str, float]  # per source, for actioncam.prepare again after the events
+    telemetry_s: float
 
 
 def _analyze(
@@ -4247,458 +4306,623 @@ def _analyze(
     out_dir: Path,
     steps: progress.Run,
     *,
-    vision: bool | None,
-    model: str | None,
-    language: str | None,
-    use_scenes: bool,
-    max_candidates: int | None,
-    vision_top: int | None,
-    ollama_url: str | None,
-    ollama_model: str | None,
-    exclude: Sequence[str],
-    recursive: bool,
-    recover: bool,
-    layers: bool,
-    skip: Collection[str],
-    earlier_total_s: float | None,
-    detection: dict[str, Any] | None,
-    batch_size: int,
-    visual_index: bool,
-    ocr_det_skip: bool,
-    crash_moments: bool,
-    footage: category.FootageVision | None,
-    vision_time_share: float | None,
-    telemetry_fallback: bool,
-    reranked: dict[str, Any] | None,
-    rerank_backup: str | None,
-    ids: Mapping[tuple[str, float, float], str] | None,
-    last_candidate_id: int,
-    context: str | None,
-    context_recorded: bool,
-    vision_detect_all: bool,
+    opts: AnalyzeOptions,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
     steps.start("transcribe")
-    sources = find_sources(target, exclude, recursive)
+    sources = find_sources(target, opts.exclude, opts.recursive)
     # joined MPEG-TS/PS recordings whose timestamps jump are read through a stream copy (#1052)
     timelines = tsrepair.prepare_sources(sources)
     # --style auto: probed before transcription, which needs the style's action-cam context, scene
     # setting and OCR prefetch; talk is told from general once the speech coverage is known.
     auto = style if isinstance(style, AutoRequest) else None
-    if auto is not None and vision is False and footage is None:
-        vision_detect_all = False  # --no-vision wins: nothing is shown to the model
-    probes: list[category.SourceProbe] = []
-    cat: str | None = None  # the category whose layers run (None: the style's own)
-    if auto is not None:
-        probes, det = category.detect(
-            sources,
-            vision,
-            ollama_url,
-            ollama_model,
-            shared=footage,
-            context=context,
-            every_source=vision_detect_all,
-        )
-        name, fallback = category.choose_style(det, auto.emphasis)
-        if det.pending:
-            logger.info("Footage looks %s so far (%s)", category.label(det.category), det.reason)
-        style = auto.style(name)
-        cat = det.category if fallback is None else None
-    elif detection is not None and reranked is None and not detection.get("fallback"):
-        # a re-run: as decided
-        stored = detection.get("category")
-        cat = stored if stored in category.CATEGORIES else None
-    # action-cam without any telemetry: the action style, decided before the OCR prefetch, the
-    # scene setting and the layer plan, which all follow the style
-    style_fallback: dict[str, str] | None = None
-    if (
-        auto is None
-        and (detection is None or reranked is not None)
-        and telemetry_fallback
-        and style.kind == ACTION_CAM
-        and not any(has_telemetry(s) for s in sources)
-    ):
-        style, style_fallback = _no_telemetry_fallback(style, sources)
+    if auto is not None and opts.vision is False and opts.footage is None:
+        # --no-vision wins: nothing is shown to the model
+        opts = replace(opts, vision_detect_all=False)
+    start = _start_style(auto, style, sources, opts)
+    style = start.style
     with (
         folders.output_dir(out_dir),  # a failed run leaves no empty project folder behind
         runstate.project_ready(out_dir),  # the run lock of a new project, now it exists
         cache.hold_outputs(out_dir, HELD_OUTPUTS) as held,
         # HUD OCR in the background while the GPU steps run; stopped before the folder goes
         _ocr_prefetch(
-            style, sources, skip, out_dir, layers, cat, batch_size, ocr_det_skip
+            style,
+            sources,
+            opts.skip,
+            out_dir,
+            opts.layers,
+            start.cat,
+            opts.batch_size,
+            opts.ocr_det_skip,
         ) as prefetch,
     ):
         # ---- 1. transcribe: audio, loudness, Whisper and scene cuts per source
-        use_scenes = use_scenes and style.use_scenes
-        cam_ctx = None
-        if style.kind == ACTION_CAM:
-            from cutpoint import actioncam  # noqa: PLC0415
-
-            t0 = time.perf_counter()
-            stale = out_dir / actioncam.FEATURES_DIR
-            if stale.is_dir():
-                for f in stale.glob("*.npz"):
-                    cache.remove(f)  # held: removed only when the run completes
-            durations = {str(s): probe(remap_source(s)).duration for s in sources}
-            cam_ctx = actioncam.prepare(sources, durations, out_dir)
-            telemetry_s = round(time.perf_counter() - t0, 2)
-            _warn_missing_telemetry([s for s in sources if cam_ctx.telemetry[str(s)] is None])
-        tr = Transcriber(model=model, language=language)
-
-        def read_checked(src: Path, offset: float) -> Callable[..., Any] | None:
-            """``analyze_source``'s hook: offer the source to the OCR prefetch, which reads
-            only a whole, clean source while Whisper runs on the GPU (and, in a shared-decode
-            mode, makes its scene proxy; the share is returned for the scene cuts)."""
-            if prefetch is None:
-                return None
-
-            def offer(info: MediaInfo, rec: dict[str, Any] | None) -> Any:
-                ok = not offset and rec is None and tr.device == "cuda"
-                plan = None
-                windows = edge_windows(style, info.duration)  # no full pass to share
-                if ok and use_scenes and not windows and prefetch.mode is not None:
-                    plan = _scene_plan(src, info.duration)
-                return prefetch.offer(src, round(info.duration, 3), ok, plan)
-
-            return offer
-
-        def cpu_busy() -> bool:
-            """The background HUD OCR (CPU-heavy) reads or is about to read a source: a source
-            offered and not read yet (:attr:`~cutpoint.events.ocr_prefetch.OcrPrefetch.busy`)."""
-            return prefetch is not None and prefetch.busy
-
+        opts = replace(opts, use_scenes=opts.use_scenes and style.use_scenes)
+        cam = _prepare_action_cam(style, sources, out_dir)
+        tr = Transcriber(model=opts.model, language=opts.language)
         timings: dict[str, float] = {}
-        if cam_ctx is not None:
-            timings["telemetry_s"] = telemetry_s
-        pending = auto is not None and det.pending  # the style's text signals wait for talk
-        results: list[SourceResult] = []
-        transcript_lines: list[str] = []
-        progress.continuing("transcribe", _cached_transcripts(sources, tr), len(sources))
-        for i, src in enumerate(sources):
-            if batch_size and i and not i % batch_size:  # a batch boundary (--batch-size)
-                tr.close()  # loaded again by the next transcript to make
-                free_models()
-                progress.continuing("transcribe", i, len(sources))
-            steps.update(progress.fraction(i, len(sources)), src.name)
-
-            shown = 0.0  # this source's share in the pct so far
-
-            def report(done: float, i: int = i) -> None:
-                """``done`` of source ``i`` in the step's pct, never lower than before (a
-                recovered part's extract starts over at its own offset)."""
-                nonlocal shown
-                shown = max(shown, done)
-                steps.update(progress.fraction(i + shown, len(sources)))
-
-            offset, n_parts = 0.0, 0
-            readable_from: float | None = None  # where the damage before a recovered part ends
-            while True:
-                logger.info(
-                    "Analyzing %s%s",
-                    src,
-                    f" from {clock(offset)} (recovered part)" if offset else "",
-                )
-                # Action-cam candidates come from the feature grid, after the event layers.
-                res = analyze_source(
-                    src,
-                    style,
-                    tr,
-                    use_scenes,
-                    max_candidates,
-                    timings,
-                    offset=offset,
-                    recover=recover,
-                    pick=cam_ctx is None and not pending,
-                    report=report if steps.active else None,
-                    read_checked=read_checked(src, offset),
-                    text=not pending,
-                    # progress.json from the first transcript on, before the scene cuts
-                    on_transcript=lambda: runstate.transcribed(out_dir, sources),
-                    cpu_busy=cpu_busy,
-                    readable_from=readable_from,
-                )
-                results.append(res)
-                name = f"{src.name}@{offset:.0f}" if offset else src.name
-                transcript_lines.append(f"# {src}" + (f" (from {clock(offset)})" if offset else ""))
-                transcript_lines.extend(transcript_text(name, res.segments) or ["(no speech)"])
-                transcript_lines.append("")
-                rec = res.read_error
-                if not (recover and rec) or n_parts >= MAX_RECOVERED_PARTS:
-                    break
-                cdir = cache.source_dir(src, offset)
-                # a record older than unreadable_until: no lead-in for the next part's scene pass
-                resume, until = rec.get("resumed_at"), rec.get("unreadable_until")
-                if not resume:
-                    found = find_resume_point(
-                        remap_source(src), rec["failure_time"], res.info.duration
-                    )
-                    resume, until = found if found is not None else (None, None)
-                if resume is None or resume <= offset:
-                    logger.warning(
-                        "%s: no readable point found after %s; rest of file skipped",
-                        src.name,
-                        clock(rec["failure_time"]),
-                    )
-                    break
-                rec["resumed_at"] = resume
-                rec["unreadable_until"] = until
-                rec["lost_s"] = round(resume - rec["failure_time"], 3)
-                cache.save_json(cdir / READ_ERRORS_FILE, rec)
-                logger.warning(
-                    "%s: resuming at %s (skipping %.1f s of unreadable footage)",
-                    src.name,
-                    clock(resume),
-                    rec["lost_s"],
-                )
-                offset, readable_from, n_parts = resume, until, n_parts + 1
-            runstate.transcribed(out_dir, sources)  # a source without audio: once analyzed
-        # Written with highlights.json at the end; the event layers read it from memory.
-        transcript = "\n".join(transcript_lines)
-        tr.close()  # Whisper out of memory before the next step loads a model
-        free_models()
-        _warn_transcript_fallback(tr)
-        detection_rec = detection  # highlights.json's record of an auto run (a re-run: as given)
-        if auto is not None:  # the final decision, with the speech coverage
-            det = category.decide(
-                probes,
-                category.source_speech(
-                    sources, [(r.source, r.duration, r.segments) for r in results]
-                ),
-                every_source=vision_detect_all and vision is not False,
-            )
-            if pending:  # talk or general: this style's transcript signals and candidates
-                # (otherwise the speech only adds the commentary hint: the style stays)
-                name, fallback = category.choose_style(det, auto.emphasis)
-                cat = det.category if fallback is None else None
-                style = auto.style(name)
-                for r in results:
-                    if r.signals is not None:
-                        text_signals(r.signals, style, r.source.name)
-                        scene_signal(r.signals, style)  # a full pass if it weighs scenes
-                        if r.signals.edge_cuts is None:  # cut by a full pass after all
-                            r.stages.pop("scene_windows", None)
-                        r.candidates = pick_candidates(r, style, max_candidates, timings)
-            category.warn(det, style.name, fallback)
-            detection_rec = det.record(auto.emphasis, style.name, fallback)
+        if cam is not None:
+            timings["telemetry_s"] = cam.telemetry_s
+        results, transcript = _transcribe_sources(
+            sources, style, tr, start.pending, cam, timings, prefetch, out_dir, steps, opts
+        )
+        style, cat, detection_rec = _final_style(auto, start, sources, results, timings, opts)
         steps.done()  # an error of the later steps never fails the transcription
-        bad = [r for r in results if r.read_error]
-        if bad:
-            for r in bad:
-                rec = r.read_error or {}
-                logger.warning(
-                    "READ ERROR SUMMARY: %s stopped at %s%s",
-                    r.info.path.name,
-                    clock(rec["failure_time"]),
-                    f", resumed at {clock(rec['resumed_at'])}"
-                    if rec.get("resumed_at")
-                    else " (not recovered; use --recover)"
-                    if not recover
-                    else " (could not recover)",
-                )
-        hl: dict[str, Any] = {
-            "version": 1,
-            "style": style.name,
-            "style_kind": style.kind,
-            # The built-in style this one is based on (its own name for a built-in one), so
-            # readers need no style library. Older files lack it.
-            "style_base": style.base,
-            **({"detection": detection_rec} if detection_rec is not None else {}),
-            "created": None,
-            "settings": {
-                **({"mask_friends": style.mask_friends} if style.kind == ACTION_CAM else {}),
-                "must_include_crash": style.must_include_crash,
-                "whisper_model": tr.model_name,
-                "whisper_device": tr.device,
-                "scenes": use_scenes,
-                "vision_requested": bool(vision),
-                "vision_used": False,
-                "vision": None,
-                "vision_top": vision_top,
-                # never its login: a replay takes it from config.json or OLLAMA_HOST (A639)
-                "ollama_url": backends.without_login(ollama_url) if ollama_url else ollama_url,
-                "ollama_model": ollama_model,
-                "target_total": style.target_total,
-                "weights": style.weights,
-                # Which version of the style scored this (styles.style_hash): the file's
-                # content hash for a user style. Recorded only; a re-rank does not compare it.
-                "style_hash": style_hash(style),
-                # The features this install can compute (install level; a source's own set,
-                # which the scores divide by, is in ``features_by_source``).
-                "features_available": sorted(features.available()),
-                # Per source: the features its scores were divided by (#960). Differs from
-                # features_available for an action-cam source without telemetry, or with
-                # IMU-only telemetry (no GPS rows, no wind reading). Refilled after ranking.
-                "features_by_source": _features_by_source(results),
-                # Enough to re-run the same analysis (``reanalyze``, used by cutpoint events).
-                # Absolute (not resolved: keeps drive letters, symlinks and the user's spelling)
-                # so later commands find them from any working directory.
-                "inputs": [
-                    str(Path(t).absolute())
-                    for t in ([target] if isinstance(target, Path) else target)
-                ],
-                "exclude": list(exclude),
-                "recursive": recursive,
-                "language": language,
-                "max_candidates": max_candidates,
-                "recover": recover,
-                **({} if crash_moments else {"crash_moments": False}),  # 360 analyze
-                **(
-                    {"style_requested": AUTO}
-                    if detection_rec is not None and reranked is None
-                    else {}
-                ),
-                # re-ranked to another style (cutpoint rerank): the user's choice
-                **(
-                    {"style_requested": style.name, "reranked": reranked}
-                    if reranked is not None
-                    else {}
-                ),
-                # the backup of the last re-rank, which gives ids back (#1005)
-                **({"rerank_backup": rerank_backup} if rerank_backup is not None else {}),
-                # #939: an action-cam style without telemetry ran as `style` (action)
-                **(
-                    {"style_requested": style_fallback["from"], "style_fallback": style_fallback}
-                    if style_fallback is not None
-                    else {}
-                ),
-                # --ocr-det-skip: `cutpoint events` reads HUD text as this run did (only when on)
-                **({"ocr_det_skip": True} if ocr_det_skip else {}),
-                # --context (#1068): the crash step's profile, the vision and dialogue prompts;
-                # `cutpoint events`, `rerank` and re-analyses read it from here (only when given)
-                **({"context": context} if context else {}),
-                # --vision-detect-all (#1069): how --style auto detected (only when on)
-                **({"vision_detect_all": True} if vision_detect_all and detection_rec else {}),
-            },
-            "timings": timings,
-            "suggested_top": 0,
-            "sources": [
-                {
-                    "path": str(r.source),
-                    "duration": round(r.info.duration, 3),
-                    "width": r.info.width,
-                    "height": r.info.height,
-                    "fps": float(r.info.fps),
-                    **(
-                        {"offset": r.offset, "analyzed_s": round(r.duration, 3)}
-                        if r.offset or r.read_error
-                        else {}
-                    ),
-                    **({"read_errors": [r.read_error]} if r.read_error else {}),
-                    **(
-                        {"timeline": timelines[str(r.source)]} if str(r.source) in timelines else {}
-                    ),
-                }
-                for r in results
-            ],
-            "candidates": [],
-        }
+        _summarize_read_errors(results, opts)
+        hl = _highlights_record(
+            target,
+            style,
+            detection_rec,
+            start.style_fallback,
+            tr,
+            results,
+            timelines,
+            timings,
+            opts,
+        )
 
         # ---- 2-4. reactions, keyframes, crashes: the event layers (events.json)
         events_new = False
-        if layers:
-            plan = plan_layers(style, sources, skip, cat, visual_index)
-            for step, reason in plan.skipped.items():
-                steps.skip(step, reason)
-            # ---- 5. dialogue: a text model reads the transcripts (open-list styles only).
-            # Inside the event layers it runs before events.json is written; without them
-            # (lite, every layer skipped) after, on the events.json there is.
-            spoken: dict[str, list[dict[str, Any]]] = {}
-            for r in results:
-                spoken.setdefault(str(r.source), []).extend(r.segments)
-            for segments in spoken.values():
-                segments.sort(key=lambda s: s["start"])
-            backend = _dialogue_backend(style, skip, steps, spoken, ollama_url, ollama_model)
-            ran: list[bool] = []
-            reader = (
-                _dialogue_reader(backend, spoken, steps, timings, ran, context)
-                if backend is not None
-                else None
+        if opts.layers:
+            events_new = _run_event_steps(
+                hl,
+                results,
+                sources,
+                style,
+                cat,
+                transcript,
+                timings,
+                prefetch,
+                out_dir,
+                steps,
+                opts,
             )
-            if plan.layers:
-                # VLM windows cached by `events` follow them
-                hl["candidates"] = _records(results, style)
-                t0 = time.perf_counter()
-                events_new = _run_layers(
-                    out_dir,
-                    plan,
-                    hl,
-                    steps,
-                    llm="auto",  # profile discovery (activity.AUTO): any local Ollama, quietly
-                    prefetch=prefetch,
-                    transcript=transcript,
-                    ollama_url=ollama_url,
-                    ollama_model=ollama_model,
-                    batch_size=batch_size,
-                    dialogue=(lambda layer1: reader(_audio_events(layer1))) if reader else None,
-                    det_skip=ocr_det_skip,
-                    # a recorded context does not replace the project's activity.json (the
-                    # VLM layer still reads it from settings.context)
-                    context=None if context_recorded else context,
-                )
-                timings["events_s"] = round(time.perf_counter() - t0, 2)
-                free_models()
-            if reader is not None and not ran:
-                _dialogue_alone(
-                    out_dir, hl, transcript, steps, reader, [str(r.source) for r in results]
-                )
 
         # ---- 5. ranking: candidates rescored with the events
-        steps.start("ranking")
-        if cam_ctx is not None:
-            from cutpoint import activity  # noqa: PLC0415
-
-            if events_new:  # with this run's events.json and crashes.json
-                cam_ctx = actioncam.prepare(sources, durations, out_dir)
-            # the beauty / people features on the captions of the project's activity.json
-            # (written by the crash step above; action-cam without one)
-            with activity.use_prompts(activity.project_prompts(out_dir)):
-                for r in results:
-                    r.candidates = pick_candidates(r, style, max_candidates, timings, cam_ctx)
-                    logger.info("%s: %d candidates", r.source.name, len(r.candidates))
-            # a source's own set is known only once it is picked from
-            hl["settings"]["features_by_source"] = _features_by_source(results)
-        if ids is not None:  # a re-rank's new spans get ids above the earlier analysis's
-            hl["settings"]["last_candidate_id"] = last_candidate_id
-        ev = rank_parts(
-            hl,
-            results,
-            style,
-            out_dir,
-            steps,
-            t_start=t_start,
-            crash_moments=crash_moments,
-            vision=vision,
-            vision_top=vision_top,
-            ollama_url=ollama_url,
-            ollama_model=ollama_model,
-            batch_size=batch_size,
-            vision_time_share=vision_time_share,
-            earlier_total_s=earlier_total_s,
-            ids=ids,
+        ev = _rank_results(
+            hl, results, sources, style, cam, events_new, timings, t_start, out_dir, steps, opts
         )
         selfcheck.apply(hl, ev)  # warns; changes no score (#1073)
-        hl["created"] = datetime.now().isoformat(timespec="seconds")
-        hl["timings"]["sources"] = _source_timings(results, prefetch)
-        took = round(time.perf_counter() - t_start, 2)
-        if earlier_total_s is None:
-            timings["total_s"] = took
-        else:  # a re-rank: the analysis itself took what it took the first time
-            timings["total_s"] = earlier_total_s
-            timings["rerank_s"] = took
-        # Text mode's line endings, as a plain write_text gave them; highlights.json last, so
-        # the commit renames it last.
-        cache.save_bytes(
-            out_dir / "transcript.txt", transcript.replace("\n", os.linesep).encode("utf-8")
+        return _write_outputs(
+            hl,
+            ev,
+            results,
+            transcript,
+            timings,
+            t_start,
+            opts.earlier_total_s,
+            prefetch,
+            held,
+            out_dir,
         )
-        out = out_dir / "highlights.json"
-        cache.save_json(out, backends.saved_settings(hl), durable=True)
-        if ev:  # ranked with the events: a pre-events copy of an older analysis is stale
-            cache.remove(out_dir / "highlights.pre-events.json")
-        held.commit()  # every HELD_OUTPUTS file at once (a cancel in it waits for the last)
-        logger.info("Wrote %d candidates to %s (%.1fs)", len(hl["candidates"]), out, took)
-        report_highlights(out_dir, out)
-        return out
+
+
+def _start_style(
+    auto: AutoRequest | None,
+    style: Style | AutoRequest,
+    sources: Sequence[Path],
+    opts: AnalyzeOptions,
+) -> _StylePlan:
+    """The style and layer category the transcription starts with: ``--style auto`` probes the
+    sources (talk is told from general later, :func:`_final_style`), a re-run takes the recorded
+    category, and an action-cam style without any telemetry runs as ``action``."""
+    probes: list[category.SourceProbe] = []
+    cat: str | None = None  # the category whose layers run (None: the style's own)
+    pending = False
+    fallback: str | None = None
+    if auto is not None:
+        probes, det = category.detect(
+            sources,
+            opts.vision,
+            opts.ollama_url,
+            opts.ollama_model,
+            shared=opts.footage,
+            context=opts.context,
+            every_source=opts.vision_detect_all,
+        )
+        name, fallback = category.choose_style(det, auto.emphasis)
+        if det.pending:
+            logger.info("Footage looks %s so far (%s)", category.label(det.category), det.reason)
+        style = auto.style(name)
+        cat = det.category if fallback is None else None
+        pending = det.pending  # the style's text signals wait for talk
+    elif (
+        opts.detection is not None and opts.reranked is None and not opts.detection.get("fallback")
+    ):
+        # a re-run: as decided
+        stored = opts.detection.get("category")
+        cat = stored if stored in category.CATEGORIES else None
+    # action-cam without any telemetry: the action style, decided before the OCR prefetch, the
+    # scene setting and the layer plan, which all follow the style
+    style_fallback: dict[str, str] | None = None
+    if (
+        auto is None
+        and (opts.detection is None or opts.reranked is not None)
+        and opts.telemetry_fallback
+        and style.kind == ACTION_CAM
+        and not any(has_telemetry(s) for s in sources)
+    ):
+        style, style_fallback = _no_telemetry_fallback(style, sources)
+    return _StylePlan(style, cat, probes, pending, fallback, style_fallback)
+
+
+def _prepare_action_cam(style: Style, sources: Sequence[Path], out_dir: Path) -> _ActionCam | None:
+    """An action-cam style's context (telemetry and features) before the transcription; None
+    for any other style."""
+    if style.kind != ACTION_CAM:
+        return None
+    from cutpoint import actioncam  # noqa: PLC0415
+
+    t0 = time.perf_counter()
+    stale = out_dir / actioncam.FEATURES_DIR
+    if stale.is_dir():
+        for f in stale.glob("*.npz"):
+            cache.remove(f)  # held: removed only when the run completes
+    durations = {str(s): probe(remap_source(s)).duration for s in sources}
+    cam_ctx = actioncam.prepare(sources, durations, out_dir)
+    telemetry_s = round(time.perf_counter() - t0, 2)
+    _warn_missing_telemetry([s for s in sources if cam_ctx.telemetry[str(s)] is None])
+    return _ActionCam(cam_ctx, durations, telemetry_s)
+
+
+def _transcribe_sources(
+    sources: Sequence[Path],
+    style: Style,
+    tr: Transcriber,
+    pending: bool,
+    cam: _ActionCam | None,
+    timings: dict[str, float],
+    prefetch: OcrPrefetch | None,
+    out_dir: Path,
+    steps: progress.Run,
+    opts: AnalyzeOptions,
+) -> tuple[list[SourceResult], str]:
+    """The transcribe step's sources: audio, loudness, Whisper and scene cuts per source
+    (:func:`analyze_source`), a part recovered after a read error a result of its own; Whisper
+    is closed at the end.
+
+    Returns:
+        The results and the transcript.txt text.
+    """
+
+    def read_checked(src: Path, offset: float) -> Callable[..., Any] | None:
+        """``analyze_source``'s hook: offer the source to the OCR prefetch, which reads
+        only a whole, clean source while Whisper runs on the GPU (and, in a shared-decode
+        mode, makes its scene proxy; the share is returned for the scene cuts)."""
+        if prefetch is None:
+            return None
+
+        def offer(info: MediaInfo, rec: dict[str, Any] | None) -> Any:
+            ok = not offset and rec is None and tr.device == "cuda"
+            plan = None
+            windows = edge_windows(style, info.duration)  # no full pass to share
+            if ok and opts.use_scenes and not windows and prefetch.mode is not None:
+                plan = _scene_plan(src, info.duration)
+            return prefetch.offer(src, round(info.duration, 3), ok, plan)
+
+        return offer
+
+    def cpu_busy() -> bool:
+        """The background HUD OCR (CPU-heavy) reads or is about to read a source: a source
+        offered and not read yet (:attr:`~cutpoint.events.ocr_prefetch.OcrPrefetch.busy`)."""
+        return prefetch is not None and prefetch.busy
+
+    results: list[SourceResult] = []
+    transcript_lines: list[str] = []
+    progress.continuing("transcribe", _cached_transcripts(sources, tr), len(sources))
+    for i, src in enumerate(sources):
+        if opts.batch_size and i and not i % opts.batch_size:  # a batch boundary (--batch-size)
+            tr.close()  # loaded again by the next transcript to make
+            free_models()
+            progress.continuing("transcribe", i, len(sources))
+        steps.update(progress.fraction(i, len(sources)), src.name)
+
+        shown = 0.0  # this source's share in the pct so far
+
+        def report(done: float, i: int = i) -> None:
+            """``done`` of source ``i`` in the step's pct, never lower than before (a
+            recovered part's extract starts over at its own offset)."""
+            nonlocal shown
+            shown = max(shown, done)
+            steps.update(progress.fraction(i + shown, len(sources)))
+
+        offset, n_parts = 0.0, 0
+        readable_from: float | None = None  # where the damage before a recovered part ends
+        while True:
+            logger.info(
+                "Analyzing %s%s",
+                src,
+                f" from {clock(offset)} (recovered part)" if offset else "",
+            )
+            # Action-cam candidates come from the feature grid, after the event layers.
+            res = analyze_source(
+                src,
+                style,
+                tr,
+                opts.use_scenes,
+                opts.max_candidates,
+                timings,
+                offset=offset,
+                recover=opts.recover,
+                pick=cam is None and not pending,
+                report=report if steps.active else None,
+                read_checked=read_checked(src, offset),
+                text=not pending,
+                # progress.json from the first transcript on, before the scene cuts
+                on_transcript=lambda: runstate.transcribed(out_dir, sources),
+                cpu_busy=cpu_busy,
+                readable_from=readable_from,
+            )
+            results.append(res)
+            name = f"{src.name}@{offset:.0f}" if offset else src.name
+            transcript_lines.append(f"# {src}" + (f" (from {clock(offset)})" if offset else ""))
+            transcript_lines.extend(transcript_text(name, res.segments) or ["(no speech)"])
+            transcript_lines.append("")
+            rec = res.read_error
+            if not (opts.recover and rec) or n_parts >= MAX_RECOVERED_PARTS:
+                break
+            cdir = cache.source_dir(src, offset)
+            # a record older than unreadable_until: no lead-in for the next part's scene pass
+            resume, until = rec.get("resumed_at"), rec.get("unreadable_until")
+            if not resume:
+                found = find_resume_point(remap_source(src), rec["failure_time"], res.info.duration)
+                resume, until = found if found is not None else (None, None)
+            if resume is None or resume <= offset:
+                logger.warning(
+                    "%s: no readable point found after %s; rest of file skipped",
+                    src.name,
+                    clock(rec["failure_time"]),
+                )
+                break
+            rec["resumed_at"] = resume
+            rec["unreadable_until"] = until
+            rec["lost_s"] = round(resume - rec["failure_time"], 3)
+            cache.save_json(cdir / READ_ERRORS_FILE, rec)
+            logger.warning(
+                "%s: resuming at %s (skipping %.1f s of unreadable footage)",
+                src.name,
+                clock(resume),
+                rec["lost_s"],
+            )
+            offset, readable_from, n_parts = resume, until, n_parts + 1
+        runstate.transcribed(out_dir, sources)  # a source without audio: once analyzed
+    # Written with highlights.json at the end; the event layers read it from memory.
+    transcript = "\n".join(transcript_lines)
+    tr.close()  # Whisper out of memory before the next step loads a model
+    free_models()
+    _warn_transcript_fallback(tr)
+    return results, transcript
+
+
+def _final_style(
+    auto: AutoRequest | None,
+    start: _StylePlan,
+    sources: Sequence[Path],
+    results: list[SourceResult],
+    timings: dict[str, float],
+    opts: AnalyzeOptions,
+) -> tuple[Style, str | None, dict[str, Any] | None]:
+    """``--style auto``'s final decision, with the speech coverage: a pending style (talk or
+    general) gets its transcript signals and candidates now.
+
+    Returns:
+        The style, the layer category and highlights.json's ``detection`` record.
+    """
+    style, cat, fallback = start.style, start.cat, start.fallback
+    detection_rec = opts.detection  # highlights.json's record of an auto run (a re-run: as given)
+    if auto is not None:  # the final decision, with the speech coverage
+        det = category.decide(
+            start.probes,
+            category.source_speech(sources, [(r.source, r.duration, r.segments) for r in results]),
+            every_source=opts.vision_detect_all and opts.vision is not False,
+        )
+        if start.pending:  # talk or general: this style's transcript signals and candidates
+            # (otherwise the speech only adds the commentary hint: the style stays)
+            name, fallback = category.choose_style(det, auto.emphasis)
+            cat = det.category if fallback is None else None
+            style = auto.style(name)
+            for r in results:
+                if r.signals is not None:
+                    text_signals(r.signals, style, r.source.name)
+                    scene_signal(r.signals, style)  # a full pass if it weighs scenes
+                    if r.signals.edge_cuts is None:  # cut by a full pass after all
+                        r.stages.pop("scene_windows", None)
+                    r.candidates = pick_candidates(r, style, opts.max_candidates, timings)
+        category.warn(det, style.name, fallback)
+        detection_rec = det.record(auto.emphasis, style.name, fallback)
+    return style, cat, detection_rec
+
+
+def _summarize_read_errors(results: Sequence[SourceResult], opts: AnalyzeOptions) -> None:
+    """One warning per source whose read stopped early."""
+    bad = [r for r in results if r.read_error]
+    if bad:
+        for r in bad:
+            rec = r.read_error or {}
+            logger.warning(
+                "READ ERROR SUMMARY: %s stopped at %s%s",
+                r.info.path.name,
+                clock(rec["failure_time"]),
+                f", resumed at {clock(rec['resumed_at'])}"
+                if rec.get("resumed_at")
+                else " (not recovered; use --recover)"
+                if not opts.recover
+                else " (could not recover)",
+            )
+
+
+def _highlights_record(
+    target: Path | Sequence[Path],
+    style: Style,
+    detection_rec: dict[str, Any] | None,
+    style_fallback: dict[str, str] | None,
+    tr: Transcriber,
+    results: list[SourceResult],
+    timelines: Mapping[str, Any],
+    timings: dict[str, float],
+    opts: AnalyzeOptions,
+) -> dict[str, Any]:
+    """highlights.json's object before the event layers and the ranking fill it."""
+    return {
+        "version": 1,
+        "style": style.name,
+        "style_kind": style.kind,
+        # The built-in style this one is based on (its own name for a built-in one), so
+        # readers need no style library. Older files lack it.
+        "style_base": style.base,
+        **({"detection": detection_rec} if detection_rec is not None else {}),
+        "created": None,
+        "settings": {
+            **({"mask_friends": style.mask_friends} if style.kind == ACTION_CAM else {}),
+            "must_include_crash": style.must_include_crash,
+            "whisper_model": tr.model_name,
+            "whisper_device": tr.device,
+            "scenes": opts.use_scenes,
+            "vision_requested": bool(opts.vision),
+            "vision_used": False,
+            "vision": None,
+            "vision_top": opts.vision_top,
+            # never its login: a replay takes it from config.json or OLLAMA_HOST (A639)
+            "ollama_url": backends.without_login(opts.ollama_url)
+            if opts.ollama_url
+            else opts.ollama_url,
+            "ollama_model": opts.ollama_model,
+            "target_total": style.target_total,
+            "weights": style.weights,
+            # Which version of the style scored this (styles.style_hash): the file's
+            # content hash for a user style. Recorded only; a re-rank does not compare it.
+            "style_hash": style_hash(style),
+            # The features this install can compute (install level; a source's own set,
+            # which the scores divide by, is in ``features_by_source``).
+            "features_available": sorted(features.available()),
+            # Per source: the features its scores were divided by (#960). Differs from
+            # features_available for an action-cam source without telemetry, or with
+            # IMU-only telemetry (no GPS rows, no wind reading). Refilled after ranking.
+            "features_by_source": _features_by_source(results),
+            # Enough to re-run the same analysis (``reanalyze``, used by cutpoint events).
+            # Absolute (not resolved: keeps drive letters, symlinks and the user's spelling)
+            # so later commands find them from any working directory.
+            "inputs": [
+                str(Path(t).absolute()) for t in ([target] if isinstance(target, Path) else target)
+            ],
+            "exclude": list(opts.exclude),
+            "recursive": opts.recursive,
+            "language": opts.language,
+            "max_candidates": opts.max_candidates,
+            "recover": opts.recover,
+            **({} if opts.crash_moments else {"crash_moments": False}),  # 360 analyze
+            **(
+                {"style_requested": AUTO}
+                if detection_rec is not None and opts.reranked is None
+                else {}
+            ),
+            # re-ranked to another style (cutpoint rerank): the user's choice
+            **(
+                {"style_requested": style.name, "reranked": opts.reranked}
+                if opts.reranked is not None
+                else {}
+            ),
+            # the backup of the last re-rank, which gives ids back (#1005)
+            **({"rerank_backup": opts.rerank_backup} if opts.rerank_backup is not None else {}),
+            # #939: an action-cam style without telemetry ran as `style` (action)
+            **(
+                {"style_requested": style_fallback["from"], "style_fallback": style_fallback}
+                if style_fallback is not None
+                else {}
+            ),
+            # --ocr-det-skip: `cutpoint events` reads HUD text as this run did (only when on)
+            **({"ocr_det_skip": True} if opts.ocr_det_skip else {}),
+            # --context (#1068): the crash step's profile, the vision and dialogue prompts;
+            # `cutpoint events`, `rerank` and re-analyses read it from here (only when given)
+            **({"context": opts.context} if opts.context else {}),
+            # --vision-detect-all (#1069): how --style auto detected (only when on)
+            **({"vision_detect_all": True} if opts.vision_detect_all and detection_rec else {}),
+        },
+        "timings": timings,
+        "suggested_top": 0,
+        "sources": [
+            {
+                "path": str(r.source),
+                "duration": round(r.info.duration, 3),
+                "width": r.info.width,
+                "height": r.info.height,
+                "fps": float(r.info.fps),
+                **(
+                    {"offset": r.offset, "analyzed_s": round(r.duration, 3)}
+                    if r.offset or r.read_error
+                    else {}
+                ),
+                **({"read_errors": [r.read_error]} if r.read_error else {}),
+                **({"timeline": timelines[str(r.source)]} if str(r.source) in timelines else {}),
+            }
+            for r in results
+        ],
+        "candidates": [],
+    }
+
+
+def _run_event_steps(
+    hl: dict[str, Any],
+    results: list[SourceResult],
+    sources: Sequence[Path],
+    style: Style,
+    cat: str | None,
+    transcript: str,
+    timings: dict[str, float],
+    prefetch: OcrPrefetch | None,
+    out_dir: Path,
+    steps: progress.Run,
+    opts: AnalyzeOptions,
+) -> bool:
+    """The event layers (reactions, keyframes, crashes: :func:`plan_layers`) and the dialogue
+    step, with ``layers``.
+
+    Returns:
+        Whether the event layers wrote this run's events.json.
+    """
+    events_new = False
+    plan = plan_layers(style, sources, opts.skip, cat, opts.visual_index)
+    for step, reason in plan.skipped.items():
+        steps.skip(step, reason)
+    # ---- 5. dialogue: a text model reads the transcripts (open-list styles only).
+    # Inside the event layers it runs before events.json is written; without them
+    # (lite, every layer skipped) after, on the events.json there is.
+    spoken: dict[str, list[dict[str, Any]]] = {}
+    for r in results:
+        spoken.setdefault(str(r.source), []).extend(r.segments)
+    for segments in spoken.values():
+        segments.sort(key=lambda s: s["start"])
+    backend = _dialogue_backend(style, opts.skip, steps, spoken, opts.ollama_url, opts.ollama_model)
+    ran: list[bool] = []
+    reader = (
+        _dialogue_reader(backend, spoken, steps, timings, ran, opts.context)
+        if backend is not None
+        else None
+    )
+    if plan.layers:
+        # VLM windows cached by `events` follow them
+        hl["candidates"] = _records(results, style)
+        t0 = time.perf_counter()
+        events_new = _run_layers(
+            out_dir,
+            plan,
+            hl,
+            steps,
+            llm="auto",  # profile discovery (activity.AUTO): any local Ollama, quietly
+            prefetch=prefetch,
+            transcript=transcript,
+            ollama_url=opts.ollama_url,
+            ollama_model=opts.ollama_model,
+            batch_size=opts.batch_size,
+            dialogue=(lambda layer1: reader(_audio_events(layer1))) if reader else None,
+            det_skip=opts.ocr_det_skip,
+            # a recorded context does not replace the project's activity.json (the
+            # VLM layer still reads it from settings.context)
+            context=None if opts.context_recorded else opts.context,
+        )
+        timings["events_s"] = round(time.perf_counter() - t0, 2)
+        free_models()
+    if reader is not None and not ran:
+        _dialogue_alone(out_dir, hl, transcript, steps, reader, [str(r.source) for r in results])
+    return events_new
+
+
+def _rank_results(
+    hl: dict[str, Any],
+    results: list[SourceResult],
+    sources: Sequence[Path],
+    style: Style,
+    cam: _ActionCam | None,
+    events_new: bool,
+    timings: dict[str, float],
+    t_start: float,
+    out_dir: Path,
+    steps: progress.Run,
+    opts: AnalyzeOptions,
+) -> Any:
+    """The ranking step: action-cam candidates picked from the feature grid, then
+    :func:`rank_parts`.
+
+    Returns:
+        :func:`rank_parts`'s events.json object.
+    """
+    steps.start("ranking")
+    if cam is not None:
+        from cutpoint import actioncam, activity  # noqa: PLC0415
+
+        cam_ctx = cam.ctx
+        if events_new:  # with this run's events.json and crashes.json
+            cam_ctx = actioncam.prepare(sources, cam.durations, out_dir)
+        # the beauty / people features on the captions of the project's activity.json
+        # (written by the crash step above; action-cam without one)
+        with activity.use_prompts(activity.project_prompts(out_dir)):
+            for r in results:
+                r.candidates = pick_candidates(r, style, opts.max_candidates, timings, cam_ctx)
+                logger.info("%s: %d candidates", r.source.name, len(r.candidates))
+        # a source's own set is known only once it is picked from
+        hl["settings"]["features_by_source"] = _features_by_source(results)
+    if opts.ids is not None:  # a re-rank's new spans get ids above the earlier analysis's
+        hl["settings"]["last_candidate_id"] = opts.last_candidate_id
+    return rank_parts(
+        hl,
+        results,
+        style,
+        out_dir,
+        steps,
+        t_start=t_start,
+        crash_moments=opts.crash_moments,
+        vision=opts.vision,
+        vision_top=opts.vision_top,
+        ollama_url=opts.ollama_url,
+        ollama_model=opts.ollama_model,
+        batch_size=opts.batch_size,
+        vision_time_share=opts.vision_time_share,
+        earlier_total_s=opts.earlier_total_s,
+        ids=opts.ids,
+    )
+
+
+def _write_outputs(
+    hl: dict[str, Any],
+    ev: Any,
+    results: list[SourceResult],
+    transcript: str,
+    timings: dict[str, float],
+    t_start: float,
+    earlier_total_s: float | None,
+    prefetch: OcrPrefetch | None,
+    held: Any,
+    out_dir: Path,
+) -> Path:
+    """transcript.txt and highlights.json written and every :data:`HELD_OUTPUTS` file committed
+    at once.
+
+    Returns:
+        Path of the written highlights.json.
+    """
+    hl["created"] = datetime.now().isoformat(timespec="seconds")
+    hl["timings"]["sources"] = _source_timings(results, prefetch)
+    took = round(time.perf_counter() - t_start, 2)
+    if earlier_total_s is None:
+        timings["total_s"] = took
+    else:  # a re-rank: the analysis itself took what it took the first time
+        timings["total_s"] = earlier_total_s
+        timings["rerank_s"] = took
+    # Text mode's line endings, as a plain write_text gave them; highlights.json last, so
+    # the commit renames it last.
+    cache.save_bytes(
+        out_dir / "transcript.txt", transcript.replace("\n", os.linesep).encode("utf-8")
+    )
+    out = out_dir / "highlights.json"
+    cache.save_json(out, backends.saved_settings(hl), durable=True)
+    if ev:  # ranked with the events: a pre-events copy of an older analysis is stale
+        cache.remove(out_dir / "highlights.pre-events.json")
+    held.commit()  # every HELD_OUTPUTS file at once (a cancel in it waits for the last)
+    logger.info("Wrote %d candidates to %s (%.1fs)", len(hl["candidates"]), out, took)
+    report_highlights(out_dir, out)
+    return out
 
 
 def _records(parts: Sequence[CrashPart], style: Style) -> list[dict[str, Any]]:
@@ -4850,8 +5074,6 @@ def rank_parts(
     Returns:
         The events.json object the candidates were ranked with, or a falsy value without one.
     """
-    timings = hl["timings"]
-
     if crash_moments and style.kind != ACTION_CAM:  # this run's crash step, `cutpoint crashes`
         from cutpoint.crash import load_crashes  # noqa: PLC0415
 
@@ -4872,6 +5094,74 @@ def rank_parts(
 
     # ---- 6. vision: the rating of the default edit and the moments below its cut, blended into
     # their scores
+    _vision_step(
+        hl,
+        ev,
+        grids,
+        style,
+        project,
+        steps,
+        t_start=t_start,
+        vision=vision,
+        vision_top=vision_top,
+        ollama_url=ollama_url,
+        ollama_model=ollama_model,
+        batch_size=batch_size,
+        vision_time_share=vision_time_share,
+        earlier_total_s=earlier_total_s,
+        vision_cache_only=vision_cache_only,
+    )
+
+    cands = hl["candidates"]
+    cands.sort(
+        key=lambda c: (not c.get("must_include"), *scorer.rank_key(c), *scorer.tie_key(c))
+    )  # must-include first
+    suggested = len(default_fit.fit_target(cands, style.target_total))
+    if ids is None:
+        hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]
+        hl["settings"]["last_candidate_id"] = len(cands)
+    else:  # unchanged spans keep their id, the others get the next ones
+        given: set[str] = set()
+        out = []
+        for c in cands:
+            was = ids.get(span_key(c))
+            if was is not None and was not in given:
+                given.add(was)
+                c = {"id": was, **c}
+            out.append(c)
+        hl["candidates"] = out
+        number_candidates(hl)
+    hl["suggested_top"] = suggested
+    from cutpoint import visual_pool  # noqa: PLC0415
+
+    if visual_pool.is_pool_style(style):
+        # visual pool moments: after the scored ones, outside suggested_top
+        hl["candidates"] += _visual_pool(project, parts, style, hl)
+    return ev
+
+
+def _vision_step(
+    hl: dict[str, Any],
+    ev: Any,
+    grids: list[GridPart],
+    style: Style,
+    project: Path,
+    steps: progress.Run,
+    *,
+    t_start: float,
+    vision: bool | None,
+    vision_top: int | None,
+    ollama_url: str | None,
+    ollama_model: str | None,
+    batch_size: int,
+    vision_time_share: float | None,
+    earlier_total_s: float | None,
+    vision_cache_only: bool,
+) -> None:
+    """:func:`rank_parts`'s vision step, in place: the rating of the default edit and the band
+    below its cut (:func:`vision_band`), blended in and clamped; ``hl["timings"]`` gets
+    ``vision_s`` and ``hl["settings"]`` the ``vision`` record."""
+    timings = hl["timings"]
     cands = hl["candidates"]
     rater: VisionRater | None = None
     bad_url: ValueError | None = None
@@ -5042,33 +5332,6 @@ def rank_parts(
             logger.warning("%s", message)
             jsonout.warn("vision_unavailable", message)
             steps.skip("vision", "Ollama or its vision model is not reachable")
-
-    cands = hl["candidates"]
-    cands.sort(
-        key=lambda c: (not c.get("must_include"), *scorer.rank_key(c), *scorer.tie_key(c))
-    )  # must-include first
-    suggested = len(default_fit.fit_target(cands, style.target_total))
-    if ids is None:
-        hl["candidates"] = [{"id": f"h{rank:03d}", **c} for rank, c in enumerate(cands, 1)]
-        hl["settings"]["last_candidate_id"] = len(cands)
-    else:  # unchanged spans keep their id, the others get the next ones
-        given: set[str] = set()
-        out = []
-        for c in cands:
-            was = ids.get(span_key(c))
-            if was is not None and was not in given:
-                given.add(was)
-                c = {"id": was, **c}
-            out.append(c)
-        hl["candidates"] = out
-        number_candidates(hl)
-    hl["suggested_top"] = suggested
-    from cutpoint import visual_pool  # noqa: PLC0415
-
-    if visual_pool.is_pool_style(style):
-        # visual pool moments: after the scored ones, outside suggested_top
-        hl["candidates"] += _visual_pool(project, parts, style, hl)
-    return ev
 
 
 def report_highlights(out_dir: Path, highlights: Path) -> None:
