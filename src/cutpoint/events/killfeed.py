@@ -1619,7 +1619,7 @@ class Interpreter:
     def _phrases(self, t: float, region: Region, text: str, conf: float) -> bool:
         """Phrase matches, keeping only the longest of nested matches
         ("YOU HAVE BEEN DESTROYED", not also "DESTROYED"); the text after the
-        phrase is kept as ``detail`` ("by -BRoFS- Sinistro9121 (Strv m/40L)")."""
+        phrase is kept as ``detail`` ("by -XMPL- Pinecone4711 (Strv m/40L)")."""
         hits = [ph for ph in self.phrases if fuzzy_contains(text, ph, FUZZY)]
         hits = [ph for ph in hits if not any(ph != o and norm(ph) in norm(o) for o in hits)]
         for ph in hits:

@@ -498,7 +498,7 @@ def rerank(
         if not dry_run:
             with cache.hold_outputs(project, (HIGHLIGHTS, BACKUP)) as held:
                 cache.save_bytes(project / BACKUP, raw)
-                cache.save_json(project / HIGHLIGHTS, after)
+                cache.save_json(project / HIGHLIGHTS, after, durable=True)
                 held.commit()
             result.saved, result.backup = True, project / BACKUP
             logger.info(
