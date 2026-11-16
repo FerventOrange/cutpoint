@@ -82,6 +82,22 @@ def test_a_bad_download_keeps_the_file_there_before(tmp_path):
     assert not dst.with_name("m.bin.part").exists()
 
 
+@pytest.mark.parametrize("served", ["missing", "bad_sha"])
+def test_a_same_size_older_file_stays_when_the_new_download_fails(tmp_path, served):
+    """Windows review W2: a file of the right size but another sha256 (an older release) is
+    kept until a checked download replaces it."""
+    good = b"new-model" * 10
+    old = b"old-model" * 10  # same size
+    dst = write(tmp_path / "out" / "m.bin", old)
+    srv = tmp_path / "srv" / "m.bin"
+    url = srv.as_uri() if served == "missing" else write_bytes(srv, b"bad-model" * 10)
+    with pytest.raises((RuntimeError, OSError)):
+        setup.download(url, dst, len(good), hashlib.sha256(good).hexdigest())
+    assert dst.read_bytes() == old
+    setup.download(write_bytes(srv, good), dst, len(good), hashlib.sha256(good).hexdigest())
+    assert dst.read_bytes() == good
+
+
 # -- #30: PANNs checkpoint mirrors ----------------------------------------------------------------
 
 

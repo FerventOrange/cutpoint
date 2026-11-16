@@ -70,7 +70,9 @@ def _add_cuda_dll_dirs() -> None:
     if sys.platform != "win32":
         return
     # LoadLibrary searches the current folder before PATH: a cublas64_12.dll in the footage
-    # folder cutpoint runs from would be loaded (A643). An empty DLL directory drops it.
+    # folder cutpoint runs from would be loaded (A643). An empty DLL directory drops it from
+    # the plain search of the whole process (ctranslate2's lazy loads too) and adds no folder,
+    # so what PATH and add_dll_directory find stays as it was.
     ctypes.windll.kernel32.SetDllDirectoryW("")
     for bin_dir in _nvidia_bin_dirs():
         os.add_dll_directory(str(bin_dir))
@@ -114,10 +116,12 @@ def _missing_cuda_libs() -> list[str]:
     for name in _CUDA_LIBS.get("linux" if sys.platform.startswith("linux") else sys.platform, ()):
         try:
             if sys.platform == "win32":
-                # the wheels' copy by its absolute path first; else winmode=0: plain
-                # LoadLibrary search (incl. PATH), as ctranslate2 uses
-                own = next((d / name for d in _nvidia_bin_dirs() if (d / name).is_file()), None)
-                ctypes.WinDLL(str(own) if own is not None else name, winmode=0)
+                # by name, as ctranslate2 loads them: winmode=0 is the plain LoadLibrary search
+                # (PATH, with the wheels' bin folders put first by _add_cuda_dll_dirs; the
+                # current folder dropped there). Never by absolute path: torch has loaded its
+                # own copies of these names already, and a wheel's DLL loaded by path binds
+                # to those and fails with WinError 127 (A643 review)
+                ctypes.WinDLL(name, winmode=0)
             else:
                 ctypes.CDLL(name)
         except OSError:

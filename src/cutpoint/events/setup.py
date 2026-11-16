@@ -165,8 +165,8 @@ def download(
         if sha256 is None or _sha256(dst) == sha256:
             logger.info("have %s", dst.name)
             return dst
+        # kept until a checked download replaces it: a failed one leaves it as it was
         logger.warning("%s does not match its sha256; downloading it again", dst.name)
-        dst.unlink()
     dst.parent.mkdir(parents=True, exist_ok=True)
     have = part.stat().st_size if part.exists() else 0
     req = urllib.request.Request(url, headers={"User-Agent": "cutpoint-setup"})
@@ -201,6 +201,12 @@ def download(
     if sha256 is not None and (actual := _sha256(part)) != sha256:
         part.unlink(missing_ok=True)
         raise RuntimeError(f"{dst.name}: sha256 mismatch (expected {sha256}, got {actual})")
+    if (
+        sha256 is None
+        and expected_size is not None
+        and (got := part.stat().st_size) != (expected_size)
+    ):  # cut short: the .part stays for the next run to resume
+        raise RuntimeError(f"{dst.name}: {got} bytes downloaded, expected {expected_size}")
     part.replace(dst)
     return dst
 
