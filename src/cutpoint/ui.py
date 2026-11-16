@@ -2583,11 +2583,8 @@ def _pano_reasons(
 
 
 def _file_ident(f: Path) -> tuple[str, int, int] | None:
-    try:
-        st = f.stat()
-    except OSError:
-        return None
-    return f.name, st.st_size, st.st_mtime_ns
+    stamp = file_stamp(f)
+    return None if stamp is None else (f.name, stamp[1], stamp[0])
 
 
 class PanoPreview:
