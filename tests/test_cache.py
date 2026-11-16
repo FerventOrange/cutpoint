@@ -4,10 +4,14 @@ import json
 import os
 from pathlib import PurePosixPath
 
+import numpy as np
 import pytest
 
-from cutpoint import activity, cache, crash, telemetry
+from cutpoint import actioncam, activity, cache, crash, telemetry
 from cutpoint.events import common
+from cutpoint.events import visual as V
+from cutpoint.events import voice as VO
+from cutpoint.pano import views as VW
 
 _GENERIC = activity.full(activity.builtin("generic"))
 
@@ -186,3 +190,121 @@ def test_source_dir_changes_when_only_the_modification_time_changes(home, tmp_pa
     assert cache.source_dir(src) != first
     os.utime(src, ns=(st.st_atime_ns, st.st_mtime_ns))  # back: the old folder again
     assert cache.source_dir(src) == first
+
+
+def test_save_npz_then_load_npz_round_trips(tmp_path):
+    path = tmp_path / "a.npz"
+    cache.save_npz(path, x=np.arange(4, dtype=np.float32), y=np.zeros((2, 3)))
+    got = cache.load_npz(path)
+    assert got is not None
+    assert got["x"].dtype == np.float32
+    assert got["x"].tolist() == [0, 1, 2, 3]
+    assert got["y"].shape == (2, 3)
+    assert [p.name for p in tmp_path.iterdir()] == ["a.npz"]
+    path.unlink()  # no handle left open: the file can be removed (and replaced) on Windows
+
+
+def test_load_npz_is_none_for_missing_truncated_or_garbage(tmp_path):
+    assert cache.load_npz(tmp_path / "none.npz") is None
+    good = tmp_path / "good.npz"
+    cache.save_npz(good, x=np.arange(1000))
+    cut = tmp_path / "cut.npz"
+    cut.write_bytes(good.read_bytes()[:40])
+    junk = tmp_path / "junk.npz"
+    junk.write_bytes(b"not a zip at all")
+    empty = tmp_path / "empty.npz"
+    empty.write_bytes(b"")
+    assert cache.load_npz(cut) is None
+    assert cache.load_npz(junk) is None
+    assert cache.load_npz(empty) is None
+
+
+def _truncated(path):
+    path.write_bytes(b"PK half written")
+    return path
+
+
+def test_load_voice_and_visual_treat_a_truncated_cache_as_a_miss(tmp_path, monkeypatch):
+    monkeypatch.setattr(VO, "cache_path", lambda *_a, **_k: _truncated(tmp_path / "v.npz"))
+    monkeypatch.setattr(V, "cache_path", lambda *_a, **_k: _truncated(tmp_path / "f.npz"))
+    assert VO.load_voice(tmp_path / "c.mp4") is None
+    assert V.load_visual(tmp_path / "c.mp4") is None
+
+
+def test_load_views_treats_a_truncated_cache_as_a_miss(tmp_path, monkeypatch):
+    monkeypatch.setattr(VW, "cache_path", lambda *_a, **_k: _truncated(tmp_path / "w.npz"))
+    assert VW.load_views(tmp_path / "c.mp4") is None
+
+
+def test_cached_speed_treats_a_truncated_cache_as_a_miss(home, tmp_path):
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"x")
+    p = telemetry.TelemetryParams()
+    _truncated(cache.source_dir(src) / f"telemetry-{p.key()}.npz")
+    assert telemetry.cached_speed(src) is None
+
+
+def test_imu_grids_recomputes_a_truncated_cache(home, tmp_path, monkeypatch):
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"x")
+    path = _truncated(cache.source_dir(src) / f"crashimu-v{crash.IMU_VERSION}.npz")
+    calls = []
+    monkeypatch.setattr(telemetry, "imu_read_path", lambda s: (None, None, s, False))
+    monkeypatch.setattr(crash, "_compute_imu", lambda *a: calls.append(a))
+    assert crash.imu_grids(src, 10.0) is None
+    assert len(calls) == 1
+    assert "none" in cache.load_npz(path)  # rewritten whole
+
+
+def test_load_npz_never_raises_on_corrupt_compressed_data(tmp_path):
+    good = tmp_path / "good.npz"
+    cache.save_npz(good, x=np.arange(5000, dtype=np.int64))
+    raw = good.read_bytes()
+    bad = tmp_path / "bad.npz"
+    hits = 0
+    for i in range(30, len(raw) - 100, 7):  # inside the compressed member data
+        bad.write_bytes(raw[:i] + bytes([raw[i] ^ 0xFF]) + raw[i + 1 :])
+        hits += cache.load_npz(bad) is None
+    assert hits  # some of the corruptions are caught, none raise
+
+
+def test_load_npz_of_an_empty_archive_is_a_hit(tmp_path):
+    path = tmp_path / "empty.npz"
+    cache.save_npz(path)
+    assert cache.load_npz(path) == {}
+
+
+def test_extract_recomputes_a_truncated_telemetry_cache(home, tmp_path, monkeypatch):
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"x")
+    p = telemetry.TelemetryParams()
+    stem = cache.source_dir(src) / f"telemetry-{p.key()}"
+    cache.save_json(stem.with_suffix(".json"), {"duration": 1.0, "events": [], "meta": {}})
+    _truncated(stem.with_suffix(".npz"))
+    calls = []
+    monkeypatch.setattr(telemetry, "imu_read_path", lambda s: (None, None, s, False))
+    monkeypatch.setattr(telemetry, "_compute", lambda *a: calls.append(a))
+    assert telemetry.extract(src, 1.0, p) is None
+    assert len(calls) == 1
+
+
+def test_text_embeddings_recompute_a_truncated_cache(tmp_path, monkeypatch):
+    path = tmp_path / "text-x.npy"
+    path.write_bytes(b"\x93NUMPY half")
+    monkeypatch.setattr(V, "_prompt_file", lambda _p: path)
+
+    class Models:
+        def encode_text(self, prompts):
+            return np.ones((len(prompts), 4))
+
+    got = V.text_embeddings(("a",), Models())
+    assert got.dtype == np.float32
+    assert np.load(path).shape == (1, 4)  # rewritten whole
+
+
+def test_load_part_treats_a_corrupt_features_file_as_a_miss(tmp_path):
+    src = tmp_path / "clip.mp4"
+    path = actioncam.features_path(tmp_path, src, 0.0)
+    path.parent.mkdir(parents=True)
+    _truncated(path)
+    assert actioncam.load_part(tmp_path, src) is None
