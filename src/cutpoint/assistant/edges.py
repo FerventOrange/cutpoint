@@ -158,11 +158,14 @@ class EdgePlanner:
                 edges, reasons = self._plans[key]
                 return dict(edges), dict(reasons)
             try:
-                planned, reasons, whole = self._plan(rows, smart_tail, speech_aware, opts)
+                planned, reasons, whole, dropped = self._plan(rows, smart_tail, speech_aware, opts)
             except Exception as err:  # noqa: BLE001  the chat and preview go on with raw ranges
                 logger.warning("could not plan the exported edges (%s); using the raw ones", err)
                 return dict(raw), {}
             out = {**raw, **planned}
+            for rid in dropped:  # the export leaves a clip inside a longer one out
+                out[rid] = (raw[rid][0], raw[rid][0])
+                reasons[rid] = "inside another clip"
             if whole:  # a source that could not be read may be back at the next ask
                 self._plans[key] = (out, reasons)
                 while len(self._plans) > MAX_CACHED:
@@ -184,9 +187,10 @@ class EdgePlanner:
         smart_tail: bool,
         speech_aware: bool,
         opts: ExportOptions,
-    ) -> tuple[Edges, Reasons, bool]:
-        """``(edges, reasons, whole)``: the planned rows (those of the sources that can be
-        read), why each moved, and whether every source could be read."""
+    ) -> tuple[Edges, Reasons, bool, set[str]]:
+        """``(edges, reasons, whole, dropped)``: the planned rows (those of the sources that
+        can be read), why each moved, whether every source could be read and the ids the
+        export leaves out (inside a longer clip)."""
         hl = cache.load_json(self.project / "highlights.json")
         hl = hl if isinstance(hl, dict) else {}
         try:  # a deleted user style degrades to its recorded base; none recorded: auto's
@@ -220,7 +224,7 @@ class EdgePlanner:
                 logger.warning("could not read %s (%s); its clips keep their raw ranges", src, err)
         moments = [m for m in moments if m["source"] in infos]
         if not moments:
-            return {}, {}, False
+            return {}, {}, False, set()
         padding = Padding.from_args(None, opts.extend_start, opts.extend_end)
         plans = plan_edges(
             moments,
@@ -252,7 +256,8 @@ class EdgePlanner:
             and (round(p.start, 3), round(p.end, 3))
             != (float(p.entry["start"]), float(p.entry["end"]))
         }
-        return planned, reasons, len(infos) == len(io_paths)
+        dropped = {m["id"] for m in moments} - {p.entry["id"] for p in plans}
+        return planned, reasons, len(infos) == len(io_paths), dropped
 
     # -- words and phrase ends ---------------------------------------------------------
     def _key(self, source: str) -> tuple[Any, ...]:

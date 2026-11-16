@@ -319,3 +319,36 @@ def test_extend_keeps_an_exact_clip_at_its_own_edges_and_short_fade(tmp_path, mo
     assert (word["start"], word["end"], word["exact"]) == (30.0, 30.12, True)
     assert word["audio_fade"] == 0.01
     assert fades == {"001_a.mp4": 0.25, "002_word.mp4": 0.01}
+
+
+def test_extend_rejects_a_manifest_without_a_format(tmp_path):
+    """A229: a clean error, not a KeyError."""
+    clips = tmp_path / "proj" / "clips"
+    write(clips / "001_a.mp4")
+    write(clips / "manifest.json", json.dumps({"clips": []}))
+    with pytest.raises(ValueError, match=r"manifest.json is not a clips manifest"):
+        extend.extend_clips(clips, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False))
+
+
+def test_extend_rejects_a_manifest_entry_without_a_range(tmp_path):
+    clips = tmp_path / "proj" / "clips"
+    write(clips / "001_a.mp4")
+    write(clips / "manifest.json", json.dumps({"format": FMT, "clips": [{"file": "001_a.mp4"}]}))
+    with pytest.raises(ValueError, match=r"manifest.json is not a clips manifest"):
+        extend.extend_clips(clips, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False))
+
+
+def test_extend_reuse_manifest_entry_without_start_is_not_reused(home, tmp_path, reads):
+    src = tmp_path / "a.mp4"
+    write(src)
+    clips = _clips_dir(tmp_path, source=str(src))
+    reuse = tmp_path / "proj" / "earlier"
+    write(reuse / "001_a.mp4")
+    write(
+        reuse / "manifest.json",
+        json.dumps({"format": FMT, "clips": [{"file": "001_a.mp4", "source": str(src)}]}),
+    )
+    out = extend.extend_clips(
+        clips, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False), reuse_dir=reuse
+    )
+    assert (out / "001_a.mp4").exists()

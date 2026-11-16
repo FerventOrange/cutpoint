@@ -460,6 +460,19 @@ def planning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return seen
 
 
+def test_a_clip_the_export_drops_is_zero_length_with_a_reason(
+    tmp_path: Path, planning, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        edges, "plan_edges", lambda moments, project, **kw: [Plan(m, 0.0, 9.0) for m in moments[:1]]
+    )
+    planner = edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
+    got, reasons = planner.explain(SEQ)
+    dropped = SEQ[1]["id"]
+    assert got[dropped][0] == got[dropped][1]
+    assert reasons[dropped] == "inside another clip"
+
+
 def test_the_planner_plans_with_smart_tails_and_speech_aware_cuts_on(
     tmp_path: Path, planning
 ) -> None:

@@ -139,9 +139,9 @@ def select_moments(
             # Must-include crashes go first and stay even past the cap.
             if not ids and not c.get("must_include") and default_fit.clashes(c, fitted):
                 continue
-            if c.get("must_include") or total + c["duration"] <= max_total:
+            if c.get("must_include") or total + default_fit.length(c) <= max_total:
                 fitted.append(c)
-                total += c["duration"]
+                total += default_fit.length(c)
         chosen = [c for c in chosen if c in fitted]
     if not ids and pool:
         chosen = _reserve(project, chosen, pool, len(chosen) if max_total else picks, max_total)
@@ -170,7 +170,7 @@ def _reserve(
         (c for c in chosen if not visual_pool.is_protected(c, spans)),
         key=lambda c: c["score"],
     )  # lowest-ranked first
-    total = sum(c["duration"] for c in chosen)
+    total = sum(default_fit.length(c) for c in chosen)
     taken: list[dict[str, Any]] = []
     for p in sorted(pool, key=lambda c: -round(10 * visual_pool.peak_of(c), 1)):
         if len(taken) == slots or not victims:
@@ -180,8 +180,8 @@ def _reserve(
         if any(default_fit.span_overlaps(p, c) for c in chosen):
             continue
         v = victims[0]
-        after = total - v["duration"] + p["duration"]
-        if max_total and after > max_total and p["duration"] > v["duration"]:
+        after = total - default_fit.length(v) + default_fit.length(p)
+        if max_total and after > max_total and default_fit.length(p) > default_fit.length(v):
             continue
         victims.pop(0)
         chosen = [c for c in chosen if c is not v]
@@ -323,7 +323,7 @@ def speech_pass[P: SpeechPlan](
     Every clip stays inside the readable part of its source that holds its pick.
 
     Args:
-        plans: Planned clips, in output order.
+        plans: Planned clips, in output order (a clip inside another's range is removed).
         speech: Pass settings (nothing happens when disabled).
         project: Project folder (its ``events.json`` feeds the speech maps).
         fit_end: Whether the end of a clip with this entry may move.
@@ -382,7 +382,15 @@ def speech_pass[P: SpeechPlan](
                 max_lead=e.get("speech_max_lead"),
             )
         )
-    boundaries.fit_clips(bounds, speech)
+    dropped = boundaries.fit_clips(bounds, speech)
+    if dropped:
+        gone = {b.name for b in dropped}
+        plans[:] = [p for p in plans if p.name not in gone]  # in place: the caller's list
+        jsonout.warn(
+            "nested_clip_dropped",
+            f"{len(gone)} clip(s) lie inside a longer clip of the same source and were left "
+            f"out: {', '.join(sorted(gone))}",
+        )
     boundaries.log_summary(bounds)
     by_name = {b.name: b for b in bounds}
     for plan in plans:
@@ -448,6 +456,43 @@ def foreign_manifest(folder: Path) -> str | None:
     ):
         return None
     return "it does not list clips as cutpoint does"
+
+
+def _has_range(e: dict[str, Any]) -> bool:
+    return isinstance(e.get("source"), str) and all(
+        isinstance(e.get(k), (int, float)) and not isinstance(e.get(k), bool)
+        for k in ("start", "end")
+    )
+
+
+def manifest_parts(
+    data: Any, *, need_format: bool = False, need_range: bool = False, path: Path | None = None
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """``(format, entries)`` of a parsed manifest.json: its ``format`` record and its
+    ``clips`` entries, each a dict with a ``file`` name.
+
+    Args:
+        need_format: Also require the format's ``width``, ``height`` and ``fps``.
+        need_range: Also require every entry's str ``source`` and numeric ``start``, ``end``.
+        path: The manifest's path, named in the error.
+
+    Raises:
+        ValueError: ``not a clips manifest`` if it has another shape.
+    """
+    err = ValueError(f"{path} is not a clips manifest" if path else "not a clips manifest")
+    if not isinstance(data, dict):
+        raise err
+    fmt = data.get("format") or {}
+    entries = data.get("clips", [])
+    if (
+        not isinstance(fmt, dict)
+        or not isinstance(entries, list)
+        or not all(isinstance(e, dict) and isinstance(e.get("file"), str) for e in entries)
+        or (need_format and not all(k in fmt for k in ("width", "height", "fps")))
+        or (need_range and not all(_has_range(e) for e in entries))
+    ):
+        raise err
+    return fmt, entries
 
 
 def check_own_manifest(folder: Path) -> None:
