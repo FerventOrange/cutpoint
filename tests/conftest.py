@@ -141,6 +141,30 @@ def home(isolated_env: Path) -> Path:
     return isolated_env
 
 
+def patch_ui(monkeypatch: pytest.MonkeyPatch, name: str, value) -> None:
+    """Patch `cutpoint.ui.<name>` in every `cutpoint.ui` module that holds the same object.
+
+    `cutpoint.ui` may be a facade over submodules: patching the facade alone would not reach the
+    submodule that reads `name`. Every loaded module of `cutpoint.ui` (the module itself and
+    `cutpoint.ui.*`) whose `name` is the facade's object is patched; undone at teardown.
+    """
+    import cutpoint.ui as facade  # noqa: PLC0415
+
+    missing = object()
+    old = getattr(facade, name, missing)
+    if old is missing:
+        raise AssertionError(f"patch_ui: cutpoint.ui has no {name!r}")
+    patched = 0
+    for mod_name, mod in list(sys.modules.items()):
+        if mod is None or not (mod_name == "cutpoint.ui" or mod_name.startswith("cutpoint.ui.")):
+            continue
+        if getattr(mod, name, missing) is old:
+            monkeypatch.setattr(mod, name, value)
+            patched += 1
+    if not patched:
+        raise AssertionError(f"patch_ui: no cutpoint.ui module holds {name!r}")
+
+
 def write(path: Path, text: str | bytes = "x") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(text, bytes):

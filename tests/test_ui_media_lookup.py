@@ -14,9 +14,11 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("httpx")
+import sys
+
 from fastapi.testclient import TestClient
 
-from conftest import media_info
+from conftest import media_info, patch_ui
 from cutpoint import projectdelete, stage, ui
 
 PORT = 8765
@@ -34,7 +36,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
         lambda paths: [shutil.move(p, bin_ / f"{i}-{Path(p).name}") for i, p in enumerate(paths)],
     )
     monkeypatch.setattr(projectdelete, "trash_blocker", lambda items: None)
-    monkeypatch.setattr(ui, "probe", lambda path: media_info(Path(path), duration=10.0))
+    patch_ui(monkeypatch, "probe", lambda path: media_info(Path(path), duration=10.0))
     app = ui.create_app(PORT)
     with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
         c.headers["X-Cutpoint-Token"] = app.state.token
@@ -55,7 +57,7 @@ def counted(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
         calls["entries"] += 1
         return real_entries(self, p)
 
-    monkeypatch.setattr(ui, "project_dir", project_dir)
+    patch_ui(monkeypatch, "project_dir", project_dir)
     monkeypatch.setattr(ui.Sources, "entries", entries)
     return calls
 
@@ -85,7 +87,7 @@ def test_range_requests_within_the_ttl_check_the_folder_once(
     client: TestClient, tmp_path: Path, counted: dict[str, int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pid, sid, _ = make_project(client, tmp_path)
-    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)  # within the TTL however slow the runner
+    patch_ui(monkeypatch, "MEDIA_LOOKUP_S", 3600.0)  # within the TTL however slow the runner
     url = media_url(client, pid, sid)
     counted.update(project_dir=0, entries=0)
     for i in range(50):
@@ -98,7 +100,7 @@ def test_after_the_ttl_the_folder_is_checked_again(
     client: TestClient, tmp_path: Path, counted: dict[str, int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pid, sid, _ = make_project(client, tmp_path)
-    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 0.0)
+    patch_ui(monkeypatch, "MEDIA_LOOKUP_S", 0.0)
     counted.update(project_dir=0, entries=0)
     for _ in range(3):
         assert client.get(media_url(client, pid, sid)).status_code == 200
@@ -120,8 +122,8 @@ def test_per_request_cost_drops_with_a_slow_folder_check(
         slept.append(0.013)
         return real_dir(pid)
 
-    monkeypatch.setattr(ui, "project_dir", slow)
-    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)  # a slow runner takes over 2 s for n
+    patch_ui(monkeypatch, "project_dir", slow)
+    patch_ui(monkeypatch, "MEDIA_LOOKUP_S", 3600.0)  # a slow runner takes over 2 s for n
     n = 200
     for i in range(n):
         assert client.get(url, headers={"Range": f"bytes={i}-{i}"}).status_code == 206
@@ -139,7 +141,7 @@ def test_director_preview_requests_within_the_ttl_check_the_folder_once(
 ) -> None:
     """The 360 director preview plays as a proxy too, in many Range requests (#1020)."""
     pid, sid, _ = make_project(client, tmp_path)
-    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)  # within the TTL however slow the runner
+    patch_ui(monkeypatch, "MEDIA_LOOKUP_S", 3600.0)  # within the TTL however slow the runner
     counted.update(project_dir=0, entries=0)
     for _ in range(20):  # no preview of this flat project: 404 after the lookup
         assert client.get(director_url(client, pid, sid)).status_code == 404
@@ -152,7 +154,7 @@ def test_director_previews_of_a_deleted_project_are_409_then_404(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pid, sid, _ = make_project(client, tmp_path)
-    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)
+    patch_ui(monkeypatch, "MEDIA_LOOKUP_S", 3600.0)
     assert client.get(media_url(client, pid, sid)).status_code == 200  # kept now
     p = ui.projects_dir() / pid
     ui.DELETING.add(p)
@@ -210,7 +212,7 @@ def test_a_project_deleted_outside_the_app_is_404_after_the_ttl(
     url = media_url(client, pid, sid)
     assert client.get(url).status_code == 200
     shutil.rmtree(ui.projects_dir() / pid)
-    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 0.0)  # the TTL passed
+    patch_ui(monkeypatch, "MEDIA_LOOKUP_S", 0.0)  # the TTL passed
     assert client.get(url).status_code == 404
 
 
@@ -222,7 +224,7 @@ def test_the_kept_answer_is_per_projects_folder(
     assert client.get(url).status_code == 200
     other = tmp_path / "other-projects"
     other.mkdir()
-    monkeypatch.setattr(ui, "projects_dir", lambda: other)
+    patch_ui(monkeypatch, "projects_dir", lambda: other)
     assert client.get(url).status_code == 404
 
 
@@ -250,7 +252,7 @@ def test_window_requests_within_the_ttl_stat_the_source_once(
 ) -> None:
     """#1030: no window proxy is ready, so each request also asks the status: still one stat."""
     pid, sid, source = make_project(client, tmp_path)
-    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)  # within the TTL however slow the runner
+    patch_ui(monkeypatch, "MEDIA_LOOKUP_S", 3600.0)  # within the TTL however slow the runner
     stat_keys.clear()
     for _ in range(20):
         assert client.get(window_url(client, pid, sid)).status_code == 409  # not ready
@@ -261,13 +263,13 @@ def test_a_window_request_after_the_ttl_stats_the_source_again(
     client: TestClient, tmp_path: Path, stat_keys: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pid, sid, source = make_project(client, tmp_path)
-    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)
+    patch_ui(monkeypatch, "MEDIA_LOOKUP_S", 3600.0)
     stat_keys.clear()
     assert client.get(window_url(client, pid, sid)).status_code == 409
     assert client.get(window_url(client, pid, sid)).status_code == 409
     assert len(stat_keys) == 1
     source.write_bytes(DATA + b"changed")  # a changed source: seen once the kept answer is stale
-    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 0.0)
+    patch_ui(monkeypatch, "MEDIA_LOOKUP_S", 0.0)
     assert client.get(window_url(client, pid, sid)).status_code == 409
     assert len(stat_keys) == 2
     assert client.get(window_url(client, pid, sid)).status_code == 409
@@ -278,7 +280,7 @@ def test_range_requests_within_the_ttl_stat_the_source_once(
     client: TestClient, tmp_path: Path, stat_keys: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pid, sid, source = make_project(client, tmp_path)
-    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)
+    patch_ui(monkeypatch, "MEDIA_LOOKUP_S", 3600.0)
     stat_keys.clear()
     for i in range(20):
         res = client.get(media_url(client, pid, sid), headers={"Range": f"bytes={i}-{i + 9}"})
@@ -290,7 +292,7 @@ def test_a_source_removed_after_its_key_was_kept_is_404_not_500(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pid, sid, source = make_project(client, tmp_path)
-    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)
+    patch_ui(monkeypatch, "MEDIA_LOOKUP_S", 3600.0)
     url = media_url(client, pid, sid)
     assert client.get(url).status_code == 200  # key kept
     source.unlink()
@@ -310,7 +312,7 @@ def test_window_content_keys_are_per_project(
     assert res.status_code == 200, res.text
     other = res.json()["id"]
     other_sid = client.get(f"/api/projects/{other}").json()["sources"][0]["id"]
-    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)
+    patch_ui(monkeypatch, "MEDIA_LOOKUP_S", 3600.0)
     stat_keys.clear()
     for _ in range(3):
         for p, s in ((pid, sid), (other, other_sid)):
@@ -364,7 +366,7 @@ def no_drive_type(root: str) -> int:
 def test_the_project_lists_its_slow_start_hints(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(ui, "_REMOTE", {})
+    patch_ui(monkeypatch, "_REMOTE", {})
     monkeypatch.setattr(projectdelete, "_drive_type", no_drive_type)  # tested apart
     monkeypatch.setattr(stage, "is_remote", lambda path: True)
     fragmented = box(b"ftyp") + box(b"moov", box(b"mvex")) + box(b"moof") + box(b"mdat")
@@ -379,7 +381,7 @@ def test_the_project_lists_its_slow_start_hints(
 def test_a_flat_source_on_local_storage_has_no_hints(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(ui, "_REMOTE", {})
+    patch_ui(monkeypatch, "_REMOTE", {})
     monkeypatch.setattr(projectdelete, "_drive_type", no_drive_type)  # tested apart
     monkeypatch.setattr(stage, "is_remote", lambda path: False)
     pid, sid, _ = make_project(client, tmp_path, box(b"ftyp") + box(b"moov") + box(b"mdat"))
@@ -403,10 +405,10 @@ def test_a_check_that_raced_an_in_app_delete_is_not_kept(
         lookups.forget(p)  # the delete ends between the check and the store
         return p
 
-    monkeypatch.setattr(ui, "project_dir", racing)
+    patch_ui(monkeypatch, "project_dir", racing)
     assert client.get(url).status_code == 200  # served from the check it made
     assert lookups.kept == {}
-    monkeypatch.setattr(ui, "project_dir", real_dir)
+    patch_ui(monkeypatch, "project_dir", real_dir)
     shutil.rmtree(ui.projects_dir() / pid)
     assert client.get(url).status_code == 404
 
@@ -419,10 +421,10 @@ def test_on_windows_the_drive_type_says_network(
 ) -> None:
     """Fixed (3) or RAM (6) drives are local, also F: and beyond; removable (2) and remote (4,
     also a UNC path) are named; an unknown type (0) is not."""
-    monkeypatch.setattr(ui, "_REMOTE", {})
-    monkeypatch.setattr(ui.sys, "platform", "win32")
+    patch_ui(monkeypatch, "_REMOTE", {})
+    monkeypatch.setattr(sys, "platform", "win32")
     roots: list[str] = []
-    monkeypatch.setattr(ui.projectdelete, "_drive_type", lambda root: roots.append(root) or kind)
+    monkeypatch.setattr(projectdelete, "_drive_type", lambda root: roots.append(root) or kind)
     monkeypatch.setattr(stage, "is_remote", lambda path: pytest.fail("not asked on Windows"))
     p = Path("F:/Projects/trip")
     assert ui.on_network(p) is expect
@@ -430,12 +432,12 @@ def test_on_windows_the_drive_type_says_network(
 
 
 def test_on_windows_a_failed_drive_type_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ui, "_REMOTE", {})
-    monkeypatch.setattr(ui.sys, "platform", "win32")
+    patch_ui(monkeypatch, "_REMOTE", {})
+    monkeypatch.setattr(sys, "platform", "win32")
 
     def broken(root: str) -> int:
         raise OSError("no kernel32")
 
-    monkeypatch.setattr(ui.projectdelete, "_drive_type", broken)
+    monkeypatch.setattr(projectdelete, "_drive_type", broken)
     monkeypatch.setattr(stage, "is_remote", lambda path: True)
     assert ui.on_network(Path("F:/Projects/trip")) is True

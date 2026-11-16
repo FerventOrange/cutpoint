@@ -15,6 +15,7 @@ import pytest
 pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
+from conftest import patch_ui
 from cutpoint import analyze, rerank, ui
 from cutpoint.styles import get_style, style_name
 from test_rerank import lite_layers, make_project, read  # noqa: F401 (lite_layers: a fixture)
@@ -26,7 +27,7 @@ URL = "/api/projects/p/ranking/undo"
 
 @pytest.fixture
 def client(home: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    monkeypatch.setattr(ui, "cuda_probe", lambda: False)
+    patch_ui(monkeypatch, "cuda_probe", lambda: False)
     app = ui.create_app(PORT)
     with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
         c.headers["X-Cutpoint-Token"] = app.state.token
