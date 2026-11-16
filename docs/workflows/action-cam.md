@@ -17,7 +17,7 @@ cutpoint assemble projects/trip/clips --loudnorm
 `analyze --style action-cam`:
 
 - skips scene detection;
-- runs the reaction (sound events, voice), keyframe (visual, only with a CUDA GPU) and crash
+- runs the reaction (sound events, voice), keyframe (visual, with a CUDA GPU; without one only the AI Chat's light frame index) and crash
   steps when the `events` extra and models are installed, writing `events.json` and
   `crashes.json` (`--skip` leaves steps out); the Ollama frame rating runs only with `--vision`;
 - writes `telemetry.json` (day summary, runs, per-source events);

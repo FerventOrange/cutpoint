@@ -471,8 +471,9 @@ class ClipEncoder:
         enc.on_device = False
         return enc
 
-    def embed(self, frames: np.ndarray, batch: int = 32) -> np.ndarray:
-        """``(N, 3, 768)`` L2-normalised embeddings of left / centre / right crops."""
+    def embed(self, frames: np.ndarray, batch: int = 32, centre: bool = False) -> np.ndarray:
+        """``(N, 3, 768)`` L2-normalised embeddings of left / centre / right crops; with
+        ``centre`` ``(N, 1, 768)`` of the centre crop alone (the light frame index, #989)."""
         torch = self.torch
         if not self.on_device:
             # the VRAM checked when the visual layer loaded may be taken since (#721)
@@ -484,14 +485,19 @@ class ClipEncoder:
             else:
                 self.model = self.model.to(self.device)
             self.on_device = True
+        crops = 1 if centre else 3
         out = []
         for i in range(0, len(frames), batch):
             x = torch.from_numpy(frames[i : i + batch]).to(self.device).permute(0, 3, 1, 2)
             x = x.float() / 255
             b, _, h, w = x.shape
             s = min(h, w)
-            offs = [0, (w - s) // 2, w - s]
-            c = torch.cat([x[:, :, :, o : o + s] for o in offs], 0)
+            if centre:
+                y0, x0 = (h - s) // 2, (w - s) // 2
+                c = x[:, :, y0 : y0 + s, x0 : x0 + s]
+            else:
+                offs = [0, (w - s) // 2, w - s]
+                c = torch.cat([x[:, :, :, o : o + s] for o in offs], 0)
             c = torch.nn.functional.interpolate(
                 c, size=(224, 224), mode="bicubic", antialias=True, align_corners=False
             )
@@ -499,8 +505,8 @@ class ClipEncoder:
             with torch.inference_mode():
                 e = self.model.encode_image(c).float()
             e = e / e.norm(dim=-1, keepdim=True)
-            out.append(e.view(3, b, -1).permute(1, 0, 2).cpu().numpy())
-        return np.concatenate(out) if out else np.zeros((0, 3, 768), np.float32)
+            out.append(e.view(crops, b, -1).permute(1, 0, 2).cpu().numpy())
+        return np.concatenate(out) if out else np.zeros((0, crops, 768), np.float32)
 
     def close(self) -> None:
         """Release the model and GPU memory (again: no-op)."""

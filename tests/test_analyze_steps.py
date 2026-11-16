@@ -1110,6 +1110,23 @@ def test_the_crash_layer_learns_why_there_is_no_visual_layer(run, monkeypatch, r
     assert crash._NO_VISUAL_REASON.get() is None  # reset after the run
 
 
+def test_with_the_light_index_the_crash_layer_still_hears_no_cuda(run, monkeypatch):
+    """#989: the light frame index runs in the keyframes step, but crashes.json still has no
+    visual layer, and its warning says why."""
+    seen = []
+
+    def events(project, **kw):
+        seen.append((crash._NO_VISUAL_REASON.get(), kw["layers"]))
+
+    monkeypatch.setattr(pipeline, "run_events", events)
+    run.plan = analyze.LayerPlan(
+        layers={"keyframes": ("visual_light",), "crashes": ("crash",)},
+        no_visual=analyze.SKIP_NO_CUDA,
+    )
+    run.go("action")
+    assert seen == [("no CUDA GPU for the keyframes step", ("visual_light", "crash"))]
+
+
 def test_highlights_json_is_written_once_atomically(run):
     run.plan = plan(reactions=("audio",), keyframes=("ocr",))
     run.go(vision=True)
@@ -2115,14 +2132,57 @@ def test_plan_visual_index_follows_the_skip_option(env):
     assert "keyframes" not in p.layers and p.skipped["keyframes"] == analyze.SKIP_OPTION
 
 
-def test_plan_visual_index_without_cuda_keeps_the_hud_text(env, caplog):
+def test_plan_visual_index_without_cuda_is_the_light_index_after_the_hud_text(env):
+    """#989: without CUDA the visual index is the light frame index (CLIP on the CPU, chat
+    only), after the HUD text."""
     env.cuda = False
+    p = analyze.plan_layers(get_style("gaming"), [Path("a.mp4")], (), None, True)
+    assert p.layers["keyframes"] == ("ocr", "visual_light") and "keyframes" not in p.skipped
+    assert p.no_visual == analyze.SKIP_NO_CUDA
+    talk = analyze.plan_layers(get_style("commentary"), [Path("a.mp4")], (), None, True)
+    assert talk.layers["keyframes"] == ("visual_light",) and "keyframes" not in talk.skipped
+
+
+@pytest.mark.parametrize(
+    ("style", "keyframes"),
+    [("gaming", ("ocr",)), ("funny", ("ocr",)), ("commentary", None)],
+)
+def test_plan_without_cuda_gives_no_light_index_where_a_gpu_writes_none(env, style, keyframes):
+    """Q5 option (a): only where a GPU run indexes (here: no --visual-index)."""
+    env.cuda = False
+    assert (
+        analyze.plan_layers(get_style(style), [Path("a.mp4")], ()).layers.get("keyframes")
+        == keyframes
+    )
+
+
+@pytest.mark.parametrize(
+    ("style", "cat", "keyframes"),
+    [
+        ("sport", None, ("visual_light",)),  # the sport style is action footage
+        ("action-cam", None, ("visual_light",)),
+        ("funny", "general", ("visual_light",)),
+        ("commentary", "general", ("visual_light",)),
+        ("funny", "gameplay", ("ocr",)),
+    ],
+)
+def test_plan_without_cuda_plans_the_light_index_for_the_footage_a_gpu_indexes(
+    env, style, cat, keyframes
+):
+    """#989: by the footage category (sport via action, general), not only the style."""
+    env.cuda = False
+    p = analyze.plan_layers(get_style(style), [Path("a.mp4")], (), cat)
+    assert p.layers["keyframes"] == keyframes
+    assert (p.no_visual == analyze.SKIP_NO_CUDA) is ("visual_light" in keyframes)
+
+
+def test_plan_light_index_without_clip_files_is_left_out(env, caplog):
+    env.cuda, env.missing = False, [("visual", ["visual_light"])]
     caplog.set_level("INFO")
     p = analyze.plan_layers(get_style("gaming"), [Path("a.mp4")], (), None, True)
-    assert p.layers["keyframes"] == ("ocr",) and "keyframes" not in p.skipped
-    assert "the visual index skipped" in caplog.text
-    talk = analyze.plan_layers(get_style("commentary"), [Path("a.mp4")], (), None, True)
-    assert "keyframes" not in talk.layers and talk.skipped["keyframes"].startswith("no CUDA GPU")
+    assert p.layers["keyframes"] == ("ocr",)
+    got, why = planned("action")
+    assert "keyframes" not in got and "cutpoint setup --only visual" in why["keyframes"]
 
 
 def test_plan_visual_index_without_clip_files_keeps_the_hud_text(env, caplog):
@@ -2157,14 +2217,14 @@ def test_plan_telemetry_turns_crashes_on_for_any_style(env):
     assert got["keyframes"] == ("ocr",) and why == {}
 
 
-def test_plan_without_cuda_leaves_out_the_clip_keyframes(env, caplog):
+def test_plan_without_cuda_writes_the_light_index_in_place_of_the_clip_keyframes(env):
     env.cuda = False
-    caplog.set_level("INFO")
-    got, why = planned("action")
-    assert "keyframes" not in got and why["keyframes"].startswith("no CUDA GPU")
-    assert got["crashes"] == ("crash",)
-    assert "No CUDA GPU" in caplog.text
+    p = analyze.plan_layers(get_style("action"), [Path("a.mp4")], ())
+    assert p.layers["keyframes"] == ("visual_light",) and "keyframes" not in p.skipped
+    assert p.no_visual == analyze.SKIP_NO_CUDA  # the crashes step still says why
+    assert p.layers["crashes"] == ("crash",)
     assert planned("funny")[0]["keyframes"] == ("ocr",)  # HUD text needs no CUDA
+    assert planned("action", skip=("keyframes",))[1]["keyframes"] == analyze.SKIP_OPTION
 
 
 def test_plan_cuda_check_uses_torch(env, monkeypatch):
@@ -2191,7 +2251,7 @@ def test_plan_a_broken_torch_counts_as_no_cuda(env, monkeypatch, caplog, broken)
             is_available=dll_error)))  # fmt: skip
     caplog.set_level("DEBUG", logger=analyze.logger.name)
     got, why = planned("action")
-    assert "keyframes" not in got and why["keyframes"] == analyze.SKIP_NO_CUDA
+    assert got["keyframes"] == ("visual_light",) and "keyframes" not in why
     assert got["crashes"] == ("crash",)
     assert "torch CUDA check failed" in caplog.text
 
