@@ -455,7 +455,7 @@ def update_config(
         for key in remove:
             data.pop(key, None)
         path.parent.mkdir(parents=True, exist_ok=True)
-        cache.save_json(path, data, indent=indent)  # type: ignore[arg-type]
+        cache.save_json(path, data, indent=indent, durable=True)  # type: ignore[arg-type]
         get_config.cache_clear()
         return data
 

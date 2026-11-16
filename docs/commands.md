@@ -1621,6 +1621,8 @@ in `gaming`, nominates candidates for events no candidate covers (see [Candidate
 
 Footage that is not reachable (offline drive, moved file) is skipped with a `footage not reachable` warning; if none is reachable the command fails before writing anything. With a source skipped, `events.json` is rewritten without that source's events; the action-cam re-rank is skipped and other styles re-rank with the events found; rerun once the footage is back (caches make it quick).
 
+The footage `events` reads is the one `highlights.json` names (`settings.inputs` and `sources[].path`). A project folder you got from someone else names paths on your machine that `events` then reads and caches (it never writes to them), so look at those entries first.
+
 | Layer | What |
 |---|---|
 | `audio` | PANNs sound events: laughter, screams, cheering |
@@ -1925,6 +1927,13 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   so is in-place `extend` of such a clips folder; use `--out` with a folder on that drive.
   As with `clips --force`, a `manifest.json` in `DIR` that cutpoint may not have written stops
   the run before any export.
+- The project is the one `manifest.json` records (`project`), else the clips folder's parent:
+  its `highlights.json` and, for 360 clips, its clip list are read there. When the recorded
+  project is not the clips folder's parent (a clips folder exported with `clips --out` elsewhere
+  or copied from another machine), an INFO line says so and the 360 path files are written
+  under the clips folder's parent (`pano_paths\<out folder>`), never into the recorded project.
+  The manifest's `source`, `read_from` and `lut` are read as recorded: a clips folder from
+  someone else names files on your machine.
 - An `.mp4` in the folder without a manifest entry is not re-exported; the WARNING says
   whether it is a source of the clips, a clip renamed during review (recognised by its size,
   naming its exported name), or added by hand.
@@ -2227,7 +2236,8 @@ new style, with its event layers (minutes to hours; cached work is reused). It w
 `highlights.before-rerank.json` before it starts. `rerank --analyze` is not resumable
 (`cutpoint resume` does not replay it); running it again reuses its caches. A 360 project is
 analyzed again by `cutpoint 360 analyze <project> --style NAME`, the command the `ERROR` line
-names; `--analyze` refuses it. Re-ranking into
+names; `--analyze` refuses it. Like `events`, `--analyze` reads the footage `highlights.json` names (`settings.inputs`,
+`sources[].path`): in a project folder from someone else these are paths on your machine. Re-ranking into
 `gaming` when the dialogue step never read the project is only an INFO note: run
 `cutpoint analyze` with `--style gaming` for its talk stretches.
 
@@ -2251,7 +2261,9 @@ An `analyze` or `edit` run recorded without `--style` before the default changed
 
 Statuses that are resumed: `interrupted` (also `running` with a dead process), `failed` and
 `low_memory`. Status `done` logs `nothing to resume` and exits 0. Sources of the record that
-are missing now log a WARNING (`resume_sources_changed`); the run continues.
+are missing now log a WARNING (`resume_sources_changed`); the run continues. A project folder
+from someone else replays their recorded command, whose inputs are paths on your machine that
+the run reads: check them with `--dry-run` first.
 
 `--dry-run` runs nothing and prints:
 
