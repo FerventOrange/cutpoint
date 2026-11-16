@@ -106,6 +106,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `cutpoint ui` project view answers about 3.5x faster on large projects (3000 moments: 216 to 61 ms), with the same reply (#1085, A742).
+- `cutpoint ui` jobs list, polled every second while a job runs, sends the log only for the running job and the newest job (about 36x less data with 50 kept jobs) (#1085, A744).
+- `cutpoint ui`: polls that change nothing on the page no longer rebuild the Moments tiles, so focus and scroll stay put while a proxy builds (#1085, A753).
 - Snapping moments to word and sentence edges is much faster on long transcripts with many moments (#1085): the words and sentence edges of a part are indexed once instead of scanned for every moment (3 h of speech, 1,000 moments: 6.7 s to 0.01 s). The snapped edges are unchanged.
 - GoPro telemetry is read once per source instead of twice (#1085): the telemetry step now also fills the crash step's IMU cache from the same read, so `analyze` and `crashes` no longer parse each GoPro file a second time. Results are unchanged.
 - **BREAKING:** API keys are read from and saved to the native OS keyring only (Secret Service, KWallet, macOS Keychain, Windows Credential Manager). Keys saved in keyrings.alt or another plaintext keyring are no longer read: save them again or set the key's environment variable. Without an OS keyring, Save key fails and names the variable.
