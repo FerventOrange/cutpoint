@@ -72,6 +72,26 @@ export function bootRoutes(project = makeProject()) {
  */
 export const reply = (status, body) => ({ __reply: true, status, body });
 
+/**
+ * Answer the page's confirm dialog (app.js confirmAction) with ``answers`` in turn (the last one
+ * repeats); returns the list of what it asked (title and text).
+ */
+export function answerConfirms(page, answers = [true]) {
+  const $ = (sel) => page.document.querySelector(sel);
+  const dlg = $('#confirmDialog');
+  const asked = [];
+  let i = 0;
+  dlg.showModal = function () {
+    asked.push(`${$('#confirmTitle').textContent} ${$('#confirmText').textContent}`);
+    const yes = answers[Math.min(i++, answers.length - 1)];
+    queueMicrotask(() => { // after confirmAction listens for the close
+      this.returnValue = yes ? 'ok' : 'cancel';
+      this.dispatchEvent(new page.window.Event('close'));
+    });
+  };
+  return asked;
+}
+
 function makeFetch(routes, log, unhandled) {
   return async function fetchMock(input, init = {}) {
     const url = new URL(typeof input === 'string' ? input : input.url, ORIGIN);

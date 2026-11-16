@@ -878,7 +878,7 @@ class Turn:
                 if final:
                     self._finish("done")
                     return
-                result = result[:MAX_RESULT_CHARS]
+                result = context.cut_result(result, MAX_RESULT_CHARS)  # a data block keeps its end
                 if json_mode:
                     sent = {"role": "user", "content": f"{call.name} result:\n{result}"}
                 else:
@@ -1464,12 +1464,13 @@ class Turn:
             payload = hook.preview(style)
         except ranking.RankingError as err:
             logger.info("assistant: ranking preview refused: %s", err)
+            why = errtext.no_paths(str(err))  # the model and chat.json get no file path
             self._emit(
                 {
                     "kind": "tool",
                     "name": ranking.NAME,
                     "style": style,
-                    "error": "the project is busy" if err.busy else str(err),
+                    "error": "the project is busy" if err.busy else why,
                 }
             )
             if err.busy:
@@ -1478,7 +1479,7 @@ class Turn:
                     "user to ask again when it is done",
                     False,
                 )
-            return f"error: the ranking could not be previewed: {err}. Tell the user", False
+            return f"error: the ranking could not be previewed: {why}. Tell the user", False
         except Exception:  # a text with a file path must not reach the model or the reply
             logger.exception("assistant: ranking preview failed")
             self._emit(
