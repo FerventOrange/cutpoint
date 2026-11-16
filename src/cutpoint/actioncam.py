@@ -727,15 +727,14 @@ def save_features(
     meta = json.dumps(
         {"source": str(src), "offset": offset, "duration": duration, "events": events}
     )
-    buf = io.BytesIO()  # written atomically (held back until `analyze` completes)
-    np.savez_compressed(
-        buf,
+    cache.save_npz(  # atomic (held back until `analyze` completes)
+        path,
+        parents=True,
         mask=mask.astype(np.float32),
         friends=friends.astype(np.float32),
         meta=np.array(meta),
         **{f"f_{k}": v.astype(np.float32) for k, v in features.items()},
     )
-    cache.save_bytes(path, buf.getvalue(), parents=True)
     return path
 
 
@@ -760,7 +759,13 @@ def load_part(project: Path, src: Path, offset: float = 0.0) -> dict[str, Any] |
     one."""
     path = features_path(project, src, offset)
     data = cache.load_bytes(path)
-    return None if data is None else load_features(path, data)
+    if data is None:
+        return None
+    try:
+        return load_features(path, data)
+    except cache.NPZ_ERRORS as err:
+        logger.warning("%s: action-cam features unreadable (%s); treated as missing", path, err)
+        return None
 
 
 def load_project_features(project: Path) -> list[dict[str, Any]]:
