@@ -11,9 +11,10 @@ only for custom and self-hosted base URLs: it never goes to an official host (#5
 A key is never written to ``config.json`` or project files, never sent to the page (only where
 it comes from: :func:`status`) and never put in a job's arguments. ``cutpoint ui`` moves the
 variables above out of its environment at startup (:func:`capture`), and its jobs get an
-environment without them (:func:`child_env`), so no child process sees a key. Every key read in this
-process is replaced by ``[redacted]`` in error messages (:func:`redact`) and in log records
-(:class:`RedactFilter`, installed by :func:`redact_logs`).
+environment without them (:func:`child_env`; other programs, such as the proxy, also get no
+other variable named like a secret), so no child process sees a key. Every key read in this process is replaced by ``[redacted]`` in
+error messages (:func:`redact`) and in log records (:class:`RedactFilter`, installed by
+:func:`redact_logs`).
 """
 
 from __future__ import annotations
@@ -37,9 +38,19 @@ SERVICE = "cutpoint"  # keyring service name
 MAX_KEY = 512
 REDACTED = "[redacted]"
 MIN_SECRET = 8  # shorter values are not searched for (they would match ordinary text)
-# Key-like tokens (OpenAI "sk-...", Anthropic "sk-ant-...", xAI "xai-..."), redacted even when
-# not read here.
-_KEY_LIKE = re.compile(r"\b(?:sk|xai)-[A-Za-z0-9_\-]{16,}")
+# Key-like tokens (OpenAI "sk-...", Anthropic "sk-ant-...", xAI "xai-...", Google OAuth
+# "ya29...."), redacted even when not read here.
+_KEY_LIKE = re.compile(r"\b(?:(?:sk|xai)-[A-Za-z0-9_\-]{16,}|ya29\.[A-Za-z0-9_\-]{20,})")
+# The token of an ``Authorization: Bearer ...`` header (the proxy's keys, OAuth tokens)
+_BEARER = re.compile(r"(\bBearer\s+)[A-Za-z0-9_\-.~+/=]{16,}", re.IGNORECASE)
+# The operating-system stores a key may be kept in: never a plaintext file backend
+# (keyrings.alt, or one PYTHON_KEYRING_BACKEND names)
+OS_BACKENDS = {
+    ("keyring.backends.SecretService", "Keyring"),
+    ("keyring.backends.kwallet", "DBusKeyring"),
+    ("keyring.backends.macOS", "Keyring"),
+    ("keyring.backends.Windows", "WinVaultKeyring"),
+}
 
 _SEEN: set[str] = set()  # every key read or saved in this process
 _LOCK = threading.Lock()
@@ -49,11 +60,44 @@ class KeyringError(RuntimeError):
     """The keyring refused (or has no backend); the message is for the user (never the key)."""
 
 
-def _keyring() -> Any:
+def _keyring_module() -> Any:
     """The ``keyring`` module (a core dependency, imported when first needed)."""
     import keyring  # noqa: PLC0415
 
     return keyring
+
+
+def os_backend(module: Any) -> Any:
+    """The operating-system keyring of ``module`` (the ``keyring`` module): its backend when
+    that is one of :data:`OS_BACKENDS`, else the first such one a chainer holds.
+
+    Raises:
+        KeyringError: There is none (only a plaintext or no backend).
+    """
+    backend = module.get_keyring()
+
+    def supported(candidate: Any) -> bool:
+        return (type(candidate).__module__, type(candidate).__name__) in OS_BACKENDS
+
+    if supported(backend):
+        return backend
+    if (
+        type(backend).__module__ == "keyring.backends.chainer"
+        and type(backend).__name__ == "ChainerBackend"
+    ):
+        selected = next((item for item in backend.backends if supported(item)), None)
+        if selected is not None:
+            return selected
+    raise KeyringError("no OS keyring is available")
+
+
+def _keyring() -> Any:
+    """The operating-system keyring backend (:func:`os_backend`).
+
+    Raises:
+        KeyringError: There is none.
+    """
+    return os_backend(_keyring_module())
 
 
 def _remember(key: str) -> None:
@@ -166,13 +210,14 @@ def save(provider: str, key: str, host: str, *, vision: bool = False, shared: bo
         ValueError: An unknown provider, or a key that is empty, too long or has spaces.
         KeyringError: The keyring refused (or has no backend).
     """
-    ring = _check(provider)
+    if provider not in KEYED:
+        raise ValueError(f"provider must be one of {', '.join(KEYED)}")
     key = key.strip() if isinstance(key, str) else ""
     if not key or len(key) > MAX_KEY or any(c.isspace() or not c.isprintable() for c in key):
         raise ValueError(f"the key must be 1-{MAX_KEY} printable characters without spaces")
     _remember(key)
     try:
-        ring.set_password(SERVICE, ring_user(provider, host), key)
+        _keyring().set_password(SERVICE, ring_user(provider, host), key)
     except Exception as err:  # noqa: BLE001 - any backend error, named without the key
         names = [n for n in env_names(provider, host) if shared or n != ENV_KEY]
         hint = f"; or set {names[0]} before starting cutpoint ui" if names else ""
@@ -180,9 +225,8 @@ def save(provider: str, key: str, host: str, *, vision: bool = False, shared: bo
             hint = "; Vision jobs started from cutpoint ui need the keyring" + (
                 f" ({names[0]} works for command-line runs only)" if names else ""
             )
-        raise KeyringError(
-            f"the keyring did not save the key ({type(err).__name__}){hint}"
-        ) from None
+        why = str(err) if isinstance(err, KeyringError) else type(err).__name__
+        raise KeyringError(f"the keyring did not save the key ({why}){hint}") from None
 
 
 def clear(provider: str, host: str) -> None:
@@ -201,11 +245,31 @@ def clear(provider: str, host: str) -> None:
         raise KeyringError(f"the keyring did not remove the key ({type(err).__name__})") from None
 
 
-def child_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """``env`` (default: this process's environment) without the API key variables."""
+# Other programs' secrets a child never needs (GEMINI_API_KEY, GITHUB_TOKEN, AZURE_OPENAI_KEY,
+# AWS_SECRET_ACCESS_KEY, GH_PAT, MYSQL_PWD, ...): a name (upper-cased) whose last part is
+# API_KEY(S), APIKEY(S), TOKEN(S), KEY, ACCESS_KEY, PRIVATE_KEY (each also with _ID), PAT, PASS or
+# PASSWD, that ends in _PWD, or with SECRET, PASSWORD or CREDENTIAL in it. PWD, OLDPWD,
+# *_ASKPASS, SSH_AUTH_SOCK and PYTHON_KEYRING_BACKEND stay.
+_SECRET_NAME = re.compile(
+    r"(?:^|_)(?:API_?KEYS?|TOKENS?|(?:ACCESS_|PRIVATE_)?KEY(?:_ID)?|PAT|PASS|PASSWD)$"
+    r"|_PWD$|SECRET|PASSWORD|CREDENTIAL"
+)
+
+
+def child_env(
+    env: Mapping[str, str] | None = None, *, keep_secret_names: bool = False
+) -> dict[str, str]:
+    """``env`` (default: this process's environment) without the API key variables and any
+    other variable named like a secret (:data:`_SECRET_NAME`). ``keep_secret_names``: keep the
+    latter, for Cutpoint's own commands (a ``cutpoint ui`` job: ``HF_TOKEN`` for its model
+    downloads); the key variables go either way."""
     env = os.environ if env is None else env
     drop = {name.upper() for name in ENV_VARS}
-    return {k: v for k, v in env.items() if k.upper() not in drop}
+    return {
+        k: v
+        for k, v in env.items()
+        if k.upper() not in drop and (keep_secret_names or not _SECRET_NAME.search(k.upper()))
+    }
 
 
 def redact(text: str) -> str:
@@ -216,7 +280,7 @@ def redact(text: str) -> str:
     secrets.update(v for name in ENV_VARS if len(v := _env(name)) >= MIN_SECRET)
     for secret in sorted(secrets, key=len, reverse=True):
         text = text.replace(secret, REDACTED)
-    return _KEY_LIKE.sub(REDACTED, text)
+    return _BEARER.sub(rf"\g<1>{REDACTED}", _KEY_LIKE.sub(REDACTED, text))
 
 
 class RedactFilter(logging.Filter):
