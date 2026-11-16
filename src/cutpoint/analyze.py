@@ -3074,6 +3074,7 @@ LAYER_STEP = {
     "audio": "reactions",
     "voice": "reactions",
     "visual": "keyframes",
+    "visual_light": "keyframes",  # without a CUDA GPU: the AI Chat's light frame index (#989)
     "ocr": "keyframes",
     "crash": "crashes",
     "dialogue": "dialogue",  # the dialogue reader, run by run_events before it writes
@@ -3094,6 +3095,9 @@ class LayerPlan:
     layers: dict[str, tuple[str, ...]] = field(default_factory=dict)
     skipped: dict[str, str] = field(default_factory=dict)
     game: bool = False
+    # why the keyframes step runs without the visual layer the crashes step reads (the
+    # light frame index in its place: :data:`SKIP_NO_CUDA`)
+    no_visual: str | None = None
 
     def all_layers(self) -> tuple[str, ...]:
         """Every planned layer, in the order :func:`run_events` runs them."""
@@ -3178,6 +3182,14 @@ def layer_category(style: Style) -> str:
     return category.TALK
 
 
+def _light_index(cat: str, visual_index: bool) -> bool:
+    """Whether a run without a CUDA GPU writes the light frame index for the AI Chat (#989),
+    for footage of category ``cat``: only where a GPU run writes the full index, action-cam,
+    action (the ``sport`` style too: :func:`layer_category`) and general footage, and the
+    others with ``--visual-index`` (``visual_index`` in config.json)."""
+    return cat in (category.ACTION_CAM, category.ACTION, category.GENERAL) or visual_index
+
+
 def plan_layers(
     style: Style,
     sources: Sequence[Path],
@@ -3195,7 +3207,10 @@ def plan_layers(
     (``--visual-index``) adds the CLIP visual layer to the keyframes of gameplay (before the
     HUD text) and talk too, for the assistant's visual search only. ``cuda``: whether a CUDA
     GPU is there (None: torch's own check, :func:`_cuda`; ``cutpoint ui`` passes a child
-    process's answer, so it never imports torch). Crashes:
+    process's answer, so it never imports torch). Without a CUDA GPU the light frame index for
+    the AI Chat (``visual_light``, CLIP on the CPU, chat only) takes the CLIP visual layer's
+    place where :func:`_light_index` says so; ``no_visual`` then tells the crashes step why it
+    has no visual layer. Crashes:
     action-cam, action and general footage, or any source with telemetry. A step whose events extra
     or model files are missing is left out with one INFO line naming the fix; nothing is
     downloaded.
@@ -3239,18 +3254,25 @@ def plan_layers(
             plan.skipped[step] = SKIP_NO_EXTRA
         want.clear()
         return plan
-    if "visual" in want.get("keyframes", ()) and not (cuda or _cuda)():
-        rest = tuple(x for x in want["keyframes"] if x != "visual")  # gameplay: the HUD text stays
-        logger.info(
-            "No CUDA GPU: %s skipped (CLIP on the CPU would take about an hour per hour of "
-            "footage)",
-            "keyframes" if not rest else "the visual index",
-        )
-        if rest:
-            want["keyframes"] = rest
+    light = plan.skipped.get("keyframes") != SKIP_OPTION and _light_index(cat, visual_index)
+    if ("visual" in want.get("keyframes", ()) or light) and not (cuda or _cuda)():
+        # gameplay: the HUD text stays
+        rest = tuple(x for x in want.get("keyframes", ()) if x != "visual")
+        if light:  # run_events logs its INFO line with the estimate
+            want["keyframes"] = (*rest, "visual_light")
+            plan.skipped.pop("keyframes", None)  # a style without a keyframe layer of its own
+            plan.no_visual = SKIP_NO_CUDA  # crashes.json still has no visual layer
         else:
-            plan.skipped["keyframes"] = SKIP_NO_CUDA
-            del want["keyframes"]
+            logger.info(
+                "No CUDA GPU: %s skipped (CLIP on the CPU would take about an hour per hour of "
+                "footage)",
+                "keyframes" if not rest else "the visual index",
+            )
+            if rest:
+                want["keyframes"] = rest
+            else:
+                plan.skipped["keyframes"] = SKIP_NO_CUDA
+                del want["keyframes"]
     components: dict[str, None] = {}
     for step, layers in list(want.items()):
         files = event_paths.missing_files(layers)
@@ -3258,7 +3280,11 @@ def plan_layers(
             continue
         components.update(dict.fromkeys(comp for comp, _ in files))
         # reactions without the voice layer, keyframes of gameplay without the visual index
-        rest = tuple(x for x in layers if x not in ("voice", *(("visual",) if plan.game else ())))
+        rest = tuple(
+            x
+            for x in layers
+            if x not in ("voice", *(("visual", "visual_light") if plan.game else ()))
+        )
         if rest != layers and rest and not event_paths.missing_files(rest):
             want[step] = rest
             continue
@@ -3333,13 +3359,16 @@ class _StepHook:
         try:
             yield
         except LowMemoryError:  # the memory guard stops the run (resumable), not the layer
-            raise
+            raise  # (visual_light never gets here: its own WARNING, pipeline._light_layer)
         except Exception as err:
             logger.debug("%s layer failed", layer, exc_info=True)
             files: list[str] = []
             if layer == "ocr":  # analyze goes on, ranked without the HUD: a WARNING
                 memguard.raise_if_out_of_memory(err, "the HUD OCR", "the sources not read yet")
                 message, files = _ocr_failed(err)
+                logger.warning("%s", message)
+            elif layer == "visual_light":  # chat only: the analysis does not need it
+                message = f"Frame index for the AI Chat failed: {err}; continuing without it"
                 logger.warning("%s", message)
             elif layer in self.optional:
                 message = f"Visual index failed: {err}; the HUD text still runs"
@@ -3579,7 +3608,7 @@ def _run_layers(
     from cutpoint.events.vlm_windows import VlmParams  # noqa: PLC0415
 
     tags, game = _ocr_options(project)
-    why = plan.skipped.get("keyframes")
+    why = plan.skipped.get("keyframes") or plan.no_visual
     try:
         with (
             pending_highlights(project, hl, transcript),
@@ -3593,7 +3622,7 @@ def _run_layers(
                 audio=AudioParams(),
                 ocr=OcrParams(game=game, player_tags=tags, det_skip=det_skip),
                 vlm=VlmParams(max_windows=None),
-                stage=_StepHook(steps, {"visual"} if plan.game else set()),
+                stage=_StepHook(steps, {"visual_light", *(("visual",) if plan.game else ())}),
                 cached_ocr=plan.game,
                 llm=llm,
                 prefetch=prefetch,

@@ -22,10 +22,18 @@ are sparser than 1.5 s (gameplay recordings) are decoded fully through
 Raw outputs are cached per source in ``cache/<source>/visual-<hash>.npz``.
 Everything derived from them (:func:`frame_scores`) is cheap numpy, so the
 prompts and the person rules can change without decoding again.
+
+Without a CUDA GPU, ``analyze`` writes a **light frame index** instead (#989): CLIP only, the
+centre crop of about one frame every :data:`LIGHT_STEP_S` seconds plus a few frames inside each
+candidate, cached apart in ``cache/<source>/visual-light-<hash>.npz``
+(:func:`compute_light`). Only the AI Chat's ``look_for`` reads it
+(:func:`load_visual_light`); :func:`load_visual`, and so every ranking reader, never does. A
+full index written later replaces it.
 """
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import importlib.util
 import io
@@ -34,7 +42,7 @@ import re
 import sys
 import time
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -137,12 +145,19 @@ def cache_path(src: Source | Path, params: VisualParams) -> Path:
 
 def load_visual(src: Source | Path, params: VisualParams | None = None) -> VisualData | None:
     """Cached visual outputs of a source, or None if the layer has not run or the
-    footage is offline (its cache key needs the file's size and mtime)."""
+    footage is offline (its cache key needs the file's size and mtime). Never the light
+    frame index (:func:`load_visual_light`): what ranks reads this."""
     try:
         path = cache_path(src, params or VisualParams())
     except OSError as err:
         logger.warning("%s: footage not reachable (%s); no visual data for it", src, err)
         return None
+    return _load_npz(path)
+
+
+def _load_npz(path: Path) -> VisualData | None:
+    """The :class:`VisualData` cached in ``path`` (and its ``.json`` meta), or None when it
+    is missing, damaged or lacks an array (a cache miss)."""
     z = cache.load_npz(path)
     if z is None or not {"t", "emb", "det", "box_emb", "box_idx"} <= z.keys():
         return None
@@ -577,6 +592,7 @@ def compute_visual(
         path, t=data.t, emb=data.emb, det=data.det, box_emb=data.box_emb, box_idx=data.box_idx
     )
     cache.save_json(path.with_suffix(".json"), data.meta)
+    drop_light(src)  # the full index replaces the light one for the chat
     logger.info(
         "%s: visual %d frames (%s) in %.1fs (GPU %.1fs, %.0fx realtime), %d detections",
         src.name,
@@ -586,6 +602,261 @@ def compute_visual(
         gpu_s,
         src.duration / max(elapsed, 1e-6),
         len(data.det),
+    )
+    return data
+
+
+# --------------------------------------------------------------------------- light index
+LIGHT_VERSION = 1
+LIGHT_STEP_S = 10.0  # one timeline frame every this many seconds
+LIGHT_PER_CANDIDATE = 3  # frames inside each candidate ...
+LIGHT_NEAR_S = 3.0  # ... unless an indexed (or planned) frame is this close
+LIGHT_PASS_SPACING_S = 3.0  # keyframes this sparse: one keyframe-only pass, else a seek per frame
+LIGHT_DUP_S = 0.5  # a decoded frame this close to an indexed one is a duplicate (one keyframe)
+# Seconds per frame of the INFO line's estimate. CLIP ViT-L/14 centre crop, float32, on the CPU
+# (#989): an 8-thread desktop with AVX2 (i7-9700K) took 0.76-0.79 s per frame in batches of 8
+# (1.4-1.55 s one at a time), a 4-vCPU Linux VM without AVX2 1.73-1.84 s; 1.0 lies between.
+# Decode: a keyframe seek took 0.18-0.30 s on the VM.
+LIGHT_CLIP_S_PER_FRAME = 1.0
+LIGHT_DECODE_S_PER_FRAME = 0.3
+# Loading CLIP on the CPU: 14.9 s on the desktop, 20-29 s on the VM
+LIGHT_LOAD_S = 25.0
+
+
+@dataclass(frozen=True)
+class LightParams:
+    """Settings of the light frame index (``width`` and ``step_s`` are in its cache key; the
+    candidate frames are not: a run adds the ones missing)."""
+
+    width: int = 640  # decoded frame width (height keeps the aspect, even)
+    step_s: float = LIGHT_STEP_S
+    batch: int = 8  # frames per CLIP call: fastest on the CPU (#989: 1 and 16 are slower)
+
+    def key(self) -> dict[str, Any]:
+        """Cache-key dict (``batch`` does not change results)."""
+        return {
+            "layer": "visual_light",
+            "v": LIGHT_VERSION,
+            "clip": [CLIP_ARCH, CLIP_PRETRAINED],
+            "crop": "centre",
+            "width": self.width,
+            "step_s": self.step_s,
+        }
+
+
+def light_cache_path(src: Source | Path, params: LightParams | None = None) -> Path:
+    """``cache/<source>/visual-light-<hash>.npz``."""
+    cdir = src.cdir if isinstance(src, Source) else cache.source_dir(src)
+    return cdir / f"visual-light-{params_key((params or LightParams()).key())}.npz"
+
+
+def load_visual_light(src: Source | Path, params: LightParams | None = None) -> VisualData | None:
+    """The cached light frame index of a source (``emb`` ``(N, 1, 768)``: the centre crop; no
+    detections), or None. Only the AI Chat's ``look_for`` reads it."""
+    try:
+        path = light_cache_path(src, params)
+    except OSError as err:
+        logger.warning("%s: footage not reachable (%s); no frame index for it", src, err)
+        return None
+    return _load_npz(path)
+
+
+def drop_light(src: Source | Path) -> None:
+    """Remove the light frame index of ``src`` (a full one replaces it)."""
+    try:
+        path = light_cache_path(src)
+    except OSError:
+        return
+    for p in (path, path.with_suffix(".json")):
+        p.unlink(missing_ok=True)
+
+
+def light_marks(
+    duration: float,
+    spans: Sequence[tuple[float, float]],
+    params: LightParams | None = None,
+    done: Sequence[float] = (),
+    have: Sequence[float] = (),
+) -> list[float]:
+    """The times (s, 0.1 s steps, sorted) still to index for a source of ``duration``: one
+    every ``step_s`` (from ``step_s / 2``) and :data:`LIGHT_PER_CANDIDATE` evenly inside each
+    candidate span of ``spans``, a candidate time skipped when an indexed frame (``have``) or
+    a time already planned is within :data:`LIGHT_NEAR_S`; times in ``done`` (asked for by an
+    earlier run) are left out."""
+    params = params or LightParams()
+    want = [round(float(m), 1) for m in np.arange(params.step_s / 2, duration, params.step_s)]
+    taken = sorted([*map(float, have), *want])
+    for a, b in spans:
+        a, b = max(0.0, float(a)), min(float(duration), float(b))
+        for k in range(LIGHT_PER_CANDIDATE if b > a else 0):
+            m = round(a + (k + 0.5) * (b - a) / LIGHT_PER_CANDIDATE, 1)
+            i = bisect.bisect_left(taken, m)
+            near = [taken[j] for j in (i - 1, i) if 0 <= j < len(taken)]
+            if any(abs(m - x) < LIGHT_NEAR_S for x in near):
+                continue
+            bisect.insort(taken, m)
+            want.append(m)
+    asked = {round(float(x), 1) for x in done}
+    return sorted({m for m in want if m not in asked})
+
+
+def _light_frames(
+    path: Path, marks: Sequence[float], width: int, height: int, spacing: float | None
+) -> Iterator[tuple[float, float, np.ndarray]]:
+    """``(mark, t, frame)`` for the sorted ``marks`` on the CPU: with keyframes at least
+    :data:`LIGHT_PASS_SPACING_S` apart (or unknown), one keyframe-only pass and the keyframe
+    nearest each mark (marks after the last keyframe get it); else one keyframe seek per mark,
+    the first keyframe from it (a mark after the last keyframe gets none)."""
+    find_tool("ffmpeg")  # a missing ffmpeg is an error, not "no frames"
+    if spacing is None or spacing >= LIGHT_PASS_SPACING_S:
+        i, prev = 0, None
+        frames = iter_frames(path, width, height, keyframes=True, hwaccel=False)
+        try:
+            for t, f in frames:
+                while i < len(marks) and marks[i] <= t:
+                    m = marks[i]
+                    yield (m, *prev) if prev is not None and m - prev[0] < t - m else (m, t, f)
+                    i += 1
+                if i >= len(marks):
+                    break
+                prev = (t, f)
+        finally:
+            frames.close()
+        for m in marks[i:] if prev is not None else ():
+            yield m, *prev
+        return
+    vf = f"scale={width}:{height}:flags=area,format=rgb24"
+    for m in marks:
+        seek = decode_raw(
+            path, size=(width, height), vf=vf, start=m, keyframes_only=True, pts=True, hwaccel=None
+        )
+        try:
+            got = next(seek, None)
+        except FFmpegError as err:
+            logger.debug("light index: no keyframe after %.1fs of %s: %s", m, path, err)
+            got = None
+        finally:
+            seek.close()
+        if got is not None:  # showinfo's time counts from the seek
+            yield m, m + max(0.0, got[0]), got[1]
+
+
+def light_todo(
+    src: Source,
+    spans: Sequence[tuple[float, float]],
+    params: LightParams | None = None,
+    force: bool = False,
+) -> list[float]:
+    """The times :func:`compute_light` would index for ``src`` (none when it has a full
+    index: the chat reads that)."""
+    if cache_path(src, VisualParams()).exists():
+        return []
+    old = None if force else load_visual_light(src, params)
+    done = (old.meta.get("done") or []) if old is not None else []
+    have = old.t.tolist() if old is not None else []
+    return light_marks(src.duration, spans, params, done, have)
+
+
+def light_minutes(frames: int, load: bool = True) -> int:
+    """The INFO line's estimate (minutes, at least 1) of indexing ``frames`` frames, with
+    loading CLIP on the CPU first when ``load``."""
+    s = frames * (LIGHT_CLIP_S_PER_FRAME + LIGHT_DECODE_S_PER_FRAME) + (LIGHT_LOAD_S if load else 0)
+    return max(1, round(s / 60))
+
+
+def compute_light(
+    src: Source,
+    encoder: Any,
+    spans: Sequence[tuple[float, float]],
+    params: LightParams | None = None,
+    force: bool = False,
+) -> VisualData | None:
+    """Add the missing frames of the light frame index of ``src`` (:func:`light_todo`) and
+    return it (None when it has none).
+
+    Args:
+        src: Source (its ``io_path`` is decoded; staged copies are used).
+        encoder: A CLIP image encoder (``cutpoint.crash.ClipEncoder``): ``embed(frames,
+            batch=, centre=True)`` gives ``(N, 1, 768)``.
+        spans: The source's candidate ``(start, end)`` spans.
+        params: Index settings.
+        force: Ignore the cached index.
+    """
+    params = params or LightParams()
+    old = None if force else load_visual_light(src, params)
+    marks = light_todo(src, spans, params, force)
+    if not marks:
+        return old
+    t0 = time.perf_counter()
+    info = probe(src.io_path)
+    width = params.width
+    height = round(width * info.height / max(1, info.width) / 2) * 2
+    spacing = keyframe_spacing(src.io_path)
+    done = [*((old.meta.get("done") or []) if old is not None else []), *marks]
+    ts = sorted(old.t.tolist()) if old is not None else []
+    new_t: list[float] = []
+    new_e: list[np.ndarray] = []
+    batch: list[np.ndarray] = []
+    clip_s = 0.0
+
+    def flush() -> None:
+        nonlocal clip_s
+        c0 = time.perf_counter()
+        new_e.append(
+            np.asarray(encoder.embed(np.stack(batch), batch=params.batch, centre=True), np.float16)
+        )
+        clip_s += time.perf_counter() - c0
+        batch.clear()
+
+    for _, t, frame in _light_frames(src.io_path, marks, width, height, spacing):
+        i = bisect.bisect_left(ts, t)
+        if any(abs(t - ts[j]) < LIGHT_DUP_S for j in (i - 1, i) if 0 <= j < len(ts)):
+            continue  # the keyframe of another mark
+        ts.insert(i, t)
+        new_t.append(t)
+        batch.append(frame)
+        if len(batch) >= params.batch:
+            flush()
+    if batch:
+        flush()
+    t_all = np.array([*(old.t.tolist() if old is not None else []), *new_t], np.float32)
+    parts = [old.emb] if old is not None else []
+    emb_all = np.concatenate([*parts, *new_e]).astype(np.float16) if parts or new_e else None
+    if emb_all is None or not len(t_all):
+        logger.warning("%s: frame index decoded no frames", src.name)
+        return None
+    order = np.argsort(t_all, kind="stable")
+    data = VisualData(
+        t=t_all[order],
+        emb=emb_all[order],
+        det=np.zeros((0, 7), np.float32),
+        box_emb=np.zeros((0, 768), np.float16),
+        box_idx=np.zeros(0, np.int64),
+    )
+    elapsed = time.perf_counter() - t0
+    data.meta = {
+        "source": str(src.path),
+        "frames": len(data.t),
+        "mode": "keyframe pass" if spacing is None or spacing >= LIGHT_PASS_SPACING_S else "seeks",
+        "keyframe_spacing_s": spacing,
+        "size": [width, height],
+        "elapsed_s": round(elapsed, 1),
+        "clip_s": round(clip_s, 1),
+        "done": sorted({round(float(x), 1) for x in done}),
+        "params": params.key(),
+    }
+    path = light_cache_path(src, params)
+    cache.save_npz(
+        path, t=data.t, emb=data.emb, det=data.det, box_emb=data.box_emb, box_idx=data.box_idx
+    )
+    cache.save_json(path.with_suffix(".json"), data.meta)
+    logger.info(
+        "%s: frame index +%d frames (%s) in %.1fs (CLIP %.1fs)",
+        src.name,
+        len(new_t),
+        data.meta["mode"],
+        elapsed,
+        clip_s,
     )
     return data
 

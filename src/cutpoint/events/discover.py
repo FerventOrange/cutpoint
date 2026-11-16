@@ -96,6 +96,9 @@ from cutpoint.imageio import read_image, write_jpeg
 logger = logging.getLogger(__name__)
 
 REF_W, REF_H = 1920, 1080
+# 2: box y scales with the frame height, not the width (#1085); records without it from
+# frames that are not 16:9 are read again
+REF_VERSION = 2
 CELL = 24  # reference pixels per grid cell
 GW, GH = REF_W // CELL, REF_H // CELL
 MENU_CELL_W, MENU_CELL_H = REF_W // 8, REF_H // 6  # coarse 8 x 6 grid for the menu test
@@ -297,13 +300,13 @@ def plan_bursts(sources: list[Source], n: int) -> list[tuple[Source, float]]:
 def read_ocr_samples(path: Path) -> list[dict[str, Any]]:
     """The OCR'd burst frames cached in ``path`` (``discovery/<game>/ocr.jsonl``).
 
-    Each record: ``{id, source, src_key, t, burst, k, frame, boxes}``; ``source`` is
+    Each record: ``{id, source, src_key, t, burst, k, frame, ref_v, boxes}``; ``source`` is
     the file name and ``src_key`` tells files of one name apart (the file name and
     the source's cache key, see :func:`_src`; older records have none). A box is
     ``{x0, y0, x1, y1, text, score}`` in reference pixels. Unreadable lines are
     skipped; a missing file gives ``[]``.
     """
-    out = []
+    out: dict[Any, dict[str, Any]] = {}  # a frame read again replaces its earlier record
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines():
             try:
@@ -311,8 +314,8 @@ def read_ocr_samples(path: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError:
                 continue
             if isinstance(rec, dict) and "id" in rec:
-                out.append(rec)
-    return out
+                out[rec["id"]] = rec
+    return list(out.values())
 
 
 def _src(f: dict[str, Any]) -> str:
@@ -354,6 +357,13 @@ def _frame_name(source: str, t: float) -> str:
     """The JPEG name of a burst frame: from its source and time, so that no other burst
     plan writes a frame over a cached record's picture."""
     return hashlib.sha1(f"{source}@{t:.2f}".encode()).hexdigest()[:16] + ".jpg"
+
+
+def other_aspect(path: Path) -> bool:
+    """Whether the saved frame at ``path`` is not 16:9 (off by over 2%); an unreadable one
+    counts as 16:9."""
+    img = read_image(path)
+    return img is not None and abs(img.shape[1] / img.shape[0] / (REF_W / REF_H) - 1) > 0.02
 
 
 def _ocr_frames(
@@ -425,6 +435,8 @@ def _ocr_frames(
         name = rec.get("frame")
         if not isinstance(name, str) or not (frame_dir / name).is_file() or shared[name] > 1:
             return None
+        if rec.get("ref_v") != REF_VERSION and other_aspect(frame_dir / name):
+            return None  # boxes from before y scaled with the height (#1085): read again
         return rec | {"src_key": src_keys[bi], "burst": bi, "k": k}
 
     # failed before the first frame is saved: no empty frames/ (or empty ocr.jsonl) left
@@ -451,12 +463,12 @@ def _ocr_frames(
                     # padded to the widest of a batch, which made first-run discovery about
                     # 22% faster on 5 test clips (#443)
                     engine = OcrEngine(lanes=1, rec_batch=1)
-                sx = REF_W / img.shape[1]
+                sx, sy = REF_W / img.shape[1], REF_H / img.shape[0]
                 items = engine(img, params.min_score)
                 boxes = []
                 for box, text, score in items:
                     xs = [p[0] * sx for p in box]
-                    ys = [p[1] * sx for p in box]
+                    ys = [p[1] * sy for p in box]
                     boxes.append(
                         {
                             "x0": round(min(xs)),
@@ -477,6 +489,7 @@ def _ocr_frames(
                     "burst": bi,
                     "k": k,
                     "frame": fname,
+                    "ref_v": REF_VERSION,
                     "boxes": boxes,
                 }
                 if fh is None:
@@ -1951,6 +1964,7 @@ def discover_regions(
             "params": asdict(params),
             "elapsed_s": round(time.perf_counter() - t0, 1),
             "source_resolution": [info.width, info.height] if info else None,
+            "mapping": REF_VERSION,
             "proposals": proposals,
             "frames": [f["id"] for f in frames],  # this run's OCR records
         },

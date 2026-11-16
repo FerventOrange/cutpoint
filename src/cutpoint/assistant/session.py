@@ -346,6 +346,8 @@ class Project:
     edges: EdgePlanner | None = None
     # some source has cached frame embeddings (lookfor.indexed): without any, look_for is not offered
     frame_index: bool = True
+    # without them, why and what adds them (lookfor.index_state): the rules tell the model
+    index_state: Mapping[str, Any] | None = None
     # a source's cached transcript words (edges.EdgePlanner.words); None: find_words finds none
     words: Callable[[str], list[dict[str, Any]] | None] | None = None
     # the library styles to preview a ranking in (ranking.Hook); None: preview_ranking is not
@@ -659,7 +661,10 @@ class Turn:
         # find_words', look_for's and preview_ranking's rules, then how and when to watch, after
         # the others and measured with them
         late = words.RULES
-        late += lookfor.rules(bool(self._watch)) if self.project.frame_index else ""
+        if self.project.frame_index:
+            late += lookfor.rules(bool(self._watch))
+        else:
+            late += lookfor.unindexed_rules(self.project.index_state or {})
         after = watch.RULES.replace("{cap}", watch.views(sheets)) if self._watch else ""
 
         def build(rank_rules: str) -> list[dict[str, Any]]:
