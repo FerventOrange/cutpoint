@@ -171,6 +171,18 @@ def test_edit_events_passes_the_ollama_options_to_the_vlm_layer(pipeline, monkey
     assert got == [{"ollama_url": None, "ollama_model": None}]  # config.json and env decide
 
 
+def test_edit_events_still_exports_the_clips_and_assembles(pipeline, monkeypatch):
+    """A228: the events layers must not make edit think the clips were kept."""
+    from cutpoint.events import cli as events_cli  # noqa: PLC0415
+    from cutpoint.events import pipeline as events_pipeline  # noqa: PLC0415
+
+    monkeypatch.setattr(events_pipeline, "preflight", lambda layers: None)
+    monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: None)
+    monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
+    assert cli.main(["edit", str(pipeline.video), "--style", "action", "--events"]) == 0
+    assert [c[0] for c in pipeline.calls] == ["analyze", "clips", "assemble"]
+
+
 @pytest.mark.parametrize(
     ("argv", "layers", "expected"),
     [
@@ -554,7 +566,7 @@ def test_edit_context_reaches_the_shared_vision_client_and_the_analysis(pipeline
     assert kw["context"] == "  chest   mount "  # analyze() cleans it
     assert kw["footage"].context == "chest mount"
     pipeline.calls.clear()
-    assert cli.main(argv) == 0
+    assert cli.main([*argv, "--force"]) == 0  # the first run exported clips
     assert (
         pipeline.calls[0][2]["context"] is None and pipeline.calls[0][2]["footage"].context is None
     )
