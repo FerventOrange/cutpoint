@@ -2,7 +2,7 @@
 // loads, a login click says "Starting" while the server starts it, and a failure shows on the row.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boot, reply } from './harness.mjs';
+import { answerConfirms, boot, reply } from './harness.mjs';
 
 const settings = () => ({
   assistant: { provider: 'ollama', model: '', url: '', custom: false, local: true, providers: [], keys: {}, key_hosts: {} },
@@ -76,7 +76,7 @@ test('clicking Log in with no proxy running says the proxy is starting until the
     logins: () => ({ logins: [CODEX], proxy_running: false, saved_login: false }),
     routes: { 'POST /api/assistant/login': async () => { await gate; return { url: 'https://auth.example/login' }; } },
   });
-  m.page.window.confirm = () => true;
+  answerConfirms(m.page);
   m.page.window.open = () => {};
   m.d.querySelector('#modelsSubsList button').click();
   await m.page.settle();
@@ -97,7 +97,7 @@ test('a login that fails because the proxy did not start shows the reason on the
     logins: () => ({ logins: [CODEX], proxy_running: false, saved_login: false }),
     routes: { 'POST /api/assistant/login': () => reply(503, { detail: why }) },
   });
-  m.page.window.confirm = () => true;
+  answerConfirms(m.page);
   m.d.querySelector('#modelsSubsList button').click();
   await m.page.settle();
   assert.ok(m.row().includes(why), m.row());
@@ -117,7 +117,7 @@ test('once the proxy runs, reopening clears the "did not start" errors but keeps
         : reply(500, { detail: 'login denied' })),
     },
   });
-  m.page.window.confirm = () => true;
+  answerConfirms(m.page);
   for (const button of m.d.querySelectorAll('#modelsSubsList button')) {
     button.click();
     await m.page.settle();

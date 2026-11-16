@@ -1,7 +1,7 @@
 // The Models tab (#575): per-role provider and model choice, subscription accounts, saving.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boot, reply } from './harness.mjs';
+import { answerConfirms, boot, reply } from './harness.mjs';
 
 const provider = (name, over = {}) => ({ name, title: name, model_required: false, placeholder: '', models: [], ...over });
 const PROVIDERS = [
@@ -206,15 +206,14 @@ test('vision consent: a hosted provider needs permission before frames are sent,
 
 // ---- subscription login ----
 
-function loginSetup(t, { provider: name = 'codex', statuses = [{ state: 'done' }], confirms = [true] } = {}) {
+function loginSetup(t, { provider: name = 'codex', statuses = [{ state: 'done' }], confirms = [true], url = 'https://auth.example/login' } = {}) {
   const opened = [];
   const state = { logins: [{ provider: name, title: name, logged_in: false }] };
   let polls = 0;
-  const prompts = [];
   return modelsTab(t, {
     logins: state.logins,
     routes: {
-      'POST /api/assistant/login': { url: 'https://auth.example/login' },
+      'POST /api/assistant/login': { url },
       'GET /api/assistant/login/status': () => {
         const s = statuses[Math.min(polls++, statuses.length - 1)];
         if (s.state === 'done') state.logins[0].logged_in = true;
@@ -223,8 +222,7 @@ function loginSetup(t, { provider: name = 'codex', statuses = [{ state: 'done' }
     },
   }).then((m) => {
     m.page.window.open = (...a) => opened.push(a);
-    let i = 0;
-    m.page.window.confirm = (msg) => { prompts.push(msg); return confirms[Math.min(i++, confirms.length - 1)]; };
+    const prompts = answerConfirms(m.page, confirms);
     return Object.assign(m, { opened, prompts, polls: () => polls, state });
   });
 }
@@ -267,6 +265,36 @@ test('login: Antigravity asks a second confirmation about provisioning a project
   assert.match(m.prompts[1], /provision/);
   assert.ok(!m.page.requests.some((r) => r.path === '/api/assistant/login'));
 });
+
+test('login: the risk consent is the page\'s own dialog, never a native confirm', async (t) => {
+  const m = await loginSetup(t);
+  m.page.window.confirm = () => { throw new Error('native confirm'); };
+  await m.click('#modelsSubsList button');
+  assert.equal(m.prompts.length, 1);
+  assert.match(m.prompts[0], /^Log in with .+\? Use at your own risk\.$/);
+  assert.equal(m.opened.length, 1);
+});
+
+for (const url of ['javascript:alert(1)', ' javascript:alert(1)', 'data:text/html,x', 'http://evil.example/login', 'not a url']) {
+  test(`login: the sign-in address ${JSON.stringify(url)} is neither opened nor linked`, async (t) => {
+    const m = await loginSetup(t, { url });
+    await m.click('#modelsSubsList button');
+    assert.equal(m.opened.length, 0);
+    assert.equal(m.$('#modelsSubsStatus a'), null);
+    assert.match(m.$('#modelsSubsStatus').textContent, /not a web page/);
+  });
+}
+
+for (const url of ['https://auth.example/login', 'http://localhost:1455/auth']) {
+  test(`login: ${url} opens and is linked without a referrer`, async (t) => {
+    const m = await loginSetup(t, { url });
+    await m.click('#modelsSubsList button');
+    assert.deepEqual(m.opened[0], [url, '_blank', 'noopener,noreferrer']);
+    const link = m.$('#modelsSubsStatus a');
+    assert.equal(link.getAttribute('href'), url);
+    assert.equal(link.getAttribute('rel'), 'noopener noreferrer');
+  });
+}
 
 test('logout drops that provider\'s cached models and refreshes the accounts', async (t) => {
   const logins = [{ provider: 'codex', title: 'Codex', logged_in: true }];

@@ -232,6 +232,38 @@ def data_block(kind: str, body: str) -> str:
     return f"<<<DATA {kind}>>>\n{body}\n<<<END DATA>>>"
 
 
+def cut_result(text: str, limit: int = MAX_RESULT_CHARS) -> str:
+    """``text`` (a tool result) within ``limit`` characters. A data block loses whole lines
+    from its end but keeps its end marker, with a note of the lines left out after it; the
+    text around the block stays. Markers inside a body are broken up by :func:`data_block`,
+    so the first ones found are the block's own."""
+    if len(text) <= limit:
+        return text
+    close = "\n<<<END DATA>>>"
+    start = text.find("<<<DATA ")
+    end = text.find(close, start) if start >= 0 else -1
+    if end >= 0:
+        head = text[: text.index("\n", start) + 1]  # up to and with "<<<DATA kind>>>\n"
+        after = text[end + len(close) :]
+        lines = text[len(head) : end].split("\n")
+        note = "\n({} of {} lines left out: the result is too long)"
+        room = limit - len(head) - len(close) - len(after)
+        room -= len(note.format(len(lines), len(lines)))
+        kept, used = 0, -1  # no newline before the first line
+        while kept < len(lines) and used + 1 + len(lines[kept]) <= room:
+            used += 1 + len(lines[kept])
+            kept += 1
+        if room >= 0:
+            left = note.format(len(lines) - kept, len(lines))
+            return head + "\n".join(lines[:kept]) + close + left + after
+    # no block, or the text around it alone is too long: cut, and drop a block left open
+    cut = text[:limit]
+    opened = cut.rfind("<<<DATA ")
+    if opened >= 0 and cut.find(close, opened) < 0:
+        cut = cut[:opened]
+    return cut
+
+
 def file_name(path: Any) -> str:
     return source_path(str(path)).name
 

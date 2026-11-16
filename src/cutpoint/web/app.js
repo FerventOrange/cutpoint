@@ -6964,11 +6964,20 @@ function renderLogins() {
   renderVisionRoleHints();
 }
 
+/** ``url`` when it is a sign-in page to open: https, or http on this machine; else null (a ``javascript:`` URL would run in this page). */
+function signInUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'https:' || (u.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname))) return url;
+  } catch { /* not a URL */ }
+  return null;
+}
+
 async function subLogin(provider) {
   const title = PROVIDER_TITLES[provider] ?? provider;
-  if (!window.confirm(`Log in with ${title}? Use at your own risk.`)) return;
+  if (!(await confirmAction(`Log in with ${title}?`, 'Use at your own risk.', 'Log in', false))) return;
   if (provider === 'antigravity') {
-    const ok = window.confirm('Antigravity sign-in may provision a free-tier project if your account has none. Continue?');
+    const ok = await confirmAction('Continue the Antigravity sign-in?', 'Antigravity sign-in may provision a free-tier project if your account has none.', 'Continue', false);
     if (!ok) return;
   }
   subNote();
@@ -6990,10 +6999,16 @@ async function subLogin(provider) {
   }
   S.loginStarting.delete(provider);
   S.proxyRunning = true;
+  const url = signInUrl(r.url);
+  if (!url) {
+    S.loginErrors[provider] = 'the sign-in address is not a web page';
+    renderLogins();
+    return subNote(`Login failed: ${S.loginErrors[provider]}.`);
+  }
   S.loginPending.add(provider);
-  window.open(r.url, '_blank', 'noopener');
+  window.open(url, '_blank', 'noopener,noreferrer');
   subNote('Finish signing in in the browser tab that opened. ',
-    h('a', { href: r.url, target: '_blank', rel: 'noopener', text: 'Open the sign-in page again' }));
+    h('a', { href: url, target: '_blank', rel: 'noopener noreferrer', text: 'Open the sign-in page again' }));
   renderLogins();
   while (S.loginPending.has(provider)) {
     await new Promise((resolve) => setTimeout(resolve, SUB_POLL_MS));
