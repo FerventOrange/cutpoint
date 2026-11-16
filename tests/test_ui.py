@@ -9876,6 +9876,7 @@ def test_resume_is_offered_for_a_stopped_run(
     assert ui.run_state(tmp_path / "none", analyzed) is None
 
 
+@pytest.mark.slow
 def test_a_running_record_of_a_dead_process_reads_interrupted(tmp_path: Path) -> None:
     p = tmp_path / "p"
     proc = subprocess.run(
@@ -9888,6 +9889,7 @@ def test_a_running_record_of_a_dead_process_reads_interrupted(tmp_path: Path) ->
     assert ui.run_state(p, False)["status"] == "interrupted"
 
 
+@pytest.mark.slow
 def test_resume_preview_runs_the_dry_run_and_reports_its_steps(
     client: TestClient, scratch_appdata: None
 ) -> None:
@@ -9929,6 +9931,7 @@ def test_resume_preview_turns_cli_errors_into_plain_answers(
     assert seen[0]["cwd"] == p.parent  # the projects folder, not the server's own
 
 
+@pytest.mark.slow
 def test_a_folder_busy_job_shows_the_plain_state_without_the_delete_advice() -> None:
     message = "Another cutpoint run (process 9) is using X. If no other run is active, delete L"
     envelope = {"ok": False, "command": "analyze", "schema": 1, "project": None, "outputs": {}}
@@ -9952,6 +9955,7 @@ def test_a_folder_busy_job_shows_the_plain_state_without_the_delete_advice() -> 
     assert view["logs"][0].endswith("INFO starting")
 
 
+@pytest.mark.slow
 def test_another_failure_keeps_its_error_line_and_reports_its_code() -> None:
     envelope = {"ok": False, "command": "clips", "schema": 1, "project": None, "outputs": {}}
     envelope |= {"warnings": [], "error": {"code": "not_found", "message": "boom"}}
@@ -9962,6 +9966,7 @@ def test_another_failure_keeps_its_error_line_and_reports_its_code() -> None:
     assert job.result is not None and job.result["error"]["code"] == "not_found"
 
 
+@pytest.mark.slow
 def test_jobs_run_in_the_folder_they_are_given(tmp_path: Path) -> None:
     job = ui.Jobs().start(
         "p", "analyze", [sys.executable, "-c", "import os; print(os.getcwd())"], cwd=tmp_path
@@ -10075,6 +10080,7 @@ def test_a_resumed_edit_lists_its_clips_and_final_and_a_resumed_analysis_keeps_i
     assert cache.load_json(p / ui.ANALYSIS_FILE)["skip"] == ["keyframes", "crashes"]
 
 
+@pytest.mark.slow
 def test_a_project_another_process_holds_reads_busy(client: TestClient, tmp_path: Path) -> None:
     p, _ = cli_project(tmp_path)
     assert client.get("/api/projects/cli").json()["busy"] is False
@@ -10092,6 +10098,7 @@ def test_a_project_another_process_holds_reads_busy(client: TestClient, tmp_path
     assert client.get("/api/projects/cli").json()["busy"] is True
 
 
+@pytest.mark.slow
 def test_a_clips_job_reports_the_clips_it_took_over() -> None:
     def job(outputs: dict[str, object]) -> dict[str, object]:
         envelope = {"ok": True, "command": "clips", "schema": 1, "project": None}
@@ -10107,6 +10114,7 @@ def test_a_clips_job_reports_the_clips_it_took_over() -> None:
     assert "taken_over" not in job({})
 
 
+@pytest.mark.slow
 def test_jobs_never_import_a_module_from_the_projects_folder(tmp_path: Path) -> None:
     """``python -m cutpoint`` runs there: PYTHONSAFEPATH keeps a stray json.py out of reach."""
     (tmp_path / "json.py").write_text("raise SystemExit(7)\n", encoding="utf-8")
@@ -10283,6 +10291,7 @@ def test_folders_cutpoint_did_not_write_are_never_removed(tmp_path: Path) -> Non
     assert (p / "clips_ui_20260101-131313").is_dir()
 
 
+@pytest.mark.slow
 def test_the_ui_prunes_when_an_export_job_ends(tmp_path: Path) -> None:
     p = tmp_path / "proj"
     old = stopped_export(p, "clips_ui_20260101-101010")
@@ -10322,6 +10331,7 @@ def test_an_unreadable_progress_record_keeps_every_resume_folder(tmp_path: Path)
     assert keep.is_dir()
 
 
+@pytest.mark.slow
 def test_a_failed_job_still_ends_with_on_end_and_a_failing_on_end_changes_nothing() -> None:
     calls: list[int] = []
     jobs = ui.Jobs()
@@ -10468,6 +10478,7 @@ def test_envelope_accepts_only_a_source_of_the_project(
 
 
 @needs_ffmpeg
+@pytest.mark.slow
 def test_envelope_failure_is_a_500_and_leaves_no_cache_file(
     client: TestClient,
     audio_sources: tuple[str, dict[str, str], Path],
@@ -10489,6 +10500,7 @@ def test_envelope_failure_is_a_500_and_leaves_no_cache_file(
 
 
 @needs_ffmpeg
+@pytest.mark.slow
 def test_an_envelope_decode_over_the_time_limit_is_killed_and_reported(
     client: TestClient,
     audio_sources: tuple[str, dict[str, str], Path],
@@ -10529,6 +10541,7 @@ def test_an_envelope_decode_over_the_time_limit_is_killed_and_reported(
 
 
 @needs_ffmpeg
+@pytest.mark.slow
 def test_shutdown_stops_an_envelope_decode_in_flight(
     client: TestClient,
     audio_sources: tuple[str, dict[str, str], Path],

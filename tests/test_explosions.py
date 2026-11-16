@@ -258,21 +258,22 @@ def test_run_events_confirms_booms_and_writes_the_settings(tmp_path, monkeypatch
     monkeypatch.setattr(pipeline, "source_parts", lambda path: [Part(0.0, cdir, None)])
     monkeypatch.setattr(common, "gpu_memory_used_mib", lambda: None)
     monkeypatch.setattr(sheets, "write_visual_sheets", lambda *a, **k: None)
-    seen: list[Any] = []
-    real_confirm = explosions.confirm
+    windows: list[tuple[float, float]] = []
 
-    def spy(events, parts, params=None, **kw):
-        seen.append(kw.get("luma"))
-        return real_confirm(events, parts, params, **kw)
+    def fake_luma(t0, t1):
+        windows.append((t0, t1))
+        return [0.3] * 5
 
-    monkeypatch.setattr(explosions, "luma_reader", lambda video: lambda t0, t1: None)
-    monkeypatch.setattr(explosions, "confirm", spy)
+    monkeypatch.setattr(explosions, "luma_reader", lambda video: fake_luma)
     jpath, _ = pipeline.run_events(project, layers=("audio",), discover=False, sheets=False)
-    assert len(seen) == 1
-    assert callable(seen[0])
+    # the real confirm read the picture only around the boom the loudness backs
+    assert len(windows) == 1
+    assert windows[0][0] < 20.0 < windows[0][1]
     data = json.loads(jpath.read_text())
     booms = [e for e in data["events"] if e["label"] == "Explosion"]
     assert [e["details"]["confirmed"] for e in booms] == [True, False]
+    assert booms[0]["details"]["after_black"] is False
+    assert not any(e["details"].get("after_black") for e in booms)
     assert data["settings"]["explosions"] == json.loads(
         json.dumps(explosions.ExplosionParams().key())
     )
