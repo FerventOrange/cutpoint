@@ -37,9 +37,19 @@ SERVICE = "cutpoint"  # keyring service name
 MAX_KEY = 512
 REDACTED = "[redacted]"
 MIN_SECRET = 8  # shorter values are not searched for (they would match ordinary text)
-# Key-like tokens (OpenAI "sk-...", Anthropic "sk-ant-...", xAI "xai-..."), redacted even when
-# not read here.
-_KEY_LIKE = re.compile(r"\b(?:sk|xai)-[A-Za-z0-9_\-]{16,}")
+# Key-like tokens (OpenAI "sk-...", Anthropic "sk-ant-...", xAI "xai-...", Google OAuth
+# "ya29...."), redacted even when not read here.
+_KEY_LIKE = re.compile(r"\b(?:(?:sk|xai)-[A-Za-z0-9_\-]{16,}|ya29\.[A-Za-z0-9_\-]{20,})")
+# The token of an ``Authorization: Bearer ...`` header (the proxy's keys, OAuth tokens)
+_BEARER = re.compile(r"(\bBearer\s+)[A-Za-z0-9_\-.~+/=]{16,}", re.IGNORECASE)
+# The operating-system stores a key may be kept in: never a plaintext file backend
+# (keyrings.alt, or one PYTHON_KEYRING_BACKEND names)
+OS_BACKENDS = {
+    ("keyring.backends.SecretService", "Keyring"),
+    ("keyring.backends.kwallet", "DBusKeyring"),
+    ("keyring.backends.macOS", "Keyring"),
+    ("keyring.backends.Windows", "WinVaultKeyring"),
+}
 
 _SEEN: set[str] = set()  # every key read or saved in this process
 _LOCK = threading.Lock()
@@ -49,11 +59,44 @@ class KeyringError(RuntimeError):
     """The keyring refused (or has no backend); the message is for the user (never the key)."""
 
 
-def _keyring() -> Any:
+def _keyring_module() -> Any:
     """The ``keyring`` module (a core dependency, imported when first needed)."""
     import keyring  # noqa: PLC0415
 
     return keyring
+
+
+def os_backend(module: Any) -> Any:
+    """The operating-system keyring of ``module`` (the ``keyring`` module): its backend when
+    that is one of :data:`OS_BACKENDS`, else the first such one a chainer holds.
+
+    Raises:
+        KeyringError: There is none (only a plaintext or no backend).
+    """
+    backend = module.get_keyring()
+
+    def supported(candidate: Any) -> bool:
+        return (type(candidate).__module__, type(candidate).__name__) in OS_BACKENDS
+
+    if supported(backend):
+        return backend
+    if (
+        type(backend).__module__ == "keyring.backends.chainer"
+        and type(backend).__name__ == "ChainerBackend"
+    ):
+        selected = next((item for item in backend.backends if supported(item)), None)
+        if selected is not None:
+            return selected
+    raise KeyringError("no OS keyring is available")
+
+
+def _keyring() -> Any:
+    """The operating-system keyring backend (:func:`os_backend`).
+
+    Raises:
+        KeyringError: There is none.
+    """
+    return os_backend(_keyring_module())
 
 
 def _remember(key: str) -> None:
@@ -166,13 +209,14 @@ def save(provider: str, key: str, host: str, *, vision: bool = False, shared: bo
         ValueError: An unknown provider, or a key that is empty, too long or has spaces.
         KeyringError: The keyring refused (or has no backend).
     """
-    ring = _check(provider)
+    if provider not in KEYED:
+        raise ValueError(f"provider must be one of {', '.join(KEYED)}")
     key = key.strip() if isinstance(key, str) else ""
     if not key or len(key) > MAX_KEY or any(c.isspace() or not c.isprintable() for c in key):
         raise ValueError(f"the key must be 1-{MAX_KEY} printable characters without spaces")
     _remember(key)
     try:
-        ring.set_password(SERVICE, ring_user(provider, host), key)
+        _keyring().set_password(SERVICE, ring_user(provider, host), key)
     except Exception as err:  # noqa: BLE001 - any backend error, named without the key
         names = [n for n in env_names(provider, host) if shared or n != ENV_KEY]
         hint = f"; or set {names[0]} before starting cutpoint ui" if names else ""
@@ -180,9 +224,8 @@ def save(provider: str, key: str, host: str, *, vision: bool = False, shared: bo
             hint = "; Vision jobs started from cutpoint ui need the keyring" + (
                 f" ({names[0]} works for command-line runs only)" if names else ""
             )
-        raise KeyringError(
-            f"the keyring did not save the key ({type(err).__name__}){hint}"
-        ) from None
+        why = str(err) if isinstance(err, KeyringError) else type(err).__name__
+        raise KeyringError(f"the keyring did not save the key ({why}){hint}") from None
 
 
 def clear(provider: str, host: str) -> None:
@@ -216,7 +259,7 @@ def redact(text: str) -> str:
     secrets.update(v for name in ENV_VARS if len(v := _env(name)) >= MIN_SECRET)
     for secret in sorted(secrets, key=len, reverse=True):
         text = text.replace(secret, REDACTED)
-    return _KEY_LIKE.sub(REDACTED, text)
+    return _BEARER.sub(rf"\g<1>{REDACTED}", _KEY_LIKE.sub(REDACTED, text))
 
 
 class RedactFilter(logging.Filter):

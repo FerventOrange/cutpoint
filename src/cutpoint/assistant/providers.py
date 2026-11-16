@@ -84,7 +84,9 @@ ANTHROPIC_MODELS = (DEFAULT_ANTHROPIC_MODEL, "claude-opus-5-5")
 OPENAI_MODELS = ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna")
 XAI_MODELS = ("grok-4.7", "grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1")
 AUTO_SERVER_MODEL = "server's default model"  # an OpenAI-compatible model not resolved yet
-MAX_TOKENS = 4096  # an Anthropic reply's cap (required); a proposal is far shorter
+# An Anthropic reply's cap (required): room for a whole proposal with suggestions, and still
+# read within HOSTED_TIMEOUT_S, as the reply is not streamed (#738)
+MAX_TOKENS = 8192
 MAX_ERROR = 300  # characters of a server's error text in a message
 TITLES = {
     "ollama": "Ollama",
@@ -376,19 +378,35 @@ def is_local(url: str) -> bool:
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
-def proxy_port() -> int:
+def _direct(on_machine: bool) -> dict[str, Any]:
+    """``requests`` arguments that keep a request to a server on this machine off the proxy
+    the environment names (``HTTP_PROXY``, ``ALL_PROXY``: that proxy would see what "nothing
+    leaves this machine" promises), as ``cliproxy._session`` does; none for another host."""
+    return {"proxies": {"http": None, "https": None, "all": None}} if on_machine else {}
+
+
+def _headers_only(request: Any) -> Any:
+    """An explicit ``auth`` that changes nothing: ``requests`` then reads no ``~/.netrc``, which
+    would replace the ``Authorization`` header (the key) with that file's login."""
+    return request
+
+
+def proxy_port() -> int | None:
     """The port of Cutpoint's subscription proxy (:func:`cutpoint.assistant.cliproxy.port`:
-    the running daemon's, else the configured one), :data:`~cutpoint.assistant.cliproxy.DEFAULT_PORT`
-    when none is configured or it cannot be read, so a consent check never fails on it."""
+    the running daemon's, else the configured one, else
+    :data:`~cutpoint.assistant.cliproxy.DEFAULT_PORT`); None when it cannot be read (a bad keys
+    file or variable), so that :func:`is_proxy` fails closed."""
     try:
         return cliproxy.port()
-    except Exception:  # noqa: BLE001 - a bad keys file or variable: the default port
-        return cliproxy.DEFAULT_PORT
+    except Exception:  # noqa: BLE001 - a bad keys file or variable: unknown
+        return None
 
 
 def is_proxy(url: str) -> bool:
     """Whether ``url`` is Cutpoint's subscription proxy: on this machine (:func:`is_local`) and
-    on :func:`proxy_port`. The proxy forwards to hosted models, so it is no local server."""
+    on :func:`proxy_port`, or any https:// URL on this machine while that port cannot be read
+    (it may be the proxy on a custom port). The proxy forwards to hosted models, so it is no
+    local server."""
     if not is_local(url):
         return False
     try:
@@ -396,7 +414,10 @@ def is_proxy(url: str) -> bool:
     except (LocationParseError, ValueError):
         return False
     scheme = (parsed.scheme or "http").lower()
-    return (parsed.port or _DEFAULT_PORTS.get(scheme)) == proxy_port()
+    port = proxy_port()
+    if port is None:  # the proxy serves https only
+        return scheme == "https"
+    return (parsed.port or _DEFAULT_PORTS.get(scheme)) == port
 
 
 def is_consent_exempt(url: str) -> bool:
@@ -646,7 +667,12 @@ class OllamaProvider:
         """The names of the pulled models (``/api/tags``); [] for an error answer."""
         try:
             # a short connect timeout, as VisionRater.available() (#921, #928)
-            resp = requests.get(f"{self.url}/api/tags", timeout=(1, 3), allow_redirects=False)
+            resp = requests.get(
+                f"{self.url}/api/tags",
+                timeout=(1, 3),
+                allow_redirects=False,
+                **_direct(self.on_machine),
+            )
             if moved := _redirect("Ollama", resp, "URL"):
                 raise moved
             data = resp.json() if resp.status_code < 400 else None
@@ -675,6 +701,7 @@ class OllamaProvider:
                 json=payload,
                 timeout=timeout,
                 allow_redirects=False,
+                **_direct(self.on_machine),
                 **kw,
             )
         except requests.RequestException as err:
@@ -939,6 +966,8 @@ class _HttpProvider:
                 headers=self._headers(),
                 timeout=(CONNECT_TIMEOUT_S, timeout),
                 allow_redirects=False,
+                auth=_headers_only,
+                **_direct(self.on_machine),
             )
         except requests.Timeout as err:
             raise ProviderError(f"{self.title} did not answer within {timeout:g} s") from err
@@ -1387,8 +1416,9 @@ class AnthropicProvider(_HttpProvider):
         data = self._read(resp)
         stop = data.get("stop_reason")
         if stop == "max_tokens":  # a tool call cut off midway is not one to run
-            raise TruncatedError(
-                f"{self.title}'s reply was cut off at {MAX_TOKENS} tokens; try a simpler request"
+            # the output cap, not the context (that is a 400): less context would not help
+            raise OutputCapError(
+                f"{self.title}'s reply was cut off at its limit of {MAX_TOKENS} tokens", MAX_TOKENS
             )
         if stop == "refusal":
             raise ProviderError(f"{self.title} declined this request")

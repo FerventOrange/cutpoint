@@ -16,6 +16,7 @@ from cutpoint.assistant.providers import (
     AnthropicProvider,
     OllamaProvider,
     OpenAIProvider,
+    OutputCapError,
     Reply,
     ToolCall,
     TruncatedError,
@@ -102,10 +103,13 @@ def test_openai_responses_incomplete_is_a_truncated_reply(monkeypatch) -> None:
         OpenAIProvider("", "gpt-6.1-sol", 0, KEY).chat(HI)
 
 
-def test_anthropic_max_tokens_still_raises(monkeypatch) -> None:
+def test_anthropic_max_tokens_is_the_output_cap_not_the_context(monkeypatch) -> None:
+    # stop_reason max_tokens is the reply's cap: the turn asks for a shorter reply (SHORT_REPLY)
+    # instead of dropping context and hitting the same cap again (A292)
     Wire(monkeypatch, _Resp({"content": [], "stop_reason": "max_tokens"}))
-    with pytest.raises(TruncatedError, match="cut off at 4096 tokens"):
+    with pytest.raises(OutputCapError, match="cut off at its limit") as err:
         AnthropicProvider("", "m", 0, KEY).chat(HI)
+    assert err.value.tokens == providers.MAX_TOKENS
     Wire(monkeypatch, an_reply({"type": "text", "text": "ok"}))
     assert AnthropicProvider("", "m", 0, KEY).chat(HI).text == "ok"
 

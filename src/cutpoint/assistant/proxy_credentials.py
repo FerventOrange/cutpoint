@@ -236,35 +236,9 @@ class CredentialStore:
                 result[name] = _read_bytes(path)
         return result
 
-    @staticmethod
-    def _select_os_backend(module: Any) -> Any:
-        backend = module.get_keyring()
-
-        def supported(candidate: Any) -> bool:
-            return (
-                type(candidate).__module__,
-                type(candidate).__name__,
-            ) in {
-                ("keyring.backends.SecretService", "Keyring"),
-                ("keyring.backends.kwallet", "DBusKeyring"),
-                ("keyring.backends.macOS", "Keyring"),
-                ("keyring.backends.Windows", "WinVaultKeyring"),
-            }
-
-        if supported(backend):
-            return backend
-        if (
-            type(backend).__module__ == "keyring.backends.chainer"
-            and type(backend).__name__ == "ChainerBackend"
-        ):
-            selected = next((item for item in backend.backends if supported(item)), None)
-            if selected is not None:
-                return selected
-        raise keys.KeyringError("no supported operating-system keyring is available")
-
     def _ring(self) -> Any:
         try:
-            return self._select_os_backend(keys._keyring())
+            return keys._keyring()  # an OS store only (keys.os_backend)
         except keys.KeyringError:
             raise
         except Exception as err:  # noqa: BLE001

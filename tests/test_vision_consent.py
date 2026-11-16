@@ -149,19 +149,21 @@ def test_a_configured_proxy_port_replaces_the_default(home, monkeypatch, where: 
     assert providers.is_consent_exempt(PROXY)  # the default port is just another local port
 
 
-def test_an_unreadable_proxy_port_falls_back_to_the_default(home, monkeypatch) -> None:
+def test_an_unreadable_proxy_port_fails_closed(home, monkeypatch) -> None:
+    # the proxy may run on a custom port: every https:// URL on this machine counts as it (A682)
     monkeypatch.setenv("CUTPOINT_CLIPROXY_PORT", "not-a-port")
     with pytest.raises(cliproxy.ProxyError):
         cliproxy.port()
-    assert providers.proxy_port() == cliproxy.DEFAULT_PORT
+    assert providers.proxy_port() is None
     assert not providers.is_consent_exempt(PROXY)
 
     def broken() -> int:
-        raise OSError("keys file unreadable")
+        raise PermissionError("keys file unreadable")
 
     monkeypatch.setattr(cliproxy, "port", broken)
-    assert providers.proxy_port() == cliproxy.DEFAULT_PORT
-    assert providers.is_consent_exempt("http://127.0.0.1:11434")
+    assert providers.proxy_port() is None
+    assert not providers.is_consent_exempt("https://127.0.0.1:19000/v1")
+    assert providers.is_consent_exempt("http://127.0.0.1:11434")  # Ollama stays local
 
 
 def test_a_vision_provider_on_the_proxy_port_needs_consent(home, hosted) -> None:

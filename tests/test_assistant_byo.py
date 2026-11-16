@@ -905,7 +905,7 @@ def test_a_key_is_never_sent_over_http_to_another_machine(home, monkeypatch) -> 
 @pytest.mark.parametrize(
     ("stop", "why"),
     [
-        ("max_tokens", r"cut off at 4096 tokens; try a simpler request"),
+        ("max_tokens", r"cut off at its limit of \d+ tokens"),
         ("refusal", r"declined this request"),
     ],
 )

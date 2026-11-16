@@ -33,7 +33,6 @@ class FakeRing:
 def ring(monkeypatch: pytest.MonkeyPatch) -> FakeRing:
     fake = FakeRing()
     monkeypatch.setattr(keys, "_keyring", lambda: fake)
-    monkeypatch.setattr(CredentialStore, "_select_os_backend", staticmethod(lambda module: module))
     return fake
 
 
@@ -89,12 +88,12 @@ def test_only_operating_system_backends_are_accepted_and_chainer_does_not_fallba
     )
     module = SimpleNamespace(get_keyring=lambda: chainer_type())
     store = CredentialStore(tmp_path / "proxy")
-    assert store._select_os_backend(module) is secure
+    assert keys.os_backend(module) is secure
     with pytest.raises(keys.KeyringError):
         store._set(secure, "manifest", "secret")
     assert writes == []
-    with pytest.raises(keys.KeyringError, match="operating-system keyring"):
-        store._select_os_backend(SimpleNamespace(get_keyring=lambda: plaintext))
+    with pytest.raises(keys.KeyringError, match="no OS keyring"):
+        keys.os_backend(SimpleNamespace(get_keyring=lambda: plaintext))
 
 
 def test_prepare_fails_closed_without_a_working_backend(tmp_path: Path, monkeypatch) -> None:
