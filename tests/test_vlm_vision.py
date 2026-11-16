@@ -326,9 +326,11 @@ def test_preflight_needs_no_model_files_for_the_vlm_layer(extra_ok) -> None:
     pipeline.preflight(("ocr", "vlm"))
 
 
-def _run_vlm(tmp_path: Path, monkeypatch, **kw: Any) -> dict[str, Any]:
+def _run_vlm(
+    tmp_path: Path, monkeypatch, hl_settings: dict[str, Any] | None = None, **kw: Any
+) -> dict[str, Any]:
     """``run_events`` with the VLM layer only over one fake source (``kw``: more of its
-    arguments); returns events.json."""
+    arguments; ``hl_settings``: the analysis's ``settings``); returns events.json."""
     src = _source(tmp_path)
     project = tmp_path / "proj"
     project.mkdir(exist_ok=True)
@@ -336,7 +338,11 @@ def _run_vlm(tmp_path: Path, monkeypatch, **kw: Any) -> dict[str, Any]:
     monkeypatch.setattr(
         pipeline,
         "load_highlights",
-        lambda p: {"sources": [{"path": str(src.path)}], "candidates": [cand]},
+        lambda p: {
+            "sources": [{"path": str(src.path)}],
+            "candidates": [cand],
+            **({"settings": hl_settings} if hl_settings is not None else {}),
+        },
     )
     monkeypatch.setattr(pipeline, "load_source", lambda path, dur: src)
     monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
@@ -418,3 +424,45 @@ def test_run_events_passes_the_ollama_options_to_the_vision_client(
     )
     assert seen == [(("http://gpu-box:11434", "my-vl:7b"), {})]
     assert data["settings"]["vlm"]["model"] == "ollama@gpu-box:11434:my-vl:7b"
+
+
+# --------------------------------------------------------------------------- --context (#1068)
+def test_run_events_without_context_sends_none_and_records_none(
+    extra_ok, ollama, tmp_path, monkeypatch
+) -> None:
+    ollama.replies = [REPLY]
+    data = _run_vlm(tmp_path, monkeypatch, hl_settings={"style": "gaming"})
+    assert "<description>" not in json.dumps(ollama.chats)
+    assert "context" not in data["settings"]["vlm"]
+
+
+@pytest.mark.parametrize(
+    ("hl_settings", "context", "sent"),
+    [
+        ({"context": "recorded words"}, None, "recorded words"),  # the analysis's own
+        ({"context": "recorded words"}, "explicit words", "explicit words"),  # the call wins
+    ],
+)
+def test_run_events_puts_the_context_in_the_window_prompts(
+    extra_ok, ollama, tmp_path, monkeypatch, hl_settings, context, sent
+) -> None:
+    ollama.replies = [REPLY]
+    data = _run_vlm(tmp_path, monkeypatch, hl_settings=hl_settings, context=context)
+    sent_text = json.dumps(ollama.chats)
+    assert sent in sent_text and sent_text.count("<description>") == 1
+    other = "recorded words" if sent == "explicit words" else "explicit words"
+    assert other not in sent_text
+    assert data["settings"]["vlm"]["context"] == sent
+
+
+def test_a_changed_context_describes_the_windows_again(
+    extra_ok, ollama, tmp_path, monkeypatch
+) -> None:
+    ollama.replies = [REPLY]
+    _run_vlm(tmp_path, monkeypatch)
+    ollama.replies = [REPLY]
+    data = _run_vlm(tmp_path, monkeypatch, context="chest mount")  # not the cached description
+    assert len(ollama.chats) == 2 and data["stats"]["vlm"].get("cached", 0) == 0
+    ollama.replies = [REPLY]
+    data = _run_vlm(tmp_path, monkeypatch, context="chest mount")
+    assert len(ollama.chats) == 2 and data["stats"]["vlm"]["cached"] == 1

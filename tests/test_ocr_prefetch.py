@@ -269,7 +269,7 @@ def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake):
     monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
     monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
     monkeypatch.setattr(pipeline, "load_preset", lambda *a: None)
-    monkeypatch.setattr(pipeline, "_discover", lambda *a: {})
+    monkeypatch.setattr(pipeline, "_discover", lambda *a, **k: {})
     monkeypatch.setattr(pipeline, "OcrEngine", lambda: None)
     monkeypatch.setattr(pipeline, "detect_ocr_events", ocr_prefetch.detect_ocr_events)
 
@@ -597,7 +597,7 @@ def test_the_sources_read_before_a_failure_keep_their_menu_spans(ocr_run, monkey
 
 
 def test_a_discovery_failure_names_the_missing_preset(ocr_run, caplog, monkeypatch) -> None:
-    def discover(*a):
+    def discover(*a, **k):
         raise ValueError("no frames to sample")
 
     monkeypatch.setattr(pipeline, "_discover", discover)
@@ -648,7 +648,7 @@ def test_out_of_memory_outside_the_reads_stops_the_run(ocr_run, caplog, monkeypa
     """An untagged out-of-memory error of the OCR layer (here: its discovery's setup) stops
     the run too."""
 
-    def discover(*a):
+    def discover(*a, **k):
         raise _oom()
 
     monkeypatch.setattr(pipeline, "_discover", discover)
@@ -1236,3 +1236,35 @@ def test_take_drops_a_result_whose_game_key_changed(fake, records, monkeypatch) 
     assert pre.take(fake.source(1), fake.params(), None) is None
     assert "a.mp4: read" in records.lines
     assert "b.mp4: read" not in records.lines  # the dropped read's lines are not replayed
+
+
+def test_take_drops_a_result_read_with_a_preset_that_changed_since(
+    fake, records, monkeypatch
+) -> None:
+    """The vision HUD map topped up the preset after the background read (#1069): the result
+    and its log lines are dropped, the caller reads it again with the preset as it is now."""
+    from cutpoint.events.regions import Region, preset_from_dict  # noqa: PLC0415
+
+    b_started, swapped = threading.Event(), threading.Event()
+
+    def read(src, cancel):
+        if src.name == "b.mp4":  # b's preset was taken as it was; hold it until the swap
+            b_started.set()
+            assert swapped.wait(10)
+        logging.getLogger("cutpoint.events.killfeed").info("%s: read", src.name)
+        return [{"t": 1.0, "type": "kill", "src": src.name}], {}
+
+    fake.read = read
+    old = preset_from_dict({"game": "g", "regions": [Region("feed", 1, 1, 9, 9, "feed").key()]})
+    new = preset_from_dict({"game": "g", "regions": [Region("feed", 5, 5, 9, 9, "feed").key()]})
+    now = [old]
+    monkeypatch.setattr(ocr_prefetch, "load_preset", lambda game, project: now[0])
+    pre = fake.make()
+    pre.offer(fake.paths[0], 60.0, True)
+    pre.offer(fake.paths[1], 60.0, True)
+    assert pre.take(fake.source(0), fake.params(), None) is not None
+    assert b_started.wait(10)
+    now[0] = new  # the top-up rewrote it
+    swapped.set()
+    assert pre.take(fake.source(1), fake.params(), None) is None
+    assert "b.mp4: read" not in records.lines

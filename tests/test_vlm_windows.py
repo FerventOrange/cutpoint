@@ -9,6 +9,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from conftest import HOP, SLED
 from cutpoint import activity, paths
@@ -239,3 +240,38 @@ def test_events_txt_names_the_vision_model(tmp_path: Path):
     )
     assert header({}) == "# VLM WINDOW = Vision model summary of a window (hl = highlight 0-10);"
     assert "Omni" not in header({})
+
+
+# --------------------------------------------------------------------------- --context (#1068)
+def _window_texts(tmp_path: Path, params: vw.VlmParams) -> list[str]:
+    src = _source(tmp_path)
+    win = vw.Window(src.path.name, 5.0, 20.0, 1.0, [])
+    lines = [{"name": src.name, "start": 6.0, "end": 8.0, "text": "nice shot"}]
+    msgs = vw.build_messages(src, win, [b"j"], params, vw.game_prompt("boxfeed", None), lines, [])
+    return [c["text"] for c in msgs[0]["content"] if c["type"] == "text"]
+
+
+def test_the_vlm_key_changes_only_with_context_words():
+    plain = vw.VlmParams().key()
+    assert vw.VlmParams(context=None).key() == plain
+    assert "uc" not in plain
+    hinted = vw.VlmParams(context="chest mount").key()
+    assert hinted["uc"] and {k: v for k, v in hinted.items() if k != "uc"} == plain
+    assert vw.VlmParams(context="lake").key()["uc"] != hinted["uc"]
+    cam = vw.default_wording()
+    assert "uc" not in vw.VlmParams(action_cam=cam).key()
+    assert "uc" in vw.VlmParams(action_cam=cam, context="x").key()
+
+
+@pytest.mark.parametrize("cam", [False, True])
+def test_the_window_prompts_carry_the_context_once_before_the_reply_format(tmp_path, cam):
+    wording = vw.default_wording() if cam else None
+    plain = _window_texts(tmp_path, vw.VlmParams(action_cam=wording))
+    blank = _window_texts(tmp_path, vw.VlmParams(action_cam=wording, context=" "))
+    assert blank == plain
+    texts = _window_texts(tmp_path, vw.VlmParams(action_cam=wording, context="a <b>river"))
+    assert len(texts) == len(plain) + 1  # one block more
+    joined = "\n".join(texts)
+    assert joined.count("<description>") == 1 and "a briver" in joined
+    assert "Reply with JSON only" in texts[-1] and "<description>" not in texts[-1]
+    assert texts[-1] == plain[-1]  # the reply-format instruction stays last, unchanged

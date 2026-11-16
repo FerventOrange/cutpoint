@@ -38,7 +38,7 @@ from cutpoint.events.common import Source, layer_cache_path, transcript_excerpt
 from cutpoint.events.eventtypes import EventType, first_match
 from cutpoint.events.regions import HudPreset, is_installed_path, load_preset
 from cutpoint.ffmpeg_utils import grab_images
-from cutpoint.utils import clock
+from cutpoint.utils import clock, context_block, context_hash
 from cutpoint.vision import VisionRater
 
 if TYPE_CHECKING:
@@ -318,6 +318,9 @@ class VlmParams:
     # vision model that describes the windows, set by the pipeline
     # ("<provider>@<host>:<model>", "ollama@127.0.0.1:11434:qwen3.5:9b" for an Ollama)
     model: str = ""
+    # the user's words about the footage (analyze --context, settings.context; #1068), set by
+    # the pipeline: a delimited block in every window prompt. None: prompts and keys as before
+    context: str | None = None
 
     def key(self, prompt: GamePrompt | None = None) -> dict[str, Any]:
         """Parameters that change a window's result (selection params excluded).
@@ -326,7 +329,7 @@ class VlmParams:
         for action-cam windows, ``COMBAT_PROMPT_VERSION`` for a combat ``prompt`` (the
         same key as before #596), else ``PROMPT_VERSION``. A ``prompt`` from a custom
         project preset adds its hash as ``gp``; an action-cam wording adds its hash as
-        ``aw``.
+        ``aw``; the user's ``context`` words add theirs as ``uc`` (only when given).
         """
         cam = self.action_cam
         if cam is not None:
@@ -336,6 +339,7 @@ class VlmParams:
         else:
             version = PROMPT_VERSION
         wording = cam.key() if cam is not None else ""
+        words = context_hash(self.context)
         return {
             "frames": self.frames,
             "h": FRAME_HEIGHT,
@@ -346,6 +350,7 @@ class VlmParams:
             **({"action_cam": ACTION_CAM_PROMPT_VERSION} if cam is not None else {}),
             **({"aw": wording} if wording else {}),
             **({"gp": prompt.key()} if prompt and prompt.custom else {}),
+            **({"uc": words} if words else {}),
         }
 
 
@@ -697,7 +702,8 @@ def _media_content(
     transcript_lines: list[dict[str, Any]],
     events: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Frames, transcript and hints of a window (shared by the prompts)."""
+    """Frames, transcript and hints of a window, and the user's ``params.context`` words
+    (shared by the prompts)."""
     dur = win.end - win.start
     content: list[dict[str, Any]] = []
     step = dur / max(1, len(frames))
@@ -724,6 +730,8 @@ def _media_content(
             content.append(
                 {"type": "text", "text": "Detector hints (automatic, may be wrong):\n" + h}
             )
+    if block := context_block(params.context):
+        content.append({"type": "text", "text": block})
     return content
 
 

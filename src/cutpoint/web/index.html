@@ -789,6 +789,8 @@
         <span id="dAnNoScenes" class="vh">Leaves out scene detection (--no-scenes): cuts in the video no longer add to a moment's score, and the analysis takes less time.</span>
         <label class="check" title="If a video has a read error, analysis resumes after the bad part instead of stopping there (--recover). The video is not copied or changed."><input type="checkbox" id="anRecover" aria-describedby="dAnRecover"> Recover after read errors</label>
         <span id="dAnRecover" class="vh">If a video has a read error, analysis resumes after the bad part instead of stopping there (--recover). The video is not copied or changed.</span>
+        <label class="check" title="Auto style only: every video is shown to the vision model, not only the unsure ones (--vision-detect-all). It only settles videos: one sure to be gameplay becomes unsure when the model and the game HUD text both see no game. About one vision call per video; a hosted Vision model needs your consent in the Models tab."><input type="checkbox" id="anVisionDetectAll" aria-describedby="dAnVisionDetectAll"> Show every video to the vision model (Auto style)</label>
+        <span id="dAnVisionDetectAll" class="vh">Auto style only: every video is shown to the vision model, not only the unsure ones (--vision-detect-all). It only settles videos: one sure to be gameplay becomes unsure when the model and the game HUD text both see no game. About one vision call per video; a hosted Vision model needs your consent in the Models tab.</span>
         <fieldset class="analyze-skip" aria-describedby="anSkipHint">
           <legend>Skip steps</legend>
           <label class="check"><input type="checkbox" name="anSkip" value="reactions"> Reactions (laughter and other sounds)</label>
@@ -797,7 +799,7 @@
           <label class="check"><input type="checkbox" name="anSkip" value="dialogue"> Dialogue (funny or heated talk, gaming)</label>
         </fieldset>
         <p id="anSkipHint" class="hint">Leaves these steps out (--skip). None ticked: analysis.skip in config.json, else none.</p>
-        <p class="hint">One-Click Edit repeats Skip steps; the other options turn it off for this project, as cutpoint edit does not take them.</p>
+        <p class="hint">One-Click Edit repeats Skip steps and Show every video to the vision model; the other options turn it off for this project, as cutpoint edit does not take them.</p>
         </div>
       </details>
       <!-- After the analysis, each its own CLI command and its own button (type=button, so Enter in

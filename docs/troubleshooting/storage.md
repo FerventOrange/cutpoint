@@ -100,6 +100,11 @@ file may be read. Free space and run again, or delete the cache folder of source
 use (the copies are kept until the cache is cleared; `cutpoint stage --clear` does not remove
 them).
 
+A smaller forward gap in the timestamps (under 10 s) needs no copy: the analysis audio and the
+waveform hold silence for it, so the audio stays as long as the video. An analysis audio made
+by an older version that left such a gap out (a false READ ERROR with no ffmpeg message, and a
+transcript a few seconds early after the gap) is extracted again once, with an INFO line.
+
 ## Docker volume from the 0.2.0 image
 
 The 0.2.0 image ran as root, so an existing `cutpoint-data` volume is root-owned and newer images

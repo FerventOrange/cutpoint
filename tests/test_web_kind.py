@@ -74,3 +74,18 @@ def test_a_moment_a_stretch_only_widened_keeps_its_own_type():
     assert pacing.moment_kind("Fast Run Again", plain, {}, lambda: False) == pacing.ACTION
     text = UTIL_JS.read_text(encoding="utf-8")
     assert "c.dialogue_title ? [c.widened_from?.label ?? c.label, c.vision_label]" in text
+
+
+def test_a_moment_an_events_vlm_window_named_is_judged_by_the_label_it_had():
+    base = {"signals": {"events": {}}}
+    titled = {
+        **base,
+        "label": "x-banter",
+        "label_before_vlm": "gaming-moment",
+        "label_vlm": "x-banter",
+    }
+    assert pacing.moment_kind("x-banter", titled, {}, lambda: False) == pacing.ACTION
+    plain = {**base, "label": "x-banter"}  # no VLM rename: "banter" is a talk word
+    assert pacing.moment_kind("x-banter", plain, {}, lambda: False) == pacing.DIALOGUE
+    funny = {**titled, "label_before_vlm": "laughter", "label": "calm-view"}
+    assert pacing.moment_kind("calm-view", funny, {}, lambda: False) == pacing.FUNNY

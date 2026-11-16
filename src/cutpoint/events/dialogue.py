@@ -43,6 +43,7 @@ from typing import Any
 
 from cutpoint import cache, jsonout, state
 from cutpoint.events.scoring import DIALOGUE_TYPE, LAUGH_SOUNDS, SCREAM_SOUNDS
+from cutpoint.utils import context_block, context_hash
 
 logger = logging.getLogger(__name__)
 
@@ -373,12 +374,14 @@ def to_events(
     return out
 
 
-def cache_key(lines: Sequence[Line], model_key: str) -> str:
+def cache_key(lines: Sequence[Line], model_key: str, context: str | None = None) -> str:
     """Name of a source's cache entry: a hash of the transcript (times and text), the model
-    (:attr:`Backend.key`), the prompt version, the piece length and the overlap."""
+    (:attr:`Backend.key`), the prompt version, the piece length and the overlap, and of the
+    user's ``context`` words when given (without any the key is as before)."""
     digest = hashlib.sha1()
     for start, end, text in lines:
         digest.update(f"{start:.2f}|{end:.2f}|{text}\n".encode())
+    words = context_hash(context)
     return cache.params_hash(
         {
             "v": PROMPT_VERSION,
@@ -386,8 +389,19 @@ def cache_key(lines: Sequence[Line], model_key: str) -> str:
             "piece": PIECE_S,
             "overlap": OVERLAP_S,
             "transcript": digest.hexdigest(),
+            **({"context": words} if words else {}),
         }
     )
+
+
+def prompt(context: str | None = None) -> str:
+    """:data:`PROMPT` with the user's ``context`` words about the recording before the
+    transcript (#1068); :data:`PROMPT` as it is without any."""
+    block = context_block(context, "The user describes the recording as")
+    if not block:
+        return PROMPT
+    head, sep, tail = PROMPT.rpartition("Transcript, one numbered line each:")
+    return f"{head}{block}\n{sep}{tail}"
 
 
 # --------------------------------------------------------------------------- backends
@@ -632,10 +646,13 @@ class SourceRead:
     cached: bool = False
 
 
-def _cache_path(src: Path, lines: Sequence[Line], backend: Backend) -> Path | None:
+def _cache_path(
+    src: Path, lines: Sequence[Line], backend: Backend, context: str | None = None
+) -> Path | None:
     """Where the reading of ``src`` is cached (None: the source cannot be keyed)."""
     try:
-        return cache.source_dir(src) / f"{CACHE_PREFIX}{cache_key(lines, backend.key)}.json"
+        key = cache_key(lines, backend.key, context)
+        return cache.source_dir(src) / f"{CACHE_PREFIX}{key}.json"
     except OSError as err:
         logger.debug("No dialogue cache for %s: %s", src, err)
         return None
@@ -701,12 +718,15 @@ def read_source(
     lines: Sequence[Line],
     backend: Backend,
     on_piece: Callable[[int, int], None] | None = None,
+    context: str | None = None,
 ) -> SourceRead:
     """Read the transcript ``lines`` of ``src`` with ``backend``, or take the reading from the
     cache when the transcript, model and prompt are the same. A piece whose request fails or
     whose reply is not JSON is logged and skipped; a reading with one is not cached.
-    ``on_piece(done, total)`` is called after each piece."""
-    path = _cache_path(src, lines, backend)
+    ``on_piece(done, total)`` is called after each piece. ``context``: the user's
+    ``--context`` words, in the prompt (:func:`prompt`) and the cache key."""
+    path = _cache_path(src, lines, backend, context)
+    head = prompt(context)
     hit = _cached_stretches(path)
     if hit is not None:
         logger.info("%s: dialogue reading from the cache (%d stretches)", src.name, len(hit))
@@ -716,7 +736,7 @@ def read_source(
     found: list[Stretch] = []
 
     def ask(idx: list[int]) -> dict[str, Any] | None:
-        return backend.ask(PROMPT + piece_text(lines, idx))
+        return backend.ask(head + piece_text(lines, idx))
 
     def take(idx: list[int], reply: dict[str, Any] | None) -> None:
         if reply is None:
@@ -791,6 +811,8 @@ def read_all(
     audio_events: Sequence[dict[str, Any]] | None,
     backend: Backend,
     on_progress: Callable[[float, str], None] | None = None,
+    *,
+    context: str | None = None,
 ) -> list[dict[str, Any]]:
     """The dialogue events of every source.
 
@@ -801,6 +823,7 @@ def read_all(
             unranked (an INFO line says so).
         backend: From :func:`choose_backend`; its model is freed at the end.
         on_progress: ``(share of the step done 0-100, source name)``.
+        context: The user's ``--context`` words about the recording (#1068), in the prompt.
     """
     sounds_any = any(e.get("kind") == "audio" for e in audio_events or ())
     out: list[dict[str, Any]] = []
@@ -818,7 +841,7 @@ def read_all(
                 if on_progress:
                     on_progress(100 * (n + done / of) / total, name)
 
-            read = read_source(Path(src), lines, backend, piece)
+            read = read_source(Path(src), lines, backend, piece, context)
             sounds = reaction_times(audio_events or (), src) if sounds_any else None
             out += to_events(src, read.stretches, sounds, backend.name, backend.model)
             logger.info(

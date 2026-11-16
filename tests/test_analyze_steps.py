@@ -15,6 +15,7 @@ import time
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import cv2
 import numpy as np
@@ -560,6 +561,7 @@ def test_analyze_source_reports_extract_then_whisper(
     monkeypatch.setattr(analyze.cache, "source_dir", lambda s, off=0.0: tmp_path / "cache")
     if cached_wav:
         write(tmp_path / "cache" / "audio16k.wav")
+        write(tmp_path / "cache" / analyze.CLOCK_FILE)
 
     @contextlib.contextmanager
     def watch(wav, seconds, report):
@@ -989,6 +991,9 @@ def test_a_style_without_an_open_list_gets_no_nominee_and_the_same_suggested_top
     """Kills nothing covers nominate no window under a style that does not go past its usual
     list, and the suggestion is the one of a run without events, on the analyze path and when
     ``cutpoint events`` rescores the file afterwards."""
+    from cutpoint import default_fit  # noqa: PLC0415
+
+    monkeypatch.setattr(default_fit, "FIT_SHARE", 1.0)  # fixture moments are long for their target
 
     sig = {k: np.zeros(6001) for k in ("loudness", "speech", "laughter", "scene", "continuity")}
     signals = analyze.PartSignals(6001, sig, [], [], [], [], [])  # grids: a nominee could be scored
@@ -2542,6 +2547,77 @@ def test_reanalyze_keeps_the_detection_and_never_probes_again(probed, monkeypatc
     assert after["settings"]["style_requested"] == "auto"
 
 
+# ------------------------------------------------------------ --vision-detect-all (#1069)
+@pytest.mark.parametrize(
+    ("kw", "style", "flag"),
+    [
+        ({"vision_detect_all": True}, analyze.AutoRequest("hype"), True),
+        ({"vision_detect_all": False}, analyze.AutoRequest("hype"), None),
+        ({}, analyze.AutoRequest("hype"), None),
+        ({"vision_detect_all": True}, "gaming", None),  # an explicit style detects nothing
+    ],
+)
+def test_vision_detect_all_is_recorded_only_when_on_and_the_style_is_auto(probed, kw, style, flag):
+    probed.go(style, vision=None, **kw)
+    st = _hl(probed)["settings"]
+    assert st.get("vision_detect_all") is flag
+    assert "vision_detect_all" not in st or flag is True
+    if style == "gaming":
+        assert "detection" not in _hl(probed)
+    else:
+        assert (_hl(probed)["detection"].get("vision_detect_all") is True) is (flag is True)
+
+
+def test_vision_detect_all_reaches_the_probes_of_the_detection(probed, monkeypatch):
+    asked = []
+    monkeypatch.setattr(
+        category,
+        "probe_source",
+        lambda src, vision=None: (
+            asked.append(vision and vision.every_source)
+            or category.SourceProbe(str(src), 60.0, False, **GAME_PROBE)
+        ),
+    )
+    probed.go(analyze.AutoRequest("hype"), vision=None, vision_detect_all=True)
+    assert asked == [True]
+    asked.clear()
+    probed.go(analyze.AutoRequest("hype"), vision=None)
+    assert asked == [False]
+
+
+def test_vision_detect_all_off_with_the_vision_model_off_asks_as_today(probed, monkeypatch):
+    asked = []
+    monkeypatch.setattr(
+        category,
+        "probe_source",
+        lambda src, vision=None: (
+            asked.append(vision) or category.SourceProbe(str(src), 60.0, False, **GAME_PROBE)
+        ),
+    )
+    probed.go(analyze.AutoRequest("hype"), vision=False, vision_detect_all=True)
+    assert asked == [None]  # no vision client at all
+    assert "vision_detect_all" not in _hl(probed)["detection"]
+
+
+def test_reanalyze_keeps_vision_detect_all_and_never_probes_again(probed, monkeypatch):
+    probed.go(analyze.AutoRequest("hype"), vision=None, vision_detect_all=True)
+    before = _hl(probed)
+    assert before["settings"]["vision_detect_all"] is True
+    monkeypatch.setattr(
+        category, "probe_source", lambda src, vision=None: pytest.fail("probed again")
+    )
+    analyze.reanalyze(probed.proj)
+    after = _hl(probed)
+    assert after["settings"]["vision_detect_all"] is True
+    assert after["detection"] == before["detection"]
+
+
+def test_reanalyze_without_vision_detect_all_records_none(probed):
+    probed.go(analyze.AutoRequest("hype"), vision=None)
+    analyze.reanalyze(probed.proj)
+    assert "vision_detect_all" not in _hl(probed)["settings"]
+
+
 # ----------------------------------------------------------------- per-source timings (#725)
 @pytest.mark.parametrize("cached", [True, False])
 def test_analyze_source_times_each_stage_and_flags_a_cached_source(tmp_path, monkeypatch, cached):
@@ -2551,6 +2627,7 @@ def test_analyze_source_times_each_stage_and_flags_a_cached_source(tmp_path, mon
     cdir = tmp_path / "cache"
     if cached:
         write(cdir / "audio16k.wav")
+        write(cdir / analyze.CLOCK_FILE)
         write(cdir / "transcript-m.json", "[]")
     monkeypatch.setattr(analyze, "probe", lambda path: info)
     monkeypatch.setattr(analyze.cache, "source_dir", lambda s, off=0.0: cdir)
@@ -3077,6 +3154,9 @@ def test_moments_that_tie_before_vision_are_taken_alike_by_analyze_and_its_resco
     both take the edit in :func:`cutpoint.scorer.edit_rank_key` order: T (earlier start) is
     taken, S skipped and marked, and the rescore keeps the mark, so U, rated up, passes S
     instead of being held under T's 60. A re-rank changes nothing."""
+    from cutpoint import default_fit  # noqa: PLC0415
+
+    monkeypatch.setattr(default_fit, "FIT_SHARE", 1.0)  # fixture moments are long for their target
     monkeypatch.setattr(analyze, "analyze_source", _tied)
     band_run.ratings = dict.fromkeys((200.0, 100.0, 20.0, 300.0), 0.0)  # U and the rest: 10
     kill = {
@@ -3335,3 +3415,110 @@ def test_reanalyze_of_a_fallback_from_a_broken_style_file_raises_its_error(run):
     with pytest.raises(ValueError, match="Cannot read learned style"):
         analyze.reanalyze(run.proj)
     assert _hl(run)["settings"]["style_requested"] == "mycam"  # the project is left as it was
+
+
+# ----------------------------------------------------------------- --context (#1068)
+def test_the_context_is_recorded_one_line_and_only_when_given(run):
+    run.go()
+    assert "context" not in _hl(run)["settings"]
+    run.go(context="  \n ")
+    assert "context" not in _hl(run)["settings"]
+    run.go(context="  downhill mtb,\n chest   mount ")
+    assert _hl(run)["settings"]["context"] == "downhill mtb, chest mount"
+
+
+def test_the_context_reaches_the_footage_question_and_the_event_layers(probed, monkeypatch):
+    seen: list[dict] = []
+    real = category.detect
+    monkeypatch.setattr(category, "detect", lambda *a, **kw: seen.append(kw) or real(*a, **kw))
+    probed.plan = plan(reactions=("audio",), crashes=("crash",))
+    probed.go(analyze.AutoRequest("hype"), context=" chest   mount ")
+    assert [kw["context"] for kw in seen] == ["chest mount"]
+    ((_project, _layers, kw),) = probed.events_calls
+    assert kw["context"] == "chest mount"
+    seen.clear()
+    probed.events_calls.clear()
+    probed.go(analyze.AutoRequest("hype"))
+    assert [kw["context"] for kw in seen] == [None]
+    assert probed.events_calls[0][2]["context"] is None
+
+
+def test_the_context_reaches_the_dialogue_reader(run, monkeypatch):
+    got: list[Any] = []
+
+    def reader(backend, spoken, steps, timings, ran, context=None):
+        got.append(context)
+        return lambda audio: []
+
+    monkeypatch.setattr(analyze, "_dialogue_backend", lambda *a: object())
+    monkeypatch.setattr(analyze, "_dialogue_reader", reader)
+    run.plan = plan(reactions=("audio",))
+    run.go("gaming", context="raid night")
+    run.go("gaming")
+    assert got == ["raid night", None]
+
+
+def test_the_dialogue_reader_hands_the_context_to_read_all(monkeypatch):
+    from cutpoint.events import dialogue  # noqa: PLC0415
+
+    got: dict[str, Any] = {}
+
+    def read_all(transcripts, audio, backend, on_progress=None, *, context=None):
+        got["context"] = context
+        return []
+
+    monkeypatch.setattr(dialogue, "read_all", read_all)
+    steps = SimpleNamespace(update=lambda *a: None)
+    read = analyze._dialogue_reader(object(), {}, steps, {}, [], "raid night")
+    assert read([]) == [] and got["context"] == "raid night"
+
+
+def test_a_reanalysis_keeps_the_recorded_context(run):
+    run.go(context="chest mount")
+    run.old = None
+    analyze.reanalyze(run.proj)
+    assert _hl(run)["settings"]["context"] == "chest mount"
+
+
+def test_the_rating_prompts_get_the_recorded_context(run, monkeypatch):
+    """rank_parts sets the rater's context from settings, so ratings are keyed by it."""
+    raters: list[Any] = []
+    base = analyze.VisionRater
+
+    class Rater(base):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            raters.append(self)
+
+    monkeypatch.setattr(analyze, "VisionRater", Rater)
+    run.go(vision=True, context="chest mount")
+    run.go(vision=True)
+    assert [r.context for r in raters] == ["chest mount", None]
+
+
+def test_an_analysis_records_the_words_it_rated_with(run):
+    """Review F2/F4: settings.vision_context, the words of the rating prompts (a re-rank
+    looks the cached ratings up with them); null when rated without words."""
+    run.go(vision=True, context="chest mount")
+    assert _hl(run)["settings"]["vision_context"] == "chest mount"
+    run.go(vision=True)
+    assert "vision_context" in _hl(run)["settings"]
+    assert _hl(run)["settings"]["vision_context"] is None
+    run.go(context="chest mount")  # no vision step: nothing was rated with them
+    assert "vision_context" not in _hl(run)["settings"]
+
+
+def test_a_reanalysis_keeps_the_projects_activity_json_over_the_recorded_context(run):
+    """Review F1: a re-analysis hands the recorded settings.context to the event layers as
+    not given, so the crash step keeps the project's activity.json (``crashes --activity``)
+    instead of choosing a profile from the words; the analysis still records them."""
+    run.plan = plan(reactions=("audio",), crashes=("crash",))
+    run.go(context="chest mount")
+    assert run.events_calls[0][2]["context"] == "chest mount"
+    assert (run.proj / "activity.json").is_file()
+    run.events_calls.clear()
+    run.old = (run.proj / "highlights.json").read_bytes()
+    analyze.reanalyze(run.proj, get_style("funny"))  # a style given: the event layers run
+    ((_project, _layers, kw),) = run.events_calls
+    assert kw["context"] is None
+    assert _hl(run)["settings"]["context"] == "chest mount"

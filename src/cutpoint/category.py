@@ -21,6 +21,11 @@ over a few frames, as a thin game HUD has; without the extra (Cutpoint lite) the
 screen-text cue (:func:`anchor_probe`, no OCR) takes its place. A source still
 unsure after that, or one that camera tags alone make general, is shown to the vision model
 (:func:`needs_vision`); for a camera-tagged source only an ``action`` answer counts (#958).
+
+``--vision-detect-all`` (#1069, off by default) shows every source with frames and without
+telemetry to the vision model, not only the unsure ones, and runs the HUD text check on every
+source without camera tags. It only settles sources: one decided sure without it stays so,
+unless the vision answer and the read text both disagree with the pixels (:func:`_source`).
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ from cutpoint import cache
 from cutpoint.config import remap_source
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.ffmpeg_utils import GRAB_WORKERS
+from cutpoint.utils import context_block, context_hash, footage_context
 
 logger = logging.getLogger(__name__)
 
@@ -706,15 +712,16 @@ def ocr_installed() -> bool:
     return importlib.util.find_spec("rapidocr_onnxruntime") is not None
 
 
-def needs_text(p: SourceProbe) -> bool:
+def needs_text(p: SourceProbe, every_source: bool = False) -> bool:
     """Whether the HUD text check can settle ``p``: no telemetry, no camera tags, a frame
     probe that is not a still picture, and a gameplay score that is neither sure gameplay
-    nor sure general (the text never makes camera-tagged footage or a still gameplay)."""
+    nor sure general (the text never makes camera-tagged footage or a still gameplay).
+    ``every_source`` (``--vision-detect-all``): whatever the gameplay score."""
     if p.telemetry or p.camera_marks or p.hud_static is None:
         return False
     if p.static_share is not None and p.static_share > STILL_SHARE:
         return False
-    return GENERAL_SURE <= gameplay_score(_bare(p))[0] < GAMEPLAY_SURE
+    return every_source or GENERAL_SURE <= gameplay_score(_bare(p))[0] < GAMEPLAY_SURE
 
 
 def _bare(p: SourceProbe) -> SourceProbe:
@@ -722,11 +729,13 @@ def _bare(p: SourceProbe) -> SourceProbe:
     return replace(p, hud_text=None, screen_anchors=None)
 
 
-def _with_text(found: SourceProbe, cdir: Path, io: Path | None = None) -> SourceProbe:
-    """``found`` with :attr:`SourceProbe.hud_text` when :func:`needs_text`: from
-    :data:`TEXT_FILE`, else from :func:`text_probe` (cached); unchanged without the OCR
-    engine (Cutpoint lite) or when the check fails (tried once per process)."""
-    if not needs_text(found):
+def _with_text(
+    found: SourceProbe, cdir: Path, io: Path | None = None, every_source: bool = False
+) -> SourceProbe:
+    """``found`` with :attr:`SourceProbe.hud_text` when :func:`needs_text` (``every_source``
+    as there): from :data:`TEXT_FILE`, else from :func:`text_probe` (cached); unchanged
+    without the OCR engine (Cutpoint lite) or when the check fails (tried once per process)."""
+    if not needs_text(found, every_source):
         return found
     from cutpoint.events.ocr_raw import engine_version  # noqa: PLC0415
 
@@ -840,12 +849,14 @@ def screen_anchors(anchors: Sequence[Mapping[str, Any]], box: Sequence[float] | 
     return kept
 
 
-def _with_anchors(found: SourceProbe, cdir: Path, io: Path | None = None) -> SourceProbe:
-    """``found`` with :attr:`SourceProbe.screen_anchors` when :func:`needs_text` and there is
-    no OCR engine (Cutpoint lite; a full install whose HUD text check fails gets no cue): from
-    :data:`ANCHOR_FILE`, else from :func:`anchor_probe` (cached); unchanged when the cue fails
-    (tried once per process)."""
-    if found.hud_text is not None or ocr_installed() or not needs_text(found):
+def _with_anchors(
+    found: SourceProbe, cdir: Path, io: Path | None = None, every_source: bool = False
+) -> SourceProbe:
+    """``found`` with :attr:`SourceProbe.screen_anchors` when :func:`needs_text`
+    (``every_source`` as there) and there is no OCR engine (Cutpoint lite; a full install
+    whose HUD text check fails gets no cue): from :data:`ANCHOR_FILE`, else from
+    :func:`anchor_probe` (cached); unchanged when the cue fails (tried once per process)."""
+    if found.hud_text is not None or ocr_installed() or not needs_text(found, every_source):
         return found
     rec = cache.load_json(cdir / ANCHOR_FILE)
     fresh = (
@@ -903,7 +914,13 @@ class FootageVision:
 
     ``ollama_url`` and ``ollama_model`` are the run's ``--ollama-url`` and ``--ollama-model``
     (they pick the Ollama over a hosted Vision role, as for the rating). ``explicit``: the
-    user asked for vision (``--vision``, ``"vision": true``).
+    user asked for vision (``--vision``, ``"vision": true``). ``context``: the user's
+    ``--context`` words about the footage (#1068), a hint in the question (the frames decide);
+    the answers are cached apart per text (:meth:`key`). ``every_source``
+    (``--vision-detect-all``, #1069): ask about every source with frames and without
+    telemetry, and check the HUD text of every source without camera tags (:func:`needs_vision`,
+    :func:`needs_text`); the answers share the cache of the unsure-only question (the same
+    prompt). Without a model it changes nothing.
 
     Quiet: in Cutpoint lite, when no model answers or memory is short, one INFO line, and the
     sources stay as the rest decided them. Without the user's Vision consent the same, unless
@@ -915,8 +932,12 @@ class FootageVision:
         ollama_url: str | None = None,
         ollama_model: str | None = None,
         explicit: bool = False,
+        context: str | None = None,
+        every_source: bool = False,
     ) -> None:
         self._url, self._model, self._explicit = ollama_url, ollama_model, explicit
+        self.context = footage_context(context)
+        self.every_source = every_source
         self._client: Any = None
         self._made = False
         self._ready: bool | None = None  # None: not checked yet
@@ -943,9 +964,13 @@ class FootageVision:
         return self._client
 
     def key(self) -> str | None:
-        """The cache key of the model's answers, ``<model>@<host>`` (None without a client)."""
+        """The cache key of the model's answers, ``<model>@<host>``, with ``#<hash>`` of the
+        ``--context`` words when given (None without a client)."""
         rater = self.client()
-        return None if rater is None else f"{rater.model}@{rater.host}"
+        if rater is None:
+            return None
+        words = context_hash(self.context)
+        return f"{rater.model}@{rater.host}" + (f"#{words}" if words else "")
 
     def _rater(self) -> Any:
         """The client once it is checked (consent, then the model answering), else None."""
@@ -979,7 +1004,7 @@ class FootageVision:
             return None
         try:
             reply = rater.ask_json(
-                VISION_PROMPT.format(n=len(frames)),
+                vision_prompt(len(frames), self.context),
                 frames,
                 VISION_SCHEMA,
                 num_predict=256,
@@ -1000,14 +1025,34 @@ class FootageVision:
             self._client.unload()
 
 
+def vision_prompt(n: int, context: str | None = None) -> str:
+    """The footage question about ``n`` frames, with the user's ``context`` words as a hint
+    before the reply format (:data:`VISION_PROMPT` as it is without any)."""
+    prompt = VISION_PROMPT.format(n=n)
+    block = context_block(context)
+    if not block:
+        return prompt
+    hint = block + "Take it as a hint only: answer from what the frames show.\n"
+    return prompt.replace("Reply with JSON only:", hint + "Reply with JSON only:", 1)
+
+
 @contextlib.contextmanager
 def footage_vision(
-    vision: bool | None = None, ollama_url: str | None = None, ollama_model: str | None = None
+    vision: bool | None = None,
+    ollama_url: str | None = None,
+    ollama_model: str | None = None,
+    context: str | None = None,
+    every_source: bool = False,
 ) -> Iterator[FootageVision | None]:
     """A :class:`FootageVision` for one detection, closed at the end. ``vision``: True = asked
     for (a missing consent is a WARNING), None = the default (asked quietly), False = off (None
-    is yielded). ``ollama_url``, ``ollama_model``: see :class:`FootageVision`."""
-    vision = None if vision is False else FootageVision(ollama_url, ollama_model, vision is True)
+    is yielded, whatever ``every_source``). ``ollama_url``, ``ollama_model``, ``context``,
+    ``every_source``: see :class:`FootageVision`."""
+    vision = (
+        None
+        if vision is False
+        else FootageVision(ollama_url, ollama_model, vision is True, context, every_source)
+    )
     try:
         yield vision
     finally:
@@ -1015,14 +1060,17 @@ def footage_vision(
             vision.close()
 
 
-def needs_vision(p: SourceProbe) -> bool:
+def needs_vision(p: SourceProbe, every_source: bool = False) -> bool:
     """Whether to ask the vision model about ``p``: no telemetry, a frame probe, and the rest
     (the HUD text check included) leaves it unsure, or camera tags alone make it sure general
     (an action camera without telemetry has the tags of a phone clip; only an ``action``
     answer counts for it, see :func:`_source`). A 360 source (a 2:1 frame) is never asked,
-    whatever its tags."""
+    whatever its tags. ``every_source`` (``--vision-detect-all``): also every other source
+    with a frame probe and without telemetry that is not a 360 source."""
     if p.telemetry or p.frames < MIN_FRAMES:
         return False
+    if every_source and not p.equirect:
+        return True
     found = _source(replace(p, vision=None), None)
     return found.ambiguous or (found.decided_by == "camera tags" and not p.equirect)
 
@@ -1030,10 +1078,10 @@ def needs_vision(p: SourceProbe) -> bool:
 def _with_vision(
     found: SourceProbe, cdir: Path, vision: FootageVision | None, io: Path | None = None
 ) -> SourceProbe:
-    """``found`` with :attr:`SourceProbe.vision` when :func:`needs_vision`: from
-    :data:`VISION_FILE` (per model), else asked and cached; unchanged without ``vision`` or
-    an answer."""
-    if vision is None or not needs_vision(found):
+    """``found`` with :attr:`SourceProbe.vision` when :func:`needs_vision` (with
+    ``vision``'s ``every_source``): from :data:`VISION_FILE` (per model), else asked and
+    cached; unchanged without ``vision`` or an answer."""
+    if vision is None or not needs_vision(found, vision.every_source):
         return found
     rec = cache.load_json(cdir / VISION_FILE)
     answers = rec.get("answers") if isinstance(rec, dict) else None
@@ -1069,7 +1117,8 @@ def probe_source(src: Path, vision: FootageVision | None = None) -> SourceProbe:
     (:data:`SPREAD` scaled frames and :data:`PAIRS` pairs of crops) only without telemetry,
     the HUD text check only when the rest leaves the source unsure (:func:`needs_text`), and
     with ``vision`` the vision model only when it is still unsure or camera tags alone make
-    it general (:func:`needs_vision`).
+    it general (:func:`needs_vision`); with ``vision``'s ``every_source`` both for every
+    source they can read.
 
     Raises:
         FFmpegError: If ffprobe cannot read the file.
@@ -1077,10 +1126,12 @@ def probe_source(src: Path, vision: FootageVision | None = None) -> SourceProbe:
     from cutpoint.analyze import has_telemetry  # noqa: PLC0415
     from cutpoint.ffmpeg_utils import ffprobe_json, probe  # noqa: PLC0415
 
+    every = vision is not None and vision.every_source
     cdir = cache.source_dir(src)
     cached = SourceProbe.from_json(cache.load_json(cdir / CACHE_FILE))
     if cached is not None:  # saved under the path of its first run, maybe another remap
-        found = _with_anchors(_with_text(replace(cached, path=str(src)), cdir), cdir)
+        found = _with_text(replace(cached, path=str(src)), cdir, every_source=every)
+        found = _with_anchors(found, cdir, every_source=every)
         return _with_vision(found, cdir, vision)
     io = remap_source(src)
     info = probe(io)
@@ -1098,7 +1149,8 @@ def probe_source(src: Path, vision: FootageVision | None = None) -> SourceProbe:
             setattr(found, key, round(value, 5) if isinstance(value, float) else value)
     if found.telemetry or found.frames >= MIN_FRAMES:  # else a read failure that may pass
         cache.save_json(cdir / CACHE_FILE, found.to_json())
-    return _with_vision(_with_anchors(_with_text(found, cdir, io), cdir, io), cdir, vision, io)
+    found = _with_anchors(_with_text(found, cdir, io, every), cdir, io, every)
+    return _with_vision(found, cdir, vision, io)
 
 
 # --------------------------------------------------------------------------- speech
@@ -1156,6 +1208,7 @@ class Detection:
             or None.
         decided_by: The evidence (:data:`EVIDENCE`) that decided the sure sources of the
             category, most footage first; empty when the detection is ambiguous.
+        every_source: Decided as ``--vision-detect-all`` asks (:func:`decide`).
     """
 
     category: str
@@ -1167,6 +1220,7 @@ class Detection:
     disagree: list[str] = field(default_factory=list)
     suggest: str | None = None
     decided_by: list[str] = field(default_factory=list)
+    every_source: bool = False
 
     def record(self, emphasis: str, style: str, fallback: str | None) -> dict[str, Any]:
         """The ``detection`` block of highlights.json and of ``--json``."""
@@ -1182,6 +1236,8 @@ class Detection:
             "suggest": self.suggest,
             "decided_by": self.decided_by,
             "sources": [asdict(s) for s in self.sources],
+            # --vision-detect-all (#1069): only when on
+            **({"vision_detect_all": True} if self.every_source else {}),
         }
 
 
@@ -1251,16 +1307,40 @@ def _general_evidence(p: SourceProbe) -> str:
     return "camera tags" if p.camera_marks else "360 frame"
 
 
-def _source(p: SourceProbe, speech: float | None) -> SourceDecision:
+def _text_count(p: SourceProbe) -> int | None:
+    """The HUD text anchors of ``p``, or the screen-text cue's without the OCR engine
+    (Cutpoint lite); None when neither ran."""
+    return p.hud_text if p.hud_text is not None else p.screen_anchors
+
+
+def _as_default(p: SourceProbe) -> SourceProbe:
+    """``p`` as probed without ``--vision-detect-all``: the HUD text only when
+    :func:`needs_text` and the vision answer only when :func:`needs_vision` say so."""
+    p = p if needs_text(p) else _bare(p)
+    return p if needs_vision(p) else replace(p, vision=None)
+
+
+def _source(p: SourceProbe, speech: float | None, every_source: bool = False) -> SourceDecision:
     """The category of one source. The vision model's answer (:attr:`SourceProbe.vision`,
     only asked when the rest is unsure or camera tags alone decide, :func:`needs_vision`)
     settles gameplay or not; ``other`` leaves it open. A source the camera tags make sure
     general without it stays so unless the answer is ``action`` (re-exports and phone clips
-    carry the tags too, #958)."""
+    carry the tags too, #958).
+
+    ``every_source`` (``--vision-detect-all``, #1069): every source was shown to the vision
+    model and had the HUD text check. It only settles sources (:func:`_as_default` is the
+    decision without it). With an answer other than ``other``: a source sure without the
+    option stays as decided, except sure gameplay that the answer (not ``gameplay``) and the
+    checked HUD text (fewer than :data:`TEXT_ANCHORS` places) both contradict: unsure
+    gameplay. A source unsure without it is decided as there, with the answer. Without such
+    an answer the source is decided as without ``every_source``."""
     if p.telemetry:
         return SourceDecision(
             p.path, p.duration, ACTION_CAM, False, "camera telemetry", None, speech, "telemetry"
         )
+    every = every_source and p.vision in (V_GAMEPLAY, V_ACTION, V_CAMERA, V_SCREEN)
+    if not every and not needs_text(p):
+        p = _bare(p)  # checked only for --vision-detect-all: counts only with its answer
     if p.vision is not None and p.camera_marks:
         # asked only because the tags decide (needs_vision): the answer can make it action,
         # nothing else; the speech (talk) is weighed as without it
@@ -1273,6 +1353,16 @@ def _source(p: SourceProbe, speech: float | None) -> SourceDecision:
     seen = p.vision if p.vision in (V_GAMEPLAY, V_ACTION, V_CAMERA, V_SCREEN) else None
     if p.vision in VISION_ANSWERS:
         why.append(f"vision: {p.vision}")
+    if every:  # it only settles: a sure decision without it stays, unless both disagree
+        base = _source(_as_default(p), speech)
+        if not base.ambiguous:
+            text = _text_count(p)
+            doubted = seen != V_GAMEPLAY and text is not None and text < TEXT_ANCHORS
+            if base.category == GAMEPLAY and doubted:  # the answer and the text see no game
+                return SourceDecision(
+                    p.path, p.duration, GAMEPLAY, True, ", ".join(why), score, speech, None
+                )
+            return base
     if (score >= GAMEPLAY_MIN) if seen is None else seen == V_GAMEPLAY:
         ambiguous = seen is None and (score < GAMEPLAY_SURE or _text_alone(p) or _cue_lifted(p))
         decided = None if ambiguous else "vision" if seen else _gameplay_evidence(p)
@@ -1310,17 +1400,23 @@ def _source(p: SourceProbe, speech: float | None) -> SourceDecision:
     return SourceDecision(p.path, p.duration, GENERAL, ambiguous, reason, score, speech, decided)
 
 
-def decide(probes: Sequence[SourceProbe], speech: Mapping[str, float] | None = None) -> Detection:
+def decide(
+    probes: Sequence[SourceProbe],
+    speech: Mapping[str, float] | None = None,
+    every_source: bool = False,
+) -> Detection:
     """The project category of ``probes`` (``speech``: coverage per source path, None before
     transcription), by duration-weighted majority in two stages, so the speech coverage can
     only turn general or action into talk: first action cam (telemetry in at least
     :data:`TELEMETRY_SHARE` of the footage), gameplay or other; then, for other, talk,
     action or general. The project is ambiguous when ambiguous sources make up at least half of the
-    winning category.
+    winning category. ``every_source``: the probes are ``--vision-detect-all``'s (:func:`_source`).
     """
     if not probes:
         raise ValueError("no sources to detect")
-    srcs = [_source(p, None if speech is None else speech.get(p.path)) for p in probes]
+    srcs = [
+        _source(p, None if speech is None else speech.get(p.path), every_source) for p in probes
+    ]
     total = sum(max(s.duration, 1e-3) for s in srcs)
 
     def share(cats: Sequence[str], among: Sequence[SourceDecision] = srcs) -> float:
@@ -1377,6 +1473,7 @@ def decide(probes: Sequence[SourceProbe], speech: Mapping[str, float] | None = N
         disagree=disagree,
         suggest=suggest,
         decided_by=sorted(weight, key=lambda k: -weight[k]),
+        every_source=every_source,
     )
 
 
@@ -1425,22 +1522,27 @@ def detect(
     ollama_model: str | None = None,
     *,
     shared: FootageVision | None = None,
+    context: str | None = None,
+    every_source: bool = False,
 ) -> tuple[list[SourceProbe], Detection]:
     """Probe ``sources`` (:func:`probe_source`, cached) and decide without the speech
     coverage (talk is then pending, see :attr:`Detection.pending`).
 
-    ``vision``, ``ollama_url`` and ``ollama_model`` as for :func:`footage_vision`; ``shared``
-    is a :class:`FootageVision` of the caller (the other arguments are ignored) so that two
-    detections of a run ask one client; the model is freed after each detection.
+    ``vision``, ``ollama_url``, ``ollama_model``, ``context`` and ``every_source`` as for
+    :func:`footage_vision`; ``shared`` is a :class:`FootageVision` of the caller (the other
+    arguments are ignored) so that two detections of a run ask one client; the model is freed
+    after each detection.
     """
     logger.info("Detecting the footage category of %d source(s)", len(sources))
     if shared is not None:
         probes = [probe_source(s, shared) for s in sources]
         shared.close()
+        every = shared.every_source
     else:
-        with footage_vision(vision, ollama_url, ollama_model) as fv:
+        with footage_vision(vision, ollama_url, ollama_model, context, every_source) as fv:
             probes = [probe_source(s, fv) for s in sources]
-    return probes, decide(probes)
+        every = fv is not None and fv.every_source
+    return probes, decide(probes, every_source=every)
 
 
 def choose_style(det: Detection, emphasis: str) -> tuple[str, str | None]:

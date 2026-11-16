@@ -14,15 +14,18 @@ Cutpoint is a universal AI footage editor: it takes footage and nothing else, de
 in it and scores from that. Do not ask the user what the footage is or which style to use. Let
 Cutpoint detect it: without `--style`, `analyze` and `edit` run `--style auto`. Today auto picks only gameplay, action-cam, action, talk or general
 footage; for sport or a funny edit, use the user's words (`--style sport`, `--kind
-funny-moments`). Name a style only when the user asks for something specific. `--activity` is an
-option of `profile` and `crashes`, not of `analyze` or `edit`. Steer the result with `--kind`,
-`--max-total`, a custom style (`cutpoint style`) or `--segments` for the user's own picks.
+funny-moments`). Name a style only when the user asks for something specific. When the user says
+what the footage is, pass their words with `--context "<the user's words>"` on `analyze` or
+`edit` (do not ask for them). `--activity` is an option of `profile` and `crashes`, not of
+`analyze` or `edit`. Steer the result with `--kind`, `--max-total`, a custom style
+(`cutpoint style`) or `--segments` for the user's own picks.
 
 ## Status: what you can rely on
 
 | Available now | Planned (do not call; it does not exist yet) |
 |---|---|
-| CLI `cutpoint` with the commands below | `--context` on `edit`, clip order chosen by a local model |
+| CLI `cutpoint` with the commands below | Clip order chosen by a local model |
+| `--context TEXT` on `analyze` and `edit` (also `detect`): the user's words about the footage, given before the analysis, go to the footage question of `--style auto` (a hint; the frames decide), the crash step's activity profile (as `crashes --context`) and the vision rating, dialogue and `events` VLM prompts; no scoring weight. Recorded as `settings.context` in `highlights.json` (`crashes --context` and `profile --context` update it) and reused by `events`, `rerank` and `resume` | |
 | `cutpoint edit`: analyze, clips and assemble in one command | |
 | `cutpoint resume <project>`: re-runs an interrupted or failed run from its `progress.json` | |
 | `cutpoint rerank <project> --style NAME`: re-ranks an analysed project with another style from its caches, in seconds (`--dry-run` previews; `needs_analyze` when a feature the style needs is missing, `--analyze` then analyzes again) | |
@@ -30,7 +33,7 @@ option of `profile` and `crashes`, not of `analyze` or `edit`. Steer the result 
 | Result files in the project folder (JSON and text), `.srt` subtitles next to clips and finals | Profiles for games |
 | Activity profiles for crash detection and the action-cam and 360 layers: `cutpoint profile <project>`, `--context` on `profile` and `crashes`. Cutpoint ships only `base` and `generic`; every other profile is discovered from the footage or made by the user or their agent | |
 | Profile library: `cutpoint profile list\|show\|create\|validate\|delete` (`create NAME --from FILE`; `--json`) | |
-| Footage category detection: `cutpoint detect`, and `--style auto`, the default of `analyze` and `edit` (an explicit `--style NAME` wins; unsure footage, and camera footage without telemetry, is shown to the vision model unless `--no-vision`, and if it is still unsure Auto uses `gaming` when it leans to gameplay, else `action`; `detect` shows `decided_by`) | |
+| Footage category detection: `cutpoint detect`, and `--style auto`, the default of `analyze` and `edit` (an explicit `--style NAME` wins; unsure footage, and camera footage without telemetry, is shown to the vision model unless `--no-vision`, and if it is still unsure Auto uses `gaming` when it leans to gameplay, else `action`; `detect` shows `decided_by`). `--vision-detect-all` on `analyze`, `edit` and `detect` (off by default; `"vision_detect_all": true` in `config.json`) shows every source to the vision model, about one call per source; it only settles sources: a sure gameplay source becomes unsure when the vision answer and the HUD text both see no game | |
 | Frame index for the AI Chat's visual search: `--visual-index` on `analyze` and `edit` (off by default; `"visual_index": true` in `config.json`) also writes the CLIP frame embeddings for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` always have them | |
 | VLM layer of `cutpoint events` through the shared vision model: Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the Models tab of `cutpoint ui` | |
 | `--json` result envelope on stdout: `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `style ...`, `events`, `resume`, `rerank`, `360 ...` | |
@@ -75,7 +78,7 @@ To let Claude Code find Cutpoint on its own, the user can install the skill with
   `ffmpeg_missing`, `missing_extra`, `output_not_empty`, `folder_busy` (another run holds the folder's lock: wait or retry), `needs_analyze` (`rerank`: a feature the style needs is missing; `outputs.missing` names it and `outputs.analyze_command` the command that analyzes again: ask the user first, it takes minutes to hours), `low_memory` (too little free
   memory for a model: tell the user to close other programs, then run the command the ERROR line names (`cutpoint resume <project>`, or the same command again when no progress.json was written yet)),
   `interrupted` (130) or `error`.
-  Read `warnings` such as `kept_clips`, `kept_sources`, `step_failed`, `chat_consent_needed` (the dialogue step was skipped: the hosted AI Chat model has no consent) and `transcript_fallback` (a source was transcribed with Whisper small on the CPU: the GPU was short of memory or failed; after a memory shortage a later run with the GPU free transcribes it again, after a CUDA failure `--model medium` does) and `action_cam_no_telemetry` (`--style action-cam` on footage without camera telemetry: with none in any source the `action` style ran instead (`settings.style_fallback` in `highlights.json`); otherwise `files` names the sources scored without it, over their sound, speech and visual features so they still give moments) and `timeline_remuxed` (a joined `.ts` or `.mpg` recording whose timestamps jump is read through a stream copy in the cache, about its size) or `timeline_remux_failed` (no copy could be made, so the footage after its first join may be left out: tell the user what the WARNING says, to free space in the cache folder, or for an ffmpeg failure to report it) and tell the user.
+  Read `warnings` such as `kept_clips`, `kept_sources`, `step_failed`, `chat_consent_needed` (the dialogue step was skipped: the hosted AI Chat model has no consent) and `transcript_fallback` (a source was transcribed with Whisper small on the CPU: the GPU was short of memory or failed; after a memory shortage a later run with the GPU free transcribes it again, after a CUDA failure `--model medium` does) and `action_cam_no_telemetry` (`--style action-cam` on footage without camera telemetry: with none in any source the `action` style ran instead (`settings.style_fallback` in `highlights.json`); otherwise `files` names the sources scored without it, over their sound, speech and visual features so they still give moments) and `timeline_remuxed` (a joined `.ts` or `.mpg` recording whose timestamps jump is read through a stream copy in the cache, about its size) or `timeline_remux_failed` (no copy could be made, so the footage after its first join may be left out: tell the user what the WARNING says, to free space in the cache folder, or for an ffmpeg failure to report it) and `feed_quiet`, `feed_missing`, `kills_uncredited`, `signal_dominates` or `label_dominates` (a self-check of the analysis found a detection that probably failed silently, such as a kill feed that reads almost nothing or kills never credited to `player_tags`; the ranking is unchanged and `settings.self_checks` in `highlights.json` has them (absent without findings): tell the user the message and its hint, do not retry blindly) and tell the user.
   With `CUTPOINT_PROGRESS=1`, stderr also has `PROGRESS {...}` lines per step (`analyze` has 7 steps, `edit` 9). Keys of both:
   [docs/commands.md#json-output](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#json-output)
   and [#progress-output](https://github.com/FerventOrange/cutpoint/blob/main/docs/commands.md#progress-output).
@@ -133,7 +136,11 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
   `analyze`; `--visual-index` and `--no-visual-index` as on `analyze` (the frame embeddings for
   the visual search of `cutpoint ui`, off by default; they change no ranking);
   `--ocr-det-skip` and `--no-ocr-det-skip` as on `analyze` (faster gameplay HUD reading, off
-  by default; `"ocr_det_skip": true` in `config.json`);
+  by default; `"ocr_det_skip": true` in `config.json`); `--vision-detect-all` and
+  `--no-vision-detect-all` as on `analyze` (every source to the vision model in `--style auto`,
+  off by default; only when the user asks for a closer footage check);
+  `--context "<the user's words>"` as on
+  `analyze` (what the footage is, when the user said it);
   `--compress-peaks`, `--lut`, `--lut-strength`, `--color` and `--color-strength` as on `clips`.
 - Outputs: the project `<projects>/clip` (`--out NAME` to change it) with the clips,
   `final.mp4` and `clip-final.mp4` plus `.srt` subtitles. The last log lines name the final
@@ -191,10 +198,11 @@ Given a request such as "edit D:\Videos\clip.mp4 into a funny-moments montage":
    reports a missing module, tell the user how to add the extra (see
    [When something fails](#when-something-fails)).
 4. **Choose moments.** Read `highlights.json` (`candidates` with `id`, `source`, `start`, `end`,
-   `score` 0-100, `label`, `transcript`; `suggested_top`) and, for banter and funny moments,
+   `score` 0-100, `label` (a dialogue title's slug, else the `events` VLM window's label, else a
+   banner's words or the analysis label), `transcript`; `suggested_top`) and, for banter and funny moments,
    `transcript.txt` (`[file.mp4 00:12:31.4-00:12:38.9] text`). `suggested_top` is how many
    moments plain `clips` takes: the best that fit the style's target length, skipping longer
-   ones (if none fits, the best one). `--top` with that number is not the same pick (it takes
+   ones and any longer than a third of it (if none fits, the best one). `--top` with that number is not the same pick (it takes
    the N best whatever their length), so for the default edit run `clips` without `--top`.
    Then either:
    - take the top N: `uv run cutpoint clips clip-edit --top 8` (or `--max-total 60` for a
@@ -239,7 +247,7 @@ Variants:
 | Short clip or reel for social media | `clips <project> --vertical --max-total 60`, then `assemble projects/<project>/clips_vertical --captions` |
 | Highlights of a specific length | `clips <project> --max-total <seconds>` |
 | "Extra" instruction such as "only funny moments" or "keep the speech intact" | Choose `--style`, filter candidates by `transcript`/`label`, use `--segments`. The CLI does not parse these instructions |
-| The user says what the footage is ("downhill mtb, chest mount, muddy lens") | Before `crashes`, run `profile <project> --context "<the user's words>"`; check the choice with `profile <project> --json` (`outputs.name` and `outputs.source`; a `context_not_applied` warning means the user's words were not used; with `vision_consent_needed` the user's Ollama is on another machine and needs their Vision consent in the Models tab: tell them). `--activity NAME` takes a name from `profile list` (an unknown name is `bad_args`). Cutpoint ships no sport profiles: discovery writes one from the footage, named after the activity (without a model: the nearest library profile, else `generic`), cached per footage, so a new project over the same files gets the same one; a discovery the model answered unusably or that timed out is cached too (`--refresh-profile` asks the model again and writes it again with `--context` or while no library profile matches the footage; otherwise `profile delete NAME` first). When the user asks for a profile of their own, write the JSON (`profile show generic` is the format) and save it with `profile create NAME --from FILE` (`profile validate` checks it first); never edit the profile files by hand |
+| The user says what the footage is ("downhill mtb, chest mount, muddy lens") | Before the analysis: `analyze <input> --context "<the user's words>"` (or on `edit`). For a project analysed without it, before `crashes`, run `profile <project> --context "<the user's words>"`; check the choice with `profile <project> --json` (`outputs.name` and `outputs.source`; a `context_not_applied` warning means the user's words were not used; with `vision_consent_needed` the user's Ollama is on another machine and needs their Vision consent in the Models tab: tell them). `--activity NAME` takes a name from `profile list` (an unknown name is `bad_args`). Cutpoint ships no sport profiles: discovery writes one from the footage, named after the activity (without a model: the nearest library profile, else `generic`), cached per footage, so a new project over the same files gets the same one; a discovery the model answered unusably or that timed out is cached too (`--refresh-profile` asks the model again and writes it again with `--context` or while no library profile matches the footage; otherwise `profile delete NAME` first). When the user asks for a profile of their own, write the JSON (`profile show generic` is the format) and save it with `profile create NAME --from FILE` (`profile validate` checks it first); never edit the profile files by hand |
 | Re-rank an analysed project with another style ("more talk", "only the funny bits") | `rerank <project> --style NAME --dry-run` shows the new top moments (`was`: the rank before, `new` for a new span); without `--dry-run` it saves them and keeps the file before as `highlights.before-rerank.json` (copy it back to undo; `cutpoint ui` has Undo/Redo ranking, one step, hidden once the project changed since). Unchanged spans keep their ids, spans of the ranking before the last rerank get theirs back (switching style and back restores the ids) and new spans get new ones: read `highlights.json` again before `clips --ids`. Vision ratings come from the cache only. `events` and `rerank --analyze` keep the re-ranked style, but running `analyze` or `edit` again without `--style` detects the footage again: pass `--style NAME` to keep it (`cutpoint ui` keeps the re-ranked style itself). `needs_analyze`: tell the user what is missing and, with their OK, run `outputs.analyze_command` (`rerank ... --analyze`; for a 360 project `360 analyze ... --style NAME`) |
 | A run was interrupted or failed | `resume <project>` (`--dry-run` shows the recorded command and step counts). It replays the recorded command line, including a recorded `--force`, and takes no `--force` itself. Status `done`: nothing to resume |
 | Room to trim in an editor | `clips ... --extend 1.5` or `extend <clips_dir> --seconds 2` |

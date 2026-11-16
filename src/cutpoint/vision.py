@@ -24,6 +24,7 @@ from cutpoint.config import get_config
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
 from cutpoint.styles import ACTION_CAM
+from cutpoint.utils import context_block
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -487,6 +488,9 @@ class VisionRater:
         # rating stops (:attr:`stopped`, #986); a usable reply resets it
         self.empty_in_row = 0
         self.stopped = False  # True: rate() gives only cached ratings and asks nothing more
+        # the user's --context words about the footage (#1068): in the rating prompts and so in
+        # rating_key; None: the prompts and keys as before
+        self.context: str | None = None
         # per source: (cache file, its ratings), or None when the source cannot be keyed
         self._ratings: dict[Path, tuple[Path, dict[str, Any]] | None] = {}
 
@@ -767,7 +771,15 @@ class VisionRater:
         store = self._store(src)
         speech = speech_excerpt(transcript, style)
         key = rating_key(
-            self.model, style, times, self.provider_name, self.host, activity, speech, laughter
+            self.model,
+            style,
+            times,
+            self.provider_name,
+            self.host,
+            activity,
+            speech,
+            laughter,
+            self.context,
         )
         if (hit := self._lookup(store, key)) is not None:
             self.hits += 1
@@ -778,7 +790,9 @@ class VisionRater:
             return None
         if self.stopped:  # empty replies stopped the rating (#986): unrated, as when skipped
             return None
-        result = self._rate_frames(src, times, style, activity, speech, laughter, (start, end))
+        result = self._rate_frames(
+            src, times, style, activity, speech, laughter, (start, end), self.context
+        )
         if result is not None and store is not None:
             entry: dict[str, Any] = {"score": result.score, "label": result.label}
             store[1][key] = entry | ({"digest": self.digest} if self.digest else {})
@@ -809,6 +823,7 @@ class VisionRater:
             activity=activity,
             transcript=transcript or "",
             laughter=laughter,
+            context=self.context,
         )
         return self._lookup(self._store(src), key)
 
@@ -860,10 +875,12 @@ class VisionRater:
         speech: str = "",
         laughter: bool = False,
         span: tuple[float, float] | None = None,
+        context: str | None = None,
     ) -> VisionResult | None:
         """Grab the frames at ``times`` and ask the model for a rating (no cache); ``speech``
-        (already cut by :func:`speech_excerpt`) goes with them, and ``laughter`` is said in the
-        prompt. ``span``: the window, for the DEBUG timing line of each request (#909)."""
+        (already cut by :func:`speech_excerpt`) goes with them, and ``laughter`` and the user's
+        ``context`` words are said in the prompt. ``span``: the window, for the DEBUG timing
+        line of each request (#909)."""
         if self.consent_needed:
             self.warn_consent()
             return None
@@ -884,7 +901,7 @@ class VisionRater:
         images = [base64.b64encode(b).decode("ascii") for b in frames]
         self.asked += 1
         content = ""
-        prompts = _prompts(style, profile, activity, bool(speech), laughter)
+        prompts = _prompts(style, profile, activity, bool(speech), laughter, context)
         block = _SPEECH_BLOCK.format(text=speech) if speech else ""
         steps = zip(prompts, _ATTEMPTS, _TEMPERATURES, strict=True)
         for attempt, (prompt, (num_ctx, num_predict), temperature) in enumerate(steps, 1):
@@ -1147,10 +1164,12 @@ def rating_key(
     activity: Prompts | None = None,
     transcript: str = "",
     laughter: bool = False,
+    context: str | None = None,
 ) -> str:
     """Cache key of one rating: a hash of everything sent to the model except the frames
     (``RATING_VERSION``, model, style, both prompts (with the heard-laughter sentence for
-    ``laughter``), attempt options and temperatures, frame
+    ``laughter`` and the user's ``context`` words, so a changed text rates again; without
+    any the key is as before), attempt options and temperatures, frame
     width, the window's speech (``transcript``, as :func:`speech_excerpt` gives it; with
     none the key is the frames-only one) and the model's :class:`RatingProfile` if it has
     one; the ``provider`` and its
@@ -1162,7 +1181,7 @@ def rating_key(
     digest cannot be fetched."""
     profile = rating_profile(model)
     transcript = speech_excerpt(transcript, style)
-    prompts = _prompts(style, profile, activity, bool(transcript), laughter)
+    prompts = _prompts(style, profile, activity, bool(transcript), laughter, context)
     params: dict[str, Any] = {
         "version": RATING_VERSION,
         "model": model,
@@ -1198,12 +1217,14 @@ def _prompts(
     activity: Prompts | None = None,
     speech: bool = False,
     laughter: bool = False,
+    context: str | None = None,
 ) -> tuple[str, str]:
     """(first prompt, retry prompt) of ``style``, worded for one contact sheet when the
     profile sends one; the action-cam pair in the ``vlm`` wording of ``activity`` (None: the
     default (``generic``) activity's); with ``speech`` the default pair that also rates the transcript
     (not for action-cam); with ``laughter`` both default prompts say that laughter was heard
-    (not for action-cam)."""
+    (not for action-cam); with ``context`` (the user's ``--context`` words, #1068) both
+    prompts carry them as a delimited block before the reply format (every style)."""
     first, retry = _PROMPTS.get(style, _SPEECH_PROMPTS if speech else _DEFAULT_PROMPTS)
     if laughter and style not in _PROMPTS:
         first = first.replace(
@@ -1223,6 +1244,10 @@ def _prompts(
 
         # one pass, so a value is never searched again for another placeholder
         first, retry = _WORDING_RE.sub(fill, first), _WORDING_RE.sub(fill, retry)
+    if block := context_block(context):
+        block = block.replace("{", "{{").replace("}", "}}")  # the prompts are format()ted later
+        first = first.replace("Respond with JSON only:", block + "Respond with JSON only:", 1)
+        retry = retry.replace("Output only JSON:", block + "Output only JSON:", 1)
     if not profile:
         return first, retry
     sheet = "This image is a grid of {n} frames, in reading order (left to right, top to bottom),"

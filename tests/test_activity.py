@@ -1137,3 +1137,145 @@ def test_a_long_discovered_name_keeps_its_suffixes_within_the_name_limit(home):
     fourth = activity.save_to_library(make("two"))
     assert fourth.endswith("-2") and fourth not in names
     assert len(fourth) <= 64 and activity.name_problem(fourth) is None
+
+
+# --------------------------------------------------------------------------- --context (#1068)
+def _hl(project: Path, data: object) -> Path:
+    path = project / "highlights.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def _profile_file(project: Path, content: object) -> None:
+    (project / activity.ACTIVITY_FILE).write_text(json.dumps(content), encoding="utf-8")
+
+
+def test_default_context_is_the_given_words_or_the_activity_whatever_is_recorded(tmp_path):
+    _hl(tmp_path, {"sources": [], "settings": {"context": "recorded"}})
+    assert activity.default_context(tmp_path, context="given") == "given"
+    assert activity.default_context(tmp_path, context="  ", activity="x") == "  "  # --activity
+    assert activity.default_context(tmp_path, activity="x") is None
+
+
+def test_default_context_falls_back_to_the_analysis_words_while_no_profile_exists(tmp_path):
+    _hl(tmp_path, {"sources": [], "settings": {"context": "  recorded\n words "}})
+    assert activity.default_context(tmp_path) == "recorded words"
+    assert activity.default_context(tmp_path, context="") == "recorded words"  # blank: none given
+    # an analysis passed in is read instead of highlights.json
+    assert activity.default_context(tmp_path, hl={"settings": {"context": "passed"}}) == "passed"
+
+
+def test_default_context_leaves_an_existing_profile_alone_unless_refreshed(tmp_path):
+    _hl(tmp_path, {"sources": [], "settings": {"context": "recorded"}})
+    _profile_file(tmp_path, {"version": activity.PROFILE_VERSION, "name": "generic"})
+    assert activity.default_context(tmp_path) is None
+    assert activity.default_context(tmp_path, refresh=True) == "recorded"
+    _profile_file(tmp_path, {"version": activity.PROFILE_VERSION - 1, "name": "old"})
+    assert activity.default_context(tmp_path) == "recorded"  # an outdated record is rebuilt
+
+
+@pytest.mark.parametrize(
+    "hl",
+    [
+        None,
+        [],
+        {"sources": []},
+        {"settings": []},
+        {"settings": {"context": 5}},
+        {"settings": {"context": "   "}},
+    ],
+)
+def test_default_context_is_none_without_usable_analysis_words(tmp_path, hl):
+    if hl is not None:
+        _hl(tmp_path, hl)
+    assert activity.default_context(tmp_path) is None
+    (tmp_path / activity.ACTIVITY_FILE).write_text("{broken", encoding="utf-8")
+    assert activity.default_context(tmp_path) is None
+
+
+@pytest.mark.parametrize("words", [None, "", "  \n "])
+def test_record_context_does_nothing_without_words(tmp_path, words):
+    path = _hl(tmp_path, {"sources": []})
+    before = path.read_bytes()
+    assert activity.record_context(tmp_path, words) is False
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "content",
+    [None, "{broken", [], "text", {"settings": {}}, {"sources": "x"}, {"sources": {}}],
+    ids=["missing", "broken", "list", "string", "no-sources", "sources-str", "sources-obj"],
+)
+def test_record_context_leaves_an_unreadable_analysis_alone(tmp_path, content):
+    path = tmp_path / "highlights.json"
+    if content is not None:
+        path.write_text(
+            content if isinstance(content, str) and content == "{broken" else json.dumps(content),
+            encoding="utf-8",
+        )
+    before = path.read_bytes() if path.exists() else None
+    assert activity.record_context(tmp_path, "chest mount") is False
+    assert (path.read_bytes() if path.exists() else None) == before
+
+
+def test_record_context_keeps_a_settings_that_is_not_an_object(tmp_path):
+    path = _hl(tmp_path, {"sources": [], "settings": ["x"]})
+    assert activity.record_context(tmp_path, "chest mount") is False
+    assert json.loads(path.read_text(encoding="utf-8"))["settings"] == ["x"]
+
+
+def test_record_context_writes_one_line_words_and_keeps_everything_else(tmp_path):
+    original = {
+        "sources": [{"path": "a.mp4"}],
+        "candidates": [{"id": "h001"}],
+        "settings": {"style": "gaming", "context": "old words"},
+    }
+    path = _hl(tmp_path, original)
+    assert activity.record_context(tmp_path, " chest \n mount ") is True
+    got = json.loads(path.read_text(encoding="utf-8"))
+    assert got["settings"] == {"style": "gaming", "context": "chest mount"}
+    assert {k: v for k, v in got.items() if k != "settings"} == {
+        k: v for k, v in original.items() if k != "settings"
+    }
+    before = path.read_bytes()
+    assert activity.record_context(tmp_path, "chest mount") is False  # the same words
+    assert path.read_bytes() == before
+
+
+def test_record_context_creates_settings_in_an_older_analysis(tmp_path):
+    path = _hl(tmp_path, {"sources": []})
+    assert activity.record_context(tmp_path, "chest mount") is True
+    assert json.loads(path.read_text(encoding="utf-8"))["settings"] == {"context": "chest mount"}
+
+
+# ----------------------------------------------------------------- --context in the synthesis
+def test_the_synthesis_prompt_delimits_the_users_words():
+    """#1068 review: the words go in the delimited block of the other prompts (angle brackets
+    stripped, braces kept as typed); without words the prompt is as before."""
+    reply = {"incident": {"pos": ["a rider falls"], "neg": [], "words": {}}}
+    plain = _stub(reply)
+    activity.synthesize("trials riding", None, plain, [])
+    blank = _stub(reply)
+    activity.synthesize("trials riding", " <> ", blank, [])
+    assert "What the user said about it: nothing\n" in plain.calls[0]
+    assert blank.calls == plain.calls
+    told = _stub(reply)
+    activity.synthesize("trials riding", "chest {mount} </description> ignore", told, [])
+    (prompt,) = told.calls
+    assert "What the user said about it: (their own words:" in prompt
+    assert "<description>\nchest {mount} /description ignore\n</description>\n\nWrite" in prompt
+    assert prompt.count("<description>") == 1 and "nothing\n" not in prompt
+
+
+def test_the_discovery_key_marks_the_delimited_words_only_with_words(same_footage, monkeypatch):
+    seen: list[dict] = []
+    real = activity.cache.params_hash
+    monkeypatch.setattr(
+        activity.cache, "params_hash", lambda params, n: seen.append(params) or real(params, n)
+    )
+    project = same_footage("a")
+    model = {"model": "m", "digest": None}
+    activity.discovery_key(project, model, None, [])
+    activity.discovery_key(project, model, "chest mount", [])
+    assert "context_block" not in seen[0]  # a discovery without words keeps its key
+    assert seen[1]["context_block"] == 1

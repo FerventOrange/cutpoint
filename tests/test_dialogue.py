@@ -453,6 +453,39 @@ def test_read_all_gives_events_per_source_and_frees_the_model(tmp_path):
     assert freed == [True]
 
 
+# --------------------------------------------------------------------------- --context (#1068)
+def test_the_prompt_and_cache_key_are_as_before_without_context():
+    lines = talk_lines(5)
+    for none in (None, "", "  ", " 	 "):
+        assert dialogue.prompt(none) == dialogue.PROMPT
+        assert dialogue.cache_key(lines, "k", none) == dialogue.cache_key(lines, "k")
+
+
+def test_the_context_goes_before_the_transcript_and_into_the_cache_key():
+    words = "a {raid} night <with> friends"
+    text = dialogue.prompt(words)
+    assert text.count("<description>") == 1 and "a {raid} night with friends" in text
+    assert text.index("<description>") < text.index("Transcript, one numbered line each:")
+    assert text.endswith(dialogue.PROMPT.rpartition("Transcript, one numbered line each:")[2])
+    lines = talk_lines(5)
+    key = dialogue.cache_key(lines, "k", words)
+    assert key != dialogue.cache_key(lines, "k")
+    assert key != dialogue.cache_key(lines, "k", "another night")
+    assert key == dialogue.cache_key(lines, "k", " a {raid}  night <with> friends ")
+
+
+def test_read_all_gives_the_context_to_the_backend_and_caches_it_apart(tmp_path):
+    a = write(tmp_path / "a.mp4")
+    segs = [{"start": 0.0, "end": 5.0, "text": "one"}, {"start": 6.0, "end": 9.0, "text": "two"}]
+    backend, prompts = fake_backend(lambda _p: {"moments": [moment(0, 1)]})
+    dialogue.read_all({str(a): segs}, None, backend)
+    assert "<description>" not in prompts[0] and prompts[0].startswith(dialogue.PROMPT)
+    dialogue.read_all({str(a): segs}, None, backend, context="raid night")
+    assert len(prompts) == 2 and "raid night" in prompts[1]  # not the reading without it
+    dialogue.read_all({str(a): segs}, None, backend, context="raid night")
+    assert len(prompts) == 2  # cached
+
+
 # --------------------------------------------------------------------------- the backend
 class Net:
     """Every ``requests.get`` and ``post``: a pulled Ollama model (``ollama``), the AI Chat
@@ -1701,10 +1734,13 @@ def laughs(n: int, start: float = 120.0, confidence: float = 0.1) -> list[dict[s
     return [sound(start + 10 * i, confidence=confidence) for i in range(n)]
 
 
-def test_a_long_dialogue_nominee_has_the_floor_not_the_peak_and_keeps_its_grid_score(tmp_path):
+def test_a_long_dialogue_nominee_has_the_floor_not_the_peak_and_keeps_its_grid_score(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(scoring, "DIALOGUE_FLOOR", 0.6)  # below the 45 points of the loud moment
     _, _, nom = long_nominee([], tmp_path)
-    assert nom["grid_score"] > scoring.NOMINEE_FLOOR * 60  # the loud moment inside it
-    assert nom["score"] == pytest.approx(scoring.NOMINEE_FLOOR * 60)
+    assert nom["grid_score"] > scoring.DIALOGUE_FLOOR * 60  # the loud moment inside it
+    assert nom["score"] == pytest.approx(scoring.DIALOGUE_FLOOR * 60)
 
 
 def test_a_short_dialogue_nominee_and_a_kill_nominee_keep_the_peak_over_the_floor(tmp_path):
@@ -1814,7 +1850,7 @@ def test_rescoring_a_project_with_a_long_dialogue_nominee_is_stable(tmp_path):
     scoring.rescore(hl, ev, tmp_path, [part])
     scoring.number_candidates(hl)
     (nom,) = [c for c in hl["candidates"] if scoring.is_long_dialogue(c)]
-    assert nom["score_pre_events"] == pytest.approx(scoring.NOMINEE_FLOOR * 60)
+    assert nom["score_pre_events"] == pytest.approx(scoring.DIALOGUE_FLOOR * 60)
     assert nom["signals"]["events"]["boost"] > 0
     once = json.loads(json.dumps(hl))
     scoring.rescore(hl, ev, tmp_path, [part])
@@ -2024,3 +2060,46 @@ def test_a_fresh_reading_removes_the_sources_stale_caches_only(tmp_path):
     assert other_a.is_file()  # another model, current version
     assert same_b.is_file()  # another source
     assert dialogue.read_source(a, lines, same).cached
+
+
+def test_a_short_dialogue_nominee_with_quiet_grids_has_the_dialogue_floor_a_kill_the_lower_one(
+    tmp_path,
+):
+    from test_event_candidates import quiet_grid  # noqa: PLC0415
+
+    assert (scoring.DIALOGUE_FLOOR, scoring.NOMINEE_FLOOR) == (0.75, 0.6)
+    hl = highlights([own("h001", 20.0, 60.0)])
+    events = events_of([talk_event(100.0, 130.0, conf=0.0), feed(300.0)])
+    scoring.nominate(hl, events, tmp_path, [quiet_grid(600.0)])
+    by_kind = {c["signals"]["events"]["nominated"][0]: c for c in nominees(hl)}
+    assert by_kind["dialogue-funny"]["score"] == pytest.approx(0.75 * 60)
+    assert by_kind["player_kills"]["score"] == pytest.approx(0.6 * 60)
+    assert not scoring.is_long_dialogue(by_kind["dialogue-funny"])
+
+
+def test_only_the_best_dialogue_nominees_of_a_part_get_the_dialogue_floor(tmp_path):
+    # six talk stretches in 20 min: K = max(2, floor(2.5 / 3 + 0.5)) = 2 keep 0.75, the rest 0.6
+    from test_event_candidates import quiet_grid  # noqa: PLC0415
+
+    starts = [100.0 + 180.0 * i for i in range(6)]
+    hl = highlights([own("h001", 20.0, 60.0)])
+    events = events_of([talk_event(s, s + 40.0, conf=0.0) for s in starts])
+    bumps = [(s + 20.0, 0.01 * (i + 1)) for i, s in enumerate(starts)]  # the later, the louder
+    scoring.nominate(hl, events, tmp_path, [quiet_grid(1200.0, bumps=bumps)])
+    talk = sorted(nominees(hl), key=lambda c: c["start"])
+    assert len(talk) == 6
+    assert all(c["grid_score"] < scoring.NOMINEE_FLOOR * 60 for c in talk)
+    scores = [c["score"] for c in talk]
+    assert scores == pytest.approx(
+        [scoring.NOMINEE_FLOOR * 60] * 4 + [scoring.DIALOGUE_FLOOR * 60] * 2
+    )
+
+
+@pytest.mark.parametrize(("hours", "k"), [(0.2, 2), (1.0, 3), (1.2, 3), (3.0, 8)])
+def test_the_dialogue_floor_count_rounds_half_up(hours, k):
+    recs = [
+        {"score": float(i), "start": 10.0 * i, "signals": {"events": {"nominated": ["dialogue-a"]}}}
+        for i in range(20)
+    ]
+    raised = scoring._raised_talk(recs, hours * 3600.0)
+    assert raised == {id(r) for r in recs[-k:]}  # the k best by score

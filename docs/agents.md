@@ -93,8 +93,10 @@ pointer above.
 
 - Scoring is heuristic and works best with voice or mic audio. Review the clips before assembling.
 - Free-text instructions are mostly applied by the agent when choosing moments. The exception
-  is what the footage is: the agent passes the user's description to `cutpoint profile
-  <project> --context "..."` (or `crashes --context`), and the local LLM turns it into crash
-  prompts and slang. Tell your agent what the video is ("my first day mountain biking, chest
-  mount"); no file needs editing.
+  is what the footage is: the agent passes the user's description with `cutpoint analyze
+  <video> --context "..."` (or `edit`). It steers footage detection, the crash profile and the
+  model prompts (vision rating, dialogue, events VLM), not the scoring weights. For a project
+  analysed without it, `cutpoint profile <project> --context "..."` or `crashes --context`
+  also update the project's recorded description. Tell your agent what the video is ("my
+  first day mountain biking, chest mount"); no file needs editing.
 - Optional modules need extras and models: see [Getting started](getting-started.md).

@@ -424,3 +424,21 @@ def test_avoid_rates_chat_on_decoded_hours_only(
     assert info["label"] == "feed"
     assert info["too_short"] is True
     assert info["dropped"] == {}
+
+
+def test_a_pass_without_a_feed_region_records_an_empty_feed_regions(tmp_path: Path) -> None:
+    """The self-checks (#1073) tell "no feed region" from an older file without the key."""
+    banner = Region("banner", 0, 0, 400, 100, "banner")
+    stats: dict[str, Any] = {}
+    interp = OcrInterpretation(
+        "rec.mp4",
+        OcrParams(game="tilefall", fps=FPS),
+        _preset(tmp_path, "discovered"),
+        (banner,),
+        (1920, 1080),
+        stats,
+    )
+    for n in range(5):
+        interp.add(FrameRec(n=n, t=n / FPS, regions={"banner": {"g": "read", "items": []}}))
+    interp.finish()
+    assert stats["feed_regions"] == {}

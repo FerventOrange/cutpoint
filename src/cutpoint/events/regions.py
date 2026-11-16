@@ -32,9 +32,10 @@ added to the phrases of JSON presets.
 Region entries take any :class:`Region` field (``min_change``, ``min_fill``,
 ...); missing ones use the defaults. Other keys are ignored: region discovery
 marks the extra notice regions it adds where text shows outside every other
-region with ``"origin": "outside"`` and the vision model's name for a discovered
-region as ``"label"`` (``kill_feed``, ``chat``, ...); neither changes the region or its
-cache key.
+region with ``"origin": "outside"``, the regions the vision HUD map added
+(:mod:`cutpoint.events.hud_map`) with ``"origin": "vision"`` and the vision model's name for a
+discovered region as ``"label"`` (``kill_feed``, ``chat``, ...); none of them changes the region
+or its cache key.
 """
 
 from __future__ import annotations
@@ -63,8 +64,11 @@ class Region:
         x, y, w, h: Rectangle in 1920x1080 reference pixels.
         kind: How OCR text is interpreted: "feed" (stacked text lines: "A
             destroyed B" or coloured names), "banner", "bigtext" (large
-            centred text), "notice" or "score" (a small on-screen number such as a
-            round score or a counter; :class:`cutpoint.events.killfeed.ScoreTracker`).
+            centred text), "notice", "score" (a small on-screen number such as a
+            round score or a counter; :class:`cutpoint.events.killfeed.ScoreTracker`) or
+            "replay" (a replay or killcam marker the vision HUD map found: text there marks
+            a replay, whose kills are no kills of the player;
+            :func:`cutpoint.events.killfeed.mark_replay_kills`).
         min_change: Fraction of the downscaled HUD-pixel mask that must change
             before the region is OCR'd again ("mask" gate).
         min_fill: Minimum fraction of HUD pixels for the region to be OCR'd at
@@ -82,6 +86,9 @@ class Region:
         upscale: "mask" and "read" gates: OCR the crop enlarged to this factor of its
             1920x1080 reference size (small, thin digits read far better at 2.5x); 1:
             as decoded. Left out of the cache key at 1, so older keys stay.
+        marker: "replay" regions: the marker text discovery's OCR read there most often (the
+            vision HUD map learns it from the footage); only text like it (:func:`marker_seen`)
+            marks a replay. Empty: any text does. Left out of the cache key when empty.
     """
 
     name: str
@@ -97,14 +104,36 @@ class Region:
     min_text_h: int = 0
     det_scale: float = 1.0
     upscale: float = 1.0
+    marker: str = ""
 
     def key(self) -> dict[str, Any]:
         """Cache-key dict (also the region's preset JSON entry): every field, ``upscale``
-        only when it is not 1."""
+        only when it is not 1, ``marker`` only when set."""
         d = asdict(self)
         if self.upscale == 1.0:
             del d["upscale"]
+        if not self.marker:
+            del d["marker"]
         return d
+
+
+def letters(text: str) -> str:
+    """The letters of ``text``, lower case (how marker texts are compared)."""
+    return "".join(ch for ch in text.lower() if ch.isalpha())
+
+
+def marker_seen(text: str, marker: str) -> bool:
+    """Whether OCR ``text`` reads like the replay ``marker`` (both compared by their
+    :func:`letters`): a common run of at least 3 letters and 60% of the longer one, so a
+    partial or misread marker ("DREPL" or "DREPLAY" for "REPLAY") counts and other text (a
+    round notice, a name such as "Playmaker") does not."""
+    from difflib import SequenceMatcher  # noqa: PLC0415
+
+    a, b = letters(text), letters(marker)
+    if not a or not b:
+        return False
+    m = SequenceMatcher(None, a, b, autojunk=False).find_longest_match(0, len(a), 0, len(b))
+    return m.size >= max(3, 0.6 * max(len(a), len(b)))
 
 
 REF_W, REF_H = 1920, 1080  # the reference frame the region rectangles are in

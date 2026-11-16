@@ -27,10 +27,16 @@ it: it is the full reference.
 
 Style (`--style` on `cutpoint edit` and `cutpoint analyze`): `--style auto` is the default, so
 give none and it picks from the footage. `cutpoint detect <video> --json` shows its pick (`outputs.styles`); a
-`style_ambiguous` warning means it could not tell and used `gaming` (best guess gameplay) or `action`; the warning names the style, and `detect` shows `decided_by`. Unsure footage, and camera footage without telemetry, is shown to the vision model first (`--no-vision` skips it). Name a style only when the user says
+`style_ambiguous` warning means it could not tell and used `gaming` (best guess gameplay) or `action`; the warning names the style, and `detect` shows `decided_by`. Unsure footage, and camera footage without telemetry, is shown to the vision model first (`--no-vision` skips it); `--vision-detect-all` shows it every source (about one vision call each), only when the user asks for a closer footage check. Name a style only when the user says
 what the footage is. Pick `funny`, `gaming`, `action`, `sport`, `commentary` (long talk) or
 `action-cam` (action-cam footage with GoPro or Insta360 X3 telemetry). Without any telemetry
 `action-cam` runs as `action` with an `action_cam_no_telemetry` warning: tell the user.
+
+When the user says what the footage is ("downhill mtb, chest mount, muddy lens"), pass their own
+words before the analysis: `cutpoint analyze <video> --context "<words>"` (also on `edit`). They
+are a hint for the footage detection, the crash profile and the vision, dialogue and VLM models, never
+a scoring weight; `highlights.json` keeps them for `events`, `rerank` and `resume`. Do not ask
+the user for a description.
 
 One step ("edit this into a montage"):
 
@@ -93,7 +99,9 @@ is missing: tell the user, and with their OK run the command the ERROR line name
   `timeline_remuxed` (a joined `.ts` or `.mpg` recording whose timestamps jump is read through a
   stream copy in the cache, about its size) and `timeline_remux_failed` (no copy could be made, so
   the footage after its first join may be left out: tell the user what the WARNING says, to free
-  space in the cache folder, or for an ffmpeg failure to report it).
+  space in the cache folder, or for an ffmpeg failure to report it). A `feed_quiet`, `feed_missing`, `kills_uncredited`,
+  `signal_dominates` or `label_dominates` warning is a self-check of the analysis: a detection
+  probably failed silently (the ranking is unchanged); tell the user its message and hint.
 - Cutpoint ships only the `base` and `generic` activity profiles. Others are discovered or made by
   the user or you: `cutpoint profile list|show|create|validate|delete` (`create NAME --from FILE`).
   `--activity NAME` takes a name from `profile list`.

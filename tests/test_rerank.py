@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 from conftest import envelope
-from cutpoint import analyze, cache, cli, folders, jsonout, rerank, runstate
+from cutpoint import activity, analyze, cache, cli, folders, jsonout, rerank, runstate
 from cutpoint.assistant.providers import AUTO_SERVER_MODEL
 from cutpoint.errors import FolderBusyError, NeedsAnalyzeError, StaleRankingError
 from cutpoint.ffmpeg_utils import MediaInfo
@@ -1157,3 +1157,90 @@ def test_a_hosted_unset_model_is_resolved_before_the_cached_ratings(home, tmp_pa
     assert looked_up and set(looked_up) == {"served-model"}
     assert after["settings"]["vision_used"] is True
     assert after["settings"]["vision"]["model"] == "served-model"
+
+
+@pytest.mark.parametrize(
+    ("context", "vision_context", "want"),
+    [
+        (None, ..., None),
+        ("chest mount", ..., "chest mount"),  # a file without vision_context: settings.context
+        # review F2: the words the ratings were made with, after crashes/profile --context
+        ("helmet cam", "chest mount", "chest mount"),
+        (None, "chest mount", "chest mount"),
+        ("helmet cam", None, None),  # review F4: rated without words (null recorded)
+    ],
+)
+def test_a_rerank_rates_with_the_context_the_analysis_recorded(
+    home, tmp_path, monkeypatch, context, vision_context, want
+):
+    """#1068: the cached ratings are looked up under the keys of the prompts with the words
+    the analysis rated with (``settings.vision_context``), else ``settings.context``."""
+    project = make_project(home, tmp_path)
+    hl = read(project)
+    hl["settings"]["vision_requested"] = True
+    if context:
+        hl["settings"]["context"] = context
+    if vision_context is not ...:  # ...: no key (null: rated without words)
+        hl["settings"]["vision_context"] = vision_context
+    raters: list[Any] = []
+    monkeypatch.setattr(analyze, "VisionRater", _context_rater(raters))
+    new = rerank.ranked(project, hl, get_style("funny"))
+    assert raters and all(r.context == want for r in raters)
+    # a re-rank keeps the recorded words as they are
+    assert new["settings"].get("vision_context", ...) == vision_context
+    assert new["settings"].get("context") == context
+
+
+@pytest.mark.parametrize("key", ["missing", "null"])
+def test_recorded_words_keep_the_ratings_made_without_words(home, tmp_path, monkeypatch, key):
+    """Review F4: ``crashes``/``profile --context`` on a project rated without words (an
+    older file without settings.vision_context, or one with null) records the words, and a
+    plain rerank still looks the ratings up without them."""
+    project = make_project(home, tmp_path)
+    hl = read(project)
+    hl["settings"].update(vision_requested=True, vision_used=True)
+    hl["settings"].pop("context", None)
+    hl["settings"].pop("vision_context", None)
+    if key == "null":
+        hl["settings"]["vision_context"] = None
+    (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    assert activity.record_context(project, "Y")
+    hl = read(project)
+    assert hl["settings"]["context"] == "Y" and hl["settings"]["vision_context"] is None
+    raters: list[Any] = []
+    monkeypatch.setattr(analyze, "VisionRater", _context_rater(raters))
+    rerank.ranked(project, hl, get_style("funny"))
+    assert raters and all(r.context is None for r in raters)
+
+
+def _context_rater(raters: list[Any]) -> type:
+    """A fake VisionRater that keeps each instance, to read the context rank_parts set."""
+
+    class Rater:
+        cache_only = False
+        hits = asked = missed = 0
+        stats = dict.fromkeys(
+            ("calls", "grab_s", "load_s", "prompt_s", "reply_s", "prompt_tokens", "reply_tokens"), 0
+        )
+        provider_name = "ollama"
+        consent_needed = None
+        model = "m"
+
+        def __init__(self, **_):
+            self.context = "unset"
+            self.via = None
+            raters.append(self)
+
+        def available(self):
+            return True
+
+        def cached(self, *a, **k):
+            return None
+
+        def rate(self, *a, **k):
+            return None
+
+        def unload(self):
+            pass
+
+    return Rater

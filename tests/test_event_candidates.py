@@ -662,7 +662,8 @@ def test_a_rated_nominee_keeps_its_rating_through_the_post_vision_rescore(tmp_pa
     assert again["score"] == scorer.with_bonus(again["score_pre_events"], boost, None)
 
 
-def test_suggested_top_follows_the_target_with_the_nominees(tmp_path):
+def test_suggested_top_follows_the_target_with_the_nominees(tmp_path, monkeypatch):
+    monkeypatch.setattr(default_fit, "FIT_SHARE", 1.0)  # fixture moments are long for their target
     hl = highlights([own("h001", 20.0, 30.0)], target_total=20)
     run_rescore(hl, events_of([feed(100.0), feed(300.0), feed(500.0)]), tmp_path, [grid()])
     n = len(default_fit.fit_target(hl["candidates"], 20))
@@ -1131,7 +1132,8 @@ def ranked_ids(style: str, events: list[dict[str, Any]], tmp_path) -> tuple[list
     return ids, hl["suggested_top"]
 
 
-def test_an_open_list_ranks_the_nominee_by_score(tmp_path):
+def test_an_open_list_ranks_the_nominee_by_score(tmp_path, monkeypatch):
+    monkeypatch.setattr(default_fit, "FIT_SHARE", 1.0)  # fixture moments are long for their target
     burst = [short(100.0), short(101.5), short(103.0)]
     # the nominee (floor 30 plus the boost of three kills) beats the weak pick (20) on score
     ids, top = ranked_ids("gaming", burst, tmp_path)
@@ -1281,3 +1283,139 @@ def test_laughter_is_heard_in_a_candidate_from_its_audio_evidence(laughter, hear
     events = {} if laughter is None else {"laughter": laughter}
     assert scoring.heard_laughter({"signals": {"events": events, "laughter": 0.9}}) is heard
     assert scoring.heard_laughter({"signals": {}}) is False
+
+
+# --------------------------------------------------------------------------- repeat damping (#1071)
+def announce(t: float, text: str = "ACTION PHASE", **extra: Any) -> dict[str, Any]:
+    return {
+        "source": SRC, "start": t, "end": t + 2, "kind": "ocr", "type": "bigtext",
+        "label": text, "announce": True, **extra,
+    }  # fmt: skip
+
+
+def test_announcements_shown_every_round_count_less_than_a_rare_one():
+    cand = own("h001", 100.0, end=108.0)
+    one = scoring.event_boost(
+        cand, [announce(101.0), announce(103.0, "OTHER LINE")], DEFAULT_EVENT_TYPES
+    )
+    assert one[0] == pytest.approx(6.0)  # two different lines, 3 points each, as before
+    every_round = [announce(10.0 + 40 * i) for i in range(15)]
+    every_round += [announce(101.0), announce(103.0)]  # 17 of the same line in 600 s
+    got = scoring.event_boost(cand, every_round, DEFAULT_EVENT_TYPES)[0]
+    assert got == pytest.approx(3.0 * 2 * (3 / 17) ** 0.5)
+    assert got < one[0]
+
+
+def test_the_text_of_a_repeated_announcement_is_its_key_whatever_the_spacing_and_digits():
+    events = [announce(10.0 * i, f"Round {i}") for i in range(1, 5)]
+    events += [announce(100.0, "ROUND5")]
+    w = scoring.repeat_weights(events, DEFAULT_EVENT_TYPES, 600.0)
+    assert w.values() and all(v == pytest.approx((3 / 5) ** 0.5) for v in w.values())
+    assert len(w) == 5
+
+
+def test_announce_words_key_the_line_and_other_types_are_not_damped():
+    ev = [announce(10.0 * i, f"YOUR TEAM n{i}", announce_words=["YOUR TEAM"]) for i in range(1, 7)]
+    kills = [feed(200.0 + 20.0 * i) for i in range(1, 12)]
+    w = scoring.repeat_weights(ev + kills, DEFAULT_EVENT_TYPES, 600.0)
+    assert all(w[id(e)] == pytest.approx((3 / 6) ** 0.5) for e in ev)
+    assert all(id(k) not in w for k in kills)  # kills and banners keep their weight
+    cand = own("h001", 100.0, end=108.0)
+    full = scoring.event_boost(cand, [feed(101.0), feed(102.0)], DEFAULT_EVENT_TYPES)[0]
+    many = scoring.event_boost(cand, [*kills, feed(101.0), feed(102.0)], DEFAULT_EVENT_TYPES)[0]
+    assert many == full
+
+
+def test_a_longer_source_allows_more_repeats_of_an_announcement():
+    events = [announce(10.0 * i) for i in range(8)]
+    short = scoring.repeat_weights(events, DEFAULT_EVENT_TYPES, 600.0)
+    long = scoring.repeat_weights(events, DEFAULT_EVENT_TYPES, 3 * 3600.0)  # allowance 9
+    assert set(long.values()) == {1.0} and max(short.values()) < 1.0
+
+
+def test_source_spans_reads_analysed_seconds_else_duration():
+    hl = {
+        "sources": [
+            {"path": "a", "analyzed_s": 100, "duration": 500},
+            {"path": "b", "duration": 7},
+            {"path": "c"},
+        ]
+    }
+    assert scoring.source_spans(hl) == {"a": 100.0, "b": 7.0}
+
+
+# --------------------------------------------------------------------------- VLM window labels
+def vlm_win(start: float, end: float, label: str = "Sneaky Defuse") -> dict[str, Any]:
+    return {
+        "source": SRC, "start": start, "end": end, "label": label,
+        "highlight_score": 0.5, "funny_score": 0.0,
+    }  # fmt: skip
+
+
+def test_a_vlm_window_covering_the_moment_names_it_and_keeps_the_label_it_had():
+    c = own("h001", 100.0, end=108.0)
+    scoring.set_vlm_label(c, vlm_win(98.0, 112.0))
+    assert c["label"] == "sneaky-defuse"
+    assert c["label_before_vlm"] == "gaming-moment" and c["label_vlm"] == "sneaky-defuse"
+
+
+def test_a_vlm_window_that_only_touches_the_moment_does_not_name_it():
+    c = own("h001", 100.0, end=108.0)
+    scoring.set_vlm_label(c, vlm_win(105.0, 130.0))  # 3 of 8 s: under half
+    scoring.set_vlm_label(c, None)
+    assert c["label"] == "gaming-moment" and "label_before_vlm" not in c
+    scoring.set_vlm_label(c, vlm_win(104.0, 130.0))  # exactly half
+    assert c["label"] == "sneaky-defuse"
+
+
+def test_a_dialogue_title_outranks_a_vlm_window_title():
+    c = {**own("h001", 100.0, end=108.0), "label": "fast-run", "dialogue_title": "Fast Run"}
+    scoring.set_vlm_label(c, vlm_win(98.0, 112.0))
+    assert c["label"] == "fast-run" and "label_before_vlm" not in c
+
+
+def test_put_vlm_labels_restores_the_label_unless_something_renamed_it():
+    c, renamed = own("h001", 100.0, end=108.0), own("h002", 200.0, end=208.0)
+    for x in (c, renamed):
+        scoring.set_vlm_label(x, vlm_win(x["start"] - 2, x["end"] + 2))
+    renamed["label"] = "by-hand"
+    scoring.put_vlm_labels([c, renamed])
+    assert c["label"] == "gaming-moment"
+    assert renamed["label"] == "by-hand"
+    for x in (c, renamed):
+        assert "label_vlm" not in x and "label_before_vlm" not in x
+
+
+def test_rescoring_names_by_the_window_and_is_idempotent_and_follows_a_dropped_window(tmp_path):
+    hl = highlights([own("h001", 20.0, 60.0), own("h002", 300.0, 40.0)])
+    ev = events_of([], windows=[vlm_win(18.0, 32.0)])
+    run_rescore(hl, ev, tmp_path, [grid()])
+    first = copy.deepcopy(hl)
+    by_id = {c["id"]: c for c in hl["candidates"]}
+    assert by_id["h001"]["label"] == "sneaky-defuse"
+    assert by_id["h001"]["label_before_vlm"] == "gaming-moment"
+    assert by_id["h002"]["label"] == "gaming-moment" and "label_before_vlm" not in by_id["h002"]
+    for _ in range(2):
+        run_rescore(hl, ev, tmp_path, [grid()])
+        assert hl == first
+    run_rescore(hl, events_of([]), tmp_path, [grid()])  # the window is gone
+    assert {c["label"] for c in hl["candidates"]} == {"gaming-moment"}
+    assert all("label_before_vlm" not in c for c in hl["candidates"])
+
+
+def test_a_banner_nominee_is_named_after_its_words_and_a_vlm_window_after_that(tmp_path):
+    hl = highlights([own("h001", 20.0, 60.0)])
+    ev = events_of([banner(100.0, "WON ROUND"), feed(300.0)])
+    run_rescore(hl, ev, tmp_path, [grid()])
+    labels = {round(c["start"]): c["label"] for c in nominees(hl)}
+    assert sorted(labels.values()) == ["player-kills", "won-round"]  # a kill: its type's name
+    nom = next(c for c in nominees(hl) if c["label"] == "won-round")
+    window = vlm_win(nom["start"] - 1, nom["end"] + 1, "Clutch Win")
+    run_rescore(
+        hl,
+        events_of([banner(100.0, "WON ROUND"), feed(300.0)], windows=[window]),
+        tmp_path,
+        [grid()],
+    )
+    got = next(c for c in nominees(hl) if c["start"] == nom["start"])
+    assert got["label"] == "clutch-win" and got["label_before_vlm"] == "won-round"

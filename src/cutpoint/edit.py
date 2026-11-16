@@ -149,6 +149,7 @@ def run_edit(
     skip: Collection[str] = (),
     visual_index: bool | None = None,
     ocr_det_skip: bool | None = None,
+    vision_detect_all: bool = False,
     compress_peaks: str = "off",
     lut: Lut | None = None,
     color: str | None = None,
@@ -156,6 +157,7 @@ def run_edit(
     keep_clips: bool = True,
     output_format: str = "mp4",
     vision_time_share: float | None = None,
+    context: str | None = None,
 ) -> Path:
     """Analyze ``inputs`` into ``project``, export clips and assemble them as ``kind`` says.
 
@@ -167,13 +169,15 @@ def run_edit(
     for the events VLM layer; ``skip`` also leaves its steps' layers out of ``events``,
     :data:`~cutpoint.analyze.LAYER_STEP`); ``visual_index`` is ``analyze --visual-index``
     (opt-in: None or False writes the frame embeddings only for the styles that always do);
-    ``ocr_det_skip`` is ``analyze --ocr-det-skip`` (None or False: off), also for ``events``.
+    ``ocr_det_skip`` is ``analyze --ocr-det-skip`` (None or False: off), also for ``events``;
+    ``vision_detect_all`` is ``analyze --vision-detect-all`` (off with ``vision`` False).
     ``compress_peaks``
     (``clips``/``assemble --compress-peaks``) is baked into the clips, so the final keeps it
     without compressing twice. ``lut`` (:func:`~cutpoint.encode.check_lut`) grades the clips
     as ``clips --lut`` does, ``color`` and ``color_strength`` as ``clips --color`` and
     ``--color-strength`` (None: config.json's ``color``); the final keeps the grade.
-    ``vision_time_share`` is analyze's (None: config.json's ``vision_time_share``).
+    ``vision_time_share`` is analyze's (None: config.json's ``vision_time_share``), and so is
+    ``context`` (``--context``, #1068; also the hint of this run's footage question).
 
     ``keep_clips`` False exports the clips into a temporary folder in ``project``, removed
     after the join (also on a failure or Ctrl+C), and leaves the clips folder alone.
@@ -210,6 +214,7 @@ def run_edit(
             skip=skip,
             visual_index=visual_index,
             ocr_det_skip=ocr_det_skip,
+            vision_detect_all=vision_detect_all,
             compress_peaks=compress_peaks,
             lut=lut,
             color=color,
@@ -217,6 +222,7 @@ def run_edit(
             keep_clips=keep_clips,
             output_format=output_format,
             vision_time_share=vision_time_share,
+            context=context,
         )
 
 
@@ -236,6 +242,7 @@ def _run_edit(
     skip: Collection[str],
     visual_index: bool | None,
     ocr_det_skip: bool | None,
+    vision_detect_all: bool,
     compress_peaks: str,
     lut: Lut | None,
     color: str | None,
@@ -243,6 +250,7 @@ def _run_edit(
     keep_clips: bool,
     output_format: str,
     vision_time_share: float | None,
+    context: str | None,
 ) -> Path:
     """:func:`run_edit`, reporting to ``steps``."""
     from cutpoint.analyze import analyze, report_highlights  # noqa: PLC0415
@@ -278,7 +286,9 @@ def _run_edit(
     tsrepair.prepare_sources(videos)
     # one client of the vision model for both detections (here and in analyze): a failed
     # request is not tried again; None with --no-vision / "vision": false
-    with category.footage_vision(vision, ollama_url, ollama_model) as footage:
+    with category.footage_vision(
+        vision, ollama_url, ollama_model, context, vision_detect_all
+    ) as footage:
         if events:
             from cutpoint.analyze import LAYER_STEP  # noqa: PLC0415
             from cutpoint.events.pipeline import ACTION_CAM_LAYERS, DEFAULT_LAYERS, preflight  # noqa: PLC0415
@@ -305,6 +315,7 @@ def _run_edit(
             ocr_det_skip=bool(ocr_det_skip),
             footage=footage,
             vision_time_share=vision_time_share,
+            context=context,
         )
     if events:
         from cutpoint.events.cli import run_args  # noqa: PLC0415

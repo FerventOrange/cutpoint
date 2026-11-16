@@ -788,3 +788,12 @@ def test_events_stops_with_low_memory_and_resume_finishes(
     assert len(s.ollama.asked) == 6
     assert _events_json(s.project) == reference
     assert json.loads((s.project / runstate.FILE).read_text(encoding="utf-8"))["status"] == "done"
+
+
+def test_resume_replays_an_analysis_with_its_context(project, monkeypatch):
+    got: list = []
+    monkeypatch.setattr(cli, "_cmd_analyze", lambda a: got.append(a.context))
+    argv = ["analyze", "videos/a.mp4", "--out", "p", "--context", "downhill mtb, chest mount"]
+    _record(project, command="analyze", argv=argv)
+    assert cli.main(["resume", "p"]) == 0
+    assert got == ["downhill mtb, chest mount"]

@@ -368,3 +368,156 @@ def test_config_encoding_bom_loads_and_utf16_is_one_clear_error(home, caplog):
     assert len(errors) == 1
     assert str(path) in errors[0].getMessage()
     assert "not UTF-8 text" in errors[0].getMessage()
+
+
+# -- --context (#1068) ----------------------------------------------------------------
+
+
+def test_analyze_and_edit_hand_the_context_on(home, tmp_path, monkeypatch):
+    import cutpoint.analyze  # noqa: PLC0415
+
+    video = write(tmp_path / "a.mp4")
+    seen: list = []
+    monkeypatch.setattr(cutpoint.analyze, "analyze", lambda *a, **kw: seen.append(kw["context"]))
+    monkeypatch.setattr(cli, "run_edit", lambda *a, **kw: seen.append(kw["context"]))
+    for command in ("analyze", "edit"):
+        assert cli.main([command, str(video), "--out", "p"]) == 0
+        assert cli.main([command, str(video), "--out", "p", "--context", "chest mount"]) == 0
+    assert seen == [None, "chest mount", None, "chest mount"]
+
+
+# -- vision_detect_all (#1069) ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("data", "want"),
+    [({}, False), ({"vision_detect_all": None}, False), ({"vision_detect_all": True}, True)],
+)
+def test_vision_detect_all_default_is_off_unless_true(home, data, want):
+    set_config(home, **data)
+    assert config.vision_detect_all_default() is want
+
+
+@pytest.mark.parametrize("value", ["true", 1, [True]])
+def test_vision_detect_all_must_be_a_boolean(home, value):
+    set_config(home, vision_detect_all=value)
+    with pytest.raises(ValueError, match=r"vision_detect_all must be true or false"):
+        config.get_config()
+
+
+# (config vision_detect_all, config vision, argv) -> what the command hands on
+DETECT_ALL_CASES = [
+    (None, None, [], False),
+    (None, None, ["--vision-detect-all"], True),
+    (True, None, [], True),  # the config's default applies
+    (True, None, ["--no-vision-detect-all"], False),  # the flag wins over the config
+    (False, None, ["--vision-detect-all"], True),
+    (None, None, ["--vision-detect-all", "--no-vision"], False),  # --no-vision wins
+    (True, False, [], False),  # "vision": false wins over the config's option
+    (None, False, ["--vision-detect-all"], False),
+]
+
+
+@pytest.mark.parametrize(("cfg", "vision", "argv", "want"), DETECT_ALL_CASES)
+def test_analyze_vision_detect_all_flag_wins_else_config(
+    home, tmp_path, monkeypatch, cfg, vision, argv, want
+):
+    import cutpoint.analyze  # noqa: PLC0415
+
+    set_config(
+        home,
+        **({} if cfg is None else {"vision_detect_all": cfg}),
+        **({} if vision is None else {"vision": vision}),
+    )
+    video = write(tmp_path / "a.mp4")
+    seen: list = []
+    monkeypatch.setattr(
+        cutpoint.analyze, "analyze", lambda *a, **kw: seen.append(kw["vision_detect_all"])
+    )
+    assert cli.main(["analyze", str(video), "--out", "p", "--style", "auto", *argv]) == 0
+    assert seen == [want]
+
+
+def test_analyze_vision_detect_all_is_for_auto_only(home, tmp_path, monkeypatch):
+    import cutpoint.analyze  # noqa: PLC0415
+
+    video = write(tmp_path / "a.mp4")
+    seen: list = []
+    monkeypatch.setattr(
+        cutpoint.analyze, "analyze", lambda *a, **kw: seen.append(kw["vision_detect_all"])
+    )
+    argv = ["analyze", str(video), "--out", "p", "--vision-detect-all"]
+    assert cli.main([*argv, "--style", "gaming"]) == 0
+    assert seen == [False]
+
+
+@pytest.mark.parametrize(("cfg", "vision", "argv", "want"), DETECT_ALL_CASES)
+def test_edit_vision_detect_all_flag_wins_else_config(
+    home, tmp_path, monkeypatch, cfg, vision, argv, want
+):
+    set_config(
+        home,
+        **({} if cfg is None else {"vision_detect_all": cfg}),
+        **({} if vision is None else {"vision": vision}),
+    )
+    video = write(tmp_path / "a.mp4")
+    seen: list = []
+    monkeypatch.setattr(cli, "run_edit", lambda *a, **kw: seen.append(kw["vision_detect_all"]))
+    assert cli.main(["edit", str(video), "--out", "p", *argv]) == 0
+    assert seen == [want]
+
+
+@pytest.mark.parametrize(("cfg", "vision", "argv", "want"), DETECT_ALL_CASES)
+def test_detect_vision_detect_all_flag_wins_else_config(
+    home, tmp_path, monkeypatch, cfg, vision, argv, want
+):
+    from cutpoint import category  # noqa: PLC0415
+
+    set_config(
+        home,
+        **({} if cfg is None else {"vision_detect_all": cfg}),
+        **({} if vision is None else {"vision": vision}),
+    )
+    video = write(tmp_path / "a.mp4")
+    seen: list = []
+    real = category.footage_vision
+
+    def spy(*args, **kw):
+        seen.append(args[4] if len(args) > 4 else kw.get("every_source"))
+        return real(*args, **kw)
+
+    monkeypatch.setattr(category, "footage_vision", spy)
+    monkeypatch.setattr(
+        category,
+        "probe_source",
+        lambda src, vision=None: category.SourceProbe(str(src), 60.0, True),
+    )
+    assert cli.main(["detect", str(video), *argv]) == 0
+    assert seen == [want]
+
+
+@pytest.mark.parametrize("argv", [["--no-vision"], []])
+def test_no_vision_turns_vision_detect_all_off_with_an_info_line(
+    home, tmp_path, monkeypatch, caplog, argv
+):
+    import cutpoint.analyze  # noqa: PLC0415
+
+    if not argv:
+        set_config(home, vision=False)
+    video = write(tmp_path / "a.mp4")
+    monkeypatch.setattr(cutpoint.analyze, "analyze", lambda *a, **kw: None)
+    with caplog.at_level(logging.INFO):
+        assert cli.main(["analyze", str(video), "--out", "p", "--vision-detect-all", *argv]) == 0
+    [line] = [m for m in messages(caplog, "INFO") if "--vision-detect-all is off" in m]
+    assert "vision model is off" in line
+    assert not messages(caplog, "WARNING")
+
+
+def test_vision_detect_all_off_logs_nothing_about_no_vision(home, tmp_path, monkeypatch, caplog):
+    import cutpoint.analyze  # noqa: PLC0415
+
+    video = write(tmp_path / "a.mp4")
+    monkeypatch.setattr(cutpoint.analyze, "analyze", lambda *a, **kw: None)
+    with caplog.at_level(logging.INFO):
+        assert cli.main(["analyze", str(video), "--out", "p", "--no-vision"]) == 0
+    assert not [m for m in messages(caplog, "INFO") if "vision-detect-all" in m]

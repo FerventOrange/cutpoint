@@ -100,6 +100,7 @@ So do these combinations:
 | `vision_consent_needed` | `analyze`, `detect`, `events`, `360 director` (so `edit`, `360 analyze`), `profile`, `crashes` | The Vision role's provider needs the Vision consent and it was not given, so nothing was sent to it: a hosted provider (an API key or a subscription login), or an Ollama on another machine (`--ollama-url`, `vision_assistant.url`, `OLLAMA_HOST` or `ollama_url` is not `localhost` or a loopback address, or is on the Cutpoint proxy's port; `profile` and `crashes` use only that Ollama). Vision was skipped, or the activity profile fell back without the model; allow vision requests in the Models tab of `cutpoint ui` (Vision role), or add the key the message names (`vision-v2:<provider>@<host>[:port]`, such as `vision-v2:ollama@10.0.0.5:11434` or `vision-v2:openai@api.openai.com`) to the [`vision_assistant.consent`](configuration.md#vision_assistant) list in `config.json`. For the footage check of `--style auto` and `detect`, only when vision was asked for (`--vision` or `"vision": true`); by default the check is skipped with an INFO line |
 | `chat_consent_needed` | `analyze` (so `edit`) | The dialogue step found no usable text model and the AI Chat model is hosted (an API key, a subscription login, or an Ollama on another machine) without the AI Chat consent, so no transcript was sent. The step was skipped; allow it in the AI Chat tab of `cutpoint ui`, or add the key the message names (`assistant-v3:<provider>@<host>`) to [`assistant.consent`](configuration.md#assistant) in `config.json`. The Vision consent does not count. It is not given when a local Ollama answers instead |
 | `vlm_unavailable` | `events` (so `edit --events`) | The VLM layer ran but the vision model (Ollama or the hosted Vision role) is not available, or the port of `OLLAMA_HOST` or `ollama_url` is invalid (only the VLM layer is skipped, with a WARNING); windows not described yet stayed undescribed and cached descriptions were used (the message gives the count) |
+| `feed_quiet`, `feed_missing`, `kills_uncredited`, `signal_dominates`, `label_dominates` | `analyze`, `events`, `rerank` (so `edit`) | A self-check of the finished analysis found a detection that probably failed silently; it only warns and never changes a score or the ranking. The message ends with a hint. `feed_quiet` (`gaming`): a kill feed region read under 100 distinct lines per hour of gameplay (menu time excluded, at least 0.5 h of gameplay; a working feed reads 150 lines/h or more: Ready or Not 152, Siege 441-574, War Thunder 760-2300), `files` the sources. `feed_missing` (`gaming`, `player_tags` set): the HUD read found no feed region in a source whose vision descriptions mention 10 or more kills (`player_tags` is global, so a game without kills stays quiet). `kills_uncredited` (`gaming`, `player_tags` set): no kill is credited to the player anywhere although the feed read 5 or more kills or the vision model's descriptions mention 10 or more. `signal_dominates`: one OCR text or kind of event evidence (`banners`, `announcements`, ...) is behind more than half (and at least 4) of the top moments (`suggested_top`, at least 10, else 20). `label_dominates`: one label named by an OCR or VLM detection (not a fallback such as `gaming-moment`, a reaction such as `laughter`, a keyword phrase or an action-cam telemetry label) is on over 15% of at least 40 candidates. Keyword phrases are no finding. The findings are also in `highlights.json` `settings.self_checks` (`code`, `message`, `hint`, `files`); `cutpoint ui` shows them in the job log. A project with older files skips the checks it lacks the data for |
 | `grade_dropped` | `clips` (so `edit`) | `--force` replaced clips whose manifest recorded a grade (`lut` or `color`) and this run grades none; give `--lut` or `--color` again to keep it |
 | `pano_mixed_sources` | `clips` (so `edit`), `assemble <project>` | The run's 360 clips are not rendered like-for-like: stitched and dual fisheye sources mixed, or an equirect rendered without the IMU levelling (FlowState, no sidecar, Studio export); `files` names the 360 clips (empty for a temporary export: `assemble <project>`, `edit --no-keep-clips`). Export with `--pano-source dfisheye` to compare their `360 qa` with the previews (see [360 video](workflows/360.md#render-sources)) |
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
@@ -133,7 +134,7 @@ So do these combinations:
 | `no_telemetry` | `crashes`, `events` (crash layer) | A source has no IMU telemetry; its crashes come from the transcript only |
 | `no_visual_layer` | `crashes`, `events` (crash layer) | A source has no visual layer; run `events` first so what the camera sees counts |
 | `highlights_not_updated` | `crashes`, `events` | The reanalyze step (`events`: the action-cam re-rank) was skipped (a source could not be found at its recorded or remapped path, or was not reachable), so `highlights.json` is unchanged |
-| `context_not_applied` | `crashes`, `profile` | `--context` was not applied (Ollama or the LLM unavailable, or no usable profile from it) |
+| `context_not_applied` | `crashes`, `profile`, `analyze`, `edit`, `events` (crash step or layer) | `--context` was not applied to the activity profile (Ollama or the LLM unavailable, or no usable profile from it) |
 
 `outputs` keys per command (`project` as in the table above):
 
@@ -409,8 +410,8 @@ most, and in the hover text. A moment a stretch only widened keeps its own type 
 the stretch's title as its name and the title's slug as its label.
 A moment with only a generic label (`action-moment`, `loud-moment`) is titled with what the
 vision model saw: its vision rating label, else the label of its `events` VLM window (the search
-finds both). `highlights.json`, the label a moment takes into the sequence and clip file names
-keep the analysis label. A moment of the visual pool (beauty shots, friends, cruising runs)
+finds both). The label a moment takes into the sequence and clip file names is its `label` in
+`highlights.json` (the `events` VLM window's label when it has one, see [Candidates](#candidates)). A moment of the visual pool (beauty shots, friends, cruising runs)
 carries a "visual" badge with its kind, such as "visual · view".
 
 While an analysis runs, the Moments column lists its steps (Transcription, Reactions, Keyframes,
@@ -513,7 +514,7 @@ copy next to it; that export becomes the current one. If earlier clips exist,
 a second run asks before replacing them and passes `--force` only when you confirm. The presets
 are off, with the reason shown, for 360 projects and for projects analyzed with `--exclude` or
 `--recursive`, `--no-scenes`, a non-default whisper `--model`, `--language`, `--max-candidates`,
-`--must-include-crash` with a value other than the style's default (0.6) or `--recover`. A Skip steps choice is passed on as `edit --skip`.
+`--must-include-crash` with a value other than the style's default (0.6) or `--recover`. A Skip steps choice is passed on as `edit --skip`, and for an Auto project the analysis's Show every video to the vision model as `edit --vision-detect-all` or `--no-vision-detect-all`.
 
 **Analysis options** are in the "Analyze again" dialog, and in the dialog that "Analysis
 options…" opens before the first analysis ("Analyze footage" alone uses none of them). Each one
@@ -528,13 +529,14 @@ applies:
 | Crashes become moments at | `--must-include-crash` |
 | Skip scene detection | `--no-scenes` |
 | Recover after read errors | `--recover` |
+| Show every video to the vision model (Auto style) | `--vision-detect-all` / `--no-vision-detect-all` |
 | Skip steps: Reactions, Keyframes, Crashes, Dialogue | `--skip reactions keyframes crashes dialogue` |
 
 The dialog starts with what the project's analysis used, as `highlights.json` records it (the
 model only when it is not the default), so "Analyze again" repeats it unless you change it. It
 keeps a recorded `--recover` the same way. `highlights.json` does not record `--skip`, so the UI
 keeps it in `ui/analysis.json` for that analysis only; after a command-line re-run it starts
-unticked. 360 projects have no Analysis options (`360 analyze` takes none of these flags).
+unticked. Show every video to the vision model can be changed only while the analysis runs in the Auto style (the project's, or the one the style button switches to); it starts ticked when the analysis recorded `settings.vision_detect_all`, unticked for an Auto analysis without it, and before any Auto analysis as [`vision_detect_all`](configuration.md#vision_detect_all) in `config.json` says. An Auto analysis always passes it explicitly, as `--vision-detect-all` or `--no-vision-detect-all`. 360 projects have no Analysis options (`360 analyze` takes none of these flags).
 
 **Refine** is a block of the same dialog, below the options. Each control starts its own job,
 not an analysis:
@@ -938,7 +940,11 @@ file, the start of the first word, the end of the last word and a few words arou
 without transcript words is skipped, and the model is told when no source has them. When a
 phrase is not said in one place but each of its words is, the model gets the `add_range` ops
 that splice it: the first place each word is said, in order. In the moment and sequence rows,
-as in `find_words`, two sources with the same file name are shown as `folder/name`.
+as in `find_words`, two sources with the same file name are shown as `folder/name` to a model on
+this machine; any other model (hosted, a subscription, or Ollama on another machine) gets no folder
+name: the first is shown as `clip.mp4`, the next as `clip.mp4 (2)`, and so on, never the name of
+another source. Transcript lines given to the model name the file the same way. Earlier replies
+that named a file the way the other kind of model was shown it reach the model with its own name.
 
 To make someone say a sentence ("make her say 'I am done'"), the model finds each word or phrase
 with `find_words` and adds them in order with `add_range` ops: a `file`, a `start` and an `end` in
@@ -1075,8 +1081,9 @@ cutpoint edit <file|folder> [<file|folder> ...] [--kind KIND] [--style STYLE] [-
               [--top N] [--max-total S] [--vertical] [--force] [--no-keep-clips]
               [--format mp4|fcpxml|otio] [--events]
               [--vision | --no-vision] [--vision-top N] [--ollama-url URL]
-              [--ollama-model MODEL] [--skip STEP [STEP ...]]
+              [--ollama-model MODEL] [--context TEXT] [--skip STEP [STEP ...]]
               [--visual-index | --no-visual-index] [--ocr-det-skip | --no-ocr-det-skip]
+              [--vision-detect-all | --no-vision-detect-all]
               [--compress-peaks off|light|strong] [--lut FILE [--lut-strength 0-1]]
               [--color off|auto|underwater [--color-strength 0-1]] [--json]
 ```
@@ -1106,9 +1113,11 @@ one of them is refused.
 | `--events` | Also run [`events`](#events) with its defaults, without the layers of the `--skip` steps, to re-rank the moments. Needs the `events` extra and `cutpoint setup`; checked before the analysis |
 | `--vision` / `--no-vision` | As on `analyze`: rate the default edit and the moments below its cut with Ollama, or not. Default: [`vision`](configuration.md#vision) in `config.json`, else off. With `--style auto` they also govern the footage check of unsure sources and camera footage without telemetry (see [detect](#detect)): on unless `--no-vision` or `"vision": false`; `--vision` also warns of a missing consent |
 | `--vision-top N`, `--ollama-url`, `--ollama-model` | As on [`analyze`](#analyze): the most moments sent to vision, and the Ollama server and model (also for the VLM layer of `--events`); an invalid port in `--ollama-url` exits 2 (`bad_args`) |
+| `--context TEXT` | As on [`analyze`](#analyze): what the footage is, in the user's words, for the footage question of `--style auto`, the crash step's activity profile and the vision rating, dialogue and `--events` VLM prompts; recorded as `settings.context` |
 | `--skip STEP ...` | As on [`analyze`](#analyze): leave out `reactions`, `keyframes`, `crashes` and/or `dialogue`. Give it after the input paths |
 | `--visual-index` / `--no-visual-index` | As on `analyze`: also write the frame embeddings of the AI Chat's visual search for `gaming`, `funny` and `commentary` footage, or not. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
 | `--ocr-det-skip` / `--no-ocr-det-skip` | As on `analyze`, also for the OCR layer of `--events`. Default: [`ocr_det_skip`](configuration.md#ocr_det_skip) in `config.json`, else off |
+| `--vision-detect-all` / `--no-vision-detect-all` | As on [`analyze`](#analyze), for both footage checks of the run (the `--events` check and the analysis's). Default: [`vision_detect_all`](configuration.md#vision_detect_all) in `config.json`, else off |
 | `--compress-peaks off\|light\|strong` | [Peak compression](#peak-compression), baked into the clips (so the final has it too). Default: `compress_peaks` in `config.json`, else off |
 | `--lut FILE`, `--lut-strength 0-1` | Grade the clips with a 3D LUT, as on [`clips`](#clips) (so the final has it too). Checked before the analysis |
 | `--color off\|auto\|underwater`, `--color-strength 0-1` | [Automatic color correction](#clips) of the clips, as on `clips` (so the final has it too). Not with `--lut`; checked before the analysis |
@@ -1145,9 +1154,11 @@ A fresh run into an existing project reads the ids from the current `highlights.
 | `--ollama-url`, `--ollama-model` | Defaults: `vision_assistant.url` (Vision role `ollama`) / `OLLAMA_HOST` / `ollama_url` / `http://127.0.0.1:11434`, and `CUTPOINT_VISION_MODEL` / `vision_assistant.model` (Vision role `ollama`) / `qwen3.5:9b` (`qwen3-vl:8b`, the earlier default, still works with `--ollama-model qwen3-vl:8b`). With a [`vision_assistant`](configuration.md#vision_assistant) of any provider other than `ollama` in `config.json`, the frames (here and for `360 director --vl-check`) go to that provider instead: an API (`anthropic`, `openai`, `xai`, with your API key) or a subscription (`claude-code`, `codex`, `antigravity`), once you agreed to it in the Models tab ("Allow vision requests"), unless you give `--ollama-url` and/or `--ollama-model`: then that Ollama is used instead (a flag left out takes its default) and nothing goes to the hosted provider. An Ollama URL that is not this machine (`localhost` or a loopback address, except on the Cutpoint proxy's port) needs that Vision consent too; without it vision is skipped with a WARNING (`vision_consent_needed`). An `--ollama-url` with an invalid port (such as `myhost:99999`) exits 2 with `bad_args`; a bad port in `OLLAMA_HOST`, `ollama_url`, the Models-tab Vision URL (`vision_assistant.url`) or the AI Chat Ollama URL only skips the step |
 | `--model NAME` | Whisper model. Default `medium` on CUDA, `small` on CPU |
 | `--language en` | Force the transcription language (default: auto-detect). A forced language is transcribed and cached separately (`transcript-<model>-<language>.json`), and `clips`, `extend` and `assemble` subtitle the project from that transcript |
+| `--context TEXT` | What the footage is, in the user's words (`--context "downhill mtb, chest mount, muddy lens"`), given before the analysis. One line, cut to 500 characters, as on [`profile`](#profile); blank text is none. It goes to: the footage question of `--style auto` (a hint in the vision model's prompt; the frames decide, and without a model the detection is unchanged), the crash step's activity profile (as `crashes --context`; `activity.json` records it, with a `context_not_applied` warning when no model could use it), the `--vision` rating prompts, the `dialogue` reader's prompt and the window prompts of the VLM layer of [`events`](#events) (also `edit --events`). It changes no scoring weight. The text is sent only where those steps already send data, under the same consents (a hosted Vision or AI Chat model needs its consent). Recorded as `settings.context` in `highlights.json`: `events`, `rerank` (also `--analyze`) and `cutpoint resume` reuse it, and `crashes`, `profile` and `events` take it for the activity profile while the project has none yet (or with `--refresh-profile`), unless given their own `--context` or `--activity`. `crashes --context` and `profile --context` record their text as `settings.context` in turn, so the project keeps one description. Running `analyze` or `edit` again without `--context` records none (an existing `activity.json` keeps its profile, also in a re-analysis such as `rerank --analyze`). With `--vision`, the text the ratings were made with is recorded as `settings.vision_context` (`null` when rated without text; `crashes --context` and `profile --context` add it to an older file that rated without the key); a plain `rerank` looks the cached ratings up with it, so a later `crashes --context` or `profile --context` does not lose them until the next analysis rates again. The vision, dialogue, VLM-window and footage-question caches are keyed on the text, so a changed text asks the models again; without it the caches and results are as before |
 | `--skip STEP ...` | Leave out `reactions`, `keyframes`, `crashes` and/or `dialogue` (give it after the input paths). Default: [`analysis.skip`](configuration.md#analysis) in `config.json`, else none |
 | `--visual-index` / `--no-visual-index` | Also write the frame embeddings (the CLIP visual layer, in the `keyframes` step, before the HUD text for `gaming` and `funny`) that the AI Chat's [`look_for`](#ai-chat) searches, for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` footage always has them. They change no ranking. Sources with telemetry: the crashes step also reads them, so `crashes.json` can differ; the ranking does not. Like that layer for the other styles it needs the `events` extra, its model files and a CUDA GPU, and is left out with an INFO line otherwise (the HUD text of `gaming` and `funny` still runs). Cached per source like the rest: a later run with the option on computes only what is missing, and one with it off leaves what exists. Default: [`visual_index`](configuration.md#visual_index) in `config.json`, else off |
 | `--ocr-det-skip` / `--no-ocr-det-skip` | Gameplay HUD text (the `keyframes` step): skip the text detection of a HUD region that has not changed since detection last ran there, and keep that result. Faster on footage with a still HUD; on two test clips it saved a third and a tenth of the detection calls and lost no event. A read with it is cached apart from one without it, so switching reads the footage again once. Default: [`ocr_det_skip`](configuration.md#ocr_det_skip) in `config.json`, else off |
+| `--vision-detect-all` / `--no-vision-detect-all` | `--style auto`: show every source with frames and without telemetry to the vision model, not only the unsure ones (about one vision call per source); it only settles sources: a sure gameplay source becomes unsure when the vision answer and the HUD text both see no game (see **Every source** under [`detect`](#detect)). Off with `--no-vision` or `"vision": false` (one INFO line). Recorded as `settings.vision_detect_all` (only when on), which a re-analysis keeps. Default: [`vision_detect_all`](configuration.md#vision_detect_all) in `config.json`, else off |
 | `--no-scenes` | Skip scene detection |
 | `--max-candidates N` | Candidates per source before merging. Default: enough to cover about 3 times the style's target length, at least 30. `gaming` has an open list instead: see [Candidates](#candidates) |
 | `--recover` | After a read error, resume analysis past the bad region |
@@ -1239,8 +1250,8 @@ Whisper heard with confidence below 0.5 as `[index, confidence]`, the index coun
 `transcript.split(" ")` (omitted when none is unsure or the transcript has no confidences). With
 `--vision`, a rated candidate also has the model's own description in `vision_label` and
 `vision_rated` (the `start` and `end` it rated, the score before and after the rating, `base`
-and `blended`, the prompt `kind`, `speech` or `frames`, and its `centre`). Vision never changes a moment's `label`, so its clip gets the same name with and
-without `--vision` (the rating can still change which moments are picked and their order). The rating counts only
+and `blended`, the prompt `kind`, `speech` or `frames`, and its `centre`). The vision rating never changes a moment's `label`, so its clip gets the same name with and
+without `--vision` (the rating can still change which moments are picked and their order; an `events` VLM window can rename it, see [Candidates](#candidates)). The rating counts only
 while the candidate keeps that span: once `events` widens or a menu trim cuts it, the rating
 moves to `vision_stale` (`score`, `label`, `window`), `signals.vision` is `null` and `vision_label`
 goes; the span coming back restores them. A moment the default edit skipped above its cut when
@@ -1348,7 +1359,7 @@ the transcription starts. Any other value, or unset: as described above.
 |---|---|
 | `transcribe` | Whisper transcription, scoring and scene detection |
 | `reactions` | PANNs sound events (laughter, screams, cheering). Also the voice layer when `crashes` will run |
-| `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game; the vision model, when it answers, labels the regions it proposes. For `action`, `action-cam` and `sport`, the CLIP visual layer, only with a CUDA GPU; with `--visual-index` that layer runs for `gaming`, `funny` and `commentary` too (frame embeddings for the AI Chat's visual search, no effect on ranking) |
+| `keyframes` | Game HUD text (OCR). For `gaming` and `funny`, HUD region discovery runs when no preset matches the game; the vision model, when it answers, points at the HUD (kill feed, score, banners, replay marker; OCR confirms each) and labels the regions it proposes, and tops up an installed discovered preset that has no `discovery.hud_map` yet, once ([Game streams](workflows/game-streams.md#hud-presets)). For `action`, `action-cam` and `sport`, the CLIP visual layer, only with a CUDA GPU; with `--visual-index` that layer runs for `gaming`, `funny` and `commentary` too (frame embeddings for the AI Chat's visual search, no effect on ranking) |
 | `crashes` | Action-cam footage only (telemetry found, or style `action-cam`, `action` or `sport`) |
 | `dialogue` | A text model reads the whole transcript and marks talk worth keeping. Open-list styles only (`gaming`). See [Dialogue reader](#dialogue-reader) |
 | `ranking` | Re-ranks the candidates with the events, after leaving out those in HUD menu time ([game streams](workflows/game-streams.md)); `highlights.json`, `events.json`, `events.txt` and the other result files are written after the last step |
@@ -1422,6 +1433,18 @@ the default count above (or `--max-candidates`), each at least a quarter of the 
 usual count, but beyond that count a moment must reach 0.5 of the strongest peak. The default
 sequence stays about 90 s. `--max-candidates` sets the cap for every style, as before.
 
+The transcript grid (`speech`) counts the style's keywords. Per source, a phrase said often
+counts less each time: up to max(3, 3 per hour of the source) times at its full weight, above
+that each hit at sqrt(allowance / count) of it, so a speaker's filler ("oh my god" 36 times in
+3 h) fades while a rare "let's go" keeps its weight. This holds in every style; laughter is never
+damped. In `gaming`, `action`, `sport` and `action-cam` a non-profane keyword counts fully only
+with a delivery cue within 3 s: laughter, another strong keyword (a different phrase of weight
+0.8 or more after damping) or a loudness jump (the loudness grid at least 0.2 above its median
+of the 9 s before, or at least 0.5)); said flat it counts 0.3 of its weight. `funny` and
+`commentary` need no delivery cue: calm talk is their content. Profanity, in the styles that
+gate it, then needs a cue as before, so a damped or flat hype word no longer vouches for it. A
+candidate's label still names the strongest keyword said by the keyword's own weight.
+
 In styles with an open list (`gaming`), detected events can also create candidates of their own
 ("nominated" moments), so a moment no longer has to be found by the grids first. Other styles
 create none and behave as before. When events are scored (`analyze` with its event
@@ -1432,10 +1455,23 @@ candidate, and so labels it `laughter`, only with backup within 5 s: another lau
 cheering sound, a laughter word or marker in the transcript, or loud speech. A stronger laugh
 needs none. A nominated candidate has `signals.events.nominated` (the
 event names) and keeps the score its window had from the grids as `grid_score`; its `score` is at
-least 0.6 of the best other candidate's of that source, so the events decide its rank. A dialogue stretch over 90 s has exactly 0.6 of it, and its laughter and on-screen events count per minute. Ids of
+least 0.6 of the best other candidate's of that source (0.75 for the best ones a dialogue stretch made: by `grid_score`, 2.5 per hour of the part, rounded half up, at least 2; the others 0.6 too), so the events decide its rank. A dialogue stretch over 90 s has exactly that share, and its laughter and on-screen events count per minute. Ids of
 nominees continue after the highest id ever given (`settings.last_candidate_id`). Menu time is
 left out. Run again, the
 same events give the same nominees. A source whose caches are gone gets none.
+
+A nominee is labelled by what nominated it: a round banner or multikill by its own words
+(`won-round`, `match-point`), a dialogue stretch by its title, another event by its type
+(`explosions`, `laughter`). When events are scored, a candidate whose `events` VLM window
+covers at least half of it takes the slug of the window's label as its `label` (and clip file
+name, such as `1v1-clutch-win`); the label it had stays in `label_before_vlm` and the slug in
+`label_vlm`, and the next rescore names it again from the windows it finds then. The kind
+`cutpoint ui` and AI Chat give the moment still comes from `label_before_vlm`: the window's
+title is only its name. A candidate
+with a `dialogue_title` keeps the title's slug: the title names the bit of talk the moment was
+made or widened for, which a window of picture around it may only partly cover. The order is
+the dialogue title, the VLM window label, the banner's words, then the analysis label (a strong
+keyword, `laugh`, `loud-moment`, `<style>-moment`). The `--vision` rating never changes a label.
 
 If ffmpeg hits read errors (a damaged file, a failing drive), `analyze` warns loudly, records
 `read_errors` on that source in `highlights.json`, and stops analysing that source at the
@@ -1475,7 +1511,7 @@ on CUDA and `small` on CPU), so it is reused only when both runs use the same `-
 ## detect
 
 ```text
-cutpoint detect <file|folder> [<file|folder> ...] [--exclude GLOB] [--recursive] [--vision | --no-vision] [--ollama-url URL] [--ollama-model NAME] [--json]
+cutpoint detect <file|folder> [<file|folder> ...] [--exclude GLOB] [--recursive] [--vision | --no-vision] [--vision-detect-all | --no-vision-detect-all] [--ollama-url URL] [--ollama-model NAME] [--context TEXT] [--json]
 ```
 
 Tells which category the footage is and which style `--style auto` would use, without analyzing
@@ -1519,7 +1555,31 @@ unsure; with `--vision` or `"vision": true` given explicitly, a skip for lack of
 source only `action` counts: any other answer leaves it General by its camera tags, as re-exports and phone clips carry them
 too. Fast first-person footage (worn or mounted cameras, FPV drone flight) is meant to be `action`. Answers are cached per
 model and host as `category-vision-v3.json` (an older `category-vision-v2.json` is not read: these sources are asked once more). `decided_by` in the result (and the `detect` output)
-names the evidence that decided: `vision` for these sources.
+names the evidence that decided: `vision` for these sources. `--context TEXT` (also on `analyze`
+and `edit`) adds the user's words about the footage to the question as a hint; the answer still
+comes from the frames, a source the vision check is not asked about is decided as without it,
+and its answers are cached apart from those without words.
+
+**Every source.** `--vision-detect-all` (on `detect`, `analyze` and `edit`; the Analysis options of `cutpoint ui`;
+[`vision_detect_all`](configuration.md#vision_detect_all) in `config.json`) shows every source
+with frames and without telemetry to the vision model, not only the unsure ones, except 360
+footage (a 2:1 frame), which is asked only when unsure. It costs about one vision call per
+source; the answers share the cache of the unsure-only check (the same question). The HUD
+text check then also runs on every source without camera tags that is not a still picture.
+The option only settles sources, except that it can make sure gameplay unsure (below); it
+never flips a source on the vision answer alone. With a vision answer other than `other`:
+
+- A source the check without the option leaves unsure is decided as there (the answer
+  settles it, `decided_by` `vision`).
+- A source the check without the option makes sure stays as decided there, except sure
+  gameplay when the answer is not `gameplay` and the HUD text check found fewer than 3 boxes:
+  the answer and the text both see no game, so it becomes ambiguous gameplay (never General).
+  When the text check did not run or failed, the pixels' decision stands.
+- For a camera-tagged source only `action` counts, as in the unsure-only check.
+
+In Cutpoint lite the screen-text cue stands in for the read text in the second rule. Without an answer (no model, no consent, `other`) a source is decided as
+without the option. `--no-vision` or `"vision": false` turns it off, with one INFO line. The
+`detection` block then has `"vision_detect_all": true`; without the option it has no such key.
 
 **HUD text check.** A thin HUD (a few lines of text, as in War Thunder, Rainbow Six or
 Battlefield) is too small to show in the small frames. So a source those leave unsure between
@@ -1542,7 +1602,8 @@ A 2:1 frame counts as 360 footage only at 3840 px wide or more; `decided_by` is 
 `highlights.json` of an `auto` analysis has a `detection` block: `version` (4), `category`,
 `emphasis` (`hype`, or `funny` for `funny-moments`), `style`, `reason`, `ambiguous`, `scores`,
 `fallback` (the style used when the category was unclear, else `null`), `suggest`, `decided_by` and
-`sources` (as in the [`--json` outputs](#json-output)).
+`sources` (as in the [`--json` outputs](#json-output)), and `vision_detect_all` (`true`) only
+when it was detected with [`--vision-detect-all`](#detect).
 
 ## events
 
@@ -1664,7 +1725,7 @@ computer (a network folder) is not, so delete it by hand if no run is active.
 
 | Option | Meaning |
 |---|---|
-| `--top N` | Top N by score (default: the best moments that fit the style's target length, a moment that does not fit in the room left is skipped and the next one tried; a must-include crash is always kept, and if none fits the best one is taken). An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
+| `--top N` | Top N by score (default: the best moments that fit the style's target length, a moment longer than a third of it or that does not fit in the room left is skipped and the next one tried; a must-include crash is always kept, and if none fits the best one is taken). An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
 | `--ids ...` | Explicit candidate ids |
 | `--segments FILE` | Export exactly the listed segments in the listed order |
 | `--max-total S` | Keep the best-scoring moments that fit in S seconds. An automatic pick skips a candidate that mostly overlaps one already picked from the same source; `--ids` does not. |
@@ -1977,7 +2038,7 @@ write to, as for `clips --segments`). Everything else is a clips folder, as befo
 options below are then refused (`bad_args`, exit 1).
 
 - The moments are chosen as `clips` chooses them: `--top N`, `--ids`, `--segments FILE`,
-  `--max-total S` and `--order` (default: the best moments that fit the style's target length, as `clips`; `suggested_top` of `highlights.json` is their count). `--mix` is
+  `--max-total S` and `--order` (default: the best moments that fit the style's target length, each at most a third of it, as `clips`; `suggested_top` of `highlights.json` is their count). `--mix` is
   not offered; pass `--segments <project>/mix_segments.json --order arc`.
 - They are exported with the export options of [`clips`](#clips): `--vertical`, `--size`,
   `--crop`, `--smart-tail`, `--tail-min`, `--tail-max`, `--event-tails`, `--event-window`,
@@ -2307,12 +2368,14 @@ result was reused), and `crashes.json` the profile step in `timings.profile_s`. 
 retry is skipped when the first attempt took nearly the whole timeout. In
 `analyze` and `edit` it runs whenever a local Ollama answers, without `--vision`, and is quiet:
 a missing consent, a bad Ollama port, too little free memory or a fallback is one INFO line.
-`profile`, `crashes` and `events` still warn.
+`profile`, `crashes` and `events` still warn, and so do `analyze` and `edit` given `--context`.
+Without `--context`, `profile`, `crashes` and `events` use the `settings.context` of
+`analyze --context` while the project has no `activity.json` yet, or with `--refresh-profile`.
 
 | Option | Meaning |
 |---|---|
 | `--activity NAME` | Use `generic` or a profile of your library (`cutpoint profile list`). An unknown name is `bad_args`. Default: found in your library or discovered from the footage |
-| `--context TEXT` | What the video is, in the user's words. The local LLM turns it into extra crash captions and slang on top of the profile. A changed text rebuilds the profile |
+| `--context TEXT` | What the video is, in the user's words. The local LLM turns it into extra crash captions and slang on top of the profile. A changed text rebuilds the profile. It is also recorded as the project's `settings.context` in `highlights.json` (as `analyze --context`), so re-analyses and `events` use the latest description. Without it, the `settings.context` of `analyze --context` is used while the project has no `activity.json` yet, or with `--refresh-profile` |
 | `--refresh-profile` | Ignore `activity.json` and the profile (or failed discovery) cached for this footage, and detect or build the profile again, and replace the cached one, also in your library. Footage that matches a library profile keeps it unless you give `--context`; to start over, run `cutpoint profile delete NAME` first |
 | `--ollama-url`, `--ollama-model` | The Ollama server and model that build the profile, as on [`analyze`](#analyze) (a flag left out takes its default). A new profile needs no deleting of `activity.json` to use them: add `--refresh-profile` |
 | `--json` | One [result envelope](#json-output) on stdout; `outputs` holds the `activity.json` record (`name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `scores`, `description`, `profile`) and `activity_file`. Output of the local model never reaches stdout |

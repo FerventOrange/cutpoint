@@ -49,8 +49,10 @@ FREE_FACTOR = 1.05  # free space the copy needs, times the source's size
 _DISCONTINUITY = re.compile(r"timestamp discontinuity[^\n]*")
 _PART = re.compile(r"timeline\.(\d+)\.[0-9a-f]{8}\.part\.mkv")
 # What a source keeps of its cache when it is first marked for a copy: the audio and what is
-# made of it come out the same from the copy (ffmpeg corrected the jumps when it was extracted)
-_KEPT = ("audio16k.wav", "audio16k-tracks.json", "loudness.json", "transcript-*.json",
+# made of it come out the same from the copy (ffmpeg put the audio on the container's clock when
+# it was extracted, and audio16k-clock.json says so: a WAV without it is checked again, #1056)
+_KEPT = ("audio16k.wav", "audio16k-tracks.json", "audio16k-clock.json", "loudness.json",
+         "transcript-*.json",
          "fallback-transcript-*.json", TIMELINE_FILE, COPY_FILE, "timeline.*.part.mkv",
          ".timeline.cutpoint-lock")  # fmt: skip
 

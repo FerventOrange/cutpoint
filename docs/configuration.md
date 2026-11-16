@@ -83,6 +83,7 @@ with `_` are ignored.
   "vision_time_share": 0.3,
   "visual_index": false,
   "ocr_det_skip": false,
+  "vision_detect_all": false,
   "compress_peaks": "off",
   "color": "off",
   "analysis": {"skip": []},
@@ -200,6 +201,17 @@ event. `--no-ocr-det-skip` turns it off for one run; with `false` or no key, onl
 reads the footage again once. `events` without the flag uses the setting the analysis used
 (`settings.ocr_det_skip` in `highlights.json`; no entry means off, older projects too), not
 this key; this key applies there only when no analysis is recorded. Other values are rejected.
+
+### vision_detect_all
+
+`true` or `false` (default). With `true`, `--style auto` (`analyze`, `edit`) and `detect` show
+every source to the vision model, not only the unsure ones, as
+[`--vision-detect-all`](commands.md#detect) does. It only settles sources: a sure gameplay
+source becomes unsure when the vision answer and the HUD text both see no game. It costs about one
+vision call per source. `--no-vision-detect-all` turns it off for one run; with `false` or no
+key, only `--vision-detect-all` turns it on. `--no-vision` or `"vision": false` turns it off
+too. The Analysis options of `cutpoint ui` start from it before a project's first Auto
+analysis. Other values are rejected.
 
 ### vision_assistant
 
@@ -411,12 +423,17 @@ A style tells `analyze` how to score and how long clips and the final cut should
 
 | Style | Clip length | Target total | Notes |
 |---|---|---|---|
-| `gaming` | 4-12 s | 90 s | Loudness and hype words, capped keywords |
+| `gaming` | 4-12 s | 90 s | Loudness and hype words (with a delivery cue), capped keywords |
 | `action` | 3-12 s | 60 s | Loudness and scene cuts, plus laughter |
 | `sport` | 5-20 s | 90 s | Crowd loudness, "goal", "what a ...", laughter |
 | `funny` | 4-20 s | 60 s | Laughter-heavy |
 | `commentary` | 20-120 s | 12.5 min | Speech continuity, sentence-snapped, chronological |
 | `action-cam` | 2-10 s by moment type | 150 s | Action-cam telemetry, model tags and sound events; lifts and stops masked |
+
+Keywords said often in a source count less each time, in every style, and in `gaming`,
+`action`, `sport` and `action-cam` a hype word said flat (no laughter, other strong keyword or
+loudness jump near it) counts 0.3 of its weight; see [Candidates](commands.md#candidates).
+Custom styles inherit both from their base.
 
 `action-cam` is the telemetry-driven action-cam style (`ski` is not a style: it is an unknown name like any other). Speed, airtime and crash scoring need GoPro HERO 9-13 telemetry (or the Insta360 X3 IMU); a source without it is scored from audio, speech and model features only, over those features alone, so its moments rank with the others; when no source has any, `analyze` and `edit` use the `action` style instead with an `action_cam_no_telemetry` warning (see [workflows/action-cam.md](workflows/action-cam.md)).
 
@@ -652,7 +669,10 @@ before.
   replaces it without that limit.
   `announcements` matches a `bigtext` event with `announce` set (a learned big-text pop-up, see
   [game streams](workflows/game-streams.md#learned-announcements)) and adds 3 points each, at most
-  2 counted, in every style. It has no tail payoff and is boost-only: it adds its points to a
+  2 counted, in every style; per source, a line shown often counts less each time (up to
+  max(3, 3 per hour) times in full, above that each at sqrt(allowance / count), keyed by its
+  learned words), while banners, kills and score changes, which are outcomes, keep their points
+  however often they come. It has no tail payoff and is boost-only: it adds its points to a
   candidate that already exists, but never makes a moment of its own (not in `gaming` either) and
   never seeds a VLM window. A preset type named `announcements` replaces it and behaves like any
   preset type.

@@ -125,6 +125,7 @@ from cutpoint import (
     progress,
     projectdelete,
     runstate,
+    selfcheck,
     stage,
 )
 from cutpoint import envelope as audio_envelope
@@ -163,6 +164,7 @@ from cutpoint.config import (
     resolve_projects_dir,
     set_config_values,
     vision_assistant_settings,
+    vision_detect_all_default,
     vision_setting,
 )
 from cutpoint.edit import KINDS
@@ -248,7 +250,7 @@ FRAME_TIMEOUT_S = 30.0
 FRAME_MAX_AT = 1e7  # seconds (~115 days): cap when the length is unknown
 FRAME_SLOTS = 2  # ffmpeg still grabs at once; the rest wait their turn
 FRAME_CACHE_MAX = 1500  # stills kept per project; the least recently used go first
-ENVELOPE_VERSION = 1  # part of a cached envelope's name: bump it when the envelope changes
+ENVELOPE_VERSION = 2  # part of a cached envelope's name: bump it when the envelope changes
 ENVELOPE_TIMEOUT_S = 1800.0  # a decode running longer is killed (a multi-hour source on a NAS)
 ENVELOPE_STALE_S = (
     10.0  # a queued decode nobody asked for in this long (2 x the page's 5 s) is dropped
@@ -4458,7 +4460,7 @@ def ranking_preview(p: Path, style_name: object) -> dict[str, Any]:
     after: dict[str, Any] = {}
     if not missing:
         try:
-            after = rerank.ranked(p, hl, style, raw)
+            after = rerank.ranked(p, hl, style, raw, check=False)
         except NeedsAnalyzeError as err:  # a source with nothing cached after all
             missing = err.missing
     if missing:
@@ -4975,7 +4977,7 @@ ANALYZE_TEXT_FORMS = {  # what the page may send for them: a model name, a langu
 }
 ANALYZE_FLAGS = {"no_scenes": "--no-scenes", "recover": "--recover"}
 ANALYZE_KEYS = ("model", "language", "max_candidates", "no_scenes", "skip", "must_include_crash",
-                "recover")  # fmt: skip
+                "recover", "vision_detect_all")  # fmt: skip
 ANALYSIS_FILE = f"{UI_DIR}/analysis.json"  # the --skip of the project's analysis (not recorded)
 
 
@@ -5033,9 +5035,25 @@ def save_analysis_skip(p: Path, skip: list[str]) -> None:
     cache.save_json(_own(p, ANALYSIS_FILE), {"skip": skip, "created": hl.get("created")})
 
 
+def _vision_detect_all(hl: dict[str, Any] | None) -> bool:
+    """``--vision-detect-all`` as the project's analysis used it (``settings.vision_detect_all``):
+    on when recorded, off for an auto analysis without it; with no auto analysis yet
+    ``vision_detect_all`` in config.json (off when config.json is unreadable)."""
+    st = (hl or {}).get("settings") or {}
+    if st.get("vision_detect_all") is True:
+        return True
+    if st.get("style_requested") == AUTO and isinstance((hl or {}).get("detection"), dict):
+        return False
+    try:
+        return vision_detect_all_default()
+    except ValueError:  # an invalid config.json: the job says
+        return False
+
+
 def analyze_options(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, Any]:
     """The Analyze options the project's analysis used, as the page sends them: what
-    ``highlights.json`` recorded (a model only when not the default) and the saved ``--skip``."""
+    ``highlights.json`` recorded (a model only when not the default), the saved ``--skip`` and
+    ``vision_detect_all`` (:func:`_vision_detect_all`)."""
     st = (hl or {}).get("settings") or {}
     model = st.get("whisper_model")
     mc = st.get("max_candidates")
@@ -5062,6 +5080,7 @@ def analyze_options(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
         and crash != default_crash
         else None,
         "recover": st.get("recover") is True,
+        "vision_detect_all": _vision_detect_all(hl),
     }
 
 
@@ -5073,6 +5092,7 @@ REFINE_WARNINGS = (
     "vlm_unavailable",
     "context_not_applied",
     "step_failed",
+    *selfcheck.CODES,  # the analysis self-checks (#1073): a detection that silently failed
 )
 
 
@@ -5158,9 +5178,22 @@ def _note_warnings(job: Job) -> None:
             job.note("WARNING", f"{msg} ({', '.join(files)})" if files else msg)
 
 
-def _analyze_args(body: dict[str, Any], recorded: dict[str, Any]) -> tuple[list[str], list[str]]:
+def _vision_detect_all_arg(value: object) -> list[str]:
+    """``--vision-detect-all`` or ``--no-vision-detect-all`` for ``value`` (explicit, so the job
+    and the page agree even if config.json changes before the CLI reads it); none for None."""
+    if value is None:
+        return []
+    if not isinstance(value, bool):
+        raise bad("vision_detect_all must be true or false")
+    return ["--vision-detect-all" if value else "--no-vision-detect-all"]
+
+
+def _analyze_args(
+    body: dict[str, Any], recorded: dict[str, Any], auto: bool = False
+) -> tuple[list[str], list[str]]:
     """The Analyze options' flags and the ``--skip`` steps: each from the request, else (a key it
-    does not send) what the project's analysis used, so Analyze again repeats it."""
+    does not send) what the project's analysis used, so Analyze again repeats it.
+    ``--vision-detect-all`` only for an ``auto`` analysis (the other styles detect nothing)."""
     opts = {k: body.get(k, v) for k, v in recorded.items()}
     args = []
     for key, flag in ANALYZE_TEXT.items():
@@ -5191,6 +5224,9 @@ def _analyze_args(body: dict[str, Any], recorded: dict[str, Any]) -> tuple[list[
     for key, flag in ANALYZE_FLAGS.items():
         if _flag(opts, key):
             args.append(flag)
+    vda = _vision_detect_all_arg(opts["vision_detect_all"])
+    if auto:
+        args += vda
     skip = opts["skip"]
     if skip is None:
         skip = []
@@ -6344,7 +6380,7 @@ def create_app(port: int) -> FastAPI:
                 args.append("--recursive")
             # The Analyze options; a recorded --recover is kept unless the page turns it off, or
             # the parts past a read error drop out.
-            opts, skip = _analyze_args(body, recorded)
+            opts, skip = _analyze_args(body, recorded, style == AUTO)
             args += opts + _vision_args(st)
             if skip:  # last: its steps follow it. Saved (an older file never matches the new
                 # analysis's created stamp, so without --skip there is nothing to save)
@@ -6416,6 +6452,8 @@ def create_app(port: int) -> FastAPI:
                 + _color_args(body)
                 + _vision_args((hl or {}).get("settings") or {})
             )
+            if live == AUTO:  # the analysis's --vision-detect-all, so the detection repeats
+                args += _vision_detect_all_arg(_vision_detect_all(hl))
             # edit analyzes again: with the Analyze options' --skip, or it would run those steps
             if skip := _saved_skip(p, hl):
                 args += ["--skip", *skip]

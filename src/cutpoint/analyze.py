@@ -49,8 +49,10 @@ from cutpoint import (
     memguard,
     paths,
     progress,
+    repeats,
     runstate,
     scorer,
+    selfcheck,
     tsrepair,
 )
 from cutpoint.config import path_key, remap_source, unc_path
@@ -116,7 +118,14 @@ from cutpoint.transcribe import (
     split_markers,
     transcript_name,
 )
-from cutpoint.utils import clock, find_videos, matches_glob, slugify
+from cutpoint.utils import (
+    clock,
+    find_videos,
+    footage_context,
+    matches_glob,
+    slugify,
+    title_slug,
+)
 from cutpoint.vision import PRIOR_N, RATING_PRIOR, VisionRater, speech_excerpt
 
 if TYPE_CHECKING:
@@ -130,6 +139,21 @@ LONG_FILE_S = 1800  # above this, scene detection decodes keyframes only
 PROFANE = {p.rstrip("*") for p in PROFANITY}  # names as keyword_hits reports them
 PROFANITY_CUE_S = 3.0  # a profane word counts only if another cue is this close
 PROFANITY_CUE_MIN = 0.8  # minimum weight of a keyword that counts as a cue
+# Delivery cue of a hype word (#1071, styles with ``delivery_cue``): within DELIVERY_CUE_S of it,
+# laughter, a non-profane keyword other than itself of at least PROFANITY_CUE_MIN, or a loudness
+# jump: the loudness grid's highest from DELIVERY_PRE_S before the word to DELIVERY_POST_S after
+# it at least DELIVERY_JUMP above its median over the DELIVERY_BASE_S before that (the grid is
+# already the source's own robust z-score, so the jump is relative to the source), or at least
+# DELIVERY_LOUD (the loudness that lets a profane word count alone). A hype word with none keeps
+# DELIVERY_FLAT of its weight: said flat it is still talk about the moment, so it can break a tie
+# and name a clip, but no longer outranks a loud one (0.3: what a secondary hit adds under the
+# keyword cap, :func:`keyword_signal`). On the 3 h stream of #1071, 89% of the "oh my god" hits
+# had no such cue.
+DELIVERY_CUE_S = PROFANITY_CUE_S
+DELIVERY_PRE_S, DELIVERY_POST_S, DELIVERY_BASE_S = 1.0, 2.0, 9.0
+DELIVERY_JUMP = 0.2
+DELIVERY_LOUD = 0.5
+DELIVERY_FLAT = 0.3
 # the vision band (#909): the default edit plus k below its cut, k = this share of the edit's
 # moments, at least VISION_BAND_MIN and at most VISION_BAND_MAX
 VISION_BAND_SHARE, VISION_BAND_MIN, VISION_BAND_MAX = 0.3, 2, 24
@@ -147,9 +171,13 @@ WAV_HEADER = 44
 # The audio tracks the analysis WAV mixes, saved next to it only when copies of another track
 # are left out (#685); without it the WAV mixes every track
 MIX_FILE = "audio16k-tracks.json"
+# Written next to the analysis WAV once it is read on the container's clock (a gap in the
+# timestamps is silence, ffmpeg_utils.AUDIO_CLOCK, #1056); a WAV without it is checked once
+CLOCK_FILE = "audio16k-clock.json"
 # The caches made from the analysis WAV and, last, the WAV, removed when it mixed other tracks
+# or left out a gap
 AUDIO_CACHES = ("loudness.json", "transcript-*.json", "fallback-transcript-*.json",
-                "events-audio-*.json", "voice-*.npz", "audio16k.wav")  # fmt: skip
+                "events-audio-*.json", "voice-*.npz", CLOCK_FILE, "audio16k.wav")  # fmt: skip
 RESUME_REFINE = 2  # bisection probes to lose less footage before the resume point
 RESUME_MARGIN_S = 1.0  # start the recovered part a little after the first good probe
 MAX_RECOVERED_PARTS = 5  # per source
@@ -349,6 +377,57 @@ def gate_profanity(
     return kept
 
 
+def damp_keywords(
+    kw_hits: list[tuple[float, float, str]], span_s: float
+) -> list[tuple[float, float, str]]:
+    """``kw_hits`` of one source (or part) ``span_s`` seconds long with each weight times the
+    repeat factor of its phrase there (:func:`cutpoint.repeats.repeat_factor`): a phrase said
+    often counts less each time, a rare one keeps its weight (#1071)."""
+    factors = repeats.repeat_factors((p for _, _, p in kw_hits), span_s)
+    return [(t, w * factors[p], p) for t, w, p in kw_hits]
+
+
+def loudness_jump(loudness: np.ndarray, t: float) -> bool:
+    """Whether the loudness grid jumps at ``t`` (seconds): its highest over
+    ``[t - DELIVERY_PRE_S, t + DELIVERY_POST_S]`` is at least :data:`DELIVERY_LOUD`, or at least
+    :data:`DELIVERY_JUMP` above its median over the :data:`DELIVERY_BASE_S` before that."""
+    n = len(loudness)
+    if not n:
+        return False
+    i = min(n - 1, max(0, int(t / DT)))
+    lo = max(0, i - int(DELIVERY_PRE_S / DT))
+    peak = float(loudness[lo : i + int(DELIVERY_POST_S / DT) + 1].max())
+    base = loudness[max(0, lo - int(DELIVERY_BASE_S / DT)) : lo]
+    return peak >= DELIVERY_LOUD or peak - (float(np.median(base)) if base.size else 0.0) >= (
+        DELIVERY_JUMP
+    )
+
+
+def gate_delivery(
+    kw_hits: list[tuple[float, float, str]],
+    laugh_hits: list[tuple[float, float, str]],
+    loudness: np.ndarray,
+) -> list[tuple[float, float, str]]:
+    """``kw_hits`` with each non-profane hit that has no delivery cue near it (laughter,
+    another strong non-profane keyword, a loudness jump: :data:`DELIVERY_CUE_S`,
+    :func:`loudness_jump`) at :data:`DELIVERY_FLAT` of its weight; profane hits are left to
+    :func:`gate_profanity`. A cue keyword is a different phrase: a filler said twice in a row is
+    no cue for itself. The cues are judged on the weights given, so the result does not depend
+    on the order of the hits."""
+    strong = [(t, p) for t, w, p in kw_hits if p not in PROFANE and w >= PROFANITY_CUE_MIN]
+    laughs = np.asarray([t for t, _, _ in laugh_hits], dtype=float)
+    out = []
+    for t, w, p in kw_hits:
+        if p not in PROFANE and not (
+            (laughs.size and float(np.min(np.abs(laughs - t))) <= DELIVERY_CUE_S)
+            or any(q != p and abs(u - t) <= DELIVERY_CUE_S for u, q in strong)
+            or loudness_jump(loudness, t)
+        ):
+            w *= DELIVERY_FLAT
+        out.append((t, w, p))
+    return out
+
+
 # --------------------------------------------------------------------------- per-source caching
 def _loudness(wav: Path, cdir: Path) -> tuple[np.ndarray, np.ndarray]:
     path = cdir / "loudness.json"
@@ -444,7 +523,22 @@ def _audio_mix(src: Path, cdir: Path, tracks: tuple[int, ...], streams: int) -> 
     want = list(tracks) if len(tracks) < streams else None
     if _mixed_tracks(cdir, streams) == want:
         return
-    stale = [f for pattern in AUDIO_CACHES for f in cdir.glob(pattern)]
+    if not _purge_audio(src, cdir, "mixed other tracks"):
+        return
+    if want is None:
+        (cdir / MIX_FILE).unlink(missing_ok=True)
+    else:
+        cache.save_json(cdir / MIX_FILE, {"tracks": want})
+
+
+def _purge_audio(src: Path, cdir: Path, why: str, extra: tuple[str, ...] = ()) -> bool:
+    """Remove the analysis WAV of ``src`` from ``cdir`` with every cache made from it
+    (:data:`AUDIO_CACHES`) and the ``extra`` files, the WAV last; ``why`` is what the INFO line
+    says was wrong with the old audio. A file that cannot be removed (open in another program)
+    is named in a WARNING; the WAV is then kept too, so the old WAV and the caches left are
+    used together meanwhile. Returns whether every file is gone."""
+    patterns = (*AUDIO_CACHES[:-1], *extra, AUDIO_CACHES[-1])
+    stale = [f for pattern in patterns for f in cdir.glob(pattern)]
     kept: list[Path] = []
     for f in stale:
         if kept and f.name == "audio16k.wav":
@@ -461,15 +555,38 @@ def _audio_mix(src: Path, cdir: Path, tracks: tuple[int, ...], streams: int) -> 
             src.name,
             ", ".join(f.name for f in kept),
         )
-        return
+        return False
     if stale:  # the WAV (removed last) is gone: extracted again
-        logger.info(
-            "%s: the cached analysis audio mixed other tracks; extracting it again", src.name
-        )
-    if want is None:
-        (cdir / MIX_FILE).unlink(missing_ok=True)
-    else:
-        cache.save_json(cdir / MIX_FILE, {"tracks": want})
+        logger.info("%s: the cached analysis audio %s; extracting it again", src.name, why)
+    return True
+
+
+def _audio_clock(src: Path, info: MediaInfo, offset: float, cdir: Path) -> None:
+    """Make the cached analysis WAV in ``cdir`` one read on the container's clock (#1056).
+
+    A WAV made before :data:`CLOCK_FILE` existed left out the stretch where a forward jump in
+    the timestamps (under tsrepair's limit) was: it is shorter than the source, its read-error
+    record (if any) has no ffmpeg message, and the transcript after the jump is early. Such a
+    WAV is removed with every cache made from it and the length-only record, so it is
+    extracted again once. A WAV of full length, or one cut short by a read error ffmpeg
+    reported, is kept; either way :data:`CLOCK_FILE` is written, so the check is made once.
+    ``info`` is the probe of the file the WAV is read from (the copy of a repaired source).
+    """
+    wav = cdir / "audio16k.wav"
+    if not wav.exists() or (cdir / CLOCK_FILE).exists():
+        return
+    short = (info.duration - offset) - wav_duration(wav)
+    saved = load_read_errors(cdir)
+    if short > SHORTFALL_FLOOR_S and not (saved and saved.get("messages")):
+        why = f"left out {short:.1f} s where the timestamps jump"
+        _purge_audio(src, cdir, why, extra=(READ_ERRORS_FILE,))
+        return  # gone: its extract writes the record; kept: the next run checks again
+    _write_clock(cdir)
+
+
+def _write_clock(cdir: Path) -> None:
+    """Record that the WAV in ``cdir`` was read on the container's clock."""
+    cache.save_json(cdir / CLOCK_FILE, {"version": 1})
 
 
 SOURCE_STAGES = ("probe_s", "audio_extract_s", "loudness_s", "transcribe_s", "scenes_s")
@@ -1726,11 +1843,19 @@ class PartSignals:
 
 def text_signals(ps: PartSignals, style: Style, name: str) -> None:
     """Fill the style-dependent transcript signals of ``ps``: the keyword and laughter hits
-    and the ``speech`` and ``laughter`` curves (profanity gated against the loudness for
-    styles with ``profanity_alone`` False). ``name``: the source's, for the log."""
+    and the ``speech`` and ``laughter`` curves. The keyword weights are, in this order, damped
+    by how often the part says each phrase (styles with ``repeat_damping``,
+    :func:`damp_keywords`), cut to :data:`DELIVERY_FLAT` for a hype word said flat (styles with
+    ``delivery_cue``, :func:`gate_delivery`), and profanity is gated against the loudness
+    (styles with ``profanity_alone`` False, :func:`gate_profanity`, which then sees the
+    weights left). Laughter is never damped or gated. ``name``: the source's, for the log."""
     n, sig, words = ps.n, ps.sig, ps.words
     kw_hits = keyword_hits(words, style.keywords)
     laugh_hits = laughter_hits(words, flat_markers(ps.segments))
+    if style.repeat_damping:
+        kw_hits = damp_keywords(kw_hits, n * DT)
+    if style.delivery_cue:
+        kw_hits = gate_delivery(kw_hits, laugh_hits, sig["loudness"])
     if not style.profanity_alone:
         n_before = len(kw_hits)
         n_profane = sum(1 for *_, p in kw_hits if p in PROFANE)
@@ -2059,10 +2184,12 @@ def analyze_source(
                 report(EXTRACT_SHARE + (1 - EXTRACT_SHARE) * at(frac))
 
         tracks = _analysis_tracks(src, io, info, cdir)
+        _audio_clock(src, info, offset, cdir)
         made = not wav.exists() or cached_transcript(tr, cdir) is None
         if not wav.exists():
             with _watch_extract(wav, span, extracted if report else None):
                 res = extract_audio(io, wav, info, start=offset, tracks=tracks)
+            _write_clock(cdir)
         tick("audio_extract_s", t0)
         read_error = check_read(src, info, offset, wav, cdir, res)
         if read_error:
@@ -2259,6 +2386,9 @@ def describe_candidates(
     ``avail``: the features the score is renormalised over (default
     :func:`cutpoint.scorer.available_for`; an action-cam source's own, #950)."""
     words, kw_hits, laugh_hits = ps.words, ps.kw_hits, ps.laugh_hits
+    # a label names what was said by the style's own weight, before repeat damping and the
+    # delivery cue (#1071): those decide the score, not what the moment is about
+    said_w = {k.rstrip("*"): w for k, w in style.keywords.items()}
     if avail is None:
         avail = scorer.available_for(style)
     for c in cands:
@@ -2266,9 +2396,8 @@ def describe_candidates(
         inside = [(t, w, p) for t, w, p in kw_hits + laugh_hits if c.start <= t <= c.end]
         c.keywords = [p for _, _, p in sorted(inside, key=lambda h: -h[1])]
         c.keywords = list(dict.fromkeys(c.keywords))[:5]
-        strong = [
-            p for _, w, p in sorted(inside, key=lambda h: -h[1]) if w >= 0.5 and p not in PROFANE
-        ]  # a bare swear is a useless label
+        named = sorted(((said_w.get(p, w), p) for _, w, p in inside), key=lambda h: -h[0])
+        strong = [p for w, p in named if w >= 0.5 and p not in PROFANE]  # a bare swear: no label
         if not c.label_hint:  # action-cam picks bring their own ("jump 0.6s", "crash 7g")
             c.label_hint = strong[0] if strong else ""
         said = [w for w in words if c.start <= w["start"] <= c.end]
@@ -2369,7 +2498,7 @@ def nominate_candidates(
                 t,
                 0.0,
                 dict.fromkeys(ps.sig, 0.0),
-                label_hint=slugify(s.name, 30),
+                label_hint=title_slug(s.text, default="") or slugify(s.name, 30),
                 nominated=[s.name],
                 whole=s.whole,
                 over=s.over,
@@ -3377,11 +3506,12 @@ def _dialogue_reader(
     steps: progress.Run,
     timings: dict[str, float],
     ran: list[bool],
+    context: str | None = None,
 ) -> Callable[[list[dict[str, Any]]], list[dict[str, Any]]]:
     """The dialogue step as a function of the audio events (events.json entries with source,
     ``start``, ``label`` and ``confidence``): reads the ``transcripts`` with ``backend`` and
     returns the dialogue events. Records ``timings["dialogue_s"]`` and appends to ``ran`` when
-    called."""
+    called. ``context``: the user's ``--context`` words, given to the reader's prompt."""
     from cutpoint.events import dialogue  # noqa: PLC0415
 
     def read(audio: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3389,7 +3519,11 @@ def _dialogue_reader(
         t0 = time.perf_counter()
         try:
             found = dialogue.read_all(
-                transcripts, audio, backend, lambda pct, name: steps.update(pct, name)
+                transcripts,
+                audio,
+                backend,
+                lambda pct, name: steps.update(pct, name),
+                context=context,
             )
         except LowMemoryError:  # an optional step never aborts the analysis
             message = f"Dialogue skipped: not enough free memory for {backend.model}"
@@ -3454,6 +3588,7 @@ def _run_layers(
     batch_size: int = 0,
     dialogue: Callable[[dict[str, list[dict[str, Any]]]], list[dict[str, Any]]] | None = None,
     det_skip: bool = False,
+    context: str | None = None,
 ) -> bool:
     """Run the planned event layers on the analysis ``hl`` (not written yet) and write
     events.json, as ``cutpoint events`` would (held back with the other
@@ -3464,7 +3599,8 @@ def _run_layers(
     None: from config.json and the environment); ``batch_size``: ``--batch-size``
     (:func:`~cutpoint.events.pipeline.run_events`); ``dialogue``: the dialogue reader it runs as
     the ``dialogue`` step before it writes events.json (:func:`_dialogue_reader`); ``det_skip``:
-    ``--ocr-det-skip`` (``OcrParams.det_skip``)."""
+    ``--ocr-det-skip`` (``OcrParams.det_skip``); ``context``: ``--context``, for the crash
+    layer's activity profile."""
     from cutpoint.crash import no_visual_reason  # noqa: PLC0415
     from cutpoint.events.audio_events import AudioParams  # noqa: PLC0415
     from cutpoint.events.common import pending_highlights  # noqa: PLC0415
@@ -3496,6 +3632,7 @@ def _run_layers(
                 discover_hint=DISCOVER_HINT,
                 batch_size=batch_size,
                 dialogue=dialogue,
+                context=context,
             )
     except Exception as err:
         if steps.current == "ranking" or isinstance(err, LowMemoryError):
@@ -3864,6 +4001,9 @@ def analyze(
     rerank_backup: str | None = None,
     ids: Mapping[tuple[str, float, float], str] | None = None,
     last_candidate_id: int = 0,
+    context: str | None = None,
+    context_recorded: bool = False,
+    vision_detect_all: bool = False,
 ) -> Path:
     """Run the full analysis and write ``out_dir/highlights.json``.
 
@@ -3958,6 +4098,19 @@ def analyze(
             into a project (``analyze``, ``edit``, ``360 analyze``) keeps the ids of the spans
             it finds again; without one every candidate is numbered from ``h001``.
         last_candidate_id: The highest id the earlier analysis gave (with ``ids`` only).
+        context: ``--context``, the user's words about the footage (#1068), recorded as
+            ``settings.context``: a hint in the footage question of ``--style auto`` (not
+            with ``footage``, which brings its own), it picks the crash step's activity
+            profile as ``crashes --context`` does, and it goes into the vision rating and
+            dialogue prompts. No scoring weight reads it. None or blank: as without it.
+        context_recorded: ``context`` is the recorded ``settings.context`` of a re-analysis
+            (:func:`reanalyze`), not words the user gave now: the crash step keeps the
+            project's activity.json then, as ``crashes`` without ``--context`` does.
+        vision_detect_all: ``--vision-detect-all`` (#1069; the caller has turned it off for
+            ``--no-vision``): ``--style auto`` shows every source to the vision model; it only
+            settles sources (:func:`cutpoint.category.decide`), recorded as
+            ``settings.vision_detect_all`` (only when on) for a re-analysis and ``cutpoint
+            ui``. With ``footage``, its own ``every_source`` decides.
 
     Returns:
         Path of the written highlights.json.
@@ -3998,6 +4151,9 @@ def analyze(
             rerank_backup=rerank_backup,
             ids=ids,
             last_candidate_id=last_candidate_id,
+            context=footage_context(context),
+            context_recorded=context_recorded,
+            vision_detect_all=footage.every_source if footage is not None else vision_detect_all,
         )
 
 
@@ -4033,6 +4189,9 @@ def _analyze(
     rerank_backup: str | None,
     ids: Mapping[tuple[str, float, float], str] | None,
     last_candidate_id: int,
+    context: str | None,
+    context_recorded: bool,
+    vision_detect_all: bool,
 ) -> Path:
     """:func:`analyze`, reporting to ``steps``."""
     t_start = time.perf_counter()
@@ -4043,10 +4202,20 @@ def _analyze(
     # --style auto: probed before transcription, which needs the style's action-cam context, scene
     # setting and OCR prefetch; talk is told from general once the speech coverage is known.
     auto = style if isinstance(style, AutoRequest) else None
+    if auto is not None and vision is False and footage is None:
+        vision_detect_all = False  # --no-vision wins: nothing is shown to the model
     probes: list[category.SourceProbe] = []
     cat: str | None = None  # the category whose layers run (None: the style's own)
     if auto is not None:
-        probes, det = category.detect(sources, vision, ollama_url, ollama_model, shared=footage)
+        probes, det = category.detect(
+            sources,
+            vision,
+            ollama_url,
+            ollama_model,
+            shared=footage,
+            context=context,
+            every_source=vision_detect_all,
+        )
         name, fallback = category.choose_style(det, auto.emphasis)
         if det.pending:
             logger.info("Footage looks %s so far (%s)", category.label(det.category), det.reason)
@@ -4212,6 +4381,7 @@ def _analyze(
                 category.source_speech(
                     sources, [(r.source, r.duration, r.segments) for r in results]
                 ),
+                every_source=vision_detect_all and vision is not False,
             )
             if pending:  # talk or general: this style's transcript signals and candidates
                 # (otherwise the speech only adds the commentary hint: the style stays)
@@ -4309,6 +4479,11 @@ def _analyze(
                 ),
                 # --ocr-det-skip: `cutpoint events` reads HUD text as this run did (only when on)
                 **({"ocr_det_skip": True} if ocr_det_skip else {}),
+                # --context (#1068): the crash step's profile, the vision and dialogue prompts;
+                # `cutpoint events`, `rerank` and re-analyses read it from here (only when given)
+                **({"context": context} if context else {}),
+                # --vision-detect-all (#1069): how --style auto detected (only when on)
+                **({"vision_detect_all": True} if vision_detect_all and detection_rec else {}),
             },
             "timings": timings,
             "suggested_top": 0,
@@ -4351,7 +4526,7 @@ def _analyze(
             backend = _dialogue_backend(style, skip, steps, spoken, ollama_url, ollama_model)
             ran: list[bool] = []
             reader = (
-                _dialogue_reader(backend, spoken, steps, timings, ran)
+                _dialogue_reader(backend, spoken, steps, timings, ran, context)
                 if backend is not None
                 else None
             )
@@ -4372,6 +4547,9 @@ def _analyze(
                     batch_size=batch_size,
                     dialogue=(lambda layer1: reader(_audio_events(layer1))) if reader else None,
                     det_skip=ocr_det_skip,
+                    # a recorded context does not replace the project's activity.json (the
+                    # VLM layer still reads it from settings.context)
+                    context=None if context_recorded else context,
                 )
                 timings["events_s"] = round(time.perf_counter() - t0, 2)
                 free_models()
@@ -4414,6 +4592,7 @@ def _analyze(
             earlier_total_s=earlier_total_s,
             ids=ids,
         )
+        selfcheck.apply(hl, ev)  # warns; changes no score (#1073)
         hl["created"] = datetime.now().isoformat(timespec="seconds")
         hl["timings"]["sources"] = _source_timings(results, prefetch)
         took = round(time.perf_counter() - t_start, 2)
@@ -4650,6 +4829,18 @@ def rank_parts(
         for c in ranked[:cut]:
             if id(c) not in in_edit:
                 c["vision_skipped"] = [c["start"], c["end"]]
+        # the user's --context words (#1068) go into the prompts, so into the cache keys. An
+        # analysis records the words it rated with as settings.vision_context (null: rated
+        # without words); a re-rank keeps them, so its cached ratings are found after `crashes`
+        # or `profile --context` changed settings.context (a file without the key, from before
+        # it: settings.context)
+        settings = hl["settings"]
+        recorded = settings.get("context")
+        if vision_cache_only and "vision_context" in settings:
+            recorded = settings["vision_context"]
+        rater.context = footage_context(recorded)
+        if not vision_cache_only:
+            settings["vision_context"] = rater.context
         # action-cam: worded for the project's activity.json (the default without one)
         wording = None
         if style.base == ACTION_CAM:
@@ -4967,6 +5158,10 @@ def reanalyze(
         rerank_backup=rerank_backup,
         ids=ids,
         last_candidate_id=last_id,
+        context=st.get("context"),  # #1068: as the analysis was told (footage_context checks it)
+        context_recorded=True,
+        # #1069: recorded again (nothing is detected again; cutpoint ui reads it back)
+        vision_detect_all=st.get("vision_detect_all") is True,
     )
 
 
