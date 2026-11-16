@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -1383,22 +1384,6 @@ def test_the_spin_reason_names_a_short_moment_s_own_length() -> None:
         assert f"one way in {pano_candidates.SPIN_WINDOW_S:g} s" in text
 
 
-def test_the_page_describes_camera_path_flags_accessibly() -> None:
-    """Accessibility contract (#517): card badges' reasons are a tooltip that is also the card's
-    description, shown on keyboard focus and hidden by Escape; the note has its own region."""
-    js = _web("app.js")
-    render = _js_function(js, "renderMoments")
-    assert "'aria-describedby': tip" in render and "role: 'tooltip'" in render
-    html = _web("index.html")
-    assert "tips-off" in js and 'id="panoNote"' in html
-    # one permanent status region: its text changes, the node is never replaced
-    assert 'role="status" class="pano-status"' in html
-    assert "el.replaceChildren(" not in _js_function(js, "renderPanoNote")
-    css = _web("app.css")
-    assert ".cand:has(.cand-main:focus-visible) .flag-tip" in css
-    assert "body.tips-off .flag-tip { display: none; }" in css
-
-
 def test_find_videos_never_returns_raw_360_files(tmp_path: Path) -> None:
     """analyze must not read dual-fisheye .insv or .lrv proxies as flat video."""
     for name in (X3_00, X3_10, X3_LRV, "a.mp4"):
@@ -1464,11 +1449,12 @@ def test_requests_must_be_loopback_and_carry_the_token(
 def test_a_refused_request_says_whether_the_token_or_the_host_was_wrong(
     client: TestClient, tmp_path: Path
 ) -> None:
-    """Contract pin: web/api.js TOKEN_DETAIL must match the token detail below exactly; it shows
-    the "server restarted" banner and stops polling on it, and must not for the host detail."""
+    """Cross-language contract: web/api.js TOKEN_DETAIL must equal the token detail below; it shows
+    the "server restarted" banner and stops polling on it, and must not for the host detail
+    (tests/js/api.test.mjs)."""
     token_detail = {"detail": "missing or wrong session token"}
-    api_js = (ui.WEB_DIR / "api.js").read_text(encoding="utf-8")
-    assert f"const TOKEN_DETAIL = '{token_detail['detail']}';" in api_js
+    js_detail = re.search(r"\bTOKEN_DETAIL\s*=\s*(['\"])(.*?)\1", _web("api.js"))
+    assert js_detail and js_detail[2] == token_detail["detail"]
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
     media = client.get(f"/api/projects/{pid}").json()["sources"][0]["url"]
     wrong_t = media.split("?")[0] + "?t=stale"
@@ -1485,84 +1471,13 @@ def test_a_refused_request_says_whether_the_token_or_the_host_was_wrong(
 
 
 def test_the_scrolling_columns_clip_their_visually_hidden_labels() -> None:
-    """Contract pin (#354): .vh labels are position: absolute. Unless .col is positioned, their
+    """Regression (#354, #415): .vh labels are position: absolute. Unless .col is positioned, their
     containing block is the page, the column's overflow does not clip them, and a long moments
-    list makes the page scroll past the Jobs bar on a wide window."""
-    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
-    assert re.search(r"^\.vh \{[^}]*position: absolute;", css, re.M)
-    col = re.search(r"^\.col \{([^}]*)\}", css, re.M)
-    assert col and "position: relative;" in col[1] and "overflow: auto;" in col[1]
-
-
-def test_stats_for_nerds_is_an_off_by_default_overlay_on_the_preview() -> None:
-    """Contract pin (#353): the scoring line is an overlay in the video panel, hidden by default,
-    toggled by a labelled Settings box and remembered per browser; the line under the transcript
-    is gone.
-
-    Check in a browser (no browser in the test suite): with a moment open, tick Settings > Stats
-    for Nerds; the stats show at once in the preview's top-left, clicks on them still play/pause,
-    the transport bar stays uncovered, and they stay inside the preview at a 360 px wide window.
-    Reload: still on. Untick: #signals is hidden and empty."""
-    html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
-    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
-    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
-    screen = re.search(r'<div class="screen">(.*?)</div>', html, re.S)
-    assert screen and '<p id="signals" class="nerd-stats" hidden></p>' in screen[1]
-    assert html.count('id="signals"') == 1
-    settings = re.search(r'<dialog id="settingsDialog".*?</dialog>', html, re.S)
-    assert settings and re.search(
-        r'<label class="check"><input type="checkbox" id="setNerdStats"[^>]*> Stats for Nerds</label>',
-        settings[0],
-    )
-    overlay = re.search(r"^\.nerd-stats \{([^}]*)\}", css, re.M)
-    assert overlay and "position: absolute;" in overlay[1] and "pointer-events: none;" in overlay[1]
-    # 8px from the panel's edges on every side: --space-2 is 8px
-    assert re.search(r"^:root \{[^}]*--space-2: 8px;", css, re.M)
-    assert "top: var(--space-2); left: var(--space-2);" in overlay[1]
-    assert "max-width: calc(100% - 2 * var(--space-2));" in overlay[1]
-    assert "monospace" in overlay[1]
-    assert "const NERD_KEY = 'cutpoint.nerdStats';" in js
-    assert "nerdStats: false," in js  # off unless the browser stored "1"
-
-
-def test_verbose_moment_labels_hide_the_tile_file_id_and_times_by_default() -> None:
-    """Contract pin: Settings > Verbose moment labels (off unless the browser stored "1") is a
-    class on the list; the file, id and start-end time stay in the markup, so the filter and the
-    tile's reading order are unchanged, and CSS hides them."""
-    html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
-    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
-    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
-    assert re.search(
-        r'<label class="check"><input type="checkbox" id="setVerboseMoments"[^>]*> Verbose moment labels</label>',
-        html,
-    )
-    assert (
-        '<ol id="candList" class="cand-list moments-compact"></ol>' in html
-    )  # compact before first paint
-    assert ".moments-compact :is(.cand-time, .cand-src) { display: none; }" in css
-    assert "const VERBOSE_KEY = 'cutpoint.verboseMoments';" in js
-    assert "verboseMoments: false," in js
-    assert "class: 'cand-range'" in _js_function(js, "renderMoments")
-
-
-def test_moment_cards_show_a_read_only_strip_of_their_place_in_the_source() -> None:
-    """Contract pin: the score bar on the moment cards became a strip like the preview's overview
-    (the whole source, the moment in --gold on --deep), with no control of its own, hidden from
-    screen readers (the time line states the times) and the score in its hover title.
-
-    Check in a browser (no browser in the test suite): in Graphite, Light and Blue, each tile's strip
-    marks its moment in gold where the overview does; clicking it opens the moment as before."""
-    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
-    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
-    strip = re.search(r"^function sourceStrip\(c\) \{(.*?)^\}", js, re.M | re.S)
-    assert strip and "sourceStrip(c)" in js
-    assert "'aria-hidden': 'true'" in strip[1]
-    assert "title: `Score ${c.score.toFixed(3)}`" in strip[1]
-    assert "input" not in strip[1] and "tabindex" not in strip[1]
-    assert "const dur = sourceDur(c.source);" in strip[1]  # no request per card
-    assert re.search(r"^\.cand-strip \{[^}]*background: var\(--deep\);", css, re.M)
-    assert re.search(r"^\.cand-strip-clip \{[^}]*background: var\(--gold\);", css, re.M)
-    assert "class: 'score'" not in js and not re.search(r"^\.score\b", css, re.M)
+    list makes the page scroll past the Jobs bar on a wide window. Layout jsdom cannot see."""
+    css = _web("app.css")
+    assert _css_decls(css, ".vh")["position"] == "absolute"
+    col = _css_decls(css, ".col")
+    assert (col["position"], col["overflow"]) == ("relative", "auto")
 
 
 def _theme_colours(css: str, selector: str) -> dict[str, str]:
@@ -1581,105 +1496,14 @@ def _contrast(a: str, b: str) -> float:
     return (hi + 0.05) / (lo + 0.05)
 
 
-def test_settings_offer_graphite_light_and_blue_themes_applied_before_first_paint() -> None:
-    """Contract pin (#445): Settings > Theme picks Graphite (the default, the :root colours), Light
-    or Blue; themes only override the custom properties, the choice is stored per browser like Stats
-    for Nerds (Graphite as no key), and an inline script in <head> sets data-theme before the
-    stylesheet paints. The old Dark theme is gone: a stored "dark" is Graphite.
-
-    Check in a browser (no browser in the test suite): pick Light in Settings, the whole page
-    recolours at once; Cancel or Escape goes back; Save and reload: still Light, with no graphite
-    flash. Clear the key ``cutpoint.theme``: Graphite. Store "dark": Graphite, and the key is gone."""
-    html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
-    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
-    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
-    settings = re.search(r'<dialog id="settingsDialog".*?</dialog>', html, re.S)
-    assert settings
-    select = re.search(r'<select id="setTheme"[^>]*>(.*?)</select>', settings[0], re.S)
-    assert select and re.findall(r'<option value="(\w+)">(\w+)</option>', select[1]) == [
-        ("graphite", "Graphite"),
-        ("light", "Light"),
-        ("blue", "Blue"),
-    ]
-    head = html.split("</head>")[0]
-    early = re.search(r"<script>(.*?)</script>", head, re.S)
-    assert early and "localStorage.getItem('cutpoint.theme')" in early[1] and "try {" in early[1]
-    assert "document.documentElement.dataset.theme = t" in early[1]
-    assert "t === 'light' || t === 'blue'" in early[1] and "'dark'" not in early[1]
-    assert (
-        "localStorage.removeItem('cutpoint.theme')" in early[1]
-    )  # a stored "dark" (or unknown) is dropped
-    assert head.index("<script>") < head.index('href="app.css"')  # set before the styles apply
-    assert "const THEME_KEY = 'cutpoint.theme';" in js
-    assert "localStorage.removeItem(THEME_KEY)" in js  # Graphite is stored as no key
-
+def test_every_theme_keeps_its_text_and_controls_readable() -> None:
+    """Contrast contract (#445, WCAG 1.4.3 and 1.4.11): in Graphite (the :root colours), Light and
+    Blue, text is 4.5:1 and controls 3:1 on their grounds. The themes only override custom
+    properties, so outside the theme blocks no rule holds a colour of its own (it would not
+    follow the theme). Computed from app.css values: jsdom applies no stylesheet. Picking and
+    storing a theme and the early script are in tests/js/graphite.test.mjs and workspace.test.mjs."""
+    css = _web("app.css")
     graphite = _theme_colours(css, ":root")
-    # no saved choice: Graphite
-    assert {
-        k: graphite[k] for k in ("slate", "panel", "raise", "deep", "text", "muted", "amber")
-    } == {
-        "slate": "#141517",
-        "panel": "#17181b",
-        "raise": "#2c2e33",
-        "deep": "#1d1f22",
-        "text": "#ececee",
-        "muted": "#9a9ca3",
-        "amber": "#f2b347",
-    }
-    blue = _theme_colours(css, ':root[data-theme="blue"]')
-    # Blue: the colours of before Graphite, unchanged
-    keep = ("slate", "panel", "raise", "deep", "line", "track", "text", "muted")
-    assert {k: blue[k] for k in keep} == {
-        "slate": "#233348",
-        "panel": "#2d4058",
-        "raise": "#384e6b",
-        "deep": "#19273a",
-        "line": "#455d7d",
-        "track": "#455d7d",  # bar tracks: today's --line
-        "text": "#edf2f8",
-        "muted": "#b3c2d2",
-    }
-    assert (blue["amber"], blue["bad"], blue["ok"], blue["glow"]) == (
-        "#f3bd60",
-        "#ffa89b",
-        "#94d6a8",
-        "#ffae19",
-    )
-    # the colours rules used to hold themselves, now :root custom properties, are the same values
-    root = re.search(r':root\[data-theme="blue"\] \{(.*?)\n\}', css, re.S)
-    assert root
-    moved = {
-        "hover": "#435b7a",
-        "amber-hover": "#f7cb80",
-        "danger-ink": "#ffffff",  # was #fff
-        "danger-btn-hover": "#d23a3a",
-        "bad-bg": "#4a2c33",
-        "bad-line": "#7a4650",
-        "art": "#8195b0",
-        "well": "#0d1622",
-        "log-bg": "#101b2a",
-        "tick": "rgba(179, 194, 210, 0.2)",
-        "hatch": "rgba(179, 194, 210, 0.16)",
-        "gap-shade": "rgba(10, 18, 28, 0.45)",
-        "glow-shadow": "rgba(255, 174, 25, 0.35)",
-        "danger-tint": "rgba(224, 62, 62, 0.16)",
-        "danger-tint-line": "rgba(224, 62, 62, 0.5)",
-        "shadow": "rgba(5, 10, 18, 0.6)",
-        "backdrop": "rgba(10, 18, 28, 0.72)",
-        "scrim": "rgb(8 12 18 / 0.78)",
-        "scrim-ink": "#edf2f8",  # was var(--text)
-        "thumb-scrim": "rgba(0, 0, 0, 0.55)",
-        "thumb-scrim-ink": "#f3bd60",  # was var(--amber)
-    }
-    root_values = dict(re.findall(r"--([\w-]+): (#[0-9a-fA-F]+|rgba?\([^)]*\))", root[1]))
-    assert {k: root_values.get(k) for k in moved} == moved
-    # outside the theme blocks, rules use the custom properties, not colours of their own
-    # (comments name issues as #352; the backdrop keeps a fallback for browsers where it does not inherit)
-    rules = re.sub(
-        r"/\*.*?\*/|var\(--backdrop, [^)]*\)\)", "", css.split("\n}\n", 3)[3], flags=re.S
-    )
-    assert not re.findall(r"#[0-9a-fA-F]{3,6}\b|rgba?\(\d", rules)
-
     for name in ("graphite", "blue", "light"):
         t = (
             graphite
@@ -1702,7 +1526,6 @@ def test_settings_offer_graphite_light_and_blue_themes_applied_before_first_pain
             text += [("faint", b) for b in ("slate", "panel", "deep")]
         for fg, bg in text:
             assert _contrast(t[fg], t[bg]) >= 4.5, (name, fg, bg)
-        # focus rings, the focused-card glow and other controls: 3:1 (WCAG 1.4.11)
         # --amber-text: focus rings and amber text; --amber is the fill, with --amber-ink on it
         ui_parts = [("amber-text", b) for b in ("slate", "panel", "raise", "deep")]
         ui_parts += [
@@ -1713,67 +1536,17 @@ def test_settings_offer_graphite_light_and_blue_themes_applied_before_first_pain
             ("gold-edge", "deep"),
         ]
         if name != "blue":  # Blue keeps today's borders (below 3:1)
-            ui_parts += [("line", "panel"), ("line", "slate"), ("line", "deep")]
-            # the --amber fill of progress bars on their track
-            ui_parts += [("amber", "track")]
+            ui_parts += [("line", "panel"), ("line", "slate"), ("line", "deep"), ("amber", "track")]
         for fg, bg in ui_parts:
             assert _contrast(t[fg], t[bg]) >= 3, (name, fg, bg)
-    assert re.search(r':root\[data-theme="light"\] \{[^}]*color-scheme: light;', css)
-    # the selected tab is raised on the segmented well (tokens, not hex); the range accents use --amber-text
-    assert re.search(r'\.side-tab\[aria-selected="true"\][^{]*\{[^}]*var\(--raise\)', css)
+    assert _css_decls(css, ':root[data-theme="light"]')["color-scheme"] == "light"
+    # no colour outside the theme blocks (the backdrop keeps a fallback where it does not inherit)
+    rules = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    rules = re.sub(r":root[^{]*\{[^}]*\}", "", rules)
+    rules = re.sub(r"var\(--backdrop, [^)]*\)\)", "", rules)
+    assert not re.findall(r"#[0-9a-fA-F]{3,6}\b|rgba?\(\d", rules)
     for rule in re.findall(r"[^{}]*input\[type=range\][^{}]*\{[^}]*accent-color[^}]*\}", css):
         assert "accent-color: var(--amber-text)" in rule, rule
-
-
-def test_the_trim_markers_are_keyboard_and_pointer_slider_handles() -> None:
-    """Contract pin (#352): Clip start and Clip end on the rail are focusable sliders with a 24 px
-    hit area, moved by keys and pointer drags through setRange (the path of the I and O keys), and Space is
-    not taken from the global play/pause handler.
-
-    Check in a browser (no browser in the test suite): Tab to a handle, arrows move it 0.1 s,
-    Shift+arrows 1 s, PageUp/PageDown 5 s; the cut line and aria-valuetext follow; start stops
-    MIN_CLIP before end; Space plays and pauses; a drag on a zoomed rail pans at the edge."""
-    html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
-    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
-    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
-    rail = re.search(r'<div class="rail" id="rail">(.*?)\n        </div>', html, re.S)
-    assert rail
-    for which, name in (("start", "Clip start"), ("end", "Clip end")):
-        tag = re.search(rf'<div id="{which}Handle"[^>]*>', rail[1])
-        assert tag, which
-        for attr in (
-            'role="slider"',
-            'tabindex="0"',
-            f'aria-label="{name}"',
-            "aria-valuemin=",
-            "aria-valuemax=",
-            "aria-valuenow=",
-        ):
-            assert attr in tag[0], (which, attr)
-    for attr in ("aria-valuemin", "aria-valuemax", "aria-valuenow"):
-        assert f"el.setAttribute('{attr}'" in js
-    assert "el.setAttribute('aria-valuetext', `${HANDLE_NAMES[which]}, ${fmt(t)}`);" in js
-    assert (
-        "const HANDLE_STEPS = { ArrowLeft: -0.1, ArrowDown: -0.1, ArrowRight: 0.1, ArrowUp: 0.1, PageDown: -5, PageUp: 5 };"
-        in js
-    )
-    assert "step * 10" in js  # Shift+arrows: 1 s
-    assert "return t === c[which] || setRange(which, t, widen);" in js
-    assert "el.setPointerCapture(e.pointerId);" in js
-    # a drag whose clip changed is dropped when the stage renders, not on the next pointer event
-    at = js.index("function renderStage(")
-    stage = js[at : js.index("const c = current();", at)]
-    assert "if (trimDrag && dragStale(trimDrag)) dropDrag();" in stage
-    assert (
-        "' '"
-        not in js[js.index("const HANDLE_STEPS") : js.index("el.addEventListener('pointerdown'")]
-    )
-    handle = re.search(r"^\.rail-handle \{([^}]*)\}", css, re.M)
-    assert handle and "width: 24px;" in handle[1] and "top: 0; bottom: 0;" in handle[1]
-    assert "touch-action: none;" in handle[1]
-    assert re.search(r"^\.rail-handle:focus-visible \{[^}]*outline: 2px solid", css, re.M)
-    # the rail is 104 px tall: the handle's hit area is at least 24 x 24
-    assert re.search(r"^\.rail \{[^}]*height: 104px;", css, re.M)
 
 
 def test_the_page_files_are_revalidated_on_each_load(client: TestClient) -> None:
@@ -2046,25 +1819,6 @@ def test_project_reply_follows_highlights_json_rewritten_with_the_same_size_and_
     assert [c["label"] for c in first.json()["highlights"]["candidates"]] == ["aaaa"]
     assert [c["label"] for c in second["highlights"]["candidates"]] == ["bbbb"]
     assert second["ranking_key"] != first.json()["ranking_key"]
-
-
-def test_moment_cards_show_the_cli_id_as_text_and_filter_by_it() -> None:
-    """#487: the id is real text with a screen-reader prefix, not a tooltip; data-id stays the
-    internal id (markMoments, AI highlights and the sequence use it)."""
-    render = _js_function(_web("app.js"), "renderMoments")
-    assert "h('span', { class: 'vh', text: 'Candidate ' }), c.cli_id)" in render
-    assert "'data-id': c.id" in render
-    # the filter runs through util.js momentMatches (Sort and filter), which matches the id
-    assert "momentMatches({ ...c," in render
-    util = _web("util.js")
-    assert "${m.cli_id ?? ''}" in util[util.index("export function momentMatches(") :]
-    assert (
-        ".cand-id {" in _web("app.css")
-        and "white-space: nowrap" in _web("app.css").split(".cand-id {")[1].split("}")[0]
-    )
-    assert "by the ids on the moment cards (shown with Settings > Verbose moment labels)" in _web(
-        "index.html"
-    )
 
 
 def test_media_supports_range_and_only_serves_project_sources(
@@ -3303,63 +3057,6 @@ def test_a_huge_still_time_of_a_source_of_unknown_length_is_cut_not_an_overflow(
     cs = round(ui.FRAME_MAX_AT * 100)
     assert still is not None and still.name == f"{media.key(source)}-{cs}-160.jpg"
     assert starts == [cs / 100]
-
-
-def test_rail_filmstrip_is_a_decorative_layer_under_the_markers() -> None:
-    """Contract pin (#261): the trim rail's filmstrip is an aria-hidden layer first in the rail's
-    markers, drawn by its own drawFilm (keyframe stills, key=1, on a 0.25 s x 2^k grid at most one
-    per 78 px, exact stills below a 1 s step, asked for 150 ms after the view stops), loaded ahead of the sequence thumbnails
-    under the same limit of 3, stale queued stills dropped by a generation counter, stopped after
-    3 failures for a source and skipped by data savers. Each theme sets its --film-opacity.
-
-    Check in a browser (no browser in the test suite): in Graphite, Light and Blue, open a moment;
-    stills fade in from the playhead outward; the gold selection, its handles, the dashed analyzed
-    range, the playhead and the hatched gaps stay readable over them. Pan: the stills move with
-    the view and only new ones load; zoom in and out: no still flashes. Resize the window: the
-    strip refills. With a source that cannot be read, the ticks stay."""
-    html = (ui.WEB_DIR / "index.html").read_text(encoding="utf-8")
-    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
-    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
-    marks = re.search(
-        r'<div class="rail" id="rail">\s*<div class="rail-marks">(.*?)</div>\s*<input', html, re.S
-    )
-    film_div = '<div class="rail-film" id="railFilm" aria-hidden="true"></div>'
-    assert marks and marks[1].lstrip().startswith(film_div)
-    assert html.count('id="railFilm"') == 1
-    themes = {
-        ":root": "0.55",
-        ':root[data-theme="light"]': "0.35",
-        ':root[data-theme="blue"]': "0.55",
-    }
-    for theme, opacity in themes.items():
-        block = re.search(re.escape(theme) + r" \{(.*?)\n\}", css, re.S)
-        assert block and f"--film-opacity: {opacity};" in block[1], theme
-    assert re.search(r"^\.rail-film \{[^}]*opacity: var\(--film-opacity\);", css, re.M)
-    assert "future filmstrip" not in css
-    draw = re.search(r"^function drawRail\(c = current\(\)\) \{(.*?)^\}", js, re.M | re.S)
-    assert draw and draw[1].count("drawFilm(c);") == 1 and "railFilm" not in draw[1]
-    film = re.search(r"^function drawFilm\(c = current\(\)\) \{(.*?)^\}", js, re.M | re.S)
-    assert film and "$('#railFilm')" in film[1] and "filmGen += 1;" in film[1]
-    assert "setTimeout(loadFilm, FILM_WAIT)" in film[1]
-    for const in (
-        "const FILM_TILE = 78;",
-        "const FILM_STEP = 0.25;",
-        "const FILM_WAIT = 150;",
-        "const FILM_FAILS = 3;",
-        "const THUMB_LOADS = 3;",
-    ):
-        assert const in js, const
-    assert "&w=${THUMB_W}${key ? '&key=1' : ''}`" in js
-    assert "const FILM_EXACT = 1;" in js and "const key = step >= FILM_EXACT;" in film[1]
-    gaps = re.search(
-        r"^\.rail-marks:has\(> \.rail-film > img\.ok\) > \.rail-gaps > span \{", css, re.M
-    )
-    assert gaps  # Light shades the rail's gaps darker while stills show
-    assert "prefers-reduced-data: reduce" in js and "navigator.connection?.saveData" in js
-    assert "new ResizeObserver(() => {\n  drawFilm();" in js and "}).observe($('#rail'))" in js
-    pump = re.search(r"^function pumpThumbs\(\) \{(.*?)^\}", js, re.M | re.S)
-    assert pump and pump[1].index("filmQueue.shift()") < pump[1].index("thumbQueue.shift()")
-    assert "next.gen !== filmGen" in pump[1]
 
 
 STILL_BT2020 = {"color_primaries": "bt2020", "color_space": "bt2020nc", "pix_fmt": "yuv420p10le"}
@@ -6991,7 +6688,7 @@ def test_focus_goes_to_the_row_in_place_of_one_that_left_the_list(
     list and preserveFocus focused the list's first button. util.js rowInPlace picks the row now at
     the card's index instead (the last one past the end, none in an empty list)."""
     assert util_js("return U.rowInPlace(args[0], args[1]);", at, n) == row
-    assert "rowInPlace(at, rows.length)" in _web("app.js")  # preserveFocus uses it
+    # preserveFocus's use of it: tests/js/workspace.test.mjs
 
 
 def test_a_failed_folder_listing_is_not_cached_as_an_empty_list(
@@ -7411,485 +7108,67 @@ def _web(name: str) -> str:
     return (ui.WEB_DIR / name).read_text(encoding="utf-8")
 
 
-def test_the_360_empty_state_counts_recordings_apart_from_the_360() -> None:
-    """Contract pin: a 360 project with no moments reads "360 footage: N recording(s) found"
-    (or "No 360 recordings found"), never "N 360 clips found", which read as 5,360."""
-    js = _web("app.js")
-    body = re.search(r"function renderUnanalyzed\(.*?\n\}\n", js, re.S)[0]
-    assert "`360 footage: ${n} recording${n === 1 ? '' : 's'} found`" in body
-    assert "'No 360 recordings found'" in body
-    assert not re.search(r"\$\{n\} 360", js)  # no count directly before "360"
+def _css_decls(css: str, selector: str) -> dict[str, str]:
+    """The declarations of the first rule whose selector list is ``selector`` (whitespace and
+    comments ignored), as ``{property: value}``: a reformat or reorder of the rule keeps them."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    want = " ".join(selector.split())
+    for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        if " ".join(sel.split()) == want:
+            pairs = (d.split(":", 1) for d in body.split(";") if ":" in d)
+            return {k.strip(): " ".join(v.split()) for k, v in pairs}
+    raise AssertionError(f"no rule {selector!r}")
 
 
-def test_stage_and_final_video_never_sound_together() -> None:
-    """Contract pin: the Export tab's final video plays on while its tab is hidden, so "Play
-    sequence" (or a moment) starting on the stage pauses it, and playing it stops the sequence
-    (or pauses the stage). Before, its audio ran on under every sequence clip."""
-    js = _web("app.js")
-    stage_play = re.search(r"onStage\('play', \(\) => \{(.*?)\n\}\);", js, re.S)[1]
-    assert "finalVideo.pause();" in stage_play
-    final_play = re.search(
-        r"finalVideo\.addEventListener\('play', \(\) => \{(.*?)\n\}\);", js, re.S
-    )
-    assert final_play and "if (S.seqPlay) seqStop();" in final_play[1]
-    # off the sequence it pauses the stage and cancels a resume at a window's end, which would
-    # start the stage again (and so pause the final video) once the next window loads
-    assert re.search(r"else \{\s*cancelResume\(\);[^\n]*\n\s*v\.pause\(\);", final_play[1])
+class _Tags(HTMLParser):
+    """index.html's elements by id (their attributes) and each select's option values."""
 
+    def __init__(self, html: str) -> None:
+        super().__init__()
+        self.by_id: dict[str, dict[str, str | None]] = {}
+        self.options: dict[str, list[str]] = {}
+        self._select: str | None = None
+        self.feed(html)
 
-def test_a_hidden_side_tab_pauses_its_videos() -> None:
-    """Contract pin: closing the Export panel pauses its final video, which would otherwise play
-    on unseen (a hidden element keeps playing)."""
-    js = _web("app.js")
-    body = js[js.index("function initSideTabs(") : js.index("function initMomentOrder(")]
-    close = body[body.index("const closeExport = () => {") :]
-    close = close[: close.index("\n  };")]
-    assert "exportPanel.hidden = true;" in close
-    assert "for (const vid of exportPanel.querySelectorAll('video')) vid.pause();" in close
-    html = _web("index.html")
-    export = html[html.index('id="panelExport"') :]
-    assert '<video id="finalVideo"' in export  # the video this pauses lives in a tab panel
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        a = dict(attrs)
+        if a.get("id"):
+            self.by_id[a["id"]] = a
+        if tag == "select":
+            self._select = a.get("id")
+            self.options[self._select or ""] = []
+        elif tag == "option" and self._select:
+            self.options[self._select].append(a.get("value") or "")
 
-
-def test_play_sequence_keeps_a_window_proxy_only_when_it_covers_the_whole_clip() -> None:
-    """Contract pin: during "Play sequence" the stage keeps its loaded window proxy for the next
-    clip of the same source only when the window plays all of it, as ``fileFor`` decides. A
-    window covering the clip's start alone was kept and sought, so the clip was cut short at
-    the window's end or the sequence stalled waiting for a file that never loaded."""
-    js = _web("app.js")
-    # a file of the clip's own source: a window of another source whose times hold the clip
-    # played that source's picture and sound as the clip
-    holds = re.search(r"const holdsClip = \(c\) => \{(.*?)\n\};", js, re.S)[1]
-    assert "ofSource(src)" in holds and "coversSeg(r, c, sourceDur(c.source))" in holds
-    body = js[js.index("function stageVideo(") : js.index("/** Stop a video element")]
-    # part: the clip, or over a cut only the part of it that plays
-    keep = "const keep = mine && inLoaded(at, durOf(c)) && (!S.seqPlay || holdsClip(part));"
-    assert keep in body
-    assert "if (fits && (keep || p))" in body and "if (!keep) loadFile(src, p, at);" in body
-    playing_on = re.search(r"const playingOn = ([^;]*);", body)[1]
-    assert "ofSource(src)" in playing_on
-    assert playing_on.endswith("&& (!S.seqPlay || holdsClip(part))")
-
-
-def test_sequence_column_is_a_tablist_of_tabs_and_tabpanels() -> None:
-    """Contract pin (#462, #346): the column has a Sequence, an AI Chat and a Models tab, each
-    controlling a labelled tabpanel; only the selected tab is in the tab order (roving tabindex).
-    Export is no tab: the header's Export button controls the Export panel, a region with its own
-    heading, shown in this column with no tab selected."""
-    html = _web("index.html")
-    (tablist,) = re.findall(r'<div[^>]*role="tablist"[^>]*>(.*?)</div>', html, re.S)
-    tabs = re.findall(r"<button\b[^>]*>", tablist)
-    assert len(tabs) == 3 and all('role="tab"' in t for t in tabs)
-    panels = dict(
-        re.findall(r'<div id="(\w+)"[^>]*role="tabpanel"[^>]*aria-labelledby="(\w+)"', html)
-    )
-    assert panels == {
-        "panelSequence": "tabSequence",
-        "panelAssistant": "tabAssistant",
-        "panelModels": "tabModels",
-    }
-    for tab in tabs:
-        tab_id = re.search(r'id="(\w+)"', tab)[1]
-        controls = re.search(r'aria-controls="(\w+)"', tab)[1]
-        assert panels[controls] == tab_id  # tab and panel name each other
-    assert 'aria-selected="true"' in tabs[0]
-    assert all('aria-selected="false"' in t and 'tabindex="-1"' in t for t in tabs[1:])
-    assert "tabindex" not in tabs[0]
-    for later in ("panelAssistant", "panelExport", "panelModels"):
-        assert " hidden" in re.search(rf'<div id="{later}"[^>]*>', html)[0]  # Sequence first
-    assert "tabExport" not in html
-    export = re.search(r'<div id="panelExport"[^>]*>', html)[0]
-    assert 'role="region"' in export and 'aria-labelledby="exportTitle"' in export
-    assert re.search(r'<button type="button" id="exportBtn"[^>]*aria-expanded="false"', html)
-    assert 'aria-controls="panelExport"' in re.search(r'<button[^>]*id="exportBtn"[^>]*>', html)[0]
-    assert 'id="exportBack"' in html and 'id="exportTitle"' in html
-    assert 'id="side" aria-label="Sequence, AI chat and models"' in html
-    js = _web("app.js")
-    assert "[role=tab]" in js and "aria-selected" in js and "ArrowRight" in js
-
-
-def test_side_tabs_share_the_column_width_evenly_at_any_width() -> None:
-    """Contract pin: the tabs are a segmented control (board F): a rounded well with 8 px (top,
-    bottom) and 12 px (sides) margin and 3 px padding whose three tabs are equal grid columns, so at any width the splitter sets
-    they fill it evenly; a label too long for its tab ends in an ellipsis (its text, the tab's
-    name for screen readers, stays whole). The selected tab is raised and 600 weight.
-
-    Check in a browser (no browser in the test suite): at the narrowest, default and widest
-    column, the three tabs are equally wide within 1 px and together as wide as the well."""
-    css = _web("app.css")
-    band = re.search(r"^\.side-tabs \{([^}]*)\}", css, re.M)[1]
-    assert "display: grid;" in band and "grid-template-columns: repeat(3, minmax(0, 1fr));" in band
-    assert "margin: var(--space-2) var(--space-3);" in band and "padding: 3px;" in band
-    assert "border-radius: 8px;" in band and "background: var(--deep);" in band
-    tab = re.search(r"^\.side-tab \{([^}]*)\}", css, re.M)[1]
-    for decl in ("min-width: 0;", "overflow: hidden;", "white-space: nowrap;",
-                 "text-overflow: ellipsis;", "height: 30px;", "border-radius: 6px;"):  # fmt: skip
-        assert decl in tab
-    assert "flex" not in tab
-    selected = re.search(r'^\.side-tab\[aria-selected="true"\] \{([^}]*)\}', css, re.M)[1]
-    assert "background: var(--raise);" in selected and "font-weight: 600;" in selected
-    html = _web("index.html")
-    (tablist,) = re.findall(r'<div[^>]*role="tablist"[^>]*>(.*?)</div>', html, re.S)
-    names = re.findall(r'<button\b[^>]*role="tab"[^>]*>([^<]+)</button>', tablist)
-    assert names == ["Sequence", "AI Chat", "Models"]  # the visible text is the name
-    assert "aria-label" not in tablist.replace('aria-label="Sequence column"', "")
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "select":
+            self._select = None
 
 
 def test_side_tabs_and_panel_headers_stay_put_while_a_panel_scrolls() -> None:
-    """Contract pin: the tab bar (at the column's -12 px padding) and the Sequence and AI Chat
-    headers under it are sticky (the Sequence header holds the selection actions, so no separate
-    bar sticks); below 960 px, where the page scrolls, they are static. revealRow keeps rows clear
-    of them through the scroll padding app.js sets. Before, the tab bar and headers scrolled away
-    with a long panel.
-
-    Check in a browser (no browser in the test suite): at 1600x800, with each panel scrolled to
-    the bottom, the tab bar's and header's tops do not move and the header's top equals the tab
-    bar's bottom, and a focused row lands below them."""
+    """Regression: the tab bar and the Sequence and AI Chat headers scrolled away with a long
+    panel; they are sticky (layout jsdom cannot see). revealRow's scroll padding is in
+    tests/js/graphite.test.mjs."""
     css = _web("app.css")
-    band = re.search(r"^\.side-bar \{([^}]*)\}", css, re.M)[1]
-    assert "position: sticky; top: -12px;" in band
-    # as tall as the header bands: 8 px margin, the 36 px control, 8 px margin, the 1 px rule
-    assert "--side-bar-h: var(--band-h);" in css
-    heads = re.search(
-        r"^#panelSequence > \.col-head, #panelAssistant > \.chat-head \{([^}]*)\}", css, re.M
-    )[1]
-    assert "position: sticky; top: calc(var(--side-bar-h) - 12px);" in heads
-    narrow = css[css.index("@media (max-width: 960px)") :]
-    narrow = narrow[: narrow.index("\n}\n")]
-    assert ".side-bar, .seq-foot, #panelAssistant > .chat-head" in narrow
-    assert "#panelSequence > .col-head { top: 0; }" in narrow  # the selection actions stay in reach
-    assert "#panelSequence > .col-head," not in narrow.split("{")[0]
-    js = _web("app.js")
-    reveal = js[js.index("function revealRow(") :]
-    reveal = reveal[: reveal.index("\n}\n")]
-    assert "scrollPaddingTop" in reveal and "scrollPaddingBottom" in reveal
-    assert "side.style.scrollPaddingTop = px;" in js
-    # the footer is no scroll-padding (focusing in it must not scroll the column); rows clear it by margin
-    assert "side.style.scrollPaddingBottom = `${$('#chatForm').offsetHeight}px`;" in js
-    assert "side.style.setProperty('--seq-foot-h', `${$('#seqFoot').offsetHeight}px`);" in js
-    assert "--seq-foot-h" in reveal
-    assert "scroll-margin-bottom: calc(var(--seq-foot-h, 0px) + 28px);" in css
-    assert "pad.observe(el)" in js and "$('#seqFoot')]" in js
-    assert "--side-bars" not in js and "--side-bars" not in css
-    # a ticked or current row keeps 4.5:1 for its rank and kind text: the rank is --muted there
-    assert re.search(
-        r"\.seq\.selected \.rank, \.seq\[aria-current\] \.rank \{ color: var\(--muted\); \}", css
-    )
-    assert "12%, var(--picked))" in css and "12%, var(--raise))" not in css
-    # the "+ tail" note is --amber-text (4.07:1 on the ticked tint in Light): --muted when ticked
-    assert re.search(r"\.seq\.selected \.seq-tail \{ color: var\(--muted\); \}", css)
+    assert _css_decls(css, ".side-bar")["position"] == "sticky"
+    heads = _css_decls(css, "#panelSequence > .col-head, #panelAssistant > .chat-head")
+    assert heads["position"] == "sticky"
 
 
-@pytest.mark.parametrize(
-    ("bar", "col", "prop", "key", "limits", "track"),
-    [
-        ("sideSplit", "side", "--side-w", "SIDE_KEY", ("SIDE_MIN", "SIDE_MAX", -1), 3),
-        ("momSplit", "moments", "--mom-w", "MOM_KEY", ("MOM_MIN", "MOM_MAX", 1), 1),
-    ],
-)
-def test_column_splitters_resize_by_pointer_keys_and_reset_and_keep_the_stage(
-    bar: str, col: str, prop: str, key: str, limits: tuple[str, str, int], track: int
-) -> None:
-    """Contract pin (#516): the moments and sequence columns each have a focusable separator
-    beside them, driven by one shared helper with the column's own storage key, limits and drag
-    direction; the width is a CSS track of #workspace, and the stage track keeps STAGE_MIN.
+def test_the_column_minimums_fit_the_narrowest_three_column_window() -> None:
+    """Cross-file contract (#516): app.js's MOM_MIN + SIDE_MIN + STAGE_MIN fit app.css's narrowest
+    three-column window, and the stage track keeps STAGE_MIN. The splitters' behaviour is in
+    tests/js/workspace.test.mjs."""
+    js, css = _web("app.js"), _web("app.css")
 
-    Check in a browser (no browser in the test suite): drag, arrows (Shift for four steps),
-    Home/End and double-click resize each column; the width survives a reload; at a 961 px window
-    the preview stays 360 px and neither column shrinks below its minimum."""
-    html, css, js = _web("index.html"), _web("app.css"), _web("app.js")
-    tag = re.search(rf'<div id="{bar}"[^>]*>', html)[0]
-    for attr in ('class="splitter"', 'role="separator"', 'tabindex="0"',
-                 'aria-orientation="vertical"', f'aria-controls="{col}"',
-                 'title="Drag to resize, double-click to reset"'):  # fmt: skip
-        assert attr in tag, attr
-    assert re.search(rf'<section class="col {col}" id="{col}"', html)
-    lo, hi, direction = limits
-    assert re.search(
-        rf"splitter\(\{{ bar: \$\('#{bar}'\), col: \w+, other: \w+, prop: '{prop}', key: {key},"
-        rf"\s+min: {lo}, maxW: {hi}, dir: {direction} \}}\)",
-        js,
-    )
-    # one helper for both: a single drag, key and reset handler, no copy per column
-    helper = re.search(r"function initSplitters\(\) \{.*?\n\}\n", js, re.S)[0]
-    for listener in ("'pointerdown'", "'keydown'", "'dblclick'"):
-        assert helper.count(f"bar.addEventListener({listener}") == 1, listener
-    for attr in ("aria-valuemin", "aria-valuemax", "aria-valuenow"):
-        assert f"bar.setAttribute('{attr}'" in helper
-    assert "requestAnimationFrame(flush)" in helper  # at most one resize per frame
-    assert "Math.floor(innerWidth / 2)" in helper and "- STAGE_MIN" in helper
-    assert "addEventListener('resize'" in helper
-    assert re.search(r"try \{\s+pref = Number\(localStorage\.getItem\(key\)\)", helper)
-    assert re.search(r"try \{\s+if \(pref == null\) localStorage\.removeItem\(key\);", helper)
-    assert f'@property {prop} {{ syntax: "*"; inherits: false; }}' in css
-    cols = re.search(r"^#workspace \{[^}]*grid-template-columns: ([^;]+);", css, re.M)[1]
-    tracks = re.findall(r"var\([^()]*\([^)]*\)\)|minmax\([^)]*\)", cols)
-    assert tracks[track - 1].startswith(f"var({prop}, minmax(")
-    stage_min = re.search(r"^const STAGE_MIN = (\d+);", js, re.M)[1]
-    assert tracks[1] == f"minmax({stage_min}px, 1fr)"
-    # the narrowest window with three columns fits both minimums beside the stage's
-    narrow = int(re.search(r"@media \(max-width: (\d+)px\) \{\n  body", css)[1]) + 1
-    mins = [int(re.search(rf"^const {name} = (\d+);", js, re.M)[1]) for name in
-            ("MOM_MIN", "SIDE_MIN")]  # fmt: skip
-    assert sum(mins) + int(stage_min) <= narrow
-    # the handle sits at the left edge of the track right of the bar, in its own cell
-    edge = re.search(r"^\.splitter \{[^}]*grid-area: 1 / 3;", css, re.M)
-    assert edge if bar == "sideSplit" else "#momSplit { grid-area: 1 / 2; }" in css
+    def const(name: str) -> int:
+        return int(re.search(rf"\bconst {name}\s*=\s*(\d+)\s*;", js)[1])
 
-
-def test_export_panel_has_the_options_and_actions_and_no_single_padding_field() -> None:
-    """Contract pin (#462): the Export tab holds every export and assembly option and the
-    actions; the old single padding field (``#optExtend``) stays gone: padding is a start and an
-    end field, sent as ``extend_start`` / ``extend_end``, never as ``extend``."""
-    html = _web("index.html")
-    export = re.search(r'<div id="panelExport".*?\n      </div>\n    </section>', html, re.S)[0]
-    ids = set(re.findall(r'\bid="(\w+)"', export))
-    assert {
-        "exportPanel", "optVertical", "optCaptions", "optSpeech", "optTail", "optLoudnorm",
-        "optLink", "optTransition", "optAudioTransition", "optPeaks", "clipsBtn", "assembleBtn",
-        "extendBtn", "revealExportBtn", "exportState", "outputs", "finalVideo", "optPicksSeq",
-        "optPicksAuto", "optExtendStart", "optExtendEnd",
-    } <= ids  # fmt: skip
-    assert 'id="optExtend"' not in html and "'#optExtend'" not in _web("app.js")
-    assert "Padding per side" not in html
-    assert re.search(r'<select id="optAudioTransition"[^>]*>(.*?)</select>', html, re.S)
-    values = re.findall(
-        r'value="(\w+)"', re.search(r'<select id="optAudioTransition".*?</select>', html, re.S)[0]
-    )
-    assert values == ["cut", "crossfade"]
-    # the page sends no single padding; the server still accepts one
-    js = _web("app.js")
-    for builder in ("exportOptions", "extendOptions"):
-        body = re.search(rf"function {builder}\(\) \{{\n(.*?)\n\}}", js, re.S)[1]
-        assert not re.search(r"\bextend\s*:", body), builder
-
-
-def test_every_export_option_is_described_for_screen_readers() -> None:
-    """Contract pin (#462): each option names a description element (aria-describedby) that
-    exists in the page and is not empty, so hover titles are not the only help."""
-    html = _web("index.html")
-    panel = re.search(
-        r'<fieldset class="panel opts" id="exportPanel">.*?</fieldset>\s*</fieldset>', html, re.S
-    )[0]
-    controls = re.findall(r"<(?:input|select)\b[^>]*>", panel)
-    option_ids = {"optVertical", "optCaptions", "optSpeech", "optTail", "optLoudnorm", "optLink",
-                  "optTransition", "optAudioTransition", "optPeaks", "optPicksSeq",
-                  "optPicksAuto", "optTop", "optMaxTotal", "optIds", "optOrder",
-                  "optSpeechExtend", "optSpeechLead", "optTailMin", "optTailMax",
-                  "optEventTails", "optEventWindow", "optExtendStart",
-                  "optExtendEnd", "optColor", "optColorStrength", "optFadeDur",
-                  "optFinalAudioFade", "optCaptionModel", "optCrop", "optCropBox", "optSize",
-                  "optAudioFade", "optFormat"}  # fmt: skip
-    seen = set()
-    for control in controls:
-        cid = re.search(r'id="(\w+)"', control)[1]
-        seen.add(cid)
-        described = re.search(r'aria-describedby="(\w+)"', control)
-        assert described, f"{cid} has no aria-describedby"
-        text = re.search(rf'<span id="{described[1]}"[^>]*>(.+?)</span>', panel, re.S)
-        assert text and len(text[1].strip()) > 20, f"{cid}: description missing or empty"
-    assert seen == option_ids
-
-
-def test_export_tab_says_sequence_and_max_video_length() -> None:
-    """Contract pin (mock2): the first Clips to Export choice is "Sequence" (was "The sequence
-    (hand-picked)") and --max-total is "Max video length" (was "Max total (s)"; no "(s)", the
-    title says seconds), the cap on all clips together; its title and description say so."""
-    html = _web("index.html")
-    assert re.search(r'id="optPicksSeq"[^>]*> Sequence</label>', html)
-    assert "hand-picked" not in html and "Max total" not in html
-    label = re.search(r'<label for="optMaxTotal" title="([^"]*)">([^<]*)</label>', html)
-    assert label and label[2] == "Max video length"
-    described = re.search(r'<span id="dMaxTotal" class="vh">([^<]*)</span>', html)[1]
-    for text in (label[1], described):
-        assert text.startswith("Caps the video's length: the clips' total in seconds")
-        assert "(--max-total)" in text
-
-
-ADVANCED_EXPORT = ("optTop", "optIds", "optSpeechExtend", "optSpeechLead", "optTailMin",
-                   "optTailMax", "optEventWindow", "optExtendStart", "optExtendEnd")  # fmt: skip
-
-
-def test_advanced_export_options_are_hidden_until_a_browser_setting_shows_them() -> None:
-    """Contract pin (mock2): Top moments, Candidate ids, the Cut Timing fields but Event tails,
-    the "Latest export" facts and Extend export carry ``adv`` and are hidden (display: none, so the
-    grids keep no gaps) unless Settings > "Show advanced export options" is ticked. Like Stats for
-    Nerds it is off by default and kept in this browser (``cutpoint.advancedExport`` = "1"); it
-    previews on change, and Cancel or Escape restores it.
-
-    Check in a browser (no browser in the test suite): advanced off, Cut Timing shows Event tails
-    alone and Clips to Export Max video length and Order; ticking the box shows the rest at once."""
-    html = _web("index.html")
-    js = _web("app.js")
-    css = _web("app.css")
-    for cid in ADVANCED_EXPORT:
-        assert re.search(rf'<label for="{cid}" class="adv"', html), cid
-        assert re.search(rf'<input type="\w+" id="{cid}" class="adv"', html), cid
-    for cid in ("optMaxTotal", "optOrder", "optEventTails"):  # stay visible
-        assert not re.search(rf'<label for="{cid}" class="adv"', html), cid
-    # only the "Latest export ..." facts are advanced: the 360 preview note and guidance such as
-    # "Add moments to the sequence" always show, and an empty line takes no room
-    assert '<p id="exportState" class="muted"></p>' in html
-    render = re.search(r"function renderExport\(\) \{\n(.*?)\n\}", js, re.S)[1]
-    assert "h('span', { class: 'adv', text: `Latest export (" in render
-    assert render.count("latest(") == 3 and "st.textContent" not in render
-    for shown in ("say(`${note} Automatic picks", "say(note)", "say('Add moments to the sequence",
-                  "say(` The latest export differs from this sequence.${note} Export again"):  # fmt: skip
-        assert shown in render, shown
-    # no 360 note makes say() null: every branch drops it, so "null" is never rendered
-    assert "const show = (...parts) => st.replaceChildren(...parts.filter(Boolean));" in render
-    assert render.count("st.replaceChildren(") == 1
-    assert re.search(
-        r"^#panelExport:not\(\.show-adv\) #exportState:not\(:has\(span:not\(\.adv\)\)\), "
-        r"#exportState:empty \{ display: none; \}",
-        css,
-        re.M,
-    )
-    assert re.search(r'<button type="button" id="extendBtn" class="btn outline adv"', html)
-    assert 'id="revealExportBtn" class="btn outline"' in html  # Show Exports Folder stays
-    assert re.search(r"^#panelExport:not\(\.show-adv\) \.adv \{ display: none; \}", css, re.M)
-    settings = re.search(r'<dialog id="settingsDialog".*?</dialog>', html, re.S)[0]
-    assert re.search(
-        r'<label class="check"><input type="checkbox" id="setAdvExport"[^>]*> Show advanced export options</label>',
-        settings,
-    )
-    assert " checked" not in re.search(r'<input type="checkbox" id="setAdvExport"[^>]*>', html)[0]
-    assert "const ADV_KEY = 'cutpoint.advancedExport';" in js
-    assert "advExport: false," in js  # off unless the browser stored "1"
-    init = re.search(r"function initAdvExport\(\) \{\n(.*?)\n\}", js, re.S)[1]
-    assert "S.advExport = localStorage.getItem(ADV_KEY) === '1';" in init
-    assert "showAdvExport(S.advExport);" in init
-    show = re.search(r"function showAdvExport\(on\) \{\n(.*?)\n\}", js, re.S)[1]
-    assert "$('#panelExport').classList.toggle('show-adv', on);" in show
-    assert "S.advExportWas = S.advExport;" in js
-    # Cancel/Escape restore only a changed box: a field revealed for an out-of-range value stays
-    assert "if ($('#setAdvExport').checked !== S.advExportWas) setAdvExport(S.advExportWas);" in js
-    assert "initAdvExport();" in js
-
-
-def test_hidden_advanced_export_fields_still_send_their_values() -> None:
-    """Contract pin (mock2): hiding never changes an export. A job's fields are skipped only when
-    blank or disabled, never because they are hidden; a hidden field that a job sends is named
-    under the options ("Advanced options in use: ..."), and a hidden field out of its range shows
-    the advanced options so the browser can point at it."""
-    js = _web("app.js")
-    html = _web("index.html")
-    fields = re.search(r"function fields\(\.\.\.keys\) \{\n(.*?)\n\}", js, re.S)[1]
-    assert "if (el.disabled || !v) continue;" in fields
-    assert "adv" not in fields and "hidden" not in fields and "checkVisibility" not in fields
-    in_use = re.search(r"function renderAdvInUse\(\) \{\n(.*?)\n\}", js, re.S)[1]
-    assert "el.classList.contains('adv') && !el.disabled && el.value.trim()" in in_use
-    assert "Advanced options in use: ${used.join(', ')}" in in_use
-    assert '<p id="advInUse" class="hint" hidden></p>' in html
-    sync = re.search(r"function syncTiming\(\) \{\n(.*?)\n\}", js, re.S)[1]
-    assert sync.rstrip().endswith("renderAdvInUse();")  # after every field and box change
-    valid = re.search(r"function validOptions\(body\) \{\n(.*?)\n\}", js, re.S)[1]
-    assert "if (bad?.classList.contains('adv')) showAdvExport(true);" in valid
-    assert valid.index("showAdvExport(true)") < valid.index("bad?.reportValidity();")
-
-
-def test_extend_export_is_off_with_nothing_to_extend() -> None:
-    """Extend export with blank (or 0) Extend start and end and Speech-aware cuts off would run
-    ``extend --no-speech-aware`` with no padding, which the CLI refuses ("Nothing to do"): the
-    button is disabled with the reason in its title (the tooltip) and follows the fields as they
-    are typed. Its aria-describedby hides the title from screen readers, so the same reason is
-    also in the hidden #extendWhy it names (written only when it changes)."""
-    js = _web("app.js")
-    html = _web("index.html")
-    btn = re.search(r'<button type="button" id="extendBtn"[^>]*>', html)[0]
-    assert 'aria-describedby="dExtendBtn extendWhy"' in btn
-    assert '<span id="extendWhy" class="vh"></span>' in html
-    busy = _js_function(js, "renderBusy")
-    assert "const extendSay = $('#extendWhy');" in busy
-    assert (
-        "if (extendSay.textContent !== $('#extendBtn').title) "
-        "extendSay.textContent = $('#extendBtn').title;"
-    ) in busy
-    assert busy.index("set('#extendBtn'") < busy.index("extendSay.textContent =")
-    assert "const ext = extendOptions();" in busy
-    assert "!ext.speech_aware && !(ext.extend_start > 0) && !(ext.extend_end > 0)" in busy
-    assert "set('#extendBtn', !p || busy || !p.clips || idle, extendWhy);" in busy
-    assert "'Set Extend start or Extend end above 0, or turn Speech-aware cuts on.'" in busy
-    assert "!p?.clips ? 'Export clips first.'" in busy  # the earlier reasons still come first
-    assert (
-        "for (const id of ['#optExtendStart', '#optExtendEnd', '#optSpeech']) "
-        "$(id).addEventListener('input', renderBusy);"
-    ) in js
-
-
-def test_slider_tick_labels_sit_centred_under_their_stops() -> None:
-    """Contract pin (mock2): Compress Audio Peaks and Color are centred with equal margins
-    (--inset); their tick labels sit in a box inset by half the native thumb (--thumb) more, so
-    its ends and middle are the thumb's stops, and each label is centred on its stop. Color's
-    Strength slider spans the same width under its name and percentage.
-
-    Check in a browser (no browser in the test suite): Light and Auto are centred under the
-    middle stop within 1 px, None/Off and Max/Underwater under the end stops, in every theme."""
-    css = _web("app.css")
-    assert re.search(
-        r"^\.opts \.peaks, \.opts \.color \{ --inset: 24px; --thumb: 16px; \}", css, re.M
-    )
-    rng = re.search(
-        r"^\.peaks input\[type=range\], \.color input\[type=range\] \{([^}]*)\}", css, re.M
-    )[1]
-    assert "width: calc(100% - 2 * var(--inset));" in rng and "justify-self: center;" in rng
-    assert "margin: 0;" in rng
-    ticks = re.search(r"^\.peaks \.ticks, \.color \.ticks \{([^}]*)\}", css, re.M)[1]
-    assert "position: relative;" in ticks
-    assert "margin-inline: calc(var(--inset) + var(--thumb) / 2);" in ticks
-    assert "space-between" not in ticks
-    span = re.search(r"^\.ticks span \{([^}]*)\}", css, re.M)[1]
-    assert "position: absolute;" in span and "transform: translateX(-50%);" in span
-    for n, left in ((1, "0"), (2, "50%"), (3, "100%")):
-        assert f".ticks span:nth-child({n}) {{ left: {left}; }}" in css
-    strength = re.search(r"^\.color-strength \{([^}]*)\}", css, re.M)[1]
-    assert "margin: 6px var(--inset) 0;" in strength
-    assert re.search(
-        r"^\.color \.color-strength input\[type=range\] \{ grid-row: 2; grid-column: 1 / -1; width: 100%; \}",
-        css,
-        re.M,
-    )
-    html = _web("index.html")
-    for names in (["None", "Light", "Max"], ["Off", "Auto", "Underwater"]):
-        assert (
-            f'<div class="ticks" aria-hidden="true">{"".join(f"<span>{n}</span>" for n in names)}</div>'
-            in html
-        )
-
-
-def test_export_option_defaults_are_smart_edges_loudnorm_link_on_and_light_peaks() -> None:
-    """Contract pin (#462): a viewer who changed nothing gets Speech-aware cuts and Smart tails
-    (Smart edges before), Normalize loudness and Link Transitions on, Light peaks, the sequence
-    as the clips and Event tails on Auto; Vertical and captions off. The markup and the script's
-    defaults agree, and the slider's stops are None, Light, Max."""
-    html = _web("index.html")
-    js = _web("app.js")
-
-    def checked(cid: str) -> bool:
-        return " checked" in re.search(rf'<input[^>]*id="{cid}"[^>]*>', html)[0]
-
-    assert [checked(c) for c in ("optSpeech", "optTail", "optLoudnorm", "optLink")] == [True] * 4
-    assert checked("optPicksSeq") and not checked("optPicksAuto")
-    assert [checked(c) for c in ("optVertical", "optCaptions")] == [False] * 2
-    defaults = re.search(r"const OPT_DEFAULTS = \{(.*?)\};", js, re.S)[1]
-    for pair in ("speech_aware: true", "smart_tail: true", "picks: 'sequence'",
-                 "event_tails: 'auto'", "order: ''", "loudnorm: true", "link: true", "vertical: false",
-                 "captions: false", "transition: 'cut'", "audio_transition: 'cut'",
-                 "compress_peaks: 'light'"):  # fmt: skip
-        assert pair in defaults
-    assert "const PEAK_STOPS = ['off', 'light', 'strong'];" in js
-    slider = re.search(r'<input type="range" id="optPeaks"[^>]*>', html)[0]
-    assert 'min="0"' in slider and 'max="2"' in slider and 'value="1"' in slider  # Light
-    # config.json's compress_peaks, when it sets one, beats the Light default
-    assert "compress_peaks_set" in js
-
-
-def test_the_page_sends_the_new_options_with_its_jobs() -> None:
-    js = _web("app.js")
-    assert "smart_tail: $('#optTail').checked" in js
-    assert "speech_aware: $('#optSpeech').checked" in js
-    assert "saved.smart_edges" in js  # a stored Smart edges choice is both boxes' default
-    assert "audio_transition: $('#optAudioTransition').value" in js
+    stage = const("STAGE_MIN")
+    narrow = int(re.search(r"@media \(max-width:\s*(\d+)px\)\s*\{\s*body", css)[1]) + 1
+    assert const("MOM_MIN") + const("SIDE_MIN") + stage <= narrow
+    cols = _css_decls(css, "#workspace")["grid-template-columns"]
+    assert f"minmax({stage}px, 1fr)" in cols
 
 
 def test_focus_rings_use_the_amber_text_colour_so_light_theme_keeps_contrast() -> None:
@@ -8223,23 +7502,14 @@ def test_extend_job_needs_an_export(client: TestClient, tmp_path: Path) -> None:
     assert res.json()["detail"] == "export clips before extending them"
 
 
-def test_the_export_tab_offers_the_direct_controls_with_labels() -> None:
-    """Contract pin (#462): each new control is a native, labelled input whose limits match the
-    server's, and the page sends each under the option name the server reads."""
-    html = _web("index.html")
-    js = _web("app.js")
-    for cid in ("optTop", "optMaxTotal", "optIds", "optOrder", "optSpeechExtend", "optSpeechLead",
-                "optTailMin", "optTailMax", "optEventTails", "optEventWindow", "optExtendStart",
-                "optExtendEnd", "optCrop", "optCropBox", "optSize", "optAudioFade", "optFadeDur",
-                "optFinalAudioFade", "optCaptionModel"):  # fmt: skip
-        assert re.search(rf'<label for="{cid}"[^>]*>[^<]+</label>', html), cid
-    radios = re.findall(r'<input type="radio" name="optPicks"[^>]*value="(\w+)"', html)
-    assert radios == ["sequence", "auto"]
-    assert re.search(r'id="optPicksSeq"[^>]*checked', html)
+def test_the_export_fields_take_the_limits_and_choices_the_server_takes() -> None:
+    """Cross-language contract (#462): each Export field's min and max and each select's values
+    are those the server validates. What the page sends is in tests/js/export.test.mjs."""
+    tags = _Tags(_web("index.html"))
 
-    def limits(cid: str) -> tuple[str, str]:
-        tag = re.search(rf'<input[^>]*id="{cid}"[^>]*>', html)[0]
-        return re.search(r'min="([\d.]+)"', tag)[1], re.search(r'max="([\d.]+)"', tag)[1]
+    def limits(cid: str) -> tuple[str | None, str | None]:
+        a = tags.by_id[cid]
+        return a.get("min"), a.get("max")
 
     assert limits("optTop") == ("1", str(ui.MAX_SEGMENTS))
     assert limits("optMaxTotal")[1] == f"{ui.MAX_TOTAL_S:g}"
@@ -8249,22 +7519,9 @@ def test_the_export_tab_offers_the_direct_controls_with_labels() -> None:
     assert limits("optEventWindow")[1] == f"{ui.MAX_TIMING_S:g}"
     for cid in ("optAudioFade", "optFadeDur", "optFinalAudioFade"):
         assert limits(cid)[1] == f"{ui.MAX_FADE_S:g}"
-
-    def values(sid: str) -> list[str]:
-        return re.findall(r'value="(\w*)"', re.search(rf'<select id="{sid}".*?</select>', html)[0])
-
-    assert sorted(values("optOrder")) == sorted(["", *ui.CLIP_ORDERS])
-    assert values("optEventTails") == list(ui.EVENT_TAILS)
-    assert values("optCrop") == ["", "auto", "none", "custom"]
-    model = re.search(r'<select id="optCaptionModel".*?</select>', html)[0]
-    assert re.findall(r'value="([\w.-]*)"', model) == ["", *ui.TRANSCRIPT_MODELS]
-    fields = re.search(r"const OPT_FIELDS = \{(.*?)\};", js, re.S)[1]
-    for key in ("top", "max_total", "ids", "speech_max_extend", "speech_max_lead", "tail_min",
-                "tail_max", "event_window", "extend_start", "extend_end", "crop", "size",
-                "audio_fade", "fade_dur", "final_audio_fade"):  # fmt: skip
-        assert re.search(rf"\b{key}: '#opt\w+'", fields), key
-    assert "startJob('extend', body)" in js and "extendOptions()" in js
-    assert "extend: 'Export extension'" in js  # the Jobs bar names the job
+    assert sorted(tags.options["optOrder"]) == sorted(["", *ui.CLIP_ORDERS])
+    assert tags.options["optEventTails"] == list(ui.EVENT_TAILS)
+    assert tags.options["optCaptionModel"] == ["", *ui.TRANSCRIPT_MODELS]
 
 
 # --- One-click presets: cutpoint edit --kind (#462) ---
@@ -8453,103 +7710,27 @@ def test_a_finished_preset_is_the_current_export_with_its_final(
     assert view["clips"]["dir"] == "clips" and view["final_current"] is True
 
 
-def test_the_export_tab_offers_the_presets_and_asks_before_replacing() -> None:
-    """Contract pin (#462): the preset select lists edit's kinds; Make sends ``force`` only after
-    the shared confirm dialog, and the page shows the server's reason when presets are off."""
-    html = _web("index.html")
-    js = _web("app.js")
-    assert re.search(r'<label for="optKind"[^>]*>Preset</label>', html)
-    kinds = re.findall(
-        r'value="([\w-]+)"', re.search(r'<select id="optKind".*?</select>', html, re.S)[0]
-    )
-    assert kinds == list(edit.KINDS)
-    make_btn = re.search(r'<button type="button" id="makeBtn"[^>]*>Make</button>', html)[0]
-    # the reason it is off, if it is
-    assert 'aria-describedby="dMake presetWhy"' in make_btn
-    # short option text, so the selects read fully in a 290 px column (details in titles)
-    for sid in ("optKind", "optOrder"):
-        select = re.search(rf'<select id="{sid}".*?</select>', html, re.S)[0]
-        names = re.findall(r">([^<]+)</option>", select)
-        assert names and max(map(len, names)) <= 14, names
-    make = re.search(r"async function makePreset\(\) \{\n(.*?)\n\}", js, re.S)[1]
-    # the folders as they are now: refreshed before deciding whether to ask
-    assert make.index("await refreshProject()") < make.index("preset_taken")
-    assert make.index("confirmAction('Replace the clips of the earlier preset run?'") < make.index(
-        "body.force = true"
-    )
-    assert "startJob('edit', body)" in make and "preset_taken" in make
-    assert "p?.preset_problem" in js and "#presetWhy" in js
+def test_the_preset_select_lists_the_kinds_of_edit() -> None:
+    """Cross-language contract (#462): the One-Click Edit select offers edit's kinds. Asking
+    before replacing is in tests/js/export.test.mjs."""
+    assert _Tags(_web("index.html")).options["optKind"] == list(edit.KINDS)
 
 
 # --- Web contract pins for the AI Chat tab (#346) ---
 
 
-def _chat_js() -> str:
-    """app.js's AI Chat section."""
-    js = _web("app.js")
-    return js[js.index("// ---------- AI Chat (#346)") : js.index("// ---------- jobs")]
+def test_the_chat_input_is_limited_as_the_server_limits_a_message() -> None:
+    """Cross-language contract (#346): the chat input's maxlength is ai_session.MAX_TEXT. The
+    panel's markup is in tests/js/markup.test.mjs."""
+    assert _Tags(_web("index.html")).by_id["chatInput"]["maxlength"] == str(ai_session.MAX_TEXT)
 
 
-def _js_function(js: str, name: str) -> str:
-    """The body of top-level function ``name`` in ``js``."""
-    found = re.search(rf"^(?:async )?function {name}\((.*?)\) \{{\n(.*?)^\}}", js, re.M | re.S)
-    assert found, name
-    return found[2]
-
-
-def test_the_ai_chat_tab_has_one_labelled_input_and_one_send_button() -> None:
-    """Contract pin (#346): an AI Chat tab beside Sequence; the panel names the assistant, has a
-    Clear chat button, one labelled input limited as the server limits it, one send button and
-    no mic or attach button; replies are announced from outside the panels, so a hidden tab's
-    reply is still read out.
-
-    Check in a browser (no browser in the test suite): in Graphite, Light and Blue, at a 290 px
-    column and in the narrow layout, the input stays at the bottom and nothing overflows."""
-    html = _web("index.html")
-    tab = re.search(r'<button\b[^>]*id="tabAssistant"[^>]*>([^<]*)</button>', html)
-    assert tab and 'role="tab"' in tab[0] and tab[1] == "AI Chat"
-    panel = re.search(r'<div id="panelAssistant".*?\n      </div>\n', html, re.S)[0]
-    assert re.search(r'<h2 id="chatTitle"[^>]*>AI Assistant</h2>', panel)
-    assert re.search(r'<button type="button" id="chatClear"[^>]*>Clear chat</button>', panel)
-    buttons = re.findall(r"<button\b[^>]*>(?:[^<]|<svg.*?</svg>)*</button>", panel, re.S)
-    assert [b for b in buttons if 'type="submit"' in b] == [
-        '<button type="submit" id="chatSend" class="btn primary" aria-label="Send" disabled><svg class="chat-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>'
-    ]
-    # Clear chat, the hosted-provider consent (#346) and Send; no mic, no attach
-    assert [re.search(r'id="(\w+)"', b)[1] for b in buttons] == [
-        "chatClear",
-        "chatConsentOk",
-        "chatSend",
-    ]
-    assert not re.search(r"\b(mic|microphone|attach|voice)\b", panel, re.I)
-    fields = re.findall(r"<(?:input|textarea)\b[^>]*>", panel)
-    assert len(fields) == 1 and 'id="chatInput"' in fields[0]
-    assert f'maxlength="{ai_session.MAX_TEXT}"' in fields[0]
-    assert '<label for="chatInput"' in panel
-    side = re.search(r'<section class="col side".*?</section>\s*</main>', html, re.S)[0]
-    live = '<p id="chatLive" class="vh" role="status"></p>'
-    assert live in side and side.index(live) < side.index('<div id="panelSequence"')
-    chat = _chat_js()
-    assert "$('#chatLive').textContent = turnNews(t)" in chat
-    # the header is the provider's label (name, model, host); the small-model note
-    assert "prov ? prov.label" in chat and "prov?.local" in chat
-
-
-def test_the_consent_texts_name_what_each_role_sends() -> None:
-    """The AI Chat consent names what context.py sends a hosted assistant (analysis results
-    only: no audio, frames only once allowed for a project, file names but not paths); the
-    Vision consent names the frames, transcript excerpts, file names and times, on-screen text
-    and telemetry, and that it is separate from the assistant's consent; both name the data
-    each role sends, and the assistant's names the whole transcripts analysis sends it."""
+def test_the_chat_context_sends_only_what_the_consent_names() -> None:
+    """What context.py sends a hosted assistant stays within what the AI Chat consent names
+    (analysis results only: no audio, no image parts, file names but not paths). The consent
+    texts themselves are checked in tests/js/chat.test.mjs and tests/js/models.test.mjs."""
     from cutpoint.assistant import context  # noqa: PLC0415
 
-    sends = re.search(r'^const CONSENT_SENDS = "(.*)";$', _web("app.js"), re.M)[1]
-    parts = ("labels", "scores", "signals", "vision descriptions", "transcript snippets")
-    for part in (*parts, "file names", "times"):
-        assert part in sends, part
-    assert "your messages" in sends and "never audio" in sends
-    # frames only under their own per-project consent (#640, view_moment)
-    assert "never video frames unless you allow them for a project" in sends
     cand = {
         "id": "h1",
         "source": "D:/Videos/clip.mp4",
@@ -8570,214 +7751,21 @@ def test_the_consent_texts_name_what_each_role_sends() -> None:
     msgs = context.build_messages(table, [], "hi", context.budget(8192))
     assert all(isinstance(m["content"], str) for m in msgs)  # text only: no image parts
     assert "D:/Videos" not in "".join(m["content"] for m in msgs)
-    vision = _js_function(_web("app.js"), "renderVisionConsent")
-    text = re.search(r"\$\('#visionConsentText'\)\.textContent = `(.*?)`;", vision)[1]
-    text += re.search(r"\$\('#visionConsentMore'\)\.textContent = '(.*?)';", vision)[
-        1
-    ]  # behind "More"
-    for part in (
-        "video frames",
-        "transcript excerpts",
-        "file names and times",
-        "on-screen text",
-        "telemetry",
-        "The AI Chat gets other data",
-        "allowing one never covers the other",
-    ):
-        assert part in text, part
-    # analysis (the dialogue step) sends whole transcripts to the chat model; its consent says so
-    app = _web("app.js")
-    analysis = re.search(r"^const ANALYSIS_SENDS = '(.*)';$", app, re.M)[1]
-    assert "whole transcripts" in analysis
-    assert "${ANALYSIS_SENDS}" in _js_function(app, "renderChat")
 
 
 def test_model_text_is_never_set_as_markup() -> None:
-    """Contract pin (#346): replies, summaries, labels and notes come from the model or the
-    project; the page sets them as text only (h()'s ``text`` or textContent)."""
-    sinks = ("innerHTML", "outerHTML", "insertAdjacentHTML", "DOMParser", "document.write")
-    for name in ("app.js", "util.js", "api.js", "picker.js"):
-        js = _web(name)
+    """Security contract (#346): replies, summaries, labels and notes come from the model or the
+    project; no web module has an HTML sink, so they can only be set as text. markdown() is in
+    tests/js/markdown.test.mjs."""
+    sinks = ("innerHTML", "outerHTML", "insertAdjacentHTML", "DOMParser", "document.write",
+             "srcdoc", "createContextualFragment", "setHTMLUnsafe")  # fmt: skip
+    inline = re.findall(r"<script\b[^>]*>(.*?)</script>", _web("index.html"), re.S)
+    assert any(s.strip() for s in inline)  # the early theme script
+    scripts = [(p.name, p.read_text(encoding="utf-8")) for p in sorted(ui.WEB_DIR.glob("*.js"))]
+    assert {"app.js", "util.js", "api.js", "picker.js"} <= {name for name, _ in scripts}
+    for name, js in [*scripts, *(("index.html <script>", s) for s in inline)]:
         for sink in sinks:
             assert sink not in js, (name, sink)
-    chat = _chat_js()
-    # assistant replies are built by markdown() (createElement and text nodes), never as markup
-    assert "markdown(ev.text)" in chat and "h('p', { text: ev.summary })" in chat
-    assert "h('p', { text: ev.text })" not in chat
-    assert "$('#propSummary').textContent = p.summary;" in chat
-    assert "else if (k === 'text') el.textContent = v;" in _web("util.js")
-
-
-def test_a_proposal_is_previewed_before_it_replaces_the_working_sequence() -> None:
-    """Contract pin (#346): a proposal only sets S.proposal, which the Sequence tab previews with
-    its changes in words, the moments list marks by class and the rail shows as ghost handles
-    in their own element and function. Apply posts the working sequence and takes the server's
-    result (rebased, or a 409 in words); suggestions are at most three and preview the same
-    way; Save still uses S.segments only."""
-    html = _web("index.html")
-    js = _web("app.js")
-    chat = _chat_js()
-    assert "  proposal: null," in js
-    assert re.search(r'<button type="button" id="propApply"[^>]*>Apply</button>', html)
-    assert re.search(r'<button type="button" id="propDiscard"[^>]*>Discard</button>', html)
-    rail = re.search(r'<div class="rail" id="rail">.*?<div class="rail-ends', html, re.S)[0]
-    assert '<div class="rail-ghost" id="railGhost" aria-hidden="true" hidden></div>' in rail
-    draw = _js_function(js, "drawRail")
-    assert "drawGhost(c);" in draw and "railGhost" not in draw  # its own function
-    assert "$('#railGhost')" in _js_function(js, "drawGhost")
-    moments = _js_function(js, "renderMoments")
-    assert "markMoments();" in moments and "ai-" not in moments  # marked apart, by class
-    marks = _js_function(chat, "markMoments")
-    assert "classList.toggle" in marks and "replaceChildren" not in marks
-    on_event = _js_function(chat, "onChatEvent")
-    assert "previewProposal(ev)" in on_event and "S.segments" not in on_event
-    apply = _js_function(chat, "applyProposal")
-    assert (
-        "/applied`), { method: 'POST', body: { segments: JSON.parse(key()), base_key: p.base_key, "
-        "color: colorChoice() } }" in apply
-    )
-    assert apply.index("await api(") < apply.index("remember(null, !!entry.color);")
-    # "changed since" compares with the sequence the proposal was made on (its diff's "before"),
-    # not with the sequence when the preview opened
-    preview = _js_function(chat, "previewProposal")
-    assert "seqKey: baseOf(p.diff)" in preview and "key()" not in preview
-    assert "seqShape() === p.seqKey" in _js_function(chat, "renderProposal")
-    # while Apply waits: Discard is off and a new proposal waits for it
-    assert "S.pendingProposal = p;" in preview
-    assert "$('#propDiscard').disabled = !S.proposal || S.applying;" in chat
-    assert "previewProposal(next)" in apply
-    assert "revertChange(" in apply  # a revert previewed on an older sequence is previewed again
-    # ... and finally's pending proposal does not replace that new preview
-    again = apply.index("await revertChange(")
-    assert apply.index("if (!err) S.pendingProposal = null;", again) < apply.index("finally")
-    assert apply.index("remember(null, !!entry.color);") < apply.index(
-        "replaceSequence(entry.after);"
-    )
-    assert apply.index("replaceSequence(entry.after);") < apply.index(
-        "chooseColor(entry.color.after);"
-    )
-    assert "e.status === 409" in apply and "entry.rebased" in apply
-    assert "const MAX_SUGGESTIONS = 3;" in chat and ".slice(0, MAX_SUGGESTIONS)" in chat
-    assert "onclick: () => reviewProposal(s)" in chat  # a suggestion previews like a proposal
-    assert "'/turns'), { method: 'POST', body: { text, segments: JSON.parse(key()) } }" in chat
-    assert "?after=${run.next}" in chat and "/cancel`), { method: 'POST' }" in chat
-    revert = _js_function(chat, "revertChange")
-    assert "/revert`), { method: 'POST'" in revert and "reviewProposal(p)" in revert
-    # Send waits for the saved chat, which would otherwise replace a turn sent meanwhile
-    assert "!!S.chat?.loaded" in _js_function(chat, "renderChatForm")
-    assert "!chat?.loaded" in _js_function(chat, "sendChat")
-    clear = _js_function(chat, "clearChat")
-    assert "remember" not in clear and "S.segments" not in clear  # Clear chat never reverts
-    assert "proposal" not in _js_function(js, "saveReview")
-
-
-def test_single_key_shortcuts_setting_is_browser_side_and_on_by_default() -> None:
-    """Contract pin (#748, WCAG 2.1.4): Settings > Single-key shortcuts is a real checkbox with a
-    label and hint, kept in the browser (not config.json; "0" while off), and gates M [ ] I O."""
-    html = _web("index.html")
-    js = _web("app.js")
-    assert re.search(
-        r'<label class="check"><input type="checkbox" id="setSingleKeys"[^>]*> Single-key shortcuts</label>',
-        html,
-    )
-    assert "const KEYS_KEY = 'cutpoint.singleKeys';" in js
-    assert "singleKeys: true," in js
-    assert "single && (e.key === '[' ||" in js and "single && e.key.toLowerCase() === 'm'" in js
-
-
-def test_one_undo_stack_holds_manual_and_ai_edits_with_ctrl_z() -> None:
-    """Contract pin (#346): every edit of the working sequence (add, remove, move, trims,
-    rename, batch remove, Apply) first pushes a snapshot of the segments and drafts onto one
-    stack of at most 50; Ctrl+Z undoes, Ctrl+Y or Shift+Ctrl+Z redoes; text fields keep their
-    own undo."""
-    html = _web("index.html")
-    js = _web("app.js")
-    assert "  undo: []," in js and "  redo: []," in js and "const UNDO_MAX = 50;" in js
-    assert "if (S.undo.length > UNDO_MAX) S.undo.shift();" in js
-    snap = re.search(r"const snapshot = \(withColor = false\) => \(\{(.*?)\}\);", js)[1]
-    assert "structuredClone(S.segments)" in snap and "structuredClone(S.drafts)" in snap
-    assert "colorChoice()" in snap  # only an applied AI Chat change that sets Color keeps the Color
-    for name in ("addSeg", "removeSeg", "moveSeg", "removeSelected", "finishRename"):
-        assert "remember();" in _js_function(js, name), name
-    assert "remember(`trim:${c.id}:${which}`)" in _js_function(js, "setRange")
-    assert "remember(null, !!entry.color);" in _js_function(js, "applyProposal")
-    keys = js[js.index("// Ctrl+Z / Ctrl+Y") : js.index("const single = S.singleKeys;")]
-    assert "(k === 'z' || k === 'y')" in keys and "textarea" in keys
-    assert "if (k === 'y' || e.shiftKey) redo();" in keys and "else undo();" in keys
-    for bid, shortcut in (("undoBtn", "Control+Z"), ("redoBtn", "Control+Y Control+Shift+Z")):
-        assert re.search(
-            rf'<button type="button" id="{bid}"[^>]*aria-keyshortcuts="{re.escape(shortcut)}"', html
-        )
-
-
-def test_sequence_header_is_one_row_with_icon_history_buttons() -> None:
-    """Contract pin: one row, no title line. Select all is at the left; Undo and Redo (28 px icon
-    buttons with a name, a tooltip and their shortcuts) and then Play sequence, or, with clips ticked,
-    the count, Remove and Clear (renderBatch swaps them), at the right, so the list never jumps. The
-    heading stays for screen readers only. A hidden ::after with Play's longer label keeps "Stop" from
-    shrinking or moving it; the row never wraps, and as it narrows words give way (still read aloud)."""
-    html = _web("index.html")
-    css = _web("app.css")
-    js = _web("app.js")
-    assert 'class="seq-line"' not in html
-    head = re.search(r'<div class="col-head seq-head">(.*?)</div>\s*<!-- An AI Chat', html, re.S)[1]
-    assert re.findall(r'id="(\w+)"', head) == [
-        "seqTitle", "seqSelAllRow", "seqSelAll", "undoBtn", "redoBtn", "seqPlayBtn", "seqBatch",
-        "seqSelCount", "seqRemoveSel", "seqClearSel",
-    ]  # fmt: skip
-    assert html.count('class="seq-bar"') == 1
-    for bid, name in (("undoBtn", "Undo"), ("redoBtn", "Redo")):
-        tag = re.search(rf'<button type="button" id="{bid}"[^>]*>', html)[0]
-        assert (
-            f'aria-label="{name}"' in tag and f'title="{name} (Ctrl+' in tag and "seq-hist" in tag
-        )
-    assert (
-        "$('#undoBtn').append(icon('undo'));" in js and "$('#redoBtn').append(icon('redo'));" in js
-    )
-    assert "  undo: [[" in js and "  redo: [[" in js
-    assert (
-        "width: var(--control-h-sm)" in re.search(r"\.seq-hist \{([^}]*)\}", css)[1]
-    )  # 28 px, as Play
-    bar = re.search(r"\.seq-bar \{([^}]*)\}", css)[1]
-    assert "flex-wrap: nowrap;" in bar  # never wraps, in any state
-    assert "container: seqbar / inline-size;" in re.search(r"\.seq-head \{([^}]*)\}", css)[1]
-    assert "@container seqbar (width < " in css
-    # the heading is for screen readers; focus falls back to a visible control
-    assert ".side .col-head h2 { position: absolute;" in css and ".side .seq-head h2" not in css
-    assert "seqTitle').focus" not in js and "$('#seqTitle'))" not in js
-    assert "const seqHome = () =>" in js and "$('#tabSequence')" in js
-    assert "$('#seqPlayBtn').hidden = hidePlay;" in _js_function(js, "renderBatch")
-    assert "const hidePlay = !!n && !S.seqPlay;" in _js_function(js, "renderBatch")
-    play = re.search(r"#seqPlayBtn \{([^}]*)\}", css)[1]
-    assert "white-space: nowrap;" in play
-    reserve = re.search(r"#seqPlayBtn::after \{([^}]*)\}", css)[1]
-    # the reserved label is the button's longer one, hidden from sight and the accessible name
-    assert 'content: "Play sequence" / "";' in reserve and "visibility: hidden;" in reserve
-    label = "b.textContent = S.seqPlay ? 'Stop' : 'Play sequence';"
-    assert label in _js_function(js, "renderSeqPlay")
-    # a previewed AI Chat proposal still hides the selection controls
-    assert "#panelSequence.previewing :is(#seqList, #seqBatch, #seqSelAllRow," in css
-
-
-def test_dragging_a_clip_is_forgotten_and_scrolls_the_list() -> None:
-    """Contract pin (#749): both lists share one drag state that every ending clears, a drop must
-    carry our own data type, the marker shows the landing side, and a held clip scrolls the column
-    above the sticky footer. Behaviour is in tests/js/drag.test.mjs."""
-    js = _web("app.js")
-    css = _web("app.css")
-    end = _js_function(js, "endDrag")
-    assert "dragId = null;" in end and "cancelAnimationFrame(dragRaf)" in end
-    # a render waits for a live drag (the held row must survive for its dragend); endDrag runs it
-    assert "dragDirty = true;" in _js_function(js, "renderSequence")
-    assert "if (dirty) renderSequence();" in end
-    assert (
-        "ondragenter: (e) => dragHover(e, " in js
-        and "addEventListener('dragenter', dragScroll)" in js
-    )
-    assert "const ownDrag = (e) =>" in js and "DRAG_TYPE" in js
-    assert "--seq-foot-h" in _js_function(js, "dragArea")  # the bottom zone sits above the footer
-    assert "document.addEventListener('dragover', dragScroll);" in js
-    assert ".seq.drop.after .seq-card" in css and ".sb-cell.drop.after > .sb-block" in css
 
 
 # --- Moments list order (#469) ---
@@ -8823,171 +7811,6 @@ def test_position_order_is_stable_and_keeps_same_named_files_apart(util_js) -> N
     assert _sort_positions(util_js, cased[::-1]) == got and got[-1] == "z"
 
 
-def test_moment_order_control_is_labelled_with_score_default() -> None:
-    """#469: Sort and filter's "Sort by" group offers Score (default) and Position in video as
-    native radios; a status region announces the change."""
-    html = _web("index.html")
-    pop = re.search(r'<div id="filterPop"[^>]*>(.*?)\n          </div>', html, re.S)[1]
-    sort = re.search(r"<fieldset[^>]*>\s*<legend>Sort by</legend>(.*?)</fieldset>", pop, re.S)[1]
-    assert re.findall(r'<input type="radio" name="momentOrder" value="(\w+)"( checked)?> ([^<]+)</label>', sort) == [
-        ("score", " checked", "Score"),
-        ("position", "", "Position in video"),
-    ]  # fmt: skip
-    assert re.search(r'<p id="orderLive"[^>]*role="status"', html)
-    assert '<select id="momentOrder"' not in html
-
-
-def test_filter_row_is_one_search_and_a_funnel_disclosure() -> None:
-    """Sort and filter (mock1): one full-width labelled search, then a square funnel button that
-    discloses the sort order and quick filters in native radios and checkboxes, each set in a
-    fieldset with a legend; Escape closes it and returns focus to the button."""
-    html = _web("index.html")
-    js = _web("app.js")
-    css = _web("app.css")
-    row = re.search(
-        r'<div class="filter-row" id="filterWrap" hidden>(.*?)<p id="orderLive"', html, re.S
-    )[1]
-    assert '<span class="vh">Search moments by label, words, file or candidate id</span>' in row
-    assert re.search(
-        r'<input id="filter" type="search" placeholder="[^"]+" autocomplete="off">', row
-    )
-    btn = re.search(r'<button type="button" id="filterBtn"([^>]*)>', row)[1]
-    assert 'class="btn icon-btn"' in btn and 'aria-expanded="false"' in btn
-    assert 'aria-controls="filterPop"' in btn and 'aria-label="Sort and filter moments"' in btn
-    assert row.index('id="filter"') < row.index('id="filterBtn"') < row.index('id="filterPop"')
-    assert re.search(
-        r'<div id="filterPop" class="filter-pop" role="group" aria-label="[^"]+" tabindex="-1" hidden>',
-        row,
-    )
-    legends = re.findall(r"<fieldset[^>]*>\s*<legend>([^<]+)</legend>", row)
-    assert legends == ["Sort by", "Sequence", "Show only"]
-    seq = re.findall(r'name="filterSeq" value="(\w+)"(?: checked)?> ([^<]+)</label>', row)
-    assert seq == [("all", "All"), ("in", "In sequence"), ("out", "Not in sequence")]
-    assert '<input type="checkbox" id="filterReady"> Ready only</label>' in row
-    assert "filterMust" not in row and "filterMust" not in js  # Must include was removed
-    assert re.search(
-        r'<label class="field" id="filterSourceWrap" hidden>Source file\s*<select id="filterSource">',
-        row,
-    )
-    # the disclosure: aria-expanded follows it; Escape closes and refocuses; outside closes
-    init = _js_function(js, "initMomentFilters")
-    assert "btn.setAttribute('aria-expanded', String(on));" in init and "pop.hidden = !on;" in init
-    assert "e.key !== 'Escape'" in init and "open(false, true)" in init and "btn.focus()" in init
-    assert "e.preventDefault();" in init  # the page's Escape (stop Play sequence) does not also run
-    assert "'pointerdown'" in init and "'focusout'" in init
-    assert "btn.prepend(icon('funnel'));" in init and "funnel: [['path'" in js
-    # the active dot, and its name says it too
-    sync = _js_function(js, "syncFilterMenu")
-    assert "btn.classList.toggle('on', !!on.length);" in sync and "S.order !== 'score'" in sync
-    assert "btn.setAttribute('aria-label', ['Sort and filter moments', ...on].join(', '));" in sync
-    assert "$('#filterSourceWrap').hidden = sources.length < 2;" in sync
-    assert re.search(r"^#filterBtn\.on \.filter-dot \{ display: block; \}", css, re.M)
-    assert re.search(r"^\.filter-pop \{[^}]*position: absolute;[^}]*right: 0;", css, re.M)
-    assert not re.search(r"^\.order\b", css, re.M)
-
-
-def test_moment_filters_are_remembered_safely_and_the_source_per_project() -> None:
-    """Sort and filter: Sequence and Ready only are stored per browser (guarded, removed when
-    none is on); the source file is a path of one project, so it is never stored and is dropped
-    when the workspace resets. A stored ``must`` from before Must include was removed is not read."""
-    js = _web("app.js")
-    init = _js_function(js, "initMomentFilters")
-    assert "const FILTERS_KEY = 'cutpoint.momentFilters';" in js
-    assert re.search(r"try \{[^}]*JSON\.parse\(localStorage\.getItem\(FILTERS_KEY\)\)", init, re.S)
-    assert "localStorage.removeItem(FILTERS_KEY)" in init
-    assert "localStorage.setItem(FILTERS_KEY, JSON.stringify({ seq, ready }))" in init
-    assert "must" not in init
-    assert "source" not in init[init.index("const changed") : init.index("renderMoments();")]
-    assert "S.filters.source = '';" in _js_function(js, "resetWorkspace")
-    assert "filters: { ...NO_FILTERS }," in js
-    assert "$('#orderLive').textContent = `${n} of ${cands().length} moments shown`;" in init
-
-
-def test_render_moments_filters_with_util_and_says_which_filter_matched_nothing() -> None:
-    """Sort and filter: renderMoments keeps the score rank, filters through util.js
-    momentMatches with the search text and the quick filters (picked and ready per card), then
-    sorts; the empty state names the filters when any is on."""
-    js = _web("app.js")
-    render = _js_function(js, "renderMoments")
-    # the filter also finds the label the card shows (display_label, #634)
-    assert "momentMatches({ ...c, label, picked: !!seg, ready: readyFor(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }) }, S.filter, f)" in render  # fmt: skip
-    assert "source: multi && sources.includes(S.filters.source) ? S.filters.source : ''" in render
-    assert render.index("momentMatches(") < render.index("positionCompare")
-    assert "No moments match ${filtersOn(f) || S.kind ? 'these filters' : 'this filter'}." in render
-    assert "(!S.kind || kindOf(c) === S.kind)" in render  # the kind filter above the grid
-    assert "$('#filterBtn').focus()" in render  # the focused card filtered away with no card left
-    # AI Chat's "Filter list by" says how many show, and that the quick filters still apply
-    assert (
-        "${n} shown${filtersOn(S.filters) || S.kind ? '; Sort and filter or the kind filter is also on' : ''}"
-        in js
-    )
-
-
-def test_moment_card_order_matches_the_mockup() -> None:
-    """Graphite board B, compact: a tile holds the still (kind dot and the one length badge), then
-    rank, title and must include, "kind · score" with the preview readiness as an icon, the id and
-    times, the file only with several sources and the strip; Add/Remove is an icon button over the
-    still's corner. The transcript is the tooltip, not tile text."""
-    js = _web("app.js")
-    css = _web("app.css")
-    render = _js_function(js, "renderMoments")
-    card = render[render.index("class: 'cand-main'") :]
-    order = [
-        "title: [title, c.bit_description, c.transcript]",
-        "still,",
-        "class: 'cand-top'",
-        "class: 'rank tc'",
-        "class: 'cand-title'",
-        "class: 'tag', text: 'must include'",
-        "bitBadge(c),",
-        "class: 'cand-meta'",
-        "scoreText(c.score, c.pool === 'visual'), badge)",
-        "class: 'cand-what'",
-        "class: 'cand-time tc'",
-        "class: 'cand-id'",
-        "multi ? h('span', { class: 'cand-src' }",
-        "sourceStrip(c),",
-        "class: 'vh', text: `, ${c.transcript}`",
-        "'data-act': 'toggle'",
-    ]
-    at = [card.index(s) for s in order]
-    assert at == sorted(at), order
-    top = card[card.index("class: 'cand-top'") : card.index("class: 'cand-meta'")]
-    assert "prepBadge" not in top and "'data-act': 'toggle'" not in top
-    assert "cand-foot" not in card and "cand-text" not in card  # the transcript is the tooltip
-    assert "prepBadge(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] }, true)" in render
-    assert render.count(".toFixed(1)} s`") == 1  # the length shows once: on the still
-    assert (
-        "h('span', { class: 'cand-len tc', text: `${(c.end - c.start).toFixed(1)} s` })" in render
-    )
-    assert "icon(picked ? 'minus' : 'plus')" in card and "class: 'cand-toggle'" in card
-    assert "plus: [['path'" in js and "minus: [['path'" in js
-    assert (
-        "'data-act': 'focus'" in render
-        and "'aria-current': c.id === S.focus ? 'true' : null" in render
-    )
-    assert re.search(r"^\.cand > \* \{ grid-area: 1 / 1; \}", css, re.M)
-    assert re.search(
-        r"^\.cand > \.cand-toggle, \.cand > \.btn \{ justify-self: end;", css, re.M
-    )  # Add back keeps its place
-    assert re.search(r"^\.cand-toggle \{[^}]*width: 24px; height: 24px;", css, re.M)
-    assert re.search(
-        r"^\.cand-toggle \{[^}]*background: var\(--amber\); color: var\(--amber-ink\)", css, re.M
-    )
-    assert re.search(
-        r"^\.cand\.picked > \.cand-toggle \{ background: var\(--danger-btn\); color: var\(--danger-ink\)",
-        css,
-        re.M,
-    )
-    assert re.search(r"^\.cand-thumb \{[^}]*aspect-ratio: 2 / 1", css, re.M)
-    assert re.search(
-        r"^\.cand-list \{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(min\(112px, 100%\)",
-        css,
-        re.M,
-    )
-    assert re.search(r"^\.cand-dot \{[^}]*background: var\(--k\);", css, re.M)
-
-
 def _filter_moments(util_js, moments: list[dict], q: str, f: dict) -> list[str]:
     """Run util.js's momentMatches under node; ``f`` over NO_FILTERS."""
     ids, on = util_js(
@@ -9022,19 +7845,6 @@ def test_moment_filters_combine_with_the_search_text(util_js) -> None:
     assert run("", {"source": "/v/b.mp4"}) == ["b", "c"]
     assert run("jump", {"seq": "out"}) == ["c"]
     assert run("jump", {"ready": True, "source": "/v/b.mp4"}) == []
-
-
-def test_moment_order_is_remembered_safely_and_sorts_after_filtering() -> None:
-    """#469: storage access is guarded, the sort runs after the filter, and the rank badge
-    still comes from the score rank."""
-    js = _web("app.js")
-    init = re.search(r"function initMomentOrder\(\) \{(.*?)\n\}\n", js, re.S)[1]
-    assert re.search(r"try \{[^}]*localStorage\.getItem\(ORDER_KEY\)[^}]*\} catch", init, re.S)
-    assert re.search(r"try \{[^}]*localStorage\.(set|remove)Item\(ORDER_KEY", init, re.S)
-    assert "'cutpoint.momentOrder'" in js
-    render = re.search(r"function renderMoments\(\) \{(.*?)\n\}\n", js, re.S)[1]
-    assert render.index(".filter(") < render.index("positionCompare")
-    assert re.search(r"\.map\(\(c, i\) => \(\{ c, rank: i \+ 1 \}\)\)", render)
 
 
 # --- Color (#461): the export's --color and --color-strength ---
@@ -9198,79 +8008,14 @@ def test_the_project_view_of_a_deleted_user_style_without_a_base_is_not_an_error
     assert view.json()["gaming"] is False and view.json()["must_include_crash_default"] is None
 
 
-def test_color_is_a_three_stop_slider_like_compress_audio_peaks() -> None:
-    """Contract pin (#461): Color is a range slider with the stops Off, Auto and Underwater, built
-    like Compress Audio Peaks, with a 0-100% Strength shown only with a grade; both name their
-    value for screen readers. The page has no LUT option, so nothing disables Color."""
-    html = _web("index.html")
-    js = _web("app.js")
-    panel = re.search(r'<fieldset class="panel color">(.*?)</fieldset>', html, re.S)[1]
-    slider = re.search(r'<input type="range" id="optColor"[^>]*>', panel)[0]
-    for attr in ('min="0"', 'max="2"', 'step="1"', 'value="0"', 'aria-labelledby="colorLegend"',
-                 'aria-describedby="dColor"', 'aria-valuetext="Off"'):  # fmt: skip
-        assert attr in slider
-    assert re.search(r'<legend id="colorLegend"[^>]*>Color</legend>', panel)
-    ticks = re.search(r'<div class="ticks" aria-hidden="true">(.*?)</div>', panel)[1]
-    assert re.findall(r"<span>(\w+)</span>", ticks) == ["Off", "Auto", "Underwater"]
-    row = re.search(
-        r'<div class="color-strength" id="colorStrengthRow" hidden>(.*?)</div>', panel, re.S
-    )[1]
-    strength = re.search(r'<input type="range" id="optColorStrength"[^>]*>', row)[0]
-    for attr in ('min="0"', 'max="100"', 'value="100"', 'aria-valuetext="Strength 100%"'):
-        assert attr in strength
-    assert '<label for="optColorStrength"' in row
-    assert "const COLOR_STOPS = ['off', 'auto', 'underwater'];" in js
-    assert "underwater: 'Underwater'" in js
-    assert "`Strength ${range.value}%`" in js
-    assert "$('#colorStrengthRow').hidden = color() === 'off';" in js
-    assert not re.search(r"\blut\b", html, re.I)  # no LUT option that would disable Color
-
-
 def test_color_strength_keeps_its_room_so_the_color_slider_never_moves() -> None:
     """Regression (#518): showing Strength moved the Color slider. Hidden (Color Off), the Strength
-    row keeps its box below the slider with ``visibility: hidden``, so no mode changes the layout,
-    and the row cannot be clicked, focused or read; the page's ``[hidden]`` rule does not win."""
-    html = _web("index.html")
+    row keeps its box with ``visibility: hidden``, beating the page's ``[hidden]`` rule. Layout
+    jsdom cannot see; showing and hiding it is in tests/js/export.test.mjs."""
     css = _web("app.css")
-    panel = re.search(r'<fieldset class="panel color">(.*?)</fieldset>', html, re.S)[1]
-    assert panel.index('id="optColor"') < panel.index('id="colorStrengthRow"')  # Strength below
-    rule = re.search(r"\.color-strength\[hidden\] \{([^}]*)\}", css)[1]
-    assert "display: grid !important" in rule and "visibility: hidden" in rule
-    shown = re.search(r"\.color-strength \{([^}]*)\}", css)[1]
-    assert "display: grid" in shown  # the same box hidden or shown
-    assert "[hidden] { display: none !important; }" in css  # overridden by the more specific rule
-
-
-def test_the_page_sends_color_with_clips_and_presets_and_strength_below_100() -> None:
-    """Contract pin (#461): Export clips and One-Click Edit send ``color``; ``color_strength``
-    only with a grade and below 100% (the CLI's default is 1). Extend export and Assemble send
-    neither."""
-    js = _web("app.js")
-    options = re.search(r"function colorOptions\(\) \{\n(.*?)\n\}", js, re.S)[1]
-    assert "{ color: color() }" in options
-    assert "body.color !== 'off' && pct < 100" in options and "pct / 100" in options
-    for builder, sends in (("exportOptions", True), ("makePreset", True),
-                           ("extendOptions", False), ("assembleOptions", False)):  # fmt: skip
-        body = re.search(rf"function {builder}\(\) \{{\n(.*?)\n\}}", js, re.S)[1]
-        assert ("...colorOptions()" in body) is sends, builder
-
-
-def test_color_starts_from_config_json_but_never_on_for_gaming() -> None:
-    """Contract pin (#461): a project opens with the Color this browser saved for it (so a dive's
-    Underwater does not carry over to land footage), else config.json's color (GET
-    /api/settings), else Off; a gaming project opens at Off. Strength is one choice for all."""
-    js = _web("app.js")
-    start = re.search(r"function startColor\(\) \{\n(.*?)\n\}", js, re.S)[1]
-    assert "S.savedOpts.color_by_project?.[S.id]" in start and "S.colorDefault" in start
-    assert "setColor(S.project?.gaming ? 'off' : value);" in start
-    init = re.search(r"function initExportOptions\(\) \{\n(.*?)\n\}\n", js, re.S)[1]
-    assert "store('color_by_project', { ...mine, [S.id]: color() });" in init
-    assert "store('color'," not in init  # no browser-wide Color
-    assert "store('color_strength', Number(strength.value));" in init  # browser-wide Strength
-    assert "colorDefault: 'off'" in js
-    assert "if (COLOR_STOPS.includes(st.color)) S.colorDefault = st.color;" in js
-    adopt = re.search(r"function adopt\(p, switched\) \{\n(.*?)\n\}", js, re.S)[1]
-    assert "if (switched) startColor();" in adopt
+    hidden = _css_decls(css, ".color-strength[hidden]")
+    assert hidden["display"] == "grid !important" and hidden["visibility"] == "hidden"
+    assert _css_decls(css, ".color-strength")["display"] == "grid"
 
 
 def _color_note(util_js, clips: list[dict]) -> str:
@@ -9352,14 +8097,7 @@ def test_export_state_shows_the_color_note_from_the_manifest(
     cache.save_json(p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1"}]})
     view = client.get(f"/api/projects/{pid}").json()
     assert view["clips"]["clips"][0]["color"] == entry
-    js = _web("app.js")
-    assert re.search(r"import \{[^}]*\bcolorNote\b[^}]*\} from './util.js';", js)
-    body = re.search(r"function renderExport\(\) \{\n(.*?)\n\}", js, re.S)[1]
-    assert "+ colorNote(clips?.clips);" in body
-    # always shown (say, not the advanced latest()), in each of the three exported branches
-    for shown in ("say(`${note} Automatic picks", "say(note)",
-                  "say(` The latest export differs from this sequence.${note} Export again"):  # fmt: skip
-        assert body.count(shown) == 1, shown
+    # the page's note from it: tests/js/export.test.mjs
 
 
 # --- Subscription logins (Settings > Subscriptions) ---
@@ -9739,27 +8477,6 @@ def test_a_login_whose_poll_fails_reports_the_error_and_can_start_again(
 
     assert login_state(client, "codex") == {"state": "error", "error": error or str(err)}
     assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
-
-
-def test_chat_diffs_name_a_moment_by_its_display_label() -> None:
-    """#634: a proposal row (propRow) and a found moment (momentName) are named as the Moments
-    list names them: display_label while the row keeps the analysis label (shownName), the row's
-    own label once renamed, else the label and the id."""
-    js = _web("app.js")
-    shown = _js_function(js, "shownName")
-    assert "cand?.display_label && (label == null || label === cand.label)" in shown
-    row = _js_function(js, "propRow")
-    assert "shownName(cands().find((c) => c.id === r.id), r.label) || momentName(r.id)" in row
-    body = js[js.index("const momentName = (id) =>") :][:300]
-    assert "c?.display_label || (c ?? S.segments.find((s) => s.id === id))?.label || id" in body
-
-
-def test_chat_filter_button_shows_only_when_the_list_filter_finds_a_moment() -> None:
-    """#634 F3: "Filter list by" is offered only when the list's own filter (labels, vision
-    label, transcript) finds one of the moments shown, so it never filters the list to 0."""
-    item = _js_function(_web("app.js"), "showItem")
-    assert "momentMatches({ ...c, label: filterLabel(c) }, query, NO_FILTERS)" in item
-    assert "found ? h('button'" in item
 
 
 def test_suggest_style_leaves_usable_360_footage_to_the_server(
@@ -10362,32 +9079,6 @@ def test_a_failed_job_still_ends_with_on_end_and_a_failing_on_end_changes_nothin
     job = jobs.start("proj", "clips", [sys.executable, "-c", "raise SystemExit(3)"], on_end=boom)
     assert job.done.wait(30)
     assert job.status == "failed" and job.error == "exit code 3"
-
-
-def test_the_center_stage_has_a_mode_switch_a_storyboard_and_zoom_levels() -> None:
-    """Contract pin (overhaul PR 2): the stage mode is a group of aria-pressed buttons (Clip, Cut
-    and Sequence), the zoom levels are aria-pressed buttons, and the storyboard sits after the trim message so it never replaces the trim controls; its blocks
-    reorder through moveSeg and play through seqStart. I and O are trim keys."""
-    html = _web("index.html")
-    js = _web("app.js")
-    mode = re.search(r'<div id="stageMode"[^>]*role="group"[^>]*>(.*?)</div>', html, re.S)[1]
-    assert re.findall(r'data-mode="(\w+)" aria-pressed="(\w+)"', mode) == [
-        ("clip", "true"),
-        ("cut", "false"),
-        ("sequence", "false"),
-    ]
-    levels = re.search(r'<div id="zoomPresets"[^>]*>(.*?)</div>', html, re.S)[1]
-    assert re.findall(r'data-span="(\d+)" aria-pressed="false"', levels) == ["10", "30", "120"]
-    assert html.index('id="trimMsg"') < html.index('id="storyboard"') < html.index('id="side"')
-    assert (
-        'id="startField"' not in html and 'id="endField"' not in html
-    )  # the cut line replaced them
-    for hook in ("cutRange", "cutLen", "cutTail", "cutOut", "resetBtn", "prevClip", "nextClip"):
-        assert f'id="{hook}"' in html, hook
-    block = _js_function(js, "sbBlock")
-    assert "moveSeg(s.id, to)" in block and "dragDrop(e, i)" in block
-    assert "seqStart(s.id)" in block
-    assert "k === 'i' || k === 'o'" in js
 
 
 # ---- the trim rail's audio envelope and events ----
@@ -11243,77 +9934,6 @@ def test_final_joins_are_null_for_an_export_record_without_them(
     )
     view = client.get("/api/projects/cli").json()
     assert view["final_joins"] is None and view["final_current"] is True
-
-
-def test_the_page_pauses_the_first_analysis_and_labels_one_click_edit() -> None:
-    """Contract pins (#811, #809): while the first analysis runs the empty state drops the art, the
-    options and the Analyzing button and offers a real Pause analysis button that cancels the job
-    (behaviour in tests/js/pause.test.mjs); One-Click Edit carries a visible Experimental badge."""
-    js = _web("app.js")
-    html = _web("index.html")
-    css = _web("app.css")
-    unanalyzed = _js_function(js, "renderUnanalyzed")
-    assert (
-        "id: 'pauseBtn'" in unanalyzed
-        and "type: 'button'" in unanalyzed
-        and "'Pause analysis'" in unanalyzed
-    )
-    assert "/cancel`" in _js_function(js, "pauseAnalysis")
-    busy = _js_function(js, "renderBusy")
-    assert "classList.toggle('running', own)" in busy and "pause.focus()" in busy
-    assert (
-        ".empty.fresh.running .fresh-art, .empty.fresh.running .fresh-lead { display: none; }"
-        in css
-    )
-    assert "class: `fresh-count fresh-lead" in unanalyzed
-    assert "id: 'pauseBtn', class: 'btn primary'" in unanalyzed
-    assert (
-        ".empty.fresh.running #pauseBtn { position: sticky; top: var(--space-1); z-index: 2;" in css
-    )
-    assert "#pauseBtn { background: var(--amber); border-color: var(--amber);" in css
-    assert (
-        '<legend>One-Click Edit <span class="tag pool" id="presetExp">Experimental</span></legend>'
-        in html
-    )
-    assert 'aria-describedby="dMake presetWhy"' in html
-
-
-def test_font_sizes_come_from_the_type_scale_tokens() -> None:
-    """Contract pin (#810): app.css has five font-size tokens on :root, and no rule sets a literal
-    px font size; the header gaps use one --gap token."""
-    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
-    root = css[: css.index("\n}")]
-    sizes = dict(re.findall(r"--fs-(\w+): ([\d.]+)px;", root))
-    assert sizes == {
-        "caption": "11.5",
-        "small": "12.5",
-        "body": "13.5",
-        "title": "15",
-        "heading": "20",
-    }
-    assert not re.findall(r"font-size: ?[\d.]+px|\bfont: (?:\d+ )?[\d.]+px", css)
-    assert re.search(r"^\.top \{[^}]*gap: var\(--gap\);", css, re.M)
-    for sel in (r"\.stage-head", r"\.cut-line", r"\.cut-nav", r"\.jobs-head"):
-        assert re.search(rf"^{sel} \{{[^}}]*gap: [^;]*var\(--gap\);", css, re.M), sel
-
-
-def test_empty_preview_is_centred_and_the_running_panel_is_top_aligned() -> None:
-    """Contract pin (#810): both empty previews (no project, not analyzed) share .stage-empty,
-    centred both ways with its button centred under the text; while the first analysis runs the
-    Moments panel is top-aligned (margin: 0 auto) so Pause is the first thing in the column."""
-    css = (ui.WEB_DIR / "app.css").read_text(encoding="utf-8")
-    js = (ui.WEB_DIR / "app.js").read_text(encoding="utf-8")
-    box = re.search(r"^\.stage > \.empty\.stage-empty \{([^}]*)\}", css, re.M)
-    assert box and "justify-items: center;" in box[1] and "text-align: center;" in box[1]
-    assert "align-self: center;" in box[1] and "margin: auto;" in box[1]
-    assert re.search(
-        r"^\.stage > \.empty\.stage-empty \.btn \{[^}]*justify-self: center;", css, re.M
-    )
-    assert "classList.toggle('stage-empty', !c && !S.project?.highlights)" in js
-    running = re.search(
-        r"^\.moments:has\(> \.empty\.fresh\.running\) > \.empty\.fresh \{([^}]*)\}", css, re.M
-    )
-    assert running and "margin: 0 auto;" in running[1]
 
 
 # --- the subscription proxy for an analysis (#832) ---

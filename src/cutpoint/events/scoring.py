@@ -30,6 +30,7 @@ This module collects the evidence; the points are combined by the scorer's bonus
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import re
@@ -1074,14 +1075,17 @@ def rescore_highlights(project: Path) -> int:
     # widened spans back to their own first: the menu check below sees the real candidates,
     # and nominate widens them again
     restore_widened(hl.get("candidates", []))
+    from cutpoint.backends import saved_settings  # noqa: PLC0415 (requests: off the CLI import)
+
     backup = project / "highlights.pre-events.json"
     if not backup.exists() and not hl.get("settings", {}).get("events_rescored"):
-        cache.save_json(backup, hl)  # one-time copy of the untouched analysis
+        # one-time copy of the untouched analysis, without an Ollama login (A639)
+        cache.save_json(backup, saved_settings(copy.deepcopy(hl)))
     drop_menu_time(hl, ev)
     changed = rescore(hl, ev, project)
     number_candidates(hl)
     selfcheck.apply(hl, ev)  # warns; changes no score (#1073)
-    cache.save_json(project / "highlights.json", hl, durable=True)
+    cache.save_json(project / "highlights.json", saved_settings(hl), durable=True)
     logger.info(
         "Rescored %d of %d candidates from events.json", changed, len(hl.get("candidates", []))
     )

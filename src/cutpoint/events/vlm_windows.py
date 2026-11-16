@@ -649,14 +649,19 @@ def build_messages(
     game: GamePrompt | None,
     transcript_lines: list[dict[str, Any]],
     events: list[dict[str, Any]],
+    *,
+    name: str | None = None,
 ) -> list[dict[str, Any]]:
     """OpenAI-style messages for one window.
 
     ``game`` is the window's :class:`GamePrompt`; None uses the generic (neutral)
-    "video game" prompt.
+    "video game" prompt. ``name``: what the prompt calls the source (:func:`source_name`;
+    None: its file name).
     """
     if params.action_cam is not None:
-        return build_messages_action_cam(src, win, frames, params, transcript_lines, events)
+        return build_messages_action_cam(
+            src, win, frames, params, transcript_lines, events, name=name
+        )
     if game is None:
         game = game_prompt(None, None)
     dur = win.end - win.start
@@ -666,7 +671,8 @@ def build_messages(
             "type": "text",
             "text": (
                 f"This is a {dur:.0f}-second window of a {view}{game.name} recording, "
-                f"starting at {clock(win.start)} in {src.name}. The single audio track mixes "
+                f"starting at {clock(win.start)} in {name or src.name}. The single audio track "
+                "mixes "
                 "game sound, the player's microphone and friends on voice chat. "
                 f"{len(frames)} frames follow, each labelled with seconds from the window start."
             ),
@@ -742,9 +748,11 @@ def build_messages_action_cam(
     params: VlmParams,
     transcript_lines: list[dict[str, Any]],
     events: list[dict[str, Any]],
+    *,
+    name: str | None = None,
 ) -> list[dict[str, Any]]:
     """Action-cam variant of :func:`build_messages` (adds the ``tags`` rubric), worded for
-    the project's activity (``params.action_cam``)."""
+    the project's activity (``params.action_cam``); ``name`` as there."""
     w = params.action_cam or default_wording()
     dur = win.end - win.start
     content: list[dict[str, Any]] = [
@@ -752,7 +760,7 @@ def build_messages_action_cam(
             "type": "text",
             "text": (
                 f"This is a {dur:.0f}-second window of a {w.text('recording')}, starting at "
-                f"{clock(win.start)} in {src.name}. The audio is the camera microphone: "
+                f"{clock(win.start)} in {name or src.name}. The audio is the camera microphone: "
                 f"{w.text('audio')}. {len(frames)} frames follow, each labelled with "
                 "seconds from the window start."
             ),
@@ -873,6 +881,14 @@ def _ask(
     return json.dumps(data), {"prompt_tokens": rater.last_prompt_tokens}
 
 
+def source_name(server: VisionRater, src: Source, number: int) -> str:
+    """What a prompt calls ``src``, the ``number``-th source of the run (from 1): its file name
+    for a vision model on this machine (:attr:`~cutpoint.vision.VisionRater.local`), else
+    ``source <number>``: a file name is host information, never sent to a hosted provider or
+    an Ollama on another machine (A653)."""
+    return src.name if getattr(server, "local", False) is True else f"source {number}"
+
+
 MAX_FAILS_IN_A_ROW = 3  # windows without a reply in a row after which the layer stops
 
 
@@ -915,6 +931,7 @@ def describe_windows(
         "prompt_tokens": [],
     }
     caches: dict[str, tuple[Path, dict[str, Any]]] = {}
+    numbers = {path: n for n, path in enumerate(sources, 1)}  # "source N" in a hosted prompt
     for win in windows:
         src = sources[win.source]
         prompt = prompts.get(win.source)
@@ -949,6 +966,7 @@ def describe_windows(
             prompt,
             transcript_lines,
             layer1.get(win.source, []),
+            name=source_name(server, src, numbers[win.source]),
         )
         parsed, usage, err = None, {}, None
         timed_out = False

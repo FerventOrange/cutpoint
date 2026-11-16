@@ -514,6 +514,17 @@ class VisionRater:
         self._ratings: dict[Path, tuple[Path, dict[str, Any]] | None] = {}
 
     @property
+    def local(self) -> bool:
+        """Whether nothing sent to the provider leaves this machine (an Ollama or other server
+        on it, not Cutpoint's subscription proxy): only then do prompts name the source files,
+        as the AI Chat sends host and path information only to a model on this machine (A653)."""
+        from cutpoint.assistant.providers import is_consent_exempt  # noqa: PLC0415
+
+        if self.via:
+            return getattr(self.via.provider, "local", False) is True
+        return is_consent_exempt(self.url)
+
+    @property
     def consent_needed(self) -> str | None:
         """The consent key the provider still needs (None: on this machine or agreed to), as
         computed for this rater's ``consent``; read-only, so no caller can switch the guard of
@@ -537,6 +548,15 @@ class VisionRater:
             models = ollama_get(self.url, "/api/tags", timeout=(1, 3)).get("models")
         except (requests.RequestException, ValueError) as err:  # ValueError: not JSON
             why = unreachable_reason(err)
+            if why in ("HTTP 401", "HTTP 403"):  # a login is never saved with the project (A639)
+                logger.warning(
+                    "Ollama at %s refused the request (%s): it needs a login, which Cutpoint "
+                    "does not save; set it in config.json or OLLAMA_HOST, or give --ollama-url "
+                    "with it again; skipping vision",
+                    self.host,
+                    why,
+                )
+                return False
             logger.info("Ollama not reachable at %s (%s); skipping vision", self.host, why)
             return False
         # entries of another shape are left out (A116)

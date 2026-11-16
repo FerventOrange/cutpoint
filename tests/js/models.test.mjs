@@ -501,3 +501,12 @@ test('Refresh catalog loads the Vision list for the Vision role, not the Chat li
   await m.page.settle();
   assert.ok(!m.optionValues('#visionRoleModel').includes('chat-only-model'));
 });
+
+test('vision consent names the data it sends and that the AI Chat consent is separate (moved from a source-text pin, #1085 A594)', async (t) => {
+  const key = 'vision-v2:openai@api.openai.com';
+  const m = await apiTab(t, { visionProvider: 'openai', consent: { key, needed: true, host: 'api.openai.com', missing_key: null } });
+  const text = `${m.$('#visionConsentText').textContent} ${m.$('#visionConsentMore').textContent}`;
+  for (const part of ['video frames', 'transcript excerpts', 'file names and times', 'on-screen text', 'telemetry', 'The AI Chat gets other data', 'allowing one never covers the other']) {
+    assert.ok(text.includes(part), part);
+  }
+});

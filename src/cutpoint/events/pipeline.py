@@ -1486,7 +1486,7 @@ def _discover(
                 game,
                 backup,
             )
-        cache.save_json(target, proposal)
+        cache.save_json(target, discover.installable(proposal))
         out[game].update(installed=True, preset=str(target))
         logger.info(
             "Installed discovered HUD preset for %r: %s (edit it to calibrate)", game, target
@@ -1552,12 +1552,10 @@ def _discover(
         hud.save_game_keys(project, entries, groups)
 
     def made_from(key: str, s: Any) -> bool:
-        """Whether the preset ``key`` was discovered from source ``s`` (its OCR records)."""
-        preset = load_preset(key, project)
-        data = cache.load_json(preset.path) if preset is not None and preset.path else None
-        ids = (
-            ((data or {}).get("discovery") or {}).get("frames") if isinstance(data, dict) else None
-        )
+        """Whether the preset ``key`` was discovered from source ``s``: the OCR records of
+        this project's ``discovery/<key>/proposal.json`` (an installed preset keeps none,
+        A647); False when that file is missing or unreadable."""
+        ids = discover.proposal_frames(project / "discovery" / key / "proposal.json")
         prefix = f"{discover.src_key(s)}@"
         return isinstance(ids, list) and any(str(i).startswith(prefix) for i in ids)
 
