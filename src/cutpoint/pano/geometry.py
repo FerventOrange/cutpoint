@@ -32,11 +32,9 @@ with the opposite sign).
 
 from __future__ import annotations
 
-import io
 import logging
 import math
 import time
-import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -286,7 +284,7 @@ def _cached_orientation(z: Any, meta: dict[str, Any]) -> Orientation:
 
 
 #: What reading a damaged or half-written ``.npz`` raises.
-_NPZ_ERRORS = (OSError, ValueError, EOFError, KeyError, zipfile.BadZipFile)
+_NPZ_ERRORS = cache.NPZ_ERRORS
 
 
 def _read_orientation(path: Path, meta: dict[str, Any]) -> Orientation | None:
@@ -560,16 +558,14 @@ def orientation(
     t, acc, gyr = load_imu(insv00)
     o = fuse(t, acc, gyr, fps, n_frames, q_offset_s=q_offset_s or 0.0)
     o.meta["elapsed_s"] = round(time.perf_counter() - t0, 2)
-    buf = io.BytesIO()  # a file object: numpy adds no suffix
-    np.savez_compressed(
-        buf,
+    cache.save_npz(
+        path,
         t=o.t.astype(np.float32),
         up=o.up.astype(np.float32),
         heading=o.heading.astype(np.float32),
         heading_smooth=o.heading_smooth.astype(np.float32),
         q=o.q.astype(np.float32),
     )
-    cache.save_bytes(path, buf.getvalue())
     cache.save_json(path.with_suffix(".json"), o.meta)
     _log_axis(source, o)
     return o
