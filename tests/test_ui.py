@@ -29,6 +29,8 @@ import pytest
 
 pytest.importorskip("httpx")
 from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
@@ -1933,6 +1935,73 @@ def test_moment_cards_get_the_cli_candidate_id_that_ids_takes(tmp_path: Path) ->
     assert ui._auto_picks({"ids": shown}, hl) == ["--ids", "h002", "h001"]
 
 
+def test_moments_view_looks_up_each_source_once_and_keeps_the_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A742: a source's real path is looked up once per view, not once per moment (with
+    thousands of moments it was most of the project reply's time); the ids stay moment_id's."""
+    a, b = str(tmp_path / "a.mp4"), str(tmp_path / "b.mp4")
+    spans = [(a, 1.0, 5.0), (b, 2.0, 6.0), (a, 10.0, 15.0), (a, 20.0, 25.5), (b, 30.0, 31.0)]
+    hl = {"candidates": [{"source": s, "start": t0, "end": t1} for s, t0, t1 in spans]}
+    want = [ui.moment_id(s, t0, t1) for s, t0, t1 in spans]
+    asked: list[str] = []
+    realpath = os.path.realpath
+
+    def counted(path: str) -> str:
+        asked.append(path)
+        return realpath(path)
+
+    monkeypatch.setattr(os.path, "realpath", counted)
+    view = ui.moments_view(hl)["candidates"]
+    monkeypatch.undo()
+    assert sorted(asked) == [a, b]
+    assert [c["id"] for c in view] == want
+
+
+def test_plain_json_writes_the_bytes_fastapis_own_reply_writes() -> None:
+    """A742: the project reply skips FastAPI's value-by-value copy (``jsonable_encoder``) but
+    writes the same bytes, a value JSON has no type for included; NaN is refused as before."""
+    content = {
+        "a": [1, 2.5, None, True, "é ✓ \u2028"],
+        "t": (1, "x"),
+        "p": Path("x") / "y.mp4",
+        "n": {"k": {"deep": [{}, []]}},
+        3: "an int key",
+    }
+    assert ui.PlainJSON(content).body == JSONResponse(jsonable_encoder(content)).body
+    with pytest.raises(ValueError):
+        ui.PlainJSON({"x": float("nan")})
+    with pytest.raises(ValueError):
+        JSONResponse(jsonable_encoder({"x": float("nan")}))
+
+
+def test_project_reply_follows_highlights_json_rewritten_with_the_same_size_and_time(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A742: the project reply reads highlights.json each time, so a rewrite shows at once even
+    when the file keeps its size and modification time (a coarse clock, a copied file)."""
+    pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
+    p = ui.project_dir(pid)
+    src = str((folder / "a.mp4").resolve())
+    hl = p / "highlights.json"
+
+    def analyse(label: str) -> None:
+        moment = {"id": "h001", "source": src, "start": 1.0, "end": 5.0, "label": label}
+        cache.save_json(hl, {"candidates": [moment]})
+
+    analyse("aaaa")
+    st = hl.stat()
+    first = client.get(f"/api/projects/{pid}")
+    assert first.headers["content-type"] == "application/json"
+    analyse("bbbb")
+    os.utime(hl, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert (hl.stat().st_size, hl.stat().st_mtime_ns) == (st.st_size, st.st_mtime_ns)
+    second = client.get(f"/api/projects/{pid}").json()
+    assert [c["label"] for c in first.json()["highlights"]["candidates"]] == ["aaaa"]
+    assert [c["label"] for c in second["highlights"]["candidates"]] == ["bbbb"]
+    assert second["ranking_key"] != first.json()["ranking_key"]
+
+
 def test_moment_cards_show_the_cli_id_as_text_and_filter_by_it() -> None:
     """#487: the id is real text with a screen-reader prefix, not a tooltip; data-id stays the
     internal id (markMoments, AI highlights and the sequence use it)."""
@@ -2653,6 +2722,38 @@ def test_posix_kill_tree_without_term_sends_only_sigkill(
 
     monkeypatch.setattr(procs.os, "killpg", gone)  # the group already exited: nothing to report
     procs.kill_tree(SimpleNamespace(pid=4242, wait=wait), term=False)  # type: ignore[arg-type]
+
+
+def test_jobs_list_sends_the_log_of_the_running_and_the_newest_job_only(
+    client: TestClient,
+) -> None:
+    """A744: the page polls the jobs every second while one runs and shows the log of the
+    running job, else of the newest; the other kept jobs (up to 50) come without their log."""
+    jobs = client.app.state.jobs
+
+    def keep(status: str, cancelled: bool = False) -> ui.Job:
+        job = ui.Job("p", "analyze")
+        job.status, job.cancelled = status, cancelled
+        job.note("INFO", f"{status} job")
+        jobs.jobs[job.id] = job
+        return job
+
+    old, failed = keep("completed"), keep("failed")
+    running = keep("running", cancelled=True)  # Cancel asked, the process not gone yet
+    try:
+        got = client.get("/api/jobs").json()["jobs"]
+        assert [j["id"] for j in got] == [old.id, failed.id, running.id]
+        assert ["logs" in j for j in got] == [False, False, True]
+        assert got[2]["status"] == "cancelling"
+        assert got[2]["logs"][0].endswith("INFO running job")
+        assert got[1]["status"] == "failed" and got[1]["progress"] == {"total": None, "steps": []}
+        running.status = "cancelled"  # it ended: the newest keeps its log, for the page to show
+        got = client.get("/api/jobs").json()["jobs"]
+        assert ["logs" in j for j in got] == [False, False, True]
+        assert got[2]["logs"][0].endswith("INFO running job")
+        assert running.view()["logs"] == got[2]["logs"]  # cancel and start still send it
+    finally:
+        running.status = "cancelled"
 
 
 @pytest.mark.parametrize(

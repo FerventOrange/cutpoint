@@ -120,6 +120,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -1117,7 +1118,8 @@ class Job:
             if step["state"] == "running":
                 self.steps[name] = {**step, "state": "interrupted"}
 
-    def view(self) -> dict[str, Any]:
+    def view(self, logs: bool = True) -> dict[str, Any]:
+        """The job as the page reads it; ``logs`` false leaves its log out."""
         # Ordered by the CLI's step index; a step sent again later keeps its place.
         steps = sorted(self.steps.values(), key=lambda s: s["index"])
         out: dict[str, Any] = {
@@ -1126,7 +1128,7 @@ class Job:
             "action": self.action,
             # Cancelled but the watcher has not seen the exit yet (Windows can lag a poll or two).
             "status": "cancelling" if self.cancelled and self.status == "running" else self.status,
-            "logs": list(self.logs),
+            **({"logs": list(self.logs)} if logs else {}),
             "progress": {"total": self.steps_total, "steps": steps},
             "started": self.started,
         }
@@ -3406,7 +3408,12 @@ def moment_id(source: str, start: float, end: float) -> str:
     """The page's id of the moment ``source`` ``start``-``end``: a hash of the source's real
     path and the span, so saved trims, sequences and drafts stay attached to the interval
     whatever the CLI ranks (``h001``) become after an analysis or a re-rank."""
-    key = f"{os.path.realpath(source)}|{float(start)}|{float(end)}"
+    return _span_id(os.path.realpath(source), start, end)
+
+
+def _span_id(real: str, start: float, end: float) -> str:
+    """:func:`moment_id` of the source whose real path is ``real``."""
+    key = f"{real}|{float(start)}|{float(end)}"
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
@@ -3422,6 +3429,13 @@ def moments_view(hl: dict[str, Any] | None, events: Any = None) -> dict[str, Any
     dialogue moment's ``display_label`` is its readable ``dialogue_title``, not the slug label."""
     if hl is None:
         return None
+    reals: dict[str, str] = {}  # a source's real path, looked up once (A742: thousands of moments)
+
+    def real(source: str) -> str:
+        if source not in reals:
+            reals[source] = os.path.realpath(source)
+        return reals[source]
+
     return {
         **hl,
         "candidates": [
@@ -3432,7 +3446,7 @@ def moments_view(hl: dict[str, Any] | None, events: Any = None) -> dict[str, Any
                 or ai_context.shown_label(c.get("label"), c),
                 "long_bit": scoring.is_long_dialogue(c),
                 "bit_description": bit_description(c, events),
-                "id": moment_id(c["source"], c["start"], c["end"]),
+                "id": _span_id(real(c["source"]), c["start"], c["end"]),
             }
             for c in hl.get("candidates") or []
         ],
@@ -4325,6 +4339,23 @@ STALE_TEXT = (
 RERANK_BUSY_TEXT = "A ranking is being applied to this project; wait a moment"
 UNDO_STALE_TEXT = "The moments changed since the page loaded (an analysis or another ranking ran)"
 NO_UNDO_TEXT = "There is no earlier ranking of this analysis to go back to"
+
+
+class PlainJSON(JSONResponse):
+    """The JSON reply of plain data, the same bytes as FastAPI's own (:func:`jsonable_encoder`,
+    then :class:`JSONResponse`) without first copying it value by value: a project's reply holds
+    every moment, thousands for a long gameplay recording (A742). ``jsonable_encoder`` still
+    takes a value JSON has no type for."""
+
+    def render(self, content: Any) -> bytes:
+        return json.dumps(
+            content,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
+            default=jsonable_encoder,
+        ).encode("utf-8")
 
 
 class RankingRefused(Exception):
@@ -5606,15 +5637,20 @@ def create_app(port: int) -> FastAPI:
         return url(pid, "sources", sid).replace("?", f"/director/{name}?", 1)
 
     def pano_views(
-        pid: str, p: Path, listing: list[dict[str, Any]], only: str | None = None
+        pid: str,
+        p: Path,
+        listing: list[dict[str, Any]],
+        only: str | None = None,
+        hl: dict[str, Any] | None = None,
     ) -> dict[str, dict[str, Any]]:
         """The camera path flags and director preview of each candidate (by CLI id) of a 360
-        clip, a ready preview with its url (under the source the page plays it as)."""
+        clip, a ready preview with its url (under the source the page plays it as). ``hl``:
+        the project's highlights.json when the caller has read it already."""
         previews.prune(p)
         views = previews.listing(p)
         if only is not None:
             views = {only: views[only]} if only in views else {}
-        hl = _highlights(p) or {}
+        hl = (hl if hl is not None else _highlights(p)) or {}
         where = {str(c.get("id")): c.get("source") for c in hl.get("candidates") or []}
         sids = {s["path"]: s["id"] for s in listing}
         for cid, view in views.items():
@@ -6196,10 +6232,10 @@ def create_app(port: int) -> FastAPI:
         if highlights is not None and meta.get("kind") == "360":
             # #517: flags of each moment's cached camera path and its director preview (null:
             # not a moment of a 360 clip of the project, the page plays the raw preview)
-            views = pano_views(pid, p, listing)
+            views = pano_views(pid, p, listing, hl=hl)
             for c in highlights["candidates"]:
                 c["pano"] = views.get(str(c.get("cli_id")))
-        return {
+        view = {
             "id": pid,
             "name": meta.get("name") or pid,
             "style": _analysis_inputs(meta, hl)[1] or "",
@@ -6257,6 +6293,7 @@ def create_app(port: int) -> FastAPI:
             # does not match the current analysis (ranking_undo_view)
             "ranking_undo": ranking_undo_view(p, meta),
         }
+        return PlainJSON(view)
 
     @owned.get("/projects/{pid}/resume")
     def resume_preview(pid: str):
@@ -6932,7 +6969,15 @@ def create_app(port: int) -> FastAPI:
 
     @secure.get("/jobs")
     def list_jobs():
-        return {"jobs": [j.view() for j in list(jobs.jobs.values())]}
+        """The kept jobs, oldest first. Only the running job and the newest carry their log: the
+        page shows the log of the running job, else of the newest, and polls this every second
+        while a job runs (A744: 50 kept logs of 300 lines each were sent every time)."""
+        kept = list(jobs.jobs.values())
+        return {
+            "jobs": [
+                j.view(logs=j.status == "running" or i == len(kept) - 1) for i, j in enumerate(kept)
+            ]
+        }
 
     @secure.post("/jobs/{job_id}/cancel")
     def cancel_job(job_id: str):
