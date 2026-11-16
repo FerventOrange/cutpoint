@@ -657,7 +657,11 @@ def load_visual_light(src: Source | Path, params: LightParams | None = None) -> 
     except OSError as err:
         logger.warning("%s: footage not reachable (%s); no frame index for it", src, err)
         return None
-    return _load_npz(path)
+    try:
+        return _load_npz(path)
+    except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile) as err:
+        logger.warning("%s: unreadable frame index (%s); indexing it again", path.name, err)
+        return None
 
 
 def drop_light(src: Source | Path) -> None:

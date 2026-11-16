@@ -462,7 +462,6 @@ def run_events(
                 kept,
                 encoder,
                 crash_run and "ocr" not in layers,
-                force="visual_light" in force,
             )
         timings["visual_light_s"] = round(time.perf_counter() - t0, 1)
 

@@ -128,6 +128,8 @@ NO_WEIGHTS = "Visual search needs the CLIP weights (cutpoint setup --only visual
 WHY_NO_INDEX = "Visual search isn't available for this project: its analysis has no frame index"
 FIX_WEIGHTS = "cutpoint setup --only visual"
 FIX_INDEX = "analyze the project again with --visual-index"
+# The model's rules never carry the lite install command (it can hold local paths)
+FIX_LITE_RULES = "installing the full edition of Cutpoint (the chat page shows the command)"
 # (the tool is not offered: the rule does not name it)
 NO_INDEX_RULES = """
 
@@ -151,7 +153,8 @@ def index_state(sources: Sequence[str]) -> dict[str, Any]:
 def unindexed_rules(state: Mapping[str, Any]) -> str:
     """The assistant's rule line when :func:`index_state` is not ``ok``."""
     why = str(state.get("why") or WHY_NO_INDEX).rstrip(".")
-    return NO_INDEX_RULES.format(why=why, fix=state.get("fix") or FIX_INDEX)
+    fix = FIX_LITE_RULES if state.get("why") == NO_LITE else state.get("fix") or FIX_INDEX
+    return NO_INDEX_RULES.format(why=why, fix=fix)
 
 
 class LookForError(Exception):
