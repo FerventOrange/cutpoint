@@ -3166,7 +3166,12 @@ def source_entries(
             if pano:  # one .lrv per clip 360 analysis can use (those of meta.clips, if set)
                 only = meta.get("clips") or None
                 _, clips, _ = inspect_source(Path(picked[0]))
-                found = [clips[n]["lrv"] for n in _usable(clips) if not only or n in only]
+                found = [
+                    g["lrv"]
+                    for g in (clips[n] for n in _usable(clips))
+                    if not only
+                    or {g["num"], x3.clip_key(g["date"], g["time"], g["num"])} & set(only)
+                ]
             else:
                 found = find_picked(picked, *picked_filters(meta))
             paths = dict.fromkeys(map(str, found))
@@ -4041,7 +4046,13 @@ def inspect_source(src: Path) -> tuple[list[Path], dict[str, dict[str, Any]], Co
     else:
         listed = sorted(p for p in (src.parent if f else src).iterdir() if safe_is_file(p))
         files = [
-            p for p in listed if not f or (insta360.parse_name(p) or {}).get("num") == f["num"]
+            p
+            for p in listed
+            if not f
+            or (
+                (g := insta360.parse_name(p))
+                and (g["date"], g["time"], g["num"]) == (f["date"], f["time"], f["num"])
+            )
         ]
     videos = [p for p in files if p.suffix.lower() in VIDEO_EXTS]
     other = Counter(
@@ -6113,7 +6124,8 @@ def create_app(port: int) -> FastAPI:
             style = style if is_cam else pano_style()
         except ValueError as err:  # config.json's pano section is not an object
             raise bad(str(err), 409) from err
-        clips = {"clips": usable} if src.is_file() else {}  # one file: just that clip
+        f = insta360.parse_name(src) if src.is_file() else None  # one file: just that clip
+        clips = {"clips": [x3.clip_key(f["date"], f["time"], f["num"])]} if f else {}
         full = os.path.abspath(source)  # noqa: PTH100
         return new_project(name.strip(), full, style, kind="360", **clips)
 
@@ -6375,8 +6387,14 @@ def create_app(port: int) -> FastAPI:
                 raise bad("the style of a 360 project cannot be changed")
             _no_options([meta["source"]], "the source")
             only = [c for c in meta.get("clips") or [] if isinstance(c, str)]
-            if not all(re.fullmatch(r"[0-9]+", c) for c in only):  # X3 clip numbers
-                raise bad("the clips in the project's ui/meta.json are not clip numbers")
+            if not all(re.fullmatch(r"\d{3}|\d{8}_\d{6}_\d{3}", c) for c in only):  # X3 clip ids
+                raise bad("the clips in the project's ui/meta.json are not clip ids")
+            f = insta360.parse_name(Path(meta["source"]))
+            if f:  # a project made before A207 holds the bare number of its one picked file
+                only = [
+                    x3.clip_key(f["date"], f["time"], f["num"]) if c == f["num"] else c
+                    for c in only
+                ]
             live = _library_style(style, hl)  # a deleted style: its recorded base
             _own(p, "highlights.json")  # the analysis rewrites it
             _own(p, "pano.json")  # and the scan this

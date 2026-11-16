@@ -169,7 +169,7 @@ X3_CLIPS = {X3_00: b"", X3_10: b"", X3_LRV: b""}
     ("pick", "style", "meta"),
     [
         (None, None, {"kind": "360", "style": "action-cam"}),
-        (X3_00, None, {"kind": "360", "style": "action-cam", "clips": ["001"]}),
+        (X3_00, None, {"kind": "360", "style": "action-cam", "clips": ["20260101_100000_001"]}),
         (None, "action-cam", {"kind": "360", "style": "action-cam"}),
     ],
     ids=["folder-flat-style-becomes-pano-default", "file-keeps-its-clip", "action-cam-style"],
@@ -511,6 +511,39 @@ def test_360_project_lists_one_lrv_per_usable_clip_before_analysis(
     assert [Path(e["path"]).name for e in ui.source_entries(p, None)] == [X3_LRV]
 
 
+def test_360_file_pick_takes_its_recording_when_another_has_its_number(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A207: one picked file of a 029 two recordings share gives that recording alone, its
+    analysis is accepted and it lists its own proxy; a project with the bare number still
+    lists its clip."""
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    names = [
+        "VID_20240831_194807_00_029.insv", "LRV_20240831_194807_01_029.lrv",
+        "VID_20260122_132929_00_029.insv", "LRV_20260122_132929_11_029.lrv",
+    ]  # fmt: skip
+    for name in names:
+        (folder / name).write_bytes(b"")
+    res = client.post("/api/projects", json={"name": "T", "source": str(folder / names[2])})
+    assert res.status_code == 200, res.text
+    p = ui.project_dir(res.json()["id"])
+    assert ui.read_meta(p)["clips"] == ["20260122_132929_029"]
+    assert [Path(e["path"]).name for e in ui.source_entries(p, None)] == [names[3]]
+    seen: list[list[str]] = []
+    monkeypatch.setattr(ui, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(seen))
+    res = client.post(f"/api/projects/{res.json()['id']}/jobs", json={"action": "analyze"})
+    assert res.status_code == 200, res.text
+    assert seen[0][-2:] == ["--only", "20260122_132929_029"]
+    cache.save_json(p / ui.META_FILE, {**ui.read_meta(p), "clips": ["029"]})  # before A207
+    assert [Path(e["path"]).name for e in ui.source_entries(p, None)] == [names[3]]
+    seen.clear()
+    res = client.post(f"/api/projects/{p.name}/jobs", json={"action": "analyze"})
+    assert res.status_code == 200, res.text
+    assert seen[0][-2:] == ["--only", "20260122_132929_029"]
+
+
 def test_list_projects_shows_ui_360_projects_but_hides_command_line_ones(
     client: TestClient, tmp_path: Path
 ) -> None:
@@ -526,7 +559,7 @@ def test_list_projects_shows_ui_360_projects_but_hides_command_line_ones(
     assert [p["id"] for p in client.get("/api/projects").json()["projects"]] == [pid]
 
 
-@pytest.mark.parametrize("only", [None, "001"], ids=["folder", "file"])
+@pytest.mark.parametrize("only", [None, "20260101_100000_001"], ids=["folder", "file"])
 def test_360_analyze_job_runs_the_360_command_with_a_plan(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, only: str | None
 ) -> None:

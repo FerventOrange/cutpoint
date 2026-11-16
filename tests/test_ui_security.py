@@ -97,5 +97,5 @@ def test_a_360_clip_in_meta_json_that_is_not_a_number_never_reaches_the_job(
     seen: list[list[str]] = []
     monkeypatch.setattr(ui.Jobs, "start", fake_start(seen))
     res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
-    assert res.status_code == 400 and "not clip numbers" in res.json()["detail"]
+    assert res.status_code == 400 and "not clip ids" in res.json()["detail"]
     assert seen == []

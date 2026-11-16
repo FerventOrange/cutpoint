@@ -105,6 +105,7 @@ def _set_folder_project(folder: Path) -> None:
 
 TIMINGS_FILE = "pano_timings.json"
 STALE_TIMINGS_KEPT = "stale_timings_kept"  # --json warning: an earlier run's timings not removed
+DUPLICATE_CLIP_NUMBERS = "duplicate_clip_numbers"  # --json warning: recordings share a number
 
 
 def _timing(project: Path, key: str, value: Any) -> None:
@@ -181,9 +182,10 @@ def _scan(
     allow_empty: bool = True,
     timings: dict[str, Any] | None = None,
 ) -> int:
-    """:func:`cmd_scan` into ``project``; with ``only``, just those clip numbers (their
-    orientation alone is read). Returns the number of clips. ``scan_s`` goes to
-    ``timings`` when given (``360 analyze --scan`` saves it), else into ``pano_timings.json``.
+    """:func:`cmd_scan` into ``project``; with ``only``, just those clips (ids or numbers,
+    see :func:`cutpoint.pano.x3.select`; their orientation alone is read). Returns the number
+    of clips. ``scan_s`` goes to ``timings`` when given (``360 analyze --scan`` saves it),
+    else into ``pano_timings.json``.
 
     Raises:
         FileNotFoundError: If no clip matches and not ``allow_empty`` (nothing is written).
@@ -191,14 +193,18 @@ def _scan(
     from cutpoint.insta360 import imu_source  # noqa: PLC0415
     from cutpoint.pano import geometry as G  # noqa: PLC0415
     from cutpoint.pano import project as P  # noqa: PLC0415
-    from cutpoint.pano.x3 import scan  # noqa: PLC0415
+    from cutpoint.pano.x3 import duplicate_numbers, scan, select  # noqa: PLC0415
 
     t0 = time.perf_counter()
     clips, dirs = [], []
     for d in folders:
-        found = scan(Path(d))
-        clips += [c for c in found if not only or c.clip_id in only]
+        clips += scan(Path(d))
         dirs.append(Path(d))
+    if only:  # over the whole project: a number its pano.json has too is not unique
+        scanned = {P.norm(c.source) for c in clips}
+        known = [c for k, c in P.load(project).items() if k not in scanned]
+        picked = {id(c) for c in select(clips + known, only, "--only")}
+        clips = [c for c in clips if id(c) in picked]
     if not clips and not allow_empty:
         what = f"clip {', '.join(only)}" if only else "clips"
         raise FileNotFoundError(f"no Insta360 X3 {what} found in {', '.join(folders)}")
@@ -214,13 +220,32 @@ def _scan(
             "median_tilt_deg": round(float(sorted(tilt)[len(tilt) // 2]), 1),
         }
     path = P.save(project, clips, dirs)
+    saved = list(P.load(project).values())  # the ids over the whole project
+    ids = {P.norm(c.source): c.clip_id for c in saved}
+    for c in clips:
+        c.clip_id = ids.get(P.norm(c.source), c.clip_id)
+    dups = duplicate_numbers(saved)
+    if dups:
+        message = (
+            "more than one recording has clip number "
+            + "; ".join(f"{n} ({', '.join(ids)})" for n, ids in dups.items())
+            + ": name these clips by their id in --clips and --only"
+        )
+        logger.warning("%s", message)
+        jsonout.warn(
+            DUPLICATE_CLIP_NUMBERS,
+            message,
+            [Path(c.source) for c in saved if c.number in dups],
+        )
     el = round(time.perf_counter() - t0, 1)
     if timings is None:
         _timing(project, "scan_s", el)
     else:
         timings["scan_s"] = el
+    width = max([4, *(len(c.clip_id) for c in clips)])
     logger.info(
-        "%-4s %-5s %8s %7s %9s %6s  %s",
+        "%-*s %-5s %8s %7s %9s %6s  %s",
+        width,
         "clip",
         "mode",
         "duration",
@@ -231,7 +256,8 @@ def _scan(
     )
     for c in clips:
         logger.info(
-            "%-4s %-5s %7.1fs %7d %9.2f %5.0f°  %s",
+            "%-*s %-5s %7.1fs %7d %9.2f %5.0f°  %s",
+            width,
             c.clip_id,
             c.mode,
             c.duration,
@@ -312,7 +338,9 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
         runstate.project_made(project)  # a new project: lock and record it, now it exists
     clips = [c for c in clips if c.lrv]
     if a.only:
-        clips = [c for c in clips if c.clip_id in a.only]
+        from cutpoint.pano.x3 import select  # noqa: PLC0415
+
+        clips = select(clips, a.only, "--only")
     keep = False  # CLIP waits on the CPU only when the crash dense confirm will embed frames
     if not (a.no_events or a.views_only):
         from cutpoint.crash import ClipEncoder, dense_needs_run  # noqa: PLC0415
@@ -914,9 +942,10 @@ def cmd_stitch(a: argparse.Namespace) -> None:
     clips = load(project)
     chosen: dict[str, Any] = {}
     if a.clips:
-        for c in clips.values():
-            if c.clip_id in a.clips:
-                chosen[c.clip_id] = c
+        from cutpoint.pano.x3 import select  # noqa: PLC0415
+
+        for c in select(list(clips.values()), a.clips, "--clips"):
+            chosen[c.source] = c
     else:
         sources: list[str] = []
         if a.from_clips:
@@ -934,10 +963,10 @@ def cmd_stitch(a: argparse.Namespace) -> None:
         for s in sources:
             c = clip_for(clips, s)
             if c is not None:
-                chosen[c.clip_id] = c
+                chosen[c.source] = c
     if not chosen:
         raise ValueError(
-            "No 360 clips selected (use --clips NNN ..., --from-clips DIR, --segments FILE or "
+            "No 360 clips selected (use --clips ID ..., --from-clips DIR, --segments FILE or "
             "a project with highlights.json)"
         )
     from cutpoint.capabilities import SDK_NEEDS_NVIDIA, nvidia_present  # noqa: PLC0415
@@ -946,7 +975,9 @@ def cmd_stitch(a: argparse.Namespace) -> None:
         logger.warning(SDK_NEEDS_NVIDIA)
         jsonout.warn("sdk_needs_nvidia", SDK_NEEDS_NVIDIA)
     recs = stitch_clips(
-        sorted(chosen.values(), key=lambda c: c.clip_id), force=a.force, dry_run=a.dry_run
+        sorted(chosen.values(), key=lambda c: (c.clip_id, c.source)),
+        force=a.force,
+        dry_run=a.dry_run,
     )
     for r in recs:
         logger.info("clip %s: %s %s", r["clip"], r["status"], r["output"])
@@ -1148,7 +1179,13 @@ def add_parser(sub: Any) -> None:
     )
     an.add_argument("--model", help="whisper model (default: medium on CUDA, small on CPU)")
     an.add_argument("--language", help="force transcription language, e.g. en")
-    an.add_argument("--only", nargs="+", metavar="NNN", help="only these clip numbers")
+    an.add_argument(
+        "--only",
+        nargs="+",
+        metavar="ID",
+        help="only these clips: the clip number (029), or the id (20240831_194807_029) when "
+        "recordings share the number",
+    )
     an.add_argument("--views-only", action="store_true", help="only the 360 view layer")
     an.add_argument("--no-events", action="store_true", help="skip cutpoint events")
     an.add_argument("--force-views", action="store_true", help="recompute the view layer")
@@ -1223,7 +1260,13 @@ def add_parser(sub: Any) -> None:
     )
     sti.add_argument("project")
     g2 = sti.add_mutually_exclusive_group()
-    g2.add_argument("--clips", nargs="+", metavar="NNN", help="these clip numbers")
+    g2.add_argument(
+        "--clips",
+        nargs="+",
+        metavar="ID",
+        help="these clips: the clip number (029), or the id (20240831_194807_029) when "
+        "recordings share the number",
+    )
     g2.add_argument("--from-clips", metavar="DIR", help="clips folder (its manifest)")
     g2.add_argument(
         "--segments", metavar="FILE", help="segments JSON, e.g. mix_segments.json (its sources)"
