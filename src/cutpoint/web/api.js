@@ -4,7 +4,7 @@
 const KEY = 'cutpoint-token';
 const NO_TOKEN = 'This page has no session token. Open the complete URL printed by `cutpoint ui`.';
 const BAD_TOKEN = 'The server rejected this session token. Open the complete URL printed by `cutpoint ui` again.';
-// ui/__init__.py auth: the one 403 detail meaning the token is not this run's (a host/origin 403 differs)
+// ui/app.py auth: the one 403 detail meaning the token is not this run's (a host/origin 403 differs)
 const TOKEN_DETAIL = 'missing or wrong session token';
 const EXPIRED = 'The Cutpoint server restarted or this link expired. Open the new link printed in the terminal.';
 

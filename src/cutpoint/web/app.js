@@ -6822,7 +6822,7 @@ async function loadRoleModels(role, refresh) {
 }
 
 const SUB_POLL_MS = 1500;
-const PROXY_START_FAILED = 'the subscription proxy did not start'; // ui/__init__.py proxy_error and Log in
+const PROXY_START_FAILED = 'the subscription proxy did not start'; // ui/routes/shared.py proxy_error and ui/routes/settings.py Log in
 const subNote = (...parts) => $('#modelsSubsStatus')?.replaceChildren(...parts);
 
 async function loadLogins({ started = false } = {}) {

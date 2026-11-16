@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import errno
-import functools
 import hashlib
 import hmac
 import os
@@ -32,7 +31,6 @@ from cutpoint.ui.media import Media
 from cutpoint.ui.pano_previews import PanoPreviews
 from cutpoint.ui.picker import Picker
 from cutpoint.ui.projects import MediaLookups, Sources
-from cutpoint.ui.routes.context import AppContext
 from cutpoint.ui.settings import require_config
 
 
@@ -183,20 +181,13 @@ def create_app(port: int) -> FastAPI:
     app.state.assistant = turns
     app.state.planners = {}  # one per project: it caches what it planned
 
-    ctx = AppContext(
-        jobs=jobs,
-        media=media,
-        sources=sources,
-        secure=secure,
-        owned=owned,
-        proxy_error=functools.partial(routes.shared.proxy_error, app),
-    )
     secure.include_router(routes.settings.secure)
     owned.include_router(routes.projects.owned)
-    routes.jobs.register(ctx)
+    owned.include_router(routes.jobs.owned)
+    secure.include_router(routes.jobs.secure)
     owned.include_router(routes.media.owned)
     served.include_router(routes.media.served)
-    routes.ranking.register(ctx)
+    owned.include_router(routes.ranking.owned)
     owned.include_router(routes.assistant.owned)
     owned.include_router(routes.projects.owned_delete)
     owned.include_router(routes.assistant.owned_revert)
