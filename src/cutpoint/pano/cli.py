@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache, jsonout, progress, runstate
-from cutpoint.utils import parse_size, positive_float, positive_int
+from cutpoint.utils import file_stamp, parse_size, positive_float, positive_int
 
 logger = logging.getLogger("cutpoint")
 # Event layers ``cutpoint 360 analyze`` runs after the analysis.
@@ -144,11 +144,8 @@ def _save_views_only_timings(project: Path, timings: dict[str, Any], t_start: fl
 def _stamp(path: Path) -> tuple[int, int, int] | None:
     """``(inode, mtime_ns, size)`` of ``path``, or None if it cannot be stat-ed: an atomic
     rewrite (a rename over it) changes it."""
-    try:
-        st = path.stat()
-    except OSError:
-        return None
-    return st.st_ino, st.st_mtime_ns, st.st_size
+    stamp = file_stamp(path)
+    return None if stamp is None else (stamp[2], stamp[0], stamp[1])
 
 
 def _drop_timings(project: Path) -> None:

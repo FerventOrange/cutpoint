@@ -157,7 +157,7 @@ from cutpoint.assistant import session as ai_session
 from cutpoint.assistant import store as ai_store
 from cutpoint.assistant import watch as ai_watch
 from cutpoint.backends import ollama_url
-from cutpoint.clips import MIN_EXPORT_S, too_short
+from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import (
     ASSISTANT_PROVIDERS,
     COLOR_MODES,
@@ -194,6 +194,7 @@ from cutpoint.pano import project as pano_project
 from cutpoint.pano import stitch as pano_stitch
 from cutpoint.pano import x3
 from cutpoint.pano.project import default_style as pano_style
+from cutpoint.segments import MAX_SEGMENTS, check_segments
 from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import (
     ACTION_CAM,
@@ -225,7 +226,6 @@ WEB_DIR = Path(__file__).parent / "web"
 UI_DIR = "ui"  # per-project state: meta.json, review.json, exports.json, proxy/, frames/, pano/
 META_FILE = f"{UI_DIR}/meta.json"  # the project's name, sources and chosen style
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
-MAX_SEGMENTS = ai_ops.MAX_SEGMENTS
 MAX_LOG_LINES = 300
 MAX_JOBS = 50
 MAX_KEPT_NAMES = 100  # names of kept files the delete plan lists
@@ -2583,11 +2583,8 @@ def _pano_reasons(
 
 
 def _file_ident(f: Path) -> tuple[str, int, int] | None:
-    try:
-        st = f.stat()
-    except OSError:
-        return None
-    return f.name, st.st_size, st.st_mtime_ns
+    stamp = file_stamp(f)
+    return None if stamp is None else (f.name, stamp[1], stamp[0])
 
 
 class PanoPreview:
@@ -3513,60 +3510,42 @@ def analysis_stats(hl: dict[str, Any] | None, took: float | None) -> dict[str, f
     return {"video_s": round(sum(video), 3), "took_s": took}
 
 
-def _num(item: dict[str, Any], key: str, i: int) -> float:
-    v = item.get(key)
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
-        raise bad(f"segment {i}: {key} must be a number")
-    return float(v)
-
-
 def validate_segments(
     raw: Any, sources: list[dict[str, Any]], media: Media
 ) -> list[dict[str, Any]]:
     """Check a review against the project's sources; return the cleaned segments (``exact``
     kept only when true)."""
-    if not isinstance(raw, list):
-        raise bad("segments must be a list")
-    if len(raw) > MAX_SEGMENTS:
-        raise bad(f"at most {MAX_SEGMENTS} segments")
     by_path = {s["path"]: s for s in sources}
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for i, item in enumerate(raw, 1):
-        if not isinstance(item, dict):
-            raise bad(f"segment {i}: object expected")
-        sid, label = item.get("id"), item.get("label", "segment")
-        if not isinstance(sid, str) or not 0 < len(sid) <= 64 or sid in seen:
-            raise bad(f"segment {i}: id must be a unique string of 1-64 characters")
-        seen.add(sid)
-        src = by_path.get(item.get("source")) if isinstance(item.get("source"), str) else None
-        if src is None:
-            raise bad(f"segment {i}: source is not part of this project")
-        start, end = _num(item, "start", i), _num(item, "end", i)
-        if start < 0 or too_short(start, end):
-            raise bad(f"segment {i}: needs 0 <= start and end at least {MIN_EXPORT_S}s after start")
-        duration = src["duration"] or media.duration(remap_source(src["path"]))
-        if duration is None:
-            raise bad(f"segment {i}: source cannot be read")
-        if end > duration + 0.01:
-            raise bad(f"segment {i}: end {end:g}s is past the source's {duration:g}s")
-        if not isinstance(label, str) or len(label) > ai_ops.LABEL_MAX:
-            raise bad(f"segment {i}: label must be text of at most {ai_ops.LABEL_MAX} characters")
-        exact = item.get("exact", False)
-        if not isinstance(exact, bool):
-            raise bad(f"segment {i}: exact must be true or false")
-        out.append(
-            {
-                "id": sid,
-                "source": src["path"],
-                "start": round(start, 3),
-                "end": round(end, 3),
-                "label": "".join(c for c in label if c.isprintable()).strip() or "segment",
-                # a word splice: exported at exactly its edges and joined with hard cuts
-                **({"exact": True} if exact else {}),
-            }
-        )
-    return out
+
+    def duration(path: str) -> float | None:
+        return by_path[path]["duration"] or media.duration(remap_source(path))
+
+    def fail(rule: str, i: int, row: Any, **info: Any) -> HTTPException:
+        at = f"segment {i}: "
+        match rule:
+            case "list":
+                return bad("segments must be a list")
+            case "count":
+                return bad(f"at most {MAX_SEGMENTS} segments")
+            case "object":
+                return bad(f"{at}object expected")
+            case "id":
+                return bad(f"{at}id must be a unique string of 1-64 characters")
+            case "source":
+                return bad(f"{at}source is not part of this project")
+            case "number":
+                return bad(f"{at}{info['key']} must be a number")
+            case "range":
+                return bad(f"{at}needs 0 <= start and end at least {MIN_EXPORT_S}s after start")
+            case "unreadable":
+                return bad(f"{at}source cannot be read")
+            case "past":
+                return bad(f"{at}end {info['end']:g}s is past the source's {info['duration']:g}s")
+            case "label":
+                return bad(f"{at}label must be text of at most {ai_ops.LABEL_MAX} characters")
+        return bad(f"{at}exact must be true or false")
+
+    return check_segments(raw, has_source=by_path.__contains__, duration=duration, fail=fail)
 
 
 def validate_joins(raw: Any) -> list[dict[str, str]]:

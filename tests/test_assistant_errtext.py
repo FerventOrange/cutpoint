@@ -34,6 +34,7 @@ USER = "Travis"
         ("open /home/u/x.json failed", "open x.json failed"),
         ("open '/home/u/my dir/x.json' failed", "open x.json failed"),
         ("open ~/Videos/x.mp4", "open x.mp4"),
+        (r"cannot read C:\Users\Jörg\Vidéos\a.mp4", "cannot read a.mp4"),
         (r"open ~\Videos\x.mp4", "open x.mp4"),
         # a folder, a name without an extension, a dotfile, a bare drive or home: <folder>
         (r"in C:\Users\Travis\Videos", "in <folder>"),
@@ -56,7 +57,6 @@ def test_paths_become_a_bare_name_or_folder(text: str, want: str) -> None:
         "Ollama at http://host:11434/api is down",
         "HTTPConnectionPool(host='h', port=1): Max retries, url: /api/chat (Caused by x)",
         "use and/or 1/2 of action / sport",
-        "no change",
     ],
 )
 def test_text_that_is_not_a_path_stays(text: str) -> None:
@@ -124,7 +124,6 @@ def test_a_single_quoted_path_with_an_apostrophe(text: str) -> None:
         "Invalid URL (POST /v1/chat/completions)",
         "404 Not Found (GET /api/tags)",
         "Bad request (DELETE /v1/models/x)",
-        "POST /v1/chat/completions",
         "GET /v1beta/models/x:generateContent",
     ],
 )
@@ -141,7 +140,6 @@ def test_urls_and_regex_text_stay(text: str) -> None:
         "POST /home/user/x.mp4 failed",
         "GET /Users/me/a.mp4",
         "url: /home/u/x.mp4",
-        "bad url: /Users/me/a.mp4",
         "'POST /home/user/x.mp4'",
         "post /home/user/x.mp4",
         "POST  /home/user/x.mp4",

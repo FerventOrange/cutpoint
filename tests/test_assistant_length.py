@@ -72,23 +72,70 @@ def kinds(turn: session.Turn) -> list[str]:
 # -- the target the user asked for ---------------------------------------------------------------
 
 
+# One row per branch of ``context.target_seconds``: each cue before or after a length, a clock
+# time, minutes with seconds, a count word, and each way a length is a clip's, a change or a place.
 @pytest.mark.parametrize(
     ("text", "seconds"),
     [
+        # a cue before the length
+        ("get it to 4 minutes", 240),
+        ("cut it to 90 s", 90),
+        ("aim for 2 minutes", 120),
+        ("target of 150 s", 150),
+        ("total of 240 s", 240),
         ("~4 min of beauty shots", 240),
-        ("make it 4 minutes", 240),
-        ("a 4-minute montage", 240),
-        ("make it 240 s", 240),
-        ("about 90 seconds", 90),
-        ("1:30 total", 90),
-        ("make it 2.5 min", 150),
         ("about two minutes of skiing", 120),
-        ("trim 2 s off the end", None),
-        ("extend m3 by 5 seconds", None),
+        ("make it a minute and 4 s", 64),
+        ("about 2 minutes and 15 seconds", 135),
+        ("make it 4 min 30 s", 270),
+        ("the video should be 2.5 minutes", 150),
+        ("extend m3 to 60 s, make the video 4 minutes", 240),
+        ("clips around 2 minutes", 120),
+        ("make it about 4 minutes more or less", 240),
+        # a cue after the length
+        ("a 90 second reel", 90),
+        ("a 4 minute long montage", 240),
+        ("one minute overall", 60),
+        ("remove m3, about 2 min total", 120),
+        # a clock time
+        ("make it 1:30", 90),
+        ("keep it to 1:30", 90),
+        ("make the video 3:30", 210),
+        ("1:30 total", 90),
+        # a length per clip first, then the sequence's
+        ("tighten every clip and aim for a 2 minute montage", 120),
+        ("shorten every clip so the video is about 2 min", 120),
+        ("trim each clip, the whole thing under 2 minutes", 120),
+        ("tighten every clip, total around 3 min", 180),
+        ("cut each clip down and keep it under 90 seconds", 90),
+        ("every moment about 6 s, cut to 90 s", 90),
+        ("every clip around 5 s overall 2 min", 120),
+        ("shorten each clip. under 2 minutes", 120),
+        ("tighten each clip! around 3 min", 180),
+        ("tighten each clip; around 3 min", 180),
+        # a length per clip is none
+        ("each of the highlights about 5 s", None),
+        ("each edit about 4 s", None),
+        ("make each highlight about 5 seconds", None),
+        ("clip about 5 s", None),
+        ("per clip: about 1 min", None),
+        ("about 5 s each", None),
+        ("about 1 min per clip", None),
+        ("around 1 minute a clip", None),
+        ("I want 10s clips", None),
+        ("I want clips of about 5 seconds", None),
+        ("make the clips about 5 s long", None),
+        # nor is a change, a place, a moment's length or "as"
+        ("need 30 s more", None),
+        ("make it 5 min longer", None),
+        ("extend the jump by about 10 s", None),
         ("extend m3 by 2 minutes", None),
-        ("extend m3 to 60 seconds", None),
+        ("m3, make it 8 seconds", None),
+        ("remove the clip at 3 minutes", None),
+        ("move the 2 minute clip", None),
         ("what happens at 1:30?", None),
-        ("add the laugh", None),
+        ("around 4:20", None),
+        ("make it as short as possible", None),
     ],
 )
 def test_the_length_the_user_asks_for_is_read_from_the_message(
@@ -742,27 +789,6 @@ def test_a_reply_at_the_output_cap_is_asked_again_shorter_without_shrinking_the_
 
 
 @pytest.mark.parametrize(
-    ("text", "seconds"),
-    [
-        ("make it ~4 min", 240),
-        ("get it to 4 minutes", 240),
-        ("a 4 minute long montage", 240),
-        ("a 90 second reel", 90),
-        ("total of 240 s", 240),
-        ("under 2 minutes", 120),
-        ("remove the clip at 3 minutes", None),
-        ("move the 2 minute clip", None),
-        ("the first 5 minutes", None),
-        ("around 4:20", None),
-        ("around 12:05", None),
-        ("the last 30 seconds are boring", None),
-    ],
-)
-def test_only_a_length_given_to_the_sequence_is_a_target(text: str, seconds: float | None) -> None:
-    assert context.target_seconds(text) == seconds
-
-
-@pytest.mark.parametrize(
     ("summary", "claims"),
     [
         ("Added the laugh at the start", True),
@@ -917,23 +943,6 @@ def test_malformed_json_ops_are_rejected_with_the_parse_error() -> None:
 # -- round 3 ----------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("text", "seconds"),
-    [
-        ("make the video 3:30", 210),
-        ("the video should be 2.5 minutes", 150),
-        ("keep it to 1 min", 60),
-        ("keep it to 1:30", 90),
-        ("the clip at 3:30", None),
-        ("around 4:20", None),
-    ],
-)
-def test_sequence_length_phrasing_is_a_target_and_positions_are_not(
-    text: str, seconds: float | None
-) -> None:
-    assert context.target_seconds(text) == seconds
-
-
 def test_a_length_is_sent_back_up_to_three_times_then_the_closest_is_offered() -> None:
     def add(end: float) -> Any:
         return propose("Add the laugh", {"op": "add", "id": "m1", "start": 10, "end": end})
@@ -1056,74 +1065,68 @@ def test_a_reply_that_announces_work_is_nudged_for_any_edit_request(msg: str) ->
     assert fake.requests[1]["messages"][-1]["content"] == session.NUDGE
 
 
+# One row per branch of ``context.claimed_seconds`` and ``Turn._length_gap``, for a proposal
+# exported at 34 s: each cue before or after a length, minutes with seconds, and each way a
+# length is a clip's, a change, a length asked for or hedged, or excused by the exported length.
 @pytest.mark.parametrize(
-    ("summary", "wrong"),
+    ("summary", "claimed", "flagged"),
     [
-        ("Added the laugh; now about 3 minutes.", True),
-        ("Added the laugh for a total of 90 s.", True),
-        ("Added the laugh; it is now about 34 s long.", False),
-        ("Added the laugh, about 30 s in total.", False),  # within the tolerance
-        ("Added the laugh.", False),  # no length claimed
-        ("Extended the jump by 10 s.", False),  # a change, no length
-        # a length without a whole-sequence cue, a bound or a clip's length is no claim
-        ("Added about 15 seconds of banter.", False),
-        ("Added 3 clips (about 12 s) for a total of 34 s.", False),
-        ("Added the laugh (about 12 s); now about 34 s.", False),
-        ("Extended the jump; it is now about 8 s.", False),
-        ("Kept it under 1 minute; now 34 s.", False),
-        ("The jump is now 8 s.", False),
-        ("m3 now runs 12 s.", False),
-        ("Each clip is now 5 s.", False),
-        # a change in length, a clip's length or a place in the source is no claim (#863 review)
-        ("Added the laugh; the video is now 12 s longer.", False),
-        ("Added the laugh, now 12 s longer.", False),
-        ("Trimmed every clip; now 5 s each.", False),
-        ("Trimmed all clips, now about 5 s apiece.", False),
-        ("Extended the jump, now 8 s.", False),
-        ("Extended the jump; now 8 s long.", False),
-        ("Trimmed the intro; the laugh now runs 12 s.", False),
-        ("The jump now lasts 8 s.", False),
-        ("Cut 20 s in total from the intro.", False),
-        ("Trimmed about 10 s overall from m3 and m5.", False),
-        ("Trimmed it by 20 s overall.", False),
-        ("Removed a total of 20 s of dead air.", False),
-        ("Added three clips totalling about 15 s.", False),
-        ("Added 3 clips (12 s in all).", False),
-        ("Swapped in the laugh, now at 12:30 in the source.", False),
-        ("Added m4 and m6 (about 12 s each), now 34 s overall.", False),
-        ("Lengthened m3 by 4 s; the montage now lasts about 34 seconds.", False),
-        # a whole-sequence length is read
-        ("Added the laugh; now 90 s.", True),
-        ("Added the laugh for a total 90 s.", True),
-        ("Added the laugh, 90 s in all.", True),
-        ("Added the laugh; the video is now 90 seconds.", True),
-        ("Added the laugh; it now runs 1:30.", True),
+        # the sequence's length, a cue before it
+        ("Added the laugh; now 90 s.", 90.0, True),
+        ("Added the laugh for a total of 90 s.", 90.0, True),
+        ("Added the laugh; it now runs 1:30.", 90.0, True),
+        ("Added the laugh; your video is now 60 s.", 60.0, True),
+        ("It now runs 4 min 30 s.", 270.0, True),
+        ("It runs 34 s; 60 s in total is your target.", 34.0, False),
+        ("Lengthened m3 by 4 s; the montage now lasts about 34 seconds.", 34.0, False),
+        # ... a cue after it
+        ("Added the laugh, 90 s in all.", 90.0, True),
+        ("It is about a minute total.", 60.0, True),
+        ("Made it 4 min 30 s overall.", 270.0, True),
+        ("Made it 4 minutes and 30 seconds in total.", 270.0, True),
+        ("Now a minute and 4 s in all.", 64.0, True),
+        # a clip's length, a change in length or no cue: no claim
+        ("Each clip is now 5 s.", None, False),
+        ("m3 now runs 12 s.", None, False),
+        ("The jump now lasts 8 s.", None, False),
+        ("Extended the jump; it is now about 8 s.", None, False),
+        ("Added the laugh; the video is now 12 s longer.", None, False),
+        ("Added 3 clips (12 s in all).", None, False),
+        ("Added about 15 seconds of banter.", None, False),
+        ("Moved the laugh earlier, now at 0:12 in the video.", None, False),
+        ("Moved the laugh to the start, now as the opener.", None, False),
+        # the object of a change: no claim
+        ("Trimmed about 10 s overall from m3 and m5.", None, False),
+        ("Trimmed it by 20 s overall.", None, False),
+        ("Added three clips totalling about 15 s.", None, False),
+        ("Cut 20 s in total from the intro.", None, False),
+        ("Removed a total of 20 s of dead air.", None, False),
+        # a length asked for, negated or hypothetical: no claim
+        ("Added the laugh, short of 60 s total.", None, False),
+        ("Added the laugh, just shy of 60 s total.", None, False),
+        ("Added the laugh. 60 s in total needs more footage.", None, False),
+        ("Added the laugh. 60 s total would take more footage.", None, False),
+        ("Added the laugh, closer to 60 s overall.", None, False),
+        ("Added the laugh, toward 60 s overall.", None, False),
+        ("Added the laugh; still not at 60 s total.", None, False),
+        ("It is 34 s now, short of the 60 s total.", None, False),
+        ("Added the laugh; now 34 s of the 40 s asked.", 34.0, False),
+        ("Added the laugh; 60 s total, which was your goal, needs more footage.", None, False),
+        ("Added the laugh; 60 s total, as requested, needs more footage.", None, False),
+        # the exported length named anywhere excuses a claim, the length before a change not
+        ("Added the laugh, now the 34 s cut; 60 s total is too long for the footage.", 60.0, False),
+        ("Added the laugh, going from 0:34 to 1:00 overall.", 60.0, True),
+        ("Added the laugh, taking it from 34 s to 60 s total.", 60.0, True),
     ],
 )
-def test_a_length_claim_in_the_summary_is_checked_against_the_exported_length(
-    summary: str, wrong: bool
+def test_a_length_claim_in_a_summary_is_read_and_checked_against_the_exported_length(
+    summary: str, claimed: float | None, flagged: bool
 ) -> None:
+    assert context.claimed_seconds(summary) == claimed
     gap = session.Turn._length_gap(summary, {"length": 34.0})
-    assert (gap is not None) is wrong
-    if wrong:
-        assert "makes 34 s as exported" in gap
-        claim = context.claimed_seconds(summary)
-        assert claim is not None and f"says the sequence is {claim:.0f} s" in gap
-    if "90 s" in summary or "90 seconds" in summary or "1:30" in summary:
-        assert context.claimed_seconds(summary) == 90.0
-
-
-@pytest.mark.parametrize(
-    "summary",
-    [
-        "Made it 4 min 30 s overall.",
-        "Made it 4 minutes and 30 seconds in total.",
-        "It now runs 4 min 30 s.",
-    ],
-)
-def test_a_claim_in_minutes_and_seconds_is_read_whole(summary: str) -> None:
-    assert context.claimed_seconds(summary) == 270.0
-    assert session.Turn._length_gap(summary, {"length": 270.0}) is None
+    assert (gap is not None) is flagged
+    if flagged:
+        assert "makes 34 s as exported" in gap and f"says the sequence is {claimed:.0f} s" in gap
 
 
 def test_a_claim_that_fits_the_change_or_a_clip_is_not_flagged() -> None:
@@ -1163,71 +1166,6 @@ def test_a_wrong_length_claim_goes_back_with_a_short_proposal() -> None:
     assert "makes 34 s of the 60 s asked" in sent and "says the sequence is 60 s" in sent
 
 
-@pytest.mark.parametrize(
-    ("summary", "seconds"),
-    [
-        # the length the user asked for is no claim
-        ("You asked for a total of 60 s; I found only 34 s of funny moments.", None),
-        ("Now 34 s, below the target total of 60 s.", 34.0),
-        ("It is 34 s now, short of the 60 s total.", None),
-        ("34 s, not the 60 s overall you wanted.", None),
-        ("Now 34 s; you wanted 40 s in all, but there is no more funny footage.", 34.0),
-        ("Added the laugh; now 34 s of the 40 s asked.", 34.0),
-        # a place in the sequence is no length
-        ("Moved the laugh earlier, now at 0:12 in the video.", None),
-        ("Added the laugh at the end, now at 0:28.", None),
-        # the sequence's length still is
-        ("Now 34 s in total.", 34.0),
-        ("The video is now 60 s.", 60.0),
-    ],
-)
-def test_an_asked_length_or_a_place_is_no_claim(summary: str, seconds: float | None) -> None:
-    assert context.claimed_seconds(summary) == seconds
-    assert (session.Turn._length_gap(summary, {"length": 34.0}) is not None) is (seconds == 60.0)
-
-
-@pytest.mark.parametrize(
-    ("summary", "seconds"),
-    [
-        # "as" is not "a s"
-        ("Moved the laugh to the start, now as the opener.", None),
-        ("Now 34 s total as planned.", 34.0),
-        ("Added the laugh, the video now runs 34 s overall as one sequence.", 34.0),
-        ("Added the laugh, now as funny as it gets.", None),
-        # the count words still read
-        ("It is about a minute total.", 60.0),
-        ("Now a minute and 4 s in all.", 64.0),
-        ("Now one minute overall.", 60.0),
-        ("Now 1:30 overall.", 90.0),
-        # target talk after a length is not a claim
-        ("Now 60 s total to match the target.", None),
-        ("Now 1:00 total so it hits the goal.", None),
-        ("Now 34 s; 60 s total was the goal.", 34.0),
-        ("Now 34 s, 60 s overall is still the target.", 34.0),
-        ("It runs 34 s; 60 s in total is your target.", 34.0),
-        ("It is 34 s, 60 s total is the goal you set.", None),
-        ("Now 34 s, short of 60 s overall you hoped for.", 34.0),
-    ],
-)
-def test_as_is_no_count(summary: str, seconds: float | None) -> None:
-    assert context.claimed_seconds(summary) == seconds
-
-
-@pytest.mark.parametrize(
-    ("text", "seconds"),
-    [
-        ("make it as short as possible", None),
-        ("the overall as funny as you can", None),
-        ("about a minute total", 60),
-        ("make it a minute and 4 s", 64),
-        ("one minute overall", 60),
-        ("make it 1:30", 90),
-    ],
-)
-def test_as_is_no_count_in_a_target(text: str, seconds: float | None) -> None:
-    assert context.target_seconds(text) == seconds
-
-
 def test_a_summary_that_names_the_asked_length_is_taken_as_it_is() -> None:
     summary = "Added the laugh. You asked for a total of 4 minutes, but only 34 s exist."
     fake = FakeProvider([propose(summary, {"op": "add", "id": "m1"})] * 4)
@@ -1246,103 +1184,11 @@ ASKED_AFTER = [
 ]
 
 
-@pytest.mark.parametrize("summary", ASKED_AFTER)
-def test_a_summary_that_names_the_exported_length_and_the_asked_one_is_not_flagged(
-    summary: str,
-) -> None:
-    assert session.Turn._length_gap(summary, {"length": 34.0}) is None
-
-
-@pytest.mark.parametrize(
-    ("summary", "seconds"),
-    [
-        # "which you asked for" or "you would need" after a comma, or "reaching" before: asked
-        ("Added the laugh, short of 60 s total, which you asked for.", None),
-        ("Added the laugh, not yet 60 s in all, which you wanted.", None),
-        ("Added the laugh; 60 s total, you would need more footage.", None),
-        ("Added the laugh, still short of reaching 60 s total.", None),
-        # "short of", "shy of", "would need" or "need more" near a length: the length asked for
-        ("Added the laugh, short of 60 s total.", None),
-        ("Added the laugh, just shy of 60 s total.", None),
-        ("Added the laugh. 60 s in total would need more footage.", None),
-        ("Added the laugh. 60 s in total needs more footage.", None),
-        # the sequence's length still is
-        ("Added the laugh, now 90 s in all.", 90.0),
-        ("Added the laugh, 90 s overall, as the opener.", 90.0),
-    ],
-)
-def test_the_asked_length_after_a_comma_or_reaching_is_no_claim(
-    summary: str, seconds: float | None
-) -> None:
-    assert context.claimed_seconds(summary) == seconds
-
-
-@pytest.mark.parametrize(
-    ("summary", "wrong"),
-    [
-        ("Added the laugh. 60 s in total would need more footage.", False),
-        ("Added the laugh, short of 60 s total.", False),
-        # how much more it needs, or the asked length after a comma (#881 review)
-        ("Added the laugh; 60 s overall needs about 26 s more footage.", False),
-        ("Added the laugh; 60 s total needs 26 more seconds.", False),
-        ("Added the laugh, still below 60 s overall, which was your target.", False),
-        ("Added the laugh; 60 s total, which was your goal, needs more footage.", False),
-        ("Added the laugh; 60 s total, as requested, needs more footage.", False),
-        # a negated or hypothetical length (#889)
-        ("Added the laugh. 60 s in total would require more footage.", False),
-        ("Added the laugh. 60 s overall isn't possible with this footage.", False),
-        ("Added the laugh. 60 s total would take more footage.", False),
-        ("Added the laugh; there isn't enough footage for 60 s total.", False),
-        ("Added the laugh; not enough footage yet for 60 s overall.", False),
-        ("Added the laugh, closer to 60 s overall.", False),
-        ("Added the laugh, toward 60 s overall.", False),
-        ("Added the laugh; still not at 60 s total.", False),
-        ("Added the laugh. A total of 60 s isn't reachable yet.", False),
-        # a wrong claim is still flagged
-        ("Now 60 s in total.", True),
-        ("Added the laugh; your video is now 60 s.", True),
-        ("Added the laugh; now 60 s in all.", True),
-        ("Added the laugh; now 90 s overall, up 26 s.", True),
-    ],
-)
-def test_a_length_that_would_need_more_or_falls_short_is_not_flagged(
-    summary: str, wrong: bool
-) -> None:
-    assert (session.Turn._length_gap(summary, {"length": 34.0}) is not None) is wrong
-
-
 def test_a_wrong_claim_is_still_flagged_when_no_length_named_fits() -> None:
     summary = "Added the laugh; now 90 s, after 24 s."
     assert context.named_seconds(summary) == [90.0, 24.0]
     assert session.Turn._length_gap(summary, {"length": 34.0}) is not None
     assert session.Turn._length_gap(summary, {"length": 24.0}) is None  # 24 s is named
-
-
-@pytest.mark.parametrize(
-    "summary",
-    [
-        "Added the laugh, taking it from 34 s to 60 s total.",
-        "Added the laugh, going from 0:34 to 1:00 overall.",
-    ],
-)
-def test_the_length_before_a_change_does_not_excuse_a_wrong_claim(summary: str) -> None:
-    assert context.named_seconds(summary) == [60.0]
-    assert session.Turn._length_gap(summary, {"length": 39.0}) is not None
-
-
-@pytest.mark.parametrize(
-    "summary",
-    [
-        # a length at a place, after "the" or in parentheses can be the sequence's: kept
-        "Added the laugh; now at 34 s, still not 60 s in total.",
-        "Added the laugh, now the 34 s cut; 60 s total is too long for the footage.",
-        "Added the laugh (now 34 s); 60 s overall is not possible.",
-    ],
-)
-def test_a_correct_summary_with_the_exported_length_anywhere_but_after_from_is_not_flagged(
-    summary: str,
-) -> None:
-    assert session.Turn._length_gap(summary, {"length": 34.0}) is None
 
 
 def test_a_turn_with_a_summary_that_names_the_asked_length_keeps_it() -> None:
@@ -1680,131 +1526,6 @@ def test_a_phrase_end_far_away_leaves_the_end_and_a_trim_never_passes_the_cap(
         seq, [{"op": "trim", "id": "c1", "end_delta": 2}], CANDS, durations(), snap=far
     )
     assert out.after[0]["end"] == 30.0  # first end 20 + MAX_GROW_S
-
-
-@pytest.mark.parametrize(
-    ("text", "seconds"),
-    [
-        ("make each clip about 5 s", None),
-        ("I want 10s clips", None),
-        ("need clips around 8 seconds", None),
-        ("need 30 s more", None),
-        ("make it 5 min longer", None),
-        ("every clip around 6 s", None),
-        ("make each clip, about 5 s", None),
-        ("every clip (about 5 s)", None),
-        ("per clip: 5 s", None),
-        ("make each clip about 1 minute", None),
-        ("make a montage of clips around 2 minutes", 120),
-        ("make it 4 min and 30 s", 270),
-        ("make it 4 min 30 s", 270),
-        ("about 2 minutes and 15 seconds", 135),
-        ("make it 90 seconds", 90),
-        ("pick 8 clips, ~3 min", 180),
-        ("use the best clips, around 2 minutes", 120),
-        ("remove the boring clips, under 2 minutes", 120),
-        ("use fewer clips, about 1 min", 60),
-        ("add 2 more clips, about 4 min", 240),
-        ("8 clips, 3 minutes long", 180),
-        ("make it about 4 minutes more or less", 240),
-        ("each clip - about 5 s", None),
-        ("each clip -- around 6 seconds", None),
-        ("for every clip, ~4 s", None),
-        ("every clip, around 1 min", None),
-        ("per clip: about 1 min", None),
-        ("each clip should be about 5 s", None),
-        ("each clip should be about 1 minute", None),
-        ("make every clip about 2 minutes", None),
-        ("per clip about 1.5 min", None),
-        ("about 5 s each", None),
-        ("about 1 min each", None),
-        ("about 1 min per clip", None),
-        ("make them 5 s each", None),
-        ("around 1 minute a clip", None),
-        ("use clips about 3 min", 180),
-        ("best clips, about 2 min", 120),
-        ("funny clips around 1.5 minutes", 90),
-        ("clips around 2 minutes", 120),
-        ("clip about 2 min", 120),
-        ("use clips about 10 s", None),
-        ("clip about 5 s", None),
-        ("pick 8 clips, ~30 s", 30),
-        ("use 3 clips, about 45 seconds", 45),
-        ("Trim every clip. About 3 minutes total", 180),
-        ("shorten each clip. under 2 minutes", 120),
-        ("tighten each clip! around 3 min", 180),
-        ("tighten each clip; around 3 min", 180),
-        ("shorten each clip.\nAbout 3 minutes total", 180),
-        ("tighten each clip. about 90 s", 90),
-        ("make the video about 3 minutes", 180),
-        ("the montage should be around 2 min", 120),
-        ("keep it under 90 seconds", 90),
-        ("aim for 2 minutes", 120),
-        ("roughly 3 minutes long", 180),
-        ("a 2 minute reel", 120),
-        ("target of 150 s", 150),
-        ("i need about a minute", 60),
-        ("I want the whole thing about two minutes", 120),
-        ("can you make it 3 mins", 180),
-        ("I want clips of about 5 seconds", None),
-        ("make the clips about 5 s long", None),
-        ("10-second clips please", None),
-        ("keep the clips around 6 s", None),
-        ("each one about 5 s", None),
-        ("every moment about 6 s", None),
-        ("make each clip about 5 s long", None),
-        ("each clip should be 5 s long", None),
-        ("each clip should be under 1 min", None),
-        ("for each of the clips, about 5 s", None),
-        ("make every clip about 5 s, and the video about 2 min", 120),
-        ("each clip 5 s, the whole thing about 2 min", 120),
-        ("the clips should be about 4 min in total", 240),
-        ("make it 4 minutes, 30 s per clip", 240),
-        ("make it 2 min with 10 s clips", 120),
-        ("make it 3 minutes; 5 s each", 180),
-        ("keep it to 4 min, more or less", 240),
-        ("each of the clips about 1 minute", None),
-        ("each clip about 5 s, about 2 min total", 120),
-        ("each clip about 5 s, make it about 2 min", 120),
-        ("every clip about 4 s; around 90 s overall", 90),
-        ("tighten each clip and make it about 3 minutes", 180),
-        ("shorten every clip so the video is about 2 min", 120),
-        ("trim each clip, the whole thing under 2 minutes", 120),
-        ("tighten every clip, total around 3 min", 180),
-        ("cut each clip down and keep it under 90 seconds", 90),
-        ("make each clip snappier and get it to 2 min", 120),
-        ("tighten each clip and make the video about 3 min", 180),
-        ("tighten every clip and aim for a 2 minute montage", 120),
-        ("make each highlight about 5 seconds", None),
-        ("each of the highlights about 5 s", None),
-        ("each edit about 4 s", None),
-        ("each highlight about 5 s, make it 2 min", 120),
-        ("every moment about 6 s, cut to 90 s", 90),
-    ],
-)
-def test_a_length_for_each_clip_or_a_change_is_no_sequence_target(
-    text: str, seconds: float | None
-) -> None:
-    assert context.target_seconds(text) == seconds
-
-
-@pytest.mark.parametrize(
-    ("text", "seconds"),
-    [
-        ("extend m3 to 60 s, make the video 4 minutes", 240),
-        ("per clip 5 s, cut to 2 min", 120),
-        ("every clip around 5 s overall 2 min", 120),
-        ("cut it to 90 s", 90),
-        ("extend m3 to 60 s", None),
-        ("remove m3, about 2 min total", 120),
-        ("m3, make it 8 seconds", None),
-        ("for m3, make it about 5 s", None),
-        ("take m3, trim it to 10 s", None),
-        ("on m4, keep it under 6 seconds", None),
-    ],
-)
-def test_more_length_phrasings_give_a_target(text: str, seconds: float | None) -> None:
-    assert context.target_seconds(text) == seconds
 
 
 def test_a_long_message_with_many_lengths_is_parsed_fast() -> None:

@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from conftest import media_info, write
-from cutpoint import clips, config, folders, reset_state, sources, srt
+from cutpoint import clips, config, folders, planning, reset_state, sources, srt
 
 WORDS = [{"start": 101.0, "end": 101.4, "word": "hello"}]
 
@@ -239,7 +239,7 @@ def test_protected_srt_is_matched_in_the_clips_folder_not_the_staging_one(
     write(out / "001_a.srt", "mine")
     case_insensitive(out)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
-    subs = srt.ClipSubtitles(srt.unlisted_srts(out, []), None, out)
+    subs = srt.ClipSubtitles(planning.unlisted_srts(out, []), None, out)
     assert subs.write(staging / "001_A.mp4", "src.mp4", 100.0, 104.0) is None
     assert not (staging / "001_A.srt").exists()
 

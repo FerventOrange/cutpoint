@@ -41,10 +41,9 @@ from typing import Any
 
 from cutpoint.clips import MIN_EXPORT_S, too_short
 from cutpoint.config import COLOR_MODES, source_path
+from cutpoint.segments import LABEL_MAX, MAX_SEGMENTS, check_segments
 
-MAX_SEGMENTS = 500  # as cutpoint.ui.MAX_SEGMENTS (ui needs the optional fastapi)
 MAX_OPS = 100  # ops in one proposal
-LABEL_MAX = 200
 OPS = ("add", "add_range", "remove", "move", "trim", "order", "sort", "color")
 SORT_KEYS = ("time", "score", "length")
 LENGTH_EPS = 0.05  # a clip's length must change by more than this to be lengthened/shortened
@@ -503,48 +502,40 @@ def _check(
     name: Callable[[str], str],
 ) -> list[dict[str, Any]]:
     """``rows`` cleaned, with the rules of ``validate_segments``; else :class:`OpsError`."""
-    if len(rows) > MAX_SEGMENTS:
-        raise OpsError(f"the sequence can hold at most {MAX_SEGMENTS} moments")
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for row in rows:
-        sid, label = row.get("id"), row.get("label", "segment")
-        if not isinstance(sid, str) or not 0 < len(sid) <= 64 or sid in seen:
-            raise OpsError(f"{name(str(sid))}: ids must be unique strings of 1-64 characters")
-        seen.add(sid)
-        who = name(sid)
-        source = row.get("source")
-        if not isinstance(source, str) or source not in durations:
-            raise OpsError(f"{who}: its source is not part of this project")
-        start, end = row.get("start"), row.get("end")
-        if not all(isinstance(t, (int, float)) and math.isfinite(t) for t in (start, end)):
-            raise OpsError(f"{who}: start and end must be numbers")
-        if start < 0 or too_short(start, end):
-            raise OpsError(
-                f"{who}: needs 0 <= start and end at least {MIN_EXPORT_S}s after start "
-                f"(got {start:g}-{end:g})"
-            )
-        duration = durations[source]
-        if duration is None:
-            raise OpsError(f"{who}: its source cannot be read")
-        if end > duration + 0.01:
-            raise OpsError(f"{who}: end {end:g}s is past the source's {duration:g}s")
-        if not isinstance(label, str) or len(label) > LABEL_MAX:
-            raise OpsError(f"{who}: label must be text of at most {LABEL_MAX} characters")
-        exact = row.get("exact", False)
-        if not isinstance(exact, bool):
-            raise OpsError(f"{who}: exact must be true or false")
-        out.append(
-            {
-                "id": sid,
-                "source": source,
-                "start": round(float(start), 3),
-                "end": round(float(end), 3),
-                "label": "".join(c for c in label if c.isprintable()).strip() or "segment",
-                **({"exact": True} if exact else {}),
-            }
-        )
-    return out
+
+    def fail(rule: str, i: int, row: Any, **info: Any) -> OpsError:
+        who = name(str(row.get("id"))) if isinstance(row, dict) else ""
+        match rule:
+            case "count":
+                return OpsError(f"the sequence can hold at most {MAX_SEGMENTS} moments")
+            case "id":
+                return OpsError(f"{who}: ids must be unique strings of 1-64 characters")
+            case "source":
+                return OpsError(f"{who}: its source is not part of this project")
+            case "number":
+                return OpsError(f"{who}: start and end must be numbers")
+            case "range":
+                return OpsError(
+                    f"{who}: needs 0 <= start and end at least {MIN_EXPORT_S}s after start "
+                    f"(got {info['start']:g}-{info['end']:g})"
+                )
+            case "unreadable":
+                return OpsError(f"{who}: its source cannot be read")
+            case "past":
+                return OpsError(
+                    f"{who}: end {info['end']:g}s is past the source's {info['duration']:g}s"
+                )
+            case "label":
+                return OpsError(f"{who}: label must be text of at most {LABEL_MAX} characters")
+            case "exact":
+                return OpsError(f"{who}: exact must be true or false")
+        return OpsError(
+            "the sequence must be a list of moments"
+        )  # list, object: not from apply_ops
+
+    return check_segments(
+        rows, has_source=lambda s: s in durations, duration=durations.__getitem__, fail=fail
+    )
 
 
 def _in_order(ids: list[str], old: dict[str, tuple[int, Any]]) -> set[str]:

@@ -1081,7 +1081,7 @@ def rescore_highlights(project: Path) -> int:
     changed = rescore(hl, ev, project)
     number_candidates(hl)
     selfcheck.apply(hl, ev)  # warns; changes no score (#1073)
-    cache.save_json(project / "highlights.json", hl)
+    cache.save_json(project / "highlights.json", hl, durable=True)
     logger.info(
         "Rescored %d of %d candidates from events.json", changed, len(hl.get("candidates", []))
     )

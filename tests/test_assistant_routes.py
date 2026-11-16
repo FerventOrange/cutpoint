@@ -1273,42 +1273,31 @@ def test_the_key_routes_refuse_an_unknown_role_and_default_to_the_chat(
     assert ring.saved == {}
 
 
+# One row per branch of the edit-request check (``session._edits``, ``session._asks_advice``):
+# each leading edit phrase and where it may stand, a request phrased as a question, and the help
+# questions and statements with the same words that ask for no edit (#863, #864, #881 review).
 @pytest.mark.parametrize(
     ("text", "nudged"),
     [
-        # more edit phrasings get the nudge toward a proposal (#864)
-        ("drop the intro", True),
         ("get rid of the long pause", True),
         ("take out the menu part", True),
         ("use the laugh at 12:30", True),
         ("open with the jump", True),
-        ("start with the crash", True),
         ("end with the win", True),
-        ("can you drop the intro?", True),
-        # an advice question still asks none (#863)
-        ("should I drop the intro?", False),
-        ("what would you use to end with?", False),
-        ("is it worth it to get rid of the long pause?", False),
-        # nor does a help question or statement with one of these words (#881 review)
-        ("how do I use the timeline?", False),
-        ("Can I use this for YouTube Shorts?", False),
-        ("How do I get rid of the warning?", False),
-        ("Tell me how to use the timeline.", False),
-        ("Let's start with the basics: what is a style?", False),
-        ("How much VRAM does it use?", False),
-        ("can it use my GPU?", False),
-        ("To start with, what does the score mean?", False),
-        ("I don't know where to start with this.", False),
-        ("I want to learn how to use this.", False),
-        ("Can you use my GPU?", False),
-        ("Can we use LUTs?", False),
-        ("We use OBS to record.", False),
-        # a request with them still does
-        ("ok, use the laugh then", True),
-        ("Can you use the laugh at 12:30?", True),
         ("let's start with the crash", True),
+        ("ok, use the laugh then", True),
+        ("can you drop the intro?", True),
+        ("Can you use the laugh at 12:30?", True),
         ("how about we drop the intro?", True),
         ("could we add the laugh?", True),
+        # advice and help questions, and statements, ask none
+        ("should I drop the intro?", False),
+        ("Can I use this for YouTube Shorts?", False),
+        ("Can you use my GPU?", False),
+        ("Let's start with the basics: what is a style?", False),
+        ("Tell me how to use the timeline.", False),
+        ("I don't know where to start with this.", False),
+        ("We use OBS to record.", False),
     ],
 )
 def test_more_edit_phrasings_get_the_nudge_and_advice_questions_do_not(

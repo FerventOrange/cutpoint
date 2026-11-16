@@ -1,11 +1,14 @@
 """One bad source skips only itself (#985, #1033): action-cam telemetry, the contact sheets,
 the crash dense check and the per-source layers of the events pipeline go on with the other
-sources, with a WARNING and a ``step_failed`` JSON warning naming the one that failed."""
+sources, with a WARNING and a ``step_failed`` JSON warning naming the one that failed. The rule
+is :class:`cutpoint.events.pipeline.SourceGuard`, tested once below; each layer keeps one wiring
+test (its message) and the tests of what only it does."""
 
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +22,7 @@ from cutpoint.events import audio_events, pipeline, sheets, visual, voice
 from cutpoint.events.common import AudioPart, Source
 
 N = 50  # 5 s on the 0.1 s grid
+_Make = Callable[[str], Exception]  # a fake's error for the source of this file name
 BAD = "'list' object cannot be interpreted as an integer"
 
 
@@ -41,10 +45,10 @@ def _source(tmp_path: Path, name: str) -> Source:
     )
 
 
-def _extract(bad: set[str], err: Exception | None = None):
+def _extract(bad: set[str], err: _Make | None = None):
     def extract(src, duration):
         if Path(src).stem in bad:
-            raise err or TypeError(BAD)
+            raise err(Path(src).name) if err is not None else TypeError(BAD)
         return _tel()
 
     return extract
@@ -56,6 +60,86 @@ def _warned(caplog) -> list[str]:
 
 def _step_failed(result) -> list[tuple[str, list[str]]]:
     return [(w["message"], w["files"]) for w in result.warnings if w["code"] == "step_failed"]
+
+
+# --------------------------------------------------------------------------- the guard
+def _fail(guard: pipeline.SourceGuard, err: Exception, name: str, **kw) -> None:
+    """``guard.skip`` as a per-source loop calls it: in the ``except`` of ``err``."""
+    try:
+        raise err
+    except Exception as caught:  # noqa: BLE001 - the guard decides
+        guard.skip(caught, name, f"/footage/{name}", **kw)
+
+
+def test_the_guard_skips_a_failing_source_with_a_warning(caplog):
+    log = logging.getLogger("cutpoint.crash")
+    guard = pipeline.SourceGuard("crash dense check", debug_what="dense windows", log=log)
+    told = pipeline.SourceGuard("telemetry", message="{name}: not read ({err}); without it")
+    with caplog.at_level(logging.DEBUG), jsonout.run("crashes") as result:
+        _fail(guard, ValueError("bad IMU block"), "reef.mp4")
+        _fail(guard, OSError("moov atom not found"), "wreck.mp4", warn=False)  # warned before
+        _fail(told, TypeError(BAD), "cave.mp4")
+    message = "reef.mp4: crash dense check skipped this source (bad IMU block)"
+    assert _warned(caplog) == [message, f"cave.mp4: not read ({BAD}); without it"]
+    assert _step_failed(result) == [(message, ["/footage/reef.mp4"]), (_warned(caplog)[1], ["/footage/cave.mp4"])]  # fmt: skip
+    debug = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert [r.getMessage() for r in debug[:2]] == [
+        "/footage/reef.mp4: dense windows failed",
+        "/footage/wreck.mp4: dense windows failed",
+    ]
+    assert debug[0].exc_info[0] is ValueError and debug[0].name == "cutpoint.crash"
+    assert [str(e) for e in guard.failed.values()] == ["bad IMU block", "moov atom not found"]
+    assert list(guard.failed) == ["/footage/reef.mp4", "/footage/wreck.mp4"]
+
+
+def test_the_guard_raises_the_last_error_when_every_source_failed():
+    guard = pipeline.SourceGuard("Audio events")
+    guard.raise_if_all_failed(2)  # none failed
+    _fail(guard, ValueError("truncated wav"), "cave.mp4")
+    last = OSError("moov atom not found")
+    _fail(guard, last, "arch.mp4")
+    assert not guard.all_failed(3)
+    guard.raise_if_all_failed(3)  # one source still went through
+    assert guard.all_failed(2)
+    with pytest.raises(OSError) as info:
+        guard.raise_if_all_failed(2)
+    assert info.value is last  # unchanged: cli.py maps its type
+
+
+def test_the_guard_lets_a_memory_shortage_through(caplog):
+    guard = pipeline.SourceGuard("Voice layer")
+    short = LowMemoryError("short", "1 GB free")
+    with (
+        caplog.at_level(logging.DEBUG),
+        jsonout.run("events") as result,
+        pytest.raises(LowMemoryError) as info,
+    ):
+        _fail(guard, short, "cave.mp4")
+    assert info.value is short
+    assert caplog.records == [] and result.warnings == [] and guard.failed == {}
+
+
+@pytest.mark.parametrize(
+    "err",
+    [
+        RuntimeError("CUDA out of memory. Tried to allocate 20.00 MiB (GPU 0; 7.79 GiB total)"),
+        MemoryError(),
+    ],
+)
+def test_the_guard_turns_out_of_memory_into_a_low_memory_error(caplog, err):
+    """Not a bad source: the run stops, resumable, chained to the allocation's error."""
+    guard = pipeline.SourceGuard("contact sheets", oom_what="the contact sheets")
+    with (
+        caplog.at_level(logging.WARNING),
+        jsonout.run("events") as result,
+        pytest.raises(LowMemoryError) as info,
+    ):
+        _fail(guard, err, "reef.mp4")
+    assert str(info.value).startswith(
+        "Out of memory in the contact sheets (reef.mp4); close other programs"
+    )
+    assert info.value.args[1] == "out of memory" and info.value.__cause__ is err
+    assert _warned(caplog) == [] and result.warnings == [] and guard.failed == {}
 
 
 # --------------------------------------------------------------------------- action-cam prepare
@@ -73,20 +157,6 @@ def test_prepare_scores_a_source_whose_telemetry_fails_without_it(tmp_path, monk
     message = f"gully.mp4: telemetry not read ({BAD}); scored without it"
     assert _warned(caplog) == [message]
     assert _step_failed(result) == [(message, [str(srcs[1])])]
-
-
-def test_prepare_raises_when_every_source_fails(tmp_path, monkeypatch):
-    srcs = [tmp_path / f"{n}.mp4" for n in ("ridge", "gully")]
-    monkeypatch.setattr(actioncam, "extract", _extract({"ridge", "gully"}))
-    with pytest.raises(TypeError, match="cannot be interpreted"):
-        actioncam.prepare(srcs, {str(s): N / 10 for s in srcs}, tmp_path)
-
-
-def test_prepare_lets_a_memory_shortage_stop_the_run(tmp_path, monkeypatch):
-    srcs = [tmp_path / f"{n}.mp4" for n in ("ridge", "gully")]
-    monkeypatch.setattr(actioncam, "extract", _extract({"ridge"}, LowMemoryError("short")))
-    with pytest.raises(LowMemoryError):
-        actioncam.prepare(srcs, {str(s): N / 10 for s in srcs}, tmp_path)
 
 
 # --------------------------------------------------------------------------- contact sheets
@@ -138,14 +208,6 @@ def test_sheets_leave_out_a_source_whose_telemetry_fails(
     assert _step_failed(result) == [(message, [str(srcs[1].path)])]
 
 
-def test_sheets_raise_when_every_source_fails(tmp_path, monkeypatch, sheet_fakes):
-    srcs = [_source(tmp_path, n) for n in ("reef", "wreck")]
-    monkeypatch.setattr(telemetry, "extract", _extract({"reef", "wreck"}))
-    with pytest.raises(TypeError, match="cannot be interpreted"):
-        sheets.write_visual_sheets(tmp_path, srcs)
-    assert sheet_fakes == {}
-
-
 # --------------------------------------------------------------------------- events: telemetry
 def test_telemetry_layer_keeps_a_failing_source_events_without_coverage(
     tmp_path, monkeypatch, caplog
@@ -165,15 +227,6 @@ def test_telemetry_layer_keeps_a_failing_source_events_without_coverage(
     assert _step_failed(result) == [(message, [str(srcs[1].path)])]
 
 
-def test_telemetry_layer_raises_when_every_source_fails(tmp_path, monkeypatch):
-    srcs = [_source(tmp_path, n) for n in ("ridge", "gully")]
-    data = {"sources": {str(s.path): {"events": []} for s in srcs}}
-    (tmp_path / "telemetry.json").write_text(json.dumps(data), encoding="utf-8")
-    monkeypatch.setattr(telemetry, "extract", _extract({"ridge", "gully"}))
-    with pytest.raises(TypeError, match="cannot be interpreted"):
-        pipeline._telemetry_layer(tmp_path, srcs, pipeline.VlmParams())
-
-
 def test_telemetry_layer_counts_a_source_without_telemetry_as_fine(tmp_path, monkeypatch):
     """Only every source failing fails the layer, as in the action-cam read."""
     srcs = [_source(tmp_path, n) for n in ("ridge", "gully")]
@@ -188,13 +241,13 @@ def test_telemetry_layer_counts_a_source_without_telemetry_as_fine(tmp_path, mon
 @pytest.fixture
 def run_audio(tmp_path, monkeypatch):
     """``run_events`` over ``srcs`` with ``layers`` (only audio by default; its detection fails
-    for the names in ``bad`` with ``err``); returns the events written and the detectors
+    for the names in ``bad`` with ``err(name)``); returns the events written and the detectors
     closed."""
 
     def go(
         srcs: list[Source],
         bad: set[str],
-        err: Exception | None = None,
+        err: _Make | None = None,
         layers: tuple[str, ...] = ("audio",),
         batch_size: int = 0,
     ):
@@ -209,7 +262,7 @@ def run_audio(tmp_path, monkeypatch):
 
         def detect(s, det, params, force=False):
             if s.path.stem in bad:
-                raise err or ValueError("truncated wav")
+                raise err(s.name) if err is not None else ValueError("truncated wav")
             return [{"t": 1.0, "end": 2.0, "label": "Laughter", "score": 0.9}]
 
         def vision_rater(url, model):
@@ -260,18 +313,6 @@ def test_audio_layer_skips_a_source_whose_detection_fails(tmp_path, run_audio, c
     assert _step_failed(result) == [(message, [str(srcs[1].path)])]
 
 
-def test_audio_layer_fails_when_every_source_fails(tmp_path, run_audio):
-    srcs = [_source(tmp_path, n) for n in ("cave", "arch")]
-    with pytest.raises(ValueError, match="truncated wav"):
-        run_audio(srcs, {"cave", "arch"})
-
-
-def test_audio_layer_lets_a_memory_shortage_stop_the_run(tmp_path, run_audio):
-    srcs = [_source(tmp_path, n) for n in ("cave", "arch")]
-    with pytest.raises(LowMemoryError):
-        run_audio(srcs, {"cave"}, LowMemoryError("short"))
-
-
 # --------------------------------------------------------------------------- events: voice
 class _Det:
     device = "cpu"
@@ -280,13 +321,13 @@ class _Det:
         pass
 
 
-def _voice(monkeypatch, bad: set[str], err: Exception | None = None) -> list[str]:
+def _voice(monkeypatch, bad: set[str]) -> list[str]:
     """Voice grids that fail for the names in ``bad``; returns the names computed."""
     done: list[str] = []
 
     def compute(s, det, vad, params, force=False):
         if s.path.stem in bad:
-            raise err or ValueError("truncated wav")
+            raise ValueError("truncated wav")
         done.append(s.name)
         return {}
 
@@ -307,31 +348,8 @@ def test_voice_layer_skips_a_source_whose_grids_fail(tmp_path, monkeypatch, capl
     assert _step_failed(result) == [(message, [str(srcs[1].path)])]
 
 
-def test_voice_layer_fails_when_every_source_fails(tmp_path, monkeypatch):
-    srcs = [_source(tmp_path, n) for n in ("cave", "arch")]
-    _voice(monkeypatch, {"cave", "arch"})
-    with pytest.raises(ValueError, match="truncated wav"):
-        voice.run_layer(srcs, voice.VoiceParams(), det=_Det())
-
-
-def test_voice_layer_hands_the_errors_to_the_caller_of_a_batch(tmp_path, monkeypatch):
-    """A batch of only bad files does not fail the layer: the caller counts every batch's."""
-    srcs = [_source(tmp_path, n) for n in ("cave", "arch")]
-    _voice(monkeypatch, {"cave", "arch"})
-    errors: list[Exception] = []
-    voice.run_layer(srcs, voice.VoiceParams(), det=_Det(), errors=errors)
-    assert [str(e) for e in errors] == ["truncated wav", "truncated wav"]
-
-
-def test_voice_layer_lets_a_memory_shortage_stop_the_run(tmp_path, monkeypatch):
-    srcs = [_source(tmp_path, n) for n in ("cave", "arch")]
-    _voice(monkeypatch, {"cave"}, LowMemoryError("short"))
-    with pytest.raises(LowMemoryError):
-        voice.run_layer(srcs, voice.VoiceParams(), det=_Det(), errors=[])
-
-
 # --------------------------------------------------------------------------- events: visual
-def _visual(monkeypatch, bad: set[str], err: Exception | None = None) -> SimpleNamespace:
+def _visual(monkeypatch, bad: set[str]) -> SimpleNamespace:
     """A visual layer whose frames fail for the names in ``bad``; records the names computed,
     the models closed and handed over."""
     st = SimpleNamespace(done=[], closed=0, handed=[])
@@ -347,7 +365,7 @@ def _visual(monkeypatch, bad: set[str], err: Exception | None = None) -> SimpleN
 
     def compute(s, models, params, force=False, avoid=None):
         if s.path.stem in bad:
-            raise err or OSError("moov atom not found")
+            raise OSError("moov atom not found")
         st.done.append(s.name)
         return object()
 
@@ -375,45 +393,20 @@ def test_visual_layer_skips_a_source_whose_frames_fail(tmp_path, monkeypatch, ca
     assert _step_failed(result) == [(message, [str(srcs[1].path)])]
 
 
-def test_visual_layer_fails_when_every_source_fails(tmp_path, monkeypatch):
-    srcs = [_source(tmp_path, n) for n in ("reef", "wreck")]
-    st = _visual(monkeypatch, {"reef", "wreck"})
-    with pytest.raises(OSError, match="moov atom"):
-        visual.run_layer(srcs, visual.VisualParams(), handoff=st.handed.append)
-    assert st.handed == [] and st.closed == 1
-
-
-def test_visual_layer_hands_the_errors_to_the_caller_of_a_batch(tmp_path, monkeypatch):
-    srcs = [_source(tmp_path, n) for n in ("reef", "wreck")]
-    _visual(monkeypatch, {"reef", "wreck"})
-    errors: list[Exception] = []
-    visual.run_layer(srcs, visual.VisualParams(), errors=errors)
-    assert [str(e) for e in errors] == ["moov atom not found"] * 2
-
-
-def test_visual_layer_lets_a_memory_shortage_stop_the_run(tmp_path, monkeypatch):
-    srcs = [_source(tmp_path, n) for n in ("reef", "wreck")]
-    st = _visual(monkeypatch, {"reef"}, LowMemoryError("short"))
-    with pytest.raises(LowMemoryError):
-        visual.run_layer(srcs, visual.VisualParams(), errors=[])
-    assert st.closed == 1
-
-
 # --------------------------------------------------------------------------- crash dense check
 @pytest.fixture
 def dense_project(tmp_path, monkeypatch):
     """``crash.detect_project`` over one candidate per source with the real
     :func:`crash.dense_feature` and :func:`crash.write_sheet`; ``bad`` names the sources whose
-    decode raises ``err`` (``vanish``: after deleting the file), ``bad_inputs`` those whose
-    inputs raise it and ``gone`` those deleted once their inputs loaded."""
+    decode raises ``err(name)`` (``vanish``: after deleting the file) and ``gone`` those
+    deleted once their inputs loaded."""
 
     def go(
         names: list[str],
         bad: set[str],
-        err: Exception | None = None,
+        err: _Make | None = None,
         sheets: int = 0,
         vanish: bool = False,
-        bad_inputs: frozenset[str] = frozenset(),
         gone: frozenset[str] = frozenset(),
     ) -> Path:
         srcs = [tmp_path / f"{n}.mp4" for n in names]
@@ -425,8 +418,6 @@ def dense_project(tmp_path, monkeypatch):
         (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
 
         def inputs(src, dur, p, tmp, lang):
-            if src.stem in bad_inputs:
-                raise err or ValueError("bad IMU block")
             if src.stem in gone:
                 src.unlink()
             return crash.SourceInputs(
@@ -445,7 +436,9 @@ def dense_project(tmp_path, monkeypatch):
             if Path(path).stem in bad:
                 if vanish:
                     Path(path).unlink(missing_ok=True)
-                raise err or FileNotFoundError(f"{Path(path).name}: no such file")
+                if err is not None:
+                    raise err(Path(path).name)
+                raise FileNotFoundError(f"{Path(path).name}: no such file")
             ts = np.arange(a, b, 1.0)
             return ts, np.zeros((len(ts), 32, 32, 3), np.uint8)
 
@@ -514,17 +507,6 @@ def test_a_source_whose_sheet_fails_keeps_its_crash(dense_project, monkeypatch, 
     assert _step_failed(result) == [(message, [got["gully.mp4"]["source"]])]
 
 
-def test_crash_dense_check_fails_when_every_source_fails(dense_project, tmp_path):
-    with pytest.raises(FileNotFoundError, match="no such file"):
-        dense_project(["ridge", "gully"], {"ridge", "gully"})
-    assert not (tmp_path / "proj" / crash.CRASHES_FILE).exists()
-
-
-def test_crash_dense_check_lets_a_memory_shortage_stop_the_run(dense_project):
-    with pytest.raises(LowMemoryError):
-        dense_project(["ridge", "gully"], {"ridge"}, LowMemoryError("short"))
-
-
 # --------------------------------------------------------------------------- run_events batches
 @pytest.mark.parametrize("layer", ["voice", "visual"])
 def test_a_batch_of_one_bad_source_does_not_fail_the_layer(tmp_path, run_audio, monkeypatch, layer):
@@ -566,94 +548,6 @@ def test_a_failed_visual_layer_frees_the_clip_it_handed_to_the_crash_layer(
     assert closed == [1]
 
 
-# --------------------------------------------------------------------------- out of memory
-def _oom() -> RuntimeError:
-    return RuntimeError("CUDA out of memory. Tried to allocate 20.00 MiB (GPU 0; 7.79 GiB total)")
-
-
-def _stopped(info, what: str, name: str) -> None:
-    """The run stopped with a resumable LowMemoryError chained to the GPU's error."""
-    assert str(info.value).startswith(f"Out of memory in {what} ({name}); close other programs")
-    assert isinstance(info.value.__cause__, RuntimeError)
-
-
-def test_out_of_memory_in_the_telemetry_read_stops_the_run(tmp_path, monkeypatch):
-    srcs = [tmp_path / f"{n}.mp4" for n in ("ridge", "gully")]
-    monkeypatch.setattr(actioncam, "extract", _extract({"ridge"}, _oom()))
-    with pytest.raises(LowMemoryError) as info:
-        actioncam.prepare(srcs, {str(s): N / 10 for s in srcs}, tmp_path)
-    _stopped(info, "the telemetry read", "ridge.mp4")
-
-
-def test_out_of_memory_in_the_contact_sheets_stops_the_run(tmp_path, monkeypatch, sheet_fakes):
-    srcs = [_source(tmp_path, n) for n in ("reef", "wreck")]
-    monkeypatch.setattr(telemetry, "extract", _extract({"reef"}, _oom()))
-    with pytest.raises(LowMemoryError) as info:
-        sheets.write_visual_sheets(tmp_path, srcs)
-    _stopped(info, "the contact sheets", "reef.mp4")
-    assert sheet_fakes == {}
-
-
-def test_out_of_memory_in_the_telemetry_coverage_stops_the_run(tmp_path, monkeypatch):
-    srcs = [_source(tmp_path, n) for n in ("ridge", "gully")]
-    data = {"sources": {str(s.path): {"events": []} for s in srcs}}
-    (tmp_path / "telemetry.json").write_text(json.dumps(data), encoding="utf-8")
-    monkeypatch.setattr(telemetry, "extract", _extract({"ridge"}, _oom()))
-    with pytest.raises(LowMemoryError) as info:
-        pipeline._telemetry_layer(tmp_path, srcs, pipeline.VlmParams())
-    _stopped(info, "Telemetry coverage", "ridge.mp4")
-
-
-def test_out_of_memory_in_the_audio_layer_stops_the_run(tmp_path, run_audio):
-    srcs = [_source(tmp_path, n) for n in ("cave", "arch")]
-    with pytest.raises(LowMemoryError) as info:
-        run_audio(srcs, {"cave"}, _oom())
-    _stopped(info, "Audio events", "cave.mp4")
-
-
-def test_out_of_memory_in_the_voice_layer_stops_the_run(tmp_path, monkeypatch):
-    srcs = [_source(tmp_path, n) for n in ("cave", "arch")]
-    done = _voice(monkeypatch, {"cave"}, _oom())
-    with pytest.raises(LowMemoryError) as info:
-        voice.run_layer(srcs, voice.VoiceParams(), det=_Det(), errors=[])
-    _stopped(info, "Voice layer", "cave.mp4")
-    assert done == []  # arch is not computed after it
-
-
-def test_out_of_memory_in_the_visual_layer_stops_the_run(tmp_path, monkeypatch):
-    srcs = [_source(tmp_path, n) for n in ("reef", "wreck")]
-    st = _visual(monkeypatch, {"reef"}, _oom())
-    with pytest.raises(LowMemoryError) as info:
-        visual.run_layer(srcs, visual.VisualParams(), errors=[], handoff=st.handed.append)
-    _stopped(info, "Visual layer", "reef.mp4")
-    assert st.done == [] and st.handed == [] and st.closed == 1
-
-
-def test_out_of_memory_in_the_crash_inputs_stops_the_run(dense_project, tmp_path):
-    with pytest.raises(LowMemoryError) as info:
-        dense_project(["ridge", "gully"], set(), _oom(), bad_inputs=frozenset({"ridge"}))
-    _stopped(info, "crash detection", "ridge.mp4")
-    assert not (tmp_path / "proj" / crash.CRASHES_FILE).exists()
-
-
-def test_out_of_memory_in_the_crash_dense_check_stops_the_run(dense_project, tmp_path):
-    with pytest.raises(LowMemoryError) as info:
-        dense_project(["ridge", "gully"], {"ridge"}, _oom())
-    _stopped(info, "the crash dense check", "ridge.mp4")
-    assert not (tmp_path / "proj" / crash.CRASHES_FILE).exists()
-
-
-def test_out_of_memory_in_the_crash_sheets_stops_the_run(dense_project, monkeypatch, tmp_path):
-    def write_sheet(c, out, *a, **k):
-        raise _oom()
-
-    monkeypatch.setattr(crash, "write_sheet", write_sheet)
-    with pytest.raises(LowMemoryError) as info:
-        dense_project(["ridge", "gully"], set(), sheets=15)
-    assert "Out of memory in the crash contact sheets" in str(info.value)
-    assert not (tmp_path / "proj" / crash.CRASHES_FILE).exists()
-
-
 # --------------------------------------------------------------------------- crash dense cache
 def test_a_source_gone_before_its_dense_cache_is_read_is_skipped(dense_project, caplog):
     with caplog.at_level(logging.WARNING), jsonout.run("crashes") as result:
@@ -664,3 +558,66 @@ def test_a_source_gone_before_its_dense_cache_is_read_is_skipped(dense_project, 
     (message,) = _warned(caplog)
     assert message.startswith("gully.mp4: crash dense check skipped this source (")
     assert [f for _, f in _step_failed(result)] == [[got["gully.mp4"]["source"]]]
+
+
+# --------------------------------------------------------------------------- every source fails
+class _Raised(list):
+    """Makes the error of each failing source (a CUDA out of memory with ``oom``) and keeps
+    them in the order raised."""
+
+    def __init__(self, oom: bool) -> None:
+        super().__init__()
+        self.oom = oom
+
+    def __call__(self, name: str) -> Exception:
+        err = RuntimeError(f"CUDA out of memory ({name})") if self.oom else ValueError(name)
+        self.append(err)
+        return err
+
+
+def _all_bad(site: str, tmp_path, monkeypatch, request, err: _Raised) -> None:
+    """Run ``site`` over two sources whose per-source step both fail with ``err``."""
+    names = ("ridge", "gully")
+    if site == "actioncam":
+        srcs = [tmp_path / f"{n}.mp4" for n in names]
+        monkeypatch.setattr(actioncam, "extract", _extract(set(names), err))
+        actioncam.prepare(srcs, {str(s): N / 10 for s in srcs}, tmp_path)
+    elif site == "sheets":
+        request.getfixturevalue("sheet_fakes")
+        monkeypatch.setattr(telemetry, "extract", _extract(set(names), err))
+        sheets.write_visual_sheets(tmp_path, [_source(tmp_path, n) for n in names])
+    elif site == "telemetry coverage":
+        srcs = [_source(tmp_path, n) for n in names]
+        data = {"sources": {str(s.path): {"events": []} for s in srcs}}
+        (tmp_path / "telemetry.json").write_text(json.dumps(data), encoding="utf-8")
+        monkeypatch.setattr(telemetry, "extract", _extract(set(names), err))
+        pipeline._telemetry_layer(tmp_path, srcs, pipeline.VlmParams())
+    elif site == "audio":
+        request.getfixturevalue("run_audio")([_source(tmp_path, n) for n in names], set(names), err)
+    else:
+        request.getfixturevalue("dense_project")(list(names), set(names), err)
+
+
+@pytest.mark.parametrize(
+    ("site", "oom_what"),
+    [
+        ("actioncam", "the telemetry read"),
+        ("sheets", "the contact sheets"),
+        ("telemetry coverage", "Telemetry coverage"),
+        ("audio", "Audio events"),
+        ("crash dense", "the crash dense check"),
+    ],
+)
+@pytest.mark.parametrize("oom", [False, True], ids=["bad", "oom"])
+def test_every_source_failing_fails_the_step(tmp_path, monkeypatch, request, site, oom_what, oom):
+    """Each site counts its sources for "every source failed" and names its step when out of
+    memory stops the run."""
+    err = _Raised(oom)
+    with pytest.raises(LowMemoryError if oom else ValueError) as info:
+        _all_bad(site, tmp_path, monkeypatch, request, err)
+    if oom:
+        assert str(info.value).startswith(f"Out of memory in {oom_what} (")
+        assert info.value.__cause__ is err[0]
+    else:
+        assert len(err) == 2 and info.value is err[-1]  # the last source's, unchanged
+    assert not (tmp_path / "proj" / crash.CRASHES_FILE).exists()

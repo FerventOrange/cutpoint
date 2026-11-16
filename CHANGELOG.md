@@ -103,9 +103,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An OpenAI-compatible server (not OpenAI's own Responses API) that answers HTTP 400 naming `response_format` or `json_schema` is asked once again without it, and later calls of that provider leave it out; the reply is still checked for a JSON object with the required keys. Other 400s, timeouts and key errors are not retried (#920).
 - A Vision reply that is not a JSON object is dropped with a DEBUG line naming the model and the JSON type, no longer silently.
 - `cutpoint events` and the re-analysis of an action-cam project no longer end with `Unknown style` after the project's style was deleted with `cutpoint style delete`: the style degrades to the built-in base `highlights.json` records (`style_base`), with an INFO line naming both, so the crash moments are rebuilt and the events nominate and rescore as that base; the re-analysis records the base as the project's style. An older file without `style_base` ends with an ERROR line that names the missing style and asks for `cutpoint analyze` with another `--style`. A project of a deleted style over `action` or `sport` also keeps its visual pool when `highlights.json` has no `settings.visual_pool` record.
+- `config.json`, `highlights.json` and the swap journal of a clips-folder replace are flushed to disk (`fsync`) before they replace the file before, and on Linux and macOS their folder after it, so a power cut leaves the old or the new file, not an empty one; other cache files are written as before (#1085, A667).
 
 ### Changed
 
+- `clips --force` and `extend` decide what they may replace in a clips folder with one shared step, so the files replaced and kept are the same in both. Their WARNINGs now match too: `extend --out DIR --force` into a `DIR` without a readable `manifest.json` warns that it keeps every other file, as `clips --force` did; the `Kept ...` warnings of both name the folder as an absolute path and list the kept clips in natural order (`2_x` before `10_x`) (#1085, A381).
 - `cutpoint ui` project view answers about 3.5x faster on large projects (3000 moments: 216 to 61 ms), with the same reply (#1085, A742).
 - `cutpoint ui` jobs list, polled every second while a job runs, sends the log only for the running job and the newest job (about 36x less data with 50 kept jobs) (#1085, A744).
 - `cutpoint ui`: polls that change nothing on the page no longer rebuild the Moments tiles, so focus and scroll stay put while a proxy builds (#1085, A753).
@@ -162,6 +164,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows: CUDA DLLs are loaded from absolute wheel paths, not from the current folder (#1085, A643).
 - 360 stitch: one stitch per output file at a time, and `-output` or `-inputs` in `pano.stitch_args` is refused (#1085, A660, A661).
 - The activity discovery cache is validated (A655). The 360 VL verdict cache is keyed per source and clip, so old verdicts are asked once more (A658, A659). Stage and timeline index names stay in the cache folder (A666, in part). Raw prompt chat markers are broken (A642). Vision sends nothing while its consent is needed (A645). Dialogue reading needs the AI Chat consent for an Ollama on another machine (A644). Feed label logging shows only the label (A648) (#1085).
+- `cutpoint extend` logs one INFO line when a clips folder's `manifest.json` names a project that is not the folder's parent (a folder exported elsewhere with `clips --out`, or copied from another machine), and writes the 360 path files of such a folder under its own parent (`pano_paths/<out folder>`), never into the recorded project; that project's `highlights.json` and 360 clip list are still read (#1085, A663).
 
 ## [0.5.0] - 2026-11-10
 

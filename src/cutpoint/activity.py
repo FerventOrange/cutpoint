@@ -1256,7 +1256,7 @@ def record_context(project: Path, context: str | None) -> bool:
     if "vision_context" not in settings and settings.get("vision_used") is True:
         settings["vision_context"] = settings.get("context")
     settings["context"] = words
-    cache.save_json(path, hl)
+    cache.save_json(path, hl, durable=True)
     logger.info("activity: the description is recorded in %s", path.name)
     return True
 

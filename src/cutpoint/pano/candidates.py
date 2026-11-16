@@ -84,6 +84,7 @@ import numpy as np
 from cutpoint import cache, state
 from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
+from cutpoint.utils import file_stamp
 
 logger = logging.getLogger(__name__)
 
@@ -166,11 +167,8 @@ def code_id() -> str:
 
 def _file_id(path: Path) -> list[Any] | None:
     """``[name, size, mtime_ns]`` of a cache file, or None when it does not exist."""
-    try:
-        st = path.stat()
-    except OSError:
-        return None
-    return [path.name, st.st_size, st.st_mtime_ns]
+    stamp = file_stamp(path)
+    return None if stamp is None else [path.name, stamp[1], stamp[0]]
 
 
 def _inputs(src: Path) -> dict[str, Any]:
