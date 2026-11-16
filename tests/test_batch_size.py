@@ -659,7 +659,7 @@ def test_describe_batches_gives_the_results_of_one_call(monkeypatch, size, unloa
     stats of one call; the model is unloaded at each boundary (2x), never without ``unload``."""
     calls: list[list[str]] = []
 
-    def describe(rater, by_path, part, vlm, prompts, transcript, layer1, force=False):
+    def describe(rater, by_path, part, vlm, prompts, transcript, layer1, force=False, fails=0):
         calls.append([w.key for w in part])
         res = [{"key": w.key, "source": w.source} for w in part]
         return res, {"requested": len(part), "ok": len(part), "seconds": [1.0] * len(part)}
@@ -680,6 +680,44 @@ def test_describe_batches_gives_the_results_of_one_call(monkeypatch, size, unloa
     assert run(size, unload) == reference
     assert rater.unloads == unloads
     assert calls == ([["a0", "a1"], ["b2", "b3"], ["c4"]] if size else [[w.key for w in ws]])
+
+
+def test_describe_batches_after_a_stop_take_only_the_cache(monkeypatch):
+    """A stopped first batch: the later ones get no rater, no force and no unload."""
+    calls: list[tuple[Any, bool]] = []
+
+    def describe(rater, by_path, part, vlm, prompts, transcript, layer1, force=False, fails=0):
+        calls.append((rater, force))
+        return [], ({"stopped": "x"} if len(calls) == 1 else {})
+
+    rater = SimpleNamespace(unloads=0)
+    rater.unload = lambda: setattr(rater, "unloads", rater.unloads + 1)
+    monkeypatch.setattr(pipeline, "describe_windows", describe)
+    ws = _windows("a", "a", "b", "b", "c")
+    _, stats = pipeline._describe_batches(
+        rater, {}, ws, None, {}, [], {}, force=True, batch_size=2, unload=True
+    )
+    assert calls == [(rater, True), (None, False), (None, False)]
+    assert rater.unloads == 0
+    assert stats["stopped"] == "x"
+
+
+def test_describe_batches_carry_the_failure_streak(monkeypatch):
+    """The failures in a row go on across the batches and are not a stat of the call."""
+    seeds: list[int] = []
+
+    def describe(rater, by_path, part, vlm, prompts, transcript, layer1, force=False, fails=0):
+        seeds.append(fails)
+        return [], {"requested": len(part), "streak": fails + 1}
+
+    rater = SimpleNamespace(unload=lambda: None)
+    monkeypatch.setattr(pipeline, "describe_windows", describe)
+    _, stats = pipeline._describe_batches(
+        rater, {}, _windows("a", "a", "b", "b", "c"), None, {}, [], {},
+        force=False, batch_size=2, unload=False,
+    )  # fmt: skip
+    assert seeds == [0, 1, 2]
+    assert "streak" not in stats
 
 
 # -- the memory guard (#109 phase 5) at a batch; the boundary after the cached part --------

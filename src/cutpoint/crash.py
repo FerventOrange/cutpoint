@@ -88,6 +88,9 @@ G = 9.80665
 # at least generic's (floor prompts), a profile without negatives takes generic's (#932)
 CRASH_VERSION = 3
 IMU_VERSION = 1
+# Crops of a dense window's frames, kept in each window of the store; 2: portrait frames are
+# cropped along the height (#1085 A182)
+DENSE_CROPS = 2
 CRASHES_FILE = "crashes.json"
 CHECK_DIR = "crash_check"
 # On-lift damping reaches this far past the event: the lift line and boarding
@@ -473,7 +476,10 @@ class ClipEncoder:
 
     def embed(self, frames: np.ndarray, batch: int = 32, centre: bool = False) -> np.ndarray:
         """``(N, 3, 768)`` L2-normalised embeddings of left / centre / right crops; with
-        ``centre`` ``(N, 1, 768)`` of the centre crop alone (the light frame index, #989)."""
+        ``centre`` ``(N, 1, 768)`` of the centre crop alone (the light frame index, #989).
+        Portrait frames are cropped top / centre / bottom, as the visual layer does."""
+        from cutpoint.events.visual import square_crops  # noqa: PLC0415
+
         torch = self.torch
         if not self.on_device:
             # the VRAM checked when the visual layer loaded may be taken since (#721)
@@ -490,14 +496,9 @@ class ClipEncoder:
         for i in range(0, len(frames), batch):
             x = torch.from_numpy(frames[i : i + batch]).to(self.device).permute(0, 3, 1, 2)
             x = x.float() / 255
-            b, _, h, w = x.shape
-            s = min(h, w)
-            if centre:
-                y0, x0 = (h - s) // 2, (w - s) // 2
-                c = x[:, :, y0 : y0 + s, x0 : x0 + s]
-            else:
-                offs = [0, (w - s) // 2, w - s]
-                c = torch.cat([x[:, :, :, o : o + s] for o in offs], 0)
+            b = x.shape[0]
+            sq = square_crops(x)
+            c = sq[1] if centre else torch.cat(sq, 0)
             c = torch.nn.functional.interpolate(
                 c, size=(224, 224), mode="bicubic", antialias=True, align_corners=False
             )
@@ -930,9 +931,14 @@ def plan_clip(inp: SourceInputs, c: dict[str, Any], p: CrashParams) -> dict[str,
     speed = _grid(inp, "speed_kmh")
     words = inp.words or []
     why = "min aftermath"
-    sp = _seg(speed, t1, t1 + 12.0)
-    if speed is not None and sp.size and sp.min() <= p.still_kmh + 1.0:
-        i_stop = int(t1 / DT) + int(np.argmax(sp <= p.still_kmh + 1.0))
+    # grid indices: a GPS gap (NaN) must not shift the stop earlier (#1085 A181)
+    i0 = max(0, int(t1 / DT))
+    still = np.zeros(0, bool)
+    if speed is not None:
+        i1 = min(len(speed), int((t1 + 12.0) / DT) + 1)
+        still = np.nan_to_num(np.asarray(speed[i0:i1], float), nan=np.inf) <= p.still_kmh + 1.0
+    if still.any():
+        i_stop = i0 + int(np.argmax(still))
         t_stop = i_stop * DT
         x = np.nan_to_num(speed[i_stop : int(hard_end / DT)], nan=0.0)
         go = np.convolve(x > 5.0, np.ones(20), mode="valid") >= 20  # moving for 2 s
@@ -970,6 +976,38 @@ def plan_clip(inp: SourceInputs, c: dict[str, Any], p: CrashParams) -> dict[str,
 # --------------------------------------------------------------------------- dense step
 def _dense_cache(src: Path, p: CrashParams) -> Path:
     return cache.source_dir(src) / f"crashdense-{p.dense_key()}.json"
+
+
+def _portrait(src: Path) -> bool | None:
+    """Whether the frames of ``src`` are taller than wide (None when it cannot be probed)."""
+    from cutpoint.config import remap_source  # noqa: PLC0415
+    from cutpoint.errors import FFmpegError  # noqa: PLC0415
+    from cutpoint.ffmpeg_utils import probe  # noqa: PLC0415
+
+    try:
+        info = probe(remap_source(src))
+    except (OSError, FFmpegError):
+        return None
+    return info.height > info.width
+
+
+def _load_dense(src: Path, p: CrashParams) -> dict[str, Any]:
+    """The dense store of ``src``. Windows of a portrait source embedded before its frames
+    were cropped along the height (#1085 A182) are dropped, so they are computed again."""
+    store = cache.load_json(_dense_cache(src, p))
+    if not isinstance(store, dict):
+        return {}
+    old = [k for k, r in store.items() if r.get("crops") != DENSE_CROPS]
+    if old:
+        portrait = _portrait(src)
+        if portrait is None:  # cannot be probed now: keep the store unmarked, probe next run
+            return store
+        if portrait:
+            for k in old:
+                del store[k]
+    for r in store.values():
+        r["crops"] = DENSE_CROPS
+    return store
 
 
 def dense_needs_run(srcs: list[Path]) -> bool:
@@ -1019,6 +1057,7 @@ def dense_feature(
             "t": [round(float(x), 2) for x in ts],
             "crash": [round(float(x), 3) for x in crash_prompt_scores(emb, p)],
             "change": [round(float(x), 3) for x in view_change(emb)],
+            "crops": DENSE_CROPS,
         }
         store[key] = rec
     t = np.asarray(rec["t"])
@@ -1364,7 +1403,7 @@ def detect_project(
         src = c["source"]
         if src not in stores:
             try:  # the cache folder stats the file: one gone since its inputs loaded fails
-                stores[src] = {} if force else (cache.load_json(_dense_cache(Path(src), p)) or {})
+                stores[src] = {} if force else _load_dense(Path(src), p)
             except OSError as err:
                 dense_skip(src, err)
                 stores[src] = {}

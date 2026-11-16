@@ -60,8 +60,8 @@ class Backend(KeyringBackend):
     )
     (module_dir / "sitecustomize.py").write_text(
         """import os, subprocess, sys
-from cutpoint.assistant.proxy_credentials import CredentialStore
-CredentialStore._select_os_backend = staticmethod(lambda module: module.get_keyring())
+from cutpoint.assistant import keys
+keys.os_backend = lambda module: module.get_keyring()
 _popen = subprocess.Popen
 def _daemon_boundary(args, *pos, **kw):
     if (
@@ -101,9 +101,7 @@ def temp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         ),
     )
     monkeypatch.setattr("cutpoint.paths.home", lambda: home)
-    monkeypatch.setattr(
-        CredentialStore, "_select_os_backend", staticmethod(lambda backend: backend)
-    )
+    monkeypatch.setattr(keys, "os_backend", lambda module: module)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         monkeypatch.setenv("CUTPOINT_CLIPROXY_PORT", str(probe.getsockname()[1]))

@@ -788,6 +788,14 @@ def run_events(
                     vram["vlm"] = vm.summary()
                 finally:
                     rater.unload()
+                if vstats.get("stopped"):
+                    left = len(windows) - vstats.get("ok", 0) - vstats.get("cached", 0)
+                    message = (
+                        f"VLM: stopped because {vstats['stopped']}; {left} window(s) not "
+                        "described, cached descriptions used (run again to describe them)"
+                    )
+                    logger.warning("%s", message)
+                    jsonout.warn("vlm_unavailable", message)
             else:
                 if "vlm" in force:  # nothing to describe them with: keep the saved descriptions
                     results, vstats = describe_windows(
@@ -801,7 +809,9 @@ def run_events(
                 jsonout.warn("vlm_unavailable", message)
         else:
             results = cached
-        stats["vlm"] = {k: v for k, v in vstats.items() if k not in ("seconds", "prompt_tokens")}
+        stats["vlm"] = {
+            k: v for k, v in vstats.items() if k not in ("seconds", "prompt_tokens", "streak")
+        }
         secs = vstats.get("seconds") or []
         if secs:
             stats["vlm"]["mean_s_per_window"] = round(sum(secs) / len(secs), 1)
@@ -989,14 +999,26 @@ def _describe_batches(
     results: list[dict[str, Any]] = []
     stats: dict[str, Any] = {}
     done = 0
+    streak = 0  # windows in a row without a usable reply, across the batches
     for k, part in enumerate(vlm_batches(windows, batch_size)):
-        if k:  # a batch boundary
+        stopped = stats.get("stopped")
+        if k and not stopped:  # a batch boundary
             if unload:
                 rater.unload()
             progress.continuing("vlm", done, len(windows))
+        # after a stop the later batches only take what is cached
         res, st = describe_windows(
-            rater, by_path, list(part), vlm, prompts, transcript, layer1, force=force
+            None if stopped else rater,
+            by_path,
+            list(part),
+            vlm,
+            prompts,
+            transcript,
+            layer1,
+            force=force and not stopped,
+            fails=streak,
         )
+        streak = st.pop("streak", 0)  # merge_stats would sum it
         results += res
         stats = merge_stats(stats, st) if k else st
         done += len(part)
