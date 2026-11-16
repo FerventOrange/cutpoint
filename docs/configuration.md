@@ -568,7 +568,7 @@ digest and the first guess, so later runs and every step read the same key witho
 again; a changed file or a changed first guess is checked again. The file also keeps the first
 name of each folder of date-named videos, so deleting the oldest recording or a folder that is
 offline changes no key. To skip the check, name the
-game with `--game KEY` or add a `match` hint to its preset (neither is fit-checked; a `--game` key must be a plain name: no `/`, `\`, `:`, NUL, empty, `.` or `..`, else `bad_args`; a preset whose `game` is such a name is skipped with a WARNING and its source uses its first guess); to check every
+game with `--game KEY` or add a `match` hint to its preset (neither is fit-checked; a `--game` key must be a plain name: no `/`, `\`, `:`, NUL, empty, `.` or `..`, else `bad_args`; a preset whose `game` is such a name is still used for reading, with a WARNING, but is not refitted or discovered again); to check every
 source again, run with `--discover-regions`.
 
 The OCR layer also keeps its raw read of each source (the text it read per frame) in the source's

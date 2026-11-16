@@ -127,7 +127,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - `cutpoint resume` refuses a `progress.json` whose recorded command line does not parse to the recorded command on this project (#1085, A662).
-- `--game` keys, and the `game` of a preset or event, that are empty, `.`, `..` or contain `/`, `\`, `:` or NUL are refused with `bad_args`. A preset whose `game` is such a name is skipped with a WARNING and its source uses its first guess (#1085, A652).
+- `--game` keys that are empty, `.`, `..` or contain `/`, `\`, `:` or NUL are refused with `bad_args`, as is installing a discovered preset under such a key. A preset whose `game` is such a name is still used for reading, with a WARNING naming the file, but is not refitted or discovered again; when it does not load, its source uses its first guess (#1085, A652).
 - `cutpoint setup` fetches the PANNs label list over https and checks its size and sha256, and pins the Silero voice model to v6.2.3 (size and sha256): an older copy is replaced, and a download that fails the check keeps the file there before (#1085, A650, A651).
 - ffmpeg and ffprobe inputs that Cutpoint builds are limited to the `file` and `pipe` protocols (`-protocol_whitelist file,pipe`) (#1085, A665, in part).
 - ffmpeg and ffprobe are found on `PATH` only in absolute directories (#1085, A664, in part).
