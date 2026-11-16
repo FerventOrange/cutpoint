@@ -84,3 +84,8 @@ def test_a_chat_rater_needs_the_ai_chat_consent_of_a_remote_ollama(home) -> None
     set_config(home, assistant={"consent": [chat_key]})
     assert vision.VisionRater(url, "m", local_only=True, consent="chat").consent_needed is None
     assert vision.VisionRater(url, "m").consent_needed == vision_key
+
+
+def test_an_unknown_consent_kind_is_refused() -> None:
+    with pytest.raises(ValueError, match="consent must be"):
+        vision.VisionRater("http://127.0.0.1:11434", "m", consent="frames")

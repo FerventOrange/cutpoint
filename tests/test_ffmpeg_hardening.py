@@ -70,3 +70,18 @@ def test_no_localappdata_searches_no_winget_folder_below_the_current_one(
     monkeypatch.setattr(fu.sys, "platform", "win32")
     with pytest.raises(fu.FFmpegNotFoundError):
         fu.find_tool("ffmpeg")
+
+
+def test_the_peak_tag_probe_names_its_input_with_i(monkeypatch, tmp_path) -> None:
+    """Review F4: ffprobe's input is given with -i, so it gets the protocol whitelist."""
+    from cutpoint import assemble  # noqa: PLC0415
+
+    seen: list[list[str]] = []
+    monkeypatch.setattr(fu, "find_tool", lambda name: name)
+    monkeypatch.setattr(
+        assemble, "run", lambda args: seen.append(fu._command(args[0], args[1:])) or ""
+    )
+    clip = tmp_path / "c.mp4"
+    assemble._peak_tagged(clip)
+    (cmd,) = seen
+    assert cmd[-4:] == [*WL, "-i", str(clip)]

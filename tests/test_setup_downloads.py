@@ -67,7 +67,19 @@ def test_the_silero_model_is_pinned_and_checked(tmp_path, monkeypatch):
     monkeypatch.setattr(ev_paths, "silero_vad", lambda: dst)
     with pytest.raises(RuntimeError, match="sha256 mismatch"):
         setup.install_voice()
-    assert not dst.exists()
+    # F2: a bad download never removes the model there before (another size: not checked)
+    assert dst.read_bytes() == b"old model"
+    assert not dst.with_name(dst.name + ".part").exists()
+
+
+def test_a_bad_download_keeps_the_file_there_before(tmp_path):
+    """F2: the sha256 is checked on the .part file; the older file of another size stays."""
+    url = write_bytes(tmp_path / "srv" / "new.bin", b"tampered")
+    dst = write(tmp_path / "out" / "m.bin", b"older working model")
+    with pytest.raises(RuntimeError, match="sha256 mismatch"):
+        setup.download(url, dst, 8, hashlib.sha256(b"expected").hexdigest())
+    assert dst.read_bytes() == b"older working model"
+    assert not dst.with_name("m.bin.part").exists()
 
 
 # -- #30: PANNs checkpoint mirrors ----------------------------------------------------------------

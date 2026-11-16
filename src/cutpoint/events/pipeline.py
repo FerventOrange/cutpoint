@@ -1077,7 +1077,32 @@ def _discover(
                 raw = hud.load_game_keys(project).get(hud.source_id(path)) or {}
                 if isinstance(raw.get("key"), str):
                     before[path] = raw["key"]
-        by_game.setdefault(check_game_key(key), []).append(s)
+        try:
+            check_game_key(key)
+        except jsonout.ArgumentError:
+            if named:
+                raise
+            # a preset's ``game`` that is no plain name ("Rainbow Six: Siege"): its discovery
+            # files get the source's first guess instead of a path made from it
+            preset = next(
+                (
+                    p
+                    for p in hud.preset_files(project)
+                    if str((hud._read_json(p) or {}).get("game")) == key
+                ),
+                None,
+            )
+            guess = hud.first_guess(path, project)
+            logger.warning(
+                "HUD preset %s names its game %r, which is no plain name (no /, \\, :, '..'); "
+                "using %r for %s",
+                preset or "(unknown file)",
+                key,
+                guess,
+                path,
+            )
+            key = guess
+        by_game.setdefault(key, []).append(s)
     planned = sum(force or load_preset(g, project) is None for g in by_game)
     runs = {"started": 0, "total": max(1, planned)}  # discoveries (a misfit adds one)
     shown = [0.0]  # the discovery part's pct never goes back

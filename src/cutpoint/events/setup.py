@@ -197,11 +197,11 @@ def download(
                 if total and done / total >= next_log:
                     logger.info("%s %5.1f%% of %.2f GB", dst.name, 100 * done / total, total / 1e9)
                     next_log += 0.1
-    part.replace(dst)
-    if sha256 is not None and (actual := _sha256(dst)) != sha256:
-        dst.unlink(missing_ok=True)
+    # checked before it replaces dst: a bad download never removes a working older file
+    if sha256 is not None and (actual := _sha256(part)) != sha256:
         part.unlink(missing_ok=True)
         raise RuntimeError(f"{dst.name}: sha256 mismatch (expected {sha256}, got {actual})")
+    part.replace(dst)
     return dst
 
 

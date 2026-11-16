@@ -47,7 +47,9 @@ def test_run_events_refuses_a_path_as_game(tmp_path: Path) -> None:
 
 def _discover(project: Path, monkeypatch, game: str) -> list[object]:
     ran: list[object] = []
-    monkeypatch.setattr(discover, "discover_regions", lambda *a, **k: ran.append(a) or {})
+    monkeypatch.setattr(
+        discover, "discover_regions", lambda *a, **k: ran.append(a) or {"regions": []}
+    )
     src = SimpleNamespace(path=Path("/synthetic/footage/session.mp4"))
     pipeline._discover(project, [src], OcrParams(game=game), None, 1, "project")
     return ran
@@ -60,15 +62,23 @@ def test_discovery_refuses_a_path_as_game(tmp_path: Path, monkeypatch) -> None:
     assert not (tmp_path / "escaped").exists() and not (project / "discovery").exists()
 
 
-def test_discovery_refuses_a_preset_game_that_is_a_path(tmp_path: Path, monkeypatch) -> None:
-    """A project preset whose ``game`` is a path and whose ``match`` hint names the source."""
+@pytest.mark.parametrize("game", ["../../escaped", "Made Up: Game"])
+def test_a_preset_game_that_is_no_plain_name_falls_back_to_the_first_guess(
+    tmp_path: Path, monkeypatch, caplog, game: str
+) -> None:
+    """A project preset whose ``game`` is a path or holds ":" and whose ``match`` hint names
+    the source: a WARNING naming the preset, and the source's first guess names its files."""
+    from cutpoint.events import regions  # noqa: PLC0415
+
     project = tmp_path / "proj"
     presets = project / "hud_presets"
     presets.mkdir(parents=True)
-    (presets / "x.json").write_text(
-        json.dumps({"game": "../../escaped", "match": ["session"], "regions": []}),
-        encoding="utf-8",
-    )
-    with pytest.raises(jsonout.ArgumentError):
-        _discover(project, monkeypatch, "auto")
+    preset = presets / "x.json"
+    preset.write_text(json.dumps({"game": game, "match": ["session"], "regions": []}), "utf-8")
+    with caplog.at_level("WARNING"):
+        ran = _discover(project, monkeypatch, "auto")
+    guess = regions.first_guess("/synthetic/footage/session.mp4", project)
+    assert [a[1] for a in ran] == [project / "discovery" / guess]
+    (warning,) = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert str(preset) in warning and repr(game) in warning
     assert not (tmp_path / "escaped").exists()

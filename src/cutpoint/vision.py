@@ -425,6 +425,8 @@ class VisionRater:
         """``consent``: what the Ollama on another machine needs before a request goes there:
         ``"vision"`` (frames: the Vision consent) or ``"chat"`` (whole transcripts for the
         dialogue reader, with ``local_only``: the AI Chat consent of that server, #644)."""
+        if consent not in ("vision", "chat"):
+            raise ValueError(f"consent must be 'vision' or 'chat', not {consent!r}")
         cfg = get_config()
         v_ast = cfg.vision_assistant
         explicit = bool(url or model)  # given on the command line: they win (#805)
