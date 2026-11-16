@@ -1870,7 +1870,6 @@ def test_interrupted_extract_audio_removes_its_temp_wav_after_ffmpeg_exits(
 
     monkeypatch.setattr(Path, "unlink", locked_unlink)
     dst.parent.mkdir()
-    (dst.parent / "a.tmp.wav").write_bytes(b"partial")  # ffmpeg had started writing
     with pytest.raises(KeyboardInterrupt):
         ffmpeg_utils.extract_audio(tmp_path / "a.mp4", dst, media_info(tmp_path / "a.mp4"))
     assert child.cmd[-1].endswith(".tmp.wav")

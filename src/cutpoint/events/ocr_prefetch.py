@@ -102,8 +102,11 @@ def shared_mode() -> str | None:
 def sweep(cdir: Path) -> None:
     """Remove what an interrupted background scene proxy may have left in ``cdir``."""
     shutil.rmtree(cdir / SPOOL_DIR, ignore_errors=True)
+    from cutpoint.ffmpeg_utils import sweep_tmp  # noqa: PLC0415 - one function; keeps the import block
+
     with contextlib.suppress(OSError):
         (cdir / PROXY_TMP).unlink(missing_ok=True)
+    sweep_tmp(cdir / "proxy.mp4")  # only those of runs that are gone
 
 
 # lossless proxy, bytes per pixel and second: measured on NVDEC at 0.16-0.60 MB per source

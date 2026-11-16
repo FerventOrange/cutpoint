@@ -670,14 +670,17 @@ def _watch_extract(
     if report is None or seconds <= 0:
         yield
         return
-    tmp = wav.with_suffix(".tmp.wav")  # extract_audio's temp file, renamed when complete
+    from cutpoint.ffmpeg_utils import tmp_files  # noqa: PLC0415 - one function; keeps the import block
+
     stop = threading.Event()
 
     def poll() -> None:
         while not stop.wait(EXTRACT_POLL_S):
-            try:
-                size = tmp.stat().st_size
-            except OSError:  # not created yet
+            try:  # extract_audio's unique temp file, renamed when complete
+                size = max((p.stat().st_size for p in tmp_files(wav, own=True)), default=0)
+            except OSError:  # renamed while listed
+                continue
+            if size == 0:  # not created yet
                 continue
             report(min(1.0, max(0, size - WAV_HEADER) / (WAV_BYTES_PER_S * seconds)))
 

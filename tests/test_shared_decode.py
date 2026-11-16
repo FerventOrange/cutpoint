@@ -217,7 +217,9 @@ TINY_FB = TINY[0] * TINY[1] * 3
 def _fake(monkeypatch, tmp_path, script: str, cancel=None, size=TINY):
     """A SplitDecode of a Python child in place of ffmpeg (``script`` writes its stdout),
     the spool files' sizes recorded as they are deleted."""
-    monkeypatch.setattr(ffmpeg_utils, "_command", lambda tool, args: [sys.executable, "-c", script])
+    monkeypatch.setattr(
+        ffmpeg_utils, "_command", lambda tool, args: [sys.executable, "-c", script, *args]
+    )
     sizes: list[int] = []
     real_unlink = Path.unlink
 
@@ -248,7 +250,9 @@ def _fake(monkeypatch, tmp_path, script: str, cancel=None, size=TINY):
 def _writer(data: int, chunk: int, code: int = 0, proxy: Path | None = None) -> str:
     """A child that writes ``data`` bytes (``i % 251``) in pipe writes of ``chunk`` bytes,
     makes ``proxy`` (as ffmpeg's tmp proxy) and exits with ``code``."""
-    make = f"open({str(proxy)!r}, 'wb').close()\n" if proxy else ""
+    # ffmpeg's tmp proxy is the argument the command line names (_fake passes argv on)
+    make = "open(next(a for a in sys.argv if a.endswith('.tmp.mp4')), 'wb').close()\n"
+    make = make if proxy else ""
     return (
         "import os, sys, time\n"
         f"data = bytes(i % 251 for i in range({data}))\n"
@@ -377,7 +381,7 @@ def test_a_writer_held_at_the_cap_stops_at_once(tmp_path, monkeypatch, how, exit
     _blocked(f.split)
     if exited:
         f.split._proc.wait(10)  # exited 0 by itself, the rest of its output in the pipe
-        assert proxy.exists()
+        assert any(f.cdir.glob("proxy*.mp4"))  # the tmp proxy, or already renamed
     t0 = time.perf_counter()
     if how == "cancel":
         cancel.set()
@@ -726,8 +730,12 @@ def test_stale_spools_are_swept_when_offered(pre, tmp_path):
     (cdir / ffmpeg_utils.SPOOL_DIR).mkdir()
     (cdir / ffmpeg_utils.SPOOL_DIR / "seg-00000.raw").write_bytes(b"x")
     (cdir / ocr_prefetch.PROXY_TMP).write_bytes(b"x")
+    (cdir / f"proxy.99999999.{ffmpeg_utils._host_tag()}.deadbeef.tmp.mp4").write_bytes(
+        b"x"
+    )  # a killed run's proxy
+    (cdir / "proxy.mp4").write_bytes(b"done")  # a finished proxy stays
     pre.make("0").offer(pre.src, 60.0, True)  # in mode 0 too
-    assert _left(cdir) == set()
+    assert _left(cdir) == {"proxy.mp4"}
 
 
 def test_split_is_declined_below_the_disk_gate(pre, monkeypatch, tmp_path, caplog):
