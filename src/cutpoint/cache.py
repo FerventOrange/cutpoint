@@ -66,12 +66,15 @@ def source_dir(src: Path, offset: float = 0.0, *, create: bool = True) -> Path:
 
 class HeldOutputs:
     """Files of a project that a run in progress holds back (see :func:`hold_outputs`):
-    ``files`` maps each resolved path to the bytes it will get, or None to delete it."""
+    ``files`` maps each resolved path to the bytes it will get, or None to delete it;
+    ``durable`` holds the paths a held write asked to flush to disk (``save_bytes(...,
+    durable=True)``), which :meth:`commit` flushes before their rename."""
 
     def __init__(self, folder: Path, names: Collection[str]) -> None:
         self.folder = folder.resolve()
         self.names = frozenset(names)
         self.files: dict[Path, bytes | None] = {}
+        self.durable: set[Path] = set()
 
     def key(self, path: Path) -> Path | None:
         """The resolved ``path`` if this hold covers it, else None."""
@@ -88,10 +91,13 @@ class HeldOutputs:
         :func:`match_mode`); if any of that fails, the temp files and the new folders are
         removed and the project is left untouched. Only then are the deletions made and the
         temp files renamed onto their files (retried while locked, as :func:`save_bytes`), with
-        Ctrl+C, Ctrl+Break and SIGTERM deferred (:func:`_deferred_interrupts`)."""
+        Ctrl+C, Ctrl+Break and SIGTERM deferred (:func:`_deferred_interrupts`). A file in
+        ``durable`` is flushed to disk (``fsync``) when staged and, on POSIX, its folder after
+        the renames, as :func:`save_bytes` does with ``durable``."""
         with contextlib.suppress(ValueError):
             _HOLDS.remove(self)
         files, self.files = self.files, {}
+        durable, self.durable = self.durable, set()
         staged: list[tuple[Path, Path]] = []  # (temp file, its file)
         try:
             with created_dirs() as made:  # new folders removed again on failure
@@ -107,6 +113,9 @@ class HeldOutputs:
                         tmp = Path(name)
                         staged.append((tmp, path))
                         tmp.write_bytes(data)
+                        if path in durable:
+                            with tmp.open("r+b") as f:  # as save_bytes(durable=True)
+                                os.fsync(f.fileno())
                         match_mode(tmp, path)
                 except BaseException:
                     for tmp, _ in staged:  # before created_dirs removes the empty folders
@@ -122,6 +131,8 @@ class HeldOutputs:
                 for tmp, path in staged:
                     # os.replace, not Path.replace: tests patch cache.os.replace
                     retry_locked(partial(os.replace, tmp, path), path, "replace")
+            for folder in dict.fromkeys(path.parent for _, path in staged if path in durable):
+                _fsync_dir(folder)
         finally:
             for tmp, _ in staged:  # those not renamed (a rename failed or was interrupted)
                 with contextlib.suppress(OSError):
@@ -364,18 +375,36 @@ def match_mode(tmp: Path, target: Path) -> None:
         tmp.chmod(mode)
 
 
-def save_json(path: Path, data: Any, *, indent: int = 2) -> None:
+def save_json(path: Path, data: Any, *, indent: int = 2, durable: bool = False) -> None:
     """Atomically write ``data`` as JSON, UTF-8, with the platform's line endings (see
-    :func:`save_bytes`)."""
+    :func:`save_bytes`, also for ``durable``)."""
     text = json.dumps(data, indent=indent, ensure_ascii=False)
     # strings escape their newlines, so these are only the indent's line breaks
-    save_bytes(path, text.replace("\n", os.linesep).encode("utf-8"))
+    save_bytes(path, text.replace("\n", os.linesep).encode("utf-8"), durable=durable)
 
 
-def save_bytes(path: Path, data: bytes, *, parents: bool = False) -> None:
+def _fsync_dir(folder: Path) -> None:
+    """Flush ``folder``'s entries (a rename into it) to disk: POSIX only, best effort
+    (Windows cannot open a folder for it, and some file systems refuse)."""
+    if os.name != "posix":
+        return
+    with contextlib.suppress(OSError):
+        fd = os.open(folder, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def save_bytes(path: Path, data: bytes, *, parents: bool = False, durable: bool = False) -> None:
     """Atomically write ``data`` (unique temp file, then rename), with the mode a plain
     write would give (:func:`match_mode`); ``parents``: create the missing folders first.
     A file held back by :func:`hold_outputs` is kept in memory instead (no folder made).
+
+    ``durable``: flush the temp file to disk (``fsync``) before the rename and, on POSIX,
+    the folder after it, so a power cut leaves the old or the new file, not an empty one.
+    For the files that matter (``config.json``, ``highlights.json``, the swap journal of
+    :mod:`cutpoint.folders`); caches leave it off, as each flush costs a disk write (A667).
 
     On Windows the rename fails with PermissionError while another process has
     ``path`` open; it is retried a few times with a short backoff
@@ -389,6 +418,8 @@ def save_bytes(path: Path, data: bytes, *, parents: bool = False) -> None:
     if _HOLDS and (got := _held(path)) is not None:
         hold, key = got
         hold.files[key] = bytes(data)
+        if durable:
+            hold.durable.add(key)
         return
     if parents:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -397,12 +428,17 @@ def save_bytes(path: Path, data: bytes, *, parents: bool = False) -> None:
     tmp = Path(name)
     try:
         tmp.write_bytes(data)
+        if durable:
+            with tmp.open("r+b") as f:  # Windows flushes only a handle open for writing
+                os.fsync(f.fileno())
         match_mode(tmp, path)
         # os.replace, not Path.replace: tests patch cache.os.replace
         retry_locked(partial(os.replace, tmp, path), path, "replace")
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    if durable:
+        _fsync_dir(path.parent)
 
 
 def save_npz(path: Path, *, compressed: bool = True, parents: bool = False, **arrays: Any) -> None:

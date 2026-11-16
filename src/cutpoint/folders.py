@@ -517,7 +517,7 @@ def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
     bak = backup_path(dst)
     bak.mkdir()
     try:
-        save_json(bak / _SWAP_JOURNAL, journal)
+        save_json(bak / _SWAP_JOURNAL, journal, durable=True)
         if created:
             dst.mkdir()
         for n in olds:
