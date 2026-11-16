@@ -448,6 +448,53 @@ def test_untrusted_text_stays_inside_its_data_block() -> None:
     assert "< < <END DATA> > >" in ctx
 
 
+def test_a_long_tool_result_is_cut_at_a_row_and_keeps_its_end_marker() -> None:
+    """A result over the cap loses whole rows from the end of its data block, not the end
+    marker (untrusted text in an open block would run into what follows)."""
+    long = [
+        {
+            **CANDS[0],
+            "id": f"c{i}",
+            "start": float(i),
+            "end": i + 1.0,
+            "label": f"laugh {i} " + "x" * 400,
+        }
+        for i in range(20)
+    ]
+    proj = session.Project(long, [], durations(), "", "key0")
+    fake = FakeProvider(
+        [call("find_moments", query="laugh", limit=20), call("propose_edit", summary="s")]
+    )
+    fake.context_tokens = 128_000  # room for the whole result
+    run(fake, proj=proj)
+    sent = fake.requests[1]["messages"][-1]["content"]
+    assert len(sent) <= session.MAX_RESULT_CHARS
+    block, note = sent.split("\n<<<END DATA>>>\n")
+    rows = block.split("\n")[1:]  # after "<<<DATA moments>>>"
+    assert rows and all(json.loads(r)["label"].endswith("x") for r in rows)  # whole rows only
+    assert note == f"({20 - len(rows)} of 20 lines left out: the result is too long)"
+
+
+def test_cut_result_keeps_the_text_around_the_block_and_short_results() -> None:
+    text = "before\n" + context.data_block("t", "\n".join(["y" * 10] * 10)) + "\nafter"
+    assert context.cut_result(text, len(text)) == text
+    cut = context.cut_result(text, len(text) - 1)
+    assert cut.startswith("before\n<<<DATA t>>>\n") and len(cut) <= len(text) - 1
+    assert "\n<<<END DATA>>>\n(" in cut and cut.count("y" * 10) < 10
+    assert cut.endswith("left out: the result is too long)\nafter") and len(cut) <= len(text) - 1
+    # one row longer than the cap (a moment with a long transcript): its start is kept
+    row = context.cut_result(context.data_block("moment", "y" * 8000), 6000)
+    assert len(row) <= 6000 and row.count("y") > 5000
+    assert row.endswith("<<<END DATA>>>\n(the first line is cut: the result is too long)")
+    two = context.cut_result(context.data_block("m", "y" * 8000 + "\nz"), 6000)
+    assert len(two) <= 6000 and two.endswith(
+        "cut and the other 1 left out: the result is too long)"
+    )
+    # no room for the block: the open block goes, nothing else is left behind
+    assert context.cut_result(text, 20) == "before\n"
+    assert context.cut_result("z" * 50, 10) == "z" * 10
+
+
 # -- project files (#1010) --------------------------------------------------------------------
 
 

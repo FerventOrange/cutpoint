@@ -1367,8 +1367,10 @@ def _discover(
             backup = target.with_suffix(".json.pre-1085")
             target.replace(backup)
             proposal = proposal | {k: old[k] for k in USER_PRESET_KEYS if k in old}
-            if isinstance(old.get("feed"), dict):  # what discovery found (row_notices) wins
-                proposal["feed"] = old["feed"] | (proposal.get("feed") or {})
+            if isinstance(old.get("feed"), dict):  # the user's feed keys; row_notices is
+                # discovery's, so only the new discovery sets it
+                kept = {k: v for k, v in old["feed"].items() if k != "row_notices"}
+                proposal["feed"] = kept | (proposal.get("feed") or {})
             logger.warning(
                 "Replaced the HUD preset for %r (made with a wrong y scale, #1085); the old "
                 "file is kept as %s",

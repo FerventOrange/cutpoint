@@ -90,6 +90,7 @@ from cutpoint.events.regions import (
     guard_regions,
     source_tag,
 )
+from cutpoint.events.text import alnum_words
 from cutpoint.ffmpeg_utils import grab_images, probe
 from cutpoint.imageio import read_image, write_jpeg
 
@@ -567,7 +568,8 @@ def gameplay_frames(frames: list[dict[str, Any]], params: DiscoverParams) -> lis
 
 
 def _norm_text(t: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", t.lower())
+    """Lower-case letters and digits in any script, nothing else (:func:`alnum_words`)."""
+    return alnum_words(t).replace(" ", "").lower()
 
 
 def _cells(b: dict[str, Any]) -> tuple[slice, slice]:
@@ -732,8 +734,8 @@ def _icon_lines(
                     and _name_like(b["text"])
                 ):
                     found = True
-                    left.add(re.sub(r"[^a-z]", "", a["text"].lower()))
-                    right.add(re.sub(r"[^a-z]", "", b["text"].lower()))
+                    left.add(re.sub(r"\d", "", _norm_text(a["text"])))
+                    right.add(re.sub(r"\d", "", _norm_text(b["text"])))
         if found:
             hits += 1
             bursts.add((_src(f), f["burst"]))
@@ -749,7 +751,7 @@ def _sighting_variety(band: list[tuple[str, tuple[str, int], float, str]]) -> fl
     and a static label (in any case) has 1 / bursts."""
     texts: dict[str, list[str]] = {}
     for fid, _, _, t in band:
-        texts.setdefault(fid, []).append(re.sub(r"[0-9]", "", _norm_text(t)))
+        texts.setdefault(fid, []).append(re.sub(r"\d", "", _norm_text(t)))
     distinct = {"".join(sorted(ts)) for ts in texts.values()} - {""}
     return min(1.0, len(distinct) / max(1, len({bk for _, bk, _, _ in band})))
 
@@ -1203,7 +1205,7 @@ def _is_covered(b: dict[str, Any], covered: tuple[Region, ...]) -> bool:
 
 
 def _static_key(text: str) -> str:
-    return re.sub(r"[0-9]", "", _norm_text(text))
+    return re.sub(r"\d", "", _norm_text(text))
 
 
 def _notice_letters(text: str) -> bool:

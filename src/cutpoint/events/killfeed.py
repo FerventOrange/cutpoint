@@ -54,6 +54,7 @@ from cutpoint.events.regions import (
     marker_seen,
     scaled,
 )
+from cutpoint.events.text import alnum_words
 from cutpoint.ffmpeg_utils import READ_ERROR_RE, decode_raw, decoder_for, probe
 from cutpoint.imageio import write_png
 
@@ -131,7 +132,9 @@ class OcrParams:
 # are on screen (:func:`feed_stacks`, #891)
 # 25: ... but the rows a feed reads first in one frame are lines of their own (a screen's text in
 # the feed's area, #891)
-GENERIC_VERSION = 25
+# 26: text in any script is compared by its letters and digits, not only A-Z and 0-9 (:func:`norm`,
+# #1085 A137); ASCII text gives the same events, replayed from the raw OCR cache
+GENERIC_VERSION = 26
 # Reads of a source whose part gave no frames before the cached result is kept as it is.
 MAX_INCOMPLETE_READS = 2
 
@@ -152,8 +155,9 @@ CHAT_MIN_CHARS = 3  # nor those with fewer letters and digits
 
 
 def norm(text: str) -> str:
-    """Upper-case alphanumerics and single spaces (for fuzzy comparisons)."""
-    return re.sub(r"\s+", " ", re.sub(r"[^A-Z0-9 ]", " ", text.upper())).strip()
+    """Upper-case letters and digits in any script and single spaces (for fuzzy comparisons,
+    :func:`~cutpoint.events.text.alnum_words`)."""
+    return alnum_words(text)
 
 
 def fuzzy_contains(text: str, phrase: str, thr: float = 0.8) -> bool:
@@ -202,7 +206,7 @@ _CAMEL_RE = re.compile(r"(?<=[a-z])(?=[A-Z])")  # "TargetDestroyed": a word boun
 def _word_spans(t: str, n: int, tol: int) -> list[str]:
     """Space-less stretches of whole words of the normalized text ``t`` that are
     ``n`` +- ``tol`` characters long; letter and digit runs are words."""
-    toks = re.findall(r"[A-Z]+|[0-9]+", t)
+    toks = re.findall(r"[^\s\d]+|\d+", t)
     bounds = [0]
     for tok in toks:
         bounds.append(bounds[-1] + len(tok))
@@ -218,8 +222,12 @@ def _word_spans(t: str, n: int, tol: int) -> list[str]:
 
 
 def similar(a: str, b: str) -> float:
-    """SequenceMatcher ratio of two normalized strings."""
-    return difflib.SequenceMatcher(None, norm(a).replace(" ", ""), norm(b).replace(" ", "")).ratio()
+    """SequenceMatcher ratio of two normalized strings; 0 when both are empty (two texts
+    with no letters or digits are no match)."""
+    x, y = norm(a).replace(" ", ""), norm(b).replace(" ", "")
+    if not (x or y):
+        return 0.0
+    return difflib.SequenceMatcher(None, x, y).ratio()
 
 
 # Letters OCR reads for one another, folded to one form when names are compared
@@ -1014,6 +1022,9 @@ def collapse_banner_bursts(events: list[dict[str, Any]]) -> list[dict[str, Any]]
     return [e for e in events if id(e) not in dropped]
 
 
+_NAME_RUN_RE = re.compile(r"[^\W\d_]{3}")  # three letters in a row, any script
+
+
 def _line_rest(raw: str, phrase: str) -> str:
     """The text of the line ``raw`` besides ``phrase`` when it holds a name (three letters in a
     row), else "" (:func:`collapse_banner_bursts`)."""
@@ -1030,7 +1041,7 @@ def _line_rest(raw: str, phrase: str) -> str:
                 best, at = ratio, i
         if best >= FUZZY:
             rest = line[:at] + line[at + len(phrase) :]
-    return rest if re.search(r"[A-Za-z]{3}", rest) else ""
+    return rest if _NAME_RUN_RE.search(rest) else ""
 
 
 def _held_runs(
@@ -1081,7 +1092,7 @@ def _announce_screen(e: dict[str, Any], key: str, learned: set[str], fixed: set[
     line = "".join(w for w in norm(text).split() if w not in fixed)
     for word in sorted(learned.intersection(_announce_keys(text)), key=len, reverse=True):
         line = line.replace(norm(word).replace(" ", ""), "", 1) if norm(word) else line
-    return line if re.search(r"[A-Za-z]{3}", line) else ""
+    return line if _NAME_RUN_RE.search(line) else ""
 
 
 def learn_announcements(
