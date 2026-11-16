@@ -62,13 +62,13 @@ Notes:
 - **`stitch_args`.** The parameters are Insta360's. See the parameter table under "Using the Sample Programs" in the public [Media SDK API Reference](https://github.com/Insta360Develop/Insta360-Developer_Docs/blob/main/docs/en/sdk/x-ace-go/desktop/media.md). Example: `["-stitch_type", "aistitch", "-output_size", "5760x2880", "-enable_h265_encoder", "-bitrate", "100000000"]`.
 - **Allowed stitch types.** `optflow`, `dynamicstitch` or `aistitch`. Cutpoint accepts only the stitch types listed in Insta360's public docs and rejects any other value (including the old `template`) before the run.
 - **Output size.** `-output_size` must be 2:1 (for example `5760x2880`). Any other value is rejected before the run; the finished file is also checked for 2:1.
-- **FlowState is not used.** Cutpoint levels and frames stitched equirects with its own IMU track, as for `dfisheye`, so do not add `-enable_flowstate` to `stitch_args`. A stitch made with it, or one without a `<stem>.equirect.json` sidecar (every stitch made before FlowState was dropped from the defaults), is rendered as it is, and its framing drifts as the camera's heading changes. Cutpoint logs a warning for such files; restitch them with `cutpoint 360 stitch <project> --clips NNN --force` (the warning names the clip). Insta360 Studio exports get the same warning.
+- **FlowState is not used.** Cutpoint levels and frames stitched equirects with its own IMU track, as for `dfisheye`, so do not add `-enable_flowstate` to `stitch_args`. A stitch made with it, or one without a `<stem>.equirect.json` sidecar (every stitch made before FlowState was dropped from the defaults), is rendered as it is, and its framing drifts as the camera's heading changes. Cutpoint logs a warning for such files; restitch them with `cutpoint 360 stitch <project> --clips ID --force` (the warning names the clip). Insta360 Studio exports get the same warning.
 - **Encoder.** H.264 hardware encoding is capped at 4096 px, so keep `-enable_h265_encoder` for 5.7K output.
 
 ## What `cutpoint 360 stitch` does
 
 ```powershell
-cutpoint 360 stitch <project> [--clips NNN ... | --from-clips DIR | --segments FILE] [--top N] [--max-total S] [--force] [--dry-run]
+cutpoint 360 stitch <project> [--clips ID ... | --from-clips DIR | --segments FILE] [--top N] [--max-total S] [--force] [--dry-run]
 ```
 
 - Cutpoint judges success from the SDK's progress and error output plus other status markers it prints at runtime (including any requested `-enable_*` feature reported as failed or off), and verifies the output file with ffprobe.
@@ -95,7 +95,7 @@ The SDK is under NDA. The repository `.gitignore` blocks the common SDK paths (`
 | `timed out after ...s (pano.stitch_timeout_s)` | Raise or remove `pano.stitch_timeout_s`. Clip length, stitch type and GPU decide the time |
 | Very slow stitching | The SDK may be encoding in software. Update the NVIDIA driver, keep `-enable_h265_encoder` for outputs above 4096 px, and look at the encoder line the run logs (`encoder ... (...)`). `-enable_soft_encode` or `-disable_cuda` in `pano.stitch_args` forces the slow path |
 | `Invalid -output_size ...` (not 2:1) | Rejected before running: fix `-output_size` in `pano.stitch_args` (width = 2 x height) |
-| `No 360 clips selected` | Pass `--clips NNN ...` or `--from-clips DIR`, or run in a project that has `highlights.json` |
+| `No 360 clips selected (use --clips ID ..., --from-clips DIR, --segments FILE or a project with highlights.json)` | Pass `--clips ID ...` (the clip number, such as `029`, or `YYYYMMDD_HHMMSS_NNN` when two recordings have that number) or `--from-clips DIR`, or run in a project that has `highlights.json` |
 | `clips folder not found: <path>` | `--from-clips` takes an absolute path, `projects/<project>/<folder>`, or a folder name inside the project (e.g. `clips_review`) |
 | `<folder>: N GB free, clip NNN needs ~M GB` (error before the run) | Set `pano.stitched_dir` to a drive with room |
-| `... stitched with FlowState` or `no sidecar ..., assuming FlowState` warning when rendering | The equirect predates the current defaults or was stitched with `-enable_flowstate`; its framing drifts with the camera's heading. Restitch: `cutpoint 360 stitch <project> --clips NNN --force` (the warning prints the exact command) |
+| `... stitched with FlowState` or `no sidecar ..., assuming FlowState` warning when rendering | The equirect predates the current defaults or was stitched with `-enable_flowstate`; its framing drifts with the camera's heading. Restitch: `cutpoint 360 stitch <project> --clips ID --force` (the warning prints the exact command) |

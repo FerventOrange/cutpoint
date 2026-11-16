@@ -569,3 +569,119 @@ def test_json_missing_input_is_not_found(home, tmp_path, capsys, argv, command, 
         assert doc["project"] == str(home / "projects" / project)
     if command == "360 status":
         assert doc["outputs"]["sdk"]["found"] is False  # the SDK part ran first
+
+
+# ------------------------------------------------------------- clip numbers two recordings share
+def _two_029(home, tmp_path) -> Path:
+    """A project with clip 029 of two recordings (a formatted card) and clip 030."""
+    cam = tmp_path / "cam"
+    clips = [
+        x3clip(clip_id=num, insv=[str(write(cam / f"VID_{stamp}_00_{num}.insv"))])
+        for stamp, num in (("20240831_194807", "029"), ("20260122_132929", "029"),
+                           ("20260122_133938", "030"))
+    ]  # fmt: skip
+    project = home / "projects" / "trip"
+    P.save(project, clips, [cam])
+    return project
+
+
+def test_pano_json_gives_two_recordings_of_one_number_their_own_ids(home, tmp_path):
+    project = _two_029(home, tmp_path)
+    ids = ["030", "20240831_194807_029", "20260122_132929_029"]
+    data = cache.load_json(project / "pano.json")
+    assert sorted(c["clip_id"] for c in data["clips"]) == ids
+    for c in data["clips"]:  # as written before A207: the bare numbers
+        c["clip_id"] = c["clip_id"][-3:]
+    cache.save_json(project / "pano.json", data)
+    assert sorted(c.clip_id for c in P.load(project).values()) == ids
+
+
+def test_360_stitch_rejects_a_clip_number_two_recordings_share(home, tmp_path, capsys):
+    _two_029(home, tmp_path)
+    code, doc = run_json(capsys, ["360", "stitch", "trip", "--clips", "029", "--dry-run"])
+    assert code == 1 and doc["error"]["code"] == "bad_args"
+    assert "20240831_194807_029, 20260122_132929_029" in doc["error"]["message"]
+
+
+def test_360_stitch_takes_an_id_or_a_number_one_recording_has(home, tmp_path, monkeypatch, capsys):
+    _two_029(home, tmp_path)
+    seen = []
+
+    def stitch(clips, force, dry_run):
+        seen.extend(c.clip_id for c in clips)
+        return []
+
+    monkeypatch.setattr(pano_stitch, "stitch_clips", stitch)
+    monkeypatch.setattr(capabilities, "nvidia_present", lambda: True)
+    args = ["360", "stitch", "trip", "--clips", "20260122_132929_029", "030", "--dry-run"]
+    code, _ = run_json(capsys, args)
+    assert code == 0 and seen == ["030", "20260122_132929_029"]
+
+
+def test_360_scan_json_warns_about_a_clip_number_two_recordings_share(
+    home, tmp_path, monkeypatch, capsys
+):
+    cam = tmp_path / "cam"
+    clips = [
+        x3clip(clip_id="029", insv=[str(write(cam / f"VID_{stamp}_00_029.insv"))])
+        for stamp in ("20240831_194807", "20260122_132929")
+    ]
+    monkeypatch.setattr(x3, "scan", lambda folder: clips)
+    monkeypatch.setattr(insta360, "imu_source", lambda src: None)
+    code, doc = run_json(capsys, ["360", "scan", str(cam), "--out", "trip"])
+    assert code == 0 and warning_codes(doc) == ["duplicate_clip_numbers"]
+    warning = doc["warnings"][0]
+    assert "029 (20240831_194807_029, 20260122_132929_029)" in warning["message"]
+    assert warning["files"] == [c.insv[0] for c in clips]
+    assert [c["id"] for c in doc["outputs"]["clips"]] == [c.recording_id for c in clips]
+
+
+def test_360_scan_warns_when_a_second_folder_brings_a_number_the_project_has(
+    home, tmp_path, monkeypatch, capsys
+):
+    """A207: the clip numbers are checked over the whole project, and a shared number in
+    --only is refused before pano.json is written."""
+    stamps = {"a": "20240831_194807", "b": "20260122_132929"}
+
+    def scan(folder):
+        return [
+            x3clip(clip_id="029", insv=[str(folder / f"VID_{stamps[folder.name]}_00_029.insv")])
+        ]
+
+    for sub, stamp in stamps.items():
+        write(tmp_path / sub / f"VID_{stamp}_00_029.insv")
+    monkeypatch.setattr(x3, "scan", scan)
+    monkeypatch.setattr(insta360, "imu_source", lambda src: None)
+    monkeypatch.setattr("cutpoint.pano.cli._require_detector", lambda: None)
+    code, doc = run_json(capsys, ["360", "scan", str(tmp_path / "a"), "--out", "trip"])
+    assert code == 0 and doc["warnings"] == []
+    pano = home / "projects" / "trip" / "pano.json"
+    before = pano.read_bytes()
+    argv = ["360", "analyze", "trip", "--scan", str(tmp_path / "b"), "--only", "029", "--no-events"]
+    code, doc = run_json(capsys, argv)
+    assert code == 1 and doc["error"]["code"] == "bad_args"
+    assert "20240831_194807_029, 20260122_132929_029" in doc["error"]["message"]
+    assert pano.read_bytes() == before
+    code, doc = run_json(capsys, ["360", "scan", str(tmp_path / "b"), "--out", "trip"])
+    assert code == 0 and warning_codes(doc) == ["duplicate_clip_numbers"]
+    assert "029 (20240831_194807_029, 20260122_132929_029)" in doc["warnings"][0]["message"]
+    assert len(doc["warnings"][0]["files"]) == 2
+    assert [c["id"] for c in doc["outputs"]["clips"]] == ["20260122_132929_029"]
+
+
+def test_pano_json_warns_once_about_a_clip_paired_across_two_recordings(home, tmp_path, caplog):
+    """A207: a scan before the fix could pair one recording's proxy with another's lenses."""
+    cam = tmp_path / "cam"
+    mixed = x3clip(
+        clip_id="029",
+        lrv=str(cam / "LRV_20240831_194807_01_029.lrv"),
+        insv=[str(cam / "VID_20260122_132929_00_029.insv")],
+    )
+    project = home / "projects" / "trip"
+    P.save(project, [mixed], [cam])
+    with caplog.at_level("WARNING"):
+        P.load(project)
+        P.load(project)
+    hits = [r for r in caplog.records if "from two recordings" in r.getMessage()]
+    assert len(hits) == 1
+    assert f"cutpoint 360 scan {cam} --out {project} again" in hits[0].getMessage()

@@ -763,7 +763,7 @@ def _clip_lock(source: str) -> threading.Lock:
 def _kind_for(project: Path, clip: Any, start: float, end: float) -> str | None:
     """The ``kind`` of the ``highlights.json`` candidate of ``clip`` overlapping ``[start,
     end]`` most (the moment being previewed, possibly trimmed), else None."""
-    from cutpoint.pano.project import clip_for, load  # noqa: PLC0415
+    from cutpoint.pano.project import clip_for, load, norm  # noqa: PLC0415
 
     clips = load(project)
     best, kind = 0.0, None
@@ -775,7 +775,8 @@ def _kind_for(project: Path, clip: Any, start: float, end: float) -> str | None:
         except (KeyError, TypeError, ValueError):
             continue
         hit = clip_for(clips, c.get("source", ""))
-        if ov > best and hit is not None and hit.clip_id == clip.clip_id:
+        # by source: an old pano.json may give two recordings one clip number
+        if ov > best and hit is not None and norm(hit.source) == norm(clip.source):
             best, kind = ov, c.get("kind")
     return kind
 
