@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Crash clips: a GPS gap between the impact and the stop no longer moves the stop earlier (each missing fix moved it 0.1 s, and the clip's end, its "moving again" time and the first words after the stop with it). The dense crash check of portrait footage (frames stored upright) now embeds a top, centre and bottom square crop as the visual layer does, instead of squashing the whole frame into all three; landscape embeddings are unchanged. Dense windows of portrait footage cached before the fix are computed again on the next `crashes` or `analyze`; landscape ones are kept (#1085, A181, A182).
 - A stalled vision server no longer holds the `events` VLM layer for hours: a timed-out request stops the layer at once (that window is not asked again) and so do 3 windows in a row without a usable reply. Windows already described and cached descriptions are kept, a `vlm_unavailable` warning gives the count left undescribed, and the next run asks only those windows (#1085, A158).
 - A long AI Chat tool result is cut inside its data block at a row and keeps its end marker, with a note of the rows left out, so the model no longer reads the rest of the result as outside the data (#1085, A293, A679).
 - A refused ranking preview in the AI Chat no longer shows file paths to the model or in `chat.json` (#1085, A678).
