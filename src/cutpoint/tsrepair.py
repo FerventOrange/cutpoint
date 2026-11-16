@@ -277,15 +277,24 @@ def _register(key: str, copy: Path, st: os.stat_result) -> None:
     """List ``copy`` in the timeline index for the source ``key``."""
     root = cache.cache_root()
     path = root / stage.TIMELINE_INDEX
-    data = cache.load_json(path)
-    index = data if isinstance(data, dict) else {}
-    index[key] = {
+    entry = {
         "file": copy.relative_to(root).as_posix(),
         "size": st.st_size,
         "mtime_ns": st.st_mtime_ns,
         "copy_size": copy.stat().st_size,
     }
-    cache.save_json(path, index)
+    try:
+        with stage.index_lock(path):  # read under the lock: another run may have added entries
+            data = cache.load_json(path)
+            index = data if isinstance(data, dict) else {}
+            index[key] = entry
+            cache.save_json(path, index)
+    except FolderBusyError as err:
+        logger.warning(
+            "%s: timeline index not updated (%s); the copy is read from its cache folder",
+            key,
+            err,
+        )
 
 
 def _clean_parts(cdir: Path) -> None:

@@ -29,6 +29,7 @@ from cutpoint import (
     ffmpeg_utils,
     insta360,
     procs,
+    projectdelete,
     stage,
     telemetry,
     transcribe,
@@ -177,10 +178,31 @@ def test_mount_without_proc_mounts_is_local(monkeypatch):
     assert stage.is_remote(Path("/x/v.mp4")) is False
 
 
-@pytest.mark.parametrize(("drive", "remote"), [("C:", False), ("d:", False), ("F:", True)])
-def test_is_remote_windows_uses_the_drive_letter(plat, drive, remote):
+@pytest.mark.parametrize(
+    ("path", "kind", "remote"),
+    [
+        ("H:/v.mp4", 3, False),  # a local fixed disk, whatever its letter
+        ("D:/v.mp4", 4, True),  # a mapped network drive
+        ("F:/v.mp4", 2, True),  # removable
+        ("//server/share/v.mp4", 3, True),  # UNC: never asked
+        ("F:/v.mp4", 0, True),  # unknown: the letter decides
+        ("D:/v.mp4", 1, False),
+    ],
+)
+def test_is_remote_windows_uses_the_drive_type(plat, monkeypatch, path, kind, remote):
     plat("win32")
-    assert stage.is_remote(PureWindowsPath(drive + "\\v.mp4")) is remote  # type: ignore[arg-type]
+    monkeypatch.setattr(projectdelete, "_drive_type", lambda root: kind)
+    assert stage.is_remote(PureWindowsPath(path)) is remote  # type: ignore[arg-type]
+
+
+def test_is_remote_windows_falls_back_to_the_letter_when_the_query_fails(plat, monkeypatch):
+    def broken(root: str) -> int:
+        raise OSError("no drive type")
+
+    plat("win32")
+    monkeypatch.setattr(projectdelete, "_drive_type", broken)
+    assert stage.is_remote(PureWindowsPath("F:/v.mp4")) is True  # type: ignore[arg-type]
+    assert stage.is_remote(PureWindowsPath("d:/v.mp4")) is False  # type: ignore[arg-type]
 
 
 # -- stage: storage label ---------------------------------------------------------------------

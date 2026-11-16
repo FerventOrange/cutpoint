@@ -689,3 +689,25 @@ def test_the_lock_file_survives_the_drop_of_stale_caches(media, scans, tmp_path)
 
     assert lock.exists()
     assert not other.exists()
+
+
+def test_register_writes_the_timeline_index_under_its_lock(home, tmp_path, monkeypatch):
+    """A249: another run holding the index lock makes ``_register`` wait, then log and carry on
+    (the copy is still found from its cache folder); entries already in the index stay."""
+    root = cache.cache_root()
+    root.mkdir(parents=True, exist_ok=True)
+    copy = root / "x" / "timeline.mkv"
+    copy.parent.mkdir()
+    copy.write_bytes(b"copy")
+    src = tmp_path / "a.ts"
+    src.write_bytes(b"src")
+    path = root / stage.TIMELINE_INDEX
+    path.write_text(json.dumps({"older": {"file": "y/timeline.mkv"}}), encoding="utf-8")
+    monkeypatch.setattr(stage, "_LOCK_WAIT_S", 0.2)
+
+    with stage.index_lock(path):
+        tsrepair._register("k", copy, src.stat())  # no raise
+    assert set(json.loads(path.read_text(encoding="utf-8"))) == {"older"}
+    tsrepair._register("k", copy, src.stat())
+
+    assert set(json.loads(path.read_text(encoding="utf-8"))) == {"older", "k"}
