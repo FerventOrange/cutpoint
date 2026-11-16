@@ -202,6 +202,17 @@ def test_a_preview_that_raises_an_os_error_keeps_the_path_from_the_model_and_the
         assert "C:\\\\" not in text and "highlights.json" not in text
 
 
+def test_a_refused_preview_with_a_path_reaches_neither_the_model_nor_the_page_with_it() -> None:
+    err = ranking.RankingError("cannot read /home/u/secret/highlights.json")
+    fake = FakeProvider([call("preview_ranking", style="funny"), call("find_moments", query="x")])
+    turn = run(fake, proj=with_hook(Hook(error=err)))
+    assert "could not be previewed: cannot read highlights.json" in result_of(fake)
+    (event,) = tool_events(turn)
+    assert event["error"] == "cannot read highlights.json"
+    for text in (json.dumps(fake.requests), json.dumps(turn.record())):
+        assert "/home/u/secret" not in text
+
+
 def test_success_emits_the_card_event_with_the_reason_and_ends_the_turn() -> None:
     fake = FakeProvider([call("preview_ranking", style="funny", reason="  you  asked\nfor fun ")])
     turn = run(fake, proj=with_hook(Hook(), key="k1"))
