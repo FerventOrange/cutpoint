@@ -20,7 +20,7 @@ from conftest import media_info, write
 from cutpoint import encode, ffmpeg_utils, paths
 from cutpoint.insta360 import imu_source
 from cutpoint.pano import geometry as G
-from cutpoint.pano import project, qa, render
+from cutpoint.pano import project, qa, render, x3
 from cutpoint.pano.x3 import X3Clip
 from pano_helpers import LRV, fuse_rotations, orientation, qmul, quat, x3clip
 
@@ -605,3 +605,39 @@ def test_clips_run_logs_one_pano_mixed_sources_warning(
     with caplog.at_level(logging.WARNING):
         clips._warn_pano_sources(plans[:2], uniform, None)
     assert got == [] and caplog.text == ""
+
+
+def test_find_studio_export_does_not_take_another_recordings_export(home, tmp_path, monkeypatch):
+    """A207: an export named with another recording's date and time, or by a clip number
+    two recordings in the camera folder share, is not the clip's."""
+    monkeypatch.setattr(
+        ffmpeg_utils, "probe", lambda p: SimpleNamespace(width=200, height=100, duration=1.0)
+    )
+    cam = tmp_path / "cam"
+    clip = x3clip(insv=[str(write(cam / "VID_20260101_100000_00_001.insv"))], duration=1.0)
+    other = write(cam / "export" / "VID_20250505_090000_00_001.mp4")  # another 001
+    assert project.find_studio_export(clip)[0] is None
+    by_number = write(cam / "export" / "trip_001.mp4")
+    assert project.find_studio_export(clip)[0] == by_number  # one recording has 001
+    write(cam / "VID_20250505_090000_00_001.insv")  # now two recordings have it
+    found, why = project.find_studio_export(clip)
+    assert found is None and "trip_001.mp4: named by clip number 001 only" in why
+    own = write(cam / "export" / "VID_20260101_100000_00_001.mp4")
+    assert project.find_studio_export(clip)[0] == own
+    assert other.is_file()
+    # two camera folders of one project, each with one 029, and one shared export folder
+    shared = tmp_path / "360-studio"
+    by_number = write(shared / "trip_029.mp4")
+    two = [
+        x3clip(
+            clip_id="029",
+            insv=[str(write(tmp_path / sub / f"VID_{stamp}_00_029.insv"))],
+            duration=1.0,
+        )
+        for sub, stamp in (("a", "20240831_194807"), ("b", "20260122_132929"))
+    ]
+    assert project.find_studio_export(two[0], [shared])[0] == by_number  # ids not yet given
+    x3.assign_ids(two)  # as the project's pano.json gives them: the long ids
+    for c in two:
+        found, why = project.find_studio_export(c, [shared])
+        assert found is None and "trip_029.mp4: named by clip number 029 only" in why

@@ -63,7 +63,7 @@ from typing import Any
 from cutpoint import cache, paths, state
 from cutpoint.config import path_key, remap_source, source_path
 from cutpoint.insta360 import parse_name
-from cutpoint.pano.x3 import X3Clip
+from cutpoint.pano.x3 import X3Clip, assign_ids
 
 logger = logging.getLogger(__name__)
 
@@ -271,9 +271,18 @@ def save(project: Path, clips: list[X3Clip], camera_dirs: list[Path]) -> Path:
     project.mkdir(parents=True, exist_ok=True)
     path = project / PANO_FILE
     old = cache.load_json(path) or {}
-    by_src = {c["lrv"] or c["insv"][0]: c for c in old.get("clips", [])}
+    entries: dict[str, tuple[dict[str, Any] | None, X3Clip | None]] = {
+        c["lrv"] or c["insv"][0]: (c, None) for c in old.get("clips", [])
+    }
     for c in clips:
-        by_src[c.source] = c.to_json()
+        entries[c.source] = (None, c)
+    # ids over the whole project: a number two recordings have gets the long ids
+    objs = [c or X3Clip.from_json(d or {}) for d, c in entries.values()]
+    assign_ids(objs)
+    by_src = {
+        src: c.to_json() if c else {**(d or {}), "clip_id": o.clip_id}
+        for (src, (d, c)), o in zip(entries.items(), objs, strict=True)
+    }
     dirs = list(dict.fromkeys([*old.get("camera_dirs", []), *map(str, camera_dirs)]))
     cache.save_json(
         path,
@@ -292,7 +301,18 @@ def load(project: Path) -> dict[str, X3Clip]:
     data = cache.load_json(project / PANO_FILE)
     if not data:
         return {}
-    return {norm(c.source): c for c in (X3Clip.from_json(d) for d in data.get("clips", []))}
+    clips = [X3Clip.from_json(d) for d in data.get("clips", [])]
+    assign_ids(clips)  # an older pano.json may give two recordings one number
+    for c in clips:  # an older scan paired the files of such recordings by number alone
+        lrv, lens = parse_name(c.lrv) if c.lrv else None, parse_name(c.insv[0]) if c.insv else None
+        if lrv and lens and (lrv["date"], lrv["time"]) != (lens["date"], lens["time"]):
+            _warn_once(
+                project / PANO_FILE,
+                f"clip {c.clip_id}: the proxy {Path(c.lrv or '').name} and the lens file "
+                f"{Path(c.insv[0]).name} are from two recordings; run cutpoint 360 scan "
+                f"{Path(c.insv[0]).parent} --out {project} again",
+            )
+    return {norm(c.source): c for c in clips}
 
 
 def camera_dirs(project: Path) -> list[Path]:
@@ -354,17 +374,43 @@ def _studio_dirs(clip: X3Clip, extra: list[Path]) -> list[Path]:
 
 
 _NUM_RE = re.compile(r"(?:^|[_\-\s])(\d{3})(?:[_\-\s.]|$)")
+_STAMP_RE = re.compile(r"(?<!\d)(\d{8}_\d{6})(?!\d)")
+
+
+def _number_shared(clip: X3Clip) -> bool:
+    """Whether another recording in ``clip``'s camera folder has its clip number."""
+    f = parse_name(clip.insv[0])
+    if f is None:
+        return False
+    folders = dict.fromkeys([Path(clip.insv[0]).parent, remap_source(clip.insv[0]).parent])
+    for d in folders:
+        try:
+            names = [parse_name(p) for p in d.iterdir()]
+        except OSError:
+            continue
+        if any(
+            g and g["num"] == f["num"] and (g["date"], g["time"]) != (f["date"], f["time"])
+            for g in names
+        ):
+            return True
+    return False
 
 
 def find_studio_export(
     clip: X3Clip, extra_dirs: list[Path] | None = None
 ) -> tuple[Path | None, str]:
-    """An Insta360 Studio equirect export of ``clip``, or ``(None, reason)``."""
+    """An Insta360 Studio equirect export of ``clip``, or ``(None, reason)``.
+
+    An export named with a ``YYYYMMDD_HHMMSS`` stamp must carry the clip's; one named with
+    the clip number alone is used only when no other recording in the project (its long id)
+    or the camera folder has it.
+    """
     from cutpoint.errors import FFmpegError  # noqa: PLC0415
     from cutpoint.ffmpeg_utils import probe  # noqa: PLC0415
 
     f = parse_name(clip.insv[0]) or {}
     stem = f"{f.get('date', '')}_{f.get('time', '')}"
+    shared: bool | None = None  # _number_shared, read on the first number-only name
     reasons = []
     for d in _studio_dirs(clip, extra_dirs or []):
         for p in sorted(d.iterdir()):
@@ -372,9 +418,24 @@ def find_studio_export(
                 continue
             if parse_name(p) is not None:
                 continue
-            nums = _NUM_RE.findall(p.stem)
-            if stem not in p.name and clip.clip_id not in nums:
+            stamps = _STAMP_RE.findall(p.stem)
+            if stamps:
+                if stem not in stamps:
+                    continue  # another recording's export
+            elif clip.number not in _NUM_RE.findall(p.stem):
                 continue
+            else:
+                if shared is None:  # long id: the project has another recording with it
+                    shared = clip.clip_id != clip.number or _number_shared(clip)
+                if shared:
+                    why = (
+                        f"{p.name}: named by clip number {clip.number} only, which another "
+                        "recording has too; rename it with the recording's "
+                        f"VID_{stem} stem"
+                    )
+                    _warn_once(p, why)
+                    reasons.append(why)
+                    continue
             try:
                 info = probe(p)
             except FFmpegError as err:
@@ -429,6 +490,14 @@ def source_flowstate(mode: str | None, inputs: list[str] | tuple[str, ...]) -> b
 
 
 _flowstate_warned: set[str] = state.register_container(__name__, "_flowstate_warned", set())
+
+
+def _warn_once(path: Path, message: str) -> None:
+    """Log ``message`` as a WARNING once per file (with the FlowState warnings' memory)."""
+    key = f"{path}|{message}"
+    if key not in _flowstate_warned:
+        _flowstate_warned.add(key)
+        logger.warning("%s", message)
 
 
 def _warn_flowstate(path: Path, why: str, fix: str) -> None:

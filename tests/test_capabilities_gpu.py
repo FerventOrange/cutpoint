@@ -284,7 +284,7 @@ def test_hint_uv_pypi_install(monkeypatch):
 
 @pytest.mark.parametrize("nvidia", [False, True])
 def test_stitch_warns_only_without_nvidia(monkeypatch, caplog, tmp_path, nvidia):
-    clip = SimpleNamespace(clip_id="001", source="a.insv")
+    clip = SimpleNamespace(clip_id="001", recording_id="001", number="001", source="a.insv")
     monkeypatch.setattr(pano_cli, "_project", lambda _p: Path(tmp_path))
     monkeypatch.setattr(project, "load", lambda _p: {"001": clip})
     monkeypatch.setattr(stitch, "stitch_clips", lambda clips, **_kw: [])

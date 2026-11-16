@@ -15,6 +15,10 @@ trailing frame), and its left half is the ``_00_`` lens. The toolkit uses the
 highlights, manifests); the ``.insv`` files are only read for the IMU (trailer,
 cheap) and for rendering.
 
+The camera's clip number repeats (a formatted card, a second camera, merged days). A
+clip's id is its number, or ``YYYYMMDD_HHMMSS_NNN`` when another recording of the scan or
+project has that number (:func:`assign_ids`).
+
 On the user's mount the ``_00_`` lens looks at the sky and ``_10_`` down at the
 rider, so the lens seam lies on the horizon (see ``docs/insta360-sdk.md``).
 """
@@ -23,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -42,7 +47,8 @@ class X3Clip:
     """One X3 recording and the files that belong to it.
 
     Attributes:
-        clip_id: The three-digit clip number (``"035"``).
+        clip_id: The clip number (``"035"``), or ``YYYYMMDD_HHMMSS_NNN`` when another
+            recording has that number (:func:`assign_ids`).
         start_local: Wall-clock start from the file name (camera clock, local).
         mode: ``"5.7k"`` (two 2880x2880 lens files) or ``"4k"`` (one 3840x1920 file).
         lrv: The proxy (source identity for analysis and clips), or None.
@@ -66,6 +72,18 @@ class X3Clip:
     duration: float = 0.0
     bytes_insv: int = 0
     meta: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def number(self) -> str:
+        """The camera's three-digit clip number (``"035"``): not unique across recordings."""
+        f = parse_name(self.insv[0]) if self.insv else None
+        return f["num"] if f else self.clip_id[-3:]
+
+    @property
+    def recording_id(self) -> str:
+        """``YYYYMMDD_HHMMSS_NNN``: unique per recording (the clip id when not parseable)."""
+        f = parse_name(self.insv[0]) if self.insv else None
+        return clip_key(f["date"], f["time"], f["num"]) if f else self.clip_id
 
     @property
     def source(self) -> str:
@@ -148,23 +166,75 @@ def read_trailer_meta(insv00: Path) -> dict[str, Any]:
     }
 
 
+def clip_key(date: str, hms: str, num: str) -> str:
+    """A recording's long id: ``YYYYMMDD_HHMMSS_NNN``."""
+    return f"{date}_{hms}_{num}"
+
+
+def assign_ids(clips: list[X3Clip]) -> None:
+    """Set the ids of ``clips`` (one project): the clip number, or ``YYYYMMDD_HHMMSS_NNN``
+    when another recording among them has that number. A clip without an X3 name keeps
+    its id."""
+    shared = Counter(n for n, _ in {(c.number, c.recording_id) for c in clips})
+    for c in clips:
+        if c.insv and parse_name(c.insv[0]) is not None:
+            c.clip_id = c.recording_id if shared[c.number] > 1 else c.number
+
+
 def group_files(paths: Iterable[Path]) -> dict[str, dict[str, Any]]:
-    """X3 files by clip number: ``date``, ``time`` and, if found, ``lens00``, ``lens10``, ``lrv``.
+    """X3 files by clip id (as :func:`assign_ids`, over ``paths``): ``date``, ``time``, ``num`` and, if found,
+    ``lens00``, ``lens10``, ``lrv``.
 
     Pure (names only); paths whose name does not match ``cutpoint.insta360.NAME_RE`` are
     ignored. A clip is usable for 360 analysis when it has both ``lens00`` and ``lrv``.
+    Files pair by date, time and number, so two recordings with one number stay apart.
     """
     groups: dict[str, dict[str, Any]] = {}
     for p in paths:
         f = parse_name(p.name)
         if f is None:
             continue
-        g = groups.setdefault(f["num"], {"date": f["date"], "time": f["time"]})
+        g = groups.setdefault(
+            clip_key(f["date"], f["time"], f["num"]),
+            {"date": f["date"], "time": f["time"], "num": f["num"]},
+        )
         if f["ext"] == "lrv":
             g["lrv"] = p
         else:
             g[f"lens{f['lens']}"] = p
-    return groups
+    shared = Counter(g["num"] for g in groups.values())
+    return {k if shared[g["num"]] > 1 else g["num"]: g for k, g in sorted(groups.items())}
+
+
+def duplicate_numbers(clips: Iterable[X3Clip]) -> dict[str, list[str]]:
+    """Clip numbers that more than one recording has: ``{number: [recording ids]}``."""
+    ids: dict[str, set[str]] = {}
+    for c in clips:
+        ids.setdefault(c.number, set()).add(c.recording_id)
+    return {n: sorted(v) for n, v in sorted(ids.items()) if len(v) > 1}
+
+
+def select(clips: list[X3Clip], wanted: Iterable[str], option: str) -> list[X3Clip]:
+    """The clips of ``wanted`` (in ``clips`` order): clip ids, ``YYYYMMDD_HHMMSS_NNN`` ids,
+    or clip numbers that one recording has. Unknown names select nothing.
+
+    Raises:
+        cutpoint.jsonout.ArgumentError: For a number more than one recording uses.
+    """
+    from cutpoint.jsonout import ArgumentError  # noqa: PLC0415
+
+    picked: set[int] = set()
+    for w in wanted:
+        hits = [c for c in clips if w in (c.clip_id, c.recording_id)]
+        hits = hits or [c for c in clips if c.number == w]
+        ids = sorted({c.recording_id for c in hits})
+        if len(ids) > 1:
+            raise ArgumentError(
+                f"{option} {w}: more than one recording has clip number {w}; "
+                f"name one by its id: {', '.join(ids)}"
+            )
+        picked |= {id(c) for c in hits}
+    return [c for c in clips if id(c) in picked]
 
 
 def scan(folder: Path, with_meta: bool = True) -> list[X3Clip]:
@@ -176,7 +246,7 @@ def scan(folder: Path, with_meta: bool = True) -> list[X3Clip]:
         with_meta: Also read the trailer metadata (camera, calibration).
 
     Returns:
-        Clips ordered by clip number.
+        Clips ordered by start time, with ids as :func:`assign_ids` gives over the folder.
 
     Raises:
         FileNotFoundError: If the folder does not exist or holds no X3 files.
@@ -187,20 +257,19 @@ def scan(folder: Path, with_meta: bool = True) -> list[X3Clip]:
     if not groups:
         raise FileNotFoundError(f"No Insta360 .insv/.lrv files in {folder}")
     clips = []
-    for num in sorted(groups):
-        g = groups[num]
+    for key, g in groups.items():
         insv = [g[k] for k in ("lens00", "lens10") if k in g]
         if "lens00" not in g:
             logger.warning(
                 "clip %s: no _00_.insv (only %s); skipped",
-                num,
+                key,
                 ", ".join(p.name for p in insv) or "a proxy",
             )
             continue
         start = datetime.strptime(g["date"] + g["time"], "%Y%m%d%H%M%S")
         cached = _cached_probe(g, insv)
         clip = X3Clip(
-            clip_id=num,
+            clip_id=key,
             start_local=start.isoformat(),
             mode="5.7k" if "lens10" in g else "4k",
             lrv=str(g["lrv"]) if "lrv" in g else None,
@@ -214,7 +283,7 @@ def scan(folder: Path, with_meta: bool = True) -> list[X3Clip]:
                 try:
                     meta = read_trailer_meta(insv[0])
                 except Exception as err:  # noqa: BLE001 - Rust parser raises plain Exception
-                    logger.warning("clip %s: trailer unreadable (%s)", num, err)
+                    logger.warning("clip %s: trailer unreadable (%s)", key, err)
                     meta = {"error": str(err)}
                 cache.save_json(mpath, meta)
             clip.meta = meta
