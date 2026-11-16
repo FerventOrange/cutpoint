@@ -389,7 +389,8 @@ def _direct(on_machine: bool) -> dict[str, Any]:
 
 def _headers_only(request: Any) -> Any:
     """An explicit ``auth`` that changes nothing: ``requests`` then reads no ``~/.netrc``, which
-    would replace the ``Authorization`` header (the key) with that file's login."""
+    would replace the ``Authorization`` header (the key) with that file's login, or send that
+    login to an Ollama server."""
     return request
 
 
@@ -673,6 +674,7 @@ class OllamaProvider:
                 f"{self.url}/api/tags",
                 timeout=(1, 3),
                 allow_redirects=False,
+                auth=_headers_only,
                 **_direct(self.on_machine),
             )
             if moved := _redirect("Ollama", resp, "URL"):
@@ -703,6 +705,7 @@ class OllamaProvider:
                 json=payload,
                 timeout=timeout,
                 allow_redirects=False,
+                auth=_headers_only,
                 **_direct(self.on_machine),
                 **kw,
             )

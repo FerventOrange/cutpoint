@@ -11,9 +11,10 @@ only for custom and self-hosted base URLs: it never goes to an official host (#5
 A key is never written to ``config.json`` or project files, never sent to the page (only where
 it comes from: :func:`status`) and never put in a job's arguments. ``cutpoint ui`` moves the
 variables above out of its environment at startup (:func:`capture`), and its jobs get an
-environment without them (:func:`child_env`), so no child process sees a key. Every key read in this
-process is replaced by ``[redacted]`` in error messages (:func:`redact`) and in log records
-(:class:`RedactFilter`, installed by :func:`redact_logs`).
+environment without them (:func:`child_env`; other programs, such as the proxy, also get no
+other variable named like a secret), so no child process sees a key. Every key read in this process is replaced by ``[redacted]`` in
+error messages (:func:`redact`) and in log records (:class:`RedactFilter`, installed by
+:func:`redact_logs`).
 """
 
 from __future__ import annotations
@@ -244,11 +245,26 @@ def clear(provider: str, host: str) -> None:
         raise KeyringError(f"the keyring did not remove the key ({type(err).__name__})") from None
 
 
-def child_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """``env`` (default: this process's environment) without the API key variables."""
+# Other programs' secrets a child never needs (GEMINI_API_KEY, GITHUB_TOKEN,
+# AWS_SECRET_ACCESS_KEY, ...): a name ending in API_KEY, APIKEY, TOKEN, ACCESS_KEY or
+# ACCESS_KEY_ID, or with SECRET, PASSWORD or CREDENTIAL in it (upper-cased)
+_SECRET_NAME = re.compile(
+    r"(?:^|_)(?:API_?KEY|TOKEN|ACCESS_KEY(?:_ID)?)$|SECRET|PASSWORD|CREDENTIAL"
+)
+
+
+def child_env(env: Mapping[str, str] | None = None, *, secrets: bool = False) -> dict[str, str]:
+    """``env`` (default: this process's environment) without the API key variables and any
+    other variable named like a secret (:data:`_SECRET_NAME`). ``secrets``: keep the latter,
+    for Cutpoint's own commands (a ``cutpoint ui`` job: ``HF_TOKEN`` for its model downloads);
+    the key variables go either way."""
     env = os.environ if env is None else env
     drop = {name.upper() for name in ENV_VARS}
-    return {k: v for k, v in env.items() if k.upper() not in drop}
+    return {
+        k: v
+        for k, v in env.items()
+        if k.upper() not in drop and (secrets or not _SECRET_NAME.search(k.upper()))
+    }
 
 
 def redact(text: str) -> str:

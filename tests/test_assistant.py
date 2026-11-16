@@ -259,7 +259,7 @@ def test_auto_model_is_qwen3_5_if_pulled_else_the_vision_model(
         monkeypatch.delenv("CUTPOINT_VISION_MODEL", raising=False)
     asked: list[str] = []
 
-    def get(url, timeout, allow_redirects=True):
+    def get(url, timeout, allow_redirects=True, **_kw):
         assert allow_redirects is False  # a redirect is reported, never followed
         asked.append(url)
         return _Resp({"models": [{"name": n} for n in tags or []]})

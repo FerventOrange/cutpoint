@@ -55,6 +55,42 @@ def test_the_proxy_guardian_gets_no_api_key_variable(monkeypatch, tmp_path: Path
     assert "PGSTORE_DSN" not in env and FAKE_KEY not in env.values()
 
 
+SECRETS = ("GOOGLE_API_KEY", "GEMINI_API_KEY", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY")
+KEPT = {
+    "PATH": "/usr/bin",
+    "APPDATA": "C:/Users/someone/AppData/Roaming",
+    "HTTPS_PROXY": "http://proxy.invalid:3128",
+    "SSL_CERT_FILE": "/etc/ssl/certs/ca.pem",
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+}
+
+
+def test_children_get_no_secret_named_variable(monkeypatch, tmp_path: Path) -> None:
+    # other programs' tokens never reach the guardian or CLIProxyAPI (F4); what the keyring and
+    # the network need stays
+    env = dict.fromkeys(SECRETS, "fake-secret-value-0123456789") | KEPT
+    assert keys.child_env(env) == KEPT
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: seen.update(kw))
+    cliproxy._spawn_guardian(["guardian"], tmp_path)
+    assert not set(SECRETS) & set(seen["env"])
+    assert KEPT.items() <= seen["env"].items()
+
+
+def test_a_ui_job_keeps_hf_token_but_no_key_variable(monkeypatch) -> None:
+    # a cutpoint job's own downloads may need HF_TOKEN; the assistant's keys never reach it
+    from cutpoint import ui  # noqa: PLC0415
+
+    for name in keys.ENV_VARS:
+        monkeypatch.setenv(name, FAKE_KEY)
+    monkeypatch.setenv("HF_TOKEN", "fake-hf-token-0123456789")
+    env = ui.job_env()
+    assert env["HF_TOKEN"] == "fake-hf-token-0123456789"
+    assert not set(keys.ENV_VARS) & set(env)
+
+
 # A677: keys are kept only in an operating-system keyring
 
 
@@ -172,8 +208,15 @@ def proxied(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Adapter:
 
 def test_ollama_on_this_machine_is_not_sent_through_the_environment_proxy(proxied) -> None:
     OllamaProvider("http://127.0.0.1:11434", "m", 0).list_models()
-    ((_, proxies),) = proxied.sent
+    ((request, proxies),) = proxied.sent
     assert not any(proxies.values())
+    assert "Authorization" not in request.headers  # no ~/.netrc login either (F5)
+
+
+def test_a_netrc_login_is_never_sent_to_ollama(proxied) -> None:
+    OllamaProvider("http://127.0.0.1:11434", "m", 0)._post("show", {"model": "m"}, 5)
+    ((request, _),) = proxied.sent
+    assert "Authorization" not in request.headers
 
 
 def test_an_on_machine_openai_server_skips_the_proxy_and_netrc(proxied) -> None:
