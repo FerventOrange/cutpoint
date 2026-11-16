@@ -171,7 +171,7 @@ X3_CLIPS = {X3_00: b"", X3_10: b"", X3_LRV: b""}
     ("pick", "style", "meta"),
     [
         (None, None, {"kind": "360", "style": "action-cam"}),
-        (X3_00, None, {"kind": "360", "style": "action-cam", "clips": ["001"]}),
+        (X3_00, None, {"kind": "360", "style": "action-cam", "clips": ["20260101_100000_001"]}),
         (None, "action-cam", {"kind": "360", "style": "action-cam"}),
     ],
     ids=["folder-flat-style-becomes-pano-default", "file-keeps-its-clip", "action-cam-style"],
@@ -513,6 +513,39 @@ def test_360_project_lists_one_lrv_per_usable_clip_before_analysis(
     assert [Path(e["path"]).name for e in ui.source_entries(p, None)] == [X3_LRV]
 
 
+def test_360_file_pick_takes_its_recording_when_another_has_its_number(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A207: one picked file of a 029 two recordings share gives that recording alone, its
+    analysis is accepted and it lists its own proxy; a project with the bare number still
+    lists its clip."""
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    names = [
+        "VID_20240831_194807_00_029.insv", "LRV_20240831_194807_01_029.lrv",
+        "VID_20260122_132929_00_029.insv", "LRV_20260122_132929_11_029.lrv",
+    ]  # fmt: skip
+    for name in names:
+        (folder / name).write_bytes(b"")
+    res = client.post("/api/projects", json={"name": "T", "source": str(folder / names[2])})
+    assert res.status_code == 200, res.text
+    p = ui.project_dir(res.json()["id"])
+    assert ui.read_meta(p)["clips"] == ["20260122_132929_029"]
+    assert [Path(e["path"]).name for e in ui.source_entries(p, None)] == [names[3]]
+    seen: list[list[str]] = []
+    monkeypatch.setattr(ui, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
+    monkeypatch.setattr(ui.Jobs, "start", fake_start(seen))
+    res = client.post(f"/api/projects/{res.json()['id']}/jobs", json={"action": "analyze"})
+    assert res.status_code == 200, res.text
+    assert seen[0][-2:] == ["--only", "20260122_132929_029"]
+    cache.save_json(p / ui.META_FILE, {**ui.read_meta(p), "clips": ["029"]})  # before A207
+    assert [Path(e["path"]).name for e in ui.source_entries(p, None)] == [names[3]]
+    seen.clear()
+    res = client.post(f"/api/projects/{p.name}/jobs", json={"action": "analyze"})
+    assert res.status_code == 200, res.text
+    assert seen[0][-2:] == ["--only", "20260122_132929_029"]
+
+
 def test_list_projects_shows_ui_360_projects_but_hides_command_line_ones(
     client: TestClient, tmp_path: Path
 ) -> None:
@@ -528,7 +561,7 @@ def test_list_projects_shows_ui_360_projects_but_hides_command_line_ones(
     assert [p["id"] for p in client.get("/api/projects").json()["projects"]] == [pid]
 
 
-@pytest.mark.parametrize("only", [None, "001"], ids=["folder", "file"])
+@pytest.mark.parametrize("only", [None, "20260101_100000_001"], ids=["folder", "file"])
 def test_360_analyze_job_runs_the_360_command_with_a_plan(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, only: str | None
 ) -> None:
@@ -1847,16 +1880,16 @@ def test_save_keeps_the_target_when_review_json_is_locked_for_a_moment(
     cache.save_json(p / "highlights.json", {"sources": [{"path": src, "duration": 10.0}]})
     assert client.put(f"/api/projects/{pid}/target", json={"seconds": 240}).status_code == 200
     file = p / "ui" / "review.json"
-    real = Path.read_bytes
+    real = Path.read_text
     calls: list[int] = []
 
-    def flaky(self: Path) -> bytes:
+    def flaky(self: Path, *a, **kw) -> str:
         if self == file and not calls:
             calls.append(1)
             raise PermissionError("locked")
-        return real(self)
+        return real(self, *a, **kw)
 
-    monkeypatch.setattr(Path, "read_bytes", flaky)
+    monkeypatch.setattr(Path, "read_text", flaky)
     seg = {"id": "h001", "source": src, "start": 1, "end": 4.5, "label": "good"}
     assert client.put(f"/api/projects/{pid}/review", json={"segments": [seg]}).status_code == 200
     assert calls == [1]
@@ -4261,7 +4294,7 @@ def test_put_settings_removes_a_folder_it_created_when_saving_fails(
     def broken(*a, **kw):
         raise OSError(28, "No space left")
 
-    monkeypatch.setattr(ui, "set_config_values", broken)
+    monkeypatch.setattr(ui, "update_config", broken)
     res = client.put("/api/settings", json={"projects_dir": str(new)})
     assert res.status_code == 500 and not new.exists()
 
@@ -4276,7 +4309,7 @@ def test_put_settings_never_removes_an_existing_folder_on_failure(
     def broken(*a, **kw):
         raise OSError(28, "No space left")
 
-    monkeypatch.setattr(ui, "set_config_values", broken)
+    monkeypatch.setattr(ui, "update_config", broken)
     res = client.put("/api/settings", json={"projects_dir": str(existing)})
     assert res.status_code == 500 and (existing / "f.txt").exists()
 
@@ -4437,10 +4470,10 @@ def test_a_job_cannot_start_while_the_projects_folder_is_being_written(
     client: TestClient, home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     jobs = client.app.state.jobs
-    real_write = ui.set_config_values
+    real_write = ui.update_config
     attempt: dict = {}
 
-    def write_while_another_tab_starts_a_job(values, remove=()):
+    def write_while_another_tab_starts_a_job(change):
         def start() -> None:
             attempt["job"] = jobs.start("p", "analyze", SLEEP_JOB)
             attempt["wrote"] = wrote.is_set()
@@ -4450,10 +4483,11 @@ def test_a_job_cannot_start_while_the_projects_folder_is_being_written(
         attempt["wrote_event"] = wrote
         threading.Thread(target=start, daemon=True).start()
         attempt["overlapped"] = done.wait(0.5)  # True: the job started mid-write
-        real_write(values, remove=remove)
+        data = real_write(change)
         wrote.set()
+        return data
 
-    monkeypatch.setattr(ui, "set_config_values", write_while_another_tab_starts_a_job)
+    monkeypatch.setattr(ui, "update_config", write_while_another_tab_starts_a_job)
     new = tmp_path / "elsewhere"
     try:
         res = client.put("/api/settings", json={"projects_dir": str(new)})

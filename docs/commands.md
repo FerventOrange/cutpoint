@@ -122,6 +122,7 @@ So do these combinations:
 | `nothing_staged_under_input` | `stage --clear` | An input that no longer exists has no staged copy recorded |
 | `events_extra_missing` | `setup` | The `pip` component found modules for `events` missing |
 | `stale_timings_kept` | `360 analyze` | The run failed after `highlights.json` changed and the earlier run's `pano_timings.json` could not be removed (held open by another program); `files` names it. It does not describe the analysis in the project: delete it, or rerun `360 analyze` |
+| `duplicate_clip_numbers` | `360 scan`, `360 analyze --scan` | More than one recording of the project (this scan's or an earlier one's) has the same clip number (a formatted card, two cameras, merged days); the message names the numbers and their ids, `files` the sources. Each is a clip of its own with the id `YYYYMMDD_HHMMSS_NNN`: name it so in `--clips` and `--only` |
 | `events_not_in_highlights` | `360 analyze` | A source was not reachable, so `highlights.json` lacks the events |
 | `not_a_360_clip` | `360 director` | A selected moment is not a 360 clip and was skipped |
 | `vl_check_unavailable` | `360 director` | `--vl-check` could not run or stopped answering |
@@ -154,7 +155,7 @@ So do these combinations:
 | `mix` | `segments`, `report`, `sheet`, `moments` (each `id`, `source`, `start`, `end`, `duration`, `category`), `count`, `total_seconds`, `target_seconds`, `categories` (per category `n` and `seconds`), `content_qa_pass` |
 | `stage` | `stage_dir`. Staging: `files`, `copied`, `skipped`, `bytes`, `read_s`, `mb_per_s`. `--list`: `files` (each `source`, `staged`, `bytes`, `read_s`). `--clear`: `removed` |
 | `setup` | `components`: one key per component (all by default, or those given to `--only`): `files` (each `path`, `bytes`, `status` of `downloaded`, `found` or `missing`); for `pip`, `installed` and `missing`; for `whisper`, `model` (its name), `path` (its folder in the Hugging Face cache) and `status` (`downloaded`, `found`, or `missing` with `model` and `path` `null` when the step did not finish) |
-| `360 scan` | `pano`, `timings`, `clips` (each `id`, `mode`, `duration`, `frames`, `insv`, `insv_bytes`, `lrv`), `count`, `total_seconds` |
+| `360 scan` | `pano`, `timings`, `clips` (each `id` (the clip number, or `YYYYMMDD_HHMMSS_NNN` when recordings share it), `mode`, `duration`, `frames`, `insv`, `insv_bytes`, `lrv`), `count`, `total_seconds` |
 | `360 analyze` | `timings` (`pano_timings.json`: this run's `views`, `analyze_s`, `events_s`, `paths_s`, `scan_s` with `--scan` and `total_s`; with `--views-only` the earlier file's keys stay, with this run's `views` and `views_only_s`; `analyze_total_s` was removed, older files may still have it; see [360 video](workflows/360.md#commands); `null` in the envelope of a run that failed after `highlights.json` changed, as the earlier run's file was removed, or kept with a `stale_timings_kept` warning), `views` (`cached`, `computed`); with `--scan`, also those of `360 scan`; unless `--views-only`, also the outputs of `analyze` (`highlights`, `transcript`, `candidates`, `visual_candidates`, `suggested_top`, `style`); unless `--views-only` or `--no-events`, also `events`; unless `--views-only`, also `candidate_paths` (`dir`, `candidates`, `computed`, `cached`, `skipped`, `failed`, `seconds`, `flags`: candidates per flag code; see [360 video](workflows/360.md#camera-paths-of-the-candidates)) |
 | `360 status` | `sdk` (`exe`, `origin`, `found`, `runs`, `version`); with a project, `clips` (each `id`, `mode`, `duration`, `views`, `render`, `render_file`) |
 | `360 director` | `paths_dir`, `paths` (each `path`, `preview`), `count`, `vl_check` |
@@ -348,7 +349,7 @@ The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for S
 With a project open, Settings also has "Delete this project". The dialog names the project and the
 size of what will be deleted, lists the files that stay, and has Cancel focused. Only what
 Cutpoint wrote is deleted: the result files (`highlights.json`, `transcript.txt`, `events.*`,
-`progress.json`, `activity.json`, `crashes.json`, `telemetry.json`, `mix_*`, the finals with their
+`highlights.before-rerank.json`, `progress.json`, `activity.json`, `crashes.json`, `telemetry.json`, `mix_*`, the finals with their
 `.srt` and timelines), the `ui/` folder and the other folders Cutpoint made in the project,
 hidden temporary and resume folders, and in each clips folder the clips its `manifest.json` lists
 with their `.srt` and the manifest. Everything else stays: staged footage copies, clips you added

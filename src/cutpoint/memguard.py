@@ -374,13 +374,13 @@ def _ollama_entry(url: str, model: str) -> dict | None:
     loaded or Ollama does not answer."""
     import requests  # noqa: PLC0415
 
-    from cutpoint.vision import refuse_redirect  # noqa: PLC0415
+    from cutpoint.backends import ollama_get  # noqa: PLC0415
 
     try:
-        resp = requests.get(f"{url}/api/ps", timeout=(1, 3), allow_redirects=False)
-        refuse_redirect(resp)
-        loaded = resp.json().get("models", [])
+        loaded = ollama_get(url, "/api/ps", timeout=(1, 3)).get("models", [])
     except (requests.RequestException, ValueError, AttributeError):
+        return None
+    if not isinstance(loaded, list):  # another shape: as not loaded (A116)
         return None
     names = (model, f"{model}:latest")
     found = (

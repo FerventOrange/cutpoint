@@ -12,7 +12,7 @@ from cutpoint import insta360
 from cutpoint.pano import x3
 
 
-def test_group_files_pairs_files_by_clip_number_and_ignores_other_names() -> None:
+def test_group_files_pairs_files_by_recording_and_ignores_other_names() -> None:
     names = [
         "VID_20260101_100000_00_001.insv",  # 5.7K clip: both lenses and the proxy
         "VID_20260101_100000_10_001.insv",
@@ -26,15 +26,77 @@ def test_group_files_pairs_files_by_clip_number_and_ignores_other_names() -> Non
         "IMG_0001.insv",  # not a camera name
     ]
     got = x3.group_files(Path(n) for n in names)
-    assert sorted(got) == ["001", "002", "003", "004"]
+    one, two, three, four = "001", "002", "003", "004"
+    assert sorted(got) == [one, two, three, four]
     assert {n: sorted(k for k in g if k.startswith(("lens", "lrv"))) for n, g in got.items()} == {
-        "001": ["lens00", "lens10", "lrv"],
-        "002": ["lens00", "lrv"],
-        "003": ["lrv"],
-        "004": ["lens00"],
+        one: ["lens00", "lens10", "lrv"],
+        two: ["lens00", "lrv"],
+        three: ["lrv"],
+        four: ["lens00"],
     }
-    assert got["001"]["date"] == "20260101" and got["001"]["time"] == "100000"
-    assert got["004"]["lens00"] == Path("VID_20260101_130000_00_004.INSV")
+    assert got[one]["date"] == "20260101" and got[one]["time"] == "100000"
+    assert got[one]["num"] == "001"
+    assert got[four]["lens00"] == Path("VID_20260101_130000_00_004.INSV")
+
+
+SAME_NUMBER = [  # two recordings numbered 029: a formatted card, a second camera, merged days
+    "VID_20240831_194807_00_029.insv",
+    "LRV_20240831_194807_01_029.lrv",
+    "VID_20260122_132929_00_029.insv",
+    "VID_20260122_132929_10_029.insv",
+    "LRV_20260122_132929_11_029.lrv",
+]
+
+
+def test_group_files_keeps_two_recordings_with_one_number_apart() -> None:
+    got = x3.group_files(Path(n) for n in SAME_NUMBER)
+    assert got == {
+        "20240831_194807_029": {
+            "date": "20240831", "time": "194807", "num": "029",
+            "lens00": Path(SAME_NUMBER[0]), "lrv": Path(SAME_NUMBER[1]),
+        },
+        "20260122_132929_029": {
+            "date": "20260122", "time": "132929", "num": "029",
+            "lens00": Path(SAME_NUMBER[2]), "lens10": Path(SAME_NUMBER[3]),
+            "lrv": Path(SAME_NUMBER[4]),
+        },
+    }  # fmt: skip
+
+
+def _clip(insv00: str) -> x3.X3Clip:
+    """A clip as an older pano.json has it: the id is the bare number."""
+    return x3.X3Clip(clip_id=insv00[-8:-5], start_local="t", mode="4k", lrv=None, insv=[insv00])
+
+
+def test_assign_ids_gives_a_shared_number_the_long_ids_and_keeps_the_others() -> None:
+    old, new = _clip(SAME_NUMBER[0]), _clip(SAME_NUMBER[2])
+    other = _clip("VID_20260122_133938_00_030.insv")
+    foreign = x3.X3Clip(clip_id="007", start_local="t", mode="4k", lrv=None, insv=["a.insv"])
+    x3.assign_ids([old, new, other, foreign])
+    assert [c.clip_id for c in (old, new, other, foreign)] == [
+        "20240831_194807_029", "20260122_132929_029", "030", "007",
+    ]  # fmt: skip
+    x3.assign_ids([new, other])  # one recording per number: the numbers again
+    assert (new.clip_id, other.clip_id) == ("029", "030")
+
+
+def test_select_takes_ids_and_unambiguous_numbers_and_rejects_shared_ones() -> None:
+    from cutpoint.jsonout import ArgumentError  # noqa: PLC0415
+
+    old, new = _clip(SAME_NUMBER[0]), _clip(SAME_NUMBER[2])
+    other = _clip("VID_20260122_133938_00_030.insv")
+    clips = [old, new, other]
+    assert old.number == new.number == "029"
+    assert x3.duplicate_numbers(clips) == {"029": ["20240831_194807_029", "20260122_132929_029"]}
+    assert x3.select(clips, ["030"], "--clips") == [other]
+    # the long id selects one recording, also while its clip id is still the bare number
+    assert x3.select(clips, ["20260122_132929_029", "999"], "--clips") == [new]
+    with pytest.raises(ArgumentError, match="20240831_194807_029, 20260122_132929_029"):
+        x3.select(clips, ["029"], "--clips")
+    x3.assign_ids(clips)
+    with pytest.raises(ArgumentError, match="name one by its id"):
+        x3.select(clips, ["029"], "--only")
+    assert x3.select(clips, [new.clip_id], "--only") == [new]
 
 
 def test_parse_name_normalises_kind_and_extension() -> None:
@@ -179,3 +241,21 @@ def test_probe_video_stream_is_empty_when_ffprobe_fails(monkeypatch) -> None:
 
     monkeypatch.setattr(ffmpeg_utils, "ffprobe_json", fail)
     assert x3.probe_video_stream(Path("broken.insv")) == {}
+
+
+def test_scan_pairs_each_recording_of_a_shared_number_with_its_own_files(
+    home, tmp_path, monkeypatch, caplog
+) -> None:
+    """A207: the second 029 no longer takes the first one's lens files or proxy."""
+    folder = tmp_path / "card"
+    folder.mkdir()
+    for name in SAME_NUMBER:
+        (folder / name).write_bytes(b"x")
+    monkeypatch.setattr(x3, "probe_video_stream", lambda path: {})
+    clips = x3.scan(folder, with_meta=False)
+    assert [(c.clip_id, c.mode) for c in clips] == [
+        ("20240831_194807_029", "4k"),
+        ("20260122_132929_029", "5.7k"),
+    ]
+    assert [Path(c.lrv).name for c in clips if c.lrv] == [SAME_NUMBER[1], SAME_NUMBER[4]]
+    assert [[Path(p).name for p in c.insv] for c in clips] == [SAME_NUMBER[:1], SAME_NUMBER[2:4]]

@@ -16,6 +16,7 @@ import requests
 
 from cutpoint import activity, ffmpeg_utils, memguard
 from cutpoint.pano import vlcheck as V
+from cutpoint.pano import x3
 
 
 @pytest.mark.parametrize(
@@ -228,7 +229,7 @@ def test_a_redirect_is_not_followed(monkeypatch: pytest.MonkeyPatch) -> None:
     chk = V.VLChecker(url="http://127.0.0.1:1", model="m")
     sent: list[tuple[str, bool]] = []
 
-    def moved(url: str, json: dict, timeout: Any, allow_redirects: bool = True) -> Any:
+    def moved(url: str, json: dict, timeout: Any, allow_redirects: bool = True, **_k: Any) -> Any:
         sent.append((url, allow_redirects))
         resp = requests.Response()
         resp.status_code = 307
@@ -252,7 +253,7 @@ def _ctx_sent(monkeypatch: pytest.MonkeyPatch, url: str, loaded: int | None) -> 
     monkeypatch.setattr(memguard, "ollama_loaded", lambda u, m, num_ctx=None: False)
     sent: list[int] = []
 
-    def post(url: str, json: dict, timeout: Any, allow_redirects: bool = True) -> Any:
+    def post(url: str, json: dict, timeout: Any, allow_redirects: bool = True, **_k: Any) -> Any:
         sent.append(json["options"]["num_ctx"])
         resp = requests.Response()
         resp.status_code = 200
@@ -289,3 +290,10 @@ def test_the_verdict_file_is_named_by_recording_and_clip(home) -> None:
     escaped = V._cache_file("../../x", "a.insv")
     assert escaped.parent == folder and ".." not in escaped.name
     assert V._cache_file("029", "a.insv") != V._cache_file("029", "b.insv")
+
+
+def test_two_recordings_with_one_clip_number_keep_apart_verdicts(home) -> None:
+    """A207: the clip ids and the sources of two recordings numbered 029 differ."""
+    old = V._cache_file(x3.clip_key("20240831", "194807", "029"), "LRV_20240831_194807_01_029.lrv")
+    new = V._cache_file(x3.clip_key("20260122", "132929", "029"), "LRV_20260122_132929_11_029.lrv")
+    assert old != new

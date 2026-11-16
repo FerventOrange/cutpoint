@@ -135,7 +135,7 @@ def test_describe_refuses_a_redirect(ollama, monkeypatch, caplog) -> None:
     monkeypatch.setattr(vision.requests, "post", moved)
     with caplog.at_level(logging.WARNING):
         assert vision.VisionRater().describe("describe", JPEGS, vw.RESPONSE_SCHEMA) is None
-    assert sent == [{"timeout": 600, "allow_redirects": False}]  # not followed
+    assert [(kw["timeout"], kw["allow_redirects"]) for kw in sent] == [(600, False)]  # not followed
     assert any("redirect" in r.getMessage() for r in caplog.records)
 
 

@@ -171,14 +171,15 @@ from cutpoint.config import (
     projects_dir,
     remap_source,
     resolve_projects_dir,
-    set_config_values,
+    update_config,
+    update_section,
     vision_assistant_settings,
     vision_detect_all_default,
     vision_setting,
 )
 from cutpoint.edit import KINDS
 from cutpoint.encode import BT709_TAGS, TV_RANGE, preview_filter, still_filter
-from cutpoint.errors import EncoderUnavailableError, FFmpegError, FolderBusyError
+from cutpoint.errors import FFmpegError, FolderBusyError
 from cutpoint.events import scoring
 from cutpoint.ffmpeg_utils import (
     ChildScope,
@@ -1309,7 +1310,19 @@ class Jobs:
                 except Exception as err:  # surfaced to the user as the job error
                     logger.exception("job %s post-processing failed", job.id)
                     job.error, job.status = str(err), "failed"
+        except Exception as err:  # the watcher itself broke: never leave the job "running"
+            logger.exception("job %s: watching it failed", job.id)
+            job.error = job.error or f"the server stopped following the job: {err}"
+            with self.lock:
+                proc, job.proc = job.proc, None
+            if proc is not None and proc.poll() is None:  # unread, it would block on its output
+                with contextlib.suppress(Exception):
+                    procs.kill_tree(proc)
         finally:
+            if job.status == "running":  # also after a BaseException: the next job may start
+                job.interrupt_steps()
+                job.error = job.error or "the server stopped following the job"
+                job.status = "failed"
             if on_end:
                 try:
                     on_end()
@@ -1805,6 +1818,8 @@ class Media:
                 win = self.window_running = self.windows_queue.popleft()
             try:
                 self._build_window(win)
+            except Exception:  # the lane's one thread must outlive any window (#1085)
+                logger.exception("window proxy lane: a window failed")
             finally:
                 with self.lock:
                     self.window_running = None
@@ -1848,9 +1863,9 @@ class Media:
         except HTTPException as err:  # refused: the temporary is removed below
             logger.warning("window proxy of %s failed: %s", what, err.detail)
             self._window_failed(win, str(err.detail))
-        except OSError as err:
+        except Exception as err:  # a failed window never stops the lane: listed as failed
             logger.exception("window proxy of %s failed", what)
-            self._window_failed(win, str(err))
+            self._window_failed(win, str(err) or type(err).__name__)
         finally:
             with contextlib.suppress(OSError):  # e.g. NotADirectoryError when ui is a file
                 tmp.unlink(missing_ok=True)
@@ -2108,7 +2123,7 @@ class Media:
                 logger.warning("proxy of %s failed: %s", real.name, tail)
         except HTTPException as err:  # refused: the temporary is removed below
             logger.warning("proxy of %s failed: %s", real.name, err.detail)
-        except OSError:
+        except Exception:  # in the pool, a raised error would be lost in a Future: log it
             logger.exception("proxy of %s failed", real.name)
         finally:
             with contextlib.suppress(OSError):  # e.g. NotADirectoryError when ui is a file
@@ -2134,7 +2149,7 @@ class Media:
             return None
         try:
             enc = video_encoder()
-        except (ValueError, EncoderUnavailableError):
+        except (ValueError, FFmpegError):  # also EncoderUnavailableError: libx264 then
             return None
         return None if enc.kind in ("cpu", "amf") else enc
 
@@ -3168,7 +3183,12 @@ def source_entries(
             if pano:  # one .lrv per clip 360 analysis can use (those of meta.clips, if set)
                 only = meta.get("clips") or None
                 _, clips, _ = inspect_source(Path(picked[0]))
-                found = [clips[n]["lrv"] for n in _usable(clips) if not only or n in only]
+                found = [
+                    g["lrv"]
+                    for g in (clips[n] for n in _usable(clips))
+                    if not only
+                    or {g["num"], x3.clip_key(g["date"], g["time"], g["num"])} & set(only)
+                ]
             else:
                 found = find_picked(picked, *picked_filters(meta))
             paths = dict.fromkeys(map(str, found))
@@ -3753,6 +3773,17 @@ def _valid_target(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= TARGET_MAX_S
 
 
+def _read_locked(file: Path) -> Any:
+    """:func:`cache.read_json` that raises a lock's PermissionError as is, so
+    :func:`cache.retry_locked` waits it out."""
+    try:
+        return cache.read_json(file)
+    except ValueError as err:
+        if isinstance(err.__cause__, PermissionError):
+            raise err.__cause__ from None
+        raise
+
+
 def _target_of(review: Any) -> float | None:
     """The target length saved in a ``review.json`` document, else None."""
     v = review.get("target") if isinstance(review, dict) else None
@@ -4055,7 +4086,13 @@ def inspect_source(src: Path) -> tuple[list[Path], dict[str, dict[str, Any]], Co
     else:
         listed = sorted(p for p in (src.parent if f else src).iterdir() if safe_is_file(p))
         files = [
-            p for p in listed if not f or (insta360.parse_name(p) or {}).get("num") == f["num"]
+            p
+            for p in listed
+            if not f
+            or (
+                (g := insta360.parse_name(p))
+                and (g["date"], g["time"], g["num"]) == (f["date"], f["time"], f["num"])
+            )
         ]
     videos = [p for p in files if p.suffix.lower() in VIDEO_EXTS]
     other = Counter(
@@ -5733,26 +5770,30 @@ def create_app(port: int) -> FastAPI:
         if moving and any(j.status == "running" for j in list(jobs.jobs.values())):
             raise bad(busy, 409)
         folder, created = None, False
-        if assistant is not None:
-            section = data.get("assistant")
-            updates["assistant"] = {**(section if isinstance(section, dict) else {}), **assistant}
-        if vision_ast is not None:
-            raw_v = data.get("vision_assistant")
-            v_section = dict(raw_v) if isinstance(raw_v, dict) else {}
-            updates["vision_assistant"] = {
-                **v_section,
-                **vision_ast,
-            }
         if moving:
             folder, created = check_projects_dir(body.get("projects_dir"))
             updates["projects_dir"] = str(folder)
+
+        def merge(now: dict[str, Any]) -> tuple[dict[str, Any], tuple[str, ...]]:
+            # the sections as they are in the file now: a change saved meanwhile stays
+            values = dict(updates)
+            for name, given in (("assistant", assistant), ("vision_assistant", vision_ast)):
+                if given is not None:
+                    raw = now.get(name)
+                    section = raw if isinstance(raw, dict) else {}
+                    # checked again against the provider saved meanwhile (e.g. a subscription
+                    # one, which takes no url): a refusal writes nothing
+                    check_assistant(given, name, existing_provider=section.get("provider"))
+                    values[name] = {**section, **given}
+            return values, removals
+
         # The jobs lock makes the running-job check and the write atomic against Jobs.start,
         # so no job starts against the old folder while the setting changes.
         try:
             with jobs.lock:
                 if moving and any(j.status == "running" for j in jobs.jobs.values()):
                     raise bad(busy, 409)
-                set_config_values(updates, remove=removals)
+                data = update_config(merge)
         except (ValueError, OSError, HTTPException) as err:
             if created and folder is not None:
                 with contextlib.suppress(OSError):
@@ -5762,7 +5803,7 @@ def create_app(port: int) -> FastAPI:
             if isinstance(err, ValueError):  # config.json is not valid JSON: never overwrite it
                 raise bad(str(err), 409) from err
             raise bad(f"could not save the settings: {err.strerror or err}", 500) from err
-        out = settings_view({**{k: v for k, v in data.items() if k not in removals}, **updates})
+        out = settings_view(data)
         if assistant is not None:
             out["assistant_note"] = None
             try:
@@ -5849,21 +5890,18 @@ def create_app(port: int) -> FastAPI:
         want = ai_providers.consent_key(provider, role)
         if want is None or body.get("key") != want:
             raise bad(f"the {role} provider changed: check it and agree again", 409)
-        data = config_data()
-        raw_section = data.get(section_name)
-        section = dict(raw_section) if isinstance(raw_section, dict) else {}
-        given = list(_tuple_of_str(section.get("consent")))
-        if want not in given:
-            try:
-                set_config_values({section_name: {**section, "consent": [*given, want]}})
-            except ValueError as err:
-                raise bad(str(err), 409) from err
-            except OSError as err:
-                raise bad(f"could not save the consent: {err.strerror or err}", 500) from err
-        fresh_data = config_data()
-        fresh_section = fresh_data.get(section_name)
-        fresh_dict = fresh_section if isinstance(fresh_section, dict) else {}
-        consent_list = _tuple_of_str(fresh_dict.get("consent"))
+
+        def agree(section: dict[str, Any]) -> dict[str, Any] | None:
+            given = list(_tuple_of_str(section.get("consent")))
+            return None if want in given else {**section, "consent": [*given, want]}
+
+        try:
+            section = update_section(section_name, agree)  # re-read under the config lock
+        except ValueError as err:
+            raise bad(str(err), 409) from err
+        except OSError as err:
+            raise bad(f"could not save the consent: {err.strerror or err}", 500) from err
+        consent_list = _tuple_of_str(section.get("consent"))
         return {"consent": consent_view(provider, consent=consent_list, role=role)}
 
     @secure.get("/assistant/models")
@@ -6174,7 +6212,8 @@ def create_app(port: int) -> FastAPI:
             style = style if is_cam else pano_style()
         except ValueError as err:  # config.json's pano section is not an object
             raise bad(str(err), 409) from err
-        clips = {"clips": usable} if src.is_file() else {}  # one file: just that clip
+        f = insta360.parse_name(src) if src.is_file() else None  # one file: just that clip
+        clips = {"clips": [x3.clip_key(f["date"], f["time"], f["num"])]} if f else {}
         full = os.path.abspath(source)  # noqa: PTH100
         return new_project(name.strip(), full, style, kind="360", **clips)
 
@@ -6330,11 +6369,24 @@ def create_app(port: int) -> FastAPI:
         file = _own(p, f"{UI_DIR}/review.json")
         _ui_folder(p)  # a command-line project has no ui folder yet
         with review_lock:
-            # the sequence's target length is saved by its own route: Save keeps it
-            # a short lock must not drop the target; missing or still locked: load_json reads None
-            with contextlib.suppress(OSError):
-                cache.retry_locked(file.read_bytes, file, "read")
-            saved = cache.load_json(file)
+            # the sequence's target length is saved by its own route: Save keeps it; a short
+            # lock must not drop it, and a file that cannot be read is never written over
+            try:
+                saved = cache.retry_locked(lambda: _read_locked(file), file, "read")
+            except FileNotFoundError:
+                saved = None
+            except (ValueError, OSError) as err:
+                # the reason, naming the file as the page does (never its absolute path)
+                if isinstance(err, OSError) and err.strerror:
+                    why = f"ui/review.json cannot be read: {err.strerror}"
+                else:  # read_json's ValueError, retry_locked's PermissionError on Windows
+                    why = str(err).replace(str(file), "ui/review.json")
+                raise bad(
+                    f"{why.rstrip('.')}. Fix or delete ui/review.json (it keeps the "
+                    "sequence's target length and joins), then save again; the sequence was "
+                    "not saved",
+                    409,
+                ) from err
             kept = _target_of(saved)
             if kept is not None:
                 review["target"] = kept
@@ -6437,8 +6489,14 @@ def create_app(port: int) -> FastAPI:
                 raise bad("the style of a 360 project cannot be changed")
             _no_options([meta["source"]], "the source")
             only = [c for c in meta.get("clips") or [] if isinstance(c, str)]
-            if not all(re.fullmatch(r"[0-9]+", c) for c in only):  # X3 clip numbers
-                raise bad("the clips in the project's ui/meta.json are not clip numbers")
+            if not all(re.fullmatch(r"\d{3}|\d{8}_\d{6}_\d{3}", c) for c in only):  # X3 clip ids
+                raise bad("the clips in the project's ui/meta.json are not clip ids")
+            f = insta360.parse_name(Path(meta["source"]))
+            if f:  # a project made before A207 holds the bare number of its one picked file
+                only = [
+                    x3.clip_key(f["date"], f["time"], f["num"]) if c == f["num"] else c
+                    for c in only
+                ]
             live = _library_style(style, hl)  # a deleted style: its recorded base
             _own(p, "highlights.json")  # the analysis rewrites it
             _own(p, "pano.json")  # and the scan this
@@ -7472,22 +7530,23 @@ def create_app(port: int) -> FastAPI:
             raise bad("the assistant's provider changed: check it and allow again", 409)
         if consent_view(provider)["needed"]:
             raise bad(f"agree first to use {provider.host} in AI Chat", 409)
-        data = config_data()
-        raw = data.get("assistant")
-        section = dict(raw) if isinstance(raw, dict) else {}
-        given = section.get("frames_consent", {})
-        if not isinstance(given, dict):
-            raise bad("assistant.frames_consent in config.json must be an object", 409)
         where = ai_watch.project_key(p)
-        keys_now = list(ai_watch.frames_consent(data, p))
-        if want not in keys_now:
-            frames = {**given, where: [*keys_now, want]}
-            try:
-                set_config_values({"assistant": {**section, "frames_consent": frames}})
-            except ValueError as err:
-                raise bad(str(err), 409) from err
-            except OSError as err:
-                raise bad(f"could not save the consent: {err.strerror or err}", 500) from err
+
+        def allow(section: dict[str, Any]) -> dict[str, Any] | None:
+            given = section.get("frames_consent", {})
+            if not isinstance(given, dict):
+                raise bad("assistant.frames_consent in config.json must be an object", 409)
+            keys_now = list(ai_watch.frames_consent({"assistant": section}, p))
+            if want in keys_now:
+                return None
+            return {**section, "frames_consent": {**given, where: [*keys_now, want]}}
+
+        try:
+            update_section("assistant", allow)  # re-read under the config lock
+        except ValueError as err:
+            raise bad(str(err), 409) from err
+        except OSError as err:
+            raise bad(f"could not save the consent: {err.strerror or err}", 500) from err
         return {"frames": frames_state(p, provider)}
 
     @owned.post("/projects/{pid}/assistant/turns")
