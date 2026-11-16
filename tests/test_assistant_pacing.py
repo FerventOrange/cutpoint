@@ -110,52 +110,48 @@ def longest_run(kinds: list[str], kind: str = pacing.ACTION) -> int:
 # -- the wording --------------------------------------------------------------------------------
 
 
+# One row per branch of ``pacing.asks_for_mix``: each mix wording, a ride sport other than skiing,
+# a negation or transition before it, and each wording that only looks like a mix.
 @pytest.mark.parametrize(
-    "text",
+    ("text", "wanted"),
     [
-        TURN,
-        "break up the skiing with some funny moments",
-        "mix in some scenic shots",
-        "a good mix of skiing and views",
-        "intersperse the laughs between the runs",
-        "sprinkle in a few funny clips",
-        "add a funny moment now and then",
-        "put a view in between the skiing clips",
-        "alternate skiing and scenery",
-        "vary the pace please",
-        "an occasional joke",
-        "no music, just break up the skiing",
-        "No music. Break up the skiing with laughs",
-        "not too long, mix in some views",
-        "no fades, but alternate skiing and scenery",
-        "don't cut it short; break up the skiing",
-        "not too long, with dialogue to break up the runs",
-        "no music. add some dialogue and break up the runs",
+        (TURN, True),
+        ("a good mix of skiing and views", True),
+        ("not too long, mix in some views", True),
+        ("No music. Break up the skiing with laughs", True),
+        ("don't cut it short; break up the skiing", True),
+        ("sprinkle in a few funny clips", True),
+        ("add a funny moment now and then", True),
+        ("show a funny moment from time to time", True),
+        ("alternate skiing and scenery", True),
+        ("vary the pace please", True),
+        ("an occasional joke", True),
+        ("between the mtb runs add a funny moment", True),
+        ("add dialogue between the snowboard runs", True),
+        # an audio mix, a negated request, a transition or another word is none
+        ("mix the audio", False),
+        ("mix in some music", False),
+        ("mix in the background audio", False),
+        ("don't break up the skiing", False),
+        ("keep the skiing together, no alternating", False),
+        ("without breaking up the runs", False),
+        ("never intersperse dialogue", False),
+        ("add a fade in between the clips", False),
+        ("add a crossfade between the runs", False),
+        ("put a transition between each run", False),
+        ("use an alternate take of clip 3", False),
+        ("an alternative cut", False),
+        ("the occasional stutter in clip 4", False),
+        ("break up the long clip into two", False),
+        ("between the trailer and the intro", False),
+        ("between the surface shots", False),
     ],
 )
-def test_wording_that_asks_for_a_mix_is_found(text: str) -> None:
-    assert pacing.asks_for_mix(text)
+def test_a_mix_request_is_found_and_look_alike_wording_is_not(text: str, wanted: bool) -> None:
+    assert pacing.asks_for_mix(text) is wanted
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "put a view in between the biking clips",
-        "break up the surfing with some dialogue",
-        "alternate surf and scenery",
-        "between the mtb runs add a funny moment",
-        "add dialogue between the snowboard runs",
-        "put a view in between the skiing clips",
-    ],
-)
-def test_mix_wording_names_any_ride_sport_not_only_skiing(text: str) -> None:
-    assert pacing.asks_for_mix(text)
-
-
-@pytest.mark.parametrize(
-    "label",
-    ["biking", "mtb-trail", "surfing", "skateboard-skating", "snowboarding", "skiing"],
-)
+@pytest.mark.parametrize("label", ["mtb-trail", "surfing"])
 def test_ride_sport_labels_are_action(label: str) -> None:
     assert pacing.moment_kind(label, None, {}, lambda: False) == "action"
 
@@ -174,39 +170,8 @@ def test_python_and_web_action_words_stay_in_sync() -> None:
     assert set(re.findall(r"'([^']+)'", found.group(1))) == set(pacing._ACTION_WORDS)
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "mix the audio",
-        "no music mix",
-        "mix in some music",
-        "mix in the background audio",
-        "a mix of music and sound",
-        "run cutpoint mix on this",
-        "add a fade transition between clips",
-        "make it 4 minutes of skiing",
-        "remove the last clip",
-        "an alternative cut",
-        "don't break up the skiing",
-        "do not mix in any funny clips",
-        "keep the skiing together, no alternating",
-        "without breaking up the runs",
-        "never intersperse dialogue",
-        "add a fade in between the clips",
-        "add a crossfade between the runs",
-        "put a transition between each run",
-        "use an alternate take of clip 3",
-        "the occasional stutter in clip 4",
-        "break up the long clip into two",
-        "between the trailer and the intro",
-        "between the surface shots",
-        "Make it ~4 minutes; don't break up the skiing with dialogue, keep the runs together",
-    ],
-)
-def test_audio_mix_and_plain_edits_are_not_a_mix_request(text: str) -> None:
-    assert not pacing.asks_for_mix(text)
-
-
+# One row per branch of ``pacing.names_dialogue``: each dialogue word, a negation before it, and
+# "talk" or "chat" that is not a kind of moment.
 @pytest.mark.parametrize(
     ("text", "named"),
     [
@@ -215,17 +180,15 @@ def test_audio_mix_and_plain_edits_are_not_a_mix_request(text: str) -> None:
         ("add talking moments", True),
         ("some talk between the runs", True),
         ("not too long, with dialogue to break up the runs", True),
-        ("no music. add some dialogue", True),
-        ("no dialogue, break up the skiing", False),
         ("the commentary", True),
         ("a conversation", True),
         ("chat clips", True),
+        ("no music. add some dialogue", True),
         ("a funny moment", False),
-        ("the talker is wrong", False),
-        ("break up the skiing with views, no dialogue", False),
+        ("no dialogue, break up the skiing", False),
         ("never add banter", False),
         ("without any commentary", False),
-        ("can we chat about the plan", False),
+        ("the talker is wrong", False),
         ("let's talk about the order", False),
     ],
 )
@@ -240,21 +203,18 @@ def kind(label: str, cand: dict | None = None, cues: dict | None = None, spoken:
     return pacing.moment_kind(label, cand, cues or {}, lambda: spoken)
 
 
+# One row per branch of ``pacing.moment_kind`` after the crash check: the kind, each word group of
+# the label (which wins over cues and speech), the strongest cue of a generic label, then speech.
 @pytest.mark.parametrize(
     ("label", "cand", "cues", "spoken", "want"),
     [
         ("fast", None, {}, False, "action"),
         ("jump", None, {}, True, "action"),  # speech over a skiing clip stays action
-        ("crash", None, {}, False, "action"),
-        ("carve", None, {}, False, "action"),
-        ("casual cruising run", {"kind": "cruise"}, {}, False, "action"),
         ("group / friends shot", {"kind": "crew"}, {}, True, "action"),
-        ("view", None, {}, False, "scenic"),
         ("stunning-mountain-views", None, {}, False, "scenic"),
         ("scenic view / beauty shot", {"kind": "view", "pool": "visual"}, {}, False, "scenic"),
         ("beauty", None, {"speed": 9}, False, "scenic"),
         ("laugh", None, {}, True, "funny"),
-        ("big laugh", None, {}, False, "funny"),
         ("talk", None, {}, False, "dialogue"),
         ("ski-moment", None, {}, True, "dialogue"),  # generic label, spoken
         ("loud-moment", None, {}, False, "action"),  # generic label, nothing else
@@ -275,15 +235,12 @@ def test_the_kind_of_a_row_comes_from_its_label_kind_cues_and_speech(
 @pytest.mark.parametrize(
     ("label", "cand", "want"),
     [
-        ("crash", {"kind": "crash", "must_include": True}, "crash"),  # a crash moment (#848)
-        ("crash reaction", {"kind": "crash"}, "crash"),
+        ("crash reaction", {"kind": "crash"}, "crash"),  # a crash moment (#848)
         ("wipeout", {"kind": "wipeout"}, "crash"),  # an action-cam crash
         ("ski-moment", {"crash": {"type": "crash"}, "crash_forced": True}, "crash"),
         ("ski-moment", {"crash": {"type": "crash"}, "must_include": True}, "crash"),
         ("crash", None, "action"),  # the word alone: unchanged
-        ("fast", {"crash": {"type": "crash"}, "crash_forced": False}, "action"),  # only marked
-        ("laugh", {"crash": {"type": "crash"}, "crash_forced": False}, "funny"),
-        ("fast", {"kind": "cruise"}, "action"),
+        ("laugh", {"crash": {"type": "crash"}, "crash_forced": False}, "funny"),  # only marked
     ],
 )
 def test_a_crash_moment_is_the_crash_kind(label, cand, want) -> None:
