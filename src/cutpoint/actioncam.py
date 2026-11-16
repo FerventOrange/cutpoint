@@ -80,9 +80,8 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache, features, jsonout, memguard, scorer
+from cutpoint import cache, features, scorer
 from cutpoint.config import path_key, source_path
-from cutpoint.errors import LowMemoryError
 from cutpoint.telemetry import DT, Telemetry, extract, join_runs, paint_spans
 
 logger = logging.getLogger(__name__)
@@ -170,24 +169,22 @@ def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> 
         durations: ``{str(source): container duration}``.
         project: Project folder.
     """
+    from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
+
     tels: dict[str, Telemetry | None] = {}
-    failed: Exception | None = None  # the last source's error
-    n_failed = 0
+    guard = SourceGuard(
+        "the telemetry read",
+        message="{name}: telemetry not read ({err}); scored without it",
+        debug_what="telemetry",
+        log=logger,
+    )
     for src in sources:
         try:
             tels[str(src)] = extract(src, durations[str(src)])
-        except LowMemoryError:
-            raise
-        except Exception as err:  # one unreadable source must not cost the others theirs
-            memguard.raise_if_out_of_memory(err, "the telemetry read", src.name)
-            message = f"{src.name}: telemetry not read ({err}); scored without it"
-            logger.debug("%s: telemetry failed", src, exc_info=True)
-            logger.warning("%s", message)
-            jsonout.warn("step_failed", message, [src])
-            tels[str(src)], failed = None, err
-            n_failed += 1
-    if failed is not None and n_failed == len(sources):  # not one bad file: the step failed
-        raise failed
+        except Exception as err:  # noqa: BLE001 - one unreadable source, logged
+            guard.skip(err, src.name, src)
+            tels[str(src)] = None
+    guard.raise_if_all_failed(len(sources))  # not one bad file: the step failed
     good = [t for t in tels.values() if t is not None]
     speeds = []
     for t in good:
