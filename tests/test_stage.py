@@ -341,3 +341,32 @@ def test_staged_path_never_resolves_or_expands_a_network_drive_key(
         assert staged_path(str(asked)) == str(asked)
     assert not [p for p in resolved if p.upper().startswith(net)]
     assert stage._expand_subst(net + r"\Footage\a.mp4") == net + r"\Footage\a.mp4"
+
+
+@pytest.mark.parametrize("name", ["../victim.mp4", "/abs/victim.mp4", "C:victim.mp4", ".."])
+def test_a_stage_index_name_with_a_folder_part_is_never_read_or_deleted(home, tmp_path, name):
+    """A666: a tampered index.json entry whose ``file`` leaves the stage folder is ignored."""
+    src = write(tmp_path / "src" / "x.mp4", "xx")
+    stage_sources([src], min_free_gb=0)
+    index_file = config.get_config().stage_dir / "index.json"
+    index = json.loads(index_file.read_text())
+    (entry,) = index.values()
+    victim = write(index_file.parent.parent / "victim.mp4", "xx")
+    entry["file"] = str(victim) if name.startswith("/") else name
+    index_file.write_text(json.dumps(index))
+    assert staged_path(str(src)) == str(src)
+    assert clear_stage() == 0
+    assert victim.read_text() == "xx"
+
+
+def test_a_timeline_index_entry_outside_the_cache_is_not_read(home, tmp_path, monkeypatch):
+    """A666: the timeline index's ``file`` must stay below the cache folder."""
+    src = write(tmp_path / "src" / "x.ts", "xx")
+    st = src.stat()
+    stamp = (tmp_path / "cache", None)
+    good = {"file": "a/timeline.mkv", "size": 2, "mtime_ns": st.st_mtime_ns, "copy_size": 2}
+    data = {"k1": good, "k2": {**good, "file": "../x.mkv"}, "k3": {**good, "file": "/x.mkv"}}
+    write(stamp[0] / stage.TIMELINE_INDEX, json.dumps(data))
+    stage._TIMELINE.clear()
+    monkeypatch.setattr(stage, "_timeline_stamp", lambda: stamp)
+    assert set(stage.timeline_index(stamp)) == {"k1"}

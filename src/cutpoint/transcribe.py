@@ -69,14 +69,18 @@ def _add_cuda_dll_dirs() -> None:
         _preload_cuda_libs()
     if sys.platform != "win32":
         return
-    for base in map(Path, sys.path):
-        nvidia = base / "nvidia"
-        if not nvidia.is_dir():
-            continue
-        for bin_dir in nvidia.glob("*/bin"):
-            os.add_dll_directory(str(bin_dir))
-            # ctranslate2 loads some DLLs lazily via LoadLibrary, which uses PATH.
-            os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+    # LoadLibrary searches the current folder before PATH: a cublas64_12.dll in the footage
+    # folder cutpoint runs from would be loaded (A643). An empty DLL directory drops it.
+    ctypes.windll.kernel32.SetDllDirectoryW("")
+    for bin_dir in _nvidia_bin_dirs():
+        os.add_dll_directory(str(bin_dir))
+        # ctranslate2 loads some DLLs lazily via LoadLibrary, which uses PATH.
+        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+
+
+def _nvidia_bin_dirs() -> list[Path]:
+    """Windows: the ``bin`` folders of the pip-installed nvidia-*-cu12 wheels."""
+    return [d for base in map(Path, sys.path) for d in sorted((base / "nvidia").glob("*/bin"))]
 
 
 def _preload_cuda_libs() -> None:
@@ -110,8 +114,10 @@ def _missing_cuda_libs() -> list[str]:
     for name in _CUDA_LIBS.get("linux" if sys.platform.startswith("linux") else sys.platform, ()):
         try:
             if sys.platform == "win32":
-                # winmode=0: plain LoadLibrary search (incl. PATH), as ctranslate2 uses.
-                ctypes.WinDLL(name, winmode=0)
+                # the wheels' copy by its absolute path first; else winmode=0: plain
+                # LoadLibrary search (incl. PATH), as ctranslate2 uses
+                own = next((d / name for d in _nvidia_bin_dirs() if (d / name).is_file()), None)
+                ctypes.WinDLL(str(own) if own is not None else name, winmode=0)
             else:
                 ctypes.CDLL(name)
         except OSError:

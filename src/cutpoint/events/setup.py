@@ -77,8 +77,11 @@ AESTHETIC_SHA256 = "8aa479a5065da0ad9941938da7f5ef8eeb66df8bf91385a8381557ee511f
 PANNS_MIN_RATE = 500_000
 SLOW_START_WINDOW = 20.0
 PANNS_LABELS_URL = (
-    "http://storage.googleapis.com/us_audioset/youtube_corpus/v1/csv/class_labels_indices.csv"
+    "https://storage.googleapis.com/us_audioset/youtube_corpus/v1/csv/class_labels_indices.csv"
 )
+# the CSV fixes the class order every PANNs grid is read in: a changed file is refused
+PANNS_LABELS_SIZE = 14675
+PANNS_LABELS_SHA256 = "cdd1049833c4b86127c2773ac0d14a2754b6a6d0d1798002ed5c66e699708429"
 
 # Import names of the ``events`` extra (see pyproject.toml).
 EVENTS_MODULES = (
@@ -223,7 +226,7 @@ def install_panns() -> None:
     The checkpoint comes from the first of ``PANNS_CKPT_MIRRORS`` that works,
     preceded by ``CUTPOINT_PANNS_URL`` when that environment variable is set.
     """
-    download(PANNS_LABELS_URL, paths.panns_labels())
+    download(PANNS_LABELS_URL, paths.panns_labels(), PANNS_LABELS_SIZE, PANNS_LABELS_SHA256)
     urls = list(PANNS_CKPT_MIRRORS)
     if env_url := os.environ.get("CUTPOINT_PANNS_URL", "").strip():
         urls = [env_url, *(u for u in urls if u != env_url)]
@@ -338,7 +341,7 @@ def install_whisper(model: str | None = None) -> dict[str, str]:
 
 def install_voice() -> None:
     """Download the Silero VAD ONNX model."""
-    download(paths.SILERO_URL, paths.silero_vad())
+    download(paths.SILERO_URL, paths.silero_vad(), paths.SILERO_SIZE, paths.SILERO_SHA256)
 
 
 def add_arguments(ap: argparse.ArgumentParser) -> None:

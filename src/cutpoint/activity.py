@@ -468,9 +468,16 @@ def save_to_library(profile: dict[str, Any], footage: list[str] | None = None) -
                     f,
                     name,
                 )
-        # the base is trimmed so the suffixed name fits NAME_RE's 64 characters
+        from cutpoint.stylefiles import NAME_RE  # noqa: PLC0415
+
+        # the base is trimmed so the suffixed name fits NAME_RE's 64 characters; a name that
+        # is no file name at all (``../x`` from a hand-edited cache, A655) is slugified first
         tag = f"-{cache.params_hash(profile, 6)}"
-        stem = name
+        stem = (
+            name
+            if isinstance(name, str) and NAME_RE.fullmatch(name)
+            else slugify(str(name), 40, "custom")
+        )
         name, n = f"{stem[: 64 - len(tag)].rstrip('-_')}{tag}", 1
         while name.lower() in taken:
             n += 1
@@ -1188,7 +1195,9 @@ def _load_discovery(key: str) -> dict[str, Any] | None:
         return None
     if not all(isinstance(inc.get(k, []), list) for k in ("pos", "neg")):
         return None  # no LLM captions of its own is usable: the self-check may drop them all
-    return hit
+    # the file is only a cache: its name (a library file name) and lists are checked as an
+    # LLM reply is (A655)
+    return {**hit, "profile": validate(prof)}
 
 
 def _save_discovery(key: str, entry: dict[str, Any]) -> None:

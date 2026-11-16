@@ -31,6 +31,7 @@ request used up its token budget before the answer. Replies are cached per
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import re
@@ -307,8 +308,12 @@ def sample_times(path: dict[str, Any], every: float = 3.0, max_frames: int = 4) 
     return np.array(sorted(out))
 
 
-def _cache_file(clip_id: str) -> Path:
-    return cache.cache_root() / "pano_vl" / f"{clip_id}.json"
+def _cache_file(clip_id: str, source: str = "") -> Path:
+    """The verdict file of one clip of one recording: named by a hash of both, so a path file's
+    ``clip`` never becomes a path part (A658) and clip 029 of another recording never shares
+    the verdicts (A659)."""
+    digest = hashlib.sha1(f"{source}|{clip_id}".encode()).hexdigest()[:16]
+    return cache.cache_root() / "pano_vl" / f"{digest}.json"
 
 
 def frame_key(
@@ -349,10 +354,10 @@ def check_preview(
         ``flags`` (the bad ones).
     """
     start = float(path["segment"]["start"])
-    clip_id = str(path.get("clip", "clip"))
-    if clip_id not in _MEMO:
-        _MEMO[clip_id] = cache.load_json(_cache_file(clip_id)) or {}
-    store = _MEMO[clip_id]
+    file = _cache_file(str(path.get("clip", "clip")), str(path.get("source", "")))
+    if str(file) not in _MEMO:
+        _MEMO[str(file)] = cache.load_json(file) or {}
+    store = _MEMO[str(file)]
     tps = sample_times(path, every, max_frames)
     flags: list[VLFlag] = []
     secs, hits, dirty = 0.0, 0, False
@@ -385,8 +390,8 @@ def check_preview(
             hits += 1
         flags.append(VLFlag(t=round(t, 3), **reply))
     if dirty:
-        _cache_file(clip_id).parent.mkdir(parents=True, exist_ok=True)
-        cache.save_json(_cache_file(clip_id), store, indent=0)
+        file.parent.mkdir(parents=True, exist_ok=True)
+        cache.save_json(file, store, indent=0)
     bad = sum(f.bad for f in flags)
     return flags, {
         "frames": len(flags),

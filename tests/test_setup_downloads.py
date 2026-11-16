@@ -24,6 +24,8 @@ def _panns_env(monkeypatch, tmp_path: Path, good: bytes, mirrors: tuple[str, ...
     monkeypatch.setattr(setup, "PANNS_CKPT_SHA256", hashlib.sha256(good).hexdigest())
     labels = write_bytes(tmp_path / "srv" / "labels.csv", b"a,b\n")
     monkeypatch.setattr(setup, "PANNS_LABELS_URL", labels)
+    monkeypatch.setattr(setup, "PANNS_LABELS_SIZE", 4)
+    monkeypatch.setattr(setup, "PANNS_LABELS_SHA256", hashlib.sha256(b"a,b\n").hexdigest())
     monkeypatch.setattr(ev_paths, "panns_ckpt", lambda: ckpt)
     monkeypatch.setattr(ev_paths, "panns_labels", lambda: tmp_path / "models" / "panns" / "l.csv")
     return ckpt
@@ -40,6 +42,32 @@ def test_corrupt_cached_archive_is_downloaded_again(tmp_path):
     dst.write_bytes(b"X" * len(data))  # same size, corrupt content
     setup.download(url, dst, len(data), hashlib.sha256(data).hexdigest())
     assert dst.read_bytes() == data
+
+
+def test_the_panns_labels_are_fetched_over_https_and_checked(tmp_path, monkeypatch):
+    """A650: a changed label CSV (it fixes the class order) is refused, not installed."""
+    assert setup.PANNS_LABELS_URL.startswith("https://")
+    pinned = setup.PANNS_LABELS_SIZE, setup.PANNS_LABELS_SHA256
+    good = b"good-checkpoint" * 20
+    _panns_env(monkeypatch, tmp_path, good, (write_bytes(tmp_path / "srv" / "g.pth", good),))
+    monkeypatch.delenv("CUTPOINT_PANNS_URL", raising=False)
+    monkeypatch.setattr(setup, "PANNS_LABELS_SIZE", pinned[0])
+    monkeypatch.setattr(setup, "PANNS_LABELS_SHA256", pinned[1])
+    with pytest.raises(RuntimeError, match="sha256 mismatch"):
+        setup.install_panns()
+    assert not ev_paths.panns_labels().exists()
+
+
+def test_the_silero_model_is_pinned_and_checked(tmp_path, monkeypatch):
+    """A651: a tag URL, and a model of other content is downloaded again, then refused."""
+    assert "/raw/v6.2.3/" in ev_paths.SILERO_URL and ev_paths.SILERO_URL.startswith("https://")
+    dst = write(tmp_path / "models" / "silero" / "silero_vad.onnx", b"old model")
+    served = b"X" * ev_paths.SILERO_SIZE  # right size, wrong content
+    monkeypatch.setattr(ev_paths, "SILERO_URL", write_bytes(tmp_path / "srv" / "s.onnx", served))
+    monkeypatch.setattr(ev_paths, "silero_vad", lambda: dst)
+    with pytest.raises(RuntimeError, match="sha256 mismatch"):
+        setup.install_voice()
+    assert not dst.exists()
 
 
 # -- #30: PANNs checkpoint mirrors ----------------------------------------------------------------

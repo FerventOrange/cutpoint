@@ -15,7 +15,10 @@ from cutpoint import paths as _paths
 from cutpoint import state
 from cutpoint.hub import quiet_hub_handler
 
-SILERO_URL = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
+# pinned to a release tag with its size and sha256: a changed model would change the voice grids
+SILERO_URL = "https://github.com/snakers4/silero-vad/raw/v6.2.3/src/silero_vad/data/silero_vad.onnx"
+SILERO_SIZE = 2327524
+SILERO_SHA256 = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
 # Hugging Face repo open_clip loads ViT-L-14 "openai" from, and torchvision's
 # Faster R-CNN v2 COCO checkpoint name (both downloaded by ``setup --only visual``).
 CLIP_HF_REPO = "timm/vit_large_patch14_clip_224.openai"
