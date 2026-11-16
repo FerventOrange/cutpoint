@@ -317,9 +317,9 @@ def test_every_unsnapped_edge_lies_inside_a_decoded_window(world, monkeypatch):
     seen = []
     real = analyze._snap
 
-    def spy(c, cuts, segments, duration, style):
+    def spy(c, cuts, segments, duration, style, index=None):
         seen.append((c.start, c.end))
-        real(c, cuts, segments, duration, style)
+        real(c, cuts, segments, duration, style, index)
 
     monkeypatch.setattr(analyze, "_snap", spy)
     world.source(get_style("funny"))

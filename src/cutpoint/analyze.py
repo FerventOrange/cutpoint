@@ -29,9 +29,11 @@ import re
 import sys
 import threading
 import time
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from functools import cached_property
 from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -1602,20 +1604,6 @@ def sentence_bounds(segments: list[Segment], gap: float = 0.7) -> tuple[list[flo
     return starts, ends
 
 
-def _in_speech(t: float, segments: list[Segment]) -> bool:
-    return any(s["start"] - 0.3 <= t <= s["end"] + 0.3 for s in segments if s.get("text"))
-
-
-def _gap_before(t: float, words: list[dict[str, Any]]) -> float:
-    prev = [w["end"] for w in words if w["end"] <= t]
-    return t - max(prev) if prev else 1.0
-
-
-def _gap_after(t: float, words: list[dict[str, Any]]) -> float:
-    nxt = [w["start"] for w in words if w["start"] >= t]
-    return min(nxt) - t if nxt else 1.0
-
-
 def _longest_pause(words: list[dict[str, Any]], lo: float, hi: float) -> tuple[float, float] | None:
     """(end of word before, start of word after) for the longest gap inside [lo, hi]."""
     gaps = [
@@ -1629,52 +1617,145 @@ def _longest_pause(words: list[dict[str, Any]], lo: float, hi: float) -> tuple[f
     return end_of_prev, start_of_next
 
 
-def _snap_sentences(c: Candidate, segments: list[Segment], duration: float) -> None:
+class _SnapIndex:
+    """The words, sentence edges and speech stretches of one part's ``segments``, built once
+    for every candidate :func:`_snap` snaps there (A685). Every lookup returns what the scan
+    over the segments gave, to the float."""
+
+    def __init__(self, segments: list[Segment]) -> None:
+        self.segments = segments
+        self.words = flat_words(segments)
+        raw_starts = [w["start"] for w in self.words]
+        raw_ends = [w["end"] for w in self.words]
+        self.starts = sorted(raw_starts)
+        self.ends = sorted(raw_ends)
+        self.starts_sorted = raw_starts == self.starts
+        self.ends_sorted = raw_ends == self.ends
+
+    @cached_property
+    def sentences(self) -> tuple[list[float], list[float]]:
+        starts, ends = sentence_bounds(self.segments)
+        return sorted(starts), sorted(ends)
+
+    @cached_property
+    def _speech(self) -> tuple[list[float], list[float]]:
+        spans = sorted(
+            (s["start"] - 0.3, s["end"] + 0.3)
+            for s in self.segments
+            if s.get("text") and s["start"] - 0.3 <= s["end"] + 0.3
+        )
+        los: list[float] = []
+        his: list[float] = []
+        for lo, hi in spans:
+            if his and lo <= his[-1]:
+                his[-1] = max(his[-1], hi)
+            else:
+                los.append(lo)
+                his.append(hi)
+        return los, his
+
+    def in_speech(self, t: float) -> bool:
+        los, his = self._speech
+        i = bisect_right(los, t) - 1
+        return i >= 0 and t <= his[i]
+
+    def gap_before(self, t: float) -> float:
+        i = bisect_right(self.ends, t)
+        return t - self.ends[i - 1] if i else 1.0
+
+    def gap_after(self, t: float) -> float:
+        i = bisect_left(self.starts, t)
+        return self.starts[i] - t if i < len(self.starts) else 1.0
+
+    def longest_pause(self, lo: float, hi: float) -> tuple[float, float] | None:
+        if not self.ends_sorted:
+            return _longest_pause(self.words, lo, hi)
+        first = bisect_left(self.ends, lo)
+        last = min(bisect_right(self.ends, hi), len(self.words) - 1)
+        return _longest_pause(self.words[first : last + 1], lo, hi)
+
+
+def _snap_sentences(
+    c: Candidate, segments: list[Segment], duration: float, index: _SnapIndex | None = None
+) -> None:
     """Move boundaries that fall inside speech to sentence ends, else the longest pause.
 
     Padding never exceeds half the silence next to the boundary, so it cannot
-    reach into a neighbouring word.
+    reach into a neighbouring word. ``index`` is the :class:`_SnapIndex` of ``segments``
+    when the caller snaps many candidates.
     """
-    words = flat_words(segments)
-    starts, ends = sentence_bounds(segments)
-    if _in_speech(c.start, segments):
-        before = [t for t in starts if c.start - 12 <= t <= c.start]
-        after = [t for t in starts if c.start < t <= c.start + 6]
-        if before or after:
-            t = max(before) if before else min(after)
-        else:
-            pause = _longest_pause(words, c.start - 12, c.start + 6)
+    ix = index or _SnapIndex(segments)
+    starts, ends = ix.sentences
+    if ix.in_speech(c.start):
+        i = bisect_right(starts, c.start)  # starts[:i] are <= c.start, starts[i:] are after
+        t = None
+        if i and starts[i - 1] >= c.start - 12:
+            t = starts[i - 1]
+        elif i < len(starts) and starts[i] <= c.start + 6:
+            t = starts[i]
+        if t is None:
+            pause = ix.longest_pause(c.start - 12, c.start + 6)
             t = pause[1] if pause else c.start
-        c.start = max(0.0, t - min(0.2, _gap_before(t, words) / 2))
-    if _in_speech(c.end, segments):
-        after = [t for t in ends if c.end <= t <= c.end + 15]
-        before = [t for t in ends if c.end - 6 <= t < c.end and t > c.start]
-        if after or before:
-            t = min(after) if after else max(before)
-        else:
-            pause = _longest_pause(words, c.end - 6, c.end + 15)
+        c.start = max(0.0, t - min(0.2, ix.gap_before(t) / 2))
+    if ix.in_speech(c.end):
+        i = bisect_left(ends, c.end)  # ends[:i] are before c.end, ends[i:] are >= c.end
+        t = None
+        if i < len(ends) and ends[i] <= c.end + 15:
+            t = ends[i]
+        elif i and ends[i - 1] >= c.end - 6 and ends[i - 1] > c.start:
+            t = ends[i - 1]
+        if t is None:
+            pause = ix.longest_pause(c.end - 6, c.end + 15)
             t = pause[0] if pause else c.end
-        c.end = min(duration, t + min(0.4, _gap_after(t, words) / 2))
+        c.end = min(duration, t + min(0.4, ix.gap_after(t) / 2))
 
 
 def _snap(
-    c: Candidate, cuts: list[float], segments: list[Segment], duration: float, style: Style
+    c: Candidate,
+    cuts: list[float],
+    segments: list[Segment],
+    duration: float,
+    style: Style,
+    index: _SnapIndex | None = None,
 ) -> None:
-    """Snap to nearby scene cuts, then sentence edges (long-form), then word edges."""
+    """Snap to nearby scene cuts, then sentence edges (long-form), then word edges.
+
+    ``index`` is the :class:`_SnapIndex` of ``segments``: pass one when snapping many
+    candidates of the same part."""
+    ix = index or _SnapIndex(segments)
     for attr in ("start", "end"):
         t = getattr(c, attr)
         near = [x for x in cuts if abs(x - t) <= SNAP_REACH_S]
         if near:
             setattr(c, attr, min(near, key=lambda x: abs(x - t)))
     if style.snap_sentences and not c.whole:  # a dialogue stretch ends where the reader said
-        _snap_sentences(c, segments, duration)
-    words = flat_words(segments)
-    for w in words:  # words are chronological, so each fix can only move outward
-        if w["start"] < c.start < w["end"]:
-            c.start = max(0.0, w["start"] - min(0.05, _gap_before(w["start"], words) / 2))
-    for w in reversed(words):
-        if w["start"] < c.end < w["end"]:
-            c.end = min(duration, w["end"] + min(0.15, _gap_after(w["end"], words) / 2))
+        _snap_sentences(c, segments, duration, ix)
+    words = ix.words
+    if ix.starts_sorted and ix.ends_sorted:
+        # Words are chronological: the first word the edge is inside of is the one to move
+        # past (the loops below end after one word unless words overlap).
+        nxt = 0
+        while True:
+            i = max(nxt, bisect_right(ix.ends, c.start))
+            if i >= bisect_left(ix.starts, c.start):
+                break
+            w = words[i]
+            c.start = max(0.0, w["start"] - min(0.05, ix.gap_before(w["start"]) / 2))
+            nxt = i + 1
+        bound = len(words)
+        while True:
+            j = min(bisect_left(ix.starts, c.end), bound) - 1
+            if j < bisect_right(ix.ends, c.end):
+                break
+            c.end = min(duration, words[j]["end"] + min(0.15, ix.gap_after(words[j]["end"]) / 2))
+            bound = j
+    else:
+        for w in words:  # words are chronological, so each fix can only move outward
+            if w["start"] < c.start < w["end"]:
+                c.start = max(0.0, w["start"] - min(0.05, ix.gap_before(w["start"]) / 2))
+        for w in reversed(words):
+            if w["start"] < c.end < w["end"]:
+                c.end = min(duration, w["end"] + min(0.15, ix.gap_after(w["end"]) / 2))
     c.start, c.end = round(max(0.0, c.start), 3), round(min(duration, c.end), 3)
 
 
@@ -2344,8 +2425,9 @@ def pick_candidates(
         head, tail = (raw[:usual], raw[usual:]) if usual is not None else (raw, [])
         cands = _merge(head, style)
         _cover_edges(ps, cands)
+        snap_index = _SnapIndex(segments)
         for c in cands:
-            _snap(c, ps.cuts, segments, span, style)
+            _snap(c, ps.cuts, segments, span, style, snap_index)
         cands = _resolve_overlaps(cands, style)
         taken = [(c.start, c.end) for c in cands]
         tail = [c for c in tail if not any(a <= c.peak_t <= b for a, b in taken)]
@@ -2444,8 +2526,9 @@ def _place_free(
             stretches.setdefault(_free_around(c.peak_t, taken, span), []).append(c)
     cands = [m for group in stretches.values() for m in _merge(group, style)]
     _cover_edges(ps, cands)
+    snap_index = _SnapIndex(ps.segments)
     for c in cands:
-        _snap(c, ps.cuts, ps.segments, span, style)
+        _snap(c, ps.cuts, ps.segments, span, style, snap_index)
     cands = [
         c for c in _resolve_overlaps(cands, style) if c.over or _fit_free(c, taken, span, style)
     ]
@@ -2626,6 +2709,7 @@ def _action_cam_candidates(
         )
         picks = actioncam.merge_must_include(picks, forced)
     cands = []
+    snap_index = _SnapIndex(segments)
     for p in picks:
         c = Candidate(
             source=src,
@@ -2640,7 +2724,7 @@ def _action_cam_candidates(
             event=p.event if any(p is f for f in forced) else None,
         )
         # Word edges only (no scene snapping): never cut a word in half.
-        _snap(c, [], segments, span, style)
+        _snap(c, [], segments, span, style, snap_index)
         cands.append(c)
     timings["action_cam_s"] = round(timings.get("action_cam_s", 0.0) + time.perf_counter() - t0, 2)
     return cands, src_avail
