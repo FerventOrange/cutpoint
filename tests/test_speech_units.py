@@ -327,7 +327,7 @@ def test_a_marker_only_holder_is_no_speech_and_no_line_or_subtitle():
     (seg,) = split_markers([holder])
     spoken = split_markers([_marked("so", "anyway")])[0]
 
-    assert analyze._in_speech(11.0, [seg]) is False
+    assert analyze._SnapIndex([seg]).in_speech(11.0) is False
     assert analyze.sentence_bounds([seg]) == ([], [])
     assert analyze.sentence_bounds([spoken, seg]) == analyze.sentence_bounds([spoken])
     assert analyze.transcript_text("clip.mp4", [seg]) == []
