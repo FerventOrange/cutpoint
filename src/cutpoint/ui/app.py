@@ -15,9 +15,8 @@ import signal
 import socket
 import threading
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -28,7 +27,6 @@ from cutpoint.assistant import keys as ai_keys
 from cutpoint.assistant import session as ai_session
 from cutpoint.ui import routes
 from cutpoint.ui.common import LOOPBACK, MAX_BODY_BYTES, WEB_DIR, bad
-from cutpoint.ui.files import _highlights
 from cutpoint.ui.jobs import Jobs
 from cutpoint.ui.media import Media
 from cutpoint.ui.pano_previews import PanoPreviews
@@ -105,6 +103,8 @@ def create_app(port: int) -> FastAPI:
     app.state.previews = previews
     app.state.proxies = proxies  # routes look it up here, so a test can swap it
     app.state.login_lock, app.state.login_states = login_lock, login_states
+    app.state.media_token = media_t
+    app.state.review_lock = threading.Lock()  # review.json is read and rewritten by two routes
 
     class BodyCap:
         """Pure ASGI wrapper: a body read past MAX_BODY_BYTES, whatever its headers say, is 413."""
@@ -179,42 +179,6 @@ def create_app(port: int) -> FastAPI:
     owned = APIRouter(dependencies=[Depends(auth), Depends(require_config)])
     served = APIRouter(dependencies=[Depends(auth_media), Depends(require_config)])
 
-    def url(pid: str, kind: str, name: str) -> str:
-        return f"/api/projects/{quote(pid, safe='')}/{kind}/{quote(name, safe='')}?t={media_t}"
-
-    def window_url(pid: str, sid: str, lo: int, hi: int) -> str:
-        return url(pid, "sources", sid).replace("?", f"/window/{lo}-{hi}?", 1)
-
-    def director_url(pid: str, sid: str, name: str) -> str:
-        return url(pid, "sources", sid).replace("?", f"/director/{name}?", 1)
-
-    def pano_views(
-        pid: str,
-        p: Path,
-        listing: list[dict[str, Any]],
-        only: str | None = None,
-        hl: dict[str, Any] | None = None,
-    ) -> dict[str, dict[str, Any]]:
-        """The camera path flags and director preview of each candidate (by CLI id) of a 360
-        clip, a ready preview with its url (under the source the page plays it as). ``hl``:
-        the project's highlights.json when the caller has read it already."""
-        previews.prune(p)
-        views = previews.listing(p)
-        if only is not None:
-            views = {only: views[only]} if only in views else {}
-        hl = (hl if hl is not None else _highlights(p)) or {}
-        where = {str(c.get("id")): c.get("source") for c in hl.get("candidates") or []}
-        sids = {s["path"]: s["id"] for s in listing}
-        for cid, view in views.items():
-            pv = view["preview"]
-            if pv is not None and pv["state"] == "ready":
-                sid = sids.get(where.get(cid))
-                if sid is None:  # not one of the project's sources: nothing may serve it
-                    view["preview"] = None
-                else:
-                    pv["url"] = director_url(pid, sid, pv.pop("name"))
-        return views
-
     turns = ai_session.Turns()
     app.state.assistant = turns
     app.state.planners = {}  # one per project: it caches what it planned
@@ -223,24 +187,18 @@ def create_app(port: int) -> FastAPI:
         jobs=jobs,
         media=media,
         sources=sources,
-        lookups=lookups,
-        previews=previews,
         secure=secure,
         owned=owned,
-        served=served,
-        url=url,
-        window_url=window_url,
-        pano_views=pano_views,
         proxy_error=functools.partial(routes.shared.proxy_error, app),
-        turns=turns,
     )
     secure.include_router(routes.settings.secure)
-    routes.projects.register(ctx)
+    owned.include_router(routes.projects.owned)
     routes.jobs.register(ctx)
-    routes.media.register(ctx)
+    owned.include_router(routes.media.owned)
+    served.include_router(routes.media.served)
     routes.ranking.register(ctx)
     owned.include_router(routes.assistant.owned)
-    routes.projects.register_delete(ctx)
+    owned.include_router(routes.projects.owned_delete)
     owned.include_router(routes.assistant.owned_revert)
 
     api.include_router(secure)
