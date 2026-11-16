@@ -260,15 +260,19 @@ class _Fake:
             recs = [r for r in recs if discover._src(r) in keep_src_keys]
         used = {self.corner[r["source"]] for r in recs}
         regs = [r for c, r in (("a", TOP_LEFT), ("b", BOTTOM_RIGHT)) if c in used]
-        return {
+        proposal = {
             "game": game,
             "source": "discovered",
             "regions": [asdict(r) for r in regs],
             "discovery": {
+                "proposals": [{"name": "feed", "evidence": {"samples": ["PlayerOne: gg"]}}],
                 "frames": [r["id"] for r in recs],
                 "fit_ref": self.ref if self.ref is not None else profile(recs, MIN_SCORE).ref(),
             },
         }
+        # as discover_regions writes it
+        (out_dir / "proposal.json").write_text(json.dumps(proposal), encoding="utf-8")
+        return proposal
 
     def sample_frames(self, sources, out_dir, params) -> list[dict]:
         self.sampled += [s.name for s in sources]
@@ -596,6 +600,62 @@ def test_a_lost_decision_finds_the_preset_made_from_its_source(folder, caplog) -
         "beta one.mp4 does not fit the HUD preset 'neon-drift' (score 0.00); "
         "discovering it as 'beta-one'"
     ) in caplog.messages
+
+
+def test_an_installed_preset_keeps_no_samples_or_frames(folder) -> None:
+    """A647: OCR text samples and record ids (file names) stay in proposal.json."""
+    import json  # noqa: PLC0415
+
+    from cutpoint import paths  # noqa: PLC0415
+    from cutpoint.events import regions  # noqa: PLC0415
+
+    srcs = folder.sources({"alpha one.mp4": "a", "alpha two.mp4": "a"})
+    folder.run(srcs)
+    text = (paths.presets_dir() / "neon-drift.json").read_text(encoding="utf-8")
+    assert "PlayerOne" not in text and "alpha one" not in text
+    disc = json.loads(text)["discovery"]
+    assert "proposals" not in disc and "frames" not in disc and "fit_ref" in disc
+    kept = json.loads(
+        (folder.project / "discovery" / "neon-drift" / "proposal.json").read_text("utf-8")
+    )["discovery"]
+    assert kept["proposals"] and kept["frames"]
+    assert regions.load_preset("neon-drift", folder.project) is not None
+
+
+def test_a_lost_decision_without_the_proposal_is_not_made_from_the_source(folder) -> None:
+    """made_from reads the project's proposal.json: gone, the preset is another source's."""
+    from cutpoint.events import regions  # noqa: PLC0415
+
+    srcs = folder.sources({"alpha one.mp4": "a", "alpha two.mp4": "a", "beta one.mp4": "b"})
+    folder.run(srcs)
+    regions.game_keys_path(folder.project).unlink()
+    (folder.project / "discovery" / "beta-one" / "proposal.json").unlink()
+    folder.run(srcs)
+    assert _keys(folder.project)["beta one.mp4"] not in ("beta-one", "neon-drift")
+
+
+def test_an_old_preset_with_samples_and_frames_still_loads(tmp_path) -> None:
+    import json  # noqa: PLC0415
+
+    from cutpoint import paths  # noqa: PLC0415
+    from cutpoint.events import discover, regions  # noqa: PLC0415
+
+    old = {
+        "game": "old-game",
+        "source": "discovered",
+        "regions": [{"name": "feed", "x": 10, "y": 10, "w": 300, "h": 120, "kind": "feed"}],
+        "discovery": {
+            "proposals": [{"name": "feed", "evidence": {"samples": ["PlayerOne: gg"]}}],
+            "frames": ["a.mp4~1@0"],
+        },
+    }
+    paths.presets_dir().mkdir(parents=True, exist_ok=True)
+    (paths.presets_dir() / "old-game.json").write_text(json.dumps(old), encoding="utf-8")
+    assert regions.load_preset("old-game", None) is not None
+    assert "frames" not in discover.installable(old)["discovery"]
+    assert discover.proposal_frames(tmp_path / "missing.json") is None
+    (tmp_path / "bad.json").write_text("{not json", encoding="utf-8")
+    assert discover.proposal_frames(tmp_path / "bad.json") is None
 
 
 def test_a_preset_with_an_old_fit_ref_splits_nothing(folder, caplog) -> None:

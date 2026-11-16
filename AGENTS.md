@@ -132,6 +132,10 @@ uv run cutpoint edit D:\Videos\clip.mp4 --kind funny-moments
   crash/profile step. An `--ollama-url` on another machine, or a hosted Vision provider in the
   Models tab, needs the user's Vision consent (Models tab); without it vision is skipped with a
   `vision_consent_needed` warning: tell the user. An invalid port in `--ollama-url` exits 2 (`bad_args`).
+  A login in `--ollama-url` (`user:password@`) is not saved in `highlights.json` or
+  `progress.json`: `resume`, `events`, `rerank --analyze` and a re-analysis take it from
+  `OLLAMA_HOST` or an Ollama URL in `config.json` for the same host and port, else give
+  `--ollama-url` with it again (an Ollama that answers 401 or 403 skips vision with a WARNING).
   `--vision-top`, `--ollama-url`, `--ollama-model` and `--skip` work as on
   `analyze`; `--visual-index` and `--no-visual-index` as on `analyze` (the frame embeddings for
   the visual search of `cutpoint ui`, off by default; they change no ranking);
