@@ -219,6 +219,14 @@ def test_assistant_routes_take_the_token_header_only(client: TestClient, proj) -
         assert res.status_code == 403, (method, path, res.text)
 
 
+def test_assistant_routes_need_a_valid_config(client: TestClient, home: Path, proj) -> None:
+    """Like every ``owned`` route, the chat routes answer 409 while config.json is rejected."""
+    set_config(home, vision="yes")  # a wrongly typed value: get_config rejects the file
+    assert client.get("/api/projects/cli/assistant").status_code == 409
+    url = "/api/projects/cli/assistant/history/x/revert"
+    assert client.post(url, json={"segments": []}).status_code == 409
+
+
 def test_a_prompt_injection_in_the_transcript_still_only_yields_a_proposal(
     client: TestClient, monkeypatch, proj
 ) -> None:
