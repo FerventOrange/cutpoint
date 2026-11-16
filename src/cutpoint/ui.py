@@ -10,7 +10,11 @@ Trust boundaries:
 * Every request needs a loopback ``Host`` (and ``Origin``, when sent) on the bound port.
 * Every ``/api`` call needs the per-run token (``X-Cutpoint-Token``), which only the URL printed at
   startup carries (``#t=<token>``; there is no way to fetch it from the server). Media/output URLs
-  carry it as ``?t=`` because ``<video>`` cannot send headers.
+  carry ``?t=`` because ``<video>`` cannot send headers: a read-only media token derived from it
+  (:func:`media_token`), which only the media routes accept, so a copied video or download
+  address grants no other call. A request body over :data:`MAX_BODY_BYTES` is refused.
+* The page's Content-Security-Policy (:func:`page_policy`) allows only its own files, inline
+  styles, ``data:`` images and the inline theme script of ``index.html`` by its hash.
 * Source stills (``.../sources/<id>/frame?at=<seconds>``) are media URLs too; they are cached in
   the project's ``ui/frames`` folder under a name built from the source's content key.
 * The audio envelope of a source (``.../sources/<id>/envelope``, a JSON call) is cached in ``ui/envelope``
@@ -21,8 +25,10 @@ Trust boundaries:
   for one).
 * A project id is a direct child folder of the projects folder. A project's media are its
   recorded source files, and only those under the source the user picked for it (or, for projects
-  made on the command line, the inputs of its analysis); ``highlights.json`` alone never
-  grants access to a file.
+  made on the command line, the inputs of its analysis). For a project the page made,
+  ``highlights.json`` alone never grants access to a file; for a command-line project both the
+  inputs and the source list come from it, so whoever can write that file into the projects
+  folder can have any video on disk served (the trust of local file access).
 * Resume (``GET .../resume``, the ``resume`` job) replays the command line the project's
   ``progress.json`` recorded, from its recorded working folder (``cutpoint resume``): a
   recorded ``--force`` or an ``--out`` outside the project too. The page shows that command
@@ -82,9 +88,11 @@ Trust boundaries:
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import errno
 import hashlib
+import hmac
 import importlib.util
 import json
 import logging
@@ -220,6 +228,7 @@ MAX_LOG_LINES = 300
 MAX_JOBS = 50
 MAX_KEPT_NAMES = 100  # names of kept files the delete plan lists
 MAX_EXTEND_S = 30.0
+MAX_BODY_BYTES = 16 * 1024 * 1024  # of one request (JSON only: the page uploads no files)
 MAX_TIMING_S = 60.0  # speech caps, tail lengths and the event window the page may send
 MAX_TOTAL_S = 36000.0  # clips --max-total
 CLIP_ORDERS = ("story", "score", "chronological")  # clips --order without --mix
@@ -4755,6 +4764,14 @@ def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[A
     return inputs, (hl or {}).get("style")
 
 
+def _no_options(values: Any, what: str) -> None:
+    """A bad request when one of ``values`` (paths from ``ui/meta.json`` or ``highlights.json``,
+    which may have been edited by hand) would reach a job's command line as an option."""
+    for v in values:
+        if str(v).startswith("-"):
+            raise bad(f"{what} {str(v)!r} in the project's files is not a path")
+
+
 def _library_style(style: object, hl: dict[str, Any] | None) -> object:
     """``style`` as a job may pass it to ``--style``: a style gone from the library (deleted) is
     the built-in base ``hl`` records for it (the job then records the base); a bad request
@@ -5450,8 +5467,32 @@ def stitch_first(
     return cutpoint_cmd("360", "stitch", str(project), "--clips", *(c.clip_id for c in missing))
 
 
+def page_policy() -> str:
+    """The page's Content-Security-Policy: its own files only, inline styles, ``data:`` images
+    (the icon) and the one inline script of ``index.html`` (the theme) by its hash."""
+    script = "script-src 'self'"
+    index = WEB_DIR / "index.html"
+    if index.is_file():
+        inline = re.findall(r"<script>(.*?)</script>", index.read_text(encoding="utf-8"), re.S)
+        for body in inline:
+            digest = base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
+            script += f" 'sha256-{digest}'"
+    return (
+        f"default-src 'self'; {script}; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; media-src 'self'; frame-ancestors 'none'"
+    )
+
+
+def media_token(token: str) -> str:
+    """The read-only token of media URLs (``?t=``): accepted by the media routes only, so a
+    copied video or download address cannot call the rest of the API."""
+    return hmac.new(token.encode(), b"media", hashlib.sha256).hexdigest()
+
+
 def create_app(port: int) -> FastAPI:
     token = secrets.token_urlsafe(32)
+    media_t = media_token(token)
+    policy = page_policy()
     jobs, media, picker, sources = Jobs(), Media(), Picker(), Sources()
     lookups = MediaLookups(sources)
     previews = PanoPreviews()
@@ -5488,11 +5529,14 @@ def create_app(port: int) -> FastAPI:
             origin is not None and not _loopback_url(origin, port, origin=True)
         ):
             return JSONResponse({"detail": "forbidden host or origin"}, status_code=403)
+        length = request.headers.get("content-length", "")
+        if length.isdigit() and int(length) > MAX_BODY_BYTES:  # refused before it is read
+            return JSONResponse({"detail": "request body too large"}, status_code=413)
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+        response.headers["Content-Security-Policy"] = policy
         if request.url.path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
         else:
@@ -5506,7 +5550,11 @@ def create_app(port: int) -> FastAPI:
         got = request.headers.get("x-cutpoint-token") or (
             request.query_params.get("t") if query else ""
         )
-        return secrets.compare_digest((got or "").encode(), token.encode())
+        got = (got or "").encode()
+        # media URLs carry the read-only media token; the session token works there too
+        return secrets.compare_digest(got, token.encode()) or (
+            query and secrets.compare_digest(got, media_t.encode())
+        )
 
     def auth(request: Request) -> None:
         if not supplied(request):
@@ -5523,7 +5571,7 @@ def create_app(port: int) -> FastAPI:
     served = APIRouter(dependencies=[Depends(auth_media), Depends(require_config)])
 
     def url(pid: str, kind: str, name: str) -> str:
-        return f"/api/projects/{quote(pid, safe='')}/{kind}/{quote(name, safe='')}?t={token}"
+        return f"/api/projects/{quote(pid, safe='')}/{kind}/{quote(name, safe='')}?t={media_t}"
 
     def window_url(pid: str, sid: str, lo: int, hi: int) -> str:
         return url(pid, "sources", sid).replace("?", f"/window/{lo}-{hi}?", 1)
@@ -6324,6 +6372,10 @@ def create_app(port: int) -> FastAPI:
                 raise bad("Analyze options are not available for 360 projects")
             if body.get("style") is not None:
                 raise bad("the style of a 360 project cannot be changed")
+            _no_options([meta["source"]], "the source")
+            only = [c for c in meta.get("clips") or [] if isinstance(c, str)]
+            if not all(re.fullmatch(r"[0-9]+", c) for c in only):  # X3 clip numbers
+                raise bad("the clips in the project's ui/meta.json are not clip numbers")
             live = _library_style(style, hl)  # a deleted style: its recorded base
             _own(p, "highlights.json")  # the analysis rewrites it
             _own(p, "pano.json")  # and the scan this
@@ -6337,13 +6389,14 @@ def create_app(port: int) -> FastAPI:
                 def prepare() -> None:
                     _keep_style(p, str(live), undo)
 
-            if only := [c for c in meta.get("clips") or [] if isinstance(c, str)]:
+            if only:
                 args += ["--only", *only]
             plan = [{"step": s, "label": progress.LABELS[s]} for s in progress.PANO_STEPS]
         elif action == "analyze":
             inputs, style = _analysis_inputs(meta, hl)
             if not inputs or not style:
                 raise bad("project has no recorded source to analyze")
+            _no_options(inputs, "an input")
             # The header's style button (#897): analyze again in another style (auto: detected)
             new = body.get("style")
             if new is not None and (
@@ -6428,6 +6481,7 @@ def create_app(port: int) -> FastAPI:
             if why := preset_problem(meta, hl):
                 raise bad(why)
             inputs, style = _analysis_inputs(meta, hl)
+            _no_options(inputs or [], "an input")
             live = _library_style(style, hl)  # a deleted style: the edit runs in its base
             vertical = _flag(body, "vertical")
             force = _flag(body, "force")
