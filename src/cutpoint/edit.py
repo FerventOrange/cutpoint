@@ -296,9 +296,9 @@ def _run_edit(
             is_cam = _action_cam(style, videos, footage)
             defaults = ACTION_CAM_LAYERS if is_cam else DEFAULT_LAYERS
             # --skip leaves out the layers of its steps here too (keyframes: no HUD discovery).
-            kept = tuple(x for x in defaults if LAYER_STEP.get(x) not in skip)
-            event_layers = kept if kept != defaults else None
-            preflight(kept)
+            layers = tuple(x for x in defaults if LAYER_STEP.get(x) not in skip)
+            event_layers = layers if layers != defaults else None
+            preflight(layers)
 
         # A failed or interrupted analyze removes the (still empty) folders it created.
         analyze(
