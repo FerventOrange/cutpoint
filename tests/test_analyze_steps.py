@@ -2156,6 +2156,26 @@ def test_plan_without_cuda_gives_no_light_index_where_a_gpu_writes_none(env, sty
     )
 
 
+@pytest.mark.parametrize(
+    ("style", "cat", "keyframes"),
+    [
+        ("sport", None, ("visual_light",)),  # the sport style is action footage
+        ("action-cam", None, ("visual_light",)),
+        ("funny", "general", ("visual_light",)),
+        ("commentary", "general", ("visual_light",)),
+        ("funny", "gameplay", ("ocr",)),
+    ],
+)
+def test_plan_without_cuda_plans_the_light_index_for_the_footage_a_gpu_indexes(
+    env, style, cat, keyframes
+):
+    """#989: by the footage category (sport via action, general), not only the style."""
+    env.cuda = False
+    p = analyze.plan_layers(get_style(style), [Path("a.mp4")], (), cat)
+    assert p.layers["keyframes"] == keyframes
+    assert (p.no_visual == analyze.SKIP_NO_CUDA) is ("visual_light" in keyframes)
+
+
 def test_plan_light_index_without_clip_files_is_left_out(env, caplog):
     env.cuda, env.missing = False, [("visual", ["visual_light"])]
     caplog.set_level("INFO")

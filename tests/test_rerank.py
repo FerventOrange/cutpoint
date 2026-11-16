@@ -311,6 +311,16 @@ def test_an_event_layer_the_style_plans_and_did_not_run_needs_analyze(home, tmp_
     assert asked == []
 
 
+def test_the_chat_only_light_index_never_needs_analyze(home, tmp_path, monkeypatch):
+    """#989: an older project analyzed without a GPU has no light frame index, and no ranking
+    reads it: rerank must not ask for an analysis because of it."""
+    project = make_project(home, tmp_path)
+    monkeypatch.setattr(rerank, "_events_extra", lambda: True)
+    plan = analyze.LayerPlan(layers={"keyframes": ("visual_light",), "crashes": ("crash",)})
+    monkeypatch.setattr(analyze, "plan_layers", lambda *a, **k: plan)
+    assert features_of(project, "action") == {"layer:crash"}
+
+
 def test_no_events_extra_needs_no_layer(home, tmp_path):
     project = make_project(home, tmp_path, layers=())
     assert features_of(project, "action") == set()

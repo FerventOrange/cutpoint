@@ -883,3 +883,52 @@ test('no Open folder button where folders cannot be opened, as Show folder', asy
   assert.equal(m.d.querySelector('#chatLog [data-act="open-folder"]'), null);
   assert.match(m.log().join(' '), /final\.mp4/);
 });
+
+// ---------- the one-line note when the visual search cannot run (#989) ----------
+
+const NO_INDEX = { ok: false, why: 'Visual search isn\'t available for this project: its analysis has no frame index', fix: 'analyze the project again with --visual-index' };
+
+test('the chat says why its visual search is unavailable and what adds it', async (t) => {
+  const m = await chatPage(t, { assistant: { frame_index: NO_INDEX } });
+  assert.equal(m.$('#chatIndexNote').hidden, false);
+  assert.equal(m.$('#chatIndexNote').textContent, `${NO_INDEX.why}. To add it: ${NO_INDEX.fix}.`);
+});
+
+test('the chat shows no frame-index note when the visual search can run', async (t) => {
+  const m = await chatPage(t, { assistant: { frame_index: { ok: true, why: null, fix: null } } });
+  assert.equal(m.$('#chatIndexNote').hidden, true);
+  assert.equal(m.$('#chatIndexNote').textContent, '');
+});
+
+test('the frame-index note is asked for again when an analysis changes the events, not otherwise', async (t) => {
+  let sig = 'v1';
+  let idx = NO_INDEX;
+  let jobs = [];
+  const job = { id: 'j1', project_id: 'p1', action: 'analyze', status: 'running', logs: [], progress: { total: null, steps: [] }, started: '' };
+  const m = await chatPage(t, {
+    routes: {
+      'GET /api/projects/p1': () => makeProject({ events_sig: sig }),
+      'GET /api/jobs': () => ({ jobs }),
+      [`GET ${A}`]: () => ({ provider, consent: null, turns: [], running: [], frame_index: idx }),
+    },
+  });
+  const asked = () => m.page.requests.filter((r) => r.method === 'GET' && r.path === A).length;
+  assert.equal(m.$('#chatIndexNote').hidden, false);
+  const before = asked();
+  jobs = [job]; // an analysis runs ...
+  await m.tick(5000);
+  jobs = [{ ...job, status: 'done' }]; // ... and finishes: the project is read again
+  idx = { ok: true, why: null, fix: null };
+  await m.tick(1000);
+  assert.equal(asked(), before, 'the events did not change: the chat is not asked');
+  assert.equal(m.$('#chatIndexNote').hidden, false);
+
+  jobs = [{ ...job, id: 'j2' }];
+  await m.tick(5000); // idle polls come every 5 s
+  sig = 'v2'; // this analysis wrote events.json / the frame index
+  jobs = [{ ...job, id: 'j2', status: 'done' }];
+  await m.tick(1000);
+  assert.equal(asked(), before + 1);
+  assert.equal(m.$('#chatIndexNote').hidden, true);
+  m.page.assertNoUnhandled();
+});

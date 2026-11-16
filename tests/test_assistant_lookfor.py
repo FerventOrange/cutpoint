@@ -191,6 +191,97 @@ def test_indexed_looks_only_for_the_cache_file(tmp_path, monkeypatch) -> None:
     assert lookfor.indexed(["a.mp4"]) is False  # no key without the file's size and mtime
 
 
+def test_a_light_frame_index_alone_counts_as_indexed(tmp_path, monkeypatch) -> None:
+    """#989: without a CUDA GPU analyze writes only the light index; look_for is offered."""
+    light = tmp_path / "light.npz"
+    light.write_bytes(b"")
+    monkeypatch.setattr(V, "cache_path", lambda src, params: tmp_path / "none.npz")
+    monkeypatch.setattr(V, "light_cache_path", lambda src, params=None: light)
+    assert lookfor.indexed(["a.mp4"]) is True
+    light.unlink()
+    assert lookfor.indexed(["a.mp4"]) is False
+
+
+def test_the_finder_falls_back_to_the_light_index_and_prefers_the_full_one(
+    clip, monkeypatch
+) -> None:
+    full, light = frames(30, range(10, 15)), frames(30, range(20, 25))
+    seen: list[str] = []
+
+    def load_visual(src: Path, params: Any = None) -> Any:
+        return full if Path(src).as_posix() == B else None
+
+    def load_light(src: Path, params: Any = None) -> Any:
+        seen.append(Path(src).as_posix())
+        return light
+
+    monkeypatch.setattr(V, "load_visual", load_visual)
+    monkeypatch.setattr(V, "load_visual_light", load_light)
+    found = lookfor.Finder([A, B]).search("x", 5, [], {A: 30.0, B: 30.0})
+    assert found.searched == 2
+    assert seen == [A]  # the source with a full index never reads the light one
+    starts = {(h.source, round(h.start)) for h, _ in found.hits}
+    assert starts == {(A, 20), (B, 10)}
+
+
+def test_the_index_state_says_why_and_how_to_fix(tmp_path, monkeypatch) -> None:
+    weights = tmp_path / "clip.pt"
+    monkeypatch.setattr(V.paths, "clip_weights", lambda: weights)
+    monkeypatch.setattr(lookfor, "unavailable", lambda: "not available in Cutpoint lite")
+    state = lookfor.index_state([A])
+    assert state["ok"] is False and state["why"] == lookfor.NO_LITE and state["fix"]
+    monkeypatch.setattr(lookfor, "unavailable", lambda: None)
+    state = lookfor.index_state([A])
+    assert (state["ok"], state["why"], state["fix"]) == (
+        False,
+        lookfor.NO_WEIGHTS,
+        "cutpoint setup --only visual",
+    )
+    weights.write_bytes(b"x")
+    monkeypatch.setattr(lookfor, "indexed", lambda sources: False)
+    state = lookfor.index_state([A])
+    assert state == {"ok": False, "why": lookfor.WHY_NO_INDEX, "fix": lookfor.FIX_INDEX}
+    monkeypatch.setattr(lookfor, "indexed", lambda sources: True)
+    assert lookfor.index_state([A]) == {"ok": True, "why": None, "fix": None}
+
+
+def test_the_unindexed_rules_tell_why_and_what_adds_the_index() -> None:
+    text = lookfor.unindexed_rules({"why": "Visual search needs the CLIP weights.", "fix": "do X"})
+    assert "Visual search needs the CLIP weights, so" in text and "do X" in text
+    assert "find_moments" in text and "look_for" not in text
+    assert lookfor.FIX_INDEX in lookfor.unindexed_rules({})
+
+
+def test_without_frames_the_rules_carry_the_reason_and_the_fix() -> None:
+    for why, in_rules, not_in_rules in (
+        ("Visual search isn't in Cutpoint lite", lookfor.FIX_LITE_RULES, "FIX-ME"),
+        ("Visual search needs the CLIP weights", "FIX-ME", lookfor.FIX_LITE_RULES),
+    ):
+        p = project()
+        p.frame_index = False
+        p.index_state = {"ok": False, "why": why, "fix": "FIX-ME"}
+        provider = FakeProvider([Reply("Done.")])
+        run(provider, proj=p)
+        rules = provider.requests[0]["messages"][0]["content"]
+        assert f"{why}, so" in rules and in_rules in rules and not_in_rules not in rules
+
+
+def test_the_lite_install_command_with_a_local_path_stays_out_of_the_rules(monkeypatch) -> None:
+    cmd = 'uv pip install --python "/home/u/.venv/bin/python" "cutpoint[events]"'
+    monkeypatch.setattr(lookfor.extras, "install_hint", lambda extra: cmd)
+    monkeypatch.setattr(lookfor, "unavailable", lambda: "not available in Cutpoint lite")
+    state = lookfor.index_state([A])
+    assert state["fix"] == cmd  # the page shows the full command
+    rules = lookfor.unindexed_rules(state)
+    assert lookfor.FIX_LITE_RULES in rules and "/home/u" not in rules
+    p = project()
+    p.frame_index = False
+    p.index_state = state
+    provider = FakeProvider([Reply("Done.")])
+    run(provider, proj=p)
+    assert "/home/u" not in provider.requests[0]["messages"][0]["content"]
+
+
 def test_look_for_is_offered_only_with_cached_frame_embeddings() -> None:
     for indexed in (True, False):
         proj = project()
