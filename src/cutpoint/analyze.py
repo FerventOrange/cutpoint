@@ -5097,8 +5097,10 @@ def reanalyze(
         raise ValueError(
             f"{project / 'highlights.json'} records no analysis; run 'cutpoint analyze' again"
         )
-    st = hl.get("settings", {})
-    inputs = st.get("inputs") or [s["path"] for s in hl["sources"]]
+    st = hl.get("settings") or {}
+    inputs = st.get("inputs") or [
+        s["path"] for s in hl["sources"] if isinstance(s, dict) and isinstance(s.get("path"), str)
+    ]
     pano = (project / PANO_FILE).is_file()
     given = style
     reranked = None if given is None else rerank_record(hl, given)
@@ -5180,7 +5182,12 @@ def reanalyze_if_reachable(project: Path) -> Path | None:
     if not isinstance(hl, dict):  # missing or not an object: reanalyze below reports it
         hl = {}
     offline = 0
-    for path in dict.fromkeys(s["path"] for s in hl.get("sources", [])):
+    recorded = [
+        s["path"]
+        for s in hl.get("sources") or []
+        if isinstance(s, dict) and isinstance(s.get("path"), str)
+    ]
+    for path in dict.fromkeys(recorded):
         try:
             cache.source_dir(Path(path))
         except OSError:
@@ -5196,8 +5203,8 @@ def reanalyze_if_reachable(project: Path) -> Path | None:
     # input it cannot find would fail it, and a recorded source it does not find under
     # the same spelling would drop out (e.g. moved out of a folder input that still
     # exists) or be re-keyed (an older project that recorded the remapped copy).
-    st = hl.get("settings", {})
-    srcs = [s["path"] for s in hl.get("sources", [])]
+    st = hl.get("settings") or {}
+    srcs = recorded
     found: set[str] = set()
     missing = 0
     for p in dict.fromkeys(st.get("inputs") or srcs):

@@ -25,6 +25,7 @@ from cutpoint import cache, sources
 from cutpoint.assemble import caption_chunks, clip_offsets
 from cutpoint.config import path_key, remap_source, source_path
 from cutpoint.ffmpeg_utils import MediaInfo
+from cutpoint.planning import manifest_parts
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +204,8 @@ def final_cues(
     missing_sources: list[str] = []
     for f, info, offset in zip(files, infos, clip_offsets(infos, fade), strict=True):
         e = entries.get(f.name)
+        if e is not None and not all(k in e for k in ("source", "start", "end")):
+            e = None  # an entry without its range is no entry
         if e is None and (own := read_srt(f.with_suffix(".srt"))) is not None:
             for s, t, text in own:
                 s, t = max(s, 0.0), min(t, info.vduration)
@@ -233,7 +236,9 @@ def clips_language(clips_dir: Path) -> str | None:
     of :func:`~cutpoint.extend.manifest_project`), or None: detected, or no analysis."""
     from cutpoint.extend import manifest_project  # noqa: PLC0415 - it imports this module
 
-    manifest = cache.load_json(clips_dir / "manifest.json") or {}
+    manifest = cache.load_json(clips_dir / "manifest.json")
+    if not isinstance(manifest, dict):
+        manifest = {}
     return sources.project_language(manifest_project(manifest, clips_dir))
 
 
@@ -256,8 +261,12 @@ def write_final_srt(
     Returns:
         The .srt path, or None if none was written.
     """
-    manifest = cache.load_json(clips_dir / "manifest.json") or {}
-    entries = {e.get("file"): e for e in manifest.get("clips", []) if isinstance(e, dict)}
+    try:
+        entries = {
+            e["file"]: e for e in manifest_parts(cache.load_json(clips_dir / "manifest.json"))[1]
+        }
+    except ValueError:
+        entries = {}  # none, or not a clips manifest: no entries
     if language is None:
         language = clips_language(clips_dir)
     cues, missing, missing_sources = final_cues(files, infos, entries, fade, words_lookup(language))

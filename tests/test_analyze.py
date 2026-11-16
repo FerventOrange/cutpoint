@@ -778,3 +778,43 @@ def test_a_label_names_the_keyword_by_its_style_weight_not_its_damped_one():
     both, alone = analyze.describe_candidates(cands, style, ps, 0.0)
     assert both.keywords[0] == "wow" and both.label_hint == "oh my god"
     assert alone.keywords == ["yes"] and alone.label_hint == ""
+
+
+def test_reanalyze_takes_null_settings(tmp_path):
+    """A100: "settings": null is an empty record, not an AttributeError."""
+    here = tmp_path / "gone.mp4"
+    write(
+        tmp_path / "highlights.json",
+        json.dumps({"sources": [{"path": str(here)}], "settings": None}),
+    )
+    with pytest.raises(Exception) as err:
+        analyze.reanalyze(tmp_path)
+    assert not isinstance(err.value, AttributeError)
+    assert analyze.reanalyze_if_reachable(tmp_path) is None  # source gone: left alone
+
+
+def test_reanalyze_if_reachable_tolerates_null_or_odd_sources(tmp_path, monkeypatch):
+    sentinel = tmp_path / "result.json"
+    monkeypatch.setattr(analyze, "reanalyze", lambda project: sentinel)
+    for sources in (None, ["x", {"name": "a"}, {"path": None}]):
+        (tmp_path / "highlights.json").write_text(
+            json.dumps({"sources": sources}), encoding="utf-8"
+        )
+        assert analyze.reanalyze_if_reachable(tmp_path) is sentinel
+
+
+def test_reanalyze_skips_recorded_sources_without_a_path(tmp_path, monkeypatch):
+    """Non-dict entries or entries without a str path do not crash the inputs fallback."""
+    seen = {}
+
+    def fake_analyze(inputs, *a, **k):
+        seen["inputs"] = inputs
+        return tmp_path / "highlights.json"
+
+    monkeypatch.setattr(analyze, "analyze", fake_analyze)
+    write(
+        tmp_path / "highlights.json",
+        json.dumps({"sources": ["x", {"name": "n"}, {"path": 5}, {"path": "/v/a.mp4"}]}),
+    )
+    analyze.reanalyze(tmp_path)
+    assert [str(p).replace("\\", "/") for p in seen["inputs"]] == ["/v/a.mp4"]
