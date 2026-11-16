@@ -332,3 +332,129 @@ def test_a_nested_gps_scale_reads_as_flat_and_an_unusable_one_skips_its_payload(
     assert rows.tolist() == want.tolist()  # only the good payload is left
     debug = [r.getMessage() for r in caplog.records if r.levelname == "DEBUG"]
     assert len(debug) == len(bad) and all(m.startswith("GPS9: unusable Scale") for m in debug)
+
+
+# ------------------------------------------------------------------------- the grids (A586)
+RIDE_S, STOP_S, LIFT_S, END_S = 40.0, 55.0, 110.0, 120.0
+IMU_HZ = 100.0
+
+
+def _gps_fix(tr: float) -> tuple[float, float, float, int]:
+    """``(speed m/s, alt m, dop, fix)`` at ``tr``: a ride at 36 km/h with bad fixes, a stop,
+    a lift climbing 1 m/s at 15 km/h, then riding on with a 6 s run of bad DOP."""
+    if tr < RIDE_S:
+        speed, alt, dop, fix = 10.0, 2000.0 - 0.2 * tr, 1.5, 3
+        if 10 <= tr < 12:
+            speed, fix = 0.0, 0  # no fix for 2 s: interpolated
+        elif 20 <= tr < 21:
+            speed = 300 / 3.6  # a speed spike: dropped
+        elif 25 <= tr < 26:
+            speed, fix = 0.0, 2  # a 2D fix: dropped
+        elif 30 <= tr < 31:
+            speed, dop = 0.0, 9.0  # a poor DOP: dropped
+        return speed, alt, dop, fix
+    if tr < STOP_S:
+        return 0.0, 1992.0, 1.5, 3
+    if tr < LIFT_S:
+        return 15 / 3.6, 1992.0 + (tr - STOP_S), 1.5, 3
+    return 20 / 3.6, 2047.0, 9.0 if 112 <= tr < 118 else 1.5, 3  # a 6 s gap: left out
+
+
+def _ride_groups(gps: bool = True) -> list[dict]:
+    groups: list[dict] = []
+    if gps:
+        for k in range(int(END_S)):
+            recs = []
+            for j in range(10):
+                speed, alt, dop, fix = _gps_fix(k + j / 10)
+                recs.append(_gps_rec(46.5, 7.25, alt, speed, 9100, 3600.0 + k, dop, fix))
+            groups.append(_gps_group(k * 1_000_000, *recs))
+    groups.append({"WindProcessing": {"TimestampUs": 50_000_000, "Data": [[1, 80]] * 10}})
+    face = struct.pack(">BBHHHHHBB", 1, 90, 1, 0, 0, 32767, 32767, 0, 0)  # a quarter of the frame
+    groups.append({"FACE": {"TimestampUs": 60_000_000, "0x46414345": _klv("FACE", 14, [face])}})
+    return groups
+
+
+def _compute_ride(monkeypatch, gps: bool = True) -> Telemetry:
+    """:func:`telemetry._compute` of :func:`_ride_groups` and an IMU that rides upright with
+    turns (yaw about gravity) and vibration, and is calm while stopped and on the lift."""
+    t = np.arange(int(END_S * IMU_HZ)) / IMU_HZ
+    riding = (t < RIDE_S) | (t >= LIFT_S)
+    noise = np.where(riding, 4.0, 0.005)[:, None]
+    acc = np.tile([0.0, telemetry.G, 0.0], (len(t), 1))
+    acc += np.random.default_rng(5).normal(0, 1, acc.shape) * noise
+    gyr = np.zeros_like(acc)
+    gyr[:, 1] = np.where(t < RIDE_S, 60 * np.sin(np.pi * t), 0.0)  # one turn each way per 2 s
+    parser = type("Parser", (), {"camera": "GoPro", "model": "HERO11 Black"})()
+    groups = _ride_groups(gps)
+    monkeypatch.setattr(telemetry, "parse_imu", lambda path: (parser, groups, t, acc, gyr))
+    tel = telemetry._compute(Path("GX01.mp4"), END_S, P)
+    assert tel is not None
+    return tel
+
+
+def _bins(a: float, b: float) -> slice:
+    return slice(int(a / DT), int(b / DT))
+
+
+def test_compute_drops_bad_fixes_fills_short_gaps_and_finds_the_stop_and_the_lift(monkeypatch):
+    tel = _compute_ride(monkeypatch)
+    g = tel.grid
+    assert tel.n == int(END_S / DT) + 1 and all(len(v) == tel.n for v in g.values())
+    # bad fixes are dropped and the 2 s without a fix is interpolated
+    assert g["speed_kmh"][_bins(1, 39)].tolist() == pytest.approx([36.0] * 380, abs=0.5)
+    assert g["gps_ok"][_bins(0, 112)].min() == 1.0
+    assert tel.summary()["top_speed_kmh"] == pytest.approx(36.0, abs=0.5)  # not the spike
+    # the 6 s gap stays a gap
+    assert np.isnan(g["speed_kmh"][_bins(113, 117)]).all()
+    assert g["gps_ok"][_bins(113, 117)].max() == 0.0
+    assert g["alt_m"][_bins(60, 100)].tolist() == pytest.approx(
+        (1992.0 + np.arange(60, 100, DT) - STOP_S).tolist(), abs=0.6
+    )
+    # stopped, then on the lift: still only while stopped
+    assert g["still_mask"][_bins(41, 54)].min() == 1.0
+    assert g["still_mask"][_bins(0, 39)].max() == 0.0
+    assert g["lift_mask"][_bins(60, 108)].min() == 1.0
+    assert g["lift_mask"][_bins(0, 50)].max() == 0.0
+    assert g["still_mask"][_bins(60, 108)].max() == 0.0
+    # carving: turns at speed, nothing while stopped
+    assert g["carve"][_bins(2, 38)].mean() > 0.8
+    assert g["carve"][_bins(42, 54)].max() == 0.0
+    # slow streams: wind held for its payload, faces for 0.9 s
+    assert g["wind"][_bins(50, 51)].tolist() == pytest.approx([0.8] * 10)
+    assert g["wind"][_bins(0, 49.9)].max() == 0.0
+    assert g["faces"][_bins(60, 61)].tolist() == pytest.approx([0.25] * 10, abs=0.001)
+    assert g["faces"][int(61 / DT)] == 0.0
+    assert tel.events == [] and tel.meta["clock"] == "gps"
+    assert tel.meta["camera"] == "GoPro HERO11 Black" and tel.meta["gps_samples"] == 1200
+
+
+def test_compute_without_gps_finds_stillness_from_the_vibration(monkeypatch):
+    tel = _compute_ride(monkeypatch, gps=False)
+    g = tel.grid
+    assert np.isnan(g["speed_kmh"]).all() and g["gps_ok"].max() == 0.0
+    assert g["lift_mask"].max() == 0.0  # no altitude: no lift
+    assert g["vibration"][_bins(2, 38)].min() > 0.04
+    assert g["still_mask"][_bins(41, 54)].min() == 1.0
+    assert g["still_mask"][_bins(0, 39)].max() == 0.0
+    assert tel.meta["clock"] == "none" and tel.meta["gps_samples"] == 0
+
+
+def test_interp_gaps_fills_only_short_inner_gaps():
+    nan = np.nan
+    x = np.array([nan, 1.0, nan, nan, 4.0, nan, nan, nan, nan, 9.0, nan])
+    got = telemetry._interp_gaps(x, 3)
+    want = [nan, 1.0, 2.0, 3.0, 4.0, nan, nan, nan, nan, 9.0, nan]  # edges and long gaps stay
+    assert np.array_equal(got, want, equal_nan=True)
+    assert np.isnan(x[2])  # the input is not changed
+    one = np.array([nan, 5.0, nan])
+    assert np.array_equal(telemetry._interp_gaps(one, 3), one, equal_nan=True)
+
+
+def test_rolling_mean_and_std_skip_nans():
+    x = np.array([1.0, 3.0, np.nan, 5.0, 7.0])
+    assert telemetry._rolling(x, 3).tolist() == pytest.approx([2.0, 2.0, 4.0, 6.0, 6.0])
+    std = telemetry._rolling(x, 3, "std")
+    assert std.tolist() == pytest.approx([1.0, 1.0, 1.0, 1.0, 1.0])
+    assert np.isnan(telemetry._rolling(np.full(4, np.nan), 3)).all()
+    assert telemetry._rolling(x, 0).tolist()[:2] == [1.0, 3.0]  # k < 1: one bin

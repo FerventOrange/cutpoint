@@ -233,6 +233,16 @@ class DetectorWeightsMissing(WeightsMissing):
     disk."""
 
 
+def square_crops(x: Any) -> list[Any]:
+    """Three square crops of ``(N, C, H, W)`` frames along their long side: left, centre and
+    right, or top, centre and bottom for portrait frames (views, no copies)."""
+    h, w = x.shape[2], x.shape[3]
+    s = min(h, w)
+    if w >= h:
+        return [x[:, :, :, o : o + s] for o in (0, (w - s) // 2, w - s)]
+    return [x[:, :, o : o + s, :] for o in (0, (h - s) // 2, h - s)]
+
+
 def load_clip(*, download: bool = False) -> Any:
     """The CLIP ViT-L/14 model (open_clip, CPU, float32) from the weights under
     :func:`paths.clip_dir`.
@@ -387,10 +397,7 @@ class VisualModels:
         torch = self.torch
         x = torch.from_numpy(frames).to(self.device).permute(0, 3, 1, 2).float() / 255
         b, _, h, w = x.shape
-        s = min(h, w)
-        offs = [0, (w - s) // 2, w - s] if w >= h else [0, (h - s) // 2, h - s]
-        crops = [x[:, :, :, o : o + s] if w >= h else x[:, :, o : o + s, :] for o in offs]
-        c = torch.cat(crops, 0)  # (3B, 3, s, s): left block, centre block, right block
+        c = torch.cat(square_crops(x), 0)  # (3B, 3, s, s): left block, centre block, right block
         e = self._embed(c)
         emb = e.view(3, b, -1).permute(1, 0, 2).cpu().numpy().astype(np.float16)
         with torch.inference_mode():

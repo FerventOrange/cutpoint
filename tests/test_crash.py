@@ -754,3 +754,274 @@ def test_imu_read_path_prefers_the_x3_trailer_then_the_staged_copy(
     monkeypatch.setattr(stage, "is_remote", lambda _p: remote)
     io, x3_imu, read_path, got = telemetry.imu_read_path(src)
     assert (io, x3_imu, read_path, got) == (src, trailer and Path(trailer), Path(read), unstaged)
+
+
+# ---------------------------------------------------------------- the stop after a GPS gap (A181)
+def test_a_gps_gap_after_the_impact_does_not_move_the_stop_earlier():
+    """#1085 A181: NaN speed bins between the impact and the stop shifted the stop (and the
+    words and movement measured from it) one bin earlier each."""
+    inp = _inputs(spike=True)
+    speed = np.full(N, 30.0)
+    speed[303:331] = np.nan  # no fix for 2.8 s after the impact
+    speed[340:] = 0.0  # stopped at 34 s
+    speed[500:] = 20.0  # moving again at 50 s
+    inp.tel.grid["speed_kmh"] = speed
+    inp.words = [
+        {"start": 32.0, "end": 32.4, "word": "whoa"},  # still sliding: before the stop
+        {"start": 45.0, "end": 45.5, "word": "ouch"},  # the first words after it
+    ]
+    c = {"t0": 30.0, "t1": 30.2}
+    clip = crash.plan_clip(inp, c, crash.CrashParams())
+    assert (clip["end"], clip["until"]) == (46.0, "first words after")
+    inp.words = []
+    clip = crash.plan_clip(inp, c, crash.CrashParams())
+    assert (clip["end"], clip["until"]) == (50.0, "moving again")
+
+
+# ---------------------------------------------------------------- portrait crops (A182)
+def _pooling_encoder() -> crash.ClipEncoder:
+    """A ClipEncoder whose fake model embeds a 224x224 crop as its 16x16 average pool."""
+    torch = pytest.importorskip("torch")
+
+    class Model:
+        def encode_image(self, x):
+            return torch.nn.functional.adaptive_avg_pool2d(x, 16).flatten(1) + 1.0
+
+    enc = crash.ClipEncoder.__new__(crash.ClipEncoder)
+    enc.torch, enc.device, enc.dtype, enc.model = torch, "cpu", torch.float32, Model()
+    enc.mean, enc.std = torch.zeros(1, 3, 1, 1), torch.ones(1, 3, 1, 1)
+    enc.on_device = True
+    return enc
+
+
+def _embed_before_a182(enc, frames: np.ndarray, batch: int, centre: bool) -> np.ndarray:
+    """ClipEncoder.embed as it was before #1085 A182 (crops along the width only)."""
+    torch = enc.torch
+    crops = 1 if centre else 3
+    out = []
+    for i in range(0, len(frames), batch):
+        x = torch.from_numpy(frames[i : i + batch]).permute(0, 3, 1, 2).float() / 255
+        b, _, h, w = x.shape
+        s = min(h, w)
+        if centre:
+            y0, x0 = (h - s) // 2, (w - s) // 2
+            c = x[:, :, y0 : y0 + s, x0 : x0 + s]
+        else:
+            c = torch.cat([x[:, :, :, o : o + s] for o in (0, (w - s) // 2, w - s)], 0)
+        c = torch.nn.functional.interpolate(
+            c, size=(224, 224), mode="bicubic", antialias=True, align_corners=False
+        )
+        c = ((c.clamp(0, 1) - enc.mean) / enc.std).to(enc.dtype)
+        e = enc.model.encode_image(c).float()
+        e = e / e.norm(dim=-1, keepdim=True)
+        out.append(e.view(crops, b, -1).permute(1, 0, 2).numpy())
+    return np.concatenate(out)
+
+
+@pytest.mark.parametrize("centre", [False, True], ids=["three-crops", "centre"])
+def test_landscape_embeddings_are_byte_identical_to_before(centre):
+    enc = _pooling_encoder()
+    frames = np.random.default_rng(7).integers(0, 256, (5, 36, 64, 3), dtype=np.uint8)
+    got = enc.embed(frames, batch=2, centre=centre)
+    assert got.tobytes() == _embed_before_a182(enc, frames, 2, centre).tobytes()
+
+
+def test_portrait_frames_are_cropped_top_centre_bottom_like_the_visual_layer():
+    """#1085 A182: a tall frame was squashed whole into all three crops."""
+    from cutpoint.events.visual import square_crops  # noqa: PLC0415
+
+    enc = _pooling_encoder()
+    frames = np.zeros((2, 80, 40, 3), np.uint8)
+    frames[:, :20, :, 0] = 255  # red top quarter
+    frames[:, 60:, :, 2] = 255  # blue bottom quarter
+    emb = enc.embed(frames, batch=1)
+    top, mid, bottom = emb[0]
+    assert not np.allclose(top, mid) and not np.allclose(mid, bottom)
+    assert not np.allclose(top, bottom)
+    assert np.allclose(enc.embed(frames, centre=True)[:, 0], emb[:, 1], atol=1e-6)
+    # the crops VisualModels.run takes
+    crops = square_crops(frames.transpose(0, 3, 1, 2))
+    assert [c.shape for c in crops] == [(2, 3, 40, 40)] * 3
+    assert crops[0][:, 0].max() == 255 and crops[0][:, 2].max() == 0  # top: red only
+    assert crops[2][:, 2].max() == 255 and crops[2][:, 0].max() == 0  # bottom: blue only
+    wide = square_crops(frames.transpose(0, 3, 2, 1))  # the same frames on their side
+    assert all(np.array_equal(a, b.transpose(0, 1, 3, 2)) for a, b in zip(crops, wide, strict=True))
+
+
+@pytest.mark.parametrize("portrait", [True, False], ids=["portrait", "landscape"])
+def test_old_dense_windows_of_a_portrait_source_are_computed_again(tmp_path, monkeypatch, portrait):
+    """#1085 A182: windows a dense store kept from before the portrait crops are dropped for a
+    portrait source only; a landscape source keeps them, marked so it is not probed again."""
+    from conftest import media_info  # noqa: PLC0415
+
+    src = tmp_path / "s.mp4"
+    src.write_bytes(b"x")
+    p = _generic_params()
+    old = {"t": [1.0], "crash": [0.5], "change": [0.0]}
+    new = {**old, "crops": crash.DENSE_CROPS}
+    crash.cache.save_json(crash._dense_cache(src, p), {"1.0-11.0": old, "20.0-30.0": new})
+    size = {"width": 1080, "height": 1920} if portrait else {}
+    probes = []
+    monkeypatch.setattr(
+        "cutpoint.ffmpeg_utils.probe", lambda path: probes.append(path) or media_info(path, **size)
+    )
+    store = crash._load_dense(src, p)
+    want = {"20.0-30.0": new} if portrait else {"1.0-11.0": new, "20.0-30.0": new}
+    assert store == want and len(probes) == 1
+    crash.cache.save_json(crash._dense_cache(src, p), store)
+    assert crash._load_dense(src, p) == want and len(probes) == 1  # all marked: no probe
+
+
+def test_a_dense_store_of_a_source_that_cannot_be_probed_is_kept(tmp_path, monkeypatch):
+    from cutpoint.errors import FFmpegError  # noqa: PLC0415
+
+    def probe(path):
+        raise FFmpegError("no video stream")
+
+    src = tmp_path / "s.mp4"
+    src.write_bytes(b"x")
+    p = _generic_params()
+    crash.cache.save_json(crash._dense_cache(src, p), {"1.0-11.0": {"t": [1.0]}})
+    monkeypatch.setattr("cutpoint.ffmpeg_utils.probe", probe)
+    store = crash._load_dense(src, p)
+    assert list(store) == ["1.0-11.0"]
+    assert "crops" not in store["1.0-11.0"]
+    crash.cache.save_json(crash._dense_cache(src, p), [1, 2])  # not a store
+    assert crash._load_dense(src, p) == {}
+
+
+# ---------------------------------------------------------------- the IMU half (A490)
+FS = 200.0
+BINS = int(60.0 / crash.DT) + 1  # the grids of a 60 s source
+GOPRO = [{"Accelerometer": {"Scale": [32767.0 / (16 * crash.G)]}}]  # +-16 g per axis
+INSTA360 = [{"Default": {"Metadata": {}}}]
+
+
+def _imu_stream() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """60 s of a camera ridden upright (gravity on +y): a 5 g bump at 10 s, a crash at 30 s
+    (one axis at 32.3 g, saturated on every camera, then a 1 s roll at 300 deg/s) and lying on
+    its side (gravity on +x) from 31 s on. Events start mid-bin."""
+    t = np.arange(int(60 * FS)) / FS
+    acc = np.tile([0.0, crash.G, 0.0], (len(t), 1))
+    acc += np.random.default_rng(3).normal(0, 0.3, acc.shape)  # riding vibration
+    acc[(t >= 10.05) & (t < 10.07), 0] = 5 * crash.G
+    acc[(t >= 30.05) & (t < 30.07), 0] = 32.3 * crash.G
+    acc[t >= 31.05] = [crash.G, 0.0, 0.0]
+    gyr = np.zeros_like(acc)
+    gyr[(t >= 30.05) & (t < 31.05), 2] = 300.0  # roll: perpendicular to gravity
+    return t, acc, gyr
+
+
+def _fake_parse(monkeypatch, groups, t, acc, gyr) -> list[Path]:
+    calls = []
+
+    def parse_imu(path, level=20):
+        calls.append(path)
+        return object(), groups, t, acc, gyr
+
+    monkeypatch.setattr(telemetry, "parse_imu", parse_imu)
+    return calls
+
+
+@pytest.mark.parametrize("groups", [GOPRO, INSTA360, [{}]], ids=["gopro", "insta360", "no-scale"])
+def test_imu_grids_bin_peaks_saturation_rotation_and_gravity(monkeypatch, groups):
+    _fake_parse(monkeypatch, groups, *_imu_stream())
+    g = crash._compute_imu(Path("a.mp4"), 60.0)
+    assert all(len(v) == BINS for k, v in g.items() if k != "imu_hz")
+    assert g["imu_hz"][0] == pytest.approx(FS, rel=1e-3)
+    assert g["acc_g"][100] == pytest.approx(5.1, abs=0.05) and g["acc_g"][300] > 32
+    assert np.flatnonzero(g["sat"]).tolist() == [300]  # the crash, not the bump
+    assert g["gyro_dps"][300:311].min() == pytest.approx(300.0)
+    assert g["rot_deg"][295:315].sum() == pytest.approx(300.0, rel=0.01)  # 1 s at 300 deg/s
+    assert g["offaxis_deg"][295:315].sum() == pytest.approx(300.0, rel=0.01)
+    assert g["offaxis_deg"][:295].max() == 0.0
+    assert g["grav_y"][50:250].mean() == pytest.approx(1.0, abs=0.01)  # upright
+    assert g["grav_x"][330:600].mean() == pytest.approx(1.0, abs=0.01)  # on its side
+
+
+def test_a_crash_turns_the_camera_away_from_its_riding_orientation(monkeypatch):
+    """The synthetic stream end to end: the IMU grids, the flip angle against the riding
+    orientation (moving, from GPS) and the telemetry decision."""
+    _fake_parse(monkeypatch, GOPRO, *_imu_stream())
+    inp = _inputs(spike=False)
+    inp.imu = crash._compute_imu(Path("a.mp4"), 60.0)
+    inp.tel.grid["speed_kmh"][300:] = 0.0  # stopped at the crash
+    inp.flip = crash._flip_deg(inp)
+    assert inp.flip[200:290].max() < 2  # riding: the riding orientation
+    assert inp.flip[330:600].min() == pytest.approx(90.0, abs=2)  # on its side
+    p = crash.CrashParams()
+    bump, hit = cands = crash.candidate_events(inp, p)
+    assert [c["origin"] for c in cands] == ["telemetry", "telemetry"]
+    assert bump["t0"] == 10.0 and 29.5 <= hit["t0"] <= 30.0
+    bump, hit = (crash.telemetry_features(inp, c["t0"], c["t1"], p) for c in cands)
+    assert hit["saturated"] == 1 and hit["flip_after_deg"] == pytest.approx(90, abs=2)
+    assert hit["parts"]["flip"] == 1.0 and hit["parts"]["stop"] == 1.0
+    assert hit["score"] >= 0.5 > bump["score"]
+    assert bump["saturated"] == 0 and bump["parts"]["flip"] == 0.0
+
+
+def test_flip_without_gps_is_measured_against_the_whole_clip():
+    inp = _inputs(spike=False)
+    inp.tel = None
+    grav = np.zeros((N, 3))
+    grav[:, 1] = 1.0
+    grav[500:] = [0.0, -1.0, 0.0]  # upside down for the last 10 s
+    grav[100:110] = np.nan  # no gravity samples
+    inp.imu = {f"grav_{a}": grav[:, k] for k, a in enumerate("xyz")}
+    flip = crash._flip_deg(inp)
+    assert flip[:500].max() == pytest.approx(0.0, abs=0.01)  # NaN bins count as unturned
+    assert flip[500:].min() == pytest.approx(180.0, abs=0.01)
+    inp.imu = {k: np.full(N, np.nan) for k in inp.imu}
+    assert crash._flip_deg(inp).tolist() == [0.0] * N  # no gravity at all
+
+
+def _grav_group(t_us: int, *vecs: tuple[float, float, float]) -> dict:
+    return {
+        "GravityVector": {
+            "TimestampUs": t_us,
+            "Data": [{"x": x, "y": y, "z": z} for x, y, z in vecs],
+        }
+    }
+
+
+def test_the_camera_gravity_stream_is_spread_normalised_and_preferred(monkeypatch):
+    groups = [_grav_group(k * 1_000_000, *[(0.0, -2.0, 0.0)] * 30) for k in range(60)]
+    groups[0]["GravityVector"]["Data"][1] = "not a sample"
+    gt, gv = crash._grav_stream(groups)
+    assert len(gt) == 60 * 30 - 1
+    assert gt[:2].tolist() == pytest.approx([0.0, 2 / 30])  # spread over its payload
+    assert np.allclose(gv, [0.0, -1.0, 0.0])  # unit vectors
+    assert crash._grav_stream([{"GravityVector": {"Data": [1]}}])[0].size == 0
+    # the camera's fused gravity wins over the accelerometer (upright there)
+    _fake_parse(monkeypatch, [*GOPRO, *groups], *_imu_stream())
+    g = crash._compute_imu(Path("a.mp4"), 60.0)
+    assert g["grav_y"][:600].tolist() == pytest.approx([-1.0] * 600)
+    assert np.isnan(g["grav_y"][600])  # past the stream: no data
+
+
+def test_imu_grids_are_cached_per_source_and_a_corrupt_cache_is_recomputed(tmp_path, monkeypatch):
+    src = tmp_path / "GX01.mp4"
+    src.write_bytes(b"x")
+    monkeypatch.setattr(telemetry, "imu_read_path", lambda s: (s, None, s, False))
+    calls = _fake_parse(monkeypatch, GOPRO, *_imu_stream())
+    first = crash.imu_grids(src, 60.0)
+    path = crash.cache.source_dir(src) / f"crashimu-v{crash.IMU_VERSION}.npz"
+    assert path.exists() and len(calls) == 1
+    again = crash.imu_grids(src, 60.0)
+    assert len(calls) == 1  # a hit
+    assert sorted(again) == sorted(first) and all(v.dtype == np.float64 for v in again.values())
+    assert all(np.allclose(again[k], first[k], equal_nan=True, atol=1e-3) for k in first)
+    path.write_bytes(b"not an npz")
+    assert crash.imu_grids(src, 60.0) is not None and len(calls) == 2  # recomputed
+    crash.imu_grids(src, 60.0, force=True)
+    assert len(calls) == 3
+
+
+def test_a_source_without_imu_is_cached_as_none(tmp_path, monkeypatch):
+    src = tmp_path / "GX02.mp4"
+    src.write_bytes(b"x")
+    monkeypatch.setattr(telemetry, "imu_read_path", lambda s: (s, None, s, False))
+    calls = []
+    monkeypatch.setattr(telemetry, "parse_imu", lambda path, level=20: calls.append(path))
+    assert crash.imu_grids(src, 60.0) is None and len(calls) == 1
+    assert crash.imu_grids(src, 60.0) is None and len(calls) == 1  # the "none" marker
