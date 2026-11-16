@@ -55,13 +55,26 @@ def test_the_proxy_guardian_gets_no_api_key_variable(monkeypatch, tmp_path: Path
     assert "PGSTORE_DSN" not in env and FAKE_KEY not in env.values()
 
 
-SECRETS = ("GOOGLE_API_KEY", "GEMINI_API_KEY", "GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY")
+SECRETS = (
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "GITHUB_TOKEN",
+    "AWS_SECRET_ACCESS_KEY",
+    "AZURE_OPENAI_KEY",
+    "GH_PAT",
+    "MYSQL_PWD",
+    "GROQ_API_KEYS",
+)
 KEPT = {
     "PATH": "/usr/bin",
     "APPDATA": "C:/Users/someone/AppData/Roaming",
     "HTTPS_PROXY": "http://proxy.invalid:3128",
     "SSL_CERT_FILE": "/etc/ssl/certs/ca.pem",
     "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+    "PWD": "/home/someone",
+    "OLDPWD": "/tmp",
+    "SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock",
+    "PYTHON_KEYRING_BACKEND": "keyring.backends.SecretService.Keyring",
 }
 
 

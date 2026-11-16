@@ -301,7 +301,7 @@ def job_env() -> dict[str, str]:
     # Never the assistant's API key variables (ai_keys.child_env): no job uses them. Other
     # secret-named variables stay (HF_TOKEN: the job's model downloads).
     return {
-        **ai_keys.child_env(secrets=True),
+        **ai_keys.child_env(keep_secret_names=True),
         "PYTHONUNBUFFERED": "1",
         "PYTHONIOENCODING": "utf-8",
         "CUTPOINT_PROGRESS": "1",

@@ -245,25 +245,30 @@ def clear(provider: str, host: str) -> None:
         raise KeyringError(f"the keyring did not remove the key ({type(err).__name__})") from None
 
 
-# Other programs' secrets a child never needs (GEMINI_API_KEY, GITHUB_TOKEN,
-# AWS_SECRET_ACCESS_KEY, ...): a name ending in API_KEY, APIKEY, TOKEN, ACCESS_KEY or
-# ACCESS_KEY_ID, or with SECRET, PASSWORD or CREDENTIAL in it (upper-cased)
+# Other programs' secrets a child never needs (GEMINI_API_KEY, GITHUB_TOKEN, AZURE_OPENAI_KEY,
+# AWS_SECRET_ACCESS_KEY, GH_PAT, MYSQL_PWD, ...): a name (upper-cased) whose last part is
+# API_KEY(S), APIKEY(S), TOKEN(S), KEY, ACCESS_KEY, PRIVATE_KEY (each also with _ID), PAT, PASS or
+# PASSWD, that ends in _PWD, or with SECRET, PASSWORD or CREDENTIAL in it. PWD, OLDPWD,
+# *_ASKPASS, SSH_AUTH_SOCK and PYTHON_KEYRING_BACKEND stay.
 _SECRET_NAME = re.compile(
-    r"(?:^|_)(?:API_?KEY|TOKEN|ACCESS_KEY(?:_ID)?)$|SECRET|PASSWORD|CREDENTIAL"
+    r"(?:^|_)(?:API_?KEYS?|TOKENS?|(?:ACCESS_|PRIVATE_)?KEY(?:_ID)?|PAT|PASS|PASSWD)$"
+    r"|_PWD$|SECRET|PASSWORD|CREDENTIAL"
 )
 
 
-def child_env(env: Mapping[str, str] | None = None, *, secrets: bool = False) -> dict[str, str]:
+def child_env(
+    env: Mapping[str, str] | None = None, *, keep_secret_names: bool = False
+) -> dict[str, str]:
     """``env`` (default: this process's environment) without the API key variables and any
-    other variable named like a secret (:data:`_SECRET_NAME`). ``secrets``: keep the latter,
-    for Cutpoint's own commands (a ``cutpoint ui`` job: ``HF_TOKEN`` for its model downloads);
-    the key variables go either way."""
+    other variable named like a secret (:data:`_SECRET_NAME`). ``keep_secret_names``: keep the
+    latter, for Cutpoint's own commands (a ``cutpoint ui`` job: ``HF_TOKEN`` for its model
+    downloads); the key variables go either way."""
     env = os.environ if env is None else env
     drop = {name.upper() for name in ENV_VARS}
     return {
         k: v
         for k, v in env.items()
-        if k.upper() not in drop and (secrets or not _SECRET_NAME.search(k.upper()))
+        if k.upper() not in drop and (keep_secret_names or not _SECRET_NAME.search(k.upper()))
     }
 
 
