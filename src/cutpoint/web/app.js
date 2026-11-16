@@ -3815,7 +3815,9 @@ function drawSbHead(c = current(), t = playhead(c)) {
   if (!cell) return;
   const e = planned(c);
   const list = $('#sbList');
-  const x = cell.offsetLeft - list.scrollLeft + Math.max(0, Math.min(1, (t - e.start) / (e.end - e.start))) * cell.offsetWidth;
+  const span = e.end - e.start; // 0 for a clip the export drops
+  const f = span > 1e-6 ? Math.max(0, Math.min(1, (t - e.start) / span)) : 0;
+  const x = cell.offsetLeft - list.scrollLeft + f * cell.offsetWidth;
   el.style.left = `${x.toFixed(1)}px`;
   el.hidden = x < 0 || x > list.clientWidth;
 }
@@ -4279,6 +4281,8 @@ const seqSeg = (j) => {
   const span = Math.max(CUT_PLAY, seqLap() + 1);
   return j ? { ...s, start, end: Math.min(end, start + span) } : { ...s, start: Math.max(start, end - span), end };
 };
+/** Clip ``j`` has left the sequence, or the export drops it (zero length): nothing to play. */
+const seqEmpty = (j) => { const s = seqSeg(j); return !s || s.end - s.start <= 1e-6; };
 /** Seconds the two clips of the playing cut overlap, read live; 0 for a Cut or any other play. */
 function seqLap() {
   if (!S.seqPlay?.across) return 0;
@@ -4460,7 +4464,7 @@ function seqPoll() {
 function cueNext() {
   const sp = S.seqPlay;
   let j = sp.i + 1;
-  while (j < sp.order.length && !seqSeg(j)) j += 1;
+  while (j < sp.order.length && seqEmpty(j)) j += 1;
   const cur = seqSeg(sp.i);
   const seg = seqSeg(j);
   const src = srcOf(seg?.source);
@@ -4534,8 +4538,8 @@ function seqGo(j, lap = 0) {
   const sp = S.seqPlay;
   const skipped = [];
   for (; j < sp.order.length; j += 1) {
+    if (seqEmpty(j)) continue;
     const seg = seqSeg(j);
-    if (!seg) continue;
     const src = srcOf(seg.source);
     if (src && src.status !== 'failed') break;
     skipped.push(seg.label || seg.id);

@@ -1522,8 +1522,8 @@ def export_clips(
         except ValueError as err:
             raise jsonout.ArgumentError(str(err)) from None
     highlights = cache.load_json(project / "highlights.json")
-    language = ((highlights or {}).get("settings") or {}).get("language")
     hl = highlights if isinstance(highlights, dict) else {}
+    language = (hl.get("settings") or {}).get("language")
     known_style = recorded_name(hl) is not None
     # The recorded style: a deleted user style degrades to the built-in base the file records;
     # a file (or none) that records no style gets auto's style for unclear footage (#1002)

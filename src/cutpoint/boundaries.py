@@ -536,17 +536,40 @@ class ClipBounds:
     record: dict[str, Any] = field(default_factory=dict)
 
 
-def separate(clips: list[ClipBounds]) -> None:
+def separate(clips: list[ClipBounds]) -> list[ClipBounds]:
     """Split overlapping ranges of same-source clips (no footage shown twice).
 
     The cut goes in the longest speech-free stretch between the two picks; if
-    the picks themselves overlap, in the middle of the overlap.
+    the picks themselves overlap, in the middle of the overlap. A clip inside
+    another's range is dropped instead (a cut would split the outer one): it is
+    removed from ``clips``, logged as a WARNING, and returned.
     """
+    dropped: list[ClipBounds] = []
     groups: dict[str, list[ClipBounds]] = {}
     for c in clips:
         groups.setdefault(c.key, []).append(c)
     for group in groups.values():
         group.sort(key=lambda c: (c.keep_start, c.keep_end))
+        for i, a in enumerate(group):
+            for b in group[i + 1 :]:
+                if any(x is a or x is b for x in dropped):
+                    continue
+                if abs(a.start - b.start) < 1e-6 and abs(a.end - b.end) < 1e-6:
+                    continue  # the same range twice: cut apart as before
+                if a.start <= b.start + 1e-6 and b.end <= a.end + 1e-6:
+                    outer, inner = a, b
+                elif b.start <= a.start + 1e-6 and a.end <= b.end + 1e-6:
+                    outer, inner = b, a
+                else:
+                    continue
+                logger.warning(
+                    "Dropped %s: its range lies inside %s (a cut would split the longer clip)",
+                    inner.name,
+                    outer.name,
+                )
+                dropped.append(inner)
+        if dropped:
+            group[:] = [c for c in group if not any(c is d for d in dropped)]
         for a, b in pairwise(group):
             if a.end <= b.start + 1e-6:
                 continue
@@ -573,18 +596,21 @@ def separate(clips: list[ClipBounds]) -> None:
                 "reason": note,
             }
             a.end, b.start = min(a.end, cut), max(b.start, cut)
+    if dropped:
+        clips[:] = [c for c in clips if not any(c is d for d in dropped)]
+    return dropped
 
 
-def fit_clips(clips: list[ClipBounds], settings: SpeechSettings) -> None:
+def fit_clips(clips: list[ClipBounds], settings: SpeechSettings) -> list[ClipBounds]:
     """Separate same-source neighbours, then move ends/starts out of speech.
 
     Clips of one source are handled in source-time order: an end may extend up
     to the next clip's start, and the next clip's start may move back only to
     this clip's (final) end. A clip's own ``max_extend`` / ``max_lead``
     replace the global caps for it (recorded as ``limits``). Results go to
-    each clip's ``record``.
+    each clip's ``record``. Returns the clips :func:`separate` dropped.
     """
-    separate(clips)
+    dropped = separate(clips)
     groups: dict[str, list[ClipBounds]] = {}
     for c in clips:
         groups.setdefault(c.key, []).append(c)
@@ -613,6 +639,7 @@ def fit_clips(clips: list[ClipBounds], settings: SpeechSettings) -> None:
                 c.end = round(mv.new, 3)
                 c.record["end"] = mv.to_json()
             prev_end = c.end
+    return dropped
 
 
 def log_summary(clips: list[ClipBounds]) -> None:
