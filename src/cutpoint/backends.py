@@ -28,14 +28,15 @@ def split_ollama_url(raw: str, what: str) -> tuple[SplitResult, int | None]:
     url = raw
     bare = "://" not in url
     if bare:
-        if url.count(":") > 1 and not url.startswith("["):
-            url = f"[{url}]"
+        login, at, host = url.rpartition("@")  # a login (user:pw@host:port) is no IPv6 address
+        if host.count(":") > 1 and not host.startswith("["):
+            url = f"{login}{at}[{host}]"
         url = "http://" + url
     parts = urlsplit(url)
     try:
         port = parts.port or (OLLAMA_PORT if bare else None)
     except ValueError:
-        raise ValueError(f"{what} {strip_userinfo(raw)!r}: invalid port") from None
+        raise ValueError(f"{what} {without_login(raw)!r}: invalid port") from None
     return parts, port
 
 
@@ -90,6 +91,99 @@ def strip_userinfo(text: str) -> str:
     return _USERINFO.sub("", text)
 
 
+# host[:port] as an authority without a login: a name or IPv4, a bracketed or bare IPv6 address
+_HOST_PORT = re.compile(
+    r"(\[[^\]]*\]|[^:\[\]@]*)(:\d*)?|[0-9A-Fa-f.]*:[0-9A-Fa-f.]*:[0-9A-Fa-f:.]*"
+)
+
+
+def without_login(raw: str) -> str:
+    """``raw``, an Ollama URL as given (with or without a scheme, as ``--ollama-url`` takes
+    it), without its ``user:password@``: what Cutpoint writes down (``settings.ollama_url`` of
+    ``highlights.json``, the ``argv`` of ``progress.json``) and shows in errors. A login is
+    never saved; a later run takes it from :func:`with_login` (A639).
+
+    The login is the authority's (up to its last ``@``, as a password may hold one); an
+    ``@`` in the path (``http://h/p@x``) is no login. An authority that is no ``host[:port]``
+    while an ``@`` follows (a password with an unencoded ``/``, ``?`` or ``#``) is cut up to
+    the last ``@``."""
+    head, sep, rest = raw.partition("://")
+    if not sep:
+        head, rest = "", raw
+    ends = [i for i in (rest.find(c) for c in "/?#") if i >= 0]
+    end = min(ends, default=len(rest))
+    authority = rest[:end]
+    if "@" in authority:
+        rest = authority.rpartition("@")[2] + rest[end:]
+    elif "@" in rest and not _HOST_PORT.fullmatch(authority):
+        rest = rest[rest.rfind("@") + 1 :]
+    return head + sep + rest
+
+
+def saved_settings(hl: Any) -> Any:
+    """``hl`` (a ``highlights.json`` object) as it is written: ``settings.ollama_url`` without
+    its login (:func:`without_login`), changed in place. Every writer of ``highlights.json``
+    calls it, so an older file that kept a login loses it on its next write (A639)."""
+    st = hl.get("settings") if isinstance(hl, dict) else None
+    if isinstance(st, dict) and isinstance(st.get("ollama_url"), str):
+        st["ollama_url"] = without_login(st["ollama_url"])
+    return hl
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(url: str) -> tuple[str, str, int | None] | None:
+    """``(scheme, host, port)`` of an Ollama URL (normalised as :func:`normalize_ollama_url`),
+    the scheme's port when it names none; None for a value that is no usable URL."""
+    try:
+        parts = urlsplit(normalize_ollama_url(url, "ollama_url"))
+        port = parts.port
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    return scheme, (parts.hostname or "").lower(), port or _DEFAULT_PORTS.get(scheme)
+
+
+def _configured_ollama_urls() -> list[str]:
+    """The Ollama URLs the user set: ``$OLLAMA_HOST``, then ``ollama_url`` and the URLs of the
+    Vision and AI Chat roles on Ollama in ``config.json`` (an invalid ``config.json``: none of
+    it)."""
+    urls = [(os.environ.get("OLLAMA_HOST") or "").strip()]
+    try:
+        cfg = get_config()
+    except ValueError:
+        return [u for u in urls if u]
+    urls.append(cfg.ollama_url.strip())
+    urls += [s.url.strip() for s in (cfg.vision_assistant, cfg.assistant) if s.provider == "ollama"]
+    return [u for u in urls if u]
+
+
+def with_login(url: str) -> str:
+    """``url`` (an Ollama base URL) with the ``user:password@`` of ``$OLLAMA_HOST`` or of an
+    Ollama URL in ``config.json`` that names the same scheme, host and port, when it has no
+    login of its own; else ``url`` as it is. A recorded ``--ollama-url`` keeps no login
+    (:func:`without_login`), so a replayed run (``reanalyze``, ``resume``, ``events``,
+    ``rerank --analyze``, a job of ``cutpoint ui``) gets it here (A639)."""
+    if any(get_auth_from_url(url)):
+        return url
+    want = _origin(url)
+    if want is None:
+        return url
+    for other in _configured_ollama_urls():
+        user, password = get_auth_from_url(_with_scheme(other))
+        if (user or password) and _origin(other) == want:
+            parts = urlsplit(url)
+            login = urlsplit(_with_scheme(other)).netloc.rpartition("@")[0]
+            return urlunsplit(parts._replace(netloc=f"{login}@{parts.netloc}"))
+    return url
+
+
+def _with_scheme(url: str) -> str:
+    """``url`` with ``http://`` when it has no scheme (as :func:`split_ollama_url` adds it)."""
+    return url if "://" in url else "http://" + url
+
+
 class OllamaReplyError(ValueError):
     """Ollama answered, but not with the JSON shape asked for (A116)."""
 
@@ -102,9 +196,10 @@ def headers_only(request: Any) -> Any:
 
 
 def _auth(url: str) -> Any:
-    """The URL's own ``user:password`` as basic auth (what ``requests`` sends for it), else
-    :func:`headers_only`: never a ``~/.netrc`` login."""
-    user, password = get_auth_from_url(url)
+    """The URL's own ``user:password`` as basic auth (what ``requests`` sends for it), else the
+    configured login of the same server (:func:`with_login`), else :func:`headers_only`: never
+    a ``~/.netrc`` login."""
+    user, password = get_auth_from_url(with_login(url))
     return HTTPBasicAuth(user, password) if user or password else headers_only
 
 

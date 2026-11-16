@@ -90,10 +90,47 @@ def _now() -> str:
 
 def options_key(options: dict[str, Any]) -> str:
     """:func:`cutpoint.cache.params_hash` of the parsed options (no callables, ``--json`` or
-    ``-v``; paths as strings)."""
-    return cache.params_hash(
-        {k: v for k, v in options.items() if k not in _NOT_OPTIONS and not callable(v)}
-    )
+    ``-v``; paths as strings; ``--ollama-url`` without its login, :func:`without_login`)."""
+    kept = {k: v for k, v in options.items() if k not in _NOT_OPTIONS and not callable(v)}
+    if isinstance(kept.get("ollama_url"), str):
+        from cutpoint.backends import without_login  # noqa: PLC0415 (requests: off the CLI import)
+
+        kept["ollama_url"] = without_login(kept["ollama_url"])
+    return cache.params_hash(kept)
+
+
+_URL_OPTION = "--ollama-url"
+_URL_PREFIX = "--ollama-u"  # the shortest abbreviation argparse takes for it
+
+
+def recorded_argv(argv: Sequence[str]) -> list[str]:
+    """``argv`` as ``progress.json`` keeps it: each ``--ollama-url`` value (``--ollama-url X``,
+    ``--ollama-url=X``, or an abbreviation of the option) without its ``user:password@``, so
+    the record (read by ``cutpoint resume`` and ``cutpoint ui``) holds no login (A639). The
+    values after ``--`` are left as they are."""
+    from cutpoint.backends import without_login  # noqa: PLC0415 (requests: off the CLI import)
+
+    out: list[str] = []
+    value_next = False
+    for raw in argv:
+        arg = str(raw)
+        if value_next:
+            out.append(without_login(arg))
+            value_next = False
+            continue
+        if arg == "--":
+            out += [str(a) for a in argv[len(out) :]]
+            break
+        opt, eq, value = arg.partition("=")
+        if opt.startswith(_URL_PREFIX) and _URL_OPTION.startswith(opt):
+            if eq:
+                out.append(f"{opt}={without_login(value)}")
+            else:
+                out.append(arg)
+                value_next = True
+            continue
+        out.append(arg)
+    return out
 
 
 def _error(err: BaseException) -> dict[str, str]:
@@ -129,7 +166,7 @@ class Recorder:
             "version": VERSION,
             "generator": f"cutpoint {__version__}",
             "command": command,
-            "argv": [str(a) for a in argv],
+            "argv": recorded_argv(argv),
             "cwd": str(Path.cwd()),
             "options_key": options_key(options),
             "status": "running",

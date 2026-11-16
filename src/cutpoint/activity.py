@@ -1256,7 +1256,9 @@ def record_context(project: Path, context: str | None) -> bool:
     if "vision_context" not in settings and settings.get("vision_used") is True:
         settings["vision_context"] = settings.get("context")
     settings["context"] = words
-    cache.save_json(path, hl, durable=True)
+    from cutpoint.backends import saved_settings  # noqa: PLC0415 (requests: off the CLI import)
+
+    cache.save_json(path, saved_settings(hl), durable=True)
     logger.info("activity: the description is recorded in %s", path.name)
     return True
 
