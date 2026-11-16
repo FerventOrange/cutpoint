@@ -1025,3 +1025,76 @@ def test_a_source_without_imu_is_cached_as_none(tmp_path, monkeypatch):
     monkeypatch.setattr(telemetry, "parse_imu", lambda path, level=20: calls.append(path))
     assert crash.imu_grids(src, 60.0) is None and len(calls) == 1
     assert crash.imu_grids(src, 60.0) is None and len(calls) == 1  # the "none" marker
+
+
+def _parse_gopro(monkeypatch) -> list[Path]:
+    """A fake GoPro parse (camera named, for telemetry.extract); returns the parsed paths."""
+    calls = []
+    parsed = SimpleNamespace(camera="GoPro", model="HERO11 Black"), GOPRO, *_imu_stream()
+
+    def parse_imu(path, level=20):
+        calls.append(path)
+        return parsed
+
+    monkeypatch.setattr(telemetry, "parse_imu", parse_imu)
+    return calls
+
+
+def test_extract_parses_a_source_once_for_its_telemetry_and_the_crash_imu_grids(
+    tmp_path, monkeypatch
+):
+    src = tmp_path / "GX03.mp4"
+    src.write_bytes(b"x")
+    monkeypatch.setattr(telemetry, "imu_read_path", lambda s: (s, None, s, False))
+    calls = _parse_gopro(monkeypatch)
+    tel = telemetry.extract(src, 60.0)
+    grids = crash.imu_grids(src, 60.0)
+    assert tel is not None and grids is not None
+    assert calls == [src]  # one parse fills both caches
+    expected = crash._compute_imu(src, 60.0)  # as imu_grids computed them on its own
+    assert sorted(grids) == sorted(expected)
+    assert all(np.allclose(grids[k], expected[k], equal_nan=True, atol=1e-3) for k in expected)
+
+
+def test_extract_keeps_valid_crash_imu_grids_and_leaves_a_failed_parse_to_imu_grids(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(telemetry, "imu_read_path", lambda s: (s, None, s, False))
+    src = tmp_path / "GX04.mp4"
+    src.write_bytes(b"x")
+    path = crash._imu_cache(src)
+    crash.cache.save_npz(path, acc_g=np.ones(3))
+    _parse_gopro(monkeypatch)
+    telemetry.extract(src, 60.0)
+    assert crash.cache.load_npz(path)["acc_g"].tolist() == [1.0, 1.0, 1.0]  # kept
+    other = tmp_path / "GX05.mp4"
+    other.write_bytes(b"x")
+    calls = []
+    monkeypatch.setattr(telemetry, "parse_imu", lambda path, level=20: calls.append(path))
+    assert telemetry.extract(other, 60.0) is None
+    assert crash.imu_grids(other, 60.0) is None and calls == [other, other]  # imu_grids retries
+
+
+@pytest.mark.parametrize(
+    ("unstaged", "remux_ok", "parsed"),
+    [(True, True, ["small"]), (True, False, ["full"]), (False, True, ["full"])],
+    ids=["remote-remuxed", "remux-failed-full-file", "local-not-remuxed"],
+)
+def test_imu_grids_read_a_remote_unstaged_file_through_the_gpmf_remux(
+    tmp_path, monkeypatch, unstaged, remux_ok, parsed
+):
+    src = tmp_path / "GX06.mp4"
+    src.write_bytes(b"x")
+    full, small = tmp_path / "full.mp4", tmp_path / "small.mp4"
+    monkeypatch.setattr(telemetry, "imu_read_path", lambda s: (s, None, full, unstaged))
+    remuxed = []
+
+    def gpmf_copy(io, tmp):
+        remuxed.append(io)
+        return small if remux_ok else None
+
+    monkeypatch.setattr(crash, "_gpmf_copy", gpmf_copy)
+    calls = _parse_gopro(monkeypatch)
+    assert crash.imu_grids(src, 60.0) is not None
+    assert remuxed == ([src] if unstaged else [])
+    assert calls == [{"small": small, "full": full}[p] for p in parsed]

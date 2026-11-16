@@ -283,7 +283,7 @@ def test_extract_recomputes_a_truncated_telemetry_cache(home, tmp_path, monkeypa
     _truncated(stem.with_suffix(".npz"))
     calls = []
     monkeypatch.setattr(telemetry, "imu_read_path", lambda s: (None, None, s, False))
-    monkeypatch.setattr(telemetry, "_compute", lambda *a: calls.append(a))
+    monkeypatch.setattr(telemetry, "parse_imu", lambda *a: calls.append(a))
     assert telemetry.extract(src, 1.0, p) is None
     assert len(calls) == 1
 
