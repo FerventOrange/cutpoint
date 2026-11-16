@@ -132,6 +132,8 @@ class OcrParams:
 # 25: ... but the rows a feed reads first in one frame are lines of their own (a screen's text in
 # the feed's area, #891)
 GENERIC_VERSION = 25
+# Reads of a source whose part gave no frames before the cached result is kept as it is.
+MAX_INCOMPLETE_READS = 2
 
 # Chat overlays (Twitch VODs): a discovered "feed" region that shows this many distinct text
 # lines per hour of footage is chat, not a kill feed. Measured on real footage: chat 9000-40000
@@ -3812,10 +3814,15 @@ def detect_ocr_events(
     key = params.key(game, preset) | ({"avoid": avoid} if avoid else {})
     key["raw"] = cache.params_hash(raw.key)
     cpath = layer_cache_path(src.cdir, "ocr", key)
-    if not force and (hit := cache.load_json(cpath)) is not None:
-        _log_score_slots(src.name, hit.get("stats", {}))
-        return hit["events"], hit.get("stats", {})
     can_read = engine is not None or make_engine is not None
+    tries = 0  # reads of this source that left a part unread
+    if not force and (hit := cache.load_json(cpath)) is not None:
+        tries = int(hit.get("stats", {}).get("incomplete", 0))
+        # a read that left a part unread is read again, but only once more: a part that
+        # fails twice is taken as damaged
+        if not (tries and tries < MAX_INCOMPLETE_READS and can_read):
+            _log_score_slots(src.name, hit.get("stats", {}))
+            return hit["events"], hit.get("stats", {})
     if force and can_read:  # without an engine nothing would read it again
         raw.drop()
     meta = None if debug_dir else raw.meta()
@@ -4013,6 +4020,8 @@ def detect_ocr_events(
                 read_errors[0],
             )
         stats["read_errors"] = pos["read_errors"] + len(read_errors)
+        if failed:
+            stats["incomplete"] = tries + 1
         flush(len(segments), 0)
         if writer is not None and failed:
             logger.info("%s: raw OCR cache left incomplete (a part gave no frames)", src.name)
