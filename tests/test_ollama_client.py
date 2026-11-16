@@ -16,7 +16,7 @@ import pytest
 import requests
 
 from cutpoint import backends, cli, vision
-from cutpoint.assistant.providers import OllamaProvider, ProviderError
+from cutpoint.assistant.providers import OllamaProvider, ProviderError, public
 from cutpoint.events import common
 
 SECRET = "s3cret"
@@ -83,6 +83,24 @@ def test_a_no_host_cli_error_has_no_password() -> None:
     with pytest.raises(argparse.ArgumentTypeError, match="no host") as got:
         cli._ollama_url_arg(f"http://user:{SECRET}@:11434")
     assert SECRET not in str(got.value)
+
+
+@pytest.mark.parametrize("password", ["pa/ss", "p@ss"])
+def test_a_password_with_a_slash_or_at_never_shows(password: str) -> None:
+    """An unencoded "/" makes urlsplit read the netloc as ``user:pa``: the port error."""
+    assert backends.strip_userinfo(f"http://user:{password}@host:1") == "http://host:1"
+    with pytest.raises(ValueError, match="invalid port") as got:
+        backends.normalize_ollama_url("http://user:pa/ss@host", "--ollama-url")
+    assert "user" not in str(got.value) and "ss" not in str(got.value)
+    with pytest.raises(argparse.ArgumentTypeError, match=r"no host|invalid port") as got:
+        cli._ollama_url_arg(f"http://user:{password}@:11434")
+    assert "user" not in str(got.value) and "ss" not in str(got.value)
+
+
+def test_strip_userinfo_keeps_text_without_a_login() -> None:
+    assert backends.strip_userinfo("http://host:1/api/tags") == "http://host:1/api/tags"
+    assert backends.strip_userinfo("http://u:p@s/s@h:1") == "http://h:1"
+    assert backends.strip_userinfo("a@b http://u:p/x@h/api") == "a@b http://h/api"
 
 
 def test_the_vision_paths_log_no_password(monkeypatch, quiet_guard, caplog) -> None:
@@ -201,3 +219,11 @@ def test_ollama_reply_reads_chat_and_generate_answers() -> None:
     assert backends.ollama_reply({"response": "hi"}, generate=True) == "hi"
     with pytest.raises(ValueError, match="no reply text"):
         backends.ollama_reply({"response": "hi"})
+
+
+def test_public_strips_a_password_with_a_slash_or_at() -> None:
+    for url in ("http://user:pa/ss@host:1", "http://user:p@ss@host:1"):
+        shown = public(f"{url} is not reachable")
+        assert "pa" not in shown.replace("path", "") and "ss" not in shown
+        assert shown == "http://host:1 is not reachable"
+    assert public("http://host:1/v1") == "http://host:1/v1"

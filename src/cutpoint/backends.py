@@ -81,7 +81,8 @@ def ollama_url() -> str:
 
 # --------------------------------------------------------------------------- Ollama requests
 
-_USERINFO = re.compile(r"(?<=://)[^/\s]*@")
+# Up to the LAST "@" of the URL (before any "?" or "#"): a password may hold an unencoded "/" or "@".
+_USERINFO = re.compile(r"(?<=://)[^\s'\"?#]*@")
 
 
 def strip_userinfo(text: str) -> str:

@@ -35,7 +35,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
-import re
 import threading
 import time
 from collections.abc import Callable
@@ -49,7 +48,7 @@ from urllib3.util import parse_url
 
 from cutpoint.assistant import cliproxy, keys
 from cutpoint.backends import headers_only as _headers_only
-from cutpoint.backends import normalize_ollama_url, ollama_send, ollama_url
+from cutpoint.backends import normalize_ollama_url, ollama_send, ollama_url, strip_userinfo
 from cutpoint.config import AssistantSettings, assistant_settings
 from cutpoint.vision import default_model as vision_model
 from cutpoint.vision import unreachable_reason
@@ -582,13 +581,10 @@ def _openai_base(url: str) -> str:
     return base + "/v1" if urlsplit(base).path in ("", "/") else base
 
 
-_USERINFO = re.compile(r"(?<=://)[^/@\s]+@")
-
-
 def public(text: str) -> str:
     """``text`` with the ``user:password@`` part of every URL in it left out: what a message
     (a turn's error, which ``chat.json`` keeps) may show."""
-    return _USERINFO.sub("", text)
+    return strip_userinfo(text)
 
 
 def _key_hint(name: str, host: str, *, shared: bool = True, vision: bool = False) -> str:
