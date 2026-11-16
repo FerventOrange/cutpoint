@@ -1013,5 +1013,5 @@ def test_360_analyze_again_keeps_the_ids_of_the_earlier_analysis(
     monkeypatch.setattr(analyze_mod, "_analyze", capture)
     _run_analyze(no_events=True)
     (kw,) = got
-    assert kw["ids"] == {("a.lrv", 10.0, 20.0): "h003"}
-    assert kw["last_candidate_id"] == 40
+    assert kw["opts"].ids == {("a.lrv", 10.0, 20.0): "h003"}
+    assert kw["opts"].last_candidate_id == 40
