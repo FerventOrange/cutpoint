@@ -298,6 +298,107 @@ def test_describe_windows_retry_succeeds(ollama, tmp_path, monkeypatch) -> None:
     assert len(ollama.chats) == 2 and stats["ok"] == 1 and len(results) == 1
 
 
+class ScriptedRater:
+    """A fake vision client: ``script`` maps a window number (1-based) to "ok", "fail"
+    (every ask fails) or "timeout" (the ask times out)."""
+
+    last_prompt_tokens = 1
+
+    def __init__(self, script: dict[int, str]) -> None:
+        self.script, self.asked, self.timed_out, self.cur = script, [], False, 0
+
+    def describe(self, prompt: str, images: Any, schema: Any, **kw: Any) -> Any:
+        self.timed_out = False
+        self.asked.append(self.cur)
+        what = self.script.get(self.cur, "ok")
+        if what == "timeout":
+            self.timed_out = True
+            return None
+        return None if what == "fail" else REPLY
+
+
+def _many(
+    tmp_path: Path,
+    monkeypatch,
+    rater: ScriptedRater,
+    count: int = 10,
+    windows=None,
+    force=False,
+    fails=0,
+):
+    """Describe ``count`` windows; the rater learns the window number from build_messages."""
+    src = _source(tmp_path)
+    monkeypatch.setattr(vw, "grab_frames", lambda *a, **k: list(JPEGS))
+    wins = windows or [
+        vw.Window(str(src.path), i * 30.0, i * 30.0 + 15, 1.0, ["s"]) for i in range(count)
+    ]
+    real = vw.build_messages
+
+    def build(src_, win, *a, **k):
+        rater.cur = int(win.start // 30) + 1
+        return real(src_, win, *a, **k)
+
+    monkeypatch.setattr(vw, "build_messages", build)
+    params = vw.VlmParams(model="qwen3.5:9b")
+    out = vw.describe_windows(
+        rater, {str(src.path): src}, wins, params, {}, [], {}, force, fails=fails
+    )
+    return wins, out
+
+
+def test_a_timeout_stops_the_layer_and_the_next_run_asks_the_rest(tmp_path, monkeypatch) -> None:
+    rater = ScriptedRater({3: "timeout"})
+    wins, (results, stats) = _many(tmp_path, monkeypatch, rater)
+    assert rater.asked == [1, 2, 3]  # no retry of window 3, none after it
+    assert len(results) == 2 and stats["ok"] == 2 and stats["failed"] == 1
+    assert "timed out" in stats["stopped"]
+    again = ScriptedRater({})
+    _, (results, stats) = _many(tmp_path, monkeypatch, again, windows=wins)
+    assert again.asked == [3, 4, 5, 6, 7, 8, 9, 10] and len(results) == 10
+    assert stats["cached"] == 2 and "stopped" not in stats
+
+
+def test_force_stops_asking_but_keeps_the_cache_after_a_stop(tmp_path, monkeypatch) -> None:
+    wins, _ = _many(tmp_path, monkeypatch, ScriptedRater({}))  # all 10 cached
+    rater = ScriptedRater({2: "timeout"})
+    _, (results, stats) = _many(tmp_path, monkeypatch, rater, windows=wins, force=True)
+    # window 1 described again, window 2 times out, windows 3-10 come from the cache
+    assert rater.asked == [1, 2]
+    assert len(results) == 9 and stats["cached"] == 8 and "timed out" in stats["stopped"]
+
+
+def test_failures_in_a_row_stop_the_layer(tmp_path, monkeypatch) -> None:
+    rater = ScriptedRater(dict.fromkeys(range(2, 11), "fail"))
+    _, (results, stats) = _many(tmp_path, monkeypatch, rater)
+    # window 1 ok, then 3 windows (2 asks each) fail in a row
+    assert rater.asked == [1, 2, 2, 3, 3, 4, 4]
+    assert len(results) == 1 and stats["failed"] == 3 and "in a row" in stats["stopped"]
+    assert stats["streak"] == 3
+
+
+def test_failures_of_the_batch_before_count_toward_the_stop(tmp_path, monkeypatch) -> None:
+    rater = ScriptedRater({1: "fail"})
+    _, (results, stats) = _many(tmp_path, monkeypatch, rater, fails=2)
+    assert rater.asked == [1, 1]
+    assert not results and "in a row" in stats["stopped"]
+
+
+def test_a_failure_followed_by_success_goes_on(tmp_path, monkeypatch) -> None:
+    rater = ScriptedRater({2: "fail", 4: "fail", 5: "fail"})
+    _, (results, stats) = _many(tmp_path, monkeypatch, rater)
+    assert len(results) == 7 and stats["failed"] == 3 and "stopped" not in stats
+
+
+def test_run_events_warns_when_the_layer_stops(extra_ok, ollama, tmp_path, monkeypatch) -> None:
+    ollama.replies = [requests.Timeout("slow")]  # one ask, no retry
+    with jsonout.run("events") as res:
+        _run_vlm(tmp_path, monkeypatch)
+    assert len(ollama.chats) == 1
+    (warning,) = res.warnings
+    assert warning["code"] == "vlm_unavailable"
+    assert "timed out" in warning["message"] and "1 window(s) not described" in warning["message"]
+
+
 def test_vision_frames_are_capped_to_the_image_token_budget(ollama, tmp_path, monkeypatch) -> None:
     # 640 tokens of 32x32 px at 16:9: 606 px high, so 16 frames fit the 16k context
     assert vw.FRAME_HEIGHT == 606
