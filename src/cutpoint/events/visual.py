@@ -1165,8 +1165,7 @@ def run_layer(
     (the caller decides), or without ``errors`` the last one is raised when every source
     failed. :class:`~cutpoint.errors.LowMemoryError` always propagates.
     """
-    from cutpoint.errors import LowMemoryError  # noqa: PLC0415
-    from cutpoint.events.pipeline import skip_source  # noqa: PLC0415
+    from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
 
     need = [s for s in sources if force or load_visual(s, params) is None]
     stats: dict[str, Any] = {"cached": len(sources) - len(need), "computed": 0}
@@ -1188,24 +1187,21 @@ def run_layer(
             (p.person_pos, p.person_neg),
         ):
             text_embeddings(pos + neg, models)
-        failed: list[Exception] = []
+        guard = SourceGuard("Visual layer")
         for s in need:
             try:
                 got = compute_visual(
                     s, models, params, force=True, avoid=(bad or {}).get(str(s.path))
                 )
-            except LowMemoryError:
-                raise
             except Exception as err:  # noqa: BLE001 - one bad source, logged
-                skip_source("Visual layer", s, err)
-                failed.append(err)
+                guard.skip(err, s.name, s.path)
                 continue
             if got is not None:
                 stats["computed"] += 1
         if errors is not None:
-            errors += failed
-        elif failed and len(failed) == len(sources):  # not one bad file: the layer failed
-            raise failed[-1]
+            errors += guard.failed.values()
+        else:  # not one bad file: the layer failed
+            guard.raise_if_all_failed(len(sources))
         if handoff is not None:
             handoff(models)
     finally:

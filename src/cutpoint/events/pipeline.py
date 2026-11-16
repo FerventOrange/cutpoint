@@ -26,7 +26,7 @@ from typing import Any, NamedTuple
 
 from cutpoint import cache, jsonout, memguard, progress, tsrepair
 from cutpoint import paths as cutpoint_paths
-from cutpoint.errors import LowMemoryError, is_out_of_memory
+from cutpoint.errors import LowMemoryError
 from cutpoint.events import explosions, paths, scoring
 from cutpoint.events.audio_events import (
     AudioParams,
@@ -362,8 +362,7 @@ def run_events(
         with stage("audio"):
             unload_ollama()
             with VramMonitor() as vm:
-                failed: Exception | None = None  # the last source's error
-                n_failed = 0  # sources whose detection failed
+                guard = SourceGuard("Audio events")
                 try:
                     for i, s in enumerate(sources):
                         if batch_size and i and not i % batch_size:  # a batch boundary
@@ -390,15 +389,11 @@ def run_events(
                                 stats["audio_device"] = det.device
                             try:  # miss or forced
                                 evs = detect_audio_events(s, det, audio, force=True)
-                            except LowMemoryError:
-                                raise
                             except Exception as err:  # noqa: BLE001 - one bad source, logged
-                                skip_source("Audio events", s, err)
-                                failed, evs = err, []
-                                n_failed += 1
+                                guard.skip(err, s.name, s.path)
+                                evs = []
                         layer1[str(s.path)] += [{**e, "kind": "audio"} for e in evs]
-                    if failed is not None and n_failed == len(sources):  # the layer failed
-                        raise failed
+                    guard.raise_if_all_failed(len(sources))  # not one bad file: it failed
                 except BaseException:
                     keep = False  # the layer failed: free the model now
                     raise
@@ -907,24 +902,18 @@ def _light_layer(
     try:
         if enc is None:
             enc = ClipEncoder(device="cpu")
-        failed: list[Exception] = []
+        guard = SourceGuard("Frame index")
         for i, (s, _) in enumerate(todo.values()):
             progress.update(progress.fraction(i, len(todo)))
             try:
                 got = V.compute_light(s, enc, spans.get(str(s.path), []), force=force)
-            except LowMemoryError:
-                raise
-            except Exception as err:  # one bad source, logged (out of memory: below)
-                if is_out_of_memory(err):  # not a bad source: the layer stops
-                    raise LowMemoryError(str(err), "out of memory") from err
-                skip_source("Frame index", s, err)
-                failed.append(err)
+            except Exception as err:  # noqa: BLE001 - one bad source (out of memory: below)
+                guard.skip(err, s.name, s.path)
                 continue
             if got is not None:
                 stats["computed"] += 1
                 stats["frames"] += len(got.t)
-        if failed and len(failed) == len(todo):  # not one bad file: the layer failed
-            raise failed[-1]
+        guard.raise_if_all_failed(len(todo))  # not one bad file: the layer failed
         if crash_run and encoder is None:
             kept.append(enc)  # the crash layer's dense confirm: no second load
             handed = True
@@ -1051,15 +1040,70 @@ def _release_engine(make_engine: Callable[[], OcrEngine]) -> None:
     make_engine.cache_clear()  # type: ignore[attr-defined]
 
 
-def skip_source(what: str, s: Any, err: Exception) -> None:
-    """A WARNING and a ``step_failed`` warning naming the source ``what`` skipped (``err``);
-    also used by the voice and visual layers. An out-of-memory ``err`` stops the run instead
-    (:func:`~cutpoint.memguard.raise_if_out_of_memory`)."""
-    memguard.raise_if_out_of_memory(err, what, s.name)
-    message = f"{s.name}: {what} skipped this source ({err})"
-    logger.debug("%s: %s failed", s.path, what, exc_info=True)
-    logger.warning("%s", message)
-    jsonout.warn("step_failed", message, [s.path])
+class SourceGuard:
+    """One bad source skips only itself (#985, #1033), the rule of every per-source loop of
+    the events layers, the action-cam telemetry read, the contact sheets and the crash layer.
+
+    In the loop, ``except Exception as err: guard.skip(err, name, path)`` (then ``continue``):
+    a :class:`~cutpoint.errors.LowMemoryError` is raised again and an out-of-memory ``err``
+    stops the run as one (:func:`~cutpoint.memguard.raise_if_out_of_memory`, resumable);
+    any other error is logged at DEBUG with its traceback, a WARNING and a ``step_failed``
+    warning name the source, and it is recorded in :attr:`failed`. After the loop,
+    :meth:`raise_if_all_failed` raises the last error when every source failed: not one bad
+    file, the step failed. KeyboardInterrupt is not an :class:`Exception`: it passes.
+
+    Args:
+        what: The step, in the message: ``"<name>: <what> skipped this source (<err>)"``.
+        message: Another message (``str.format`` fields ``name``, ``what`` and ``err``).
+        oom_what: The step in the out-of-memory error (default: ``what``).
+        debug_what: The step in the DEBUG line ``"<path>: <debug_what> failed"`` (default:
+            ``what``).
+        log: The logger of the lines (default: this module's); the caller's keeps their
+            logger name (``caplog`` and ``-v`` filters by it).
+    """
+
+    def __init__(
+        self,
+        what: str,
+        *,
+        message: str = "{name}: {what} skipped this source ({err})",
+        oom_what: str | None = None,
+        debug_what: str | None = None,
+        log: logging.Logger | None = None,
+    ) -> None:
+        self.what = what
+        self.log = log or logger
+        self.message = message
+        self.oom_what = oom_what or what
+        self.debug_what = debug_what or what
+        self.failed: dict[str, Exception] = {}  # str(path): its error, in the order they failed
+
+    def skip(self, err: Exception, name: str, path: Path | str, *, warn: bool = True) -> None:
+        """Skip the source ``name`` (``path``) that failed with ``err`` (see the class);
+        ``warn=False``: logged at DEBUG only (the caller warned for it already).
+
+        Raises:
+            LowMemoryError: If ``err`` is one or is an out-of-memory error.
+        """
+        if isinstance(err, LowMemoryError):
+            raise err
+        memguard.raise_if_out_of_memory(err, self.oom_what, name)
+        self.log.debug("%s: %s failed", path, self.debug_what, exc_info=True)
+        if warn:
+            message = self.message.format(name=name, what=self.what, err=err)
+            self.log.warning("%s", message)
+            jsonout.warn("step_failed", message, [path])
+        self.failed[str(path)] = err
+
+    def all_failed(self, total: int) -> bool:
+        """Whether a source failed and as many failed as ``total`` (the sources it counts)."""
+        return bool(self.failed) and len(self.failed) == total
+
+    def raise_if_all_failed(self, total: int) -> None:
+        """Raise the last source's error, unchanged (cli.py maps its type), when
+        :meth:`all_failed`."""
+        if self.all_failed(total):
+            raise list(self.failed.values())[-1]
 
 
 def _telemetry_layer(
@@ -1078,8 +1122,7 @@ def _telemetry_layer(
 
     data = cache.load_json(project / "telemetry.json") or {}
     out: dict[str, list[dict[str, Any]]] = {}
-    failed: Exception | None = None  # the last source's error
-    n_failed = 0  # sources whose telemetry read failed
+    guard = SourceGuard("Telemetry coverage")
     for s in sources:
         rec = (data.get("sources") or {}).get(str(s.path))
         if not rec:
@@ -1107,12 +1150,9 @@ def _telemetry_layer(
             )
         try:
             tel = extract(s.path, s.duration)
-        except LowMemoryError:
-            raise
         except Exception as err:  # noqa: BLE001 - logged; its events stay, without coverage
-            skip_source("Telemetry coverage", s, err)
-            failed, tel = err, None
-            n_failed += 1
+            guard.skip(err, s.name, s.path)
+            tel = None
         if tel is not None:
             g = tel.grid
             ride = (g["lift_mask"] == 0) & (g["still_mask"] == 0)
@@ -1129,8 +1169,7 @@ def _telemetry_layer(
                     }
                 )
         out[str(s.path)] = evs
-    if failed is not None and n_failed == len(sources):  # not one bad file: the layer failed
-        raise failed
+    guard.raise_if_all_failed(len(sources))  # not one bad file: the layer failed
     return out
 
 

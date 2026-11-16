@@ -64,7 +64,6 @@ from typing import Any
 import numpy as np
 
 from cutpoint import activity, cache, jsonout, memguard, progress
-from cutpoint.errors import LowMemoryError
 
 logger = logging.getLogger(__name__)
 # Why the run that calls detect_project has no visual layer (``analyze`` left the
@@ -1314,6 +1313,8 @@ def detect_project(
     Returns:
         Path of crashes.json.
     """
+    from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
+
     sources = []
     for src, dur in _project_sources(project):
         try:
@@ -1357,23 +1358,15 @@ def detect_project(
     # The 360 lift rides of load_inputs are found with this profile's lift captions.
     prompts = activity.prompts(full_prof) if full_prof else None
     progress.start("inputs")
-    failed: Exception | None = None  # the last source's error
-    failed_src: Path | None = None
+    guard = SourceGuard("crash detection", debug_what="crash inputs", log=logger)
     with activity.use_prompts(prompts or activity.project_prompts(project)):
         for src, dur in sources:
             try:
                 if force:
                     imu_grids(src, dur, force=True, tmp_dir=tmp_dir)
                 inp = load_inputs(src, dur, p, tmp_dir, language)
-            except LowMemoryError:
-                raise
-            except Exception as err:  # one unreadable source must not cost the others theirs
-                memguard.raise_if_out_of_memory(err, "crash detection", src.name)
-                message = f"{src.name}: crash detection skipped this source ({err})"
-                logger.debug("%s: crash inputs failed", src, exc_info=True)
-                logger.warning("%s", message)
-                jsonout.warn("step_failed", message, [src])
-                failed, failed_src = err, src
+            except Exception as err:  # noqa: BLE001 - one unreadable source, logged
+                guard.skip(err, src.name, src)
                 continue
             inputs[str(src)] = inp
             if inp.imu is None:
@@ -1393,12 +1386,12 @@ def detect_project(
                     "what the camera sees",
                     [src],
                 )
-    if not inputs and failed is not None:  # no source loaded: not one bad file, the step failed
+    if guard.all_failed(len(sources)):  # no source loaded: not one bad file, the step failed
+        last_src, last = list(guard.failed.items())[-1]
         logger.warning(
-            "crash detection failed for every source (last: %s: %s)",
-            failed_src.name if failed_src else "?", failed,
-        )  # fmt: skip
-        raise failed  # unchanged: cli.py maps its type and attributes (missing_extra, errno)
+            "crash detection failed for every source (last: %s: %s)", Path(last_src).name, last
+        )
+        guard.raise_if_all_failed(len(sources))  # unchanged: cli.py maps its type (missing_extra)
     timings["inputs_s"] = round(time.perf_counter() - t0, 1)
     cands = []
     for inp in inputs.values():
@@ -1426,16 +1419,9 @@ def detect_project(
     enc = encoder
     stores: dict[str, dict[str, Any]] = {}
     windows: set[tuple[str, str]] = set()
-    dense_failed: dict[str, Exception] = {}  # source: its error (its other windows skipped)
-
-    def dense_skip(src: str, err: Exception) -> None:
-        """One source's dense check failed (``err``): warned, its candidates unconfirmed."""
-        memguard.raise_if_out_of_memory(err, "the crash dense check", Path(src).name)
-        message = f"{Path(src).name}: crash dense check skipped this source ({err})"
-        logger.debug("%s: crash dense check failed", src, exc_info=True)
-        logger.warning("%s", message)
-        jsonout.warn("step_failed", message, [src])
-        dense_failed[src] = err
+    # a source whose dense check failed: warned, its candidates unconfirmed (other windows skipped)
+    dense_guard = SourceGuard("crash dense check", oom_what="the crash dense check", log=logger)
+    dense_failed = dense_guard.failed  # source: its error
 
     for c in todo:
         src = c["source"]
@@ -1443,7 +1429,7 @@ def detect_project(
             try:  # the cache folder stats the file: one gone since its inputs loaded fails
                 stores[src] = {} if force else _load_dense(Path(src), p)
             except OSError as err:
-                dense_skip(src, err)
+                dense_guard.skip(err, Path(src).name, src)
                 stores[src] = {}
         windows.add((src, "{:.1f}-{:.1f}".format(*dense_window(c, p))))
     if dense:
@@ -1470,16 +1456,13 @@ def detect_project(
             new = key not in store
             try:
                 c["dense"] = dense_feature(enc, inputs[src], c, p, store)
-            except LowMemoryError:
-                raise
-            except Exception as err:  # noqa: BLE001 - one bad source, logged by dense_skip
-                dense_skip(src, err)
+            except Exception as err:  # noqa: BLE001 - one bad source, logged
+                dense_guard.skip(err, Path(src).name, src)
                 c["dense"] = None
                 continue
             if new and key in store:  # saved at once: an interrupted run keeps its windows
                 cache.save_json(_dense_cache(Path(src), p), store)
-        if dense_failed and len(dense_failed) == len(stores):  # not one bad file: it failed
-            raise list(dense_failed.values())[-1]
+        dense_guard.raise_if_all_failed(len(stores))  # not one bad file: it failed
     finally:
         if enc is not None:
             enc.close()
@@ -1507,6 +1490,12 @@ def detect_project(
         for f in out_dir.glob("*.jpg"):
             cache.remove(f)
     sheet_failed: set[str] = set(dense_failed)  # sources whose frames cannot be read
+    sheet_guard = SourceGuard(
+        "crash contact sheets",
+        oom_what="the crash contact sheets",
+        debug_what="crash contact sheet",
+        log=logger,
+    )
     for c in cands[:sheets]:
         c["caption"] = (
             f"{c['id']} {c['name']} {c['t0']:.1f}-{c['t1']:.1f}s "
@@ -1519,17 +1508,11 @@ def detect_project(
             continue
         try:
             path = write_sheet(c, out_dir / f"{c['id']}_{Path(c['name']).stem}_{c['t0']:.0f}.jpg")
-        except LowMemoryError:
-            raise
-        except Exception as err:  # a sheet is a by-product: crashes.json is still written
-            memguard.raise_if_out_of_memory(err, "the crash contact sheets", Path(c["source"]).name)
+        except Exception as err:  # noqa: BLE001 - a sheet is a by-product: crashes.json is written
+            # warned once per source (a source whose dense check failed was warned for then)
+            warn = c["source"] not in dense_failed
+            sheet_guard.skip(err, Path(c["source"]).name, c["source"], warn=warn)
             sheet_failed.add(c["source"])
-            logger.debug("%s: crash contact sheet failed", c["source"], exc_info=True)
-            if c["source"] not in dense_failed:  # warned once per source
-                name = Path(c["source"]).name
-                message = f"{name}: crash contact sheets skipped this source ({err})"
-                logger.warning("%s", message)
-                jsonout.warn("step_failed", message, [c["source"]])
             continue
         if path:
             c["sheet"] = str(path)

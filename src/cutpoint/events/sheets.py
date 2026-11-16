@@ -18,8 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import jsonout, memguard
-from cutpoint.errors import FFmpegError, LowMemoryError
+from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import grab_images
 from cutpoint.imageio import write_jpeg
 
@@ -153,24 +152,24 @@ def write_visual_sheets(project: Path, sources: list[Any], n: int = 24) -> list[
     fails, the last error is raised. An out-of-memory error stops the run
     (:class:`~cutpoint.errors.LowMemoryError`).
     """
+    from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
+
     beauty: list[_Frame] = []
     friends: list[_Frame] = []
     lift: list[_Frame] = []
     boxes_of: _Boxes = {}
-    failed: Exception | None = None  # the last source's error
+    guard = SourceGuard(
+        "contact sheets",
+        oom_what="the contact sheets",
+        debug_what="contact sheet frames",
+        log=logger,
+    )
     done = 0
     for s in sources:
         try:
             got = _source_frames(s)
-        except LowMemoryError:
-            raise
-        except Exception as err:  # one unreadable source must not cost the others theirs
-            memguard.raise_if_out_of_memory(err, "the contact sheets", s.name)
-            message = f"{s.name}: contact sheets skipped this source ({err})"
-            logger.debug("%s: contact sheet frames failed", s.path, exc_info=True)
-            logger.warning("%s", message)
-            jsonout.warn("step_failed", message, [s.path])
-            failed = err
+        except Exception as err:  # noqa: BLE001 - one unreadable source, logged
+            guard.skip(err, s.name, s.path)
             continue
         if got is None:
             continue
@@ -179,8 +178,8 @@ def write_visual_sheets(project: Path, sources: list[Any], n: int = 24) -> list[
         friends += got[1]
         lift += got[2]
         boxes_of.update(got[3])
-    if failed is not None and not done:  # not one bad file: the step failed
-        raise failed
+    # not one bad file: the step failed (a source without visual data counts for neither)
+    guard.raise_if_all_failed(len(guard.failed) + done)
     out_dir = project / "visual_check"
     written = []
 
