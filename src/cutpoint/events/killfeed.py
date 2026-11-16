@@ -24,6 +24,7 @@ import queue
 import re
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -1529,9 +1530,33 @@ class Interpreter:
         team colours stay (:func:`_two_hues`): two kills of one pair can follow each other."""
         tracker = self.tracker
         lines = [e for e in tracker.events if e["type"] == "kill" and e.get("entry") == "icon"]
+        # The name test of a line depends on its (killer, victim) only, so it is made once per
+        # distinct pair, and each name comparison once (#1085, A703: it was every line with
+        # every other, twice). Lines are not bucketed by killer: a misread killer still matches.
+        counts = Counter((e["killer"], e["victim"]) for e in lines)
+        same_memo: dict[tuple[str | None, str | None], bool] = {}
+        side_memo: dict[tuple[str | None, str | None], bool] = {}
+        verdicts: dict[tuple[str, str], bool] = {}
 
         def same(a: str | None, b: str | None) -> bool:
-            return tracker._nested(a, b) or tracker._misread(a, b)
+            if (a, b) not in same_memo:
+                same_memo[a, b] = tracker._nested(a, b) or tracker._misread(a, b)
+            return same_memo[a, b]
+
+        def same_side(a: str | None, b: str | None) -> bool:
+            """One side of :meth:`EventTracker._same_line`."""
+            if (a, b) not in side_memo:
+                side_memo[a, b] = same(a, b) or similar(a or "", b or "") >= tracker.fuzzy
+            return side_memo[a, b]
+
+        def names_label(p: tuple[str, str]) -> bool:
+            if p not in verdicts:
+                # :meth:`EventTracker._same_line` of two lines with these names
+                repeats = {q for q in counts if same_side(p[0], q[0]) and same_side(p[1], q[1])}
+                verdicts[p] = sum(counts[q] for q in repeats) >= LABEL_REPEATS and not any(
+                    same(n, o) for q in counts if q not in repeats for n in p for o in q
+                )
+            return verdicts[p]
 
         def label(e: dict[str, Any]) -> bool:
             if _two_hues(e):
@@ -1539,16 +1564,7 @@ class Interpreter:
             runs = _runs(e["_times"], STATIC_FEED_GUARD_S)
             if max(run[-1] - run[0] for run in runs) > ROW_NOTICE_MAX_S:
                 return True
-            repeats = [o for o in lines if tracker._same_line(e, o)]
-            ids = {id(o) for o in repeats}
-            names = (e["killer"], e["victim"])
-            return len(repeats) >= LABEL_REPEATS and not any(
-                same(n, o[side])
-                for o in lines
-                if id(o) not in ids
-                for n in names
-                for side in ("killer", "victim")
-            )
+            return names_label((e["killer"], e["victim"]))
 
         gone = {id(e) for e in lines if label(e)}
         tracker.events = [e for e in tracker.events if id(e) not in gone]
