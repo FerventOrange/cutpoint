@@ -35,7 +35,7 @@ from collections.abc import Iterator, Sequence
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from cutpoint import cache, jsonout, paths, state
+from cutpoint import cache, folders, jsonout, paths, state
 from cutpoint.config import (
     canonical_source,
     get_config,
@@ -45,6 +45,7 @@ from cutpoint.config import (
     unc_path,
     windows_norm,
 )
+from cutpoint.errors import FolderBusyError
 from cutpoint.utils import file_stamp, matches_glob
 
 logger = logging.getLogger(__name__)
@@ -92,15 +93,37 @@ def _mount(path: Path) -> tuple[str, str]:
     return best, fstype
 
 
+_DRIVE_NO_ROOT, _DRIVE_REMOVABLE, _DRIVE_REMOTE = 1, 2, 4  # GetDriveTypeW; 0 is unknown
+
+
 def is_remote(path: Path) -> bool:
     """Whether ``path`` is likely on slow or network storage.
 
-    Windows: any drive but ``C:``, ``D:`` and ``E:``. Elsewhere: a network file
-    system mount (NFS, SMB/CIFS, SSHFS, GVfs, rclone, WebDAV, 9p, Ceph,
-    GlusterFS); anything else counts as local.
+    Windows: a UNC path, or a drive whose type (``GetDriveTypeW``) is network or removable.
+    If Windows cannot say, the drive letter decides: any drive but ``C:``, ``D:`` and ``E:``
+    is remote. Elsewhere: a network file system mount (NFS, SMB/CIFS, SSHFS, GVfs, rclone,
+    WebDAV, 9p, Ceph, GlusterFS); anything else counts as local.
     """
     if sys.platform == "win32":
-        return path.drive.upper() not in ("C:", "D:", "E:")
+        drive = path.drive or Path(path).absolute().drive
+        if drive.upper().startswith("\\\\?\\UNC\\"):
+            drive = "\\\\" + drive[8:]
+        elif drive.startswith("\\\\?\\"):
+            drive = drive[4:]
+        if drive.startswith("\\\\"):
+            return True
+        # Lazy: projectdelete is heavy and stage is imported by the CLI at startup.
+        from cutpoint import projectdelete  # noqa: PLC0415
+
+        try:
+            kind = projectdelete._drive_type(drive + "\\")
+        except (OSError, AttributeError):
+            kind = 0
+        if kind in (_DRIVE_REMOVABLE, _DRIVE_REMOTE):
+            return True
+        if kind > _DRIVE_NO_ROOT:
+            return False
+        return drive.upper() not in ("C:", "D:", "E:")
     return _mount(path)[1] in _NETWORK_FS
 
 
@@ -224,6 +247,8 @@ _INDEX: dict[tuple, dict[str, dict]] = {}
 # staged_path results: path -> (result, size of the copy or None when result is path, whether
 # the result is a timeline copy of tsrepair).
 _STAGED: dict[tuple, dict[str, tuple[str, int | None, bool]]] = {}
+# Of a staged (not timeline) hit in _STAGED: path -> (size, mtime_ns) of the source then.
+_SOURCE_STAT: dict[str, tuple[int, int]] = {}
 # The last loaded timeline index of tsrepair (cache_dir()/timeline-index.json), by its stamp.
 _TIMELINE: dict[tuple, dict[str, dict]] = state.register_container(__name__, "_TIMELINE", {})
 # A thread inside unrepaired(): staged_path skips the timeline copies (tsrepair reads the
@@ -305,8 +330,9 @@ def staged_path(path: str, *, repaired: bool = True) -> str:
     index, so this is safe to apply to any ffmpeg ``-i`` argument.
 
     Results are cached until ``stage_dir``, ``source_remap``, the stage index or the timeline
-    index file changes; a cached copy is checked again (one stat), so one deleted or
-    truncated by hand is no longer returned.
+    index file changes; a cached copy is checked again (its size, and the source's size and
+    mtime when the source can be reached), so one deleted or truncated by hand, or one whose
+    source changed, is no longer returned.
     """
     if not repaired or getattr(_LOCAL, "unrepaired", False):
         return _staged_path(path, repaired=False)[0]
@@ -327,6 +353,7 @@ def _memo_hit(path: str) -> tuple[str, int | None, bool]:
     memo = _STAGED.get(deps)
     if memo is None:
         _STAGED.clear()
+        _SOURCE_STAT.clear()
         memo = _STAGED[deps] = {}
     hit = memo.get(path)
     if hit is not None and hit[2]:
@@ -339,8 +366,22 @@ def _memo_hit(path: str) -> tuple[str, int | None, bool]:
                 hit = None
         except OSError:
             hit = None
+        if hit is not None and (seen := _SOURCE_STAT.get(path)) is not None:
+            try:
+                st = Path(path).stat()
+                if (st.st_size, st.st_mtime_ns) != seen:
+                    hit = None  # the source changed since the hit was made
+            except OSError:
+                pass  # the source is not reachable (offline drive): the copy is all there is
     if hit is None:
         hit = memo[path] = _staged_path(path)
+        _SOURCE_STAT.pop(path, None)
+        if hit[1] is not None and not hit[2]:
+            try:
+                st = Path(path).stat()
+                _SOURCE_STAT[path] = (st.st_size, st.st_mtime_ns)
+            except OSError:
+                pass
     return hit
 
 
@@ -392,8 +433,10 @@ def _timeline_unlisted(path: str) -> tuple[str, int] | None:
 def _staged_path(path: str, *, repaired: bool = True) -> tuple[str, int | None, bool]:
     """:func:`staged_path` without the cache: ``(result, size of the copy or None, whether it
     is a timeline copy)``."""
-    if not path or path.startswith(("-", "pipe:")) or "=" in path:
+    if not path or path.startswith(("-", "pipe:")):
         return path, None, False
+    if "=" in path and not ((p := Path(path)).is_absolute() or p.is_file()):
+        return path, None, False  # a lavfi spec (``color=c=black``), not a file name
     if repaired and (timeline := _timeline_path(path)) is not None:
         return timeline[0], timeline[1], True
     index = _stage_index()
@@ -412,6 +455,13 @@ def _staged_path(path: str, *, repaired: bool = True) -> tuple[str, int | None, 
             return path, None, False
     except OSError:
         return path, None, False
+    try:
+        st = Path(path).stat()
+    except OSError:
+        pass  # the source is not reachable (offline drive): the copy is all there is
+    else:
+        if st.st_size != entry["size"] or st.st_mtime_ns != entry.get("mtime_ns", st.st_mtime_ns):
+            return path, None, False  # the source changed since it was staged
     logger.debug("staged read %s -> %s", path, copy)
     return str(copy), entry["size"], False
 
@@ -537,6 +587,35 @@ def _save_index(stage_dir: Path, index: dict[str, dict[str, Any]]) -> None:
     cache.save_json(stage_dir / STAGE_INDEX, index)
 
 
+_LOCK_WAIT_S = 10.0
+
+
+@contextlib.contextmanager
+def index_lock(index_file: Path) -> Iterator[None]:
+    """Hold the lock of the index file ``index_file`` (``.<name>.cutpoint-lock`` beside it) while
+    it is read, changed and written, so two runs do not lose each other's entries. Waits up to
+    10 s for another run; hold it only around that read-modify-write, never across a copy."""
+    deadline = time.monotonic() + _LOCK_WAIT_S
+    with contextlib.ExitStack() as stack:
+        while True:
+            try:
+                stack.enter_context(folders.swap_lock(index_file.with_suffix("")))
+                break
+            except FolderBusyError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+        yield
+
+
+def _update_index(stage_dir: Path, slot: str, entry: dict[str, Any]) -> None:
+    """Set ``slot`` in the stage index on disk, from a fresh read under the lock."""
+    with index_lock(stage_dir / STAGE_INDEX):
+        fresh = _load_index(stage_dir)
+        fresh[slot] = entry
+        _save_index(stage_dir, fresh)
+
+
 def copy_once(src: Path, dst: Path, label: str) -> float:
     """Sequentially copy ``src`` to ``dst`` (via ``.partial``), keeping mtime.
 
@@ -548,21 +627,26 @@ def copy_once(src: Path, dst: Path, label: str) -> float:
     tmp = dst.with_name(dst.name + ".partial")
     t0 = time.perf_counter()
     done, next_log = 0, 0.1
-    with src.open("rb") as fi, tmp.open("wb") as fo:
-        while chunk := fi.read(CHUNK):
-            fo.write(chunk)
-            done += len(chunk)
-            if size and done / size >= next_log:
-                el = time.perf_counter() - t0
-                logger.info(
-                    "  %s: %3d%% (%.0f MB/s)",
-                    label,
-                    int(done / size * 100),
-                    done / 1e6 / max(el, 1e-6),
-                )
-                next_log += 0.1
-    os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
-    tmp.replace(dst)
+    try:
+        with src.open("rb") as fi, tmp.open("wb") as fo:
+            while chunk := fi.read(CHUNK):
+                fo.write(chunk)
+                done += len(chunk)
+                if size and done / size >= next_log:
+                    el = time.perf_counter() - t0
+                    logger.info(
+                        "  %s: %3d%% (%.0f MB/s)",
+                        label,
+                        int(done / size * 100),
+                        done / 1e6 / max(el, 1e-6),
+                    )
+                    next_log += 0.1
+        os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
+        tmp.replace(dst)
+    except BaseException:  # a read error or Ctrl+C leaves no half copy behind
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
     return time.perf_counter() - t0
 
 
@@ -632,7 +716,7 @@ def stage_sources(
                     items.append(_item(src, dst, st.st_size, "skipped"))
                     if rel is not None and "rel" not in entry:  # staged before #163: record it now
                         entry["rel"] = list(rel)
-                        _save_index(stage_dir, index)
+                        _update_index(stage_dir, slot, entry)
                     continue
             if slot is None:  # a new file; a case-twin of a staged one gets its own key
                 slot = key
@@ -658,7 +742,7 @@ def stage_sources(
             }
             if rel is not None:
                 index[slot]["rel"] = list(rel)
-            _save_index(stage_dir, index)
+            _update_index(stage_dir, slot, index[slot])
             total_b += st.st_size
             total_s += secs
             copied += 1
@@ -768,9 +852,12 @@ def clear_stage(
         keys &= wanted
     for key in keys:
         (stage_dir / index[key]["file"]).unlink(missing_ok=True)
-        del index[key]
     if stage_dir.is_dir():
-        _save_index(stage_dir, index)
+        with index_lock(stage_dir / STAGE_INDEX):
+            fresh = _load_index(stage_dir)  # entries another run added meanwhile stay
+            for key in keys:
+                fresh.pop(key, None)
+            _save_index(stage_dir, fresh)
     reload_stage_index()
     logger.info("Removed %d staged file(s) from %s", len(keys), stage_dir)
     return len(keys)
