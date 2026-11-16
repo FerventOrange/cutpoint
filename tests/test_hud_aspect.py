@@ -216,6 +216,27 @@ def test_a_rediscovered_stale_preset_keeps_what_the_user_set(home, monkeypatch):
     assert new["bigtext"] is False and new["feed"] == {"newest": "top"}
 
 
+def test_a_rediscovered_stale_preset_drops_the_old_row_notices(home, monkeypatch):
+    """``row_notices`` is what discovery found, not the user: a new discovery that finds no
+    icon feed clears it (the user's ``newest`` stays)."""
+    from test_hud_map import _top_up  # noqa: PLC0415
+
+    folder = paths.presets_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    old = {
+        "game": "zonewar",
+        "source": "discovered",
+        "feed": {"newest": "top", "row_notices": True},
+        "regions": [{"name": "feed", "x": 1, "y": 2, "w": 300, "h": 100, "kind": "feed"}],
+        "discovery": {"source_resolution": [3440, 1440]},
+    }
+    (folder / "zonewar.json").write_text(json.dumps(old), encoding="utf-8")
+    stats, _, _ = _top_up(home, monkeypatch, None, None)
+    assert stats["zonewar"]["installed"] is True
+    new = json.loads((folder / "zonewar.json").read_text(encoding="utf-8"))
+    assert new["feed"] == {"newest": "top"}
+
+
 def test_discovery_writes_the_mapping_version(tmp_path, monkeypatch):
     from test_hud_map import _discover  # noqa: PLC0415
 
