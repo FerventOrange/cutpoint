@@ -20,7 +20,7 @@ pytest.importorskip("httpx")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from conftest import write
+from conftest import patch_ui, write
 from cutpoint import paths, ui
 from cutpoint.assistant import context, providers, ranking, session
 from cutpoint.assistant import store as ai_store
@@ -296,7 +296,7 @@ def test_an_old_record_without_a_key_is_never_marked() -> None:
 
 @pytest.fixture
 def client(home: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    monkeypatch.setattr(ui, "cuda_probe", lambda: False)
+    patch_ui(monkeypatch, "cuda_probe", lambda: False)
     app = ui.create_app(PORT)
     with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
         c.headers["X-Cutpoint-Token"] = app.state.token
@@ -327,12 +327,12 @@ def test_the_hook_turns_refusals_and_http_errors_into_ranking_errors(
 
         return raiser
 
-    monkeypatch.setattr(ui, "ranking_preview", refuse("folder_busy"))
+    patch_ui(monkeypatch, "ranking_preview", refuse("folder_busy"))
     with pytest.raises(ranking.RankingError, match="some text") as err:
         hook.preview("funny")
     assert err.value.busy
 
-    monkeypatch.setattr(ui, "ranking_preview", refuse("other"))
+    patch_ui(monkeypatch, "ranking_preview", refuse("other"))
     with pytest.raises(ranking.RankingError) as err:
         hook.preview("funny")
     assert not err.value.busy
@@ -340,7 +340,7 @@ def test_the_hook_turns_refusals_and_http_errors_into_ranking_errors(
     def http(_p, _name):
         raise HTTPException(409, "no analysis")
 
-    monkeypatch.setattr(ui, "ranking_preview", http)
+    patch_ui(monkeypatch, "ranking_preview", http)
     with pytest.raises(ranking.RankingError, match="no analysis") as err:
         hook.preview("funny")
     assert not err.value.busy

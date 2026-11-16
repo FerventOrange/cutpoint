@@ -29,12 +29,24 @@ import numpy as np
 import pytest
 
 pytest.importorskip("httpx")
+import importlib.util
+import tempfile
+
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
-from conftest import link_dir, link_file, media_info, needs_ffmpeg, remap, set_config, write
+from conftest import (
+    link_dir,
+    link_file,
+    media_info,
+    needs_ffmpeg,
+    patch_ui,
+    remap,
+    set_config,
+    write,
+)
 from cutpoint import (
     cache,
     capabilities,
@@ -50,12 +62,13 @@ from cutpoint import (
     runstate,
     ui,
 )
-from cutpoint.assistant import keys
+from cutpoint.assistant import cliproxy, keys
 from cutpoint.assistant import session as ai_session
 from cutpoint.pano import candidates as pano_candidates
 from cutpoint.pano import director as pano_director
 from cutpoint.pano import project as pano_project
 from cutpoint.pano import render as pano_render
+from cutpoint.pano import stitch as pano_stitch
 from cutpoint.utils import find_videos
 from pano_helpers import x3clip
 from proxy_helpers import FakeLauncher, not_running
@@ -95,7 +108,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
 @pytest.fixture(autouse=True)
 def no_nvenc(monkeypatch: pytest.MonkeyPatch) -> None:
     """Proxies encode with libx264 unless a test says otherwise: no GPU probe in tests."""
-    monkeypatch.setattr(ui, "video_encoder", lambda: ui.VideoEncoder("cpu"))
+    patch_ui(monkeypatch, "video_encoder", lambda: ui.VideoEncoder("cpu"))
 
 
 @pytest.fixture(autouse=True)
@@ -534,7 +547,7 @@ def test_360_file_pick_takes_its_recording_when_another_has_its_number(
     assert ui.read_meta(p)["clips"] == ["20260122_132929_029"]
     assert [Path(e["path"]).name for e in ui.source_entries(p, None)] == [names[3]]
     seen: list[list[str]] = []
-    monkeypatch.setattr(ui, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
+    patch_ui(monkeypatch, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
     monkeypatch.setattr(ui.Jobs, "start", fake_start(seen))
     res = client.post(f"/api/projects/{res.json()['id']}/jobs", json={"action": "analyze"})
     assert res.status_code == 200, res.text
@@ -573,7 +586,7 @@ def test_360_analyze_job_runs_the_360_command_with_a_plan(
     source = folder / X3_00 if only else folder
     pid = client.post("/api/projects", json={"name": "T", "source": str(source)}).json()["id"]
     seen: list[list[str]] = []
-    monkeypatch.setattr(ui, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
+    patch_ui(monkeypatch, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
     monkeypatch.setattr(ui.Jobs, "start", fake_start(seen))
     res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
     assert res.status_code == 200, res.text
@@ -649,12 +662,12 @@ class StitchExport:
         self.clips_lines: list[str] = []
         self.hold: threading.Event | None = None
         self.stitching = threading.Event()
-        monkeypatch.setattr(ui, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
-        monkeypatch.setattr(ui, "spawn", self.spawn)
+        patch_ui(monkeypatch, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
+        patch_ui(monkeypatch, "spawn", self.spawn)
         monkeypatch.setattr(procs, "kill_tree", lambda proc, *a, **k: proc.release.set())
         status = {"found": True, "runs": True} if sdk is None else sdk
-        monkeypatch.setattr(ui.pano_stitch, "sdk_status", lambda: status)
-        monkeypatch.setattr(ui.pano_stitch, "free_gb", lambda _folder: free)
+        monkeypatch.setattr(pano_stitch, "sdk_status", lambda: status)
+        monkeypatch.setattr(pano_stitch, "free_gb", lambda _folder: free)
         monkeypatch.setattr(capabilities, "nvidia_present", lambda: nvidia)
 
     def spawn(self, args: list[str], **_kw: object) -> FakeProc:
@@ -754,7 +767,7 @@ def test_a_360_export_without_an_nvidia_gpu_skips_the_stitch_with_a_warning(
 def test_a_360_export_skips_the_stitch_with_a_warning_when_space_is_short(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run = StitchExport(client, tmp_path, monkeypatch, free=ui.pano_stitch.MIN_FREE_GB + 0.1)
+    run = StitchExport(client, tmp_path, monkeypatch, free=pano_stitch.MIN_FREE_GB + 0.1)
     view = run.export().view()
     assert view["status"] == "completed", view
     assert run.commands() == [["clips", str(run.p)]]
@@ -835,7 +848,7 @@ def test_a_flat_export_never_stitches(
     _, seg = cli_project(tmp_path)
     assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
     monkeypatch.setattr(
-        ui.pano_stitch, "sdk_status", lambda: pytest.fail("a flat export asked for the SDK")
+        pano_stitch, "sdk_status", lambda: pytest.fail("a flat export asked for the SDK")
     )
     FakeProc().fake_spawn(monkeypatch)
     res = client.post("/api/projects/cli/jobs", json={"action": "clips"})
@@ -1209,7 +1222,7 @@ def ready_director(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[DirectorPreviews, str]:
     """A 360 project with ``h001``'s preview ready, and that preview's URL path."""
-    monkeypatch.setattr(ui, "MEDIA_LOOKUP_S", 3600.0)  # the lookups stay kept however slow
+    patch_ui(monkeypatch, "MEDIA_LOOKUP_S", 3600.0)  # the lookups stay kept however slow
     run = DirectorPreviews(client, tmp_path, monkeypatch)
     run.ask("h001")
     pv = run.wait("h001", "ready")
@@ -1312,7 +1325,7 @@ def test_a_changed_imu_offset_or_render_format_renders_a_fresh_preview(
     for change in (
         lambda: None,
         lambda: set_config(home, pano={"imu_offset_s": 0.25}),
-        lambda: monkeypatch.setattr(ui, "PANO_PREVIEW_W", 480),
+        lambda: patch_ui(monkeypatch, "PANO_PREVIEW_W", 480),
     ):
         change()
         assert run.candidate("h001")["pano"]["preview"] is None  # nothing ready for this one
@@ -1689,7 +1702,7 @@ def test_the_target_is_not_saved_over_a_review_file_that_cannot_be_read(
     def locked(path, hint=""):
         raise PermissionError("locked")
 
-    monkeypatch.setattr(ui.cache, "read_json", locked)
+    monkeypatch.setattr(cache, "read_json", locked)
     assert client.put(url, json={"seconds": 60}).status_code == 409
     assert file.read_bytes() == good
 
@@ -1812,7 +1825,7 @@ def test_media_supports_range_and_only_serves_project_sources(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     info = media_info(duration=10.0)  # h264 yuv420p + one AAC track: the browser plays it
-    monkeypatch.setattr(ui, "probe", lambda _path: info)
+    patch_ui(monkeypatch, "probe", lambda _path: info)
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"0123456789"})
     source = client.get(f"/api/projects/{pid}").json()["sources"][0]
     assert source["status"] == "unknown"  # opening a project probes nothing
@@ -2821,8 +2834,8 @@ def test_frame_is_a_cached_jpeg_inside_the_project_and_the_source_is_untouched(
     url = f"/api/projects/{pid}/sources/{sid}/frame?at=0.5&t={client.headers['X-Cutpoint-Token']}"
     calls: list[float] = []
     real_grab = ui.grab_images
-    monkeypatch.setattr(
-        ui, "grab_images", lambda *a, **k: (calls.append(a[1]), real_grab(*a, **k))[1]
+    patch_ui(
+        monkeypatch, "grab_images", lambda *a, **k: (calls.append(a[1]), real_grab(*a, **k))[1]
     )
 
     first = client.get(url, headers={"X-Cutpoint-Token": ""})
@@ -2849,7 +2862,7 @@ def test_frame_failure_is_a_500_and_leaves_no_cache_file(
     def broken(*_a: object, **_k: object) -> list[bytes]:
         raise errors.FFmpegError("no image")
 
-    monkeypatch.setattr(ui, "grab_images", broken)
+    patch_ui(monkeypatch, "grab_images", broken)
     res = client.get(
         f"/api/projects/{pid}/sources/{sid}/frame?at=0.5&t={client.headers['X-Cutpoint-Token']}",
         headers={"X-Cutpoint-Token": ""},
@@ -2884,7 +2897,7 @@ def test_frame_builds_one_still_at_a_time_even_after_a_failed_build(
         finally:
             active[0] -= 1
 
-    monkeypatch.setattr(ui, "grab_images", grab)
+    patch_ui(monkeypatch, "grab_images", grab)
     results: list[object] = []
 
     def request() -> None:
@@ -2945,8 +2958,8 @@ def test_frame_cache_evicts_the_least_recently_used_beyond_the_cap(
     pid, _, source, frames = still_source
     media = ui.Media()
     project = ui.project_dir(pid)
-    monkeypatch.setattr(ui, "FRAME_CACHE_MAX", 2)
-    monkeypatch.setattr(ui, "grab_images", lambda *_a, **_k: [b"\xff\xd8\xffjpeg"])
+    patch_ui(monkeypatch, "FRAME_CACHE_MAX", 2)
+    patch_ui(monkeypatch, "grab_images", lambda *_a, **_k: [b"\xff\xd8\xffjpeg"])
     first = media.frame(project, str(source), 0.1, 160)
     second = media.frame(project, str(source), 0.2, 160)
     old = time.time() - 100
@@ -2990,7 +3003,7 @@ def test_frame_key_mode_asks_for_the_keyframe_and_is_cached_apart_from_exact_sti
     def get(query: str):
         return client.get(f"{base}&{query}", headers={"X-Cutpoint-Token": ""})
 
-    monkeypatch.setattr(ui, "grab_images", grab)
+    patch_ui(monkeypatch, "grab_images", grab)
     key = get("at=0.5&key=1")
     assert key.status_code == 200 and key.content.endswith(b"key")
     exact = get("at=0.5")  # a keyframe still is never served for an exact one
@@ -3034,10 +3047,10 @@ def test_a_huge_still_time_of_a_source_of_unknown_length_is_cut_not_an_overflow(
     source = write(tmp_path / "a.mp4", b"x" * 10)
     project = tmp_path / "project"
     project.mkdir()
-    monkeypatch.setattr(ui, "probe", lambda _path: media_info(source, duration=0.0, **SD))
+    patch_ui(monkeypatch, "probe", lambda _path: media_info(source, duration=0.0, **SD))
     starts: list[object] = []
-    monkeypatch.setattr(
-        ui, "grab_images", lambda *a, **_k: (starts.append(a[1]), [b"\xff\xd8\xffjpeg"])[1]
+    patch_ui(
+        monkeypatch, "grab_images", lambda *a, **_k: (starts.append(a[1]), [b"\xff\xd8\xffjpeg"])[1]
     )
     media = ui.Media()
     still = media.frame(project, str(source), 1e308, 160)
@@ -3076,7 +3089,7 @@ def test_still_is_converted_to_what_the_export_shows_and_cached_under_a_new_name
     project = tmp_path / "project"
     project.mkdir()
     info = media_info(source, duration=10.0, **over)
-    monkeypatch.setattr(ui, "probe", lambda _path: info)
+    patch_ui(monkeypatch, "probe", lambda _path: info)
     monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
     calls: list[dict[str, object]] = []
 
@@ -3084,7 +3097,7 @@ def test_still_is_converted_to_what_the_export_shows_and_cached_under_a_new_name
         calls.append(k)
         return [b"\xff\xd8\xffjpeg"]
 
-    monkeypatch.setattr(ui, "grab_images", grab)
+    patch_ui(monkeypatch, "grab_images", grab)
     media = ui.Media()
     still = media.frame(project, str(source), 0.5, 160)
 
@@ -3190,7 +3203,7 @@ def test_show_folder_opens_only_the_projects_own_source_folder(
 ) -> None:
     """The folder comes from the project, never the request; token, 404 and 501 cases."""
     opened: list[Path] = []
-    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    patch_ui(monkeypatch, "folder_opener", lambda: opened.append)
     pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
     assert client.get("/api/session").json()["can_reveal"] is True
 
@@ -3233,7 +3246,7 @@ def test_show_folder_opens_only_the_projects_own_source_folder(
     assert opened == []
 
     folder.mkdir()
-    monkeypatch.setattr(ui, "folder_opener", lambda: None)
+    patch_ui(monkeypatch, "folder_opener", lambda: None)
     assert client.get("/api/session").json()["can_reveal"] is False
     res = client.post(f"/api/projects/{pid}/reveal")
     assert (
@@ -3246,7 +3259,7 @@ def test_show_folder_for_a_command_line_project_uses_its_recorded_sources(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     opened: list[Path] = []
-    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    patch_ui(monkeypatch, "folder_opener", lambda: opened.append)
     footage = tmp_path / "footage"
     for name in ("day1/a.mp4", "day2/b.mp4"):
         (footage / name).parent.mkdir(parents=True, exist_ok=True)
@@ -3270,7 +3283,7 @@ def test_show_folder_is_404_when_the_picked_folder_is_gone_or_unreadable(
 ) -> None:
     """A deleted source folder is never swapped for its parent; OS errors are a 404, not a 500."""
     opened: list[Path] = []
-    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    patch_ui(monkeypatch, "folder_opener", lambda: opened.append)
     pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
     meta = cache.load_json(ui.project_dir(pid) / "ui" / "meta.json")
     assert Path(meta["source"]) == folder
@@ -3305,7 +3318,7 @@ def reveal_env(
     Returns (opened folders, project id, source folder, project folder, reveal URL).
     """
     opened: list[Path] = []
-    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    patch_ui(monkeypatch, "folder_opener", lambda: opened.append)
     pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
     return opened, pid, folder, ui.project_dir(pid), f"/api/projects/{pid}/reveal"
 
@@ -3359,7 +3372,7 @@ def test_show_folder_targets_open_the_latest_clips_and_the_final_folder(
     def broken(_: Path) -> None:
         raise OSError(5, "Access is denied")
 
-    monkeypatch.setattr(ui, "folder_opener", lambda: broken)
+    patch_ui(monkeypatch, "folder_opener", lambda: broken)
     res = client.post(reveal, params={"target": "outputs"})
     assert res.status_code == 500 and "Access is denied" in res.json()["detail"]
 
@@ -3382,7 +3395,7 @@ def test_show_folder_project_opens_the_project_folder_itself(
         ).status_code
         == 403
     )
-    monkeypatch.setattr(ui, "folder_opener", lambda: None)
+    patch_ui(monkeypatch, "folder_opener", lambda: None)
     res = client.post(reveal, params={"target": "project"})
     assert res.status_code == 501
     assert res.json()["detail"] == "Opening folders isn't available on this machine"
@@ -3425,7 +3438,7 @@ def test_exports_json_cannot_point_through_a_link_outside_the_project(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
     opened: list[Path] = []
-    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    patch_ui(monkeypatch, "folder_opener", lambda: opened.append)
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
     p = ui.project_dir(pid)
     reveal = f"/api/projects/{pid}/reveal"
@@ -3519,8 +3532,8 @@ def test_folder_opener_runs_the_platform_tool_without_a_shell(
         calls.append((args, kw))
         return FakeProc()
 
-    monkeypatch.setattr(ui.subprocess, "Popen", popen)
-    monkeypatch.setattr(ui.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
 
@@ -3537,12 +3550,12 @@ def test_folder_opener_runs_the_platform_tool_without_a_shell(
     assert all(not kw.get("shell") for _, kw in calls)
     assert all(kw["stdout"] == kw["stderr"] == subprocess.DEVNULL for _, kw in calls)
 
-    monkeypatch.setattr(ui.shutil, "which", lambda name: None)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
     assert ui.folder_opener() is None  # macOS without `open`, or Linux without xdg-open
 
     started: list[str] = []
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(ui.os, "startfile", started.append, raising=False)
+    monkeypatch.setattr(os, "startfile", started.append, raising=False)
     ui.folder_opener()(tmp_path)
     assert started == [str(tmp_path)] and len(calls) == 2
 
@@ -3580,8 +3593,8 @@ class FakeDialog:
 @pytest.fixture
 def dialog(monkeypatch: pytest.MonkeyPatch) -> FakeDialog:
     fake = FakeDialog()
-    monkeypatch.setattr(ui.subprocess, "Popen", fake)
-    monkeypatch.setattr(ui, "path_picker", lambda: lambda kind, start: (["dlg", kind], 1))
+    monkeypatch.setattr(subprocess, "Popen", fake)
+    patch_ui(monkeypatch, "path_picker", lambda: lambda kind, start: (["dlg", kind], 1))
     return fake
 
 
@@ -3617,15 +3630,15 @@ def test_pick_errors(
     def broken(*a, **kw):
         raise OSError(2, "No such file")
 
-    monkeypatch.setattr(ui.subprocess, "Popen", broken)
+    monkeypatch.setattr(subprocess, "Popen", broken)
     res = client.post("/api/pick", params={"kind": "file"})
     assert res.status_code == 500 and "No such file" in res.json()["detail"]
     # The failure released the lock, so the next dialog can open.
-    monkeypatch.setattr(ui.subprocess, "Popen", dialog)
+    monkeypatch.setattr(subprocess, "Popen", dialog)
     dialog.out = ""
     assert client.post("/api/pick", params={"kind": "file"}).status_code == 200
 
-    monkeypatch.setattr(ui, "path_picker", lambda: None)
+    patch_ui(monkeypatch, "path_picker", lambda: None)
     assert client.post("/api/pick", params={"kind": "file"}).status_code == 501
     assert client.get("/api/session").json()["can_pick"] is False
 
@@ -3668,8 +3681,8 @@ def test_pick_passes_start_to_the_dialog(
         starts.append(start)
         return ["dlg"], None
 
-    monkeypatch.setattr(ui, "path_picker", lambda: build)
-    monkeypatch.setattr(ui.subprocess, "Popen", FakeDialog())
+    patch_ui(monkeypatch, "path_picker", lambda: build)
+    monkeypatch.setattr(subprocess, "Popen", FakeDialog())
     client.post("/api/pick", params={"kind": "file", "start": str(tmp_path / "missing" / "x")})
     client.post("/api/pick", params={"kind": "file", "start": "relative"})
     assert starts == [tmp_path, None]
@@ -3679,7 +3692,7 @@ def test_path_picker_builds_the_platform_dialog_argv(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     present: set[str] = set()
-    monkeypatch.setattr(ui.shutil, "which", lambda n: f"/bin/{n}" if n in present else None)
+    monkeypatch.setattr(shutil, "which", lambda n: f"/bin/{n}" if n in present else None)
     monkeypatch.delenv("DISPLAY", raising=False)
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     monkeypatch.delenv("SSH_CONNECTION", raising=False)
@@ -3720,9 +3733,9 @@ def test_path_picker_builds_the_platform_dialog_argv(
     assert ui.path_picker()("file", None)[0][3:] == ["file"]
 
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(ui.importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
     assert ui.path_picker() is None  # Python without tkinter
-    monkeypatch.setattr(ui.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
     argv, cancel = ui.path_picker()("folder", tmp_path)
     assert argv[:3] == [sys.executable, "-I", "-c"]
     assert argv[4:6] == ["folder", str(tmp_path)] and "*.mp4" in argv[6] and cancel is None
@@ -3733,8 +3746,8 @@ def test_path_picker_builds_the_platform_dialog_argv(
 def test_path_picker_is_off_in_an_ssh_session_on_windows_and_macos(
     monkeypatch: pytest.MonkeyPatch, platform: str, var: str
 ) -> None:
-    monkeypatch.setattr(ui.shutil, "which", lambda n: f"/bin/{n}")
-    monkeypatch.setattr(ui.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(shutil, "which", lambda n: f"/bin/{n}")
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.delenv("SSH_CONNECTION", raising=False)
     monkeypatch.delenv("SSH_TTY", raising=False)
@@ -3991,7 +4004,7 @@ def test_put_settings_removes_a_folder_it_created_when_saving_fails(
     def broken(*a, **kw):
         raise OSError(28, "No space left")
 
-    monkeypatch.setattr(ui, "update_config", broken)
+    patch_ui(monkeypatch, "update_config", broken)
     res = client.put("/api/settings", json={"projects_dir": str(new)})
     assert res.status_code == 500 and not new.exists()
 
@@ -4006,7 +4019,7 @@ def test_put_settings_never_removes_an_existing_folder_on_failure(
     def broken(*a, **kw):
         raise OSError(28, "No space left")
 
-    monkeypatch.setattr(ui, "update_config", broken)
+    patch_ui(monkeypatch, "update_config", broken)
     res = client.put("/api/settings", json={"projects_dir": str(existing)})
     assert res.status_code == 500 and (existing / "f.txt").exists()
 
@@ -4018,7 +4031,7 @@ def test_check_projects_dir_removes_its_own_folder_when_the_write_probe_fails(
         raise PermissionError(13, "Permission denied")
 
     new = tmp_path / "probe"
-    monkeypatch.setattr(ui.tempfile, "TemporaryFile", denied)
+    monkeypatch.setattr(tempfile, "TemporaryFile", denied)
     with pytest.raises(HTTPException) as e:
         ui.check_projects_dir(str(new))
     assert e.value.status_code == 400 and "Permission denied" in e.value.detail
@@ -4150,7 +4163,7 @@ def test_put_settings_refuses_a_job_that_started_during_the_check_and_removes_th
         started.append(jobs.start("p", "analyze", SLEEP_JOB))  # a second tab wins the race
         return result
 
-    monkeypatch.setattr(ui, "check_projects_dir", check_then_start_job)
+    patch_ui(monkeypatch, "check_projects_dir", check_then_start_job)
     new = tmp_path / "fresh"
     try:
         res = client.put("/api/settings", json={"projects_dir": str(new)})
@@ -4184,7 +4197,7 @@ def test_a_job_cannot_start_while_the_projects_folder_is_being_written(
         wrote.set()
         return data
 
-    monkeypatch.setattr(ui, "update_config", write_while_another_tab_starts_a_job)
+    patch_ui(monkeypatch, "update_config", write_while_another_tab_starts_a_job)
     new = tmp_path / "elsewhere"
     try:
         res = client.put("/api/settings", json={"projects_dir": str(new)})
@@ -4216,7 +4229,7 @@ def test_a_job_is_refused_when_the_projects_folder_changed_after_the_project_was
         config.set_config_values({"projects_dir": str(other)})  # a second tab saves the settings
         return real_cmd(*args)
 
-    monkeypatch.setattr(ui, "cutpoint_cmd", cmd_while_the_folder_changes)
+    patch_ui(monkeypatch, "cutpoint_cmd", cmd_while_the_folder_changes)
     try:
         res = client.post("/api/projects/p/jobs", json={"action": "analyze"})
         assert res.status_code == 409 and "projects folder changed" in res.json()["detail"]
@@ -4328,7 +4341,7 @@ def hevc_project(
     Returns (project id, source folder, project folder, the outside folder).
     """
     probed = media_info(vcodec="hevc", duration=10.0)
-    monkeypatch.setattr(ui, "probe", lambda _path: probed)
+    patch_ui(monkeypatch, "probe", lambda _path: probed)
     pid, folder = make_project(client, tmp_path, {"a.mp4": b"x"})
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -4375,7 +4388,7 @@ def test_frames_folder_linked_outside_is_not_used_and_nothing_there_is_deleted(
     def never(*_a: object, **_k: object) -> list[bytes]:
         raise AssertionError("a still must not be built into a linked folder")
 
-    monkeypatch.setattr(ui, "grab_images", never)
+    patch_ui(monkeypatch, "grab_images", never)
     token = client.headers["X-Cutpoint-Token"]
     res = client.get(f"/api/projects/{pid}/sources/{sid}/frame?at=0.5&t={token}")
     assert res.status_code == 409
@@ -4472,7 +4485,7 @@ def test_a_dangling_ui_link_is_a_409_and_nothing_is_created(
             swap_ui(p)
             return [sys.executable, "-c", "pass"]
 
-        monkeypatch.setattr(ui, "cutpoint_cmd", cmd_after_ui_changes)
+        patch_ui(monkeypatch, "cutpoint_cmd", cmd_after_ui_changes)
         res = client.post("/api/projects/cli/jobs", json={"action": "clips"})
     assert res.status_code == 409, res.text
     assert res.json()["detail"] == "cli/ui is not a folder; remove or rename it"
@@ -4497,7 +4510,7 @@ def test_a_clips_job_that_does_not_start_leaves_no_segments_file(
             config.set_config_values({"projects_dir": str(tmp_path / "other")})
             return real_cmd(*args)
 
-        monkeypatch.setattr(ui, "cutpoint_cmd", cmd_while_the_folder_changes)
+        patch_ui(monkeypatch, "cutpoint_cmd", cmd_while_the_folder_changes)
     elif why == "job running":
         busy = jobs.start("x", "analyze", [sys.executable, "-c", "import time; time.sleep(60)"])
     else:
@@ -4505,7 +4518,7 @@ def test_a_clips_job_that_does_not_start_leaves_no_segments_file(
         def no_spawn(_args: list[str], **_kw: object) -> None:
             raise OSError("not found")
 
-        monkeypatch.setattr(ui, "spawn", no_spawn)
+        patch_ui(monkeypatch, "spawn", no_spawn)
     try:
         res = client.post("/api/projects/cli/jobs", json={"action": "clips"})
         assert res.status_code == (500 if why == "cannot start" else 409), res.text
@@ -4541,7 +4554,7 @@ def test_a_proxy_linked_during_the_encode_fails_with_a_warning_and_leaves_nothin
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     _pid, folder, p, outside = hevc_project
-    monkeypatch.setattr(ui, "proxy_args", lambda _real, tmp, _n, **_kw: [str(tmp)])
+    patch_ui(monkeypatch, "proxy_args", lambda _real, tmp, _n, **_kw: [str(tmp)])
 
     class Encoder:
         returncode = 0
@@ -4557,7 +4570,7 @@ def test_a_proxy_linked_during_the_encode_fails_with_a_warning_and_leaves_nothin
             self.tmp.write_bytes(b"proxy")
             return self.returncode
 
-    monkeypatch.setattr(ui, "spawn", Encoder)
+    patch_ui(monkeypatch, "spawn", Encoder)
     with caplog.at_level(logging.INFO):
         media = client.app.state.media
         media.prepare(p, str(folder / "a.mp4"))
@@ -4584,7 +4597,7 @@ def test_assemble_picks_a_fresh_name_when_only_a_caption_file_is_left(
     seen: list[list[str]] = []
     proc = FakeProc()
     proc.release.set()
-    monkeypatch.setattr(ui, "spawn", lambda args, **_kw: seen.append(args) or proc)
+    patch_ui(monkeypatch, "spawn", lambda args, **_kw: seen.append(args) or proc)
     res = client.post(f"/api/projects/{pid}/jobs", json={"action": "assemble"})
     assert res.status_code == 200, res.text
     assert client.app.state.jobs.get(res.json()["id"]).done.wait(10)
@@ -4614,7 +4627,7 @@ class FakeProc:
         ``ui.spawn`` runs a real child at below-normal priority, which is slow on a busy machine.
         """
         self.release.set()
-        monkeypatch.setattr(ui, "spawn", lambda args, **_kw: self)
+        patch_ui(monkeypatch, "spawn", lambda args, **_kw: self)
         return self
 
 
@@ -4623,7 +4636,7 @@ def test_a_cancelled_job_reads_cancelling_until_the_process_has_exited(
 ) -> None:
     proc = FakeProc()
     killed = threading.Event()
-    monkeypatch.setattr(ui, "spawn", lambda args: proc)
+    patch_ui(monkeypatch, "spawn", lambda args: proc)
     monkeypatch.setattr(procs, "kill_tree", lambda _p: killed.set())  # the exit comes later
     jobs = ui.Jobs()
     job = jobs.start("p", "analyze", ["x"])
@@ -4660,7 +4673,7 @@ def test_cancel_returns_before_the_kill_finishes_and_a_second_cancel_adds_no_kil
         finish.wait(10)
         proc.release.set()
 
-    monkeypatch.setattr(ui, "spawn", lambda args: proc)
+    patch_ui(monkeypatch, "spawn", lambda args: proc)
     monkeypatch.setattr(procs, "kill_tree", slow_kill)
     jobs = ui.Jobs()
     job = jobs.start("p", "analyze", ["x"])
@@ -4734,7 +4747,7 @@ def test_a_command_line_final_can_be_downloaded_and_revealed(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     opened: list[Path] = []
-    monkeypatch.setattr(ui, "folder_opener", lambda: opened.append)
+    patch_ui(monkeypatch, "folder_opener", lambda: opened.append)
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
     p = ui.project_dir(pid)
     touch(p / "final.mp4", 10)
@@ -4793,7 +4806,7 @@ def test_failed_proxy_build_on_a_command_line_project_removes_the_ui_folders_it_
 ) -> None:
     """Issue #194: a CLI project has no ``ui/``; a failed build removes ``ui/proxy`` and ``ui/``
     it created."""
-    monkeypatch.setattr(ui, "probe", lambda _path: media_info(vcodec="hevc", duration=10.0))
+    patch_ui(monkeypatch, "probe", lambda _path: media_info(vcodec="hevc", duration=10.0))
     src = tmp_path / "footage" / "a.mp4"
     src.parent.mkdir()
     src.write_bytes(b"x")
@@ -4812,7 +4825,7 @@ def test_failed_proxy_build_on_a_command_line_project_removes_the_ui_folders_it_
         def wait(self) -> int:
             return self.returncode
 
-    monkeypatch.setattr(ui, "spawn", Failing)
+    patch_ui(monkeypatch, "spawn", Failing)
     media = client.app.state.media
     media.prepare(p, str(src))
     media.pool.submit(int).result(30)  # the one worker has finished the build
@@ -4958,7 +4971,7 @@ class ProxyEncoder:
 @pytest.fixture
 def proxy_encoder(monkeypatch: pytest.MonkeyPatch) -> type[ProxyEncoder]:
     monkeypatch.setattr(ProxyEncoder, "calls", [], raising=False)
-    monkeypatch.setattr(ui, "spawn", ProxyEncoder)
+    patch_ui(monkeypatch, "spawn", ProxyEncoder)
     return ProxyEncoder
 
 
@@ -4987,7 +5000,7 @@ def test_proxy_uses_the_gpu_encoder_exports_use_else_libx264(
     codec: str,
 ) -> None:
     enc = ui.VideoEncoder(kind or "cpu", "/dev/dri/renderD128" if kind == "vaapi" else None)
-    monkeypatch.setattr(ui, "video_encoder", lambda: enc)
+    patch_ui(monkeypatch, "video_encoder", lambda: enc)
     _, folder, p, _ = hevc_project
     assert build_proxy(client, p, folder / "a.mp4") == "ready"
     [args] = proxy_encoder.calls
@@ -5002,7 +5015,7 @@ def test_a_failed_nvenc_proxy_is_built_again_with_libx264(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The probe encodes 0.2 s of black; a driver can still fail on the real file."""
-    monkeypatch.setattr(ui, "video_encoder", lambda: ui.VideoEncoder("nvenc"))
+    patch_ui(monkeypatch, "video_encoder", lambda: ui.VideoEncoder("nvenc"))
     monkeypatch.setattr(proxy_encoder, "nvenc_fails", True)
     _, folder, p, _ = hevc_project
     (folder / "b.mp4").write_bytes(b"y")
@@ -5023,14 +5036,14 @@ def test_a_proxy_failing_with_nvenc_and_libx264_fails(
     hevc_project: tuple[str, Path, Path, Path],
     proxy_encoder: type[ProxyEncoder],
 ) -> None:
-    monkeypatch.setattr(ui, "video_encoder", lambda: ui.VideoEncoder("nvenc"))
+    patch_ui(monkeypatch, "video_encoder", lambda: ui.VideoEncoder("nvenc"))
 
     class Failing(ProxyEncoder):
         def __init__(self, args: list[str], **_kw: object) -> None:
             self.calls.append(args)
             self.returncode = 1
 
-    monkeypatch.setattr(ui, "spawn", Failing)
+    patch_ui(monkeypatch, "spawn", Failing)
     _, folder, p, _ = hevc_project
     assert build_proxy(client, p, folder / "a.mp4") == "failed"
     assert len(proxy_encoder.calls) == 2
@@ -5040,7 +5053,7 @@ def test_a_proxy_failing_with_nvenc_and_libx264_fails(
 
 def test_no_proxy_ffmpeg_starts_after_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
     spawned: list[list[str]] = []
-    monkeypatch.setattr(ui, "spawn", lambda args, **_kw: spawned.append(args))
+    patch_ui(monkeypatch, "spawn", lambda args, **_kw: spawned.append(args))
     media = ui.Media()
     media.shutdown()
     code, _ = media._encode(["ffmpeg"])  # e.g. the libx264 retry after a failed NVENC encode
@@ -5065,7 +5078,7 @@ def test_a_proxy_ffmpeg_is_registered_as_it_starts_so_shutdown_kills_it(
             media.shutdown()  # the server stops during the encode
             return "", None
 
-    monkeypatch.setattr(ui, "spawn", Encode)
+    patch_ui(monkeypatch, "spawn", Encode)
     media._encode(["ffmpeg"])
     assert len(killed) == 1
     assert isinstance(killed[0], Encode)
@@ -5113,7 +5126,7 @@ def test_info_has_no_color_filter_for_playable_sources_and_the_sdr_filter_for_hl
     src.write_bytes(b"x")
     media = ui.Media()
     probed = media_info(duration=10.0)
-    monkeypatch.setattr(ui, "probe", lambda _path: probed)
+    patch_ui(monkeypatch, "probe", lambda _path: probed)
     assert media.info(src, "k1") == (True, 10.0, 1, "")
     hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
     probed = hlg
@@ -5144,7 +5157,7 @@ def test_info_narrows_only_full_range_bt601_proxies_and_keeps_the_others_keys(
     src = tmp_path / "a.mkv"
     src.write_bytes(b"x")
     info = media_info(vcodec="mpeg2video", duration=10.0, **over)
-    monkeypatch.setattr(ui, "probe", lambda _path: info)
+    patch_ui(monkeypatch, "probe", lambda _path: info)
     media = ui.Media()
     got = (media.info(src, "k") or (True, 0, 0, ""))[3]
     want = {"range": encode.TV_RANGE, "sdr": encode.sdr_filter(info), "": ""}[color]
@@ -5166,7 +5179,7 @@ def test_whole_proxy_of_an_hlg_source_is_converted_to_sdr(
 ) -> None:
     monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
     hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
-    monkeypatch.setattr(ui, "probe", lambda _path: hlg)
+    patch_ui(monkeypatch, "probe", lambda _path: hlg)
     _, folder, p, _ = hevc_project
     assert build_proxy(client, p, folder / "a.mp4") == "ready"
     [args] = proxy_encoder.calls
@@ -5195,7 +5208,7 @@ def test_hlg_proxy_built_with_another_tone_map_is_not_served_but_rebuilt(
 ) -> None:
     monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
     hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
-    monkeypatch.setattr(ui, "probe", lambda _path: hlg)
+    patch_ui(monkeypatch, "probe", lambda _path: hlg)
     _, folder, p, _ = hevc_project
     key = ui.Media.key((folder / "a.mp4").resolve()) or ""
     (p / "ui" / "proxy").mkdir(parents=True)
@@ -5251,7 +5264,7 @@ class FakeWindowFfmpeg:
         self.procs: list[FakeWindowProc] = []
         self.killed: list[FakeWindowProc] = []
         self.kill_seen = threading.Event()
-        monkeypatch.setattr(ui, "spawn", self.spawn)
+        patch_ui(monkeypatch, "spawn", self.spawn)
         monkeypatch.setattr(procs, "kill_tree", self.kill)
 
     def spawn(self, args: list[str], *, low_priority: bool = True) -> FakeWindowProc:
@@ -5292,7 +5305,7 @@ def window_media(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, window_ffmpeg: FakeWindowFfmpeg
 ) -> Iterator[tuple[ui.Media, Path, Path]]:
     """A Media, a project folder and a 1000 s HEVC source; its windows spawn the fake ffmpeg."""
-    monkeypatch.setattr(ui, "probe", lambda _path: media_info(vcodec="hevc", duration=1000.0))
+    patch_ui(monkeypatch, "probe", lambda _path: media_info(vcodec="hevc", duration=1000.0))
     media, p, src = ui.Media(), tmp_path / "proj", tmp_path / "a.mp4"
     p.mkdir()
     src.write_bytes(b"x")
@@ -5430,9 +5443,9 @@ def test_a_whole_proxy_build_and_its_progress_belong_to_its_project(
         def wait(self) -> int:
             return 0
 
-    monkeypatch.setattr(ui, "spawn", Held)
+    patch_ui(monkeypatch, "spawn", Held)
     monkeypatch.setattr(ui.Media, "_gpu_encoder", lambda _self: None)
-    monkeypatch.setattr(ui, "probe", lambda _path: media_info(vcodec="hevc", duration=100.0))
+    patch_ui(monkeypatch, "probe", lambda _path: media_info(vcodec="hevc", duration=100.0))
     src, a, b = tmp_path / "a.mp4", tmp_path / "A", tmp_path / "B"
     src.write_bytes(b"x")
     a.mkdir()
@@ -5683,7 +5696,7 @@ def test_prepare_with_a_window_queues_it_and_the_whole_proxy_and_the_listing_sho
     def probing(_path: object) -> None:
         raise AssertionError("listing a project must not run ffprobe")
 
-    monkeypatch.setattr(ui, "probe", probing)
+    patch_ui(monkeypatch, "probe", probing)
     src = client.get(base).json()["sources"][0]
     assert src["windows"] == []
     assert src["pending"] == [{"lo": 0.0, "hi": 10.0, "state": "encoding"}]
@@ -5836,7 +5849,7 @@ def scripted(
     monkeypatch.setattr(ScriptedEncoder, "reports", reports, raising=False)
     monkeypatch.setattr(ScriptedEncoder, "started", [], raising=False)
     monkeypatch.setattr(ScriptedEncoder, "calls", [], raising=False)
-    monkeypatch.setattr(ui, "spawn", ScriptedEncoder)
+    patch_ui(monkeypatch, "spawn", ScriptedEncoder)
     return ScriptedEncoder
 
 
@@ -5849,7 +5862,7 @@ def test_the_whole_build_progress_is_reported_then_cleared_when_it_ends(
     status: str,
 ) -> None:
     enc = scripted(client, monkeypatch, [(5_000_000, code)])  # of a 10 s source
-    monkeypatch.setattr(ui, "video_encoder", lambda: ui.VideoEncoder("cpu"))
+    patch_ui(monkeypatch, "video_encoder", lambda: ui.VideoEncoder("cpu"))
     _, folder, p, _ = hevc_project
     assert build_proxy(client, p, folder / "a.mp4") == status
     assert enc.started == [0.0, 0.5]
@@ -5862,7 +5875,7 @@ def test_the_nvenc_retry_restarts_the_progress_at_zero(
     hevc_project: tuple[str, Path, Path, Path],
 ) -> None:
     enc = scripted(client, monkeypatch, [(8_000_000, 1), (2_000_000, 0)])
-    monkeypatch.setattr(ui, "video_encoder", lambda: ui.VideoEncoder("nvenc"))
+    patch_ui(monkeypatch, "video_encoder", lambda: ui.VideoEncoder("nvenc"))
     _, folder, p, _ = hevc_project
     assert build_proxy(client, p, folder / "a.mp4") == "ready"
     assert len(enc.calls) == 2
@@ -5900,7 +5913,7 @@ def test_the_listing_of_a_source_the_browser_plays_has_no_proxy_and_no_progress(
     hevc_project: tuple[str, Path, Path, Path],
 ) -> None:
     pid, _, _, _ = hevc_project
-    monkeypatch.setattr(ui, "probe", lambda _path: media_info(duration=10.0))  # H.264
+    patch_ui(monkeypatch, "probe", lambda _path: media_info(duration=10.0))  # H.264
     sid = client.get(f"/api/projects/{pid}").json()["sources"][0]["id"]
     assert prepare(client, pid, sid).json() == {"status": "ready"}
     src = client.get(f"/api/projects/{pid}").json()["sources"][0]
@@ -6062,7 +6075,7 @@ def test_a_failed_window_logs_ffmpeg_s_last_lines_and_is_listed_until_asked_for_
         def communicate(self) -> tuple[str, None]:
             return "\n".join(output) + "\n", None
 
-    monkeypatch.setattr(ui, "spawn", Failing)
+    patch_ui(monkeypatch, "spawn", Failing)
     monkeypatch.setattr(ui.Media, "_gpu_encoder", lambda _self: None)
     entry = lambda: client.get(base).json()["sources"][0]  # noqa: E731
     with caplog.at_level(logging.WARNING, logger="cutpoint.ui"):
@@ -6073,7 +6086,7 @@ def test_a_failed_window_logs_ffmpeg_s_last_lines_and_is_listed_until_asked_for_
     [warning] = [r.getMessage() for r in caplog.records if "window proxy" in r.getMessage()]
     assert warning.endswith("failed: line 2\nline 3\nline 4\nline 5\nConversion failed!")
 
-    monkeypatch.setattr(ui, "spawn", window_ffmpeg.spawn)
+    patch_ui(monkeypatch, "spawn", window_ffmpeg.spawn)
     window_ffmpeg.hold = False
     assert prepare(client, pid, sid, {"lo": 2, "hi": 4}).status_code == 200
     assert entry()["failed"] == []  # asked for again
@@ -6193,7 +6206,7 @@ def test_prune_proxies_keeps_hdr_windows_of_the_current_tone_map_before_any_prob
     monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
     hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
     probed: list[str] = []
-    monkeypatch.setattr(ui, "probe", lambda path: probed.append(Path(path).name) or hlg)
+    patch_ui(monkeypatch, "probe", lambda path: probed.append(Path(path).name) or hlg)
     media, folder, paths, a, _ = prune_setup(tmp_path)
     hdr = hashlib.sha1(f"{a}|{encode.sdr_filter(hlg)}".encode()).hexdigest()[:16]
     (folder / f"{hdr}.w0-500.mp4").write_bytes(b"x")
@@ -6212,7 +6225,7 @@ def test_prepare_deletes_hdr_proxies_of_an_earlier_tone_map_that_prune_could_not
     monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
     hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
     probed: list[str] = []
-    monkeypatch.setattr(ui, "probe", lambda path: probed.append(Path(path).name) or hlg)
+    patch_ui(monkeypatch, "probe", lambda path: probed.append(Path(path).name) or hlg)
     media, folder, paths, a, b = prune_setup(tmp_path)
     monkeypatch.setattr(media.pool, "submit", lambda *_args: None)  # no build
     # named by the content key: no current proxy beside them
@@ -6236,7 +6249,7 @@ def test_prune_proxies_probes_no_source_whose_proxy_it_knows(
 ) -> None:
     probed: list[str] = []
     hevc = media_info(vcodec="hevc", duration=10.0)
-    monkeypatch.setattr(ui, "probe", lambda path: probed.append(Path(path).name) or hevc)
+    patch_ui(monkeypatch, "probe", lambda path: probed.append(Path(path).name) or hevc)
     media, folder, paths, a, b = prune_setup(tmp_path)
     names = [f"{a}.mp4", f"{b}.w0-500.mp4"]
     for name in names:
@@ -6251,7 +6264,7 @@ def test_prune_proxies_keeps_the_proxies_while_a_source_is_offline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     probed: list[str] = []
-    monkeypatch.setattr(ui, "probe", lambda path: probed.append(Path(path).name))
+    patch_ui(monkeypatch, "probe", lambda path: probed.append(Path(path).name))
     nas = tmp_path / "nas"
     nas.mkdir()
     paths = []
@@ -6277,7 +6290,7 @@ def test_prune_proxies_deletes_proxies_idle_a_month_while_a_source_is_offline(
 ) -> None:
     probed: list[str] = []
     sdr = media_info(duration=10.0)
-    monkeypatch.setattr(ui, "probe", lambda path: probed.append(Path(path).name) or sdr)
+    patch_ui(monkeypatch, "probe", lambda path: probed.append(Path(path).name) or sdr)
     media, folder, paths, a, b = prune_setup(tmp_path)
     paths.append(str(tmp_path / "offline" / "c.mp4"))  # a drive that stays offline
     month = [f"{'1' * 16}.mp4", f"{'2' * 16}.w0-500.mp4"]  # also an HDR window
@@ -6310,7 +6323,7 @@ def test_prune_proxies_keeps_a_reachable_hdr_sources_proxy_idle_a_month_while_on
     monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
     hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
     probed: list[str] = []
-    monkeypatch.setattr(ui, "probe", lambda path: probed.append(Path(path).name) or hlg)
+    patch_ui(monkeypatch, "probe", lambda path: probed.append(Path(path).name) or hlg)
     media, folder, paths, a, _ = prune_setup(tmp_path)
     paths.append(str(tmp_path / "offline" / "c.mp4"))  # a drive that stays offline
     hdr = hashlib.sha1(f"{a}|{encode.sdr_filter(hlg)}".encode()).hexdigest()[:16]
@@ -6329,7 +6342,7 @@ def test_prune_proxies_deletes_stale_whole_proxies(
     monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
     hlg = media_info(vcodec="hevc", pix_fmt="yuv420p10le", duration=10.0, **HLG)
     hevc = media_info(vcodec="hevc", duration=10.0)
-    monkeypatch.setattr(ui, "probe", lambda path: hlg if Path(path).name == "a.mp4" else hevc)
+    patch_ui(monkeypatch, "probe", lambda path: hlg if Path(path).name == "a.mp4" else hevc)
     media, folder, paths, a, b = prune_setup(tmp_path)
     hdr = hashlib.sha1(f"{a}|{encode.sdr_filter(hlg)}".encode()).hexdigest()[:16]
     (tmp_path / "b.mp4").write_bytes(b"changed")  # b's proxy is of its earlier content
@@ -6562,7 +6575,7 @@ def folder_listings(monkeypatch: pytest.MonkeyPatch) -> list[int]:
         calls.append(1)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(ui, "find_videos", counting)
+    patch_ui(monkeypatch, "find_videos", counting)
     return calls
 
 
@@ -6691,7 +6704,7 @@ def test_a_failed_folder_listing_is_not_cached_as_an_empty_list(
             raise FileNotFoundError("folder briefly unavailable")
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(ui, "find_videos", flaky)
+    patch_ui(monkeypatch, "find_videos", flaky)
     client.get(f"/api/projects/{pid}")  # the failed listing; the response does not matter
     assert source_names(client, pid) == ["a.mp4"]
 
@@ -6699,7 +6712,7 @@ def test_a_failed_folder_listing_is_not_cached_as_an_empty_list(
 def test_the_cache_keeps_at_most_max_projects_and_expires_after_its_ttl(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, folder_listings: list[int]
 ) -> None:
-    monkeypatch.setattr(ui, "SOURCES_CACHE_MAX", 1)
+    patch_ui(monkeypatch, "SOURCES_CACHE_MAX", 1)
     pid1, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
     other = tmp_path / "other"
     other.mkdir()
@@ -6712,7 +6725,7 @@ def test_the_cache_keeps_at_most_max_projects_and_expires_after_its_ttl(
     assert len(folder_listings) == 0
     source_names(client, pid1)
     assert len(folder_listings) == 1
-    monkeypatch.setattr(ui, "SOURCES_CACHE_S", 0)
+    patch_ui(monkeypatch, "SOURCES_CACHE_S", 0)
     source_names(client, pid1)
     assert len(folder_listings) == 2
 
@@ -6729,7 +6742,7 @@ def test_opening_a_project_probes_nothing_until_a_source_is_prepared(
         probes.append(path)
         return media_info(duration=10.0)
 
-    monkeypatch.setattr(ui, "probe", counting)
+    patch_ui(monkeypatch, "probe", counting)
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
     source = client.get(f"/api/projects/{pid}").json()["sources"][0]
     assert (probes, source["status"]) == ([], "unknown")
@@ -6762,7 +6775,7 @@ def test_an_unanalyzed_folder_missing_in_place_is_listed_at_its_source_remap_tar
     write(copy / "a.mp4", b"0123456789")
     write(copy / "skip_unverified.mp4", b"x")  # source_remap_exclude: would be read at the original
     shutil.rmtree(folder)
-    monkeypatch.setattr(ui, "probe", lambda _path: media_info(duration=10.0))
+    patch_ui(monkeypatch, "probe", lambda _path: media_info(duration=10.0))
     remap(home, monkeypatch, folder, copy, exclude=["*unverified*"])
     data = client.get(f"/api/projects/{pid}").json()
     assert data["source_error"] is None
@@ -6783,7 +6796,7 @@ def test_a_source_remap_change_rebuilds_the_list_at_once_and_other_edits_keep_it
         builds.append(1)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(ui, "source_entries", counting)
+    patch_ui(monkeypatch, "source_entries", counting)
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
 
     def after(**data) -> int:
@@ -6912,7 +6925,7 @@ def test_a_step_still_running_when_the_job_fails_reads_interrupted(
 
 def test_a_cancelled_job_interrupts_its_running_step(monkeypatch: pytest.MonkeyPatch) -> None:
     proc = FakeProc()
-    monkeypatch.setattr(ui, "spawn", lambda args: proc)
+    patch_ui(monkeypatch, "spawn", lambda args: proc)
     monkeypatch.setattr(procs, "kill_tree", lambda _p: proc.release.set())
     jobs = ui.Jobs()
     job = jobs.start("p", "analyze", ["x"])
@@ -8138,7 +8151,7 @@ def logins(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         )
 
     def statuses() -> list[dict]:
-        return [status(p) for p in ui.cliproxy.PROVIDERS]
+        return [status(p) for p in cliproxy.PROVIDERS]
 
     def logout(provider: str) -> None:
         fake.stored.pop(provider, None)
@@ -8147,12 +8160,12 @@ def logins(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     def cancel_login(state: str) -> None:
         fake.cancelled = [*getattr(fake, "cancelled", []), state]
 
-    monkeypatch.setattr(ui.cliproxy, "start_login", start_login)
-    monkeypatch.setattr(ui.cliproxy, "poll_login", poll_login)
-    monkeypatch.setattr(ui.cliproxy, "status", status)
-    monkeypatch.setattr(ui.cliproxy, "statuses", statuses)
-    monkeypatch.setattr(ui.cliproxy, "logout", logout)
-    monkeypatch.setattr(ui.cliproxy, "cancel_login", cancel_login)
+    monkeypatch.setattr(cliproxy, "start_login", start_login)
+    monkeypatch.setattr(cliproxy, "poll_login", poll_login)
+    monkeypatch.setattr(cliproxy, "status", status)
+    monkeypatch.setattr(cliproxy, "statuses", statuses)
+    monkeypatch.setattr(cliproxy, "logout", logout)
+    monkeypatch.setattr(cliproxy, "cancel_login", cancel_login)
     return fake
 
 
@@ -8212,14 +8225,14 @@ def test_a_failed_subscription_login_says_why_and_can_start_again(
 
 def offline_until_started(launcher: FakeLauncher, monkeypatch: pytest.MonkeyPatch) -> None:
     """``cliproxy.start_login`` fails like a missing proxy until the launcher has started one."""
-    real = ui.cliproxy.start_login
+    real = cliproxy.start_login
 
     def start_login(provider: str) -> dict:
         if not launcher.is_running:
             raise not_running()
         return real(provider)
 
-    monkeypatch.setattr(ui.cliproxy, "start_login", start_login)
+    monkeypatch.setattr(cliproxy, "start_login", start_login)
 
 
 def test_a_subscription_login_starts_the_proxy_when_none_runs_and_tries_again(
@@ -8239,7 +8252,7 @@ def test_a_subscription_login_whose_proxy_does_not_start_is_unavailable_with_the
     client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     launcher = client.app.state.proxies = FakeLauncher()
-    launcher.error = ui.cliproxy.ProxyError("port 18317 is already in use")
+    launcher.error = cliproxy.ProxyError("port 18317 is already in use")
     offline_until_started(launcher, monkeypatch)
     res = client.post("/api/assistant/login", json={"provider": "codex"})
     assert res.status_code == 503, res.text
@@ -8273,14 +8286,14 @@ def test_a_subscription_login_waits_for_a_proxy_that_is_still_starting(
 ) -> None:
     launcher = client.app.state.proxies = FakeLauncher(running=True)
     launcher.gate = threading.Event()  # another request is starting the proxy
-    real = ui.cliproxy.start_login
+    real = cliproxy.start_login
 
     def start_login(provider: str) -> dict:
         if not launcher.gate.is_set():
-            raise ui.cliproxy.ProxyConnectionError("proxy connection failed")
+            raise cliproxy.ProxyConnectionError("proxy connection failed")
         return real(provider)
 
-    monkeypatch.setattr(ui.cliproxy, "start_login", start_login)
+    monkeypatch.setattr(cliproxy, "start_login", start_login)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(client.post, "/api/assistant/login", json={"provider": "codex"})
         assert launcher.waiting.wait(5)  # the route waits before its first try
@@ -8297,9 +8310,9 @@ def test_a_subscription_login_with_a_running_proxy_keeps_the_original_error(
     why = "proxy answered 401"
 
     def refused(_provider: str) -> dict:
-        raise ui.cliproxy.ProxyConnectionError(why)
+        raise cliproxy.ProxyConnectionError(why)
 
-    monkeypatch.setattr(ui.cliproxy, "start_login", refused)
+    monkeypatch.setattr(cliproxy, "start_login", refused)
     res = client.post("/api/assistant/login", json={"provider": "codex"})
     assert res.status_code == 503 and res.json()["detail"] == why
     assert launcher.starts == 0
@@ -8312,9 +8325,9 @@ def test_a_subscription_login_failing_for_another_reason_is_a_server_error(
     client.app.state.proxies = FakeLauncher(running=True)
 
     def broken(_provider: str) -> dict:
-        raise ui.cliproxy.ProxyError("failed to start login for codex: missing url")
+        raise cliproxy.ProxyError("failed to start login for codex: missing url")
 
-    monkeypatch.setattr(ui.cliproxy, "start_login", broken)
+    monkeypatch.setattr(cliproxy, "start_login", broken)
     assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 500
 
 
@@ -8336,11 +8349,11 @@ def test_a_stopped_proxy_is_not_an_error_on_the_login_rows(
 ) -> None:
     client.app.state.proxies = FakeLauncher()
     monkeypatch.setattr(
-        ui.cliproxy,
+        cliproxy,
         "statuses",
         lambda: [
-            {"provider": p, "logged_in": False, "error": ui.cliproxy.NOT_RUNNING}
-            for p in ui.cliproxy.PROVIDERS
+            {"provider": p, "logged_in": False, "error": cliproxy.NOT_RUNNING}
+            for p in cliproxy.PROVIDERS
         ],
     )
     logins = client.get("/api/assistant/logins").json()["logins"]
@@ -8361,7 +8374,7 @@ def test_the_proxy_route_starts_it_only_with_a_saved_login(client: TestClient) -
 
 def test_the_proxy_route_says_why_it_did_not_start(client: TestClient) -> None:
     launcher = client.app.state.proxies = FakeLauncher(saved=True)
-    launcher.error = ui.cliproxy.ProxyError("no binary for this platform")
+    launcher.error = cliproxy.ProxyError("no binary for this platform")
     res = client.post("/api/assistant/proxy")
     assert res.status_code == 503
     assert (
@@ -8388,7 +8401,7 @@ def test_login_timeout_cancellation_does_not_hold_login_lock(
 ) -> None:
     assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
     original_monotonic = time.monotonic
-    monkeypatch.setattr(ui.time, "monotonic", lambda: original_monotonic() + ui.LOGIN_TIMEOUT_S + 1)
+    monkeypatch.setattr(time, "monotonic", lambda: original_monotonic() + ui.LOGIN_TIMEOUT_S + 1)
 
     entered, release = threading.Event(), threading.Event()
     logins.cancelled = []
@@ -8398,7 +8411,7 @@ def test_login_timeout_cancellation_does_not_hold_login_lock(
         entered.set()
         assert release.wait(2)
 
-    monkeypatch.setattr(ui.cliproxy, "cancel_login", slow_cancel)
+    monkeypatch.setattr(cliproxy, "cancel_login", slow_cancel)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         expired = pool.submit(login_state, client, "codex")
@@ -8448,7 +8461,7 @@ def test_outputs_route_refuses_path_traversal(client: TestClient, tmp_path: Path
 @pytest.mark.parametrize(
     ("err", "error"),
     [
-        (ui.cliproxy.ProxyError("no usable keyring: credentials not stored"), None),
+        (cliproxy.ProxyError("no usable keyring: credentials not stored"), None),
         (OSError(), "OSError"),  # no message: the error type still says what failed
     ],
     ids=["keyring-refused", "bare-oserror"],
@@ -8459,7 +8472,7 @@ def test_a_login_whose_poll_fails_reports_the_error_and_can_start_again(
     def broken(state: str) -> dict:
         raise err
 
-    monkeypatch.setattr(ui.cliproxy, "poll_login", broken)
+    monkeypatch.setattr(cliproxy, "poll_login", broken)
     assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
 
     assert login_state(client, "codex") == {"state": "error", "error": error or str(err)}
@@ -8640,7 +8653,7 @@ def test_resume_preview_turns_cli_errors_into_plain_answers(
         seen.append({"args": args, **kw})
         return subprocess.CompletedProcess(args, 1, "log line\n" + json.dumps(envelope) + "\n", "")
 
-    monkeypatch.setattr(ui.subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", run)
     res = client.get("/api/projects/stopped/resume")
     assert res.status_code == status and detail in res.json()["detail"]
     p = ui.projects_dir() / "stopped"
@@ -8858,7 +8871,7 @@ def test_resume_preview_returns_the_command_line_it_replays(
     envelope |= {"error": None, "outputs": {"resume": {"argv": argv, "status_before": "x"}}}
     out = json.dumps(envelope) + "\n"
     monkeypatch.setattr(
-        ui.subprocess, "run", lambda args, **kw: subprocess.CompletedProcess(args, 0, out, "")
+        subprocess, "run", lambda args, **kw: subprocess.CompletedProcess(args, 0, out, "")
     )
     assert client.get("/api/projects/stopped/resume").json()["argv"] == argv
     envelope["outputs"]["resume"]["argv"] = ["clips", 3]  # never anything but strings
@@ -8929,7 +8942,7 @@ def test_a_resumed_360_export_stitches_what_its_command_line_exports(
     cache.save_json(p / "ui" / "meta.json", {"name": "cli", "kind": "360"})
     progress_record(p, command="clips", argv=argv)
     stitched: list[tuple[object, ...]] = []
-    monkeypatch.setattr(ui, "stitch_first", lambda job, *a: stitched.append(a) and None)
+    patch_ui(monkeypatch, "stitch_first", lambda job, *a: stitched.append(a) and None)
     res, seen = resume_job(client, monkeypatch, "cli")
     assert res.status_code == 200, res.text
     before = seen[0]["rest"][1]  # Jobs.start(..., plan, before)
@@ -9107,8 +9120,8 @@ def test_envelope_is_the_peak_level_per_bucket_and_cached(
     pid, ids, folder = audio_sources
     calls: list[list[str]] = []
     real_spawn = ui.spawn
-    monkeypatch.setattr(
-        ui, "spawn", lambda args, **kw: (calls.append(args), real_spawn(args, **kw))[1]
+    patch_ui(
+        monkeypatch, "spawn", lambda args, **kw: (calls.append(args), real_spawn(args, **kw))[1]
     )
     url = f"/api/projects/{pid}/sources/{ids['tone.mp4']}/envelope"
 
@@ -9176,8 +9189,8 @@ def test_envelope_failure_is_a_500_and_leaves_no_cache_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pid, ids, folder = audio_sources
-    monkeypatch.setattr(
-        ui,
+    patch_ui(
+        monkeypatch,
         "spawn",
         lambda args, **kw: subprocess.Popen(
             [sys.executable, "-c", "raise SystemExit(1)"], stdout=subprocess.PIPE
@@ -9208,8 +9221,8 @@ def test_an_envelope_decode_over_the_time_limit_is_killed_and_reported(
         started.append(proc)
         return proc
 
-    monkeypatch.setattr(ui, "ENVELOPE_TIMEOUT_S", 0.5)
-    monkeypatch.setattr(ui, "spawn", silent)
+    patch_ui(monkeypatch, "ENVELOPE_TIMEOUT_S", 0.5)
+    patch_ui(monkeypatch, "spawn", silent)
     media = client.app.state.media
     url = f"/api/projects/{pid}/sources/{ids['tone.mp4']}/envelope"
     try:
@@ -9248,7 +9261,7 @@ def test_shutdown_stops_an_envelope_decode_in_flight(
         started.append(proc)
         return proc
 
-    monkeypatch.setattr(ui, "spawn", silent)
+    patch_ui(monkeypatch, "spawn", silent)
     media = client.app.state.media
     url = f"/api/projects/{pid}/sources/{ids['tone.mp4']}/envelope"
     try:
@@ -9283,8 +9296,8 @@ def test_an_envelope_decode_failing_in_any_way_is_stored_not_requeued(
     def refuse(project: Path, name: str) -> Path:
         raise HTTPException(409, "the folder is not ours")
 
-    monkeypatch.setattr(ui, "_ui_folder", refuse)
-    monkeypatch.setattr(ui, "spawn", lambda args, **kw: spawned.append(args))
+    patch_ui(monkeypatch, "_ui_folder", refuse)
+    patch_ui(monkeypatch, "spawn", lambda args, **kw: spawned.append(args))
     media = client.app.state.media
     url = f"/api/projects/{pid}/sources/{ids['tone.mp4']}/envelope"
     res = get_envelope(client, url)  # 202 while it runs, then the stored error
@@ -9318,10 +9331,10 @@ def test_an_envelope_nobody_asks_for_any_more_is_dropped_from_the_queue(
         release.wait(30)
         return real_folder(project, name)
 
-    monkeypatch.setattr(ui, "ENVELOPE_STALE_S", 0.3)
-    monkeypatch.setattr(ui, "_ui_folder", stuck)
-    monkeypatch.setattr(
-        ui, "spawn", lambda args, **kw: (spawned.append(args), real_spawn(args, **kw))[1]
+    patch_ui(monkeypatch, "ENVELOPE_STALE_S", 0.3)
+    patch_ui(monkeypatch, "_ui_folder", stuck)
+    patch_ui(
+        monkeypatch, "spawn", lambda args, **kw: (spawned.append(args), real_spawn(args, **kw))[1]
     )
     media = client.app.state.media
     project = ui.project_dir(pid)
@@ -9362,7 +9375,7 @@ def test_a_cached_envelope_answers_while_another_source_decodes(
         release.wait(30)
         return real_folder(project, name)
 
-    monkeypatch.setattr(ui, "_ui_folder", stuck)
+    patch_ui(monkeypatch, "_ui_folder", stuck)
     media = client.app.state.media
     try:
         assert media.envelope(ui.project_dir(pid), str(other)) == {"pending": True}
@@ -10031,7 +10044,7 @@ def test_an_analysis_still_runs_when_the_proxy_does_not_start_and_the_log_says_w
 ) -> None:
     set_config(home, assistant={"provider": "claude-code"})
     launcher = FakeLauncher(saved=True)
-    launcher.error = ui.cliproxy.ProxyError("port 18317 is already in use")
+    launcher.error = cliproxy.ProxyError("port 18317 is already in use")
     res, started = proxy_job(client, monkeypatch, tmp_path, launcher)
     assert res.status_code == 200, res.text
     assert started[0].notes == [
@@ -10171,7 +10184,7 @@ def refine_job(
         return SimpleNamespace(view=lambda: {"status": "running"})
 
     monkeypatch.setattr(ui.Jobs, "start", start)
-    monkeypatch.setattr(ui, "events_unavailable", lambda: lite)
+    patch_ui(monkeypatch, "events_unavailable", lambda: lite)
     return client.post("/api/projects/cli/jobs", json=body), seen
 
 
@@ -10354,11 +10367,11 @@ def test_the_project_says_the_description_it_has_and_whether_events_run_here(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     p = refine_project(tmp_path)
-    monkeypatch.setattr(ui, "events_unavailable", lambda: None)
+    patch_ui(monkeypatch, "events_unavailable", lambda: None)
     view = client.get("/api/projects/cli").json()["refine"]
     assert (view["context"], view["unavailable"]) == (None, None)
     cache.save_json(p / "activity.json", {"request": {"activity": None, "context": "mud"}})
-    monkeypatch.setattr(ui, "events_unavailable", lambda: "torch is not installed")
+    patch_ui(monkeypatch, "events_unavailable", lambda: "torch is not installed")
     view = client.get("/api/projects/cli").json()["refine"]
     assert (view["context"], view["unavailable"]) == ("mud", "torch is not installed")
 
@@ -10369,7 +10382,7 @@ def test_the_lite_message_names_the_missing_module_and_how_to_add_it(
     monkeypatch.setattr(extras, "edition", lambda: "full")
     assert ui.events_unavailable() is None
     monkeypatch.setattr(extras, "edition", lambda: "lite")
-    monkeypatch.setattr(ui.importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
     message = ui.events_unavailable()
     assert message is not None and "not available in Cutpoint lite" in message
 
@@ -10859,7 +10872,7 @@ def test_360_analyze_of_a_deleted_user_style_runs_in_its_base_and_keeps_it(
     cache.save_json(p / "ui" / "meta.json", meta | {"style": "gone"})
     cache.save_json(p / "highlights.json", {"style": "gone", "style_base": "action-cam"})
     seen: list[list[str]] = []
-    monkeypatch.setattr(ui, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
+    patch_ui(monkeypatch, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
 
     def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
         seen.append(job_args(args))
@@ -10930,7 +10943,7 @@ def test_a_refused_style_job_leaves_the_style_as_it_was(
     assert res.status_code == 409
     assert (p / "ui" / "meta.json").read_bytes() == before
     # a run elsewhere holds the project: refused when the job would start
-    monkeypatch.setattr(ui, "project_busy", lambda *_a: True)
+    patch_ui(monkeypatch, "project_busy", lambda *_a: True)
     res, _ = style_job(client, monkeypatch, {"style": "commentary"})
     assert res.status_code == 409 and res.json()["detail"] == ui.BUSY_TEXT
     assert (p / "ui" / "meta.json").read_bytes() == before
@@ -10964,7 +10977,7 @@ def test_a_real_start_failure_puts_meta_back_and_removes_the_ui_folder_it_made(
     def no_spawn(*_a, **_kw):
         raise OSError("no such program")
 
-    monkeypatch.setattr(ui, "spawn", no_spawn)
+    patch_ui(monkeypatch, "spawn", no_spawn)
     p = auto_project(tmp_path, None, None)
     res = client.post("/api/projects/cli/jobs", json={"action": "analyze", "style": "action"})
     assert res.status_code == 500
@@ -11019,7 +11032,7 @@ def test_a_style_change_repeats_the_options_the_earlier_analysis_used(
     "scenes": false without --no-scenes, so the analysis in action detects scenes (#880), and
     its own crash default is not passed on as an explicit --must-include-crash."""
     # all built-in styles share one default, so give the earlier style its own to tell them apart
-    monkeypatch.setattr(ui, "_style_crash", lambda s, _hl=None: 0.3 if s == "action-cam" else 0.6)
+    patch_ui(monkeypatch, "_style_crash", lambda s, _hl=None: 0.3 if s == "action-cam" else 0.6)
     p = auto_project(tmp_path, None, {"style": "action-cam"})
     hl = cache.load_json(p / "highlights.json")
     hl["settings"].update(scenes=False, must_include_crash=0.3)
@@ -11057,7 +11070,7 @@ def test_a_style_switch_that_did_not_finish_does_not_change_the_recorded_options
 def test_a_custom_styles_crash_value_survives_a_style_switch_that_did_not_finish(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(ui, "_style_crash", lambda s, _hl=None: 0.8 if s == "mine" else 0.6)
+    patch_ui(monkeypatch, "_style_crash", lambda s, _hl=None: 0.8 if s == "mine" else 0.6)
     p = auto_project(tmp_path, None, {"style": "mine"})
     hl = cache.load_json(p / "highlights.json")
     hl["settings"].update(must_include_crash=0.8)

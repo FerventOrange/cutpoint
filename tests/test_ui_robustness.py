@@ -16,7 +16,7 @@ import pytest
 pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
-from conftest import set_config
+from conftest import patch_ui, set_config
 from cutpoint import cache, config, procs, ui
 from cutpoint.assistant import providers
 from cutpoint.assistant import watch as ai_watch
@@ -30,7 +30,7 @@ WAIT = 10  # seconds; only a safety net, every wait below ends on an event
 
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    monkeypatch.setattr(ui, "video_encoder", lambda: ui.VideoEncoder("cpu"))
+    patch_ui(monkeypatch, "video_encoder", lambda: ui.VideoEncoder("cpu"))
     app = ui.create_app(PORT)
     with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
         c.headers["X-Cutpoint-Token"] = app.state.token
@@ -56,7 +56,7 @@ def test_a_watcher_that_breaks_fails_the_job_and_the_next_job_can_start(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     proc = AliveProc()
-    monkeypatch.setattr(ui, "spawn", lambda args, **_kw: proc)
+    patch_ui(monkeypatch, "spawn", lambda args, **_kw: proc)
 
     def kill(p: AliveProc, *_a: Any, **_kw: Any) -> None:
         p.killed = True
@@ -146,7 +146,7 @@ def test_an_ffmpeg_error_while_picking_the_gpu_encoder_falls_back_to_libx264(
     def broken() -> ui.VideoEncoder:
         raise FFmpegError("ffmpeg -encoders failed")
 
-    monkeypatch.setattr(ui, "video_encoder", broken)
+    patch_ui(monkeypatch, "video_encoder", broken)
     assert media._gpu_encoder() is None
 
 
@@ -362,7 +362,7 @@ def test_an_assistant_url_is_checked_again_against_a_provider_saved_meanwhile(
             config.set_config_values({"assistant": {"provider": "codex"}})
         return out
 
-    monkeypatch.setattr(ui, "check_assistant", check)
+    patch_ui(monkeypatch, "check_assistant", check)
     res = client.put("/api/settings", json={"assistant": {"url": "https://llm.example.test/v1"}})
     assert res.status_code == 400, res.text
     assert res.json()["detail"] == "assistant.url cannot be customized for subscription providers"

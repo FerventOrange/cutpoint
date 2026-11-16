@@ -17,6 +17,7 @@ import pytest
 pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
+from conftest import patch_ui
 from cutpoint import analyze, cache, folders, rerank, runstate, ui
 from cutpoint.styles import get_style, style_name
 from test_rerank import lite_layers, make_project, read  # noqa: F401 (lite_layers: a fixture)
@@ -27,7 +28,7 @@ BASE = "/api/projects/p/ranking"
 
 @pytest.fixture
 def client(home: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
-    monkeypatch.setattr(ui, "cuda_probe", lambda: False)  # never a child process here
+    patch_ui(monkeypatch, "cuda_probe", lambda: False)  # never a child process here
     app = ui.create_app(PORT)
     with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
         c.headers["X-Cutpoint-Token"] = app.state.token
@@ -291,7 +292,7 @@ def test_the_ui_process_never_imports_torch_to_rank(home, tmp_path, client, monk
 
     monkeypatch.setattr(analyze, "_cuda", boom)
     asked: list[int] = []
-    monkeypatch.setattr(ui, "cuda_probe", lambda: asked.append(1) or False)
+    patch_ui(monkeypatch, "cuda_probe", lambda: asked.append(1) or False)
     had_torch = "torch" in sys.modules
     got = preview(client, "action")  # plans the visual layer: asks the probe
     assert got.status_code == 200, got.text
@@ -333,7 +334,7 @@ class FakeRun:
 )
 def test_the_cuda_probe_answers_from_the_child(monkeypatch, returncode, raises, expected):
     fake = FakeRun(returncode, raises)
-    monkeypatch.setattr(ui.subprocess, "run", fake)
+    monkeypatch.setattr(subprocess, "run", fake)
     probe = ui.CudaProbe()
     assert probe() is expected
     assert probe() is expected
@@ -343,7 +344,7 @@ def test_the_cuda_probe_answers_from_the_child(monkeypatch, returncode, raises, 
 def test_the_cuda_probe_runs_this_python_with_a_timeout_and_never_imports_torch(monkeypatch):
     had_torch = "torch" in sys.modules
     fake = FakeRun(0)
-    monkeypatch.setattr(ui.subprocess, "run", fake)
+    monkeypatch.setattr(subprocess, "run", fake)
     assert ui.CudaProbe()() is True
     cmd, kwargs = fake.calls[0]
     assert cmd[0] == sys.executable
@@ -365,7 +366,7 @@ def test_concurrent_cuda_probes_run_one_child(monkeypatch):
         release.wait(5)
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(ui.subprocess, "run", slow_run)
+    monkeypatch.setattr(subprocess, "run", slow_run)
     probe = ui.CudaProbe()
     answers: list[bool] = []
     threads = [threading.Thread(target=lambda: answers.append(probe())) for _ in range(5)]

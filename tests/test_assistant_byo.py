@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 import requests
 
-from conftest import set_config
+from conftest import patch_ui, set_config
 from cutpoint import config
 from cutpoint.assistant import keys, ops, providers, session
 from cutpoint.assistant.providers import (
@@ -976,7 +976,7 @@ def test_jobs_and_dialogs_start_without_the_key_variables(monkeypatch) -> None:
     assert job["env"]["CUTPOINT_PROGRESS"] == "1"
     assert not set(job["env"]) & set(keys.ENV_VARS)
     assert OTHER not in json.dumps(job)  # nor in the arguments
-    monkeypatch.setattr(ui, "path_picker", lambda: lambda kind, start: (["dialog"], None))
+    patch_ui(monkeypatch, "path_picker", lambda: lambda kind, start: (["dialog"], None))
     ui.Picker().ask("file", None)
     assert not set(seen[-1]["env"]) & set(keys.ENV_VARS)
 

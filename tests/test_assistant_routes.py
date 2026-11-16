@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 
 from conftest import set_config
 from cutpoint import cache, config, ui
-from cutpoint.assistant import keys, providers, session
+from cutpoint.assistant import cliproxy, keys, lookfor, providers, session
 from cutpoint.assistant import store as ai_store
 from proxy_helpers import FakeLauncher
 from test_assistant import FakeProvider, Reply, _Resp, call
@@ -355,7 +355,7 @@ def test_the_page_learns_whether_the_visual_search_can_run(
     weights = tmp_path / "clip.pt"
     weights.write_bytes(b"x")
     monkeypatch.setattr(V.paths, "clip_weights", lambda: weights)
-    monkeypatch.setattr(ui.ai_lookfor, "unavailable", lambda: None)
+    monkeypatch.setattr(lookfor, "unavailable", lambda: None)
     got = client.get("/api/projects/cli/assistant").json()["frame_index"]
     assert got["ok"] is False and "no frame index" in got["why"] and got["fix"]
     src = Path(json.loads((proj[0] / "highlights.json").read_text())["sources"][0]["path"])
@@ -685,7 +685,7 @@ def test_a_subscription_provider_misses_a_login_not_a_key(
 ) -> None:
     set_config(home, assistant={"provider": "codex"})
     why = "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
-    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": False, "error": why})
+    monkeypatch.setattr(cliproxy, "status", lambda _name: {"logged_in": False, "error": why})
     got = client.get("/api/projects/cli/assistant").json()["consent"]
     assert got["missing_key"] == why and got["missing_kind"] == "login"
     set_config(home, assistant={"provider": "anthropic"})
@@ -702,7 +702,7 @@ def test_the_models_of_a_subscription_start_the_proxy_only_with_a_saved_login(
     providers.clear_model_cache()
     set_config(home, assistant={"provider": "codex"})
     launcher = client.app.state.proxies = FakeLauncher(saved=False)
-    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": False, "error": None})
+    monkeypatch.setattr(cliproxy, "status", lambda _name: {"logged_in": False, "error": None})
     client.get("/api/assistant/models?provider=codex")
     assert launcher.starts == 0 and launcher.calls == [True]
 
@@ -716,7 +716,7 @@ def test_the_models_of_a_subscription_say_why_the_proxy_did_not_start(
 ) -> None:
     set_config(home, assistant={"provider": "codex"})
     launcher = client.app.state.proxies = FakeLauncher(saved=True)
-    launcher.error = ui.cliproxy.ProxyError("no binary for this platform")
+    launcher.error = cliproxy.ProxyError("no binary for this platform")
     res = client.get("/api/assistant/models?provider=codex")
     assert res.status_code == 200
     assert res.json() == {
@@ -792,7 +792,7 @@ def test_a_turn_says_why_the_subscription_proxy_did_not_start(
     _, seq, _ = proj
     use_codex(monkeypatch, home)
     launcher = client.app.state.proxies = FakeLauncher(saved=True)
-    launcher.error = ui.cliproxy.ProxyError("port 18317 is already in use")
+    launcher.error = cliproxy.ProxyError("port 18317 is already in use")
     res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
     assert res.status_code == 503
     assert res.json()["detail"] == (
@@ -886,10 +886,10 @@ def test_models_route_role_consent_gating(client: TestClient, monkeypatch, home:
         assistant={"provider": "ollama"},
         vision_assistant={"provider": "codex", "consent": []},
     )
-    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": True})
+    monkeypatch.setattr(cliproxy, "status", lambda _name: {"logged_in": True})
     model_requests = []
     monkeypatch.setattr(
-        ui.cliproxy, "list_models", lambda *args, **kwargs: model_requests.append(args) or []
+        cliproxy, "list_models", lambda *args, **kwargs: model_requests.append(args) or []
     )
     # Without consent, subscription/hosted provider requires consent and returns consent_needed
     res = client.get("/api/assistant/models?role=vision&provider=codex")
@@ -906,7 +906,7 @@ def test_models_route_role_consent_gating(client: TestClient, monkeypatch, home:
     )
     seen = []
     monkeypatch.setattr(
-        ui.ai_providers,
+        providers,
         "model_list",
         lambda provider, consent, **kwargs: seen.append(consent) or {"state": "ok", "models": []},
     )
@@ -930,9 +930,9 @@ def test_vision_models_route_keeps_saved_model_only_for_its_provider(
         },
     )
     providers.clear_model_cache()
-    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": True})
+    monkeypatch.setattr(cliproxy, "status", lambda _name: {"logged_in": True})
     monkeypatch.setattr(
-        ui.cliproxy,
+        cliproxy,
         "list_models",
         lambda *a, **k: [
             {"id": "gpt-3.5-turbo", "name": "gpt-3.5-turbo"},
@@ -974,7 +974,7 @@ def test_vision_consent_is_versioned_and_not_given_by_the_assistant_s(
 ) -> None:
     """Consent under the old Vision wording (``<provider>@<host>``) and the assistant's consent
     do not let frames go out: the Models tab asks again with the ``vision-v2:`` key."""
-    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": True})
+    monkeypatch.setattr(cliproxy, "status", lambda _name: {"logged_in": True})
     set_config(
         home,
         assistant={"provider": "codex", "consent": ["assistant-v3:codex@chatgpt.com"]},
@@ -999,7 +999,7 @@ def test_vision_consent_is_versioned_and_not_given_by_the_assistant_s(
 def test_vision_consent_does_not_unlock_the_assistant(
     client: TestClient, monkeypatch, home: Path, proj
 ) -> None:
-    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": True})
+    monkeypatch.setattr(cliproxy, "status", lambda _name: {"logged_in": True})
     vision_key = "vision-v2:codex@chatgpt.com"
     # even a Vision key in the assistant's own list is not the assistant's consent
     set_config(
@@ -1076,7 +1076,7 @@ def test_an_assistant_v2_consent_no_longer_counts(
 def test_the_assistant_s_consent_does_not_unlock_vision(
     client: TestClient, monkeypatch, home: Path
 ) -> None:
-    monkeypatch.setattr(ui.cliproxy, "status", lambda _name: {"logged_in": True})
+    monkeypatch.setattr(cliproxy, "status", lambda _name: {"logged_in": True})
     assistant_key = "assistant-v3:codex@chatgpt.com"
     # even an assistant key in Vision's own list is not Vision's consent
     set_config(
@@ -1430,7 +1430,7 @@ def test_no_path_user_or_host_name_reaches_a_hosted_model(
     assert f"{ann}/clip.mp4" in shown and f"{bo}/clip.mp4" in shown  # local: as it was
     fake = use(monkeypatch, HostedFake(_every_tool()))
     fake.context_tokens = 64000  # room for the earlier turns
-    monkeypatch.setattr(ui.ai_lookfor, "indexed", lambda _sources: True)  # look_for is offered
+    monkeypatch.setattr(lookfor, "indexed", lambda _sources: True)  # look_for is offered
     ok = client.post(
         "/api/assistant/consent", json={"key": "assistant-v3:anthropic@api.anthropic.com"}
     )
