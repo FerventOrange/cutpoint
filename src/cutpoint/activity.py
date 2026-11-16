@@ -1258,7 +1258,7 @@ def record_context(project: Path, context: str | None) -> bool:
     settings["context"] = words
     from cutpoint.backends import saved_settings  # noqa: PLC0415 (requests: off the CLI import)
 
-    cache.save_json(path, saved_settings(hl))
+    cache.save_json(path, saved_settings(hl), durable=True)
     logger.info("activity: the description is recorded in %s", path.name)
     return True
 

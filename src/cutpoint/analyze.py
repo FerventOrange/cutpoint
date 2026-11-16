@@ -3027,7 +3027,7 @@ def rebuild_crash_moments(project: Path) -> bool:
     number_candidates(hl)
     if _canonical(hl) == _canonical(before):  # the same records, maybe in another order
         return False
-    cache.save_json(path, backends.saved_settings(hl))
+    cache.save_json(path, backends.saved_settings(hl), durable=True)
     logger.info("Crash moments rebuilt from crashes.json in %s", path.name)
     return True
 
@@ -4692,7 +4692,7 @@ def _analyze(
             out_dir / "transcript.txt", transcript.replace("\n", os.linesep).encode("utf-8")
         )
         out = out_dir / "highlights.json"
-        cache.save_json(out, backends.saved_settings(hl))
+        cache.save_json(out, backends.saved_settings(hl), durable=True)
         if ev:  # ranked with the events: a pre-events copy of an older analysis is stale
             cache.remove(out_dir / "highlights.pre-events.json")
         held.commit()  # every HELD_OUTPUTS file at once (a cancel in it waits for the last)

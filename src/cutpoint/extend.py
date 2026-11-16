@@ -42,7 +42,7 @@ from typing import Any
 from cutpoint import boundaries, cache, folders, jsonout, srt, tsrepair
 from cutpoint.clipresume import ClipResume, clip_key
 from cutpoint.color import COLOR_VERSION, AutoGrade
-from cutpoint.config import remap_source, source_path
+from cutpoint.config import path_key, remap_source, source_path
 from cutpoint.crop import Crop, parse_spec
 from cutpoint.encode import (
     Grade,
@@ -120,6 +120,14 @@ def manifest_project(manifest: dict[str, Any], clips_dir: Path) -> Path:
         except OSError:
             pass
     return clips_dir.resolve().parent
+
+
+def _foreign_project(project: Path, clips_dir: Path) -> bool:
+    """Whether ``project`` (:func:`manifest_project`) is not the clips folder's parent: a
+    clips folder exported elsewhere (``clips --out``) or copied from another machine, whose
+    manifest names a project this run must not write into (A663)."""
+    parent = clips_dir.resolve().parent
+    return path_key(str(project.resolve())) != path_key(str(parent))
 
 
 def _pick(e: dict[str, Any]) -> tuple[float, float]:
@@ -409,7 +417,18 @@ def _extend_locked(
         known = manifest_entries(clips_dir, files)  # clips renamed during review too
         # joined MPEG-TS/PS recordings are read through their stream copy, the clock of the
         # analysis (#1052); one the analysis read so is never read in place
-        highlights = cache.load_json(manifest_project(manifest, clips_dir) / "highlights.json")
+        project = manifest_project(manifest, clips_dir)
+        foreign = _foreign_project(project, clips_dir)
+        if foreign:
+            logger.info(
+                "%s names the project %s, not the folder's parent %s: its highlights.json and "
+                "360 clip list are read there, and 360 path files are written under %s",
+                clips_dir / "manifest.json",
+                project,
+                clips_dir.resolve().parent,
+                clips_dir.resolve().parent / "pano_paths",
+            )
+        highlights = cache.load_json(project / "highlights.json")
         remuxed = [
             e["path"]
             for e in (highlights.get("sources") if isinstance(highlights, dict) else None) or []
@@ -476,7 +495,6 @@ def _extend_locked(
             )
             reuse_by_file = {x["file"]: x for x in reuse_entries}
             reuse_same_format = reuse_fmt == fmt_d
-        project = manifest_project(manifest, clips_dir)
         language = project_language(project)
         speech_recs = speech_pass(
             plans,
@@ -488,7 +506,7 @@ def _extend_locked(
         )
         pano = None
         if any(p.entry.get("pano") for p in plans):
-            from cutpoint.pano.render import Format360, PanoExporter  # noqa: PLC0415
+            from cutpoint.pano.render import PATHS_DIR, Format360, PanoExporter  # noqa: PLC0415
 
             pano = PanoExporter(
                 project,
@@ -498,6 +516,8 @@ def _extend_locked(
                 pano_cmd_every,
             )
             pano.fmt = Format360(fmt.width, fmt.height, fmt.fps)
+            if foreign:  # the manifest's project is read, never written (A663)
+                pano.paths_dir = clips_dir.resolve().parent / PATHS_DIR / out_dir.name
         compressed = sum(1 for p in plans if p.entry.get("compress_peaks"))
         if compressed:
             logger.warning(

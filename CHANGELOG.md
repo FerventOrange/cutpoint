@@ -103,6 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An OpenAI-compatible server (not OpenAI's own Responses API) that answers HTTP 400 naming `response_format` or `json_schema` is asked once again without it, and later calls of that provider leave it out; the reply is still checked for a JSON object with the required keys. Other 400s, timeouts and key errors are not retried (#920).
 - A Vision reply that is not a JSON object is dropped with a DEBUG line naming the model and the JSON type, no longer silently.
 - `cutpoint events` and the re-analysis of an action-cam project no longer end with `Unknown style` after the project's style was deleted with `cutpoint style delete`: the style degrades to the built-in base `highlights.json` records (`style_base`), with an INFO line naming both, so the crash moments are rebuilt and the events nominate and rescore as that base; the re-analysis records the base as the project's style. An older file without `style_base` ends with an ERROR line that names the missing style and asks for `cutpoint analyze` with another `--style`. A project of a deleted style over `action` or `sport` also keeps its visual pool when `highlights.json` has no `settings.visual_pool` record.
+- `config.json`, `highlights.json` and the swap journal of a clips-folder replace are flushed to disk (`fsync`) before they replace the file before, and on Linux and macOS their folder after it, so a power cut leaves the old or the new file, not an empty one; other cache files are written as before (#1085, A667).
 
 ### Changed
 
@@ -166,6 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows: CUDA DLLs are loaded from absolute wheel paths, not from the current folder (#1085, A643).
 - 360 stitch: one stitch per output file at a time, and `-output` or `-inputs` in `pano.stitch_args` is refused (#1085, A660, A661).
 - The activity discovery cache is validated (A655). The 360 VL verdict cache is keyed per source and clip, so old verdicts are asked once more (A658, A659). Stage and timeline index names stay in the cache folder (A666, in part). Raw prompt chat markers are broken (A642). Vision sends nothing while its consent is needed (A645). Dialogue reading needs the AI Chat consent for an Ollama on another machine (A644). Feed label logging shows only the label (A648) (#1085).
+- `cutpoint extend` logs one INFO line when a clips folder's `manifest.json` names a project that is not the folder's parent (a folder exported elsewhere with `clips --out`, or copied from another machine), and writes the 360 path files of such a folder under its own parent (`pano_paths/<out folder>`), never into the recorded project; that project's `highlights.json` and 360 clip list are still read (#1085, A663).
 
 ## [0.5.0] - 2026-11-10
 
