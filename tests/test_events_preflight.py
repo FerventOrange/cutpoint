@@ -105,6 +105,9 @@ class _Resp:
     def __init__(self, data):
         self._data = data
 
+    def raise_for_status(self):
+        pass
+
     def json(self):
         return self._data
 

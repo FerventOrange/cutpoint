@@ -217,7 +217,7 @@ class VLChecker:
     def _post(self, prompt: str, image: str, num_predict: int) -> dict[str, Any] | None:
         import requests  # noqa: PLC0415
 
-        from cutpoint.vision import refuse_redirect  # noqa: PLC0415
+        from cutpoint.backends import ollama_post  # noqa: PLC0415
 
         # a provider the user did not agree to (a hosted one, or an Ollama on another machine):
         # no request, only the consent warning
@@ -251,12 +251,8 @@ class VLChecker:
             self.preloaded = memguard.ollama_loaded(self.rater.url, self.model)
         self.rater.used = True  # so unload() frees it
         try:
-            resp = requests.post(
-                f"{self.rater.url}/api/chat", json=payload, timeout=(3, 300), allow_redirects=False
-            )
-            refuse_redirect(resp)
-            resp.raise_for_status()
-            return resp.json().get("message") or {}
+            msg = ollama_post(self.rater.url, "/api/chat", payload, timeout=(3, 300)).get("message")
+            return msg if isinstance(msg, dict) else {}  # another shape: no reply (A116)
         except requests.RequestException as err:
             logger.warning("VL check request failed: %s; no more VL checks", err)
             self.dead = True

@@ -46,7 +46,7 @@ def rater(monkeypatch) -> vision.VisionRater:
 def _post(monkeypatch, reply) -> list[dict]:
     sent: list[dict] = []
 
-    def post(url, json=None, timeout=None, allow_redirects=True):
+    def post(url, json=None, timeout=None, allow_redirects=True, **_k):
         sent.append({"url": url, "json": json, "timeout": timeout, "redir": allow_redirects})
         if isinstance(reply, Exception):
             raise reply
@@ -57,7 +57,7 @@ def _post(monkeypatch, reply) -> list[dict]:
 
 
 def _get(monkeypatch, reply) -> None:
-    def get(url, timeout=None, allow_redirects=True):
+    def get(url, timeout=None, allow_redirects=True, **_k):
         assert url == f"{URL}/api/ps" and allow_redirects is False
         if isinstance(reply, Exception):
             raise reply
@@ -176,7 +176,7 @@ def test_on_gpu_from_api_ps(monkeypatch, rater, models, expected):
 def test_on_gpu_probe_has_a_short_connect_timeout(monkeypatch, rater):
     seen = []
 
-    def get(url, timeout=None, allow_redirects=True):
+    def get(url, timeout=None, allow_redirects=True, **_k):
         seen.append(timeout)
         return _Resp({"models": []})
 
