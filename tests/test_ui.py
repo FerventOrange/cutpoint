@@ -1091,6 +1091,51 @@ def test_two_apps_in_one_process_share_no_planners_or_login_states(tmp_path: Pat
     assert seen == {"a": "done", "b": "idle"}
 
 
+def test_two_apps_in_one_process_serve_only_their_own_media_urls(home: Path) -> None:
+    """A media URL carries the media token of the app that listed it (app.state.media_token),
+    so it plays from that app and the other app's media routes refuse it."""
+    proj = ui.projects_dir() / "proj"
+    write(proj / "ui" / "meta.json", json.dumps({"name": "proj"}))
+    write(proj / "final.mp4", b"video")
+    a, b = ui.create_app(PORT), ui.create_app(PORT)
+    urls = {}
+    for name, app in (("a", a), ("b", b)):
+        with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
+            c.headers["X-Cutpoint-Token"] = app.state.token
+            res = c.get("/api/projects/proj")
+            assert res.status_code == 200, res.text
+            urls[name] = res.json()["outputs"][0]["url"]
+    assert urls["a"] != urls["b"]
+    for name, app in (("a", a), ("b", b)):
+        with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:  # the URL's token only
+            for listed_by, url in urls.items():
+                res = c.get(url)
+                assert res.status_code == (200 if listed_by == name else 403), (name, url)
+
+
+@pytest.mark.parametrize("path,body", [("target", {"seconds": 30}), ("review", {"segments": []})])
+def test_two_apps_in_one_process_hold_their_own_review_lock(
+    home: Path, path: str, body: dict
+) -> None:
+    """Saving the sequence or the target takes the review lock of the app that serves it
+    (app.state.review_lock): a save waiting in one app never holds up the other's."""
+    write(ui.projects_dir() / "proj" / "ui" / "meta.json", json.dumps({"name": "proj"}))
+    a, b = ui.create_app(PORT), ui.create_app(PORT)
+
+    def put_save(app) -> int:
+        with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
+            c.headers["X-Cutpoint-Token"] = app.state.token
+            return c.put(f"/api/projects/proj/{path}", json=body).status_code
+
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+        with a.state.review_lock:
+            assert pool.submit(put_save, b).result(timeout=30) == 200
+            held = pool.submit(put_save, a)
+            with pytest.raises(concurrent.futures.TimeoutError):
+                held.result(timeout=0.5)  # waits for its own app's lock
+        assert held.result(timeout=30) == 200
+
+
 def test_a_stale_or_missing_camera_path_previews_the_library_fallback(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
