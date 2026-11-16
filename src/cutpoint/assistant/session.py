@@ -396,8 +396,14 @@ def _without_names(text: str, renamed: Mapping[str, str]) -> str:
     pass, the longest first."""
     if not renamed:
         return text
-    names = "|".join(re.escape(n) for n in sorted(renamed, key=len, reverse=True))
-    return re.sub(rf"(?<![\w.-])(?:{names})", lambda m: renamed[m.group()], text)
+    keys = sorted(renamed, key=len, reverse=True)
+    names = "|".join(f"(?P<n{i}>{re.escape(n)})" for i, n in enumerate(keys))
+
+    def shown(m: re.Match[str]) -> str:  # the spelling as written first, else the name matched
+        return renamed.get(m.group()) or renamed[keys[int(str(m.lastgroup)[1:])]]
+
+    # Windows paths differ in case, so the match ignores it
+    return re.sub(rf"(?<![\w.-])(?:{names})", shown, text, flags=re.IGNORECASE)
 
 
 def cut_again_error(provider: Any, err: TruncatedError, again: bool = True) -> ProviderError:
@@ -1835,8 +1841,11 @@ def _source_of(name: Any, table: context.MomentTable, n: int) -> tuple[str | Non
     if isinstance(name, str) and name in paths:
         return name, ""
     shown = {p: table.file(p) for p in paths}
-    given = name.replace("\\", "/").strip("/") if isinstance(name, str) else None
-    hits = [p for p in paths if given is not None and given == shown[p]]
+    slashed = name.replace("\\", "/") if isinstance(name, str) else None
+    given = slashed.strip("/") if slashed is not None else None
+    # as shown first: a source at a root without a drive is shown as "/clip.mp4"
+    hits = [p for p in paths if slashed is not None and slashed == shown[p]]
+    hits = hits or [p for p in paths if given is not None and given == shown[p]]
     hits = hits or [p for p in paths if given is not None and given == context.file_name(p)]
     if len(hits) == 1:
         return hits[0], ""
