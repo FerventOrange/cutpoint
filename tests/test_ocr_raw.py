@@ -362,14 +362,32 @@ def test_segment_without_frames_leaves_the_read_incomplete(tmp_path: Path, monke
     (meta,) = tmp_path.glob("ocr-raw-*/meta.json")
     status = json.loads(meta.read_text())
     assert not status["complete"] and status["failed"]
-    _bump(monkeypatch)
-    assert _run(tmp_path, monkeypatch, None, avoid=avoid) == ([], {"skipped": "not cached"})
+    # without an engine the partial result is used as it is
+    assert _run(tmp_path, monkeypatch, None, avoid=avoid)[1]["incomplete"] == 1
     # the next read starts over and reads the part that failed
     starts: list[float] = []
-    events, _ = _run(tmp_path, monkeypatch, _Engine(), avoid=avoid, starts=starts)
+    events, stats = _run(tmp_path, monkeypatch, _Engine(), avoid=avoid, starts=starts)
     assert starts == [0.0, 29.0]
     assert [e["t"] for e in events if e["type"] == "kill"] == [29.0, 40.0]
-    assert json.loads(meta.read_text())["complete"]
+    assert json.loads(meta.read_text())["complete"] and "incomplete" not in stats
+
+
+def test_incomplete_read_is_read_once_more(tmp_path: Path, monkeypatch) -> None:
+    avoid = [(25.0, 27.0)]
+    _run(tmp_path, monkeypatch, _Engine(), avoid=avoid, fail_at=29.0)
+    starts: list[float] = []
+    _, stats = _run(tmp_path, monkeypatch, _Engine(), avoid=avoid, fail_at=29.0, starts=starts)
+    assert starts and stats["incomplete"] == 2  # read again, failed again
+    starts.clear()
+    _, stats = _run(tmp_path, monkeypatch, _Engine(), avoid=avoid, starts=starts)
+    assert starts == [] and stats["incomplete"] == 2  # damaged: a plain cache hit now
+
+
+def test_complete_read_is_a_cache_hit(tmp_path: Path, monkeypatch) -> None:
+    first = _run(tmp_path, monkeypatch, _Engine())
+    starts: list[float] = []
+    assert _run(tmp_path, monkeypatch, _Engine(), starts=starts) == first
+    assert starts == [] and "incomplete" not in first[1]
 
 
 def test_failed_segment_survives_an_interrupt(tmp_path: Path, monkeypatch) -> None:
