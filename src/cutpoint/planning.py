@@ -8,6 +8,9 @@
 * :func:`report_clips`: the ``--json`` outputs of the clips folder written.
 * :func:`manifest_entries` / :func:`check_own_manifest`: which clips and which
   manifest.json a clips folder's run made (renamed clips by size; ``generator``).
+* :func:`replace_plan` / :func:`warn_kept`: what ``clips --force`` and ``extend`` may
+  replace in a clips folder (only what an earlier run made, never a source) and the
+  warnings naming what they keep.
 
 Nothing here encodes or writes files (see :mod:`cutpoint.encode`).
 """
@@ -20,11 +23,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from cutpoint import boundaries, cache, default_fit, jsonout, sources, visual_pool
+from cutpoint import boundaries, cache, default_fit, folders, jsonout, sources, visual_pool
 from cutpoint.config import path_key
 from cutpoint.events.tails import load_events
 from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.styles import style_name
+from cutpoint.utils import clip_files
 
 logger = logging.getLogger(__name__)
 
@@ -557,3 +561,192 @@ def kept_why(kept: list[str], renamed: dict[str, str], had_manifest: bool) -> st
     if others:
         why += f"; the old manifest.json does not list {', '.join(others)} (added by hand?)"
     return why
+
+
+# ------------------------------------------------- what clips --force / extend may replace
+def _listed_pairs(out_dir: Path) -> list[tuple[str | None, str | None]] | None:
+    """``(clip, .srt)`` names of each entry of the manifest.json in ``out_dir`` (None for a
+    missing or invalid one), or None if there is no readable manifest.json."""
+    manifest = cache.load_json(out_dir / "manifest.json")
+    entries = manifest.get("clips") if isinstance(manifest, dict) else None
+    if not isinstance(entries, list):
+        return None
+    pairs: list[tuple[str | None, str | None]] = []
+    for e in entries:
+        names: list[str | None] = []
+        for key, ext in (("file", ".mp4"), ("srt", ".srt")):
+            f = e.get(key) if isinstance(e, dict) else None
+            # a bare clip name only: never a path out of the folder or another kind of file
+            ok = isinstance(f, str) and f == Path(f).name and f.lower().endswith(ext)
+            names.append(f if ok else None)
+        pairs.append((names[0], names[1]))
+    return pairs
+
+
+def listed_files(out_dir: Path) -> list[str] | None:
+    """The clip and ``.srt`` names the manifest.json in ``out_dir`` lists (files an earlier
+    run made), or None if there is no readable manifest.json."""
+    pairs = _listed_pairs(out_dir)
+    if pairs is None:
+        return None
+    return [f for pair in pairs for f in pair if f is not None]
+
+
+def unlisted_srts(out_dir: Path, listed: list[str] | None) -> set[str]:
+    """:func:`~cutpoint.config.path_key` of the ``.srt`` files in ``out_dir`` that
+    ``listed`` (:func:`listed_files`) does not name: no subtitles are written under them."""
+    ours = {path_key(n, out_dir) for n in listed or []}
+    return {
+        k
+        for f in out_dir.glob("*.srt")
+        if f.is_file() and (k := path_key(f.name, out_dir)) not in ours
+    }
+
+
+def check_unlisted_clips(out_dir: Path, new: list[str], listed: list[str] | None) -> None:
+    """Fail before any export if writing the clip names ``new`` into ``out_dir`` would
+    replace a ``.mp4`` that ``listed`` (:func:`listed_files`) does not name: renamed during
+    review or added by hand (every one, without a readable manifest.json).
+
+    Raises:
+        FileExistsError: Naming them.
+    """
+    if not out_dir.is_dir():
+        return
+    ours = {path_key(n, out_dir) for n in listed or []}
+    names = {path_key(n, out_dir) for n in new}
+    hits = [
+        p.name
+        for p in sorted(out_dir.iterdir())
+        if (k := path_key(p.name, out_dir)) in names
+        and k not in ours
+        and (p.is_file() or p.is_symlink())
+    ]
+    if hits:
+        why = (
+            "the old manifest.json does not list them (renamed during review or added by hand)"
+            if listed is not None
+            else "there is no readable manifest.json, so they may not be clips cutpoint exported"
+        )
+        raise FileExistsError(
+            f"Cannot replace {', '.join(hits)} in {out_dir}: {why}. Move or rename them, "
+            "then run again."
+        )
+
+
+@dataclass(frozen=True)
+class ReplacePlan:
+    """What ``clips --force`` or ``extend`` replaces in a clips folder and what it keeps
+    (:func:`replace_plan`)."""
+
+    replace: list[str]  # names replaced or removed besides the clips the run writes
+    kept_sources: list[str]  # files kept because the run reads them as sources
+    kept: list[str]  # other .mp4 kept: renamed during review or added by hand
+    had_manifest: bool  # whether the old manifest.json was readable
+    protected_srts: set[str]  # path_key of the .srt names no subtitles are written under
+    renamed: dict[str, str]  # the exported name of each kept clip renamed during review
+
+
+def replace_plan(
+    out_dir: Path,
+    new: list[str],
+    sources: set[Any],
+    *,
+    clip_sources: set[Any] | None = None,
+) -> ReplacePlan:
+    """What a run that writes the clip names ``new`` into ``out_dir`` replaces there.
+
+    Only files an earlier run made are replaced: the clips and their ``.srt`` subtitles
+    listed in the old manifest.json (those the run does not write too, as the new
+    manifest.json no longer lists them) and leftover ``.<name>.part.mp4`` files of a
+    hard-killed run. A file the run reads (``sources``, see
+    :func:`~cutpoint.folders.source_keys`) is never replaced; neither is any other ``.mp4``,
+    so a name in ``new`` that is such a file stops the run (:func:`check_unlisted_clips`).
+    Every other ``.srt`` (all of them without a readable manifest.json) is protected: no
+    subtitles are written under its name. A manifest.json cutpoint did not write stops the
+    run (:func:`check_own_manifest`).
+
+    Only a name spelled on disk as listed is replaced: a clip renamed in case only still
+    matches its listed name on a case-insensitive file system and must stay (kept, with a
+    warning). A listed name spelled otherwise on disk goes, under that spelling, only if the
+    run writes or replaces its clip: an ``.srt`` beside it would keep the old cues, unlisted.
+
+    Args:
+        clip_sources: More :func:`~cutpoint.folders.file_keys` (``extend``: every source of
+            the manifest's clips, read this run or not). A kept ``.mp4`` that is one of them
+            is named as a kept source, not a kept clip; it is not protected beyond
+            ``sources``.
+
+    Raises:
+        ValueError: If a name in ``new`` is a source of this run (before any export).
+        FileExistsError: If a name in ``new`` is another ``.mp4`` the old manifest.json
+            does not list, or that manifest.json is not one cutpoint wrote (before any
+            export).
+    """
+    folders.check_not_sources(out_dir, new, sources)
+    if not out_dir.is_dir():
+        return ReplacePlan([], [], [], True, set(), {})
+    check_own_manifest(out_dir)
+    listed = listed_files(out_dir)
+    check_unlisted_clips(out_dir, new, listed)
+    if listed is None and any(out_dir.iterdir()):
+        logger.warning(
+            "%s has no readable manifest.json: --force adds the clips this run writes and "
+            "keeps every other file",
+            out_dir,
+        )
+    parts = [p.name for p in out_dir.glob(".*.part.mp4")]
+    present = {p.name for p in out_dir.iterdir()}
+    on_disk = {path_key(n, out_dir): n for n in present}
+    names = list(dict.fromkeys([*(listed or []), *parts]))
+    replace: list[str] = []
+    kept_sources: list[str] = []
+
+    def add(n: str) -> None:
+        f = out_dir / n
+        if f.is_file() or f.is_symlink():
+            (kept_sources if folders.same_file(f, sources) else replace).append(n)
+
+    for n in names:
+        if n in present:
+            add(n)
+    gone = {path_key(n, out_dir) for n in (*new, *replace)}
+    for n in names:
+        if (
+            n not in present
+            and (d := on_disk.get(path_key(n, out_dir))) is not None
+            and path_key(Path(n).with_suffix(".mp4").name, out_dir) in gone
+        ):
+            add(d)
+    done = {path_key(n, out_dir) for n in (*new, *replace, *kept_sources)}
+    named_sources = sources | (clip_sources or set())
+    kept: list[str] = []
+    for p in clip_files(out_dir):
+        if path_key(p.name, out_dir) not in done:
+            (kept_sources if folders.same_file(p, named_sources) else kept).append(p.name)
+    entries = manifest_entries(out_dir, [out_dir / n for n in kept])
+    return ReplacePlan(
+        replace,
+        kept_sources,
+        kept,
+        listed is not None,
+        unlisted_srts(out_dir, listed),
+        {n: e["file"] for n, e in entries.items() if e["file"] != n},
+    )
+
+
+def warn_kept(out_dir: Path, plan: ReplacePlan, sources_why: str) -> None:
+    """The WARNING and ``--json`` warning (``kept_sources``, ``kept_clips``) naming the files
+    ``plan`` kept in ``out_dir``. ``sources_why`` says why a kept source stays; the hint that
+    ``assemble`` includes them follows it after a space."""
+    hint = "assemble includes them, so move them out if they are not part of the edit"
+    shown = out_dir.absolute()
+    if plan.kept_sources:
+        message = f"Kept {', '.join(plan.kept_sources)} in {shown}: {sources_why} {hint}"
+        logger.warning("%s", message)
+        jsonout.warn("kept_sources", message, [out_dir / n for n in plan.kept_sources])
+    if plan.kept:
+        why = kept_why(plan.kept, plan.renamed, plan.had_manifest)
+        message = f"Kept {', '.join(plan.kept)} in {shown}: {why}; {hint}"
+        logger.warning("%s", message)
+        jsonout.warn("kept_clips", message, [out_dir / n for n in plan.kept])

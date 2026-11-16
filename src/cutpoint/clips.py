@@ -63,19 +63,18 @@ from cutpoint.ffmpeg_utils import (
 from cutpoint.planning import (
     MANIFEST_GENERATOR,
     Padding,
-    check_own_manifest,
     exact_fade,
     file_size,
-    kept_why,
-    manifest_entries,
     pad,
+    replace_plan,
     report_clips,
     select_moments,
     speech_pass,
+    warn_kept,
 )
 from cutpoint.styles import Style, recorded_name
 from cutpoint.tail import TailResult, TailSettings, smart_tail
-from cutpoint.utils import clip_files, seconds_keys, slugify
+from cutpoint.utils import seconds_keys, slugify
 
 if TYPE_CHECKING:
     from cutpoint.pano.render import PanoExporter
@@ -986,8 +985,8 @@ def _entry(
     """manifest.json record of one rendered clip (``peaks``: its :func:`peak_filters` preset,
     recorded as ``compress_peaks`` when the clip got compression, with its ``makeup`` gain as
     ``compress_peaks_makeup_db``; ``size``: the clip's size in bytes, see
-    :func:`manifest_entries`; ``grade``: its grade, recorded with its ``to_json()`` keys, such as
-    ``lut`` and ``lut_strength``)."""
+    :func:`~cutpoint.planning.manifest_entries`; ``grade``: its grade, recorded with its
+    ``to_json()`` keys, such as ``lut`` and ``lut_strength``)."""
     m, src, start, end = plan.entry, plan.src, plan.start, res.end
     return {
         "file": plan.name,
@@ -1108,87 +1107,6 @@ def write_manifest(
             "crop": crop,
             "clips": entries,
         },
-    )
-
-
-def _replaced_files(
-    out_dir: Path, new: list[str], sources: set[Any]
-) -> tuple[list[str], list[str], list[str], bool, set[str], dict[str, str]]:
-    """What ``--force`` replaces in ``out_dir`` besides the clip names ``new`` this run writes.
-
-    Only files an earlier run made are replaced: the clips and their ``.srt`` subtitles
-    listed in the old manifest.json and leftover ``.<name>.part.mp4`` files. A file this
-    run reads (``sources``, see :func:`source_keys`) is never replaced; neither is any
-    other ``.mp4``, so a name in ``new`` that is such a file stops the run
-    (:func:`~cutpoint.srt.check_unlisted_clips`). Every other ``.srt`` (all of them without
-    a readable manifest.json) is protected: :func:`render_clips` writes no subtitles under
-    its name. A manifest.json cutpoint did not write stops the run
-    (:func:`check_own_manifest`).
-
-    Returns:
-        ``(names to replace, .mp4 kept as sources of this run, other .mp4 kept, whether
-        the old manifest.json was readable, path_key of the protected .srt names, the
-        exported name of each kept clip renamed during review)``.
-
-    Raises:
-        ValueError: If a name in ``new`` is a source of this run (before any export).
-        FileExistsError: If a name in ``new`` is another ``.mp4`` the old manifest.json
-            does not list, or that manifest.json is not one cutpoint wrote (before any
-            export).
-    """
-    folders.check_not_sources(out_dir, new, sources)
-    if not out_dir.is_dir():
-        return [], [], [], True, set(), {}
-    check_own_manifest(out_dir)
-    listed = srt.listed_files(out_dir)
-    srt.check_unlisted_clips(out_dir, new, listed)
-    if listed is None and any(out_dir.iterdir()):
-        logger.warning(
-            "%s has no readable manifest.json: --force adds the clips this run writes and "
-            "keeps every other file",
-            out_dir,
-        )
-    parts = [p.name for p in out_dir.glob(".*.part.mp4")]
-    # Only a name spelled on disk as listed: a clip renamed in case only still matches its
-    # listed name on a case-insensitive file system and must stay (kept, with a warning).
-    # A listed name spelled otherwise on disk goes, under that spelling, only if this run
-    # writes or replaces its clip: an .srt beside it would keep the old cues, unlisted.
-    present = {p.name for p in out_dir.iterdir()}
-    on_disk = {path_key(n, out_dir): n for n in present}
-    names = list(dict.fromkeys([*(listed or []), *parts]))
-    replace: list[str] = []
-    kept_sources: list[str] = []
-
-    def add(n: str) -> None:
-        f = out_dir / n
-        if f.is_file() or f.is_symlink():
-            (kept_sources if folders.same_file(f, sources) else replace).append(n)
-
-    for n in names:
-        if n in present:
-            add(n)
-    gone = {path_key(n, out_dir) for n in (*new, *replace)}
-    for n in names:
-        if (
-            n not in present
-            and (d := on_disk.get(path_key(n, out_dir))) is not None
-            and path_key(Path(n).with_suffix(".mp4").name, out_dir) in gone
-        ):
-            add(d)
-    done = {path_key(n, out_dir) for n in (*new, *replace, *kept_sources)}
-    kept: list[str] = []
-    for p in sorted(clip_files(out_dir)):
-        if path_key(p.name, out_dir) not in done:
-            (kept_sources if folders.same_file(p, sources) else kept).append(p.name)
-    entries = manifest_entries(out_dir, [out_dir / n for n in kept])
-    renamed = {n: e["file"] for n, e in entries.items() if e["file"] != n}
-    return (
-        replace,
-        kept_sources,
-        kept,
-        listed is not None,
-        srt.unlisted_srts(out_dir, listed),
-        renamed,
     )
 
 
@@ -1636,7 +1554,7 @@ def export_clips(
         if temporary:
             check_free_space(out_dir.parent, plans, fmt)
         # --force replaces only what an earlier run made, never a file this run reads.
-        replace, kept_sources, kept, had_manifest, protected_srts, renamed = _replaced_files(
+        replaced = replace_plan(
             out_dir,
             [p.name for p in plans],
             folders.source_keys(
@@ -1686,7 +1604,7 @@ def export_clips(
             vertical=vertical,
             audio_fade=audio_fade,
             pano=pano,
-            protected_srts=protected_srts,
+            protected_srts=replaced.protected_srts,
             clips_dir=out_dir,
             peaks=peaks,
             language=language,
@@ -1716,20 +1634,13 @@ def export_clips(
             grades=grades,
         )
         if work != out_dir:  # staged, not exported into directly
-            folders.swap_in(work, out_dir, [*replace, "manifest.json"])
-    hint = "assemble includes them, so move them out if they are not part of the edit"
-    if kept_sources:
-        message = (
-            f"Kept {', '.join(kept_sources)} in {out_dir}: a file this run reads as a source is "
-            f"never replaced. They are not in the new manifest.json and {hint}"
-        )
-        logger.warning("%s", message)
-        jsonout.warn("kept_sources", message, [out_dir / n for n in kept_sources])
-    if kept:
-        why = kept_why(kept, renamed, had_manifest)
-        message = f"Kept {', '.join(kept)} in {out_dir}: {why}; {hint}"
-        logger.warning("%s", message)
-        jsonout.warn("kept_clips", message, [out_dir / n for n in kept])
+            folders.swap_in(work, out_dir, [*replaced.replace, "manifest.json"])
+    warn_kept(
+        out_dir,
+        replaced,
+        "a file this run reads as a source is never replaced. They are not in the new "
+        "manifest.json and",
+    )
     if not temporary:
         report_clips(out_dir)
     return out_dir

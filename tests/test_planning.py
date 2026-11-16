@@ -15,7 +15,7 @@ import pytest
 
 import cutpoint
 from conftest import media_info, write
-from cutpoint import boundaries, clips, extend, planning
+from cutpoint import boundaries, clips, config, extend, folders, jsonout, planning
 from cutpoint.encode import OutputFormat
 from cutpoint.events.tails import EventTailSettings
 from cutpoint.ffmpeg_utils import MediaInfo
@@ -797,3 +797,152 @@ def test_export_clips_takes_a_list_shaped_highlights_file(tmp_path):
     with pytest.raises(Exception) as err:  # whatever it says, not a traceback of .get
         clips.export_clips(project)
     assert not isinstance(err.value, AttributeError)
+
+
+# -- replace_plan / warn_kept: what clips --force and extend may replace -----------------
+# Each edge case runs once as clips (no clip_sources) and once as extend (clip_sources: every
+# source of the clips folder's manifest); both must give the same plan.
+MODES = {"clips": lambda _keys: None, "extend": lambda keys: keys}
+
+
+def _clips_folder(tmp_path: Path, listed: list[dict[str, Any]] | None) -> Path:
+    out = tmp_path / "clips"
+    out.mkdir()
+    if listed is not None:
+        manifest = {"generator": planning.MANIFEST_GENERATOR, "clips": listed}
+        write(out / "manifest.json", json.dumps(manifest))
+    return out
+
+
+def _keys(*paths: Path) -> set[Any]:
+    return folders.source_keys((str(p), p, []) for p in paths)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_replace_plan_replaces_only_what_an_earlier_run_made(tmp_path, mode):
+    out = _clips_folder(
+        tmp_path,
+        [{"file": "001_a.mp4", "srt": "001_a.srt"}, {"file": "002_b.mp4", "srt": "002_b.srt"}],
+    )
+    for n in ("001_a.mp4", "001_a.srt", "002_b.mp4", "050_mine.mp4", "050_mine.srt", "notes.txt"):
+        write(out / n, n)
+    write(out / ".003_c.part.mp4", "leftover of a hard-killed run")
+    src = write(tmp_path / "footage.mp4", "source")
+    plan = planning.replace_plan(
+        out, ["001_a.mp4", "003_c.mp4"], _keys(src), clip_sources=MODES[mode](_keys(src))
+    )
+    # 002_b is not written again: the new manifest.json no longer lists it, so it goes too
+    assert sorted(plan.replace) == [".003_c.part.mp4", "001_a.mp4", "001_a.srt", "002_b.mp4"]
+    assert plan.kept == ["050_mine.mp4"] and plan.kept_sources == []
+    assert plan.had_manifest is True and plan.renamed == {}
+    assert plan.protected_srts == {config.path_key("050_mine.srt", out)}
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_replace_plan_never_replaces_a_source_in_the_folder(tmp_path, mode):
+    out = _clips_folder(tmp_path, [{"file": "001_a.mp4"}, {"file": "002_b.mp4"}])
+    listed_src = write(out / "002_b.mp4", "a listed clip used as a source")
+    src = write(out / "footage.mp4", "source")
+    write(out / "001_a.mp4", "old")
+    keys = _keys(src, listed_src)
+    plan = planning.replace_plan(out, ["001_a.mp4"], keys, clip_sources=MODES[mode](keys))
+    assert plan.replace == ["001_a.mp4"]
+    assert plan.kept_sources == ["002_b.mp4", "footage.mp4"] and plan.kept == []
+    with pytest.raises(ValueError, match="reads it as a source"):
+        planning.replace_plan(out, ["footage.mp4"], keys, clip_sources=MODES[mode](keys))
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_replace_plan_keeps_a_clip_renamed_in_case_only(tmp_path, mode, case_insensitive):
+    """The manifest lists 001_Joke; review renamed it 001_joke. On a case-insensitive file
+    system the listed name finds it, but it stays (kept, with its .srt) unless the run writes
+    its clip again; then it goes under the spelling on disk, .srt included."""
+    out = _clips_folder(tmp_path, [{"file": "001_Joke.mp4", "srt": "001_Joke.srt"}])
+    write(out / "001_joke.mp4", "renamed")
+    write(out / "001_joke.srt", "its subtitles")
+    case_insensitive(out)
+    clip_sources = MODES[mode](set())
+    plan = planning.replace_plan(out, ["001_b.mp4"], set(), clip_sources=clip_sources)
+    assert plan.replace == [] and plan.kept == ["001_joke.mp4"]
+    plan = planning.replace_plan(out, ["001_Joke.mp4"], set(), clip_sources=clip_sources)
+    assert sorted(plan.replace) == ["001_joke.mp4", "001_joke.srt"] and plan.kept == []
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_replace_plan_names_a_clip_renamed_during_review(tmp_path, mode):
+    out = _clips_folder(tmp_path, [{"file": "001_a.mp4", "size": 7}])
+    write(out / "099_mine.mp4", "renamed")  # 7 bytes, and 001_a.mp4 is gone
+    plan = planning.replace_plan(out, ["001_b.mp4"], set(), clip_sources=MODES[mode](set()))
+    assert plan.kept == ["099_mine.mp4"] and plan.renamed == {"099_mine.mp4": "001_a.mp4"}
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_replace_plan_stops_before_replacing_what_cutpoint_did_not_make(tmp_path, mode):
+    out = _clips_folder(tmp_path, [{"file": "001_a.mp4"}])
+    write(out / "002_mine.mp4", "added by hand")
+    clip_sources = MODES[mode](set())
+    with pytest.raises(FileExistsError, match=r"Cannot replace 002_mine.mp4"):
+        planning.replace_plan(out, ["002_mine.mp4"], set(), clip_sources=clip_sources)
+    write(out / "manifest.json", json.dumps({"generator": "another tool", "clips": []}))
+    with pytest.raises(FileExistsError, match="may not be one cutpoint wrote"):
+        planning.replace_plan(out, ["001_a.mp4"], set(), clip_sources=clip_sources)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_replace_plan_without_a_manifest_keeps_all_but_leftovers(tmp_path, mode, caplog):
+    out = _clips_folder(tmp_path, None)
+    for n in ("001_a.mp4", "001_a.srt"):
+        write(out / n, n)
+    write(out / ".001_a.part.mp4", "leftover")
+    clip_sources = MODES[mode](set())
+    plan = planning.replace_plan(out, ["002_b.mp4"], set(), clip_sources=clip_sources)
+    assert plan.replace == [".001_a.part.mp4"] and plan.kept == ["001_a.mp4"]
+    assert plan.had_manifest is False
+    assert plan.protected_srts == {config.path_key("001_a.srt", out)}
+    assert "has no readable manifest.json" in caplog.text
+    with pytest.raises(FileExistsError, match=r"no readable manifest.json"):
+        planning.replace_plan(out, ["001_a.mp4"], set(), clip_sources=clip_sources)
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_replace_plan_of_a_missing_folder_is_empty(tmp_path, mode):
+    plan = planning.replace_plan(
+        tmp_path / "new", ["001_a.mp4"], set(), clip_sources=MODES[mode](set())
+    )
+    assert plan == planning.ReplacePlan([], [], [], True, set(), {})
+
+
+def test_replace_plan_names_a_source_of_the_clips_as_one_only_in_extend(tmp_path):
+    """extend: a source of a clip it does not re-export is named as a kept source; not read
+    this run, it is protected no further than clips --force protects it."""
+    out = _clips_folder(tmp_path, [{"file": "001_a.mp4"}])
+    other = write(out / "other.mp4", "source of a clip not re-exported")
+    as_clips = planning.replace_plan(out, ["001_a.mp4"], set())
+    assert as_clips.kept == ["other.mp4"] and as_clips.kept_sources == []
+    as_extend = planning.replace_plan(out, ["001_a.mp4"], set(), clip_sources=_keys(other))
+    assert as_extend.kept == [] and as_extend.kept_sources == ["other.mp4"]
+
+
+def test_warn_kept_warns_kept_sources_and_kept_clips(tmp_path, caplog, capsys):
+    out = tmp_path / "clips"
+    plan = planning.ReplacePlan(
+        [], ["footage.mp4"], ["099_mine.mp4"], True, set(), {"099_mine.mp4": "001_a.mp4"}
+    )
+    with caplog.at_level(logging.WARNING), jsonout.run("clips") as result:
+        planning.warn_kept(out, plan, "a source of these clips is never replaced;")
+    hint = "assemble includes them, so move them out if they are not part of the edit"
+    sources_msg = (
+        f"Kept footage.mp4 in {out.absolute()}: a source of these clips is never replaced; {hint}"
+    )
+    clips_msg = (
+        f"Kept 099_mine.mp4 in {out.absolute()}: cutpoint exported 099_mine.mp4 as 001_a.mp4 "
+        f"(renamed during review); {hint}"
+    )
+    assert caplog.messages == [sources_msg, clips_msg]
+    assert result.envelope()["warnings"] == [
+        {"code": "kept_sources", "message": sources_msg, "files": [str(out / "footage.mp4")]},
+        {"code": "kept_clips", "message": clips_msg, "files": [str(out / "099_mine.mp4")]},
+    ]
+    caplog.clear()
+    planning.warn_kept(out, planning.ReplacePlan([], [], [], True, set(), {}), "unused")
+    assert caplog.messages == []

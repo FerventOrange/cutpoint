@@ -42,7 +42,7 @@ from typing import Any
 from cutpoint import boundaries, cache, folders, jsonout, srt, tsrepair
 from cutpoint.clipresume import ClipResume, clip_key
 from cutpoint.color import COLOR_VERSION, AutoGrade
-from cutpoint.config import path_key, remap_source, source_path
+from cutpoint.config import remap_source, source_path
 from cutpoint.crop import Crop, parse_spec
 from cutpoint.encode import (
     Grade,
@@ -56,15 +56,15 @@ from cutpoint.ffmpeg_utils import MediaInfo, probe
 from cutpoint.planning import (
     MANIFEST_GENERATOR,
     Padding,
-    check_own_manifest,
     exact_fade,
     file_size,
-    kept_why,
     manifest_entries,
     manifest_parts,
     pad,
+    replace_plan,
     report_clips,
     speech_pass,
+    warn_kept,
 )
 from cutpoint.sources import project_language
 from cutpoint.utils import clip_files, seconds_keys
@@ -514,44 +514,13 @@ def _extend_locked(
             reads.append((e["source"], plan.src, pano_files))
         names = [p.name for p in plans]
         sources = folders.source_keys(reads)
-        folders.check_not_sources(out_dir, names, sources)
         # Like clips --force: replace only the clips and .srt files out_dir's manifest.json
-        # lists, never a file this run reads. Listed ones this run does not write (a clip not
-        # re-exported, the .srt of a clip deleted during review) are removed, as the new
-        # manifest.json no longer lists them; unlisted ones are never replaced. Only a name
-        # spelled on disk as listed: a clip renamed in case only (skipped above as having no
-        # entry) still matches on a case-insensitive file system and must stay. A listed name
-        # spelled otherwise on disk goes, under that spelling, only if this run writes or
-        # replaces its clip: an .srt beside it would keep the old cues, unlisted. Leftover
-        # ``.<name>.part.mp4`` files of a hard-killed run go too, as with clips --force.
-        check_own_manifest(out_dir)
-        listed = srt.listed_files(out_dir)
-        srt.check_unlisted_clips(out_dir, names, listed)
-        renamed = {
-            n: e["file"]
-            for n, e in manifest_entries(out_dir, clip_files(out_dir)).items()
-            if e["file"] != n
-        }
-        subs = srt.ClipSubtitles(srt.unlisted_srts(out_dir, listed), language, out_dir)
-        present = {p.name for p in out_dir.iterdir()} if out_dir.is_dir() else set()
-        on_disk = {path_key(n, out_dir): n for n in present}
-        parts = [p.name for p in out_dir.glob(".*.part.mp4")] if out_dir.is_dir() else []
-        listed_names = list(dict.fromkeys([*(listed or []), *parts]))
-
-        def replaceable(n: str) -> bool:
-            f = out_dir / n
-            return (f.is_file() or f.is_symlink()) and not folders.same_file(f, sources)
-
-        old_files = [n for n in listed_names if n in present and replaceable(n)]
-        gone = {path_key(n, out_dir) for n in (*names, *old_files)}
-        old_files += [
-            d
-            for n in listed_names
-            if n not in present
-            and (d := on_disk.get(path_key(n, out_dir))) is not None
-            and path_key(Path(n).with_suffix(".mp4").name, out_dir) in gone
-            and replaceable(d)
-        ]
+        # lists (and leftover .part.mp4 files), never a file this run reads. Listed ones this
+        # run does not write (a clip not re-exported, the .srt of a clip deleted during review)
+        # are removed, as the new manifest.json no longer lists them; unlisted ones are never
+        # replaced. A clip renamed in case only (skipped above as having no entry) stays.
+        replaced = replace_plan(out_dir, names, sources, clip_sources=all_sources)
+        subs = srt.ClipSubtitles(replaced.protected_srts, language, out_dir)
         # A staged run takes over the finished clips of an interrupted one with the same plan
         # and keeps its own when interrupted (cutpoint.clipresume); 360 clips are redone.
         resume = None
@@ -699,27 +668,8 @@ def _extend_locked(
             },
         )
         if staged:  # all or nothing; only the clips and .srt files named above are replaced
-            folders.swap_in(work, out_dir, old_files)
-    if staged:
-        written = {path_key(e["file"], out_dir) for e in entries}
-        kept = [p for p in clip_files(out_dir) if path_key(p.name, out_dir) not in written]
-        hint = "assemble includes them, so move them out if they are not part of the edit"
-        kept_sources = [p for p in kept if folders.same_file(p, all_sources | sources)]
-        if kept_sources:
-            message = (
-                f"Kept {', '.join(p.name for p in kept_sources)} in {out_dir.absolute()}: a "
-                f"source of these clips is never replaced; {hint}"
-            )
-            logger.warning("%s", message)
-            jsonout.warn("kept_sources", message, kept_sources)
-        kept = [p for p in kept if p not in kept_sources]
-        if kept:
-            why = kept_why([p.name for p in kept], renamed, listed is not None)
-            message = (
-                f"Kept {', '.join(p.name for p in kept)} in {out_dir.absolute()}: {why}; {hint}"
-            )
-            logger.warning("%s", message)
-            jsonout.warn("kept_clips", message, kept)
+            folders.swap_in(work, out_dir, replaced.replace)
+    warn_kept(out_dir, replaced, "a source of these clips is never replaced;")
     if skipped and not in_place:
         jsonout.warn(
             "skipped_clips",
