@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -416,9 +416,9 @@ def test_a_verbatim_path_is_not_unc(monkeypatch):
     monkeypatch.setattr(stage.sys, "platform", "win32")
     seen = []
     monkeypatch.setattr(projectdelete, "_drive_type", lambda d: seen.append(d) or 3)
-    assert not stage.is_remote(stage.Path(r"\\?\C:\x\a.mp4"))
+    assert not stage.is_remote(PureWindowsPath(r"\\?\C:\x\a.mp4"))
     assert seen == ["C:\\"]
-    assert stage.is_remote(stage.Path(r"\\?\UNC\srv\share\a.mp4"))
+    assert stage.is_remote(PureWindowsPath(r"\\?\UNC\srv\share\a.mp4"))
 
 
 def test_an_unreachable_source_still_uses_its_copy(home, tmp_path):
