@@ -7,8 +7,9 @@ biggest impact, and the accelerometer clips at 8 g per axis. This module
 combines four independent kinds of evidence per candidate window:
 
 * **telemetry** (full-rate GPMF IMU, cached per source as
-  ``cache/<source>/crashimu-v<N>.npz`` on the 0.1 s grid; files on network storage are read
-  through a GPMF-only remux of a few MB): repeated hard
+  ``cache/<source>/crashimu-v<N>.npz`` on the 0.1 s grid, filled by the telemetry step's
+  parse; parsed here, files on network storage are read through a GPMF-only remux of a few
+  MB): repeated hard
   impacts and axis saturation, extreme vibration, off-axis rotation (pitch /
   roll; looking around is yaw), the camera's gravity vector turning away from
   its riding orientation (upside down, sideways), a speed collapse and lying
@@ -211,8 +212,9 @@ class CrashParams:
 def _gpmf_copy(src: Path, tmp: Path) -> Path | None:
     """GPMF-only MP4 of ``src`` in ``tmp`` (ffmpeg reads just that track's chunks).
 
-    telemetry-parser reads most of the file it is given; remuxing the "GoPro
-    MET" track alone reads a few MB instead of GBs from slow or network storage.
+    telemetry-parser reads only the metadata and GPMF chunks of the file it is
+    given; remuxing the "GoPro MET" track alone reads a few MB from slow or
+    network storage.
     """
     from cutpoint.errors import FFmpegError  # noqa: PLC0415
     from cutpoint.ffmpeg_utils import ffprobe_json, run  # noqa: PLC0415
@@ -296,12 +298,20 @@ def _grav_stream(groups: list[Any]) -> tuple[np.ndarray, np.ndarray]:
 def _compute_imu(
     read_path: Path, duration: float, force: bool = False
 ) -> dict[str, np.ndarray] | None:
-    from cutpoint.telemetry import gravity, parse_imu  # noqa: PLC0415
+    from cutpoint.telemetry import parse_imu  # noqa: PLC0415
 
     # ``force`` (``crashes --force``) logs a parse failure at INFO: the grids are then
     # recomputed before ``telemetry.extract`` runs, which may hit its cache. Unforced:
     # DEBUG, as telemetry.extract (run first on the same source) logged it at INFO.
-    parsed = parse_imu(read_path, logging.INFO if force else logging.DEBUG)
+    return _grids_of(parse_imu(read_path, logging.INFO if force else logging.DEBUG), duration)
+
+
+def _grids_of(
+    parsed: tuple[Any, list[Any], np.ndarray, np.ndarray, np.ndarray] | None, duration: float
+) -> dict[str, np.ndarray] | None:
+    """The IMU grids of a :func:`cutpoint.telemetry.parse_imu` result (None: no IMU)."""
+    from cutpoint.telemetry import gravity  # noqa: PLC0415
+
     if parsed is None or len(parsed[2]) < 10:
         return None
     _, groups, t, acc, gyr = parsed
@@ -373,7 +383,7 @@ def imu_grids(
     """
     from cutpoint.telemetry import imu_read_path  # noqa: PLC0415
 
-    path = cache.source_dir(src) / f"crashimu-v{IMU_VERSION}.npz"
+    path = _imu_cache(src)
     if not force and (z := cache.load_npz(path)) is not None:
         if "none" in z:
             return None
@@ -388,10 +398,9 @@ def imu_grids(
                 grids = _compute_imu(small, duration, force)
     if grids is None:
         grids = _compute_imu(read_path, duration, force)
+    _save_imu(path, grids)
     if grids is None:
-        cache.save_npz(path, none=np.zeros(1))
         return None
-    cache.save_npz(path, **{k: v.astype(np.float32) for k, v in grids.items()})
     logger.info(
         "%s: crash IMU grids in %.1fs (%.0f Hz)",
         src.name,
@@ -399,6 +408,35 @@ def imu_grids(
         float(grids["imu_hz"][0]),
     )
     return grids
+
+
+def _imu_cache(src: Path) -> Path:
+    return cache.source_dir(src) / f"crashimu-v{IMU_VERSION}.npz"
+
+
+def _save_imu(path: Path, grids: dict[str, np.ndarray] | None) -> None:
+    if grids is None:
+        cache.save_npz(path, none=np.zeros(1))
+    else:
+        cache.save_npz(path, **{k: v.astype(np.float32) for k, v in grids.items()})
+
+
+def cache_imu_grids(
+    src: Path,
+    duration: float,
+    parsed: tuple[Any, list[Any], np.ndarray, np.ndarray, np.ndarray] | None,
+) -> None:
+    """Fill the :func:`imu_grids` cache of ``src`` from a parse already made (by
+    :func:`cutpoint.telemetry.extract`), so the file is not parsed a second time.
+
+    A valid cache is kept as it is. A failed parse (None) caches nothing, so
+    :func:`imu_grids` tries on its own; an empty IMU result is cached as "none".
+    """
+    if parsed is None:
+        return
+    path = _imu_cache(src)
+    if cache.load_npz(path) is None:
+        _save_imu(path, _grids_of(parsed, duration))
 
 
 # --------------------------------------------------------------------------- dense confirm

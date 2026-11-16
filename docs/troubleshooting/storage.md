@@ -50,7 +50,8 @@ Notes:
   `crashes`/`events` (they match sources by path).
 - Projects analyzed before inputs were stored as absolute paths keep relative ones until
   `analyze` runs again.
-- Action-cam telemetry reads whole files; stage first. Crash detection reads only the telemetry
+- Action-cam telemetry reads only the metadata and GPMF chunks, but over slow storage staging
+  still helps. Crash detection reads only the telemetry
   track and needs no staging.
 
 ## Preview slow to start in `cutpoint ui`
