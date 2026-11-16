@@ -10,7 +10,7 @@ manifest ``start`` / ``end``: the in/out points after tails, padding
 entry; its own ``.srt``, renamed with it, is used instead.
 
 A clips folder's ``.srt`` (or clip) that its manifest.json does not list was not made by
-cutpoint and is never replaced (:func:`listed_files` and the helpers after it).
+cutpoint and is never replaced (:func:`cutpoint.planning.replace_plan`).
 """
 
 from __future__ import annotations
@@ -281,74 +281,3 @@ def write_final_srt(
     write_srt(srt, cues)
     logger.info("Wrote %s (%d subtitles)", srt, len(cues))
     return srt
-
-
-# ------------------------------------------------- what clips --force / extend may replace
-def _listed_pairs(out_dir: Path) -> list[tuple[str | None, str | None]] | None:
-    """``(clip, .srt)`` names of each entry of the manifest.json in ``out_dir`` (None for a
-    missing or invalid one), or None if there is no readable manifest.json."""
-    manifest = cache.load_json(out_dir / "manifest.json")
-    entries = manifest.get("clips") if isinstance(manifest, dict) else None
-    if not isinstance(entries, list):
-        return None
-    pairs: list[tuple[str | None, str | None]] = []
-    for e in entries:
-        names: list[str | None] = []
-        for key, ext in (("file", ".mp4"), ("srt", ".srt")):
-            f = e.get(key) if isinstance(e, dict) else None
-            # a bare clip name only: never a path out of the folder or another kind of file
-            ok = isinstance(f, str) and f == Path(f).name and f.lower().endswith(ext)
-            names.append(f if ok else None)
-        pairs.append((names[0], names[1]))
-    return pairs
-
-
-def listed_files(out_dir: Path) -> list[str] | None:
-    """The clip and ``.srt`` names the manifest.json in ``out_dir`` lists (files an earlier
-    run made), or None if there is no readable manifest.json."""
-    pairs = _listed_pairs(out_dir)
-    if pairs is None:
-        return None
-    return [f for pair in pairs for f in pair if f is not None]
-
-
-def unlisted_srts(out_dir: Path, listed: list[str] | None) -> set[str]:
-    """:func:`~cutpoint.config.path_key` of the ``.srt`` files in ``out_dir`` that
-    ``listed`` (:func:`listed_files`) does not name: no subtitles are written under them."""
-    ours = {path_key(n, out_dir) for n in listed or []}
-    return {
-        k
-        for f in out_dir.glob("*.srt")
-        if f.is_file() and (k := path_key(f.name, out_dir)) not in ours
-    }
-
-
-def check_unlisted_clips(out_dir: Path, new: list[str], listed: list[str] | None) -> None:
-    """Fail before any export if writing the clip names ``new`` into ``out_dir`` would
-    replace a ``.mp4`` that ``listed`` (:func:`listed_files`) does not name: renamed during
-    review or added by hand (every one, without a readable manifest.json).
-
-    Raises:
-        FileExistsError: Naming them.
-    """
-    if not out_dir.is_dir():
-        return
-    ours = {path_key(n, out_dir) for n in listed or []}
-    names = {path_key(n, out_dir) for n in new}
-    hits = [
-        p.name
-        for p in sorted(out_dir.iterdir())
-        if (k := path_key(p.name, out_dir)) in names
-        and k not in ours
-        and (p.is_file() or p.is_symlink())
-    ]
-    if hits:
-        why = (
-            "the old manifest.json does not list them (renamed during review or added by hand)"
-            if listed is not None
-            else "there is no readable manifest.json, so they may not be clips cutpoint exported"
-        )
-        raise FileExistsError(
-            f"Cannot replace {', '.join(hits)} in {out_dir}: {why}. Move or rename them, "
-            "then run again."
-        )

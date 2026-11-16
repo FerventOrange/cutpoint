@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from conftest import media_info, needs_ffmpeg
-from cutpoint import assemble, cache, clips, sources, srt
+from cutpoint import assemble, cache, clips, planning, sources, srt
 from cutpoint.ffmpeg_utils import MediaInfo
 
 
@@ -181,9 +181,9 @@ def test_listed_files_are_the_bare_clip_and_srt_names_of_the_manifest(tmp_path):
         {"file": "notes.txt", "srt": "004_d.mp4"},  # never another kind of file
     ]
     (out / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
-    assert srt.listed_files(out) == ["001_a.mp4", "001_a.srt", "002_b.mp4", "003_c.mp4"]
+    assert planning.listed_files(out) == ["001_a.mp4", "001_a.srt", "002_b.mp4", "003_c.mp4"]
     (out / "manifest.json").unlink()
-    assert srt.listed_files(out) is None  # no manifest: nothing is cutpoint's
+    assert planning.listed_files(out) is None  # no manifest: nothing is cutpoint's
 
 
 def test_clips_force_removes_the_listed_srt_of_a_clip_deleted_during_review(home, monkeypatch):
