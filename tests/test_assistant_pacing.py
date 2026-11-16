@@ -122,6 +122,7 @@ def longest_run(kinds: list[str], kind: str = pacing.ACTION) -> int:
         ("don't cut it short; break up the skiing", True),
         ("sprinkle in a few funny clips", True),
         ("add a funny moment now and then", True),
+        ("show a funny moment from time to time", True),
         ("alternate skiing and scenery", True),
         ("vary the pace please", True),
         ("an occasional joke", True),

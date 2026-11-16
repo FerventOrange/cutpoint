@@ -61,6 +61,7 @@ def sent(fake: FakeProvider, text: str = session.PROMISE_NUDGE) -> int:
         ("I need to search for each.", True),
         ("Let me do that.", True),
         ("Okay, I'm going to check the transcript", True),
+        ("I'm gonna look at the jump again", True),
         ("I'll look for the other words next.", True),
         ("Done with the first. I\N{RIGHT SINGLE QUOTATION MARK}ll search for the rest.", True),
         ("Let me check the moment at 12:30.", True),
