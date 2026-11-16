@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- HUD region discovery on footage that is not 16:9 (21:9, 4:3) put every region at the wrong height: box y was scaled with the width factor, but regions are read back with the height factor (a 3440x1440 box on the bottom edge was stored at y 804 and read at 1072 of 1440; on 4:3 the bottom quarter was clamped away). Discovery, the vision HUD map boxes and the feed-label crops now scale y with the height. A discovered preset of non-16:9 footage made before the fix is discovered again, and a cached discovery frame of such footage is read again; 16:9 is unchanged (#1085, A138).
 - `cutpoint edit --events` exports the clips again: it skipped the clips step, so the join failed with no clips, or with `--force` joined the clips of an earlier run (#1085, A228).
 - AI Chat: a local model can pick a source at a drive root that shares its file name with another source, also the roots of two drives (shown as `C:/clip.mp4`, or `/clip.mp4` without a drive letter; it was refused); a model not on this machine never sees the drive letter, and an earlier reply's folder names are replaced whatever their case (Windows), follow-up to #1063.
 - Folder inputs and the browser workspace's source check now accept `.ts`, `.m2ts`, `.mts`, `.m2t`, `.mpg` and `.mpeg` recordings, which were skipped unless named as a file; the joined-recording check of MPEG-TS and MPEG-PS now runs on them too (#1057).

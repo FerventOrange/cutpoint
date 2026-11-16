@@ -312,6 +312,7 @@ def preset_files(project: Path | None = None) -> list[Path]:
 
 
 _warned_invalid: set[Path] = set()  # invalid presets already warned about (once per path)
+_warned_stale: set[Path] = set()  # stale presets already noted (once per path)
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -369,10 +370,29 @@ def _event_phrases(events: tuple[dict[str, Any], ...]) -> list[str]:
     return out
 
 
+def stale_mapping(data: dict[str, Any]) -> bool:
+    """Whether ``data`` is a discovered preset of footage that is not 16:9, made before
+    discovery scaled y with the frame height (``discovery.mapping`` 2, #1085): its
+    rectangles sit at the wrong height."""
+    disc = data.get("discovery")
+    if data.get("source") != "discovered" or not isinstance(disc, dict):
+        return False
+    res = disc.get("source_resolution")
+    if disc.get("mapping") or not isinstance(res, list) or len(res) != 2:
+        return False
+    try:
+        w, h = float(res[0]), float(res[1])
+    except (TypeError, ValueError):
+        return False
+    return h > 0 and abs(w / h - REF_W / REF_H) > 0.02 * REF_W / REF_H
+
+
 def load_preset(game: str | None, project: Path | None = None) -> HudPreset | None:
     """The HUD preset for ``game``.
 
-    Lookup order: project, user (``<CUTPOINT_HOME>/presets``), then bundled.
+    Lookup order: project, user (``<CUTPOINT_HOME>/presets``), then bundled. A discovered
+    preset of footage that is not 16:9 from before the height fix is skipped
+    (:func:`stale_mapping`), so discovery makes it again.
 
     Returns:
         The preset, or None when ``game`` has none (discovery can create one).
@@ -382,6 +402,11 @@ def load_preset(game: str | None, project: Path | None = None) -> HudPreset | No
     for path in preset_files(project):
         data = _read_json(path)
         if data and (data.get("game") or path.stem) == game:
+            if stale_mapping(data):
+                if path not in _warned_stale:
+                    _warned_stale.add(path)
+                    logger.info("Ignoring HUD preset %s: made with a wrong y scale (#1085)", path)
+                continue  # a fresh preset of the same game further on still counts
             return preset_from_dict(data, path)
     return None
 
