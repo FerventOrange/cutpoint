@@ -40,7 +40,6 @@ def sent(monkeypatch) -> list[tuple[str, Any]]:
     monkeypatch.setattr(vision.requests, "post", post)
     monkeypatch.setattr(vision.requests, "get", get)
     monkeypatch.setattr(vision.VisionRater, "check_memory", lambda self, n=None: None)
-    monkeypatch.setattr(vision, "refuse_redirect", lambda r: None)
     return calls
 
 

@@ -349,7 +349,7 @@ The UI uses `POST /api/pick` for the dialogs and `GET`/`PUT /api/settings` for S
 With a project open, Settings also has "Delete this project". The dialog names the project and the
 size of what will be deleted, lists the files that stay, and has Cancel focused. Only what
 Cutpoint wrote is deleted: the result files (`highlights.json`, `transcript.txt`, `events.*`,
-`progress.json`, `activity.json`, `crashes.json`, `telemetry.json`, `mix_*`, the finals with their
+`highlights.before-rerank.json`, `progress.json`, `activity.json`, `crashes.json`, `telemetry.json`, `mix_*`, the finals with their
 `.srt` and timelines), the `ui/` folder and the other folders Cutpoint made in the project,
 hidden temporary and resume folders, and in each clips folder the clips its `manifest.json` lists
 with their `.srt` and the manifest. Everything else stays: staged footage copies, clips you added

@@ -229,7 +229,7 @@ def test_a_redirect_is_not_followed(monkeypatch: pytest.MonkeyPatch) -> None:
     chk = V.VLChecker(url="http://127.0.0.1:1", model="m")
     sent: list[tuple[str, bool]] = []
 
-    def moved(url: str, json: dict, timeout: Any, allow_redirects: bool = True) -> Any:
+    def moved(url: str, json: dict, timeout: Any, allow_redirects: bool = True, **_k: Any) -> Any:
         sent.append((url, allow_redirects))
         resp = requests.Response()
         resp.status_code = 307
@@ -253,7 +253,7 @@ def _ctx_sent(monkeypatch: pytest.MonkeyPatch, url: str, loaded: int | None) -> 
     monkeypatch.setattr(memguard, "ollama_loaded", lambda u, m, num_ctx=None: False)
     sent: list[int] = []
 
-    def post(url: str, json: dict, timeout: Any, allow_redirects: bool = True) -> Any:
+    def post(url: str, json: dict, timeout: Any, allow_redirects: bool = True, **_k: Any) -> Any:
         sent.append(json["options"]["num_ctx"])
         resp = requests.Response()
         resp.status_code = 200

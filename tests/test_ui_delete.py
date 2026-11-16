@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 from collections.abc import Iterator
@@ -17,7 +18,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, write
-from cutpoint import folders, projectdelete, runstate, ui
+from cutpoint import folders, projectdelete, rerank, runstate, ui
 
 PORT = 8765
 REAL_TRASH_BLOCKER = projectdelete.trash_blocker
@@ -553,3 +554,46 @@ def test_junctions_are_listed_and_never_followed(client: TestClient, tmp_path: P
     assert survivors == ["001_a.mp4", "manifest.json", "precious.mp4"]
     assert (p / "ui" / "j").exists() and (p / "more_clips").exists()
     assert not (p / "highlights.json").exists()
+
+
+# Placeholders of the AGENTS.md "Project files" table, filled in as a run would
+PLACEHOLDERS = {"<label>": "x", "<name>": "trip", "<id>": "run1", "<folder>": "clips"}
+
+
+def agents_project_files() -> list[str]:
+    """The names in the first column of AGENTS.md's "Project files" table."""
+    text = (Path(__file__).resolve().parents[1] / "AGENTS.md").read_text(encoding="utf-8")
+    table = text.split("## Project files", 1)[1].split("\n## ", 1)[0]
+    names: list[str] = []
+    for row in table.splitlines():  # the heading and |---| rows have no backticks
+        if row.startswith("|"):
+            names += re.findall(r"`([^`]+)`", row.split("|")[1])
+    return names
+
+
+def test_every_project_file_agents_md_names_is_deleted_with_the_project() -> None:
+    """A file the table lists but the delete does not know keeps the project folder (#1085)."""
+    names = agents_project_files()
+    assert {"highlights.json", "highlights.before-rerank.json"} <= set(names)  # all rows read
+    assert len(names) > 15
+    p = ui.projects_dir() / "trip"
+    p.mkdir(parents=True)
+    for name in names:
+        if re.fullmatch(r"\.\w+", name):  # "(or `.fcpxml` / `.otio`)": a suffix, not a file
+            continue
+        for k, v in PLACEHOLDERS.items():
+            name = name.replace(k, v)
+        if name.endswith("/"):
+            write(p / name / "a.mp4")
+        else:
+            write(p / name, "{}")
+    clips = sorted(f.name for f in (p / "clips").iterdir() if f.suffix != ".json")
+    write(p / "clips" / "001_x.mp4")
+    manifest(p / "clips", ["001_x.mp4"])
+    assert clips == ["001_x.srt"]
+    plan = projectdelete.make_plan(p)
+    assert plan.kept == []
+
+
+def test_the_rerank_backup_is_one_of_the_project_files() -> None:
+    assert rerank.BACKUP in projectdelete.OWN_FILES

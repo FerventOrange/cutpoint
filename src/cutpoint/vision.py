@@ -19,7 +19,13 @@ import numpy as np
 import requests
 
 from cutpoint import cache, memguard, paths, state
-from cutpoint.backends import normalize_ollama_url, ollama_url
+from cutpoint.backends import (
+    normalize_ollama_url,
+    ollama_get,
+    ollama_post,
+    ollama_reply,
+    ollama_url,
+)
 from cutpoint.config import get_config
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
@@ -528,18 +534,14 @@ class VisionRater:
         try:
             # a short connect timeout (per address of the host): an Ollama that answers
             # accepts at once; a down one costs 1 s, not 3 (#921)
-            resp = requests.get(f"{self.url}/api/tags", timeout=(1, 3), allow_redirects=False)
-            refuse_redirect(resp)
-            resp.raise_for_status()
-            data = resp.json()
-            if not isinstance(data, dict):
-                raise ValueError(f"/api/tags returned {type(data).__name__}, not an object")
-            models = data.get("models", [])
+            models = ollama_get(self.url, "/api/tags", timeout=(1, 3)).get("models")
         except (requests.RequestException, ValueError) as err:  # ValueError: not JSON
             why = unreachable_reason(err)
             logger.info("Ollama not reachable at %s (%s); skipping vision", self.host, why)
             return False
-        names = {m.get("name", "") for m in models}
+        # entries of another shape are left out (A116)
+        models = [m for m in models if isinstance(m, dict)] if isinstance(models, list) else []
+        names = {m["name"] for m in models if isinstance(m.get("name"), str)}
         if self.model not in names and f"{self.model}:latest" not in names:
             logger.info(
                 "Ollama model %s not pulled (have: %s); skipping vision",
@@ -666,15 +668,9 @@ class VisionRater:
         self.check_memory(num_ctx)
         self.used = True
         try:
-            resp = requests.post(
-                f"{self.url}/api/{endpoint}", json=payload, timeout=timeout, allow_redirects=False
-            )
-            refuse_redirect(resp)
-            resp.raise_for_status()
-            body = resp.json()
-            content = body["response"] if raw else body["message"]["content"]
-            data = _json_object(content)
-        except (requests.RequestException, KeyError, ValueError) as err:
+            body = ollama_post(self.url, f"/api/{endpoint}", payload, timeout=timeout)
+            data = _json_object(ollama_reply(body, generate=raw))
+        except (requests.RequestException, ValueError) as err:
             logger.warning("Ollama request failed: %s", err)
             return None
         return _matching(data, schema, self.model)
@@ -739,15 +735,10 @@ class VisionRater:
         self.used = True
         self.timed_out = False
         try:
-            resp = requests.post(
-                f"{self.url}/api/chat", json=payload, timeout=timeout, allow_redirects=False
-            )
-            refuse_redirect(resp)  # never followed: the frames would go to another host
-            resp.raise_for_status()
-            body = resp.json()
-            content = body["message"]["content"]
+            body = ollama_post(self.url, "/api/chat", payload, timeout=timeout)
+            content = ollama_reply(body)
             data = _json_object(content)
-        except (requests.RequestException, KeyError, TypeError, ValueError) as err:
+        except (requests.RequestException, ValueError) as err:
             self.timed_out = isinstance(err, requests.Timeout)
             logger.warning("Vision request failed: %s", err)
             return None
@@ -970,14 +961,9 @@ class VisionRater:
                 self.used = True
                 t_call = time.perf_counter()
                 try:
-                    resp = requests.post(
-                        f"{self.url}/api/chat", json=payload, timeout=300, allow_redirects=False
-                    )
-                    refuse_redirect(resp)
-                    resp.raise_for_status()
-                    body = resp.json()
-                    content = body["message"]["content"]
-                except (requests.RequestException, KeyError, ValueError) as err:
+                    body = ollama_post(self.url, "/api/chat", payload, timeout=300)
+                    content = ollama_reply(body)
+                except (requests.RequestException, ValueError) as err:
                     logger.warning("Vision request failed: %s", err)
                     self.stats["calls"] += 1
                     self.stats["reply_s"] += time.perf_counter() - t_call
@@ -1103,14 +1089,7 @@ class VisionRater:
         self.used = True
         self.timed_out = False
         try:
-            resp = requests.post(
-                f"{self.url}/api/generate",
-                json=body,
-                timeout=timeout,
-                allow_redirects=False,
-            )
-            refuse_redirect(resp)
-            resp.raise_for_status()
+            ollama_post(self.url, "/api/generate", body, timeout=timeout, read=False)
         except requests.RequestException as err:
             self.timed_out = isinstance(err, requests.Timeout)
             logger.info("Ollama model %s did not load: %s", self.model, err)
@@ -1124,10 +1103,7 @@ class VisionRater:
         if self.via or self.consent_needed:
             return None
         try:
-            resp = requests.get(f"{self.url}/api/ps", timeout=(1, 3), allow_redirects=False)
-            refuse_redirect(resp)
-            resp.raise_for_status()
-            models = resp.json().get("models", [])
+            models = ollama_get(self.url, "/api/ps", timeout=(1, 3)).get("models", [])
         except (requests.RequestException, ValueError, AttributeError):
             return None
         for m in models if isinstance(models, list) else []:
@@ -1147,29 +1123,13 @@ class VisionRater:
         if not self.used:
             return
         try:
-            resp = requests.post(
-                f"{self.url}/api/generate",
-                json={"model": self.model, "keep_alive": 0},
-                timeout=10,
-                allow_redirects=False,  # never to a host the user did not allow
-            )
-            refuse_redirect(resp)
-            resp.raise_for_status()
+            payload = {"model": self.model, "keep_alive": 0}
+            ollama_post(self.url, "/api/generate", payload, timeout=10, read=False)
         except requests.RequestException as err:
             logger.debug("Could not unload Ollama model %s: %s", self.model, err)
             return
         self.used = False
         logger.debug("Unloaded Ollama model %s", self.model)
-
-
-def refuse_redirect(resp: Any) -> None:
-    """Raise :class:`requests.HTTPError` when Ollama answered with a redirect: requests is
-    called with ``allow_redirects=False``, so what was sent (frames) never goes to a host the
-    user did not allow."""
-    if resp.is_redirect:
-        raise requests.HTTPError(
-            f"Ollama answered with a redirect (HTTP {resp.status_code}); not followed"
-        )
 
 
 def _frame_times(start: float, end: float, n_frames: int) -> list[float]:
