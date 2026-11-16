@@ -2,7 +2,7 @@
 // proposal is previewed until Apply (which the server may refuse) or Discard.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { boot, makeProject, reply } from './harness.mjs';
+import { answerConfirms, boot, makeProject, reply } from './harness.mjs';
 
 const A = '/api/projects/p1/assistant';
 const seg = (n, start, label) => ({ id: `h00${n}`, source: '/videos/a.mp4', start, end: start + 8, label });
@@ -931,4 +931,126 @@ test('the frame-index note is asked for again when an analysis changes the event
   assert.equal(asked(), before + 1);
   assert.equal(m.$('#chatIndexNote').hidden, true);
   m.page.assertNoUnhandled();
+});
+
+// ---------- moved from source-text pins in tests/test_ui.py (#1085 A594) ----------
+
+test('the hosted chat consent names what each message sends, never audio, and that analysis sends whole transcripts', async (t) => {
+  const consent = { needed: true, key: 'assistant-v3:anthropic@api.anthropic.com', host: 'api.anthropic.com' };
+  const m = await chatPage(t, { assistant: { provider: { name: 'anthropic', label: 'Anthropic', local: false }, consent } });
+  const text = m.$('#chatConsentText').textContent;
+  for (const part of ['labels', 'scores', 'signals', 'vision descriptions', 'transcript snippets', 'file names', 'times', 'your messages', 'never audio', 'whole transcripts']) {
+    assert.ok(text.includes(part), part);
+  }
+});
+
+test('"Filter list by" is offered only when the list\'s own filter finds a shown moment by the searched words', async (t) => {
+  const show = (query) => turnRoutes([
+    { kind: 'tool', n: 0, name: 'find_moments', query },
+    { kind: 'show', n: 1, ids: ['h001', 'h002'] },
+  ]);
+  const m = await chatPage(t, { routes: show('laugh') });
+  await m.send('the laughs');
+  await m.tick(1000);
+  const btn = m.d.querySelector('#chatLog [data-act=filter]');
+  assert.equal(btn.textContent, 'Filter list by “laugh”');
+  btn.click();
+  await m.page.settle();
+  assert.equal(m.$('#filter').value, 'laugh');
+  assert.deepEqual([...m.d.querySelectorAll('#candList li.cand')].map((li) => li.dataset.id), ['h001']);
+  assert.equal(m.$('#chatLive').textContent, 'Moments filtered by laugh: 1 shown');
+
+  m.page.close();
+  t.mock.timers.reset();
+  const n = await chatPage(t, { routes: show('zebra') });
+  await n.send('zebras');
+  await n.tick(1000);
+  assert.ok(n.d.querySelector('#chatLog [data-act=show]'), 'Highlight in list is still offered');
+  assert.equal(n.d.querySelector('#chatLog [data-act=filter]'), null, 'a filter that would show 0 moments is not offered');
+});
+
+test('a proposal row names a moment as the Moments list does: its display_label while the row keeps the analysis label', async (t) => {
+  const project = makeProject();
+  project.highlights.candidates[0].display_label = 'Smooth run';
+  const renamed = { ...AFTER[1], label: 'My fall' };
+  const p = proposal({ after: [AFTER[0], renamed], diff: diff([AFTER[0], renamed]) });
+  const m = await chatPage(t, { project, routes: turnRoutes([p]) });
+  await m.send('add');
+  await m.tick(1000);
+  const titles = [...m.d.querySelectorAll('.prop-title')].map((el) => el.textContent);
+  assert.ok(titles.includes('Smooth run'), titles.join('|'));
+  assert.ok(titles.includes('My fall'), 'a row renamed in the proposal keeps its own label');
+  assert.ok(!titles.includes('Big laugh'));
+});
+
+// ---------- review F1 (#1085 A594): behaviours the deleted proposal pin held ----------
+
+/** A promise and the function that settles it, to hold a route's answer. */
+function held() {
+  let release;
+  const promise = new Promise((r) => { release = r; });
+  return { promise, release };
+}
+
+test('a proposal that arrives while Apply waits is previewed once Apply ends', async (t) => {
+  const entry = { id: 'e1', proposal: 'pr1', summary: 'Add the two best moments', after: AFTER, diff: diff(AFTER), applied: '2026-11-01T10:00:00' };
+  const answer = held();
+  const second = proposal({ n: 2, id: 'pr2', summary: 'Only the fall', after: [AFTER[1]], diff: diff([AFTER[1]]) });
+  let polls = 0;
+  const m = await chatPage(t, {
+    routes: {
+      [`POST ${A}/turns`]: { id: 't1', status: 'running', provider },
+      [`GET ${A}/turns/t1`]: () => (++polls === 1 ? { status: 'running', events: [proposal()], next: 1 } : { status: 'done', events: polls === 2 ? [second] : [], next: 2 }),
+      [`POST ${A}/proposals/pr1/applied`]: () => answer.promise.then(() => entry),
+    },
+  });
+  await m.send('add the best two');
+  await m.tick(1000);
+  assert.equal(m.$('#propSummary').textContent, 'Add the two best moments');
+  await m.click('#propApply'); // waits for the server
+  await m.tick(1000); // the second proposal comes in meanwhile
+  assert.equal(m.$('#propSummary').textContent, 'Add the two best moments', 'not replaced while Apply waits');
+  answer.release();
+  await m.page.settle();
+  assert.deepEqual(m.seqIds(), ['h001', 'h002'], 'the first one was applied');
+  assert.equal(m.$('#propPanel').hidden, false);
+  assert.equal(m.$('#propSummary').textContent, 'Only the fall');
+});
+
+test('Send waits until the saved chat has loaded, which would otherwise replace a turn sent meanwhile', async (t) => {
+  const saved = held();
+  const m = await chatPage(t, { routes: { [`GET ${A}`]: () => saved.promise.then(() => ({ provider, consent: null, turns: [], running: [] })), ...turnRoutes([]) } });
+  assert.equal(m.$('#chatSend').disabled, true);
+  await m.send('hello');
+  assert.equal(m.posts('/turns').length, 0);
+  saved.release();
+  await m.page.settle();
+  assert.equal(m.$('#chatSend').disabled, false);
+  await m.send('hello');
+  assert.equal(m.posts('/turns').length, 1);
+});
+
+test('Clear chat never undoes an applied change', async (t) => {
+  const entry = { id: 'e1', proposal: 'pr1', summary: 'Add the two best moments', after: AFTER, diff: diff(AFTER), applied: '2026-11-01T10:00:00' };
+  const m = await proposed(t, { [`POST ${A}/proposals/pr1/applied`]: entry, [`DELETE ${A}/chat`]: {} });
+  await m.click('#propApply');
+  assert.deepEqual(m.seqIds(), ['h001', 'h002']);
+  answerConfirms(m.page, [true]);
+  await m.click('#chatClear');
+  assert.equal(m.page.requests.filter((r) => r.method === 'DELETE').length, 1, 'the chat was cleared');
+  assert.deepEqual(m.seqIds(), ['h001', 'h002']);
+  assert.equal(m.$('#undoBtn').disabled, false, 'the change is still one undo step away');
+});
+
+test('a proposal offers at most three suggestions; one previews like a proposal', async (t) => {
+  const sug = (i) => proposal({ id: `s${i}`, summary: `Suggestion ${i}`, after: [AFTER[0]], diff: diff([AFTER[0]]) });
+  const m = await chatPage(t, { routes: turnRoutes([proposal({ suggestions: [1, 2, 3, 4].map(sug) })]) });
+  await m.send('ideas');
+  await m.tick(1000);
+  const buttons = [...m.d.querySelectorAll('#chatLog [data-act^=suggest]')];
+  assert.deepEqual(buttons.map((b) => b.textContent), ['Suggestion 1', 'Suggestion 2', 'Suggestion 3']);
+  buttons[1].click();
+  await m.page.settle();
+  assert.equal(m.$('#propSummary').textContent, 'Suggestion 2');
+  assert.deepEqual(m.seqIds(), [], 'previewed, not applied');
 });
