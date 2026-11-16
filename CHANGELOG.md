@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A stalled vision server no longer holds the `events` VLM layer for hours: a timed-out request stops the layer at once (that window is not asked again) and so do 3 windows in a row without a usable reply. Windows already described and cached descriptions are kept, a `vlm_unavailable` warning gives the count left undescribed, and the next run asks only those windows (#1085, A158).
+- A long AI Chat tool result is cut inside its data block at a row and keeps its end marker, with a note of the rows left out, so the model no longer reads the rest of the result as outside the data (#1085, A293, A679).
+- A refused ranking preview in the AI Chat no longer shows file paths to the model or in `chat.json` (#1085, A678).
+- Login prompts in `cutpoint ui` use the page's own dialog instead of the browser's `confirm` box (#1085, A675).
 - HUD text in a script other than Latin was dropped before comparison: every Cyrillic, Korean or other non-Latin line read as empty, so two different notices were one event, two icon kills with different names merged, a banner phrase or player tag in such a script never matched, and discovery saw no text change in a non-Latin HUD and found no feed. The HUD text rules now keep letters and digits of any script (accents too, so "CAFÉ" and "café" are one; fullwidth, superscript and circled digits read as plain digits; circled letters are dropped). Banner phrases match in spaced scripts (Latin with accents, Cyrillic, Korean, Greek); short Chinese and Japanese phrases such as "击杀" inside unspaced text still do not, and two texts without letters or digits no longer count as the same. ASCII text gives the same results as before; the cached OCR events are interpreted again from the cached reads, without new OCR. A HUD preset discovered before from such footage is kept as it is: delete `<CUTPOINT_HOME>/presets/<game>.json` (or the project's `hud_presets/<game>.json`) to discover it again (#1085, A137).
 - HUD region discovery on footage that is not 16:9 (21:9, 4:3) put every region at the wrong height: box y was scaled with the width factor, but regions are read back with the height factor (a 3440x1440 box on the bottom edge was stored at y 804 and read at 1072 of 1440; on 4:3 the bottom quarter was clamped away). Discovery, the vision HUD map boxes and the feed-label crops now scale y with the height. A discovered preset of non-16:9 footage made before the fix is discovered again, and a cached discovery frame of such footage is read again; 16:9 is unchanged (#1085, A138).
 - A HUD OCR read with a part that gave no frames is no longer cached as complete: its result is used for the run, marked `incomplete` in its stats, and read again by the next run (once more; a part that fails twice is taken as damaged) instead of hiding the rest of the source until a version bump or `--force` (#1085, A139).
@@ -124,6 +127,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - **BREAKING:** the `ski` extra is gone (`ui`, `keyring` stay as aliases), and `--style ski` is now an ordinary unknown style with no special message.
+
+### Security
+
+- `cutpoint ui` media links (videos, stills, downloads) carry a read-only media token in `?t=` instead of the session token. Only the media routes accept it; API routes refuse it, so a copied media address grants no other call (#1085, A668, A674).
+- The `cutpoint ui` page sends a Content-Security-Policy that allows only its own scripts, its own files, inline styles and `data:` images (#1085, A673).
+- `cutpoint ui` refuses request bodies over 16 MiB with 413 (#1085, A670).
+- `cutpoint ui` refuses a recorded input or 360 source that starts with `-` as a job argument, so a hand-edited `ui/meta.json` or `highlights.json` cannot pass an option to a job (#1085, A669).
+- The proxy sign-in page opens only `https` addresses or `http` on this machine, without a referrer (#1085, A672).
 
 ## [0.5.0] - 2026-11-10
 
