@@ -293,3 +293,131 @@ test('the stage and the Export tab\'s final video never sound together; leaving 
   await p.wait();
   assert.ok(fin.__media.calls.includes('pause'));
 });
+
+// "Play sequence" keeps the stage's window proxy for the next clip of its source only when that
+// window plays all of the clip (fileFor, holdsClip): a window holding the clip's start alone would
+// cut it short at its end.
+
+/** h001 (10-18) then h002 (50-58) of a.mp4 in the sequence. */
+function seqOf() {
+  const cands = makeProject().highlights.candidates.map((c) => (c.id === 'h002' ? { ...c, start: 50, end: 58 } : c));
+  return {
+    highlights: { style: 'funny', candidates: cands },
+    review: { segments: cands.slice(0, 2).map(({ id, source, start, end, label }) => ({ id, source, start, end, label })) },
+  };
+}
+
+/** Windows 0-55 and 45-120 of a.mp4 ready, the whole proxy building; Play sequence, h001 plays from 0-55. */
+async function seqPlayer(t) {
+  const p = await player(t, { windows: [win(0, 55), win(45, 120)] }, { project: seqOf() });
+  p.d.querySelector('#seqPlayBtn').click();
+  await p.wait();
+  if (!(p.v.__media.readyState > 0)) p.loadWindow(55);
+  await p.wait();
+  const two = p.d.querySelector('#video2');
+  return {
+    ...p, two,
+    active: () => p.d.querySelector('.screen video.active'),
+    row: () => p.d.querySelector('#seqList li.playing')?.dataset.id,
+  };
+}
+
+test('Play sequence: a clip only partly in the playing window plays from a window covering all of it, by a swap', async (t) => {
+  const s = await seqPlayer(t);
+  assert.equal(s.row(), 'h001');
+  assert.equal(s.v.dataset.url, win(0, 55).url);
+  assert.equal(s.v.__media.currentTime, 10);
+  assert.equal(s.v.paused, false);
+  assert.equal(s.two.dataset.url, win(45, 120).url, '0-55 holds only the start of 50-58: the spare cues 45-120');
+  s.two.__media.loaded(75);
+  assert.equal(s.two.__media.currentTime, 5, 'at the clip start (source 50, window time 5)');
+
+  await s.playTo(18); // the end of h001
+  assert.equal(s.row(), 'h002');
+  assert.equal(s.active(), s.two, 'a hard cut to the spare player');
+  assert.equal(s.two.dataset.offset, '45');
+  assert.equal(s.two.paused, false);
+  // #video stays on 0-55 at 18, paused: the stage is #video2 now (read the active player, not #video)
+  assert.equal(s.v.paused, true, 'the old player, still on 0-55, stops');
+
+  s.two.__media.tick(55 - 45); // past the end of 0-55: the clip plays on
+  await s.wait(16);
+  assert.equal(s.row(), 'h002');
+  s.two.__media.tick(58 - 45);
+  await s.wait(16);
+  assert.equal(s.d.querySelector('#seqPlayBtn').textContent, 'Play sequence', 'the whole clip played, then the sequence ended');
+});
+
+test('Play sequence: with the spare player unusable the stage loads the covering window, not a seek in the playing one', async (t) => {
+  const s = await seqPlayer(t);
+  s.two.__media.loaded(75);
+  Object.defineProperty(s.two, 'error', { configurable: true, value: { code: 4 } }); // its file failed
+
+  await s.playTo(18);
+  assert.equal(s.row(), 'h002');
+  assert.equal(s.active(), s.v, 'no swap to the failed spare');
+  assert.equal(s.v.dataset.url, win(45, 120).url, 'the stage switches to the window holding all of 50-58');
+  s.v.__media.loaded(75);
+  await s.wait();
+  assert.equal(s.v.__media.currentTime, 5, 'sought to source 50 in that window');
+  assert.equal(s.v.paused, false, 'and plays');
+});
+
+test('Play sequence: once the whole proxy is ready, a playing window that holds only part of the next clip gives way to it', async (t) => {
+  const s = await seqPlayer(t);
+  s.two.__media.loaded(75);
+  Object.defineProperty(s.two, 'error', { configurable: true, value: { code: 4 } });
+  s.state.src = { ...s.state.src, status: 'ready', duration: 600 }; // the whole proxy is built
+  await s.wait(2000); // the stage's poll lists it; h001 plays on from 0-55, which holds it
+  assert.equal(s.v.dataset.url, win(0, 55).url);
+  assert.equal(s.v.paused, false);
+
+  await s.playTo(18);
+  assert.equal(s.row(), 'h002');
+  assert.equal(s.v.dataset.url, '/api/projects/p1/sources/s1?t=x', 'the whole proxy, not 0-55 sought to 50');
+  s.v.__media.loaded(600);
+  await s.wait();
+  assert.equal(s.v.__media.currentTime, 50);
+  assert.equal(s.v.paused, false);
+});
+
+// #498 (c12e589): a window of one source must not stay on stage for the next clip of ANOTHER source
+// whose times it happens to hold (ofSource in holdsClip and playingOn; the two guard the same path,
+// so the test fails only when both go).
+test('Play sequence: a clip of another file inside the playing window\'s times plays from its own file (#498)', async (t) => {
+  const base = makeProject();
+  const [a, b, c] = base.highlights.candidates;
+  const other = { ...b, source: '/videos/b.mp4', start: 12, end: 20 };
+  const bUrl = '/api/projects/p1/sources/s2?t=x';
+  const seg = ({ id, source, start, end, label }) => ({ id, source, start, end, label });
+  const s = await player(t, { windows: [win(0, 55)] }, {
+    project: {
+      highlights: { style: 'funny', candidates: [a, other, c] },
+      review: { segments: [seg(a), seg(other)] },
+      sources: [
+        { ...base.sources[0], status: 'needs-proxy', windows: [win(0, 55)], pending: [], failed: [] },
+        { id: 's2', path: '/videos/b.mp4', name: 'b.mp4', status: 'ready', url: bUrl, duration: 600 },
+      ],
+    },
+  });
+  s.d.querySelector('#seqPlayBtn').click();
+  await s.wait();
+  if (!(s.v.__media.readyState > 0)) s.loadWindow(55);
+  await s.wait();
+  assert.equal(s.v.dataset.url, win(0, 55).url, 'h001 plays from a.mp4\'s window');
+  // the spare player cued b.mp4 but its file failed: the stage itself must switch files
+  const two = s.d.querySelector('#video2');
+  assert.equal(two.dataset.url, bUrl);
+  two.__media.loaded(600);
+  Object.defineProperty(two, 'error', { configurable: true, value: { code: 4 } });
+
+  await s.playTo(18); // the end of h001
+  assert.equal(s.d.querySelector('#seqList li.playing')?.dataset.id, 'h002');
+  const active = s.d.querySelector('.screen video.active');
+  assert.equal(active, s.v, 'no swap to the failed spare');
+  assert.notEqual(active.dataset.url, win(0, 55).url, 'not a.mp4 sought to 12 s');
+  assert.equal(active.dataset.url, bUrl);
+  active.__media.loaded(600); // b.mp4's metadata arrives
+  await s.wait();
+  assert.equal(active.__media.currentTime, 12);
+});
