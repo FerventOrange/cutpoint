@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Array caches (frame embeddings, voice, 360 views and orientation, telemetry, crash IMU grids, action-cam features, CLIP text embeddings) are written atomically, and a damaged or half-written cache file is read as a miss and made again instead of failing every later run until it was deleted by hand (#1085, A159, A186, A206, A352).
 - `cutpoint edit --events` exports the clips again: it skipped the clips step, so the join failed with no clips, or with `--force` joined the clips of an earlier run (#1085, A228).
 - AI Chat: a local model can pick a source at a drive root that shares its file name with another source, also the roots of two drives (shown as `C:/clip.mp4`, or `/clip.mp4` without a drive letter; it was refused); a model not on this machine never sees the drive letter, and an earlier reply's folder names are replaced whatever their case (Windows), follow-up to #1063.
 - Folder inputs and the browser workspace's source check now accept `.ts`, `.m2ts`, `.mts`, `.m2t`, `.mpg` and `.mpeg` recordings, which were skipped unless named as a file; the joined-recording check of MPEG-TS and MPEG-PS now runs on them too (#1057).

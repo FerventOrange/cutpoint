@@ -762,14 +762,12 @@ def cached_speed(src: Path, params: TelemetryParams | None = None) -> np.ndarray
     """
     p = params or TelemetryParams()
     npz = cache.source_dir(src) / f"telemetry-{p.key()}.npz"
-    if not npz.exists():
+    z = cache.load_npz(npz)
+    if z is None or "speed_kmh" not in z:
         return None
-    with np.load(npz) as z:
-        if "speed_kmh" not in z.files:
-            return None
-        speed = z["speed_kmh"].astype(np.float64)
-        if "gps_ok" in z.files:
-            speed = np.where(z["gps_ok"] > 0, speed, np.nan)
+    speed = z["speed_kmh"].astype(np.float64)
+    if "gps_ok" in z:
+        speed = np.where(z["gps_ok"] > 0, speed, np.nan)
     return speed
 
 
@@ -798,15 +796,14 @@ def extract(
         if data is not None:
             if data.get("none"):
                 return None
-            with np.load(npz) as z:
-                grid = {k: z[k] for k in z.files}
-            return Telemetry(
-                source=str(src),
-                duration=data["duration"],
-                grid=grid,
-                events=data["events"],
-                meta=data["meta"],
-            )
+            if (grid := cache.load_npz(npz)) is not None:
+                return Telemetry(
+                    source=str(src),
+                    duration=data["duration"],
+                    grid=grid,
+                    events=data["events"],
+                    meta=data["meta"],
+                )
     io, x3_imu, read_path, unstaged = imu_read_path(src)
     if unstaged:
         logger.warning(
@@ -820,10 +817,10 @@ def extract(
         _x3_clock(tel, x3_imu)
     if tel is None:
         cache.save_json(meta_path, {"none": True})
-        np.savez_compressed(npz)
+        cache.save_npz(npz)
         return None
     tel.source = str(src)
-    np.savez_compressed(npz, **{k: v.astype(np.float32) for k, v in tel.grid.items()})
+    cache.save_npz(npz, **{k: v.astype(np.float32) for k, v in tel.grid.items()})
     cache.save_json(meta_path, {"duration": duration, "events": tel.events, "meta": tel.meta})
     logger.info(
         "%s: telemetry %s (%.1fs): top %.0f km/h, %d airtime, %d crash, lift %.0fs",

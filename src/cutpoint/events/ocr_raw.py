@@ -176,7 +176,7 @@ class RawStore:
         for i in range(int(meta.get("chunks", 0))):
             try:
                 chunk = _decode(self.chunk_path(i).read_bytes())
-            except (OSError, ValueError, KeyError, zipfile.BadZipFile, EOFError) as err:
+            except cache.NPZ_ERRORS as err:
                 logger.warning("%s: raw OCR chunk %d unreadable (%s)", self.folder.name, i, err)
                 return
             yield chunk

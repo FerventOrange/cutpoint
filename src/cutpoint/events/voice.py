@@ -85,10 +85,8 @@ def load_voice(
     except OSError as err:
         logger.warning("%s: footage not reachable (%s); no voice data for it", src, err)
         return None
-    if not path.exists():
-        return None
-    with np.load(path) as z:
-        return {k: z[k].astype(np.float32) for k in z.files}
+    z = cache.load_npz(path)
+    return None if z is None else {k: v.astype(np.float32) for k, v in z.items()}
 
 
 def _highpass(x: np.ndarray, hz: float) -> np.ndarray:
@@ -256,7 +254,7 @@ def compute_voice(
             for g in GROUPS:
                 put(f"{pre}_{g}", sel[:, owner_arr == g].max(1), FRAME_S)
     grids["wind_db"] = np.nan_to_num(grids["wind_db"], nan=0.0)
-    np.savez_compressed(path, **grids)
+    cache.save_npz(path, **grids)
     logger.info(
         "%s: voice grids in %.1fs (%.0fx realtime)",
         src.name,
