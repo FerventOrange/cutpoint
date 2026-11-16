@@ -622,9 +622,16 @@ def gravity(acc: np.ndarray, k: int) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------- main entry
-def _compute(path: Path, duration: float, p: TelemetryParams) -> Telemetry | None:
+def _compute(
+    path: Path,
+    duration: float,
+    p: TelemetryParams,
+    parsed: tuple[Any, list[Any], np.ndarray, np.ndarray, np.ndarray] | None = None,
+) -> Telemetry | None:
+    """Telemetry of ``path``, from ``parsed`` (its :func:`parse_imu`) or parsing it."""
     t0 = time.perf_counter()
-    parsed = parse_imu(path)
+    if parsed is None:
+        parsed = parse_imu(path)
     if parsed is None:
         return None
     parser, groups, t, acc, gyr = parsed
@@ -777,7 +784,7 @@ def extract(
     """Telemetry of ``src`` (cached per source), or None if it has none.
 
     Reads the staged copy when ``cutpoint stage`` has one; otherwise warns, because
-    the parser reads the entire file.
+    the parser reads only the metadata and GPMF chunks, from the original's storage.
 
     Args:
         src: Source video (original path; ``source_remap`` and the stage apply).
@@ -785,6 +792,7 @@ def extract(
         params: Detection thresholds.
         force: Ignore the cache.
     """
+    from cutpoint.crash import cache_imu_grids  # noqa: PLC0415
     from cutpoint.stage import storage_label  # noqa: PLC0415
 
     p = params or TelemetryParams()
@@ -807,12 +815,18 @@ def extract(
     io, x3_imu, read_path, unstaged = imu_read_path(src)
     if unstaged:
         logger.warning(
-            "%s is not staged: telemetry-parser reads the whole file from %s "
-            "(run `cutpoint stage` first for speed)",
+            "%s is not staged: its telemetry is read from %s "
+            "(`cutpoint stage` copies it to local disk)",
             src.name,
             storage_label(io),
         )
-    tel = _compute(read_path, duration, p)
+    t0 = time.perf_counter()
+    parsed = parse_imu(read_path)
+    tel = None if parsed is None else _compute(read_path, duration, p, parsed)
+    if tel is not None:
+        tel.meta["parse_s"] = round(time.perf_counter() - t0, 2)
+    # The crash step's IMU grids come from the same parse (crash.imu_grids would parse again).
+    cache_imu_grids(src, duration, parsed)
     if tel is not None and x3_imu is not None:
         _x3_clock(tel, x3_imu)
     if tel is None:
