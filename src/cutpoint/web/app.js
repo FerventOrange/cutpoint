@@ -773,6 +773,11 @@ function adopt(p, switched) {
 
 // ---------- rendering: moments ----------
 
+// What the Moments tiles on the page were drawn from (tilesKey): a project poll (every 1-2 s while
+// a proxy builds or a 360 preview renders) or a render that changes none of it keeps the tiles, as
+// a gaming project can list thousands (A753).
+let tilesDrawn = { list: null, rest: null };
+
 function renderMoments() {
   const p = S.project;
   const hl = p?.highlights;
@@ -825,11 +830,15 @@ function renderMoments() {
     });
   if (S.order === 'position') items.sort((a, b) => positionCompare(a.c, b.c)); // the badge keeps the score rank
   const listHadFocus = $('#candList').contains(document.activeElement);
+  const none = list.length && !items.length ? `No moments match ${filtersOn(f) || S.kind ? 'these filters' : 'this filter'}.` : '';
+  const drawn = tilesKey(list, items, sources, multi, none);
   // A tile: the still with the kind dot and length (Add/Remove sits over its corner: no nested
   // buttons), then rank and title, kind and score with the preview readiness as an icon, the id and
   // times, the file with several sources, and the strip. The transcript is the tile's tooltip.
-  if (lazySeen) for (const b of $('#candList').querySelectorAll('.cand-thumb.loading')) { lazySeen.unobserve(b); lazyAsks.delete(b); } // tiles about to be replaced
-  preserveFocus(() => {
+  const redraw = drawn.list !== tilesDrawn.list || drawn.rest !== tilesDrawn.rest;
+  tilesDrawn = drawn;
+  if (redraw && lazySeen) for (const b of $('#candList').querySelectorAll('.cand-thumb.loading')) { lazySeen.unobserve(b); lazyAsks.delete(b); } // tiles about to be replaced
+  if (redraw) preserveFocus(() => {
     $('#candList').replaceChildren(
       ...items.map(({ c, rank }) => {
         const seg = segOf(c);
@@ -878,14 +887,32 @@ function renderMoments() {
       }),
     );
   });
-  if (list.length && !items.length)
-    $('#candList').replaceChildren(h('li', { class: 'empty', text: `No moments match ${filtersOn(f) || S.kind ? 'these filters' : 'this filter'}.` }));
+  if (redraw && none) $('#candList').replaceChildren(h('li', { class: 'empty', text: none }));
   // the focused card left the list (Add with Not in sequence, say) and no card is left to take focus
   if (listHadFocus && !$('#candList').contains(document.activeElement) && !$('#filterWrap').hidden) $('#filterBtn').focus();
   markMoments();
   renderBusy(); // first: the buttons are as disabled as they will be when focus looks for one
   if (hadFocus && !empty.contains(document.activeElement))
     ([$('#resumeBig'), $('#analyzeBig'), $('#pauseBtn'), $('#candList button'), $('#resumeBtn')].find((b) => b && !b.hidden && !b.disabled) ?? $('#momentsTitle')).focus();
+}
+
+/**
+ * Everything the Moments tiles show, as two strings: ``list``, the project's moments, and
+ * ``rest``, each shown tile (its rank, whether it is in the sequence, its preview readiness), the
+ * focused moment, the sources' urls (stills), lengths and unplayable parts (strips), whether the
+ * file names show and the no-match text. Equal strings draw the same tiles.
+ */
+function tilesKey(list, items, sources, multi, none) {
+  const srcs = sources.map((path) => {
+    const src = srcOf(path);
+    const dur = sourceDur(path);
+    return [path, src?.url ?? null, dur ?? null, dur ? sourceGaps(src, dur) : []];
+  });
+  const tiles = items.map(({ c, rank }) => {
+    const seg = S.segments.find((s) => s.id === c.id);
+    return [rank, !!seg, prepState(srcOf(c.source), seg ?? { ...c, ...S.drafts[c.id] })];
+  });
+  return { list: JSON.stringify(list), rest: JSON.stringify([tiles, srcs, S.focus, multi, none]) };
 }
 
 /**
