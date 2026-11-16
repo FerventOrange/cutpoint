@@ -1069,6 +1069,15 @@ def test_a_director_preview_renders_in_the_background_and_is_reused(
     assert len(run.renders) == 1
 
 
+def test_two_apps_in_one_process_share_no_planners_or_login_states() -> None:
+    a, b = ui.create_app(PORT), ui.create_app(PORT)
+    assert a.state.planners is not b.state.planners
+    assert a.state.login_states is not b.state.login_states
+    a.state.planners["p"] = object()
+    a.state.login_states["s"] = {"state": "x"}
+    assert b.state.planners == {} and b.state.login_states == {}
+
+
 def test_a_stale_or_missing_camera_path_previews_the_library_fallback(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
