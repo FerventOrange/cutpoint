@@ -82,6 +82,22 @@ DISCOVERY_PCT = 50.0
 _FAILURE = "_cutpoint_ocr_failure"  # the attribute :func:`ocr_failure` reads
 
 
+def check_game_key(key: str) -> str:
+    """``key`` when it can be a HUD preset's file stem and a ``discovery`` folder name: not
+    empty, not ``.`` or ``..``, no path separator or drive (``/``, ``\\``, ``:``), no NUL.
+
+    Raises:
+        jsonout.ArgumentError: For any other key (``--game ../x`` would write outside the
+            presets and project folders).
+    """
+    if not key.strip() or key in (".", "..") or any(c in key for c in "/\\:\0"):
+        raise jsonout.ArgumentError(
+            f"HUD preset key {key!r} (--game, or a preset's game): a key is a name without "
+            "a path (no /, \\, :, '..'; e.g. counter-strike-2)"
+        )
+    return key
+
+
 class OcrFailure(NamedTuple):
     """Where the OCR layer failed (:func:`ocr_failure`)."""
 
@@ -258,6 +274,8 @@ def run_events(
         Paths of events.json and events.txt.
     """
     audio, ocr, vlm = audio or AudioParams(), ocr or OcrParams(), vlm or VlmParams()
+    if ocr.game != "auto":
+        check_game_key(ocr.game)
     boom = explosions.ExplosionParams()
     stage = stage or _layer_step
     hl = load_highlights(project)
@@ -1187,6 +1205,36 @@ def _discover(
                 raw = hud.load_game_keys(project).get(hud.source_id(path)) or {}
                 if isinstance(raw.get("key"), str):
                     before[path] = raw["key"]
+        try:
+            check_game_key(key)
+        except jsonout.ArgumentError:
+            if named:
+                raise
+            # a preset's ``game`` that is no plain name ("Rainbow Six: Siege"): no path is
+            # made from it. A preset that loads is still read with (OCR finds it by that
+            # key) but is not refitted, topped up or discovered again; else the source gets
+            # its first guess
+            preset = next(
+                (
+                    p
+                    for p in hud.preset_files(project)
+                    if str((hud._read_json(p) or {}).get("game")) == key
+                ),
+                None,
+            )
+            loads = load_preset(key, project) is not None
+            guess = hud.first_guess(path, project)
+            logger.warning(
+                "HUD preset %s names its game %r, which is no plain name (no /, \\, :, '..'); %s",
+                preset or "(unknown file)",
+                key,
+                f"{path} is read with it but it is not refitted or discovered again"
+                if loads
+                else f"using {guess!r} for {path}",
+            )
+            if loads:
+                continue
+            key = guess
         by_game.setdefault(key, []).append(s)
     planned = sum(force or load_preset(g, project) is None for g in by_game)
     runs = {"started": 0, "total": max(1, planned)}  # discoveries (a misfit adds one)
@@ -1381,7 +1429,7 @@ def _discover(
         """Write a discovered preset (its record in ``out`` says where)."""
         folder = project / "hud_presets" if scope == "project" else cutpoint_paths.presets_dir()
         folder.mkdir(parents=True, exist_ok=True)
-        target = folder / f"{game}.json"
+        target = folder / f"{check_game_key(game)}.json"
         old = cache.load_json(target) if target.is_file() else None
         if isinstance(old, dict) and stale_mapping(old):
             # a preset made with the wrong y scale (#1085): keep it aside and carry over what

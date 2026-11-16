@@ -139,6 +139,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cutpoint ui` refuses request bodies over 16 MiB with 413 (#1085, A670).
 - `cutpoint ui` refuses a recorded input or 360 source that starts with `-` as a job argument, so a hand-edited `ui/meta.json` or `highlights.json` cannot pass an option to a job (#1085, A669).
 - The proxy sign-in page opens only `https` addresses or `http` on this machine, without a referrer (#1085, A672).
+- `cutpoint resume` refuses a `progress.json` whose recorded command line does not parse to the recorded command on this project (#1085, A662).
+- `--game` keys that are empty, `.`, `..` or contain `/`, `\`, `:` or NUL are refused with `bad_args`, as is installing a discovered preset under such a key. A preset whose `game` is such a name is still used for reading, with a WARNING naming the file, but is not refitted or discovered again; when it does not load, its source uses its first guess (#1085, A652).
+- `cutpoint setup` fetches the PANNs label list over https and checks its size and sha256, and pins the Silero voice model to v6.2.3 (size and sha256): an older copy is replaced, and a download that fails the check keeps the file there before (#1085, A650, A651).
+- ffmpeg and ffprobe inputs that Cutpoint builds are limited to the `file` and `pipe` protocols (`-protocol_whitelist file,pipe`) (#1085, A665, in part).
+- ffmpeg and ffprobe are found on `PATH` only in absolute directories (#1085, A664, in part).
+- Windows: CUDA DLLs are loaded from absolute wheel paths, not from the current folder (#1085, A643).
+- 360 stitch: one stitch per output file at a time, and `-output` or `-inputs` in `pano.stitch_args` is refused (#1085, A660, A661).
+- The activity discovery cache is validated (A655). The 360 VL verdict cache is keyed per source and clip, so old verdicts are asked once more (A658, A659). Stage and timeline index names stay in the cache folder (A666, in part). Raw prompt chat markers are broken (A642). Vision sends nothing while its consent is needed (A645). Dialogue reading needs the AI Chat consent for an Ollama on another machine (A644). Feed label logging shows only the label (A648) (#1085).
 
 ## [0.5.0] - 2026-11-10
 

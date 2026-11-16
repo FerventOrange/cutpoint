@@ -683,6 +683,33 @@ class TestValidateStitchArgs:
             project.validate_stitch_args(["-output_size", size])
 
 
+@pytest.mark.parametrize("flag", ["-output", "-inputs"])
+def test_stitch_args_never_set_the_output_or_inputs(flag):
+    """A661: a second -output would make the SDK write where cutpoint does not check."""
+    with pytest.raises(ValueError, match=f"{flag} is set by cutpoint"):
+        project.validate_stitch_args([flag, "elsewhere.mp4"])
+
+
+def test_a_stitch_holds_the_lock_of_its_output(tmp_path, monkeypatch):
+    """A660: two runs (projects share the stitched folder) never stitch one output at once."""
+    from cutpoint import folders  # noqa: PLC0415
+    from cutpoint.errors import FolderBusyError  # noqa: PLC0415
+
+    out_dir = tmp_path / "stitched"
+    out_dir.mkdir()
+    _config(stitched_dir=str(out_dir))
+    clip = x3clip(clip_id="001", start_local="t", insv=["VID_20260101_100000_00_001.insv"])
+    monkeypatch.setattr(stitch, "require_sdk", lambda: tmp_path / "sdk")
+    monkeypatch.setattr(stitch, "_need_gb", lambda c: 0.0)
+    monkeypatch.setattr(stitch, "MIN_FREE_GB", 0.0)
+    ran: list[object] = []
+    monkeypatch.setattr(stitch, "_stitch_one", lambda *a: ran.append(a) or {"status": "ok"})
+    with folders.swap_lock(project.sdk_output(clip)), pytest.raises(FolderBusyError):
+        stitch.stitch_clips([clip])
+    assert ran == []
+    assert stitch.stitch_clips([clip]) == [{"status": "ok"}]
+
+
 class TestStitchArgs:
     def test_default(self):
         assert project.stitch_args() == list(project.DEFAULT_STITCH_ARGS)

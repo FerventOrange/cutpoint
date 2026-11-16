@@ -515,7 +515,10 @@ def _clip_overrides(items: list[list[str]] | None) -> dict[str, dict[str, float]
 def _cmd_events(a: argparse.Namespace) -> None:
     from cutpoint import progress  # noqa: PLC0415
     from cutpoint.events.cli import run_args  # noqa: PLC0415
+    from cutpoint.events.pipeline import check_game_key  # noqa: PLC0415
 
+    if a.game != "auto":  # a path part of the preset and discovery files (A652)
+        check_game_key(a.game)
     with progress.run(progress.EVENTS_STEPS, quiet=True):  # steps in progress.json only
         run_args(a)
 
@@ -680,7 +683,17 @@ def _cmd_resume(a: argparse.Namespace) -> int:
     os.chdir(rec["cwd"])
     try:
         other = _run_project(args)
-        if other is not None and path_key(str(other.absolute())) != path_key(
+        if args.json_command != rec["command"] or other is None:
+            # the command line is not a run of the recorded command (a hand-edited or
+            # foreign progress.json): never replay it
+            message = (
+                f"{project / runstate.FILE} records the command line "
+                f"'cutpoint {join(argv)}', which is no {rec['command']} run; not resumed"
+            )
+            logger.error("%s", message)
+            jsonout.fail(jsonout.ERROR, message)
+            return 1
+        if path_key(str(other.absolute())) != path_key(
             str(project)
         ):  # a copied project: its record names the original
             message = f"{project / runstate.FILE} records a run on {other.absolute()}"

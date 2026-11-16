@@ -526,12 +526,11 @@ def ollama_consent_key(url: str) -> str | None:
 def _local_backend(rater: Any) -> Backend | None:
     """A :class:`~cutpoint.vision.VisionRater` of an Ollama as a backend, or None (logged by
     the rater) when Ollama or the model is not there. The caller has checked the consent of an
-    Ollama on another machine (:func:`ollama_consent_key`); the rater's own (Vision) is not
-    asked. The backend is ``local`` for an Ollama on this machine, ``remote`` for an agreed
+    Ollama on another machine (:func:`ollama_consent_key`); the rater, made with
+    ``consent="chat"``, guards its requests with that same consent (never the Vision one). The backend is ``local`` for an Ollama on this machine, ``remote`` for an agreed
     one elsewhere; both rank by reactions (their ratings are ignored)."""
     from cutpoint.assistant import providers  # noqa: PLC0415
 
-    rater.consent_needed = None  # the Vision consent is neither needed nor enough here
     if not rater.available():
         return None
 
@@ -593,12 +592,14 @@ def choose_backend(ollama_url: str | None = None, ollama_model: str | None = Non
     if isinstance(provider, providers.OllamaProvider) and (provider.local or not consent_missing):
         # the AI Chat model is an Ollama: this machine's, or another's that was agreed to
         try:
-            rater = VisionRater(provider.url, provider.resolve_model(), local_only=True)
+            rater = VisionRater(
+                provider.url, provider.resolve_model(), local_only=True, consent="chat"
+            )
         except providers.ProviderError as err:
             logger.info("Dialogue reader: %s", keys.redact(str(err)))
     elif not isinstance(provider, providers.OllamaProvider) or consent_missing:
         try:
-            rater = VisionRater(ollama_url, ollama_model, local_only=True)
+            rater = VisionRater(ollama_url, ollama_model, local_only=True, consent="chat")
         except ValueError as err:  # a bad port in OLLAMA_HOST / ollama_url: no local model
             logger.warning("Dialogue reader: Ollama URL not usable (%s); no local model", err)
         if explicit and rater is not None:

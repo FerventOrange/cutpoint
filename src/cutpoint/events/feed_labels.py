@@ -234,7 +234,7 @@ def label_proposals(
             continue
         failed = 0
         # what the model read (names, chat) is not kept: only its label
-        logger.debug("Feed label %s: %s (read %.80r)", p["name"], label, reply.get("text_in_box"))
+        logger.debug("Feed label %s: %s", p["name"], label)
         out[p["name"]] = {"label": label, "model": model}
         store[key] = {"label": label}
         cache.save_json(path, store)

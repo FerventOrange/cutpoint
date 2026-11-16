@@ -244,7 +244,7 @@ def _ctx_sent(monkeypatch: pytest.MonkeyPatch, url: str, loaded: int | None) -> 
     """A checker for ``url`` whose Ollama has the model loaded with ``loaded``: the
     ``num_ctx`` it sends and the contexts the memory guard is given."""
     chk = V.VLChecker(url=url, model="m")
-    chk.rater.consent_needed = None
+    chk.rater._consent_needed = None
     probed: list[tuple[str, str]] = []
     guarded: list[int | None] = []
     monkeypatch.setattr(memguard, "ollama_context", lambda u, m: probed.append((u, m)) or loaded)
@@ -280,3 +280,12 @@ def test_nothing_loaded_gets_8192(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_a_remote_ollama_is_not_asked_for_its_context(monkeypatch: pytest.MonkeyPatch) -> None:
     sent, (probed, guarded) = _ctx_sent(monkeypatch, "http://gpu-box.example.com:11434", 50000)
     assert sent == [8192] and guarded == [8192] and not probed
+
+
+def test_the_verdict_file_is_named_by_recording_and_clip(home) -> None:
+    """A658/A659: a path file's ``clip`` is no path part, and clip 029 of two recordings
+    keeps two verdict files."""
+    folder = V._cache_file("029").parent
+    escaped = V._cache_file("../../x", "a.insv")
+    assert escaped.parent == folder and ".." not in escaped.name
+    assert V._cache_file("029", "a.insv") != V._cache_file("029", "b.insv")

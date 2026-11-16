@@ -540,3 +540,17 @@ def test_a_model_on_the_cpu_only_is_checked_once_for_all_games(tmp_path: Path) -
     rater.used = False  # freed after the first game
     assert labeler(proposals, FRAMES, tmp_path / "b" / "frames") == {}
     assert rater.loads == [feed_labels.FIRST_ASK_TIMEOUT] and len(checks) == 1 and not sent
+
+
+def test_the_text_the_model_read_is_not_logged(tmp_path: Path, caplog) -> None:
+    """A648: player names and chat the vision model read stay out of the log."""
+    _write_frames(tmp_path / "frames")
+
+    def ask(*_a: Any) -> dict[str, Any] | None:
+        return {"text_in_box": "SecretPlayer123", "label": "kill_feed"}
+
+    proposals = [_prop("feed", "feed", 0.5, x=1500, y=100)]
+    with caplog.at_level("DEBUG"):
+        out = feed_labels.label_proposals(proposals, FRAMES, tmp_path / "frames", ask, "m")
+    assert out["feed"]["label"] == "kill_feed"
+    assert "Feed label feed: kill_feed" in caplog.text and "SecretPlayer123" not in caplog.text

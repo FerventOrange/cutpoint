@@ -32,7 +32,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator, Sequence
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from cutpoint import cache, jsonout, paths, state
@@ -288,7 +288,7 @@ def timeline_index(stamp: tuple | None = None) -> dict[str, dict]:
     index = _TIMELINE.get(stamp)
     if index is None:
         data = cache.load_json(stamp[0] / TIMELINE_INDEX)
-        index = data if isinstance(data, dict) else {}
+        index = _entries(data, _below)
         _TIMELINE.clear()
         _TIMELINE[stamp] = index
     return index
@@ -502,8 +502,35 @@ def _find_subst(index: dict[str, dict[str, Any]], key: str) -> str | None:
 
 
 def _load_index(stage_dir: Path) -> dict[str, dict[str, Any]]:
-    data = cache.load_json(stage_dir / STAGE_INDEX)
-    return data if isinstance(data, dict) else {}
+    return _entries(cache.load_json(stage_dir / STAGE_INDEX), _bare)
+
+
+def _bare(name: object) -> bool:
+    """Whether ``name`` is a plain file name (no folder part, drive, ``.`` or ``..``) on
+    every OS."""
+    return (
+        isinstance(name, str)
+        and name not in ("", ".", "..")
+        and PureWindowsPath(name).name == name
+        and PurePosixPath(name).name == name
+    )
+
+
+def _below(name: object) -> bool:
+    """Whether ``name`` is a relative path that stays below its folder (no drive, root or
+    ``..``) on every OS."""
+    if not isinstance(name, str) or not name:
+        return False
+    win = PureWindowsPath(name)
+    return not win.anchor and ".." not in win.parts and not PurePosixPath(name).is_absolute()
+
+
+def _entries(data: object, check: Any) -> dict[str, dict[str, Any]]:
+    """The entries of a loaded index whose ``file`` passes ``check``: a name from a tampered
+    index never reaches a path that is read or deleted (A666)."""
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict) and check(v.get("file"))}
 
 
 def _save_index(stage_dir: Path, index: dict[str, dict[str, Any]]) -> None:

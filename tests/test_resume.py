@@ -194,6 +194,26 @@ def test_a_copied_project_does_not_replay_on_the_original(
     assert _read(project)["status"] == "interrupted" and not (project / LOCK).exists()
 
 
+@pytest.mark.parametrize(
+    ("command", "argv"),
+    [("clips", ["paths"]), ("events", ["style", "delete", "x"]), ("events", ["clips", "p"])],
+    ids=["no-project", "other-command", "command-mismatch"],
+)
+def test_a_record_of_another_command_line_is_not_replayed(
+    project, monkeypatch, capsys, caplog, command, argv
+):
+    """A hand-edited progress.json whose argv is not a run of its ``command`` (A662)."""
+    calls = _fake_events(monkeypatch)
+    _record(project, command=command, argv=argv)
+    code, doc = _resume(capsys)
+    assert code == 1 and calls == []
+    assert doc["error"]["code"] == "error" and "not resumed" in doc["error"]["message"]
+    assert doc["outputs"]["resumed"] is False
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1 and "not resumed" in errors[0]
+    assert _read(project)["status"] == "interrupted"
+
+
 def test_resume_of_a_relative_project_path_from_the_projects_folder(project, monkeypatch, capsys):
     """``resume p`` inside the projects folder names the same project: it is replayed."""
     calls = _fake_events(monkeypatch)

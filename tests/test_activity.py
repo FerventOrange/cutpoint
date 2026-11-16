@@ -859,6 +859,20 @@ def test_identical_discoveries_share_one_library_file(home):
     assert set(activity.user_files()) == {"pack-rafting", second}
 
 
+def test_a_name_that_is_a_path_never_leaves_the_profiles_folder(home):
+    """A655: a hand-edited discovery cache names its profile ``../../x``: it is slugified,
+    on load and when saved to the library."""
+    raw = {**activity.validate(PACK_RAFTING), "name": "../../escaped"}
+    activity._save_discovery("k", {"description": "d", "profile": raw})
+    hit = activity._load_discovery("k")
+    assert hit is not None and hit["profile"]["name"] == "escaped"
+    name = activity.save_to_library(raw)  # the raw name, as an older caller could pass it
+    assert activity.name_problem(name) is None
+    assert (paths.profiles_dir() / f"{name}.json").is_file()
+    found = list(home.parent.parent.rglob("escaped*.json"))
+    assert [f.parent for f in found] == [paths.profiles_dir()]
+
+
 def test_an_unreadable_library_file_is_never_overwritten(home, caplog):
     """A corrupt file with the profile's name stays; the profile gets the next free name."""
     prof = activity.validate(PACK_RAFTING)
