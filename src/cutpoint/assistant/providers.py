@@ -84,9 +84,11 @@ ANTHROPIC_MODELS = (DEFAULT_ANTHROPIC_MODEL, "claude-opus-5-5")
 OPENAI_MODELS = ("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna")
 XAI_MODELS = ("grok-4.7", "grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1")
 AUTO_SERVER_MODEL = "server's default model"  # an OpenAI-compatible model not resolved yet
-# An Anthropic reply's cap (required): room for a whole proposal with suggestions, and still
-# read within HOSTED_TIMEOUT_S, as the reply is not streamed (#738)
+# An Anthropic reply's cap (required): room for a whole proposal with suggestions (#738)
 MAX_TOKENS = 8192
+# The reply is not streamed, so the read timeout covers its whole generation: room for
+# MAX_TOKENS at 30 tokens/s (a slow model), never less than HOSTED_TIMEOUT_S
+ANTHROPIC_TIMEOUT_S = max(HOSTED_TIMEOUT_S, MAX_TOKENS / 30)
 MAX_ERROR = 300  # characters of a server's error text in a message
 TITLES = {
     "ollama": "Ollama",
@@ -1409,7 +1411,8 @@ class AnthropicProvider(_HttpProvider):
                 if isinstance(fn := t.get("function"), dict)
             ]
         self._stop(cancelled)
-        resp = self._send("POST", f"{self.url}/v1/messages", payload, self.timeout)
+        timeout = max(self.timeout, ANTHROPIC_TIMEOUT_S)  # a whole MAX_TOKENS reply
+        resp = self._send("POST", f"{self.url}/v1/messages", payload, timeout)
         self._stop(cancelled)
         if resp.status_code >= 400:
             raise self._fail(resp)

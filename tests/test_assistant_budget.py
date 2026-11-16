@@ -110,6 +110,15 @@ def test_anthropic_max_tokens_is_the_output_cap_not_the_context(monkeypatch) -> 
     with pytest.raises(OutputCapError, match="cut off at its limit") as err:
         AnthropicProvider("", "m", 0, KEY).chat(HI)
     assert err.value.tokens == providers.MAX_TOKENS
+
+
+def test_an_anthropic_reply_has_time_for_its_whole_cap(monkeypatch) -> None:
+    # not streamed: the read timeout covers a whole MAX_TOKENS reply at 30 tokens/s (F1)
+    wire = Wire(monkeypatch, an_reply({"type": "text", "text": "ok"}))
+    AnthropicProvider("", "m", 0, KEY).chat(HI)
+    timeout = wire.sent[0]["timeout"]
+    assert timeout == (providers.CONNECT_TIMEOUT_S, providers.ANTHROPIC_TIMEOUT_S)
+    assert timeout[1] >= providers.MAX_TOKENS / 30 > providers.HOSTED_TIMEOUT_S
     Wire(monkeypatch, an_reply({"type": "text", "text": "ok"}))
     assert AnthropicProvider("", "m", 0, KEY).chat(HI).text == "ok"
 

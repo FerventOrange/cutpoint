@@ -555,7 +555,7 @@ def test_opus_is_selectable_and_the_key_comes_from_the_environment(home, monkeyp
             _Resp({"type": "error", "error": {"message": "Overloaded"}}, 529),
             "answered 529: Overloaded",
         ),
-        (requests.Timeout("read timed out"), "did not answer within 180 s"),
+        (requests.Timeout("read timed out"), "did not answer within"),
         (requests.ConnectionError(f"refused, header x-api-key={KEY}"), "is not reachable"),
     ],
 )
