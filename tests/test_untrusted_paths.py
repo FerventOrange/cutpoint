@@ -133,6 +133,64 @@ def test_a_rerank_save_flushes_highlights_json(home, tmp_path, fsyncs) -> None:
     assert not any(p.name.endswith(".tmp") for p in project.iterdir())
 
 
+def test_a_rerank_save_flushes_its_backup(home, tmp_path, fsyncs) -> None:
+    """The backup a re-rank keeps is what Undo brings back: flushed before its rename too."""
+    project = make_project(home, tmp_path)
+    fsyncs.clear()
+    assert rerank.rerank(project, get_style("funny")).saved
+    assert flushed_before_replace(fsyncs, rerank.BACKUP)
+
+
+def test_a_rerank_that_analyzes_again_flushes_its_backup(home, tmp_path, fsyncs, monkeypatch):
+    """``rerank --analyze`` writes the backup before the analysis replaces highlights.json."""
+    project = make_project(home, tmp_path)
+    flushed: list[bool] = []
+
+    def fake_reanalyze(p: Path, style=None, *, backup=None, rerank_backup=None) -> Path:
+        flushed.append(flushed_before_replace(fsyncs, rerank.BACKUP))
+        return p / "highlights.json"
+
+    from cutpoint import analyze  # noqa: PLC0415
+
+    monkeypatch.setattr(analyze, "reanalyze", fake_reanalyze)
+    fsyncs.clear()
+    assert rerank.rerank(project, get_style("action-cam"), analyze_missing=True).analyzed
+    assert flushed == [True]
+
+
+def test_a_failed_rerank_analyze_flushes_the_backup_it_puts_back(
+    home, tmp_path, fsyncs, monkeypatch
+):
+    """A failed ``rerank --analyze`` puts the earlier backup (the Undo) back: flushed too."""
+    project = make_project(home, tmp_path)
+    assert rerank.rerank(project, get_style("funny")).saved  # an earlier backup to keep
+    earlier = (project / rerank.BACKUP).read_bytes()
+
+    def failing(p: Path, style=None, *, backup=None, rerank_backup=None) -> Path:
+        fsyncs.clear()  # only the writes that put the backup back from here on
+        raise RuntimeError("analysis failed")
+
+    from cutpoint import analyze  # noqa: PLC0415
+
+    monkeypatch.setattr(analyze, "reanalyze", failing)
+    with pytest.raises(RuntimeError, match="analysis failed"):
+        rerank.rerank(project, get_style("action-cam"), analyze_missing=True)
+    assert (project / rerank.BACKUP).read_bytes() == earlier
+    assert flushed_before_replace(fsyncs, rerank.BACKUP)
+
+
+def test_the_pre_events_copy_is_written_durably(tmp_path, durable_saves) -> None:
+    """``events`` keeps the untouched analysis once, as highlights.pre-events.json."""
+    from cutpoint.events import scoring  # noqa: PLC0415
+
+    project = tmp_path / "proj"
+    write(project / "highlights.json", json.dumps({"sources": [], "settings": {}}))
+    write(project / "events.json", json.dumps({"settings": {}, "events": []}))
+    scoring.rescore_highlights(project)
+    assert ("highlights.pre-events.json", True) in durable_saves
+    assert ("highlights.json", True) in durable_saves
+
+
 def test_the_swap_journal_is_written_durably(tmp_path, durable_saves) -> None:
     new, dst = tmp_path / "new", tmp_path / "clips"
     write(new / "001_a.mp4", "new")

@@ -5,6 +5,7 @@ refusals, the all-or-nothing swap and no torch in the UI process."""
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -20,6 +21,7 @@ from cutpoint import analyze, rerank, ui
 from cutpoint.styles import get_style, style_name
 from test_rerank import lite_layers, make_project, read  # noqa: F401 (lite_layers: a fixture)
 from test_ui_ranking import apply, hold_lock, preview, snapshot
+from test_untrusted_paths import flushed_before_replace, fsyncs  # noqa: F401 (a fixture)
 
 PORT = 8765
 URL = "/api/projects/p/ranking/undo"
@@ -297,6 +299,80 @@ def test_a_failed_second_rename_leaves_both_files_and_no_temp(home, tmp_path, cl
     monkeypatch.undo()
     assert snapshot(project) == before  # highlights.json put back, the backup untouched
     assert not temps(project)
+
+
+# --------------------------------------------------------------------------- A639 / A667
+LOGIN = "http://alice:s3c@ret@myhost:11434"
+
+
+def no_login(project: Path) -> None:
+    for name in ("highlights.json", rerank.BACKUP):
+        raw = (project / name).read_bytes()
+        assert b"alice" not in raw and b"s3c" not in raw, name
+
+
+def read_backup_ranking(project: Path) -> tuple[str, list[tuple[str, float, float]]]:
+    hl = json.loads((project / rerank.BACKUP).read_bytes())
+    return hl["style"], [(c["id"], c["start"], c["end"]) for c in hl["candidates"]]
+
+
+def test_undo_and_redo_keep_no_ollama_login_in_either_file(home, tmp_path, client):
+    """A639: files written before #1119 kept the login in ``settings.ollama_url``, both the
+    ranking in use and the backup the Undo brings back: neither file keeps it after a swap,
+    and the swaps still go both ways."""
+    project = make_project(home, tmp_path)
+    applied(client)
+    first, second = read_backup_ranking(project), ranking(project)
+    for name in (rerank.BACKUP, "highlights.json"):
+        rewrite(project, name, lambda hl: hl["settings"].__setitem__("ollama_url", LOGIN))
+    relink(project)
+    assert page(client)["ranking_undo"] == {"action": "undo", "style": "gaming"}
+
+    assert swap(client).json()["action"] == "undo"
+    no_login(project)
+    assert ranking(project) == first
+    for name in ("highlights.json", rerank.BACKUP):
+        hl = json.loads((project / name).read_bytes())
+        assert hl["settings"]["ollama_url"] == "http://myhost:11434"
+    assert page(client)["ranking_undo"] == {"action": "redo", "style": "funny"}
+
+    assert swap(client).json()["action"] == "redo"
+    no_login(project)
+    assert ranking(project) == second
+    assert page(client)["ranking_undo"] == {"action": "undo", "style": "gaming"}
+    assert not temps(project)
+
+
+def test_undo_is_offered_after_applying_over_a_file_with_an_ollama_login(home, tmp_path, client):
+    """A639: the apply drops the login an older file kept; the file it saves still matches its
+    seal, so the Undo is offered and brings the earlier ranking back."""
+    project = make_project(home, tmp_path, ollama_url="http://user:pass@host:11434")
+    first = ranking(project)
+    applied(client)
+    assert page(client)["ranking_undo"] == {"action": "undo", "style": "gaming"}
+    assert swap(client).json()["action"] == "undo"
+    assert ranking(project) == first
+    for name in ("highlights.json", rerank.BACKUP):
+        assert b"user:pass" not in (project / name).read_bytes(), name
+
+
+def test_the_swap_flushes_both_files_before_their_rename(
+    home,
+    tmp_path,
+    client,
+    fsyncs,  # noqa: F811
+):
+    """A667: highlights.json and its backup are flushed to disk before they are renamed into
+    place, and on POSIX the project folder after the renames."""
+    project = make_project(home, tmp_path)
+    applied(client)
+    fsyncs.clear()
+    assert swap(client).status_code == 200
+    assert flushed_before_replace(fsyncs, "highlights.json")
+    assert flushed_before_replace(fsyncs, rerank.BACKUP)
+    if os.name == "posix":
+        at = next(i for i, c in enumerate(fsyncs) if c[:2] == ("replace", rerank.BACKUP))
+        assert ("fsync", project.stat().st_ino) in fsyncs[at + 1 :]
 
 
 # --------------------------------------------------------------------------- no torch

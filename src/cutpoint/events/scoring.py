@@ -1080,7 +1080,7 @@ def rescore_highlights(project: Path) -> int:
     backup = project / "highlights.pre-events.json"
     if not backup.exists() and not hl.get("settings", {}).get("events_rescored"):
         # one-time copy of the untouched analysis, without an Ollama login (A639)
-        cache.save_json(backup, saved_settings(copy.deepcopy(hl)))
+        cache.save_json(backup, saved_settings(copy.deepcopy(hl)), durable=True)
     drop_menu_time(hl, ev)
     changed = rescore(hl, ev, project)
     number_candidates(hl)

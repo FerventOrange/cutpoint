@@ -107,6 +107,8 @@ def make_project(
     (project / "events.json").write_text(json.dumps(ev), encoding="utf-8")
     seeded = rerank.ranked(project, hl, st)
     seeded["settings"].pop("reranked", None)
+    if "ollama_url" in settings:  # as given: an older file may keep a login (A639)
+        seeded["settings"]["ollama_url"] = settings["ollama_url"]
     (project / "highlights.json").write_text(json.dumps(seeded), encoding="utf-8")
     return project
 
@@ -386,6 +388,16 @@ def test_the_backup_of_an_old_file_keeps_no_ollama_login(home, tmp_path):
         assert b"s3c" not in raw and b"alice" not in raw
     assert json.loads(kept)["settings"]["ollama_url"] == "http://myhost:11434"
     assert res.after["settings"]["rerank_backup"] == analyze.backup_digest(kept)
+
+
+def test_a_save_over_a_file_with_an_ollama_login_is_sealed_as_saved(home, tmp_path):
+    """A639: the saved file (without the login) matches its seal, so Undo stays offered."""
+    project = make_project(home, tmp_path, ollama_url="http://user:pass@host:11434")
+    res = rerank.rerank(project, get_style("commentary"))
+    saved = read(project)
+    assert saved["settings"]["ollama_url"] == "http://host:11434"
+    assert saved["settings"][rerank.UNDO]["seal"] == rerank.seal(saved)
+    assert res.after["settings"]["ollama_url"] == "http://host:11434"
 
 
 def test_save_keeps_the_earlier_file_as_the_backup(home, tmp_path):

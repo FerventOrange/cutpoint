@@ -426,6 +426,10 @@ def ranked(
     if check:  # a UI preview records and warns about nothing
         selfcheck.apply(new, ev)  # warns; changes no score (#1073)
     timings["rerank_s"] = round(time.perf_counter() - t0, 2)
+    from cutpoint.backends import saved_settings  # noqa: PLC0415 (requests: off the CLI import)
+
+    # an older file's Ollama login, which a save drops, would leave the seal unmatched (A639)
+    saved_settings(new)
     return sealed(new)  # last: the seal covers everything a save writes
 
 
@@ -486,7 +490,7 @@ def rerank(
             # replaces still gives ids back (#1005)
             earlier = _backup(project)
             kept = backup_bytes(raw)
-            cache.save_bytes(project / BACKUP, kept)
+            cache.save_bytes(project / BACKUP, kept, durable=True)
             try:
                 analyze.reanalyze(
                     project, style, backup=earlier, rerank_backup=analyze.backup_digest(kept)
@@ -498,7 +502,7 @@ def rerank(
                     if earlier is None:
                         (project / BACKUP).unlink(missing_ok=True)
                     else:
-                        cache.save_bytes(project / BACKUP, earlier)
+                        cache.save_bytes(project / BACKUP, earlier, durable=True)
                 raise
             _, after = load(project)
             return Result(
@@ -518,7 +522,7 @@ def rerank(
         result = Result(project, hl, after, ready.notes)
         if not dry_run:
             with cache.hold_outputs(project, (HIGHLIGHTS, BACKUP)) as held:
-                cache.save_bytes(project / BACKUP, kept)
+                cache.save_bytes(project / BACKUP, kept, durable=True)
                 cache.save_json(project / HIGHLIGHTS, backends.saved_settings(after), durable=True)
                 held.commit()
             result.saved, result.backup = True, project / BACKUP
