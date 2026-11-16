@@ -69,6 +69,7 @@ def has_download(cmd):
     ],
     ids=["reported", "absent", "garbage"],
 )  # fmt: skip
+@pytest.mark.slow
 def test_run_progress_reports_the_dropped_frames(monkeypatch, lines, want):
     script = "import sys; sys.stdout.write(sys.argv[1]); sys.stdout.flush()"
     argv = [sys.executable, "-c", script, lines]
