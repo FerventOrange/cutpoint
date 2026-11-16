@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import errno
+import functools
 import hashlib
 import hmac
 import os
@@ -18,16 +19,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from cutpoint.assistant import cliproxy
 from cutpoint.assistant import keys as ai_keys
-from cutpoint.assistant import ops as ai_ops
 from cutpoint.assistant import session as ai_session
-from cutpoint.assistant import store as ai_store
-from cutpoint.config import remap_source
 from cutpoint.ui import routes
 from cutpoint.ui.common import LOOPBACK, MAX_BODY_BYTES, WEB_DIR, bad
 from cutpoint.ui.files import _highlights
@@ -35,12 +33,11 @@ from cutpoint.ui.jobs import Jobs
 from cutpoint.ui.media import Media
 from cutpoint.ui.pano_previews import PanoPreviews
 from cutpoint.ui.picker import Picker
-from cutpoint.ui.projects import MediaLookups, Sources, moments_view, validate_segments
+from cutpoint.ui.projects import MediaLookups, Sources
 from cutpoint.ui.routes.context import AppContext
 from cutpoint.ui.settings import require_config
 
 
-# --------------------------------------------------------------------------- projects
 def _loopback_url(value: str, port: int, *, origin: bool) -> bool:
     try:
         parts = urlsplit(value if origin else f"//{value}")
@@ -107,6 +104,7 @@ def create_app(port: int) -> FastAPI:
     app.state.picker, app.state.sources, app.state.lookups = picker, sources, lookups
     app.state.previews = previews
     app.state.proxies = proxies  # routes look it up here, so a test can swap it
+    app.state.login_lock, app.state.login_states = login_lock, login_states
 
     class BodyCap:
         """Pure ASGI wrapper: a body read past MAX_BODY_BYTES, whatever its headers say, is 413."""
@@ -217,69 +215,33 @@ def create_app(port: int) -> FastAPI:
                     pv["url"] = director_url(pid, sid, pv.pop("name"))
         return views
 
-    def proxy_error(*, logged_in_only: bool) -> str | None:
-        """Start the subscription proxy unless one runs (:class:`cliproxy.ProxyLauncher`;
-        ``logged_in_only``: only when a login is saved); why it did not start, else None."""
-        try:
-            app.state.proxies.ensure(logged_in_only=logged_in_only)
-        except (cliproxy.ProxyError, OSError) as err:
-            return ai_keys.redact(f"the subscription proxy did not start: {err}")
-        return None
-
     turns = ai_session.Turns()
     app.state.assistant = turns
-
-    def assistant_state(
-        p: Path, segments: list[dict[str, Any]]
-    ) -> tuple[list[dict[str, Any]], ai_ops.Durations, str]:
-        """``(moments, source durations, base_key)`` of the project with ``segments``."""
-        hl = _highlights(p)
-        durations = ai_ops.Durations(
-            {s["path"]: s["duration"] for s in sources.entries(p)},
-            lambda path: media.duration(remap_source(path)),
-        )
-        moments = (moments_view(hl) or {}).get("candidates") or []
-        return moments, durations, ai_ops.base_key(segments, hl)
-
-    def assistant_revert(p: Path, hid: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        """``(history entry, its "before" checked again)``: what Revert puts back."""
-        entry = next((e for e in ai_store.history(p) if e.get("id") == hid), None)
-        if entry is None:
-            raise bad("unknown change", 404)
-        try:
-            return entry, validate_segments(entry.get("before"), sources.entries(p), media)
-        except HTTPException as err:
-            raise bad(f"this change can no longer be reverted: {err.detail}", 409) from err
+    app.state.planners = {}  # one per project: it caches what it planned
 
     ctx = AppContext(
         jobs=jobs,
         media=media,
-        picker=picker,
         sources=sources,
         lookups=lookups,
         previews=previews,
-        login_lock=login_lock,
-        login_states=login_states,
-        app=app,
         secure=secure,
         owned=owned,
         served=served,
         url=url,
         window_url=window_url,
         pano_views=pano_views,
-        proxy_error=proxy_error,
+        proxy_error=functools.partial(routes.shared.proxy_error, app),
         turns=turns,
-        assistant_state=assistant_state,
-        assistant_revert=assistant_revert,
     )
-    routes.settings.register(ctx)
+    secure.include_router(routes.settings.secure)
     routes.projects.register(ctx)
     routes.jobs.register(ctx)
     routes.media.register(ctx)
     routes.ranking.register(ctx)
-    routes.assistant.register(ctx)
+    owned.include_router(routes.assistant.owned)
     routes.projects.register_delete(ctx)
-    routes.assistant.register_revert(ctx)
+    owned.include_router(routes.assistant.owned_revert)
 
     api.include_router(secure)
     api.include_router(owned)
