@@ -18,9 +18,9 @@ function project() {
   return p;
 }
 
-async function playing(t) {
+async function playing(t, routes) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const page = await boot({ project: project() });
+  const page = await boot({ project: project(), routes });
   const d = page.document;
   t.after(() => {
     const stop = d.querySelector('#seqPlayBtn');
@@ -39,6 +39,10 @@ async function playing(t) {
       await page.settle();
     },
   };
+  if (routes) { // /edges is asked 300 ms after the project opens
+    t.mock.timers.tick(400);
+    await page.settle();
+  }
   d.querySelector('#seqPlayBtn').click();
   await page.settle();
   for (const el of [one, two]) if (el.dataset.url && !(el.__media.readyState > 0)) el.__media.loaded(600);
@@ -108,4 +112,12 @@ test('after the swap the sequence still ends with its last clip', async (t) => {
   await s.at(58);
   assert.equal(s.row(), undefined);
   assert.equal(s.d.querySelector('#seqPlayBtn').textContent, 'Play sequence');
+});
+
+test('a clip the export drops (zero length) is passed over, not played or stalled on', async (t) => {
+  const s = await playing(t, { 'POST /api/projects/p1/edges': () => ({ edges: { h002: { start: 100, end: 100, reason: 'inside another clip' } } }) });
+  assert.equal(s.row(), 'h001');
+  await s.at(18);
+  assert.equal(s.row(), 'h003', 'h002 exports as nothing: the play moves on');
+  assert.equal(s.d.querySelector('#sbHead').style.left.includes('NaN'), false, 'no NaN position for the storyboard playhead');
 });
