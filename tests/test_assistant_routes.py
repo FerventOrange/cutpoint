@@ -345,6 +345,27 @@ def test_a_local_provider_needs_no_consent(client: TestClient, monkeypatch, proj
     assert res.status_code == 409
 
 
+def test_the_page_learns_whether_the_visual_search_can_run(
+    client: TestClient, monkeypatch, proj, tmp_path: Path
+) -> None:
+    """#989: ``frame_index`` says why not and what adds it; a light index alone is enough."""
+    from cutpoint.events import visual as V  # noqa: PLC0415
+
+    use(monkeypatch, FakeProvider([]))
+    weights = tmp_path / "clip.pt"
+    weights.write_bytes(b"x")
+    monkeypatch.setattr(V.paths, "clip_weights", lambda: weights)
+    monkeypatch.setattr(ui.ai_lookfor, "unavailable", lambda: None)
+    got = client.get("/api/projects/cli/assistant").json()["frame_index"]
+    assert got["ok"] is False and "no frame index" in got["why"] and got["fix"]
+    src = Path(json.loads((proj[0] / "highlights.json").read_text())["sources"][0]["path"])
+    light = V.light_cache_path(src)
+    light.parent.mkdir(parents=True, exist_ok=True)
+    light.write_bytes(b"")
+    got = client.get("/api/projects/cli/assistant").json()["frame_index"]
+    assert got == {"ok": True, "why": None, "fix": None}
+
+
 def test_a_hosted_provider_gets_nothing_until_the_user_agrees_once(
     client: TestClient, monkeypatch, proj, home: Path
 ) -> None:

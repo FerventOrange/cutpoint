@@ -60,7 +60,9 @@ NEEDS: dict[str, tuple[float, float]] = {
     "whisper-turbo": (2.0, 2.0),
     "whisper-large": (3.5, 4.0),
     "panns": (1.0, 0.5),
-    "clip": (2.0, 1.0),  # CLIP ViT-L/14 image tower (crash dense check)
+    # CLIP ViT-L/14 (crash dense check, light frame index): loading it on the CPU peaked at
+    # 3.5 GB above the process's own (#989)
+    "clip": (3.5, 1.0),
     "visual": (2.5, 1.5),  # CLIP ViT-L/14 + Faster R-CNN v2
     "ocr": (1.0, 0.0),  # RapidOCR, CPU only
     "vlm": (7.0, 7.0),  # Ollama reported no size: qwen3.5:9b takes about 6.6 GB

@@ -407,8 +407,8 @@ as usual. Cached OCR interpretation is redone once after the update.
 ## Limits
 
 - OCR samples 3 frames per second, so event times are accurate to about 0.3 s.
-- Recordings with a different aspect ratio than 16:9 get a different HUD layout; OCR may find
-  little.
+- Recordings with a different aspect ratio than 16:9 (21:9, 4:3) are discovered at the right
+  height since #1085. A discovered preset of such footage made before it is discovered again.
 - Text colours are unreliable on bright backgrounds, so colour-based teamkill detection is off
   for discovered presets.
 - The vision model's window descriptions are a soft signal: they boost a candidate but never lower it.
