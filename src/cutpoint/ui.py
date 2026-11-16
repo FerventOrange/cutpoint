@@ -5534,6 +5534,31 @@ def create_app(port: int) -> FastAPI:
     app.state.previews = previews
     app.state.proxies = proxies  # routes look it up here, so a test can swap it
 
+    class BodyCap:
+        """Pure ASGI wrapper: a body read past MAX_BODY_BYTES, whatever its headers say, is 413."""
+
+        def __init__(self, inner) -> None:
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send) -> None:
+            if scope["type"] != "http":
+                await self.inner(scope, receive, send)
+                return
+            got = 0
+
+            async def capped():
+                nonlocal got
+                msg = await receive()
+                if msg["type"] == "http.request":
+                    got += len(msg.get("body", b""))
+                    if got > MAX_BODY_BYTES:
+                        raise bad("request body too large", 413)
+                return msg
+
+            await self.inner(scope, capped, send)
+
+    app.add_middleware(BodyCap)
+
     @app.middleware("http")
     async def guard(request: Request, call_next):
         origin = request.headers.get("origin")

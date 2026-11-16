@@ -105,6 +105,7 @@ So do these combinations:
 | `pano_mixed_sources` | `clips` (so `edit`), `assemble <project>` | The run's 360 clips are not rendered like-for-like: stitched and dual fisheye sources mixed, or an equirect rendered without the IMU levelling (FlowState, no sidecar, Studio export); `files` names the 360 clips (empty for a temporary export: `assemble <project>`, `edit --no-keep-clips`). Export with `--pano-source dfisheye` to compare their `360 qa` with the previews (see [360 video](workflows/360.md#render-sources)) |
 | `color_on_gaming` | `clips` (so `edit`) | `--color` was given for `gaming` footage: game graphics are graded too (`underwater` is made for footage shot underwater; `--color auto` or `--lut` fits games better) |
 | `loudness_below_target` | `assemble` (so `edit`) | `--loudnorm` left the final more than 1 LU below -14 LUFS: the limiter took the peaks the gain pushed over the ceiling; `--compress-peaks` leaves it more room |
+| `nested_clip_dropped` | `clips`, `extend` (so `edit`, `assemble <project>`) | A clip's range lies inside a longer clip of the same source; it was left out (the longer clip shows its footage), the message names it |
 | `step_failed` | `analyze` (so `edit`), `crashes`, `events` | An analysis step (reactions, keyframes or crashes) failed with an `ERROR` line; the run went on without it. The dialogue step adds it too when there was not enough free memory for its text model (`Dialogue skipped: ...`). A failed HUD OCR (keyframes for `gaming` and `funny`) is a `WARNING` instead, whose message names the effect (menu filtering and HUD events skipped) and the source it failed on; `files` lists the sources it did not read. So is a source whose telemetry, IMU or cached layers crash detection could not read (`<file>: crash detection skipped this source (<error>)`): `files` names it, it gets no crash moments and the other sources keep theirs. A GPU out of memory in a step's per-source work or in the HUD OCR is no `step_failed`: the run stops with `low_memory` (see the errors above). A background OCR read that runs out of memory is first read again in its turn |
 | `transcript_fallback` | `analyze` (so `edit`) | Without `--model`, Whisper ran (or an earlier run's transcript made so is reused) with `small` on the CPU instead of `medium` on the GPU, which was short of memory or failed; `files` names the sources. Speech-based moments can be weaker. A later run without `--model` transcribes them again with `medium` once it fits on the GPU (close the programs using it); after a CUDA failure the `small` transcript is kept (`--model medium` transcribes it again) |
 | `action_cam_no_telemetry` | `analyze` (so `edit`, `360 analyze`) | An action-cam style (`action-cam`, or a style of yours over it) on footage without GoPro or Insta360 X3 telemetry. When no source has any, the run used the `action` style instead (not in `360 analyze`): `highlights.json` has `style` `action`, `settings.style_requested` the style given and `settings.style_fallback` (`from`, `reason`); `files` lists every source; give `--style action` (or `auto`) to choose it. When some sources have telemetry, or a source's telemetry could not be read, the style stays and `files` names the sources scored from sound, speech and visual features only (no speed, airtime or masking), their scores taken over those features so their moments rank with the others |
@@ -1793,7 +1794,8 @@ Notes:
 - **Speech-aware boundaries** run last, on the final in/out points, and on by default. Clips of the
   same source never overlap; overlapping padding is split in the longest pause between them. To
   keep an exact cut (for example to exclude a word at the boundary), set `"speech_aware": false`
-  on the segment.
+  on the segment. A clip that lies wholly inside another clip of the same source is dropped with
+  a `nested_clip_dropped` warning, not cut.
 - **Cropping.** `--crop auto` runs ffmpeg `cropdetect` on 30 frames at each of 6 points and
   caches the result. It only finds black borders. A project can set a per-source crop in
   `<project>\project.json`: `{"crop": {"Stream*.mp4": "auto", "Round4*.mp4": "none"}}`.
@@ -1888,7 +1890,8 @@ cutpoint extend projects/my-edit/clips                      # speech boundaries 
   start or end, at most `--speech-max-extend` (default 8 s) later and `--speech-max-lead`
   (default 5 s) earlier, and keeps clips of one source from overlapping. With no padding it is
   the only change (folder `<clips_dir>_speech`); `--no-speech-aware` with no padding is
-  refused (`bad_args`). `--audio-fade S` (default 0.25, 0 = off) is baked into every clip;
+  refused (`bad_args`). A clip lying wholly inside another is dropped with a
+  `nested_clip_dropped` warning, not cut. `--audio-fade S` (default 0.25, 0 = off) is baked into every clip;
   `--pano-source` and `--pano-cmd-every` apply to 360 clips only.
 - `--clip-override GLOB KEY=S` (repeatable) sets per-clip `speech_max_extend`, `speech_max_lead`,
   `extend`, `extend_start` or `extend_end` for matching file names, for example

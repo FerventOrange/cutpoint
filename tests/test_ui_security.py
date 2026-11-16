@@ -3,6 +3,7 @@ Content-Security-Policy, the request body cap and project-file values on a job's
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import re
@@ -99,3 +100,58 @@ def test_a_360_clip_in_meta_json_that_is_not_a_number_never_reaches_the_job(
     res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
     assert res.status_code == 400 and "not clip ids" in res.json()["detail"]
     assert seen == []
+
+
+def _put_chunked(app, chunks: list[bytes], token: str) -> tuple[list[int], dict, bytes]:
+    """Drive the ASGI app with a body in several chunks and no Content-Length."""
+    headers = [
+        (b"host", f"127.0.0.1:{PORT}".encode()),
+        (b"content-type", b"application/json"),
+        (b"transfer-encoding", b"chunked"),
+        (b"x-cutpoint-token", token.encode()),
+    ]
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "PUT",
+        "scheme": "http",
+        "path": "/api/settings",
+        "raw_path": b"/api/settings",
+        "query_string": b"",
+        "headers": headers,
+        "client": ("127.0.0.1", 50000),
+        "server": ("127.0.0.1", PORT),
+    }
+    queue = [
+        {"type": "http.request", "body": c, "more_body": i < len(chunks) - 1}
+        for i, c in enumerate(chunks)
+    ]
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return queue.pop(0) if queue else {"type": "http.disconnect"}
+
+    async def send(msg: dict) -> None:
+        sent.append(msg)
+
+    asyncio.run(app(scope, receive, send))
+    starts = [m for m in sent if m["type"] == "http.response.start"]
+    head = {k.decode(): v.decode() for k, v in starts[0]["headers"]} if starts else {}
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return [m["status"] for m in starts], head, body
+
+
+def test_a_chunked_body_over_the_cap_is_refused_as_it_is_read(client: TestClient) -> None:
+    chunk = b" " * (1024 * 1024)
+    body = [b"{"] + [chunk] * 16 + [b"}"]  # 16 MiB + 2 bytes, no Content-Length
+    starts, head, out = _put_chunked(client.app, body, client.app.state.token)
+    assert starts == [413]
+    assert b"too large" in out
+    assert head["x-frame-options"] == "DENY"  # the guard's headers are on it
+
+
+def test_a_chunked_body_under_the_cap_still_works(client: TestClient) -> None:
+    starts, _, out = _put_chunked(client.app, [b"{", b" " * 1000, b"}"], client.app.state.token)
+    assert starts == [400]  # the route's own answer to an empty settings body
+    assert b"send projects_dir" in out

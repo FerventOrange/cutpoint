@@ -61,6 +61,7 @@ from cutpoint.planning import (
     file_size,
     kept_why,
     manifest_entries,
+    manifest_parts,
     pad,
     report_clips,
     speech_pass,
@@ -257,8 +258,8 @@ def _reusable(
         return False
     return (
         old.get("source") == new.get("source")
-        and abs(float(old["start"]) - new["start"]) < 1e-3
-        and abs(float(old["end"]) - new["end"]) < 1e-3
+        and abs(float(old.get("start", -1)) - new["start"]) < 1e-3
+        and abs(float(old.get("end", -1)) - new["end"]) < 1e-3
         and old.get("crop") == new.get("crop")
         and grade_from_entry(old) == grade_from_entry(new)
         and float(old.get("audio_fade", 0.25)) == float(audio_fade)
@@ -391,8 +392,10 @@ def _extend_locked(
         folders.staged_dir(out_dir, direct_if_empty=True, resume=True) as work,
     ):
         staged = work != out_dir  # not exported into directly
-        by_file = {e["file"]: e for e in manifest.get("clips", [])}
-        fmt_d = manifest.get("format") or {}
+        fmt_d, entries = manifest_parts(
+            manifest, need_format=True, need_range=True, path=clips_dir / "manifest.json"
+        )
+        by_file = {e["file"]: e for e in entries}
         fmt = OutputFormat(int(fmt_d["width"]), int(fmt_d["height"]), int(fmt_d["fps"]))
         vertical = bool(fmt_d.get("vertical"))
         files = clip_files(clips_dir)
@@ -468,8 +471,11 @@ def _extend_locked(
             reuse_manifest = cache.load_json(reuse_dir / "manifest.json")
             if reuse_manifest is None:
                 raise FileNotFoundError(f"No manifest.json in --reuse folder {reuse_dir}")
-            reuse_by_file = {x["file"]: x for x in reuse_manifest.get("clips", [])}
-            reuse_same_format = (reuse_manifest.get("format") or {}) == fmt_d
+            reuse_fmt, reuse_entries = manifest_parts(
+                reuse_manifest, path=reuse_dir / "manifest.json"
+            )
+            reuse_by_file = {x["file"]: x for x in reuse_entries}
+            reuse_same_format = reuse_fmt == fmt_d
         project = manifest_project(manifest, clips_dir)
         language = project_language(project)
         speech_recs = speech_pass(

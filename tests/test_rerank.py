@@ -1254,3 +1254,36 @@ def _context_rater(raters: list[Any]) -> type:
             pass
 
     return Rater
+
+
+def test_rerank_analyze_that_fails_keeps_the_earlier_undo(home, tmp_path, monkeypatch):
+    """A121: the backup is the one before the failed run, not the ranking it never replaced."""
+    project, _, _ = _a_to_b(home, tmp_path)
+    before = (project / rerank.BACKUP).read_bytes()
+    monkeypatch.setattr(
+        rerank, "readiness", lambda *x: rerank.Readiness([rerank.Missing("x", "y")])
+    )
+
+    def boom(*args, **kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(analyze, "reanalyze", boom)
+    with pytest.raises(KeyboardInterrupt):
+        rerank.rerank(project, get_style("gaming"), analyze_missing=True)
+    assert (project / rerank.BACKUP).read_bytes() == before
+
+
+def test_a_failure_after_analyze_saved_highlights_keeps_the_new_backup(home, tmp_path, monkeypatch):
+    project = make_project(home, tmp_path)
+    raw = (project / "highlights.json").read_bytes()
+
+    def saves_then_fails(p: Path, style=None, *, backup=None, rerank_backup=None) -> Path:
+        hl = read(p)
+        hl.update(style=style.name, candidates=[])
+        (p / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(analyze, "reanalyze", saves_then_fails)
+    with pytest.raises(KeyboardInterrupt):
+        rerank.rerank(project, get_style("action-cam"), analyze_missing=True)
+    assert (project / rerank.BACKUP).read_bytes() == raw

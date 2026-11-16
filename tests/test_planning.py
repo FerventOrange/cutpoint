@@ -19,7 +19,7 @@ from cutpoint import boundaries, clips, extend, planning
 from cutpoint.encode import OutputFormat
 from cutpoint.events.tails import EventTailSettings
 from cutpoint.ffmpeg_utils import MediaInfo
-from cutpoint.planning import Padding, pad, select_moments, speech_pass
+from cutpoint.planning import Padding, manifest_parts, pad, select_moments, speech_pass
 from cutpoint.styles import get_style
 from cutpoint.tail import TailSettings
 
@@ -740,3 +740,60 @@ def test_clips_of_a_deleted_user_style_without_a_recorded_base_is_a_clear_error(
     assert "run 'cutpoint analyze' again with another --style" in error.getMessage()
     assert error.exc_info is None
     assert not (project / "clips").exists()
+
+
+def test_select_moments_max_total_takes_a_candidate_without_duration(tmp_path):
+    """A101: the span gives the length, as without --max-total."""
+    cands = [
+        {"id": "a", "score": 2, "start": 0.0, "end": 10.0},
+        {"id": "b", "score": 1, "start": 20.0, "end": 45.0},
+    ]
+    chosen, _ = select_moments(_project(tmp_path, cands), top=2, max_total=30)
+    assert [c["id"] for c in chosen] == ["a"]
+
+
+def test_manifest_parts_rejects_other_shapes():
+    fmt = {"width": 1, "height": 1, "fps": 30}
+    assert manifest_parts({"format": fmt, "clips": [{"file": "a.mp4"}]}, need_format=True) == (
+        fmt,
+        [{"file": "a.mp4"}],
+    )
+    assert manifest_parts({"clips": []}) == ({}, [])
+    for bad in ([], {"clips": {}}, {"clips": [{"x": 1}]}, {"format": 5, "clips": []}):
+        with pytest.raises(ValueError, match="not a clips manifest"):
+            manifest_parts(bad)
+    with pytest.raises(ValueError, match="not a clips manifest"):
+        manifest_parts({"clips": []}, need_format=True)
+    ranged = {"clips": [{"file": "a.mp4", "source": "s", "start": 1, "end": 2.5}]}
+    assert manifest_parts(ranged, need_range=True)[1] == ranged["clips"]
+    for entry in ({"file": "a.mp4"}, {"file": "a.mp4", "source": "s", "start": 1}):
+        with pytest.raises(ValueError, match=r"m\.json is not a clips manifest"):
+            manifest_parts({"clips": [entry]}, need_range=True, path=Path("m.json"))
+
+
+def test_speech_pass_drops_a_clip_inside_a_longer_one(speech_env, caplog):
+    """A102: nested picks of one source keep the outer clip whole and warn."""
+    project, _ = speech_env
+    plans = [_plan("long.mp4", 10.0, 40.0), _plan("inner.mp4", 12.0, 16.0)]
+    plans[0].keep, plans[1].keep = (12.0, 38.0), (13.0, 15.0)
+    with caplog.at_level("WARNING"):
+        speech_pass(plans, boundaries.SpeechSettings(), project, fit_end=lambda e: True)
+    assert [p.name for p in plans] == ["long.mp4"]
+    assert plans[0].start <= 10.0 and plans[0].end >= 40.0
+    assert "inner.mp4" in caplog.text and "long.mp4" in caplog.text
+
+
+def test_partly_overlapping_clips_are_still_cut_apart():
+    a = boundaries.ClipBounds("a", "k", 10.0, 20.0, 12.0, 18.0, 0.0, 100.0, None)
+    b = boundaries.ClipBounds("b", "k", 16.0, 30.0, 18.0, 28.0, 0.0, 100.0, None)
+    assert boundaries.separate([a, b]) == []
+    assert a.end == b.start and 10.0 < a.end < 30.0
+
+
+def test_export_clips_takes_a_list_shaped_highlights_file(tmp_path):
+    """A229: no AttributeError on the .get of a list."""
+    project = tmp_path / "proj"
+    write(project / "highlights.json", "[1]")
+    with pytest.raises(Exception) as err:  # whatever it says, not a traceback of .get
+        clips.export_clips(project)
+    assert not isinstance(err.value, AttributeError)

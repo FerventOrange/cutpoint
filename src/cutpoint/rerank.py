@@ -469,9 +469,19 @@ def rerank(
             # replaces still gives ids back (#1005)
             earlier = _backup(project)
             cache.save_bytes(project / BACKUP, raw)
-            analyze.reanalyze(
-                project, style, backup=earlier, rerank_backup=analyze.backup_digest(raw)
-            )
+            try:
+                analyze.reanalyze(
+                    project, style, backup=earlier, rerank_backup=analyze.backup_digest(raw)
+                )
+            except BaseException:
+                # a failed or interrupted analysis keeps the earlier Undo, unless it already
+                # replaced highlights.json (its rerank_backup then points at the new BACKUP)
+                if cache.load_bytes(project / HIGHLIGHTS) == raw:
+                    if earlier is None:
+                        (project / BACKUP).unlink(missing_ok=True)
+                    else:
+                        cache.save_bytes(project / BACKUP, earlier)
+                raise
             _, after = load(project)
             return Result(
                 project,

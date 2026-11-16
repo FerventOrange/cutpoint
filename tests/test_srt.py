@@ -382,3 +382,12 @@ def test_clips_planning_reads_the_transcript_of_the_analysis_language(home, monk
     monkeypatch.setattr(sources, "source_words", spy)
     _export(project, monkeypatch, **kw)
     assert langs == ["de", "de"]  # one read to plan the clip, one for its subtitles
+
+
+def test_final_cues_ignore_an_entry_without_its_range(tmp_path):
+    """A229: no KeyError for an entry lacking source / start / end."""
+    f = tmp_path / "001_a.mp4"
+    cues, missing, sources_ = srt.final_cues(
+        [f], [_info(f, 4.0)], {"001_a.mp4": {"file": "001_a.mp4"}}, 0.0, lambda s: WORDS
+    )
+    assert (cues, missing, sources_) == ([], ["001_a.mp4"], [])
