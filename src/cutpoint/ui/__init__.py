@@ -222,7 +222,7 @@ from cutpoint.vision import default_model
 
 logger = logging.getLogger(__name__)
 
-WEB_DIR = Path(__file__).parent / "web"
+WEB_DIR = Path(__file__).parent.parent / "web"
 UI_DIR = "ui"  # per-project state: meta.json, review.json, exports.json, proxy/, frames/, pano/
 META_FILE = f"{UI_DIR}/meta.json"  # the project's name, sources and chosen style
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
