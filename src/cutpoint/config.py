@@ -17,6 +17,7 @@ import os
 import re
 import stat
 import sys
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
@@ -402,6 +403,12 @@ def _analysis_skip(path: Path, data: dict) -> tuple[str, ...]:
     return skip
 
 
+# config.json is written only by ``cutpoint ui`` (one process, many request threads): a
+# read-modify-write holds this lock, so two changes at once both survive. Not reentrant: a
+# change passed to update_config must not write config.json itself.
+_WRITE_LOCK = threading.Lock()
+
+
 def set_config_values(
     values: dict[str, object], path: Path | None = None, remove: tuple[str, ...] = ()
 ) -> Path:
@@ -414,20 +421,67 @@ def set_config_values(
         OSError: If it cannot be written.
     """
     path = path or paths.config_file()
-    data = load_config_data(path)
-    indent: int | str = 2
-    with contextlib.suppress(OSError):
-        lines = path.read_text(encoding="utf-8").splitlines()
-        lead = next((ln[: len(ln) - len(ln.lstrip())] for ln in lines[1:] if ln.strip()), "")
-        if lead:
-            indent = len(lead) if lead.strip(" ") == "" else lead
-    data.update(values)
-    for key in remove:
-        data.pop(key, None)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    cache.save_json(path, data, indent=indent)  # type: ignore[arg-type]
-    get_config.cache_clear()
+    update_config(lambda _data: (values, remove), path)
     return path
+
+
+def update_config(
+    change: Callable[[dict], tuple[dict[str, object], tuple[str, ...]] | None],
+    path: Path | None = None,
+) -> dict:
+    """Read ``config.json`` and write ``change(data)`` into it, both under one lock, so a
+    concurrent change is never lost. ``change`` gets the file's current object and returns
+    ``(values, remove)`` as for :func:`set_config_values`, or None to write nothing. Returns the
+    object as written (or as read, when nothing was).
+
+    Raises:
+        ValueError: If the file exists but is not valid JSON.
+        OSError: If it cannot be written.
+    """
+    path = path or paths.config_file()
+    with _WRITE_LOCK:
+        data = load_config_data(path)
+        edit = change(dict(data))
+        if edit is None:
+            return data
+        values, remove = edit
+        indent: int | str = 2
+        with contextlib.suppress(OSError):
+            lines = path.read_text(encoding="utf-8").splitlines()
+            lead = next((ln[: len(ln) - len(ln.lstrip())] for ln in lines[1:] if ln.strip()), "")
+            if lead:
+                indent = len(lead) if lead.strip(" ") == "" else lead
+        data.update(values)
+        for key in remove:
+            data.pop(key, None)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cache.save_json(path, data, indent=indent)  # type: ignore[arg-type]
+        get_config.cache_clear()
+        return data
+
+
+def update_section(
+    name: str, change: Callable[[dict], dict | None], path: Path | None = None
+) -> dict:
+    """:func:`update_config` for the one section ``name``: ``change`` gets a copy of its current
+    object (``{}`` when it is missing or not an object) and returns the new one, or None to
+    keep it. Returns the section as it now is in the file.
+
+    Raises:
+        ValueError: If the file exists but is not valid JSON.
+        OSError: If it cannot be written.
+    """
+
+    def edit(data: dict) -> tuple[dict[str, object], tuple[str, ...]] | None:
+        new = change(_section(data, name))
+        return None if new is None else ({name: new}, ())
+
+    return _section(update_config(edit, path), name)
+
+
+def _section(data: dict, name: str) -> dict:
+    raw = data.get(name)
+    return dict(raw) if isinstance(raw, dict) else {}
 
 
 def resolve_projects_dir(data: dict) -> Path:

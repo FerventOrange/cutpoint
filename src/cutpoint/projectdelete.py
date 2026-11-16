@@ -33,6 +33,7 @@ OWN_FILES = frozenset(
     {
         "highlights.json",
         "highlights.pre-events.json",
+        "highlights.before-rerank.json",  # cutpoint.rerank.BACKUP
         "transcript.txt",
         "events.json",
         "events.txt",
