@@ -47,6 +47,7 @@ import numpy as np
 from cutpoint import cache, progress
 from cutpoint.errors import LowMemoryError
 from cutpoint.events.discover import (
+    REF_VERSION,
     REF_W,
     _alpha_share,
     _icon_lines,
@@ -54,6 +55,7 @@ from cutpoint.events.discover import (
     _norm_text,
     _src,
     boxes_in,
+    other_aspect,
     score_region,
     score_value,
 )
@@ -232,8 +234,8 @@ def to_ref(box: Any, size: tuple[int, int], pixels: bool | None = None) -> Rect 
     """A model box ``[x0, y0, x1, y1]`` in reference px, clamped to the frame (None when it is
     no box or nothing of it is inside). Values on a 0-1000 scale of the image (Qwen-VL's
     grounding) unless one is over 1000: then pixels of the image sent (``size``: width,
-    height); ``pixels`` decides it instead (:func:`parse`: once per reply). Discovery's frames keep the source's aspect and their y scales like x
-    (:func:`cutpoint.events.discover._ocr_frames`), so the boxes land where OCR's do."""
+    height); ``pixels`` decides it instead (:func:`parse`: once per reply). Discovery's frames keep the source's aspect; x and y scale on their
+    own (:func:`cutpoint.events.discover._ocr_frames`), so the boxes land where OCR's do."""
     vals = _numbers(box)
     if vals is None:
         return None
@@ -246,8 +248,8 @@ def to_ref(box: Any, size: tuple[int, int], pixels: bool | None = None) -> Rect 
         px = [vals[0] / 1000 * w, vals[1] / 1000 * h, vals[2] / 1000 * w, vals[3] / 1000 * h]
     x0, x1 = sorted((px[0], px[2]))
     y0, y1 = sorted((px[1], px[3]))
-    s = REF_W / w
-    return clamp_box(round(x0 * s), round(y0 * s), round((x1 - x0) * s), round((y1 - y0) * s))
+    sx, sy = REF_W / w, REF_H / h
+    return clamp_box(round(x0 * sx), round(y0 * sy), round((x1 - x0) * sx), round((y1 - y0) * sy))
 
 
 def parse(reply: Any, size: tuple[int, int]) -> list[dict[str, Any]] | None:
@@ -656,6 +658,12 @@ def map_hud(
         key = _key(model, str(f["id"]), context, category)
         hit = store.get(key)
         els = _stored(hit.get("elements")) if isinstance(hit, dict) else None
+        if (
+            els is not None
+            and hit.get("ref_v") != REF_VERSION
+            and other_aspect(frame_dir / f["frame"])
+        ):
+            els = None  # boxes made before y scaled with the height (#1085): ask again
         if els is None:
             img = read_image(frame_dir / f["frame"])
             if img is None:
@@ -674,7 +682,7 @@ def map_hud(
                     break
                 continue
             failed = 0
-            store[key] = {"elements": els}
+            store[key] = {"elements": els, "ref_v": REF_VERSION}
             cache.save_json(path, store)
         seen.append(els)
         used.append(str(f["id"]))

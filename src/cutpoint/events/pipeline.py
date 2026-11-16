@@ -51,7 +51,7 @@ from cutpoint.events.killfeed import (
     link_teamkills,
 )
 from cutpoint.events.ocr_prefetch import OcrPrefetch
-from cutpoint.events.regions import game_key_for_path, load_preset
+from cutpoint.events.regions import game_key_for_path, load_preset, stale_mapping
 from cutpoint.events.report import kept_dialogue, normalize, write_outputs
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.events.vlm_windows import (
@@ -116,6 +116,18 @@ def ocr_failure(err: BaseException) -> OcrFailure | None:
 # How to avoid HUD discovery, after "Put a preset in <presets dir>" (``cutpoint events``'
 # options; ``cutpoint analyze`` passes its own: :data:`cutpoint.analyze.DISCOVER_HINT`)
 EVENTS_DISCOVER_HINT = "and pass --game, or --no-discover to skip"
+
+# what a user sets in a preset, carried over when a stale one is discovered again (#1085)
+USER_PRESET_KEYS = (
+    "player_tags",
+    "banner_phrases",
+    "match",
+    "events",
+    "title",
+    "view",
+    "hype",
+    "bigtext",
+)
 
 
 def _require_events_extra(layers: tuple[str, ...]) -> None:
@@ -1254,6 +1266,21 @@ def _discover(
         folder = project / "hud_presets" if scope == "project" else cutpoint_paths.presets_dir()
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / f"{game}.json"
+        old = cache.load_json(target) if target.is_file() else None
+        if isinstance(old, dict) and stale_mapping(old):
+            # a preset made with the wrong y scale (#1085): keep it aside and carry over what
+            # the user set in it; the new regions replace the old ones
+            backup = target.with_suffix(".json.pre-1085")
+            target.replace(backup)
+            proposal = proposal | {k: old[k] for k in USER_PRESET_KEYS if k in old}
+            if isinstance(old.get("feed"), dict):  # what discovery found (row_notices) wins
+                proposal["feed"] = old["feed"] | (proposal.get("feed") or {})
+            logger.warning(
+                "Replaced the HUD preset for %r (made with a wrong y scale, #1085); the old "
+                "file is kept as %s",
+                game,
+                backup,
+            )
         cache.save_json(target, proposal)
         out[game].update(installed=True, preset=str(target))
         logger.info(
