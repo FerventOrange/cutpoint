@@ -2003,14 +2003,39 @@ def discover_regions(
     return preset
 
 
+# What stays in discovery/<game>/proposal.json only: OCR text samples (player names, chat lines)
+# and the OCR record ids (source file names) never go into an installed preset (A647).
+PROPOSAL_ONLY = ("proposals", "frames")
+
+
+def installable(proposal: dict[str, Any]) -> dict[str, Any]:
+    """The preset :func:`discover_regions` made, as it is installed: its ``discovery`` without
+    :data:`PROPOSAL_ONLY` (``proposal.json`` keeps them)."""
+    disc = proposal.get("discovery")
+    if not isinstance(disc, dict):
+        return proposal
+    return proposal | {"discovery": {k: v for k, v in disc.items() if k not in PROPOSAL_ONLY}}
+
+
+def proposal_frames(path: Path) -> list[str] | None:
+    """The OCR record ids of the ``proposal.json`` at ``path`` (``discovery.frames``); None
+    when it is missing, unreadable or has none."""
+    data = cache.load_json(path) if path.is_file() else None
+    disc = data.get("discovery") if isinstance(data, dict) else None
+    ids = disc.get("frames") if isinstance(disc, dict) else None
+    return [str(i) for i in ids] if isinstance(ids, list) else None
+
+
 __all__ = [
     "DiscoverParams",
     "boxes_in",
     "cluster_regions",
     "discover_regions",
     "gameplay_frames",
+    "installable",
     "notice_proposals",
     "notice_region",
+    "proposal_frames",
     "read_ocr_samples",
     "score_proposals",
     "score_region",

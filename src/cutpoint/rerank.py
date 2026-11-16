@@ -129,6 +129,23 @@ def load(project: Path) -> tuple[bytes, dict[str, Any]]:
     return raw, hl
 
 
+def backup_bytes(raw: bytes) -> bytes:
+    """What :data:`BACKUP` keeps of the highlights.json bytes ``raw``: ``raw`` itself (so
+    ``settings.rerank_backup`` names it byte for byte), or, when an older file kept an Ollama
+    login in ``settings.ollama_url``, the file without it (A639)."""
+    from cutpoint.backends import saved_settings, without_login  # noqa: PLC0415 (requests: off the CLI import)
+
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return raw
+    st = data.get("settings") if isinstance(data, dict) else None
+    url = st.get("ollama_url") if isinstance(st, dict) else None
+    if not isinstance(url, str) or without_login(url) == url:
+        return raw
+    return json.dumps(saved_settings(data), indent=2, ensure_ascii=False).encode("utf-8")
+
+
 def key(raw: bytes) -> str:
     """The ranking key of the highlights.json bytes ``raw`` (sha256, its first 16 hex digits):
     it changes whenever an analysis or a re-rank rewrites the file. Same digest as
@@ -468,10 +485,11 @@ def rerank(
             # the backup first: reanalyze replaces highlights.json when it ends; the one it
             # replaces still gives ids back (#1005)
             earlier = _backup(project)
-            cache.save_bytes(project / BACKUP, raw)
+            kept = backup_bytes(raw)
+            cache.save_bytes(project / BACKUP, kept)
             try:
                 analyze.reanalyze(
-                    project, style, backup=earlier, rerank_backup=analyze.backup_digest(raw)
+                    project, style, backup=earlier, rerank_backup=analyze.backup_digest(kept)
                 )
             except BaseException:
                 # a failed or interrupted analysis keeps the earlier Undo, unless it already
@@ -493,12 +511,15 @@ def rerank(
                 backup=project / BACKUP,
                 seconds=round(time.perf_counter() - t0, 2),
             )
-        after = ranked(project, hl, style, raw)
+        from cutpoint import backends  # noqa: PLC0415 (requests: off the CLI import)
+
+        kept = backup_bytes(raw)
+        after = ranked(project, hl, style, kept)
         result = Result(project, hl, after, ready.notes)
         if not dry_run:
             with cache.hold_outputs(project, (HIGHLIGHTS, BACKUP)) as held:
-                cache.save_bytes(project / BACKUP, raw)
-                cache.save_json(project / HIGHLIGHTS, after)
+                cache.save_bytes(project / BACKUP, kept)
+                cache.save_json(project / HIGHLIGHTS, backends.saved_settings(after))
                 held.commit()
             result.saved, result.backup = True, project / BACKUP
             logger.info(

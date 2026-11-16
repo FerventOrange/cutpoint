@@ -374,6 +374,20 @@ def test_the_preview_equals_the_saved_ranking_and_writes_nothing(home, tmp_path)
     assert read(project)["style"] == "funny"
 
 
+def test_the_backup_of_an_old_file_keeps_no_ollama_login(home, tmp_path):
+    """A639 (F1): an older highlights.json with a login: neither the new file nor the backup
+    (which Undo brings back) keeps it, and the backup is the one settings.rerank_backup names."""
+    from cutpoint import analyze  # noqa: PLC0415
+
+    project = make_project(home, tmp_path, ollama_url="http://alice:s3c@ret@myhost:11434")
+    res = rerank.rerank(project, get_style("commentary"))
+    kept = (project / rerank.BACKUP).read_bytes()
+    for raw in (kept, (project / "highlights.json").read_bytes()):
+        assert b"s3c" not in raw and b"alice" not in raw
+    assert json.loads(kept)["settings"]["ollama_url"] == "http://myhost:11434"
+    assert res.after["settings"]["rerank_backup"] == analyze.backup_digest(kept)
+
+
 def test_save_keeps_the_earlier_file_as_the_backup(home, tmp_path):
     project = make_project(home, tmp_path)
     before = (project / "highlights.json").read_bytes()

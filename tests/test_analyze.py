@@ -358,6 +358,35 @@ def test_analyze_stores_the_vision_options_and_reanalyze_passes_them_back(
     assert (seen["vision_top"], seen["ollama_url"], seen["ollama_model"]) == (top, url, model)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://alice:s3cret@ollama.example:11434",
+        "http://alice:s3c@ret@ollama.example:11434",
+        "http://alice:s3c/ret@ollama.example:11434",
+        "alice:s3cret@ollama.example",
+    ],
+    ids=["plain", "at-sign", "slash", "no-scheme"],
+)
+def test_analyze_records_the_ollama_url_without_its_login(home, tmp_path, monkeypatch, url):
+    """A639: the password never reaches highlights.json; reanalyze replays the URL without it."""
+    write(tmp_path / "a.mp4")
+    _stub_probe_and_transcriber(monkeypatch)
+    proj = tmp_path / "proj"
+    analyze.analyze(
+        tmp_path / "a.mp4", get_style("funny"), proj, vision=False, ollama_url=url, use_scenes=False
+    )
+    text = (proj / "highlights.json").read_text(encoding="utf-8")
+    assert "s3c" not in text and "alice" not in text
+    st = json.loads(text)["settings"]
+    assert st["ollama_url"] in ("http://ollama.example:11434", "ollama.example")
+
+    seen: dict = {}
+    monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.update(kw) or proj)
+    analyze.reanalyze(proj)
+    assert seen["ollama_url"] == st["ollama_url"]
+
+
 def test_reanalyze_keeps_the_analysis_time_and_records_the_rerank_time(home, tmp_path, monkeypatch):
     """A re-rank (``events``, ``crashes --reanalyze``) does not pass for the analysis' time."""
     write(tmp_path / "a.mp4")

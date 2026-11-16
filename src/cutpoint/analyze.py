@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import numpy as np
 
 from cutpoint import (
+    backends,
     cache,
     category,
     config,
@@ -3026,7 +3027,7 @@ def rebuild_crash_moments(project: Path) -> bool:
     number_candidates(hl)
     if _canonical(hl) == _canonical(before):  # the same records, maybe in another order
         return False
-    cache.save_json(path, hl)
+    cache.save_json(path, backends.saved_settings(hl))
     logger.info("Crash moments rebuilt from crashes.json in %s", path.name)
     return True
 
@@ -4514,7 +4515,8 @@ def _analyze(
                 "vision_used": False,
                 "vision": None,
                 "vision_top": vision_top,
-                "ollama_url": ollama_url,
+                # never its login: a replay takes it from config.json or OLLAMA_HOST (A639)
+                "ollama_url": backends.without_login(ollama_url) if ollama_url else ollama_url,
                 "ollama_model": ollama_model,
                 "target_total": style.target_total,
                 "weights": style.weights,
@@ -4690,7 +4692,7 @@ def _analyze(
             out_dir / "transcript.txt", transcript.replace("\n", os.linesep).encode("utf-8")
         )
         out = out_dir / "highlights.json"
-        cache.save_json(out, hl)
+        cache.save_json(out, backends.saved_settings(hl))
         if ev:  # ranked with the events: a pre-events copy of an older analysis is stale
             cache.remove(out_dir / "highlights.pre-events.json")
         held.commit()  # every HELD_OUTPUTS file at once (a cancel in it waits for the last)
