@@ -11,8 +11,9 @@ from pathlib import Path
 import pytest
 
 from conftest import remap, set_config, write
-from cutpoint import config, stage
+from cutpoint import config, projectdelete, stage
 from cutpoint.config import remap_source
+from cutpoint.errors import FolderBusyError
 from cutpoint.stage import clear_stage, stage_sources, staged_path
 
 
@@ -370,3 +371,125 @@ def test_a_timeline_index_entry_outside_the_cache_is_not_read(home, tmp_path, mo
     stage._TIMELINE.clear()
     monkeypatch.setattr(stage, "_timeline_stamp", lambda: stamp)
     assert set(stage.timeline_index(stamp)) == {"k1"}
+
+
+# -- #1085: stage safety (A246-A249, A257) ----------------------------------------------------
+
+
+def test_a_source_with_equals_in_its_name_is_redirected_and_lavfi_specs_are_not(home, tmp_path):
+    """A246: ``=`` marks a lavfi spec only when no such file exists."""
+    src = write(tmp_path / "v=abc.mp4", "footage")
+    stage_sources([src], min_free_gb=0)
+
+    assert staged_path(str(src)) != str(src)
+    assert staged_path("color=c=black:s=64x64") == "color=c=black:s=64x64"
+
+
+def test_a_changed_source_is_not_served_from_the_stale_copy(home, tmp_path):
+    """A247: the source's size and mtime must still be the staged ones."""
+    src = write(tmp_path / "a.mp4", "footage")
+    stage_sources([src], min_free_gb=0)
+    copy = stage._staged_path(str(src))[0]
+    assert copy != str(src)
+
+    os.utime(src, ns=(1, 1))  # same size, new mtime
+    assert stage._staged_path(str(src))[0] == str(src)
+
+    stage_sources([src], min_free_gb=0)  # staged again
+    assert stage._staged_path(str(src))[0] != str(src)
+    write(src, "longer footage")
+    assert stage._staged_path(str(src))[0] == str(src)
+
+
+def test_staged_path_drops_a_hit_when_the_source_changes(home, tmp_path):
+    """The memoised public result is checked against the source's size and mtime too."""
+    src = write(tmp_path / "a.mp4", "footage")
+    stage_sources([src], min_free_gb=0)
+    assert staged_path(str(src)) != str(src)
+
+    os.utime(src, ns=(1, 1))
+    assert staged_path(str(src)) == str(src)
+
+
+def test_a_verbatim_path_is_not_unc(monkeypatch):
+    """A verbatim ``C:`` path is judged by its drive; a verbatim UNC path is remote."""
+    monkeypatch.setattr(stage.sys, "platform", "win32")
+    seen = []
+    monkeypatch.setattr(projectdelete, "_drive_type", lambda d: seen.append(d) or 3)
+    assert not stage.is_remote(stage.Path(r"\\?\C:\x\a.mp4"))
+    assert seen == ["C:\\"]
+    assert stage.is_remote(stage.Path(r"\\?\UNC\srv\share\a.mp4"))
+
+
+def test_an_unreachable_source_still_uses_its_copy(home, tmp_path):
+    """A247: an offline drive keeps serving the staged copy."""
+    src = write(tmp_path / "a.mp4", "footage")
+    stage_sources([src], min_free_gb=0)
+    src.unlink()
+
+    assert stage._staged_path(str(src))[0] != str(src)
+
+
+def _other_entry(name: str) -> dict:
+    return {"file": name, "size": 1, "mtime_ns": 1, "source": name, "read_s": 0.1}
+
+
+def test_stage_sources_keeps_entries_another_run_added_meanwhile(home, tmp_path, monkeypatch):
+    """A249: the index is read again before each save."""
+    a, b = write(tmp_path / "a.mp4", "aa"), write(tmp_path / "b.mp4", "bbb")
+    real_copy = stage.copy_once
+
+    def copy_and_race(src, dst, label):
+        if src.name == "b.mp4":  # another run saves its entry during this copy
+            stage._update_index(stage.get_config().stage_dir, "other", _other_entry("o.mp4"))
+        return real_copy(src, dst, label)
+
+    monkeypatch.setattr(stage, "copy_once", copy_and_race)
+    stage_sources([a, b], min_free_gb=0)
+
+    assert {e["file"] for e in stage.list_stage()} >= {"o.mp4"}
+    assert len(stage.list_stage()) == 3
+
+
+def test_clear_stage_keeps_entries_another_run_added_meanwhile(home, tmp_path, monkeypatch):
+    """A249: clearing one source drops only its entry."""
+    a = write(tmp_path / "a.mp4", "aa")
+    stage_sources([a], min_free_gb=0)
+    real_files = stage._stage_files
+
+    def files_and_race(*args):
+        stage._update_index(stage.get_config().stage_dir, "other", _other_entry("o.mp4"))
+        return real_files(*args)
+
+    monkeypatch.setattr(stage, "_stage_files", files_and_race)
+
+    assert clear_stage([a]) == 1
+    assert [e["file"] for e in stage.list_stage()] == ["o.mp4"]
+
+
+def test_the_index_is_written_under_its_lock(home, tmp_path, monkeypatch):
+    """A249: a run holding the index lock makes the others wait, then fail as busy."""
+    monkeypatch.setattr(stage, "_LOCK_WAIT_S", 0.2)
+    index = stage.get_config().stage_dir / stage.STAGE_INDEX
+    with stage.index_lock(index), pytest.raises(FolderBusyError):
+        stage._update_index(index.parent, "k", _other_entry("o.mp4"))
+    stage._update_index(index.parent, "k", _other_entry("o.mp4"))  # free again
+
+
+@pytest.mark.parametrize(
+    "error", [OSError("read error"), KeyboardInterrupt()], ids=["error", "ctrl-c"]
+)
+def test_a_failed_copy_leaves_no_partial_file(tmp_path, monkeypatch, error):
+    """A257."""
+    src = write(tmp_path / "a.mp4", "footage")
+    dst = tmp_path / "out" / "copy.mp4"
+    dst.parent.mkdir()
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(os, "utime", fail)
+    with pytest.raises(type(error)):
+        stage.copy_once(src, dst, "a")
+
+    assert list(dst.parent.iterdir()) == []

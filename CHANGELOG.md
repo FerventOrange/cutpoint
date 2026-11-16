@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cutpoint stage` and the timeline-copy index are safer (#1085, A246-A249, A257): a source with `=` in its name is now read from its staged copy and, for a joined TS, from its timeline copy; a staged copy is not used once the source changed; on Windows a drive counts as remote by its type (network or removable, or a UNC path), not by its letter, so a local `H:` is no longer "remote" and a mapped `D:` is; two runs updating the stage index no longer lose each other's entries; and a copy that fails or is interrupted leaves no `.partial` file behind.
 - A job whose watcher fails unexpectedly in `cutpoint ui` is marked failed and its process stopped, instead of staying "running" and blocking every new job until a restart (#1085, A265).
 - An unexpected error while building a window preview or a source proxy is logged and the preview can be asked for again, instead of stopping window previews for the session; a GPU encoder probe failure falls back to libx264 (#1085, A266).
 - Save of the review sequence in `cutpoint ui` is refused (409) when `ui/review.json` exists but cannot be read, instead of overwriting the saved target length and joins (#1085, A267).
