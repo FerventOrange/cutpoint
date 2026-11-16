@@ -2150,9 +2150,10 @@ def test_plan_visual_index_without_cuda_is_the_light_index_after_the_hud_text(en
 def test_plan_without_cuda_gives_no_light_index_where_a_gpu_writes_none(env, style, keyframes):
     """Q5 option (a): only where a GPU run indexes (here: no --visual-index)."""
     env.cuda = False
-    assert analyze.plan_layers(get_style(style), [Path("a.mp4")], ()).layers.get(
-        "keyframes"
-    ) == keyframes
+    assert (
+        analyze.plan_layers(get_style(style), [Path("a.mp4")], ()).layers.get("keyframes")
+        == keyframes
+    )
 
 
 def test_plan_light_index_without_clip_files_is_left_out(env, caplog):

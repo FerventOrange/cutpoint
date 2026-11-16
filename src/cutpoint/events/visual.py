@@ -612,11 +612,14 @@ LIGHT_PER_CANDIDATE = 3  # frames inside each candidate ...
 LIGHT_NEAR_S = 3.0  # ... unless an indexed (or planned) frame is this close
 LIGHT_PASS_SPACING_S = 3.0  # keyframes this sparse: one keyframe-only pass, else a seek per frame
 LIGHT_DUP_S = 0.5  # a decoded frame this close to an indexed one is a duplicate (one keyframe)
-# Seconds per frame of the INFO line's estimate. CLIP (centre crop, float32): a PLACEHOLDER
-# until a real desktop CPU is measured (#989: 1.73 s on a 4-vCPU VM without AVX2). Decode: a
-# keyframe seek took 0.18-0.30 s there.
+# Seconds per frame of the INFO line's estimate. CLIP ViT-L/14 centre crop, float32, on the CPU
+# (#989): an 8-thread desktop with AVX2 (i7-9700K) took 0.76-0.79 s per frame in batches of 8
+# (1.4-1.55 s one at a time), a 4-vCPU Linux VM without AVX2 1.73-1.84 s; 1.0 lies between.
+# Decode: a keyframe seek took 0.18-0.30 s on the VM.
 LIGHT_CLIP_S_PER_FRAME = 1.0
 LIGHT_DECODE_S_PER_FRAME = 0.3
+# Loading CLIP on the CPU: 14.9 s on the desktop, 20-29 s on the VM
+LIGHT_LOAD_S = 25.0
 
 
 @dataclass(frozen=True)
@@ -626,7 +629,7 @@ class LightParams:
 
     width: int = 640  # decoded frame width (height keeps the aspect, even)
     step_s: float = LIGHT_STEP_S
-    batch: int = 4  # frames per CLIP call: on the CPU larger batches are no faster
+    batch: int = 8  # frames per CLIP call: fastest on the CPU (#989: 1 and 16 are slower)
 
     def key(self) -> dict[str, Any]:
         """Cache-key dict (``batch`` does not change results)."""
@@ -753,9 +756,10 @@ def light_todo(
     return light_marks(src.duration, spans, params, done, have)
 
 
-def light_minutes(frames: int) -> int:
-    """The INFO line's estimate (minutes, at least 1) of indexing ``frames`` frames."""
-    s = frames * (LIGHT_CLIP_S_PER_FRAME + LIGHT_DECODE_S_PER_FRAME)
+def light_minutes(frames: int, load: bool = True) -> int:
+    """The INFO line's estimate (minutes, at least 1) of indexing ``frames`` frames, with
+    loading CLIP on the CPU first when ``load``."""
+    s = frames * (LIGHT_CLIP_S_PER_FRAME + LIGHT_DECODE_S_PER_FRAME) + (LIGHT_LOAD_S if load else 0)
     return max(1, round(s / 60))
 
 
@@ -772,7 +776,7 @@ def compute_light(
     Args:
         src: Source (its ``io_path`` is decoded; staged copies are used).
         encoder: A CLIP image encoder (``cutpoint.crash.ClipEncoder``): ``embed(frames,
-            centre=True)`` gives ``(N, 1, 768)``.
+            batch=, centre=True)`` gives ``(N, 1, 768)``.
         spans: The source's candidate ``(start, end)`` spans.
         params: Index settings.
         force: Ignore the cached index.
@@ -797,7 +801,9 @@ def compute_light(
     def flush() -> None:
         nonlocal clip_s
         c0 = time.perf_counter()
-        new_e.append(np.asarray(encoder.embed(np.stack(batch), centre=True), np.float16))
+        new_e.append(
+            np.asarray(encoder.embed(np.stack(batch), batch=params.batch, centre=True), np.float16)
+        )
         clip_s += time.perf_counter() - c0
         batch.clear()
 

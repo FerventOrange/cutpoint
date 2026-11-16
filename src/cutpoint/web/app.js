@@ -745,6 +745,7 @@ function closeProject() {
 }
 
 function adopt(p, switched) {
+  const sig = S.project?.events_sig;
   S.project = p;
   if (switched) {
     S.id = p.id;
@@ -767,6 +768,7 @@ function adopt(p, switched) {
   if (switched) syncTiming(); // Crop and Output size are off for 360 projects
   renderAll(switched);
   if (switched) loadAssistant();
+  else if (sig !== p.events_sig) refreshFrameIndex(); // an analysis finished: its frame index
 }
 
 // ---------- rendering: moments ----------
@@ -5265,6 +5267,18 @@ async function loadAssistant() {
   }
   chat.loaded = true; // Send waits for this: the saved turns would replace one sent meanwhile
   renderChat();
+}
+
+/** Ask again whether the chat's visual search can run (an analysis may have written the frame index since the chat loaded) and update its one-line note. */
+async function refreshFrameIndex() {
+  const chat = S.chat;
+  if (!chat?.loaded) return;
+  try {
+    const a = await api(aiUrl());
+    if (S.chat !== chat) return; // another project opened meanwhile
+    chat.frameIndex = a.frame_index ?? null;
+    renderChat();
+  } catch { /* the note stays as it was */ }
 }
 
 function chatError(text) {

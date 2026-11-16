@@ -3184,10 +3184,9 @@ def layer_category(style: Style) -> str:
 
 def _light_index(cat: str, visual_index: bool) -> bool:
     """Whether a run without a CUDA GPU writes the light frame index for the AI Chat (#989),
-    for footage of category ``cat``. Q5, option (a): only where a GPU run writes the full
-    index (action-cam, action and general footage, or ``--visual-index``); option (b), every
-    style, is ``return True`` here (:func:`plan_layers` then adds the keyframes step to talk
-    footage too)."""
+    for footage of category ``cat``: only where a GPU run writes the full index, action-cam,
+    action (the ``sport`` style too: :func:`layer_category`) and general footage, and the
+    others with ``--visual-index`` (``visual_index`` in config.json)."""
     return cat in (category.ACTION_CAM, category.ACTION, category.GENERAL) or visual_index
 
 
@@ -3360,7 +3359,7 @@ class _StepHook:
         try:
             yield
         except LowMemoryError:  # the memory guard stops the run (resumable), not the layer
-            raise
+            raise  # (visual_light never gets here: its own WARNING, pipeline._light_layer)
         except Exception as err:
             logger.debug("%s layer failed", layer, exc_info=True)
             files: list[str] = []

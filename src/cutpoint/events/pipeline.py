@@ -26,7 +26,7 @@ from typing import Any, NamedTuple
 
 from cutpoint import cache, jsonout, memguard, progress, tsrepair
 from cutpoint import paths as cutpoint_paths
-from cutpoint.errors import LowMemoryError
+from cutpoint.errors import LowMemoryError, is_out_of_memory
 from cutpoint.events import explosions, paths, scoring
 from cutpoint.events.audio_events import (
     AudioParams,
@@ -454,8 +454,15 @@ def run_events(
     if "visual_light" in layers:  # chat only: no event, no ranking reads it (#989)
         t0 = time.perf_counter()
         with stage("visual_light"):
+            # CLIP goes to the crash layer only when no OCR runs in between (as the visual
+            # layer's): one model resident at a time
             stats["visual_light"] = _light_layer(
-                hl, sources, kept, encoder, crash_run, force="visual_light" in force
+                hl,
+                sources,
+                kept,
+                encoder,
+                crash_run and "ocr" not in layers,
+                force="visual_light" in force,
             )
         timings["visual_light_s"] = round(time.perf_counter() - t0, 1)
 
@@ -828,7 +835,10 @@ def _light_layer(
     """The light frame index of every source that lacks frames of it (``analyze`` without a
     CUDA GPU, for the AI Chat's ``look_for``): one INFO line with the estimate, then CLIP on
     the CPU. Its CLIP (or ``encoder``, given) is handed to the crash layer through ``kept``
-    when that runs, else closed. A source that fails is skipped with a WARNING."""
+    when ``crash_run`` (it runs next, with no OCR in between), else closed. A source that fails
+    is skipped with a WARNING. Too little memory for CLIP (its load or a failed allocation)
+    does not stop the run, unlike the other layers: the layer stops with a WARNING naming the
+    fix and a ``step_failed`` warning, and its CLIP is freed (the index is the chat's only)."""
     from cutpoint.crash import ClipEncoder  # noqa: PLC0415
     from cutpoint.events import visual as V  # noqa: PLC0415
 
@@ -850,12 +860,14 @@ def _light_layer(
     logger.info(
         "No CUDA GPU: a light frame index for the AI Chat instead of keyframes "
         "(about %d min, %d frames)",
-        V.light_minutes(frames),
+        V.light_minutes(frames, load=encoder is None),
         frames,
     )
-    enc = encoder if encoder is not None else ClipEncoder(device="cpu")
+    enc = encoder
     handed = False
     try:
+        if enc is None:
+            enc = ClipEncoder(device="cpu")
         failed: list[Exception] = []
         for i, (s, _) in enumerate(todo.values()):
             progress.update(progress.fraction(i, len(todo)))
@@ -863,7 +875,9 @@ def _light_layer(
                 got = V.compute_light(s, enc, spans.get(str(s.path), []), force=force)
             except LowMemoryError:
                 raise
-            except Exception as err:  # noqa: BLE001 - one bad source, logged
+            except Exception as err:  # one bad source, logged (out of memory: below)
+                if is_out_of_memory(err):  # not a bad source: the layer stops
+                    raise LowMemoryError(str(err), "out of memory") from err
                 skip_source("Frame index", s, err)
                 failed.append(err)
                 continue
@@ -875,8 +889,18 @@ def _light_layer(
         if crash_run and encoder is None:
             kept.append(enc)  # the crash layer's dense confirm: no second load
             handed = True
+    except LowMemoryError as err:  # chat only: the analysis goes on without it (#989)
+        short = err.args[1] if len(err.args) > 1 else "out of memory"
+        message = (
+            f"Frame index for the AI Chat skipped: not enough free memory ({short}); the "
+            "chat's visual search is unavailable until it is written. To add it, close other "
+            "programs, then analyze the project again"
+        )
+        logger.warning("%s", message)
+        jsonout.warn("step_failed", message)
+        stats["low_memory"] = True
     finally:
-        if encoder is None and not handed:
+        if encoder is None and enc is not None and not handed:
             enc.close()
     return stats
 
