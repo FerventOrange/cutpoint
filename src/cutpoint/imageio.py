@@ -6,9 +6,28 @@
 
 from __future__ import annotations
 
+import os
+import uuid
+from contextlib import suppress
+from functools import partial
 from pathlib import Path
 
 import numpy as np
+
+from cutpoint import cache
+
+
+def _write_bytes(path: Path, data: bytes) -> None:
+    """Write ``data`` to a temp file beside ``path``, then rename it, so an interrupted write
+    never leaves a half or empty picture."""
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_bytes(data)
+        cache.retry_locked(partial(os.replace, tmp, path), path, "replace")
+    except BaseException:
+        with suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
 
 
 def write_jpeg(path: Path, img: np.ndarray, quality: int) -> bool:
@@ -18,7 +37,7 @@ def write_jpeg(path: Path, img: np.ndarray, quality: int) -> bool:
 
     ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
     if ok:
-        path.write_bytes(buf.tobytes())
+        _write_bytes(path, buf.tobytes())
     return bool(ok)
 
 
@@ -28,7 +47,7 @@ def write_png(path: Path, img: np.ndarray) -> bool:
 
     ok, buf = cv2.imencode(".png", img)
     if ok:
-        path.write_bytes(buf.tobytes())
+        _write_bytes(path, buf.tobytes())
     return bool(ok)
 
 
@@ -40,4 +59,9 @@ def read_image(path: Path) -> np.ndarray | None:
         data = path.read_bytes()
     except OSError:
         return None
-    return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if not data:  # an interrupted write leaves an empty file
+        return None
+    try:
+        return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    except cv2.error:
+        return None

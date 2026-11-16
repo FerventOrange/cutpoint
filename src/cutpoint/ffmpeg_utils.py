@@ -16,18 +16,22 @@ The executables are located (in order) via the ``CUTPOINT_FFMPEG`` /
 
 from __future__ import annotations
 
+import glob
 import itertools
 import json
 import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import uuid
 import wave
+import zlib
 from collections import deque
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
@@ -87,7 +91,12 @@ def find_tool(name: str) -> str:
         FFmpegNotFoundError: If the executable cannot be found anywhere.
     """
     env = paths.env(name.upper())
-    if env and Path(env).is_file():
+    if env:
+        if not Path(env).is_file():
+            raise FFmpegNotFoundError(
+                f"CUTPOINT_{name.upper()} is set to {env!r}, which is not a file. Set it to "
+                f"the full path of {name}, or unset it to find {name} on PATH."
+            )
         return env
     on_path = _on_path(name)
     if on_path:
@@ -265,11 +274,12 @@ _SCOPE = threading.local()
 @contextmanager
 def child_scope(scope: ChildScope) -> Iterator[ChildScope]:
     """Register this thread's :func:`run` children in ``scope`` (see :class:`ChildScope`)."""
+    previous = getattr(_SCOPE, "current", None)
     _SCOPE.current = scope
     try:
         yield scope
     finally:
-        _SCOPE.current = None
+        _SCOPE.current = previous
 
 
 def run(
@@ -530,13 +540,19 @@ def _probe(path: Path) -> MediaInfo:
     """:func:`probe` without the memo."""
     data = ffprobe_json(path, show_format=True, show_streams=True)
     streams = data.get("streams", [])
-    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    videos = [s for s in streams if s.get("codec_type") == "video"]
+    # cover art (an attached picture) is not the video; fall back to it when it is all there is
+    video = next((s for s in videos if not s.get("disposition", {}).get("attached_pic")), None)
+    video = video or next(iter(videos), None)
     audios = [s for s in streams if s.get("codec_type") == "audio"]
     if video is None:
         raise FFmpegError(f"No video stream in {path}")
     rate = video.get("avg_frame_rate") or "0/0"
     if rate == "0/0":
         rate = video.get("r_frame_rate") or "30/1"
+    if rate == "0/0" or rate.endswith("/0"):  # no usable rate at all
+        logger.warning("%s: the video stream has no frame rate; assuming 30 fps", path)
+        rate = "30/1"
     duration = float(data.get("format", {}).get("duration") or video.get("duration") or 0)
     a0 = audios[0] if audios else {}
     # ``-ss`` seeks from the container start, so a stream starting late ends that much later
@@ -701,7 +717,8 @@ def extract_audio(
     if info.audio_streams == 0:
         raise FFmpegError(f"No audio stream in {src}")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_suffix(".tmp.wav")
+    sweep_tmp(dst)
+    tmp = unique_tmp(dst)
     seek = ["-ss", f"{start:.3f}"] if start > 0 else []
     args = ["ffmpeg", "-y", "-v", "error", *seek, "-i", str(src), "-vn"]
     args += _map_tracks(_tracks_or_every(src, info) if tracks is None else tracks, AUDIO_CLOCK)
@@ -716,6 +733,58 @@ def extract_audio(
     return res
 
 
+def unique_tmp(dst: Path) -> Path:
+    """A temp file name beside ``dst`` that no other run uses (the per-source cache is shared
+    by every project of that source, maybe from several computers):
+    ``<stem>.<pid>.<host>.<random>.tmp<suffix>``, with the process id and an 8-digit hex tag
+    of this computer's name."""
+    name = f"{dst.stem}.{os.getpid()}.{_host_tag()}.{uuid.uuid4().hex[:8]}.tmp{dst.suffix}"
+    return dst.with_name(name)
+
+
+def _host_tag() -> str:
+    """8 hex digits that tell this computer from another one sharing the cache folder."""
+    return f"{zlib.crc32(socket.gethostname().encode('utf-8', 'replace')):08x}"
+
+
+def _tmp_fields(dst: Path, tmp: Path) -> tuple[int | None, str | None]:
+    """``(pid, host tag)`` in the name of ``tmp``, a :func:`unique_tmp` of ``dst`` (None for
+    a field it lacks)."""
+    fields = tmp.name[len(dst.stem) + 1 :].split(".")
+    pid = int(fields[0]) if fields[0].isdigit() else None
+    return pid, (fields[1] if len(fields) > 4 else None)
+
+
+def _tmp_pid(dst: Path, tmp: Path) -> int | None:
+    """The process id in the name of ``tmp``, a :func:`unique_tmp` of ``dst`` (None if none)."""
+    return _tmp_fields(dst, tmp)[0]
+
+
+def tmp_files(dst: Path, own: bool = False) -> list[Path]:
+    """The temp files :func:`unique_tmp` made for ``dst`` that exist now; ``own``: only those
+    of this process."""
+    found = dst.parent.glob(f"{glob.escape(dst.stem)}.*.tmp{glob.escape(dst.suffix)}")
+    return [p for p in found if not own or _tmp_pid(dst, p) == os.getpid()]
+
+
+def sweep_tmp(dst: Path) -> None:
+    """Remove the :func:`unique_tmp` files of ``dst`` that runs which are gone left behind (a
+    hard-killed run cannot clean up its own); those of a live process stay, and so do those
+    of another computer (its processes cannot be told), as for a lock
+    (:func:`cutpoint.folders._lock_stale`). Also the fixed ``<stem>.tmp<suffix>`` of older
+    versions."""
+    with suppress(OSError):
+        dst.with_name(f"{dst.stem}.tmp{dst.suffix}").unlink(missing_ok=True)
+    for tmp in tmp_files(dst):
+        pid, host = _tmp_fields(dst, tmp)
+        try:
+            if pid is None or host != _host_tag() or procs.pid_alive(pid, tmp.stat().st_mtime):
+                continue
+            tmp.unlink()
+        except OSError as err:
+            logger.debug("could not remove %s: %s", tmp, err)
+
+
 def wav_duration(path: Path) -> float:
     """Length of a PCM WAV file in seconds (header only, no decode)."""
     with wave.open(str(path), "rb") as w:
@@ -725,6 +794,7 @@ def wav_duration(path: Path) -> float:
 # What read_window_ok decodes per probe (s): a failed probe at t had a read error between t and
 # about t + this (find_resume_point's ``unreadable_until``)
 READ_PROBE_S = 3.0
+READ_PROBE_TIMEOUT_S = 120.0  # a probe decodes seconds: a stalled read fails instead of hanging
 
 
 def read_window_ok(src: Path, t: float, dur: float = READ_PROBE_S) -> bool:
@@ -749,9 +819,15 @@ def read_window_ok(src: Path, t: float, dur: float = READ_PROBE_S) -> bool:
         "null",
         "-",
     ]
-    cmd = _command("ffmpeg", args)
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    return proc.returncode == 0 and not READ_ERROR_RE.search(proc.stderr or "")
+    try:
+        proc = _exec("ffmpeg", args, READ_PROBE_TIMEOUT_S, src)
+    except FFmpegNotFoundError:
+        raise
+    except FFmpegError as err:  # timed out: a read that stalls is not readable
+        logger.warning("%s", err)
+        return False
+    stderr = (proc.stderr or b"").decode("utf-8", "replace")
+    return proc.returncode == 0 and not READ_ERROR_RE.search(stderr)
 
 
 def read_pcm_window(src: Path, info: MediaInfo, t0: float, t1: float) -> bytes:
@@ -794,9 +870,14 @@ def cropdetect_at(src: Path, t: float, frames: int = 30) -> tuple[int, int, int,
         "null",
         "-",
     ]
-    cmd = _command("ffmpeg", args)
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    hits = _CROP_RE.findall(proc.stderr or "")
+    try:
+        proc = _exec("ffmpeg", args, READ_PROBE_TIMEOUT_S, src)
+    except FFmpegNotFoundError:
+        raise
+    except FFmpegError as err:
+        logger.warning("%s", err)
+        return None
+    hits = _CROP_RE.findall((proc.stderr or b"").decode("utf-8", "replace"))
     if proc.returncode != 0 or not hits:
         return None
     w, h, x, y = map(int, hits[-1])
@@ -1653,6 +1734,8 @@ class _StderrLog:
         self.pts = pts
         self.lines = lines
         self.times: list[float] = []
+        self.interval = 0.0  # a frame's length (s) once known, for a missing showinfo line
+        self._last: float | None = None  # the time returned for the previous frame
         self.tail: deque[str] = deque(maxlen=20)
         self.cond = threading.Condition()
 
@@ -1678,7 +1761,17 @@ class _StderrLog:
         with self.cond:
             self.cond.wait_for(lambda: len(self.times) > k, timeout=_PTS_WAIT_S)
             t = self.times[k] if len(self.times) > k else float("nan")
-        return t if np.isfinite(t) else float(k)  # should not happen; keep the frame
+        if np.isfinite(t):
+            if self._last is not None and t > self._last:
+                self.interval = t - self._last
+            self._last = t
+            return t
+        # No showinfo line (should not happen): the previous time plus a frame, so the frame
+        # is kept and stays in order; a frame index is not a time.
+        guess = 0.0 if self._last is None else self._last + (self.interval or 1 / 30)
+        logger.warning("No presentation time for decoded frame %d; assuming %.3fs", k, guess)
+        self._last = guess
+        return guess
 
     def text(self) -> str:
         """The last stderr lines (``showinfo`` excluded)."""
@@ -2007,7 +2100,7 @@ class SplitDecode:
     then the spool thread waits for the consumer to delete a file (ffmpeg waits on its pipe).
     ffmpeg starts here, isolated from Ctrl+C and killed on ``cancel``.
 
-    The proxy is written to ``proxy.tmp.mp4`` beside ``proxy`` and renamed to ``proxy`` only
+    The proxy is written to ``proxy.<pid>.<host>.<random>.tmp.mp4`` (:func:`unique_tmp`) beside ``proxy`` and renamed to ``proxy`` only
     when ffmpeg exited 0 by itself and the spool took all of its output; otherwise it is
     deleted. A cancel or :meth:`close` while the spool is full kills a running ffmpeg (no
     proxy); one that already exited has the rest of its output drained, not spooled, and its
@@ -2041,7 +2134,8 @@ class SplitDecode:
         self.cap = spool_cap(self.frame_bytes)
         self.stamp_fps = stamp_fps
         self.proxy = proxy
-        self.tmp = proxy.with_name(proxy.stem + ".tmp" + proxy.suffix)
+        sweep_tmp(proxy)
+        self.tmp = unique_tmp(proxy)
         self.spool = spool
         self.on_exit = on_exit
         self.peak = 0  # most spool bytes on disk at once

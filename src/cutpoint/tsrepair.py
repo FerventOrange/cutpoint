@@ -189,17 +189,23 @@ def ensure_copy(src: Path, verdict: Verdict) -> Path | None:
         return _make_copy(src, verdict, io, st, cdir, key)
 
 
+COPY_WAIT_S = 3600.0  # how long to wait for another run's stream copy before giving up
+
+
 @contextlib.contextmanager
 def _copy_lock(cdir: Path, src: Path) -> Iterator[None]:
     """Hold the lock of the copy in ``cdir`` (:func:`cutpoint.folders.swap_lock`), waiting for
     another run that holds it (a stale one is taken over)."""
     held = ExitStack()
     waiting = False
+    deadline = time.monotonic() + COPY_WAIT_S
     while True:
         try:
             held.enter_context(folders.swap_lock(cdir / "timeline"))
             break
         except FolderBusyError:
+            if time.monotonic() >= deadline:
+                raise  # its text says how to clear the lock
             if not waiting:
                 waiting = True
                 logger.info("%s: waiting for another run to finish its stream copy", src.name)

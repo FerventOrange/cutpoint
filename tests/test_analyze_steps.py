@@ -33,6 +33,7 @@ from cutpoint import (
     crash,
     default_fit,
     features,
+    ffmpeg_utils,
     insta360,
     jsonout,
     paths,
@@ -660,7 +661,7 @@ def test_no_extract_watch_without_progress(run, monkeypatch):
 def test_watch_extract_reports_the_growing_temp_wav(tmp_path, monkeypatch):
     monkeypatch.setattr(analyze, "EXTRACT_POLL_S", 0.01)
     wav = tmp_path / "audio16k.wav"
-    tmp = wav.with_suffix(".tmp.wav")
+    tmp = ffmpeg_utils.unique_tmp(wav)  # what extract_audio writes
     got: list[float] = []
     seconds = 10.0
     tmp.write_bytes(b"\0" * analyze.WAV_HEADER)
