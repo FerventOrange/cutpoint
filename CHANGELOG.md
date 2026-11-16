@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A long AI Chat tool result is cut inside its data block at a row and keeps its end marker, with a note of the rows left out, so the model no longer reads the rest of the result as outside the data (#1085, A293, A679).
+- A refused ranking preview in the AI Chat no longer shows file paths to the model or in `chat.json` (#1085, A678).
+- Login prompts in `cutpoint ui` use the page's own dialog instead of the browser's `confirm` box (#1085, A675).
 - A HUD OCR read with a part that gave no frames is no longer cached as complete: its result is used for the run, marked `incomplete` in its stats, and read again by the next run (once more; a part that fails twice is taken as damaged) instead of hiding the rest of the source until a version bump or `--force` (#1085, A139).
 - Array caches (frame embeddings, voice, 360 views and orientation, telemetry, crash IMU grids, action-cam features, CLIP text embeddings) are written atomically, and a damaged or half-written cache file is read as a miss and made again instead of failing every later run until it was deleted by hand (#1085, A159, A186, A206, A352).
 - `cutpoint edit --events` exports the clips again: it skipped the clips step, so the join failed with no clips, or with `--force` joined the clips of an earlier run (#1085, A228).
@@ -120,6 +123,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - **BREAKING:** the `ski` extra is gone (`ui`, `keyring` stay as aliases), and `--style ski` is now an ordinary unknown style with no special message.
+
+### Security
+
+- `cutpoint ui` media links (videos, stills, downloads) carry a read-only media token in `?t=` instead of the session token. Only the media routes accept it; API routes refuse it, so a copied media address grants no other call (#1085, A668, A674).
+- The `cutpoint ui` page sends a Content-Security-Policy that allows only its own scripts, its own files, inline styles and `data:` images (#1085, A673).
+- `cutpoint ui` refuses request bodies over 16 MiB with 413 (#1085, A670).
+- `cutpoint ui` refuses a recorded input or 360 source that starts with `-` as a job argument, so a hand-edited `ui/meta.json` or `highlights.json` cannot pass an option to a job (#1085, A669).
+- The proxy sign-in page opens only `https` addresses or `http` on this machine, without a referrer (#1085, A672).
 
 ## [0.5.0] - 2026-11-10
 
