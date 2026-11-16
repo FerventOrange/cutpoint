@@ -1701,14 +1701,14 @@ def _add_vision_detect_all_argument(p: argparse.ArgumentParser) -> None:
 
 def _ollama_url_arg(text: str) -> str:
     """argparse type of ``--ollama-url``: the value, if it has a host and a valid port."""
-    from cutpoint.backends import split_ollama_url  # noqa: PLC0415
+    from cutpoint.backends import split_ollama_url, strip_userinfo  # noqa: PLC0415
 
     try:
         parts, _ = split_ollama_url(text.strip(), "--ollama-url")
     except ValueError as err:
         raise argparse.ArgumentTypeError(str(err)) from None
     if not parts.hostname:
-        raise argparse.ArgumentTypeError(f"--ollama-url {text!r}: no host")
+        raise argparse.ArgumentTypeError(f"--ollama-url {strip_userinfo(text)!r}: no host")
     return text
 
 
