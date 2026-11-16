@@ -445,6 +445,13 @@ def run_events(
                 raise visual_errors[-1]
         vram["visual"] = vm.summary()
         timings["visual_s"] = round(time.perf_counter() - t0, 1)
+    if "visual_light" in layers:  # chat only: no event, no ranking reads it (#989)
+        t0 = time.perf_counter()
+        with stage("visual_light"):
+            stats["visual_light"] = _light_layer(
+                hl, sources, kept, encoder, crash_run, force="visual_light" in force
+            )
+        timings["visual_light_s"] = round(time.perf_counter() - t0, 1)
 
     def write_sheets(prompt_set: Any) -> None:
         from cutpoint.events.sheets import write_visual_sheets  # noqa: PLC0415
@@ -784,6 +791,70 @@ def run_events(
             timings,
             stats,
         )
+
+
+def _light_layer(
+    hl: dict[str, Any],
+    sources: list[Any],
+    kept: list[Any],
+    encoder: Any,
+    crash_run: bool,
+    force: bool = False,
+) -> dict[str, Any]:
+    """The light frame index of every source that lacks frames of it (``analyze`` without a
+    CUDA GPU, for the AI Chat's ``look_for``): one INFO line with the estimate, then CLIP on
+    the CPU. Its CLIP (or ``encoder``, given) is handed to the crash layer through ``kept``
+    when that runs, else closed. A source that fails is skipped with a WARNING."""
+    from cutpoint.crash import ClipEncoder  # noqa: PLC0415
+    from cutpoint.events import visual as V  # noqa: PLC0415
+
+    spans: dict[str, list[tuple[float, float]]] = {}
+    for c in hl.get("candidates") or []:
+        try:
+            spans.setdefault(str(c["source"]), []).append((float(c["start"]), float(c["end"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    todo = {}
+    for s in sources:
+        marks = V.light_todo(s, spans.get(str(s.path), []), force=force)
+        if marks:
+            todo[str(s.path)] = (s, len(marks))
+    stats: dict[str, Any] = {"cached": len(sources) - len(todo), "computed": 0, "frames": 0}
+    if not todo:
+        return stats
+    frames = sum(n for _, n in todo.values())
+    logger.info(
+        "No CUDA GPU: a light frame index for the AI Chat instead of keyframes "
+        "(about %d min, %d frames)",
+        V.light_minutes(frames),
+        frames,
+    )
+    enc = encoder if encoder is not None else ClipEncoder(device="cpu")
+    handed = False
+    try:
+        failed: list[Exception] = []
+        for i, (s, _) in enumerate(todo.values()):
+            progress.update(progress.fraction(i, len(todo)))
+            try:
+                got = V.compute_light(s, enc, spans.get(str(s.path), []), force=force)
+            except LowMemoryError:
+                raise
+            except Exception as err:  # noqa: BLE001 - one bad source, logged
+                skip_source("Frame index", s, err)
+                failed.append(err)
+                continue
+            if got is not None:
+                stats["computed"] += 1
+                stats["frames"] += len(got.t)
+        if failed and len(failed) == len(todo):  # not one bad file: the layer failed
+            raise failed[-1]
+        if crash_run and encoder is None:
+            kept.append(enc)  # the crash layer's dense confirm: no second load
+            handed = True
+    finally:
+        if encoder is None and not handed:
+            enc.close()
+    return stats
 
 
 @contextlib.contextmanager

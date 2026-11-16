@@ -140,6 +140,7 @@ def layer_files(layers: Iterable[str]) -> list[tuple[str, Path]]:
         "voice": [*panns, ("voice", silero_vad())],
         "visual": [*clip, ("visual", detector_weights()), ("visual", aesthetic_head())],
         "crash": clip,
+        "visual_light": clip,  # the light frame index: CLIP alone
     }
     out: list[tuple[str, Path]] = []
     for layer in layers:

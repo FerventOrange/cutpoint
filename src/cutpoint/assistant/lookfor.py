@@ -3,7 +3,9 @@
 ``find_moments`` only reads words analysis already wrote down. ``look_for("spray")``
 compares the query with the cached frame embeddings of every source of the project (the
 ``events`` visual layer, about one frame per second, the same ones the visual pool and the
-action-cam features read: :func:`cutpoint.events.visual.load_visual`), so it also finds footage
+action-cam features read: :func:`cutpoint.events.visual.load_visual`; without it, the light
+frame index ``analyze`` writes without a CUDA GPU, a frame every 10 s and a few in each
+candidate: :func:`cutpoint.events.visual.load_visual_light`), so it also finds footage
 the scorer never proposed. Nothing is decoded and nothing is downloaded: a source whose visual
 layer was never cached is skipped, and the CLIP text tower loads from local files only
 (:func:`cutpoint.events.visual.load_clip`).
@@ -122,6 +124,34 @@ NO_INDEX = (
 
 NO_LITE = "Visual search isn't in Cutpoint lite"
 NO_WEIGHTS = "Visual search needs the CLIP weights (cutpoint setup --only visual)"
+# The page's one line and the fix of :func:`index_state`
+WHY_NO_INDEX = "Visual search isn't available for this project: its analysis has no frame index"
+FIX_WEIGHTS = "cutpoint setup --only visual"
+FIX_INDEX = "analyze the project again with --visual-index"
+# (the tool is not offered: the rule does not name it)
+NO_INDEX_RULES = """
+
+{why}, so the footage cannot be searched by what it shows. If the user asks for that, tell \
+them and what adds it: {fix}. find_moments still searches what was said and the labels."""
+
+
+def index_state(sources: Sequence[str]) -> dict[str, Any]:
+    """Whether :data:`NAME` can search ``sources`` (``ok``), and if not ``why`` (a short
+    sentence for the page and the assistant's rules) and ``fix`` (what adds it): the lite
+    edition's install command, the CLIP weights' setup command, or analyzing again."""
+    if unavailable() is not None:
+        return {"ok": False, "why": NO_LITE, "fix": extras.install_hint("events")}
+    if not V.paths.clip_weights().is_file():
+        return {"ok": False, "why": NO_WEIGHTS, "fix": FIX_WEIGHTS}
+    if not indexed(sources):
+        return {"ok": False, "why": WHY_NO_INDEX, "fix": FIX_INDEX}
+    return {"ok": True, "why": None, "fix": None}
+
+
+def unindexed_rules(state: Mapping[str, Any]) -> str:
+    """The assistant's rule line when :func:`index_state` is not ``ok``."""
+    why = str(state.get("why") or WHY_NO_INDEX).rstrip(".")
+    return NO_INDEX_RULES.format(why=why, fix=state.get("fix") or FIX_INDEX)
 
 
 class LookForError(Exception):
@@ -175,11 +205,12 @@ class Found:
 
 
 def indexed(sources: Sequence[str]) -> bool:
-    """Whether any of ``sources`` has cached frame embeddings (the file only is looked for:
-    nothing is read), so :data:`NAME` has something to search."""
+    """Whether any of ``sources`` has cached frame embeddings, full or light (the files only
+    are looked for: nothing is read), so :data:`NAME` has something to search."""
     for source in sources:
         try:
-            if V.cache_path(Path(source), V.VisualParams()).exists():
+            path = Path(source)
+            if V.cache_path(path, V.VisualParams()).exists() or V.light_cache_path(path).exists():
                 return True
         except OSError:  # offline footage: its cache key needs the file's size and mtime
             continue
@@ -252,8 +283,8 @@ class Finder:
         if self._frames is None:
             frames = {}
             for source in self.sources:
-                try:
-                    data = V.load_visual(Path(source))
+                try:  # the full index wins over the light one
+                    data = V.load_visual(Path(source)) or V.load_visual_light(Path(source))
                 except (OSError, ValueError, KeyError, zipfile.BadZipFile) as err:
                     logger.warning("look_for: %s: visual layer unreadable (%s)", source, err)
                     continue
@@ -289,8 +320,8 @@ class Finder:
             raise LookForError(
                 "no source of this project has cached frame embeddings (analyze writes them "
                 "with its visual step for action, sport and action-cam footage, and for other "
-                "styles with --visual-index), so there is nothing to look through; use "
-                "find_moments instead",
+                "styles with --visual-index; without a CUDA GPU a lighter index), so there is "
+                "nothing to look through; use find_moments instead",
                 NO_INDEX,
             )
         try:

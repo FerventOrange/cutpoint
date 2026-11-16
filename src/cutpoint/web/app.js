@@ -5186,6 +5186,8 @@ const ANALYSIS_SENDS = 'the whole transcripts of the footage (everything said in
 const FRAMES_SENDS = (host) => `To answer questions about what can be seen, the assistant can watch a few moments. Each one sends ${host} one image of 6 to 9 frames from the moment's clip, with its times, transcript and detected sounds. Nothing was sent. You allow it once for this project and host; Cutpoint saves it in config.json.`;
 const CHANGE_NAMES = { added: 'added', removed: 'removed', moved: 'moved', lengthened: 'lengthened', shortened: 'shortened', trimmed: 'trimmed', relabelled: 'renamed' };
 const SMALL_MODEL_NOTE = 'A small local model can miss moments or misread a request. Check each change in the preview before you apply it.';
+/** The one line under the chat header when its visual search cannot run: why, and what adds it (GET assistant's ``frame_index``). */
+const indexNote = (idx) => `${sentence(idx.why || 'Visual search isn’t available for this project')} To add it: ${idx.fix || 'analyze the project again'}.`;
 const aiUrl = (path = '') => `/api/projects/${encodeURIComponent(S.id)}/assistant${path}`;
 // a moment's name as the Moments list shows it (shownName; #634)
 const momentName = (id) => {
@@ -5228,7 +5230,7 @@ async function loadAssistant() {
   const pid = S.id;
   clearTimeout(S.chatTimer);
   S.turn = null;
-  const chat = S.chat = pid ? { pid, provider: null, consent: null, frames: null, turns: [], files: [], error: '', loaded: false } : null;
+  const chat = S.chat = pid ? { pid, provider: null, consent: null, frames: null, frameIndex: null, turns: [], files: [], error: '', loaded: false } : null;
   S.history = [];
   S.dismissed.clear();
   S.rankings.clear();
@@ -5241,6 +5243,7 @@ async function loadAssistant() {
     chat.provider = a.provider;
     chat.consent = a.consent ?? null;
     chat.frames = a.frames ?? null;
+    chat.frameIndex = a.frame_index ?? null;
     chat.files = a.files ?? [];
     chat.turns = (a.turns ?? []).map(chatTurn);
     S.history = hist.applied ?? [];
@@ -6157,6 +6160,9 @@ function renderChat() {
   const note = $('#chatNote');
   note.hidden = !prov?.local;
   note.textContent = prov?.local ? SMALL_MODEL_NOTE : '';
+  const idx = c?.frameIndex;
+  $('#chatIndexNote').hidden = !idx || idx.ok;
+  $('#chatIndexNote').textContent = idx && !idx.ok ? indexNote(idx) : '';
   // A missing key comes first: no agreeing to send to a provider that cannot be asked yet.
   const noKey = c?.consent?.missing_key || '';
   const consent = !noKey && c?.consent?.needed ? c.consent : null;

@@ -47,6 +47,8 @@ GENERIC = "generic"  # the style kind of every style but action-cam
 # settings key of a ranking a save (or cutpoint ui's Undo) wrote: {"seal": seal(hl), "undone": bool}
 UNDO = "rerank_undo"
 
+CHAT_ONLY_LAYER = "visual_light"  # planned by analyze without a CUDA GPU; ranks nothing
+
 # The event layers a footage category plans (:func:`cutpoint.analyze.plan_layers`) before the
 # install's own limits; when the project's events.json has them all, the plan is not needed.
 _CATEGORY_LAYERS = {
@@ -191,7 +193,8 @@ def _missing_layers(
     if not _events_extra():
         return []  # lite: analyze would run none of them either
     plan = analyze.plan_layers(style, [], (), cat, cuda=cuda)  # no sources: no telemetry probe
-    return [x for x in plan.all_layers() if x not in ran]
+    # the light frame index is the AI Chat's alone: no ranking reads it (#989)
+    return [x for x in plan.all_layers() if x not in ran and x != CHAT_ONLY_LAYER]
 
 
 def readiness(
