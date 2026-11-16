@@ -119,15 +119,15 @@ def pick_frames(
 
 
 def crop_jpeg(img: np.ndarray, p: dict[str, Any]) -> bytes | None:
-    """The JPEG of proposal ``p`` plus a margin, cut from a frame of any size (same aspect as
-    1920x1080) and upscaled so the short side is :data:`CROP_MIN_SIDE` px."""
+    """The JPEG of proposal ``p`` plus a margin, cut from a frame of any size (x and y scale
+    on their own) and upscaled so the short side is :data:`CROP_MIN_SIDE` px."""
     import cv2  # noqa: PLC0415
 
-    sx = img.shape[1] / REF_W
+    sx, sy = img.shape[1] / REF_W, img.shape[0] / REF_H
     mx, my = max(MARGIN_MIN, p["w"] * MARGIN), max(MARGIN_MIN, p["h"] * MARGIN)
-    x0, y0 = max(0, int((p["x"] - mx) * sx)), max(0, int((p["y"] - my) * sx))
+    x0, y0 = max(0, int((p["x"] - mx) * sx)), max(0, int((p["y"] - my) * sy))
     x1 = min(img.shape[1], int((p["x"] + p["w"] + mx) * sx))
-    y1 = min(img.shape[0], int((p["y"] + p["h"] + my) * sx))
+    y1 = min(img.shape[0], int((p["y"] + p["h"] + my) * sy))
     crop = img[y0:y1, x0:x1]
     if crop.size == 0:
         return None

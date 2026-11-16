@@ -7302,7 +7302,9 @@ def create_app(port: int) -> FastAPI:
     @owned.get("/projects/{pid}/assistant")
     def get_assistant(pid: str):
         """The provider in use, whether the user must agree before it gets project text
-        (``consent``), the saved chat and the turn still running, if any."""
+        (``consent``), whether its visual search can run (``frame_index``: ``ok``, else ``why``
+        and ``fix``, :func:`cutpoint.assistant.lookfor.index_state`), the saved chat and the
+        turn still running, if any."""
         p = project_dir(pid)
         running = [t.view() for t in turns.of(str(p)) if t.status == "running"]
         provider = assistant_provider()
@@ -7310,6 +7312,7 @@ def create_app(port: int) -> FastAPI:
             "provider": ai_providers.describe(provider),
             "consent": consent_view(provider),
             "frames": frames_state(p, provider),
+            "frame_index": ai_lookfor.index_state([s["path"] for s in sources.entries(p)]),
             "turns": ai_store.turns(p),
             "running": running,
             # the files the chat may name: the page links a reply naming one (Open folder)
@@ -7406,6 +7409,7 @@ def create_app(port: int) -> FastAPI:
             windows,
             edge_planner(p),
             frame_index=ai_lookfor.indexed(list(durations)),  # no frames, no look_for
+            index_state=ai_lookfor.index_state(list(durations)),  # why not, in the rules
             words=edge_planner(p).words,  # find_words: the cached transcript words
             ranking=ranking,
             ranking_key=ranking_key(p),  # kept in the turn: later turns know when ids changed
