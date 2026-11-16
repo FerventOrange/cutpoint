@@ -1,0 +1,428 @@
+"""Re-ranking a project with another style from ``cutpoint ui``, and its undo."""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
+
+from cutpoint import cache, folders, jsonout, runstate
+from cutpoint.assistant import ranking as ai_ranking
+from cutpoint.pano import project as pano_project
+from cutpoint.styles import AUTO, Style, get_style
+from cutpoint.styles import style_name as fallback_style_name
+from cutpoint.ui.analysis import ui_styles
+from cutpoint.ui.common import BUSY_TEXT, bad, job_env, logger
+from cutpoint.ui.files import _inside, _own, read_meta
+from cutpoint.ui.projects import RERANKING, moment_id, project_busy, run_state
+
+CUDA_PROBE_S = 120.0  # seconds the CUDA check's child process may take (it imports torch)
+
+
+class CudaProbe:
+    """Whether torch sees a CUDA GPU, as :func:`cutpoint.analyze.plan_layers` asks it (the
+    visual layer of a ranking's readiness, #902), from a child ``python`` once per UI session:
+    the UI process never imports torch. False when torch is missing or broken, or the check
+    fails or takes longer than :data:`CUDA_PROBE_S`."""
+
+    CODE = "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 1)"
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()  # one check at a time; later callers take its answer
+        self.seen: bool | None = None
+
+    def __call__(self) -> bool:
+        with self.lock:
+            if self.seen is None:
+                try:
+                    done = subprocess.run(
+                        [sys.executable, "-c", self.CODE],
+                        stdin=subprocess.DEVNULL,
+                        capture_output=True,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                        env=job_env(),
+                        timeout=CUDA_PROBE_S,
+                        check=False,
+                    )
+                    self.seen = done.returncode == 0
+                except (OSError, subprocess.TimeoutExpired):
+                    logger.debug("the CUDA check failed", exc_info=True)
+                    self.seen = False
+            return self.seen
+
+
+cuda_probe = CudaProbe()
+
+
+# --------------------------------------------------------------------------- ranking (#902)
+PREVIEW_TOP = 10  # moments a ranking preview lists, before and after
+RERANK_BACKUP = "highlights.before-rerank.json"  # cutpoint.rerank.BACKUP (not imported at start)
+STALE_TEXT = (
+    "The moments changed since this preview (an analysis or another ranking ran); preview it again"
+)
+RERANK_BUSY_TEXT = "A ranking is being applied to this project; wait a moment"
+UNDO_STALE_TEXT = "The moments changed since the page loaded (an analysis or another ranking ran)"
+NO_UNDO_TEXT = "There is no earlier ranking of this analysis to go back to"
+
+
+class PlainJSON(JSONResponse):
+    """The JSON reply of plain data, the same bytes as FastAPI's own (:func:`jsonable_encoder`,
+    then :class:`JSONResponse`) without first copying it value by value: a project's reply holds
+    every moment, thousands for a long gameplay recording (A742). ``jsonable_encoder`` still
+    takes a value JSON has no type for."""
+
+    def render(self, content: Any) -> bytes:
+        return json.dumps(
+            content,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
+            default=jsonable_encoder,
+        ).encode("utf-8")
+
+
+class RankingRefused(Exception):
+    """A ranking preview or apply refused with a ``code`` the page reads (``ApiError.code``):
+    :meth:`response` is the JSON answer, ``extra`` keys beside ``detail`` and ``code``."""
+
+    def __init__(self, detail: str, code: str, status: int = 409, **extra: Any) -> None:
+        super().__init__(detail)
+        self.detail, self.code, self.status, self.extra = detail, code, status, extra
+
+    def response(self) -> JSONResponse:
+        return JSONResponse(
+            {"detail": self.detail, "code": self.code, **self.extra}, status_code=self.status
+        )
+
+
+def ranking_key(p: Path) -> str | None:
+    """The ranking key (:func:`cutpoint.rerank.key`) of the project's ``highlights.json``, which
+    a preview is applied against; None without a readable file of its own."""
+    from cutpoint import rerank  # noqa: PLC0415
+
+    if not _inside(p, rerank.HIGHLIGHTS):
+        return None
+    try:
+        return rerank.key((p / rerank.HIGHLIGHTS).read_bytes())
+    except OSError:
+        return None
+
+
+def _ranking_style(name: object) -> Style:
+    """The library style (built in or saved) ``name`` a ranking takes, else 400 (auto too:
+    a ranking needs a style, not a detection)."""
+    if not isinstance(name, str) or not name or name == AUTO:
+        raise bad("style must be a style from the library, not auto")
+    if name not in ui_styles():
+        raise bad(f"unknown style {name!r}")
+    return get_style(name)
+
+
+def _ranking_check(p: Path) -> None:
+    """Refuse a ranking of ``p``: 409 for a 360 project; :class:`RankingRefused`
+    ``folder_busy`` while a run holds it or a ranking is being applied to it."""
+    if read_meta(p).get("kind") == "360" or (p / pano_project.PANO_FILE).is_file():
+        raise bad("A 360 project is ranked by its analysis; analyze it again in the style", 409)
+    if p in RERANKING:
+        raise RankingRefused(RERANK_BUSY_TEXT, jsonout.FOLDER_BUSY)
+    if project_busy(p, run_state(p, True)):
+        raise RankingRefused(BUSY_TEXT, jsonout.FOLDER_BUSY)
+
+
+def _ranking_load(p: Path) -> tuple[bytes, dict[str, Any]]:
+    """The bytes and object of the project's ``highlights.json``; 409 without an analysis."""
+    from cutpoint import rerank  # noqa: PLC0415
+
+    _own(p, rerank.HIGHLIGHTS)  # never read through a link out of the project
+    try:
+        return rerank.load(p)
+    except FileNotFoundError:
+        raise bad("This project has no analysis to rank yet; analyze it first", 409) from None
+    except ValueError:  # its message names the full path: the page gets file names only
+        raise bad("highlights.json records no analysis; analyze the project again", 409) from None
+
+
+def _ranking_rows(hl: dict[str, Any], other: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """The first :data:`PREVIEW_TOP` moments of ``hl`` for a preview card: ``rank``, the page's
+    ``id`` (:func:`moment_id`), ``cli_id``, the source's ``file`` name (never its path),
+    ``start``, ``end``, ``score``, ``label`` and, with ``other``, ``was`` (the rank there)."""
+    from cutpoint import rerank  # noqa: PLC0415
+
+    out = []
+    for r in rerank.rows(hl, PREVIEW_TOP, other):
+        src = str(r.get("source") or "")
+        row = {
+            "rank": r["rank"],
+            "id": moment_id(src, r["start"], r["end"]),
+            "cli_id": r["id"],
+            "file": Path(src).name,
+            "start": r["start"],
+            "end": r["end"],
+            "score": r["score"],
+            "label": r["label"],
+        }
+        if "was" in r:
+            row["was"] = r["was"]
+        out.append(row)
+    return out
+
+
+def _needs_analyze(style: Style, missing: list[dict[str, str | None]]) -> dict[str, Any]:
+    """What keeps a ranking in ``style`` from the caches (``missing``,
+    :meth:`cutpoint.rerank.Missing.record`): ``missing`` with file names only, whether
+    analyzing again can help (``can_analyze``: not when only offline footage is missing) and
+    the ``message`` the page shows."""
+    rows = [
+        {
+            "feature": m.get("feature"),
+            "detail": m.get("detail"),
+            "file": Path(str(m["source"])).name if m.get("source") else None,
+        }
+        for m in missing
+    ]
+    shown = "; ".join(str(m.get("detail")) for m in missing[:5])
+    more = f" (and {len(missing) - 5} more)" if len(missing) > 5 else ""
+    offline = [m for m in missing if m.get("feature") == "offline"]
+    if offline and len(offline) == len(missing):
+        then = "Reconnect the footage and preview it again"
+    elif offline:
+        then = f"Reconnect the footage, then analyze again as {style.name}"
+    else:
+        then = f"Analyze again as {style.name} to rank it"
+    return {
+        "missing": rows,
+        "can_analyze": len(offline) < len(missing),
+        "message": f"Ranking with the {style.name} style needs analyze: {shown}{more}. {then}",
+    }
+
+
+def ranking_preview(p: Path, style_name: object) -> dict[str, Any]:
+    """The project ``p`` re-ranked in the library style ``style_name`` from its caches
+    (:func:`cutpoint.rerank.ranked`), for the page's before/after card; writes nothing.
+
+    ``ready`` true: ``style``, ``from`` (the style it is ranked in now), ``base`` (the
+    :func:`ranking_key` the apply route checks), the first :data:`PREVIEW_TOP` moments ``top``
+    (with ``was``) and ``before``, ``new_ids_count``, ``dropped_count``, ``suggested_top``
+    ``before`` and ``after``, ``notes`` and ``seconds``. ``ready`` false (analyze needed):
+    ``style``, ``from``, ``base`` and :func:`_needs_analyze`'s keys.
+
+    Raises:
+        HTTPException: 400 for auto or a style not in the library, 409 for a 360 project or
+            one without an analysis.
+        RankingRefused: ``folder_busy`` while a run holds the project.
+    """
+    from cutpoint import rerank  # noqa: PLC0415
+    from cutpoint.errors import NeedsAnalyzeError  # noqa: PLC0415
+
+    style = _ranking_style(style_name)
+    _ranking_check(p)
+    t0 = time.perf_counter()
+    raw, hl = _ranking_load(p)
+    head = {"style": style.name, "from": fallback_style_name(hl), "base": rerank.key(raw)}
+    ready = rerank.readiness(p, hl, style, cuda_probe)
+    missing = [m.record() for m in ready.missing]
+    after: dict[str, Any] = {}
+    if not missing:
+        try:
+            after = rerank.ranked(p, hl, style, raw, check=False)
+        except NeedsAnalyzeError as err:  # a source with nothing cached after all
+            missing = err.missing
+    if missing:
+        return {"ready": False, **head, **_needs_analyze(style, missing)}
+    new_ids, dropped = rerank.changes(hl, after)
+    return {
+        "ready": True,
+        **head,
+        "top": _ranking_rows(after, hl),
+        "before": _ranking_rows(hl),
+        "new_ids_count": len(new_ids),
+        "dropped_count": len(dropped),
+        "suggested_top": {"before": hl.get("suggested_top"), "after": after.get("suggested_top")},
+        "notes": ready.notes,
+        "seconds": round(time.perf_counter() - t0, 2),
+    }
+
+
+def _source_paths(hl: dict[str, Any]) -> list[str]:
+    return [str(s.get("path")) for s in hl.get("sources") or [] if isinstance(s, dict)]
+
+
+def _ranking_undo(p: Path, hl: dict[str, Any]) -> tuple[dict[str, Any], bool] | None:
+    """The ranking an Undo (or Redo) of ``p`` swaps in, given its highlights.json ``hl``: the
+    backup's object and whether ``hl`` is the ranking an Undo went back to (the swap is a Redo
+    then). None when nothing matches (the Undo is hidden):
+
+    - ``hl`` is sealed (``settings.rerank_undo``, :func:`cutpoint.rerank.seal`): no analysis,
+      ``events`` run or hand edit rewrote highlights.json since a re-rank save or a swap wrote
+      it (a re-analysis keeps ``settings.rerank_backup``, but not the seal);
+    - :data:`RERANK_BACKUP` is in the project (not a link out of it) and its key is
+      ``settings.rerank_backup``: the very file that ranking replaced, unchanged;
+    - the backup is an analysis of the same sources.
+    """
+    from cutpoint import rerank  # noqa: PLC0415
+
+    st = hl.get("settings")
+    mark = st.get(rerank.UNDO) if isinstance(st, dict) else None
+    link = st.get("rerank_backup") if isinstance(st, dict) else None
+    if not isinstance(mark, dict) or not isinstance(link, str) or not _inside(p, RERANK_BACKUP):
+        return None
+    back_raw = cache.load_bytes(p / RERANK_BACKUP)
+    if back_raw is None or rerank.key(back_raw) != link or mark.get("seal") != rerank.seal(hl):
+        return None
+    try:
+        back = json.loads(back_raw.decode("utf-8-sig"))
+    except ValueError:  # UnicodeDecodeError too
+        return None
+    if (
+        not isinstance(back, dict)
+        or "style" not in back
+        or not isinstance(back.get("sources"), list)
+        or not isinstance(back.get("settings", {}), dict)
+        or _source_paths(back) != _source_paths(hl)
+    ):
+        return None
+    return back, mark.get("undone") is True
+
+
+# the last ranking_undo_view per project: (highlights.json key, backup size and mtime) -> view
+_UNDO_SEEN: dict[Path, tuple[tuple[str, int, int], dict[str, Any] | None]] = {}
+
+
+def ranking_undo_view(p: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
+    """What the page's Undo ranking offers (:func:`_ranking_undo`): ``action`` ``undo`` or
+    ``redo`` and ``style``, the style of the ranking it swaps in; None when there is none to
+    swap in, and for 360 projects. Remembered per project until either file changes."""
+    from cutpoint import rerank  # noqa: PLC0415
+
+    if meta.get("kind") == "360" or (p / pano_project.PANO_FILE).is_file():
+        return None
+    if not _inside(p, RERANK_BACKUP) or not _inside(p, rerank.HIGHLIGHTS):
+        return None
+    try:
+        st = (p / RERANK_BACKUP).stat()
+        raw = (p / rerank.HIGHLIGHTS).read_bytes()
+    except OSError:
+        return None
+    seen = (rerank.key(raw), st.st_size, st.st_mtime_ns)
+    if (got := _UNDO_SEEN.get(p)) is not None and got[0] == seen:
+        return got[1]
+    try:
+        hl = json.loads(raw.decode("utf-8-sig"))
+    except ValueError:
+        hl = None
+    found = _ranking_undo(p, hl) if isinstance(hl, dict) else None
+    view = (
+        None
+        if found is None
+        else {"action": "redo" if found[1] else "undo", "style": found[0].get("style")}
+    )
+    _UNDO_SEEN[p] = (seen, view)
+    return view
+
+
+def _swap_ranking_files(p: Path, restored: bytes, current: bytes) -> None:
+    """Swap the project's rankings: highlights.json gets ``restored`` (made from the backup) and
+    :data:`RERANK_BACKUP` ``current`` (highlights.json's bytes now). Both are staged as temp
+    files first, then renamed: highlights.json first, while the backup still holds the
+    ranking it gets. A failed second rename puts highlights.json back; should that fail too,
+    the temp file holding ``current`` is kept (its path logged), as one a hard kill leaves."""
+    hl_path, back_path = p / "highlights.json", p / RERANK_BACKUP
+    staged: list[Path] = []
+    keep = False
+    try:
+        for path, data in ((hl_path, restored), (back_path, current)):
+            fd, name = tempfile.mkstemp(dir=p, prefix=path.name + ".", suffix=".tmp")
+            os.close(fd)
+            staged.append(Path(name))
+            staged[-1].write_bytes(data)
+            cache.match_mode(staged[-1], path)
+        cache.retry_locked(lambda: staged[0].replace(hl_path), hl_path, "replace")
+        try:
+            cache.retry_locked(lambda: staged[1].replace(back_path), back_path, "replace")
+        except BaseException:
+            try:
+                cache.save_bytes(hl_path, current)  # as it was: all or nothing
+            except BaseException:
+                keep = True  # the only copy of the current ranking now
+                logger.error("The ranking before the swap is kept in %s", staged[1])
+                raise
+            raise
+    finally:
+        for tmp in staged if not keep else ():
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+
+
+def ranking_swap(p: Path, base: str) -> tuple[dict[str, Any], dict[str, Any], bool] | None:
+    """Undo (or Redo) the last ranking change of ``p``, under its run lock: swap highlights.json
+    and :data:`RERANK_BACKUP` (:func:`_ranking_undo`). The ranking swapped in keeps its moments
+    and ids as they are; only its settings change: ``rerank_backup`` links it to the file it
+    replaced, ``last_candidate_id`` is the higher of the two (never down), and it is sealed
+    again (``undone`` flips, so the next swap is the other way). Returns the ranking before,
+    the one now and whether this was an Undo; None when there is nothing to swap in
+    (:func:`_ranking_undo` is None).
+
+    Raises:
+        StaleRankingError: If highlights.json's key is not ``base`` any more.
+        FolderBusyError: If another run holds the project's lock.
+        FileNotFoundError, ValueError: As :func:`cutpoint.rerank.load`.
+    """
+    from cutpoint import rerank  # noqa: PLC0415
+    from cutpoint.errors import StaleRankingError  # noqa: PLC0415
+
+    with folders.swap_lock(p / runstate.LOCK_NAME, p):
+        raw, hl = rerank.load(p)
+        if rerank.key(raw) != base:
+            raise StaleRankingError(f"{p / rerank.HIGHLIGHTS} changed since the page loaded")
+        found = _ranking_undo(p, hl)
+        if found is None:
+            return None
+        back, undone = found
+        st = back.setdefault("settings", {})
+        st["rerank_backup"] = rerank.key(raw)
+        last = [(x.get("settings") or {}).get("last_candidate_id") for x in (hl, back)]
+        if ints := [n for n in last if isinstance(n, int) and not isinstance(n, bool)]:
+            st["last_candidate_id"] = max(ints)
+        rerank.sealed(back, undone=not undone)
+        # as cache.save_json writes it: the indent's line breaks in the platform's endings
+        text = json.dumps(back, indent=2, ensure_ascii=False).replace("\n", os.linesep)
+        _swap_ranking_files(p, text.encode("utf-8"), raw)
+        _UNDO_SEEN.pop(p, None)
+        return hl, back, not undone
+
+
+class RankingHook:
+    """The chat's ``preview_ranking`` for project ``p`` (:class:`cutpoint.assistant.ranking.Hook`):
+    the library styles with their saved description, the style the moments are ranked in now
+    (``current``) and :func:`ranking_preview`, its refusals as ``RankingError``."""
+
+    def __init__(self, p: Path, current: str) -> None:
+        self.p, self._current = p, current
+
+    def styles(self) -> list[tuple[str, str]]:
+        return [
+            (n, str((get_style(n).learned or {}).get("description") or "")) for n in ui_styles()
+        ]
+
+    def current(self) -> str:
+        return self._current
+
+    def preview(self, name: str) -> dict[str, Any]:
+        try:
+            return ranking_preview(self.p, name)
+        except RankingRefused as err:
+            raise ai_ranking.RankingError(err.detail, err.code == jsonout.FOLDER_BUSY) from None
+        except HTTPException as err:
+            raise ai_ranking.RankingError(str(err.detail)) from None

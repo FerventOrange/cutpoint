@@ -7,7 +7,7 @@ const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
 const MIN_VIEW = 2; // seconds: the rail's deepest zoom
 const LONG_CLIP = 600; // seconds: longer clips get a note under the cut line
-const LABEL_MAX = 200; // characters; ui.py validate_segments rejects longer labels
+const LABEL_MAX = 200; // characters; ui/projects.py validate_segments rejects longer labels
 const THUMB_W = 160; // pixels requested for sequence thumbnails
 const FILM_TILE = 78; // pixels: the rail's filmstrip holds about one keyframe still per this width (#261)
 const FILM_STEP = 0.25; // seconds: filmstrip stills sit on multiples of this times a power of 2, so pans and 2x zooms reuse them
@@ -3219,7 +3219,7 @@ function thumb(s, cls = 'seq-thumb', lazy = false) {
   return box;
 }
 
-/** Why a label cannot be saved (mirrors ui.py: at most 200 printable characters), or ''. */
+/** Why a label cannot be saved (mirrors ui/projects.py validate_segments: at most 200 printable characters), or ''. */
 function labelError(text) {
   if (text.length > LABEL_MAX) return `Use at most ${LABEL_MAX} characters.`;
   if (/[\p{C}\p{Zl}\p{Zp}]|(?! )\p{Zs}/u.test(text)) return 'Use letters, digits, punctuation and plain spaces only.';
@@ -3896,7 +3896,7 @@ function sbBlock(s, i, n, stop) {
 
 // ---------- cut mode ----------
 
-const round3 = (t) => Math.round(t * 1000) / 1000; // ui.py keeps times to the millisecond
+const round3 = (t) => Math.round(t * 1000) / 1000; // segments.py keeps times to the millisecond
 let cutStillTimer = 0;
 // a roll under the pointer: {id, pid, a, b, x0, x, end0, out, into, moved, kept, raf}; a, b: the
 // clips' ids; end0, out, into: clip 1's trim end and the shown out and in when it started
@@ -6822,7 +6822,7 @@ async function loadRoleModels(role, refresh) {
 }
 
 const SUB_POLL_MS = 1500;
-const PROXY_START_FAILED = 'the subscription proxy did not start'; // ui.py proxy_error and Log in
+const PROXY_START_FAILED = 'the subscription proxy did not start'; // ui/__init__.py proxy_error and Log in
 const subNote = (...parts) => $('#modelsSubsStatus')?.replaceChildren(...parts);
 
 async function loadLogins({ started = false } = {}) {

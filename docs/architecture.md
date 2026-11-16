@@ -34,7 +34,7 @@ a detailed diagram of each analyze step, the background OCR and the `edit --kind
 | `jsonout.py`, `progress.py` | `--json` result envelope; `CUTPOINT_PROGRESS` lines |
 | `capabilities.py` | `cutpoint capabilities` report |
 | `skill/` | `cutpoint skill` and the packaged `SKILL.md` |
-| `ui.py`, `web/` | Loopback browser workspace; static ES modules, project/review API, scoped media/proxies, and isolated CLI subprocess jobs |
+| `ui/` (package: `__init__` builds the app and routes; helpers in submodules), `web/` | Loopback browser workspace; static ES modules, project/review API, scoped media/proxies, and isolated CLI subprocess jobs |
 | `cache.py`, `state.py`, `utils.py` | JSON cache files and atomic writes, `retry_locked` for files another program holds; project state; shared helpers |
 | `errors.py` | Shared exceptions: `FFmpegError`, `FFmpegNotFoundError`, `EncoderUnavailableError`, `FolderBusyError` |
 | `procs.py` | Child processes: isolated start, low priority, soft stop and tree kill, Windows job object so children end with Cutpoint, liveness check |

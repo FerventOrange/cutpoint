@@ -148,6 +148,12 @@ select = [
 ignore = [
     "E501",          # long lines are handled by the formatter; stragglers are strings/comments
 ]
+# the ui package logs through the one logger of cutpoint.ui.common (BLE001 sees it log)
+logger-objects = ["cutpoint.ui.common.logger"]
+
+[tool.ruff.lint.per-file-ignores]
+# the cutpoint.ui facade re-exports the names its submodules define
+"src/cutpoint/ui/__init__.py" = ["F401"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["cutpoint"]
