@@ -173,3 +173,33 @@ def test_a_read_with_junk_once_does_not_win() -> None:
 def test_icon_cut_takes_the_nearest_boundary(text: str, k: float, cut: int) -> None:
     """The nearest space or word boundary to the gap's share; a space wins only a tie."""
     assert _icon_cut(text, k) == cut
+
+
+def _two_lines() -> tuple[np.ndarray, list]:
+    """A colour-team entry over two rows: a blue actor line above an orange target line."""
+    img = np.zeros((70, 200, 3), np.uint8)
+    img[:30], img[40:] = BLUE, ORANGE
+    for x in range(6, 194, 9):
+        img[8:22, x : x + 2] = WHITE
+        img[48:62, x : x + 2] = WHITE
+    items = [_item(0, 200, "Alder"), [[[0, 40], [200, 40], [200, 70], [0, 70]], "Boxer7", 0.95]]
+    return img, items
+
+
+@pytest.mark.parametrize("entry", [None, "auto", "two_line", "paren"])
+def test_a_two_line_colour_entry_is_read_by_auto_and_older_entry_names(entry) -> None:
+    """``"two_line"`` and ``"paren"`` were entry names of their own (#1085 A18, A21): a hand
+    preset that still names them loads and reads as ``"auto"``."""
+    img, items = _two_lines()
+    feed = {"colors": {"blue": "ally", "orange": "enemy"}}
+    parser = FeedParser(feed | ({"entry": entry} if entry else {}), (), 1.0)
+    evs = parser.parse(img, items)
+    assert [(e["killer"], e["victim"], e["killer_team"]) for e in evs] == [
+        ("Alder", "Boxer7", "ally")
+    ]
+
+
+def test_one_line_entry_reads_no_two_line_colour_entry() -> None:
+    img, items = _two_lines()
+    feed = {"colors": {"blue": "ally", "orange": "enemy"}, "entry": "one_line"}
+    assert FeedParser(feed, (), 1.0).parse(img, items) == []

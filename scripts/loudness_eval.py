@@ -635,7 +635,7 @@ class BoomGrids:
                 self.det = audio_events.PannsDetector()
             names = audio_events.load_labels()
             idx = [names.index(lab) for lab in labels]
-            probs, _ = audio_events.pooled_probabilities(source, self.det, params, idx)
+            probs = audio_events.pooled_probabilities(source, self.det, params, idx)
             dt = max(1, round(params.pool_s / audio_events.FRAME_S)) * audio_events.FRAME_S
             np.savez_compressed(path, probs=probs, dt=np.float64(dt))
         return boom_speech(probs, dt, labels, thr, n)

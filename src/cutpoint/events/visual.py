@@ -426,11 +426,10 @@ class VisualModels:
         # Square crops (10% margin) around confident person boxes for CLIP.
         crops, where = [], []
         for i, d in enumerate(dets):
-            cand = [
-                j
-                for j in np.argsort(-d[:, 1])
-                if d[j, 0] == COCO_PERSON and d[j, 1] >= self.box_min_score
-            ][: self.box_max]
+            # dets hold person boxes only (DET_LABELS above)
+            cand = [j for j in np.argsort(-d[:, 1]) if d[j, 1] >= self.box_min_score][
+                : self.box_max
+            ]
             for j in cand:
                 x1, y1, x2, y2 = d[j, 2:6] * [w, h, w, h]
                 side = max(x2 - x1, y2 - y1) * 1.1

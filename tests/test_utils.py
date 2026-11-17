@@ -135,25 +135,6 @@ def test_game_slug_normalises_to_nfc():
     assert regions._game_slug("Vide\u0301o Clip") == "vid\u00e9o-clip"
 
 
-@pytest.mark.parametrize(
-    "name",
-    [chr(c) for c in range(32, 127)]
-    + [
-        "".join(chr(c) for c in range(32, 127)),
-        "Some Game 2",
-        "  --My__Game--  ",
-        "ALL CAPS!!",
-        "a-b_c.d e",
-        "007",
-        "",
-        "---",
-    ],
-)
-def test_game_slug_is_the_legacy_slug_for_ascii(name):
-    """Keys of ASCII names are byte-identical to before #822, so their presets keep matching."""
-    assert regions._game_slug(name) == regions._legacy_slug(name)
-
-
 # -- find_videos: unreadable inputs ------------------------------------------------------
 
 needs_chmod = pytest.mark.skipif(

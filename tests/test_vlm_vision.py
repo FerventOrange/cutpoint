@@ -242,8 +242,8 @@ def test_describe_windows_with_the_vision_client(ollama, tmp_path, monkeypatch) 
     # Ollama indents structured output: twice the token budget of a compact reply
     assert body["options"] == {
         "temperature": 0.2,
-        "num_ctx": params.ctx,
-        "num_predict": 2 * params.max_tokens,
+        "num_ctx": vw.NUM_CTX,
+        "num_predict": 2 * vw.MAX_TOKENS,
     }
     assert "input_audio" not in json.dumps(body)
     (res,) = results

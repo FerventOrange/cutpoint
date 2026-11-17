@@ -172,47 +172,6 @@ def test_pictures_of_frames_no_plan_uses_are_removed_and_their_records_redone(tm
     assert _key(again) == _key(first)
 
 
-def test_a_legacy_picture_name_two_records_share_is_not_trusted(tmp_path, fake_ocr):
-    """Older caches named a picture b<burst>_<k>.jpg: two records naming one file means a
-    later plan replaced the first's picture, so neither is reused."""
-    src = SimpleNamespace(
-        name="long.mp4", path=tmp_path / "long.mp4", io_path=tmp_path / "long.mp4"
-    )
-    bursts = [(src, 0.0), (src, 60.0)]
-    first = _run(tmp_path, bursts)
-    legacy = []
-    for f in first:
-        name = f"b{f['burst']:03d}_{f['k']}.jpg"
-        (tmp_path / "frames" / f["frame"]).rename(tmp_path / "frames" / name)
-        # burst 1's records claim burst 0's files (as after another plan wrote over them)
-        legacy.append(f | {"frame": f"b000_{f['k']}.jpg"})
-    (tmp_path / "ocr.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in legacy), encoding="utf-8"
-    )
-    fake_ocr.clear()
-    again = _run(tmp_path, bursts)
-    assert fake_ocr == [0.0, 60.0]
-    assert len({f["frame"] for f in again}) == len(again)
-
-
-def test_a_legacy_cache_with_unique_picture_names_is_reused(tmp_path, fake_ocr):
-    src = SimpleNamespace(name="long.mp4", path=tmp_path / "long.mp4", io_path=tmp_path / "x.mp4")
-    bursts = [(src, 0.0), (src, 60.0)]
-    first = _run(tmp_path, bursts)
-    legacy = []
-    for f in first:
-        name = f"b{f['burst']:03d}_{f['k']}.jpg"
-        (tmp_path / "frames" / f["frame"]).rename(tmp_path / "frames" / name)
-        legacy.append(f | {"frame": name})
-    (tmp_path / "ocr.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in legacy), encoding="utf-8"
-    )
-    fake_ocr.clear()
-    again = _run(tmp_path, bursts)
-    assert fake_ocr == []
-    assert {p.name for p in (tmp_path / "frames").glob("*.jpg")} == {f["frame"] for f in again}
-
-
 def test_same_named_sources_in_other_folders_get_their_own_pictures(tmp_path, fake_ocr):
     a = SimpleNamespace(name="clip.mp4", path=tmp_path / "a" / "clip.mp4", io_path=tmp_path / "a")
     b = SimpleNamespace(name="clip.mp4", path=tmp_path / "b" / "clip.mp4", io_path=tmp_path / "b")
@@ -265,35 +224,29 @@ def test_same_named_sources_in_other_folders_get_distinct_ids_and_both_replay(tm
     assert _key(again) == _key(first)
 
 
-def test_a_record_under_the_old_file_name_id_is_adopted_when_its_picture_matches(
-    tmp_path, fake_ocr
-):
-    """#794: older caches keyed a frame by file name and time; the same file's frames keep
-    their OCR (no re-read), and a record whose picture is another path's does not."""
+def test_records_of_an_older_cache_are_read_again(tmp_path, fake_ocr):
+    """Older caches keyed a frame by file name and time (#794), named its picture by burst
+    and frame number and had no ``src_key``: such records are no hits, the frames are read
+    again (no crash) and get the current ids."""
     src = SimpleNamespace(
         name="clip.mp4", path=tmp_path / "clip.mp4", io_path=tmp_path / "clip.mp4"
     )
     bursts = [(src, 0.0)]
     first = _run(tmp_path, bursts)
-    old = [f | {"id": f"clip.mp4@{f['t']:.1f}"} for f in first]
+    old = []
+    for f in first:
+        name = f"b{f['burst']:03d}_{f['k']}.jpg"
+        (tmp_path / "frames" / f["frame"]).rename(tmp_path / "frames" / name)
+        rec = {k: v for k, v in f.items() if k != "src_key"}
+        old.append(rec | {"id": f"clip.mp4@{f['t']:.1f}", "frame": name})
     (tmp_path / "ocr.jsonl").write_text(
         "".join(json.dumps(r) + "\n" for r in old), encoding="utf-8"
     )
     fake_ocr.clear()
     again = _run(tmp_path, bursts)
-    assert fake_ocr == []
-    assert _key(again) == _key(first)  # taken over under the new ids
-
-    # the same old ids with pictures of another path (a same-named file elsewhere): redone
-    foreign = [r | {"frame": "0123456789abcdef.jpg"} for r in old]
-    for r in foreign:
-        (tmp_path / "frames" / r["frame"]).write_bytes(b"x")
-    (tmp_path / "ocr.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in foreign), encoding="utf-8"
-    )
-    fake_ocr.clear()
-    _run(tmp_path, bursts)
     assert fake_ocr == [0.0]
+    assert _key(again) == _key(first)
+    assert [f["src_key"] for f in again] == [f["src_key"] for f in first]
 
 
 def test_ocr_records_of_other_plans_are_pruned_after_a_complete_run(tmp_path, fake_ocr):
@@ -346,8 +299,9 @@ def test_an_interrupted_run_leaves_the_ocr_cache_unpruned(tmp_path, fake_ocr):
 
 
 def test_records_carry_a_per_file_src_key_also_from_the_cache(tmp_path, fake_ocr):
-    """#817: new records, cache hits without one (written before it) and records adopted
-    under an old id all get ``<file name>~<source tag>``; the cache keeps it."""
+    """#817: new records and cache hits without one (written before it) get
+    ``<file name>~<source tag>``; the cache keeps it. Records under an old id are read
+    again."""
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
     a = SimpleNamespace(name="clip.mp4", path=tmp_path / "a" / "clip.mp4", io_path=tmp_path / "a")
@@ -374,5 +328,5 @@ def test_records_carry_a_per_file_src_key_also_from_the_cache(tmp_path, fake_ocr
         )
         fake_ocr.clear()
         again = _run(tmp_path, bursts if not strip_id else [(a, 0.0)])
-        assert fake_ocr == []
+        assert fake_ocr == ([0.0] if strip_id else [])  # an old id is read again
         assert [f["src_key"] for f in again] == [f["src_key"] for f in first[: len(again)]]

@@ -515,6 +515,3 @@ def test_static_texts_are_per_file_for_same_named_files() -> None:
     assert len(bottom) == 1
     assert all(_holds(bottom[0], b) for bs in notice.values() for b in bs)
     assert bottom[0]["evidence"]["sources"] == 1
-    # records written before src_key: one source, whose static texts hide the notice
-    legacy = [{k: v for k, v in f.items() if k != "src_key"} for f in frames]
-    assert [p for p in _extra(legacy) if p["y"] > 800] == []

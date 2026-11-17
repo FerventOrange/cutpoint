@@ -18,7 +18,6 @@ from cutpoint.events.killfeed import (
     OcrParams,
     detect_ocr_events,
     menu_rules,
-    menu_times,
     text_frames,
 )
 from cutpoint.events.regions import preset_from_dict
@@ -163,7 +162,7 @@ def test_menu_rules_name_the_rule() -> None:
     assert [rules[n] for n in range(12)] == ["none"] * 10 + ["cover", "jump"]
     assert (info["median"], info["jump"]) == (30.0, 60.0)
     assert info["static_s"] == info["text_lines"] == float("inf")  # no feed times: off
-    assert menu_times(frames) == {10 / 3, 11 / 3}
+    assert {f["t"] for f in frames if rules[f["id"]] != "none"} == {10 / 3, 11 / 3}
 
 
 def test_list_menu_with_a_quiet_median() -> None:
@@ -177,8 +176,8 @@ def test_list_menu_with_a_quiet_median() -> None:
         (f"Option {chr(65 + i)}", 500 + (i % 2) * 700, 290 + (i // 2) * 38) for i in range(31)
     ]
     frames = [frame(n, _screen(n / 3 + 40)) for n in range(20)] + [frame(20, listed)]
-    assert menu_times(frames) == {20 / 3}
     rules, info = menu_rules(frames)
+    assert {f["t"] for f in frames if rules[f["id"]] != "none"} == {20 / 3}
     assert rules[20] == "list" and info["jump"] == float("inf")
 
 
@@ -189,7 +188,7 @@ def test_box_jump_needs_a_busy_median() -> None:
 
     # region boxes are few: 30 boxes along an edge are no jump over a median of 4
     frames = [frame(n, 2 + n % 5) for n in range(20)] + [frame(20, 30)]
-    assert menu_times(frames) == set()
+    assert set(menu_rules(frames)[0].values()) == {"none"}
     # a quiet HUD (median 0): the jump is off, not inf x 0
     assert menu_rules([frame(n, 0) for n in range(5)])[1]["jump"] == float("inf")
 

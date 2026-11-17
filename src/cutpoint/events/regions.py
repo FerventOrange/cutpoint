@@ -491,10 +491,7 @@ def first_guess(path: str, project: Path | None = None) -> str:
     "2026-11-08 19-01-53.mkv"), or by a generic recorder name and a date ("Replay
     2026-11-08 19-01-53.mkv", "Desktop 2024.11.14 ... .DVR.mp4"), share the key of the first such video in the folder, by
     name (:func:`date_group`), so one game recorded there gets one discovery; the
-    fit check splits other games off. A key that :func:`_legacy_slug` spells differently
-    (a non-ASCII name) and that has no preset yet while the legacy key has one gives the
-    legacy key, so presets written before keep matching; not the legacy "game", which
-    every name without ASCII letters or digits had.
+    fit check splits other games off.
     """
     p = Path(path)
     stem = _DATE_RE.sub("", p.stem)
@@ -504,15 +501,7 @@ def first_guess(path: str, project: Path | None = None) -> str:
         name = p.parent.name
     else:
         name = date_group(path, project)[1] or p.stem
-    key, legacy = _game_slug(name), _legacy_slug(name)
-    if (
-        key != legacy
-        and legacy != "game"
-        and load_preset(key, project) is None
-        and load_preset(legacy, project) is not None
-    ):
-        return legacy
-    return key
+    return _game_slug(name)
 
 
 def _date_only(stem: str) -> bool:
@@ -673,22 +662,14 @@ def _game_slug(name: str) -> str:
     and lower-cased; each character that is not a letter or digit (``str.isalnum``) or a
     combining mark (Unicode category M, such as the vowel signs of "हिन्दी") becomes "-",
     runs of "-" collapse to one and leading or trailing ones go; an empty result is
-    "game". For ASCII names this is exactly :func:`_legacy_slug`. Non-ASCII letters,
-    digits and marks stay as they are, without folding: "²" and "Ⅻ" stay (NFKC would
-    make them "2" and "xii", but also turn "™" into "tm").
+    "game". Non-ASCII letters, digits and marks stay as they are, without folding: "²"
+    and "Ⅻ" stay (NFKC would make them "2" and "xii", but also turn "™" into "tm").
     """
     text = unicodedata.normalize("NFC", name).lower()
     slug = "".join(
         c if c.isalnum() or unicodedata.category(c).startswith("M") else "-" for c in text
     )
     return re.sub(r"-+", "-", slug).strip("-") or "game"
-
-
-def _legacy_slug(name: str) -> str:
-    """The key :func:`_game_slug` gave before non-ASCII letters were kept: lower-case
-    ASCII letters and digits, every other run of characters "-" ("Café Racer" ->
-    "caf-racer"). Only for finding presets written under it."""
-    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "game"
 
 
 def scaled(region: Region, width: int, height: int) -> tuple[int, int, int, int]:

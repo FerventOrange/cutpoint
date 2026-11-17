@@ -374,6 +374,29 @@ def test_an_icon_kill_read_once_and_kept_under_a_still_screen_survives(
     assert [(k[0], k[1]) for k in _kills(events)] == [("Zander", "Boxer7")]
 
 
+@pytest.mark.parametrize("entry", ["paren", "two_line"])
+def test_a_preset_naming_a_removed_feed_entry_runs_as_auto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
+) -> None:
+    """``"paren"`` and ``"two_line"`` are no entry names any more (#1085 A18, A21): a hand
+    preset that still names them loads, runs and reads the feed as ``"auto"``."""
+    from test_ocr_menus import FEED, NOTICE, _Engine, _feed_preset, _run  # noqa: PLC0415
+
+    shows = [
+        ("Zander destroyed Boxer7 (Jet)", 1410, 100, 5.0, 12.0),
+        ("Alder (Tank) Kip (Jet)", 1410, 140, 20.0, 26.0),
+    ]
+
+    def kills(feed: dict[str, Any], where: Path) -> list[tuple]:
+        where.mkdir()
+        engine = _Engine(_screen_of(shows), (NOTICE, FEED))
+        return _kills(_run(where, monkeypatch, engine, _feed_preset() | {"feed": feed})[0])
+
+    auto = kills({}, tmp_path / "auto")
+    assert [(k[0], k[1]) for k in auto] == [("Zander", "Boxer7")]
+    assert kills({"entry": entry}, tmp_path / entry) == auto
+
+
 def test_an_icon_line_read_again_for_35_s_is_a_label(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
