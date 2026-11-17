@@ -592,7 +592,7 @@ def _extend_locked(
                     resume.add(name, None)
                 logger.info("  %s: unchanged, copied from %s", name, reuse_dir.name)
             elif resume is not None and name in resume.taken:
-                read_err = resume.taken[name]
+                read_err = None
             elif pano is not None and pano_rec:
                 old = Path(pano_rec["path_file"]) if pano_rec.get("path_file") else None
                 read_err, pano_rec = pano.export(

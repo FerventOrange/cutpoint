@@ -279,11 +279,6 @@ def budget_fills(
         yield u, taken
 
 
-def budget_union(cands: Sequence[Range], budget: float) -> tuple[Union, list[Range]]:
-    """The union and the candidates taken for the one ``budget`` (see :func:`budget_fills`)."""
-    return next(iter(budget_fills(cands, [budget])))
-
-
 def budget_cover(
     u: Union, taken: Sequence[Range], labels: Sequence[Range], min_overlap: float
 ) -> tuple[int, float]:

@@ -402,7 +402,7 @@ def _source(path: Path) -> Path:
 def _export(src: Path, out: Path, lut: Lut | None) -> np.ndarray:
     """Export 0.5-1.5 s of ``src`` (graded with ``lut``) and return its mean RGB frame."""
     info = ffmpeg_utils.probe(src)
-    encode.export_clip(
+    encode.export_clip_checked(
         src, info, 0.5, 1.5, out, encode.choose_format([info], False), False, grade=lut
     )
     vf = (

@@ -198,6 +198,7 @@ def test_check_preview_reports_bad_frames_and_reuses_cached_views(
 
     class Fake:
         model = "fake-vl"
+        provider_name = wording = host = ""
         calls = 0
 
         def ask(self, jpeg: bytes) -> dict[str, Any] | None:

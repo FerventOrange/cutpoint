@@ -257,7 +257,7 @@ def test_vaapi_clip_export_and_assemble_keep_crop_scale_pad_and_captions(vaapi, 
     clips = tmp_path / "clips"
     clips.mkdir()
     for name in ("001.mp4", "002.mp4"):
-        encode.export_clip(
+        encode.export_clip_checked(
             src, ffmpeg_utils.probe(src), 0.0, 2.0, clips / name, fmt, False, Crop(320, 180, 0, 0)
         )
     clip = ffmpeg_utils.probe(clips / "001.mp4")
@@ -283,7 +283,7 @@ def test_vaapi_clip_export_and_assemble_keep_crop_scale_pad_and_captions(vaapi, 
 
 
 def _clip_job(tmp_path: Path):
-    """Arguments for ``encode.export_clip`` of a clip that needs no real source file."""
+    """Arguments for ``encode.export_clip_checked`` of a clip that needs no real source file."""
     info = media_info(tmp_path / "src.mp4")
     return info, encode.OutputFormat(1920, 1080, 30)
 
@@ -301,6 +301,7 @@ def fake_clip_encode(monkeypatch, broken: set[str]) -> list[str]:
         return ""
 
     monkeypatch.setattr(encode, "run", run)
+    monkeypatch.setattr(encode, "probe", lambda path: media_info(Path(path), duration=2.0))
     return codecs
 
 
@@ -315,7 +316,7 @@ def test_auto_gpu_encode_that_fails_is_redone_on_the_cpu_and_remembered(
     caplog.set_level("WARNING")
 
     for name in ("001.mp4", "002.mp4"):
-        encode.export_clip(info.path, info, 0.0, 2.0, tmp_path / name, fmt, False)
+        encode.export_clip_checked(info.path, info, 0.0, 2.0, tmp_path / name, fmt, False)
 
     assert codecs == ["h264_nvenc", "libx264", "libx264"]  # clip 2 skips the broken encoder
     assert (tmp_path / "001.mp4").exists() and (tmp_path / "002.mp4").exists()
@@ -323,7 +324,7 @@ def test_auto_gpu_encode_that_fails_is_redone_on_the_cpu_and_remembered(
 
     broken.clear()  # the driver is fixed and the user names nvenc
     monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "nvenc")
-    encode.export_clip(info.path, info, 0.0, 2.0, tmp_path / "003.mp4", fmt, False)
+    encode.export_clip_checked(info.path, info, 0.0, 2.0, tmp_path / "003.mp4", fmt, False)
     assert codecs[-1] == "h264_nvenc"  # tried again, not pinned to libx264
 
 
@@ -336,7 +337,7 @@ def test_forced_gpu_encode_that_fails_names_the_cpu_setting_and_is_not_retried(
     info, fmt = _clip_job(tmp_path)
 
     with pytest.raises(FFmpegError, match="CUTPOINT_VIDEO_ENCODER=cpu"):
-        encode.export_clip(info.path, info, 0.0, 2.0, tmp_path / "001.mp4", fmt, False)
+        encode.export_clip_checked(info.path, info, 0.0, 2.0, tmp_path / "001.mp4", fmt, False)
 
     assert codecs == ["h264_nvenc"]
     assert list(tmp_path.glob("*.mp4")) == []  # no final file, no .part

@@ -426,13 +426,14 @@ def test_export_clip_checks_the_source_for_log_footage(grabs, caplog, monkeypatc
         return ""
 
     monkeypatch.setattr(encode, "run", fake_run)
+    monkeypatch.setattr(encode, "probe", lambda path: media_info(Path(path), duration=1.0))
     monkeypatch.setattr(encode, "ffmpeg_filters", lambda: BOTH)
     monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
     caplog.set_level("WARNING")
     src = Path("GX010002.MP4")
     info = media_info(src, pix_fmt="yuv420p10le", **BT709)
 
-    encode.export_clip(
+    encode.export_clip_checked(
         src, info, 1.0, 2.0, tmp_path / "o.mp4", encode.OutputFormat(1920, 1080, 30), False
     )
 
@@ -502,7 +503,7 @@ def test_real_hlg_export_is_tone_mapped_and_tagged_bt709(tmp_path, monkeypatch):
     assert encode.color_kind(info) == "HLG"
     out = tmp_path / "001.mp4"
 
-    encode.export_clip(src, info, 0.0, 1.0, out, encode.OutputFormat(320, 180, 30), False)
+    encode.export_clip_checked(src, info, 0.0, 1.0, out, encode.OutputFormat(320, 180, 30), False)
 
     got = ffmpeg_utils.probe(out)
     assert (got.pix_fmt, got.color_transfer, got.color_primaries, got.color_space) == (
@@ -536,7 +537,7 @@ def test_real_hlg_export_keeps_the_saturation_of_its_sdr_original(tmp_path, monk
     )
     info = ffmpeg_utils.probe(src)
 
-    encode.export_clip(src, info, 0.0, 1.0, out, encode.OutputFormat(320, 180, 30), False)
+    encode.export_clip_checked(src, info, 0.0, 1.0, out, encode.OutputFormat(320, 180, 30), False)
 
     assert _saturation(out) == pytest.approx(_saturation(sdr), abs=0.03)
 
@@ -585,7 +586,7 @@ def test_real_bt601_export_is_bt709_data_and_tags(tmp_path, monkeypatch):
     assert encode.bt601_matrix(info) == "smpte170m"
     out = tmp_path / "001.mp4"
 
-    encode.export_clip(src, info, 0.0, 1.0, out, encode.OutputFormat(320, 180, 30), False)
+    encode.export_clip_checked(src, info, 0.0, 1.0, out, encode.OutputFormat(320, 180, 30), False)
 
     got = ffmpeg_utils.probe(out)
     assert (got.color_space, got.color_primaries, got.color_transfer) == ("bt709",) * 3
@@ -625,7 +626,7 @@ def test_real_still_shows_the_colours_of_the_export(tmp_path, monkeypatch, data,
     info = ffmpeg_utils.probe(src)
     out = tmp_path / "001.mp4"
     fmt = encode.OutputFormat(info.width, info.height, 30)
-    encode.export_clip(src, info, 0.0, 1.0, out, fmt, False)
+    encode.export_clip_checked(src, info, 0.0, 1.0, out, fmt, False)
     color = encode.still_filter(info)
     assert bool(color) == (data == "bt709")
     [image] = ffmpeg_utils.grab_images(src, 0.5, width=320, hwaccel=None, color=color)
@@ -646,9 +647,9 @@ def test_real_untagged_hd_export_changes_no_pixel(tmp_path, monkeypatch):
     fmt = encode.OutputFormat(1280, 720, 30)
     tagged, before = tmp_path / "tagged.mp4", tmp_path / "before.mp4"
 
-    encode.export_clip(src, info, 0.0, 1.0, tagged, fmt, False)
+    encode.export_clip_checked(src, info, 0.0, 1.0, tagged, fmt, False)
     monkeypatch.setattr(encode, "bt709_filter", lambda _info: "")  # the export before #290
-    encode.export_clip(src, info, 0.0, 1.0, before, fmt, False)
+    encode.export_clip_checked(src, info, 0.0, 1.0, before, fmt, False)
 
     got = ffmpeg_utils.probe(tagged)
     assert (got.color_space, got.color_primaries, got.color_transfer) == ("bt709",) * 3

@@ -24,9 +24,8 @@ def _info(duration: float, vduration: float) -> MediaInfo:
     )
 
 
-def test_cut_duration_is_the_container_duration_used_for_offsets():
+def test_cut_offsets_use_the_container_duration():
     infos = [_info(2.3, 2.0), _info(2.3, 2.0), _info(2.0, 2.0)]
-    assert [assemble.cut_duration(i) for i in infos] == [2.3, 2.3, 2.0]
     assert assemble.clip_offsets(infos) == pytest.approx([0.0, 2.3, 4.6])
     # xfade works on the video: crossfades use the video duration, not the container's
     assert assemble.clip_offsets(infos, 0.5) == pytest.approx([0.0, 1.5, 3.0])
@@ -213,9 +212,8 @@ def test_has_soxr_is_false_when_ffmpeg_fails(monkeypatch):
 
 
 @pytest.mark.parametrize("soxr", [True, False])
-def test_limiter_filter_uses_soxr_only_when_ffmpeg_has_it(monkeypatch, soxr):
-    monkeypatch.setattr(assemble, "has_soxr", lambda: soxr)
-    graph = assemble.limiter_filter(-1.0)
+def test_limiter_chain_uses_soxr_only_when_ffmpeg_has_it(soxr):
+    graph = encode.limiter_chain(-1.0, soxr)
     assert "alimiter=limit=0.8913" in graph  # -1 dB as a linear limit
     # oversample, limit, then back down to 48 kHz as the last stage (with soxr only if available)
     assert (
@@ -226,9 +224,9 @@ def test_limiter_filter_uses_soxr_only_when_ffmpeg_has_it(monkeypatch, soxr):
 
 
 @needs_ffmpeg
-def test_limiter_filter_runs_on_this_ffmpeg():
+def test_limiter_chain_runs_on_this_ffmpeg():
     """Builds without libsoxr (gyan.dev essentials) failed: resampling engine unavailable."""
-    graph = f"{assemble.LOUDNORM},{assemble.limiter_filter(-1.0)}"
+    graph = f"{assemble.LOUDNORM},{encode.limiter_chain(-1.0, ffmpeg_utils.has_soxr())}"
     ffmpeg_utils.run(
         [
             "ffmpeg",
@@ -312,7 +310,7 @@ def test_clip_export_fades_out_audio_that_ends_before_the_clip(tmp_path):
     assert info.audio_duration == pytest.approx(1.0, abs=0.03)
     out = tmp_path / "001.mp4"
     fmt = encode.OutputFormat(64, 48, 25)
-    encode.export_clip(src, info, 0.0, 1.5, out, fmt, False, audio_fade=0.25)
+    encode.export_clip_checked(src, info, 0.0, 1.5, out, fmt, False, audio_fade=0.25)
     assert _tail_peak_db(out) < -25.0
 
 
@@ -331,7 +329,7 @@ def test_clip_export_keeps_late_starting_audio_audible_to_its_end(tmp_path):
     info = ffmpeg_utils.probe(src)
     assert info.audio_duration == pytest.approx(5.0, abs=0.05)
     out = tmp_path / "001.mp4"
-    encode.export_clip(src, info, 4.0, 5.0, out, encode.OutputFormat(64, 48, 25), False,
+    encode.export_clip_checked(src, info, 4.0, 5.0, out, encode.OutputFormat(64, 48, 25), False,
                        audio_fade=0.25)  # fmt: skip
     pcm = ffmpeg_utils.decode_pcm(out, sr=48000).astype(np.float64) / 32768
     window = pcm[int(48000 * 0.74) : int(48000 * 0.8)]
@@ -364,7 +362,7 @@ def test_clip_export_fills_source_audio_timestamp_gaps_with_silence(tmp_path):
     _gap_clip(src)
     assert len(ffmpeg_utils.decode_pcm(src, sr=48000)) / 48000 < 2.1  # the gap is real
     out = tmp_path / "001.mp4"
-    encode.export_clip(src, ffmpeg_utils.probe(src), 0.0, 2.5, out,
+    encode.export_clip_checked(src, ffmpeg_utils.probe(src), 0.0, 2.5, out,
                        encode.OutputFormat(64, 48, 25), False)  # fmt: skip
     pcm = ffmpeg_utils.decode_pcm(out, sr=48000).astype(np.float64) / 32768
     assert len(pcm) / 48000 == pytest.approx(2.5, abs=0.03)
@@ -577,7 +575,8 @@ def test_loudnorm_gain_is_linear_when_the_peaks_do_not_fit(tmp_path):
          ":s=48000:d=8", str(src)],
         check=True,
     )  # fmt: skip
-    af = f"{assemble.loudnorm_filter(src)},{assemble.limiter_filter(assemble.LIMIT_START_DB)}"
+    limiter = encode.limiter_chain(assemble.LIMIT_START_DB, ffmpeg_utils.has_soxr())
+    af = f"{assemble.loudnorm_filter(src)},{limiter}"
     subprocess.run(
         [shutil.which("ffmpeg"), "-v", "error", "-i", str(src), "-af", af, str(out)], check=True
     )

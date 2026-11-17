@@ -87,17 +87,17 @@ def test_union_adds_only_new_seconds():
     assert u.covered(35, 50) == 5
 
 
-def test_budget_union_skips_what_does_not_fit_and_tries_the_next():
+def test_budget_fills_skips_what_does_not_fit_and_tries_the_next():
     cands = [(0, 10), (100, 140), (200, 205), (3, 8)]
-    u, taken = me.budget_union(cands, 20)
+    u, taken = next(me.budget_fills(cands, [20]))
     # (100, 140) is too long and skipped; (3, 8) adds nothing
     assert u.starts == [0, 200] and u.total == 15
     assert taken == [(0, 10), (200, 205), (3, 8)]
-    assert me.budget_union(cands, 0)[0].total == 0
+    assert next(me.budget_fills(cands, [0]))[0].total == 0
 
 
 def test_budget_cover_counts_ranges_and_seconds():
-    u, taken = me.budget_union([(0, 10)], 100)
+    u, taken = next(me.budget_fills([(0, 10)], [100]))
     hits, secs = me.budget_cover(u, taken, [(0, 8), (8, 20)], 0.5)
     assert hits == 1
     assert secs == pytest.approx(10 / 20)
@@ -132,12 +132,12 @@ def test_budget_metrics_never_fall_with_the_budget_in_any_order():
 
 
 def test_short_candidate_inside_a_long_reference_range_counts():
-    u, taken = me.budget_union([(40, 46)], 100)
+    u, taken = next(me.budget_fills([(40, 46)], [100]))
     hits, secs = me.budget_cover(u, taken, [(0, 100)], 0.5)
     assert hits == 1  # the candidate hits by the shorter rule though the union covers 6%
     assert secs == pytest.approx(0.06)
     # a taken candidate that only grazes the range does not count
-    u, taken = me.budget_union([(95, 140)], 100)
+    u, taken = next(me.budget_fills([(95, 140)], [100]))
     assert me.budget_cover(u, taken, [(0, 100)], 0.5)[0] == 0
 
 

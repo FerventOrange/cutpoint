@@ -153,11 +153,6 @@ def test_presets_match_the_config_choices():
     assert set(encode.PEAK_PRESETS) == set(config.COMPRESS_PEAKS) - {"off"}
 
 
-def test_assemble_limiter_is_the_shared_limiter_chain(monkeypatch):
-    monkeypatch.setattr(assemble, "has_soxr", lambda: True)
-    assert assemble.limiter_filter(-2.3) == encode.limiter_chain(-2.3, True)
-
-
 # -- clip export chain ------------------------------------------------------------------
 
 
@@ -221,7 +216,7 @@ def test_limit_without_loudnorm_runs_the_limiter_alone(monkeypatch, tmp_path):
     monkeypatch.setattr(assemble, "probe", lambda p: media_info(p, 4.0))
     assemble.post_process(tmp_path / "s.mp4", tmp_path / "o.mp4", False, False, None, limit=True)
     args = calls[-1]
-    limiter = assemble.limiter_filter(assemble.LIMIT_START_DB)
+    limiter = encode.limiter_chain(assemble.LIMIT_START_DB, True)
     assert args[args.index("-af") + 1] == f"{limiter},atrim=end=4.000000"
     assert "loudnorm=" not in " ".join(args) and "320k" in args
     assemble.post_process(tmp_path / "s.mp4", tmp_path / "o.mp4", False, False, None)

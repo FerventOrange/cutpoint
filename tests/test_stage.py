@@ -14,7 +14,7 @@ from conftest import remap, set_config, write
 from cutpoint import config, projectdelete, stage
 from cutpoint.config import remap_source
 from cutpoint.errors import FolderBusyError
-from cutpoint.stage import clear_stage, stage_sources, staged_path
+from cutpoint.stage import clear_stage, reload_stage_index, stage_sources, staged_path
 
 
 @pytest.mark.parametrize(
@@ -155,10 +155,13 @@ def test_case_twins_below_a_windows_form_remap_are_staged_separately(home, tmp_p
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="a Windows-form key is foreign only on POSIX")
-def test_index_entries_without_rel_still_match_and_get_it(home, tmp_path, caplog):
-    """#163: an index written before ``rel`` existed is used without a new copy."""
+def test_index_entries_without_rel_are_staged_again_in_their_slot(home, tmp_path, caplog):
+    """#163: an entry written before ``rel`` existed may be either case-twin's copy, so it
+    matches neither: ``staged_path`` reads the source, and staging copies it again into the
+    entry's own slot (the old copy replaced, no orphan left)."""
     new = tmp_path / "copy"
     src = write(new / "T" / "x.mp4", "xx")
+    twin = write(new / "T" / "X.MP4", "yyy")
     set_config(home, source_remap={r"D:\Videos": str(new)})
     stage_sources([src], min_free_gb=0)
     copy = staged_path(str(src))
@@ -166,13 +169,20 @@ def test_index_entries_without_rel_still_match_and_get_it(home, tmp_path, caplog
     index = json.loads(index_file.read_text())
     assert [e.pop("rel") for e in index.values()] == [["T", "x.mp4"]]
     index_file.write_text(json.dumps(index))
-    caplog.set_level("INFO", logger="cutpoint.stage")
+    reload_stage_index()
 
+    assert staged_path(str(src)) == str(src)
+    assert staged_path(str(twin)) == str(twin)  # not x.mp4's copy
+    assert clear_stage([src]) == 1  # the old copy goes with --clear too
+    assert list(index_file.parent.glob("*.mp4")) == []
+    assert json.loads(index_file.read_text()) == {}
+    index_file.write_text(json.dumps(index))
+    reload_stage_index()
+    assert stage_sources([src], min_free_gb=0)["files"] == 1
+    saved = json.loads(index_file.read_text())
+    assert list(saved) == list(index) and saved[next(iter(saved))]["rel"] == ["T", "x.mp4"]
     assert staged_path(str(src)) == copy
-    assert stage_sources([src], min_free_gb=0)["files"] == 0
-    assert "Already staged" in caplog.text
-    assert len(list(index_file.parent.glob("*-x.mp4"))) == 1
-    assert [e["rel"] for e in json.loads(index_file.read_text()).values()] == [["T", "x.mp4"]]
+    assert [p.name for p in index_file.parent.glob("*.mp4")] == [Path(copy).name]
 
 
 def test_staged_path_follows_stage_dir_and_index_changes_without_reload(home, tmp_path):

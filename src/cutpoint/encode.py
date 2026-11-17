@@ -732,39 +732,6 @@ def choose_format(infos: list[MediaInfo], vertical: bool) -> OutputFormat:
     return OutputFormat(width=w, height=h - h % 2, fps=fps)
 
 
-def export_clip(
-    src: Path,
-    info: MediaInfo,
-    start: float,
-    end: float,
-    out: Path,
-    fmt: OutputFormat,
-    vertical: bool,
-    crop: Crop | None = None,
-    audio_fade: float = 0.0,
-    peaks: str = "",
-    grade: Grade | None = None,
-) -> str:
-    """Frame-accurate re-encode of [start, end] (absolute source time) into ``out``.
-
-    ``audio_fade`` > 0 bakes a short audio fade-in/out into the clip (the
-    video stays a hard cut), so a cut never slaps from sound to silence.
-    ``peaks`` (:meth:`PeakPlan.filter`) compresses and levels the audio before the fade;
-    a true-peak limiter (:data:`CLIP_LIMIT_DB`) then ends the chain.
-    ``grade`` (:class:`Grade`, e.g. a :class:`Lut`) grades the video after the BT.709
-    conversion.
-    ``out`` only appears once the clip is complete (:func:`atomic_output`); a failed
-    auto-chosen GPU encode is redone on the CPU (:func:`encode_with_fallback`).
-
-    Returns:
-        ffmpeg's stderr (check it for read errors; ffmpeg exits 0 after them).
-    """
-    with folders.atomic_output(out) as part:
-        return _export(
-            src, info, start, end, part, fmt, vertical, crop, audio_fade, out.name, peaks, grade
-        )
-
-
 def _export(
     src: Path,
     info: MediaInfo,
@@ -779,7 +746,20 @@ def _export(
     peaks: str = "",
     grade: Grade | None = None,
 ) -> str:
-    """:func:`export_clip` straight into ``out`` (no temporary name); ``name`` is for logs."""
+    """Frame-accurate re-encode of [start, end] (absolute source time) straight into ``out``
+    (no temporary name); ``name`` is for logs.
+
+    ``audio_fade`` > 0 bakes a short audio fade-in/out into the clip (the
+    video stays a hard cut), so a cut never slaps from sound to silence.
+    ``peaks`` (:meth:`PeakPlan.filter`) compresses and levels the audio before the fade;
+    a true-peak limiter (:data:`CLIP_LIMIT_DB`) then ends the chain.
+    ``grade`` (:class:`Grade`, e.g. a :class:`Lut`) grades the video after the BT.709
+    conversion. A failed auto-chosen GPU encode is redone on the CPU
+    (:func:`encode_with_fallback`).
+
+    Returns:
+        ffmpeg's stderr (check it for read errors; ffmpeg exits 0 after them).
+    """
     warn_if_log(src, info, start)
     return encode_with_fallback(
         lambda enc: _encode(
@@ -822,7 +802,7 @@ def _encode(
     peaks: str = "",
     grade: Grade | None = None,
 ) -> str:
-    """One ffmpeg run of :func:`export_clip` with ``enc``."""
+    """One ffmpeg run of :func:`_export` with ``enc``."""
     dur = end - start
     args = [
         "ffmpeg",
@@ -890,8 +870,8 @@ def export_clip_checked(
     peaks: str = "",
     grade: Grade | None = None,
 ) -> dict[str, Any] | None:
-    """:func:`export_clip` (``peaks`` and ``grade`` as there), guarded against silent
-    truncation by read errors.
+    """Frame-accurate re-encode of [start, end] into ``out`` (:func:`_export`: ``audio_fade``,
+    ``peaks`` and ``grade`` as there), guarded against silent truncation by read errors.
 
     If ffmpeg reports a read error or the clip comes out short, the read is
     retried once (marginal sectors sometimes read on a second try). If it is

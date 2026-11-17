@@ -895,7 +895,7 @@ def direction_scores(
     best positive bump plus the most negative one: a person inches away pulls
     the bins down); the wearer is the cone around :func:`wearer_axis` only.
     ``people_size="close"`` is the old behaviour (height = closeness, plus the
-    >70 deg rule of :func:`is_wearer`; :meth:`DirectorParams.legacy`).
+    >70 deg rule of :func:`is_wearer`; the A/B baseline in tests/test_pano_director.py).
     ``pitch``: pitch of the strongest person per bin; ``subject`` ``(N, nb, 4)``:
     its yaw, pitch, width, height (NaN where nobody). ``group`` / ``beauty``: the
     8 view scores interpolated around the circle. ``occlude`` (0-1):
