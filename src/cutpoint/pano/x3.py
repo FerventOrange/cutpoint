@@ -136,7 +136,8 @@ def read_trailer_meta(insv00: Path) -> dict[str, Any]:
     per lens (image-circle radius?, cx, cy, yaw, pitch, roll) in the
     ``sensor`` space (11904x5952 on the X3), then the sensor size. The exact
     model is undocumented (research doc section 1.2); it is recorded for a
-    future calibrated stitch and not used by the ffmpeg renderer.
+    future calibrated stitch and not used by the ffmpeg renderer. The camera's serial
+    number is not read: project folders get shared.
     """
     import telemetry_parser as tp  # noqa: PLC0415
 
@@ -153,7 +154,6 @@ def read_trailer_meta(insv00: Path) -> dict[str, Any]:
             )
     return {
         "camera": f"{parser.camera} {parser.model}".strip(),
-        "serial": md.get("serial_number"),
         "firmware": md.get("fw_version"),
         "calibration": {
             "raw": off,

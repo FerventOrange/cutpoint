@@ -79,8 +79,8 @@ Action-cam footage goes through discovery like any other:
    content is reused), so the next video of that kind matches it in step 3. The result is also
    cached per footage: a new project over the same files, with the same model, `--context` and
    example profiles, gets the same profile without asking the model again. A discovery the
-   model answered unusably or that timed out is remembered too: that footage is not sent to the
-   model again until `--refresh-profile`; a connection error is not, so the next run asks again. In `analyze` and
+   model answered unusably is remembered too: that footage is not sent to the
+   model again until `--refresh-profile`; a timeout or a connection error is not, so the next run asks again. In `analyze` and
    `edit` this runs whenever a local Ollama answers, without `--vision`, and is quiet (one INFO
    line when it is skipped).
 5. If no model answers, the nearest library profile is used, else `generic` (`source:

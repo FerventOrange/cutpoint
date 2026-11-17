@@ -64,8 +64,8 @@ and 360 layers (:func:`active_prompts`, else :func:`default_prompts`: ``generic`
    footage's id: a re-discovery of the same footage overwrites it; else a file with the same
    content is reused), so the next similar video matches it in step 3. The describe and
    synthesis requests are greedy and seeded (:data:`DISCOVERY_SEED`). Its
-   VLM wording is the floor's. Each synthesis, and each failed one (an unusable reply or a
-   timeout; not a quick request error), is cached per footage
+   VLM wording is the floor's. Each synthesis, and each failed one (an unusable reply; not
+   a timeout or a request error, which are asked again on the next run), is cached per footage
    (``<cache>/activity/<key>.json``, :func:`discovery_key`: the sources, the model, the
    prompts, ``context`` and the examples), so the same footage gets the same result
    in every project and run until ``refresh``;
@@ -973,8 +973,8 @@ def synthesize(
     wording is never the LLM's (merged on the floor, :func:`full`, it is the base text).
     ``stats`` gets per attempt ``synth_s`` (seconds), ``answered`` (a JSON reply came back)
     and ``timed_out`` (no reply after :data:`SLOW_SHARE` of the timeout), ``attempts`` and,
-    after a failure worth remembering (an unusable reply or a timeout, not a quick request
-    error), ``failed`` (why)."""
+    after a failure worth remembering (an unusable reply, not a timeout or a request
+    error: those are asked again on the next run), ``failed`` (why)."""
     stats = {} if stats is None else stats
     stats.update(synth_s=[], answered=[], timed_out=[], attempts=0)
     slow = SLOW_SHARE * PROFILE_TIMEOUT_S
@@ -983,8 +983,9 @@ def synthesize(
     examples = "\n".join(json.dumps({k: s[k] for k in SCHEMA_KEYS if k in s}) for s in seeds)
     for n, w, h in SYNTH_SIZES:
         if stats["synth_s"] and stats["synth_s"][-1] >= slow:
-            stats["failed"] = f"no usable profile; the LLM took {stats['synth_s'][-1]} s"
             logger.info("activity: the LLM is too slow for a retry; not asked again")
+            if stats["answered"][-1]:  # an unusable reply is remembered, a timeout is not
+                stats["failed"] = f"no usable profile; the LLM took {stats['synth_s'][-1]} s"
             return None
         prompt = _SYNTH_PROMPT.format(
             description=_synth_footage(description),
@@ -998,7 +999,11 @@ def synthesize(
         reply = ask(prompt, [], _schema(n, w, h))
         took = time.perf_counter() - t0
         stats["synth_s"].append(round(took, 1))
-        stats["answered"].append(isinstance(reply, dict))
+        # an unusable reply (ask_json: last_failure "reply") counts as answered, a timeout not
+        rater = getattr(getattr(ask, "func", ask), "__self__", None)
+        stats["answered"].append(
+            isinstance(reply, dict) or getattr(rater, "last_failure", None) == "reply"
+        )
         stats["timed_out"].append(reply is None and took >= slow)
         stats["attempts"] += 1
         prof = validate(reply)
@@ -1006,10 +1011,10 @@ def synthesize(
             break
         logger.info("activity: no usable profile from the LLM (%d captions asked)", n)
     else:
-        if any(stats["answered"]) or any(stats["timed_out"]):
+        if stats["answered"][-1]:
             stats["failed"] = "no usable profile"
-        else:  # a request error (Ollama not reachable, loading): worth another try
-            logger.info("activity: the LLM gave no reply (request error); asked again next run")
+        else:  # a timeout or a request error (Ollama not reachable, loading): worth another try
+            logger.info("activity: the LLM gave no reply (timeout or error); asked again next run")
         return None
     prof = {k: prof[k] for k in SCHEMA_KEYS} | {"exclude_base": []}
     prof["incident"]["words"] = _cap_words(prof["incident"]["words"], prof["incident"]["neg"])

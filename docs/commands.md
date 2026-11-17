@@ -1645,7 +1645,7 @@ Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash 
 | `--discover-regions` / `--no-discover` | Force or disable HUD region discovery |
 | `--preset-scope {user,project}` | Where a discovered preset is saved |
 | `--max-windows N`, `--window S`, `--pre S`, `--post S`, `--window-at "GLOB@START-END"` | Model window count and geometry |
-| `--sheets` | Write contact sheets to `<project>\visual_check` |
+| `--sheets` | Debugging aid: write contact sheets to `<project>\visual_check`, to check the visual layer by eye. Changes no result |
 | `--no-rescore` | Do not touch `highlights.json` |
 | `--batch-size N` | Close each layer's model after N sources (the vision model at the next source boundary after at least N `vlm` windows, never within one source's windows; the crash layer's CLIP after N dense windows) and load it again; the results are the same. Default 0: keep it loaded |
 | `--json` | One [result envelope](#json-output) on stdout for the whole run |
@@ -2381,10 +2381,11 @@ saved to the library with `"source": "discovered"` (a file with the same content
 and renames it when the answer names a different activity),
 so the next similar video finds it. The profile is also cached per footage (the files, the
 model, `--context` and the prompts), so the same footage in a new project gets the same profile
-without asking the model again. A discovery the model answered unusably or that timed out is
+without asking the model again. A discovery the model answered unusably is
 remembered the same way: the model is not asked again for that footage until
 `--refresh-profile`, another model or a new Cutpoint version (an INFO line says so); a
-connection error is not, so the next run asks again. `activity.json` records the time it took in
+timeout or a connection error is not, so the next run asks again (the run that timed out still
+uses the nearest library profile, else `generic`). `activity.json` records the time it took in
 `discovery` (`describe_s`, `attempts`, per attempt `synth_s`, `answered` (a JSON reply came
 back) and `timed_out`, `failed` with the reason when the failure is remembered; `cached: true` when an earlier
 result was reused), and `crashes.json` the profile step in `timings.profile_s`. The shorter
