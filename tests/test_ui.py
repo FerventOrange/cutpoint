@@ -4299,7 +4299,7 @@ def test_a_job_is_refused_when_the_projects_folder_changed_after_the_project_was
     real_cmd = ui.cutpoint_cmd
 
     def cmd_while_the_folder_changes(*args: str) -> list[str]:
-        config.set_config_values({"projects_dir": str(other)})  # a second tab saves the settings
+        config.update_config(lambda _d: ({"projects_dir": str(other)}, ()))  # a second tab saves
         return real_cmd(*args)
 
     patch_ui(monkeypatch, "cutpoint_cmd", cmd_while_the_folder_changes)
@@ -4580,7 +4580,7 @@ def test_a_clips_job_that_does_not_start_leaves_no_segments_file(
         real_cmd = ui.cutpoint_cmd
 
         def cmd_while_the_folder_changes(*args: str) -> list[str]:
-            config.set_config_values({"projects_dir": str(tmp_path / "other")})
+            config.update_config(lambda _d: ({"projects_dir": str(tmp_path / "other")}, ()))
             return real_cmd(*args)
 
         patch_ui(monkeypatch, "cutpoint_cmd", cmd_while_the_folder_changes)
