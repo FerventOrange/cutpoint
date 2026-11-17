@@ -102,7 +102,7 @@ class OcrParams:
 
 
 # bump when the generic (JSON preset) interpretation changes; 7: menu frames give no
-# events (:func:`menu_times`), multi-word phrases and feed kill words match whole words only;
+# events (:func:`menu_rules`), multi-word phrases and feed kill words match whole words only;
 # 8: static screens are menus too (:func:`static_frames`); 9: menu frames keep feed sightings
 # and kills, a static screen without new menu text must hold still STATIC_BARE_MIN_S;
 # 10: new menu text is STATIC_TEXT_LINES texts that stay for STATIC_TEXT_SHARE of the part;
@@ -381,53 +381,6 @@ def text_hue(bgr: np.ndarray) -> str | None:
         return "white" if np.median(bright[:, 1]) < 60 else None
     h = float(np.median(sat[:, 0])) * 2  # OpenCV hue is 0-180
     return next((name for limit, name in _HUES if h < limit), None)
-
-
-def colour_runs(img: np.ndarray, row: list[tuple]) -> list[tuple[str | None, str]]:
-    """Split an OCR row into ``(hue, text)`` runs of equally coloured characters.
-
-    Characters are mapped to x positions proportionally inside their box (OCR
-    gives no per-character boxes), each character's column slice is coloured
-    with :func:`text_hue`, and unclear characters inherit their neighbour's hue.
-    Box gaps (icons) split runs too.
-    """
-    chars: list[tuple[str | None, str]] = []
-    for bi, (box, text, _) in enumerate(row):
-        xs, ys = [p[0] for p in box], [p[1] for p in box]
-        x0, x1, y0, y1 = int(min(xs)), int(max(xs)), int(min(ys)), int(max(ys))
-        n = max(1, len(text))
-        if bi:
-            chars.append(("|", " "))  # box boundary
-        for i, ch in enumerate(text):
-            a = x0 + int(i * (x1 - x0) / n)
-            b = max(a + 1, x0 + int((i + 1) * (x1 - x0) / n))
-            hue = None if ch.isspace() else text_hue(img[max(0, y0) : y1, max(0, a) : b])
-            chars.append((hue, ch))
-    # fill unclear characters from the left, then from the right
-    last = None
-    filled = []
-    for hue, ch in chars:
-        if hue not in (None, "|"):
-            last = hue
-        filled.append((hue if hue is not None else last, ch))
-    nxt = None
-    for i in range(len(filled) - 1, -1, -1):
-        hue, ch = filled[i]
-        if hue not in (None, "|"):
-            nxt = hue
-        elif hue is None:
-            filled[i] = (nxt, ch)
-    runs: list[tuple[str | None, str]] = []
-    for hue, ch in filled:
-        if hue == "|":
-            if runs and runs[-1][1].strip():
-                runs.append((None, ""))
-            continue
-        if runs and runs[-1][0] == hue:
-            runs[-1] = (hue, runs[-1][1] + ch)
-        else:
-            runs.append((hue, ch))
-    return [(h, t.strip()) for h, t in runs if t.strip()]
 
 
 # Icon kill lines without a kill word ("name [weapon icon] name"): the two names are split
@@ -1845,8 +1798,9 @@ class FeedParser:
     * a row containing a kill word ("A destroyed B", "A eliminated B"): actor before the
       word, target after it;
     * icon feeds without words, where an entry is a coloured *actor* line and
-      a differently coloured *target* line (``"entry": "two_line"``)
-      or two coloured names on one row (``"entry": "one_line"``);
+      a differently coloured *target* line, or two coloured names on one row
+      (``"entry": "one_line"`` reads only these; any other ``entry``, such as the
+      default ``"auto"``, reads both);
       without a colour map, in a discovered icon feed (``"row_notices": true``), a
       row of two names split by an icon gap is a kill, left name first
       (:meth:`_icon_line`).
@@ -1865,7 +1819,8 @@ class FeedParser:
             k.upper(): v for k, v in (cfg.get("kill_words") or DEFAULT_KILL_WORDS).items()
         }
         self.colors: dict[str, str] = dict(cfg.get("colors") or {})
-        self.entry = cfg.get("entry", "auto")
+        # "one_line" or "auto"; older entry names ("two_line", "paren") read as "auto"
+        self.entry = "one_line" if cfg.get("entry") == "one_line" else "auto"
         self.tags = tags
         self.scale = scale
         self.row_tol = float(cfg.get("row_tol", 10)) * scale
@@ -1950,104 +1905,6 @@ class FeedParser:
                     return line[: m.start()].strip(), line[m.end() :].strip(), verb
         return None
 
-    def _colour_target(
-        self, row: list[tuple] | None, trailing: str
-    ) -> tuple[str | None, str | None]:
-        """(target, weapon) from the colour runs of a row's trailing text."""
-        if self._img is None or not row:
-            return None, None
-        runs = colour_runs(self._img, row)
-        if len(runs) < 2:
-            return None, None
-        hue, text = runs[-1]
-        prev = runs[-2][0]
-        if hue in (None, "white") or hue == prev or _alnum_len(text) < 5:
-            return None, None
-        if norm(text).replace(" ", "") not in norm(trailing).replace(" ", ""):
-            return None, None
-        weapon = trailing[: max(0, len(trailing) - len(text))].strip(" -=_>") or None
-        return text, weapon
-
-    def _parse_paren(self, lines: list[tuple], used: set[int]) -> list[dict[str, Any]]:
-        """Icon feeds whose names carry the vehicle in parentheses.
-
-        * one row, two groups: ``Killer (Veh) <weapon> Victim (Veh)``;
-        * wrapped entry: an actor row ``Killer (Veh) <weapon>`` (one group plus
-          trailing text) followed by a victim row ``Victim (Veh)`` (one group
-          at the end).
-
-        Who did what is decided by position, not colour: the player's tag
-        before the first group means the player is the actor (a player kill),
-        after it the player is the victim. Team colours are recorded when the
-        text hue maps to a team in the preset's ``colors``.
-        """
-        out: list[dict[str, Any]] = []
-        k = 0
-        while k < len(lines):
-            if k in used:
-                k += 1
-                continue
-            line, conf, team, _ = lines[k]
-            groups = paren_groups(line)
-            victim_next = False
-            if k + 1 < len(lines) and k + 1 not in used:
-                ng = paren_groups(lines[k + 1][0])
-                victim_next = len(ng) == 1 and not lines[k + 1][0][ng[0][1] :].strip(" -=_>)\uff09")
-            if len(groups) >= 2 and victim_next and len(line[groups[0][1] :].strip(" -=_>")) >= 2:
-                # a victim row never stands alone: this row is the actor row and
-                # its weapon contains parentheses ("BR-350A (MD-5 fuze)")
-                groups = groups[:1]
-            if len(groups) >= 2:
-                (_, a1), (b0, b1) = groups[0], groups[-1]
-                actor = line[:a1]
-                victim_name = _last_token(line[a1:b0])
-                weapon = line[a1:b0][: max(0, len(line[a1:b0]) - len(victim_name))]
-                ev = self._event(
-                    actor, f"{victim_name} {line[b0:b1]}", "kill", team, None, conf, line
-                )
-                if ev:
-                    ev["weapon"] = weapon.strip(" -=_>") or None
-                    out.append(ev)
-                k += 1
-                continue
-            trailing = line[groups[0][1] :].strip(" -=_>") if groups else ""
-            if len(groups) == 1 and len(trailing) >= 2 and not victim_next:
-                # single row, target without a vehicle group (AI vehicle such as
-                # "Churchill VII"): the target is the last colour run
-                target, weapon = self._colour_target(lines[k][3], trailing)
-                split = target is not None
-                if not split:
-                    target, weapon = trailing, None
-                if target:
-                    ev = self._event(line[: groups[0][1]], target, "kill", team, None, conf, line)
-                    if ev:
-                        ev["weapon"] = weapon
-                        ev["ai_target"] = True
-                        ev["target_split"] = split
-                        out.append(ev)
-                k += 1
-                continue
-            if len(groups) == 1 and len(trailing) >= 2 and k + 1 < len(lines) and k + 1 not in used:
-                nxt, nconf, nteam, _ = lines[k + 1]
-                ng = paren_groups(nxt)
-                if len(ng) == 1 and not nxt[ng[0][1] :].strip(" -=_>)\uff09"):
-                    ev = self._event(
-                        line[: groups[0][1]],
-                        nxt,
-                        "kill",
-                        team,
-                        nteam,
-                        min(conf, nconf),
-                        f"{line} | {nxt}",
-                    )
-                    if ev:
-                        ev["weapon"] = trailing or None
-                        out.append(ev)
-                    k += 2
-                    continue
-            k += 1
-        return out
-
     def _icon_line(
         self, img: np.ndarray, names: list[tuple], line: str, conf: float
     ) -> tuple[dict[str, Any] | None, bool]:
@@ -2115,10 +1972,7 @@ class FeedParser:
                     ev["entry"] = "text"
                 out.append(ev)
                 used.add(k)
-        if self.entry == "paren":
-            out += self._parse_paren(lines, used)
-            return out
-        if self.entry in ("two_line", "auto"):
+        if self.entry == "auto":
             k = 0
             while k < len(lines) - 1:
                 if k in used or k + 1 in used:
@@ -2142,31 +1996,28 @@ class FeedParser:
                         k += 2
                         continue
                 k += 1
-        if self.entry in ("one_line", "auto"):
-            for k, (line, conf, _, row) in enumerate(lines):
-                if k in used:
-                    continue
-                names = _merge_adjacent(
-                    [i for i in row if len(norm(i[1])) >= 2], gap=14 * self.scale
-                )
-                if not self.colors:
-                    if self.row_notices:  # a discovered icon feed
-                        ev, gap = self._icon_line(img, names, line, conf)
-                        if ev:
-                            out.append(ev)
-                            used.add(k)
-                        elif gap:
-                            gapped.add(k)
-                    continue
-                if len(names) < 2:
-                    continue
-                ka = self._team(img, [names[0]])
-                kb = self._team(img, [names[-1]])
-                if ka and kb and ka != kb and {ka, kb} <= {"ally", "enemy", "squad", "self"}:
-                    ev = self._event(names[0][1], names[-1][1], "kill", ka, kb, conf, line)
+        for k, (line, conf, _, row) in enumerate(lines):
+            if k in used:
+                continue
+            names = _merge_adjacent([i for i in row if len(norm(i[1])) >= 2], gap=14 * self.scale)
+            if not self.colors:
+                if self.row_notices:  # a discovered icon feed
+                    ev, gap = self._icon_line(img, names, line, conf)
                     if ev:
                         out.append(ev)
                         used.add(k)
+                    elif gap:
+                        gapped.add(k)
+                continue
+            if len(names) < 2:
+                continue
+            ka = self._team(img, [names[0]])
+            kb = self._team(img, [names[-1]])
+            if ka and kb and ka != kb and {ka, kb} <= {"ally", "enemy", "squad", "self"}:
+                ev = self._event(names[0][1], names[-1][1], "kill", ka, kb, conf, line)
+                if ev:
+                    out.append(ev)
+                    used.add(k)
         if self.row_notices:
             out += self._row_notices(lines, used | gapped | log)
         return out
@@ -2406,7 +2257,6 @@ def derive_streaks(events: list[dict[str, Any]], window_s: float = 20.0) -> None
                     "confidence": 1.0,
                     "region": kills[i].get("region"),
                     "kind": "ocr",
-                    "derived": True,
                 }
             )
         i = j + 1
@@ -2784,12 +2634,14 @@ def text_frames(
     return out
 
 
-def menu_times(
+def menu_rules(
     frames: list[dict[str, Any]],
-    params: DiscoverParams | None = None,
     feed_times: set[float] | None = None,
-) -> set[float]:
-    """Times of the menu and scoreboard frames among ``frames`` of one source.
+    text_spans: list[tuple[float, float]] | None = None,
+    text_keys: list[Any] | None = None,
+    max_gap: float = STATIC_MAX_GAP_S,
+) -> tuple[dict[Any, str], dict[str, float]]:
+    """Which of ``frames`` of one source are menu and scoreboard frames.
 
     ``frames`` are ``{"id", "t", "source", "boxes"}`` records of the text boxes
     the OCR layer detected per frame (reference pixels); the test is
@@ -2800,23 +2652,8 @@ def menu_times(
     menu_jump``. Below that, a frame with ``menu_min_boxes`` boxes is a menu
     when they cover the screen centre (``menu_cover``) or at least
     :data:`LIST_MENU_COVER` of it (a 1- or 2-column list or scoreboard).
-    With ``feed_times`` (the times of feed sightings and kills), frames with a
-    ``still`` run id that hold still are menus too (:func:`static_frames`), and so
-    are short gaps between menu screens (:func:`_fill_menu_gaps`).
-    """
-    rules, _ = menu_rules(frames, params, feed_times)
-    return {f["t"] for f in frames if rules[f["id"]] != "none"}
 
-
-def menu_rules(
-    frames: list[dict[str, Any]],
-    params: DiscoverParams | None = None,
-    feed_times: set[float] | None = None,
-    text_spans: list[tuple[float, float]] | None = None,
-    text_keys: list[Any] | None = None,
-    max_gap: float = STATIC_MAX_GAP_S,
-) -> tuple[dict[Any, str], dict[str, float]]:
-    """The :func:`menu_times` decision per frame id: the rule that made it a menu
+    Returns the decision per frame id: the rule that made it a menu
     (``cover``, ``jump``, ``list``, ``static``, ``text`` or ``fill``, a gap between
     menu screens, :func:`_fill_menu_gaps`, which runs only with ``feed_times``) or
     ``none``, and the
@@ -2826,7 +2663,7 @@ def menu_rules(
     rule, which runs only with ``feed_times``, and the ``text_lines`` of the text
     rule (:func:`text_frames`, with ``text_keys``, ``max_gap`` and ``feed_times``), which runs
     only with ``feed_times`` and ``text_spans``)."""
-    params = params or DiscoverParams()
+    params = DiscoverParams()
     median = float(np.median([len(f["boxes"]) for f in frames])) if frames else 0.0
     lists = median < params.menu_min_boxes / params.menu_jump
     if lists:
@@ -3036,8 +2873,8 @@ def _plain(v: Any) -> Any:
 
 def _band_rows(items: list[list], h: int) -> list[list[int]]:
     """The rows of a crop of height ``h`` that the boxes of OCR ``items`` cover,
-    merged: all the rows the colour rules read (:func:`_box_crop`, :func:`colour_runs`
-    and :func:`_merge_adjacent`, whose boxes keep the rows of their parts)."""
+    merged: all the rows the colour rules read (:func:`_box_crop` and
+    :func:`_merge_adjacent`, whose boxes keep the rows of their parts)."""
     spans = []
     for box, _, _ in items:
         ys = [int(p[1]) for p in box]
@@ -3757,7 +3594,7 @@ def detect_ocr_events(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """OCR HUD events for one source (cached per source + parameters).
 
-    What menu and scoreboard frames show is dropped (:func:`menu_times`): every frame records the text boxes the "det" gates
+    What menu and scoreboard frames show is dropped (:func:`menu_rules`): every frame records the text boxes the "det" gates
     last detected in its regions other than feeds (a region keeps its boxes on
     the frames it is skipped) and the still run of the decoded HUD area without the
     "score" regions (:func:`_still_rect`, :func:`static_frames`; when that area is at least :data:`STATIC_MIN_AREA` of
@@ -3874,8 +3711,6 @@ def detect_ocr_events(
     interp = OcrInterpretation(src.name, params, preset, regions, (width, height), stats)
     t_start = time.perf_counter()
     segments = keep_segments(duration, avoid)
-    if avoid:
-        stats["skipped_ranges"] = [[round(a, 1), round(b, 1)] for a, b in avoid]
     shown = [-1]  # the last percent reported to on_progress
 
     def report(t: float) -> None:
@@ -4055,7 +3890,6 @@ def detect_ocr_events(
             write(writer.fail)
         elif writer is not None:
             write(writer.finish, {k: stats[k] for k in ("hwaccel", "read_errors")})
-    stats["decoded_s"] = round(stats["frames"] / params.fps, 1)
     stats["elapsed_s"] = round(time.perf_counter() - t_start, 2)
     events = interp.finish()
     if stats.get("replayed"):

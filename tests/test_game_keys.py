@@ -1,6 +1,5 @@
-"""The game key of a source (#822): generic folder names give way to the file name,
-non-ASCII names stay readable, and presets saved under an older key keep matching
-(invented games and paths)."""
+"""The game key of a source (#822): generic folder names give way to the file name and
+non-ASCII names stay readable (invented games and paths)."""
 
 from __future__ import annotations
 
@@ -85,28 +84,20 @@ def test_an_override_and_match_hints_still_win() -> None:
     assert game_key_for_path("/rec/Neon Drift/a1.mp4") == "box-stack"
 
 
-def test_a_preset_under_the_legacy_key_keeps_matching() -> None:
+def test_a_preset_under_an_older_ascii_key_is_not_taken_for_a_non_ascii_name(tmp_path) -> None:
+    """Keys before #822 dropped non-ASCII letters ("caf-racer"); such a preset is no longer
+    found under the new key: the run discovers the game again, nothing fails."""
     path = "/rec/Café Racer/session 1.mp4"
-    assert game_key_for_path(path) == "café-racer"  # no preset yet: the new key
     write_preset(paths.presets_dir(), _preset("caf-racer"))
-    assert game_key_for_path(path) == "caf-racer"  # saved before #822
-    write_preset(paths.presets_dir(), _preset("café-racer"))
-    assert game_key_for_path(path) == "café-racer"  # the new key's own preset wins
-
-
-def test_an_old_game_preset_is_no_legacy_key_for_non_ascii_names() -> None:
-    """Every name without ASCII letters or digits had the key "game": such a preset is not
-    taken for a new non-ASCII folder."""
+    write_preset(tmp_path / "proj" / "hud_presets", _preset("caf-racer"))
     write_preset(paths.presets_dir(), _preset("game"))
+    assert game_key_for_path(path) == "café-racer"
+    assert game_key_for_path(path, None, tmp_path / "proj") == "café-racer"
+    assert regions.load_preset("café-racer") is None
     assert game_key_for_path("/rec/\u65e5\u672c\u8a9e/a1.mp4") == "\u65e5\u672c\u8a9e"
-
-
-def test_a_project_preset_under_the_legacy_key_keeps_matching(tmp_path) -> None:
-    project = tmp_path / "proj"
-    path = "/rec/Café Racer 2024.11.14 - 19.01.53.09.DVR.mp4"
-    write_preset(project / "hud_presets", _preset("caf-racer"))
-    assert game_key_for_path(path, None, project) == "caf-racer"
-    assert game_key_for_path(path) == "café-racer"  # another project has none
+    # a match hint (or --game) still names the old preset
+    write_preset(paths.presets_dir(), _preset("caf-racer", match=["café racer"]))
+    assert game_key_for_path(path) == "caf-racer"
 
 
 # --------------------------------------------------------------------------- fit decisions

@@ -40,6 +40,7 @@ def _scoreboard() -> list[dict[str, Any]]:
 
 def _frame(source: str, b: int, k: int, boxes: list[dict[str, Any]]) -> dict[str, Any]:
     return {"id": f"{source}@{b * 60 + k * 1.5:.1f}", "source": source, "burst": b, "k": k} | {
+        "src_key": source,
         "frame": f"b{b:03d}_{k}.jpg",
         "boxes": boxes,
     }
@@ -103,9 +104,18 @@ def test_box_count_jump_is_per_file_for_same_named_files() -> None:
     kept = gameplay_frames(frames, DiscoverParams())
     assert menu_list not in [f["boxes"] for f in kept]
     assert len(kept) == 12
-    # records written before src_key (file name only) are one source, as before: over the
-    # merged median of 30 boxes the busy file's HUD frames are a jump and the menu is not
-    legacy = [{k: v for k, v in f.items() if k != "src_key"} for f in frames]
-    assert [f["boxes"] for f in gameplay_frames(legacy, DiscoverParams())] == [quiet] * 6 + [
-        menu_list
-    ]
+
+
+def test_records_without_a_src_key_are_kept_apart_by_their_id() -> None:
+    """Records written before ``src_key`` was stored carry it as their id's prefix: two
+    files keep their own box-count median."""
+    quiet = [_box("HP", 20, 1040, w=40), _box("AMMO", 1800, 1040, w=60)]
+    menu_list = [_box(f"OPTION {chr(65 + i)}", 60, 100 + i * 30) for i in range(30)]
+    frames = [_keyed("aaaa1111", b, 0, quiet) for b in range(6)]
+    frames.append(_keyed("aaaa1111", 6, 0, menu_list))
+    frames += [_keyed("bbbb2222", 7 + b, 0, _busy_hud()) for b in range(6)]
+    bare = [{k: v for k, v in f.items() if k != "src_key"} for f in frames]
+    assert discover._src(bare[0]) == "clip.mp4~aaaa1111"
+    kept = gameplay_frames(bare, DiscoverParams())
+    assert menu_list not in [f["boxes"] for f in kept]
+    assert len(kept) == 12

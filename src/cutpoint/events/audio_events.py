@@ -198,8 +198,6 @@ class PannsDetector:
             ) from e
         self.model.load_state_dict(ckpt["model"])
         self.model.to(self.device).eval()
-        if self.device == "cpu":
-            torch.set_num_threads(max(1, (torch.get_num_threads() or 4)))
         logger.info("PANNs Cnn14_DecisionLevelMax on %s", self.device)
 
     def framewise(self, batch: list[np.ndarray]) -> list[np.ndarray]:
@@ -242,7 +240,7 @@ def _rolling_median(x: np.ndarray, win: int) -> np.ndarray:
 
 
 def _spans(
-    mask: np.ndarray, probs: np.ndarray, dt: float, t0: float, gap: float, min_dur: float
+    mask: np.ndarray, probs: np.ndarray, dt: float, gap: float, min_dur: float
 ) -> list[dict[str, float]]:
     """Merge a boolean mask into spans with peak/mean probability."""
     idx = np.flatnonzero(mask)
@@ -257,7 +255,7 @@ def _spans(
             spans.append([i, i])
     out = []
     for a, b in spans:
-        start, end = t0 + a * dt, t0 + (b + 1) * dt
+        start, end = a * dt, (b + 1) * dt
         if end - start < min_dur:
             continue
         seg = probs[a : b + 1]
@@ -267,7 +265,7 @@ def _spans(
                 "start": round(start, 2),
                 "end": round(end, 2),
                 "peak": round(float(seg[peak]), 3),
-                "peak_t": round(t0 + (a + peak) * dt, 2),
+                "peak_t": round((a + peak) * dt, 2),
                 "mean": round(float(seg.mean()), 3),
             }
         )
@@ -276,7 +274,7 @@ def _spans(
 
 def pooled_probabilities(
     src: Source, det: PannsDetector, params: AudioParams, class_idx: list[int]
-) -> tuple[np.ndarray, float]:
+) -> np.ndarray:
     """Run PANNs over the whole source; return ``(T, len(class_idx))`` pooled probs.
 
     Every block's frames are max-pooled into one absolute time grid, so
@@ -284,7 +282,7 @@ def pooled_probabilities(
     dropped except at the very start and end of the audio).
 
     Returns:
-        (pooled probabilities, time of row 0). Rows are ``params.pool_s`` apart.
+        Pooled probabilities; row 0 is at time 0 and rows are ``params.pool_s`` apart.
     """
     dt = max(1, round(params.pool_s / FRAME_S)) * FRAME_S
     total = max((p.offset + p.duration for p in src.audio_parts), default=0.0)
@@ -311,7 +309,7 @@ def pooled_probabilities(
             flush()
     if pending:
         flush()
-    return grid, 0.0
+    return grid
 
 
 def cached_audio_events(src: Source, params: AudioParams) -> list[dict[str, Any]] | None:
@@ -352,7 +350,7 @@ def detect_audio_events(
             class_idx.append(labels.index(lab))
             owner.append(gi)
     t_start = time.perf_counter()
-    probs, t0 = pooled_probabilities(src, det, params, class_idx)
+    probs = pooled_probabilities(src, det, params, class_idx)
     dt = max(1, round(params.pool_s / FRAME_S)) * FRAME_S
     win = max(3, int(params.baseline_s / dt))
     events: list[dict[str, Any]] = []
@@ -365,8 +363,8 @@ def detect_audio_events(
         mask = (gp >= g.abs_thr) | (
             (gp >= g.rel_floor) & (gp >= g.rel_factor * base + g.rel_margin)
         )
-        for sp in _spans(mask, gp, dt, t0, params.merge_gap_s, g.min_dur):
-            i_peak = round((sp["peak_t"] - t0) / dt)
+        for sp in _spans(mask, gp, dt, params.merge_gap_s, g.min_dur):
+            i_peak = round(sp["peak_t"] / dt)
             i_peak = min(max(i_peak, 0), len(top) - 1)
             events.append(
                 {

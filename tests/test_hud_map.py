@@ -888,7 +888,6 @@ def test_a_carry_over_ends_when_the_calls_are_released(monkeypatch: pytest.Monke
 
 
 def test_ready_loads_the_model_and_refuses_one_on_the_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(feed_labels, "ON_CPU", False)
     loads: list[float] = []
     rater = _rater(
         provider_name="ollama",

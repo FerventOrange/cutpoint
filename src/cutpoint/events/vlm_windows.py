@@ -14,7 +14,7 @@ tab's Vision role.
 Window selection merges three seed sources: highlights.json candidates,
 layer-1 audio events (laughter/scream/cheer) and OCR events (kills, banners).
 Windows extend ``pre_s`` before and ``post_s`` after a seed, overlapping
-windows are merged up to ``max_len_s``, and the best ``max_windows`` are kept.
+windows are merged up to :data:`MAX_LEN_S`, and the best ``max_windows`` are kept.
 """
 
 from __future__ import annotations
@@ -98,6 +98,8 @@ RESPONSE_SCHEMA: dict[str, Any] = {
 # name, so they are the same for every activity; the profile's ``vlm`` section words them.
 # The wording comes from the project's activity profile (``generic``'s without one); its
 # hash (``aw``) is part of the cache key, so windows are described again for another wording.
+# No scorer reads ``crash_fall``, ``fast_open`` or ``trees`` (cutpoint.actioncam reads the
+# others): they are for the AI Chat's vocabulary only (cutpoint.assistant.context, .pacing).
 ACTION_CAM_PROMPT_VERSION = 1
 ACTION_CAM_TAGS = (
     "jump_air",
@@ -295,6 +297,12 @@ def game_prompt(game: str | None, preset: HudPreset | None, combat: bool = False
     return replace(prompt, custom=True)
 
 
+CAND_POST_S = 10.0  # extend highlights.json candidates past their end
+MAX_LEN_S = 36.0  # merged windows longer than this are not merged further
+NUM_CTX = 16384  # the context of a window request
+MAX_TOKENS = 700  # a compact reply's tokens (Ollama gets twice that, see _ask)
+
+
 @dataclass
 class VlmParams:
     """Parameters for window selection and VLM requests."""
@@ -302,15 +310,10 @@ class VlmParams:
     window_s: float = 15.0
     pre_s: float = 3.0
     post_s: float = 12.0
-    cand_post_s: float = 10.0  # extend highlights.json candidates past their end
-    max_len_s: float = 36.0  # merged windows longer than this are not merged further
     max_windows: int = 60
     frames: int = 14  # for windows up to 18 s; longer ones get up to 16
     forced: tuple[tuple[str, float, float], ...] = ()  # (name glob, start, end)
-    ctx: int = 16384
     transcript: bool = True
-    hints: bool = True
-    max_tokens: int = 700
     # action-cam prompt + tags in the project's activity wording (set by the pipeline for
     # action-cam projects; None: the game prompt)
     action_cam: ActionCamWording | None = None
@@ -344,7 +347,7 @@ class VlmParams:
             "frames": self.frames,
             "h": FRAME_HEIGHT,
             "transcript": self.transcript,
-            "hints": self.hints,
+            "hints": True,  # detector hints are always sent; kept so cached windows stay valid
             "prompt": version,
             "model": self.model,
             **({"action_cam": ACTION_CAM_PROMPT_VERSION} if cam is not None else {}),
@@ -489,8 +492,8 @@ def select_windows(
         # Candidates come from dialogue/loudness peaks; the payoff (a kill
         # after the banter) often follows, so extend past the candidate end.
         a = c["start"] - 1.0
-        b = max(c["end"] + params.cand_post_s, a + params.window_s)
-        b = min(b, a + params.max_len_s)
+        b = max(c["end"] + CAND_POST_S, a + params.window_s)
+        b = min(b, a + MAX_LEN_S)
         raw.append(
             Window(
                 src,
@@ -539,10 +542,7 @@ def select_windows(
             prev
             and prev.source == w.source
             and w.start <= prev.end
-            and (
-                max(prev.end, w.end) - prev.start <= params.max_len_s
-                or (forced and w.end <= prev.end)
-            )
+            and (max(prev.end, w.end) - prev.start <= MAX_LEN_S or (forced and w.end <= prev.end))
         ):
             prev.end = max(prev.end, w.end)
             prev.priority = max(prev.priority, w.priority) + 0.15 * min(prev.priority, w.priority)
@@ -730,12 +730,8 @@ def _media_content(
                 "errors; seconds from window start):\n" + (ex or "(none)"),
             }
         )
-    if params.hints:
-        h = _hints(events, win.start, win.end)
-        if h:
-            content.append(
-                {"type": "text", "text": "Detector hints (automatic, may be wrong):\n" + h}
-            )
+    if h := _hints(events, win.start, win.end):
+        content.append({"type": "text", "text": "Detector hints (automatic, may be wrong):\n" + h})
     if block := context_block(params.context):
         content.append({"type": "text", "text": block})
     return content
@@ -871,9 +867,9 @@ def _ask(
         prompt,
         images,
         schema,
-        num_ctx=params.ctx,
+        num_ctx=NUM_CTX,
         # Ollama's structured output indents the JSON: 700 tokens cut off a full reply
-        num_predict=2 * params.max_tokens,
+        num_predict=2 * MAX_TOKENS,
         temperature=0.2 if attempt == 0 else 0.0,
     )
     if data is None:

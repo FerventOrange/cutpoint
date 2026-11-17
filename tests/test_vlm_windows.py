@@ -207,6 +207,13 @@ def test_only_the_neutral_prompt_is_re_keyed():
     assert neutral == vw.VlmParams().key()  # no prompt: the neutral one
 
 
+def test_the_default_key_is_pinned_byte_for_byte():
+    """Selection and request settings moved to module constants (#1085 A32); the key of the
+    default params must not change, or every cached window is described again."""
+    key = {"frames": 14, "h": 606, "transcript": True, "hints": True, "prompt": 6, "model": ""}
+    assert json.dumps(vw.VlmParams().key()) == json.dumps(key)
+
+
 def test_action_cam_keys_keep_the_generic_version_they_were_cached_with():
     params = vw.VlmParams(action_cam=vw.default_wording())
     assert params.key()["prompt"] == vw.ACTION_CAM_BASE_PROMPT == 5

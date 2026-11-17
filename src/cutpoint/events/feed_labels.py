@@ -52,9 +52,6 @@ LABEL_NUM_CTX = 16384  # the load and every call ask for the same context (no re
 # A call that runs out of its timeout stops the labelling: the next one would too (#845)
 LABEL_BUDGET = 120
 MIN_ASK = 15  # seconds of budget a call needs at least; with less left nothing more is asked
-# an Ollama that runs the model on the CPU alone (no GPU memory in /api/ps) takes minutes per
-# call (#845: 4 crops, about 3 min on a 4-core CPU): no labels, the rules decide
-ON_CPU = False
 
 
 class StopLabelling(Exception):
@@ -260,7 +257,8 @@ class VisionCalls:
     model (an INFO line), a provider the user has not allowed for Vision (the
     ``vision_consent_needed`` warning, :meth:`~cutpoint.vision.VisionRater.warn_consent`). An
     Ollama model is loaded by a request of its own first; when ``/api/ps`` shows it on the CPU
-    alone nothing is asked (:data:`ON_CPU`). The calls of one game share a budget
+    alone nothing is asked: it takes minutes per call (#845: 4 crops, about 3 min on a
+    4-core CPU), so the rules decide. The calls of one game share a budget
     (:meth:`begin`), and one that times out ends the calls of that game (:class:`StopLabelling`);
     a model that loads on the CPU alone or does not load in time ends those of the run.
     """
@@ -311,7 +309,7 @@ class VisionCalls:
             raise StopLabelling(self.stop[0])
         if self.ollama and not rater.used:
             if rater.load(FIRST_ASK_TIMEOUT, num_ctx=LABEL_NUM_CTX):
-                if not ON_CPU and rater.on_gpu() is False:
+                if rater.on_gpu() is False:
                     self.stop.append(f"{rater.model} runs on the CPU only, too slow to label")
                     raise StopLabelling(self.stop[0])
             elif rater.timed_out:

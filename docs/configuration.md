@@ -527,9 +527,9 @@ saved under the folder's name by an older version (such as `vods.json`) no longe
 own: pass `--game vods` to keep using it. The name
 is lower-cased, every character that is not a letter, digit or combining mark becomes `-`, and
 those of any script stay (`vidéo ünï 日本` gives `vidéo-ünï-日本`; an empty result is `game`). A preset written
-by an older version under the ASCII-only key (`Café Racer` gave `caf-racer`) still matches while
-no preset has the new key (not a `game` preset, the old key of every name without ASCII letters or
-digits).
+by an older version under the ASCII-only key (`Café Racer` gave `caf-racer`) is no longer found:
+the next run discovers the HUD again and saves it under the new key (the old file stays, unused).
+A `match` hint in the old preset, `--game <old key>` or renaming the file keeps the old preset.
 
 **HUD fit check.** The key from a folder or file name is a first guess: one folder can hold
 several games. Once that key has a preset (found, or discovered in this run), each source keyed

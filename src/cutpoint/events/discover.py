@@ -303,7 +303,7 @@ def read_ocr_samples(path: Path) -> list[dict[str, Any]]:
 
     Each record: ``{id, source, src_key, t, burst, k, frame, ref_v, boxes}``; ``source`` is
     the file name and ``src_key`` tells files of one name apart (the file name and
-    the source's cache key, see :func:`_src`; older records have none). A box is
+    the source's cache key, see :func:`_src`). A box is
     ``{x0, y0, x1, y1, text, score}`` in reference pixels. Unreadable lines are
     skipped; a missing file gives ``[]``.
     """
@@ -322,25 +322,25 @@ def read_ocr_samples(path: Path) -> list[dict[str, Any]]:
 def _src(f: dict[str, Any]) -> str:
     """The source an OCR record belongs to, for grouping per source: its ``src_key``
     (``<file name>~<cache key>``), so two files of one name in different folders stay
-    apart (#817), or the file name on records written before it."""
-    return str(f.get("src_key") or f.get("source"))
+    apart (#817). A record without one (written between #815 and #828) has it as its id's
+    prefix (``<src_key>@<time>``, see :func:`_ocr_frames`); a record whose id has no
+    ``@`` (frame records of the OCR layer, :func:`~cutpoint.events.killfeed.menu_rules`)
+    is grouped by its ``source``."""
+    key = f.get("src_key")
+    if not key:
+        fid = str(f.get("id", ""))
+        key = fid.rsplit("@", 1)[0] if "@" in fid else f.get("source")
+    return str(key)
 
 
-def boxes_in(
-    frame: dict[str, Any], x: int, y: int, w: int, h: int, min_h: int = 0
-) -> list[dict[str, Any]]:
+def boxes_in(frame: dict[str, Any], x: int, y: int, w: int, h: int) -> list[dict[str, Any]]:
     """Text boxes of an OCR'd ``frame`` whose centre lies in the rectangle
-    (reference pixels) and that are at least ``min_h`` tall."""
+    (reference pixels)."""
     return [
         b
         for b in frame["boxes"]
-        if x <= (b["x0"] + b["x1"]) / 2 <= x + w
-        and y <= (b["y0"] + b["y1"]) / 2 <= y + h
-        and b["y1"] - b["y0"] >= min_h
+        if x <= (b["x0"] + b["x1"]) / 2 <= x + w and y <= (b["y0"] + b["y1"]) / 2 <= y + h
     ]
-
-
-_LEGACY_FRAME = re.compile(r"b\d+_\d+\.jpg")
 
 
 def _source_tag(src: Source) -> str:
@@ -388,53 +388,31 @@ def _ocr_frames(
     # a frame's id is its source and time; bursts overlap on a short source, so a time
     # taken by an earlier frame gets the burst and frame number too (unique and stable)
     # the source's cache key (path, size, mtime; see cache.source_dir) is in the id, so two
-    # files of one name in different folders (or a file that changed) never share one (#794);
-    # `old_ids` are the ids older caches gave the same frames (the file name alone)
+    # files of one name in different folders (or a file that changed) never share one (#794)
     seen: set[str] = set()
-    seen_old: set[str] = set()
     plan_ids = []
-    old_ids = []
     src_keys = []  # per burst: the record's src_key, the id's prefix (see _src)
     for bi, (src, t) in enumerate(bursts):
         ids = []
-        olds = []
         skey = src_key(src)
         src_keys.append(skey)
         for k in range(params.burst_frames):
-            at = f"@{t + k * params.burst_step_s:.1f}"
-            fid, old = f"{skey}{at}", f"{src.name}{at}"
+            fid = f"{skey}@{t + k * params.burst_step_s:.1f}"
             fid = f"{fid}#{bi}.{k}" if fid in seen else fid
-            old = f"{old}#{bi}.{k}" if old in seen_old else old
             seen.add(fid)
-            seen_old.add(old)
             ids.append(fid)
-            olds.append(old)
         plan_ids.append(ids)
-        old_ids.append(olds)
 
-    # records whose JPEG is named by burst and frame number (older caches): a later plan's
-    # frame may have replaced it, which shows as two records naming one file
-    shared = Counter(
-        rec.get("frame") for rec in done.values() if _LEGACY_FRAME.fullmatch(str(rec.get("frame")))
-    )
-
-    def cached(src: Source, bi: int, k: int) -> dict[str, Any] | None:
+    def cached(bi: int, k: int) -> dict[str, Any] | None:
         """The cached record of this frame: same id and time (an older cache can hold
         another burst's frame under a shared id), in this run's burst, and its JPEG still
-        there and its own. A record under the old id (file name only) counts when its
-        JPEG name is the one this source's path gives (the name hashes the full path),
-        and is taken over under the new id. Every hit gets this source's ``src_key``."""
+        there. Every hit gets this source's ``src_key``."""
         fid, t = plan_ids[bi][k], bursts[bi][1] + k * params.burst_step_s
         rec = done.get(fid)
-        if rec is None:
-            rec = done.get(old_ids[bi][k])
-            if rec is not None and rec.get("frame") != _frame_name(str(src.path), t):
-                return None
-            rec = rec and rec | {"id": fid}
         if rec is None or rec.get("t") != round(t, 2):
             return None
         name = rec.get("frame")
-        if not isinstance(name, str) or not (frame_dir / name).is_file() or shared[name] > 1:
+        if not isinstance(name, str) or not (frame_dir / name).is_file():
             return None
         if rec.get("ref_v") != REF_VERSION and other_aspect(frame_dir / name):
             return None  # boxes from before y scaled with the height (#1085): read again
@@ -445,7 +423,7 @@ def _ocr_frames(
     with folders.output_dir(frame_dir), ExitStack() as stack:
         for bi, (src, t) in enumerate(bursts):
             ids = plan_ids[bi]
-            hits = [cached(src, bi, k) for k in range(len(ids))]
+            hits = [cached(bi, k) for k in range(len(ids))]
             if all(h is not None for h in hits):
                 out += [h for h in hits if h is not None]
                 report((bi + 1) * params.burst_frames, total)
@@ -809,7 +787,6 @@ def _grow_feed(
     per_frame: dict[str, set[int]] = {}
     for cy, fid in inner:
         per_frame.setdefault(fid, set()).add(round((cy - top) / pitch))
-    full_ids = {fid for fid, s in per_frame.items() if len(s & set(range(slots))) >= slots}
     # for growth past the top (bottom) row a frame counts as full when it has that row and
     # misses at most one other: OCR misses a box now and then
     near_full = {
@@ -859,6 +836,7 @@ def _grow_feed(
             ends[d] = (centre, round(centre + d * pitch / 2))
             added += 1
     if logger.isEnabledFor(logging.DEBUG):
+        full_ids = {fid for fid, s in per_frame.items() if len(s & set(range(slots))) >= slots}
         logger.debug(
             "Feed growth %s: pitch %.1f px, %d rows, full in %d/%d frames; a row needs "
             "%.0f frames (%d if sighting variety >= %.2f and %.0f%% full), %d bursts, "
@@ -1652,15 +1630,18 @@ def notice_region(proposal: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- output
 
 
-def proposals_to_regions(
-    proposals: list[dict[str, Any]], max_regions: int = 6, pad: int = 12
-) -> list[Region]:
-    """Turn the best proposals into :class:`Region` objects (padded, clipped).
+MAX_REGIONS = 6  # proposals_to_regions keeps at most this many regions (score regions aside)
+REGION_PAD = 12  # px a proposal's region is padded by (:func:`_padded`)
+
+
+def proposals_to_regions(proposals: list[dict[str, Any]]) -> list[Region]:
+    """Turn the best proposals into :class:`Region` objects (padded by :data:`REGION_PAD`,
+    clipped).
 
     ``feed`` regions keep the det gate at full rate; banners and notices are
     sampled at a third of the OCR rate. ``dynamic`` proposals are left out
     unless nothing else was found. ``score`` proposals become ``score`` regions after
-    them (:func:`score_region`), not counted in ``max_regions``.
+    them (:func:`score_region`), not counted in :data:`MAX_REGIONS`.
     """
     best = max((p["score"] for p in proposals if p["kind"] == "feed"), default=0.0)
     keep = [
@@ -1671,26 +1652,27 @@ def proposals_to_regions(
     ]
     keep = keep or [p for p in proposals if p["kind"] not in ("readout", "popup", "score")]
     out = []
-    for p in keep[:max_regions]:
+    for p in keep[:MAX_REGIONS]:
         kind = {"feed": "feed", "banner": "banner", "notice": "notice"}.get(p["kind"], "notice")
-        out.append(_padded(p, kind, pad))
-    return out + [score_region(p, pad) for p in proposals if p["kind"] == "score"]
+        out.append(_padded(p, kind))
+    return out + [score_region(p) for p in proposals if p["kind"] == "score"]
 
 
-def score_region(p: dict[str, Any], pad: int = 12) -> Region:
-    """The ``score`` region of a :func:`score_proposals` proposal: padded by ``pad`` px, read
+def score_region(p: dict[str, Any]) -> Region:
+    """The ``score`` region of a :func:`score_proposals` proposal: padded by
+    :data:`REGION_PAD` px, read
     in full (detection and recognition) on every :data:`SCORE_EVERY`-th frame at
     :data:`SCORE_UPSCALE` x. When every value seen had one digit, the sides grow to at least
     one digit width (0.6 of the text height), so a later two-digit value is not clipped."""
-    r = _padded(p, "score", pad)
+    r = _padded(p, "score")
     if all(v < 10 for v in p.get("evidence", {}).get("values", [10])):
-        dx = max(pad, round(0.6 * p["evidence"].get("median_text_h", p["h"])))
+        dx = max(REGION_PAD, round(0.6 * p["evidence"].get("median_text_h", p["h"])))
         x = max(0, p["x"] - dx)
         r = replace(r, x=x, w=min(REF_W - x, p["w"] + 2 * dx))
     return replace(r, gate="read", every=SCORE_EVERY, upscale=SCORE_UPSCALE)
 
 
-def _padded(p: dict[str, Any], kind: str, pad: int = 12) -> Region:
+def _padded(p: dict[str, Any], kind: str, pad: int = REGION_PAD) -> Region:
     """The :class:`Region` of proposal ``p``, padded by ``pad`` px and clipped to the frame."""
     x, y = max(0, p["x"] - pad), max(0, p["y"] - pad)
     w = min(REF_W - x, p["w"] + 2 * pad)
@@ -1776,9 +1758,7 @@ def write_overlay(
     static = cv2.resize(
         maps["static"].astype(np.uint8), (REF_W, REF_H), interpolation=cv2.INTER_NEAREST
     ).astype(bool)
-    base[static] = (0.5 * base[static] + np.array([0, 0, 0]) + np.array([60, 60, 60])).astype(
-        np.uint8
-    )
+    base[static] = (0.5 * base[static] + np.array([60, 60, 60])).astype(np.uint8)
     colors = {
         "feed": (0, 255, 0),
         "banner": (0, 200, 255),
@@ -1946,7 +1926,6 @@ def discover_regions(
     icon = icon or bool(names & vision_names)  # ...and so has one the HUD map pointed at
     preset = {
         "game": game,
-        "reference": [REF_W, REF_H],
         "source": "discovered",
         "regions": [
             r.key()
