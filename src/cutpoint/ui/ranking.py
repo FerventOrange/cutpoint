@@ -106,14 +106,15 @@ class RankingRefused(Exception):
 
 
 def ranking_key(p: Path) -> str | None:
-    """The ranking key (:func:`cutpoint.rerank.key`) of the project's ``highlights.json``, which
-    a preview is applied against; None without a readable file of its own."""
-    from cutpoint import rerank  # noqa: PLC0415
+    """The ranking key (:func:`cutpoint.analyze.backup_digest`) of the project's
+    ``highlights.json``, which a preview is applied against; None without a readable file of
+    its own."""
+    from cutpoint import analyze, rerank  # noqa: PLC0415
 
     if not _inside(p, rerank.HIGHLIGHTS):
         return None
     try:
-        return rerank.key((p / rerank.HIGHLIGHTS).read_bytes())
+        return analyze.backup_digest((p / rerank.HIGHLIGHTS).read_bytes())
     except OSError:
         return None
 
@@ -221,13 +222,17 @@ def ranking_preview(p: Path, style_name: object) -> dict[str, Any]:
             one without an analysis.
         RankingRefused: ``folder_busy`` while a run holds the project.
     """
-    from cutpoint import rerank  # noqa: PLC0415
+    from cutpoint import analyze, rerank  # noqa: PLC0415
     from cutpoint.errors import NeedsAnalyzeError  # noqa: PLC0415
 
     style = _ranking_style(style_name)
     _ranking_check(p)
     raw, hl = _ranking_load(p)
-    head = {"style": style.name, "from": fallback_style_name(hl), "base": rerank.key(raw)}
+    head = {
+        "style": style.name,
+        "from": fallback_style_name(hl),
+        "base": analyze.backup_digest(raw),
+    }
     ready = rerank.readiness(p, hl, style, cuda_probe)
     missing = [m.record() for m in ready.missing]
     after: dict[str, Any] = {}
@@ -267,7 +272,7 @@ def _ranking_undo(p: Path, hl: dict[str, Any]) -> tuple[dict[str, Any], bool] | 
       ``settings.rerank_backup``: the very file that ranking replaced, unchanged;
     - the backup is an analysis of the same sources.
     """
-    from cutpoint import rerank  # noqa: PLC0415
+    from cutpoint import analyze, rerank  # noqa: PLC0415
 
     st = hl.get("settings")
     mark = st.get(rerank.UNDO) if isinstance(st, dict) else None
@@ -275,7 +280,11 @@ def _ranking_undo(p: Path, hl: dict[str, Any]) -> tuple[dict[str, Any], bool] | 
     if not isinstance(mark, dict) or not isinstance(link, str) or not _inside(p, rerank.BACKUP):
         return None
     back_raw = cache.load_bytes(p / rerank.BACKUP)
-    if back_raw is None or rerank.key(back_raw) != link or mark.get("seal") != rerank.seal(hl):
+    if (
+        back_raw is None
+        or analyze.backup_digest(back_raw) != link
+        or mark.get("seal") != rerank.seal(hl)
+    ):
         return None
     try:
         back = json.loads(back_raw.decode("utf-8-sig"))
@@ -300,7 +309,7 @@ def ranking_undo_view(p: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
     """What the page's Undo ranking offers (:func:`_ranking_undo`): ``action`` ``undo`` or
     ``redo`` and ``style``, the style of the ranking it swaps in; None when there is none to
     swap in, and for 360 projects. Remembered per project until either file changes."""
-    from cutpoint import rerank  # noqa: PLC0415
+    from cutpoint import analyze, rerank  # noqa: PLC0415
 
     if meta.get("kind") == "360" or (p / pano_project.PANO_FILE).is_file():
         return None
@@ -311,7 +320,7 @@ def ranking_undo_view(p: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
         raw = (p / rerank.HIGHLIGHTS).read_bytes()
     except OSError:
         return None
-    seen = (rerank.key(raw), st.st_size, st.st_mtime_ns)
+    seen = (analyze.backup_digest(raw), st.st_size, st.st_mtime_ns)
     if (got := _UNDO_SEEN.get(p)) is not None and got[0] == seen:
         return got[1]
     try:
@@ -383,12 +392,12 @@ def ranking_swap(p: Path, base: str) -> tuple[dict[str, Any], dict[str, Any], bo
         FolderBusyError: If another run holds the project's lock.
         FileNotFoundError, ValueError: As :func:`cutpoint.rerank.load`.
     """
-    from cutpoint import backends, rerank  # noqa: PLC0415
+    from cutpoint import analyze, backends, rerank  # noqa: PLC0415
     from cutpoint.errors import StaleRankingError  # noqa: PLC0415
 
     with folders.swap_lock(p / runstate.LOCK_NAME, p):
         raw, hl = rerank.load(p)
-        if rerank.key(raw) != base:
+        if analyze.backup_digest(raw) != base:
             raise StaleRankingError(f"{p / rerank.HIGHLIGHTS} changed since the page loaded")
         found = _ranking_undo(p, hl)
         if found is None:
@@ -399,7 +408,7 @@ def ranking_swap(p: Path, base: str) -> tuple[dict[str, Any], dict[str, Any], bo
         backends.saved_settings(back)
         kept = rerank.backup_bytes(raw)
         st = back.setdefault("settings", {})
-        st["rerank_backup"] = rerank.key(kept)
+        st["rerank_backup"] = analyze.backup_digest(kept)
         last = [(x.get("settings") or {}).get("last_candidate_id") for x in (hl, back)]
         if ints := [n for n in last if isinstance(n, int) and not isinstance(n, bool)]:
             st["last_candidate_id"] = max(ints)

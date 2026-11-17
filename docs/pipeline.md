@@ -17,7 +17,7 @@ flowchart TD
     subgraph ANALYZE["cutpoint analyze  (steps 1-7)"]
         direction TB
         ANA["Find inputs"]
-        DET["--style auto: detect the category (tags, telemetry, 40 frames, HUD text and vision check when unsure)"]
+        DET["--style auto: detect the category (tags, telemetry, 24 frames, HUD text and vision check when unsure)"]
         AUD["1 Transcribe: extract audio, read check, loudness"]
         TR["1 Transcribe: Whisper"]
         SC["1 Transcribe: scene cuts"]
@@ -100,7 +100,7 @@ Without `--style`, `--style auto` runs and picks the style from the footage befo
 
 ```mermaid
 flowchart TD
-    P["Per source: container tags, telemetry, 40 small frames (cached)"]
+    P["Per source: container tags, telemetry, 24 small frames (cached)"]
     P --> U{{"Unsure between gameplay and general, no camera tags, not a still?"}}
     U -->|yes| OCR["HUD text check: OCR of 8 frames, text that stays in place, less clocks, dates and subtitles (cached; in lite a screen-text cue without OCR, which makes gameplay ambiguous at most)"]
     U -->|no| V

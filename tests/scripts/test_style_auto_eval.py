@@ -271,7 +271,6 @@ def test_real_decide_on_canned_probes(monkeypatch):
         900.0,
         False,
         handler="VideoHandle",
-        audio_tracks=2,
         frames=32,
         hud_static=0.0,
         static_share=0.0,

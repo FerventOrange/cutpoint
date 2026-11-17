@@ -737,7 +737,7 @@ def run_source(
     ps = res.signals
     assert ps is not None
     name = events[2] if events else str(src)
-    avail = scorer.available_for(style)
+    avail = scorer.available_for()
     out: dict[str, dict[str, Any]] = {}
     for v in variants:
         if v.kind == "reweight":

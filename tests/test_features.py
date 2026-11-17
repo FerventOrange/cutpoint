@@ -195,8 +195,7 @@ def test_lite_renormalises_a_learned_style_with_an_events_feature(home, monkeypa
 
 
 def test_ski_score_is_renormalised_like_the_other_styles():
-    assert scorer.available_for(STYLES["action-cam"]) == features.available()
-    assert scorer.available_for(STYLES["gaming"]) == features.available()
+    assert scorer.available_for() == features.available()
 
 
 def test_ski_features_come_from_the_registry_in_the_grid_order():

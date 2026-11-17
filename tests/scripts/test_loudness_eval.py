@@ -310,7 +310,7 @@ def test_boom_variant_removes_the_unreacted_explosion_from_the_top(tmp_path) -> 
 
 
 def test_reweight_lowers_loudness_only_where_events_ran() -> None:
-    avail = scorer.available_for(GAMING)
+    avail = scorer.available_for()
     w0 = GAMING.weights["loudness"]
 
     def rec(peak_loud: float, peak: float, events: dict) -> dict:

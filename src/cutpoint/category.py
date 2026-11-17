@@ -14,7 +14,7 @@ A source is one of five categories (#513):
 :func:`decide` turns the probes and the speech coverage into a :class:`Detection`, without
 I/O. The project gets one category by duration-weighted majority; :func:`resolve_auto` in
 :mod:`cutpoint.styles` maps it and the emphasis to a style. Nothing here needs torch: the
-frame probe is 32 small grey frames and numpy. A source the frames leave unsure between
+frame probe is 24 small grey frames and numpy. A source the frames leave unsure between
 gameplay and general also gets the HUD text check (:func:`text_probe`, cached as
 :data:`TEXT_FILE`): the HUD OCR engine of the events extra looks for text that stays in place
 over a few frames, as a thin game HUD has; without the extra (Cutpoint lite) the weaker
@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import contextlib
 import importlib.util
-import itertools
 import logging
 import math
 import re
@@ -53,7 +52,8 @@ from cutpoint.utils import context_block, context_hash, footage_context
 
 logger = logging.getLogger(__name__)
 
-VERSION = 3  # 2: the lower-third box (box, hud_box); 3: per window, bars cropped, size
+VERSION = 4  # 2: the lower-third box (box, hud_box); 3: per window, bars cropped, size;
+# 4: no frame pairs (noise_floor, shake) and no audio_tracks
 CACHE_FILE = f"category-v{VERSION}.json"  # in the source's cache folder
 
 ACTION_CAM = "action-cam"
@@ -62,7 +62,6 @@ GAMEPLAY = "gameplay"
 TALK = "talk"
 GENERAL = "general"
 CATEGORIES = (ACTION_CAM, ACTION, GAMEPLAY, TALK, GENERAL)
-DETECTION_VERSION = 4  # of the detection record (4: action); apart from the probe's VERSION
 HYPE, FUNNY = "hype", "funny"  # emphasis: analyze is hype, edit --kind funny-moments funny
 
 # ---- the frame probe
@@ -72,8 +71,6 @@ READ_SCALE = 2  # spread frames are read this much finer than GRID, cropped, the
 WINDOWS = 4  # consecutive groups of the spread frames, each judged on its own (#513)
 WINDOW_MIN = 4  # fewer lit frames in a window: not judged
 DARK_LUMA = 12.0  # a spread frame darker than this (mean luma: black, a fade) is left out
-PAIRS = 4  # pairs of consecutive frames, a native-resolution GRID crop of the centre
-PAIR_FRAMES = 4  # frames read per pair, for one that is not a repeat (first_change)
 SPAN = (0.1, 0.9)
 FRAME_TIMEOUT_S = 60.0
 MIN_FRAMES = 6  # fewer spread frames decoded: no frame measures
@@ -85,7 +82,6 @@ EDGE = 24.0  # luma gradient of the mean frame that counts as an edge
 # pixels with at least HUD_DENSE of them count (#513).
 HUD_CELL = 8
 HUD_DENSE = 0.2
-FLAT = 6.0  # luma gradient below which a pair pixel is flat (noise is measured there)
 BAR_LUMA, BAR_STD = 24.0, 3.0  # a letterbox / pillarbox row or column
 MARGIN = 2  # pixels left out next to the content's edge
 # A lower-third or news-ticker box: a run of rows in the bottom of the picture that moves far
@@ -99,10 +95,10 @@ BOX_ROWS = 0.04  # a box: a run of box rows at least this share of the picture's
 # ---- the decision
 # Gameplay score, calibrated on 69 labelled recordings (#513): only a static HUD separates
 # gameplay from camera footage. Screen-recorder tags are weak (OBS re-encodes of camera
-# footage carry them too); the noise floor and the shake are measured and cached but not
-# scored, as fast gameplay shakes and re-encoded camera footage has no sensor noise (checked
-# again on 54 labelled files, 2026-11-09: neither separates). A 2:1 frame of 360 video
-# counts as camera tags: a re-encode keeps its geometry, not its tags.
+# footage carry them too); the noise floor and the shake are not measured, as fast gameplay
+# shakes and re-encoded camera footage has no sensor noise (checked again on 54 labelled
+# files, 2026-11-09: neither separates). A 2:1 frame of 360 video counts as camera tags: a
+# re-encode keeps its geometry, not its tags.
 BASE_SCORE = 0.3  # no evidence either way
 CAMERA_TAGS, SCREEN_TAGS, HUD_WEIGHT = -0.3, 0.1, 0.5
 EQUIRECT_MIN_W = 3840  # px: the narrowest 2:1 frame taken as 360 video
@@ -115,8 +111,6 @@ TALK_MIN_S = 480.0  # a talk recording is at least this long
 SPEECH_BRIDGE_S = 1.0  # pauses up to this long between words count as speech
 TELEMETRY_SHARE = 0.5  # action cam wins with telemetry in at least this share of the footage
 DISAGREE_SHARE = 0.10  # minorities above this share of the footage: style_sources_disagree
-# what can decide a source (SourceDecision.decided_by, Detection.decided_by)
-EVIDENCE = ("telemetry", "static HUD", "HUD text", "camera tags", "360 frame", "speech", "vision")
 
 # ---- the HUD text check (OCR), for a source the frame probe leaves unsure
 # A thin HUD (a few lines of text) is too small to stay static at GRID; the HUD OCR engine
@@ -226,7 +220,6 @@ class SourceProbe:
         handler, encoder: The video stream's ``handler_name`` and ``encoder`` tags, or the
             container's encoder ("" when untagged).
         make, model: The camera's make and model tags ("" when untagged).
-        audio_tracks: Audio streams (OBS and editors write several; not scored).
         width, height: The video's display size (0: unknown, a probe cached before it).
         frames: Spread frames decoded (0: no frame measures, such as with telemetry).
         hud_static: Share of the picture that never changes and has edges (a HUD, a logo).
@@ -235,8 +228,6 @@ class SourceProbe:
             frame's height, or None.
         hud_box: Share of the picture that is static with edges (as ``hud_static``) inside
             ``box``: the box's own text and edges.
-        noise_floor: Luma noise sigma in flat areas of the native-resolution crops.
-        shake: Median shift (px) between consecutive frames of the crops.
         hud_text: HUD text anchors the HUD text check kept (None: not checked). Cached
             apart, in :data:`TEXT_FILE`, so not in :meth:`to_json`.
         screen_anchors: Text anchors the screen-text cue kept, run in place of the HUD text
@@ -253,7 +244,6 @@ class SourceProbe:
     encoder: str = ""
     make: str = ""
     model: str = ""
-    audio_tracks: int = 0
     width: int = 0
     height: int = 0
     frames: int = 0
@@ -261,8 +251,6 @@ class SourceProbe:
     static_share: float | None = None
     box: list[float] | None = None
     hud_box: float | None = None
-    noise_floor: float | None = None
-    shake: float | None = None
     hud_text: int | None = None
     screen_anchors: int | None = None
     vision: str | None = None
@@ -317,7 +305,7 @@ def _tags(stream_or_format: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _metadata(data: Mapping[str, Any]) -> dict[str, Any]:
-    """Handler, encoder, make, model and the audio track count of ``ffprobe`` output."""
+    """Handler, encoder, make and model of ``ffprobe`` output."""
     streams = data.get("streams") or []
     video = next((s for s in streams if s.get("codec_type") == "video"), {})
     vtags, ftags = _tags(video), _tags(data.get("format") or {})
@@ -335,7 +323,6 @@ def _metadata(data: Mapping[str, Any]) -> dict[str, Any]:
         "encoder": vtags.get("encoder") or ftags.get("encoder", ""),
         "make": make,
         "model": model,
-        "audio_tracks": sum(s.get("codec_type") == "audio" for s in streams),
     }
 
 
@@ -453,41 +440,6 @@ def static_measures(frames: np.ndarray) -> dict[str, Any]:
     return out
 
 
-def noise_sigma(img: np.ndarray) -> float | None:
-    """Immerkaer's noise estimate (luma sigma) over the flat pixels of ``img``; None when
-    too little of it is flat."""
-    lap = (
-        img[:-2, :-2] - 2 * img[:-2, 1:-1] + img[:-2, 2:]
-        - 2 * img[1:-1, :-2] + 4 * img[1:-1, 1:-1] - 2 * img[1:-1, 2:]
-        + img[2:, :-2] - 2 * img[2:, 1:-1] + img[2:, 2:]
-    )  # fmt: skip
-    flat = _gradient(img)[1:-1, 1:-1] < FLAT
-    if flat.mean() < 0.05:
-        return None
-    return float(math.sqrt(math.pi / 2) * np.abs(lap[flat]).mean() / 6)
-
-
-def shift(a: np.ndarray, b: np.ndarray) -> float:
-    """Magnitude (px) of the global shift between frames ``a`` and ``b`` (phase correlation)."""
-    win = np.outer(np.hanning(a.shape[0]), np.hanning(a.shape[1]))
-    fa, fb = np.fft.fft2((a - a.mean()) * win), np.fft.fft2((b - b.mean()) * win)
-    cross = fa * np.conj(fb)
-    corr = np.fft.ifft2(cross / (np.abs(cross) + 1e-9)).real
-    dy, dx = np.unravel_index(int(np.argmax(corr)), corr.shape)
-    dy = dy - a.shape[0] if dy > a.shape[0] // 2 else dy
-    dx = dx - a.shape[1] if dx > a.shape[1] // 2 else dx
-    return float(math.hypot(dx, dy))
-
-
-def first_change(frames: list[np.ndarray]) -> list[np.ndarray]:
-    """The first two consecutive ``frames`` that differ (a 60 fps recording of 30 fps
-    footage repeats each frame), else the first two."""
-    for a, b in itertools.pairwise(frames):
-        if float(np.abs(a - b).mean()) > 0.5:
-            return [a, b]
-    return frames[:2]
-
-
 def _bars(frames: np.ndarray) -> tuple[slice, slice]:
     """The picture inside black bars that stay over ``frames`` ``(n, h, w)``: rows and
     columns whose every pixel is dark (:data:`BAR_LUMA`) and steady (:data:`BAR_STD`), as a
@@ -551,33 +503,22 @@ def window_measures(spread: list[np.ndarray]) -> dict[str, Any]:
     return {**best, "static_share": pooled["static_share"]}
 
 
-def frame_measures(spread: list[np.ndarray], pairs: list[list[np.ndarray]]) -> dict[str, Any]:
+def frame_measures(spread: list[np.ndarray]) -> dict[str, Any]:
     """The frame fields of :class:`SourceProbe` from decoded frames (``spread`` at any size:
     :func:`window_measures` scales them to :data:`GRID`)."""
     out: dict[str, Any] = {"frames": len(spread)}
     if len(spread) >= MIN_FRAMES:
         out.update(window_measures(spread))
-    full = [p for p in pairs if len(p) == 2]
-    noise = [s for p in full for f in p if (s := noise_sigma(f)) is not None]
-    if noise:
-        out["noise_floor"] = float(np.median(noise))
-    moving = [shift(a, b) for a, b in full if float(np.abs(a - b).mean()) > 0.5]
-    if full:  # duplicated frames (a still, a paused game) move 0 px
-        out["shake"] = float(np.median(moving)) if moving else 0.0
     return out
 
 
-def _frame_probe(io: Path, duration: float, width: int, height: int) -> dict[str, Any]:
+def _frame_probe(io: Path, duration: float) -> dict[str, Any]:
     lo, hi = SPAN
     times = [duration * (lo + (hi - lo) * i / (SPREAD - 1)) for i in range(SPREAD)]
     read = (GRID[0] * READ_SCALE, GRID[1] * READ_SCALE)  # finer: bars are cropped off later
     scale_read = f"scale={read[0]}:{read[1]}"
     spread = [f[0] for f in _parallel(lambda t: _grab(io, t, scale_read, 1, read), times) if f]
-    scale = f"scale={GRID[0]}:{GRID[1]}"
-    crop = f"crop={GRID[0]}:{GRID[1]}" if width >= GRID[0] and height >= GRID[1] else scale
-    pair_t = [duration * (lo + (hi - lo) * (i + 0.5) / PAIRS) for i in range(PAIRS)]
-    pairs = [first_change(f) for f in _parallel(lambda t: _grab(io, t, crop, PAIR_FRAMES), pair_t)]
-    return frame_measures(spread, pairs)
+    return frame_measures(spread)
 
 
 # --------------------------------------------------------------------------- HUD text
@@ -1114,7 +1055,7 @@ def probe_source(src: Path, vision: FootageVision | None = None) -> SourceProbe:
     """Measure ``src`` for :func:`decide`; cached in its cache folder as :data:`CACHE_FILE`.
 
     The telemetry check and the container tags are always read; the frame probe
-    (:data:`SPREAD` scaled frames and :data:`PAIRS` pairs of crops) only without telemetry,
+    (:data:`SPREAD` scaled frames) only without telemetry,
     the HUD text check only when the rest leaves the source unsure (:func:`needs_text`), and
     with ``vision`` the vision model only when it is still unsure or camera tags alone make
     it general (:func:`needs_vision`); with ``vision``'s ``every_source`` both for every
@@ -1145,7 +1086,7 @@ def probe_source(src: Path, vision: FootageVision | None = None) -> SourceProbe:
         height=info.height,
     )
     if not found.telemetry:
-        for key, value in _frame_probe(io, info.duration, info.width, info.height).items():
+        for key, value in _frame_probe(io, info.duration).items():
             setattr(found, key, round(value, 5) if isinstance(value, float) else value)
     if found.telemetry or found.frames >= MIN_FRAMES:  # else a read failure that may pass
         cache.save_json(cdir / CACHE_FILE, found.to_json())
@@ -1185,7 +1126,8 @@ class SourceDecision:
     reason: str
     gameplay: float | None = None  # gameplay score 0-1 (None with telemetry)
     speech: float | None = None  # speech coverage 0-1 (None: not transcribed yet)
-    # the evidence that decided (:data:`EVIDENCE`); None when ambiguous
+    # the evidence that decided (telemetry, static HUD, HUD text, camera tags, 360 frame,
+    # speech, vision); None when ambiguous
     decided_by: str | None = None
 
 
@@ -1206,8 +1148,9 @@ class Detection:
             :data:`DISAGREE_SHARE` of the footage (else empty).
         suggest: A style to suggest (``commentary`` for gameplay that is mostly speech),
             or None.
-        decided_by: The evidence (:data:`EVIDENCE`) that decided the sure sources of the
-            category, most footage first; empty when the detection is ambiguous.
+        decided_by: The evidence (as in :attr:`SourceDecision.decided_by`) that decided the
+            sure sources of the category, most footage first; empty when the detection is
+            ambiguous.
         every_source: Decided as ``--vision-detect-all`` asks (:func:`decide`).
     """
 
@@ -1225,7 +1168,6 @@ class Detection:
     def record(self, emphasis: str, style: str, fallback: str | None) -> dict[str, Any]:
         """The ``detection`` block of highlights.json and of ``--json``."""
         return {
-            "version": DETECTION_VERSION,
             "category": self.category,
             "emphasis": emphasis,
             "style": style,

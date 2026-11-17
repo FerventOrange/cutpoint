@@ -60,7 +60,7 @@ def rewrite(project: Path, name: str, edit: Callable[[dict[str, Any]], object]) 
 def relink(project: Path) -> None:
     """highlights.json linked to the backup as it is now and sealed again: only the backup's own
     change is left for the Undo to notice."""
-    link = rerank.key((project / rerank.BACKUP).read_bytes())
+    link = analyze.backup_digest((project / rerank.BACKUP).read_bytes())
     rewrite(
         project, "highlights.json", lambda hl: hl["settings"].__setitem__("rerank_backup", link)
     )

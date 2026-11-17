@@ -190,9 +190,7 @@ def test_describe_candidates_scores_and_moves_to_source_time():
     (out,) = analyze.describe_candidates([c], get_style("gaming"), ps, 100.0)
     assert (out.start, out.end, out.peak_t) == (110.0, 118.0, 112.0)
     assert out.transcript == "what a shot"
-    assert out.score == scorer.score(
-        0.5, get_style("gaming"), scorer.available_for(get_style("gaming")), False
-    )
+    assert out.score == scorer.score(0.5, get_style("gaming"), scorer.available_for(), False)
 
 
 # --------------------------------------------------------------------------- events

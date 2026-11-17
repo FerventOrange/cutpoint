@@ -786,9 +786,6 @@ def _proxy_args(
     return pre, post, vf, ["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0"]
 
 
-_SCENE_DOWNLOAD = NVDEC_DOWNLOAD
-
-
 def _fixed_scale(vf: str, src: Path) -> str:
     """``vf`` with the proxy's ``scale=W:-2`` given the height of ``src``'s probed picture
     (``scale=W:H``, even): with ``-reinit_filter 0`` a picture that changes size mid-file
@@ -844,7 +841,7 @@ def _scene_decode(
     if hw.kind == "cuda":
         fmt = nvdec_download(info.vcodec, info.pix_fmt or "")
     else:
-        fmt = _SCENE_DOWNLOAD.get(info.pix_fmt or "")
+        fmt = NVDEC_DOWNLOAD.get(info.pix_fmt or "")
     if fmt is None:
         return hw.input_args(), gpu_chain(hw, vf) or vf
     head, sep, rest = vf.partition(",scale=")  # the proxy chain's fps filter comes before it
@@ -2090,16 +2087,13 @@ def check_read(
         (cdir / READ_ERRORS_FILE).unlink(missing_ok=True)  # stale record from a bad read
         return None
     record = {
-        "version": 1,
         "source": str(src),
         "offset": round(offset, 3),
-        "container_duration": round(info.duration, 3),
         "expected_audio_s": round(expected, 3),
         "audio_s": round(got, 3),
         "missing_s": round(max(0.0, short), 3),
         "failure_time": round(offset + got, 3),
         "messages": messages,
-        "detected_by": "ffmpeg messages + length" if res else "length check (cached audio)",
         "resumed_at": None,
     }
     cache.save_json(cdir / READ_ERRORS_FILE, record)
@@ -2412,7 +2406,7 @@ def pick_candidates(
         raise ValueError(f"{src}: no signals to pick candidates from")
     n, sig = ps.n, ps.sig
     segments = ps.segments
-    avail = scorer.available_for(style)
+    avail = scorer.available_for()
     if cam_ctx is not None:
         cands, avail = _action_cam_candidates(
             src, n, span, sig, offset, style, cam_ctx, max_candidates, segments, timings, avail
@@ -2476,7 +2470,7 @@ def describe_candidates(
     # delivery cue (#1071): those decide the score, not what the moment is about
     said_w = {k.rstrip("*"): w for k, w in style.keywords.items()}
     if avail is None:
-        avail = scorer.available_for(style)
+        avail = scorer.available_for()
     for c in cands:
         c.score = scorer.score(c.peak, style, avail, c.must_include)
         inside = [(t, w, p) for t, w, p in kw_hits + laugh_hits if c.start <= t <= c.end]
@@ -4668,7 +4662,6 @@ def _highlights_record(
 ) -> dict[str, Any]:
     """highlights.json's object before the event layers and the ranking fill it."""
     return {
-        "version": 1,
         "style": style.name,
         "style_kind": style.kind,
         # The built-in style this one is based on (its own name for a built-in one), so

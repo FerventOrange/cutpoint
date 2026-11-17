@@ -111,8 +111,8 @@ def test_a_talky_box_source_stays_unsure():
 
 
 def test_probes_cached_before_the_windows_are_measured_again():
-    assert category.CACHE_FILE == "category-v3.json"
-    for old in (1, 2):
+    assert category.CACHE_FILE == "category-v4.json"
+    for old in (1, 2, 3):
         assert SourceProbe.from_json({**probe(**GAME).to_json(), "version": old}) is None
 
 
@@ -161,23 +161,12 @@ def test_an_all_dark_window_is_not_cropped_to_nothing():
     assert grid.shape == (6, H, W)
 
 
-def test_noise_and_shift_measures():
-    flat = np.full((H, W), 128.0, np.float32)
-    noisy = flat + RNG.normal(0, 3, (H, W)).astype(np.float32)
-    assert category.noise_sigma(flat) == pytest.approx(0.0, abs=0.01)
-    assert category.noise_sigma(noisy) == pytest.approx(3.0, rel=0.25)
-    img = RNG.uniform(0, 255, (H, W)).astype(np.float32)
-    assert category.shift(img, np.roll(img, (3, 4), axis=(0, 1))) == pytest.approx(5.0)
-
-
 def probe(path="a.mp4", duration=600.0, **kw) -> SourceProbe:
     return SourceProbe(path, duration, kw.pop("telemetry", False), **kw)
 
 
-GAME = {"handler": "VideoHandle", "frames": 16, "hud_static": 0.01, "static_share": 0.05,
-        "noise_floor": 0.2, "shake": 0.0}  # fmt: skip
-CAMERA = {"make": "Apple", "frames": 16, "hud_static": 0.0, "static_share": 0.0,
-          "noise_floor": 3.0, "shake": 4.0}  # fmt: skip
+GAME = {"handler": "VideoHandle", "frames": 16, "hud_static": 0.01, "static_share": 0.05}
+CAMERA = {"make": "Apple", "frames": 16, "hud_static": 0.0, "static_share": 0.0}
 NEWS = {**GAME, "handler": "", "hud_static": 0.0076, "box": [0.86, 0.96], "hud_box": 0.0069}
 
 
@@ -281,14 +270,14 @@ def test_the_ambiguous_warning_names_the_general_style(caplog):
     assert "using the General style (action)" in caplog.text
 
 
-def test_several_audio_tracks_are_no_screen_recorder_sign():
-    """#513 miss 8: an editor's multi-track export is not pushed toward gameplay; ShadowPlay's
-    own handler still is; camera tags win over both."""
-    edit = probe(audio_tracks=5, frames=16, hud_static=0.0, static_share=0.0)
+def test_only_a_screen_recorders_own_handler_is_a_screen_recorder_sign():
+    """#513 miss 8: an editor's export is not pushed toward gameplay; ShadowPlay's own
+    handler still is; camera tags win over both."""
+    edit = probe(frames=16, hud_static=0.0, static_share=0.0)
     assert not edit.screen_marks
     assert category.gameplay_score(edit)[0] == category.BASE_SCORE
     assert probe(handler="VideoHandle").screen_marks
-    cam = probe(audio_tracks=5, make="Apple", frames=16, hud_static=0.0, static_share=0.0)
+    cam = probe(make="Apple", frames=16, hud_static=0.0, static_share=0.0)
     det = category.decide([cam])
     assert (det.category, det.ambiguous, det.decided_by) == (GENERAL, False, ["camera tags"])
 
@@ -466,7 +455,7 @@ def test_a_failed_frame_read_is_not_cached(faked_probe):
 def test_probe_source_measures_frames_once_and_detect_reports_it(video, capsys, monkeypatch):
     first = category.probe_source(video)
     assert not first.telemetry and first.frames == category.SPREAD
-    assert first.hud_static is not None and first.shake is not None
+    assert first.hud_static is not None
     monkeypatch.setattr(category, "_frame_probe", lambda *a: pytest.fail("probed again"))
     assert category.probe_source(video) == first  # from the cache
 
@@ -1320,12 +1309,9 @@ def test_a_long_untranscribed_action_source_leaves_talk_pending(duration, speech
     assert ("talk is checked after transcription" in det.reason) is pending
 
 
-def test_the_detection_record_has_its_own_version_apart_from_the_probe_cache():
+def test_the_detection_record_names_the_category():
     det = category.decide([probe(**UNSURE, vision="action")], {"a.mp4": 0.1})
-    rec = det.record("hype", "action", None)
-    assert rec["version"] == category.DETECTION_VERSION == 4
-    assert category.VERSION == 3 and category.CACHE_FILE == "category-v3.json"
-    assert rec["category"] == "action"
+    assert det.record("hype", "action", None)["category"] == "action"
 
 
 def test_the_vision_cache_is_a_new_file_so_camera_answers_are_asked_again():
@@ -1441,20 +1427,16 @@ def test_frame_probe_grabs_in_parallel_with_the_sequential_result(monkeypatch):
 
     seen = {}
     monkeypatch.setattr(ffmpeg_utils, "decode_raw", decode_raw)
-    monkeypatch.setattr(
-        category, "frame_measures", lambda s, p: seen.update(s=s, p=p) or {"s": len(s)}
-    )
+    monkeypatch.setattr(category, "frame_measures", lambda s: seen.update(s=s) or {"s": len(s)})
 
     def run():
-        category._frame_probe(Path("v.mp4"), 100.0, 640, 360)
-        return [float(f.mean()) for f in seen["s"]], [
-            [float(f.mean()) for f in p] for p in seen["p"]
-        ]
+        category._frame_probe(Path("v.mp4"), 100.0)
+        return [float(f.mean()) for f in seen["s"]]
 
     runs = _both_worker_counts(monkeypatch, run, live)
     assert runs[1][1] == 1 and runs[category.GRAB_WORKERS][1] > 1
     assert runs[1][0] == runs[category.GRAB_WORKERS][0]
-    assert 0 < len(runs[1][0][0]) < category.SPREAD  # the failed grabs were left out
+    assert 0 < len(runs[1][0]) < category.SPREAD  # the failed grabs were left out
 
 
 def test_text_and_vision_frames_grab_in_parallel_with_the_sequential_result(monkeypatch):

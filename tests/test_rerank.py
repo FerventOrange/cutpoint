@@ -625,7 +625,7 @@ def test_an_analyze_override_of_must_include_crash_is_kept(home, tmp_path):
 
 def test_a_save_with_the_previewed_key_writes(home, tmp_path):
     project = make_project(home, tmp_path)
-    token = rerank.key((project / "highlights.json").read_bytes())
+    token = analyze.backup_digest((project / "highlights.json").read_bytes())
     res = rerank.rerank(project, get_style("funny"), expect=token)
     assert res.saved and read(project)["style"] == "funny"
     assert (project / rerank.BACKUP).exists()
@@ -633,7 +633,7 @@ def test_a_save_with_the_previewed_key_writes(home, tmp_path):
 
 def test_a_save_with_a_stale_key_raises_before_any_write(home, tmp_path):
     project = make_project(home, tmp_path)
-    token = rerank.key((project / "highlights.json").read_bytes())
+    token = analyze.backup_digest((project / "highlights.json").read_bytes())
     rerank.rerank(project, get_style("commentary"))  # another ranking ran meanwhile
     files = {p.name: p.read_bytes() for p in project.iterdir()}
     with pytest.raises(StaleRankingError):

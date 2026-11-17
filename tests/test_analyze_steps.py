@@ -1757,7 +1757,7 @@ def test_an_imu_only_source_is_scored_over_its_own_features(tmp_path, monkeypatc
     ``speed`` out of its divisor, and its pick floor scales by the same ratio, so its
     laughter under the fixed floor is a candidate and its jump scores higher than before."""
     style = get_style("action-cam")
-    w, avail = style.weights, scorer.available_for(style)
+    w, avail = style.weights, scorer.available_for()
     own = (frozenset(features.REGISTRY) if avail is None else avail) - {"speed"}
     now = _imu_only_part(tmp_path, monkeypatch)
     assert sorted(c.kind for c in now) == ["airtime", "social"]
@@ -1809,7 +1809,7 @@ def test_a_telemetry_source_of_a_mixed_project_scores_as_before(tmp_path, monkey
     assert floors == [0.02] and floors == [actioncam.PICK_FLOOR]
     alone = _digest(_mixed_part(tmp_path, monkeypatch, a, telemetry=False))
     assert now == alone and now
-    w, avail = get_style("action-cam").weights, scorer.available_for(get_style("action-cam"))
+    w, avail = get_style("action-cam").weights, scorer.available_for()
     assert [d[5] for d in now] == [features.to_score(d[3], w, avail) for d in now]
 
 
@@ -1824,7 +1824,7 @@ def test_a_source_without_telemetry_gives_moments_that_reach_the_default_edit(
     jump = _mixed_part(tmp_path, monkeypatch, a, telemetry=True)
     talk = _mixed_part(tmp_path, monkeypatch, b, telemetry=True)
     assert {c.kind for c in talk} == {"social", "speech"}
-    own = actioncam.source_available(scorer.available_for(style), None)
+    own = actioncam.source_available(scorer.available_for(), None)
     for c in talk:
         assert 0.0 < c.score <= 100.0
         assert c.score == features.to_score(c.peak, style.weights, own)
@@ -2474,10 +2474,8 @@ def test_only_a_running_ocr_layer_reports_pct(tmp_path, monkeypatch, layers, ocr
 
 
 # ----------------------------------------------------------------- --style auto (#513)
-GAME_PROBE = {"handler": "VideoHandle", "frames": 16, "hud_static": 0.01, "static_share": 0.05,
-              "noise_floor": 0.2, "shake": 0.0}  # fmt: skip
-CAMERA_PROBE = {"make": "Apple", "frames": 16, "hud_static": 0.0, "static_share": 0.0,
-                "noise_floor": 3.0, "shake": 4.0}  # fmt: skip
+GAME_PROBE = {"handler": "VideoHandle", "frames": 16, "hud_static": 0.01, "static_share": 0.05}
+CAMERA_PROBE = {"make": "Apple", "frames": 16, "hud_static": 0.0, "static_share": 0.0}
 
 
 @pytest.fixture

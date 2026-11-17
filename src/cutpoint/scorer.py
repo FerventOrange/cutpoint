@@ -41,8 +41,8 @@ if TYPE_CHECKING:
 VLM_WEIGHT = 0.35  # share of the gap to the VLM window score that a candidate gains
 
 
-def available_for(style: Style) -> frozenset[str] | None:
-    """The features ``style``'s score is renormalised over (:func:`cutpoint.features.available`;
+def available_for() -> frozenset[str] | None:
+    """The features a style's score is renormalised over (:func:`cutpoint.features.available`;
     the same for every style)."""
     return features.available()
 
