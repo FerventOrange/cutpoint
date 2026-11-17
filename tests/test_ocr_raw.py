@@ -20,6 +20,7 @@ from cutpoint.events import killfeed, ocr_raw, pipeline
 from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrParams, detect_ocr_events
 from cutpoint.events.regions import preset_from_dict
+from events_fakes import stub_run_events
 from ocr_helpers import ocr_cache_files
 
 NOTICE = (300, 200, 1320, 700)  # a centred notice region ("det" gate at half size)
@@ -322,14 +323,7 @@ def test_lazy_engine_is_made_only_for_a_live_read(tmp_path: Path, monkeypatch, c
 
 def test_pipeline_loads_no_ocr_model_for_a_replay(tmp_path: Path, monkeypatch) -> None:
     srcs = [SimpleNamespace(path=tmp_path / f"{n}.mp4", name=f"{n}.mp4") for n in "ab"]
-    monkeypatch.setattr(
-        pipeline, "load_highlights", lambda p: {"sources": [{"path": str(s.path)} for s in srcs]}
-    )
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: srcs["ab".index(path.stem)])
-    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
-    monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
+    stub_run_events(monkeypatch, srcs)
     monkeypatch.setattr(pipeline, "load_preset", lambda *a: None)
     made: list[object] = []
     monkeypatch.setattr(pipeline, "OcrEngine", lambda: made.append(object()) or made[-1])

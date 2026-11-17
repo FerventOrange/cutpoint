@@ -9,9 +9,10 @@ from pathlib import Path
 import pytest
 
 from cutpoint import cache, jsonout
-from cutpoint.events import audio_events, common, pipeline, sheets
+from cutpoint.events import audio_events, pipeline, sheets
 from cutpoint.events.audio_events import AudioParams, cached_audio_events
 from cutpoint.events.common import AudioPart, Source, layer_cache_path
+from events_fakes import stub_run_events
 
 
 class _Stop(Exception):
@@ -37,16 +38,7 @@ def run(tmp_path: Path, monkeypatch):
     and the ``(source, det, force)`` calls to ``detect_audio_events``. Stops after the audio layer."""
 
     def go(srcs: list[Source], force: tuple[str, ...] = (), layers: tuple[str, ...] = ("audio",)):
-        by_path = {str(s.path): s for s in srcs}
-        monkeypatch.setattr(
-            pipeline, "load_highlights", lambda p: {"sources": [{"path": k} for k in by_path]}
-        )
-        monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-        monkeypatch.setattr(pipeline, "load_source", lambda path, dur: by_path[str(path)])
-        monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-        monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
-        monkeypatch.setattr(pipeline, "unload_ollama", list)
-        monkeypatch.setattr(common, "gpu_memory_used_mib", lambda: None)
+        stub_run_events(monkeypatch, srcs)
         made: list[object] = []
 
         class Det:
@@ -143,17 +135,8 @@ def run_stats(tmp_path: Path, monkeypatch):
     it wrote."""
 
     def go(srcs: list[Source]) -> dict:
-        by_path = {str(s.path): s for s in srcs}
-        monkeypatch.setattr(
-            pipeline, "load_highlights", lambda p: {"sources": [{"path": k} for k in by_path]}
-        )
-        monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-        monkeypatch.setattr(pipeline, "load_source", lambda path, dur: by_path[str(path)])
-        monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-        monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
-        monkeypatch.setattr(pipeline, "unload_ollama", list)
+        stub_run_events(monkeypatch, srcs)
         monkeypatch.setattr(pipeline, "load_preset", lambda *a: None)
-        monkeypatch.setattr(common, "gpu_memory_used_mib", lambda: None)
 
         class Det:
             device = "cuda"
@@ -162,7 +145,6 @@ def run_stats(tmp_path: Path, monkeypatch):
                 pass
 
         monkeypatch.setattr(pipeline, "PannsDetector", Det)
-        monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
         j, _ = pipeline.run_events(tmp_path, layers=("audio",), discover=False, cached_ocr=False)
         return json.loads(j.read_text(encoding="utf-8"))["stats"]
 

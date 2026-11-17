@@ -12,6 +12,7 @@ import pytest
 from cutpoint import progress
 from cutpoint.events import discover, pipeline
 from cutpoint.events.killfeed import OcrParams
+from events_fakes import stub_run_events
 
 
 class _Stop(Exception):
@@ -36,15 +37,8 @@ def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         SimpleNamespace(path=tmp_path / f"{n}.mp4", name=f"{n}.mp4", duration=600.0)
         for n in ("a", "b")
     ]
-    by_path = {str(s.path): s for s in srcs}
-    hl = {"sources": [{"path": str(s.path)} for s in srcs]}
     state = SimpleNamespace(found=None)
-    monkeypatch.setattr(pipeline, "load_highlights", lambda project: hl)
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: by_path[str(path)])
-    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
-    monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
+    stub_run_events(monkeypatch, srcs)
     monkeypatch.setattr(pipeline, "load_preset", lambda *a: state.found)
     monkeypatch.setattr(pipeline, "OcrEngine", lambda: None)
     monkeypatch.setattr(pipeline, "detect_ocr_events", lambda *a, **k: ([], {}))

@@ -20,6 +20,7 @@ from cutpoint import actioncam, crash, jsonout, telemetry
 from cutpoint.errors import LowMemoryError
 from cutpoint.events import audio_events, pipeline, sheets, visual, voice
 from cutpoint.events.common import AudioPart, Source
+from events_fakes import stub_run_events
 
 N = 50  # 5 s on the 0.1 s grid
 _Make = Callable[[str], Exception]  # a fake's error for the source of this file name
@@ -251,7 +252,6 @@ def run_audio(tmp_path, monkeypatch):
         layers: tuple[str, ...] = ("audio",),
         batch_size: int = 0,
     ):
-        by_path = {str(s.path): s for s in srcs}
         closed: list[object] = []
 
         class Det:
@@ -274,15 +274,8 @@ def run_audio(tmp_path, monkeypatch):
             written["events"] = events
             return project / "events.json", project / "events.txt"
 
-        monkeypatch.setattr(
-            pipeline, "load_highlights", lambda p: {"sources": [{"path": k} for k in by_path]}
-        )
-        monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+        stub_run_events(monkeypatch, srcs)
         monkeypatch.setattr(pipeline, "VisionRater", vision_rater)
-        monkeypatch.setattr(pipeline, "load_source", lambda path, dur: by_path[str(path)])
-        monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-        monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
-        monkeypatch.setattr(pipeline, "unload_ollama", list)
         monkeypatch.setattr(pipeline, "cached_audio_events", lambda s, p: None)
         monkeypatch.setattr(pipeline, "PannsDetector", Det)
         monkeypatch.setattr(audio_events, "PannsDetector", Det)

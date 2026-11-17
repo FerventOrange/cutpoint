@@ -48,6 +48,7 @@ from cutpoint.events import common, pipeline, report, scoring
 from cutpoint.events import paths as event_paths
 from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.styles import get_style
+from events_fakes import stub_run_events
 
 ORDER = ("audio", "voice", "visual", "ocr", "crash")
 REAL_CUDA = analyze._cuda
@@ -2452,13 +2453,7 @@ def test_only_a_running_ocr_layer_reports_pct(tmp_path, monkeypatch, layers, ocr
     """Follow-up C: reading cached OCR events (``--skip keyframes`` on a game style) sends
     no pct to whatever step is running."""
     srcs = [SimpleNamespace(path=tmp_path / f"{n}.mp4", name=f"{n}.mp4") for n in "ab"]
-    hl = {"sources": [{"path": str(s.path)} for s in srcs]}
-    monkeypatch.setattr(pipeline, "load_highlights", lambda project: hl)
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: srcs["ab".index(path.stem)])
-    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
-    monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
+    stub_run_events(monkeypatch, srcs)
     monkeypatch.setattr(pipeline, "OcrEngine", lambda: None)
     monkeypatch.setattr(pipeline, "load_preset", lambda *a: None)
     updates: list = []

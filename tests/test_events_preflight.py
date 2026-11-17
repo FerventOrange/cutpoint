@@ -17,6 +17,7 @@ from cutpoint import analyze as analyze_mod
 from cutpoint.events import common, paths, pipeline, visual
 from cutpoint.pano import cli, views
 from cutpoint.pano import geometry as G
+from events_fakes import stub_run_events
 
 
 def _create(items: list[tuple[str, Path]]) -> None:
@@ -413,14 +414,7 @@ def test_run_events_hands_the_visual_clip_model_to_the_crash_layer(
     monkeypatch, tmp_path: Path, layers, only, handed
 ):
     src = SimpleNamespace(path=tmp_path / "a.mp4", name="a.mp4", duration=60.0)
-    monkeypatch.setattr(
-        pipeline, "load_highlights", lambda project: {"sources": [{"path": str(src.path)}]}
-    )
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: src)
-    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
-    monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
+    stub_run_events(monkeypatch, [src])
 
     class Enc:
         closed = 0

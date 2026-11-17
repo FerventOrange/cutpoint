@@ -24,6 +24,7 @@ from cutpoint.events import ocr_prefetch, pipeline, vlm_windows
 from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrCancelled, OcrParams
 from cutpoint.styles import get_style
+from events_fakes import stub_run_events
 
 
 class _Stop(Exception):
@@ -261,13 +262,8 @@ def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake):
     VLM layer."""
     monkeypatch.setenv(progress.ENV, "1")
     monkeypatch.setattr(progress, "MIN_INTERVAL_S", 0.0)  # every update is a line
-    by_path = {str(p): fake.source(i) for i, p in enumerate(fake.paths)}
     hl = {"sources": [{"path": str(p), "duration": 60.0} for p in fake.paths]}
-    monkeypatch.setattr(pipeline, "load_highlights", lambda project: hl)
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: by_path[str(path)])
-    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
+    stub_run_events(monkeypatch, [fake.source(i) for i in range(len(fake.paths))], hl)
     monkeypatch.setattr(pipeline, "load_preset", lambda *a: None)
     monkeypatch.setattr(pipeline, "_discover", lambda *a, **k: {})
     monkeypatch.setattr(pipeline, "OcrEngine", lambda: None)

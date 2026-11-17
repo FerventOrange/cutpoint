@@ -23,6 +23,7 @@ from cutpoint.pano import candidates as C
 from cutpoint.pano import cli, qa, views, vlcheck
 from cutpoint.pano import director as D
 from cutpoint.pano import project as P
+from events_fakes import stub_run_events
 
 # Invented library profiles (Cutpoint ships only base and generic): HOP has no lift
 # captions, SLED has them.
@@ -157,12 +158,7 @@ def test_run_events_visual_layer_and_sheets_use_the_projects_prompts(
     src = tmp_path / "a.mp4"
     src.write_bytes(b"x")
     s = SimpleNamespace(path=src, name="a.mp4")
-    hl = {"sources": [{"path": str(src)}]}
-    monkeypatch.setattr(pipeline, "load_highlights", lambda project: hl)
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: s)
-    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
+    stub_run_events(monkeypatch, [s])
     monkeypatch.setattr(
         pipeline,
         "VisionRater",
@@ -171,7 +167,6 @@ def test_run_events_visual_layer_and_sheets_use_the_projects_prompts(
         ),
     )
     monkeypatch.setattr(pipeline, "VramMonitor", _Mon)
-    monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
     seen: list[tuple[str, str]] = []
 
     def run_layer(*a, **k):
@@ -199,15 +194,8 @@ def test_run_events_writes_sheets_after_the_crash_layer_under_the_profile_it_wro
     src = tmp_path / "a.mp4"
     src.write_bytes(b"x")
     s = SimpleNamespace(path=src, name="a.mp4")
-    monkeypatch.setattr(
-        pipeline, "load_highlights", lambda project: {"sources": [{"path": str(src)}]}
-    )
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: s)
-    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
+    stub_run_events(monkeypatch, [s])
     monkeypatch.setattr(pipeline, "VramMonitor", _Mon)
-    monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
     monkeypatch.setattr(
         pipeline,
         "VisionRater",
@@ -387,16 +375,10 @@ def _crash_context_run(tmp_path, monkeypatch, settings, context, profile=None) -
     src = tmp_path / "a.mp4"
     src.write_bytes(b"x")
     s = SimpleNamespace(path=src, name="a.mp4")
-    hl = {"sources": [{"path": str(src)}], **({"settings": settings} if settings else {})}
     if profile:
         _write(tmp_path, profile)
-    monkeypatch.setattr(pipeline, "load_highlights", lambda project: hl)
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: s)
-    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
+    stub_run_events(monkeypatch, [s], {"settings": settings} if settings else None)
     monkeypatch.setattr(pipeline, "VramMonitor", _Mon)
-    monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
     monkeypatch.setattr(
         pipeline,
         "VisionRater",

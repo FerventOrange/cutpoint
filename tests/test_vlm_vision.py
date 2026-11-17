@@ -15,9 +15,10 @@ from conftest import set_config
 from cutpoint import cache, jsonout, vision
 from cutpoint.assistant import providers
 from cutpoint.assistant.providers import Reply
-from cutpoint.events import common, pipeline
+from cutpoint.events import pipeline
 from cutpoint.events import vlm_windows as vw
 from cutpoint.events.common import Source, layer_cache_path
+from events_fakes import stub_run_events
 
 JPEGS = [b"\xff\xd8one", b"\xff\xd8two", b"\xff\xd8three"]
 REPLY: dict[str, Any] = {
@@ -436,21 +437,9 @@ def _run_vlm(
     project = tmp_path / "proj"
     project.mkdir(exist_ok=True)
     cand = {"id": "h001", "source": str(src.path), "start": 10.0, "end": 14.0, "score": 70}
-    monkeypatch.setattr(
-        pipeline,
-        "load_highlights",
-        lambda p: {
-            "sources": [{"path": str(src.path)}],
-            "candidates": [cand],
-            **({"settings": hl_settings} if hl_settings is not None else {}),
-        },
-    )
-    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: src)
-    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
-    monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
+    extra = {"settings": hl_settings} if hl_settings is not None else {}
+    stub_run_events(monkeypatch, [src], {"candidates": [cand], **extra})
     monkeypatch.setattr(pipeline, "detect_ocr_events", lambda *a, **k: ([], {}))
-    monkeypatch.setattr(common, "gpu_memory_used_mib", lambda: None)
     monkeypatch.setattr(vw, "grab_frames", lambda *a, **k: list(JPEGS))
     jpath, _ = pipeline.run_events(project, layers=("vlm",), **kw)
     return cache.load_json(jpath)
