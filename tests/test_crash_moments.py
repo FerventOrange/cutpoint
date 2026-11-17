@@ -47,7 +47,8 @@ def test_every_built_in_style_forces_crashes_at_0_6():
 
 def test_a_learned_preset_still_overrides_must_include_crash(tmp_path):
     path = tmp_path / "mine.json"
-    path.write_text('{"name": "mine", "base": "action", "must_include_crash": 0.8}', "utf-8")
+    doc = {"schema": 1, "name": "mine", "base": "action", "source": "hand"}
+    path.write_text(json.dumps({**doc, "must_include_crash": 0.8}), "utf-8")
     assert load_learned(path).must_include_crash == 0.8
 
 

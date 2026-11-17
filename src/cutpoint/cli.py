@@ -1241,9 +1241,7 @@ def _cmd_style_list(a: argparse.Namespace) -> None:
         return
     rows = [("name", "type", "base", "source", "applies to", "status")]
     for e in entries:
-        status = "legacy" if e["legacy"] else "ok"
-        if not e["valid"]:
-            status = "invalid: " + "; ".join(e["problems"])
+        status = "ok" if e["valid"] else "invalid: " + "; ".join(e["problems"])
         rows.append(
             (
                 e["name"],
@@ -1267,7 +1265,7 @@ def _cmd_style_show(a: argparse.Namespace) -> None:
         return
     kind = "built-in style" if info["type"] == "built-in" else "your style"
     extra = f", source {info['source']}" if info["source"] else ""
-    print(f"name: {info['name']} ({kind}{', legacy preset' if info['legacy'] else ''}{extra})")
+    print(f"name: {info['name']} ({kind}{extra})")
     print(f"base: {info['base']}")
     for label, key in (("file", "path"), ("description", "description"), ("profile", "profile")):
         if info[key]:
@@ -1275,7 +1273,7 @@ def _cmd_style_show(a: argparse.Namespace) -> None:
     print(f"applies to: {_applies_text(info['applies_to'])}")
     print(f"hash: {info['hash']}")
     if info["kind"] == "action-cam":
-        print(f"mask_friends: {info['mask_friends']:g}")
+        print(f"mask_friends: {str(info['mask_friends']).lower()}")
         print(f"must_include_crash: {info['must_include_crash']:g}")
     print("weights:")
     rows = [("  feature", "weight", "from")]
@@ -1828,7 +1826,7 @@ def _add_style_parsers(sub: argparse._SubParsersAction) -> None:
         "--from",
         dest="from_file",
         metavar="FILE",
-        help="start from this style JSON (also a legacy preset); the options above replace "
+        help="start from this style JSON (also an old one); the options above replace "
         "its values and --weight adds to its weights; its source is kept",
     )
     cr.add_argument("--force", action="store_true", help="replace your style of this name")

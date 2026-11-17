@@ -149,7 +149,8 @@ def _learned(home: Path, name: str, base: str) -> None:
     folder = home / "styles"
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"{name}.json").write_text(
-        json.dumps({"name": name, "base": base, "weights": {}}), encoding="utf-8"
+        json.dumps({"schema": 1, "name": name, "base": base, "source": "hand", "weights": {}}),
+        encoding="utf-8",
     )
 
 

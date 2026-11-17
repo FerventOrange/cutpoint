@@ -68,8 +68,11 @@ def test_a_project_groups_by_its_recorded_base_without_the_library(tmp_path):
     assert (got["base"], got["group"], got["resolved"]) == ("sport", "action", True)
 
 
+TRAILRIDE = {"schema": 1, "name": "trailride", "base": "sport", "source": "hand", "weights": {}}
+
+
 def test_an_older_file_without_the_base_falls_back_to_the_library(tmp_path):
-    write(paths.styles_dir() / "trailride.json", json.dumps({"base": "sport", "weights": {}}))
+    write(paths.styles_dir() / "trailride.json", json.dumps(TRAILRIDE))
     old = vp.load_project(project(tmp_path, "old", "trailride", [rated(0, 7.0)]))
     assert (old["base"], old["group"]) == ("sport", "action")
 
@@ -82,7 +85,7 @@ def test_a_recorded_base_needs_no_style_library():
 
 
 def test_a_user_style_resolves_to_its_base_from_the_library():
-    write(paths.styles_dir() / "trailride.json", json.dumps({"base": "sport", "weights": {}}))
+    write(paths.styles_dir() / "trailride.json", json.dumps(TRAILRIDE))
     assert vp.style_base({"style": "trailride"}) == ("sport", True, True)
 
 
@@ -90,7 +93,7 @@ def test_cells_per_group_and_kind_with_the_rule(tmp_path, monkeypatch):
     monkeypatch.setitem(vision.RATING_PRIOR, ("action", "frames"), 5.6)
     monkeypatch.setitem(vision.RATING_PRIOR, ("other", "frames"), 5.6)
     monkeypatch.setitem(vision.RATING_PRIOR, ("other", "speech"), 4.1)
-    write(paths.styles_dir() / "trailride.json", json.dumps({"base": "sport", "weights": {}}))
+    write(paths.styles_dir() / "trailride.json", json.dumps(TRAILRIDE))
     # action frames: 15 ratings of 7.0 over two projects -> used (n 15, delta 1.4)
     a = project(tmp_path, "ride", "action", [rated(i, 7.0) for i in range(10)])
     b = project(tmp_path, "trail", "trailride", [rated(i, 7.0) for i in range(5)])

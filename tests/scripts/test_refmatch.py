@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from conftest import load_script, write
-from cutpoint import actioncam, cache, reset_state
+from cutpoint import cache, reset_state
 from cutpoint import ffmpeg_utils as fu
 from cutpoint.errors import FFmpegError
 from cutpoint.styles import get_style
@@ -26,10 +26,10 @@ def interrupt(*_a: object, **_k: object) -> None:
 
 
 def test_mask_modes_collapse_old_threshold_lists() -> None:
-    assert refmatch.mask_modes((0, 5, 6, 7, 8, 11), 7.0) == (0.0, 7.0)
-    assert refmatch.mask_modes((0, 7, 11), 7.0) == (0.0, 7.0)
-    assert refmatch.mask_modes((11,), 7.0) == (7.0,)  # cross-validation refits one mode
-    assert refmatch.mask_modes((5, 0), 0.0) == (float(actioncam.FRIENDS_STRONG), 0.0)
+    assert refmatch.mask_modes((0, 5, 6, 7, 8, 11)) == (False, True)
+    assert refmatch.mask_modes((0, 7, 11)) == (False, True)
+    assert refmatch.mask_modes((11,)) == (True,)  # cross-validation refits one mode
+    assert refmatch.mask_modes((5, 0)) == (True, False)
 
 
 def test_fit_weights_fits_each_mask_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -42,7 +42,7 @@ def test_fit_weights_fits_each_mask_once(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(refmatch, "_train", stop)
     with pytest.raises(RuntimeError, match="stop"):
         refmatch.fit_weights([], thresholds=(0, 5, 6, 7, 8, 11), save=False)
-    assert seen == [(0.0, get_style("action-cam").mask_friends)]
+    assert seen == [(False, True)]
 
 
 def test_log_fit_reads_a_preset_saved_with_a_bom(tmp_path: Path, caplog) -> None:
@@ -263,7 +263,7 @@ SYN_RESULT = {
 def test_evaluate_scores_picks_against_the_reference_moments() -> None:
     def run(weights: dict[str, float]) -> dict[str, object]:
         return refmatch.evaluate(
-            Path("p"), SYN_RESULT, weights, friends_strong=0.0, feats=syn_feats()
+            Path("p"), SYN_RESULT, weights, friends_strong=False, feats=syn_feats()
         )
 
     right = run({"airtime": 1.0})
@@ -283,3 +283,17 @@ def test_fit_weights_moves_weight_toward_the_features_of_the_labelled_moments() 
     assert stats["airtime"]["auc"] > 0.9 > 0.5 > stats["carve"]["auc"]
     assert report["auc"]["learned_in_sample"] > 0.9
     assert report["at_edit_duration"]["learned_in_sample"]["moments_hit"] == 3
+
+
+def test_fit_weights_saves_a_schema_1_style_file(home: Path) -> None:
+    from cutpoint import stylefiles  # noqa: PLC0415
+
+    data = [refmatch.FitData(Path("p"), SYN_RESULT, syn_feats())]
+    report = refmatch.fit_weights(
+        data, name="fitted", features=["airtime", "carve"], thresholds=(0,), folds=2, cross=False
+    )
+    path = Path(report["preset"])
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["schema"] == 1 and doc["source"] == "fitted" and doc["mask_friends"] is False
+    assert stylefiles.check(doc, path.stem).ok
+    assert get_style("fitted").mask_friends is False

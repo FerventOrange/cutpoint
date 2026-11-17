@@ -305,7 +305,16 @@ def client(home: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
 def test_the_hook_lists_built_in_and_saved_styles_and_the_note_is_cut(home) -> None:
     write(
         paths.styles_dir() / "mine.json",
-        json.dumps({"base": "gaming", "weights": {}, "description": "d" * 200}),
+        json.dumps(
+            {
+                "schema": 1,
+                "name": "mine",
+                "base": "gaming",
+                "source": "hand",
+                "weights": {},
+                "description": "d" * 200,
+            }
+        ),
     )
     hook = ui.RankingHook(home / "projects" / "p", "gaming")
     got = dict(hook.styles())

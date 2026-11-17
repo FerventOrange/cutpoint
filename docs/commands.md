@@ -166,7 +166,7 @@ So do these combinations:
 | `events` | See [events outputs](#events-outputs) below |
 | `profile` | For `profile <project>`: the `activity.json` record's own keys (as the older `profile --json` printed them: `version`, `request`, `name`, `source` (`flag`, `library`, `synthesized`, `context` or `fallback`), `profile`, and when set `scores`, `description`, `described_by`, `model`), and `activity_file` (its path) |
 | `profile list\|show\|create\|validate\|delete` | `list`: `profiles_dir`, `profiles` (each `name`, `type` (`built-in` or `user`), `source`, `floor`, `valid`, `problems`, `path`, `description`; an unusable file also gives an `invalid_profile` warning). `show`: `name`, `type`, `source`, `floor`, `path`, `description`, `profile`. `create`: `name`, `path`, `replaced`, `profile` (a `profile_entry_ignored` warning per entry dropped). `validate`: the check result (`valid`, `problems`, `notes`) and its warnings. `delete`: `name`, `path`. The command names are `profile list` and so on |
-| `style` | `style list`: `styles_dir`, `styles` (each `name`, `type` (`built-in` or `user`), `legacy`, `valid`, `problems`, `warnings` (each `code`, `message`), `source`, `base`, `description`, `profile`, `applies_to` (`categories`, `profiles`), `path`). `style show`: `name`, `type`, `legacy`, `source`, `base`, `kind`, `description`, `profile`, `applies_to`, `path`, `hash`, `mask_friends`, `must_include_crash`, `weights` (each `feature`, `weight`, `from`: `base` or `style`). `style create`: `name`, `path`, `replaced`, `style` (as `style show`). `style validate`: `name`, `path`, `type`, `legacy`, `valid`, `problems`, `notes`. `style delete`: `name`, `path`. `style features`: `features` (each `name`, `layer`, `description`, `extra`, `available`) |
+| `style` | `style list`: `styles_dir`, `styles` (each `name`, `type` (`built-in` or `user`), `valid`, `problems`, `warnings` (each `code`, `message`), `source`, `base`, `description`, `profile`, `applies_to` (`categories`, `profiles`), `path`). `style show`: `name`, `type`, `source`, `base`, `kind`, `description`, `profile`, `applies_to`, `path`, `hash`, `mask_friends`, `must_include_crash`, `weights` (each `feature`, `weight`, `from`: `base` or `style`). `style create`: `name`, `path`, `replaced`, `style` (as `style show`). `style validate`: `name`, `path`, `type`, `valid`, `problems`, `notes`. `style delete`: `name`, `path`. `style features`: `features` (each `name`, `layer`, `description`, `extra`, `available`) |
 
 ### events outputs
 
@@ -2448,7 +2448,7 @@ footage or a project.
 | `list` | The built-in styles and yours, with `source`, `base`, `applies_to` and whether each is valid. A file that is not usable is listed with a warning (`invalid_style`) |
 | `show NAME` | The effective weights of a style (its base's, then its own) and where each comes from (`base` or `style`), with the style `hash` |
 | `create NAME` | Save a style (`source: hand`). Needs `--base`, or a `--from` file that has one |
-| `validate NAME\|FILE` | Check a style by name or a `.json` file by path and list every problem; exit 1 if invalid. A legacy preset is valid and noted as legacy |
+| `validate NAME\|FILE` | Check a style by name or a `.json` file by path and list every problem; exit 1 if invalid. A file of an older Cutpoint (no `schema`, or an old feature name) is invalid, and the problem says what to write instead |
 | `delete NAME` | Delete one of your styles. Built-in styles cannot be deleted. There is no confirmation. A project analyzed with a style you then delete keeps working in `clips`, `events`, `cutpoint ui` and the AI Chat with the built-in base its `highlights.json` records (`style_base`; an INFO line names it); analyze it again to record the base in an older file that has none |
 | `features` | The feature names weights can use, their layer, and whether this install has them (`available`; `extra` names the extra a feature needs) |
 
@@ -2458,7 +2458,7 @@ footage or a project.
 |---|---|
 | `NAME` | Letters, digits, `-` and `_`; not a built-in style name and not `auto` |
 | `--base STYLE` | The built-in style it builds on (not another style of yours) |
-| `--from FILE` | Start from this style JSON (a legacy preset also works). The other options replace its values and `--weight` adds to its weights; its `source` is kept. `create NAME --from FILE --force` converts a legacy preset to schema 1 |
+| `--from FILE` | Start from this style JSON (also one without `schema`: the copy gets `"schema": 1`). The other options replace its values and `--weight` adds to its weights; its `source` is kept |
 | `--weight FEATURE=W ...` | A feature weight, 0 or more, over the base's. Names are those of `style features` |
 | `--description TEXT` | What the style is for |
 | `--applies-to KIND:NAME ...` | `category:NAME` (`action-cam`, `gameplay`, `action`, `talk`, `general`) or `profile:NAME`. Stored only: `--style auto` does not use it yet |
@@ -2469,7 +2469,7 @@ footage or a project.
 An existing name without `--force` is `output_not_empty`; a missing style or file is `not_found`;
 a rejected value (unknown feature, negative weight, bad name) is `bad_args` with exit 1, and a
 command-line syntax error is exit 2. `create` and `validate` warn with `unknown_profile` and
-`feature_not_computed`; a legacy preset is never rewritten automatically.
+`feature_not_computed`. A style file is never rewritten automatically.
 
 `analyze` records `settings.style_hash` in `highlights.json`: the first 12 hex characters of the
 SHA-256 of the style's canonical JSON, so a change to a style file shows in the project.

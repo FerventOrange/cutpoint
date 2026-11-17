@@ -483,7 +483,8 @@ def test_action_cam_and_pool_candidates_are_left_alone(tmp_path):
 def learned(name: str, base: str) -> None:
     folder = paths.styles_dir()
     folder.mkdir(parents=True, exist_ok=True)
-    preset = {"name": name, "base": base, "weights": {"loudness": 0.5}}
+    preset = {"schema": 1, "name": name, "base": base, "source": "hand"}
+    preset["weights"] = {"loudness": 0.5}
     (folder / f"{name}.json").write_text(json.dumps(preset), encoding="utf-8")
 
 
@@ -542,7 +543,9 @@ def test_a_deleted_user_style_nominates_as_its_recorded_base(tmp_path, base, exp
         ("{not json", "Cannot read learned style"),
         (json.dumps({"schema": 1, "base": "gaming", "weights": {"nope": 1}}),
          "not a valid style file"),
-        (json.dumps({"base": "no-such-base", "weights": {}}), "unknown base style"),
+        (json.dumps({"schema": 1, "name": "mine", "base": "no-such-base", "source": "hand"}),
+         "'no-such-base' is not a built-in style"),
+        (json.dumps({"base": "gaming", "weights": {}}), '"schema" is missing'),
     ],
 )  # fmt: skip
 def test_recorded_style_of_a_broken_style_file_raises_its_own_error(text, error):
