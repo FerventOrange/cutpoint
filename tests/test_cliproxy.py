@@ -1593,7 +1593,7 @@ def test_start_waits_for_the_proxy_and_holds_the_launch_lock_until_stop(
 def test_a_proxy_that_does_not_come_up_is_stopped_and_frees_the_lock(
     temp_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def never_ready(_proc: object) -> None:
+    def never_ready(_proc: object, **_kw: object) -> None:
         raise cliproxy.ProxyError("CLIProxyAPI did not start in time")
 
     spawned = _fake_launch(monkeypatch, tmp_path, ready=never_ready)
@@ -1601,7 +1601,7 @@ def test_a_proxy_that_does_not_come_up_is_stopped_and_frees_the_lock(
         cliproxy.start()
     assert spawned[0].stopped == 1
 
-    monkeypatch.setattr(cliproxy, "_wait_until_ready", lambda proc: None)
+    monkeypatch.setattr(cliproxy, "_wait_until_ready", lambda proc, **kw: None)
     cliproxy.start().stop()  # no lock left behind
 
 

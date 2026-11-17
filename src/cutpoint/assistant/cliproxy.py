@@ -52,12 +52,6 @@ CLI_PROVIDERS = {
     "antigravity": "antigravity",
 }
 
-PREFIX_BY_PROVIDER = {
-    "claude-code": "claude",
-    "codex": "codex",
-    "antigravity": "antigravity",
-}
-
 DEFAULT_PORT = 18317
 # what a request says while no Cutpoint proxy runs (``cutpoint ui`` starts one when needed)
 NOT_RUNNING = "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
@@ -430,7 +424,7 @@ def _ensure_credential_prefixes() -> None:
         filename = f.get("name") or f.get("id")
         provider_type = f.get("provider") or f.get("type")
         current_prefix = f.get("prefix")
-        if provider_type not in ("claude", "codex", "antigravity") or not filename:
+        if provider_type not in CLI_PROVIDERS.values() or not filename:
             continue
         expected_prefix = provider_type
         if current_prefix != expected_prefix:
@@ -560,18 +554,7 @@ def status(provider: str) -> dict[str, Any]:
     if provider not in PROVIDERS:
         raise ValueError(f"unknown provider {provider!r}; must be one of {PROVIDERS}")
 
-    for s in statuses():
-        if s.get("provider") == provider:
-            return s
-    return {
-        "provider": provider,
-        "logged_in": False,
-        "email": None,
-        "org": None,
-        "expired": False,
-        "expires_ms": None,
-        "error": None,
-    }
+    return next(s for s in statuses() if s.get("provider") == provider)
 
 
 def start_login(provider: str) -> dict[str, str]:
@@ -702,7 +685,7 @@ def list_models(provider: str) -> list[dict[str, str]]:
     if provider not in PROVIDERS:
         raise ValueError(f"unknown provider {provider!r}; must be one of {PROVIDERS}")
     cli_p = CLI_PROVIDERS[provider]
-    prefix = PREFIX_BY_PROVIDER[provider]
+    prefix = CLI_PROVIDERS[provider]
 
     data = _management_request("GET", "/v8/management/credentials")
     files = data.get("files") or []
@@ -750,7 +733,7 @@ def chat(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Forward OpenAI chat completions payload with provider model prefix isolation."""
     if provider not in PROVIDERS:
         raise ValueError(f"unknown provider {provider!r}; must be one of {PROVIDERS}")
-    prefix = PREFIX_BY_PROVIDER[provider]
+    prefix = CLI_PROVIDERS[provider]
 
     req_body = dict(payload)
     model = str(req_body.get("model", ""))
@@ -1200,10 +1183,7 @@ def start(port: int | None = None, *, cancel: threading.Event | None = None) -> 
             raise ProxyError(f"another cutpoint proxy is already running: {err}") from err
         guardian_cmd, run_dir = _prepare_launch(home_dir, resolved_port)
         proc = _spawn_guardian(guardian_cmd, run_dir)
-        if cancel is None:
-            _wait_until_ready(proc)
-        else:
-            _wait_until_ready(proc, cancel=cancel)
+        _wait_until_ready(proc, cancel=cancel)
         if proc.poll() is not None:  # _wait_until_ready returns on a code 0 exit too
             raise ProxyError(f"CLIProxyAPI supervisor exited with code {proc.returncode}")
     except BaseException:

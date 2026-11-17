@@ -163,7 +163,7 @@ def assistant_view(data: dict[str, Any], section_name: str = "assistant") -> dic
     is_vision = section_name == "vision_assistant"
     dm = default_model() if is_vision else ai_providers.DEFAULT_OLLAMA_MODEL
     offers = {
-        "ollama": (ollama, dm if is_vision else ai_providers.AUTO_MODEL, [dm], dm, False),
+        "ollama": (ollama, dm if is_vision else ai_providers.DEFAULT_OLLAMA_MODEL, [dm], dm, False),
         "openai": (
             ai_providers.OPENAI_URL,
             "",

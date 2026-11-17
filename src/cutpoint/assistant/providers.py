@@ -57,7 +57,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_MODEL = "qwen3.5:9b"  # tools, vision and thinking; about 6.6 GB
 PREVIOUS_VISION_MODEL = "qwen3-vl:8b"  # the default vision model before qwen3.5:9b
-AUTO_MODEL = DEFAULT_OLLAMA_MODEL  # shown until resolved
 CHAT_TIMEOUT_S = 300.0  # one read of a local model's reply on a slow GPU
 HOSTED_TIMEOUT_S = 180.0  # a hosted model's whole reply (not streamed)
 CONNECT_TIMEOUT_S = 10.0
@@ -643,8 +642,8 @@ class OllamaProvider:
 
     @property
     def model(self) -> str:
-        """The model asked; :data:`AUTO_MODEL` while auto is not resolved yet."""
-        return self._model or AUTO_MODEL
+        """The model asked; :data:`DEFAULT_OLLAMA_MODEL` while auto is not resolved yet."""
+        return self._model or DEFAULT_OLLAMA_MODEL
 
     def resolve_model(self) -> str:
         """The model to ask. Auto: the first of :data:`DEFAULT_OLLAMA_MODEL`, the vision model
@@ -1623,13 +1622,11 @@ class SubscriptionProvider(OpenAIProvider):
         }
         if tools:
             payload["tools"] = tools
-        if schema:
+        if schema and not self._no_schema:
             payload["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {"name": "cutpoint_reply", "schema": schema},
             }
-        if schema and self._no_schema:
-            del payload["response_format"]
         self._stop(cancelled)
         try:
             try:

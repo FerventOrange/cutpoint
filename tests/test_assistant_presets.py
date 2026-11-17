@@ -84,7 +84,7 @@ def test_the_none_preset_is_the_configured_ollama(home, monkeypatch) -> None:
     p = providers.make(AssistantSettings("ollama", "llama3"))
     assert type(p) is providers.OllamaProvider and p.url == "http://127.0.0.1:11999"
     assert p.model == "llama3" and p.local
-    assert providers.make(AssistantSettings("ollama")).model == providers.AUTO_MODEL
+    assert providers.make(AssistantSettings("ollama")).model == providers.DEFAULT_OLLAMA_MODEL
     assert providers.is_preset("ollama", "") and providers.is_preset("ollama", "127.0.0.1:11999")
     assert not providers.is_preset("ollama", "http://nas:11434")
 
