@@ -110,6 +110,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The installers (`install.sh`, `install.ps1`) no longer ask for the `ui` and `keyring` extras, and `pyproject.toml` drops those two empty extras: the browser workspace and the keyring are in every install, so lite installs `cutpoint` and the CPU build `cutpoint[events]`. Re-running the installer upgrades an existing install as before; `uv tool install "cutpoint[ui]"` from an old note now warns that the extra does not exist. The installers refuse `CUTPOINT_VERSION` below 0.4.0 (exit 1, before installing anything), since those releases need the `ui` extra (#1085, A64).
 - `clips --force` and `extend` decide what they may replace in a clips folder with one shared step, so the files replaced and kept are the same in both. Their WARNINGs now match too: `extend --out DIR --force` into a `DIR` without a readable `manifest.json` warns that it keeps every other file, as `clips --force` did; the `Kept ...` warnings of both name the folder as an absolute path and list the kept clips in natural order (`2_x` before `10_x`) (#1085, A381).
 - `cutpoint ui` project view answers about 3.5x faster on large projects (3000 moments: 216 to 61 ms), with the same reply (#1085, A742).
 - `cutpoint ui` jobs list, polled every second while a job runs, sends the log only for the running job and the newest job (about 36x less data with 50 kept jobs) (#1085, A744).

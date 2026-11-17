@@ -30,10 +30,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# `ui` and `keyring` used to be extras; their packages are core dependencies now.
-# The names stay as empty aliases so `cutpoint[ui]` etc. keep working.
-ui = []
-keyring = []
 # CUDA 12 runtime libs so faster-whisper / ctranslate2 transcribe on an NVIDIA GPU
 # (cuBLAS + cuDNN 9, about 3.6 GB). Without them whisper runs on the CPU. Linux gets
 # looser floors because the cu126 torch wheels (events extra) pin their own

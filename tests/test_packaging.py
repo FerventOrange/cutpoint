@@ -1,7 +1,8 @@
-"""Packaging contract: the old extra names still install, and the built wheel carries the files
+"""Packaging contract: no ui/keyring extras, and the built wheel carries the files
 the package reads at run time."""
 
 import os
+import re
 import shutil
 import subprocess
 import tomllib
@@ -16,17 +17,63 @@ _ROOT = Path(__file__).resolve().parents[1]
 _REAL_ENV = {k: v for k, v in os.environ.items() if not k.startswith("CUTPOINT_")}
 
 
-def test_old_extra_names_still_install_with_the_ui_in_core():
-    """``cutpoint[ui]`` and ``[keyring]`` in old install commands keep working: the
-    names stay as empty extras, their packages are core dependencies."""
+def test_ui_and_keyring_are_core_dependencies_not_extras():
+    """The browser workspace and the keyring are in every install: no such extras exist, and
+    neither installer asks for them."""
     project = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
     extras = project["optional-dependencies"]
-    for alias in ("ui", "keyring"):
-        assert extras[alias] == []
+    assert {"ui", "keyring"}.isdisjoint(extras)
+    for script in ("install.sh", "install.ps1"):
+        text = (_ROOT / script).read_text(encoding="utf-8")
+        assert not re.search(r"cutpoint(\$extra|\$\{extra\})?\[[^\]]*\b(ui|keyring)\b", text)
+        assert not re.search(r'extra\s*=\s*"\[[^"]*\b(ui|keyring)\b', text)
     assert "ski" not in extras
     core = {r.split(";")[0].split("[")[0].split(">")[0].split("=")[0].strip()
             for r in project["dependencies"]}  # fmt: skip
     assert {"fastapi", "uvicorn", "keyring", "telemetry-parser"} <= core
+
+
+def _run_sh_version_check(version: str) -> subprocess.CompletedProcess[str]:
+    """Run install.sh's ``check_version`` alone (the script runs ``main`` when sourced)."""
+    text = (_ROOT / "install.sh").read_text(encoding="utf-8")
+    die = re.search(r"^die\(\) \{.*?^\}", text, re.S | re.M)
+    check = re.search(r"^check_version\(\) \{.*?^\}", text, re.S | re.M)
+    assert die and check
+    script = f"{die.group(0)}\n{check.group(0)}\nCUTPOINT_VERSION={version}\ncheck_version\n"
+    return subprocess.run(
+        ["sh", "-c", script], capture_output=True, text=True, timeout=30, check=False
+    )  # fmt: skip
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh not on PATH")
+@pytest.mark.parametrize("version", ["0.3.0", "0.3.9", "v0.3.0", "0.1.0", "0.0.1", "0.3.0rc1"])
+def test_install_sh_refuses_releases_before_0_4_0(version):
+    done = _run_sh_version_check(version)
+    assert done.returncode == 1 and done.stdout == ""
+    assert done.stderr == (
+        f"ERROR: Cutpoint {version} is older than 0.4.0, the oldest release this installer "
+        "can install; install it with pip or uv directly, or use a newer version.\n"
+    )
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh not on PATH")
+@pytest.mark.parametrize(
+    "version",
+    ["0.4.0", "0.4.0rc1", "0.4.0.dev1", "0.5.0", "0.10.0", "0.30.1", "1.0.0", "v0.4.0", "weird"],
+)
+def test_install_sh_allows_0_4_0_and_later_and_unparsable(version):
+    done = _run_sh_version_check(version)
+    assert (done.returncode, done.stdout, done.stderr) == (0, "", "")
+
+
+def test_install_ps1_has_the_same_version_floor():
+    text = (_ROOT / "install.ps1").read_text(encoding="utf-8")
+    assert 'if ($S.Source -eq "pypi") { Test-Version $S.Version }' in text
+    assert r"-match '^v?(\d+)\.(\d+)'" in text
+    assert "[int]$Matches[1] -eq 0 -and [int]$Matches[2] -lt 4" in text
+    sh = (_ROOT / "install.sh").read_text(encoding="utf-8")
+    msg = "is older than 0.4.0, the oldest release this installer can install; install it with pip or uv directly, or use a newer version."
+    assert msg in text and msg in sh
 
 
 @pytest.mark.slow
@@ -56,5 +103,6 @@ def test_the_wheel_ships_the_web_page_skill_guide_and_activity_profiles(tmp_path
     assert {f"cutpoint/presets/activities/{n}" for n in profiles} <= names
     assert {"cutpoint/skill/SKILL.md", "cutpoint/AGENTS.md"} <= names
     assert "base.json" in profiles and "index.html" in web  # the globs found the real folders
-    assert {"ui", "keyring", "events", "gpu"} <= set(meta.get_all("Provides-Extra"))
+    assert {"events", "gpu"} <= set(meta.get_all("Provides-Extra"))
+    assert {"ui", "keyring"}.isdisjoint(meta.get_all("Provides-Extra"))
     assert "ski" not in set(meta.get_all("Provides-Extra"))

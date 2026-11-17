@@ -36,8 +36,8 @@ Installs uv and ffmpeg when missing, then Cutpoint as a uv tool (run again to up
 
 Modes:
   (default)         Full: every feature. With an NVIDIA GPU: CUDA torch and GPU libraries
-                    ("cutpoint[all]", several GB). Without: CPU torch ("cutpoint[events,ui,keyring]").
-  --lite            Lite: no torch, no events/GPU extras ("cutpoint[ui,keyring]"). Analyze, clips,
+                    ("cutpoint[all]", several GB). Without: CPU torch ("cutpoint[events]").
+  --lite            Lite: no torch, no events/GPU extras ("cutpoint"). Analyze, clips,
                     assemble and edit work on the CPU. Lite has no Ollama: it does not offer, install
                     or start it (the AI assistant can use a third-party provider instead).
 
@@ -246,6 +246,22 @@ parse_args() {
   fi
   [ -n "$SOURCE" ] || SOURCE=pypi
   CUTPOINT_VERSION=${CUTPOINT_VERSION:-$CUTPOINT_VERSION_DEFAULT}
+  [ "$SOURCE" != pypi ] || check_version
+}
+
+# Releases before 0.4.0 need the ui extra for the browser workspace, which this installer no
+# longer asks for. Only major.minor are compared, numerically; a leading v and a pre-release
+# suffix (0.4.0rc1) are ignored, so 0.4.0rc1 counts as 0.4.0. A version that does not start
+# with N.N is left to uv to reject.
+check_version() {
+  _ver=${CUTPOINT_VERSION#v}
+  _mm=$(printf '%s\n' "$_ver" | sed -n 's/^\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')
+  [ -n "$_mm" ] || return 0
+  _major=${_mm% *}
+  _minor=${_mm#* }
+  if [ "$_major" -eq 0 ] && [ "$_minor" -lt 4 ]; then
+    die "Cutpoint $CUTPOINT_VERSION is older than 0.4.0, the oldest release this installer can install; install it with pip or uv directly, or use a newer version."
+  fi
 }
 
 # ---------------------------------------------------------------- platform
@@ -683,15 +699,12 @@ offer_ollama() {
 
 # Sets REQ (the requirement) and NO_SOURCES.
 resolve_source() {
-  # ui and keyring are extras before the packaging change and empty aliases after it, so spelling
-  # them out is correct on both layouts. keyring is an extra only in releases after 0.3.0
-  # (0.3.0 has none: uv warns and skips it), so stamp a release that has it. Drop these extras
-  # once the minimum supported release is past the packaging change. ("all" includes them.)
+  # The browser workspace and the keyring are core dependencies: no ui/keyring extras.
   # Releases before 0.4.0 had a real `ski` extra (action-cam telemetry); this script no longer requests it.
   if [ "$BACKEND" = none ]; then
-    extra="[ui,keyring]"
+    extra=""
   elif [ "$BACKEND" = cpu ]; then
-    extra="[events,ui,keyring]"
+    extra="[events]"
   else
     extra="[all]"
   fi

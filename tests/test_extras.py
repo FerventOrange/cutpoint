@@ -13,7 +13,7 @@ from cutpoint import cli, extras
 
 
 def test_missing_module_message():
-    # core dependencies since the ui and keyring extras became empty aliases
+    # core dependencies, not extras
     for core in ("telemetry_parser", "fastapi", "uvicorn", "keyring"):
         assert extras.missing_module_message(core) is None
     msg = extras.missing_module_message("torch.nn.functional")  # top-level package decides
@@ -239,6 +239,31 @@ def test_installer_hint_fork_gives_uv_tool_install(
         f"--torch-backend {backend} {tail}{note}"
     )
     assert f"--torch-backend cu126 {tail}" in extras.torch_cuda_hint()  # its purpose is CUDA
+
+
+@pytest.mark.parametrize(
+    ("receipt_extras", "extra", "spec"),
+    [
+        ('["events", "keyring", "ui"]', "events", "[events]"),
+        ('["ui", "keyring"]', "", ""),
+    ],
+)
+def test_installer_hint_drops_the_gone_ui_and_keyring_extras(
+    monkeypatch, tmp_path, receipt_extras, extra, spec
+):
+    # a receipt written by an old installer lists extras that no longer exist
+    _set_install(
+        monkeypatch,
+        tmp_path,
+        receipt=_receipt_with(f'url = "https://example.com/c.whl", extras = {receipt_extras}'),
+        uv=True,
+    )
+    receipt = extras._tool_receipt()
+    assert receipt is not None
+    hint = extras._installer_hint(receipt, extra, backend="cpu")
+    assert f'uv tool install "cutpoint{spec} @ https://example.com/c.whl"' in hint
+    assert "ui" not in hint.split("uv tool install")[1].split("@")[0]
+    assert "keyring" not in hint
 
 
 def test_install_hint_editable_uv_outside_clone_venv(monkeypatch, tmp_path):

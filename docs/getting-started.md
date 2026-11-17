@@ -77,7 +77,7 @@ combined with `--cpu` or `--cuda`. `cutpoint capabilities` shows the edition.
 - `--source SRC` (`-Source`, `CUTPOINT_SOURCE`; for example `sh -s -- --source git`, or
   `$env:CUTPOINT_SOURCE = 'git'` before `irm | iex`): `pypi` (the default, the pinned release), `git`
   or `git@REF` (a branch, tag or commit of the GitHub repository), or a local path (a checkout,
-  wheel or sdist). `CUTPOINT_VERSION=X.Y.Z` picks the release for `pypi`.
+  wheel or sdist). `CUTPOINT_VERSION=X.Y.Z` picks the release for `pypi`; the installers refuse a version below 0.4.0 (exit 1, nothing installed). A `git@REF` or local source is not checked, but it also needs 0.4.0 or later: older releases need the `ui` extra, which the installers no longer ask for.
 - `--cpu` / `--cuda` (`CUTPOINT_TORCH=cpu|cuda`): force the CPU or the CUDA (cu126) torch build.
 - `--no-ffmpeg`: do not install ffmpeg. `CUTPOINT_NO_MODIFY_PATH=1`: do not run
   `uv tool update-shell`.
@@ -117,7 +117,7 @@ uv tool install "cutpoint[events,gpu] @ URL" --torch-backend cu126 --python 3.12
 ```
 
 Without `--torch-backend`, uv picks a torch build that may not match the machine. The `--lite`
-equivalent is `"cutpoint[ui,keyring] @ URL"` (no `--torch-backend`). The runtime hints print
+equivalent is `"cutpoint @ URL"` (no `--torch-backend`). The runtime hints print
 this form with the extras in use.
 
 To install into your own virtual environment instead, use `uv pip` or `pip`. For CUDA torch add
@@ -224,7 +224,6 @@ cleaned up: [`proxy`](commands.md#proxy) and [`login`](commands.md#login).
 
 | Extra | Adds |
 |---|---|
-| `ui`, `keyring` | Aliases that add nothing: the browser workspace (`cutpoint ui`), action-cam telemetry (GoPro GPS/IMU, Insta360 X3 IMU, the 360 module) and saving an AI Chat API key in the native OS keyring are part of the core install. The names stay so `cutpoint[ui]` keeps working. |
 | `events` | `cutpoint events` and crash detection: torch and torchvision (CUDA 12.6 builds on Windows and Linux), PANNs, RapidOCR, open_clip. The venv grows to about 7 GB, including about 3.6 GB of CUDA wheels even without a GPU. |
 | `gpu` | CUDA libraries (cuBLAS, cuDNN, about 3.6 GB) so Whisper transcribes on an NVIDIA GPU. Without it Whisper uses the CPU. |
 | `all` | `events` and `gpu`. |
