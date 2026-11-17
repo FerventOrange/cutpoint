@@ -285,7 +285,6 @@ def child_scope(scope: ChildScope) -> Iterator[ChildScope]:
 def run(
     args: list[str],
     *,
-    capture: bool = True,
     cwd: Path | None = None,
     timeout: float | None = None,
 ) -> str:
@@ -296,12 +295,17 @@ def run(
     """
     cmd = _command(args[0], args[1:])
     logger.debug("exec: %s", subprocess.list2cmdline(cmd))
-    pipe = subprocess.PIPE if capture else None
     scope: ChildScope | None = getattr(_SCOPE, "current", None)
     if scope is not None:
         scope.check()
     proc = subprocess.Popen(
-        cmd, stdout=pipe, stderr=pipe, text=True, encoding="utf-8", errors="replace", cwd=cwd
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=cwd,
     )
     try:
         if scope is not None:
@@ -2056,7 +2060,6 @@ def split_decode_args(
     scene_enc: Sequence[str],
     proxy: Path,
     raw_vf: str,
-    pix_fmt: PixFmt = "bgr24",
     hw: HwDecoder | None = None,
     src_size: tuple[int, int] | None = None,
     src_fmt: str | None = None,
@@ -2088,7 +2091,7 @@ def split_decode_args(
         *(hw.input_args() if hw is not None else ()),
         *("-i", str(path), "-filter_complex", graph),
         *("-map", "[sv]", "-an", *scene_enc, str(proxy)),
-        *("-map", "[ov]", "-an", "-sn", "-dn", "-pix_fmt", pix_fmt, "-f", "rawvideo", "-"),
+        *("-map", "[ov]", "-an", "-sn", "-dn", "-pix_fmt", "bgr24", "-f", "rawvideo", "-"),
     ]
 
 
@@ -2481,8 +2484,6 @@ def decode_pcm_args(
     sr: int,
     start: float | None = None,
     duration: float | None = None,
-    mono: bool = True,
-    audio_streams: int | None = None,
     tracks: Sequence[int] | None = None,
 ) -> list[str]:
     """ffmpeg arguments (without the executable) for :func:`decode_pcm`."""
@@ -2495,12 +2496,7 @@ def decode_pcm_args(
     args.append("-vn")
     if tracks is not None:
         args += _map_tracks(tracks)
-    elif audio_streams is not None:
-        mix = audio_mix_filter(audio_streams)
-        args += ["-filter_complex", f"{mix}[a]", "-map", "[a]"] if mix else ["-map", "0:a:0"]
-    if mono:
-        args += ["-ac", "1"]
-    return [*args, "-ar", str(sr), "-f", "s16le", "-"]
+    return [*args, "-ac", "1", "-ar", str(sr), "-f", "s16le", "-"]
 
 
 def decode_pcm(
@@ -2509,8 +2505,6 @@ def decode_pcm(
     sr: int,
     start: float | None = None,
     duration: float | None = None,
-    mono: bool = True,
-    audio_streams: int | None = None,
     timeout: float | None = None,
     tracks: Sequence[int] | None = None,
 ) -> np.ndarray:
@@ -2521,14 +2515,9 @@ def decode_pcm(
         sr: Output sample rate (Hz).
         start: Input seek (``-ss`` before ``-i``) in seconds; ``None`` = no seek.
         duration: Decode this many seconds (``-t``); ``None`` = to the end.
-        mono: Downmix to one channel (``-ac 1``). Otherwise the samples of all
-            channels stay interleaved in the returned 1-D array.
-        audio_streams: Number of audio streams (:attr:`MediaInfo.audio_streams`):
-            2 or more are mixed (:func:`audio_mix_filter`), fewer map ``0:a:0``.
-            ``None`` leaves the choice to ffmpeg's default stream selection.
         timeout: Seconds before ffmpeg is killed.
-        tracks: Audio track indices to mix instead (one is mapped directly); overrides
-            ``audio_streams``.
+        tracks: Audio track indices to mix (one is mapped directly); ``None`` leaves the
+            choice to ffmpeg's default stream selection.
 
     Returns:
         Read-only ``int16`` samples (1-D); ``pcm_float`` turns them into -1..1 floats.
@@ -2541,8 +2530,6 @@ def decode_pcm(
         sr=sr,
         start=start,
         duration=duration,
-        mono=mono,
-        audio_streams=audio_streams,
         tracks=tracks,
     )
     proc = _exec("ffmpeg", args, timeout, path)

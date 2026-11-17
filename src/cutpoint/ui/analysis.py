@@ -23,7 +23,6 @@ from cutpoint.config import (
     projects_dir,
     vision_assistant_settings,
     vision_detect_all_default,
-    vision_setting,
 )
 from cutpoint.events import scoring
 from cutpoint.pano import project as pano_project
@@ -477,7 +476,7 @@ def _subscription_roles(args: list[str], style: object) -> bool:
     if any(a.startswith(("--ollama-url", "--ollama-model")) for a in args):
         return False
     try:
-        setting = vision_setting()  # unset: only ``auto`` asks the vision model (unsure footage and camera footage without telemetry)
+        setting = get_config().vision  # unset: only ``auto`` asks the vision model (unsure footage and camera footage without telemetry)
         rating = "--vision" in args or (
             "--no-vision" not in args and (setting is True or (setting is None and style == AUTO))
         )
@@ -498,7 +497,7 @@ def _vision_args(st: dict[str, Any]) -> list[str]:
     the CLI default asks the vision model about unsure sources and camera-tagged sources without
     telemetry."""
     cfg = get_config()
-    setting = vision_setting()
+    setting = cfg.vision
     args = [] if setting is None else ["--vision" if setting else "--no-vision"]
     args.append("--visual-index" if cfg.visual_index else "--no-visual-index")
     vision_top = st.get("vision_top")

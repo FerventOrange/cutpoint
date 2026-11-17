@@ -729,7 +729,7 @@ def test_stale_spools_are_swept_when_offered(pre, tmp_path):
     cdir = tmp_path / "cache"
     (cdir / ffmpeg_utils.SPOOL_DIR).mkdir()
     (cdir / ffmpeg_utils.SPOOL_DIR / "seg-00000.raw").write_bytes(b"x")
-    (cdir / ocr_prefetch.PROXY_TMP).write_bytes(b"x")
+    (cdir / "proxy.tmp.mp4").write_bytes(b"x")
     (cdir / f"proxy.99999999.{ffmpeg_utils._host_tag()}.deadbeef.tmp.mp4").write_bytes(
         b"x"
     )  # a killed run's proxy

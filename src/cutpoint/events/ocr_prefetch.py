@@ -78,7 +78,6 @@ logger = logging.getLogger(__name__)
 
 ENV = "ANALYZE_OVERLAP"  # CUTPOINT_ANALYZE_OVERLAP=0: OCR waits for its turn (escape hatch)
 SHARED_ENV = "ANALYZE_SHARED_DECODE"  # split | 0 (default): the scene proxy (experimental)
-PROXY_TMP = "proxy.tmp.mp4"  # a background scene proxy until it is complete
 MIN_FREE_MIB = 2048  # free VRAM when the first source is offered (Whisper may load after it)
 MIN_TOTAL_MIB = 8192
 POLL_S = 0.5  # waits on the worker in steps this long: Ctrl+C gets through on Windows
@@ -104,9 +103,9 @@ def sweep(cdir: Path) -> None:
     shutil.rmtree(cdir / SPOOL_DIR, ignore_errors=True)
     from cutpoint.ffmpeg_utils import sweep_tmp  # noqa: PLC0415 - one function; keeps the import block
 
-    with contextlib.suppress(OSError):
-        (cdir / PROXY_TMP).unlink(missing_ok=True)
-    sweep_tmp(cdir / "proxy.mp4")  # only those of runs that are gone
+    sweep_tmp(
+        cdir / "proxy.mp4"
+    )  # a killed run's temp proxies, and the fixed name of older versions
 
 
 # lossless proxy, bytes per pixel and second: measured on NVDEC at 0.16-0.60 MB per source

@@ -36,9 +36,9 @@ def test_player_tags_normalised(home, value, want):
 
 @pytest.mark.parametrize(
     ("data", "want"),
-    [({"vision": None}, False), ({"vision": True}, True)],
+    [({}, None), ({"vision": None}, None), ({"vision": True}, True), ({"vision": False}, False)],
 )
-def test_vision_default_is_off_unless_true(home, data, want):
+def test_vision_is_none_unless_set(home, data, want):
     set_config(home, **data)
     assert config.get_config().vision is want
 
