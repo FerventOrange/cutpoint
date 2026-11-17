@@ -225,7 +225,6 @@ def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> 
 def write_telemetry_json(project: Path, ctx: ActionCamContext) -> Path:
     """``<project>/telemetry.json``: day summary, runs, per-source summary and events."""
     data = {
-        "version": 1,
         "day": ctx.runs.get("day"),
         "runs": ctx.runs.get("runs", []),
         "clips": ctx.runs.get("clips", []),
@@ -337,7 +336,6 @@ def build_features(
     )
     vis = layer_features(src, n, offset, sp_kmh)
     f.update(vis)
-    f["friends_vlm"] = friends.copy()  # not a scored feature: kept for ablations
     friends = np.maximum(friends, vis.get("people", np.zeros(n)))
     return f, mask, friends
 
@@ -435,16 +433,13 @@ def smooth3(x: np.ndarray) -> np.ndarray:
     return np.median(np.stack([p[:-2], p[1:-1], p[2:]]), 0)
 
 
-def effective_mask(
-    mask: np.ndarray, friends: np.ndarray, friends_strong: float = FRIENDS_STRONG
-) -> np.ndarray:
+def effective_mask(mask: np.ndarray, friends_strong: float = FRIENDS_STRONG) -> np.ndarray:
     """1 where clips are forbidden: lift/stop.
 
     ``friends_strong`` (a style's ``mask_friends``) above 0 keeps the mask
     hard; 0 or less means a *soft* mask (nothing is forbidden; the
-    ``stopped`` weight decides). Friends no longer lift the mask: people
-    standing and chatting, or in transit, are in view for minutes, so
-    ``friends`` is accepted for the callers but not used.
+    ``stopped`` weight decides). Friends in view do not lift the mask: people
+    standing and chatting, or in transit, are in view for minutes.
     """
     if friends_strong <= 0:
         return np.zeros_like(mask)
@@ -455,13 +450,10 @@ def combine(
     features: dict[str, np.ndarray],
     weights: dict[str, float],
     mask: np.ndarray,
-    friends: np.ndarray,
     friends_strong: float = FRIENDS_STRONG,
 ) -> np.ndarray:
     """Weighted feature sum with the hard mask applied (:func:`cutpoint.scorer.action_cam_combined`)."""
-    return scorer.action_cam_combined(
-        features, weights, 1 - effective_mask(mask, friends, friends_strong)
-    )
+    return scorer.action_cam_combined(features, weights, 1 - effective_mask(mask, friends_strong))
 
 
 # --------------------------------------------------------------------------- picking
@@ -497,7 +489,6 @@ def pick(
     features: dict[str, np.ndarray],
     weights: dict[str, float],
     mask: np.ndarray,
-    friends: np.ndarray,
     events: list[dict[str, Any]],
     duration: float,
     max_picks: int,
@@ -508,7 +499,7 @@ def pick(
     """Peak-pick clips with feature-specific geometry; results do not overlap.
 
     Args:
-        features, weights, mask, friends: As for :func:`combine`.
+        features, weights, mask: As for :func:`combine`.
         events: Telemetry events in source time (shifted by ``-offset``).
         duration: Length of this (part of the) source.
         max_picks: Upper bound on clips.
@@ -517,7 +508,7 @@ def pick(
         floor: No clip from a peak at or below this (:func:`source_floor` for a source
             without telemetry).
     """
-    combined = combine(features, weights, mask, friends, friends_strong)
+    combined = combine(features, weights, mask, friends_strong)
     n = len(combined)
     score = combined.copy()
     gmax = float(score.max()) if n else 0.0

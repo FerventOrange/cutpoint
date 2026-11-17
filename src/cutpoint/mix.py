@@ -371,7 +371,7 @@ def part_candidates(d: dict[str, Any], max_picks: int = 30) -> list[Cand]:
     out: list[Cand] = []
 
     def picks(w: dict[str, float], mask: np.ndarray, events: list | None = None, k: int = 0):
-        return actioncam.pick(f, w, mask, zero, events or [], dur, k or max_picks, off)
+        return actioncam.pick(f, w, mask, events or [], dur, k or max_picks, off)
 
     def cand(
         cat: str, p: actioncam.Pick, kind: str, label: str, score: float | None = None
@@ -725,7 +725,7 @@ def run_mix(
         if p.get("max_end") is not None:
             s["max_end"] = max(p["max_end"], s["end"])
     cache.save_json(out, segs)
-    report = mix_report(cands, chosen, q, r, target_s, len(runs), len(parts))
+    report = mix_report(cands, chosen, q, r, target_s, len(runs))
     arc = order_moments(index_sources([dict(s) for s in segs]), "arc")
     report["arc"] = [s["id"] for s in arc]
     report["content_qa"] = content_qa(
@@ -805,7 +805,6 @@ def mix_report(
     r: MixRules,
     target_s: float,
     n_runs: int,
-    n_sources: int,
 ) -> dict[str, Any]:
     """Category breakdown, coverage and near-duplicate pairs of a selection."""
     total = sum(c.seconds for c in chosen)
@@ -828,18 +827,10 @@ def mix_report(
         "categories": cats,
         "candidates": {k: sum(c.category == k for c in cands) for k in CATEGORIES},
         "quotas": {k: round(v, 3) for k, v in effective_quotas(quotas, avail).items()},
-        "unused": [k for k in CATEGORIES if k not in avail],
         "sources_covered": len({c.source for c in chosen}),
-        "sources": n_sources,
         "runs_covered": len({c.run for c in chosen if c.run is not None}),
         "runs": n_runs,
         "near_dup_pairs": sum(a == b for a, b in dups),
-        "near_dup_pairs_any": len(dups),
-        "crashes": [
-            {"source": c.source, "t": c.peak_t, "confidence": c.score}
-            for c in chosen
-            if c.category == "crash"
-        ],
     }
 
 

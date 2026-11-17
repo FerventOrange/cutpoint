@@ -76,6 +76,9 @@ def test_crashes_json(ski, capsys):
     assert out["profile_name"] == "generic"
     data = json.loads((project / "crashes.json").read_text(encoding="utf-8"))
     assert data["timings"]["profile_s"] >= 0  # the profile step's own time (#916)
+    # #1085 A42/A43: no unread diagnostics
+    assert not {"version", "created", "n_candidates"} & set(data)
+    assert all("caption" not in c for c in data["crashes"])
     saved = data["crashes"]
     assert out["count"] == len(saved) == len(out["candidates"]) == 1
     (c,) = out["candidates"]

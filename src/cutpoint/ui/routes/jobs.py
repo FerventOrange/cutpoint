@@ -103,7 +103,7 @@ from cutpoint.ui.projects import (
 )
 from cutpoint.ui.ranking import RERANK_BUSY_TEXT
 from cutpoint.ui.routes.shared import proxy_error
-from cutpoint.utils import clip_files
+from cutpoint.utils import MAX_CONTEXT_CHARS, clip_files
 
 owned = APIRouter()
 secure = APIRouter()
@@ -530,8 +530,6 @@ def start_job(request: Request, pid: str, body: dict[str, Any]):
             context = body.get("context")
             if not isinstance(context, str) or not context.strip():
                 raise bad("describe the footage first")
-            from cutpoint.activity import MAX_CONTEXT_CHARS  # noqa: PLC0415
-
             if len(context.strip()) > MAX_CONTEXT_CHARS:
                 raise bad(f"the description is at most {MAX_CONTEXT_CHARS} characters")
             if not crash_step_runs(p, meta, hl):

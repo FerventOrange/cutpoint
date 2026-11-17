@@ -98,22 +98,25 @@ def _record(tmp_path: Path, rec: dict) -> Path:
     return tmp_path
 
 
-def test_project_prompts_reads_activity_json_and_upgrades_old_records(tmp_path):
+def test_project_prompts_reads_activity_json_and_ignores_old_records(tmp_path):
     assert activity.project_prompts(tmp_path) == activity.default_prompts()  # no file
     hop = activity.full(add_profile(HOP))
-    _record(tmp_path, {"version": 1, "name": "puddle-hop", "source": "library", "profile": hop})
+    v = activity.PROFILE_VERSION
+    _record(tmp_path, {"version": v, "name": "puddle-hop", "source": "library", "profile": hop})
     assert activity.project_prompts(tmp_path) == activity.prompts(hop)
-    # a record written before profiles had the caption sections: today's library lists
+    # a record of an older version (here without every caption section): the default set
+    # until `profile` or `crashes` resolves the project again
     old = {"name": "puddle-hop", "incident": hop["incident"]}
     old |= {"highlight": {"pos": ["an old highlight"], "neg": []}}
     _record(tmp_path, {"version": 1, "name": "puddle-hop", "source": "library", "profile": old})
-    assert activity.project_prompts(tmp_path) == activity.prompts(hop)
+    assert activity.project_prompts(tmp_path) == activity.default_prompts()
 
 
 def test_a_record_of_a_removed_built_in_keeps_its_stored_profile(tmp_path):
     """Projects analysed with a built-in sport profile Cutpoint no longer ships."""
     stored = activity.full(activity.validate({**SLED, "name": "ski"}))
-    _record(tmp_path, {"version": 1, "name": "ski", "source": "library", "profile": stored})
+    rec = {"name": "ski", "source": "library", "profile": stored}
+    _record(tmp_path, {"version": activity.PROFILE_VERSION, **rec})
     p = activity.project_prompts(tmp_path)
     assert p == activity.prompts(stored) and p.name == "ski" and p.lift
 
@@ -185,18 +188,6 @@ def test_invalid_or_too_long_vlm_values_fall_back_to_the_floor_one_by_one():
     rec_prof = {**activity.full(activity.validate(HOP)), "vlm": {"edit": 3, "video": "a"}}
     p = activity.prompts(rec_prof)
     assert dict(p.vlm)["edit"] == dict(floor.vlm)["edit"] and dict(p.vlm)["video"] == "a"
-
-
-def test_old_records_without_vlm_take_their_library_wording_else_the_floor(tmp_path):
-    sled = {k: v for k, v in activity.full(add_profile(SLED)).items() if k != "vlm"}
-    _record(tmp_path, {"version": 1, "name": "glacier-sled", "source": "library", "profile": sled})
-    assert activity.project_prompts(tmp_path).vlm == _p(SLED).vlm
-    # an LLM-written profile (since #588: every caption section) keeps its own captions
-    own = {**sled, "name": "kayak", "highlight": {"pos": ["a kayak in white water"], "neg": []}}
-    _record(tmp_path, {"version": 1, "name": "kayak", "source": "synthesized", "profile": own})
-    p = activity.project_prompts(tmp_path)
-    assert p.highlight_pos == ("a kayak in white water",)
-    assert p.vlm == activity.prompts(activity.base()).vlm
 
 
 def test_a_discovered_profile_keeps_the_base_vlm_wording(monkeypatch):

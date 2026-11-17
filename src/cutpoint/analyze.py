@@ -2695,7 +2695,6 @@ def _action_cam_candidates(
         feats,
         style.weights,
         mask,
-        friends,
         events,
         span,
         max_candidates,

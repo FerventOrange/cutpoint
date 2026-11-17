@@ -389,7 +389,8 @@ def test_full_install_action_cam_output_is_pinned(tmp_path, monkeypatch):
     """Pinned on base 13d26aa, before #556: splitting ``social`` into registry parts changes
     nothing on a full install (features_available, cache key, scores, signals, npz). #738
     changed the scenic/beauty geometry (5-7 s), so the beauty candidate's times and signals
-    digest were re-pinned."""
+    digest were re-pinned. #1085 A36 dropped the unscored ``friends_vlm`` grid (npz and
+    signals digests re-pinned; scores, kinds and times unchanged)."""
     monkeypatch.setattr(extras, "edition", lambda: "full")
     reset_state()
     cands, saved = _social_ski_run(tmp_path, monkeypatch)
@@ -404,9 +405,9 @@ def test_full_install_action_cam_output_is_pinned(tmp_path, monkeypatch):
             (78.5, 84.5, 82.0),
             (22.5, 27.5, 25.0),
         ],
-        "signals": "c616d5845e825a19b535bf0c759a3c59f975e42127a4af176b6307651062ae1e",
-        "npz_keys": [*actioncam.FEATURES, "friends_vlm"],
-        "npz": "ee9c92a531d59a301912d09dd7645416fb29433f61857e621989ba5209f1f4d9",
+        "signals": "e0df7f3ce8f80ea0db26ae67cd71b4745a1373facf329b91e18247d654fbd580",
+        "npz_keys": list(actioncam.FEATURES),
+        "npz": "23f94bf205b8e9e8ab11842f3c3e035e7f4c02d6403906f1c96ff821795db50a",
     }
     assert actioncam.features_path(tmp_path, Path("ride.mp4")).name == "ride-919e6a6c.npz"
     assert sorted(features.available()) == [  # settings.features_available

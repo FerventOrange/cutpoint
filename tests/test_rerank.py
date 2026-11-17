@@ -1229,9 +1229,10 @@ def test_a_rerank_rates_with_the_context_the_analysis_recorded(
 
 @pytest.mark.parametrize("key", ["missing", "null"])
 def test_recorded_words_keep_the_ratings_made_without_words(home, tmp_path, monkeypatch, key):
-    """Review F4: ``crashes``/``profile --context`` on a project rated without words (an
-    older file without settings.vision_context, or one with null) records the words, and a
-    plain rerank still looks the ratings up without them."""
+    """Review F4: ``crashes``/``profile --context`` on a project rated without words (null
+    settings.vision_context) records the words, and a plain rerank still looks the ratings up
+    without them. An older file without settings.vision_context loads too: its rerank looks
+    them up under the new words (rated again by a re-analysis)."""
     project = make_project(home, tmp_path)
     hl = read(project)
     hl["settings"].update(vision_requested=True, vision_used=True)
@@ -1242,11 +1243,13 @@ def test_recorded_words_keep_the_ratings_made_without_words(home, tmp_path, monk
     (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
     assert activity.record_context(project, "Y")
     hl = read(project)
-    assert hl["settings"]["context"] == "Y" and hl["settings"]["vision_context"] is None
+    want = None if key == "null" else "Y"
+    assert hl["settings"]["context"] == "Y"
+    assert hl["settings"].get("vision_context", "Y") == want
     raters: list[Any] = []
     monkeypatch.setattr(analyze, "VisionRater", _context_rater(raters))
     rerank.ranked(project, hl, get_style("funny"))
-    assert raters and all(r.context is None for r in raters)
+    assert raters and all(r.context == want for r in raters)
 
 
 def _context_rater(raters: list[Any]) -> type:

@@ -272,7 +272,7 @@ def _peaks(
     n = len(mask)
     # a NaN anywhere would make actioncam.pick's maximum NaN, and then it picks nothing
     feats = {k: np.nan_to_num(grids[k][:n], nan=0.0) for k in weights}
-    return actioncam.pick(feats, weights, mask, np.zeros(n), [], duration, MAX_PICKS)
+    return actioncam.pick(feats, weights, mask, [], duration, MAX_PICKS)
 
 
 def _views(grids: dict[str, np.ndarray], mask: np.ndarray, duration: float) -> list[Window]:

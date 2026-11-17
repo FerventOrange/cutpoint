@@ -105,13 +105,14 @@ from cutpoint.events.common import load_highlights
 from cutpoint.events.visual import load_visual, text_embeddings
 from cutpoint.events.vlm_windows import ACTION_CAM_TAGS
 from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
-from cutpoint.utils import MAX_CONTEXT_CHARS as MAX_CONTEXT_CHARS  # cutpoint ui reads it here
 from cutpoint.utils import context_block, footage_context, slugify
 from cutpoint.vision import VisionRater
 
 logger = logging.getLogger(__name__)
 
-PROFILE_VERSION = 1
+# 2: a record holds the full profile (every caption section and the vlm wording); an older
+# record is resolved again
+PROFILE_VERSION = 2
 ACTIVITY_FILE = "activity.json"
 BUILTIN_DIR = Path(__file__).parent / "presets" / "activities"
 MAX_PROMPTS = 16  # per caption list
@@ -141,7 +142,7 @@ BLANK_LIKE = 0.95
 PROFILE_TIMEOUT_S = 120
 # Per-footage cache of discovered profiles (:func:`discovery_key`), under the cache folder.
 DISCOVERY_DIR = "activity"
-DISCOVERY_VERSION = 2
+DISCOVERY_VERSION = 3  # 3: the --context words are delimited in the synthesis prompt
 # Sampling of the discovery requests (describe and synthesis, :func:`default_ask`): greedy and
 # seeded, so the same footage gets the same reply in every run (#947); a hosted model may
 # ignore the seed.
@@ -606,35 +607,10 @@ def use_prompts(p: Prompts) -> Iterator[Prompts]:
 
 
 def record_profile(rec: dict[str, Any]) -> dict[str, Any]:
-    """The full profile of an ``activity.json`` record, with the incident negatives of
-    ``generic`` when it has none (a record written before :func:`full` added them).
-
-    A record written before profiles had
-    every caption section gets them: a library profile chosen as is (``flag``, ``library``,
-    ``fallback``) is rebuilt from the library; one the LLM wrote or refined (``context``,
-    ``synthesized``) keeps its identity and ``incident`` and takes every other caption
-    section from its library profile or the floor (its old ``highlight`` and ``low_info``
-    lists predate the per-activity floor); any other keeps its own sections and takes the
-    missing ones from there. A record with every caption section but no ``vlm`` wording
-    (written before profiles had one) takes that of its library profile, else the floor's."""
-    return _neg_floor(_record_profile(rec))
-
-
-def _record_profile(rec: dict[str, Any]) -> dict[str, Any]:
-    """:func:`record_profile` before the negatives floor."""
-    prof = rec.get("profile") if isinstance(rec.get("profile"), dict) else {}
-    lib = library()
-    name = rec.get("name")
-    ref = full(lib[name]) if name in lib else base()
-    if all(k in prof for k in (*PAIR_SECTIONS, *LIST_SECTIONS, "vl")):
-        return prof if "vlm" in prof else {**prof, "vlm": ref["vlm"]}
-    source = rec.get("source")
-    if source in ("flag", "library", "fallback") and name in lib:
-        return ref
-    if source in ("context", "synthesized"):
-        keep = ("name", "description", "detect", "incident")
-        return {**ref, **{k: prof[k] for k in keep if k in prof}}
-    return {**ref, **prof}
+    """The full profile of an ``activity.json`` record (:data:`PROFILE_VERSION`), with the
+    incident negatives of ``generic`` when it has none (:func:`_neg_floor`)."""
+    prof = rec.get("profile")
+    return _neg_floor(prof if isinstance(prof, dict) else {})
 
 
 def project_prompts(project: Path) -> Prompts:
@@ -1165,9 +1141,6 @@ def discovery_key(
             "model": model,
             "prompts": prompts,
             "context": context,
-            # the words delimited in the synthesis prompt (#1068); only with words, so a
-            # discovery without them keeps its key
-            **({"context_block": 1} if context else {}),
             "examples": shown,
         },
         16,
@@ -1238,9 +1211,7 @@ def record_context(project: Path, context: str | None) -> bool:
     the project: re-analyses (``rerank --analyze``, ``crashes --reanalyze``) and ``events`` use
     the latest words. Nothing without words, without a readable analysis (missing, broken, not
     an object, no ``sources`` list, a ``settings`` that is not an object) or when it records
-    these words already. An older file that rated with vision (``vision_used``) and has no
-    ``settings.vision_context`` gets the words before as that first, so a plain ``rerank``
-    keeps finding its cached ratings. Written atomically; True when written."""
+    these words already. Written atomically; True when written."""
     words = footage_context(context)
     if words is None:
         return False
@@ -1251,10 +1222,6 @@ def record_context(project: Path, context: str | None) -> bool:
     settings = hl.setdefault("settings", {})
     if not isinstance(settings, dict) or settings.get("context") == words:
         return False
-    # a file from before settings.vision_context that rated with vision: the words of its
-    # ratings, so a plain rerank still finds them under the new words
-    if "vision_context" not in settings and settings.get("vision_used") is True:
-        settings["vision_context"] = settings.get("context")
     settings["context"] = words
     from cutpoint.backends import saved_settings  # noqa: PLC0415 (requests: off the CLI import)
 
