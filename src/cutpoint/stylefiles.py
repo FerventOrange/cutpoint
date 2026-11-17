@@ -11,14 +11,16 @@ A style file is ``<styles>/<name>.json`` (:func:`cutpoint.paths.styles_dir`, or
      "profile": "bmx",                    # optional: an activity profile name, stored only
      "applies_to": {"categories": ["action-cam"], "profiles": ["bmx"]},  # optional
      "weights": {"scene": 0.4},           # registry grid features, over the base's weights
-     "mask_friends": 0, "must_include_crash": 0.6}  # optional, as in legacy presets
+     "mask_friends": false, "must_include_crash": 0.6}  # optional
 
 Any other key (``fit``, ``created``, ...) is kept as it is. ``applies_to`` and ``profile`` are
 stored only: nothing picks a style by them yet, a style is used by ``--style NAME``.
 
-A file without ``schema`` is a legacy preset (``scripts/refmatch.py``): it loads leniently as
-before (:func:`cutpoint.styles.load_learned`), reads as ``source`` ``fitted`` and is never
-rewritten. A schema-1 file is checked strictly (:func:`check`); one that fails is unusable.
+``mask_friends`` (action-cam bases) is true for the hard lift/stop mask, false for the soft
+one; a number is read as true above 0. Every file is checked strictly (:func:`check`); one
+that fails is unusable, also a file of an older Cutpoint (no ``schema``, or an old feature
+name in its weights): the problem says what to write instead, and the file is never
+rewritten.
 
 This module holds the schema check and the logic of the ``cutpoint style`` verbs; the CLI
 handlers in :mod:`cutpoint.cli` only print. Errors: :class:`cutpoint.jsonout.ArgumentError`
@@ -51,13 +53,21 @@ logger = logging.getLogger(__name__)
 
 SCHEMA = 1
 SOURCES = ("hand", "fitted", "assistant")
-LEGACY_SOURCE = "fitted"  # what a legacy preset (no "schema") reads as
 APPLIES_KEYS = ("categories", "profiles")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 # File names Windows refuses whatever the extension
 _RESERVED_STEMS = frozenset(
     ["con", "prn", "aux", "nul"] + [f"{p}{i}" for p in ("com", "lpt") for i in range(1, 10)]
 )
+# Weight names of older style files: (base kind or None for every base) -> what to write instead
+_OLD_WEIGHTS = {
+    "laughter": (
+        ACTION_CAM,
+        'is the old name of the action-cam feature "voice_laughter"; write "voice_laughter" '
+        "instead",
+    ),
+    "taste": (None, "is a removed feature (the old taste head); delete its weight"),
+}
 _ORDER = ("schema", "name", "base", "source", "description", "profile", "applies_to", "weights")
 
 
@@ -84,11 +94,6 @@ def computed_features(base: Style) -> frozenset[str]:
     grid = set(features.names("grid"))
     cam = set(features.ACTION_CAM_FEATURES) & grid
     return frozenset(cam if base.kind == ACTION_CAM else (grid - cam) | {"speech"})
-
-
-def is_legacy(data: dict[str, Any]) -> bool:
-    """A legacy preset: a style file without ``"schema"``."""
-    return "schema" not in data
 
 
 def _number(v: object) -> bool:
@@ -150,7 +155,12 @@ def check(data: object, stem: str, profiles: Collection[str] | None = None) -> C
         return res
     p = res.problems
     schema = data.get("schema")
-    if type(schema) is not int or schema != SCHEMA:
+    if "schema" not in data:
+        p.append(
+            f'"schema" is missing: a style file of an older Cutpoint; add "schema": {SCHEMA} '
+            f'and a "source" ({_names(SOURCES)})'
+        )
+    elif type(schema) is not int or schema != SCHEMA:
         p.append(f'"schema" is {schema!r}; this Cutpoint reads schema {SCHEMA}')
 
     name = data.get("name")
@@ -184,7 +194,14 @@ def check(data: object, stem: str, profiles: Collection[str] | None = None) -> C
         p.append('"weights" must be an object of feature names and numbers')
         weights = {}
     grid = set(features.names("grid"))
-    unknown = [k for k in weights if k not in grid]
+    old = [
+        k
+        for k in weights
+        if k in _OLD_WEIGHTS and _OLD_WEIGHTS[k][0] in (None, getattr(base_style, "kind", None))
+    ]
+    for k in old:
+        p.append(f'"{k}" in "weights" {_OLD_WEIGHTS[k][1]}')
+    unknown = [k for k in weights if k not in grid and k not in old]
     if unknown:
         many = len(unknown) > 1
         p.append(
@@ -199,8 +216,8 @@ def check(data: object, stem: str, profiles: Collection[str] | None = None) -> C
         elif v < 0:
             p.append(f"the weight of {k!r} is {v}; weights cannot be negative")
             numbers = False
-    if base_style is not None and weights_ok and numbers and not unknown:
-        own = own_weights(data, base_style, Path(f"{stem}.json"))
+    if base_style is not None and weights_ok and numbers and not unknown and not old:
+        own = own_weights(data)
         if not any(w > 0 for w in {**base_style.weights, **own}.values()):
             p.append(
                 f"every weight is 0 once the weights of {base!r} are added; at least one "
@@ -226,14 +243,18 @@ def check(data: object, stem: str, profiles: Collection[str] | None = None) -> C
     if "applies_to" in data:
         named_profiles += _check_applies(data["applies_to"], p)
 
-    if "mask_friends" in data and not (_number(data["mask_friends"]) and data["mask_friends"] >= 0):
-        p.append(f'"mask_friends" is {data["mask_friends"]!r}; use a number of 0 or more')
+    mask = data.get("mask_friends")
+    if "mask_friends" in data and not (isinstance(mask, bool) or _number(mask)):
+        p.append(
+            f'"mask_friends" is {mask!r}; use true (hard mask) or false (soft mask), or a '
+            "number (above 0 is true)"
+        )
     crash = data.get("must_include_crash")
     if "must_include_crash" in data and not (_number(crash) and 0 <= crash <= 1):
         p.append(f'"must_include_crash" is {crash!r}; use a number from 0 to 1')
 
-    if base_style is not None and weights_ok and numbers and not unknown:
-        own = own_weights(data, base_style, Path(f"{stem}.json"))
+    if base_style is not None and weights_ok and numbers and not unknown and not old:
+        own = own_weights(data)
         measured = computed_features(base_style)
         idle = [k for k, w in own.items() if w > 0 and k not in measured]
         if idle:
@@ -309,7 +330,6 @@ def _builtin_entry(name: str) -> dict[str, Any]:
     return {
         "name": name,
         "type": "built-in",
-        "legacy": False,
         "valid": True,
         "problems": [],
         "warnings": [],
@@ -325,22 +345,20 @@ def _builtin_entry(name: str) -> dict[str, Any]:
 def _file_entry(stem: str, path: Path, profiles: Collection[str] | None) -> dict[str, Any]:
     data = cache.load_json(path)
     doc = data if isinstance(data, dict) else {}
-    legacy = isinstance(data, dict) and is_legacy(data)
     entry: dict[str, Any] = {
         "name": stem,
         "type": "user",
-        "legacy": legacy,
         "valid": False,
         "problems": [],
         "warnings": [],
-        "source": LEGACY_SOURCE if legacy else _text(doc.get("source")),
+        "source": _text(doc.get("source")),
         "base": _text(doc.get("base")),
         "description": _text(doc.get("description")),
         "profile": _text(doc.get("profile")),
         "applies_to": _applies(doc),
         "path": path,
     }
-    entry["problems"], warnings = _file_problems(stem, path, data, profiles)
+    entry["problems"], warnings = _file_problems(stem, data, profiles)
     entry["warnings"] = _warning_dicts(warnings)
     entry["valid"] = not entry["problems"]
     return entry
@@ -351,35 +369,25 @@ def _warning_dicts(warnings: list[tuple[str, str]]) -> list[dict[str, str]]:
 
 
 def _file_problems(
-    stem: str, path: Path, data: object, profiles: Collection[str] | None
+    stem: str, data: object, profiles: Collection[str] | None
 ) -> tuple[list[str], list[tuple[str, str]]]:
-    """The problems and warnings of the style file ``path`` as ``--style`` would load it."""
+    """The problems and warnings of the style file ``<stem>.json`` (content ``data``) as
+    ``--style`` would load it."""
     if not isinstance(data, dict):
         return ["the file cannot be read as a JSON object"], []
     if stem.lower() == AUTO:
         return [f"{AUTO!r} is reserved for --style {AUTO}; the file is ignored"], []
     if stem in STYLES:
         return [f"the built-in style {stem!r} has this name; the file is ignored"], []
-    if not is_legacy(data):
-        res = check(data, stem, profiles)
-        return res.problems, res.warnings
-    return _legacy_problems(path), []
-
-
-def _legacy_problems(path: Path) -> list[str]:
-    """Why the legacy preset ``path`` does not load (leniently, as for ``--style``), if so."""
-    try:
-        load_learned(path)
-    except (ValueError, TypeError, AttributeError) as err:
-        return [str(err)]
-    return []
+    res = check(data, stem, profiles)
+    return res.problems, res.warnings
 
 
 def list_styles() -> list[dict[str, Any]]:
     """Every style: the built-ins (sorted), then the files of the styles folder (sorted).
 
-    Each entry: ``name``, ``type`` (``built-in`` or ``user``), ``legacy``, ``valid``,
-    ``problems``, ``warnings``, ``source`` (None for built-ins; ``fitted`` for legacy presets),
+    Each entry: ``name``, ``type`` (``built-in`` or ``user``), ``valid``,
+    ``problems``, ``warnings``, ``source`` (None for built-ins),
     ``base``, ``description``, ``profile``, ``applies_to`` (``categories``, ``profiles``) and
     ``path`` (None for built-ins). A broken file is listed as not valid, never raised.
     """
@@ -412,7 +420,7 @@ def show(name: str) -> dict[str, Any]:
     """The style ``name`` with its effective weights.
 
     Returns:
-        ``name``, ``type``, ``legacy``, ``source``, ``base``, ``kind``, ``description``,
+        ``name``, ``type``, ``source``, ``base``, ``kind``, ``description``,
         ``profile``, ``applies_to``, ``path``, ``hash`` (:func:`cutpoint.styles.style_hash`),
         ``mask_friends``, ``must_include_crash`` and ``weights``: a list of ``{"feature",
         "weight", "from"}`` in scoring order, ``from`` being ``base`` (the base style's
@@ -438,11 +446,10 @@ def show(name: str) -> dict[str, Any]:
             raise jsonout.ArgumentError(f"{path} cannot be used: {'; '.join(entry['problems'])}")
         style = load_learned(path)
         data = cache.load_json(path) or {}
-        own = own_weights(data, STYLES[style.base], path)
+        own = own_weights(data)
     return {
         "name": entry["name"],
         "type": entry["type"],
-        "legacy": entry["legacy"],
         "source": entry["source"],
         "base": style.base,
         "kind": style.kind,
@@ -520,10 +527,10 @@ def create(
 ) -> tuple[Path, Check]:
     """Write the schema-1 style ``<styles>/<name>.json``.
 
-    With ``from_file``, its content is the start (a schema-1 or legacy style file, or any
-    JSON object): every key is kept, ``name`` becomes ``name``, and the given options replace
-    its ``base``, ``description``, ``profile`` and ``applies_to``; ``weights`` are added over
-    its weights. ``source`` is the file's, else ``hand``.
+    With ``from_file``, its content is the start (a style file, also one of an older
+    Cutpoint without ``schema``, or any JSON object): every key is kept, ``name`` becomes
+    ``name``, and the given options replace its ``base``, ``description``, ``profile`` and
+    ``applies_to``; ``weights`` are added over its weights. ``source`` is the file's, else ``hand``.
 
     Returns:
         The file written and its :class:`Check` (warnings only).
@@ -544,12 +551,6 @@ def create(
         if not isinstance(data, dict):
             raise jsonout.ArgumentError(f"--from {from_file}: not a JSON object")
         doc = dict(data)
-    legacy = is_legacy(doc)
-    if legacy and isinstance(doc.get("weights"), dict):  # loads as if never weighed
-        gone = [k for k in doc["weights"] if k in features.REMOVED]
-        if gone:
-            logger.info("--from %s: dropping the weights of removed features %s", from_file, gone)
-            doc["weights"] = {k: w for k, w in doc["weights"].items() if k not in gone}
     if base is None and "base" not in doc:
         raise jsonout.ArgumentError('--base is required (or a --from file with a "base")')
     doc.setdefault("schema", SCHEMA)
@@ -597,7 +598,7 @@ def validate(target: str) -> dict[str, Any]:
     ``.json``).
 
     Returns:
-        ``name``, ``path`` (None for a built-in), ``type`` (``built-in``, ``user``), ``legacy``, ``valid``,
+        ``name``, ``path`` (None for a built-in), ``type`` (``built-in``, ``user``), ``valid``,
         ``problems``, ``warnings`` and ``notes``. The caller fails the command when
         ``valid`` is false.
 
@@ -610,7 +611,6 @@ def validate(target: str) -> dict[str, Any]:
                 "name": target,
                 "path": None,
                 "type": "built-in",
-                "legacy": False,
                 "valid": True,
                 "problems": [],
                 "warnings": [],
@@ -622,32 +622,22 @@ def validate(target: str) -> dict[str, Any]:
         if not path.is_file():
             raise FileNotFoundError(f"{target}: file not found")
     data = cache.load_json(path)
-    legacy = isinstance(data, dict) and is_legacy(data)
     in_folder = path.parent.resolve() == paths.styles_dir().resolve()
     if not isinstance(data, dict):
         problems, warnings = ["the file cannot be read as a JSON object"], []
     elif in_folder:  # also why --style would ignore it (auto.json, a built-in's name)
-        problems, warnings = _file_problems(path.stem, path, data, profile_names())
-    elif legacy:
-        problems, warnings = _legacy_problems(path), []
+        problems, warnings = _file_problems(path.stem, data, profile_names())
     else:
         res = check(data, path.stem, profile_names())
         problems, warnings = res.problems, res.warnings
-    notes = []
-    if legacy and not problems:
-        notes.append(
-            'a legacy preset (no "schema"): it loads as before and is never rewritten; '
-            f"`cutpoint style create NAME --from {path}` makes a schema-{SCHEMA} copy"
-        )
     return {
         "name": path.stem,
         "path": path,
         "type": "user",
-        "legacy": legacy,
         "valid": not problems,
         "problems": problems,
         "warnings": _warning_dicts(warnings),
-        "notes": notes,
+        "notes": [],
     }
 
 

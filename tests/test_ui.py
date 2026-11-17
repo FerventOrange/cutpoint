@@ -4195,8 +4195,13 @@ def test_a_rejected_encoder_variable_is_named_instead_of_config_json(
 
 @pytest.mark.parametrize(
     "content",
-    ["{oops", '{"base": "funny", "weights": [1, 2]}', '{"base": "funny", "weights": {"x": null}}'],
-    ids=["invalid-json", "weights-not-object", "weight-null"],
+    [
+        "{oops",
+        '{"base": "funny", "weights": [1, 2]}',
+        '{"base": "funny", "weights": {"x": null}}',
+        '{"name": "broken", "base": "funny"}',
+    ],
+    ids=["invalid-json", "weights-not-object", "weight-null", "no-schema"],
 )
 def test_a_broken_learned_style_is_left_out_with_a_warning(
     client: TestClient, home: Path, caplog: pytest.LogCaptureFixture, content: str
@@ -4204,7 +4209,8 @@ def test_a_broken_learned_style_is_left_out_with_a_warning(
     styles = home / "styles"
     styles.mkdir(parents=True)
     (styles / "broken.json").write_text(content, encoding="utf-8")
-    (styles / "mine.json").write_text('{"base": "funny"}', encoding="utf-8")
+    mine = {"schema": 1, "name": "mine", "base": "funny", "source": "hand"}
+    (styles / "mine.json").write_text(json.dumps(mine), encoding="utf-8")
     with caplog.at_level(logging.WARNING):
         res = client.get("/api/session")
     assert res.status_code == 200

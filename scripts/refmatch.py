@@ -502,7 +502,7 @@ def _bins(
     fmap: dict[Key, dict[str, Any]],
     weights_keys: list[str],
     groups: dict[Key, int],
-    friends_strong: float = 7.0,
+    friends_strong: bool = True,
 ) -> dict[str, Any]:
     """1 s bins of the given saved sources: features, eligibility, labels, groups."""
     from cutpoint import actioncam  # noqa: PLC0415
@@ -601,7 +601,7 @@ def evaluate(
     weights: dict[str, float],
     only_sources: set[str] | None = None,
     budget: float | None = None,
-    friends_strong: float = 7.0,
+    friends_strong: bool = True,
     feats: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Rank auto-picked clips with ``weights``; precision/recall at the edit's duration.
@@ -719,7 +719,7 @@ def _evaluate_keys(
     keys: list[Key],
     fmap: dict[Key, dict[str, Any]],
     weights: dict[str, float],
-    th: float,
+    th: bool,
 ) -> dict[str, Any]:
     """Evaluate per project on the sources of ``keys`` and pool the results."""
     evs = []
@@ -737,7 +737,7 @@ def _evaluate_keys(
 
 
 def _train(
-    ctx: _Ctx, keys: list[Key], thresholds: tuple[float, ...], th_default: float, seed: int = 0
+    ctx: _Ctx, keys: list[Key], thresholds: tuple[bool, ...], th_default: bool, seed: int = 0
 ) -> dict[str, Any]:
     """Fit weights on ``keys``; pick ``mask_friends``."""
     fmap = ctx.fmap
@@ -756,24 +756,20 @@ def _train(
         search,
         key=lambda s: (
             s["eval"]["recall"] + s["eval"]["precision"],
-            -abs(s["mask_friends"] - th_default),
+            s["mask_friends"] == th_default,
         ),
     )
     return {**best, "search": search, "fmap": fmap}
 
 
-def mask_modes(thresholds: tuple[float, ...], default: float) -> tuple[float, ...]:
-    """``mask_friends`` candidates reduced to the two masks they can give: soft and hard.
+def mask_modes(thresholds: tuple[float, ...]) -> tuple[bool, ...]:
+    """``mask_friends`` candidates reduced to the two masks they can give: soft (False) and
+    hard (True).
 
-    Friends no longer lift the lift/stop mask, so every value above 0 is the
-    same hard mask; an older list such as ``(0, 5, 6, 7, 8, 11)`` fits each mask
-    once. The hard mask takes ``default`` (the base style's value), or
-    :data:`cutpoint.actioncam.FRIENDS_STRONG` when that is the soft mask.
+    Every value above 0 is the hard mask; an older list such as ``(0, 5, 6, 7, 8, 11)``
+    fits each mask once.
     """
-    from cutpoint.actioncam import FRIENDS_STRONG  # noqa: PLC0415
-
-    hard = default if default > 0 else float(FRIENDS_STRONG)
-    return tuple(dict.fromkeys(0.0 if t <= 0 else hard for t in thresholds))
+    return tuple(dict.fromkeys(t > 0 for t in thresholds))
 
 
 def fit_weights(
@@ -805,25 +801,21 @@ def fit_weights(
         folds: Cross-validation folds.
         thresholds: ``mask_friends`` candidates (older numeric lists are
             accepted; values above 0 collapse into one hard-mask fit).
-        features: Feature subset (default: every feature of ``base``; never ``taste``,
-            whose head is no longer computed).
+        features: Feature subset (default: every feature of ``base``).
         save: Write the preset (False for ablations).
         cross: Run the cross-project evaluation.
 
     Returns:
         The fit report (also written into the preset JSON).
     """
-    from cutpoint import features as registry  # noqa: PLC0415
     from cutpoint.styles import get_style  # noqa: PLC0415
 
     datasets = project if isinstance(project, list) else [load_fit_data(project, result)]
     base_style = get_style(base)
-    if features is not None:  # registry names; an older name is read as its new one
-        features = list(registry.action_cam_names(dict.fromkeys(features, 0.0)))
-    keys_w = [k for k in (features or list(base_style.weights)) if k != "taste"]
+    keys_w = list(features or base_style.weights)
     default = base_style.weights
     th_default = base_style.mask_friends
-    thresholds = mask_modes(thresholds, th_default)
+    modes = mask_modes(thresholds)
     fmap: dict[Key, dict[str, Any]] = {}
     groups: dict[Key, int] = {}
     gid: dict[tuple[int, str], int] = {}
@@ -834,11 +826,11 @@ def fit_weights(
     all_keys = list(fmap)
     ctx = _Ctx(datasets, fmap, groups, keys_w)
 
-    final = _train(ctx, all_keys, thresholds, th_default)
+    final = _train(ctx, all_keys, modes, th_default)
     th, learned, data = final["mask_friends"], final["weights"], final["data"]
     for s in final["search"]:
         logger.info(
-            "  mask_friends %-4g -> P %.3f R %.3f moments %d/%d",
+            "  mask_friends %-5s -> P %.3f R %.3f moments %d/%d",
             s["mask_friends"],
             s["eval"]["precision"],
             s["eval"]["recall"],
@@ -881,7 +873,7 @@ def fit_weights(
     if cross and len(datasets) > 1:
         for a in range(len(datasets)):
             tr_keys = [k for k in all_keys if k[0] == a]
-            tr = _train(ctx, tr_keys, thresholds, th_default)
+            tr = _train(ctx, tr_keys, modes, th_default)
             for b in range(len(datasets)):
                 if b == a:
                     continue
@@ -955,8 +947,10 @@ def fit_weights(
     learned_dir = paths.styles_dir()
     learned_dir.mkdir(parents=True, exist_ok=True)
     preset = {
+        "schema": 1,
         "name": name,
         "base": base,
+        "source": "fitted",
         "weights": learned,
         "mask_friends": th,
         "default_weights": default,
@@ -1005,9 +999,9 @@ def ablate(
         if spec == "old":
             feats = old
         elif spec == "all":
-            feats = [f for f in FEATURES if f != "taste"]
+            feats = list(FEATURES)
         elif spec == "no_vlm":
-            feats = [f for f in FEATURES if f not in ("vlm", "scenic", "taste")]
+            feats = [f for f in FEATURES if f not in ("vlm", "scenic")]
         else:
             feats = old + list(spec)
         t0 = time.perf_counter()
@@ -1209,7 +1203,7 @@ def _log_fit(rep: dict[str, Any], default: dict[str, float]) -> None:
     for c in rep.get("cross_project", []):
         logger.info(
             "Cross-project %s -> %s: default P %.2f R %.2f | learned P %.2f R %.2f "
-            "(mask_friends %g)",
+            "(mask_friends %s)",
             c["train"],
             c["test"],
             c["default"]["precision"],
@@ -1221,7 +1215,7 @@ def _log_fit(rep: dict[str, Any], default: dict[str, float]) -> None:
     m = rep["mask"]
     logger.info(
         "Positives: %.0f s; %.0f s inside lift/stop masks (%.0f%% of footage is "
-        "masked), %.0f s eligible at mask_friends %g (0 = soft mask), %.0f s "
+        "masked), %.0f s eligible at mask_friends %s (False = soft mask), %.0f s "
         "unreachable",
         m["positives_s"],
         m["in_lift_or_stop_s"],

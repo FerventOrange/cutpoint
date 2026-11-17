@@ -111,7 +111,15 @@ def test_a_learned_preset_overrides_its_base_weights(tmp_path):
     """A learned gaming preset that weighs talk ranks it first; built-in gaming ignores it."""
     path = tmp_path / "talky.json"
     path.write_text(
-        json.dumps({"name": "talky", "base": "gaming", "weights": {"continuity": 0.9}}),
+        json.dumps(
+            {
+                "schema": 1,
+                "name": "talky",
+                "base": "gaming",
+                "source": "hand",
+                "weights": {"continuity": 0.9},
+            }
+        ),
         encoding="utf-8",
     )
     names = ("loudness", "continuity")
@@ -274,7 +282,8 @@ def ski_picks(
 
 def learned_ski(tmp: Path, **data: Any) -> Style:
     path = tmp / "mine.json"
-    path.write_text(json.dumps({"name": "mine", "base": "action-cam", **data}), encoding="utf-8")
+    doc = {"schema": 1, "name": "mine", "base": "action-cam", "source": "fitted", **data}
+    path.write_text(json.dumps(doc), encoding="utf-8")
     return load_learned(path)
 
 
@@ -412,7 +421,7 @@ def test_ski_labels_jumps_and_crashes_from_their_telemetry_events(tmp_path, no_l
 def test_ski_never_clips_the_lift_unless_the_mask_is_soft(tmp_path, no_layers):
     tel = ski_telemetry(airtime=160.0)  # a "jump" on the transit: camera handling
     assert at(ski_picks(tmp_path, STYLES["action-cam"], tel), 160.0) is None
-    soft = learned_ski(tmp_path, mask_friends=0)
+    soft = learned_ski(tmp_path, mask_friends=False)
     assert at(ski_picks(tmp_path, soft, tel), 160.0) is not None
 
 

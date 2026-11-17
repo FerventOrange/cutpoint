@@ -1,4 +1,4 @@
-"""Style files (#514 phase 2): the schema-1 check, lenient legacy loading, ``style_hash`` and
+"""Style files (#514 phase 2): the schema-1 check, old files failing plainly, ``style_hash`` and
 ``cutpoint style list|show|create|validate|delete|features``. Invented styles and weights only."""
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ PROBLEMS = [
     ({"applies_to": {"categories": ["nope"]}}, "unknown categor"),
     ({"applies_to": {"zones": []}}, "unknown key"),
     ({"applies_to": {"categories": "talk"}}, "must be a list"),
-    ({"mask_friends": -1}, "mask_friends"),
+    ({"mask_friends": "hard"}, "mask_friends"),
     ({"must_include_crash": 1.5}, "must_include_crash"),
     ({"description": 5}, "description"),
 ]
@@ -90,18 +90,72 @@ def test_unknown_profile_is_only_a_warning():
 # ------------------------------------------------------------------ loading and hash
 
 
-def test_legacy_file_loads_leniently_and_is_never_rewritten(styles_dir, caplog):
-    legacy = {"name": "old", "base": "action", "weights": {"madeup": 0.3}}
-    path = put(styles_dir, "old", legacy)
+def _no_traceback(caplog) -> None:
+    assert all(r.exc_info is None for r in caplog.records if r.levelname == "ERROR")
+
+
+def test_file_without_schema_fails_plainly_and_is_never_rewritten(styles_dir):
+    path = put(styles_dir, "old", {"name": "old", "base": "action", "weights": {"scene": 0.3}})
     before = (path.read_bytes(), path.stat().st_mtime_ns)
-    style = get_style("old")
-    assert style.weights["madeup"] == 0.3 and style.file_hash == content_hash(legacy)
-    assert "madeup" in caplog.text
-    cam = put(
-        styles_dir, "cam", {"name": "cam", "base": "action-cam", "weights": {"laughter": 0.4}}
-    )
-    assert load_learned(cam).weights["voice_laughter"] == 0.4
+    with pytest.raises(ValueError, match=r'old\.json.*"schema" is missing.*add "schema": 1') as e:
+        get_style("old")
+    assert '"source" is missing' in str(e.value)
     assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+
+
+OLD_WEIGHTS = [
+    ("action-cam", "laughter", 'write "voice_laughter" instead'),
+    ("action", "taste", "delete its weight"),
+    ("action-cam", "taste", "delete its weight"),
+]
+
+
+@pytest.mark.parametrize(("base", "key", "hint"), OLD_WEIGHTS)
+def test_old_weight_name_fails_with_the_file_key_and_fix(
+    styles_dir, capsys, caplog, base, key, hint
+):
+    path = put(styles_dir, "old", good(name="old", base=base, weights={key: 0.4, "speech": 0.2}))
+    before = path.read_bytes()
+    problem = stylefiles.check(json.loads(before), "old").problems
+    assert problem == [problem[0]] and f'"{key}" in "weights"' in problem[0] and hint in problem[0]
+    with pytest.raises(ValueError, match=r"old\.json"):
+        load_learned(path)
+    for verb in ("show", "validate"):
+        code, doc = style(capsys, verb, "old")
+        assert code == 1 and doc["error"]["code"] == "bad_args", verb
+        message = doc["error"]["message"]
+        assert str(path) in message and f'"{key}"' in message and hint in message, message
+    code, doc = style(capsys, "validate", str(path))
+    assert code == 1 and hint in doc["error"]["message"]
+    _no_traceback(caplog)
+    assert path.read_bytes() == before
+
+
+def test_laughter_is_still_a_weight_of_the_generic_styles(styles_dir):
+    assert stylefiles.check(good(weights={"laughter": 0.4}), "mine").ok
+
+
+def test_analyze_with_an_old_style_file_stops_plainly(styles_dir, tmp_path, capsys, caplog):
+    put(styles_dir, "old", {"name": "old", "base": "action", "weights": {"scene": 0.3}})
+    video = write(tmp_path / "v.mp4", "x")
+    code, doc = run_json(capsys, ["analyze", str(video), "--style", "old"])
+    assert code == 1 and doc["error"]["code"] == "error"  # as for any unusable style file
+    assert (
+        "old.json" in doc["error"]["message"] and '"schema" is missing' in doc["error"]["message"]
+    )
+    _no_traceback(caplog)
+
+
+MASKS = [(True, True), (False, False), (7, True), (0.5, True), (0, False), (-1, False)]
+
+
+@pytest.mark.parametrize(("value", "hard"), MASKS, ids=[repr(v) for v, _ in MASKS])
+def test_mask_friends_takes_booleans_and_numbers(styles_dir, capsys, value, hard):
+    put(styles_dir, "cam", good(name="cam", base="action-cam", weights={}, mask_friends=value))
+    assert get_style("cam").mask_friends is hard
+    code, doc = style(capsys, "show", "cam")
+    assert code == 0 and doc["outputs"]["mask_friends"] is hard
+    assert STYLES["action-cam"].mask_friends is True
 
 
 def test_invalid_schema_file_names_itself_and_valid_one_loads(styles_dir):
@@ -233,11 +287,13 @@ def test_computed_features_follow_the_base_scorer():
     assert res.ok and len(res.warnings) == 1
 
 
-def test_validate_legacy_passes_with_a_note_and_invalid_fails(styles_dir, capsys):
-    put(styles_dir, "old", {"name": "old", "base": "action", "weights": {"scene": 0.3}})
+def test_validate_old_file_and_invalid_fail(styles_dir, capsys, caplog):
+    path = put(styles_dir, "old", {"name": "old", "base": "action", "weights": {"scene": 0.3}})
     code, doc = style(capsys, "validate", "old")
-    assert code == 0 and doc["outputs"]["legacy"] is True and doc["outputs"]["valid"] is True
-    assert doc["outputs"]["notes"]
+    assert code == 1 and doc["error"]["code"] == "bad_args" and doc["outputs"]["valid"] is False
+    assert str(path) in doc["error"]["message"] and "legacy" not in doc["outputs"]
+    assert any('"schema" is missing' in p for p in doc["outputs"]["problems"])
+    _no_traceback(caplog)
     put(styles_dir, "mine", good(schema=2, weights={"scene": -1}))
     code, doc = style(capsys, "validate", "mine")
     assert code == 1 and doc["error"]["code"] == "bad_args"
@@ -257,9 +313,10 @@ def test_list_reports_invalid_and_unreadable_files_without_crashing(styles_dir, 
     assert code == 0 and doc["command"] == "style list"
     by = {e["name"]: e for e in doc["outputs"]["styles"]}
     assert by["funny"]["type"] == "built-in" and by["good"]["valid"] is True
-    assert by["old"]["legacy"] is True and by["old"]["source"] == "fitted"
+    assert not by["old"]["valid"] and by["old"]["source"] is None and "legacy" not in by["old"]
+    assert any('"schema" is missing' in p for p in by["old"]["problems"])
     assert not by["bad"]["valid"] and not by["broken"]["valid"]
-    assert warning_codes(doc).count("invalid_style") == 2
+    assert warning_codes(doc).count("invalid_style") == 3
     assert doc["outputs"]["styles_dir"] == str(styles_dir)
 
 
@@ -285,14 +342,14 @@ def test_features_lists_the_grid_with_availability(home, capsys):
     assert all(isinstance(f["available"], bool) for f in rows.values())
 
 
-def test_force_replaces_a_legacy_preset_with_a_schema_file(styles_dir, capsys):
+def test_force_replaces_a_file_without_schema_with_a_schema_file(styles_dir, capsys):
     put(styles_dir, "old", {"name": "old", "base": "action", "weights": {"scene": 0.3}})
     code, doc = style(capsys, "create", "old", "--base", "action", "--force")
     assert code == 0 and doc["outputs"]["replaced"] is True
     assert json.loads((styles_dir / "old.json").read_text(encoding="utf-8"))["schema"] == 1
 
 
-def test_create_from_a_legacy_file_without_source_writes_hand(styles_dir, tmp_path, capsys):
+def test_create_from_a_file_without_schema_or_source_writes_hand(styles_dir, tmp_path, capsys):
     src = write(tmp_path / "seed.json", json.dumps({"name": "seed", "base": "action"}))
     code, _ = style(capsys, "create", "copy", "--from", str(src))
     assert code == 0
@@ -313,12 +370,12 @@ def test_name_differing_only_in_case_is_refused(styles_dir, capsys):
     assert [p.name for p in styles_dir.glob("*.json")] == ["mine.json"]
 
 
-def test_create_from_a_legacy_file_drops_removed_features(styles_dir, tmp_path, capsys):
+def test_create_from_a_file_with_a_removed_feature_is_refused(styles_dir, tmp_path, capsys):
     src = write(
         tmp_path / "seed.json",
         json.dumps({"name": "seed", "base": "action", "weights": {"taste": 0.3, "scene": 0.2}}),
     )
-    code, _ = style(capsys, "create", "copy", "--from", str(src))
-    assert code == 0
-    saved = json.loads((styles_dir / "copy.json").read_text(encoding="utf-8"))
-    assert saved["weights"] == {"scene": 0.2}
+    code, doc = style(capsys, "create", "copy", "--from", str(src))
+    assert code == 1 and doc["error"]["code"] == "bad_args"
+    assert '"taste"' in doc["error"]["message"] and "delete its weight" in doc["error"]["message"]
+    assert not (styles_dir / "copy.json").exists()

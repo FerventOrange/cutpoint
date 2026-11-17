@@ -466,7 +466,8 @@ edit the file by hand; `cutpoint style validate NAME` checks it. Schema 1:
 | `description` | Optional text |
 | `profile` | Optional activity profile name; stored only, with a warning if no such profile exists |
 | `applies_to` | Optional `categories` and `profiles` lists; stored only (a later phase may use it to match footage to a style; `--style auto` does not) |
-| `mask_friends`, `must_include_crash` | Optional numbers, as in learned styles |
+| `mask_friends` | Optional, action-cam bases: `true` for the hard lift/stop mask (no clips on lifts or stops; the default), `false` for the soft one (the `stopped` weight decides). A number also works: above 0 is `true`, 0 or less `false` |
+| `must_include_crash` | Optional number from 0 to 1 |
 
 Other keys are kept as they are. A style file is checked strictly; one that fails is not used and
 `cutpoint style list` says why. A weight on a feature the base never measures only warns
@@ -476,12 +477,15 @@ A style whose weights give `scene` 0 (as `funny` and `commentary` do) skips the 
 detection pass of `analyze` on sources up to 30 minutes and detects cuts only around the
 candidate edges, to snap them, decoded on the CPU (see [analyze](commands.md#analyze)).
 
-Learned styles from the development script `scripts/refmatch.py` are files without `schema`
-(legacy). They load as before, read as `source` `fitted` and are never rewritten automatically;
-`cutpoint style create NAME --from FILE --force` converts one to schema 1. They hold the feature
-weights and the fit report. Style definitions live in `src/cutpoint/styles.py`.
-In an action-cam style, the weight of laughter heard over the wind noise is `voice_laughter`; older
-learned styles call it `laughter`, which still works.
+Learned styles from the development script `scripts/refmatch.py` are schema-1 files with
+`source` `fitted`; they also hold the fit report. Style definitions live in
+`src/cutpoint/styles.py`.
+
+A style file of an older Cutpoint is not used, and `analyze`, `style show`, `style validate` and
+`style list` name the file and what to change (Cutpoint never rewrites it): a file without
+`schema` needs `"schema": 1` and a `source`; in an action-cam style, the weight of laughter heard
+over the wind noise is `voice_laughter`, not `laughter`; a `taste` weight (a removed feature)
+must be deleted.
 
 ## Activity profiles
 

@@ -1629,10 +1629,15 @@ def test_a_fallen_back_style_keeps_the_must_include_crash_it_was_given(run, monk
     assert hl["style"] == "action" and hl["settings"]["must_include_crash"] == 0.8
 
 
+def user_style(name: str, base: str) -> dict:
+    """A schema-1 style file named ``name`` over ``base``."""
+    return {"schema": 1, "name": name, "base": base, "source": "hand"}
+
+
 def test_an_action_cam_style_file_falls_back_and_is_named(run, monkeypatch, home):
     """A style file over action-cam falls back too; the warning and the record name it."""
     styles = home / "styles"
-    write(styles / "trail.json", json.dumps({"name": "trail", "base": "action-cam"}))
+    write(styles / "trail.json", json.dumps(user_style("trail", "action-cam")))
     _cam_run(run, monkeypatch, {"a.mp4": False}, {})
     assert get_style("trail").kind == "action-cam"
     with jsonout.run("analyze") as res:
@@ -3352,7 +3357,7 @@ def test_highlights_records_the_built_in_base_of_the_style(run):
     analyze.analyze([run.video], get_style("gaming"), run.proj, vision=False, layers=True)
     hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
     assert (hl["style"], hl["style_base"]) == ("gaming", "gaming")
-    write(paths.styles_dir() / "trailride.json", json.dumps({"base": "sport", "weights": {}}))
+    write(paths.styles_dir() / "trailride.json", json.dumps(user_style("trailride", "sport")))
     analyze.analyze([run.video], get_style("trailride"), run.proj, vision=False, layers=True)
     hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
     assert (hl["style"], hl["style_base"]) == ("trailride", "sport")
@@ -3363,7 +3368,7 @@ def test_a_deleted_user_style_degrades_to_its_recorded_base(run, capsys, monkeyp
     re-analysis run with the recorded built-in base (gaming), with an INFO line, no error."""
     from cutpoint import stylefiles  # noqa: PLC0415
 
-    write(paths.styles_dir() / "mine.json", json.dumps({"base": "gaming", "weights": {}}))
+    write(paths.styles_dir() / "mine.json", json.dumps(user_style("mine", "gaming")))
     run.go("mine")
     assert (_hl(run)["style"], _hl(run)["style_base"]) == ("mine", "gaming")
     stylefiles.delete("mine")
@@ -3403,7 +3408,7 @@ def test_a_deleted_user_style_without_a_recorded_base_is_a_clear_error(
     """An older file (no style_base) of a deleted style: one ERROR line, no traceback."""
     from cutpoint import stylefiles  # noqa: PLC0415
 
-    write(paths.styles_dir() / "mine.json", json.dumps({"base": "gaming", "weights": {}}))
+    write(paths.styles_dir() / "mine.json", json.dumps(user_style("mine", "gaming")))
     run.go("mine")
     hl = _hl(run)
     del hl["style_base"]

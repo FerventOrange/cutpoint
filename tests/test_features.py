@@ -4,13 +4,11 @@ renormalised over the features an install can compute (lite: no ``events`` extra
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from conftest import messages
 from cutpoint import actioncam, analyze, extras, features, reset_state, scorer, styles
 from cutpoint.events import scoring
 from cutpoint.features import Feature
@@ -20,9 +18,10 @@ GENERIC = sorted(n for n, s in STYLES.items() if s.kind == "generic")
 
 
 def write_style(folder: Path, data: dict) -> Path:
+    """A schema-1 style file ``<folder>/<name>.json`` of ``data``."""
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{data['name']}.json"
-    path.write_text(json.dumps(data), encoding="utf-8")
+    path.write_text(json.dumps({"schema": 1, "source": "fitted", **data}), encoding="utf-8")
     return path
 
 
@@ -35,7 +34,6 @@ def test_builtin_style_weights_are_registered(name):
 def test_every_ski_feature_is_registered():
     """refmatch fits weights over actioncam.FEATURES, so a learned ski preset may name any of them."""
     assert set(actioncam.FEATURES) <= set(features.REGISTRY)
-    assert features.ACTION_CAM_ALIASES["laughter"] in features.REGISTRY
 
 
 def test_learned_style_with_ski_features_loads(tmp_path):
@@ -46,47 +44,16 @@ def test_learned_style_with_ski_features_loads(tmp_path):
     assert load_learned(path).weights["wipeout"] == 0.1
 
 
-def _sig(n: int = 100) -> dict[str, np.ndarray]:
-    sig = {k: np.zeros(n) for k in ("loudness", "speech", "laughter", "scene", "continuity")}
-    sig["loudness"][40:50] = 1.0
-    return sig
-
-
-def _top_score(style, sig: dict[str, np.ndarray]) -> float:
-    n = len(sig["loudness"])
-    ps = analyze.PartSignals(n, dict(sig), [], [], [], [], [])
-    res = analyze.SourceResult(Path("a.mp4"), None, 0.0, n / 10, [], [], None, ps)
-    return analyze.pick_candidates(res, style, 5, {})[0].score
-
-
-@pytest.mark.parametrize("edition", ["full", "lite"])
-def test_learned_style_with_unknown_feature_loads_with_a_warning(
-    home, monkeypatch, caplog, edition
-):
-    """A hand-edited preset keeps its unknown names: they count in the divisor, as before the
-    registry, and add nothing to the grid."""
-    monkeypatch.setattr(extras, "edition", lambda: edition)
-    reset_state()
+def test_learned_style_with_unknown_feature_is_unusable(home):
+    """A hand-edited style naming features nothing measures fails, naming them."""
     path = write_style(
         home / "styles",
         {"name": "odd", "base": "gaming", "weights": {"lodness": 0.4, "vlm_window": 0.1}},
     )
-    style = get_style("odd")
-    get_style("odd")  # one analyze run loads the preset many times: one warning
-    assert style.weights["lodness"] == 0.4
-    assert style.weights["vlm_window"] == 0.1
-    [msg] = messages(caplog, logger="cutpoint.styles")
-    assert str(path) in msg
-    assert "'lodness', 'vlm_window'" in msg
-    peak = STYLES["gaming"].weights["loudness"]
-    assert _top_score(style, _sig()) == round(100 * (peak / sum(style.weights.values())), 1)
-
-
-def test_style_and_base_keeps_the_base_of_a_style_with_an_unknown_feature(home, caplog):
-    write_style(home / "styles", {"name": "odd", "base": "funny", "weights": {"lodness": 0.4}})
-    assert scoring.style_and_base("odd") == ("odd", "funny")
-    [msg] = messages(caplog, logger="cutpoint.styles")
-    assert "'lodness'" in msg
+    with pytest.raises(ValueError, match="'lodness', 'vlm_window'") as err:
+        get_style("odd")
+    assert str(path) in str(err.value)
+    assert scoring.style_and_base("odd") == ("odd",)  # the library cannot answer for it
 
 
 def test_validate_names_the_style():
@@ -201,34 +168,16 @@ def test_ski_score_is_renormalised_like_the_other_styles():
 def test_ski_features_come_from_the_registry_in_the_grid_order():
     assert actioncam.FEATURES == features.ACTION_CAM_FEATURES
     assert all(features.get(f).kind == "grid" for f in actioncam.FEATURES)
-    assert not features.REMOVED & set(features.REGISTRY)
     assert "laughter" not in actioncam.FEATURES and "laughter" not in STYLES["action-cam"].weights
 
 
-def test_action_cam_names_renames_in_place_and_prefers_the_new_name(caplog):
-    with caplog.at_level(logging.DEBUG, logger="cutpoint.features"):
-        got = features.action_cam_names(
-            {"airtime": 0.1, "laughter": 0.2, "voice": 0.3}, "mine.json"
-        )
-    assert list(got.items()) == [("airtime", 0.1), ("voice_laughter", 0.2), ("voice", 0.3)]
-    assert "mine.json: action-cam feature 'laughter' is now called 'voice_laughter'" in caplog.text
-    both = features.action_cam_names({"laughter": 0.2, "voice_laughter": 0.4})
-    assert both == {"voice_laughter": 0.4}
-
-
-def test_learned_action_cam_preset_with_the_old_laughter_name_scores_as_before(tmp_path, caplog):
-    """An older preset says "laughter": it is voice_laughter, in its place, without a warning."""
+def test_learned_action_cam_preset_with_the_old_laughter_name_fails_plainly(tmp_path):
+    """Before #514 phase 1b voice_laughter was called "laughter": such a file names the fix."""
     path = write_style(
         tmp_path, {"name": "mine", "base": "action-cam", "weights": {"laughter": 0.6}}
     )
-    with caplog.at_level(logging.DEBUG):
-        st = load_learned(path)
-    assert list(st.weights) == list(STYLES["action-cam"].weights)
-    assert st.weights["voice_laughter"] == 0.6
-    assert sum(st.weights.values()) == sum(
-        {**STYLES["action-cam"].weights, "voice_laughter": 0.6}.values()
-    )
-    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    with pytest.raises(ValueError, match=r'mine\.json.*"laughter".*write "voice_laughter"'):
+        load_learned(path)
 
 
 def test_learned_generic_preset_keeps_transcript_laughter(tmp_path):
@@ -237,14 +186,17 @@ def test_learned_generic_preset_keeps_transcript_laughter(tmp_path):
     assert "voice_laughter" not in load_learned(path).weights
 
 
-def test_old_ski_features_file_reads_laughter_as_voice_laughter(tmp_path):
-    """ski_features saved before the rename load under the new name (refmatch, mix)."""
+def test_old_ski_features_file_with_laughter_is_refused_and_treated_as_missing(tmp_path, caplog):
+    """ski_features saved before the rename name the fix (refmatch, mix) and are a cache miss
+    for load_part."""
     grids = {k: np.full(4, i / 4) for i, k in enumerate(("airtime", "laughter", "voice"))}
     src = tmp_path / "a.mp4"
-    actioncam.save_features(tmp_path, src, 0.0, 0.4, grids, np.zeros(4), np.zeros(4), [])
-    (d,) = actioncam.load_project_features(tmp_path)
-    assert list(d["features"]) == ["airtime", "voice_laughter", "voice"]
-    assert d["features"]["voice_laughter"].tolist() == [0.25] * 4
+    path = actioncam.save_features(tmp_path, src, 0.0, 0.4, grids, np.zeros(4), np.zeros(4), [])
+    with pytest.raises(ValueError, match=r"grid 'laughter', now 'voice_laughter'.*analyze") as e:
+        actioncam.load_project_features(tmp_path)
+    assert str(path) in str(e.value)
+    assert actioncam.load_part(tmp_path, src) is None
+    assert "treated as missing" in caplog.text and "'laughter'" in caplog.text
 
 
 def test_social_is_core_and_records_its_two_parts():

@@ -103,11 +103,10 @@ class Style:
         use_scenes: Run scene detection by default (pointless on single-take
             action-cam clips, and the 4K proxy decode is the slowest step).
         learned: Fit metadata for presets loaded from the styles folder.
-        mask_friends: Action-cam only: the lift/stop mask. Above 0 it is hard (no
-            clips on lifts or stops; friends in view do not lift it, so every
-            value above 0, such as the 5-11 of older presets, acts the same);
-            0 = soft mask: nothing is forbidden and the ``stopped`` feature
-            weight decides.
+        mask_friends: Action-cam only: the lift/stop mask. True = hard (no clips on lifts
+            or stops; friends in view do not lift it); False = soft: nothing is forbidden
+            and the ``stopped`` feature weight decides. A style file may give a number:
+            above 0 is True, 0 or less False (:func:`mask_flag`).
         open_list: The candidate list ends when moments stop qualifying (a stricter floor
             past :func:`cutpoint.analyze.usual_count` candidates), not at that count. Learned
             presets follow their base.
@@ -149,7 +148,7 @@ class Style:
     kind: str = "generic"
     use_scenes: bool = True
     learned: dict | None = None
-    mask_friends: float = 7.0
+    mask_friends: bool = True
     must_include_crash: float = 0.6
     open_list: bool = False
     file_hash: str | None = None
@@ -484,73 +483,43 @@ def style_names() -> list[str]:
     return sorted(STYLES) + [n for n in learned_styles() if n not in STYLES]
 
 
-@state.register_cache
-@functools.cache
-def _warn_unknown(path: str, bad: tuple[str, ...]) -> None:
-    """Warn once per run: one analyze run and the UI load the same preset many times."""
-    one = len(bad) == 1
-    logger.warning(
-        "%s: unknown feature%s %s in its weights; nothing measures %s, but %s still "
-        "count%s, so every score of this style is lower",
-        path,
-        "" if one else "s",
-        ", ".join(map(repr, bad)),
-        "it" if one else "them",
-        "its weight" if one else "their weights",
-        "s" if one else "",
-    )
-
-
-def own_weights(data: dict, base: Style, path: Path) -> dict[str, float]:
+def own_weights(data: dict) -> dict[str, float]:
     """The weights a style file sets itself (``data["weights"]``), as :func:`load_learned`
-    layers them over ``base``: an action-cam file's old ``laughter`` read as
-    ``voice_laughter`` and the weights of removed features dropped."""
-    own = {k: float(v) for k, v in data.get("weights", {}).items()}
-    if (
-        base.kind == ACTION_CAM
-    ):  # an older preset's "laughter" is voice_laughter (ACTION_CAM_ALIASES)
-        own = features.action_cam_names(own, str(path))
-    gone = [k for k in own if k in features.REMOVED]
-    if gone:  # a removed feature (the taste head) scores as if the preset never weighed it
-        logger.debug("%s: ignoring the weights of removed features %s", path, gone)
-        own = {k: w for k, w in own.items() if k not in features.REMOVED}
-    return own
+    layers them over its base's."""
+    return {k: float(v) for k, v in data.get("weights", {}).items()}
+
+
+def mask_flag(value: bool | float) -> bool:
+    """A style file's ``mask_friends`` as the hard-mask flag: a boolean as it is, a number
+    above 0 True, 0 or less False."""
+    return value if isinstance(value, bool) else value > 0
 
 
 def load_learned(path: Path) -> Style:
     """Build a style from a style file in the styles folder.
 
-    A file with ``"schema"`` (:mod:`cutpoint.stylefiles`) is checked strictly: any problem
-    makes the style unusable. A file without it is a legacy preset (``{"name", "base",
-    "weights", ...}``, ``scripts/refmatch.py``), read leniently as before: an unknown feature
-    in its weights warns and is kept.
+    The file is checked strictly (:func:`cutpoint.stylefiles.check`): any problem, such as a
+    file of an older Cutpoint without ``"schema"`` or with an old feature name, makes the
+    style unusable.
 
     Raises:
-        ValueError: If the file is unreadable, its base preset is unknown, or a schema file
-            fails its check (naming the file and every problem).
+        ValueError: If the file is unreadable or fails its check (naming the file and every
+            problem, with what to write instead).
     """
+    from cutpoint import stylefiles  # noqa: PLC0415 - it imports this module
+
     data = cache.load_json(path)
     if not isinstance(data, dict):
         raise ValueError(f"Cannot read learned style {path} (missing or invalid JSON)")
-    if "schema" in data:
-        from cutpoint import stylefiles  # noqa: PLC0415 - it imports this module
-
-        problems = stylefiles.check(data, path.stem).problems
-        if problems:
-            raise ValueError(f"{path} is not a valid style file: {'; '.join(problems)}")
-    base = STYLES.get(data.get("base", ""))
-    if base is None:
-        raise ValueError(f"{path}: unknown base style {data.get('base')!r}")
-    own = own_weights(data, base, path)
-    weights = {**base.weights, **own}
-    bad = unknown_weights(weights)
-    if bad:  # kept, so the score is as before: counted in the divisor, nothing on the grid
-        _warn_unknown(str(path), tuple(bad))
+    problems = stylefiles.check(data, path.stem).problems
+    if problems:
+        raise ValueError(f"{path} is not a valid style file: {'; '.join(problems)}")
+    base = STYLES[data["base"]]
     return replace(
         base,
-        name=data.get("name", path.stem),
-        weights=weights,
-        mask_friends=float(data.get("mask_friends", base.mask_friends)),
+        name=data["name"],
+        weights={**base.weights, **own_weights(data)},
+        mask_friends=mask_flag(data.get("mask_friends", base.mask_friends)),
         must_include_crash=float(data.get("must_include_crash", base.must_include_crash)),
         learned={k: v for k, v in data.items() if k != "weights"},
         file_hash=content_hash(data),
@@ -567,8 +536,8 @@ def content_hash(data: object) -> str:
 def style_hash(style: Style) -> str:
     """The ``settings.style_hash`` an analysis records for ``style``.
 
-    A user style: :func:`content_hash` of its file's whole JSON object as read (legacy
-    presets too), so any edit to the file changes it. A built-in style: :func:`content_hash`
+    A user style: :func:`content_hash` of its file's whole JSON object as read,
+    so any edit to the file changes it. A built-in style: :func:`content_hash`
     of ``{"name", "base", "weights", "mask_friends", "must_include_crash"}`` from its
     definition in :data:`STYLES` (``base`` is its own name), so it changes only when Cutpoint
     changes the style's weights or those overrides, not with a run's

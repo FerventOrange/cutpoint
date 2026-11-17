@@ -254,31 +254,6 @@ ACTION_CAM_FEATURES = (
     "voice",
     "wipeout",
 )
-# Before #514 phase 1b the action-cam feature voice_laughter was called "laughter", which is the
-# transcript feature for the generic styles. Learned action-cam presets and saved feature files of
-# that time say "laughter"; action_cam_names() reads it as voice_laughter.
-ACTION_CAM_ALIASES = {"laughter": "voice_laughter"}
-# Features that no longer exist. A learned preset saved while they did may still weigh them;
-# styles.load_learned() drops those weights, so they are not counted in the divisor and the
-# preset scores as one without them. ``taste`` was the personal taste head
-# (``refmatch --taste``), removed when refmatch became scripts/refmatch.py.
-REMOVED = frozenset({"taste"})
-
-
-def action_cam_names[T](named: Mapping[str, T], where: str = "") -> dict[str, T]:
-    """``named`` (action-cam weights or grids) with the old names (:data:`ACTION_CAM_ALIASES`) renamed, in
-    place of the old key (the order, and so a score's sum, stay the same). A name given both
-    ways keeps the new name's value. ``where`` names the file in the DEBUG line."""
-    out: dict[str, T] = {}
-    for k, w in named.items():
-        new = ACTION_CAM_ALIASES.get(k)
-        if new is None:
-            out[k] = w
-            continue
-        logger.debug("%s: action-cam feature %r is now called %r", where or "weights", k, new)
-        if new not in named:
-            out[new] = w
-    return out
 
 
 # --------------------------------------------------------------------------- bonus features

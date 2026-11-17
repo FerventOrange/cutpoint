@@ -20,7 +20,7 @@ analysis grid of one source:
     speech   capped style keywords (kept low: wind and chatter are constant)
     faces    GoPro FACE detections (weight 0 by default; available to fitting)
     stopped  1 while stopped (telemetry still_mask); weight 0 by default, only
-             useful with a soft mask (``mask_friends`` 0, learned presets)
+             useful with a soft mask (``mask_friends`` false, learned presets)
     short_clip 1 for a whole clip shorter than 30 s (recorded on purpose);
              weight 0 by default
 
@@ -92,7 +92,6 @@ NEW_FEATURES = tuple(f for f in FEATURES if features.get(f).layer in ("audio", "
 SHORT_CLIP_S = 30.0  # a clip this short was recorded on purpose for one moment
 VLM_ACTION_TAGS = ("jump_air", "landing", "spray")
 VLM_IDLE_TAGS = ("transit", "standing_talking", "indoor_break")  # friends do not count there
-FRIENDS_STRONG = 7  # default mask_friends: > 0 = hard lift/still mask, 0 = soft
 STRETCH = 0.7  # a pick takes the run around its peak that stays above this share of it
 FEATURES_DIR = "action_cam_features"
 PICK_FLOOR = 0.02  # a peak of the weighted sum at or below this gives no clip (:func:`pick`)
@@ -433,15 +432,15 @@ def smooth3(x: np.ndarray) -> np.ndarray:
     return np.median(np.stack([p[:-2], p[1:-1], p[2:]]), 0)
 
 
-def effective_mask(mask: np.ndarray, friends_strong: float = FRIENDS_STRONG) -> np.ndarray:
+def effective_mask(mask: np.ndarray, friends_strong: bool = True) -> np.ndarray:
     """1 where clips are forbidden: lift/stop.
 
-    ``friends_strong`` (a style's ``mask_friends``) above 0 keeps the mask
-    hard; 0 or less means a *soft* mask (nothing is forbidden; the
-    ``stopped`` weight decides). Friends in view do not lift the mask: people
-    standing and chatting, or in transit, are in view for minutes.
+    ``friends_strong`` (a style's ``mask_friends``) True keeps the mask hard;
+    False means a *soft* mask (nothing is forbidden; the ``stopped`` weight
+    decides). Friends in view do not lift the mask: people standing and
+    chatting, or in transit, are in view for minutes.
     """
-    if friends_strong <= 0:
+    if not friends_strong:
         return np.zeros_like(mask)
     return mask.copy()
 
@@ -450,7 +449,7 @@ def combine(
     features: dict[str, np.ndarray],
     weights: dict[str, float],
     mask: np.ndarray,
-    friends_strong: float = FRIENDS_STRONG,
+    friends_strong: bool = True,
 ) -> np.ndarray:
     """Weighted feature sum with the hard mask applied (:func:`cutpoint.scorer.action_cam_combined`)."""
     return scorer.action_cam_combined(features, weights, 1 - effective_mask(mask, friends_strong))
@@ -493,7 +492,7 @@ def pick(
     duration: float,
     max_picks: int,
     offset: float = 0.0,
-    friends_strong: float = FRIENDS_STRONG,
+    friends_strong: bool = True,
     floor: float = PICK_FLOOR,
 ) -> list[Pick]:
     """Peak-pick clips with feature-specific geometry; results do not overlap.
@@ -728,16 +727,24 @@ def save_features(
 
 def load_features(path: Path, data: bytes | None = None) -> dict[str, Any]:
     """Inverse of :func:`save_features` (of the file ``path``, or of its bytes ``data``).
-    A grid saved under its old name (:data:`cutpoint.features.ACTION_CAM_ALIASES`) is read under
-    the new one, in its place."""
+
+    Raises:
+        ValueError: For a file of an older Cutpoint, with the grid ``laughter`` (now
+            ``voice_laughter``): naming the file and saying to analyze again.
+    """
     with np.load(path if data is None else io.BytesIO(data)) as z:
+        if "f_laughter" in z.files:
+            raise ValueError(
+                f"{path}: action-cam features of an older Cutpoint (grid 'laughter', now "
+                "'voice_laughter'); run `cutpoint analyze --style action-cam` on the "
+                "project again to rebuild them"
+            )
         meta = json.loads(str(z["meta"]))
-        grids = {k[2:]: z[k].astype(float) for k in z.files if k.startswith("f_")}
         return {
             **meta,
             "mask": z["mask"].astype(float),
             "friends": z["friends"].astype(float),
-            "features": features.action_cam_names(grids, str(path)),
+            "features": {k[2:]: z[k].astype(float) for k in z.files if k.startswith("f_")},
         }
 
 
