@@ -146,13 +146,6 @@ def backup_bytes(raw: bytes) -> bytes:
     return json.dumps(saved_settings(data), indent=2, ensure_ascii=False).encode("utf-8")
 
 
-def key(raw: bytes) -> str:
-    """The ranking key of the highlights.json bytes ``raw`` (sha256, its first 16 hex digits):
-    it changes whenever an analysis or a re-rank rewrites the file. Same digest as
-    :func:`analyze.backup_digest`."""
-    return analyze.backup_digest(raw)
-
-
 def seal(hl: dict[str, Any]) -> str:
     """The digest of the analysis ``hl`` as a file holds it, its ``settings.rerank_undo`` (:data:`UNDO`)
     left out: equal to the recorded seal only while no analysis, ``events`` run or hand edit
@@ -451,9 +444,9 @@ def rerank(
     instead (the backup written before it; unchanged spans keep their ids there too); else
     :class:`~cutpoint.errors.NeedsAnalyzeError`, naming :func:`analyze_command`.
 
-    ``expect``: the :func:`key` of the highlights.json the caller previewed (``cutpoint ui``'s
-    apply); when the file under the lock has another, nothing is written. ``cuda``: as
-    :func:`readiness` takes it.
+    ``expect``: the :func:`~cutpoint.analyze.backup_digest` of the highlights.json the caller
+    previewed (``cutpoint ui``'s apply); when the file under the lock has another, nothing is
+    written. ``cuda``: as :func:`readiness` takes it.
 
     Raises:
         StaleRankingError: If highlights.json no longer has the key ``expect``.
@@ -470,7 +463,7 @@ def rerank(
     )
     with lock:
         raw, hl = load(project)
-        if expect is not None and key(raw) != expect:
+        if expect is not None and analyze.backup_digest(raw) != expect:
             raise StaleRankingError(
                 f"{project / HIGHLIGHTS} changed since the ranking was previewed; preview it again"
             )

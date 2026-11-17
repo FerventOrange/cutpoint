@@ -32,7 +32,6 @@ few reserved slots (:func:`reserved_slots`, :data:`SLOT_MIN_PEAK`).
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,8 +43,6 @@ from cutpoint import actioncam, telemetry
 from cutpoint.config import path_key
 from cutpoint.dsp import clean_mask, mask_runs
 from cutpoint.styles import ACTION_CAM, Style, style_name
-
-logger = logging.getLogger(__name__)
 
 POOL = "visual"  # the ``pool`` value of these candidates
 POOL_BASES = ("action", "sport")  # with the action-cam kind: the styles that get a pool

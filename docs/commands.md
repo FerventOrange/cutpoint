@@ -1518,11 +1518,11 @@ cutpoint detect <file|folder> [<file|folder> ...] [--exclude GLOB] [--recursive]
 ```
 
 Tells which category the footage is and which style `--style auto` would use, without analyzing
-it. It reads the container tags, the camera telemetry and 40 small frames per source (24 frames
-spread over the source, read at 640x360, plus 4 pairs of 4 consecutive frames; a few seconds each;
-cached as `category-v3.json` in the source's cache folder), plus the HUD text check and the vision
+it. It reads the container tags, the camera telemetry and 24 small frames per source (spread over
+the source, read at 640x360; a few seconds each; cached as `category-v4.json` in the source's
+cache folder), plus the HUD text check and the vision
 check (below) for unsure sources (the vision check also for camera-tagged sources without telemetry), and writes nothing to a project. An older cache
-(`category-v2.json`) is not read: every source is probed once more after updating.
+(`category-v3.json`) is not read: every source is probed once more after updating.
 
 | Category | Evidence | `analyze --style auto` | `edit --kind funny-moments --style auto` |
 |---|---|---|---|
@@ -1602,7 +1602,7 @@ and no `decided_by`. It is cached as `category-anchors-v1.json` (#904).
 
 A 2:1 frame counts as 360 footage only at 3840 px wide or more; `decided_by` is then `360 frame`.
 
-`highlights.json` of an `auto` analysis has a `detection` block: `version` (4), `category`,
+`highlights.json` of an `auto` analysis has a `detection` block: `category`,
 `emphasis` (`hype`, or `funny` for `funny-moments`), `style`, `reason`, `ambiguous`, `scores`,
 `fallback` (the style used when the category was unclear, else `null`), `suggest`, `decided_by` and
 `sources` (as in the [`--json` outputs](#json-output)), and `vision_detect_all` (`true`) only

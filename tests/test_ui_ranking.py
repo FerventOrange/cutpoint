@@ -73,7 +73,7 @@ def test_a_preview_lists_both_rankings_and_writes_nothing(home, tmp_path, client
     assert res.status_code == 200, res.text
     got = res.json()
     assert got["ready"] is True and (got["style"], got["from"]) == ("funny", "gaming")
-    assert got["base"] == rerank.key((project / "highlights.json").read_bytes())
+    assert got["base"] == analyze.backup_digest((project / "highlights.json").read_bytes())
     want = rerank.rerank(project, get_style("funny"), dry_run=True).after
     assert 0 < len(got["top"]) <= ui.PREVIEW_TOP
     assert [r["cli_id"] for r in got["top"]] == [c["id"] for c in want["candidates"]][
@@ -147,7 +147,7 @@ def test_apply_writes_the_ranking_the_backup_and_the_chosen_style(home, tmp_path
     assert ui.read_meta(project)["style"] == "funny"
     page = client.get("/api/projects/p").json()
     assert page["style"] == "funny"
-    assert page["ranking_key"] == rerank.key((project / "highlights.json").read_bytes())
+    assert page["ranking_key"] == analyze.backup_digest((project / "highlights.json").read_bytes())
 
 
 def test_apply_leaving_auto_keeps_the_detection(home, tmp_path, client):

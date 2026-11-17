@@ -334,11 +334,7 @@ def label_dominates(hl: dict[str, Any]) -> list[dict[str, Any]]:
     if len(cands) < LABEL_MIN_CANDIDATES:
         return []
     counts = Counter(c["label"] for c in cands if _detected_label(c))
-    over = [
-        (label, n)
-        for label, n in counts.most_common()
-        if n > LABEL_SHARE * len(cands) and not GENERIC_LABEL.fullmatch(label)
-    ]
+    over = [(label, n) for label, n in counts.most_common() if n > LABEL_SHARE * len(cands)]
     if not over:
         return []
     what = ", ".join(f"{label!r} on {n} of {len(cands)}" for label, n in over)

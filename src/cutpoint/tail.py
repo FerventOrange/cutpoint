@@ -22,7 +22,6 @@ to the last word cuts it off. :func:`smart_tail` extends a speech-ended clip:
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -30,8 +29,6 @@ from typing import Any
 import numpy as np
 
 from cutpoint.styles import LAUGHTER, Style
-
-logger = logging.getLogger(__name__)
 
 SPEECH_END_S = 1.0  # clip ends this close after the last word -> speech-ended
 JOIN_GAP_S = 0.8  # resumed speech closer than this continues the exchange
@@ -93,18 +90,12 @@ class TailResult:
         end: New clip end (absolute source time).
         extension: Seconds added to the original end (>= 0).
         reason: Why the end was placed here.
-        last_word_end: End of the last kept word, if any.
-        settled_at: Where the audio fell back to the baseline, if it did.
-        baseline_db: Local baseline level (dBFS RMS), if measured.
         included_words: Words of a continuing exchange added to the clip.
     """
 
     end: float
     extension: float
     reason: str
-    last_word_end: float | None = None
-    settled_at: float | None = None
-    baseline_db: float | None = None
     included_words: str = ""
 
     def to_json(self) -> dict[str, Any]:
@@ -205,7 +196,6 @@ def smart_tail(
             end,
             0.0,
             f"not speech-ended ({end - anchor0:.1f}s after last word)",
-            last_word_end=anchor0,
         )
 
     cap = min(limit, anchor0 + settings.tail_max)
@@ -222,7 +212,7 @@ def smart_tail(
     ctx0 = max(0.0, anchor - BASELINE_CONTEXT_S)
     samples, t_first = audio(ctx0, cap + settings.settle + 0.5)
     db = rms_db(samples)
-    settled_at = baseline = None
+    settled_at = None
     if db.size:
         times = t_first + np.arange(db.size) * HOP_S + WIN_S / 2
         k = max(1, int(SMOOTH_S / HOP_S))
@@ -247,15 +237,10 @@ def smart_tail(
     target = min(target, cap)
     if target > hard_stop:
         target, reason = hard_stop, "stopped before next speech"
-    if target > limit:
-        target, reason = limit, "limited by source end / unreadable region / next clip"
     new_end = max(end, target)
     return TailResult(
         end=round(new_end, 3),
         extension=round(new_end - end, 3),
         reason=reason,
-        last_word_end=round(anchor0, 3),
-        settled_at=round(settled_at, 3) if settled_at is not None else None,
-        baseline_db=round(baseline, 1) if baseline is not None else None,
         included_words=joined,
     )
