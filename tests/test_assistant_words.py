@@ -346,10 +346,11 @@ def test_owner_scenario_make_her_say_a_sentence() -> None:
     assert "Its words are said apart: 'I' 1 times, 'am' 1 times, 'shit' 1 times" in apart
     # #974: the splice comes ready, one add_range per word in order
     assert (
-        'propose_edit with these ops, in order: [{"op": "add_range", "file": "a.mp4", '
-        '"start": 1.5, "end": 1.6}, {"op": "add_range", "file": "a.mp4", "start": 1.65, '
-        '"end": 1.8}, {"op": "add_range", "file": "b.mp4", "start": 2.45, "end": 2.8}]'
-    ) in apart
+        'propose_edit with these ops, in order:\n<<<DATA splice>>>\n[{"op": "add_range", '
+        '"file": "a.mp4", "start": 1.5, "end": 1.6}, {"op": "add_range", "file": "a.mp4", '
+        '"start": 1.65, "end": 1.8}, {"op": "add_range", "file": "b.mp4", "start": 2.45, '
+        '"end": 2.8}]\n<<<END DATA>>>'
+    ) in apart  # file names are data (#1085 A654)
     assert "no moment id needed" in fake.requests[2]["messages"][-1]["content"]
     assert '"start": 1.5, "end": 1.8' in fake.requests[2]["messages"][-1]["content"]
     prop = turn.view()["events"][-1]
@@ -607,7 +608,7 @@ def test_a_refused_stitch_after_found_words_is_nudged_to_splice(query: str, nudg
     sent = fake.requests[2]["messages"][-1]
     assert sent["role"] == "user" and sent["content"].startswith(getattr(session, nudge))
     # #974: a phrase said apart gets its splice ops in the nudge too
-    assert ("The ops: [" in sent["content"]) is (query == "I am shit")
+    assert ("The ops:\n<<<DATA splice>>>\n[" in sent["content"]) is (query == "I am shit")
     assert "add_range one find_words hit of each word" in session.SPLICE_NUDGE
     assert turn.view()["events"][-1]["kind"] == "proposal"
 

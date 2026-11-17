@@ -914,7 +914,8 @@ class Turn:
             or self._asks_edit()
         ):
             if self._found_words:  # with the ops of a phrase said apart, if any
-                return SPLICE_NUDGE + (f" The ops: {self._splice}" if self._splice else "")
+                ops = context.data_block("splice", self._splice) if self._splice else ""
+                return SPLICE_NUDGE + (f" The ops:\n{ops}" if ops else "")
             return NUDGE
         return PROMISE_NUDGE if _promises(text) else None
 
@@ -1214,7 +1215,7 @@ class Turn:
         self._splice = json.dumps(ops, ensure_ascii=False)
         return (
             f". Its words are said apart: {said}. To make someone say it, splice them: "
-            f"propose_edit with these ops, in order: {self._splice}"
+            "propose_edit with these ops, in order:\n" + context.data_block("splice", self._splice)
         ), hits
 
     def _tool_get_moment(self, args: dict[str, Any]) -> tuple[str, bool]:
