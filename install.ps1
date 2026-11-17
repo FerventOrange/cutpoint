@@ -94,8 +94,8 @@ do not use `uv tool upgrade`, it drops the torch build).
 
 Modes:
   (default)         Full: every feature. With an NVIDIA GPU: CUDA torch and GPU libraries
-                    ("cutpoint[all]", several GB). Without: CPU torch ("cutpoint[events,ui,keyring]").
-  -Lite             Lite: no torch, no events/GPU extras ("cutpoint[ui,keyring]"). Analyze, clips,
+                    ("cutpoint[all]", several GB). Without: CPU torch ("cutpoint[events]").
+  -Lite             Lite: no torch, no events/GPU extras ("cutpoint"). Analyze, clips,
                     assemble and edit work on the CPU. Lite has no Ollama: it does not offer, install
                     or start it (the AI assistant can use a third-party provider instead).
 
@@ -229,6 +229,19 @@ Optional prompts (default No; with no interactive console the answer is No unles
         if (-not $S.Source) { $S.Source = "pypi" }
         $S.Version = $env:CUTPOINT_VERSION
         if (-not $S.Version) { $S.Version = $CUTPOINT_VERSION_DEFAULT }
+        if ($S.Source -eq "pypi") { Test-Version $S.Version }
+    }
+
+    # Releases before 0.4.0 need the ui extra for the browser workspace, which this installer no
+    # longer asks for. Only major.minor are compared, numerically; a leading v and a pre-release
+    # suffix (0.4.0rc1) are ignored, so 0.4.0rc1 counts as 0.4.0. A version that does not start
+    # with N.N is left to uv to reject. Keep in step with check_version in install.sh.
+    function Test-Version([string]$Version) {
+        if ($Version -match '^v?(\d+)\.(\d+)') {
+            if ([int]$Matches[1] -eq 0 -and [int]$Matches[2] -lt 4) {
+                Die "Cutpoint $Version is older than 0.4.0, the oldest release this installer can install; install it with pip or uv directly, or use a newer version."
+            }
+        }
     }
 
     # ------------------------------------------------------------ platform
@@ -485,13 +498,11 @@ Optional prompts (default No; with no interactive console the answer is No unles
 
     # Sets Req (the requirement) and NoSources.
     function Resolve-Source {
-        # ui and keyring are extras before the packaging change and empty aliases after it, so spelling
-        # them out is correct on both layouts. keyring is an extra only in releases after 0.3.0
-        # (0.3.0 has none: uv warns and skips it), so stamp a release that has it. Keep in step with
-        # install.sh. ("all" includes them.)
+        # The browser workspace and the keyring are core dependencies: no ui/keyring extras.
+        # Keep in step with install.sh.
         # Releases before 0.4.0 had a real `ski` extra (action-cam telemetry); this script no longer requests it.
-        if ($S.Backend -eq "none") { $extra = "[ui,keyring]" }
-        elseif ($S.Backend -eq "cpu") { $extra = "[events,ui,keyring]" }
+        if ($S.Backend -eq "none") { $extra = "" }
+        elseif ($S.Backend -eq "cpu") { $extra = "[events]" }
         else { $extra = "[all]" }
         $S.NoSources = $false
         $src = $S.Source

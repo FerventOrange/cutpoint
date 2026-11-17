@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 # Top-level import name -> extra that provides it. fastapi, uvicorn, keyring and telemetry_parser
-# are core dependencies (the ui and keyring extras are empty aliases), so they are not here.
+# are core dependencies, so they are not here.
 MODULE_EXTRA: dict[str, str] = {
     "torch": "events",
     "torchvision": "events",
@@ -191,11 +191,20 @@ def _installed_torch_backend() -> str | None:
     return "cu126" if "+cu" in version else "cpu"
 
 
+# Extras that existed before 0.4.0 and are core dependencies now.
+_GONE_EXTRAS = ("ui", "keyring")
+
+
 def _url_hint(req: dict[str, Any], extra: str, backend: str | None) -> str:
     """``uv tool install`` from a source the installers do not install from (a fork's git
     repository, a wheel or sdist URL), with an explicit ``--torch-backend`` (``backend``, else
     that of the installed torch)."""
-    extras = {extra, *(str(e) for e in req.get("extras", []) if isinstance(e, str))}
+    # ui and keyring are no extras any more; a receipt made by an older installer may list them
+    extras = {extra, *(str(e) for e in req.get("extras", []) if isinstance(e, str))} - {
+        "",
+        *_GONE_EXTRAS,
+    }
+    spec = f"[{','.join(sorted(extras))}]" if extras else ""
     if req.get("git"):
         url = _git_url(str(req["git"]), _git_ref(str(req["git"]), req))
         why = "the installer only installs from github.com/FerventOrange/cutpoint; for this git"
@@ -205,7 +214,7 @@ def _url_hint(req: dict[str, Any], extra: str, backend: str | None) -> str:
     backend = backend or _installed_torch_backend()
     note = "" if backend else " (cu126 instead of cpu with an NVIDIA GPU)"
     return (
-        f'{why} install run: uv tool install "cutpoint[{",".join(sorted(extras))}] @ {url}" '
+        f'{why} install run: uv tool install "cutpoint{spec} @ {url}" '
         f"--torch-backend {backend or 'cpu'} --python 3.12 --reinstall --no-sources{note}"
     )
 
@@ -375,9 +384,7 @@ def _installed(name: str) -> bool:
 def extras_in_use() -> list[str]:
     """cutpoint's extras whose requirements for this platform are all installed.
 
-    ``all`` is left out (it is the others together), as are the empty alias extras (``ui``,
-    ``keyring``: their packages are core dependencies); empty when cutpoint is not
-    installed.
+    ``all`` is left out (it is the others together); empty when cutpoint is not installed.
     """
     try:
         dist = importlib.metadata.distribution("cutpoint")
