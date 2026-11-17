@@ -150,6 +150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **BREAKING:** dead code of the HUD OCR and events layers removed (#1085 batch 10, A18-A38): a HUD preset an older version saved under the ASCII-only key of a non-ASCII game name (`Café Racer` gave `caf-racer`) is no longer found, so the HUD is discovered again and saved under the new key (the old file stays, unused; a `match` hint, `--game <old key>` or renaming the file keeps it). `feed.entry` knows only `one_line` and `auto`: any other value, `paren` and `two_line` included, reads as `auto` (OCR events already cached keep their old reading until the OCR cache version changes). Discovery caches from before #815 are read again once. Discovered presets no longer write `reference`, and the OCR stats no longer write `skipped_ranges` or `decoded_s`.
 - **BREAKING:** the `ski` extra is gone (`ui`, `keyring` stay as aliases), and `--style ski` is now an ordinary unknown style with no special message.
 
 ### Security
