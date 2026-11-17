@@ -48,7 +48,6 @@ from cutpoint.config import (
     projects_dir,
     resolve_project_path,
     vision_detect_all_default,
-    vision_setting,
     visual_index_default,
 )
 from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
@@ -88,7 +87,7 @@ def _vision(a: argparse.Namespace) -> bool | None:
     """``--vision`` / ``--no-vision`` as given, else ``vision`` in config.json; None when
     neither says (rating is then off, the footage detection asks about unsure sources and camera-tagged ones
     without telemetry)."""
-    return vision_setting() if a.vision is None else a.vision
+    return get_config().vision if a.vision is None else a.vision
 
 
 def _visual_index(a: argparse.Namespace) -> bool:

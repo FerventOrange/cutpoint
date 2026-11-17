@@ -278,7 +278,7 @@ def test_sweep_of_the_prefetch_keeps_a_live_runs_proxy(tmp_path: Path) -> None:
 
     live = ffmpeg_utils.unique_tmp(tmp_path / "proxy.mp4")
     dead = tmp_path / f"proxy.{_dead_pid()}.{_host()}.deadbeef.tmp.mp4"
-    old = tmp_path / ocr_prefetch.PROXY_TMP
+    old = tmp_path / "proxy.tmp.mp4"  # the fixed name of older versions
     for p in (live, dead, old):
         p.write_bytes(b"x")
     ocr_prefetch.sweep(tmp_path)

@@ -70,7 +70,7 @@ class Config:
     player_tags: tuple[str, ...] = ()
     ollama_url: str = ""
     video_encoder: str = "auto"
-    vision: bool = False
+    vision: bool | None = None  # None: not set in config.json
     analysis_skip: tuple[str, ...] = ()
     compress_peaks: str = "off"
     export_workers: int | None = None  # None: auto
@@ -232,7 +232,7 @@ def _load_config(path: Path) -> Config:
         player_tags=tuple(t for t in tags if t.strip()),
         ollama_url=str(data.get("ollama_url") or ""),
         video_encoder=encoder,
-        vision=data.get("vision") is True,
+        vision=data.get("vision") if isinstance(data.get("vision"), bool) else None,
         analysis_skip=skip,
         compress_peaks=peaks,
         export_workers=_export_workers(path, data),
@@ -497,12 +497,6 @@ def resolve_stage_dir(data: dict) -> Path:
     return paths.env_path("STAGE_DIR") or (
         paths.absolute(configured) if configured else paths.default_stage_dir()
     )
-
-
-def vision_setting() -> bool | None:
-    """``vision`` in ``config.json`` as written (True or False), None when it is not set."""
-    value = load_config_data().get("vision")
-    return value if isinstance(value, bool) else None
 
 
 def visual_index_default() -> bool:

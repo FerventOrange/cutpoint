@@ -1337,9 +1337,11 @@ detection time, the wait for the background proxy and the spool peak, and one wi
 the background OCR, for measuring; a source with cover art or more than one video stream, or a
 drive without room for the spool and proxy, logs why at once. When Cutpoint is killed or crashes during
 the split, its ffmpeg stops at once on Windows and with ffmpeg 7 and newer; on Linux and macOS
-with ffmpeg 6.x it finishes encoding the proxy first. Either way the spool and
-`proxy.tmp.mp4` stay in the cache folder until the next `analyze` that reads the source's HUD
-OCR in the background removes them.
+with ffmpeg 6.x it finishes encoding the proxy first. Either way the spool and the temporary
+proxy (`proxy.<pid>.<host>.<random>.tmp.mp4`) stay in the cache folder until the next `analyze`
+that reads the source's HUD OCR in the background removes them. That run removes the leftovers
+of runs that are finished or dead, and the fixed `proxy.tmp.mp4` of older versions, but keeps the
+temporary proxy of a run still going, and of another computer sharing the cache.
 
 Opt-in, off by default: `CUTPOINT_ANALYZE_SCENE_OVERLAP=1` detects a source's scene cuts at the
 same time as Whisper transcribes it, instead of after it. It starts only for a source whose

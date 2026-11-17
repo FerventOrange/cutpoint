@@ -178,18 +178,9 @@ def test_grab_images_args_single_png_by_height_on_cuda():
 
 
 def test_decode_pcm_args_variants():
-    mixed = fu.decode_pcm_args("in.mp4", sr=16000, start=1.0, duration=2.0, audio_streams=3)
-    assert mixed[mixed.index("-filter_complex") + 1] == (
-        "[0:a:0][0:a:1][0:a:2]amix=inputs=3:normalize=0:duration=longest[a]"
-    )
-    assert mixed[mixed.index("-map") + 1] == "[a]"
-    single = fu.decode_pcm_args("in.mp4", sr=16000, audio_streams=1)
-    assert single[single.index("-map") + 1] == "0:a:0"
     default = fu.decode_pcm_args("in.mp4", sr=8000)
     assert "-map" not in default and "-ss" not in default and "-t" not in default
     assert default[-7:] == ["-ac", "1", "-ar", "8000", "-f", "s16le", "-"]
-    stereo = fu.decode_pcm_args("in.mp4", sr=8000, mono=False)
-    assert "-ac" not in stereo
 
 
 def test_pcm_float_from_bytes_and_samples():

@@ -3945,11 +3945,11 @@ def test_put_settings_saves_the_vision_default(
     assert res.json()["vision"] is True
     assert json.loads(cfg.read_text("utf-8")) == {"player_tags": ["Me"], "vision": True}
     assert client.get("/api/settings").json()["vision"] is True
-    assert config.vision_setting() is True
+    assert config.get_config().vision is True
 
     # Unticking removes the key (the default) instead of writing false (#919).
     assert client.put("/api/settings", json={"vision": False}).json()["vision"] is False
-    assert config.vision_setting() is None
+    assert config.get_config().vision is None
     assert json.loads(cfg.read_text("utf-8")) == {"player_tags": ["Me"]}
     assert client.put("/api/settings", json={"vision": True}).json()["vision"] is True
 
