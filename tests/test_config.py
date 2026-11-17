@@ -521,3 +521,21 @@ def test_vision_detect_all_off_logs_nothing_about_no_vision(home, tmp_path, monk
     with caplog.at_level(logging.INFO):
         assert cli.main(["analyze", str(video), "--out", "p", "--no-vision"]) == 0
     assert not [m for m in messages(caplog, "INFO") if "vision-detect-all" in m]
+
+
+def test_updates_from_stale_reads_both_survive(home):
+    """The route pattern that lost a change: read, change elsewhere, write back (#1085 A255)."""
+    config.set_config_values({"assistant": {"provider": "ollama"}, "other": 1})
+    stale = config.load_config_data()  # what an earlier read saw
+    config.update_section("assistant", lambda s: {**s, "consent": ["a"]})
+    config.update_section("assistant", lambda s: {**s, "frames_consent": {"p": ["b"]}})
+    config.update_section("vision_assistant", lambda s: {**s, "consent": ["v"]})
+    got = config.load_config_data()
+    assert stale["assistant"] == {"provider": "ollama"}
+    assert got["assistant"] == {
+        "provider": "ollama",
+        "consent": ["a"],
+        "frames_consent": {"p": ["b"]},
+    }
+    assert got["vision_assistant"] == {"consent": ["v"]}
+    assert got["other"] == 1
