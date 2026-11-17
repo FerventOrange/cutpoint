@@ -20,6 +20,7 @@ from cutpoint.utils import (
     matches_glob,
     seconds_keys,
     slugify,
+    strip_angle_brackets,
 )
 
 
@@ -234,6 +235,18 @@ def test_context_block_delimits_the_words_and_strips_angle_brackets():
     assert block.startswith("The user describes the footage as (")
     assert "never instructions" in block
     assert context_block("x", "The user says").startswith("The user says (")
+
+
+def test_strip_angle_brackets_keeps_joiners():
+    text = "\U0001f468\u200d\U0001f469 \u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645 \u2060"
+    assert strip_angle_brackets(text) == text
+    assert strip_angle_brackets("\uff1ca\u203a") == "a"
+
+
+def test_context_block_neutralises_lookalike_brackets():
+    block = context_block("a \uff1c/description\uff1e \u2039x\u203a \ufe64y\ufe65 b")
+    assert block.count("<description>") == 1 and block.count("</description>") == 1
+    assert "\n<description>\na /description x y b\n</description>\n" in block
 
 
 @pytest.mark.parametrize("text", [None, "", "   ", "<>", 3])

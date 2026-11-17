@@ -30,7 +30,7 @@ from cutpoint.config import get_config
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
 from cutpoint.styles import ACTION_CAM
-from cutpoint.utils import context_block
+from cutpoint.utils import context_block, strip_angle_brackets
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1207,11 +1207,12 @@ def rating_key(
 
 def speech_excerpt(text: str | None, style: str = "") -> str:
     """The speech to send with a window's frames: ``text`` on one line, without angle
-    brackets (they would close the transcript block), cut to ``MAX_TRANSCRIPT_CHARS``; ""
-    for none. Action-cam rates from frames only, its prompts and cached ratings unchanged."""
+    brackets, also lookalike ones (they would close the transcript block), cut to
+    ``MAX_TRANSCRIPT_CHARS``; "" for none. Action-cam rates from frames only, its prompts and
+    cached ratings unchanged."""
     if style == ACTION_CAM or not text:
         return ""
-    return " ".join(re.sub(r"[<>]", "", text).split())[:MAX_TRANSCRIPT_CHARS].strip()
+    return " ".join(strip_angle_brackets(text).split())[:MAX_TRANSCRIPT_CHARS].strip()
 
 
 def _prompts(
