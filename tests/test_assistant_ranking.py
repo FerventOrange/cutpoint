@@ -244,16 +244,15 @@ def test_no_ranking_key_without_one_in_the_project() -> None:
     assert "ranking_key" not in turn.record()
 
 
-def test_the_result_for_the_model_is_short_and_names_no_path() -> None:
+def test_the_reply_names_no_path() -> None:
     ready = {**READY, "base": "C:\\Users\\me\\projects\\p", "file": "a.mp4"}
     for payload in (ready, NOT_READY):
-        text = ranking.result(payload)
-        assert len(text) <= ranking.MAX_RESULT
+        text = ranking.reply(payload)
         assert not re.search(r"[A-Za-z]:[\\/]|/home/|/Users/", text)
-    text = ranking.result(READY)
-    assert "funny (was gaming)" in text and "1 new in the top 3" in text
-    assert "1. big laugh" in text and "x" * 41 not in text
-    assert "Analyze again" in ranking.result(NOT_READY)
+    assert (
+        ranking.reply(READY) == "Previewed the funny ranking (1 new in the top 3); the user decides"
+    )
+    assert "needs a new analysis" in ranking.reply(NOT_READY)
 
 
 # -- Q7: earlier replies made with another ranking -----------------------------------------------
@@ -449,5 +448,5 @@ def test_the_ranking_tool_leaves_room_for_a_result_inside_the_fit_limit(tokens: 
     turn = ranked_turn(tokens)
     messages = turn._messages(False)
     total = context.size(messages) + len(json.dumps(turn._tools()))
-    limit = (tokens - context.REPLY_TOKENS) * session.FIT_CHARS_PER_TOKEN
-    assert total + session.MAX_RESULT_CHARS <= limit
+    limit = (tokens - context.REPLY_TOKENS) * context.FIT_CHARS_PER_TOKEN
+    assert total + context.MAX_RESULT_CHARS <= limit

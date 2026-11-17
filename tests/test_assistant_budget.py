@@ -421,8 +421,8 @@ def test_a_prompt_leaves_room_for_a_result_inside_the_fit_limit(
     assert "look_for" in messages[0]["content"]
     tools = len(json.dumps(turn._tools()))
     total = context.size(messages) + tools + sheets * sheet_chars(provider)
-    limit = (tokens - context.REPLY_TOKENS) * session.FIT_CHARS_PER_TOKEN
-    assert total + session.MAX_RESULT_CHARS <= limit
+    limit = (tokens - context.REPLY_TOKENS) * context.FIT_CHARS_PER_TOKEN
+    assert total + context.MAX_RESULT_CHARS <= limit
 
 
 def test_at_8192_one_small_sheet_leaves_the_budget_at_its_floor() -> None:
@@ -444,14 +444,14 @@ def test_the_fit_cap_counts_the_tools_and_sheets_as_size_counts_them() -> None:
     """F13: in the fit cap a sheet takes what _fit counts it as (CHARS_PER_TOKEN), not
     FIT_CHARS_PER_TOKEN."""
     b = context.budget(20000, session.TOOLS, images=2, image_tokens=750)
-    fits = int((20000 - context.REPLY_TOKENS) * session.FIT_CHARS_PER_TOKEN)
-    fits -= int((b.tools + 2 * 750) * context.CHARS_PER_TOKEN) + session.MAX_RESULT_CHARS
+    fits = int((20000 - context.REPLY_TOKENS) * context.FIT_CHARS_PER_TOKEN)
+    fits -= int((b.tools + 2 * 750) * context.CHARS_PER_TOKEN) + context.MAX_RESULT_CHARS
     assert b.chars == fits
 
 
 def test_the_8192_budget_is_what_the_fit_allows_less_the_tools_and_one_result() -> None:
     plain = context.budget(8192)
-    assert plain.chars == int((8192 - context.REPLY_TOKENS) * session.FIT_CHARS_PER_TOKEN) - 6000
+    assert plain.chars == int((8192 - context.REPLY_TOKENS) * context.FIT_CHARS_PER_TOKEN) - 6000
     with_sheets = context.budget(8192, session.TOOLS, images=1, image_tokens=750)
     assert with_sheets.chars == int(8192 // 4 * context.CHARS_PER_TOKEN)  # the floor
     assert with_sheets.chars <= plain.chars

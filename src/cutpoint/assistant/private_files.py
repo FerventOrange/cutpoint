@@ -7,10 +7,6 @@ import stat
 from pathlib import Path
 
 
-def _error(message: str) -> OSError:
-    return PermissionError(message)
-
-
 def _posix_path(path: Path) -> Path:
     path = Path(path).absolute()
     current = Path(path.anchor)
@@ -21,7 +17,7 @@ def _posix_path(path: Path) -> Path:
         except FileNotFoundError:
             continue
         if stat.S_ISLNK(info.st_mode):
-            raise _error("unsafe private path")
+            raise PermissionError("unsafe private path")
     return path
 
 
@@ -114,7 +110,7 @@ def _windows_api():
 def _win_token_sids(ctypes, wintypes, kernel32, advapi32) -> tuple[str, str]:
     token = wintypes.HANDLE()
     if not kernel32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
-        raise _error("cannot inspect current Windows user")
+        raise PermissionError("cannot inspect current Windows user")
     try:
         sid_texts = []
         for info_class in (1, 4):  # TokenUser and TokenOwner
@@ -123,11 +119,11 @@ def _win_token_sids(ctypes, wintypes, kernel32, advapi32) -> tuple[str, str]:
             if not advapi32.GetTokenInformation(
                 token, info_class, buffer, len(buffer), ctypes.byref(needed)
             ):
-                raise _error("cannot inspect current Windows user")
+                raise PermissionError("cannot inspect current Windows user")
             sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
             sid_text = wintypes.LPWSTR()
             if not sid or not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(sid_text)):
-                raise _error("cannot identify current Windows user")
+                raise PermissionError("cannot identify current Windows user")
             try:
                 sid_texts.append(sid_text.value)
             finally:
@@ -142,7 +138,7 @@ def _win_owner_needs_normalization(owner_sid: str, user_sid: str, token_owner_si
         return False
     if owner_sid == token_owner_sid:
         return True
-    raise _error("private Windows path has a different owner")
+    raise PermissionError("private Windows path has a different owner")
 
 
 def _win_verify_dacl(
@@ -160,7 +156,7 @@ def _win_verify_dacl(
         ctypes.byref(descriptor),
     )
     if status or not descriptor:
-        raise _error("cannot verify private Windows permissions")
+        raise PermissionError("cannot verify private Windows permissions")
     try:
         control, revision = wintypes.WORD(), wintypes.DWORD()
         present, defaulted = wintypes.BOOL(), wintypes.BOOL()
@@ -180,32 +176,31 @@ def _win_verify_dacl(
             or not present.value
             or not dacl.value
         ):
-            raise _error("private Windows permissions were not applied")
+            raise PermissionError("private Windows permissions were not applied")
         base = dacl.value
         acl_size = ctypes.cast(base + 2, ctypes.POINTER(wintypes.WORD))[0]
         if ctypes.cast(base + 4, ctypes.POINTER(wintypes.WORD))[0] != 1 or acl_size < 16:
-            raise _error("private Windows permissions were not applied")
+            raise PermissionError("private Windows permissions were not applied")
         offset = 8
-        for expected_flags in (3 if directory else 0,):
-            flags = ctypes.cast(base + offset + 1, ctypes.POINTER(ctypes.c_ubyte))[0]
-            size = ctypes.cast(base + offset + 2, ctypes.POINTER(wintypes.WORD))[0]
-            mask = ctypes.cast(base + offset + 4, ctypes.POINTER(wintypes.DWORD))[0]
-            ace_sid = wintypes.LPWSTR()
-            if (
-                flags != expected_flags
-                or mask != 0x1F01FF
-                or ctypes.cast(base + offset, ctypes.POINTER(ctypes.c_ubyte))[0] != 0
-                or size < 16
-                or offset + size > acl_size
-                or not advapi32.ConvertSidToStringSidW(base + offset + 8, ctypes.byref(ace_sid))
-            ):
-                raise _error("private Windows permissions were not applied")
-            try:
-                if ace_sid.value != sid:
-                    raise _error("private Windows permissions were not applied")
-            finally:
-                kernel32.LocalFree(ctypes.cast(ace_sid, ctypes.c_void_p))
-            offset += size
+        expected_flags = 3 if directory else 0
+        flags = ctypes.cast(base + offset + 1, ctypes.POINTER(ctypes.c_ubyte))[0]
+        size = ctypes.cast(base + offset + 2, ctypes.POINTER(wintypes.WORD))[0]
+        mask = ctypes.cast(base + offset + 4, ctypes.POINTER(wintypes.DWORD))[0]
+        ace_sid = wintypes.LPWSTR()
+        if (
+            flags != expected_flags
+            or mask != 0x1F01FF
+            or ctypes.cast(base + offset, ctypes.POINTER(ctypes.c_ubyte))[0] != 0
+            or size < 16
+            or offset + size > acl_size
+            or not advapi32.ConvertSidToStringSidW(base + offset + 8, ctypes.byref(ace_sid))
+        ):
+            raise PermissionError("private Windows permissions were not applied")
+        try:
+            if ace_sid.value != sid:
+                raise PermissionError("private Windows permissions were not applied")
+        finally:
+            kernel32.LocalFree(ctypes.cast(ace_sid, ctypes.c_void_p))
     finally:
         kernel32.LocalFree(descriptor)
 
@@ -227,7 +222,7 @@ def _win_check_ancestors(path: Path) -> None:
         if handle == wintypes.HANDLE(-1).value:
             if ctypes.get_last_error() in (2, 3):
                 break
-            raise _error("cannot safely inspect private path")
+            raise PermissionError("cannot safely inspect private path")
 
         class _Info(ctypes.Structure):
             _fields_ = (
@@ -249,9 +244,9 @@ def _win_check_ancestors(path: Path) -> None:
         try:
             info = _Info()
             if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
-                raise _error("cannot safely inspect private path")
+                raise PermissionError("cannot safely inspect private path")
             if info.attributes & 0x400 or not info.attributes & 0x10:
-                raise _error("unsafe private path")
+                raise PermissionError("unsafe private path")
         finally:
             kernel32.CloseHandle(handle)
 
@@ -271,7 +266,7 @@ def _win_open(path: Path, directory: bool):
     if handle == wintypes.HANDLE(-1).value:
         if ctypes.get_last_error() in (2, 3):
             raise FileNotFoundError("private path no longer exists")
-        raise _error("cannot safely open private path")
+        raise PermissionError("cannot safely open private path")
 
     class _Info(ctypes.Structure):
         _fields_ = (
@@ -293,11 +288,11 @@ def _win_open(path: Path, directory: bool):
     try:
         info = _Info()
         if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
-            raise _error("cannot inspect private path")
+            raise PermissionError("cannot inspect private path")
         if info.attributes & 0x400 or bool(info.attributes & 0x10) != directory:
-            raise _error("unsafe private path type")
+            raise PermissionError("unsafe private path type")
         if not directory and info.links != 1:
-            raise _error("unsafe private file link count")
+            raise PermissionError("unsafe private file link count")
         sid, token_owner_sid = _win_token_sids(ctypes, wintypes, kernel32, advapi32)
         descriptor = ctypes.c_void_p()
         if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -306,7 +301,7 @@ def _win_open(path: Path, directory: bool):
             ctypes.byref(descriptor),
             None,
         ):
-            raise _error("cannot create private Windows permissions")
+            raise PermissionError("cannot create private Windows permissions")
         try:
             dacl = ctypes.c_void_p()
             present, defaulted = wintypes.BOOL(), wintypes.BOOL()
@@ -316,7 +311,7 @@ def _win_open(path: Path, directory: bool):
                 )
                 or not present.value
             ):
-                raise _error("cannot create private Windows permissions")
+                raise PermissionError("cannot create private Windows permissions")
 
             current_owner = ctypes.c_void_p()
             sd = ctypes.c_void_p()
@@ -324,11 +319,11 @@ def _win_open(path: Path, directory: bool):
                 handle, 1, 1, ctypes.byref(current_owner), None, None, None, ctypes.byref(sd)
             )
             if status:
-                raise _error("cannot inspect private Windows owner")
+                raise PermissionError("cannot inspect private Windows owner")
             try:
                 owner_string = wintypes.LPWSTR()
                 if not advapi32.ConvertSidToStringSidW(current_owner, ctypes.byref(owner_string)):
-                    raise _error("cannot inspect private Windows owner")
+                    raise PermissionError("cannot inspect private Windows owner")
                 try:
                     normalize_owner = _win_owner_needs_normalization(
                         owner_string.value, sid, token_owner_sid
@@ -341,13 +336,13 @@ def _win_open(path: Path, directory: bool):
             if normalize_owner:
                 owner_sid = ctypes.c_void_p()
                 if not advapi32.ConvertStringSidToSidW(sid, ctypes.byref(owner_sid)):
-                    raise _error("cannot identify current Windows user")
+                    raise PermissionError("cannot identify current Windows user")
                 try:
                     status = advapi32.SetSecurityInfo(
                         handle, 1, 0x00000001, owner_sid, None, None, None
                     )
                     if status:
-                        raise _error("cannot set private Windows owner")
+                        raise PermissionError("cannot set private Windows owner")
                 finally:
                     kernel32.LocalFree(owner_sid)
                 final_owner = ctypes.c_void_p()
@@ -356,16 +351,16 @@ def _win_open(path: Path, directory: bool):
                     handle, 1, 1, ctypes.byref(final_owner), None, None, None, ctypes.byref(sd)
                 )
                 if status:
-                    raise _error("cannot verify private Windows owner")
+                    raise PermissionError("cannot verify private Windows owner")
                 try:
                     final_owner_string = wintypes.LPWSTR()
                     if not advapi32.ConvertSidToStringSidW(
                         final_owner, ctypes.byref(final_owner_string)
                     ):
-                        raise _error("cannot verify private Windows owner")
+                        raise PermissionError("cannot verify private Windows owner")
                     try:
                         if final_owner_string.value != sid:
-                            raise _error("private Windows path has a different owner")
+                            raise PermissionError("private Windows path has a different owner")
                     finally:
                         kernel32.LocalFree(ctypes.cast(final_owner_string, ctypes.c_void_p))
                 finally:
@@ -381,7 +376,7 @@ def _win_open(path: Path, directory: bool):
                 None,
             )
             if status:
-                raise _error("cannot protect private Windows path")
+                raise PermissionError("cannot protect private Windows path")
             _win_verify_dacl(handle, directory, sid, ctypes, wintypes, kernel32, advapi32)
         finally:
             kernel32.LocalFree(descriptor)
@@ -405,17 +400,17 @@ def private_directory(path: Path) -> None:
         except OSError:
             raise
         except Exception:  # noqa: BLE001 - sanitize unexpected native API failures.
-            raise _error("cannot protect private Windows directory") from None
+            raise PermissionError("cannot protect private Windows directory") from None
         return
     path = _posix_path(path)
     if not hasattr(os, "O_NOFOLLOW"):
-        raise _error("safe private paths are unsupported")
+        raise PermissionError("safe private paths are unsupported")
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | os.O_NOFOLLOW
     fd = os.open(path, flags)
     try:
         if not stat.S_ISDIR(os.fstat(fd).st_mode):
-            raise _error("unsafe private directory")
+            raise PermissionError("unsafe private directory")
         os.fchmod(fd, 0o700)
     finally:
         os.close(fd)
@@ -433,16 +428,16 @@ def private_file(path: Path) -> None:
         except OSError:
             raise
         except Exception:  # noqa: BLE001 - sanitize unexpected native API failures.
-            raise _error("cannot protect private Windows file") from None
+            raise PermissionError("cannot protect private Windows file") from None
         return
     path = _posix_path(path)
     if not hasattr(os, "O_NOFOLLOW"):
-        raise _error("safe private paths are unsupported")
+        raise PermissionError("safe private paths are unsupported")
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise _error("unsafe private file")
+            raise PermissionError("unsafe private file")
         os.fchmod(fd, 0o600)
     finally:
         os.close(fd)

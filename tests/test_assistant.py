@@ -267,7 +267,7 @@ def test_auto_model_is_qwen3_5_if_pulled_else_the_vision_model(
     monkeypatch.setattr(providers.requests, "get", get)
     monkeypatch.setattr(providers.requests, "post", lambda *a, **k: _Resp({"capabilities": []}))
     p = providers.OllamaProvider("http://h:1", configured, 8192)
-    assert p.model == (configured or providers.AUTO_MODEL)
+    assert p.model == (configured or providers.DEFAULT_OLLAMA_MODEL)
     p.capabilities()
     assert p.resolve_model() == p.model == want
     assert asked == ([] if configured else ["http://h:1/api/tags"])
@@ -276,7 +276,7 @@ def test_auto_model_is_qwen3_5_if_pulled_else_the_vision_model(
 @pytest.mark.parametrize(
     ("section", "want"),
     [
-        (None, ("http://127.0.0.1:11434", providers.AUTO_MODEL, 50000)),
+        (None, ("http://127.0.0.1:11434", providers.DEFAULT_OLLAMA_MODEL, 50000)),
         (
             {"model": "llama3.1:8b", "url": "box:11434", "context_tokens": 16384},
             ("http://box:11434", "llama3.1:8b", 16384),
@@ -468,7 +468,7 @@ def test_a_long_tool_result_is_cut_at_a_row_and_keeps_its_end_marker() -> None:
     fake.context_tokens = 128_000  # room for the whole result
     run(fake, proj=proj)
     sent = fake.requests[1]["messages"][-1]["content"]
-    assert len(sent) <= session.MAX_RESULT_CHARS
+    assert len(sent) <= context.MAX_RESULT_CHARS
     block, note = sent.split("\n<<<END DATA>>>\n")
     rows = block.split("\n")[1:]  # after "<<<DATA moments>>>"
     assert rows and all(json.loads(r)["label"].endswith("x") for r in rows)  # whole rows only

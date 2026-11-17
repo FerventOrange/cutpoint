@@ -24,9 +24,6 @@ JSON_TOOL = f"{NAME} {{style, reason?}}"
 MAX_STYLES = 30  # styles offered (built-ins first, as the library lists them)
 NOTE_CHARS = 60  # of a saved style's description
 MAX_REASON = 200
-MAX_RESULT = 800  # characters of the result text
-TOP_LABELS = 3  # labels the result names
-LABEL_CHARS = 40
 # One short note per built-in style (docs/configuration.md, Styles)
 STYLE_NOTES = {
     "gaming": "loudness and hype words",
@@ -147,30 +144,6 @@ def _new_in_top(payload: Mapping[str, Any]) -> tuple[int, int]:
     n = len(top)
     new = sum(1 for r in top if not isinstance(r.get("was"), int) or r["was"] > n)
     return new, n
-
-
-def result(payload: Mapping[str, Any]) -> str:
-    """The tool result for the model: what the card shows, in a few lines (file names and
-    labels only, never a path)."""
-    style, was = payload.get("style"), payload.get("from") or "unknown"
-    if not payload.get("ready"):
-        then = (
-            "the user was offered Analyze again"
-            if payload.get("can_analyze")
-            else "the user was told to reconnect the footage"
-        )
-        why = str(payload.get("message") or "")[:400]
-        return f"{style} needs a new analysis ({why}); {then}."[:MAX_RESULT]
-    new, n = _new_in_top(payload)
-    labels = []
-    for r in (payload.get("top") or [])[:TOP_LABELS]:
-        if isinstance(r, Mapping):
-            labels.append(f"{r.get('rank')}. {str(r.get('label') or '')[:LABEL_CHARS]}")
-    text = (
-        f"Preview shown: {style} (was {was}), {new} new in the top {n}; top {len(labels)}: "
-        f"{'; '.join(labels)}. The user decides with Use this ranking."
-    )
-    return text[:MAX_RESULT]
 
 
 def reply(event: Mapping[str, Any]) -> str:

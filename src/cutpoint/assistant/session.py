@@ -54,8 +54,6 @@ from cutpoint.assistant.topup import kind_groups, top_up
 logger = logging.getLogger(__name__)
 
 MAX_ROUNDS = 8  # model replies in one turn (plus one if the closing round is asked again)
-FIT_CHARS_PER_TOKEN = context.FIT_CHARS_PER_TOKEN
-MAX_RESULT_CHARS = context.MAX_RESULT_CHARS
 MAX_TEXT = 2000  # characters of a user message
 MAX_SUMMARY = 500
 MAX_SUGGESTIONS = 4
@@ -878,7 +876,9 @@ class Turn:
                 if final:
                     self._finish("done")
                     return
-                result = context.cut_result(result, MAX_RESULT_CHARS)  # a data block keeps its end
+                result = context.cut_result(
+                    result, context.MAX_RESULT_CHARS
+                )  # a data block keeps its end
                 if json_mode:
                     sent = {"role": "user", "content": f"{call.name} result:\n{result}"}
                 else:
@@ -965,7 +965,7 @@ class Turn:
         """Leave out the oldest tool results until the conversation, the tool definitions and
         room for a reply fit the context (``tight``: all but the latest). The system messages,
         the user's messages and the latest result stay. True if a result was left out."""
-        limit = (self.provider.context_tokens - context.REPLY_TOKENS) * FIT_CHARS_PER_TOKEN
+        limit = (self.provider.context_tokens - context.REPLY_TOKENS) * context.FIT_CHARS_PER_TOKEN
         total = context.size(messages) + (0 if json_mode else len(json.dumps(self._tools())))
         left = False
         for msg in self._results[:-1]:
@@ -1446,7 +1446,7 @@ class Turn:
             suggestions.append(self._numbered("s", label.strip()[:80], checked))
         event = {"kind": "proposal", **self._numbered("p", summary.strip(), main)}
         self._emit({**event, "suggestions": suggestions})
-        return "proposal shown to the user", True
+        return "", True
 
     def _tool_preview_ranking(self, args: dict[str, Any]) -> tuple[str, bool]:
         """Show the page's preview card of the moments ranked in ``style`` (the user applies it
@@ -1496,7 +1496,7 @@ class Turn:
                 False,
             )
         self._emit({"kind": "ranking", **payload, "reason": reason})
-        return ranking.result(payload), True
+        return "", True
 
     @staticmethod
     def _reserve(summary: str, main: dict[str, Any]) -> tuple[str, str]:

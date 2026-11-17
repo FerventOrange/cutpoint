@@ -463,7 +463,7 @@ class Viewer:
         lines += ["transcript:", *(said or ["(no transcript lines)"])]
         sounds = heard(self.events(), source, start, end)
         lines += ["heard:", *(sounds or ["(no detected sounds)"])]
-        # the note first: a long result is cut at session.MAX_RESULT_CHARS
+        # the note first: a long result is cut at context.MAX_RESULT_CHARS
         note = f"The timeline sheet of {short} follows as an image.\n"
         text = note + context.data_block("moment view", "\n".join(lines))
         event = {"kind": "tool", "name": NAME, "id": real, "frames": len(times), "cached": cached}
