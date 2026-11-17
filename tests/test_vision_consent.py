@@ -756,6 +756,26 @@ def test_the_ui_consent_route_unlocks_a_remote_ollama_for_the_rater(home) -> Non
     assert vision.VisionRater().consent_needed is None
 
 
+def test_two_consents_in_a_row_both_persist(home) -> None:
+    """Vision then AI Chat consent: the second save keeps the first (#1085 A255)."""
+    set_config(
+        home,
+        vision_assistant={"provider": "ollama", "url": REMOTE},
+        assistant={"provider": "ollama", "url": REMOTE},
+    )
+    want = {"vision": KEY, "assistant": "assistant-v3:ollama@10.0.0.5:11434"}
+    app = ui.create_app(8765)
+    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+        client.headers["X-Cutpoint-Token"] = app.state.token
+        for role, key in want.items():
+            res = client.post("/api/assistant/consent", json={"role": role, "key": key})
+            assert res.status_code == 200, res.text
+    saved = json.loads((home / "config.json").read_text("utf-8"))
+    assert saved["vision_assistant"]["consent"] == [want["vision"]]
+    assert saved["assistant"]["consent"] == [want["assistant"]]
+    assert saved["assistant"]["url"] == REMOTE
+
+
 # -- unload_ollama (the events run frees the GPU first) ---------------------------------------
 
 
