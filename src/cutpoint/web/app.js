@@ -38,8 +38,7 @@ const FILTERS_KEY = 'cutpoint.momentFilters';
 // localStorage: the Export & Assembly Options the user changed, by option ({link: false, ...}); the rest keep their defaults
 const OPTS_KEY = 'cutpoint.exportOptions';
 // Export & Assembly Options for a viewer who changed none; Compress peaks starts from config.json's
-// compress_peaks when it sets one, else Light. Speech-aware cuts and Smart tails were one Smart edges
-// box before: a stored smart_edges is the default of both.
+// compress_peaks when it sets one, else Light.
 const OPT_DEFAULTS = {
   vertical: false, captions: false, speech_aware: true, smart_tail: true, loudnorm: true, link: true,
   transition: 'cut', audio_transition: 'cut', compress_peaks: 'light',
@@ -6932,7 +6931,6 @@ function renderLogins() {
     if (starting) {
       badgeText = 'Starting the proxy…';
     } else if (wait) {
-      badgeClass = 'disconnected';
       badgeText = 'Waiting for browser…';
     } else if (l.logged_in) {
       if (l.expired) {
@@ -7335,9 +7333,7 @@ async function saveModels() {
   status.className = 'hint ok';
   status.textContent = 'Models saved successfully.';
   if (st.assistant_note) status.textContent += ` ${st.assistant_note}`;
-  if (st.vision_note) status.textContent += ` ${st.vision_note}`;
   if (st.assistant_check) err.textContent = `Assistant notice: ${st.assistant_check}`;
-  if (st.vision_check) err.textContent += ` Vision notice: ${st.vision_check}`;
 
   if (S.id) loadAssistant();
 }
@@ -7868,7 +7864,7 @@ function initSideTabs() {
   } catch {
     // storage blocked: start on the first tab
   }
-  const initial = tabs.find((t) => t.dataset.tab === saved) ?? tabs[0]; // a stored tab that is gone (the old Export tab) starts the first
+  const initial = tabs.find((t) => t.dataset.tab === saved) ?? tabs[0]; // an unknown stored tab starts the first
   select(initial);
   for (const t of tabs) t.addEventListener('click', () => select(t));
   exportBtn.addEventListener('click', () => {
@@ -8086,10 +8082,8 @@ function initExportOptions() {
     }
   };
   const checks = { vertical: '#optVertical', captions: '#optCaptions', speech_aware: '#optSpeech', smart_tail: '#optTail', loudnorm: '#optLoudnorm', link: '#optLink' };
-  const edges = typeof saved.smart_edges === 'boolean' ? saved.smart_edges : undefined; // the old Smart edges box
   for (const [key, id] of Object.entries(checks)) {
-    const was = typeof saved[key] === 'boolean' ? saved[key] : key === 'speech_aware' || key === 'smart_tail' ? edges : undefined;
-    $(id).checked = was ?? OPT_DEFAULTS[key];
+    $(id).checked = typeof saved[key] === 'boolean' ? saved[key] : OPT_DEFAULTS[key];
     $(id).addEventListener('change', (e) => {
       store(key, e.target.checked);
       if (key === 'link') syncAudio();

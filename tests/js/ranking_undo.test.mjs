@@ -64,7 +64,7 @@ test('Undo posts {base}, shows Undoing ranking…, disabled, then reloads and an
   const gate = new Promise((r) => { release = r; });
   const m = await open(t, {
     project: proj('funny', { action: 'undo', style: 'gaming' }),
-    routes: { [`POST ${U}`]: async () => { await gate; return { action: 'undo', style: 'gaming', from: 'funny', key: 'k3' }; } },
+    routes: { [`POST ${U}`]: async () => { await gate; return { action: 'undo' }; } },
   });
   m.link().click();
   await m.page.settle();
@@ -87,7 +87,7 @@ test('Undo posts {base}, shows Undoing ranking…, disabled, then reloads and an
 test('Redo posts the new key and announces the ranking in use again', async (t) => {
   const m = await open(t, {
     project: proj('gaming', { action: 'redo', style: 'funny' }),
-    routes: { [`POST ${U}`]: { action: 'redo', style: 'funny', from: 'gaming', key: 'k3' } },
+    routes: { [`POST ${U}`]: { action: 'redo' } },
   });
   m.state.project = proj('funny', { action: 'undo', style: 'gaming' }, { ranking_key: 'k3' });
   m.link().click();
@@ -159,7 +159,7 @@ test('the In-use card has an Undo button only while the action is undo, with its
 test('Undo from the card posts {base}, announces in the chat live region, and the card turns Stale', async (t) => {
   const m = await open(t, {
     project: proj('funny', { action: 'undo', style: 'gaming' }),
-    routes: { [`POST ${U}`]: { action: 'undo', style: 'gaming', from: 'funny', key: 'k3' } },
+    routes: { [`POST ${U}`]: { action: 'undo' } },
   });
   m.state.project = proj('gaming', { action: 'redo', style: 'funny' }, { ranking_key: 'k3' });
   m.cardUndo().click();
@@ -176,7 +176,7 @@ test('the card Undo shows Undoing… and disables the card while the route works
   const gate = new Promise((r) => { release = r; });
   const m = await open(t, {
     project: proj('funny', { action: 'undo', style: 'gaming' }),
-    routes: { [`POST ${U}`]: async () => { await gate; return { action: 'undo', style: 'gaming', from: 'funny', key: 'k3' }; } },
+    routes: { [`POST ${U}`]: async () => { await gate; return { action: 'undo' }; } },
   });
   m.cardUndo().click();
   await m.page.settle();

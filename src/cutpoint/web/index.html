@@ -6,7 +6,7 @@
   <title>cutpoint</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23f3bd60'/%3E%3Cpath d='M6 4v8l6-4z' fill='%23222'/%3E%3C/svg%3E">
   <!-- Settings > Theme (#445): set before the stylesheet paints, so a saved Light or Blue never flashes Graphite, the
-       default. The old Dark theme is Graphite now: its stored choice is dropped. -->
+       default. Any other stored value is Graphite and is dropped. -->
   <script>try { const t = localStorage.getItem('cutpoint.theme'); if (t === 'light' || t === 'blue') document.documentElement.dataset.theme = t; else if (t) localStorage.removeItem('cutpoint.theme'); } catch {}</script>
   <link rel="stylesheet" href="app.css">
   <script type="module" src="app.js"></script>
@@ -178,7 +178,7 @@
             </div>
           </div>
           <div class="cut-roll">
-            <p class="cut-roll-head"><b id="cutRollTitle">Roll the cut</b> <span id="cutRollHint" class="muted"></span></p>
+            <p class="cut-roll-head"><b>Roll the cut</b> <span id="cutRollHint" class="muted"></span></p>
             <div id="cutTrack" class="cut-track">
               <div id="cutSideA" class="cut-side a" aria-hidden="true">
                 <svg class="cut-wave" viewBox="0 0 1 100" preserveAspectRatio="none"><path></path></svg>
@@ -323,7 +323,7 @@
         <ol id="seqList" class="seq-list"></ol>
         <!-- the total of the exported lengths; with a target length set, against that target -->
         <div id="seqFoot" class="seq-foot" hidden>
-          <button type="button" id="seqTotal" class="seq-total tc" aria-expanded="false" aria-controls="seqTargetForm"></button>
+          <button type="button" id="seqTotal" class="tc" aria-expanded="false" aria-controls="seqTargetForm"></button>
           <span id="seqTarget" class="seq-target"></span>
           <div id="seqBar" class="seq-meter" hidden><div id="seqBarFill"></div></div>
           <!-- a guide for the bar, saved with the project in ui/review.json; never exported and it cuts nothing -->
@@ -520,7 +520,7 @@
         <!-- One-click presets: cutpoint edit --kind in the project's own style, with Vertical and Compress Audio Peaks above (#462) -->
         <fieldset class="panel opts presets" id="presetPanel">
           <legend>One-Click Edit <span class="tag pool" id="presetExp">Experimental</span></legend>
-          <p id="presetNote" class="hint">Picks and joins moments without your review. Use the sequence for a finished edit.</p>
+          <p class="hint">Picks and joins moments without your review. Use the sequence for a finished edit.</p>
           <div class="opt-grid">
             <label for="optKind" title="What cutpoint edit makes from the analysis, in one run: the best moments as clips, then the final video (--kind). Highlights: up to 3 minutes, chronological, with fades. Montage: up to 60 seconds, best first, with fades. Clips: the 10 best, hard cuts. Funny moments: 8, chronological, with burned-in captions. Uses Vertical 9:16 and Compress Audio Peaks.">Preset</label>
             <select id="optKind" aria-describedby="dKind">
@@ -815,7 +815,7 @@
           <p id="anDescribeWhy" class="hint"></p>
           <button type="button" class="btn small" id="anDescribeBtn">Apply</button>
         </div>
-        <div id="visionBox" class="refine-box">
+        <div class="refine-box">
           <button type="button" class="btn" id="anVisionBtn" aria-describedby="dAnVision anVisionWhy">Look closer with vision</button>
           <p id="dAnVision" class="hint">A vision model watches the top moments, adds what it sees and re-ranks.</p>
           <p id="anVisionWhy" class="hint"></p>

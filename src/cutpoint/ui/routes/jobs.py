@@ -330,10 +330,8 @@ def start_job(request: Request, pid: str, body: dict[str, Any]):
         extend_start = _seconds(body, "extend_start", MAX_EXTEND_S)
         extend_end = _seconds(body, "extend_end", MAX_EXTEND_S)
         vertical = _flag(body, "vertical")
-        # Smart edges (older pages) is both; each of its halves can be sent on its own.
-        smart = _flag(body, "smart_edges")
-        speech = _flag({"speech_aware": smart, **body}, "speech_aware")
-        tails = _flag({"smart_tail": smart, **body}, "smart_tail")
+        speech = _flag(body, "speech_aware")
+        tails = _flag(body, "smart_tail")
         event_tails = body.get("event_tails", "auto")
         if not isinstance(event_tails, str) or event_tails not in EVENT_TAILS:
             raise bad("event_tails must be 'auto', 'on' or 'off'")
@@ -428,7 +426,7 @@ def start_job(request: Request, pid: str, body: dict[str, Any]):
         transition = body.get("transition", "cut")
         if transition not in ("cut", "fade"):
             raise bad("transition must be 'cut' or 'fade'")
-        # Old pages send none: the audio follows the video, as before
+        # the page always sends it; the default makes the audio follow the video
         audio_transition = body.get("audio_transition", default_audio_transition(transition))
         if audio_transition not in AUDIO_TRANSITIONS:
             raise bad("audio_transition must be 'cut' or 'crossfade'")

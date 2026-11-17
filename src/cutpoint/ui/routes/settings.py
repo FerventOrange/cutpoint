@@ -187,9 +187,6 @@ def put_settings(request: Request, body: dict[str, Any]):
                 out["assistant_note"] = ai_providers.check_note(provider)
         except (ValueError, TypeError) as err:  # another invalid value in config.json
             out["assistant_check"] = str(err)
-    if vision_ast is not None:
-        out["vision_note"] = None
-        out["vision_check"] = None
     return out
 
 
@@ -292,12 +289,10 @@ def assistant_models(
             p = (ai_providers.make_vision if role == "vision" else ai_providers.make)(settings)
         elif provider in ai_providers.PRESETS:
             p = ai_providers.preset(provider, settings.context_tokens)
-        elif provider in cliproxy.PROVIDERS:
+        else:  # a subscription provider, checked above
             p = ai_providers.make(
                 AssistantSettings(provider=provider, context_tokens=settings.context_tokens)
             )
-        else:
-            raise bad(f"unknown provider {provider}")
     except (ValueError, TypeError) as err:  # a bad Ollama port, an invalid config.json
         raise bad(str(err), 409) from err
     if ai_providers.is_subscription(p) and (why := proxy_error(app, logged_in_only=True)):

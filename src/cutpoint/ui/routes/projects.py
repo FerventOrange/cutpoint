@@ -34,7 +34,7 @@ from cutpoint.ui.analysis import (
     ui_styles,
 )
 from cutpoint.ui.common import BUSY_TEXT, MAX_KEPT_NAMES, UI_DIR, _suggest_lock, bad, logger
-from cutpoint.ui.files import _highlights, _inside, _load, _own, _read_locked, _ui_folder, read_meta
+from cutpoint.ui.files import _highlights, _load, _own, _read_locked, _ui_folder, read_meta
 from cutpoint.ui.picker import folder_opener
 from cutpoint.ui.projects import (
     DELETING,
@@ -65,7 +65,7 @@ from cutpoint.ui.projects import (
     validate_joins,
     validate_segments,
 )
-from cutpoint.ui.ranking import RERANK_BACKUP, PlainJSON, ranking_key, ranking_undo_view
+from cutpoint.ui.ranking import PlainJSON, ranking_key, ranking_undo_view
 from cutpoint.ui.routes.shared import pano_views, url, window_url
 
 owned = APIRouter()
@@ -264,10 +264,8 @@ def get_project(request: Request, pid: str):
         "run": last_run,
         # a run holds the project now (this server's own job too): the page says to wait
         "busy": project_busy(p, last_run),
-        # the key of highlights.json a ranking preview is applied against (#902), and
-        # whether a ranking applied here or by `cutpoint rerank` kept the one before
+        # the key of highlights.json a ranking preview is applied against (#902)
         "ranking_key": ranking_key(p),
-        "rerank_backup": _inside(p, RERANK_BACKUP) and (p / RERANK_BACKUP).is_file(),
         # Undo (or Redo) of the last ranking change: {action, style}, null when the backup
         # does not match the current analysis (ranking_undo_view)
         "ranking_undo": ranking_undo_view(p, meta),

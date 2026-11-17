@@ -341,12 +341,8 @@ class Media:
             self.proxies.get((project, key), ""), "needs-proxy"
         ), None
 
-    def cached_status(self, project: Path, path: str) -> str:
-        """As :meth:`status`, or "unknown" while ``path`` is not probed yet; never runs ffprobe."""
-        return self.cached_view(project, path)[0]
-
     def cached_view(self, project: Path, path: str) -> tuple[str, bool, float | None]:
-        """``(cached_status, the source plays from a proxy, share of its whole proxy encoded or
+        """``(the cached status, the source plays from a proxy, share of its whole proxy encoded or
         None while that is not encoding)``; never runs ffprobe."""
         key = self.key(remap_source(path))
         if key is not None and key not in self.probed:

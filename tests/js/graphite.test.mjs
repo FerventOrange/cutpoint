@@ -20,11 +20,10 @@ const theme = (page) => page.document.documentElement.dataset.theme;
 
 // ---- theme ----
 
-test('themeFromStored: Graphite is the default; Light and Blue are kept; a stored "dark" is Graphite', () => {
+test('themeFromStored: Graphite is the default; Light and Blue are kept; an unknown value is Graphite', () => {
   assert.deepEqual([null, undefined, '', 'graphite', 'dark', 'nope'].map(u.themeFromStored), Array(6).fill('graphite'));
   assert.equal(u.themeFromStored('light'), 'light');
   assert.equal(u.themeFromStored('blue'), 'blue');
-  assert.deepEqual([...u.THEMES], ['graphite', 'light', 'blue']);
 });
 
 test('no saved theme boots as Graphite: no data-theme, the select says so and offers Graphite, Light, Blue', async (t) => {
@@ -35,7 +34,7 @@ test('no saved theme boots as Graphite: no data-theme, the select says so and of
   assert.deepEqual([...sel.options].map((o) => o.value), ['graphite', 'light', 'blue']);
 });
 
-test('a saved "dark" becomes Graphite and its key is dropped', async (t) => {
+test('a saved unknown theme ("dark" once existed) becomes Graphite and its key is dropped', async (t) => {
   const page = await open(t, { storage: { 'cutpoint.theme': 'dark' } });
   assert.equal(theme(page), undefined);
   assert.equal(page.document.querySelector('#setTheme').value, 'graphite');
@@ -519,7 +518,7 @@ test('a row drags as a whole except from its checkbox and buttons, and shows no 
   assert.equal(row.querySelector('.prep'), null, 'no "Ready" text or badge unless a clip is not ready');
 });
 
-test('a stored Export tab from before Export left the tabs starts on Sequence and is forgotten', async (t) => {
+test('an unknown stored tab starts on Sequence and is forgotten', async (t) => {
   const page = await open(t, { storage: { 'cutpoint.sideTab': 'export' } });
   const d = page.document;
   assert.equal(d.querySelector('#tabSequence').getAttribute('aria-selected'), 'true');
