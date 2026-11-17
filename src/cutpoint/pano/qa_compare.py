@@ -135,23 +135,24 @@ def load_report(path: Path) -> dict[str, Any]:
 
     Raises:
         FileNotFoundError: If ``path`` is not a file.
-        ValueError: If it is not a QA report.
+        ValueError: If it is not a QA report, or one written by an older ``360 qa``
+            (thresholds without ``edge_side_min_area``).
     """
     if not path.is_file():
         raise FileNotFoundError(f"QA report not found: {path}")
     rep = cache.read_json(path)
     if not isinstance(rep, dict) or "clips" not in rep or "mode" not in rep:
         raise ValueError(f"{path}: not a 360 qa report (qa.json)")
+    th = rep.get("thresholds")
+    if isinstance(th, dict) and "edge_side_min_area" not in th:
+        raise ValueError(f"{path}: written by an older cutpoint 360 qa; run 360 qa again")
     return rep
 
 
 def thresholds(report: dict[str, Any]) -> Q.QAThresholds:
-    """The report's thresholds (keys this version does not know are left out; a report
-    without ``edge_side_min_area`` used its ``edge_min_area`` at the sides too)."""
+    """The report's thresholds (keys this version does not know are left out)."""
     known = {f.name for f in fields(Q.QAThresholds)}
     got = {k: v for k, v in (report.get("thresholds") or {}).items() if k in known}
-    if "edge_min_area" in got:
-        got.setdefault("edge_side_min_area", got["edge_min_area"])
     return Q.QAThresholds(**got)
 
 

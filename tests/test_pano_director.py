@@ -28,6 +28,84 @@ FWD_V = [0.0, -1.0, 0.0]  # camera ray far from the wearer cone
 N = 12  # view frames, every 1.2 s
 
 
+def legacy_params() -> D.DirectorParams:
+    """The settings every path used before the direction-quality work (A/B baseline).
+
+    Pinned here, not taken from the defaults, so it stays the same when they change (the
+    ``legacy`` edge rule, ``framing="bin"`` and ``people_size="close"`` stay reachable through
+    ``--param`` / ``pano.director``). It covers the parameters only: the ``follow`` kind tweak (:data:`KIND_TWEAKS`,
+    added with the penalties) did not exist before, so a ``follow`` moment gets
+    w_people 1.2 / w_forward 0.5 / no selfie even with these settings (older
+    paths treated it as an unknown kind, no tweak). ``framing="bin"`` keeps the
+    bin-centre path (no subject tracking, fitted FOV, safe-area pass or
+    segment-edge shot rule).
+    """
+    return D.DirectorParams(
+        dt=0.5,
+        n_bins=36,
+        w_people=1.0,
+        w_group=0.35,
+        w_beauty=0.3,
+        w_forward=0.25,
+        forward_width_deg=50.0,
+        w_selfie_talk=0.55,
+        w_selfie_group=0.25,
+        selfie_base=0.05,
+        selfie_mode="auto",
+        selfie_ok_min=0.0,
+        w_occlude=0.0,
+        w_wearer=0.0,
+        wearer_clear_deg=20.0,
+        vertical_wearer_cone_deg=73.821,
+        people_size="close",
+        max_speed=45.0,
+        max_accel=60.0,
+        move_cost=0.12,
+        cut_cost=1.6,
+        min_hold_s=2.5,
+        smooth_s=1.0,
+        upright_hold_s=0.0,
+        pitch_default=-8.0,
+        pitch_min=-25.0,
+        pitch_max=5.0,
+        fov_wide=100.0,
+        fov_friend=86.0,
+        fov_selfie=110.0,
+        selfie_pitch_up=12.0,
+        vertical_fov_wide=62.0,
+        vertical_fov_friend=56.0,
+        vertical_fov_selfie=75.0,
+        vertical_occlude_fov=86.0,
+        framing="bin",
+        subject_max_vfrac=0.62,
+        subject_max_wfrac=0.5,
+        safe_margin=0.05,
+        fov_min=72.0,
+        fov_max=110.0,
+        vertical_fov_min=72.0 * 56 / 86,
+        vertical_fov_max=110.0 * 56 / 86,
+        fov_rate=12.0,
+        dead_zone=0.2,
+        headroom=0.10,
+        edge_rule="legacy",
+        w_shift=1.0,
+        w_widen=0.8,
+        include_margin=0.03,
+        include_pad_deg=0.0,
+        include_check_pad_deg=0.0,
+        near_soft_as_hard=False,
+        exclude_clear_deg=3.0,
+        include_max_shift=0.35,
+        include_min_subject_h=0.19,
+        include_bridge_s=2.0,
+        near_min_h_deg=15.0,
+        near_box_scale=1.0,
+        near_min_score=0.6,
+        cut_min_gain_s=1.0,
+        cut_min_gap_s=4.0,
+    )
+
+
 def make_views(boxes: dict[int, list[tuple]], source: str) -> VW.PanoViews:
     return helpers.make_views(boxes, source, n=N)
 
@@ -124,7 +202,7 @@ def test_huge_box_at_yaw_90_is_avoided(stub_scores: dict) -> None:
     stub_scores["beauty"][:, 2] = 1.0  # a vista behind the occluder (view yaw 90)
     pv = make_views({f: [huge] for f in range(N)}, "avoid.lrv")
     new = path_of(pv)
-    old = path_of(pv, D.DirectorParams.legacy())
+    old = path_of(pv, legacy_params())
     assert mean_abs_yaw(old, 90.0) < 15.0  # the old director looked into it
     assert mean_abs_yaw(new, 90.0) > 45.0
     assert new["quality"]["too_close"] < old["quality"]["too_close"]
@@ -353,7 +431,7 @@ def test_subject_paths_have_subj_keys_and_evaluate_like_v1(stub_scores: dict) ->
     subj = [k for k in new["keys"] if "subj" in k]
     assert subj and subj[0]["subj"] == pytest.approx([40.0, -10.0, 10.0, 30.0])
     assert all(k["fov"] != 96.0 for k in subj if k["target"] == "friend")  # fitted
-    assert not any("subj" in k for k in path_of(pv, D.DirectorParams.legacy())["keys"])
+    assert not any("subj" in k for k in path_of(pv, legacy_params())["keys"])
     v1 = {
         **new,
         "version": 1,
@@ -533,7 +611,7 @@ def test_held_frame_only_for_upright_clips() -> None:
     # held yaw 0 = the heading low-passed: the offset is the part of the turn not followed
     assert off is not None and off.shape == t.shape
     assert np.abs(off).max() > 30.0 and abs(off[150]) < 5.0  # a steady turn: followed mid-way
-    assert D.DirectorParams.legacy().upright_hold_s == 0.0
+    assert legacy_params().upright_hold_s == 0.0
     with pytest.raises(ValueError):
         D.with_params(p, {"upright_hold_s": -1})
 
@@ -714,7 +792,9 @@ def test_failed_director_run_removes_only_the_folder_it_created(
     out = tmp_path / "pano_paths" / "director"
     if existed:
         out.mkdir(parents=True)
-    a = argparse.Namespace(project="p", vertical=False, param=[], out_name=None)
+    a = argparse.Namespace(
+        project="p", vertical=False, param=[], out_name=None, force=True, vl_check=False
+    )
     with pytest.raises(RuntimeError, match="director failed"):
         cli.cmd_director(a)
     assert out.is_dir() is existed
@@ -1296,7 +1376,7 @@ def test_the_qa_subject_at_the_edge_is_bad_and_fixed(stub_scores: dict) -> None:
 
 def test_new_params_are_validated() -> None:
     base = D.DirectorParams()
-    assert base.edge_rule == "include_exclude" and D.DirectorParams.legacy().edge_rule == "legacy"
+    assert base.edge_rule == "include_exclude" and legacy_params().edge_rule == "legacy"
     for bad in (
         {"edge_rule": "both"},
         {"w_shift": -1},
@@ -1331,17 +1411,16 @@ def test_path_for_reuses_by_the_fixed_span(
     f.write_text(json.dumps({**v5, "keys": ["v5"], "params": params}), encoding="utf-8")
     got, _ = ex.path_for(clip, "001_a.mp4", 1.0, 8.0, None, reuse=f)
     assert got["keys"] == ["v5"]  # fixed over the whole planned span: reused
+    # an older path (version 4 fixed its framing within its segment only) is re-planned,
+    # even for a span its segment covers, and kept as a backup
     v4 = {**v5, "version": 4, "keys": ["v4"], "params": params}
     del v4["fixed"]
     f.write_text(json.dumps(v4), encoding="utf-8")
-    with caplog.at_level("WARNING"):
-        got, _ = ex.path_for(clip, "001_a.mp4", 3.0, 6.0, None, reuse=f)  # within its segment
-    assert got["keys"] == ["v4"]
     monkeypatch.setattr(D, "compute_path", lambda *a, **kw: {"keys": ["new"]})
     with caplog.at_level("WARNING"):
-        got, out = ex.path_for(clip, "001_a.mp4", 1.0, 8.0, None, reuse=f)  # extended
+        got, out = ex.path_for(clip, "001_a.mp4", 3.0, 6.0, None, reuse=f)  # within its segment
     assert got["keys"] == ["new"] and out == f
-    assert "fixed its framing within 3.0-6.0 only" in caplog.text
+    assert "version 4 director path predates the current framing" in caplog.text
     assert json.loads(f.with_name("001_a.json.bak").read_text())["keys"] == ["v4"]
 
 
@@ -1560,8 +1639,8 @@ def test_an_included_person_keeps_the_pad_inside_the_margin(near_yaw: float) -> 
     ctx = safe_ctx(n, 0.0, 86.0)
     ctx["near"] = ctx["persons"] = [near] * n
     p = D.DirectorParams()
-    assert p.include_pad_deg == 5.0 and D.DirectorParams.legacy().include_pad_deg == 0.0
-    assert p.include_check_pad_deg == 1.5 and D.DirectorParams.legacy().include_check_pad_deg == 0
+    assert p.include_pad_deg == 5.0 and legacy_params().include_pad_deg == 0.0
+    assert p.include_check_pad_deg == 1.5 and legacy_params().include_check_pad_deg == 0
     D._safe_area_pass(ctx, [(0, n)], (0, n), p)
     assert set(ctx["target"]) == {"friend"}
     y, f = float(ctx["yaw"][10]), float(ctx["fov"][10])
@@ -1611,7 +1690,7 @@ def test_a_near_person_close_to_the_side_is_hard_only_with_near_soft_as_hard() -
     ctx = safe_ctx(n, 0.0, 86.0)
     on = D.DirectorParams(near_soft_as_hard=True)
     assert not D.DirectorParams().near_soft_as_hard
-    assert not D.DirectorParams.legacy().near_soft_as_hard
+    assert not legacy_params().near_soft_as_hard
     for near_yaw, hard in ((-36.5, True), (-35.3, False)):
         ctx["near"] = ctx["persons"] = [np.array([[near_yaw, -10.0, 13.0, 28.0, 0.0, 0.9]])] * n
         off = D._framing_checks(ctx, (0, n), D.DirectorParams())

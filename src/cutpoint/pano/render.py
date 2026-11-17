@@ -111,11 +111,6 @@ class Format360:
     height: int = 1080
     fps: int = 30
 
-    @property
-    def vertical(self) -> bool:
-        """Portrait output."""
-        return self.height > self.width
-
 
 DEFAULT_FORMAT = Format360()
 
@@ -688,9 +683,9 @@ class PanoExporter:
         selected: tuple[float, float] | None = None,
     ) -> tuple[dict[str, Any], Path]:
         """Load ``reuse`` (an earlier, possibly hand-edited path) if it covers the range
-        (within 0.5 s: its ``fixed`` span, else its ``planned`` one; a version 4 path its
-        ``segment``, as it fixed its framing there only, else a WARNING says so) and is
-        not older than :data:`director.MIN_REUSE_VERSION`, else take the path
+        (within 0.5 s: its ``fixed`` span, else its ``planned`` one) and is not older than
+        :data:`director.MIN_REUSE_VERSION` (an older one is re-planned with a WARNING), else
+        take the path
         ``360 analyze`` planned for exactly this span and these settings
         (:func:`cutpoint.pano.candidates.cached_path`; an INFO line names why it is not
         reused), else run the director
@@ -729,15 +724,16 @@ class PanoExporter:
             sel = sel or path.get("selected")
             version = path.get("version", 1)
             pl = path.get("fixed") or path.get("planned") or {}
-            seg = path.get("segment") or {}
             axis = G.cached_forward_axis(Path(clip.source))  # None: no track cached, no check
             from cutpoint.pano.views import DET_FRAME  # noqa: PLC0415
 
             if version < D.MIN_REUSE_VERSION:
                 logger.warning(
-                    "  %s: version %s director path predates the current framing; re-directing",
+                    "  %s: version %s director path predates the current framing (version %d); "
+                    "re-directing",
                     reuse,
                     version,
+                    D.PATH_VERSION,
                 )
             elif axis is not None and (
                 path.get("forward_axis", G.axis_name(G.FORWARD_V)) != axis
@@ -746,18 +742,7 @@ class PanoExporter:
                 logger.warning(
                     "  %s: planned for another forward axis (upright clip); re-directing", reuse
                 )
-            elif version < 5 and not _covers(seg, start, end) and _covers(pl, start, end):
-                logger.warning(
-                    "  %s: version %s director path fixed its framing within %.1f-%.1f only, "
-                    "not %.1f-%.1f; re-directing",
-                    reuse,
-                    version,
-                    seg.get("start", math.nan),
-                    seg.get("end", math.nan),
-                    start,
-                    end,
-                )
-            elif _covers(seg if version < 5 else pl, start, end):
+            elif _covers(pl, start, end):
                 self._check_reused(path, reuse, kind)
                 changed = sel is not None and path.get("selected") != sel
                 if changed:
@@ -791,18 +776,8 @@ class PanoExporter:
         return path, out
 
     def _check_reused(self, path: dict[str, Any], file: Path, kind: str | None) -> None:
-        """Warn when a reused path is older than :data:`director.PATH_VERSION` or was
-        planned with other director settings than the current ones (it is still used:
-        it may be hand-edited)."""
-        version = path.get("version", 1)
-        if version < D.PATH_VERSION:
-            logger.warning(
-                "  %s: version %s director path (current %d); reusing it as is, delete it to "
-                "re-direct",
-                file,
-                version,
-                D.PATH_VERSION,
-            )
+        """Warn when a reused path was planned with other director settings than the
+        current ones (it is still used: it may be hand-edited)."""
         want = asdict(D.with_params(D.params_for(kind), self.overrides or {}))
         have = path.get("params") or {}
         diff = sorted(k for k, v in want.items() if have.get(k) != v)

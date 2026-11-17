@@ -67,11 +67,11 @@ def turn(name: str, deg: float) -> np.ndarray:
 
 
 def read_commands(path: Path) -> Commands | None:
-    """Parse a renderer ``.cmd`` file, or None when it has no :data:`CMD_HEADER` line
-    (rendered before the header existed) or cannot be read.
+    """Parse a renderer ``.cmd`` file, or None when it cannot be read.
 
     Raises:
-        ValueError: If a command line is malformed.
+        ValueError: If a command line is malformed, or the file has no :data:`CMD_HEADER`
+            line (rendered by an older Cutpoint).
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -79,7 +79,7 @@ def read_commands(path: Path) -> Commands | None:
         return None
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if not lines or not lines[0].startswith(CMD_HEADER + " "):
-        return None
+        raise ValueError("no cutpoint-v360 header: rendered by an older Cutpoint")
     head = dict(kv.split("=", 1) for kv in lines[0][len(CMD_HEADER) :].split())
     if head.get("rorder") != "ryp":
         raise ValueError(f"{path}: unsupported rorder {head.get('rorder')!r}")

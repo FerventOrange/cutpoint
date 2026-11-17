@@ -104,7 +104,7 @@ def test_analyze_plans_caches_and_clips_reuses_an_equal_path(project, monkeypatc
     )
     # the paths equal fresh ones, as clips would plan them
     fresh = _fresh(clip, 4.0, 12.5, "people")
-    got = C.reusable_path(proj, clip, 4.0, 12.5, "people", None)
+    got = C.cached_path(proj, clip, 4.0, 12.5, "people", None)[0]
     assert got is not None and _dump(got) == _dump(fresh)
 
     with monkeypatch.context() as m:
@@ -201,10 +201,10 @@ def test_clips_recomputes_on_any_mismatch(project, home, monkeypatch) -> None:
     ex.path_for(clip, "001_b.mp4", 4.0, 13.1, "people")  # tail / speech pass moved the end
     ex.path_for(clip, "001_c.mp4", 4.0, 12.5, "speed")  # another kind
     assert calls == [(4.0, 13.1), (4.0, 12.5)]
-    assert C.reusable_path(proj, clip, 4.0, 12.5, "people", None, vertical=True) is None
+    assert C.cached_path(proj, clip, 4.0, 12.5, "people", None, vertical=True)[0] is None
     # other director settings (config.json pano.director)
     set_config(home, pano={"director": {"max_speed": 30}})
-    assert C.reusable_path(proj, clip, 4.0, 12.5, "people", {"max_speed": 30}) is None
+    assert C.cached_path(proj, clip, 4.0, 12.5, "people", {"max_speed": 30})[0] is None
     calls.clear()
     R.PanoExporter(proj, proj / "clips2").path_for(clip, "001_a.mp4", 4.0, 12.5, "people")
     assert calls == [(4.0, 12.5)]
@@ -252,24 +252,24 @@ def test_clips_logs_why_it_re_plans(project, home, monkeypatch, caplog) -> None:
 def test_changed_views_layer_invalidates(project, monkeypatch) -> None:
     proj, clip = project
     C.cache_candidate_paths(proj)
-    assert C.reusable_path(proj, clip, 14.0, 20.0, None, None) is not None
+    assert C.cached_path(proj, clip, 14.0, 20.0, None, None)[0] is not None
     lrv = Path(clip.lrv)
     views = VW.cache_path(lrv)
     st = views.stat()
     os.utime(views, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))  # 360 analyze --force-views
-    assert C.reusable_path(proj, clip, 14.0, 20.0, None, None) is None
+    assert C.cached_path(proj, clip, 14.0, 20.0, None, None)[0] is None
     st = C.cache_candidate_paths(proj)
     assert (st["computed"], st["cached"]) == (2, 0)
-    assert C.reusable_path(proj, clip, 14.0, 20.0, None, None) is not None
+    assert C.cached_path(proj, clip, 14.0, 20.0, None, None)[0] is not None
 
 
 def test_changed_planning_code_invalidates(project, monkeypatch) -> None:
     proj, clip = project
     C.cache_candidate_paths(proj)
-    assert C.reusable_path(proj, clip, 14.0, 20.0, None, None) is not None
+    assert C.cached_path(proj, clip, 14.0, 20.0, None, None)[0] is not None
     assert C.code_id() == C.code_id()
     monkeypatch.setattr(C, "code_id", lambda: "0123456789ab")  # director code changed
-    assert C.reusable_path(proj, clip, 14.0, 20.0, None, None) is None
+    assert C.cached_path(proj, clip, 14.0, 20.0, None, None)[0] is None
     st = C.cache_candidate_paths(proj)
     assert (st["computed"], st["cached"]) == (2, 0)
 
@@ -615,15 +615,17 @@ def test_360_analyze_views_only_without_an_earlier_analysis(
     assert set(timings["views"]) == {"computed", "total_s"}
 
 
-def test_360_analyze_views_only_keeps_an_older_files_analysis(monkeypatch, tmp_path: Path) -> None:
-    """A file from before total_s times its analysis with analyze_total_s: kept too."""
+def test_360_analyze_views_only_replaces_an_older_file_without_analyze_s(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A file from before analyze_s (its analysis timed by analyze_total_s alone) does not
+    time an analysis any more: a views-only run writes its own timings over it."""
     _timing_run(monkeypatch, tmp_path)
-    earlier = {"views": {"old": 1}, "scan_s": 12.5, "analyze_s": 90.0, "analyze_total_s": 300.0}
+    earlier = {"views": {"old": 1}, "scan_s": 12.5, "analyze_total_s": 300.0}
     cache.save_json(tmp_path / "pano_timings.json", earlier)
     _run_analyze(views_only=True)
     timings = json.loads((tmp_path / "pano_timings.json").read_text(encoding="utf-8"))
-    assert set(timings) == set(earlier) | {"views_only_s"}
-    assert timings["analyze_total_s"] == 300.0
+    assert set(timings) == {"views", "total_s"}
 
 
 def test_standalone_360_scan_merges_scan_s(monkeypatch, tmp_path: Path) -> None:
