@@ -198,6 +198,27 @@ def context_hash(text: object) -> str | None:
     return None if words is None else hashlib.sha1(words.encode("utf-8")).hexdigest()[:12]
 
 
+# a run that could form a data marker's "<<<" or ">>>" (data_block)
+_MARKER_RUN = re.compile(r"<{3,}|>{3,}")
+# Brackets a model may read as < or > (fullwidth, small, single guillemets) become them, and
+# zero-width characters go, so neither hides a marker run from _MARKER_RUN (data_block)
+_LOOKALIKE = {
+    **dict.fromkeys(map(ord, "\uff1c\ufe64\u2039"), "<"),
+    **dict.fromkeys(map(ord, "\uff1e\ufe65\u203a"), ">"),
+    **dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"), None),
+}
+
+
+def data_block(kind: str, body: str) -> str:
+    """``body`` (untrusted) between data markers; markers inside it are broken up: every run of
+    three or more ``<`` or ``>`` gets spaces between them, so no ``<<<`` or ``>>>`` is left
+    (a plain replace of ``<<<`` leaves one in ``<<<<<``). Lookalike brackets count as ``<`` and
+    ``>``, and zero-width characters are dropped first (:data:`_LOOKALIKE`). Used by the AI
+    Chat (#1085 A654) and the profile discovery (A656)."""
+    body = _MARKER_RUN.sub(lambda m: " ".join(m.group()), body.translate(_LOOKALIKE))
+    return f"<<<DATA {kind}>>>\n{body}\n<<<END DATA>>>"
+
+
 def command_line(args: Sequence[str]) -> str:
     """``args`` as one command line to copy into this OS's shell (quoted where needed):
     ``subprocess.list2cmdline`` on Windows, ``shlex.join`` elsewhere."""

@@ -34,6 +34,7 @@ from typing import Any
 
 from cutpoint.config import source_path
 from cutpoint.events.scoring import LAUGH_STRONG
+from cutpoint.utils import data_block
 
 CHARS_PER_TOKEN = 2.5  # of JSON, data blocks and tool results (2.0-2.4); prose has about 4
 LOCAL_TOKENS = 8192  # a small context: 40 moments, 4 turns, fewer images; more scales up
@@ -161,15 +162,6 @@ _GENERIC = re.compile(r"(?:[\w-]+-moment|vlm)?")
 _LINE = re.compile(
     r"\[(.+) (\d{2,}):(\d{2}):(\d{2}(?:\.\d+)?)-(\d{2,}):(\d{2}):(\d{2}(?:\.\d+)?)\]"
 )
-# a run that could form a data marker's "<<<" or ">>>" (data_block)
-_MARKER_RUN = re.compile(r"<{3,}|>{3,}")
-# Brackets a model may read as < or > (fullwidth, small, single guillemets) become them, and
-# zero-width characters go, so neither hides a marker run from _MARKER_RUN (data_block)
-_LOOKALIKE = {
-    **dict.fromkeys(map(ord, "\uff1c\ufe64\u2039"), "<"),
-    **dict.fromkeys(map(ord, "\uff1e\ufe65\u203a"), ">"),
-    **dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"), None),
-}
 # the part of a transcript heading after its source path: " (from 01:02:03)", a recovered part
 _HEAD = re.compile(r" \(from [\d:.]+\)$")
 
@@ -236,15 +228,6 @@ def size(value: Any) -> int:
     if isinstance(value, list):
         return sum(size(v) for v in value)
     return 0
-
-
-def data_block(kind: str, body: str) -> str:
-    """``body`` (untrusted) between data markers; markers inside it are broken up: every run of
-    three or more ``<`` or ``>`` gets spaces between them, so no ``<<<`` or ``>>>`` is left
-    (a plain replace of ``<<<`` leaves one in ``<<<<<``). Lookalike brackets count as ``<`` and
-    ``>``, and zero-width characters are dropped first (:data:`_LOOKALIKE`)."""
-    body = _MARKER_RUN.sub(lambda m: " ".join(m.group()), body.translate(_LOOKALIKE))
-    return f"<<<DATA {kind}>>>\n{body}\n<<<END DATA>>>"
 
 
 def cut_result(text: str, limit: int = MAX_RESULT_CHARS) -> str:
