@@ -1,6 +1,6 @@
 """The commands use the caption set of the project's ``activity.json`` (review F3/F4): the
-crash, mix, events, 360 director, QA and vision-check paths see it, an old record is upgraded
-as documented, and the 360 plan keys change only for another profile.
+crash, mix, events, 360 director, QA and vision-check paths see it, and the 360 plan keys
+change only for another profile.
 
 No models or footage: every consumer of the prompts is a recording stub.
 """
@@ -232,35 +232,6 @@ def test_run_events_writes_sheets_after_the_crash_layer_under_the_profile_it_wro
     with pytest.raises(_Stop):
         pipeline.run_events(tmp_path, layers=("visual", "crash"), sheets=True, cached_ocr=False)
     assert seen == [("crash", "generic"), ("sheets", "puddle-hop")]
-
-
-# ----------------------------------------------------------------- activity.record_profile
-@pytest.mark.parametrize("source", ["context", "synthesized"])
-def test_an_old_llm_record_keeps_incident_and_identity_and_takes_the_rest_from_the_library(
-    source,
-):
-    hop = activity.full(add_profile(HOP))
-    old = {
-        "name": "puddle-hop",
-        "description": "my words",
-        "detect": ["x"],
-        "incident": {"pos": ["a rider crashing hard"], "neg": ["a calm trail"]},
-        "highlight": {"pos": ["an old highlight"], "neg": []},
-        "low_info": ["an old low-info caption"],
-    }
-    got = activity.record_profile({"name": "puddle-hop", "source": source, "profile": old})
-    assert got["incident"] == old["incident"] and got["description"] == "my words"
-    assert got["detect"] == ["x"]
-    assert got["highlight"] == hop["highlight"] and got["low_info"] == hop["low_info"]
-    assert all(k in got for k in (*activity.PAIR_SECTIONS, *activity.LIST_SECTIONS, "vl"))
-
-
-def test_an_old_record_of_an_unknown_name_takes_the_floor():
-    old = {"name": "unicycle", "incident": {"pos": ["a fall"], "neg": ["a ride"]}}
-    got = activity.record_profile({"name": "unicycle", "source": "synthesized", "profile": old})
-    floor = activity.base()
-    assert got["incident"] == old["incident"] and got["name"] == "unicycle"
-    assert got["highlight"] == floor["highlight"] and got["low_info"] == floor["low_info"]
 
 
 # ----------------------------------------------------------------- 360 plan keys

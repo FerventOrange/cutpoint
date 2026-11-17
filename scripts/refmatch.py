@@ -519,7 +519,7 @@ def _bins(
         lab = np.zeros(n)
         for a, b in pos_of[k[0]].get(path_key(str(Path(d["source"]))), []):
             lab[max(0, int((a - d["offset"]) * 10)) : max(0, int((b - d["offset"]) * 10))] = 1
-        em = actioncam.effective_mask(d["mask"], d["friends"], friends_strong)
+        em = actioncam.effective_mask(d["mask"], friends_strong)
         friends_b.append(d["friends"][: nb * per].reshape(nb, per).max(1))
         rawmask_b.append(d["mask"][: nb * per].reshape(nb, per).mean(1) >= 0.5)
         X.append(
@@ -624,7 +624,6 @@ def evaluate(
             d["features"],
             weights,
             d["mask"],
-            d["friends"],
             evs,
             d["duration"],
             10_000,
@@ -787,7 +786,6 @@ def fit_weights(
     features: list[str] | None = None,
     save: bool = True,
     cross: bool = True,
-    vlm_friends_only: bool = False,
 ) -> dict[str, Any]:
     """Fit action-cam weights to one or more reference edits and save a learned preset.
 
@@ -811,9 +809,6 @@ def fit_weights(
             whose head is no longer computed).
         save: Write the preset (False for ablations).
         cross: Run the cross-project evaluation.
-        vlm_friends_only: Use the VLM friends tags alone as the ``friends``
-            grid (for ablations). Friends no longer lift the mask, so this
-            only changes the friends numbers of the mask report.
 
     Returns:
         The fit report (also written into the preset JSON).
@@ -834,8 +829,6 @@ def fit_weights(
     gid: dict[tuple[int, str], int] = {}
     for di, ds in enumerate(datasets):
         for fi, d in enumerate(ds.feats):
-            if vlm_friends_only and "friends_vlm" in d["features"]:
-                d = {**d, "friends": d["features"]["friends_vlm"]}
             fmap[(di, fi)] = d
             groups[(di, fi)] = gid.setdefault((di, path_key(d["source"])), len(gid))
     all_keys = list(fmap)
@@ -981,7 +974,7 @@ def fit_weights(
 
 
 ABLATION_SETS = {
-    "old features (before; VLM-only friends mask)": "old",
+    "old features (before)": "old",
     "old + beauty": ["beauty"],
     "old + people": ["people"],
     "old + group": ["group"],
@@ -1009,7 +1002,6 @@ def ablate(
     old = [f for f in FEATURES if f not in NEW_FEATURES]
     rows = []
     for label, spec in (sets or ABLATION_SETS).items():
-        vlm_only = spec == "old"
         if spec == "old":
             feats = old
         elif spec == "all":
@@ -1026,7 +1018,6 @@ def ablate(
             save=False,
             thresholds=thresholds,
             cross=len(datasets) > 1,
-            vlm_friends_only=vlm_only,
         )
         cv = rep["cv_at_edit_duration"]["learned"]
         row = {

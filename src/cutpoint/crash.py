@@ -794,7 +794,6 @@ def visual_feature(inp: SourceInputs, t0: float, t1: float) -> dict[str, Any]:
     return {
         "score": round(_clip01((top - 0.6) / 0.3), 3),
         "kf_max": round(float(vals[0]), 3),
-        "kf_top2": round(top, 3),
     }
 
 
@@ -813,7 +812,6 @@ def audio_feature(inp: SourceInputs, t0: float, t1: float) -> dict[str, Any]:
     return {
         "score": round(max(s_y, 0.7 * s_l), 3),
         "yell": round(y, 4),
-        "laugh_after": round(lg, 4),
     }
 
 
@@ -1111,7 +1109,6 @@ def dense_feature(
     s = 0.5 * _clip01((top - 0.45) / 0.4) + 0.5 * _clip01((chaos - chaos_lead) / 0.25)
     return {
         "score": round(s, 3),
-        "crash_topq": round(top, 3),
         "chaos": round(chaos, 3),
         "chaos_lead": round(chaos_lead, 3),
         "frames": len(t),
@@ -1520,13 +1517,10 @@ def detect_project(
     timings["sheets_s"] = round(time.perf_counter() - t0, 1)
     timings["total_s"] = round(time.perf_counter() - t_start, 1)
     data = {
-        "version": CRASH_VERSION,
         "activity": prof and {k: prof.get(k) for k in ("name", "source")},
         "params": {**asdict(p), "key": p.key()},
-        "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "timings": timings,
-        "n_candidates": len(cands),
-        "crashes": cands,
+        "crashes": [{k: v for k, v in c.items() if k != "caption"} for c in cands],
     }
     out = project / CRASHES_FILE
     cache.save_json(out, data)

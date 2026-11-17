@@ -139,6 +139,7 @@
     "retry_low": "rides between runs, standing around and indoor scenes",
     "tags": {
       "jump_air": "the rider is airborne",
+      "landing": "the rider touches down after a jump or drop",
       "crash_fall": "someone falls or crashes",
       "spray": "spray of snow, water, dirt or sand thrown up by a hard turn or landing",
       "fast_open": "fast riding on smooth, open ground or water",

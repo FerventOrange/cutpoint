@@ -97,7 +97,7 @@ def test_detect_project_skips_offline_source_and_processes_the_rest(tmp_path, mo
         out = crash.detect_project(project, params=own_words, dense=False)
     assert loaded == [here]
     assert "gone.mp4: footage not reachable" in caplog.text
-    assert json.loads(out.read_text(encoding="utf-8"))["n_candidates"] == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["crashes"] == []
 
 
 def test_one_source_whose_telemetry_fails_is_skipped_and_the_others_get_crashes(
@@ -446,7 +446,7 @@ def dense_run(tmp_path, monkeypatch):
 
 def _crashes(project: Path) -> dict:
     data = json.loads((project / crash.CRASHES_FILE).read_text(encoding="utf-8"))
-    return {k: v for k, v in data.items() if k not in ("created", "timings")}
+    return {k: v for k, v in data.items() if k != "timings"}
 
 
 def test_dense_windows_are_saved_as_they_finish_and_a_rerun_computes_only_the_rest(
@@ -640,11 +640,12 @@ def test_a_profile_with_on_domain_negatives_never_scores_below_generic(captions,
     enc = SimpleNamespace(embed=lambda f: f)
     c = {"t0": 10.0, "t1": 11.0}
     inp = _inputs(spike=False)
-    dense = {
-        k: crash.dense_feature(enc, inp, c, p, {})["crash_topq"]
-        for k, p in (("prof", prof), ("generic", generic))
-    }
-    assert dense["prof"] >= dense["generic"]
+    stores: dict[str, dict] = {"prof": {}, "generic": {}, "alone": {}}
+    for k, p in (("prof", prof), ("generic", generic), ("alone", alone)):
+        crash.dense_feature(enc, inp, c, p, stores[k])
+    cs = {k: np.asarray(next(iter(s.values()))["crash"]) for k, s in stores.items()}
+    assert (cs["prof"] >= cs["generic"] - 1e-3).all()
+    assert cs["prof"][0] > cs["alone"][0] + 1e-3  # the floor lifts the stored fall share
 
 
 def test_generic_itself_is_scored_once_and_keys_change_with_the_floor(captions):

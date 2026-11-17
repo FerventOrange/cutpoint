@@ -28,7 +28,7 @@ def _bump(t: float, height: float, width: float = 1.0) -> np.ndarray:
 def _pick(vlm: np.ndarray, mask: np.ndarray | None = None) -> list[actioncam.Pick]:
     zero = np.zeros(N)
     return actioncam.pick(
-        {"vlm": vlm}, {"vlm": 1.0}, zero if mask is None else mask, zero, [], N * DT, 10
+        {"vlm": vlm}, {"vlm": 1.0}, zero if mask is None else mask, [], N * DT, 10
     )
 
 
@@ -44,7 +44,7 @@ def test_flat_stretch_gives_one_pick() -> None:
 def test_scenic_picks_are_five_to_seven_seconds(kind: str) -> None:
     assert actioncam.GEOMETRY[kind] == (5.0, 7.0, 2.5, 2.5)
     zero = np.zeros(N)
-    picks = actioncam.pick({kind: _bump(40.0, 1.0)}, {kind: 1.0}, zero, zero, [], N * DT, 10)
+    picks = actioncam.pick({kind: _bump(40.0, 1.0)}, {kind: 1.0}, zero, [], N * DT, 10)
     assert len(picks) == 1 and picks[0].kind == kind
     assert 5.0 <= picks[0].end - picks[0].start <= 7.0
     assert picks[0].start <= 40.0 <= picks[0].end
@@ -56,7 +56,7 @@ def test_scenic_pick_near_a_source_edge_keeps_its_length(kind: str, t: float) ->
     n = 1200  # 120 s
     peak = np.exp(-(((np.arange(n) * DT - t) / 1.0) ** 2))
     zero = np.zeros(n)
-    picks = actioncam.pick({kind: peak}, {kind: 1.0}, zero, zero, [], n * DT, 10)
+    picks = actioncam.pick({kind: peak}, {kind: 1.0}, zero, [], n * DT, 10)
     assert len(picks) == 1
     assert 5.0 <= picks[0].end - picks[0].start <= 7.0
     assert picks[0].start >= 0.0 and picks[0].end <= n * DT
@@ -65,7 +65,7 @@ def test_scenic_pick_near_a_source_edge_keeps_its_length(kind: str, t: float) ->
 def test_scenic_pick_trimmed_by_a_stronger_pick_grows_back_to_five_seconds() -> None:
     zero = np.zeros(N)
     feats = {"scenic": _bump(40.0, 0.6), "speed": _bump(35.0, 1.0)}
-    picks = actioncam.pick(feats, {"scenic": 1.0, "speed": 1.0}, zero, zero, [], N * DT, 10)
+    picks = actioncam.pick(feats, {"scenic": 1.0, "speed": 1.0}, zero, [], N * DT, 10)
     scenic = next(p for p in picks if p.kind == "scenic")
     other = next(p for p in picks if p.kind != "scenic")
     assert scenic.end - scenic.start >= 5.0
@@ -76,9 +76,7 @@ def test_scenic_pick_in_a_source_shorter_than_five_seconds_still_works() -> None
     n = 40  # 4 s
     x = np.arange(n) * DT
     peak = np.exp(-(((x - 2.0) / 0.5) ** 2))
-    picks = actioncam.pick(
-        {"beauty": peak}, {"beauty": 1.0}, np.zeros(n), np.zeros(n), [], n * DT, 10
-    )
+    picks = actioncam.pick({"beauty": peak}, {"beauty": 1.0}, np.zeros(n), [], n * DT, 10)
     assert [(p.start, p.end) for p in picks] == [(0.0, 4.0)]
 
 
@@ -133,9 +131,9 @@ def test_friends_never_lift_the_lift_or_still_mask(monkeypatch: pytest.MonkeyPat
     f, mask, friends = _features(monkeypatch, [_win(0.0, 45.0, friends_faces=10)])
     assert friends[: int(45 / DT)].min() == pytest.approx(1.0)  # friends seen strongly
     assert f["vlm"][: int(45 / DT)].max() == 0.0  # but they add nothing on the lift / stop
-    combined = actioncam.combine(f, {"vlm": 1.0}, mask, friends)
+    combined = actioncam.combine(f, {"vlm": 1.0}, mask)
     assert combined[: int(45 / DT)].max() == 0.0
-    assert actioncam.effective_mask(mask, friends)[: int(45 / DT)].min() == 1.0
+    assert actioncam.effective_mask(mask)[: int(45 / DT)].min() == 1.0
 
 
 def test_friends_do_not_count_in_standing_or_lift_windows(
@@ -147,13 +145,28 @@ def test_friends_do_not_count_in_standing_or_lift_windows(
 
 
 def test_friends_raise_a_moving_moment(monkeypatch: pytest.MonkeyPatch) -> None:
-    f, mask, friends = _features(
+    f, mask, _ = _features(
         monkeypatch, [_win(0.0, 45.0, friends_faces=10), _win(60.0, 75.0, friends_faces=8)]
     )
     assert f["vlm"][int(65 / DT)] == pytest.approx(0.8)
     weights = {"vlm": 0.2, "speed": 0.15}
-    picks = actioncam.pick(f, weights, mask, friends, [], N * DT, 10)
+    picks = actioncam.pick(f, weights, mask, [], N * DT, 10)
     assert 60.0 <= picks[0].peak_t <= 75.0  # the friends window outranks plain riding
+
+
+def test_build_features_has_no_friends_vlm_grid_and_an_old_file_with_one_loads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#1085 A36: the unscored ``friends_vlm`` grid is no longer saved; a features file
+    written before still loads (the extra grid is carried, not read)."""
+    f, mask, friends = _features(monkeypatch, [_win(60.0, 75.0, friends_faces=8)])
+    assert "friends_vlm" not in f
+    src = Path("ride.mp4")
+    old = {**f, "friends_vlm": friends.copy()}
+    actioncam.save_features(tmp_path, src, 0.0, N * DT, old, mask, friends, [])
+    d = actioncam.load_part(tmp_path, src)
+    assert d is not None and d["features"]["friends_vlm"].shape == (N,)
+    assert actioncam.pick(d["features"], {"vlm": 1.0}, d["mask"], [], N * DT, 10)
 
 
 def test_action_tags_still_count_without_friends(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -176,9 +189,9 @@ def test_old_learned_presets_still_load(home: Path) -> None:
     (styles / "old.json").write_text(json.dumps(preset), encoding="utf-8")
     style = get_style("old")
     assert style.mask_friends == 5.0
-    mask, friends = np.array([1.0, 1.0, 0.0]), np.array([1.0, 0.0, 1.0])
-    assert actioncam.effective_mask(mask, friends, style.mask_friends).tolist() == [1.0, 1.0, 0.0]
-    assert actioncam.effective_mask(mask, friends, 0).tolist() == [0.0, 0.0, 0.0]  # soft
+    mask = np.array([1.0, 1.0, 0.0])
+    assert actioncam.effective_mask(mask, style.mask_friends).tolist() == [1.0, 1.0, 0.0]
+    assert actioncam.effective_mask(mask, 0).tolist() == [0.0, 0.0, 0.0]  # soft
 
 
 def test_a_removed_taste_weight_scores_as_without_it(
@@ -270,7 +283,7 @@ def test_a_source_without_telemetry_leaves_out_the_telemetry_features(avail) -> 
 def test_the_default_floor_picks_as_before(height: float, picked: bool) -> None:
     """visual_pool, mix and refmatch call pick without a floor: 0.02, as it always was."""
     zero = np.zeros(N)
-    args = ({"social": _bump(40.0, height)}, {"social": 1.0}, zero, zero, [], N * DT, 10)
+    args = ({"social": _bump(40.0, height)}, {"social": 1.0}, zero, [], N * DT, 10)
     got = actioncam.pick(*args)
     assert bool(got) is picked
     assert actioncam.pick(*args, floor=0.02) == got
@@ -281,9 +294,9 @@ def test_a_source_without_telemetry_passes_its_floor_and_its_score_is_capped() -
     w, zero = CAM.weights, np.zeros(N)
     feats = {k: np.zeros(N) for k in actioncam.FEATURES}
     feats["social"] = _bump(40.0, 0.3)  # 0.015 weighted: under the fixed floor
-    assert actioncam.pick(feats, w, zero, zero, [], N * DT, 10) == []
+    assert actioncam.pick(feats, w, zero, [], N * DT, 10) == []
     floor = actioncam.source_floor(w, FULL, own)
-    [p] = actioncam.pick(feats, w, zero, zero, [], N * DT, 10, floor=floor)
+    [p] = actioncam.pick(feats, w, zero, [], N * DT, 10, floor=floor)
     assert p.kind == "social" and p.peak == pytest.approx(0.015)
     assert features.to_score(p.peak, w, own) == round(100 * p.peak / features.divisor(w, own), 1)
     assert features.to_score(p.peak, w, own) > features.to_score(p.peak, w, FULL)

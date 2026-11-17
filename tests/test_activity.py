@@ -199,8 +199,8 @@ def test_a_record_of_a_removed_profile_is_kept_or_discovered_again(
 ):
     """Projects of the built-in sport profiles Cutpoint no longer ships keep working."""
     stored = activity.full(activity.validate({**SLED, "name": "ski"}))
-    rec = {"version": 1, "request": {"activity": None, "context": None}, "source": "library"}
-    rec |= {"name": "ski", "profile": stored}
+    rec = {"version": activity.PROFILE_VERSION, "source": "library"}
+    rec |= {"request": {"activity": None, "context": None}, "name": "ski", "profile": stored}
     (tmp_path / activity.ACTIVITY_FILE).write_text(json.dumps(rec), encoding="utf-8")
     assert activity.resolve(tmp_path, llm=False) == rec  # its full profile is stored
     flagged = rec | {"source": "flag", "request": {"activity": "ski", "context": None}}
@@ -216,6 +216,25 @@ def test_a_record_of_a_removed_profile_is_kept_or_discovered_again(
     assert sum("'ski' no longer exists" in r.getMessage() for r in caplog.records) == 1
     with pytest.raises(jsonout.ArgumentError, match="unknown activity 'ski'"):
         activity.resolve(tmp_path, activity="ski", refresh=True)  # a new request: an error
+
+
+def test_an_activity_json_of_an_older_version_is_resolved_again(tmp_path: Path, footage):
+    """An older record (here one without every caption section, as profiles had before) is
+    not upgraded: the project is resolved again and the record rewritten, no error."""
+    old = {"version": 1, "name": "puddle-hop", "source": "library"}
+    old |= {"request": {"activity": None, "context": None}}
+    old |= {"profile": {"name": "puddle-hop", "incident": {"pos": ["a fall"], "neg": []}}}
+    (tmp_path / activity.ACTIVITY_FILE).write_text(json.dumps(old), encoding="utf-8")
+    assert activity.project_prompts(tmp_path) == activity.default_prompts()
+    rec = activity.resolve(tmp_path, llm=False)
+    assert (rec["version"], rec["name"], rec["source"]) == (
+        activity.PROFILE_VERSION,
+        "glacier-sled",
+        "library",
+    )
+    saved = json.loads((tmp_path / activity.ACTIVITY_FILE).read_text(encoding="utf-8"))
+    assert saved["version"] == activity.PROFILE_VERSION
+    assert activity.project_prompts(tmp_path) == activity.prompts(rec["profile"])
 
 
 def test_a_context_naming_a_library_profile_picks_it_when_the_llm_fails(
@@ -1281,7 +1300,7 @@ def test_the_synthesis_prompt_delimits_the_users_words():
     assert prompt.count("<description>") == 1 and "nothing\n" not in prompt
 
 
-def test_the_discovery_key_marks_the_delimited_words_only_with_words(same_footage, monkeypatch):
+def test_the_discovery_key_has_the_version_and_the_words(same_footage, monkeypatch):
     seen: list[dict] = []
     real = activity.cache.params_hash
     monkeypatch.setattr(
@@ -1291,5 +1310,6 @@ def test_the_discovery_key_marks_the_delimited_words_only_with_words(same_footag
     model = {"model": "m", "digest": None}
     activity.discovery_key(project, model, None, [])
     activity.discovery_key(project, model, "chest mount", [])
-    assert "context_block" not in seen[0]  # a discovery without words keeps its key
-    assert seen[1]["context_block"] == 1
+    assert [p["v"] for p in seen] == [activity.DISCOVERY_VERSION] * 2
+    assert [p["context"] for p in seen] == [None, "chest mount"]
+    assert all("context_block" not in p for p in seen)  # the version marks the delimited words

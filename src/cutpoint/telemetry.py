@@ -62,6 +62,9 @@ logger = logging.getLogger(__name__)
 DT = 0.1
 G = 9.80665
 TELEMETRY_VERSION = 2
+# A crash event always ends in a stop (:func:`_crash_events` skips the others): the stop's
+# share of its score.
+STOP_SHARE = 0.4
 _GPS_EPOCH = datetime(2000, 1, 1, tzinfo=UTC)
 
 
@@ -116,21 +119,12 @@ class Telemetry:
             "start_utc": self.meta.get("start_utc"),
             "start_local": self.meta.get("start_local"),
             "clock": self.meta.get("clock"),
-            "gps_fix_share": round(float(g["gps_ok"].mean()), 3) if self.n else 0.0,
             "top_speed_kmh": round(float(sp.max()), 1) if sp.size else None,
-            "p95_speed_kmh": round(float(np.percentile(sp, 95)), 1) if sp.size else None,
-            "alt_range_m": (
-                [round(float(np.nanmin(g["alt_m"])), 0), round(float(np.nanmax(g["alt_m"])), 0)]
-                if np.isfinite(g["alt_m"]).any()
-                else None
-            ),
             "lift_s": round(float(g["lift_mask"].sum() * DT), 1),
             "still_s": round(float(g["still_mask"].sum() * DT), 1),
             "airtime_events": len(air),
             "airtime_high": sum(1 for e in air if e["confidence"] == "high"),
             "crash_events": sum(1 for e in self.events if e["type"] == "crash"),
-            "max_g": round(float(g["accel_g"].max()), 2) if self.n else None,
-            "faces_s": round(float((g["faces"] > 0).sum() * DT), 1),
             "imu_hz": self.meta.get("imu_hz"),
         }
 
@@ -476,10 +470,8 @@ def _crash_events(
     t: np.ndarray,
     am: np.ndarray,
     grav: np.ndarray,
-    gyro_mag: np.ndarray,
     speed: np.ndarray,
     vib: np.ndarray,
-    airtime: list[dict[str, Any]],
     p: TelemetryParams,
 ) -> list[dict[str, Any]]:
     """Impacts (>= ``impact_g``) that end in a stop.
@@ -530,12 +522,9 @@ def _crash_events(
             g0, g1 = grav[pre].mean(0), grav[post].mean(0)
             cosang = float(np.dot(g0, g1) / (np.linalg.norm(g0) * np.linalg.norm(g1) + 1e-9))
             tilt = float(np.degrees(np.arccos(np.clip(cosang, -1, 1))))
-        w = (t >= tp - 0.5) & (t <= tp + 1.5)
-        spin = float(gyro_mag[w].max()) if w.any() else 0.0
-        landing_of = next((a for a in airtime if 0 <= tp - a["end"] <= 0.7), None)
         score = (
             0.3 * float(np.clip((am[i_pk] - 3.5) / 4.5, 0, 1))
-            + 0.4
+            + STOP_SHARE
             + 0.3 * float(np.clip(tilt / 70, 0, 1))
         )
         if score < p.crash_score:
@@ -548,11 +537,8 @@ def _crash_events(
                 "impact_t": round(tp, 2),
                 "peak_g": round(float(am[i_pk]), 2),
                 "tilt_deg": round(tilt, 0),
-                "stopped": True,
-                "spin_dps": round(spin, 0),
                 "speed_before_kmh": round(v_before, 1) if v_before is not None else None,
                 "speed_after_kmh": round(v_after, 1) if v_after is not None else None,
-                "after_jump": landing_of is not None,
                 "score": round(score, 2),
             }
         )
@@ -645,7 +631,6 @@ def _compute(
     # Gravity-aligned yaw rate: project the gyro onto the 1 s low-passed accel.
     grav = gravity(acc, int(fs))
     yaw = (gyr * grav).sum(1)
-    gyro_mag = np.linalg.norm(gyr, axis=1)
 
     grid: dict[str, np.ndarray] = {}
     grid["accel_g"] = np.nan_to_num(_bin_max(t, am, n), nan=1.0)
@@ -712,7 +697,7 @@ def _compute(
 
     airtime = _airtime_events(t, am, fs, speed, gps_ok, p)
     airtime = [e for e in airtime if not lift[min(n - 1, int(e["t"] / DT))]]
-    crashes = _crash_events(t, am, grav, gyro_mag, speed, grid["vibration"], airtime, p)
+    crashes = _crash_events(t, am, grav, speed, grid["vibration"], p)
     w_air = {"high": 1.0, "medium": 0.7, "low": 0.35}
     for e in airtime:
         e["strength"] = round(w_air[e["confidence"]] * float(np.clip(e["air_s"] / 0.8, 0.5, 1)), 2)
@@ -730,7 +715,6 @@ def _compute(
             if start and tz_min is not None
             else None
         ),
-        "tz_offset_min": tz_min,
         "clock": clock,
         "parse_s": round(time.perf_counter() - t0, 2),
     }
@@ -756,7 +740,6 @@ def _x3_clock(tel: Telemetry, insv00: Path) -> None:
             "start_local": local.isoformat(timespec="seconds"),
             "start_utc": local.astimezone(UTC).isoformat(),
             "clock": "filename",
-            "imu_file": insv00.name,
         }
     )
 
@@ -778,9 +761,7 @@ def cached_speed(src: Path, params: TelemetryParams | None = None) -> np.ndarray
     return speed
 
 
-def extract(
-    src: Path, duration: float, params: TelemetryParams | None = None, force: bool = False
-) -> Telemetry | None:
+def extract(src: Path, duration: float, params: TelemetryParams | None = None) -> Telemetry | None:
     """Telemetry of ``src`` (cached per source), or None if it has none.
 
     Reads the staged copy when ``cutpoint stage`` has one; otherwise warns, because
@@ -790,7 +771,6 @@ def extract(
         src: Source video (original path; ``source_remap`` and the stage apply).
         duration: Container duration (s); sets the grid length.
         params: Detection thresholds.
-        force: Ignore the cache.
     """
     from cutpoint.crash import cache_imu_grids  # noqa: PLC0415
     from cutpoint.stage import storage_label  # noqa: PLC0415
@@ -799,7 +779,7 @@ def extract(
     cdir = cache.source_dir(src)
     stem = f"telemetry-{p.key()}"
     npz, meta_path = cdir / f"{stem}.npz", cdir / f"{stem}.json"
-    if not force and npz.exists() and meta_path.exists():
+    if npz.exists() and meta_path.exists():
         data = cache.load_json(meta_path)
         if data is not None:
             if data.get("none"):

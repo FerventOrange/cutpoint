@@ -20,7 +20,8 @@ cutpoint assemble projects/trip/clips --loudnorm
 - runs the reaction (sound events, voice), keyframe (visual, with a CUDA GPU; without one only the AI Chat's light frame index) and crash
   steps when the `events` extra and models are installed, writing `events.json` and
   `crashes.json` (`--skip` leaves steps out); the Ollama frame rating runs only with `--vision`;
-- writes `telemetry.json` (day summary, runs, per-source events);
+- writes `telemetry.json` (day summary, runs with their `riding_s`, `top_speed_kmh` and
+  `vertical_m`, per-source summary and events);
 - writes these files, `crash_check\` and `action_cam_features\` only when it completes: a cancelled
   run leaves the previous ones as they were ([analyze](../commands.md#analyze));
 - orders clips by start time (GPS time, else the camera clock) and splits the day into runs at
@@ -144,8 +145,8 @@ description for each window tag (at most 100 characters). The tag keys (`jump_ai
 reword their descriptions, not rename, add or drop a tag. Only a profile made with
 `cutpoint profile create` can reword them: discovered and `--context` profiles keep the generic
 wording of `base.json`, as does a profile without its own wording. A value that is missing, not a string, empty or over its cap is replaced by the
-`base.json` text, field by field. The `vlm` section of an `activity.json` written before
-profiles had one is filled from the profile's library entry, else `base.json`.
+`base.json` text, field by field. An `activity.json` of an older version is not read: the
+default wording applies until `profile` or `crashes` resolves the project again.
 
 The first run after this wording was added describes the windows and rates the frames again
 for action-cam projects (the wording is part of the cache keys). The 360 plans are recomputed

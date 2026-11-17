@@ -71,40 +71,34 @@ def _impact(stop: bool = True, gps: bool = True, tilt: bool = True):
     grav = np.tile([0.0, 0.0, 1.0], (len(t), 1))
     if tilt:
         grav[t > 10.5] = [1.0, 0.0, 0.0]  # lying on the side: 90 degrees
-    gyro = np.zeros_like(t)
     bins = np.arange(200) * DT
     speed = np.where(bins < 10.5, 30.0, 0.0 if stop else 30.0)
     vib = np.where(bins < 10.0, 0.3, 0.01 if stop else 0.3)
     if not gps:
         speed = np.full(200, np.nan)
-    return t, am, grav, gyro, speed, vib
+    return t, am, grav, speed, vib
 
 
 def test_an_impact_that_ends_in_a_stop_is_a_crash():
-    [crash] = telemetry._crash_events(*_impact(), [], P)
+    [crash] = telemetry._crash_events(*_impact(), P)
     assert crash["type"] == "crash"
     assert crash["impact_t"] == pytest.approx(10.0, abs=0.03)
     assert crash["peak_g"] == 6.0
     assert crash["tilt_deg"] == pytest.approx(90, abs=1)
     assert crash["speed_before_kmh"] == 30.0 and crash["speed_after_kmh"] == 0.0
-    assert crash["after_jump"] is False
-    assert crash["score"] == pytest.approx(0.3 * (6.0 - 3.5) / 4.5 + 0.4 + 0.3, abs=0.01)
+    assert crash["score"] == pytest.approx(
+        0.3 * (6.0 - 3.5) / 4.5 + telemetry.STOP_SHARE + 0.3, abs=0.01
+    )
 
 
 def test_a_hard_bump_while_riding_on_is_not_a_crash():
-    assert telemetry._crash_events(*_impact(stop=False), [], P) == []
+    assert telemetry._crash_events(*_impact(stop=False), P) == []
 
 
 def test_without_gps_a_crash_is_an_impact_then_stillness():
-    [crash] = telemetry._crash_events(*_impact(gps=False), [], P)
+    [crash] = telemetry._crash_events(*_impact(gps=False), P)
     assert crash["speed_before_kmh"] is None and crash["speed_after_kmh"] is None
-    assert telemetry._crash_events(*_impact(gps=False, stop=False), [], P) == []
-
-
-def test_a_crash_right_after_a_jump_is_marked_as_a_landing():
-    landing = {"type": "airtime", "t": 9.0, "end": 9.6}
-    [crash] = telemetry._crash_events(*_impact(), [landing], P)
-    assert crash["after_jump"] is True
+    assert telemetry._crash_events(*_impact(gps=False, stop=False), P) == []
 
 
 # ------------------------------------------------------------------------- GPMF payloads
