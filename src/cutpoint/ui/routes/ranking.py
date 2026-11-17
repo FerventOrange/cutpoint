@@ -11,14 +11,12 @@ from fastapi import APIRouter, Request
 from cutpoint import jsonout
 from cutpoint.errors import FolderBusyError
 from cutpoint.styles import AUTO
-from cutpoint.styles import style_name as fallback_style_name
 from cutpoint.ui.analysis import _analysis_inputs, set_style
 from cutpoint.ui.common import BUSY_TEXT, META_FILE, bad
 from cutpoint.ui.files import _own, _ui_folder, read_meta
 from cutpoint.ui.projects import RERANKING, project_dir
 from cutpoint.ui.ranking import (
     NO_UNDO_TEXT,
-    RERANK_BACKUP,
     RERANK_BUSY_TEXT,
     STALE_TEXT,
     UNDO_STALE_TEXT,
@@ -28,7 +26,6 @@ from cutpoint.ui.ranking import (
     _ranking_load,
     _ranking_style,
     cuda_probe,
-    ranking_key,
     ranking_preview,
     ranking_swap,
 )
@@ -52,7 +49,7 @@ def preview_ranking(pid: str, body: dict[str, Any]):
 def apply_ranking(request: Request, pid: str, body: dict[str, Any]):
     """Re-rank the project in the library style ``style`` and save it, after the user
     clicked to use the preview made against the ranking key ``base``: highlights.json
-    replaced (the one before kept, :data:`RERANK_BACKUP`) and ``style`` the project's
+    replaced (the one before kept, :data:`cutpoint.rerank.BACKUP`) and ``style`` the project's
     chosen style (a detection kept when it leaves Auto). Redone, not stored: the same
     caches give the ranking the preview showed. No job starts on the project meanwhile.
 
@@ -107,16 +104,8 @@ def apply_ranking(request: Request, pid: str, body: dict[str, Any]):
         kept = before.get("detection") if auto else None
         set_style(p, style.name, kept if isinstance(kept, dict) else None)
         made.clear()  # the ui folder holds meta.json now
-        new_ids, dropped = rerank.changes(before, result.after)
-        return {
-            "style": style.name,
-            "from": fallback_style_name(before),
-            "key": ranking_key(p),
-            "backup": True,
-            "new_ids": new_ids,
-            "dropped_ids": dropped,
-            "seconds": result.seconds,
-        }
+        new_ids, _ = rerank.changes(before, result.after)
+        return {"new_ids": new_ids}
     finally:
         for folder in made:  # the ui folder this created for a ranking it did not save
             with contextlib.suppress(OSError):
@@ -135,6 +124,7 @@ def undo_ranking(request: Request, pid: str, body: dict[str, Any]):
     ``folder_busy``; 409 for a 360 project and when there is no earlier ranking that
     matches this analysis."""
     jobs = request.app.state.jobs
+    from cutpoint import rerank  # noqa: PLC0415
     from cutpoint.errors import StaleRankingError  # noqa: PLC0415
 
     p = project_dir(pid)
@@ -145,7 +135,7 @@ def undo_ranking(request: Request, pid: str, body: dict[str, Any]):
         _ranking_check(p)
     except RankingRefused as err:
         return err.response()
-    for name in ("highlights.json", RERANK_BACKUP, META_FILE):
+    for name in ("highlights.json", rerank.BACKUP, META_FILE):
         _own(p, name)  # refuse now, not after the swap
     with jobs.lock:  # no job starts on the project while its ranking is swapped
         p = project_dir(pid)
@@ -167,7 +157,7 @@ def undo_ranking(request: Request, pid: str, body: dict[str, Any]):
             raise bad(NO_UNDO_TEXT, 409) from None
         if swapped is None:
             raise bad(NO_UNDO_TEXT, 409)
-        before, after, undone = swapped
+        _, after, undone = swapped
         # the style the ranking swapped in runs on (auto for an auto analysis), as the
         # header shows it and the next analysis passes it; a detection kept when not Auto
         style = _analysis_inputs({}, after)[1]
@@ -175,12 +165,7 @@ def undo_ranking(request: Request, pid: str, body: dict[str, Any]):
             det = after.get("detection") if style != AUTO else None
             set_style(p, style, det if isinstance(det, dict) else None)
         made.clear()  # the ui folder holds meta.json now
-        return {
-            "action": "undo" if undone else "redo",
-            "style": fallback_style_name(after),
-            "from": fallback_style_name(before),
-            "key": ranking_key(p),
-        }
+        return {"action": "undo" if undone else "redo"}
     finally:
         for folder in made:  # the ui folder this created for a swap it did not make
             with contextlib.suppress(OSError):

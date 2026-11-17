@@ -198,12 +198,9 @@ export function kindOf(c) {
 /** A moment's score as the grid shows it: one decimal for the visual pool's 0-10 scale (``visual``), else whole numbers (0-100). */
 export const scoreText = (score, visual = false) => (visual ? Number(score).toFixed(1) : String(Math.round(score)));
 
-/** The Settings > Theme choices; Graphite is the default. */
-export const THEMES = Object.freeze(['graphite', 'light', 'blue']);
-
 /**
- * The theme a stored ``cutpoint.theme`` value means. Graphite is stored as no key. "dark", the
- * theme Graphite replaced, and anything unknown are Graphite. index.html's inline script does the same.
+ * The theme a stored ``cutpoint.theme`` value means. Graphite is stored as no key. Anything
+ * unknown (an old "dark", say) is Graphite. index.html's inline script does the same.
  */
 export const themeFromStored = (v) => (v === 'light' || v === 'blue' ? v : 'graphite');
 

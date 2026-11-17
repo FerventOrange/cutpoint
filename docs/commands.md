@@ -1025,7 +1025,7 @@ Ranking in another library style (the same re-rank as [`rerank`](#rerank)):
 `POST /api/projects/<id>/ranking/preview` with `{style}` re-ranks from the caches and writes
 nothing. It returns `ready: true` with `base` (the ranking key of `highlights.json`), `from`,
 the first 10 moments before and after (`top`, `before`; file names, never paths),
-`new_ids_count`, `dropped_count`, `suggested_top`, `notes` and `seconds`, or `ready: false`
+`new_ids_count`, `dropped_count`, `suggested_top` and `notes`, or `ready: false`
 with `missing`, `can_analyze` and `message` when a feature the style needs is missing.
 `POST /api/projects/<id>/ranking/apply` with `{style, base}` is what the page sends when the
 user clicks to use the preview: it saves the ranking (`highlights.json` replaced, the one before
@@ -1036,8 +1036,7 @@ project; no job starts on it while a ranking is applied), `needs_analyze` (apply
 and `can_analyze`) and, on apply only, `stale` (`highlights.json` is not the one previewed any
 more: preview again). A 360 project, or one without an analysis, is refused with 409 and no
 `code`. `GET /api/projects/<id>` has `ranking_key`, the `base` a preview of the current
-`highlights.json` gets (null without one), `rerank_backup`, whether
-`highlights.before-rerank.json` is there (a ranking applied here or by `rerank` kept one), and
+`highlights.json` gets (null without one), and
 `ranking_undo`: `{action, style}` (`undo`, or `redo` after an Undo; `style` is the one the
 ranking swapped in was made in) when the backup matches the current analysis, else null.
 A match means `highlights.json` still has the seal a `rerank` save or a swap wrote
@@ -1046,7 +1045,7 @@ does not write), the backup's digest is its `settings.rerank_backup`, and the ba
 analysis of the same sources. `POST /api/projects/<id>/ranking/undo` with `{base}` (the page's
 `ranking_key`) swaps the two files, written as temp files first so a stop midway loses neither;
 the one swapped in keeps its moments and ids, links to the other and becomes the project's
-style. It answers `action`, `style`, `from` and `key`, or 409 with `stale`, `folder_busy`, or
+style. It answers `action`, or 409 with `stale`, `folder_busy`, or
 no `code` for a 360 project or when there is nothing to undo.
 
 ## capabilities

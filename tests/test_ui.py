@@ -7017,9 +7017,9 @@ def _segments_written(p: Path) -> list[dict]:
 
 @pytest.mark.parametrize(
     ("body", "smart"),
-    [({}, False), ({"smart_edges": False}, False), ({"smart_edges": True}, True)],
+    [({}, False), ({"speech_aware": True, "smart_tail": True}, True)],
 )
-def test_clips_job_smart_edges_hands_the_trims_to_the_smart_flags(
+def test_clips_job_hands_the_trims_to_the_smart_flags(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, body: dict, smart: bool
 ) -> None:
     p, seg = cli_project(tmp_path)
@@ -7042,18 +7042,6 @@ def test_clips_job_smart_edges_hands_the_trims_to_the_smart_flags(
     else:  # today's behaviour: exactly the user's trims
         assert seg["smart_tail"] is False and seg["speech_aware"] is False
     assert (seg["start"], seg["end"]) == (1, 4.5)
-
-
-@pytest.mark.parametrize("value", ["true", 1, 0, None, ["x"]])
-def test_clips_job_rejects_a_non_boolean_smart_edges(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: object
-) -> None:
-    res, captured = peaks_job(
-        client, monkeypatch, tmp_path, {"action": "clips", "smart_edges": value}
-    )
-    assert res.status_code == 400, res.text
-    assert "smart_edges must be true or false" in res.json()["detail"]
-    assert not captured
 
 
 @pytest.mark.parametrize(
@@ -7313,25 +7301,18 @@ def _after(args: list[str], flag: str) -> str:
     return args[args.index(flag) + 1]
 
 
-def test_the_default_page_options_export_exactly_what_smart_edges_did(
+def test_the_default_page_options_build_the_smart_tail_argv(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The page's defaults (sequence, Speech-aware cuts and Smart tails on, Event tails Auto,
-    blank numbers) build the argv and segments file Smart edges built before #462."""
+    blank numbers) build the argv and segments file."""
     page = {"action": "clips", "picks": "sequence", "vertical": False, "speech_aware": True,
             "smart_tail": True, "event_tails": "auto", "compress_peaks": "light"}  # fmt: skip
-    old = {"action": "clips", "vertical": False, "smart_edges": True, "compress_peaks": "light"}
-    runs = []
-    for body in (page, old):
-        res, captured, _, p = options_job(client, monkeypatch, tmp_path, body)
-        assert res.status_code == 200, res.text
-        args = _cli_args(captured[0])
-        # the output and segments names carry a per-second stamp: the runs may land in different seconds
-        norm = [re.sub(r"\d{8}-\d{6}", "STAMP", a.replace(str(p), "P")) for a in args]
-        runs.append((norm, _segments_written(p)))
-        shutil.rmtree(p)
-    assert runs[0] == runs[1]
-    args, segments = runs[0]
+    res, captured, _, p = options_job(client, monkeypatch, tmp_path, page)
+    assert res.status_code == 200, res.text
+    segments = _segments_written(p)
+    # the output and segments names carry a per-second stamp
+    args = [re.sub(r"\d{8}-\d{6}", "STAMP", a.replace(str(p), "P")) for a in _cli_args(captured[0])]
     assert args[:3] == ["clips", "P", "--segments"] and args[4] == "--out"
     assert args[6:] == ["--smart-tail", "--speech-aware", "--compress-peaks", "light"]
     assert "smart_tail" not in segments[0] and "speech_aware" not in segments[0]
@@ -10757,7 +10738,7 @@ def test_a_reranked_project_shows_its_style_and_the_detection_as_stale(
         "gameplay",
         True,
     )
-    assert got["ranking_key"] and got["rerank_backup"] is False
+    assert got["ranking_key"] and "rerank_backup" not in got
 
 
 def test_a_reranked_project_is_not_gaming_after_a_rerank_away_from_gaming(

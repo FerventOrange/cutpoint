@@ -44,14 +44,10 @@ test('corrupt storage gives the defaults instead of breaking the page', async (t
   assert.equal(x.$('#candList').children.length, 3, 'the workspace still booted');
 });
 
-test('the old Smart edges box sets both Speech-aware cuts and Smart tails', async (t) => {
+test('a stored smart_edges (the removed Smart edges box) is ignored', async (t) => {
   const x = await exportTab(t, { stored: { smart_edges: false } });
-  assert.equal(x.$('#optSpeech').checked, false);
-  assert.equal(x.$('#optTail').checked, false);
-  x.page.close();
-  const y = await exportTab(t, { stored: { smart_edges: false, speech_aware: true } });
-  assert.equal(y.$('#optSpeech').checked, true, 'the newer key wins');
-  assert.equal(y.$('#optTail').checked, false);
+  assert.equal(x.$('#optSpeech').checked, true);
+  assert.equal(x.$('#optTail').checked, true);
 });
 
 test('a change is stored on its own: only changed options are kept, so the other defaults can follow', async (t) => {

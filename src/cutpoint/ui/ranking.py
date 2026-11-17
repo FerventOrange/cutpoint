@@ -9,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +66,6 @@ cuda_probe = CudaProbe()
 
 # --------------------------------------------------------------------------- ranking (#902)
 PREVIEW_TOP = 10  # moments a ranking preview lists, before and after
-RERANK_BACKUP = "highlights.before-rerank.json"  # cutpoint.rerank.BACKUP (not imported at start)
 STALE_TEXT = (
     "The moments changed since this preview (an analysis or another ranking ran); preview it again"
 )
@@ -228,7 +226,6 @@ def ranking_preview(p: Path, style_name: object) -> dict[str, Any]:
 
     style = _ranking_style(style_name)
     _ranking_check(p)
-    t0 = time.perf_counter()
     raw, hl = _ranking_load(p)
     head = {"style": style.name, "from": fallback_style_name(hl), "base": rerank.key(raw)}
     ready = rerank.readiness(p, hl, style, cuda_probe)
@@ -251,7 +248,6 @@ def ranking_preview(p: Path, style_name: object) -> dict[str, Any]:
         "dropped_count": len(dropped),
         "suggested_top": {"before": hl.get("suggested_top"), "after": after.get("suggested_top")},
         "notes": ready.notes,
-        "seconds": round(time.perf_counter() - t0, 2),
     }
 
 
@@ -267,7 +263,7 @@ def _ranking_undo(p: Path, hl: dict[str, Any]) -> tuple[dict[str, Any], bool] | 
     - ``hl`` is sealed (``settings.rerank_undo``, :func:`cutpoint.rerank.seal`): no analysis,
       ``events`` run or hand edit rewrote highlights.json since a re-rank save or a swap wrote
       it (a re-analysis keeps ``settings.rerank_backup``, but not the seal);
-    - :data:`RERANK_BACKUP` is in the project (not a link out of it) and its key is
+    - :data:`cutpoint.rerank.BACKUP` is in the project (not a link out of it) and its key is
       ``settings.rerank_backup``: the very file that ranking replaced, unchanged;
     - the backup is an analysis of the same sources.
     """
@@ -276,9 +272,9 @@ def _ranking_undo(p: Path, hl: dict[str, Any]) -> tuple[dict[str, Any], bool] | 
     st = hl.get("settings")
     mark = st.get(rerank.UNDO) if isinstance(st, dict) else None
     link = st.get("rerank_backup") if isinstance(st, dict) else None
-    if not isinstance(mark, dict) or not isinstance(link, str) or not _inside(p, RERANK_BACKUP):
+    if not isinstance(mark, dict) or not isinstance(link, str) or not _inside(p, rerank.BACKUP):
         return None
-    back_raw = cache.load_bytes(p / RERANK_BACKUP)
+    back_raw = cache.load_bytes(p / rerank.BACKUP)
     if back_raw is None or rerank.key(back_raw) != link or mark.get("seal") != rerank.seal(hl):
         return None
     try:
@@ -308,10 +304,10 @@ def ranking_undo_view(p: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
 
     if meta.get("kind") == "360" or (p / pano_project.PANO_FILE).is_file():
         return None
-    if not _inside(p, RERANK_BACKUP) or not _inside(p, rerank.HIGHLIGHTS):
+    if not _inside(p, rerank.BACKUP) or not _inside(p, rerank.HIGHLIGHTS):
         return None
     try:
-        st = (p / RERANK_BACKUP).stat()
+        st = (p / rerank.BACKUP).stat()
         raw = (p / rerank.HIGHLIGHTS).read_bytes()
     except OSError:
         return None
@@ -334,14 +330,16 @@ def ranking_undo_view(p: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
 
 def _swap_ranking_files(p: Path, restored: bytes, kept: bytes, current: bytes) -> None:
     """Swap the project's rankings: highlights.json gets ``restored`` (made from the backup) and
-    :data:`RERANK_BACKUP` ``kept`` (:func:`cutpoint.rerank.backup_bytes` of ``current``,
+    :data:`cutpoint.rerank.BACKUP` ``kept`` (:func:`cutpoint.rerank.backup_bytes` of ``current``,
     highlights.json's bytes now). Both are staged as temp files first, then renamed:
     highlights.json first, while the backup still holds the ranking it gets. A failed second
     rename puts ``current`` back into highlights.json; should that fail too, the temp file
     holding ``kept`` is kept (its path logged), as one a hard kill leaves.
     Durable as ``cache.save_bytes(..., durable=True)`` (A667): each temp file is flushed to
     disk before its rename and, on POSIX, the folder after the renames."""
-    hl_path, back_path = p / "highlights.json", p / RERANK_BACKUP
+    from cutpoint import rerank  # noqa: PLC0415
+
+    hl_path, back_path = p / "highlights.json", p / rerank.BACKUP
     staged: list[Path] = []
     keep = False
     try:
@@ -373,7 +371,7 @@ def _swap_ranking_files(p: Path, restored: bytes, kept: bytes, current: bytes) -
 
 def ranking_swap(p: Path, base: str) -> tuple[dict[str, Any], dict[str, Any], bool] | None:
     """Undo (or Redo) the last ranking change of ``p``, under its run lock: swap highlights.json
-    and :data:`RERANK_BACKUP` (:func:`_ranking_undo`). The ranking swapped in keeps its moments
+    and :data:`cutpoint.rerank.BACKUP` (:func:`_ranking_undo`). The ranking swapped in keeps its moments
     and ids as they are; only its settings change: ``rerank_backup`` links it to the file it
     replaced, ``last_candidate_id`` is the higher of the two (never down), and it is sealed
     again (``undone`` flips, so the next swap is the other way). Returns the ranking before,
