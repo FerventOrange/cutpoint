@@ -66,8 +66,7 @@ PATH_VERSION = 5  # 2: keys may carry "subj" (the framed person); 3: close peopl
 # frame edge are intruders; 4: wider framing, the wearer allowed in frame; 5: near people
 # framed whole or kept out over the whole planned span ("fixed"; same keys; evaluate
 # reads all versions)
-MIN_REUSE_VERSION = 4  # older paths (tighter framing) are re-directed, not reused
-# a version 4 path fixed its framing within its segment only: reused for that span only
+MIN_REUSE_VERSION = PATH_VERSION  # older paths are re-directed, not reused
 PATH_MARGIN_S = 10.0  # a path is planned this much beyond its segment on both sides
 
 
@@ -156,83 +155,6 @@ class DirectorParams:
     near_min_score: float = 0.6  # ... and detected with at least this score
     cut_min_gain_s: float = 1.0  # time the QA counts as cut a cut-away removes, per cut
     cut_min_gap_s: float = 4.0  # ... and starts / ends this far from another cut, or merges
-
-    @classmethod
-    def legacy(cls) -> DirectorParams:
-        """The settings every path used before the direction-quality work (A/B baseline).
-
-        Pinned here, not taken from the defaults, so it stays the same when they change.
-        It covers the parameters only: the ``follow`` kind tweak (:data:`KIND_TWEAKS`,
-        added with the penalties) did not exist before, so a ``follow`` moment gets
-        w_people 1.2 / w_forward 0.5 / no selfie even with these settings (older
-        paths treated it as an unknown kind, no tweak). ``framing="bin"`` keeps the
-        bin-centre path (no subject tracking, fitted FOV, safe-area pass or
-        segment-edge shot rule).
-        """
-        return cls(
-            dt=0.5,
-            n_bins=36,
-            w_people=1.0,
-            w_group=0.35,
-            w_beauty=0.3,
-            w_forward=0.25,
-            forward_width_deg=50.0,
-            w_selfie_talk=0.55,
-            w_selfie_group=0.25,
-            selfie_base=0.05,
-            selfie_mode="auto",
-            selfie_ok_min=0.0,
-            w_occlude=0.0,
-            w_wearer=0.0,
-            wearer_clear_deg=20.0,
-            vertical_wearer_cone_deg=73.821,
-            people_size="close",
-            max_speed=45.0,
-            max_accel=60.0,
-            move_cost=0.12,
-            cut_cost=1.6,
-            min_hold_s=2.5,
-            smooth_s=1.0,
-            upright_hold_s=0.0,
-            pitch_default=-8.0,
-            pitch_min=-25.0,
-            pitch_max=5.0,
-            fov_wide=100.0,
-            fov_friend=86.0,
-            fov_selfie=110.0,
-            selfie_pitch_up=12.0,
-            vertical_fov_wide=62.0,
-            vertical_fov_friend=56.0,
-            vertical_fov_selfie=75.0,
-            vertical_occlude_fov=86.0,
-            framing="bin",
-            subject_max_vfrac=0.62,
-            subject_max_wfrac=0.5,
-            safe_margin=0.05,
-            fov_min=72.0,
-            fov_max=110.0,
-            vertical_fov_min=72.0 * 56 / 86,
-            vertical_fov_max=110.0 * 56 / 86,
-            fov_rate=12.0,
-            dead_zone=0.2,
-            headroom=0.10,
-            edge_rule="legacy",
-            w_shift=1.0,
-            w_widen=0.8,
-            include_margin=0.03,
-            include_pad_deg=0.0,
-            include_check_pad_deg=0.0,
-            near_soft_as_hard=False,
-            exclude_clear_deg=3.0,
-            include_max_shift=0.35,
-            include_min_subject_h=0.19,
-            include_bridge_s=2.0,
-            near_min_h_deg=15.0,
-            near_box_scale=1.0,
-            near_min_score=0.6,
-            cut_min_gain_s=1.0,
-            cut_min_gap_s=4.0,
-        )
 
 
 POSITIVE_PARAMS = (
@@ -366,7 +288,7 @@ def parse_param_args(items: list[str]) -> dict[str, str]:
 
 # With selfie_mode "off" (the default) the selfie tweaks below (w_selfie_talk of
 # laughter / voice / social / speech, selfie_base of wipeout / crash) have no effect;
-# they apply with selfie_mode="auto" (--param selfie_mode=auto, or legacy()).
+# they apply with selfie_mode="auto" (--param selfie_mode=auto).
 KIND_TWEAKS: dict[str, dict[str, Any]] = {
     "laughter": {"w_selfie_talk": 0.8},
     "voice_laughter": {"w_selfie_talk": 0.8},

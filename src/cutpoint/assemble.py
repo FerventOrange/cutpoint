@@ -335,20 +335,11 @@ def concat_reencode(
     _encode(files, ";".join(chains) + f";{pairs}concat=n={len(files)}:v=1:a=1[v][a]", out)
 
 
-def cut_duration(info: MediaInfo) -> float:
-    """How long a clip lasts on a cut join: its container ``duration``.
-
-    The concat demuxer starts the next file there, longer than the video when the
-    audio runs on. The cut offsets (:func:`clip_offsets`, so final.srt) and the
-    audio rebuilt by :func:`concat_copy` use it, so they stay on the video."""
-    return info.duration
-
-
 def cut_audio_ends(infos: list[MediaInfo]) -> list[float]:
-    """Where each clip's audio ends on a cut join: where the next clip starts
-    (:func:`cut_duration`), and the last clip's at the end of its video, so the joined
-    audio is as long as the video."""
-    return [cut_duration(i) for i in infos[:-1]] + [infos[-1].vduration]
+    """Where each clip's audio ends on a cut join: where the next clip starts (its container
+    ``duration``, as in :func:`clip_offsets`), and the last clip's at the end of its video, so
+    the joined audio is as long as the video."""
+    return [i.duration for i in infos[:-1]] + [infos[-1].vduration]
 
 
 def clip_offsets(infos: list[MediaInfo], fade: float | list[float] = 0.0) -> list[float]:
@@ -364,7 +355,9 @@ def clip_offsets(infos: list[MediaInfo], fade: float | list[float] = 0.0) -> lis
     offsets, t = [], 0.0
     for info, f in zip(infos, [*joins, 0.0], strict=False):
         offsets.append(t)
-        t += info.vduration - f if video else cut_duration(info)
+        # a cut join: the concat demuxer starts the next file at the container duration, so
+        # the cut offsets (so final.srt) and the audio rebuilt by concat_copy use it too
+        t += info.vduration - f if video else info.duration
     return offsets
 
 
@@ -1082,14 +1075,6 @@ def loudnorm_filter(src: Path) -> str:
     return f"volume={gain:.2f}dB"
 
 
-def limiter_filter(limit_db: float) -> str:
-    """Oversampled (192 kHz) lookahead limiter, back to 48 kHz afterwards.
-
-    The downsampling uses soxr when the ffmpeg build has it, else ffmpeg's default (swr).
-    """
-    return limiter_chain(limit_db, has_soxr())
-
-
 def post_process(
     stage: Path,
     out: Path,
@@ -1140,7 +1125,7 @@ def post_process(
     if loudnorm or limit:
         # loudnorm and the limiter's resampling can run the audio on past its input (about
         # 0.1 s seen, #473): it is trimmed back to where the video it was joined to ends.
-        af = limiter_filter(limit_db)
+        af = limiter_chain(limit_db, has_soxr())  # soxr when the ffmpeg build has it
         if loudnorm:
             af = f"{loudnorm_filter(stage)},{af}"
         end = info.vstart + info.vduration

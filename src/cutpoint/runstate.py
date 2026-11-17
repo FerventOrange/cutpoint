@@ -73,7 +73,6 @@ LOCK_NAME = "analysis.run"  # swap_lock(<project>/analysis.run): .analysis.run.c
 # clips: so cutpoint resume replays an interrupted export (cutpoint.clipresume)
 COMMANDS = frozenset({"analyze", "edit", "events", "crashes", "profile", "360 analyze", "clips"})
 AFTER_TRANSCRIPT = frozenset({"analyze", "edit"})  # progress.json once a source is transcribed
-STATUSES = ("running", "done", "interrupted", "failed", "low_memory")
 PCT_INTERVAL_S = 5.0
 # Parsed arguments that are no options of the run (callables are left out too); --batch-size
 # changes no result, so a re-run with it (to use less memory) continues the record.

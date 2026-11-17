@@ -647,7 +647,7 @@ class StitchExport:
         self.p = ui.project_dir(self.pid)
         lrv = str(folder / X3_LRV)
         self.clip = x3clip(lrv=lrv, insv=[str(folder / X3_00), str(folder / X3_10)], duration=60)
-        pano_project.save(self.p, [self.clip], [folder])
+        pano_project.save(self.p, [self.clip])
         cand = {"id": "h001", "source": lrv, "start": 1.0, "end": 5.0, "score": 80, "label": "a"}
         hl = {
             "sources": [{"path": lrv, "duration": 60.0}],
@@ -904,7 +904,7 @@ class DirectorPreviews:
             lrv=self.lrv, insv=[str(folder / X3_00), str(folder / X3_10)], fps=30.0, duration=60
         )
         self.clip = clip
-        pano_project.save(self.p, [clip], [folder])
+        pano_project.save(self.p, [clip])
         # h003 starts off a frame: its level forward view must still show its first frame
         spans = {"h001": (5.0, 10.0), "h002": (20.0, 25.0), "h003": (40.01, 45.0)}
         cands = [

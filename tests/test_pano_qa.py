@@ -19,7 +19,7 @@ import cutpoint.events.visual as V
 import cutpoint.ffmpeg_utils as F
 from cutpoint.events.visual import VisualData
 from cutpoint.pano import geometry as G
-from cutpoint.pano import project, qa
+from cutpoint.pano import qa
 from pano_helpers import orientation
 
 TH = qa.QAThresholds()
@@ -526,23 +526,33 @@ def write_manifest(d: Path, pano: dict, start: float = 3.0) -> None:
 
 
 @pytest.mark.parametrize(
-    ("sidecar", "expect"), [(["-x"], True), (["-enable_flowstate"], False), (None, False)]
+    ("mode", "levelled", "expect"),
+    [("sdk", False, True), ("sdk", True, False), ("sdk", None, False), ("dfisheye", None, True)],
 )
 def test_sdk_horizon_only_when_imu_levelled(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sidecar, expect: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    mode: str,
+    levelled,
+    expect: bool,
 ) -> None:
+    """As the render recorded it; an SDK record without ``levelled`` (an older export) gets
+    no horizon check and a WARNING to export the clips again. Dual fisheye is always
+    levelled with our IMU track: no WARNING."""
     eq = tmp_path / "033.equirect.mp4"
     eq.write_bytes(b"")
-    if sidecar is not None:
-        project.equirect_sidecar(eq).write_text(json.dumps({"stitch_args": sidecar}))
     pf = tmp_path / "p.json"
     pf.write_text(json.dumps({**make_path(t1=30.0), "source": str(tmp_path / "src.lrv")}))
     d = tmp_path / "clips"
-    write_manifest(d, {"path_file": str(pf), "mode": "sdk", "inputs": [str(eq)], "cmd_every": 2})
+    rec = {"path_file": str(pf), "mode": mode, "inputs": [str(eq)], "cmd_every": 2}
+    write_manifest(d, rec if levelled is None else {**rec, "levelled": levelled})
     orient = _rolling(np.zeros(900))
     seen = []
     monkeypatch.setattr(G, "load_orientation", lambda src: seen.append(src) or orient)
-    item = qa.find_inputs(d)[0]
+    with caplog.at_level("WARNING"):
+        item = qa.find_inputs(d)[0]
+    assert ("export the clips again" in caplog.text) is (mode == "sdk" and levelled is None)
     assert item["imu_levelled"] is expect
     roll = qa.horizon(item, np.array([5.0, 6.0]))
     assert (roll is not None) is expect
@@ -618,20 +628,17 @@ def test_find_inputs_records_how_each_clip_was_rendered(tmp_path: Path) -> None:
     r = qa.clip_record(item, 1.0, [full_rec(0.0, []), full_rec(0.5, [])], 2.0, None, None, TH)
     assert {k: r[k] for k in qa.RENDER_KEYS} == got
     assert (r["segment"], r["selected"]) == (None, [4.0, 9.0])
-    # an older manifest (no levelled / flowstate): derived from the mode
+    # an older manifest (no levelled / flowstate): unknown, the mode alone decides
     old = {"path_file": str(pf), "mode": "dfisheye", "inputs": ["/x/VID_00_001.insv"]}
     write_manifest(d, old)
     item = qa.find_inputs(d)[0]
     assert (item["mode"], item["imu_levelled"], item["levelled"], item["flowstate"]) == (
         "dfisheye",
         True,
-        False,
-        False,
+        None,
+        None,
     )
     assert (item["input"], item["cmd_every"]) == ("VID_00_001.insv", None)
-    write_manifest(d, {"path_file": str(pf), "mode": "sdk", "inputs": [str(tmp_path / "e.mp4")]})
-    item = qa.find_inputs(d)[0]  # no sidecar: assumed FlowState, so not IMU-levelled
-    assert (item["imu_levelled"], item["levelled"], item["flowstate"]) == (False, True, None)
 
 
 @pytest.mark.parametrize(

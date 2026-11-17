@@ -193,23 +193,16 @@ def _same_file(entry: dict[str, Any], parts: tuple[str, ...], rel: tuple[str, ..
 
     The key compares the Windows way, but the files below a Windows ``source_remap`` prefix
     may sit on a case-sensitive file system (``T/x.mp4`` and ``T/X.MP4``): there the spelling
-    must match exactly. ``entry["rel"]`` is that spelling, recorded when it was staged. An
-    entry staged before it was recorded (#163) is compared through its ``source`` (the path
-    it was read from, under the remap target): its last ``len(rel)`` parts, with ``rel`` the
-    asked file's parts below the prefix in the current ``source_remap``. Without either, the
-    key decides.
+    must match exactly. ``entry["rel"]`` is that spelling, recorded when it was staged.
+    Without it the key decides, but only for a file not below such a prefix (``rel`` None):
+    an entry staged before ``rel`` was recorded (#163) may be either twin's copy, so it
+    matches no file below one (:func:`stage_sources` stages that file again in its slot).
     """
     stored = entry.get("rel")
     if isinstance(stored, list):
         want = tuple(stored)
-    elif rel is not None and isinstance(entry.get("source"), str):
-        source = entry["source"]
-        read = (PureWindowsPath(source) if is_foreign_windows(source) else Path(source)).parts
-        if len(rel) > len(read):
-            return False
-        want = read[len(read) - len(rel) :]
     else:
-        return True
+        return rel is None
     return len(want) <= len(parts) and parts[len(parts) - len(want) :] == want
 
 
@@ -714,13 +707,14 @@ def stage_sources(
                     logger.info("Already staged: %s", src.name)
                     skipped += 1
                     items.append(_item(src, dst, st.st_size, "skipped"))
-                    if rel is not None and "rel" not in entry:  # staged before #163: record it now
-                        entry["rel"] = list(rel)
-                        _update_index(stage_dir, slot, entry)
                     continue
+            stale = None  # the copy of an entry staged before #163, replaced below
             if slot is None:  # a new file; a case-twin of a staged one gets its own key
                 slot = key
-                if key in index:
+                old = index.get(key)
+                if old and rel is not None and not isinstance(old.get("rel"), list):
+                    stale = stage_dir / old["file"]  # no rel (#163): either twin's; take its slot
+                elif old:
                     slot += _TWIN_SEP + "/".join(rel if rel is not None else parts)
             free = shutil.disk_usage(stage_dir).free
             if free - st.st_size < min_free_gb * 1e9:
@@ -743,6 +737,9 @@ def stage_sources(
             if rel is not None:
                 index[slot]["rel"] = list(rel)
             _update_index(stage_dir, slot, index[slot])
+            # a case-insensitive stage folder: abcd-x.mp4 may be the abcd-X.MP4 just written
+            if stale is not None and stale != dst and not (stale.exists() and stale.samefile(dst)):
+                stale.unlink(missing_ok=True)
             total_b += st.st_size
             total_s += secs
             copied += 1
@@ -809,6 +806,19 @@ def _recorded_under(
     return keys
 
 
+def _clear_slot(index: dict[str, dict[str, Any]], key: str, parts: tuple[str, ...]) -> str | None:
+    """Index key :func:`clear_stage` removes for the file with ``key`` and ``parts``: its
+    entry (:func:`_find`), else, below a Windows-form ``source_remap`` prefix, an entry under
+    ``key`` staged before ``rel`` was recorded (#163). That copy matches no file any more
+    (either twin's, see :func:`_same_file`), so clearing it is safe."""
+    slot = _find(index, key, parts)
+    if slot is None and _below_prefix(key, parts) is not None:
+        old = index.get(key)
+        if old and not isinstance(old.get("rel"), list):
+            return key
+    return slot
+
+
 def clear_stage(
     targets: Sequence[Path] = (), *, exclude: Sequence[str] = (), recursive: bool = False
 ) -> int:
@@ -847,7 +857,7 @@ def clear_stage(
                     )
                 wanted |= recorded
                 continue
-            found = (_find(index, *_identity(p)) for p in files)
+            found = (_clear_slot(index, *_identity(p)) for p in files)
             wanted |= {slot for slot in found if slot is not None}
         keys &= wanted
     for key in keys:

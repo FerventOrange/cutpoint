@@ -683,8 +683,8 @@ def aggregate_clip(
 def edge_cut_by(clips: list[dict[str, Any]], key: str) -> dict[str, dict[str, Any]]:
     """``{value: {"clips", "frames", "duration", "edge_cut"}}`` of the clips grouped by
     their record's ``key`` (``mode`` or ``self_method``; ``unknown`` when not recorded, as
-    in older ``qa.json`` files): ``edge_cut`` is the duration-weighted share, as in the
-    edit's ``share``."""
+    for a ``--paths`` path without its video): ``edge_cut`` is the duration-weighted share,
+    as in the edit's ``share``."""
     groups: dict[str, list[dict[str, Any]]] = {}
     for c in clips:
         groups.setdefault(str(c.get(key) or "unknown"), []).append(c)
@@ -759,16 +759,11 @@ def load_path(ref: str | None) -> dict[str, Any] | None:
 def imu_levelled(pano: dict[str, Any]) -> bool:
     """True when the renderer levelled the clip with our IMU track (dual fisheye, or
     an SDK stitch whose sidecar says no FlowState), so the horizon can be checked; as the
-    render recorded it (``levelled`` False), else from the mode and the sidecar now."""
-    from cutpoint.pano.project import equirect_flowstate  # noqa: PLC0415
-
+    render recorded it (``levelled`` False)."""
     mode = pano.get("mode")
     if mode in ("dfisheye", "proxy"):
         return True
-    if isinstance(pano.get("levelled"), bool):
-        return mode in ("sdk", "studio") and not pano["levelled"]
-    inputs = pano.get("inputs") or []
-    return mode == "sdk" and bool(inputs) and equirect_flowstate(Path(inputs[0])) is False
+    return mode in ("sdk", "studio") and pano.get("levelled") is False
 
 
 # how a clip was rendered (:func:`render_info`), kept in its ``qa.json`` record
@@ -780,28 +775,27 @@ def _basename(f: str | None) -> str | None:
     return re.split(r"[\\/]", f)[-1] if f else None
 
 
-def render_info(pano: dict[str, Any]) -> dict[str, Any]:
-    """:data:`RENDER_KEYS` of a clips-folder clip, from its manifest ``pano`` record.
+def render_info(pano: dict[str, Any], file: str) -> dict[str, Any]:
+    """:data:`RENDER_KEYS` of a clips-folder clip ``file``, from its manifest ``pano`` record.
 
     ``mode`` is the render source (``sdk``, ``studio`` or ``dfisheye``), ``levelled`` and
-    ``flowstate`` as recorded by the render (older manifests: derived from the mode and the
-    SDK sidecar, :func:`~cutpoint.pano.project.source_flowstate`), ``input`` the file name of
-    the first render input and ``cmd_every`` the frames between ``v360`` updates; None
-    where unknown."""
-    from cutpoint.pano.project import source_flowstate  # noqa: PLC0415
-
+    ``flowstate`` as recorded by the render, ``input`` the file name of the first render
+    input and ``cmd_every`` the frames between ``v360`` updates; None where unknown. An SDK
+    or Studio record without ``levelled`` (exported by an older Cutpoint) is logged: no
+    horizon check for it until the clips are exported again."""
     mode = pano.get("mode")
     inputs = [str(f) for f in pano.get("inputs") or []]
-    imu = imu_levelled(pano)
-    levelled = pano.get("levelled")
-    if levelled is None and mode is not None:
-        levelled = not imu
-    flowstate = pano["flowstate"] if "flowstate" in pano else source_flowstate(mode, inputs)
+    if mode in ("sdk", "studio") and "levelled" not in pano:
+        logger.warning(
+            "%s: exported by an older Cutpoint (no levelled record); export the clips "
+            "again for a full check",
+            file,
+        )
     return {
         "mode": mode,
-        "imu_levelled": imu,
-        "levelled": levelled,
-        "flowstate": flowstate,
+        "imu_levelled": imu_levelled(pano),
+        "levelled": pano.get("levelled"),
+        "flowstate": pano.get("flowstate"),
         "input": _basename(inputs[0]) if inputs else None,
         "cmd_every": pano.get("cmd_every"),
     }
@@ -844,7 +838,7 @@ def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
             pano = e.get("pano") or {}
             path = load_path(pano.get("path_file"))
             missing = bool(pano.get("path_file")) and path is None
-            info = render_info(pano)
+            info = render_info(pano, f.name)
             levelled = info["imu_levelled"]
             cmd = None
             if levelled and path is not None and pano.get("cmd_file"):

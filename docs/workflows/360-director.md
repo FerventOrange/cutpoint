@@ -88,8 +88,9 @@ in the spirit of Pano2Vid and AutoCam.
   moment only.
 - The fix covers the whole planned span, not only the moment, so padding and tails added later
   are clean too. Keys fall on the 0.5 s grid of the moment's start. The path records that span
-  as `fixed`; `extend` reuses a recorded path when that span covers the new range, and an older
-  (version 4) path only when its moment does, else it plans the path anew with a WARNING.
+  as `fixed`; `extend` reuses a recorded path when that span covers the new range, else it
+  plans the path anew. An older path is planned anew with a WARNING and kept as
+  `<name>.json.bak`.
 - The moment's kind shifts the weights: laughter and speech favour the selfie, people and
   groups favour friends, beauty favours the view, speed and airtime favour forward.
 - Paths are planned 10 s beyond each side of the segment so padding stays on a planned path.
@@ -99,9 +100,9 @@ in the spirit of Pano2Vid and AutoCam.
   (default 30). Twisting the camera back and forth, or turning it around, then no longer swings
   or spins the view. The scene's scores turn with the camera, the forward bias stays put, and
   safe-area fixes and cut-aways hold their view in that frame too. Selfie shots still follow the
-  wearer. `0` follows the camera's heading as a mount does (the `legacy` preset uses 0). Helmet,
-  chest and bike mounts always follow it. The keys stay display yaws, so the renderer is
-  unchanged. The QA judges an upright clip's pans in the world, as the viewer sees them.
+  wearer. `0` follows the camera's heading as a mount does. Helmet, chest and bike mounts
+  always follow it. The keys stay display yaws, so the renderer is unchanged. The QA judges
+  an upright clip's pans in the world, as the viewer sees them.
 
 Override tuning values with `pano.director` in `config.json` or `cutpoint 360 director --param
 KEY=VALUE`.

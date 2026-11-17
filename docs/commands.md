@@ -1737,7 +1737,7 @@ computer (a network folder) is not, so delete it by hand if no run is active.
 | `--order` | `chronological`, `score`, `story` (default, except `commentary`: `chronological`; opens with the second-best moment, ends with the best) or `arc` (the default with `--mix`) |
 | `--vertical` | Centre-crop to 9:16, 1080x1920. Default folder `clips_vertical` |
 | `--size WxH` | Output resolution (even numbers). Default: the largest source's, capped at 1080p. Ignored with `--vertical` |
-| `--crop auto\|none\|W:H:X:Y` | Crop borders before scaling |
+| `--crop auto\|none\|W:H:X:Y` | Crop borders before scaling (`off` or `no` also mean `none`; `WxH+X+Y` also works) |
 | `--smart-tail` / `--no-smart-tail`, `--tail-min`, `--tail-max` | Extend clips that end on speech until the reaction settles |
 | `--event-tails` / `--no-event-tails`, `--event-window S` | Extend to cover a payoff event (needs `events.json`) |
 | `--extend S`, `--extend-start S`, `--extend-end S` | Padding ("handles") for trimming in an editor |

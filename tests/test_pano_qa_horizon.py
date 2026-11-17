@@ -251,6 +251,10 @@ def test_replay_follows_the_v360_conventions(tmp_path) -> None:
     assert np.allclose(got, [init, one, one @ G.rot_p(0.5)])
     assert (c.projection, c.start, c.fps) == ("equirect", 3.0, 30.0)
     assert H.read_commands(tmp_path / "missing.cmd") is None
+    old = tmp_path / "old.cmd"  # rendered before the header existed
+    old.write_text("0.0283 v360@cam yaw -2.000;\n", "utf-8")
+    with pytest.raises(ValueError, match="rendered by an older Cutpoint"):
+        H.read_commands(old)
 
 
 def test_level_camera_through_a_still_view_shows_no_roll(tmp_path) -> None:

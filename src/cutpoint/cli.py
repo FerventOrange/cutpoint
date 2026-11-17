@@ -795,7 +795,7 @@ def _cmd_profile(a: argparse.Namespace) -> None:
     record_context(project, a.context)  # the project's one description (#1068)
     shown = {**rec, "profile": record_profile(rec)}  # what `crashes` uses, not the stored file
     if jsonout.active():
-        for key, value in shown.items():  # the record's own keys, as the old --json printed them
+        for key, value in shown.items():  # the record's own keys
             jsonout.output(key, value)
         jsonout.output("activity_file", project / ACTIVITY_FILE)
         return
@@ -1204,7 +1204,7 @@ def _cmd_capabilities(a: argparse.Namespace) -> None:
     if not jsonout.active():
         print(capabilities.format_report(data))
         return
-    for key, value in data.items():  # the report's own keys, as the old --json printed them
+    for key, value in data.items():  # the report's own keys
         jsonout.output(key, value)
     torch_info = data.get("torch") or {}
     if torch_info.get("warning"):

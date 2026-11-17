@@ -56,7 +56,6 @@ import logging
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -266,7 +265,7 @@ def stitch_timeout_s() -> float | None:
 
 
 # --------------------------------------------------------------------------- pano.json
-def save(project: Path, clips: list[X3Clip], camera_dirs: list[Path]) -> Path:
+def save(project: Path, clips: list[X3Clip]) -> Path:
     """Write ``<project>/pano.json`` (merging clips from earlier scans of other folders)."""
     project.mkdir(parents=True, exist_ok=True)
     path = project / PANO_FILE
@@ -283,13 +282,10 @@ def save(project: Path, clips: list[X3Clip], camera_dirs: list[Path]) -> Path:
         src: c.to_json() if c else {**(d or {}), "clip_id": o.clip_id}
         for (src, (d, c)), o in zip(entries.items(), objs, strict=True)
     }
-    dirs = list(dict.fromkeys([*old.get("camera_dirs", []), *map(str, camera_dirs)]))
     cache.save_json(
         path,
         {
             "version": 1,
-            "updated": datetime.now().isoformat(timespec="seconds"),
-            "camera_dirs": dirs,
             "clips": sorted(by_src.values(), key=lambda c: (c["start_local"], c["clip_id"])),
         },
     )
@@ -313,12 +309,6 @@ def load(project: Path) -> dict[str, X3Clip]:
                 f"{Path(c.insv[0]).parent} --out {project} again",
             )
     return {norm(c.source): c for c in clips}
-
-
-def camera_dirs(project: Path) -> list[Path]:
-    """Camera folders recorded by ``cutpoint 360 scan``."""
-    data = cache.load_json(project / PANO_FILE) or {}
-    return [Path(p) for p in data.get("camera_dirs", [])]
 
 
 def norm(path: str | Path) -> str:

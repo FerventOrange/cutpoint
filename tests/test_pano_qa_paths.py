@@ -496,7 +496,15 @@ def _run_director(
         }
 
     monkeypatch.setattr(D, "compute_path", fake_compute)
-    a = argparse.Namespace(project="proj", vertical=False, preview=False, param=[], out_name=None)
+    a = argparse.Namespace(
+        project="proj",
+        vertical=False,
+        preview=False,
+        param=[],
+        out_name=None,
+        force=True,
+        vl_check=False,
+    )
     for k, v in kw.items():
         setattr(a, k, v)
     cli.cmd_director(a)

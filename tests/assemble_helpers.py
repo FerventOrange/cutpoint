@@ -1,5 +1,5 @@
 """Real clips for the assemble tests: three spans of one synthetic BT.709 source, exported by
-``encode.export_clip`` with a manifest. Needs ffmpeg."""
+``encode.export_clip_checked`` with a manifest. Needs ffmpeg."""
 
 from __future__ import annotations
 
@@ -31,11 +31,11 @@ def export_clips(tmp_path: Path, rate: str = "30", spans=SPANS) -> Path:
     clips.mkdir()
     fps = round(float(Fraction(rate)))
     info, fmt, entries = probe(src), encode.OutputFormat(320, 180, fps), []
-    if rate != str(fps):  # export_clip writes the rate into the filter: keep 30000/1001
+    if rate != str(fps):  # export_clip_checked writes the rate into the filter: keep 30000/1001
         fmt = encode.OutputFormat(320, 180, rate)  # type: ignore[arg-type]
     for n, (a, b) in enumerate(spans, 1):
         name = f"{n:03d}_m.mp4"
-        encode.export_clip(src, info, a, b, clips / name, fmt, False, audio_fade=0.25)
+        encode.export_clip_checked(src, info, a, b, clips / name, fmt, False, audio_fade=0.25)
         entries.append({"file": name, "source": str(src), "start": a, "end": b, "audio_fade": 0.25})
     (clips / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
     return clips

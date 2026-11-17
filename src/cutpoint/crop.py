@@ -62,6 +62,10 @@ class Crop:
 def parse_spec(spec: str | None) -> str | Crop | None:
     """Parse a crop spec into ``None`` (no crop), ``"auto"`` or a :class:`Crop`.
 
+    Typed by users (``--crop``, a segment's or ``project.json``'s ``crop``), so it is lenient:
+    case-insensitive, ``off`` and ``no`` (or empty) mean ``none``, and ``x`` or ``+`` may
+    separate the numbers as ``:`` does (``1364x750+276+164`` is ``1364:750:276:164``).
+
     Raises:
         ValueError: If the spec is malformed.
     """

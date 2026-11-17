@@ -85,7 +85,7 @@ class ClipResume:
             "command": command,
             "clips": {},
         }
-        self.taken: dict[str, dict[str, Any] | None] = {}  # name: its read-error record
+        self.taken: set[str] = set()  # clips taken over (none with a read error)
         self._take_over(dst, work)
 
     def _take_over(self, dst: Path, work: Path) -> None:
@@ -110,7 +110,7 @@ class ClipResume:
             except OSError as err:  # locked (Windows): exported again
                 logger.debug("Not taking over %s: %s", f, err)
                 continue
-            self.taken[name] = None
+            self.taken.add(name)
             self.add(name, None)
         if self.taken:
             logger.info(

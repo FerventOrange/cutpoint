@@ -383,6 +383,7 @@ def test_check_preview_does_not_reuse_replies_given_to_another_wording(tmp_path,
 
     class Fake:
         model = "fake-vl"
+        provider_name = host = ""
 
         def __init__(self, wording: str) -> None:
             self.wording, self.calls = wording, 0

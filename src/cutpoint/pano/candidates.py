@@ -27,7 +27,7 @@ and score the path, so a code change without a version bump plans anew), the cli
 duration / fps / frames and the identity (name, size, modification time) of the cached view
 layer, voice layer and orientation track it reads.
 ``clips`` (:class:`~cutpoint.pano.render.PanoExporter`) reuses a cached path only when the
-key it would plan with is equal (:func:`reusable_path`); any difference (a span moved by
+key it would plan with is equal (:func:`cached_path`); any difference (a span moved by
 tails, padding or the speech pass, other settings, a recomputed view layer) plans it anew,
 as before. A reused path is the very dict the director returned, so the render is the same.
 
@@ -281,14 +281,16 @@ def cached_path(
     overrides: dict[str, Any] | None,
     vertical: bool = False,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """:func:`reusable_path` with the reason a cached path is not reused.
+    """The cached path of ``[start, end]`` when it was planned with exactly what
+    :func:`director.compute_path` would use now (:func:`path_key`), with the reason a cached
+    path is not reused.
 
     Returns ``(path, None)`` on a hit, ``(None, None)`` when ``360 analyze`` cached no
     paths in ``project`` and ``(None, reason)`` otherwise: ``span differs from 360 analyze``
     (no entry for this exact span, such as one moved by a tail or padding), ``9:16 not
     planned by 360 analyze`` (``vertical``: ``360 analyze`` plans 16:9 only), ``settings
     changed``, ``layers changed``, ``planning code changed`` (see :data:`_MISS_REASONS`),
-    ``older cache`` or ``source not reachable``. Reads no more than :func:`reusable_path`.
+    ``older cache`` or ``source not reachable``.
     """
     folder = project / CACHE_DIR
     if not folder.is_dir():
@@ -339,20 +341,6 @@ def plan_path(
             return path, True, None
         path = D.compute_path(clip, start, end, vertical=vertical, kind=kind, overrides=overrides)
     return path, False, why
-
-
-def reusable_path(
-    project: Path,
-    clip: Any,
-    start: float,
-    end: float,
-    kind: str | None,
-    overrides: dict[str, Any] | None,
-    vertical: bool = False,
-) -> dict[str, Any] | None:
-    """The cached path of ``[start, end]`` when it was planned with exactly what
-    :func:`director.compute_path` would use now (:func:`path_key`), else None."""
-    return cached_path(project, clip, start, end, kind, overrides, vertical)[0]
 
 
 # --------------------------------------------------------------------------- diagnostics

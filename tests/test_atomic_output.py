@@ -57,7 +57,7 @@ def test_interrupted_clip_export_leaves_no_file(monkeypatch, tmp_path):
     monkeypatch.setattr(encode, "run", _dies_midway(exc))
     src = tmp_path / "src.mp4"
     with pytest.raises(type(exc)):
-        encode.export_clip(
+        encode.export_clip_checked(
             src,
             media_info(src),
             0.0,

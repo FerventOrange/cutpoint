@@ -620,7 +620,7 @@ def test_duplicate_tracks_export_at_single_track_loudness(tmp_path):
     levels = {}
     for src in (single, dup, game_mic):
         out = tmp_path / f"out-{src.name}"
-        encode.export_clip(src, ffmpeg_utils.probe(src), 0.5, 3.5, out, fmt, False)
+        encode.export_clip_checked(src, ffmpeg_utils.probe(src), 0.5, 3.5, out, fmt, False)
         levels[src.name] = measure_loudness(out)
     (i1, tp1), (i3, tp3) = levels["single.mp4"], levels["dup.mp4"]
     assert abs(i3 - i1) <= 1.0

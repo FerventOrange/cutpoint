@@ -866,7 +866,7 @@ def render_clips(
 
     def encode(plan: ClipPlan, peak: str, grade: Grade | None) -> dict[str, Any] | None:
         if resume is not None and plan.name in resume.taken:
-            return resume.taken[plan.name]
+            return None
         read_err = export_clip_checked(
             plan.src,
             plan.info,

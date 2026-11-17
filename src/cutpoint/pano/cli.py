@@ -126,14 +126,14 @@ def _save_timings(project: Path, timings: dict[str, Any], t_start: float) -> Non
 
 def _save_views_only_timings(project: Path, timings: dict[str, Any], t_start: float) -> None:
     """``360 analyze --views-only`` leaves highlights.json as it was, so an earlier run's
-    ``pano_timings.json`` that times an analysis (``analyze_s``, or ``analyze_total_s``
-    of an older file) still describes it: keep its keys (its ``total_s`` and ``scan_s``
-    too), with this run's ``views`` and ``views_only_s``, the seconds of this run (its scan
-    included). Without one (none, a standalone ``360 scan``'s, a views-only run's), write
-    this run's as :func:`_save_timings` does."""
+    ``pano_timings.json`` that times an analysis (``analyze_s``) still describes it: keep its
+    keys (its ``total_s`` and ``scan_s`` too), with this run's ``views`` and ``views_only_s``,
+    the seconds of this run (its scan included). Without one (none, a standalone ``360
+    scan``'s, a views-only run's, an older file without ``analyze_s``), write this run's as
+    :func:`_save_timings` does."""
     path = project / TIMINGS_FILE
     earlier = cache.load_json(path)
-    if not (isinstance(earlier, dict) and ({"analyze_s", "analyze_total_s"} & earlier.keys())):
+    if not (isinstance(earlier, dict) and "analyze_s" in earlier):
         _save_timings(project, timings, t_start)
         return
     earlier["views"] = timings["views"]
@@ -193,10 +193,9 @@ def _scan(
     from cutpoint.pano.x3 import duplicate_numbers, scan, select  # noqa: PLC0415
 
     t0 = time.perf_counter()
-    clips, dirs = [], []
+    clips = []
     for d in folders:
         clips += scan(Path(d))
-        dirs.append(Path(d))
     if only:  # over the whole project: a number its pano.json has too is not unique
         scanned = {P.norm(c.source) for c in clips}
         known = [c for k, c in P.load(project).items() if k not in scanned]
@@ -216,7 +215,7 @@ def _scan(
             "imu_hz": o.meta.get("imu_hz"),
             "median_tilt_deg": round(float(sorted(tilt)[len(tilt) // 2]), 1),
         }
-    path = P.save(project, clips, dirs)
+    path = P.save(project, clips)
     saved = list(P.load(project).values())  # the ids over the whole project
     ids = {P.norm(c.source): c.clip_id for c in saved}
     for c in clips:
@@ -742,7 +741,7 @@ def cmd_director(a: argparse.Namespace) -> None:
 
 def _vl_checker(a: argparse.Namespace) -> Any:
     """The ``--vl-check`` vision checker, or None when not asked for or unavailable."""
-    if not getattr(a, "vl_check", False):  # absent on hand-built namespaces
+    if not a.vl_check:
         return None
     from cutpoint.pano.vlcheck import VLChecker  # noqa: PLC0415
 
@@ -782,7 +781,7 @@ def _direct(
     from cutpoint.utils import slugify  # noqa: PLC0415
 
     vl_report: list[dict[str, Any]] = []
-    reuse = {} if checker is not None or getattr(a, "force", True) else _reusable(out_dir)
+    reuse = {} if checker is not None or a.force else _reusable(out_dir)
     prompts = prompts_key()
     segs = []
     for i, m in enumerate(_selected_segments(project, a), 1):
@@ -1117,7 +1116,7 @@ def cmd_repair(a: argparse.Namespace) -> None:
         out=None if out is None else out if out.is_absolute() else project / out,
     )
     log_repair(rep)
-    for key, value in rep.items():  # the report's own keys, as the old --json printed them
+    for key, value in rep.items():  # the report's own keys
         jsonout.output(key, value)
     excl = Path(rep["segments"]).with_name(EXCLUDE_FILE)
     jsonout.output("exclude_file", excl if rep["exclusions"] else None)

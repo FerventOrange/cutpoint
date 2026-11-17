@@ -257,7 +257,7 @@ def pano_project(home, tmp_path) -> tuple[Path, x3.X3Clip]:
     lrv = write(cam / "LRV_20260101_100000_11_001.lrv", "x")
     clip = x3clip(insv=[str(p) for p in insv], lrv=str(lrv), duration=12.0, frames=360)
     project = home / "projects" / "trip"
-    P.save(project, [clip], [cam])
+    P.save(project, [clip])
     return project, clip
 
 
@@ -581,7 +581,7 @@ def _two_029(home, tmp_path) -> Path:
                            ("20260122_133938", "030"))
     ]  # fmt: skip
     project = home / "projects" / "trip"
-    P.save(project, clips, [cam])
+    P.save(project, clips)
     return project
 
 
@@ -678,7 +678,7 @@ def test_pano_json_warns_once_about_a_clip_paired_across_two_recordings(home, tm
         insv=[str(cam / "VID_20260122_132929_00_029.insv")],
     )
     project = home / "projects" / "trip"
-    P.save(project, [mixed], [cam])
+    P.save(project, [mixed])
     with caplog.at_level("WARNING"):
         P.load(project)
         P.load(project)

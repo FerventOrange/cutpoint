@@ -370,28 +370,25 @@ def test_run_compare_uses_the_paths_reports_thresholds(tmp_path: Path) -> None:
     rend = report("rendered", d, [clip("001_a.mp4", [r])])
     paths = report("paths", d, [clip("001_a.json", [p])])
     got = {}
-    for name, side in (("old", None), ("new", 0.075)):
-        th = asdict(TH)
-        if side is None:
-            th.pop("edge_side_min_area")  # a report from before the side floor
-        else:
-            th["edge_side_min_area"] = side
+    for name, side in (("default", TH.edge_side_min_area), ("lower", 0.075)):
+        th = {**asdict(TH), "edge_side_min_area": side}
         a, b = _write(tmp_path, d, rend, {**paths, "thresholds": th})
         QC.run_compare(d, a, b)
         saved = json.loads((tmp_path / "edge_gap.json").read_text(encoding="utf-8"))
         got[name] = saved["edit"]["other_detail"]
         (tmp_path / "edge_gap.json").unlink()
-    assert got["old"] != got["new"]
+    assert got["default"] != got["lower"]
 
 
-def test_thresholds_of_an_older_report_use_edge_min_area_at_the_sides() -> None:
+def test_a_report_from_before_the_side_floor_asks_to_run_qa_again(tmp_path: Path) -> None:
+    d = tmp_path / "c"
     old = {k: v for k, v in asdict(TH).items() if k != "edge_side_min_area"}
-    old["edge_min_area"] = 0.12
-    assert QC.thresholds({"thresholds": old}).edge_side_min_area == 0.12
-    assert (
-        QC.thresholds({"thresholds": {**old, "edge_side_min_area": 0.075}}).edge_side_min_area
-        == 0.075
-    )
+    rend = report("rendered", d, [clip("001_a.mp4", [fr(0.0)])])
+    paths = report("paths", d, [clip("001_a.json", [fr(0.0)])])
+    a, b = _write(tmp_path, d, rend, {**paths, "thresholds": old})
+    with pytest.raises(ValueError, match="older cutpoint 360 qa; run 360 qa again"):
+        QC.run_compare(d, a, b)
+    assert not (tmp_path / "edge_gap.json").exists()
 
 
 def test_the_paths_subject_under_size_min_h_beats_below_area() -> None:

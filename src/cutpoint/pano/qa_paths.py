@@ -396,7 +396,7 @@ def find_path_inputs(qa_dir: Path) -> list[dict[str, Any]]:
                     "kind": e.get("kind"),
                     "path": path,
                     "path_missing": missing,
-                    **Q.render_info(pano),
+                    **Q.render_info(pano, e["file"]),
                 }
             )
         return out

@@ -333,7 +333,13 @@ def _plan_twice(
 
     monkeypatch.setattr(D, "compute_path", compute)
     a = argparse.Namespace(
-        project="proj", vertical=False, preview=False, param=[], out_name=None, force=False
+        project="proj",
+        vertical=False,
+        preview=False,
+        param=[],
+        out_name=None,
+        force=False,
+        vl_check=False,
     )
     PC.cmd_director(a)
     f = proj / "pano_paths" / "director" / "001_a.json"

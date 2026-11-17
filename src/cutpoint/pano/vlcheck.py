@@ -176,9 +176,9 @@ class VLChecker:
         self.wording = wording_id(p)
         self.rater = VisionRater(url, model)
         self.model = self.rater.model
-        self.provider_name = getattr(self.rater, "provider_name", "ollama")
+        self.provider_name = self.rater.provider_name
         # the frame cache's key: a hosted provider's endpoint, an Ollama's host[:port]
-        self.host = getattr(self.rater, "host", "")
+        self.host = self.rater.host
         self.dead = False  # set when the server stops answering: no more requests
         # the Ollama had the model loaded before this run's first request (the AI Chat or
         # another job): unload() leaves it loaded; None: no request to Ollama yet (#888)
@@ -363,9 +363,9 @@ def check_preview(
             path,
             t,
             checker.model,
-            provider=getattr(checker, "provider_name", ""),
-            wording=getattr(checker, "wording", ""),
-            host=getattr(checker, "host", ""),
+            provider=checker.provider_name,
+            wording=checker.wording,
+            host=checker.host,
         )
         reply = store.get(key)
         if reply is None:
