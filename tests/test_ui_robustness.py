@@ -346,6 +346,52 @@ def test_frame_consents_of_two_projects_given_at_once_both_survive(
     }
 
 
+@pytest.mark.parametrize(
+    ("path", "body", "vision_section"),
+    [
+        (
+            "/api/assistant/consent",
+            {"key": "vision-v2:codex@chatgpt.com", "role": "vision"},
+            {"provider": "codex", "consent": ["vision-v2:codex@chatgpt.com"]},
+        ),
+        (
+            "/api/settings",
+            {"vision_assistant": {"model": "v-model"}},
+            {"provider": "codex", "model": "v-model"},
+        ),
+    ],
+    ids=["vision consent", "vision model"],
+)
+def test_an_assistant_consent_and_a_vision_change_given_at_once_both_survive(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    home: Path,
+    path: str,
+    body: dict[str, Any],
+    vision_section: dict[str, Any],
+) -> None:
+    """Each route read config.json before the other wrote it (#1085 A255): both changes stay."""
+    monkeypatch.setattr(providers.cliproxy, "status", lambda _name: {"logged_in": True})
+    set_config(home, assistant={"provider": "codex"}, vision_assistant={"provider": "codex"})
+    answers: list[int] = []
+
+    def other() -> None:
+        call = client.put if path == "/api/settings" else client.post
+        answers.append(call(path, json=body).status_code)
+
+    fired = interleave(monkeypatch, other)
+    agreed = "assistant-v3:codex@chatgpt.com"
+    res = client.post("/api/assistant/consent", json={"key": agreed})
+    assert res.status_code == 200, res.text
+    fired[0].join(WAIT)
+    assert answers == [200]
+    saved = json.loads((home / "config.json").read_text("utf-8"))
+    assert saved == {
+        "assistant": {"provider": "codex", "consent": [agreed]},
+        "vision_assistant": vision_section,
+    }
+
+
 def test_an_assistant_url_is_checked_again_against_a_provider_saved_meanwhile(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, home: Path
 ) -> None:
@@ -359,7 +405,7 @@ def test_an_assistant_url_is_checked_again_against_a_provider_saved_meanwhile(
         calls.append(existing_provider)
         out = real(value, section_name, existing_provider)
         if len(calls) == 1:  # the other save lands between this one's check and its write
-            config.set_config_values({"assistant": {"provider": "codex"}})
+            config.update_config(lambda _d: ({"assistant": {"provider": "codex"}}, ()))
         return out
 
     patch_ui(monkeypatch, "check_assistant", check)

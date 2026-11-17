@@ -130,13 +130,15 @@ def test_find_tool_env_naming_no_file_raises(
 
 
 # -- A255: concurrent config changes both survive
-def test_set_config_values_concurrent(tmp_path: Path) -> None:
+def test_update_config_concurrent(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     path.write_text("{}", encoding="utf-8")
     keys = [f"k{i}" for i in range(12)]
-    threads = [
-        threading.Thread(target=config.set_config_values, args=({k: True}, path)) for k in keys
-    ]
+
+    def put(key: str) -> None:
+        config.update_config(lambda _data: ({key: True}, ()), path)
+
+    threads = [threading.Thread(target=put, args=(k,)) for k in keys]
     for t in threads:
         t.start()
     for t in threads:

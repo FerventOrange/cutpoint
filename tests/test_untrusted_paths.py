@@ -96,7 +96,7 @@ def durable_saves(monkeypatch) -> list[tuple[str, bool]]:
 
 
 def test_config_json_is_written_durably(tmp_path, durable_saves) -> None:
-    config.set_config_values({"player_tags": ["Example"]}, path=tmp_path / "config.json")
+    config.update_config(lambda _d: ({"player_tags": ["Example"]}, ()), tmp_path / "config.json")
     assert durable_saves == [("config.json", True)]
 
 

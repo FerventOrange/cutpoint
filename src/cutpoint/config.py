@@ -409,30 +409,15 @@ def _analysis_skip(path: Path, data: dict) -> tuple[str, ...]:
 _WRITE_LOCK = threading.Lock()
 
 
-def set_config_values(
-    values: dict[str, object], path: Path | None = None, remove: tuple[str, ...] = ()
-) -> Path:
-    """Write ``values`` into ``config.json`` atomically and drop the keys in ``remove``, keeping
-    the other keys, their order and the file's indentation; the cached :func:`get_config` is
-    dropped. Returns the file written.
-
-    Raises:
-        ValueError: If the file exists but is not valid JSON.
-        OSError: If it cannot be written.
-    """
-    path = path or paths.config_file()
-    update_config(lambda _data: (values, remove), path)
-    return path
-
-
 def update_config(
     change: Callable[[dict], tuple[dict[str, object], tuple[str, ...]] | None],
     path: Path | None = None,
 ) -> dict:
     """Read ``config.json`` and write ``change(data)`` into it, both under one lock, so a
     concurrent change is never lost. ``change`` gets the file's current object and returns
-    ``(values, remove)`` as for :func:`set_config_values`, or None to write nothing. Returns the
-    object as written (or as read, when nothing was).
+    ``(values, remove)``: the keys to set and the keys to drop, or None to write nothing. The
+    other keys, their order and the file's indentation stay; the write is atomic and the cached
+    :func:`get_config` is dropped. Returns the object as written (or as read, when nothing was).
 
     Raises:
         ValueError: If the file exists but is not valid JSON.
