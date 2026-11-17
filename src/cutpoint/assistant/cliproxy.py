@@ -322,7 +322,14 @@ def _error_text(resp: requests.Response) -> Any:
         return resp.text
     if not isinstance(body, dict):
         return resp.text
-    return body.get("error") or body.get("message") or resp.text
+    return _error_message(body.get("error")) or body.get("message") or resp.text
+
+
+def _error_message(err: Any) -> str:
+    """The text of an ``error`` value: the ``message`` of an ``{"error": {...}}`` object."""
+    if isinstance(err, dict):
+        err = err.get("message")
+    return str(err) if err else ""
 
 
 def _json_object(resp: requests.Response) -> dict[str, Any]:
@@ -594,11 +601,11 @@ def poll_login(state: str) -> dict[str, Any]:
             }
         try:
             checkpoint(cliproxy_dir())
-        except KeyringError as err:
+        except (KeyringError, OSError, ValueError) as err:
             raise _credential_store_error(err) from None
         return {"state": "done", "error": None}
     elif status_str == "error":
-        err_msg = resp.get("error") or "login failed"
+        err_msg = _error_message(resp.get("error")) or "login failed"
         return {"state": "error", "error": redact(err_msg)}
     return {"state": "pending", "error": None}
 
@@ -676,7 +683,7 @@ def logout(provider: str) -> None:
                 )
     try:
         checkpoint(cliproxy_dir())
-    except KeyringError as err:
+    except (KeyringError, OSError, ValueError) as err:
         raise _credential_store_error(err) from None
 
 

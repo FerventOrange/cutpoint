@@ -8531,7 +8531,12 @@ async function main() {
   } catch {
     // the project list has reported a config.json the server rejects
   }
-  const wanted = decodeURIComponent(location.hash.slice(1));
+  let wanted = '';
+  try {
+    wanted = decodeURIComponent(location.hash.slice(1));
+  } catch {
+    // a malformed hash such as #% names no project: open the first one
+  }
   const first = S.projects.find((p) => p.id === wanted) ?? S.projects[0];
   if (first) await openProject(first.id);
   else renderAll(true);

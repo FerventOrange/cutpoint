@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, write
 from cutpoint import folders, projectdelete, rerank, runstate, ui
+from cutpoint.ui.routes import jobs as jobs_routes
 
 PORT = 8765
 REAL_TRASH_BLOCKER = projectdelete.trash_blocker
@@ -519,6 +521,89 @@ def test_the_run_lock_is_held_while_files_go_and_the_project_is_marked(
     assert client.request("DELETE", "/api/projects/trip").status_code == 200
     assert seen == {"locked": True, "marked": True, "409": True}
     assert not ui.DELETING and not p.exists()
+
+
+def test_the_jobs_lock_is_free_while_files_go_and_no_job_starts(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Moving GBs to the trash must not hold the jobs lock (#1085, A272); a job request that
+    # resolved the folder just before the delete marked it is still refused.
+    footage = tmp_path / "footage"
+    write(footage / "a.mp4", "x")
+    res = client.post("/api/projects", json={"name": "Trip", "source": str(footage)})
+    assert res.status_code == 200, res.text
+    pid = res.json()["id"]
+    moving, release = threading.Event(), threading.Event()
+    real = projectdelete.remove_items
+
+    def slow(plan, *, permanent):
+        moving.set()
+        release.wait(10)
+        real(plan, permanent=permanent)
+
+    spawned: list[list[str]] = []
+
+    def no_spawn(job, args):
+        spawned.append(args)
+        raise OSError("not in tests")
+
+    monkeypatch.setattr(projectdelete, "remove_items", slow)
+    monkeypatch.setattr(ui.Jobs, "_popen", staticmethod(no_spawn))
+    # as resolved before the delete began: the 409 of project_dir is not seen
+    monkeypatch.setattr(jobs_routes, "project_dir", lambda p: ui.projects_dir() / p)
+    out: dict[str, int] = {}
+    t = threading.Thread(
+        target=lambda: out.update(code=client.request("DELETE", f"/api/projects/{pid}").status_code)
+    )
+    t.start()
+    try:
+        assert moving.wait(10)
+        lock = client.app.state.jobs.lock
+        free = lock.acquire(timeout=1)
+        if free:
+            lock.release()
+        assert free, "the jobs lock is held while the files are moved"
+        res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
+        assert res.status_code == 409, res.text
+        assert not spawned
+    finally:
+        release.set()
+        t.join(20)
+    assert out == {"code": 200}
+    assert not ui.DELETING
+
+
+def test_a_job_for_a_folder_deleted_after_it_was_resolved_is_refused(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A job request that resolved the folder before a delete and reaches the jobs lock after
+    # the delete ended (the mark is gone) must not start on the vanished folder.
+    footage = tmp_path / "footage"
+    write(footage / "a.mp4", "x")
+    res = client.post("/api/projects", json={"name": "Trip", "source": str(footage)})
+    assert res.status_code == 200, res.text
+    pid = res.json()["id"]
+    spawned: list[list[str]] = []
+
+    def no_spawn(job, args):
+        spawned.append(args)
+        raise OSError("not in tests")
+
+    def deleted_meanwhile() -> None:
+        assert client.request("DELETE", f"/api/projects/{pid}").status_code == 200
+
+    monkeypatch.setattr(ui.Jobs, "_popen", staticmethod(no_spawn))
+    real_start = ui.Jobs.start
+
+    def start_after_delete(self, *args, **kwargs):
+        deleted_meanwhile()  # between the route's resolve and the check under the lock
+        return real_start(self, *args, **kwargs)
+
+    monkeypatch.setattr(ui.Jobs, "start", start_after_delete)
+    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
+    assert res.status_code == 404, res.text
+    assert not spawned
+    assert not (ui.projects_dir() / pid).exists()
 
 
 def test_qa_folders_go_and_hud_presets_stay_with_a_reason(client: TestClient) -> None:

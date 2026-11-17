@@ -463,42 +463,45 @@ def delete_project(request: Request, pid: str, body: dict[str, Any] | None = Non
     permanent = _flag(body or {}, "permanent")
     project_dir(pid)
     protected = protected_sources()  # before the lock: a slow path must not hold it
-    with jobs.lock:  # no job starts on the project while it is deleted
+    # The mark and the check run under the jobs lock, the move (it can take long) after it:
+    # once marked, project_dir answers 409 and start_job refuses a request that resolved the
+    # folder before, so nothing starts on the project while its files go.
+    with jobs.lock:
         p = project_dir(pid)  # again: a delete that ran first may have removed it
         DELETING.add(p)  # every other route on the project answers 409 meanwhile
-        try:
+    try:
+        with jobs.lock:
             if why := delete_blocker(app, pid, p):
                 raise bad(why, 409)
-            plan = projectdelete.make_plan(p, protected)
-            try:
-                with folders.swap_lock(p / runstate.LOCK_NAME, p):
-                    projectdelete.remove_items(plan, permanent=permanent)
-            except FolderBusyError as err:
-                raise bad(BUSY_TEXT, 409) from err
-            except projectdelete.NoTrash as err:
-                logger.warning("could not move %s to the trash: %s", p, err)
-                return JSONResponse(
-                    {
-                        "detail": f"The Recycle Bin / Trash cannot be used: {err}.",
-                        "code": "no_trash",
-                    },
-                    status_code=409,
-                )
-            except PermissionError as err:
-                logger.warning("deleting %s failed: %s", p, err)
-                f = err.filename
-                name = (
-                    Path(f[0] if isinstance(f, (list, tuple)) and f else str(f)).name
-                    if f
-                    else "a file"
-                )
-                raise bad(f"A file is in use ({name}); close it and try again.", 409) from err
-            except OSError as err:
-                logger.warning("deleting %s failed: %s", p, err)
-                raise bad(f"could not delete the project: {err.strerror or err}", 500) from err
-            projectdelete.remove_folder(p)
-        finally:
-            lookups.forget(p)  # before the 409 ends: the media routes check it again
+        plan = projectdelete.make_plan(p, protected)
+        try:
+            with folders.swap_lock(p / runstate.LOCK_NAME, p):
+                projectdelete.remove_items(plan, permanent=permanent)
+        except FolderBusyError as err:
+            raise bad(BUSY_TEXT, 409) from err
+        except projectdelete.NoTrash as err:
+            logger.warning("could not move %s to the trash: %s", p, err)
+            return JSONResponse(
+                {
+                    "detail": f"The Recycle Bin / Trash cannot be used: {err}.",
+                    "code": "no_trash",
+                },
+                status_code=409,
+            )
+        except PermissionError as err:
+            logger.warning("deleting %s failed: %s", p, err)
+            f = err.filename
+            name = (
+                Path(f[0] if isinstance(f, (list, tuple)) and f else str(f)).name if f else "a file"
+            )
+            raise bad(f"A file is in use ({name}); close it and try again.", 409) from err
+        except OSError as err:
+            logger.warning("deleting %s failed: %s", p, err)
+            raise bad(f"could not delete the project: {err.strerror or err}", 500) from err
+        projectdelete.remove_folder(p)
+    finally:
+        lookups.forget(p)  # before the 409 ends: the media routes check it again
+        with jobs.lock:
             DELETING.discard(p)
     media.forget(p)
     turns.clear(str(p))

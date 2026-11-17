@@ -84,6 +84,7 @@ from cutpoint.ui.files import (
 )
 from cutpoint.ui.jobs import Job
 from cutpoint.ui.projects import (
+    DELETING,
     RERANKING,
     _joins_of,
     _pano_folder,
@@ -593,6 +594,10 @@ def start_job(request: Request, pid: str, body: dict[str, Any]):
             raise bad("the projects folder changed; reload the page", 409)
         if p in RERANKING:  # its highlights.json is being replaced now
             raise bad(RERANK_BUSY_TEXT, 409)
+        if p in DELETING:  # resolved before the delete began; its files are being moved
+            raise bad("this project is being deleted", 409)
+        if not p.is_dir():  # deleted after ``p`` was resolved
+            raise bad("unknown project", 404)
         if prepare:
             prepare()  # only once the job may start: a refused one leaves no file behind
 

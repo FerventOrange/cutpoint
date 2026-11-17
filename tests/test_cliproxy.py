@@ -1028,6 +1028,62 @@ def test_credential_checkpoint_failure_is_safe(
     )
 
 
+@pytest.mark.parametrize("operation", ["login", "logout"])
+@pytest.mark.parametrize("error", [ValueError("invalid credentials marker"), OSError("unsafe")])
+def test_credential_checkpoint_store_error_is_a_proxy_error(
+    temp_home: Path, monkeypatch: pytest.MonkeyPatch, operation: str, error: Exception
+) -> None:
+    # A half-written auth file or a bad marker (ValueError) or an unsafe path (OSError) after
+    # a login that succeeded is a ProxyError naming only the error type (#1085, A296).
+    def fail_checkpoint(root: Path) -> None:
+        raise error
+
+    monkeypatch.setattr(cliproxy, "checkpoint", fail_checkpoint)
+    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", lambda: None)
+    monkeypatch.setattr(
+        cliproxy,
+        "_management_request",
+        lambda *args, **kwargs: {"status": "ok", "files": []},
+    )
+    with pytest.raises(cliproxy.ProxyError) as exc:
+        if operation == "login":
+            cliproxy.poll_login("state")
+        else:
+            cliproxy.logout("codex")
+    assert str(exc.value) == (f"secure credential storage failed: {type(error).__name__}")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [{"message": "access denied by provider", "code": 7}, {"code": 7}],
+)
+def test_poll_login_reports_an_error_object(
+    temp_home: Path, monkeypatch: pytest.MonkeyPatch, error: dict
+) -> None:
+    # An upstream {"error": {...}} object is reported, not raised (#1085, A295).
+    monkeypatch.setattr(
+        cliproxy,
+        "_management_request",
+        lambda *args, **kwargs: {"status": "error", "error": error},
+    )
+    poll = cliproxy.poll_login("state")
+    assert poll["state"] == "error"
+    assert isinstance(poll["error"], str)
+    assert poll["error"] == error.get("message", "login failed")
+
+
+def test_proxy_http_error_reads_an_error_object(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A proxy error answer {"error": {"message": ...}} gives its message, not the dict's repr.
+    class Resp:
+        text = "raw body"
+
+        @staticmethod
+        def json() -> dict:
+            return {"error": {"message": "quota exceeded", "type": "limit"}}
+
+    assert cliproxy._error_text(Resp()) == "quota exceeded"  # type: ignore[arg-type]
+
+
 @pytest.mark.slow
 def test_cli_proxy_interrupt_exit_130_and_child_cleanup(tmp_path: Path) -> None:
     home = tmp_path / "home"
