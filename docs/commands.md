@@ -2386,8 +2386,8 @@ remembered the same way: the model is not asked again for that footage until
 `--refresh-profile`, another model or a new Cutpoint version (an INFO line says so); a
 timeout or a connection error is not, so the next run asks again (the run that timed out still
 uses the nearest library profile, else `generic`). `activity.json` records the time it took in
-`discovery` (`describe_s`, `attempts`, per attempt `synth_s`, `answered` (a JSON reply came
-back) and `timed_out`, `failed` with the reason when the failure is remembered; `cached: true` when an earlier
+`discovery` (`describe_s`, `attempts`, per attempt `synth_s`, `answered` (a reply came
+back, usable or not) and `timed_out`, `failed` with the reason when the failure is remembered; `cached: true` when an earlier
 result was reused), and `crashes.json` the profile step in `timings.profile_s`. The shorter
 retry is skipped when the first attempt took nearly the whole timeout. In
 `analyze` and `edit` it runs whenever a local Ollama answers, without `--vision`, and is quiet:

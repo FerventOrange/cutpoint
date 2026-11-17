@@ -690,7 +690,9 @@ class _Rater:
         return None
 
 
-def test_a_none_reply_the_rater_calls_unusable_is_cached_a_request_failure_is_not(same_footage):
+def test_a_none_reply_the_rater_calls_unusable_is_cached_a_request_failure_is_not(
+    same_footage, monkeypatch
+):
     """#1085: ask_json is None for a bad reply too; ``last_failure`` tells them apart."""
     bad = _Rater("reply")
     rec = activity.resolve(same_footage("a"), ask=bad.ask)
@@ -703,6 +705,10 @@ def test_a_none_reply_the_rater_calls_unusable_is_cached_a_request_failure_is_no
     down = _Rater("request")
     rec = activity.resolve(same_footage("c"), ask=down.ask)
     assert rec["discovery"]["answered"] == [False, False] and not _cached_discoveries()
+    monkeypatch.setattr(activity, "PROFILE_TIMEOUT_S", 0)  # every attempt "took" the timeout
+    stats: dict = {}
+    assert activity.synthesize("kayaking", None, _Rater("reply").ask, [], stats) is None
+    assert stats["answered"] == [True] and stats["timed_out"] == [False]  # slow, but answered
 
 
 def test_the_last_attempt_decides_whether_a_failure_is_remembered(same_footage):

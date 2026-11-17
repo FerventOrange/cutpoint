@@ -670,6 +670,7 @@ class VisionRater:
             return self._checked(data, schema, reply is not None)
         if self.consent_needed:
             self.warn_consent()
+            self.last_failure = "request"
             return None
         num_ctx = self._context(num_ctx)
         options = {"temperature": temperature, "num_ctx": num_ctx, "num_predict": num_predict}

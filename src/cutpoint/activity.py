@@ -971,7 +971,7 @@ def synthesize(
     ``seeds``: the example profiles, shown with the :data:`SCHEMA_KEYS` the LLM writes. The
     name and ``detect`` captions lose the crash words (:func:`_activity_name`); the VLM
     wording is never the LLM's (merged on the floor, :func:`full`, it is the base text).
-    ``stats`` gets per attempt ``synth_s`` (seconds), ``answered`` (a JSON reply came back)
+    ``stats`` gets per attempt ``synth_s`` (seconds), ``answered`` (a reply came back, usable or not)
     and ``timed_out`` (no reply after :data:`SLOW_SHARE` of the timeout), ``attempts`` and,
     after a failure worth remembering (an unusable reply, not a timeout or a request
     error: those are asked again on the next run), ``failed`` (why)."""
@@ -1004,7 +1004,7 @@ def synthesize(
         stats["answered"].append(
             isinstance(reply, dict) or getattr(rater, "last_failure", None) == "reply"
         )
-        stats["timed_out"].append(reply is None and took >= slow)
+        stats["timed_out"].append(reply is None and not stats["answered"][-1] and took >= slow)
         stats["attempts"] += 1
         prof = validate(reply)
         if prof["incident"]["pos"]:
@@ -1280,7 +1280,7 @@ def resolve(
     Returns:
         The activity.json record; ``record["profile"]`` is the full profile. When the model
         was asked, ``record["discovery"]``: ``cached`` (the footage's earlier result reused)
-        or ``describe_s``, ``attempts``, per attempt ``synth_s``, ``answered`` (a JSON reply)
+        or ``describe_s``, ``attempts``, per attempt ``synth_s``, ``answered`` (a reply, usable or not)
         and ``timed_out``, and ``failed`` (why) when the failure is remembered.
     """
     path = project / ACTIVITY_FILE
